@@ -60,9 +60,10 @@ pub const fn extract_layout_hash(artifact: &str) -> &str {
             // SAFETY: start/end fall on ASCII boundaries (the hash is hex; the
             // marker + spaces are ASCII), so the slice is valid UTF-8.
             let slice = unsafe {
-                std::str::from_utf8_unchecked(
-                    std::slice::from_raw_parts(bytes.as_ptr().add(start), end - start),
-                )
+                std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+                    bytes.as_ptr().add(start),
+                    end - start,
+                ))
             };
             return slice;
         }
@@ -469,7 +470,10 @@ mod tests {
 
     #[test]
     fn extract_layout_hash_finds_marker_not_on_first_line() {
-        assert_eq!(elh("(schema stuff)\n;; layout-hash: cafef00d\n"), "cafef00d");
+        assert_eq!(
+            elh("(schema stuff)\n;; layout-hash: cafef00d\n"),
+            "cafef00d"
+        );
     }
 
     #[test]
@@ -518,9 +522,15 @@ mod tests {
 
     // -- declare_platform!: manifest order IS GOT slot order --
 
-    extern "C" fn eff_a() -> i64 { 1 }
-    extern "C" fn eff_b() -> i64 { 2 }
-    extern "C" fn eff_c() -> i64 { 3 }
+    extern "C" fn eff_a() -> i64 {
+        1
+    }
+    extern "C" fn eff_b() -> i64 {
+        2
+    }
+    extern "C" fn eff_c() -> i64 {
+        3
+    }
 
     static HOST: crate::HostContext = crate::HostContext::new();
 
@@ -567,7 +577,9 @@ mod tests {
     fn declare_platform_manifest_order_is_got_slot_order() {
         use std::sync::atomic::Ordering;
 
-        extern "C" fn t_alloc(_: i64) -> i64 { 0 }
+        extern "C" fn t_alloc(_: i64) -> i64 {
+            0
+        }
         let cb = crate::HostCallbacks {
             alloc: t_alloc,
             alloc_with_tag: crate::null_alloc_with_tag,
@@ -575,7 +587,11 @@ mod tests {
         // SAFETY: `cb` is a valid HostCallbacks; the macro reads it via init.
         let manifest = unsafe { cranelisp_platform_manifest(&cb) };
 
-        assert_eq!(manifest.abi_version, crate::ABI_VERSION, "stamps the crate ABI");
+        assert_eq!(
+            manifest.abi_version,
+            crate::ABI_VERSION,
+            "stamps the crate ABI"
+        );
         assert_eq!(manifest.function_count, 3, "three declared functions");
 
         // SAFETY: the macro leaks a &'static [PlatformFn] of function_count entries.
@@ -606,7 +622,9 @@ mod tests {
 
         // Unused GOT slots (beyond the declared count) stay null.
         assert!(
-            __CRANELISP_PLATFORM_GOT[3].load(Ordering::Acquire).is_null(),
+            __CRANELISP_PLATFORM_GOT[3]
+                .load(Ordering::Acquire)
+                .is_null(),
             "slot past the declared functions must stay null",
         );
         assert!(

@@ -88,7 +88,7 @@ E |- x => error         when x is not bound
 (let [x 42] x)         ; => 42, x resolves to the let binding
 ```
 
-### 4.2.1 Constructor References [Tested tests/spec_04_expressions::data_constructor_undefined_error_names_constructor_strict]
+### 4.2.1 Constructor References [Uncovered S115 — was tests/spec_04_expressions::data_constructor_undefined_error_names_constructor_strict]
 
 Constructor names are resolved through the module system like any other name.
 
@@ -130,7 +130,7 @@ Display.show        ; => trait method (resolved at call site)
 math/sin            ; => function from the math module
 ```
 
-## 4.3 Let Expression [Tested tests/spec_04_expressions::let_single_binding]
+## 4.3 Let Expression [Tested+Neg tests/spec_04_expressions::let_single_binding, tests/dotted_binder_reject_0702.rs::let_dotted_binder_rejected_binder_neg, tests/dotted_binder_reject_0702.rs::let_bare_binder_accepts_twin_green]
 
 ```clojure
 (let [x1 e1 x2 e2 ... xn en] body)
@@ -266,7 +266,7 @@ A lambda captures the values of all free variables referenced in its body -- var
 
 Top-level function names and builtins are NOT captured -- they are accessed via direct calls or the global function table.
 
-### 4.5.2 Parameter Type Annotations [Tested tests/spec_03_types::annotated_params_int]
+### 4.5.2 Parameter Type Annotations [Uncovered S115 — was tests/spec_03_types::annotated_params_int]
 
 Lambda parameters support optional type annotations using the `:Type name` syntax:
 
@@ -874,4 +874,3 @@ The `Trace` value returned by `(trace expr)` is an ordinary ADT value. It can be
 `(trace ...)` is available in **all** build modes — REPL, `--run`, and `--link` standalone binaries. The trace runtime is part of the language's runtime support and is present in every produced artefact. A `(trace ...)` form behaves identically across modes: the rules of [§4.12.1](#4121-type) through [§4.12.8](#4128-examples) apply unmodified in every mode. [S76]
 
 In JIT modes (REPL and `--run`) the trace runtime is resolved at JIT-build time; in `--link` mode the trace runtime is linked into the standalone staticlib like any other runtime support, so a `(trace ...)` form in a linked program resolves and runs normally rather than failing at link time.
-

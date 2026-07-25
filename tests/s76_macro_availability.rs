@@ -79,8 +79,7 @@ fn macro_used_before_defmacro_is_unresolved_neg() {
 // normally (the positive companion; the always-reliable subset).
 #[test]
 fn macro_defined_before_use_expands() {
-    repl_prims("(defmacro nope [x] x)\n(nope 42)\n")
-        .assert_stdout_contains(":primitives/Int 42");
+    repl_prims("(defmacro nope [x] x)\n(nope 42)\n").assert_stdout_contains(":primitives/Int 42");
 }
 
 // =============================================================================
@@ -197,10 +196,7 @@ fn macro_clause_calls_imported_helper_at_expansion_works() {
 fn macro_clause_calls_imported_helper_ill_typed_rejected_neg() {
     let out = Cranelisp::new()
         .with_prelude(PreludeVariant::None)
-        .file(
-            "main.cl",
-            "(import [mac [wrap]])\n(defn main [] (wrap 41))",
-        )
+        .file("main.cl", "(import [mac [wrap]])\n(defn main [] (wrap 41))")
         .file(
             "mac.cl",
             "(import [helper [bump]])\n\
@@ -309,9 +305,7 @@ fn macro_generates_defmacro_available_to_later_use() {
 // is a plain unresolved reference.
 #[test]
 fn repl_begin_cluster_forward_macro_use_is_unresolved_neg() {
-    let out = repl_prims(
-        "(begin (defn main [] (nope 42)) (defmacro nope [x] x))\n",
-    );
+    let out = repl_prims("(begin (defn main [] (nope 42)) (defmacro nope [x] x))\n");
     // Cluster must not silently expand the forward macro reference.
     assert!(
         !out.stdout.contains(":primitives/Int 42"),

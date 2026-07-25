@@ -4,8 +4,6 @@
 
 use super::*;
 
-
-
 // spec: design/arch/ast-annotation-examples.md §3.1 — simple fn resolved_call
 #[test]
 fn test_ast_annotation_simple_fn_resolved_call() {
@@ -40,17 +38,24 @@ fn test_ast_annotation_simple_fn_resolved_call() {
     // Retrieve the annotated AST from the symbol table
     let st = tc.symbol_table();
     let entry = st.get("double").expect("double should be in symbol table");
-    if let ModuleEntry::Def { ast: Some(defn), .. } = entry {
+    if let ModuleEntry::Def {
+        ast: Some(defn), ..
+    } = entry
+    {
         let body = &defn.body;
 
         // All inferred_types should be concrete (no Var)
         let mut types = Vec::new();
         collect_inferred_types(body, &mut types);
         for (s, ty) in &types {
-            let ty = ty.as_ref().unwrap_or_else(|| panic!("no inferred_type at span {:?}", s));
+            let ty = ty
+                .as_ref()
+                .unwrap_or_else(|| panic!("no inferred_type at span {:?}", s));
             assert!(
                 !ty.contains_var(),
-                "inferred_type at span {:?} contains Var: {:?}", s, ty
+                "inferred_type at span {:?} contains Var: {:?}",
+                s,
+                ty
             );
         }
 
@@ -63,7 +68,10 @@ fn test_ast_annotation_simple_fn_resolved_call() {
 
         // Check that resolved_call is present on the Apply (BuiltinFn for add-i64)
         let rc = find_resolved_call(body, add_span);
-        assert!(rc.is_some(), "Apply (add-i64 x x) should have resolved_call");
+        assert!(
+            rc.is_some(),
+            "Apply (add-i64 x x) should have resolved_call"
+        );
         match rc.unwrap() {
             ResolvedCall::BuiltinFn { name } => {
                 assert_eq!(name.as_ref(), "add-i64");
@@ -112,9 +120,11 @@ fn test_ast_annotation_trait_method_resolved_call() {
             vec![],
             Expr::Apply {
                 callee: Box::new(Expr::var(Symbol::from("double"), span(221, 227))),
-                args: vec![
-                    Expr::IntLit { value: 5, span: span(228, 229), inferred_type: None },
-                ],
+                args: vec![Expr::IntLit {
+                    value: 5,
+                    span: span(228, 229),
+                    inferred_type: None,
+                }],
                 span: call_span,
                 resolved_call: None,
                 inferred_type: None,
@@ -141,25 +151,38 @@ fn test_ast_annotation_trait_method_resolved_call() {
     // Int) → BuiltinFn { name: "add-i64" }.
     let st = tc.symbol_table();
     let entry = st.get("double").expect("double should be in symbol table");
-    if let ModuleEntry::Def { ast: Some(defn), .. } = entry {
+    if let ModuleEntry::Def {
+        ast: Some(defn), ..
+    } = entry
+    {
         let body = &defn.body;
         let rc = find_resolved_call(body, plus_span);
-        assert!(rc.is_some(), "Apply (+ x x) should have resolved_call on AST node");
+        assert!(
+            rc.is_some(),
+            "Apply (+ x x) should have resolved_call on AST node"
+        );
         match rc.unwrap() {
             ResolvedCall::BuiltinFn { name } => {
                 assert_eq!(name.as_ref(), "add-i64");
             }
-            other => panic!("expected BuiltinFn (primitive trait-method short-circuit per FIXME 0185), got {:?}", other),
+            other => panic!(
+                "expected BuiltinFn (primitive trait-method short-circuit per FIXME 0185), got {:?}",
+                other
+            ),
         }
 
         // All types should be concrete
         let mut types = Vec::new();
         collect_inferred_types(body, &mut types);
         for (s, ty) in &types {
-            let ty = ty.as_ref().unwrap_or_else(|| panic!("no inferred_type at span {:?}", s));
+            let ty = ty
+                .as_ref()
+                .unwrap_or_else(|| panic!("no inferred_type at span {:?}", s));
             assert!(
                 !ty.contains_var(),
-                "inferred_type at span {:?} contains Var: {:?}", s, ty
+                "inferred_type at span {:?} contains Var: {:?}",
+                s,
+                ty
             );
         }
     } else {
@@ -186,8 +209,16 @@ fn test_ast_annotation_let_binding_concrete_type() {
                 Expr::Apply {
                     callee: Box::new(Expr::var(Symbol::from("add-i64"), span(311, 318))),
                     args: vec![
-                        Expr::IntLit { value: 1, span: span(319, 320), inferred_type: None },
-                        Expr::IntLit { value: 2, span: span(321, 322), inferred_type: None },
+                        Expr::IntLit {
+                            value: 1,
+                            span: span(319, 320),
+                            inferred_type: None,
+                        },
+                        Expr::IntLit {
+                            value: 2,
+                            span: span(321, 322),
+                            inferred_type: None,
+                        },
                     ],
                     span: add_span,
                     resolved_call: None,
@@ -206,17 +237,24 @@ fn test_ast_annotation_let_binding_concrete_type() {
 
     let st = tc.symbol_table();
     let entry = st.get("f").expect("f should be in symbol table");
-    if let ModuleEntry::Def { ast: Some(defn), .. } = entry {
+    if let ModuleEntry::Def {
+        ast: Some(defn), ..
+    } = entry
+    {
         let body = &defn.body;
 
         // All inferred_types should be concrete
         let mut types = Vec::new();
         collect_inferred_types(body, &mut types);
         for (s, ty) in &types {
-            let ty = ty.as_ref().unwrap_or_else(|| panic!("no inferred_type at span {:?}", s));
+            let ty = ty
+                .as_ref()
+                .unwrap_or_else(|| panic!("no inferred_type at span {:?}", s));
             assert!(
                 !ty.contains_var(),
-                "inferred_type at span {:?} contains Var: {:?}", s, ty
+                "inferred_type at span {:?} contains Var: {:?}",
+                s,
+                ty
             );
         }
 
@@ -225,7 +263,10 @@ fn test_ast_annotation_let_binding_concrete_type() {
 
         // The binding expression (add-i64 1 2) should have resolved_call
         let rc = find_resolved_call(body, add_span);
-        assert!(rc.is_some(), "Apply (add-i64 1 2) should have resolved_call");
+        assert!(
+            rc.is_some(),
+            "Apply (add-i64 1 2) should have resolved_call"
+        );
     } else {
         panic!("f should have ast: Some(..)");
     }
@@ -255,7 +296,11 @@ fn test_ast_annotation_self_recursive_all_resolved() {
                 callee: Box::new(Expr::var(Symbol::from("eq-i64"), span(411, 417))),
                 args: vec![
                     Expr::var(Symbol::from("n"), span(418, 419)),
-                    Expr::IntLit { value: 0, span: span(420, 421), inferred_type: None },
+                    Expr::IntLit {
+                        value: 0,
+                        span: span(420, 421),
+                        inferred_type: None,
+                    },
                 ],
                 span: eq_span,
                 resolved_call: None,
@@ -269,7 +314,11 @@ fn test_ast_annotation_self_recursive_all_resolved() {
                         callee: Box::new(Expr::var(Symbol::from("sub-i64"), span(441, 448))),
                         args: vec![
                             Expr::var(Symbol::from("n"), span(449, 450)),
-                            Expr::IntLit { value: 1, span: span(451, 452), inferred_type: None },
+                            Expr::IntLit {
+                                value: 1,
+                                span: span(451, 452),
+                                inferred_type: None,
+                            },
                         ],
                         span: sub_span,
                         resolved_call: None,
@@ -301,17 +350,24 @@ fn test_ast_annotation_self_recursive_all_resolved() {
 
     let st = tc.symbol_table();
     let entry = st.get("fact").expect("fact should be in symbol table");
-    if let ModuleEntry::Def { ast: Some(defn), .. } = entry {
+    if let ModuleEntry::Def {
+        ast: Some(defn), ..
+    } = entry
+    {
         let body = &defn.body;
 
         // All inferred_types should be concrete
         let mut types = Vec::new();
         collect_inferred_types(body, &mut types);
         for (s, ty) in &types {
-            let ty = ty.as_ref().unwrap_or_else(|| panic!("no inferred_type at span {:?}", s));
+            let ty = ty
+                .as_ref()
+                .unwrap_or_else(|| panic!("no inferred_type at span {:?}", s));
             assert!(
                 !ty.contains_var(),
-                "inferred_type at span {:?} contains Var: {:?}", s, ty
+                "inferred_type at span {:?} contains Var: {:?}",
+                s,
+                ty
             );
         }
 
@@ -325,7 +381,10 @@ fn test_ast_annotation_self_recursive_all_resolved() {
 
         // The recursive call to fact should NOT have resolved_call (it's a plain user fn)
         let fact_rc = find_resolved_call(body, fact_span);
-        assert!(fact_rc.is_none(), "recursive fact call should have resolved_call = None (plain user fn)");
+        assert!(
+            fact_rc.is_none(),
+            "recursive fact call should have resolved_call = None (plain user fn)"
+        );
     } else {
         panic!("fact should have ast: Some(..)");
     }
@@ -368,8 +427,16 @@ fn test_ast_annotation_constrained_fn_pinned_by_call_site() {
             Expr::Apply {
                 callee: Box::new(Expr::var(Symbol::from("add"), span(521, 524))),
                 args: vec![
-                    Expr::IntLit { value: 1, span: span(525, 526), inferred_type: None },
-                    Expr::IntLit { value: 2, span: span(527, 528), inferred_type: None },
+                    Expr::IntLit {
+                        value: 1,
+                        span: span(525, 526),
+                        inferred_type: None,
+                    },
+                    Expr::IntLit {
+                        value: 2,
+                        span: span(527, 528),
+                        inferred_type: None,
+                    },
                 ],
                 span: span(520, 530),
                 resolved_call: None,
@@ -386,17 +453,24 @@ fn test_ast_annotation_constrained_fn_pinned_by_call_site() {
     // The shared substitution pins add's type vars to Int.
     let st = tc.symbol_table();
     let entry = st.get("add").expect("add should be in symbol table");
-    if let ModuleEntry::Def { ast: Some(defn), .. } = entry {
+    if let ModuleEntry::Def {
+        ast: Some(defn), ..
+    } = entry
+    {
         let body = &defn.body;
 
         // All inferred_types should be concrete (Int, no Var)
         let mut types = Vec::new();
         collect_inferred_types(body, &mut types);
         for (s, ty) in &types {
-            let ty = ty.as_ref().unwrap_or_else(|| panic!("no inferred_type at span {:?}", s));
+            let ty = ty
+                .as_ref()
+                .unwrap_or_else(|| panic!("no inferred_type at span {:?}", s));
             assert!(
                 !ty.contains_var(),
-                "inferred_type at span {:?} contains Var: {:?}", s, ty
+                "inferred_type at span {:?} contains Var: {:?}",
+                s,
+                ty
             );
         }
 
@@ -405,12 +479,18 @@ fn test_ast_annotation_constrained_fn_pinned_by_call_site() {
         // FIXME 0185: (Num, +, Int) short-circuits to BuiltinFn so backend
         // emits the primitive inline without paying the impl-body call frame.
         let rc = find_resolved_call(body, plus_span);
-        assert!(rc.is_some(), "Apply (+ x x) should have resolved_call on AST node");
+        assert!(
+            rc.is_some(),
+            "Apply (+ x x) should have resolved_call on AST node"
+        );
         match rc.unwrap() {
             ResolvedCall::BuiltinFn { name } => {
                 assert_eq!(name.as_ref(), "add-i64");
             }
-            other => panic!("expected BuiltinFn (primitive trait-method short-circuit per FIXME 0185), got {:?}", other),
+            other => panic!(
+                "expected BuiltinFn (primitive trait-method short-circuit per FIXME 0185), got {:?}",
+                other
+            ),
         }
     } else {
         panic!("add should have ast: Some(..)");
@@ -432,16 +512,21 @@ fn test_ast_annotation_qualified_extern_resolved_call() {
     let mut tc = tc_with_prims();
     let ctx = cf_test_ctx();
 
-    let sexps = cranelisp_frontend::parse(
-        "(defn concat-nils [] (macros/sconcat macros/SNil macros/SNil))"
-    ).unwrap();
+    let sexps =
+        cranelisp_frontend::parse("(defn concat-nils [] (macros/sconcat macros/SNil macros/SNil))")
+            .unwrap();
     let program = cranelisp_frontend::build_program(&sexps).unwrap();
 
     let _result = tc.check(&program, &ctx, ModuleStrategy::Additive).unwrap();
 
     let st = tc.symbol_table();
-    let entry = st.get("concat-nils").expect("concat-nils should be in symbol table");
-    if let ModuleEntry::Def { ast: Some(defn), .. } = entry {
+    let entry = st
+        .get("concat-nils")
+        .expect("concat-nils should be in symbol table");
+    if let ModuleEntry::Def {
+        ast: Some(defn), ..
+    } = entry
+    {
         let body = &defn.body;
 
         // Find the Apply node (there's only one)
@@ -451,13 +536,24 @@ fn test_ast_annotation_qualified_extern_resolved_call() {
             }
             match expr {
                 Expr::Let { bindings, body, .. } | Expr::ParBind { bindings, body, .. } => {
-                    for (_, e) in bindings { if let Some(a) = find_any_apply(e) { return Some(a); } }
+                    for (_, e) in bindings {
+                        if let Some(a) = find_any_apply(e) {
+                            return Some(a);
+                        }
+                    }
                     find_any_apply(body)
                 }
-                Expr::If { cond, then_branch, else_branch, .. } => {
-                    find_any_apply(cond).or_else(|| find_any_apply(then_branch)).or_else(|| find_any_apply(else_branch))
-                }
-                Expr::Lambda { body, .. } | Expr::Annotate { expr: body, .. } | Expr::Trace { body, .. } => find_any_apply(body),
+                Expr::If {
+                    cond,
+                    then_branch,
+                    else_branch,
+                    ..
+                } => find_any_apply(cond)
+                    .or_else(|| find_any_apply(then_branch))
+                    .or_else(|| find_any_apply(else_branch)),
+                Expr::Lambda { body, .. }
+                | Expr::Annotate { expr: body, .. }
+                | Expr::Trace { body, .. } => find_any_apply(body),
                 _ => None,
             }
         }
@@ -475,8 +571,14 @@ fn test_ast_annotation_qualified_extern_resolved_call() {
             }
         }
 
-        let ty = body.inferred_type().expect("Apply should have inferred_type");
-        assert!(!ty.contains_var(), "inferred_type should be concrete, got {:?}", ty);
+        let ty = body
+            .inferred_type()
+            .expect("Apply should have inferred_type");
+        assert!(
+            !ty.contains_var(),
+            "inferred_type should be concrete, got {:?}",
+            ty
+        );
     } else {
         panic!("concat-nils should have ast: Some(..)");
     }
@@ -503,20 +605,22 @@ fn test_impl_method_not_marked_constrained_after_body_check() {
     let mut accumulator = ModuleCheckAccumulator::new();
 
     // Register Double trait: (deftrait Double (double [self] self))
-    let double_decl = crate::traits::test_helpers::parse_trait_decl(
-        "(deftrait Double (double [x] self))",
-    );
+    let double_decl =
+        crate::traits::test_helpers::parse_trait_decl("(deftrait Double (double [x] self))");
     let decl_form = TopLevel::TraitDecl(double_decl);
-    let result = tc.check_form(&module, &decl_form, CheckPass::Register, &mut accumulator).unwrap();
+    let result = tc
+        .check_form(&module, &decl_form, CheckPass::Register, &mut accumulator)
+        .unwrap();
     tc.merge_form_result(&module, &mut accumulator, result);
 
     // Impl Double for Int: (defn double [x] (+ x x))
     let impl_ = TraitImpl {
         head_con_var: None,
         trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Double")),
-        target: cranelisp_types::TypeExpr::Named(
-            cranelisp_types::TypeRef::new(None, TypeName::from("Int")),
-        ),
+        target: cranelisp_types::TypeExpr::Named(cranelisp_types::TypeRef::new(
+            None,
+            TypeName::from("Int"),
+        )),
         type_constraints: vec![],
         methods: vec![Defn {
             name: Symbol::from("double"),
@@ -541,7 +645,9 @@ fn test_impl_method_not_marked_constrained_after_body_check() {
         span: span(80, 120),
     };
     let impl_form = TopLevel::TraitImpl(impl_);
-    let result = tc.check_form(&module, &impl_form, CheckPass::Register, &mut accumulator).unwrap();
+    let result = tc
+        .check_form(&module, &impl_form, CheckPass::Register, &mut accumulator)
+        .unwrap();
     tc.merge_form_result(&module, &mut accumulator, result);
 
     // The register pass should produce the mangled defn (S102 FQ `$Type`
@@ -552,7 +658,10 @@ fn test_impl_method_not_marked_constrained_after_body_check() {
         "register should produce default_method_defns"
     );
     assert!(
-        accumulator.default_method_defns.iter().any(|d| d.name == mangled_name),
+        accumulator
+            .default_method_defns
+            .iter()
+            .any(|d| d.name == mangled_name),
         "should contain Double.double$primitives/Int"
     );
 
@@ -560,7 +669,9 @@ fn test_impl_method_not_marked_constrained_after_body_check() {
     let defaults = std::mem::take(&mut accumulator.default_method_defns);
     for defn in &defaults {
         let form = TopLevel::Defn(defn.clone());
-        let result = tc.check_form(&module, &form, CheckPass::Register, &mut accumulator).unwrap();
+        let result = tc
+            .check_form(&module, &form, CheckPass::Register, &mut accumulator)
+            .unwrap();
         tc.merge_form_result(&module, &mut accumulator, result);
     }
     accumulator.default_method_defns = defaults;
@@ -569,7 +680,9 @@ fn test_impl_method_not_marked_constrained_after_body_check() {
     let defaults_for_body = accumulator.default_method_defns.clone();
     for defn in &defaults_for_body {
         let form = TopLevel::Defn(defn.clone());
-        let result = tc.check_form(&module, &form, CheckPass::CheckBody, &mut accumulator).unwrap();
+        let result = tc
+            .check_form(&module, &form, CheckPass::CheckBody, &mut accumulator)
+            .unwrap();
         tc.merge_form_result(&module, &mut accumulator, result);
     }
 
@@ -584,7 +697,8 @@ fn test_impl_method_not_marked_constrained_after_body_check() {
                     "BUG: trait impl method '{}' was marked as constrained fn \
                     (scheme: {}). This causes codegen to skip it, leaving a null \
                     GOT slot -> SIGSEGV on dispatch.",
-                    mangled_name, scheme.ty
+                    mangled_name,
+                    scheme.ty
                 );
             }
             other => panic!("expected UserFn, got {:?}", other),
@@ -597,11 +711,18 @@ fn test_impl_method_not_marked_constrained_after_body_check() {
             scheme,
         );
     } else {
-        panic!("mangled method '{}' not found in symbol table", mangled_name);
+        panic!(
+            "mangled method '{}' not found in symbol table",
+            mangled_name
+        );
     }
 
     // Verify AST annotations are concrete (no Var(N))
-    if let Some(ModuleEntry::Def { ast: Some(annotated), .. }) = table.get(mangled_name.as_ref()) {
+    if let Some(ModuleEntry::Def {
+        ast: Some(annotated),
+        ..
+    }) = table.get(mangled_name.as_ref())
+    {
         let body = &annotated.body;
         if let Some(ty) = body.inferred_type() {
             assert!(
@@ -627,7 +748,9 @@ fn def_entry_carries_annotated_ast_after_check() {
     tc.check(&program, &ctx, ModuleStrategy::Additive).unwrap();
 
     let st = tc.symbol_table();
-    let entry = st.get("trivial").expect("'trivial' must be registered after check");
+    let entry = st
+        .get("trivial")
+        .expect("'trivial' must be registered after check");
     match entry {
         ModuleEntry::Def { ast, .. } => {
             assert!(
@@ -637,8 +760,13 @@ fn def_entry_carries_annotated_ast_after_check() {
             // The annotated body must carry a resolved (var-free) type.
             let defn = ast.as_ref().unwrap();
             let body = &defn.body;
-            let ty = body.inferred_type().expect("annotated body must carry inferred_type");
-            assert!(!ty.contains_var(), "inferred_type must be concrete, got {ty:?}");
+            let ty = body
+                .inferred_type()
+                .expect("annotated body must carry inferred_type");
+            assert!(
+                !ty.contains_var(),
+                "inferred_type must be concrete, got {ty:?}"
+            );
         }
         other => panic!("expected Def entry for 'trivial', got {other:?}"),
     }

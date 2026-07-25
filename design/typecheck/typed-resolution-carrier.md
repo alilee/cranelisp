@@ -745,3 +745,138 @@ sound-today, tripwired, and has a named retirement — not filed as a defect.
   classified, tripwired, sound-today item (`overload_homes`, §11.8.9 retirement
   path); the one observed defect at an SW-1 site (fn-as-value GOT-slot carrier-loss)
   is already filed as **0705** and is NOT the swallow it sits beside.
+
+---
+
+## 16. Sprint 117 W3a — builtin ABI name and storage identity stay paired
+
+**DESIGN REFINEMENT (S117 Phase 5, W3a prerequisite).** QA reduced the
+macro-staging failure far enough to expose an older typecheck carrier defect:
+the quasiquote path resolves `macros/sconcat` as a builtin, preserves only its
+bare ABI/JIT name (`sconcat`) in `ResolvedCall::BuiltinFn`, and later
+`builtin_storage_fq` tries to reconstruct the storage identity from that bare
+name. In a normal user scope the second lookup misses `macros/sconcat`, then
+defaults to `primitives/sconcat`. The backend correctly performs its keyed read
+at the supplied FQ and therefore reports the missing primitive entry. Macro
+staging must not compensate for this producer error.
+
+### 16.1 One internal resolution product
+
+Builtin resolution produces one crate-private value:
+
+```rust
+struct ResolvedBuiltin {
+    jit_name: Symbol,
+    storage_fq: FQSymbol,
+}
+```
+
+`jit_name` is the terminal builtin entry's symbol-table key and remains the
+bare ABI name carried by the public/shared
+`ResolvedCall::BuiltinFn { name: Symbol }`. `storage_fq` is
+`Resolved::storage_fq()` from that **same terminal resolution** and is written
+directly as `ApplyRef::Dispatch(storage_fq)`. The pair is constructed only
+after the terminal entry has passed the existing
+`DefKind::{Primitive, PrimitiveExtern}` gate.
+
+This is the smallest representation that keeps two independently consumed
+projections of one resolution together. It introduces no public type,
+`cranelisp-types` change, cache/schema change, or backend contract change.
+`ResolvedCall::BuiltinFn` deliberately remains ABI-oriented and bare; only
+typecheck needs the companion storage key while settling its sidecars.
+
+The resolver becomes conceptually:
+
+```text
+resolve_builtin(state, written_name)
+  -> terminal Resolved
+  -> kind gate
+  -> ResolvedBuiltin {
+       jit_name: terminal storage symbol,
+       storage_fq: terminal storage FQ,
+     }
+```
+
+Both qualified and unqualified names use the canonical scope/qualified
+resolution primitive that returns `Resolved`; neither arm manually splits and
+chain-follows while discarding the terminal key. A renamed import therefore
+also gets the terminal ABI name rather than the written alias.
+
+### 16.2 Settlement sites
+
+Every site consuming `ResolvedBuiltin` performs two adjacent writes from the
+same value:
+
+1. insert `ResolvedCall::BuiltinFn { name: builtin.jit_name }` into
+   `resolved_calls`; and
+2. insert `ApplyRef::Dispatch(builtin.storage_fq)` into `apply_refs`.
+
+The affected populations are:
+
+| Site | Required shape |
+|---|---|
+| `infer.rs::infer_apply`, ordinary named-builtin leg | Resolve once; write the bare `BuiltinFn` and exact `Dispatch` together. Do not call `record_dispatch_target` for this leg. |
+| `infer.rs::infer_apply`, auto-curry preparation | Preserve the complete builtin product in the pending auto-curry record until its existing settlement drain. Do not narrow it to `ResolvedCall` before the drain. |
+| `program/mono_collect.rs::resolve_auto_curry`, settled re-attempt | If builtin fallback resolves, retain its exact storage FQ through construction of the final `AutoCurry` resolution and write that FQ directly at the existing dispatch settlement point. |
+
+The pending carrier must model the correlation rather than add an unrelated
+`Option<FQSymbol>` beside `Option<ResolvedCall>`. A crate-private enum/struct
+variant for the builtin case is the admissible shape: it must be impossible to
+construct “builtin call present, builtin storage identity absent.” This is
+Principle 20's cross-field-invariant test applied inside typecheck. The existing
+deferrable/final auto-curry timing remains unchanged; the complete product is
+transported until the already-defined P26 settlement window, not published
+provisionally.
+
+`record_dispatch_target` remains the shared writer for dispatch products that
+already carry enough identity (`TraitMethod`, `SigDispatch`, `AutoCurry` with a
+non-builtin inner resolution). Its `BuiltinFn` arm and
+`builtin_storage_fq` re-resolver are deleted once all builtin-producing sites
+carry the pair. There is no keyed-read-else-default path: a missing storage FQ
+is unrepresentable after successful builtin resolution.
+
+### 16.3 Controls and unit scenarios
+
+The implementation unit tier must pin the producer boundary, not only the
+eventual linker error:
+
+- **qualified extern:** `macros/sconcat` produces
+  `BuiltinFn { name: "sconcat" }` and
+  `ApplyRef::Dispatch(macros/sconcat)` on the same Apply;
+- **ordinary unqualified primitive:** `add-i64` reached normally produces the
+  existing bare ABI name and `Dispatch(primitives/add-i64)`;
+- **renamed import:** an unqualified alias of a primitive records the terminal
+  storage symbol/FQ, never the alias spelling;
+- **shadowing:** the existing same-named user-function control remains green;
+  the primitive kind gate must reject the user function, and trait
+  short-circuit dispatch continues to target `primitives/add-i64`;
+- **auto-curry:** qualified builtin resolution retains the exact home through
+  both the immediate pending path and the settled re-attempt path.
+
+The quasiquote e2e is the acceptance face, but the qualified-extern carrier
+unit test is the minimal defect pin. A macro-staging test that turns green only
+because a `primitives` fallback was added is a false fix.
+
+### 16.4 Quality attributes and governing principles
+
+- **Simplicity / maintainability:** one two-field internal product replaces a
+  second resolver plus a privileged default (Principles 6 and 7).
+- **Testability:** tests can inspect both projections at the typecheck boundary
+  without constructing a backend (Principle 5).
+- **Module locality:** canonical keyed resolution names the terminal module;
+  no ambient module scan or `"primitives"` privilege participates
+  (Principles 17 and 19).
+- **Resolution integrity:** the identity is derived once and recorded from the
+  settled result (Principles 24 and 26).
+- **Concurrency, performance, and memory representation:** untouched. No new
+  shared mutable state, asymptotic work, allocation protocol, or runtime
+  instrumentation is introduced.
+
+## Next skills
+
+- `/dev` — narrow to `cranelisp-typecheck`; implement the internal product,
+  settlement writes, deletion of `builtin_storage_fq`, and the unit scenarios
+  in §16.3.
+- `/review` — verify no builtin settlement path re-resolves a bare ABI name or
+  defaults a storage home, and verify `ResolvedCall::BuiltinFn` plus public and
+  cache surfaces are unchanged.

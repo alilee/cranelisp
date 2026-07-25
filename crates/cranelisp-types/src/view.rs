@@ -79,14 +79,20 @@ impl<'a, C: CodeStore, L: LinkerStore> View<'a, C, L> {
     /// Construct a composite read view. Lookups dispatch staging-first, then
     /// live. Both refs must outlive `'a`; the returned `View` borrows them.
     pub fn union(staging: &'a SymbolTable<C, L>, live: &'a SymbolTable<C, L>) -> Self {
-        View { staging: Some(staging), live }
+        View {
+            staging: Some(staging),
+            live,
+        }
     }
 
     /// Construct a single-source read view over `live` alone. Used by
     /// `ClusterContext::Live` (REPL introspection, fine-grained-test paths,
     /// any caller reading committed state directly).
     pub fn single(live: &'a SymbolTable<C, L>) -> Self {
-        View { staging: None, live }
+        View {
+            staging: None,
+            live,
+        }
     }
 
     /// Read-through lookup. In cluster mode (staging `Some`), staging entries

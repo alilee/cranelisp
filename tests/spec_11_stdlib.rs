@@ -70,10 +70,7 @@ fn assert_repl_lines_contain(forms: &[&str], expected: &[&str]) {
         .assert_ok();
     for needle in expected {
         if !out.stdout.contains(needle) {
-            panic!(
-                "stdout missing '{}'\nstdout:\n{}",
-                needle, out.stdout
-            );
+            panic!("stdout missing '{}'\nstdout:\n{}", needle, out.stdout);
         }
     }
 }
@@ -87,6 +84,160 @@ fn assert_repl_lines_contain(forms: &[&str], expected: &[&str]) {
 #[test]
 fn prelude_loads_without_errors() {
     assert_repl_eval_contains("(+ 0 0)", ":primitives/Int 0");
+}
+
+// spec: repl/spec.md §1.3 — a stdlib `def` definition confirmation presents
+// the user binding and bound value, not the macro's synthesized thunk.
+// defect: class=display-envelope-mirror locus=src/repl.rs::definition-result found=S115 owner=/dev
+#[test]
+fn def_definition_echo_names_user_binding_not_internal_thunk() {
+    let out = Cranelisp::new()
+        .use_workspace_stdlib_for_stdlib_conformance_only()
+        .repl()
+        .stdin("(def n 42)\n")
+        .output();
+    assert!(
+        out.stdout.contains("user/n") && out.stdout.contains("primitives/Int"),
+        "`def` echo MUST describe the user binding `n` with value type Int; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("n-def"),
+        "`def` echo MUST NOT leak the synthesized `n-def` thunk; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §1.3 + §4.1 — `/info`, `/sig`, and bare lookup of a
+// stdlib `def` binding describe the same bound value, not its macro carrier.
+// defect: class=display-envelope-mirror locus=src/repl.rs::symbol_introspection found=S115 owner=/dev
+#[test]
+fn def_info_and_sig_describe_bound_value_not_macro() {
+    let out = Cranelisp::new()
+        .use_workspace_stdlib_for_stdlib_conformance_only()
+        .repl()
+        .stdin("(def n 42)\n/info n\n/sig n\nn\n")
+        .output();
+    assert!(
+        out.stdout.matches(":primitives/Int").count() >= 3,
+        "definition/introspection/bare lookup MUST agree that `n` is an Int value; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("n-def")
+            && !out.stdout.contains("; defmacro")
+            && !out.stdout.contains("Sexp"),
+        "`def` introspection MUST NOT expose its zero-arg macro implementation; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §18.4 — a failed codegen turn is discarded; the next
+// independent literal starts from the last committed session state.
+// defect: class=routing-misclassify locus=src/session_v4.rs::process_cluster_with_staging found=S115 owner=/dev
+#[test]
+fn failed_codegen_turn_does_not_poison_following_literal() {
+    let out = Cranelisp::new()
+        .use_workspace_stdlib_for_stdlib_conformance_only()
+        .repl()
+        .stdin(
+            "(import [collections.vec [vec-flatten]])\n\
+             (vec-flatten [[1 2] [3 4]])\n\
+             42\n",
+        )
+        .output();
+    assert!(
+        out.stdout.contains(":primitives/Int 42"),
+        "a literal after a genuine codegen failure MUST evaluate normally; stdout:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(
+        format!("{}{}", out.stdout, out.stderr)
+            .matches("generic value reference 'vec-concat'")
+            .count()
+            <= 1,
+        "the failed batch MUST NOT be retried on the following literal; stdout:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: repl/spec.md §18.4 — recovery after failed codegen includes later
+// definition registration, compilation, publication, and evaluation.
+// defect: class=routing-misclassify locus=src/session_v4.rs::process_cluster_with_staging found=S115 owner=/dev
+#[test]
+fn failed_codegen_turn_does_not_poison_following_definition_and_call() {
+    let out = Cranelisp::new()
+        .use_workspace_stdlib_for_stdlib_conformance_only()
+        .repl()
+        .stdin(
+            "(import [collections.vec [vec-flatten]])\n\
+             (vec-flatten [[1 2] [3 4]])\n\
+             (defn alive [] 42)\n\
+             (alive)\n",
+        )
+        .output();
+    assert!(
+        out.stdout.contains(":primitives/Int 42") && out.stdout.contains("user/alive"),
+        "definition and call after failed codegen MUST publish and evaluate; stdout:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: repl/spec.md §18.4 — a failed codegen turn publishes no partial
+// definition/specialization; a clean redefinition of the same public symbol
+// can subsequently compile, replace it, and run.
+// defect: class=routing-misclassify locus=src/session_v4.rs::process_cluster_with_staging found=S115 owner=/dev
+#[test]
+fn failed_codegen_turn_does_not_publish_partial_definition() {
+    let out = Cranelisp::new()
+        .use_workspace_stdlib_for_stdlib_conformance_only()
+        .repl()
+        .stdin(
+            "(import [collections.vec [vec-flatten]])\n\
+             (defn failed-unit [v] (vec-flatten v))\n\
+             (failed-unit [[1 2] [3 4]])\n\
+             (defn failed-unit [_] 42)\n\
+             (failed-unit 0)\n\
+             /info failed-unit\n",
+        )
+        .output();
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        out.stdout.contains(":primitives/Int 42"),
+        "a clean same-name redefinition after failed codegen MUST compile and run; got:\n{combined}"
+    );
+    let info = out.stdout.rsplit("user/failed-unit").next().unwrap_or("");
+    assert!(
+        !info.contains("broken") && !info.contains("vec-flatten"),
+        "failed turn metadata/code MUST not survive into the clean redefinition's /info; got:\n{combined}"
+    );
+}
+
+// spec: repl/spec.md §18.4 — a codegen diagnostic names the actual failing
+// compilation unit, never an incidental operator spelling.
+// defect: class=display-envelope-mirror locus=src/session_v4.rs::inline_jit_codegen_for_names found=S115 owner=/dev
+#[test]
+fn failed_codegen_diagnostic_names_actual_failing_unit_not_operator_slash() {
+    let out = Cranelisp::new()
+        .use_workspace_stdlib_for_stdlib_conformance_only()
+        .repl()
+        .stdin(
+            "(import [collections.vec [vec-flatten]])\n\
+             (vec-flatten [[1 2] [3 4]])\n",
+        )
+        .output();
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !combined.contains("codegen failed for /"),
+        "diagnostic MUST NOT attribute vec-flatten/vec-concat failure to `/`; got:\n{combined}"
+    );
+    assert!(
+        combined.contains("vec-flatten") || combined.contains("vec-concat"),
+        "diagnostic MUST identify the actual failing unit or located backend subject; got:\n{combined}"
+    );
 }
 
 // =============================================================================
@@ -261,10 +412,7 @@ fn macro_bind_bang_sequential_reference() {
 // spec: spec/09-macros.md §9.5 — cond macro multi-way conditional fallthrough
 #[test]
 fn macro_cond_fallthrough() {
-    assert_repl_eval_contains(
-        "(cond (= 1 2) 0 1)",
-        ":primitives/Int 1",
-    );
+    assert_repl_eval_contains("(cond (= 1 2) 0 1)", ":primitives/Int 1");
 }
 
 // =============================================================================
@@ -381,28 +529,19 @@ fn macro_cond_first_match() {
 // spec: spec/09-macros.md §9.5 — cond second branch match
 #[test]
 fn macro_cond_second_match() {
-    assert_repl_eval_contains(
-        "(cond (= 1 2) 10 (= 2 2) 20 30)",
-        ":primitives/Int 20",
-    );
+    assert_repl_eval_contains("(cond (= 1 2) 10 (= 2 2) 20 30)", ":primitives/Int 20");
 }
 
 // spec: spec/09-macros.md §9.5 — cond default (all conditions false)
 #[test]
 fn macro_cond_default() {
-    assert_repl_eval_contains(
-        "(cond (= 1 2) 10 (= 3 4) 20 99)",
-        ":primitives/Int 99",
-    );
+    assert_repl_eval_contains("(cond (= 1 2) 10 (= 3 4) 20 99)", ":primitives/Int 99");
 }
 
 // spec: spec/09-macros.md §9.5 — cond with comparison expression
 #[test]
 fn macro_cond_with_comparison() {
-    assert_repl_eval_contains(
-        "(cond (> 5 10) 1 (< 5 10) 2 3)",
-        ":primitives/Int 2",
-    );
+    assert_repl_eval_contains("(cond (> 5 10) 1 (< 5 10) 2 3)", ":primitives/Int 2");
 }
 
 // =============================================================================
@@ -601,10 +740,7 @@ fn macro_const_string() {
 // spec: spec/09-macros.md §9.5 — def creates named value
 #[test]
 fn macro_def_basic() {
-    assert_repl_lines_contain(
-        &["(def MY-VAL 42)", "MY-VAL"],
-        &[":primitives/Int 42"],
-    );
+    assert_repl_lines_contain(&["(def MY-VAL 42)", "MY-VAL"], &[":primitives/Int 42"]);
 }
 
 // spec: spec/09-macros.md §9.5 — def with expression
@@ -639,10 +775,7 @@ fn macro_thread_first_bare() {
 // spec: spec/09-macros.md §9.5 — thread-first multi-form: (-> 1 (+ 2) (* 3)) => 9
 #[test]
 fn macro_thread_first_multi() {
-    assert_repl_eval_contains(
-        "(-> 1 (+ 2) (* 3))",
-        ":primitives/Int 9",
-    );
+    assert_repl_eval_contains("(-> 1 (+ 2) (* 3))", ":primitives/Int 9");
 }
 
 // =============================================================================
@@ -664,10 +797,7 @@ fn macro_thread_last_bare() {
 // spec: spec/09-macros.md §9.5 — thread-last multi-form: (->> 1 (+ 2) (* 3)) => 9
 #[test]
 fn macro_thread_last_multi() {
-    assert_repl_eval_contains(
-        "(->> 1 (+ 2) (* 3))",
-        ":primitives/Int 9",
-    );
+    assert_repl_eval_contains("(->> 1 (+ 2) (* 3))", ":primitives/Int 9");
 }
 
 // =============================================================================

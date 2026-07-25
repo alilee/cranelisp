@@ -150,8 +150,9 @@ pub use cranelift::codegen::isa::TargetIsa;
 // Re-export Cranelift module types for callers of compile_to_module.
 pub use cranelift_module;
 pub use cranelift_object;
-pub mod exe;
 pub mod compiler;
+mod drop_glue;
+pub mod exe;
 pub mod got_observer;
 pub mod heap;
 pub mod jit;
@@ -160,7 +161,6 @@ pub mod primitives_inline;
 /// backend-side per-site residual-atomic-RC dump (`[RC_SITE_STATS]`). Internal —
 /// no public surface (codegen-time measurement counter, zero-cost-off).
 mod rc_site_stats;
-mod drop_glue;
 
 // Platform-interface schema generator (platform-interface.md §5.5/§6.0; BC §3
 // "the platform-interface codegen role"). The single generator with multiple
@@ -201,8 +201,9 @@ use cranelift_module::FuncId;
 
 use dashmap::DashMap;
 
-use cranelisp_types::{ConcreteType, ErrorLocation, LinkerSymbol,
-    CranelispError, Defn, ModuleFullPath, Span, Symbol, SymbolTable,
+use cranelisp_types::{
+    ConcreteType, CranelispError, Defn, ErrorLocation, LinkerSymbol, ModuleFullPath, Span, Symbol,
+    SymbolTable,
 };
 
 use cranelift::prelude::*;
@@ -403,10 +404,11 @@ pub trait CodeFinalizer {
 
 impl CodeFinalizer for cranelift_jit::JITModule {
     fn finalize_for_code_read(&mut self) -> Result<(), CranelispError> {
-        self.finalize_definitions().map_err(|e| CranelispError::CodegenError {
-            message: format!("failed to finalize JIT definitions: {e}"),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        })
+        self.finalize_definitions()
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to finalize JIT definitions: {e}"),
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
+            })
     }
 
     fn try_get_finalized_function(&self, func_id: FuncId) -> Option<*const u8> {
@@ -471,9 +473,7 @@ impl CodeFinalizer for cranelift_object::ObjectModule {
         let data_id = self
             .declare_data(name, cranelift_module::Linkage::Export, true, false)
             .map_err(|e| CranelispError::CodegenError {
-                message: format!(
-                    "failed to declare GOT data symbol '{name}' as Export: {e}"
-                ),
+                message: format!("failed to declare GOT data symbol '{name}' as Export: {e}"),
                 location: ErrorLocation::from_span(Span::SYNTHETIC),
             })?;
 
@@ -524,14 +524,12 @@ impl CodeFinalizer for cranelift_object::ObjectModule {
                 });
             }
             let func_ref = self.declare_func_in_data(func_id, &mut desc);
-            let offset: u32 = (slot * 8).try_into().map_err(|_| {
-                CranelispError::CodegenError {
-                    message: format!(
-                        "GOT slot offset overflows u32 for slot {slot} in '{name}'"
-                    ),
+            let offset: u32 = (slot * 8)
+                .try_into()
+                .map_err(|_| CranelispError::CodegenError {
+                    message: format!("GOT slot offset overflows u32 for slot {slot} in '{name}'"),
                     location: ErrorLocation::from_span(Span::SYNTHETIC),
-                }
-            })?;
+                })?;
             desc.write_function_addr(offset, func_ref);
         }
 
@@ -624,20 +622,7 @@ where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
-    // Internal helper preserves the legacy `CranelispError` flow so the
-    // codegen body (with ~40 `CranelispError::CodegenError { ... }` sites)
-    // doesn't need a row-by-row rewrite. The `From<CranelispError> for
-    // CompilationError` bridge in `error.rs` collapses internal errors into
-    // `CompilationError::CodegenFailed { cause: <message> }` at the
-    // boundary. See `facades/backend.md` §"Errors" for the contract.
-    compile_to_module_impl::<M, C, L>(
-        module_path,
-        names,
-        symbol_tables,
-        module,
-        capture_clif,
-    )
-    .map_err(CompilationError::from)
+    compile_to_module_impl::<M, C, L>(module_path, names, symbol_tables, module, capture_clif)
 }
 
 fn compile_to_module_impl<M, C, L>(
@@ -646,7 +631,7 @@ fn compile_to_module_impl<M, C, L>(
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
     module: &mut M,
     capture_clif: bool,
-) -> Result<CompilationArtifacts, CranelispError>
+) -> Result<CompilationArtifacts, CompilationError>
 where
     M: Module + CodeFinalizer,
     C: cranelisp_types::CodeStore,
@@ -672,7 +657,8 @@ where
         return Err(CranelispError::CodegenError {
             message: "no function definitions to compile".into(),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
-        });
+        }
+        .into());
     }
 
     // Step 2 (§3.1): declare all functions in the module (Pass 1). Seed with the
@@ -689,7 +675,10 @@ where
             ConcreteType::ADT(name, args)
                 if name.module.as_ref() == "primitives"
                     && name.name.as_ref() == "IO"
-                    && !args.is_empty() => args[0].clone(),
+                    && !args.is_empty() =>
+            {
+                args[0].clone()
+            }
             ty => ty.clone(),
         })
         .collect();
@@ -697,10 +686,12 @@ where
         module,
         module_path.clone(),
         symbol_tables,
-        intrinsic_ids.dealloc.ok_or_else(|| CranelispError::CodegenError {
-            message: "runtime/dealloc is required for drop-glue emission".into(),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        })?,
+        intrinsic_ids
+            .dealloc
+            .ok_or_else(|| CranelispError::CodegenError {
+                message: "runtime/dealloc is required for drop-glue emission".into(),
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
+            })?,
         intrinsic_ids.vec_drop,
     );
     for ty in result_roots {
@@ -763,7 +754,13 @@ fn project_drop_glues<M: CodeFinalizer>(
         .into_iter()
         .map(|(ty, (symbol, id))| {
             let jit_address = module.try_get_finalized_function(id).map(|p| p as usize);
-            (ty, DropGlueArtifact { symbol, jit_address })
+            (
+                ty,
+                DropGlueArtifact {
+                    symbol,
+                    jit_address,
+                },
+            )
         })
         .collect()
 }
@@ -809,27 +806,31 @@ where
     // (no view) and whenever the ownership analysis did not run
     // (`CRANELISP_NO_OWNERSHIP` ⇒ typecheck emits no summaries). Carried in
     // lockstep with `bodies`.
-    let mut summaries: Vec<Option<cranelisp_types::ModeSummary>> =
-        Vec::with_capacity(names.len());
+    let mut summaries: Vec<Option<cranelisp_types::ModeSummary>> = Vec::with_capacity(names.len());
     {
-        let table = symbol_tables.get(module_path).ok_or_else(|| {
-            CranelispError::CodegenError {
-                message: format!(
-                    "compile_to_module: no symbol table for module '{module_path}'"
-                ),
+        let table = symbol_tables
+            .get(module_path)
+            .ok_or_else(|| CranelispError::CodegenError {
+                message: format!("compile_to_module: no symbol table for module '{module_path}'"),
                 location: ErrorLocation::from_span(Span::SYNTHETIC),
-            }
-        })?;
+            })?;
         for name in names {
-            let entry = table.get(name.as_ref()).ok_or_else(|| {
-                CranelispError::CodegenError {
+            let entry = table
+                .get(name.as_ref())
+                .ok_or_else(|| CranelispError::CodegenError {
                     message: format!(
                         "compile_to_module: symbol '{name}' not found in module '{module_path}'"
                     ),
                     location: ErrorLocation::from_span(Span::SYNTHETIC),
-                }
-            })?;
-            let ModuleEntry::Def { ast, visibility, docstring, codegen_view, .. } = entry else {
+                })?;
+            let ModuleEntry::Def {
+                ast,
+                visibility,
+                docstring,
+                codegen_view,
+                ..
+            } = entry
+            else {
                 return Err(CranelispError::CodegenError {
                     message: format!(
                         "compile_to_module: symbol '{name}' in module '{module_path}' is not a compilable Def (wrong ModuleEntry variant)"
@@ -977,7 +978,7 @@ fn compile_module_bodies<M, C, L>(
     func_arities: &HashMap<Symbol, usize>,
     intrinsic_ids: &crate::jit::IntrinsicFuncIds,
     capture_clif: bool,
-) -> Result<(String, usize), CranelispError>
+) -> Result<(String, usize), CompilationError>
 where
     M: Module,
     C: cranelisp_types::CodeStore,
@@ -1025,8 +1026,11 @@ where
         // `--run`/`--link` batch with introspection off and no dump filter,
         // both are false and the `format!("{}", func.display())` allocation is
         // skipped entirely.
-        let dump_this =
-            clif_dump_matches(clif_dump_filter.as_deref(), module_path.as_ref(), defn.name.as_ref());
+        let dump_this = clif_dump_matches(
+            clif_dump_filter.as_deref(),
+            module_path.as_ref(),
+            defn.name.as_ref(),
+        );
         let render_clif = capture_clif || dump_this;
         let art = compile_defn_in_module(
             defn,
@@ -1037,7 +1041,8 @@ where
             func_ids,
             compile_ctx,
             render_clif,
-        )?;
+        )
+        .map_err(|error| attribute_body_codegen_error(module_path, defn, error))?;
         if dump_this {
             // Write directly to stderr; ignore I/O errors (stderr failure is
             // not worth poisoning a codegen result over).
@@ -1060,6 +1065,25 @@ where
     Ok((clif_ir_agg, code_size_agg))
 }
 
+fn attribute_body_codegen_error(
+    module_path: &ModuleFullPath,
+    defn: &Defn,
+    error: CranelispError,
+) -> CompilationError {
+    let converted = CompilationError::from(error);
+    match converted {
+        CompilationError::CodegenFailed {
+            cause, location, ..
+        } => CompilationError::CodegenFailed {
+            module: module_path.clone(),
+            symbol: defn.name.clone(),
+            cause,
+            location,
+        },
+        other => other,
+    }
+}
+
 /// Step 4a (S111 R5 §3.1 / `/arch` Decision 23 Bug B fix): emit the per-module
 /// GOT data symbol `__cranelisp_got_{M}`. For ObjectModule this defines a
 /// `Linkage::Export` data symbol with relocation initializers against
@@ -1079,14 +1103,14 @@ where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
-    let table = symbol_tables.get(module_path).ok_or_else(|| {
-        CranelispError::CodegenError {
+    let table = symbol_tables
+        .get(module_path)
+        .ok_or_else(|| CranelispError::CodegenError {
             message: format!(
                 "compile_to_module: no symbol table for module '{module_path}' at GOT-data emission"
             ),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
-        }
-    })?;
+        })?;
     let mut slot_funcs: Vec<(usize, FuncId)> = Vec::with_capacity(defns.len());
     for defn in defns {
         let entry = table.get(defn.name.as_ref()).ok_or_else(|| {
@@ -1239,8 +1263,7 @@ where
     // Walk the module's symbol table to identify defined function symbols;
     // ask the linker for each address. Per Decision 36, the symbols are
     // stored under their bare names.
-    let mut ptrs: std::collections::HashMap<Symbol, *const u8> =
-        std::collections::HashMap::new();
+    let mut ptrs: std::collections::HashMap<Symbol, *const u8> = std::collections::HashMap::new();
     if let Some(st) = symbol_tables.get(module) {
         for (name, entry) in st.all_symbols() {
             if entry.callable_got_slot().is_some()
@@ -1301,18 +1324,20 @@ where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
-    let table = symbol_tables.get(&fq.module).ok_or_else(|| {
-        CompilationError::SymbolNotCompilable {
-            module: fq.module.clone(),
-            symbol: fq.symbol.clone(),
-        }
-    })?;
-    let entry = table.get(fq.symbol.as_ref()).ok_or_else(|| {
-        CompilationError::SymbolNotCompilable {
-            module: fq.module.clone(),
-            symbol: fq.symbol.clone(),
-        }
-    })?;
+    let table =
+        symbol_tables
+            .get(&fq.module)
+            .ok_or_else(|| CompilationError::SymbolNotCompilable {
+                module: fq.module.clone(),
+                symbol: fq.symbol.clone(),
+            })?;
+    let entry =
+        table
+            .get(fq.symbol.as_ref())
+            .ok_or_else(|| CompilationError::SymbolNotCompilable {
+                module: fq.module.clone(),
+                symbol: fq.symbol.clone(),
+            })?;
     let Some(slot) = entry.callable_got_slot() else {
         return Err(CompilationError::SymbolNotCompilable {
             module: fq.module.clone(),
@@ -1333,17 +1358,14 @@ where
     // SAFETY: see the fn-level # Safety note — `ptr` is the live finalised code
     // address backend wrote to the GOT slot; `code_size` is the byte length
     // backend reported for that compilation.
-    let code_bytes: &[u8] =
-        unsafe { std::slice::from_raw_parts(ptr, code_size) };
+    let code_bytes: &[u8] = unsafe { std::slice::from_raw_parts(ptr, code_size) };
     let runtime_addr = ptr as u64;
 
-    disasm_host(code_bytes, runtime_addr).map_err(|cause| {
-        CompilationError::CodegenFailed {
-            module: fq.module.clone(),
-            symbol: fq.symbol.clone(),
-            cause,
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        }
+    disasm_host(code_bytes, runtime_addr).map_err(|cause| CompilationError::CodegenFailed {
+        module: fq.module.clone(),
+        symbol: fq.symbol.clone(),
+        cause,
+        location: ErrorLocation::from_span(Span::SYNTHETIC),
     })
 }
 
@@ -1454,20 +1476,26 @@ pub fn compile_trap_stub(
     // `runtime/panic` via the ordinary intrinsics declaration path (no
     // bespoke symbol wiring — §8.1).
     let intrinsic_ids = declare_intrinsics_generic(module).map_err(CompilationError::from)?;
-    let panic_id = intrinsic_ids.panic.unwrap_or_else(|| {
-        unreachable!("invariant: runtime/panic is in the intrinsics catalog")
-    });
+    let panic_id = intrinsic_ids
+        .panic
+        .unwrap_or_else(|| unreachable!("invariant: runtime/panic is in the intrinsics catalog"));
 
     // Stub signature: () -> i64 (see the fn-level ABI note).
     let mut sig = module.make_signature();
     sig.returns.push(AbiParam::new(types::I64));
 
     let func_id = module
-        .declare_function("__cranelisp_trap_stub__", cranelift_module::Linkage::Local, &sig)
-        .map_err(|e| CompilationError::from(CranelispError::CodegenError {
-            message: format!("failed to declare trap stub: {e}"),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        }))?;
+        .declare_function(
+            "__cranelisp_trap_stub__",
+            cranelift_module::Linkage::Local,
+            &sig,
+        )
+        .map_err(|e| {
+            CompilationError::from(CranelispError::CodegenError {
+                message: format!("failed to declare trap stub: {e}"),
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
+            })
+        })?;
 
     let mut ctx = module.make_context();
     ctx.func.signature = sig;
@@ -1492,18 +1520,18 @@ pub fn compile_trap_stub(
         builder.finalize();
     }
 
-    module
-        .define_function(func_id, &mut ctx)
-        .map_err(|e| CompilationError::from(CranelispError::CodegenError {
+    module.define_function(func_id, &mut ctx).map_err(|e| {
+        CompilationError::from(CranelispError::CodegenError {
             message: format!("failed to define trap stub: {e}"),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
-        }))?;
-    module
-        .finalize_definitions()
-        .map_err(|e| CompilationError::from(CranelispError::CodegenError {
+        })
+    })?;
+    module.finalize_definitions().map_err(|e| {
+        CompilationError::from(CranelispError::CodegenError {
             message: format!("failed to finalize trap stub: {e}"),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
-        }))?;
+        })
+    })?;
 
     let code_ptr = module.get_finalized_function(func_id);
 
@@ -1532,9 +1560,11 @@ mod trap_stub_tests {
     #[test]
     fn trap_stub_raises_provenance_message_and_returns_sentinel() {
         let msg = String::from("g is broken by the redefinition of f: type error");
-        let (ptr, code) =
-            compile_trap_stub(msg.as_ptr(), msg.len()).expect("trap stub compiles");
-        assert!(!ptr.is_null(), "trap stub must finalize to a non-null code ptr");
+        let (ptr, code) = compile_trap_stub(msg.as_ptr(), msg.len()).expect("trap stub compiles");
+        assert!(
+            !ptr.is_null(),
+            "trap stub must finalize to a non-null code ptr"
+        );
 
         let _ = cranelisp_intrinsics::panic::take_runtime_error();
         let stub: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
@@ -1559,13 +1589,16 @@ mod trap_stub_tests {
     #[test]
     fn trap_stub_is_callable_at_nonzero_arity() {
         let msg = String::from("h is broken by the redefinition of k: arity change");
-        let (ptr, _code) =
-            compile_trap_stub(msg.as_ptr(), msg.len()).expect("trap stub compiles");
+        let (ptr, _code) = compile_trap_stub(msg.as_ptr(), msg.len()).expect("trap stub compiles");
 
         let _ = cranelisp_intrinsics::panic::take_runtime_error();
         // Call as a 3-arg function (register-passed, caller-owned scratch).
         let stub3: extern "C" fn(i64, i64, i64) -> i64 = unsafe { std::mem::transmute(ptr) };
-        assert_eq!(stub3(1, 2, 3), 0, "sentinel through a 3-arg import signature");
+        assert_eq!(
+            stub3(1, 2, 3),
+            0,
+            "sentinel through a 3-arg import signature"
+        );
         assert!(
             cranelisp_intrinsics::panic::take_runtime_error().is_some(),
             "raise fires regardless of the caller's imported arity"
@@ -1579,8 +1612,7 @@ mod trap_stub_tests {
     #[test]
     fn trap_stub_raises_on_every_invocation() {
         let msg = String::from("m is broken by the redefinition of n: gone");
-        let (ptr, _code) =
-            compile_trap_stub(msg.as_ptr(), msg.len()).expect("trap stub compiles");
+        let (ptr, _code) = compile_trap_stub(msg.as_ptr(), msg.len()).expect("trap stub compiles");
         let stub: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
 
         for i in 0..3 {
@@ -1635,19 +1667,27 @@ where
     }
     sig.returns.push(AbiParam::new(types::I64));
 
-    let func_id = *func_ids.get(&defn.name).ok_or_else(|| {
-        CranelispError::CodegenError {
+    let func_id = *func_ids
+        .get(&defn.name)
+        .ok_or_else(|| CranelispError::CodegenError {
             message: format!("function '{}' not declared", defn.name),
             location: ErrorLocation::from_span(defn.span),
-        }
-    })?;
+        })?;
 
     let mut func = cranelift::codegen::ir::Function::with_name_signature(
         cranelift::codegen::ir::UserFuncName::testcase(defn.name.as_bytes()),
         sig,
     );
 
-    FnCompiler::compile_body(defn, body, mode_summary, &mut func, func_ctx, module, compile_ctx)?;
+    FnCompiler::compile_body(
+        defn,
+        body,
+        mode_summary,
+        &mut func,
+        func_ctx,
+        module,
+        compile_ctx,
+    )?;
 
     // Capture CLIF IR text before define_function consumes the context — but
     // only when the caller will consume it (FIXME 0325). When `capture_clif`
@@ -1677,12 +1717,8 @@ where
         .map(|compiled| compiled.code_info().total_size)
         .unwrap_or(0);
 
-    Ok(FunctionArtifacts {
-        clif_ir,
-        code_size,
-    })
+    Ok(FunctionArtifacts { clif_ir, code_size })
 }
-
 
 #[cfg(test)]
 mod concrete_boundary_phase3_tests {
@@ -1712,11 +1748,20 @@ mod concrete_boundary_phase3_tests {
     fn signature_path_classifies_concrete_and_var() {
         let no_tables: Option<&dashmap::DashMap<ModuleFullPath, SymbolTable>> = None;
         // Concrete scalars route through the total `ConcreteType` classify.
-        assert_eq!(signature_heap_category(&Type::Int, no_tables), HeapCategory::NeverHeap);
-        assert_eq!(signature_heap_category(&Type::String, no_tables), HeapCategory::AlwaysHeap);
+        assert_eq!(
+            signature_heap_category(&Type::Int, no_tables),
+            HeapCategory::NeverHeap
+        );
+        assert_eq!(
+            signature_heap_category(&Type::String, no_tables),
+            HeapCategory::AlwaysHeap
+        );
         // A generic-ctor-template field `Var` → `Mixed` (uniform representation),
         // NOT a panic and NOT a widened `classify` (FIXME 0394).
-        assert_eq!(signature_heap_category(&Type::Var(0), no_tables), HeapCategory::Mixed);
+        assert_eq!(
+            signature_heap_category(&Type::Var(0), no_tables),
+            HeapCategory::Mixed
+        );
         assert_eq!(
             signature_heap_category(&Type::TyConApp(1, vec![Type::Int]), no_tables),
             HeapCategory::Mixed

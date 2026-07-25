@@ -145,8 +145,8 @@ fn spawn_server(port: u16) -> ServerGuard {
 /// accept loop that reads one request per connection and honours Content-Length
 /// for POST bodies (exemplar/platforms/web/src/lib.rs).
 fn http_request(port: u16, method: &str, path: &str, body: Option<&str>) -> String {
-    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
-        .expect("connect to exemplar web server");
+    let mut stream =
+        TcpStream::connect(format!("127.0.0.1:{port}")).expect("connect to exemplar web server");
     stream
         .set_read_timeout(Some(Duration::from_secs(20)))
         .unwrap();

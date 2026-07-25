@@ -107,7 +107,9 @@ fn got_trace_off_path_zero_overhead_neg() {
         .output();
     let stderr = &out.stderr;
     assert!(
-        !stderr.contains("JitWrite") && !stderr.contains("LinkerWrite") && !stderr.contains("Redefinition"),
+        !stderr.contains("JitWrite")
+            && !stderr.contains("LinkerWrite")
+            && !stderr.contains("Redefinition"),
         "no GOT trace events should fire when CRANELISP_GOT_TRACE is unset (zero-overhead claim); \
          got stderr:\n{}",
         stderr

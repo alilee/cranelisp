@@ -17,12 +17,20 @@ fn test_fqtn(name: &str) -> FQTypeName {
 
 /// Helper: nullary constructor spec (no fields).
 fn nullary_ctor(name: &'static str, tag: usize) -> CtorSpec {
-    CtorSpec { name, tag, field_count: 0 }
+    CtorSpec {
+        name,
+        tag,
+        field_count: 0,
+    }
 }
 
 /// Helper: data constructor spec with the given field count.
 fn data_ctor(name: &'static str, tag: usize, field_count: usize) -> CtorSpec {
-    CtorSpec { name, tag, field_count }
+    CtorSpec {
+        name,
+        tag,
+        field_count,
+    }
 }
 
 /// Build a constructor `Def` entry under the ctor-as-Def shape.
@@ -219,11 +227,7 @@ fn test_enum_only_adt_never_heap() {
 fn test_data_only_adt_always_heap() {
     // (deftype Wrapper [val]) — non-parameterized with data constructor
     // This is the F-2 bug case: was incorrectly NeverHeap
-    let tables = tables_with_type(
-        "Wrapper",
-        &[],
-        &[data_ctor("Wrapper", 0, 1)],
-    );
+    let tables = tables_with_type("Wrapper", &[], &[data_ctor("Wrapper", 0, 1)]);
     let wrapper = cadt("Wrapper", vec![]);
     assert_eq!(
         HeapCategory::classify(&wrapper, Some(&tables)),
@@ -234,11 +238,7 @@ fn test_data_only_adt_always_heap() {
 #[test]
 fn test_product_type_always_heap() {
     // (deftype IPoint (IPoint [:Int x :Int y])) — product type
-    let tables = tables_with_type(
-        "IPoint",
-        &[],
-        &[data_ctor("IPoint", 0, 2)],
-    );
+    let tables = tables_with_type("IPoint", &[], &[data_ctor("IPoint", 0, 2)]);
     let point = cadt("IPoint", vec![]);
     assert_eq!(
         HeapCategory::classify(&point, Some(&tables)),
@@ -274,11 +274,7 @@ fn test_mixed_adt_with_tables() {
 fn test_phantom_type_never_heap() {
     // (deftype (Phantom a) PhantomVal) — parameterized, but only nullary constructor
     // This was incorrectly Mixed with the old heuristic
-    let tables = tables_with_type(
-        "Phantom",
-        &["a"],
-        &[nullary_ctor("PhantomVal", 0)],
-    );
+    let tables = tables_with_type("Phantom", &["a"], &[nullary_ctor("PhantomVal", 0)]);
     let phantom = cadt("Phantom", vec![ConcreteType::Int]);
     assert_eq!(
         HeapCategory::classify(&phantom, Some(&tables)),
@@ -341,11 +337,7 @@ fn test_vec_always_heap_with_tables() {
 /// Insert a single-constructor **product** type with a faithful `Type::Fn`
 /// constructor scheme (field types → ADT). Multiple calls compose into one
 /// table so nested value types resolve.
-fn insert_product_typed(
-    st: &mut SymbolTable,
-    type_name: &str,
-    field_types: Vec<Type>,
-) {
+fn insert_product_typed(st: &mut SymbolTable, type_name: &str, field_types: Vec<Type>) {
     let fqtn = test_fqtn(type_name);
     let info = TypeDefInfo {
         name: fqtn.clone(),
@@ -361,10 +353,16 @@ fn insert_product_typed(
         Type::Fn(field_types, Box::new(Type::ADT(fqtn.clone(), vec![])))
     };
     let entry = ModuleEntry::Def {
-        scheme: Scheme { type_vars: vec![], constraints: std::collections::HashMap::new(), ty: scheme_ty },
+        scheme: Scheme {
+            type_vars: vec![],
+            constraints: std::collections::HashMap::new(),
+            ty: scheme_ty,
+        },
         visibility: Visibility::Public,
         docstring: None,
-        param_names: (0..field_count).map(|i| Symbol::from(format!("f{i}"))).collect(),
+        param_names: (0..field_count)
+            .map(|i| Symbol::from(format!("f{i}")))
+            .collect(),
         kind: Box::new(DefKind::Constructor {
             got_slot: 0,
             type_name: fqtn.clone(),
@@ -480,8 +478,16 @@ fn test_r5_zero_word_field_product_not_value() {
         ("P", vec![Type::ADT(test_fqtn("U"), vec![])]),
     ]);
     let cat = HeapCategory::classify(&cadt("P", vec![]), Some(&tables));
-    assert_ne!(cat, HeapCategory::Value, "0-word-field product must not flatten");
-    assert_eq!(cat, HeapCategory::AlwaysHeap, "P is a real heap object (RC-governed)");
+    assert_ne!(
+        cat,
+        HeapCategory::Value,
+        "0-word-field product must not flatten"
+    );
+    assert_eq!(
+        cat,
+        HeapCategory::AlwaysHeap,
+        "P is a real heap object (RC-governed)"
+    );
 }
 
 // Wave-3a /review BLOCKER 2 (multi-field-but-≤1-word) — the backend half.
@@ -495,6 +501,10 @@ fn test_r5_multi_field_one_word_product_not_value() {
         ("M", vec![Type::Int, Type::ADT(test_fqtn("U"), vec![])]),
     ]);
     let cat = HeapCategory::classify(&cadt("M", vec![]), Some(&tables));
-    assert_ne!(cat, HeapCategory::Value, "≥2-field product must not flatten");
+    assert_ne!(
+        cat,
+        HeapCategory::Value,
+        "≥2-field product must not flatten"
+    );
     assert_eq!(cat, HeapCategory::AlwaysHeap);
 }

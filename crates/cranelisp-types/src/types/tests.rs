@@ -43,7 +43,10 @@ fn test_adt_same_name_different_module_are_distinct() {
     let b = Type::adt(ModuleFullPath::from("bar"), TypeName::from("T"), vec![]);
     // Module is load-bearing for identity — a bare-name-only ADT would
     // collapse these to equal, which Decision 0047 forbids.
-    assert_ne!(a, b, "same local name in different modules must not be equal");
+    assert_ne!(
+        a, b,
+        "same local name in different modules must not be equal"
+    );
 }
 
 #[test]
@@ -352,17 +355,29 @@ fn render_type_tyconapp_four_cells() {
     let mut map = std::collections::HashMap::new();
     map.insert(3u32, "f".to_string());
     assert_eq!(
-        render_type(&empty_args, PrimitiveNaming::Bare, VarNaming::Lettered(&map)),
+        render_type(
+            &empty_args,
+            PrimitiveNaming::Bare,
+            VarNaming::Lettered(&map)
+        ),
         "f"
     );
     assert_eq!(
-        render_type(&with_args, PrimitiveNaming::Qualified, VarNaming::Lettered(&map)),
+        render_type(
+            &with_args,
+            PrimitiveNaming::Qualified,
+            VarNaming::Lettered(&map)
+        ),
         "(f primitives/Int)"
     );
     // Lettered head fallback to t{id} when absent.
     let empty = std::collections::HashMap::new();
     assert_eq!(
-        render_type(&empty_args, PrimitiveNaming::Bare, VarNaming::Lettered(&empty)),
+        render_type(
+            &empty_args,
+            PrimitiveNaming::Bare,
+            VarNaming::Lettered(&empty)
+        ),
         "t3"
     );
 }
@@ -370,10 +385,7 @@ fn render_type_tyconapp_four_cells() {
 #[test]
 fn test_type_var_names_ordering() {
     // Variable names assigned in order of first occurrence.
-    let ty = Type::Fn(
-        vec![Type::Var(99), Type::Var(50)],
-        Box::new(Type::Var(99)),
-    );
+    let ty = Type::Fn(vec![Type::Var(99), Type::Var(50)], Box::new(Type::Var(99)));
     let names = type_var_names(&ty);
     assert_eq!(names.get(&99), Some(&"a".to_string()));
     assert_eq!(names.get(&50), Some(&"b".to_string()));

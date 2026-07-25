@@ -199,7 +199,11 @@ fn platform_effect_roots_excludes_scalars() {
     tables.insert(plat.clone(), pt);
 
     let roots = platform_effect_roots(tables.get(&plat).unwrap().value());
-    assert_eq!(roots, vec![rect], "Rectangle is the only ADT root; Int excluded");
+    assert_eq!(
+        roots,
+        vec![rect],
+        "Rectangle is the only ADT root; Int excluded"
+    );
 }
 
 // ── subst_for_ctor_fields: identity self-map elision (FIXME 0284) ──────────
@@ -232,10 +236,7 @@ fn subst_skips_identity_self_map() {
 fn subst_keeps_concrete_and_cross_var_maps() {
     let field_type_lists = vec![vec![Type::Var(0)], vec![Type::Var(1)]];
     // Var(0) -> Int (concrete), Var(1) -> Var(2) (cross-var, not identity).
-    let subst = subst_for_ctor_fields(
-        &field_type_lists,
-        &[Type::Int, Type::Var(2)],
-    );
+    let subst = subst_for_ctor_fields(&field_type_lists, &[Type::Int, Type::Var(2)]);
     assert_eq!(subst.get(&0), Some(&Type::Int), "concrete map kept");
     assert_eq!(subst.get(&1), Some(&Type::Var(2)), "cross-var map kept");
 }

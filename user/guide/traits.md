@@ -172,6 +172,22 @@ user> (describe (Dog 3))
 :primitives/String "a dog"
 ```
 
+The trait in slot 1 is a **reference** to an existing declaration, so you may
+write its module-qualified name when that is clearer or when you have not
+imported its bare name:
+
+```clojure
+(impl user/Describe Dog
+  (defn describe [self] "a dog"))
+```
+
+`Describe` and `user/Describe` mean the same thing here because both resolve to that
+one trait. The qualifier identifies the trait's home; it does not become part
+of the generated method name. This is different from `(deftrait Describe …)`:
+that `Describe` introduces a new name and is therefore a bare-only
+**binder**. See [spec §5.4](../../spec/05-definitions.md#54-trait-implementation-impl)
+and [§7.3](../../spec/07-traits.md#73-trait-implementation).
+
 An impl MUST provide every method the trait declares, except those with a
 [default body](#default-methods--a-body-instead-of-a-return-type).
 Re-entering an `impl` for the same (trait, type) pair **replaces** it — see
@@ -179,13 +195,17 @@ Re-entering an `impl` for the same (trait, type) pair **replaces** it — see
 A method's name may not collide with an existing **field accessor** of the target
 type — see [spec §7.3.1](../../spec/07-traits.md#731-concrete-implementation).
 
-### Impl declaration needs the trait in scope
+### Impl declaration needs a resolvable trait reference
 
 Writing `(impl Trait Type …)` requires the **trait** to resolve at the impl site
-(slot 1 is a reference to the trait). Importing only a *method* of the trait is
-**not** enough to *declare* an impl — declaration reaches the trait; dispatch
-reaches the method (see [Importing trait methods](#importing-trait-methods-a-method-reference-is-enough)
-below, and [spec §7.11.2(d)](../../spec/07-traits.md#7112-method-import-dispatch--a-method-reference-suffices)).
+(slot 1 is a reference to the trait). A bare `Trait` must be in scope; a
+module-qualified `module/Trait` reaches the same declaration directly and does
+not need a separate bare import. Importing only a *method* of the trait is
+**not** enough to make the bare trait name available for an impl — declaration
+reaches the trait; dispatch reaches the method (see
+[Importing trait methods](#importing-trait-methods-a-method-reference-is-enough)
+below, and
+[spec §7.11.2(d)](../../spec/07-traits.md#7112-method-import-dispatch--a-method-reference-suffices)).
 
 ## Default methods — a body instead of a return type
 
@@ -377,17 +397,78 @@ user> (fmap (fn [n] (+ n 1)) (Some 4))
 
 The rules that shape the two slots:
 
-- **Slot 1 is fixed** — it reproduces the `deftrait` head verbatim, the same
-  constructor-variable spelling `(Functor f)`. It is neither renamed nor omitted.
-- **Slot 2's head names the trait** — `(Functor Option)`, not some other name;
-  it is matched to slot 1 by resolved trait identity.
+- **Slot 1 keeps the declaration's shape and binder** — it uses the same
+  constructor-variable spelling `f`. The trait component is still a reference,
+  so `(Functor f)` and `(user/Functor f)` are equivalent when they reach
+  the same trait.
+- **Slot 2's head names the trait** — `(Functor Option)`, not some other trait;
+  it is matched to slot 1 by resolved identity. It may also be qualified:
+  `(user/Functor Option)`.
 - **The constructor's arity must match** the trait's constructor variable
-  (`Option` is `* -> *`, matching `f`'s single application `(f a)`).
+  (`Option` is `* -> *`, matching `f`'s single application `(f a)`). The target
+  constructor itself remains a bare constructor name.
+
+For example, these two references deliberately use different spellings but
+still name the same trait:
+
+```clojure
+(impl (user/Functor f) (Functor Option)
+  (defn fmap [func opt]
+    (match opt [None None (Some x) (Some (func x))])))
+```
+
+The inverse also works: a bare slot 1 and
+`(user/Functor Option)` in slot 2. In both cases `Functor` is resolved
+by identity; `f` is the binder whose spelling is echoed.
 
 See [spec §7.2](../../spec/07-traits.md#72-higher-kinded-traits) and
 [§7.3.4](../../spec/07-traits.md#734-higher-kinded-implementation). The
 [errors catalogue](../errors/trait-impl-diagnostics.md) explains the diagnostics
 when a slot is malformed.
+
+## Inspecting constraints and implementations
+
+The REPL keeps trait identity visible when inference adds a constraint. Here
+`double` works for every type implementing the prelude's `Num` trait:
+
+```
+user> (defn double [x] (+ x x))
+:(Fn [:num.num/Num a] a) user/double ; defn
+
+user> /sig double
+:(Fn [:num.num/Num a] a) user/double ; defn
+```
+
+The canonical `num.num/Num` home appears in both displays, even though the
+function used the bare `+`. That qualification tells you which trait the
+constraint means; it is not syntax you must copy into the function.
+
+For an implementation, ask the same relationship from either end:
+
+```
+user> /info Sizeable
+:user/Sizeable ; deftrait
+; defn:
+;  size
+; impl:
+;  Box
+  (deftrait Sizeable (size [x] Int))
+
+user> /info Box
+:user/Box ; deftype
+; match:
+;  MkBox
+; impl:
+;  Sizeable
+  (deftype Box (MkBox [:Int w :Int h]))
+```
+
+`/info Sizeable` answers “which types implement this trait?” while `/info Box`
+answers “which traits does this type implement?” They are inverse views of the
+same live pair. Local implementations appear before imported ones, and
+re-entering the impl replaces its row rather than adding an edit-history row.
+See the [live-development guide](live-development.md#redefining-an-impl) for
+replacement behavior.
 
 ## Importing trait methods — a method reference is enough
 

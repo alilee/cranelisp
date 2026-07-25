@@ -445,9 +445,7 @@ pub fn record_symbol_table_ensure_forward(
 /// is backed by a `OnceLock`; the first install wins, subsequent calls
 /// are no-ops.
 pub fn install_symbol_table_ensure_hook_to_scheduler_trace() {
-    cranelisp_typecheck::install_symbol_table_ensure_hook(
-        record_symbol_table_ensure_forward,
-    );
+    cranelisp_typecheck::install_symbol_table_ensure_hook(record_symbol_table_ensure_forward);
 }
 
 // ---------------------------------------------------------------------------
@@ -457,8 +455,8 @@ pub fn install_symbol_table_ensure_hook_to_scheduler_trace() {
 /// Drain this thread's ring buffer and return it, sorted by
 /// `(timestamp, thread_ord_id)`. The thread-local buffer is left empty.
 pub fn dump_thread_buffer() -> Vec<SchedulerTraceEvent> {
-    let mut out: Vec<SchedulerTraceEvent> = SCHEDULER_TRACE_BUF
-        .with(|cell| cell.borrow_mut().drain(..).collect());
+    let mut out: Vec<SchedulerTraceEvent> =
+        SCHEDULER_TRACE_BUF.with(|cell| cell.borrow_mut().drain(..).collect());
     out.sort_by_key(|e| (e.timestamp, e.thread_ord_id));
     out
 }
@@ -524,7 +522,10 @@ pub fn format_event_line(e: &SchedulerTraceEvent) -> String {
     // `pool=<N>`.
     let is_ensure = matches!(e.tag, SchedulerTraceTag::SymbolTableEnsure);
     let payload = match &e.payload {
-        SchedulerTracePayload::Module { module, state: Some(s) } if is_ensure => {
+        SchedulerTracePayload::Module {
+            module,
+            state: Some(s),
+        } if is_ensure => {
             let outcome = match s {
                 0 => "Created",
                 1 => "AlreadyPresent",
@@ -532,10 +533,16 @@ pub fn format_event_line(e: &SchedulerTraceEvent) -> String {
             };
             format!("module={module} outcome={outcome}")
         }
-        SchedulerTracePayload::Module { module, state: Some(s) } => {
+        SchedulerTracePayload::Module {
+            module,
+            state: Some(s),
+        } => {
             format!("module={module} pool={s}")
         }
-        SchedulerTracePayload::Module { module, state: None } => {
+        SchedulerTracePayload::Module {
+            module,
+            state: None,
+        } => {
             format!("module={module}")
         }
         SchedulerTracePayload::Bulk { count } => format!("count={count}"),
@@ -565,10 +572,7 @@ pub fn flush_to_stderr() {
     }
     let stderr = std::io::stderr();
     let mut guard = stderr.lock();
-    let _ = std::io::Write::write_all(
-        &mut guard,
-        b"=== CRANELISP_SCHEDULER_TRACE DUMP ===\n",
-    );
+    let _ = std::io::Write::write_all(&mut guard, b"=== CRANELISP_SCHEDULER_TRACE DUMP ===\n");
     for e in &events {
         let _ = std::io::Write::write_all(&mut guard, format_event_line(e).as_bytes());
         let _ = std::io::Write::write_all(&mut guard, b"\n");

@@ -60,16 +60,31 @@ const MAX_REPAIR_ITERATIONS: usize = 3;
 /// the model side). Writes / `/sh` / submit are deliberately ABSENT — they are
 /// unconstructable in read-only Advise mode (the MVP consent boundary).
 const ALLOWLIST: &[(&str, &str)] = &[
-    ("source", "Show the source of a defined symbol: source <name>"),
-    ("sexp", "Show the parsed s-expression of a symbol: sexp <name>"),
-    ("info", "Show a symbol's type, kind, and related info: info <name>"),
+    (
+        "source",
+        "Show the source of a defined symbol: source <name>",
+    ),
+    (
+        "sexp",
+        "Show the parsed s-expression of a symbol: sexp <name>",
+    ),
+    (
+        "info",
+        "Show a symbol's type, kind, and related info: info <name>",
+    ),
     ("sig", "Show a symbol's type signature: sig <name>"),
     ("doc", "Show a symbol's (or module's) docstring: doc <name>"),
-    ("type", "Show the inferred type of an expression: type <expr>"),
+    (
+        "type",
+        "Show the inferred type of an expression: type <expr>",
+    ),
     ("imports", "List the current module's imports: imports"),
     ("exports", "List a module's exports: exports <module>"),
     ("list", "List symbols in scope: list"),
-    ("refs", "List definitions whose body references a symbol: refs <name>"),
+    (
+        "refs",
+        "List definitions whose body references a symbol: refs <name>",
+    ),
     (
         "tests-for",
         "List test functions referencing a symbol: tests-for <name>",
@@ -268,7 +283,12 @@ impl CompilerSession {
                 if !pull_arg.is_empty() {
                     ev = ev.symbol(pull_arg);
                 }
-                if let Some(q) = call.question.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
+                if let Some(q) = call
+                    .question
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|q| !q.is_empty())
+                {
                     ev = ev.question(q);
                 }
                 if let Some(ec) = error_class {
@@ -668,7 +688,9 @@ impl CompilerSession {
                 return Err(format!("no such definition: {symbol}"));
             };
             match table.symbols.get_mut(&sym) {
-                Some(cranelisp_types::ModuleEntry::Def { kind, docstring, .. }) => {
+                Some(cranelisp_types::ModuleEntry::Def {
+                    kind, docstring, ..
+                }) => {
                     if !matches!(kind.as_ref(), cranelisp_types::DefKind::UserFn { .. }) {
                         return Err(format!(
                             "cannot record a docstring on '{symbol}': only function \
@@ -909,8 +931,9 @@ impl CompilerSession {
                     id: c.id,
                     argument: c.argument,
                 }),
-            Ok(ModelResponse::Done(prose)) => extract_form_from_prose(&prose)
-                .map(|form| RepairResponse::Prose { prose, form }),
+            Ok(ModelResponse::Done(prose)) => {
+                extract_form_from_prose(&prose).map(|form| RepairResponse::Prose { prose, form })
+            }
             Err(_) => None,
         }
     }
@@ -1010,10 +1033,16 @@ mod tests {
     // A read command synthesizes to a slash command string.
     #[test]
     fn read_command_synthesizes() {
-        assert_eq!(synthesize_command(&call("source", "foo")).unwrap(), "/source foo");
+        assert_eq!(
+            synthesize_command(&call("source", "foo")).unwrap(),
+            "/source foo"
+        );
         assert_eq!(synthesize_command(&call("list", "")).unwrap(), "/list");
         // A leading slash on the model side is tolerated.
-        assert_eq!(synthesize_command(&call("/info", "bar")).unwrap(), "/info bar");
+        assert_eq!(
+            synthesize_command(&call("/info", "bar")).unwrap(),
+            "/info bar"
+        );
     }
 
     // A write / non-read command is refused at synthesis — unconstructable.
@@ -1102,10 +1131,17 @@ mod tests {
     fn run_pull_source_captures_command_output() {
         let mut s = session_with_defined_f();
         let mut sink: Vec<u8> = Vec::new();
-        let result = s.run_pull(&call("source", "f"), &mut sink, &mut crate::agent::types::NoConsent);
+        let result = s.run_pull(
+            &call("source", "f"),
+            &mut sink,
+            &mut crate::agent::types::NoConsent,
+        );
         // The fed-back content is non-empty and carries the source (the MODEL
         // still sees the probe result — it is fed back, just not shown on screen).
-        assert!(!result.output.is_empty(), "tool_result content must not be empty");
+        assert!(
+            !result.output.is_empty(),
+            "tool_result content must not be empty"
+        );
         assert!(
             result.output.contains("(defn f [x] x)"),
             "tool_result content must carry the command output, got: {:?}",
@@ -1127,13 +1163,21 @@ mod tests {
     fn run_pull_info_is_not_empty() {
         let mut s = session_with_defined_f();
         let mut sink: Vec<u8> = Vec::new();
-        let result = s.run_pull(&call("info", "f"), &mut sink, &mut crate::agent::types::NoConsent);
+        let result = s.run_pull(
+            &call("info", "f"),
+            &mut sink,
+            &mut crate::agent::types::NoConsent,
+        );
         assert!(
             !result.output.is_empty(),
             "an /info pull on a defined symbol must carry content, got empty"
         );
         // It is the symbol's name, not a placeholder.
-        assert!(result.output.contains('f'), "info content must describe f: {:?}", result.output);
+        assert!(
+            result.output.contains('f'),
+            "info content must describe f: {:?}",
+            result.output
+        );
     }
 
     // spec: repl/spec.md §17 / §14.6 — ANSI-leak on PULL-command results (S89
@@ -1155,7 +1199,11 @@ mod tests {
         );
         let mut s = session_with_defined_f();
         let mut sink: Vec<u8> = Vec::new();
-        let result = s.run_pull(&call("source", "f"), &mut sink, &mut crate::agent::types::NoConsent);
+        let result = s.run_pull(
+            &call("source", "f"),
+            &mut sink,
+            &mut crate::agent::types::NoConsent,
+        );
 
         // (a) the MODEL-fed copy is clean plain text — ANSI fully stripped.
         assert!(
@@ -1199,7 +1247,13 @@ mod tests {
     struct ScriptedConsent(std::vec::IntoIter<String>);
     impl ScriptedConsent {
         fn new(lines: &[&str]) -> Self {
-            Self(lines.iter().map(|s| s.to_string()).collect::<Vec<_>>().into_iter())
+            Self(
+                lines
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .into_iter(),
+            )
         }
     }
     impl ConsentReader for ScriptedConsent {
@@ -1259,8 +1313,15 @@ mod tests {
             result.output
         );
         let rendered = String::from_utf8_lossy(&sink);
-        assert!(rendered.contains("[y/N]"), "the confirm gate must prompt: {rendered}");
-        assert!(result.output.contains("declined"), "decline result: {:?}", result.output);
+        assert!(
+            rendered.contains("[y/N]"),
+            "the confirm gate must prompt: {rendered}"
+        );
+        assert!(
+            result.output.contains("declined"),
+            "decline result: {:?}",
+            result.output
+        );
         assert!(
             s.lookup_with_prelude_fallback("idfn").is_none(),
             "declined submit committed nothing"
@@ -1283,7 +1344,10 @@ mod tests {
             result.output
         );
         let rendered = String::from_utf8_lossy(&sink);
-        assert!(!rendered.contains("[y/N]"), "no confirm gate for a refused write: {rendered}");
+        assert!(
+            !rendered.contains("[y/N]"),
+            "no confirm gate for a refused write: {rendered}"
+        );
     }
 
     // §15.2/§15.3 — a clean submit, confirmed with `y`, commits: the def binds.
@@ -1306,7 +1370,10 @@ mod tests {
     #[test]
     fn validate_dry_run_discards_does_not_commit() {
         let s = repl_session();
-        assert!(s.validate_one_form("(defn ghost [x] x)").is_ok(), "the form is clean");
+        assert!(
+            s.validate_one_form("(defn ghost [x] x)").is_ok(),
+            "the form is clean"
+        );
         assert!(
             s.lookup_with_prelude_fallback("ghost").is_none(),
             "validate_forms_dry_run must NEVER commit to live (§16.1 discard arm)"
@@ -1319,7 +1386,8 @@ mod tests {
     fn validate_broken_form_is_err() {
         let s = repl_session();
         assert!(
-            s.validate_one_form("(defn broken [x] (add-i64 x x)").is_err(),
+            s.validate_one_form("(defn broken [x] (add-i64 x x)")
+                .is_err(),
             "an unbalanced form must fail the validator (silent-repair trigger)"
         );
     }
@@ -1332,7 +1400,9 @@ mod tests {
         let mut s = repl_session();
         session_with_agent(
             &mut s,
-            vec![ModelResponse::ToolCalls(vec![submit_call("(defn fixed [x] x)")])],
+            vec![ModelResponse::ToolCalls(vec![submit_call(
+                "(defn fixed [x] x)",
+            )])],
             false,
         );
         // The outer `agent_turn` loop records the submit tool_use BEFORE invoking
@@ -1348,7 +1418,11 @@ mod tests {
         let (clean, final_id) = s
             .validate_and_repair("(defn fixed [x] x", "toolu_outer")
             .expect("repair yields a clean form");
-        assert_eq!(clean.trim(), "(defn fixed [x] x)", "the repaired clean form is returned");
+        assert_eq!(
+            clean.trim(),
+            "(defn fixed [x] x)",
+            "the repaired clean form is returned"
+        );
         // The returned pairing id is the LAST repair tool_use's id (the stub
         // `submit_call` uses id "s1"), NOT the outer "toolu_outer" — so the outer
         // success tool_result pairs against the actually-submitted tool_use.
@@ -1395,7 +1469,9 @@ mod tests {
         let mut s = repl_session();
         session_with_agent(
             &mut s,
-            vec![ModelResponse::Done("I'm not sure how to fix this.".to_string())],
+            vec![ModelResponse::Done(
+                "I'm not sure how to fix this.".to_string(),
+            )],
             false,
         );
         if let Some(state) = s.agent.as_mut() {
@@ -1416,7 +1492,10 @@ mod tests {
         let mut s = repl_session();
         assert!(!s.agent_auto_accept(), "no agent ⇒ auto_accept false");
         session_with_agent(&mut s, vec![], true);
-        assert!(s.agent_auto_accept(), "the reader must reflect auto_accept=true");
+        assert!(
+            s.agent_auto_accept(),
+            "the reader must reflect auto_accept=true"
+        );
         // The validator is UNAFFECTED by the flag (no read path — §20.3).
         assert!(
             s.validate_one_form("(defn b [x] (add-i64 x x)").is_err(),
@@ -1439,8 +1518,14 @@ mod tests {
         let mut consent = ScriptedConsent::new(&[]);
         let _ = s.run_pull(&submit_call("(defn auto1 [x] x)"), &mut sink, &mut consent);
         let rendered = String::from_utf8_lossy(&sink);
-        assert!(!rendered.contains("[y/N]"), "no confirm prompt under --yes: {rendered}");
-        assert!(rendered.contains("--yes is on"), "first-use notice must fire: {rendered}");
+        assert!(
+            !rendered.contains("[y/N]"),
+            "no confirm prompt under --yes: {rendered}"
+        );
+        assert!(
+            rendered.contains("--yes is on"),
+            "first-use notice must fire: {rendered}"
+        );
         assert!(
             s.lookup_with_prelude_fallback("auto1").is_some(),
             "the clean form commits under --yes"
@@ -1515,7 +1600,11 @@ mod tests {
         let module = s.current_module_path();
         let arg = format!("{} Solver core: propagation.", module.as_ref());
         let _ = s.run_pull(&set_preamble_call(&arg), &mut sink, &mut consent);
-        let table = s.shared.symbol_tables.get(&module).expect("module table exists");
+        let table = s
+            .shared
+            .symbol_tables
+            .get(&module)
+            .expect("module table exists");
         assert_eq!(
             table.module_preamble.as_deref(),
             Some("Solver core: propagation."),
@@ -1535,13 +1624,20 @@ mod tests {
         let module = s.current_module_path();
         let arg = format!("{} declined preamble.", module.as_ref());
         let result = s.run_pull(&set_preamble_call(&arg), &mut sink, &mut consent);
-        assert!(result.output.contains("declined"), "decline result: {:?}", result.output);
+        assert!(
+            result.output.contains("declined"),
+            "decline result: {:?}",
+            result.output
+        );
         let preamble = s
             .shared
             .symbol_tables
             .get(&module)
             .and_then(|t| t.module_preamble.clone());
-        assert_eq!(preamble, None, "a declined set-preamble must record nothing");
+        assert_eq!(
+            preamble, None,
+            "a declined set-preamble must record nothing"
+        );
     }
 
     // §17.15.2a / §20.2 — under `--yes` the Document consultative gate is
@@ -1566,7 +1662,11 @@ mod tests {
             rendered.contains(";; Auto preamble."),
             "the proposed block must STILL be shown under --yes (render-always): {rendered}"
         );
-        let table = s.shared.symbol_tables.get(&module).expect("module table exists");
+        let table = s
+            .shared
+            .symbol_tables
+            .get(&module)
+            .expect("module table exists");
         assert_eq!(
             table.module_preamble.as_deref(),
             Some("Auto preamble."),
@@ -1590,7 +1690,10 @@ mod tests {
                     ty: cranelisp_types::Type::Int,
                 },
                 DefKind::UserFn {
-                    fn_state: UserFnState::Concrete { got_slot: 0, mode_summary: None },
+                    fn_state: UserFnState::Concrete {
+                        got_slot: 0,
+                        mode_summary: None,
+                    },
                 },
             )
             .visibility(Visibility::Public)
@@ -1621,13 +1724,20 @@ mod tests {
             rendered.contains("record this as") && rendered.contains("docstring?"),
             "set-doc must ask the docstring consultative question: {rendered}"
         );
-        assert!(rendered.contains("recorded"), "a UserFn set-doc reports success: {rendered}");
+        assert!(
+            rendered.contains("recorded"),
+            "a UserFn set-doc reports success: {rendered}"
+        );
         let table = s.shared.symbol_tables.get(&module).expect("table");
         let doc = match table.symbols.get(&cranelisp_types::Symbol::from("solve")) {
             Some(cranelisp_types::ModuleEntry::Def { docstring, .. }) => docstring.clone(),
             _ => None,
         };
-        assert_eq!(doc.as_deref(), Some("Solve the grid."), "the docstring is set on confirm");
+        assert_eq!(
+            doc.as_deref(),
+            Some("Solve the grid."),
+            "the docstring is set on confirm"
+        );
     }
 
     // S1 (honesty) — `set-doc` on a symbol absent from the current module must
@@ -1641,7 +1751,10 @@ mod tests {
         session_with_agent(&mut s, vec![], false);
         // The contained-lookup contract: a miss is an Err, never a silent no-op.
         let err = s.apply_docstring_edit("ghost", "doc").unwrap_err();
-        assert!(err.contains("no such definition"), "miss must surface not-found: {err:?}");
+        assert!(
+            err.contains("no such definition"),
+            "miss must surface not-found: {err:?}"
+        );
         // …and through the gate, the tool result carries the error, not "recorded".
         let mut sink: Vec<u8> = Vec::new();
         let mut consent = ScriptedConsent::new(&["y"]);
@@ -1658,7 +1771,10 @@ mod tests {
             result.output
         );
         let rendered = String::from_utf8_lossy(&sink);
-        assert!(!rendered.contains("recorded"), "a miss must NOT print 'recorded': {rendered}");
+        assert!(
+            !rendered.contains("recorded"),
+            "a miss must NOT print 'recorded': {rendered}"
+        );
     }
 
     // S2 (honesty) — `set-doc` on a non-`UserFn` `Def` (here a `PrimitiveExtern`)
@@ -1695,7 +1811,10 @@ mod tests {
             Some(ModuleEntry::Def { docstring, .. }) => docstring.clone(),
             _ => None,
         };
-        assert_eq!(doc, None, "a refused set-doc must NOT set the docstring field");
+        assert_eq!(
+            doc, None,
+            "a refused set-doc must NOT set the docstring field"
+        );
     }
 
     // S2 (positive) — a `UserFn` target IS recorded: `apply_docstring_edit`
@@ -1706,13 +1825,20 @@ mod tests {
         session_with_agent(&mut s, vec![], false);
         let module = s.current_module_path();
         insert_userfn(&s, "double");
-        assert!(s.apply_docstring_edit("double", "doubles its argument").is_ok());
+        assert!(
+            s.apply_docstring_edit("double", "doubles its argument")
+                .is_ok()
+        );
         let table = s.shared.symbol_tables.get(&module).expect("table");
         let doc = match table.symbols.get(&cranelisp_types::Symbol::from("double")) {
             Some(cranelisp_types::ModuleEntry::Def { docstring, .. }) => docstring.clone(),
             _ => None,
         };
-        assert_eq!(doc.as_deref(), Some("doubles its argument"), "UserFn docstring set");
+        assert_eq!(
+            doc.as_deref(),
+            Some("doubles its argument"),
+            "UserFn docstring set"
+        );
     }
 
     // §17.2 +neg — the Document tools stay OUT of the read-only allowlist: a

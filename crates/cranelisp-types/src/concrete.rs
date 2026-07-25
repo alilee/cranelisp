@@ -113,9 +113,10 @@ impl ConcreteType {
                 params.iter().map(ConcreteType::to_type).collect(),
                 Box::new(ret.to_type()),
             ),
-            ConcreteType::ADT(name, args) => {
-                Type::ADT(name.clone(), args.iter().map(ConcreteType::to_type).collect())
-            }
+            ConcreteType::ADT(name, args) => Type::ADT(
+                name.clone(),
+                args.iter().map(ConcreteType::to_type).collect(),
+            ),
         }
     }
 }

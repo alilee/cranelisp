@@ -192,7 +192,8 @@ fn cranelisp_lib_env_searched_before_toml_lib_dirs() {
         "on a same-module shadow, CRANELISP_LIB (env) MUST be searched before the \
          Cranelisp.toml config tier and WIN (env > config, S91 §8.11.4); expected \
          exit 13 (env), got {exit:?}\nstdout: {}\nstderr: {}",
-        shadow.stdout, shadow.stderr
+        shadow.stdout,
+        shadow.stderr
     );
     // Negative companion: the config-tier module value (99) MUST NOT win the shadow.
     assert_ne!(
@@ -224,7 +225,8 @@ fn cranelisp_lib_env_searched_before_toml_lib_dirs() {
         "a config-tier-only module MUST still resolve under the additive union — \
          the env tier does not suppress the config tier (S91 §8.11.4); expected \
          exit 42\nstdout: {}\nstderr: {}",
-        additive.stdout, additive.stderr
+        additive.stdout,
+        additive.stderr
     );
 }
 
@@ -255,7 +257,8 @@ fn cranelisp_toml_missing_falls_through_to_env_var() {
         out.status.code(),
         Some(77),
         "absent Cranelisp.toml MUST fall through to CRANELISP_LIB; expected 77\nstdout: {}\nstderr: {}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
 }
 
@@ -285,7 +288,8 @@ fn cranelisp_toml_malformed_does_not_crash() {
     assert!(
         code.is_some(),
         "binary MUST exit cleanly (not killed by signal); status: {:?}\nstderr: {}",
-        out.status, out.stderr
+        out.status,
+        out.stderr
     );
     let code = code.unwrap();
     assert!(
@@ -373,7 +377,10 @@ fn platform_path_env_searched_before_toml_platform_dirs() {
     std::fs::create_dir_all(&env_dir).expect("mkdir envdir");
     std::fs::copy(&stdio_src, env_dir.join(&dll_name)).expect("copy stdio -> envdir");
     env_only
-        .env("CRANELISP_PLATFORM_PATH", env_dir.to_str().expect("envdir utf8"))
+        .env(
+            "CRANELISP_PLATFORM_PATH",
+            env_dir.to_str().expect("envdir utf8"),
+        )
         .run("main.cl")
         .output()
         .assert_exit(0)

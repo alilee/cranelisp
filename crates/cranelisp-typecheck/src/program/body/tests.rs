@@ -12,8 +12,6 @@ mod annotation;
 
 mod check_form_arms;
 
-
-
 // spec: 03-types §3.5.1 — recursive function inferred as monomorphic via self-reference
 #[test]
 fn test_check_program_recursive_function() {
@@ -89,10 +87,7 @@ fn test_check_program_recursive_function() {
             scheme.type_vars.is_empty(),
             "fact should be monomorphic (Int -> Int)"
         );
-        assert_eq!(
-            scheme.ty,
-            Type::Fn(vec![Type::Int], Box::new(Type::Int))
-        );
+        assert_eq!(scheme.ty, Type::Fn(vec![Type::Int], Box::new(Type::Int)));
     } else {
         panic!("fact not found in symbol table");
     }
@@ -203,14 +198,22 @@ fn test_internal_bind_constructor_rejected_in_head_position() {
         args: vec![
             Expr::Apply {
                 callee: Box::new(Expr::var(Symbol::from("Pure"), span(7, 11))),
-                args: vec![Expr::IntLit { value: 1, span: span(12, 13), inferred_type: None }],
+                args: vec![Expr::IntLit {
+                    value: 1,
+                    span: span(12, 13),
+                    inferred_type: None,
+                }],
                 span: span(6, 14),
                 resolved_call: None,
                 inferred_type: None,
             },
             Expr::Apply {
                 callee: Box::new(Expr::var(Symbol::from("Pure"), span(16, 20))),
-                args: vec![Expr::IntLit { value: 2, span: span(21, 22), inferred_type: None }],
+                args: vec![Expr::IntLit {
+                    value: 2,
+                    span: span(21, 22),
+                    inferred_type: None,
+                }],
                 span: span(15, 23),
                 resolved_call: None,
                 inferred_type: None,
@@ -220,9 +223,9 @@ fn test_internal_bind_constructor_rejected_in_head_position() {
         resolved_call: None,
         inferred_type: None,
     });
-    let err = tc.check_repl_input_self(&input).expect_err(
-        "internal Bind constructor must be rejected in head position",
-    );
+    let err = tc
+        .check_repl_input_self(&input)
+        .expect_err("internal Bind constructor must be rejected in head position");
     assert!(
         err.message().contains("internal"),
         "error should explain Bind is internal, got: {}",
@@ -238,7 +241,11 @@ fn test_internal_bind_constructor_rejected_in_pattern_position() {
     let input = TopLevel::Expr(Expr::Match {
         scrutinee: Box::new(Expr::Apply {
             callee: Box::new(Expr::var(Symbol::from("Pure"), span(8, 12))),
-            args: vec![Expr::IntLit { value: 1, span: span(13, 14), inferred_type: None }],
+            args: vec![Expr::IntLit {
+                value: 1,
+                span: span(13, 14),
+                inferred_type: None,
+            }],
             span: span(7, 15),
             resolved_call: None,
             inferred_type: None,
@@ -250,12 +257,20 @@ fn test_internal_bind_constructor_rejected_in_pattern_position() {
                     bindings: vec![Symbol::from("a"), Symbol::from("b")],
                     span: span(17, 27),
                 },
-                body: Expr::IntLit { value: 0, span: span(28, 29), inferred_type: None },
+                body: Expr::IntLit {
+                    value: 0,
+                    span: span(28, 29),
+                    inferred_type: None,
+                },
                 span: span(17, 29),
             },
             cranelisp_types::MatchArm {
                 pattern: cranelisp_types::Pattern::Wildcard { span: span(30, 31) },
-                body: Expr::IntLit { value: 99, span: span(32, 34), inferred_type: None },
+                body: Expr::IntLit {
+                    value: 99,
+                    span: span(32, 34),
+                    inferred_type: None,
+                },
                 span: span(30, 34),
             },
         ],
@@ -263,9 +278,9 @@ fn test_internal_bind_constructor_rejected_in_pattern_position() {
         compiler_generated: false,
         inferred_type: None,
     });
-    let err = tc.check_repl_input_self(&input).expect_err(
-        "internal Bind constructor must be rejected in pattern position",
-    );
+    let err = tc
+        .check_repl_input_self(&input)
+        .expect_err("internal Bind constructor must be rejected in pattern position");
     assert!(
         err.message().contains("internal"),
         "error should explain Bind is internal, got: {}",
@@ -281,7 +296,11 @@ fn test_non_internal_constructor_accepted_in_head_position() {
     // (Pure 1) — Pure is public; must typecheck cleanly.
     let input = TopLevel::Expr(Expr::Apply {
         callee: Box::new(Expr::var(Symbol::from("Pure"), span(1, 5))),
-        args: vec![Expr::IntLit { value: 1, span: span(6, 7), inferred_type: None }],
+        args: vec![Expr::IntLit {
+            value: 1,
+            span: span(6, 7),
+            inferred_type: None,
+        }],
         span: span(0, 8),
         resolved_call: None,
         inferred_type: None,
@@ -389,7 +408,12 @@ fn test_check_program_forward_reference_pinned() {
             name: Symbol::from("double"),
             docstring: None,
             variants: vec![DefnVariant {
-                params: vec![(Symbol::from("x"), Some(cranelisp_types::TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int")))))],
+                params: vec![(
+                    Symbol::from("x"),
+                    Some(cranelisp_types::TypeExpr::Named(
+                        cranelisp_types::TypeRef::new(None, TypeName::from("Int")),
+                    )),
+                )],
                 body: Expr::Apply {
                     callee: Box::new(Expr::var(Symbol::from("add-self"), span(118, 126))),
                     args: vec![Expr::var(Symbol::from("x"), span(127, 128))],
@@ -428,20 +452,14 @@ fn test_check_program_forward_reference_pinned() {
 
     // double is pinned: Fn([Int], Int) — annotation + add-i64 both constrain to Int
     if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("double") {
-        assert_eq!(
-            scheme.ty,
-            Type::Fn(vec![Type::Int], Box::new(Type::Int))
-        );
+        assert_eq!(scheme.ty, Type::Fn(vec![Type::Int], Box::new(Type::Int)));
     } else {
         panic!("double not found");
     }
 
     // add-self is also pinned: Fn([Int], Int) — add-i64 constrains y to Int
     if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("add-self") {
-        assert_eq!(
-            scheme.ty,
-            Type::Fn(vec![Type::Int], Box::new(Type::Int))
-        );
+        assert_eq!(scheme.ty, Type::Fn(vec![Type::Int], Box::new(Type::Int)));
     } else {
         panic!("add-self not found");
     }
@@ -533,10 +551,7 @@ fn test_check_program_string_in_function() {
     tc.check_program_self(&program).unwrap();
 
     if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("greet") {
-        assert_eq!(
-            scheme.ty,
-            Type::Fn(vec![], Box::new(Type::String))
-        );
+        assert_eq!(scheme.ty, Type::Fn(vec![], Box::new(Type::String)));
     } else {
         panic!("greet not found in symbol table");
     }
@@ -582,7 +597,10 @@ fn u7_rank1_poly_fn_return_written_and_unwritten_parity_accepted() {
         );
         match &scheme.ty {
             Type::Fn(outer_params, outer_ret) => {
-                assert!(outer_params.is_empty(), "{label} outer fn is nullary; got {scheme:?}");
+                assert!(
+                    outer_params.is_empty(),
+                    "{label} outer fn is nullary; got {scheme:?}"
+                );
                 match &**outer_ret {
                     Type::Fn(inner_params, inner_ret) => {
                         assert_eq!(inner_params.len(), 1, "{label}: {scheme:?}");
@@ -599,13 +617,23 @@ fn u7_rank1_poly_fn_return_written_and_unwritten_parity_accepted() {
     }
 
     // mk (written `:b`) ≡ mkid (unwritten) — same scheme, both accepted.
-    assert_mk_shape(&scheme_of("(defn mk [] (fn [:b y] y))", "mk"), "mk (written)");
-    assert_mk_shape(&scheme_of("(defn mkid [] (fn [y] y))", "mkid"), "mkid (unwritten)");
+    assert_mk_shape(
+        &scheme_of("(defn mk [] (fn [:b y] y))", "mk"),
+        "mk (written)",
+    );
+    assert_mk_shape(
+        &scheme_of("(defn mkid [] (fn [y] y))", "mkid"),
+        "mkid (unwritten)",
+    );
 
     // weird (written `:b`) ≡ constf (unwritten) — `∀a b. (Fn [a] (Fn [b] a))`.
     for (src, name, label) in [
         ("(defn weird [x] (fn [:b y] x))", "weird", "weird (written)"),
-        ("(defn constf [x] (fn [y] x))", "constf", "constf (unwritten)"),
+        (
+            "(defn constf [x] (fn [y] x))",
+            "constf",
+            "constf (unwritten)",
+        ),
     ] {
         let scheme = scheme_of(src, name);
         assert_eq!(
@@ -635,8 +663,7 @@ fn u7_rank1_poly_fn_return_written_and_unwritten_parity_accepted() {
 fn u7_rank1_poly_value_accepted_genuine_restrictions_enforced_elsewhere() {
     // B-1 accept — `∀a. (Fn [a] a)`, ONE quantified var, inner identity.
     let mut tc = tc_with_prims();
-    let sexps =
-        cranelisp_frontend::parse("(defn f1 [x] ((fn [:b y] y) x))").expect("parse");
+    let sexps = cranelisp_frontend::parse("(defn f1 [x] ((fn [:b y] y) x))").expect("parse");
     let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
     tc.check_program_self(&program).expect(
         "a lambda APPLIED IN PLACE at a generic arg is instantiation-at-use \
@@ -666,8 +693,8 @@ fn u7_rank1_poly_value_accepted_genuine_restrictions_enforced_elsewhere() {
     // mk3 accept (FLIPPED from the former reject) — a let-stored-and-returned
     // rank-1 poly value is legitimate; `∀a. (Fn [] (Fn [a] a))`.
     let mut tc2 = tc_with_prims();
-    let sexps2 = cranelisp_frontend::parse("(defn mk3 [] (let [g (fn [:b y] y)] g))")
-        .expect("parse");
+    let sexps2 =
+        cranelisp_frontend::parse("(defn mk3 [] (let [g (fn [:b y] y)] g))").expect("parse");
     let program2 = cranelisp_frontend::build_forms(&sexps2).expect("build_forms");
     tc2.check_program_self(&program2).expect(
         "a let-stored-and-returned rank-1 poly `fn` MUST be accepted (W6.3 ruling — \
@@ -698,12 +725,11 @@ fn u7_rank1_poly_value_accepted_genuine_restrictions_enforced_elsewhere() {
     // rejected — by unification.
     let mut tc4 = tc_with_prims();
     let sexps4 =
-        cranelisp_frontend::parse("(defn apply2 [f] (let [a (f \"x\")] (f 5)))")
-            .expect("parse");
+        cranelisp_frontend::parse("(defn apply2 [f] (let [a (f \"x\")] (f 5)))").expect("parse");
     let program4 = cranelisp_frontend::build_forms(&sexps4).expect("build_forms");
-    let err4 = tc4.check_program_self(&program4).expect_err(
-        "rank-2 (poly arg used at two types) MUST be rejected by unification",
-    );
+    let err4 = tc4
+        .check_program_self(&program4)
+        .expect_err("rank-2 (poly arg used at two types) MUST be rejected by unification");
     let msg4 = format!("{err4}").to_lowercase();
     assert!(
         msg4.contains("mismatch") || msg4.contains("expected"),
@@ -713,10 +739,8 @@ fn u7_rank1_poly_value_accepted_genuine_restrictions_enforced_elsewhere() {
     // RESULT-ONLY var held unresolved is STILL rejected — by the §3.11
     // ambiguity gate (pin-the-type), NOT the removed eager check.
     let mut tc5 = tc_with_prims();
-    let sexps5 = cranelisp_frontend::parse(
-        "(defn constf [x] (fn [y] x))\n(defn g [] (constf 5))",
-    )
-    .expect("parse");
+    let sexps5 = cranelisp_frontend::parse("(defn constf [x] (fn [y] x))\n(defn g [] (constf 5))")
+        .expect("parse");
     let program5 = cranelisp_frontend::build_forms(&sexps5).expect("build_forms");
     let err5 = tc5.check_program_self(&program5).expect_err(
         "a result-only unresolved var at a codegen position MUST be rejected by the \
@@ -768,8 +792,7 @@ fn u4_value_position_constraint_is_a_satisfaction_check() {
          (impl Num2 Int (defn nadd [a b] (add-i64 a b)))\n";
     // R12 pos — Int satisfies Num2; the type of `5` is unchanged.
     let mut tc = tc_with_prims();
-    let sexps = cranelisp_frontend::parse(&format!("{NUM2}(defn f12 [] :Num2 5)"))
-        .expect("parse");
+    let sexps = cranelisp_frontend::parse(&format!("{NUM2}(defn f12 [] :Num2 5)")).expect("parse");
     let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
     tc.check_program_self(&program)
         .expect("a value-position `:Num2 5` MUST be an accepted satisfaction check (row 12)");
@@ -787,8 +810,8 @@ fn u4_value_position_constraint_is_a_satisfaction_check() {
     // R12 neg — String has no Num2 impl; the satisfaction check rejects it,
     // never `unknown type`.
     let mut tc2 = tc_with_prims();
-    let sexps2 = cranelisp_frontend::parse(&format!("{NUM2}(defn f12b [] :Num2 \"s\")"))
-        .expect("parse");
+    let sexps2 =
+        cranelisp_frontend::parse(&format!("{NUM2}(defn f12b [] :Num2 \"s\")")).expect("parse");
     let program2 = cranelisp_frontend::build_forms(&sexps2).expect("build_forms");
     let err = tc2
         .check_program_self(&program2)
@@ -920,7 +943,11 @@ fn r3_neg_forward_reference_not_expanded() {
     let sexps = cranelisp_frontend::parse("(defn use-it [] (not-yet-defined 42))")
         .expect("parse must succeed");
     let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms must succeed");
-    let result = tc.check(&program, &test_ctx(), cranelisp_types::ModuleStrategy::Additive);
+    let result = tc.check(
+        &program,
+        &test_ctx(),
+        cranelisp_types::ModuleStrategy::Additive,
+    );
     assert!(
         result.is_err(),
         "a forward reference to an undefined name must fail to typecheck, \

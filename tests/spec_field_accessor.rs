@@ -197,9 +197,7 @@ fn bare_alias_ambiguous_canonical_both_work() {
 // §1.6.5). Every field of every type lists as `Type.field`.
 #[test]
 fn list_shows_canonical_qualified_accessor() {
-    let out = repl_prims(
-        "(deftype Box [:primitives/Int v])\n/list\n",
-    );
+    let out = repl_prims("(deftype Box [:primitives/Int v])\n/list\n");
     out.assert_stdout_contains("Box.v");
 
     // FIXME(0438): whether the BARE `v` alias ALSO appears in `/list` (option A

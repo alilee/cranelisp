@@ -99,7 +99,13 @@ impl AdtCtorSpec {
         internal: bool,
         got_slot: usize,
     ) -> Self {
-        AdtCtorSpec { name, fields, docstring, internal, got_slot }
+        AdtCtorSpec {
+            name,
+            fields,
+            docstring,
+            internal,
+            got_slot,
+        }
     }
 }
 
@@ -190,7 +196,11 @@ pub fn build_adt_entries<C: CodeStore>(
             span: body_span,
             inferred_type: None,
         };
-        let ast = DefnVariant { params: synth_params, body: synth_body, span: body_span };
+        let ast = DefnVariant {
+            params: synth_params,
+            body: synth_body,
+            span: body_span,
+        };
 
         let mut builder = ModuleEntry::def(
             scheme,
@@ -209,10 +219,13 @@ pub fn build_adt_entries<C: CodeStore>(
         .ast(ast);
         // Ctor docstring wins; the product ctor (no separate TypeDef entry to
         // hold the deftype-level docstring) falls back to it.
-        let doc = ctor
-            .docstring
-            .clone()
-            .or_else(|| if is_product { adt_docstring.map(str::to_string) } else { None });
+        let doc = ctor.docstring.clone().or_else(|| {
+            if is_product {
+                adt_docstring.map(str::to_string)
+            } else {
+                None
+            }
+        });
         if let Some(doc) = doc {
             builder = builder.docstring(doc);
         }
@@ -231,7 +244,10 @@ pub fn build_adt_entries<C: CodeStore>(
             entries.push((
                 ctor.name.clone(),
                 ModuleEntry::Import {
-                    source: FQSymbol { module: fqtn.module.clone(), symbol: canonical_key },
+                    source: FQSymbol {
+                        module: fqtn.module.clone(),
+                        symbol: canonical_key,
+                    },
                     visibility,
                 },
             ));

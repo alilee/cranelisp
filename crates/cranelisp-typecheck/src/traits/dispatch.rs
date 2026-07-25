@@ -4,7 +4,7 @@ use cranelisp_types::{
 };
 
 use super::*;
-use crate::checker::{CheckState, TypeCheckEnv};
+use crate::checker::{CheckState, PendingDispatch, ResolvedBuiltin, TypeCheckEnv};
 
 // ---------------------------------------------------------------------------
 // Method Resolution
@@ -22,7 +22,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         callee_name: &Symbol,
         arg_types: &[Type],
         span: Span,
-    ) -> Result<Option<ResolvedCall>, CranelispError> {
+    ) -> Result<Option<PendingDispatch>, CranelispError> {
         // Check if this name is a trait method (via trait_origin on ModuleEntry::Def).
         // State-rooted: chain-follow from the current module's view per Principle 17.
         //
@@ -93,12 +93,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // trait-impl body wrapper. This preserves the pre-D43 inline
         // optimisation while keeping backend trait-free (the dispatch is
         // monomorphisation-keyed in typecheck, not trait-keyed in backend).
-        if let Some(prim_name) =
-            primitive_for_trait_method(&trait_name, callee_name, &impl_type_name)
+        if let Some(builtin) =
+            resolved_builtin_for_trait_method(&trait_name, callee_name, &impl_type_name)
         {
-            return Ok(Some(ResolvedCall::BuiltinFn {
-                name: Symbol::from(prim_name),
-            }));
+            return Ok(Some(PendingDispatch::Builtin(builtin)));
         }
 
         // Build FQTraitName from the trait's already-threaded HOME (D2 — the
@@ -152,13 +150,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             )
             .unwrap_or_else(|| state.current_module.clone());
 
-        Ok(Some(ResolvedCall::TraitMethod {
+        Ok(Some(PendingDispatch::Resolved(ResolvedCall::TraitMethod {
             trait_name: fq_trait_name,
             method_name: callee_name.clone(),
             impl_type: fq_impl_type,
             mangled_name: JitSymbol::from(mangled.as_str()),
             impl_module,
-        }))
+        })))
     }
 }
 
@@ -233,6 +231,22 @@ pub(crate) fn primitive_for_trait_method(
 
         _ => None,
     }
+}
+
+fn resolved_builtin_for_trait_method(
+    trait_name: &TraitName,
+    method_name: &Symbol,
+    impl_type: &TypeName,
+) -> Option<ResolvedBuiltin> {
+    let jit_name = primitive_for_trait_method(trait_name, method_name, impl_type)?;
+    let jit_name = Symbol::from(jit_name);
+    Some(ResolvedBuiltin {
+        jit_name: jit_name.clone(),
+        storage_fq: cranelisp_types::FQSymbol {
+            module: ModuleFullPath::from("primitives"),
+            symbol: jit_name,
+        },
+    })
 }
 
 // Continuation impl for the original trait-method block — split by the

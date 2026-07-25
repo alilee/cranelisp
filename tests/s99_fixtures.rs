@@ -23,7 +23,9 @@ use e2e::{Cranelisp, PreludeVariant};
 
 /// Run a fixture under the given lenient mode; return (exit_code, stderr).
 fn run_mode(name: &str, src: &str, serial: bool) -> (i32, String) {
-    let mut c = Cranelisp::new().with_prelude(PreludeVariant::None).file(name, src);
+    let mut c = Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .file(name, src);
     if serial {
         c = c.env("CRANELISP_NO_LENIENT", "1");
     }
@@ -55,13 +57,18 @@ fn assert_parallel_equals_serial(name: &str, src: &str) {
 /// from a double-free / use-after-free has no exit code, so this doubles as the
 /// heap-corruption guard for the capture-borrow path.
 fn run_with_env(name: &str, src: &str, envs: &[(&str, &str)]) -> (i32, String) {
-    let mut c = Cranelisp::new().with_prelude(PreludeVariant::None).file(name, src);
+    let mut c = Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .file(name, src);
     for (k, v) in envs {
         c = c.env(k, v);
     }
     let out = c.run(name).output();
     let code = out.status.code().unwrap_or_else(|| {
-        panic!("{name} terminated by SIGNAL (heap corruption / crash) — env {envs:?}; stderr:\n{}", out.stderr)
+        panic!(
+            "{name} terminated by SIGNAL (heap corruption / crash) — env {envs:?}; stderr:\n{}",
+            out.stderr
+        )
     });
     (code, out.stderr)
 }
@@ -83,8 +90,7 @@ fn rc_inc_of(stderr: &str) -> u64 {
 /// change the result — a divergence (or a signal) is a borrow-elision UAF /
 /// lost-update defect (the S98 bug-#2 class).
 fn assert_borrow_parallel_equals_serial(name: &str, src: &str) {
-    let (borrow_code, borrow_err) =
-        run_with_env(name, src, &[("CRANELISP_CAPTURE_BORROW", "1")]);
+    let (borrow_code, borrow_err) = run_with_env(name, src, &[("CRANELISP_CAPTURE_BORROW", "1")]);
     let (serial_code, _) = run_with_env(name, src, &[("CRANELISP_NO_LENIENT", "1")]);
     assert!(
         !borrow_err.contains("error"),
@@ -142,7 +148,10 @@ fn s99_f2_capture_borrow_drops_rc_inc() {
     let (bo_code, bo_err) = run_with_env(
         "f2.cl",
         src,
-        &[("CRANELISP_RC_STATS", "1"), ("CRANELISP_CAPTURE_BORROW", "1")],
+        &[
+            ("CRANELISP_RC_STATS", "1"),
+            ("CRANELISP_CAPTURE_BORROW", "1"),
+        ],
     );
     assert_eq!(
         nb_code, bo_code,
@@ -166,8 +175,7 @@ fn s99_f2_capture_borrow_drops_rc_inc() {
 /// result — a divergence (or a SIGNAL, caught by `run_with_env`) would be a
 /// codegen/scheduling defect, not a scheduling no-op.
 fn assert_saturation_gate_parallel_equals_serial(name: &str, src: &str) {
-    let (gate_code, gate_err) =
-        run_with_env(name, src, &[("CRANELISP_SATURATION_GATE", "1")]);
+    let (gate_code, gate_err) = run_with_env(name, src, &[("CRANELISP_SATURATION_GATE", "1")]);
     let (serial_code, _) = run_with_env(name, src, &[("CRANELISP_NO_LENIENT", "1")]);
     assert!(
         !gate_err.contains("error"),
@@ -256,10 +264,7 @@ fn s99_f4_sudoku_parallel_equals_serial() {
 // single-ctor reshaped workload (parallel ≡ serial). GREEN at draft.
 #[test]
 fn s99_f2v_single_ctor_parallel_equals_serial() {
-    assert_parallel_equals_serial(
-        "f2v.cl",
-        include_str!("fixtures/s99/f2v_single_ctor.cl"),
-    );
+    assert_parallel_equals_serial("f2v.cl", include_str!("fixtures/s99/f2v_single_ctor.cl"));
 }
 
 // spec: design/backend/ring2-rc.md §5.5.2.6 — the capture-borrow parallel≡serial
@@ -267,10 +272,7 @@ fn s99_f2v_single_ctor_parallel_equals_serial() {
 // load-bearing when the borrow-elision + R5 flattening seams both run.
 #[test]
 fn s99_f2v_single_ctor_capture_borrow_parallel_equals_serial() {
-    assert_borrow_parallel_equals_serial(
-        "f2v.cl",
-        include_str!("fixtures/s99/f2v_single_ctor.cl"),
-    );
+    assert_borrow_parallel_equals_serial("f2v.cl", include_str!("fixtures/s99/f2v_single_ctor.cl"));
 }
 
 // =============================================================================
@@ -289,7 +291,9 @@ fn s99_f2v_single_ctor_capture_borrow_parallel_equals_serial() {
 /// (exit_code, stdout). Panics (fails) on a SIGNAL — a toggle-induced heap
 /// corruption has no exit code.
 fn run_ownership_polarity(name: &str, src: &str, no_ownership: bool) -> (i32, String) {
-    let mut c = Cranelisp::new().with_prelude(PreludeVariant::None).file(name, src);
+    let mut c = Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .file(name, src);
     c = if no_ownership {
         c.env("CRANELISP_NO_OWNERSHIP", "1")
     } else {
@@ -337,8 +341,5 @@ fn s99_f2v_output_byte_identical_under_ownership_toggle() {
 // GREEN at draft; load-bearing when reuse tokens land.
 #[test]
 fn s99_f2_output_byte_identical_under_ownership_toggle() {
-    assert_ownership_toggle_byte_identical(
-        "f2.cl",
-        include_str!("fixtures/s99/f2_contention.cl"),
-    );
+    assert_ownership_toggle_byte_identical("f2.cl", include_str!("fixtures/s99/f2_contention.cl"));
 }

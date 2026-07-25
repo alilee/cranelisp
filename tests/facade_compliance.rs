@@ -164,41 +164,41 @@ fn extract_names(line: &str) -> HashSet<String> {
         || l.starts_with("impl serde::")
         || l.starts_with("impl <")
         || l.starts_with("impl !")
-        || (l.starts_with("impl<") && l.contains(" for ") && (
-            l.contains("core::marker::")
-            || l.contains("core::clone::")
-            || l.contains("core::cmp::")
-            || l.contains("core::fmt::")
-            || l.contains("core::hash::")
-            || l.contains("core::panic::")
-            || l.contains("core::default::")
-            || l.contains("core::ops::deref::")
-            || l.contains("core::error::Error")
-            || l.contains("serde::")
-        ))
+        || (l.starts_with("impl<")
+            && l.contains(" for ")
+            && (l.contains("core::marker::")
+                || l.contains("core::clone::")
+                || l.contains("core::cmp::")
+                || l.contains("core::fmt::")
+                || l.contains("core::hash::")
+                || l.contains("core::panic::")
+                || l.contains("core::default::")
+                || l.contains("core::ops::deref::")
+                || l.contains("core::error::Error")
+                || l.contains("serde::")))
     {
         return out;
     }
     // Skip derive-impl method lines: `pub fn …::clone(&self) -> …`,
     // `::fmt(&self, …)`, `::eq(&self, …)`. These belong to skipped
     // trait-impl blocks above.
-    if l.starts_with("pub fn ") && (
-        l.contains("::clone(")
-        || l.contains("::fmt(")
-        || l.contains("::eq(")
-        || l.contains("::hash<")
-        || l.contains("::hash(")
-        || l.contains("::partial_cmp(")
-        || l.contains("::cmp(")
-        || l.contains("::deref(")
-        || l.contains("::deref_mut(")
-        || l.contains("::default(")
-        || l.contains("::serialize<")
-        || l.contains("::serialize(")
-        || l.contains("::deserialize<")
-        || l.contains("::deserialize(")
-        || l.contains("::source(")
-    ) {
+    if l.starts_with("pub fn ")
+        && (l.contains("::clone(")
+            || l.contains("::fmt(")
+            || l.contains("::eq(")
+            || l.contains("::hash<")
+            || l.contains("::hash(")
+            || l.contains("::partial_cmp(")
+            || l.contains("::cmp(")
+            || l.contains("::deref(")
+            || l.contains("::deref_mut(")
+            || l.contains("::default(")
+            || l.contains("::serialize<")
+            || l.contains("::serialize(")
+            || l.contains("::deserialize<")
+            || l.contains("::deserialize(")
+            || l.contains("::source("))
+    {
         return out;
     }
     // For `pub type X::Target = …`, also skip — it's the Deref Target alias.
@@ -233,18 +233,13 @@ fn extract_names(line: &str) -> HashSet<String> {
             // after = ("", "types::ast::Expr") or similar
             let rest = after.1;
             // Trim trailing punctuation (commas, parens, angles, etc.).
-            let trimmed = rest.trim_end_matches(|c: char| {
-                !c.is_alphanumeric() && c != '_' && c != ':'
-            });
+            let trimmed =
+                rest.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != ':');
             // Split on `::`, take the leaf.
             if let Some(leaf) = trimmed.rsplit("::").next() {
-                let leaf = leaf.trim_end_matches(|c: char| {
-                    !c.is_alphanumeric() && c != '_'
-                });
+                let leaf = leaf.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_');
                 if !leaf.is_empty()
-                    && leaf
-                        .chars()
-                        .all(|c| c.is_alphanumeric() || c == '_')
+                    && leaf.chars().all(|c| c.is_alphanumeric() || c == '_')
                     && !leaf.starts_with(char::is_numeric)
                 {
                     out.insert(leaf.to_string());
@@ -307,20 +302,15 @@ fn facade_compliance_orphans_match_expected_sprint_67_baseline() {
     let mut total_orphans: usize = 0;
 
     for (display_name, crate_dir, facade_files) in facade_pairs() {
-        let pub_api_path = root
-            .join("crates")
-            .join(crate_dir)
-            .join("public-api.txt");
+        let pub_api_path = root.join("crates").join(crate_dir).join("public-api.txt");
         let pub_api = std::fs::read_to_string(&pub_api_path)
-            .unwrap_or_else(|e| {
-                panic!("read {}: {e}", pub_api_path.display())
-            });
+            .unwrap_or_else(|e| panic!("read {}: {e}", pub_api_path.display()));
         // Concatenate every facade file's content into one corpus.
         let mut facade_corpus = String::new();
         for f in &facade_files {
             let p = root.join("design").join("arch").join("facades").join(f);
-            let s = std::fs::read_to_string(&p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let s =
+                std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             facade_corpus.push_str(&s);
             facade_corpus.push('\n');
         }
@@ -359,19 +349,12 @@ fn facade_compliance_orphans_match_expected_sprint_67_baseline() {
         total_orphans
     );
     for (crate_name, orphans) in &orphans_per_crate {
-        msg.push_str(&format!(
-            "  {} — {} orphans:\n",
-            crate_name,
-            orphans.len()
-        ));
+        msg.push_str(&format!("  {} — {} orphans:\n", crate_name, orphans.len()));
         for o in orphans.iter().take(50) {
             msg.push_str(&format!("    - {o}\n"));
         }
         if orphans.len() > 50 {
-            msg.push_str(&format!(
-                "    … ({} more)\n",
-                orphans.len() - 50
-            ));
+            msg.push_str(&format!("    … ({} more)\n", orphans.len() - 50));
         }
     }
 

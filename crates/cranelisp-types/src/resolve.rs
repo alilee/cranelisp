@@ -61,6 +61,7 @@
 //! Pass-1 recognition via this primitive), and `design/arch/interfaces.md`
 //! §"Resolution primitive".
 
+use crate::ast::Visibility;
 use crate::error::{CranelispError, ErrorLocation};
 use crate::module::{
     CHAIN_FOLLOW_DEPTH_LIMIT, CodeStore, LinkerStore, ModuleAliases, ModuleEntry, SymbolTables,
@@ -69,7 +70,6 @@ use crate::module::{
 use crate::newtype::{FQSymbol, ModuleFullPath, Symbol, TraitName, TypeName};
 use crate::span::Span;
 use crate::view::View;
-use crate::ast::Visibility;
 
 /// The reference-resolution scope — a name lookup with the implicit-prelude
 /// **fallback intrinsic to the scope**, decided ONCE at construction, never at
@@ -114,7 +114,13 @@ impl<'a, C: CodeStore, L: LinkerStore> ResolutionScope<'a, C, L> {
             Some(p) if p == current_module => None,
             other => other,
         };
-        ResolutionScope { symbol_tables, module_aliases, first_hop, current_module, prelude }
+        ResolutionScope {
+            symbol_tables,
+            module_aliases,
+            first_hop,
+            current_module,
+            prelude,
+        }
     }
 
     /// THE reference lookup. Inner (first-hop view) walk; on a
@@ -141,9 +147,11 @@ impl<'a, C: CodeStore, L: LinkerStore> ResolutionScope<'a, C, L> {
     /// macro); a hard failure (private, unknown qualified module) surfaces as
     /// `Err`. The prelude fallback is intrinsic (same as [`Self::resolve`]),
     /// replacing int's hand-rolled `recognize_macro_head` retry.
-    pub fn resolve_macro_head(&self, name: &str, span: Span)
-        -> Result<Option<FQSymbol>, ResolveError>
-    {
+    pub fn resolve_macro_head(
+        &self,
+        name: &str,
+        span: Span,
+    ) -> Result<Option<FQSymbol>, ResolveError> {
         match self.resolve(name, span) {
             Ok(resolved) => match &resolved.entry {
                 ModuleEntry::Def { kind, .. }
@@ -226,7 +234,13 @@ pub fn reject_def_over_binding<C: CodeStore, L: LinkerStore>(
             _ => BindingProvenance::Prelude,
         }
     };
-    check_binding_addition(name, BindingProvenance::Definition, existing, &resolved.fq, span)
+    check_binding_addition(
+        name,
+        BindingProvenance::Definition,
+        existing,
+        &resolved.fq,
+        span,
+    )
 }
 
 /// Error returned by the resolution primitive and its typed wrappers.
@@ -326,19 +340,30 @@ impl ResolveError {
     /// projection so the two never drift.
     pub fn message(&self) -> String {
         match self {
-            ResolveError::TraitNotFound { name, from_module, .. } => {
+            ResolveError::TraitNotFound {
+                name, from_module, ..
+            } => {
                 format!("unknown trait `{name}` (from module `{from_module}`)")
             }
-            ResolveError::TypeNotFound { name, from_module, .. } => {
+            ResolveError::TypeNotFound {
+                name, from_module, ..
+            } => {
                 format!("unknown type `{name}` (from module `{from_module}`)")
             }
-            ResolveError::ConstructorNotFound { name, from_module, .. } => {
+            ResolveError::ConstructorNotFound {
+                name, from_module, ..
+            } => {
                 format!("unknown constructor `{name}` (from module `{from_module}`)")
             }
             ResolveError::QualifiedModuleUnknown { module, name, .. } => {
                 format!("module `{module}` referenced by `{module}/{name}` is not loaded")
             }
-            ResolveError::PrivateInaccessible { name, defining_module, from_module, .. } => {
+            ResolveError::PrivateInaccessible {
+                name,
+                defining_module,
+                from_module,
+                ..
+            } => {
                 format!(
                     "`{name}` is private to module `{defining_module}`; not accessible from `{from_module}`"
                 )
@@ -409,7 +434,10 @@ impl<C: CodeStore> Resolved<C> {
     /// `ApplyRef::Dispatch` carrier value
     /// (`design/arch/backend-keyed-consumer.md` §1.1).
     pub fn storage_fq(&self) -> FQSymbol {
-        FQSymbol { module: self.home.clone(), symbol: self.storage_key.clone() }
+        FQSymbol {
+            module: self.home.clone(),
+            symbol: self.storage_key.clone(),
+        }
     }
 }
 
@@ -473,8 +501,13 @@ where
 {
     if let Some((module_part, symbol_part)) = split_qualified(name) {
         return resolve_qualified(
-            symbol_tables, module_aliases, first_hop, current_module, &module_part,
-            &symbol_part, span,
+            symbol_tables,
+            module_aliases,
+            first_hop,
+            current_module,
+            &module_part,
+            &symbol_part,
+            span,
         );
     }
 
@@ -517,14 +550,22 @@ where
         .ok_or_else(|| not_found(name, current_module, span))?;
 
     let (entry, home, storage_key) = chain_follow_committed(
-        symbol_tables, first_hop, current_module, head, current_module.clone(), sym,
+        symbol_tables,
+        first_hop,
+        current_module,
+        head,
+        current_module.clone(),
+        sym,
     )
     .ok_or_else(|| not_found(name, current_module, span))?;
 
     visibility_check(&entry, &home, current_module, name, span)?;
 
     Ok(Resolved {
-        fq: FQSymbol { module: home.clone(), symbol: canonical_symbol(name) },
+        fq: FQSymbol {
+            module: home.clone(),
+            symbol: canonical_symbol(name),
+        },
         entry,
         home,
         storage_key,
@@ -558,7 +599,14 @@ where
     L: LinkerStore,
 {
     // Step 1: resolve in the caller-chosen current-module view.
-    let first = resolve_one(symbol_tables, module_aliases, first_hop, current_module, name, span);
+    let first = resolve_one(
+        symbol_tables,
+        module_aliases,
+        first_hop,
+        current_module,
+        name,
+        span,
+    );
 
     // No fallback for this scope (suppressed prelude, the prelude itself, or a
     // never-self-fallback collapse) ⇒ a bare first-hop resolve.
@@ -759,7 +807,11 @@ where
     // self-dependency gap.
     if resolved_module == *current_module {
         return resolve_current_via_view(
-            symbol_tables, first_hop, current_module, symbol_part, span,
+            symbol_tables,
+            first_hop,
+            current_module,
+            symbol_part,
+            span,
         );
     }
     // Chain-follow the symbol within the named module too (a qualified name
@@ -779,7 +831,10 @@ where
             })?;
     visibility_check(&entry, &home, current_module, symbol_part, span)?;
     Ok(Resolved {
-        fq: FQSymbol { module: home.clone(), symbol: canonical_symbol(symbol_part) },
+        fq: FQSymbol {
+            module: home.clone(),
+            symbol: canonical_symbol(symbol_part),
+        },
         entry,
         home,
         storage_key,
@@ -863,7 +918,13 @@ where
             let next_key = source.symbol.clone();
             let next = first_hop.lookup(&next_key)?.clone();
             chain_follow_committed_depth(
-                symbol_tables, first_hop, current_module, next, home, next_key, depth + 1,
+                symbol_tables,
+                first_hop,
+                current_module,
+                next,
+                home,
+                next_key,
+                depth + 1,
             )
         }
         ModuleEntry::Import { source, .. } => {
@@ -871,7 +932,9 @@ where
             // chain-follow primitive — single source of truth for the walk
             // (it carries its own depth cap and threads the storage key).
             resolve_terminal_entry_home_and_key(
-                symbol_tables, &source.module, source.symbol.as_ref(),
+                symbol_tables,
+                &source.module,
+                source.symbol.as_ref(),
             )
         }
         _ => Some((head, home, key)),
@@ -908,7 +971,10 @@ pub fn substitute_module_alias(
                 && queried.as_bytes()[key.len()] == b'.'
                 && queried.starts_with(key));
         if is_prefix {
-            let take = best.as_ref().map(|(len, _)| key.len() > *len).unwrap_or(true);
+            let take = best
+                .as_ref()
+                .map(|(len, _)| key.len() > *len)
+                .unwrap_or(true);
             if take {
                 best = Some((key.len(), entry.value().target.clone()));
             }

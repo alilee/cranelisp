@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 
 use cranelisp_types::{
-    ErrorLocation, CranelispError, PrimitiveNaming, Span, Subst, Type, TypeId, VarNaming, apply,
+    CranelispError, ErrorLocation, PrimitiveNaming, Span, Subst, Type, TypeId, VarNaming, apply,
     free_vars, render_type,
 };
 

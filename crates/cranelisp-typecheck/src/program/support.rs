@@ -59,13 +59,20 @@ pub(crate) fn for_each_child_expr(expr: &Expr, mut f: impl FnMut(&Expr)) {
             }
             f(body);
         }
-        Expr::If { cond, then_branch, else_branch, .. } => {
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
             f(cond);
             f(then_branch);
             f(else_branch);
         }
         Expr::Lambda { body, .. } => f(body),
-        Expr::Match { scrutinee, arms, .. } => {
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
             f(scrutinee);
             for arm in arms {
                 f(&arm.body);
@@ -78,7 +85,11 @@ pub(crate) fn for_each_child_expr(expr: &Expr, mut f: impl FnMut(&Expr)) {
             }
         }
         Expr::Trace { body, .. } => f(body),
-        Expr::LaunchContinue { launched, continuation, .. } => {
+        Expr::LaunchContinue {
+            launched,
+            continuation,
+            ..
+        } => {
             f(launched);
             f(continuation);
         }
@@ -95,7 +106,6 @@ pub(crate) fn for_each_child_expr(expr: &Expr, mut f: impl FnMut(&Expr)) {
         | Expr::Var { .. } => {}
     }
 }
-
 
 /// Mutable sibling of [`for_each_child_expr`]: invoke `f` on each immediate
 /// child sub-expression of `expr` by `&mut` reference. Same variant coverage.
@@ -113,13 +123,20 @@ pub(crate) fn for_each_child_expr_mut(expr: &mut Expr, mut f: impl FnMut(&mut Ex
             }
             f(body);
         }
-        Expr::If { cond, then_branch, else_branch, .. } => {
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
             f(cond);
             f(then_branch);
             f(else_branch);
         }
         Expr::Lambda { body, .. } => f(body),
-        Expr::Match { scrutinee, arms, .. } => {
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
             f(scrutinee);
             for arm in arms {
                 f(&mut arm.body);
@@ -132,7 +149,11 @@ pub(crate) fn for_each_child_expr_mut(expr: &mut Expr, mut f: impl FnMut(&mut Ex
             }
         }
         Expr::Trace { body, .. } => f(body),
-        Expr::LaunchContinue { launched, continuation, .. } => {
+        Expr::LaunchContinue {
+            launched,
+            continuation,
+            ..
+        } => {
             f(launched);
             f(continuation);
         }
@@ -150,7 +171,6 @@ pub(crate) fn for_each_child_expr_mut(expr: &mut Expr, mut f: impl FnMut(&mut Ex
     }
 }
 
-
 /// Rename the bare `Expr::Var` at exactly `target_span` to `new_name`
 /// (FIXME 0374 — fn-value-argument monomorphisation). Used to redirect a
 /// polymorphic fn-value reference (`mk`) to its minted concrete mono instance
@@ -164,11 +184,12 @@ pub(crate) fn rename_var_at_span(expr: &mut Expr, target_span: Span, new_name: &
         *name = new_name.clone();
         return;
     }
-    for_each_child_expr_mut(expr, |child| rename_var_at_span(child, target_span, new_name));
+    for_each_child_expr_mut(expr, |child| {
+        rename_var_at_span(child, target_span, new_name)
+    });
 }
 
 // --- AST annotation helpers (Step 1b) ---
-
 
 /// Apply substitution to all `inferred_type` fields on an expression tree.
 /// Replaces `Var(N)` with concrete types from the substitution.
@@ -182,14 +203,12 @@ pub(super) fn apply_subst_to_expr(subst: &Subst, expr: &mut Expr) {
     for_each_child_expr_mut(expr, |child| apply_subst_to_expr(subst, child));
 }
 
-
 /// Apply substitution to all `inferred_type` fields in a `Defn`.
 pub(crate) fn apply_subst_to_defn(subst: &Subst, defn: &mut Defn) {
     for variant in &mut defn.variants {
         apply_subst_to_expr(subst, &mut variant.body);
     }
 }
-
 
 /// Apply substitution to all `inferred_type` fields in a `DefnVariant`.
 /// S69 Submission 35 narrowing — `ModuleEntry::Def.ast` now carries the
@@ -198,7 +217,6 @@ pub(crate) fn apply_subst_to_defn(subst: &Subst, defn: &mut Defn) {
 pub(crate) fn apply_subst_to_variant(subst: &Subst, variant: &mut DefnVariant) {
     apply_subst_to_expr(subst, &mut variant.body);
 }
-
 
 /// Annotate an expression tree with types and resolved calls from side maps.
 /// Walks the tree recursively; for each node, sets `inferred_type` from
@@ -219,12 +237,20 @@ pub(super) fn annotate_expr_from_maps(
     // position — spec §7.6 trait-method-as-value, resolved by
     // `resolve_value_position_trait_methods`) from method_resolutions.
     match expr {
-        Expr::Apply { resolved_call, span: apply_span, .. } => {
+        Expr::Apply {
+            resolved_call,
+            span: apply_span,
+            ..
+        } => {
             if let Some(resolution) = method_resolutions.get(apply_span) {
                 *resolved_call = Some(Box::new(resolution.clone()));
             }
         }
-        Expr::Var { resolved_call, span: var_span, .. } => {
+        Expr::Var {
+            resolved_call,
+            span: var_span,
+            ..
+        } => {
             if let Some(resolution) = method_resolutions.get(var_span) {
                 *resolved_call = Some(Box::new(resolution.clone()));
             }
@@ -237,7 +263,6 @@ pub(super) fn annotate_expr_from_maps(
         annotate_expr_from_maps(child, expr_types, method_resolutions)
     });
 }
-
 
 /// Build the concrete-boundary `MonoExpr` codegen view (`MonoDefnVariant`) for a
 /// codegen-bound `Concrete` entry from its fully-annotated, subst-resolved
@@ -301,7 +326,10 @@ pub(crate) fn build_concrete_codegen_view(
                 apply_refs,
             )
         }
-        Err(cranelisp_types::ViewBuildError::Unresolved { span, name: ref_name }) => {
+        Err(cranelisp_types::ViewBuildError::Unresolved {
+            span,
+            name: ref_name,
+        }) => {
             // The located typecheck-phase gate error (design §4.2/§4.3): a
             // reference typecheck could not classify surfaces HERE, never a
             // codegen-time keyed miss (wrong phase).
@@ -325,7 +353,6 @@ pub(crate) fn build_concrete_codegen_view(
     }))
 }
 
-
 /// Annotate a `Defn` with types and resolved calls from side maps.
 pub(crate) fn annotate_defn_from_maps(
     defn: &mut Defn,
@@ -336,7 +363,6 @@ pub(crate) fn annotate_defn_from_maps(
         annotate_expr_from_maps(&mut variant.body, expr_types, method_resolutions);
     }
 }
-
 
 /// Annotate a `DefnVariant` with types and resolved calls from side maps.
 /// Sibling of `annotate_defn_from_maps` for the post-S35 narrowing.
@@ -349,7 +375,6 @@ pub(crate) fn annotate_variant_from_maps(
 }
 
 // --- Callee write helper (Decision 21) ---
-
 
 /// Mangle a function name with its parameter type signature.
 /// e.g., `mangle_sig("foo", &[Type::Int, Type::Bool])` → `"foo$Int+Bool"`.
@@ -373,7 +398,6 @@ pub(super) fn is_trait_impl_mangled_name(name: &str) -> bool {
     false
 }
 
-
 /// Convert a single param annotation `TypeExpr` into the `TraitRef` it would
 /// denote as a trait bound, for the try-type-then-trait fallback (spec §3.9.3,
 /// S86 D4). A trait bound is a bare or qualified trait NAME with no type
@@ -393,7 +417,6 @@ pub(crate) fn single_trait_bound_from_annotation(
     }
 }
 
-
 /// Read the GOT slot of a prior **concrete callable** entry named `name` in
 /// the symbol table `st`, if one exists.
 ///
@@ -410,13 +433,15 @@ pub(crate) fn single_trait_bound_from_annotation(
 /// `Constructor`) and `None` for a prior `NotDetermined` / `Constrained` /
 /// non-`Def` entry — exactly the cases where there is no live pointer to
 /// preserve and a fresh slot is correct.
-pub(super) fn existing_callable_slot<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore>(
+pub(super) fn existing_callable_slot<
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+>(
     st: &SymbolTable<C, L>,
     name: &str,
 ) -> Option<usize> {
     st.get(name).and_then(|e| e.callable_got_slot())
 }
-
 
 /// Returns true if `name` is a synthesised macro-clause defn — the
 /// `__macro_{macro}_clause_{idx}` shape produced by
@@ -431,7 +456,6 @@ pub(super) fn is_macro_clause_defn_name(name: &str) -> bool {
     // double-underscore `__macro_` prefix from the frontend synthesiser).
     name.starts_with("__macro_") && name.contains("_clause_")
 }
-
 
 /// Enrich a bare "undefined variable" body-resolution error into the §0.8
 /// macro-availability diagnostic when the failing resolution happened inside a
@@ -471,7 +495,6 @@ pub(super) fn enrich_macro_clause_resolution_error(
     err
 }
 
-
 pub(super) fn mangle_sig(name: &str, param_types: &[Type]) -> Symbol {
     if param_types.is_empty() {
         Symbol::from(format!("{}$", name))
@@ -480,7 +503,6 @@ pub(super) fn mangle_sig(name: &str, param_types: &[Type]) -> Symbol {
         Symbol::from(format!("{}${}", name, parts.join("+")))
     }
 }
-
 
 /// Mangle a single concrete type into distinguishing text — THE ONE canonical,
 /// total type-mangler (FIXME 0519, Principle 7). Every concrete `Type` variant
@@ -528,7 +550,6 @@ pub(crate) fn mangle_type(ty: &Type) -> String {
     }
 }
 
-
 /// Check if two concrete types are compatible (for overload resolution).
 pub(super) fn types_compatible(a: &Type, b: &Type) -> bool {
     match (a, b) {
@@ -555,13 +576,15 @@ pub(super) fn types_compatible(a: &Type, b: &Type) -> bool {
         (Type::TyConApp(id1, a1), Type::TyConApp(id2, a2)) => {
             id1 == id2
                 && a1.len() == a2.len()
-                && a1.iter().zip(a2.iter()).all(|(a, b)| types_compatible(a, b))
+                && a1
+                    .iter()
+                    .zip(a2.iter())
+                    .all(|(a, b)| types_compatible(a, b))
         }
         (Type::Var(_), _) | (_, Type::Var(_)) => true, // Unresolved — assume compatible
         _ => false,
     }
 }
-
 
 /// The outcome of matching an overloaded call's concrete args against the
 /// registered variants of its base name.

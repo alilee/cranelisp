@@ -1,6 +1,6 @@
 ---
 number: 0800
-target: /qa
+target: /stdlib
 filed_by: /repl
 filed_at: 2026-07-21
 sprint_filed: 115
@@ -18,7 +18,8 @@ status: open
 `def` is a stdlib macro (`stdlib/defs.cl:24`) that expands `(def n v)` into a
 `defn n-def` thunk **plus** a zero-arg macro `n` that expands to `(n-def)`. That
 mechanism is invisible in the source the user typed, but it is fully visible in
-every REPL response. Three faces, one root — probed at HEAD (2026-07-21,
+every REPL response. Three faces were probed; a shared implementation root is
+not established (2026-07-21,
 `target/debug/cranelisp`, clean session):
 
 **Face 1 — the definition echo names a symbol the user never wrote (§1.3).**
@@ -93,18 +94,28 @@ violated, not the seam.
 
 ## Proposed resolution
 
-1. `/qa` attributes and routes; a minimal repro exists above (three independent
-   one-liners, no imports beyond the prelude).
+1. `/qa` attributes and routes; the minimal repros above are independent and
+   do not by themselves prove one mechanism.
 2. **Face 1 and face 2 are the highest-value pair** — they are what the
    self-documenting-REPL principle promises, and face 1 ships in the flagship
    demo today.
-3. Face 3 needs the ruling first: is a `def`-bound name callable when its value
-   is a function? If yes, the expansion or the call seam changes; if no, the
-   diagnostic must say so in the user's vocabulary (naming `def`, not
-   "clauses accept 0 argument(s)"), never leak the macro-arity internal.
-4. `/repl` owns the spec-side follow-through once the ruling lands: a `def`
-   per-class row in `repl/spec.md` §4.1 and a §1.3 row pinning the echo. Filed
-   as a `/repl` 6b/next-sprint item, gated on 1–3.
+3. Face 3 is a stdlib API/usability decision. `def` is the zero-argument macro
+   specified by §5.7/§9.10 and implemented in `stdlib/defs.cl`, not a core
+   special form. `/stdlib` decides whether and how its API supports a
+   function-valued binding. `/qa` attributes and specifies the behavioral test
+   after that design choice.
+4. `/repl` owns truthful presentation and diagnostic behavior for the selected
+   stdlib API. Faces 1–2 already violate the existing self-documentation
+   contract and do not wait for face 3.
+
+## QA disposition (Sprint 117)
+
+Faces 1–2 remain independent REPL presentation defects and are ready for
+`/testing`. The earlier claim that face 3 required a user/core-language ruling
+was a category error: it promoted a stdlib macro API choice into `/spec`
+semantics. Retargeted from `/qa` to `/stdlib`; `/repl` follows for truthful
+presentation/diagnostics, and `/qa` plans face-3 coverage only after the
+user-proxy design exists.
 
 ## Context
 

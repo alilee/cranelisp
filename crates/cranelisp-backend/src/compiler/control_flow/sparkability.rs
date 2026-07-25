@@ -14,9 +14,7 @@ use crate::compiler::fn_compiler::{node_confined, node_escapes};
 
 /// Whether lenient evaluation is disabled via CRANELISP_NO_LENIENT=1.
 pub(crate) static LENIENT_DISABLED: std::sync::LazyLock<bool> =
-    std::sync::LazyLock::new(|| {
-        std::env::var("CRANELISP_NO_LENIENT").is_ok_and(|v| v == "1")
-    });
+    std::sync::LazyLock::new(|| std::env::var("CRANELISP_NO_LENIENT").is_ok_and(|v| v == "1"));
 
 /// Which admission filter governs *which* spark candidates are admitted
 /// (`design/backend/lenient-eval.md` §2.8.2 / §2.8.6). Selected once per process
@@ -47,13 +45,12 @@ pub(crate) enum SparkAdmit {
 /// the pre-S104 syntactic filter; any other value (including unset and
 /// `mstatic`) selects M-static, the S104 Wave-1 default. Read once per process.
 pub(crate) static SPARK_ADMIT: std::sync::LazyLock<SparkAdmit> =
-    std::sync::LazyLock::new(|| match std::env::var("CRANELISP_SPARK_ADMIT")
-        .ok()
-        .as_deref()
-    {
-        Some("syntactic") => SparkAdmit::Syntactic,
-        _ => SparkAdmit::Mstatic,
-    });
+    std::sync::LazyLock::new(
+        || match std::env::var("CRANELISP_SPARK_ADMIT").ok().as_deref() {
+            Some("syntactic") => SparkAdmit::Syntactic,
+            _ => SparkAdmit::Mstatic,
+        },
+    );
 
 /// Whether capture-by-borrow across structured fork-join is enabled via
 /// `CRANELISP_CAPTURE_BORROW=1` (Sprint 99 Wave 1b, FIXME 0461 / `ring2-rc.md`
@@ -69,9 +66,7 @@ pub(crate) static SPARK_ADMIT: std::sync::LazyLock<SparkAdmit> =
 /// and its own scope-cleanup dec is the single dec accounting for the cell.
 /// The detached `LaunchContinue` path never raises the flag (§5.5.2.1 exclusion).
 pub(crate) static CAPTURE_BORROW_ENABLED: std::sync::LazyLock<bool> =
-    std::sync::LazyLock::new(|| {
-        std::env::var("CRANELISP_CAPTURE_BORROW").is_ok_and(|v| v == "1")
-    });
+    std::sync::LazyLock::new(|| std::env::var("CRANELISP_CAPTURE_BORROW").is_ok_and(|v| v == "1"));
 
 /// Known-cheap builtins that are not worth sparking.
 /// Single-instruction or near-single-instruction at the hardware level.
@@ -116,13 +111,12 @@ const SPARK_DENSITY_MAX_DEFAULT: usize = 0;
 /// [`SPARK_DENSITY_MAX_DEFAULT`]; **`0` disables the axis entirely** (no
 /// candidate is ever declined by density — the pre-B4 admission set verbatim).
 /// A non-parsing value falls back to the default. Read once per process.
-pub(crate) static SPARK_DENSITY_MAX: std::sync::LazyLock<usize> =
-    std::sync::LazyLock::new(|| {
-        std::env::var("CRANELISP_SPARK_DENSITY_MAX")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(SPARK_DENSITY_MAX_DEFAULT)
-    });
+pub(crate) static SPARK_DENSITY_MAX: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
+    std::env::var("CRANELISP_SPARK_DENSITY_MAX")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(SPARK_DENSITY_MAX_DEFAULT)
+});
 
 /// `CRANELISP_SPARK_DENSITY_TRACE=1` — silent-by-default diagnostic that prints
 /// one line per spark candidate reaching the density axis (`[SPARK_DENSITY] …`)
@@ -239,10 +233,7 @@ pub(crate) fn find_sparkable_bindings_with(
 ///
 /// Returns an empty vec if fewer than 2 sparkable arguments are found — a single
 /// expensive argument never pays IVar/thread-pool overhead for no concurrency.
-pub(crate) fn find_sparkable_args(
-    args: &[MonoExpr],
-    constructors: &HashSet<Symbol>,
-) -> Vec<usize> {
+pub(crate) fn find_sparkable_args(args: &[MonoExpr], constructors: &HashSet<Symbol>) -> Vec<usize> {
     // The syntactic §2.2 admission filter (`CRANELISP_SPARK_ADMIT=syntactic`).
     find_sparkable_args_with(args, |e| is_worth_sparking(e, constructors))
 }
@@ -297,8 +288,9 @@ fn is_worth_sparking(expr: &MonoExpr, constructors: &HashSet<Symbol>) -> bool {
                 // the callee through the SAME `bare_member_name` grammar so a
                 // dotted / FQ / bare sum-ctor call all match.
                 !CHEAP_BUILTINS.contains(&name.as_ref())
-                    && !constructors
-                        .contains(&Symbol::from(cranelisp_types::bare_member_name(name.as_ref())))
+                    && !constructors.contains(&Symbol::from(cranelisp_types::bare_member_name(
+                        name.as_ref(),
+                    )))
             } else {
                 // Non-variable callee (computed function) — conservatively spark.
                 true
@@ -339,7 +331,11 @@ fn density_declines(expr: &MonoExpr) -> bool {
             verdict.is_some(),
             verdict,
             max,
-            if verdict.is_some_and(|s| s > max) { "decline" } else { "admit" },
+            if verdict.is_some_and(|s| s > max) {
+                "decline"
+            } else {
+                "admit"
+            },
         );
     }
     // Inert (None) ⇒ admit as today. Engaged ⇒ decline iff over the threshold.
@@ -430,8 +426,13 @@ fn accumulate_density(node: &MonoExpr, engaged: &mut bool, score: &mut usize) {
             Some(false) => {}
             _ => {
                 *score += 1; // heap-pressure axis
-                let borrow_elided =
-                    matches!(node, MonoExpr::Apply { provenance: Some(_), .. });
+                let borrow_elided = matches!(
+                    node,
+                    MonoExpr::Apply {
+                        provenance: Some(_),
+                        ..
+                    }
+                );
                 if conf != Some(true) && !borrow_elided {
                     *score += 1; // surviving-RC axis
                 }
@@ -461,7 +462,12 @@ fn mono_children(node: &MonoExpr) -> Vec<&MonoExpr> {
             v.push(body);
             v
         }
-        MonoExpr::If { cond, then_branch, else_branch, .. } => {
+        MonoExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
             vec![cond, then_branch, else_branch]
         }
         MonoExpr::Lambda { body, .. } => vec![body],
@@ -470,14 +476,20 @@ fn mono_children(node: &MonoExpr) -> Vec<&MonoExpr> {
             v.extend(args.iter());
             v
         }
-        MonoExpr::Match { scrutinee, arms, .. } => {
+        MonoExpr::Match {
+            scrutinee, arms, ..
+        } => {
             let mut v = vec![scrutinee.as_ref()];
             v.extend(arms.iter().map(|a| &a.body));
             v
         }
         MonoExpr::VecLit { elements, .. } => elements.iter().collect(),
         MonoExpr::Trace { body, .. } => vec![body],
-        MonoExpr::LaunchContinue { launched, continuation, .. } => {
+        MonoExpr::LaunchContinue {
+            launched,
+            continuation,
+            ..
+        } => {
             vec![launched, continuation]
         }
         MonoExpr::ConstrADT { fields, .. } => fields.iter().collect(),

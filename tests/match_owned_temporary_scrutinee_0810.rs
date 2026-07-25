@@ -163,10 +163,14 @@ fn assert_contract(label: &str, program: &str, expect_exit: i32, ownership_off: 
         m.stderr
     );
     let (allocs, deallocs) = m.rc.unwrap_or_else(|| {
-        panic!("[{label}] {mode} ({toggle}) emitted no [RC_STATS] line:\n{}", m.stderr)
+        panic!(
+            "[{label}] {mode} ({toggle}) emitted no [RC_STATS] line:\n{}",
+            m.stderr
+        )
     });
     assert_eq!(
-        allocs, deallocs,
+        allocs,
+        deallocs,
         "[{label}] {mode} ({toggle}) MUST balance EXACTLY: allocs={allocs} \
          deallocs={deallocs} (residue {}). Every `match` scrutinee this frame \
          owns is released exactly once, after the arm has taken over its payload.",
@@ -384,11 +388,7 @@ fn inline_scrutinee_with_heap_payload_does_not_leak_box_or_field() {
 // defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/match_codegen.rs — owned temporary scrutinee under constructor patterns, wrapper-from-call superseding a tail-loop param (the exemplar shape) found=S115 owner=/dev
 #[test]
 fn wrapper_from_call_superseding_loop_param_does_not_leak() {
-    assert_both_toggles(
-        "A4 N=100",
-        &wrapper_from_call_supersedes_loop_param(100),
-        7,
-    );
+    assert_both_toggles("A4 N=100", &wrapper_from_call_supersedes_loop_param(100), 7);
     assert_both_toggles(
         "A4 N=1100",
         &wrapper_from_call_supersedes_loop_param(1100),
@@ -415,11 +415,7 @@ fn wrapper_from_call_superseding_loop_param_does_not_leak() {
 // defect: class=uaf locus=crates/cranelisp-backend/src/compiler/match_codegen.rs — let-bound owned scrutinee released while its extracted payload is still live (0782 is the var-pattern sibling) found=S115 owner=/dev
 #[test]
 fn let_bound_scrutinee_payload_outlives_the_match() {
-    assert_both_toggles(
-        "B1 N=1",
-        &let_bound_scrutinee_supersedes_loop_param(1),
-        7,
-    );
+    assert_both_toggles("B1 N=1", &let_bound_scrutinee_supersedes_loop_param(1), 7);
     assert_both_toggles(
         "B1 N=100",
         &let_bound_scrutinee_supersedes_loop_param(100),

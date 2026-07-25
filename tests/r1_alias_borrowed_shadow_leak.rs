@@ -42,13 +42,11 @@ fn rc_alloc_dealloc(stderr: &str) -> (i64, i64) {
 // with a fresh OWNED `[7 8 9]` — which must scope-dec normally. The stale outer
 // mark made the inner owned `q`'s dec be skipped: allocs=3 deallocs=2 (the fresh
 // `[7 8 9]` leaked).
-const SHADOW_REUSE: &str =
-    "(defn f [v] (let [q v] (let [q [7 8 9]] (vec-get q 0))))\n\
+const SHADOW_REUSE: &str = "(defn f [v] (let [q v] (let [q [7 8 9]] (vec-get q 0))))\n\
      (defn main [] (Pure (f [1 2 3])))\n";
 
 // Control: the inner binding renamed `r` (no name collision) — always balanced.
-const RENAMED_CONTROL: &str =
-    "(defn f [v] (let [q v] (let [r [7 8 9]] (vec-get r 0))))\n\
+const RENAMED_CONTROL: &str = "(defn f [v] (let [q v] (let [r [7 8 9]] (vec-get r 0))))\n\
      (defn main [] (Pure (f [1 2 3])))\n";
 
 // 0692 pin — the shadow-reuse binding MUST balance: the inner OWNED `q` is a

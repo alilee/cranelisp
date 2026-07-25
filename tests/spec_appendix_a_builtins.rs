@@ -213,8 +213,7 @@ fn primitive_vec_set_preserves_len() {
 // (carry: legacy/sketch_port.rs::sketch_vec_push_value)
 #[test]
 fn primitive_vec_push_value_at_last_index() {
-    repl_prims("(vec-get (vec-push [1 2 3] 99) 3)\n")
-        .assert_stdout_contains(":primitives/Int 99");
+    repl_prims("(vec-get (vec-push [1 2 3] 99) 3)\n").assert_stdout_contains(":primitives/Int 99");
 }
 
 // spec: spec/appendix-a-builtins.md §A.3 — vec value flows through a `let`
@@ -233,8 +232,7 @@ fn primitive_vec_let_bound_then_get() {
 // (carry: legacy/sketch_port.rs::sketch_vec_push_empty)
 #[test]
 fn primitive_vec_push_onto_empty() {
-    repl_prims("(vec-get (vec-push [] 42) 0)\n")
-        .assert_stdout_contains(":primitives/Int 42");
+    repl_prims("(vec-get (vec-push [] 42) 0)\n").assert_stdout_contains(":primitives/Int 42");
 }
 
 // =============================================================================
@@ -273,8 +271,7 @@ fn primitive_char_at_valid() {
 // (carry: legacy/ring1.rs::string_char_at_out_of_bounds_empty)
 #[test]
 fn primitive_char_at_out_of_bounds_empty() {
-    repl_prims("(str-len (char-at \"hello\" 100))\n")
-        .assert_stdout_contains(":primitives/Int 0");
+    repl_prims("(str-len (char-at \"hello\" 100))\n").assert_stdout_contains(":primitives/Int 0");
 }
 
 // spec: spec/appendix-a-builtins.md §A.3 — trim strips leading/trailing whitespace
@@ -289,8 +286,7 @@ fn primitive_trim_whitespace() {
 // (carry: legacy/ring1.rs::string_trim_interior_preserved)
 #[test]
 fn primitive_trim_interior_preserved() {
-    repl_prims("(str-len (trim \"  hi there  \"))\n")
-        .assert_stdout_contains(":primitives/Int 8");
+    repl_prims("(str-len (trim \"  hi there  \"))\n").assert_stdout_contains(":primitives/Int 8");
 }
 
 // spec: spec/appendix-a-builtins.md §A.3 — to-upper converts ASCII letters
@@ -353,8 +349,7 @@ fn primitive_contains_true() {
 // (carry: legacy/ring1.rs::string_contains_false)
 #[test]
 fn primitive_contains_false() {
-    repl_prims("(contains? \"hello\" \"xyz\")\n")
-        .assert_stdout_contains(":primitives/Bool false");
+    repl_prims("(contains? \"hello\" \"xyz\")\n").assert_stdout_contains(":primitives/Bool false");
 }
 
 // spec: spec/appendix-a-builtins.md §A.3 — replace substitutes occurrences
@@ -377,8 +372,7 @@ fn primitive_replace_missing_needle() {
 // (carry: legacy/ring1.rs::string_split_produces_parts)
 #[test]
 fn primitive_split_produces_parts() {
-    repl_prims("(vec-len (split \"a,b,c\" \",\"))\n")
-        .assert_stdout_contains(":primitives/Int 3");
+    repl_prims("(vec-len (split \"a,b,c\" \",\"))\n").assert_stdout_contains(":primitives/Int 3");
 }
 
 // spec: spec/appendix-a-builtins.md §A.3 — join inverse of split
@@ -415,10 +409,8 @@ fn primitive_parse_int_valid() {
     // `parse-int` returns `primitives/Option`; the imported `Some`/`None`
     // come from the PrimitivesOnly prelude and dispatch against the
     // primitive Option variants directly (no user-defined `Option` here).
-    repl_prims(
-        "(match (parse-int \"42\") [(Some n) n None 0])\n",
-    )
-    .assert_stdout_contains(":primitives/Int 42");
+    repl_prims("(match (parse-int \"42\") [(Some n) n None 0])\n")
+        .assert_stdout_contains(":primitives/Int 42");
 }
 
 // spec: spec/appendix-a-builtins.md §A.3 — parse-int returns `None`
@@ -428,10 +420,8 @@ fn primitive_parse_int_valid() {
 // (carry: legacy/ring1.rs::parse_int_invalid)
 #[test]
 fn primitive_parse_int_invalid() {
-    repl_prims(
-        "(match (parse-int \"not-a-number\") [(Some n) n None (sub-i64 0 1)])\n",
-    )
-    .assert_stdout_contains(":primitives/Int -1");
+    repl_prims("(match (parse-int \"not-a-number\") [(Some n) n None (sub-i64 0 1)])\n")
+        .assert_stdout_contains(":primitives/Int -1");
 }
 
 // spec: spec/appendix-a-builtins.md §A.3 — vec-set leaves non-target
@@ -443,10 +433,8 @@ fn primitive_parse_int_invalid() {
 // (carry: legacy/ring1.rs::vec_set_preserves_other_elements)
 #[test]
 fn primitive_vec_set_other_positions_preserved() {
-    repl_prims(
-        "(let [v (vec-set [10 20 30] 1 99)] (add-i64 (vec-get v 0) (vec-get v 2)))\n",
-    )
-    .assert_stdout_contains(":primitives/Int 40");
+    repl_prims("(let [v (vec-set [10 20 30] 1 99)] (add-i64 (vec-get v 0) (vec-get v 2)))\n")
+        .assert_stdout_contains(":primitives/Int 40");
 }
 
 // spec: spec/appendix-a-builtins.md §A.3 — vec-get returns the element
@@ -469,8 +457,7 @@ fn primitive_vec_get_string_element() {
 // (carry: legacy/ring1.rs::vec_get_middle)
 #[test]
 fn primitive_vec_get_middle_index() {
-    repl_prims("(vec-get [10 20 30] 1)\n")
-        .assert_stdout_contains(":primitives/Int 20");
+    repl_prims("(vec-get [10 20 30] 1)\n").assert_stdout_contains(":primitives/Int 20");
 }
 
 // =============================================================================
@@ -487,8 +474,7 @@ fn primitive_vec_get_middle_index() {
 // (carry: legacy/ring1.rs::vec_set_last)
 #[test]
 fn primitive_vec_set_last_index() {
-    repl_prims("(vec-get (vec-set [1 2 3] 2 99) 2)\n")
-        .assert_stdout_contains(":primitives/Int 99");
+    repl_prims("(vec-get (vec-set [1 2 3] 2 99) 2)\n").assert_stdout_contains(":primitives/Int 99");
 }
 
 // spec: spec/appendix-a-builtins.md §A.3 — chained vec-push through three

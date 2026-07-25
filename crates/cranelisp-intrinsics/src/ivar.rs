@@ -211,9 +211,8 @@ static IN_FLIGHT_SPARKS: AtomicIsize = AtomicIsize::new(0);
 /// bouncing across cores. The spark-vs-inline choice is a scheduling decision
 /// only — both arms produce byte-identical values — so correctness holds on and
 /// off by construction. Read once per process via `LazyLock`.
-static SATURATION_GATE: LazyLock<bool> = LazyLock::new(|| {
-    std::env::var("CRANELISP_SATURATION_GATE").is_ok_and(|v| v == "1")
-});
+static SATURATION_GATE: LazyLock<bool> =
+    LazyLock::new(|| std::env::var("CRANELISP_SATURATION_GATE").is_ok_and(|v| v == "1"));
 
 /// **M-dynamic — the utilization-axis multiplier `k`** (S104 Wave 2, Stage 3;
 /// `design/backend/lenient-eval.md` §2.8.3, gate G1). The in-flight-spark cap
@@ -653,8 +652,7 @@ pub extern "C" fn ivar_spark(ivar: i64) -> i64 {
         // thunk at `parent + 1`. Armed in every mode but off; the guard restores
         // the worker's resting depth on scope exit even if `ivar_force` unwinds.
         {
-            let _depth_base =
-                (*HIER_DECLINE_ON).then(|| SparkDepthGuard::enter_base(parent_depth));
+            let _depth_base = (*HIER_DECLINE_ON).then(|| SparkDepthGuard::enter_base(parent_depth));
             // Force the IVar (evaluate thunk if still PENDING).
             ivar_force(ivar);
         }
@@ -839,8 +837,7 @@ pub extern "C" fn ivar_force(ivar: i64) -> i64 {
             // (if any) to dec captured heap values, then dec/free the
             // closure itself.
             unsafe {
-                let drop_glue_ptr =
-                    *((thunk as isize + CLOSURE_DROP_GLUE_OFFSET) as *const i64);
+                let drop_glue_ptr = *((thunk as isize + CLOSURE_DROP_GLUE_OFFSET) as *const i64);
                 if drop_glue_ptr != 0 {
                     // Drop glue signature: extern "C" fn(env_ptr: i64) -> i64
                     let drop_glue: extern "C" fn(i64) -> i64 =

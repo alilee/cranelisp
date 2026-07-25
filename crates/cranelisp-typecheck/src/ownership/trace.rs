@@ -30,19 +30,32 @@ pub(crate) fn emit(state: &CheckState, cluster: &ClusterOwnership) {
     keys.sort();
     for key in keys {
         let s = &cluster.summaries[key];
-        let value_use = if cluster.value_used.contains(key) { " value-use" } else { "" };
+        let value_use = if cluster.value_used.contains(key) {
+            " value-use"
+        } else {
+            ""
+        };
         eprintln!(
             "  {key}: modes={:?} result={:?} flow={:?} spark_ops={:?}{value_use}",
             s.param_modes, s.result, s.param_flow, s.spark_ops
         );
         if let Some(f) = cluster.facts.get(key) {
-            let mut esc: Vec<_> = f.escapes.iter().filter(|(_, v)| **v).map(|(k, _)| *k).collect();
+            let mut esc: Vec<_> = f
+                .escapes
+                .iter()
+                .filter(|(_, v)| **v)
+                .map(|(k, _)| *k)
+                .collect();
             esc.sort_by_key(|s| (s.start, s.end));
             if !esc.is_empty() {
                 eprintln!("    escapes@ {esc:?}");
             }
-            let mut cross: Vec<_> =
-                f.confined.iter().filter(|(_, v)| !**v).map(|(k, _)| *k).collect();
+            let mut cross: Vec<_> = f
+                .confined
+                .iter()
+                .filter(|(_, v)| !**v)
+                .map(|(k, _)| *k)
+                .collect();
             cross.sort_by_key(|s| (s.start, s.end));
             if !cross.is_empty() {
                 eprintln!("    crossing@ {cross:?}");

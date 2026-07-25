@@ -15,8 +15,8 @@
 ; A multi-arm match — patterns left-aligned, arm bodies at the aligned right
 ; column. A two-or-more-arm match always renders multi-line (never collapsed):
 
-(deftype Signal (Stop) (Slow) (Go))
-(defn action [s] (match s [(Stop) "halt" (Slow) "ease off" (Go) "drive on"]))
+(deftype Signal Stop Slow Go)
+(defn action [s] (match s [Stop "halt" Slow "ease off" Go "drive on"]))
 /sexp action
 
 ; /source shares the printer with /sexp — same bytes, no divergence:

@@ -99,10 +99,7 @@ fn test_check_manifest_dependency_changed() {
     manifest.upsert_module(&mp, source_hash.clone(), dep_hashes);
 
     let mut current_deps = HashMap::new();
-    current_deps.insert(
-        ModuleFullPath::from("prelude"),
-        hash_source("new prelude"),
-    );
+    current_deps.insert(ModuleFullPath::from("prelude"), hash_source("new prelude"));
     let result = check_manifest(&manifest, &mp, &source_hash, &current_deps);
     assert!(!result.unwrap());
 }
@@ -287,7 +284,10 @@ fn check_manifest_prelude_change_invalidates_all_dependents() {
     }
 
     let mut current_deps = HashMap::new();
-    current_deps.insert(ModuleFullPath::from("prelude"), hash_source("(defn p [] 1)"));
+    current_deps.insert(
+        ModuleFullPath::from("prelude"),
+        hash_source("(defn p [] 1)"),
+    );
 
     for name in ["user1", "user2"] {
         let mp = ModuleFullPath::from(name);

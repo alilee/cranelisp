@@ -56,8 +56,8 @@ use std::collections::BTreeMap;
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    apply, DefKind, FQTypeName, ModuleEntry, ModuleFullPath, Subst, Symbol,
-    SymbolTable, Type, TypeId,
+    DefKind, FQTypeName, ModuleEntry, ModuleFullPath, Subst, Symbol, SymbolTable, Type, TypeId,
+    apply,
 };
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -100,10 +100,7 @@ pub(crate) fn collect_var_ids(ty: &Type, ids: &mut Vec<TypeId>) {
 /// rule `trace_codegen::build_adt_subst` and `src/display.rs::build_adt_subst`
 /// use. `field_type_lists` is the per-constructor field-type lists of the type
 /// being instantiated.
-pub(crate) fn subst_for_ctor_fields(
-    field_type_lists: &[Vec<Type>],
-    type_args: &[Type],
-) -> Subst {
+pub(crate) fn subst_for_ctor_fields(field_type_lists: &[Vec<Type>], type_args: &[Type]) -> Subst {
     let mut var_ids = Vec::new();
     for fields in field_type_lists {
         for ty in fields {
@@ -187,7 +184,9 @@ where
     let info = match type_entry {
         ModuleEntry::TypeDef { info, .. } => info.clone(),
         ModuleEntry::Def { kind, .. } => match &**kind {
-            DefKind::Constructor { type_def: Some(td), .. } => (**td).clone(),
+            DefKind::Constructor {
+                type_def: Some(td), ..
+            } => (**td).clone(),
             _ => return None,
         },
         _ => return None,
@@ -226,8 +225,15 @@ where
             ),
             "ctor '{ctor_name}' of '{fqtn}' has no resolvable Def — keying drift"
         );
-        if let Some(ModuleEntry::Def { kind, scheme, param_names, .. }) = ctor_probe
-            && let DefKind::Constructor { tag, field_count, .. } = &**kind
+        if let Some(ModuleEntry::Def {
+            kind,
+            scheme,
+            param_names,
+            ..
+        }) = ctor_probe
+            && let DefKind::Constructor {
+                tag, field_count, ..
+            } = &**kind
         {
             // Sum/enum constructor Def: names from param_names, types from
             // the scheme's Fn params (nullary → no Fn → empty).
@@ -254,8 +260,7 @@ where
     drop(table);
 
     // Build the positional subst from ALL constructors' field-var ids → args.
-    let field_type_lists: Vec<Vec<Type>> =
-        raws.iter().map(|r| r.field_types.clone()).collect();
+    let field_type_lists: Vec<Vec<Type>> = raws.iter().map(|r| r.field_types.clone()).collect();
     let subst = subst_for_ctor_fields(&field_type_lists, type_args);
 
     let ctors = raws
@@ -505,9 +510,7 @@ where
 /// loaded platform's `SymbolTable`, calls this to get the roots, and passes them
 /// (with the full `symbol_tables` map for the closure walk) to `generate_schema`
 /// (platform-interface.md §5.5.1 step 1).
-pub fn platform_effect_roots<C, L>(
-    platform_table: &SymbolTable<C, L>,
-) -> Vec<Type>
+pub fn platform_effect_roots<C, L>(platform_table: &SymbolTable<C, L>) -> Vec<Type>
 where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,

@@ -546,7 +546,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             })
             .collect()
     }
-
 }
 
 #[cfg(test)]

@@ -145,11 +145,7 @@ pub(crate) fn nice_worker_loop(shared: &SharedState) {
 /// `write_object_and_record`). The orchestrator preserves every early `return`
 /// and the load-bearing ordering (.meta.json is DECOUPLED from `.o` output —
 /// persists whenever the module type-checked).
-fn compile_module_object(
-    shared: &SharedState,
-    module: &ModuleFullPath,
-    cache_dir: &Path,
-) {
+fn compile_module_object(shared: &SharedState, module: &ModuleFullPath, cache_dir: &Path) {
     use cranelisp_backend::cache;
 
     // S101 cache-write poisoning (repl/spec.md §18.8; design/int/
@@ -213,11 +209,7 @@ fn compile_module_object(
 /// Returns `false` (caller aborts the pass) only on a meta-dir create failure;
 /// a `write_meta` error is logged and tolerated (it does not block `.o`
 /// codegen).
-fn write_module_meta(
-    shared: &SharedState,
-    module: &ModuleFullPath,
-    meta_path: &Path,
-) -> bool {
+fn write_module_meta(shared: &SharedState, module: &ModuleFullPath, meta_path: &Path) -> bool {
     use cranelisp_backend::cache;
 
     // Ensure parent directory exists (used by both the `.meta.json` and `.o`
@@ -225,17 +217,28 @@ fn write_module_meta(
     if let Some(parent) = meta_path.parent()
         && let Err(e) = std::fs::create_dir_all(parent)
     {
-        eprintln!("nice-worker: cannot create cache dir '{}': {}", parent.display(), e);
+        eprintln!(
+            "nice-worker: cannot create cache dir '{}': {}",
+            parent.display(),
+            e
+        );
         return false;
     }
 
-    let symbol_table = shared.symbol_tables
+    let symbol_table = shared
+        .symbol_tables
         .get(module)
         .map(|guard| guard.clone())
         .unwrap_or_else(|| crate::code::SessionSymbolTable::new_with_params(module.clone()));
 
-    if let Err(e) = cache::serialize::write_meta(meta_path, &symbol_table, cache::CACHE_SCHEMA_VERSION) {
-        eprintln!("nice-worker: .meta.json write failed for {}: {}", module, e.message());
+    if let Err(e) =
+        cache::serialize::write_meta(meta_path, &symbol_table, cache::CACHE_SCHEMA_VERSION)
+    {
+        eprintln!(
+            "nice-worker: .meta.json write failed for {}: {}",
+            module,
+            e.message()
+        );
         // Continue — the meta failure does not block `.o` codegen below.
     }
     true
@@ -253,11 +256,7 @@ fn enumerate_codegen_names(
     shared
         .symbol_tables
         .get(module)
-        .map(|t| {
-            t.defined_symbols()
-                .map(|(name, _)| name.clone())
-                .collect()
-        })
+        .map(|t| t.defined_symbols().map(|(name, _)| name.clone()).collect())
         .unwrap_or_default()
 }
 
@@ -270,7 +269,9 @@ fn enumerate_codegen_names(
 /// absent `.o` for a module whose codegen batch is empty.
 fn record_empty_codegen(shared: &SharedState, module: &ModuleFullPath) {
     let source_hash = shared.cache.source_hash(module).unwrap_or_default();
-    shared.cache.record_compiled(module, source_hash, std::collections::HashMap::new());
+    shared
+        .cache
+        .record_compiled(module, source_hash, std::collections::HashMap::new());
 }
 
 /// Phase 3b (S87 §3.3): build the ObjectModule with PIC ISA and emit the `.o`
@@ -289,7 +290,11 @@ fn emit_object(
         Ok(isa) => isa,
         Err(e) => {
             if std::env::var("CRANELISP_CODEGEN_TRACE").is_ok() {
-                eprintln!("nice-worker: ISA build failed for {}: {}", module, e.message());
+                eprintln!(
+                    "nice-worker: ISA build failed for {}: {}",
+                    module,
+                    e.message()
+                );
             }
             return None;
         }
@@ -368,7 +373,9 @@ fn write_object_and_record(
     {
         let source_hash = shared.cache.source_hash(module).unwrap_or_default();
         // dep_hashes: empty for now — full dependency tracking is a future enhancement.
-        shared.cache.record_compiled(module, source_hash, std::collections::HashMap::new());
+        shared
+            .cache
+            .record_compiled(module, source_hash, std::collections::HashMap::new());
     }
 
     // Append the .o path for the linker. Sprint 67 Cluster B sub-fire 3:

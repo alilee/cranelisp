@@ -33,7 +33,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, CrOutput, PreludeVariant};
+use helpers::e2e::{CrOutput, Cranelisp, PreludeVariant};
 
 // A prelude that re-exports primitives (so bare `Pure`/`vec-len`/`add-i64`
 // resolve) and defines a sentinel prelude-provided function `gulp`.

@@ -2,7 +2,6 @@
 
 use crate::test_support::*;
 
-
 // spec: facades/backend.md §"Free functions" — produce_disasm reads the
 // live GOT-slot code pointer, reads caller-supplied `code_size` bytes, and
 // capstone-disassembles them (S75 W3 Finding-C — real body, not a stub).
@@ -15,7 +14,11 @@ fn produce_disasm_returns_nonempty_for_jit_compiled_fn() {
         docstring: None,
         variants: vec![DefnVariant {
             params: vec![],
-            body: Expr::IntLit { value: 7, span: Span::new(0, 1), inferred_type: None },
+            body: Expr::IntLit {
+                value: 7,
+                span: Span::new(0, 1),
+                inferred_type: None,
+            },
             span: Span::new(0, 20),
         }],
         visibility: Visibility::Public,
@@ -38,13 +41,20 @@ fn produce_disasm_returns_nonempty_for_jit_compiled_fn() {
         &tables,
         jit.jit_module(),
         true,
-    ).expect("JIT compile should succeed");
+    )
+    .expect("JIT compile should succeed");
 
     // code_size comes from the compile-time artifacts — the caller passes
     // it back into produce_disasm (Finding-C: backend never re-derives it).
-    assert!(artifacts.code_size > 0, "JIT codegen must report a code size");
+    assert!(
+        artifacts.code_size > 0,
+        "JIT codegen must report a code size"
+    );
 
-    let fq = FQSymbol { module: module.clone(), symbol: defn.name.clone() };
+    let fq = FQSymbol {
+        module: module.clone(),
+        symbol: defn.name.clone(),
+    };
     let disasm = produce_disasm(&fq, artifacts.code_size, &tables)
         .expect("produce_disasm should disassemble live JIT code");
     assert!(
@@ -52,7 +62,6 @@ fn produce_disasm_returns_nonempty_for_jit_compiled_fn() {
         "produce_disasm must return non-empty disassembly text for a live fn"
     );
 }
-
 
 // spec: design/arch/facades/backend.md — `capture_clif` flag (FIXME 0325)
 //
@@ -73,7 +82,11 @@ fn capture_clif_gates_clif_ir_text() {
             docstring: None,
             variants: vec![DefnVariant {
                 params: vec![],
-                body: Expr::IntLit { value: 42, span: Span::new(0, 2), inferred_type: None },
+                body: Expr::IntLit {
+                    value: 42,
+                    span: Span::new(0, 2),
+                    inferred_type: None,
+                },
                 span: Span::new(0, 10),
             }],
             visibility: Visibility::Public,

@@ -21,7 +21,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{run_through_all_modes, Cranelisp, PreludeVariant};
+use helpers::e2e::{Cranelisp, PreludeVariant, run_through_all_modes};
 use std::time::Duration;
 
 // =============================================================================
@@ -119,10 +119,7 @@ fn private_defn_not_importable_neg() {
 #[test]
 fn private_deftype_not_importable_neg() {
     let out = Cranelisp::new()
-        .file(
-            "main.cl",
-            "(import [util [Hidden]])\n(defn main [] 0)",
-        )
+        .file("main.cl", "(import [util [Hidden]])\n(defn main [] 0)")
         .file("util.cl", "(deftype- Hidden [:Int x])")
         .run("main.cl")
         .output();
@@ -208,10 +205,7 @@ fn module_cycle_detection_neg() {
     // say "cycle" (FIXME(/int) potentially — UX gap, not a spec violation),
     // so the test asserts only that the program is rejected.
     let out = Cranelisp::new()
-        .file(
-            "main.cl",
-            "(import [a [f]])\n(defn main [] (f))",
-        )
+        .file("main.cl", "(import [a [f]])\n(defn main [] (f))")
         .file("a.cl", "(import [b [g]])\n(defn f [] (g))")
         .file("b.cl", "(import [a [f]])\n(defn g [] (f))")
         .run("main.cl")
@@ -220,7 +214,8 @@ fn module_cycle_detection_neg() {
         !out.status.success(),
         "import cycles MUST be rejected at compile time (spec §8.10.2); \
          stdout={} stderr={}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
 }
 
@@ -260,7 +255,8 @@ fn mutual_import_cycle_rejected_before_wait_neg() {
         "2-node mutual import cycle (m ↔ n) MUST be rejected before any wait \
          (spec §8.10; design/int/s77-int-restructure.md §3.4); \
          stdout={} stderr={}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
 }
 
@@ -820,10 +816,7 @@ fn export_glob_reexport() {
              (import [main.shell.inner [*]])\n\
              (export [main.shell.inner [*]])",
         )
-        .file(
-            "main/shell/inner.cl",
-            "(defn a [] 10)\n(defn b [] 20)",
-        )
+        .file("main/shell/inner.cl", "(defn a [] 10)\n(defn b [] 20)")
         .run("main.cl")
         .output()
         .assert_exit(30);
@@ -854,10 +847,7 @@ fn export_transitive_reexport_chain() {
              (import [main.shell.mid.leaf [deep-val]])\n\
              (export [main.shell.mid.leaf [deep-val]])",
         )
-        .file(
-            "main/shell/mid/leaf.cl",
-            "(defn deep-val [] 77)",
-        )
+        .file("main/shell/mid/leaf.cl", "(defn deep-val [] 77)")
         .run("main.cl")
         .output()
         .assert_exit(77);
@@ -986,10 +976,7 @@ fn glob_import_private_not_accessible_via_qualified_ref_neg() {
              (import [main.util [*]])\n\
              (defn main [] (main.util/secret))",
         )
-        .file(
-            "main/util.cl",
-            "(defn helper [] 42)\n(defn- secret [] 99)",
-        )
+        .file("main/util.cl", "(defn helper [] 42)\n(defn- secret [] 99)")
         .run("main.cl")
         .output();
     assert!(
@@ -1267,7 +1254,10 @@ fn defn_before_import_resumes_correctly_after_dep_load() {
 #[test]
 fn entry_module_named_non_user_runs() {
     Cranelisp::new()
-        .file("sudoku.cl", "(import [primitives [Pure]])\n(defn main [] (Pure 7))")
+        .file(
+            "sudoku.cl",
+            "(import [primitives [Pure]])\n(defn main [] (Pure 7))",
+        )
         .run("sudoku.cl")
         .output()
         .assert_exit(7);
@@ -1402,7 +1392,8 @@ fn distinct_terminal_overlap_collides() {
         "two DISTINCT terminal `Bar` definitions imported under the same bare \
          name MUST collide (spec §8.6.5 — footgun protection; globs are peers, \
          no silent winner); compilation MUST fail. stdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
     let combined = format!("{}\n{}", out.stdout, out.stderr);
     assert!(
@@ -1503,8 +1494,7 @@ fn bare_primitive_types_bool_float_string_neg_unknown_without_import() {
 // §8.11.4 "primitives remain available" guarantee.
 #[test]
 fn fq_primitive_type_int_works_without_import() {
-    repl_no_prelude(":primitives/Int 42\n")
-        .assert_stdout_contains(":primitives/Int 42");
+    repl_no_prelude(":primitives/Int 42\n").assert_stdout_contains(":primitives/Int 42");
 }
 
 // spec: spec/08-modules.md §8.9.1 — negative-coverage on the FQ path: it MUST
@@ -1544,8 +1534,7 @@ fn bare_primitive_fn_add_i64_neg_unknown_name_without_import() {
 // `primitives/add-i64` MUST work with no import / no prelude.
 #[test]
 fn fq_primitive_fn_add_i64_works_without_import() {
-    repl_no_prelude("(primitives/add-i64 1 2)\n")
-        .assert_stdout_contains(":primitives/Int 3");
+    repl_no_prelude("(primitives/add-i64 1 2)\n").assert_stdout_contains(":primitives/Int 3");
 }
 
 // =============================================================================
@@ -1630,7 +1619,8 @@ fn annotation_in_paren_is_application_of_annotated_element() {
 fn annotation_in_paren_unify_precedes_not_a_function() {
     let out = repl_with_prim_types("(:Float 42)\n");
     // The unify mismatch (Int vs Float) is reported …
-    let out = out.assert_stdout_contains("type mismatch: expected primitives/Int, got primitives/Float");
+    let out =
+        out.assert_stdout_contains("type mismatch: expected primitives/Int, got primitives/Float");
     // … and the not-a-function `(Fn …)` mismatch is NOT the reported error.
     out.assert_stdout_does_not_contain("got (Fn");
 }
@@ -2334,8 +2324,8 @@ fn combined(out: &helpers::e2e::CrOutput) -> String {
 /// `codegen error … codegen failed for / … codegen error` shape. A conforming
 /// resolution-layer diagnostic NEVER produces this. Shared across AL/FQ rows.
 fn assert_no_doubly_wrapped_codegen_leak(text: &str) {
-    let leak = text.contains("codegen failed for /")
-        || (text.matches("codegen error").count() >= 2);
+    let leak =
+        text.contains("codegen failed for /") || (text.matches("codegen error").count() >= 2);
     assert!(
         !leak,
         "output leaks a doubly-wrapped codegen-layer error (FQ-D3 §8.5.4 edge 3 \
@@ -2568,7 +2558,10 @@ fn fq_ref_member_absent_error_identical_when_preloaded_neg() {
         .run("main.cl")
         .output();
     let text = combined(&out);
-    assert!(!out.status.success(), "member-absent MUST error even when preloaded; {text}");
+    assert!(
+        !out.status.success(),
+        "member-absent MUST error even when preloaded; {text}"
+    );
     assert!(
         text.contains("mathx") && text.contains("absent"),
         "preloaded leg MUST give the SAME member-absent error naming both \
@@ -2595,7 +2588,10 @@ fn fq_ref_dep_compile_error_chained_diagnostic() {
         .run("main.cl")
         .output();
     let text = combined(&out);
-    assert!(!out.status.success(), "a failing dep MUST fail the reference; {text}");
+    assert!(
+        !out.status.success(),
+        "a failing dep MUST fail the reference; {text}"
+    );
     assert!(
         text.contains("broken"),
         "the chained diagnostic MUST name the failed module 'broken'; {text}"
@@ -2630,8 +2626,14 @@ fn fq_ref_dep_compile_error_repl_survives_to_next_prompt_neg() {
 #[test]
 fn fq_ref_cycle_reports_circular_dependency_path() {
     let out = Cranelisp::new()
-        .file("a.cl", "(import [primitives [Int]])\n(defn x [] :Int (b/y))\n")
-        .file("b.cl", "(import [primitives [Int]])\n(defn y [] :Int (a/x))\n")
+        .file(
+            "a.cl",
+            "(import [primitives [Int]])\n(defn x [] :Int (b/y))\n",
+        )
+        .file(
+            "b.cl",
+            "(import [primitives [Int]])\n(defn y [] :Int (a/x))\n",
+        )
         .file(
             "main.cl",
             "(import [primitives [Pure]])\n(defn main [] (Pure (a/x)))\n",
@@ -2662,7 +2664,10 @@ fn fq_ref_mixed_cycle_import_plus_fq_reports_cycle() {
             "a.cl",
             "(import [primitives [Int]])\n(import [b [y]])\n(defn x [] :Int (y))\n",
         )
-        .file("b.cl", "(import [primitives [Int]])\n(defn y [] :Int (a/x))\n")
+        .file(
+            "b.cl",
+            "(import [primitives [Int]])\n(defn y [] :Int (a/x))\n",
+        )
         .file(
             "main.cl",
             "(import [primitives [Pure]])\n(import [a [x]])\n(defn main [] (Pure (x)))\n",
@@ -2839,7 +2844,10 @@ fn fq_ref_chain_depth_three_resumes() {
 #[test]
 fn fq_ref_diamond_loads_once_both_resume() {
     Cranelisp::new()
-        .file("cc.cl", "(import [primitives [Int]])\n(defn base [] :Int 5)\n")
+        .file(
+            "cc.cl",
+            "(import [primitives [Int]])\n(defn base [] :Int 5)\n",
+        )
         .file(
             "aa.cl",
             "(import [primitives [Int add-i64]])\n(defn va [] :Int (add-i64 (cc/base) 1))\n",
@@ -3180,7 +3188,10 @@ fn mod_dash_child_file_pattern_loads() {
              (mod- test)\n\
              (defn main [] (Pure (main.test/answer)))\n",
         )
-        .file("main/test.cl", "(import [primitives [Int]])\n(defn answer [] :Int 42)\n")
+        .file(
+            "main/test.cl",
+            "(import [primitives [Int]])\n(defn answer [] :Int 42)\n",
+        )
         .run("main.cl")
         .output()
         .assert_exit(42);
@@ -3373,8 +3384,7 @@ fn failed_autoload_retry_does_not_claim_no_member_neg() {
 
 /// The generic-fn module: `gcount`/`gother` stay polymorphic (param inferred as
 /// `(Vec _)`), so a value-position reference must be monomorphised check-side.
-const I2_MATHX: &str =
-    "(import [primitives [Int Vec vec-len]])\n\
+const I2_MATHX: &str = "(import [primitives [Int Vec vec-len]])\n\
      (defn gcount [xs] :Int (vec-len xs))\n\
      (defn gother [xs] :Int 0)\n";
 

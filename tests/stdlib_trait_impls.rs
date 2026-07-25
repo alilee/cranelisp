@@ -279,7 +279,8 @@ trait CrOutputExt {
 }
 impl CrOutputExt for helpers::e2e::CrOutput {
     fn assert_stderr_does_not_contain_runtime_archive(self) -> Self {
-        if self.stderr.contains("cranelisp-runtime") || self.stderr.contains("libcranelisp_runtime") {
+        if self.stderr.contains("cranelisp-runtime") || self.stderr.contains("libcranelisp_runtime")
+        {
             panic!(
                 "post-FIXME-0150 Phase 5: --link MUST NOT reference cranelisp-runtime archive; \
                  got stderr:\n{}",

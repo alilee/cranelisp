@@ -96,9 +96,7 @@ fn linker_resolves_arm64_got_load_relocations() {
     // our import symbol — otherwise the test would not exercise the new
     // code path.
     {
-        use ::object::{
-            Object, ObjectSection, ObjectSymbol, RelocationFlags, RelocationTarget,
-        };
+        use ::object::{Object, ObjectSection, ObjectSymbol, RelocationFlags, RelocationTarget};
         let parsed = ::object::File::parse(&*bytes).unwrap();
         let text = parsed
             .section_by_name("__text")

@@ -237,7 +237,10 @@ pub(crate) fn run_io_trampoline_inner_async<'a, 'h: 'a>(
                     let val = unsafe { read_node_field(current, FIELD_0_OFFSET) };
                     io_observer::emit(
                         IoEventTag::PureStep,
-                        &IoEvent::PureStep { value: val, is_fresh: current_is_fresh },
+                        &IoEvent::PureStep {
+                            value: val,
+                            is_fresh: current_is_fresh,
+                        },
                     );
                     val
                 }
@@ -254,9 +257,7 @@ pub(crate) fn run_io_trampoline_inner_async<'a, 'h: 'a>(
                 // live `(token, capacity)`, acquires the permit, and hands it to
                 // the `EffectPoll` (which owns it across the arc), so it needs the
                 // full `ReactorEnv` (pool + host), not just `env.host`.
-                t if t == IO_TAG_EFFECT_POLL => {
-                    await_poll_node(current, env, strand).await
-                }
+                t if t == IO_TAG_EFFECT_POLL => await_poll_node(current, env, strand).await,
                 t if t == IO_TAG_BIND => {
                     let inner = unsafe { read_node_field(current, FIELD_0_OFFSET) };
                     let cont = unsafe { read_node_field(current, FIELD_1_OFFSET) };
@@ -376,8 +377,9 @@ async fn await_poll_node(
     // pointer out of a heap closure and transmute to its known ABI" pattern as
     // `call_continuation` (which transmutes the continuation's `code_ptr` to
     // `extern "C" fn(i64,i64) -> i64`).
-    let poll_fn: cranelisp_platform::PollFn =
-        unsafe { std::mem::transmute::<*const (), cranelisp_platform::PollFn>(poll_fn_ptr as *const ()) };
+    let poll_fn: cranelisp_platform::PollFn = unsafe {
+        std::mem::transmute::<*const (), cranelisp_platform::PollFn>(poll_fn_ptr as *const ())
+    };
     // The state env base is `closure + 32` (past header + code_ptr + drop_glue);
     // the reserved result slot is its first i64 (env offset 0). (Named
     // `state_env` to not shadow the `env: &ReactorEnv` admission handle above.)
@@ -653,7 +655,9 @@ async fn run_par_node_async(parent_ptr: i64, env: &crate::reactor::ReactorEnv<'_
     let results_buf = alloc_with_rc(8 + count * 8) as i64; // payload: padding(8) + N*8
     for (i, &val) in merged.iter().enumerate() {
         // SAFETY: `results_buf` was just allocated with `count` field slots.
-        unsafe { crate::heap_access::write_i64(results_buf, FIELD_0_OFFSET + (i as isize) * 8, val) };
+        unsafe {
+            crate::heap_access::write_i64(results_buf, FIELD_0_OFFSET + (i as isize) * 8, val)
+        };
     }
     results_buf
 }
@@ -858,7 +862,9 @@ fn feed_continuation(
             let new_io = call_continuation(cont_ptr, value, cont_is_fresh);
             io_observer::emit(
                 IoEventTag::BindExit,
-                &IoEvent::BindExit { new_current: new_io },
+                &IoEvent::BindExit {
+                    new_current: new_io,
+                },
             );
             Step::Advance(new_io)
         }
@@ -962,7 +968,9 @@ fn run_par_node(parent_ptr: i64) -> i64 {
     let results_buf = alloc_with_rc(8 + count * 8) as i64; // payload: padding(8) + N*8
     for (i, &val) in results.iter().enumerate() {
         // SAFETY: `results_buf` was just allocated with `count` field slots.
-        unsafe { crate::heap_access::write_i64(results_buf, FIELD_0_OFFSET + (i as isize) * 8, val) };
+        unsafe {
+            crate::heap_access::write_i64(results_buf, FIELD_0_OFFSET + (i as isize) * 8, val)
+        };
     }
     results_buf
 }
@@ -987,7 +995,10 @@ fn run_io_trampoline_inner(io_ptr: i64) -> i64 {
                 let val = unsafe { read_node_field(current, FIELD_0_OFFSET) };
                 io_observer::emit(
                     IoEventTag::PureStep,
-                    &IoEvent::PureStep { value: val, is_fresh: current_is_fresh },
+                    &IoEvent::PureStep {
+                        value: val,
+                        is_fresh: current_is_fresh,
+                    },
                 );
                 val
             }
@@ -1248,7 +1259,10 @@ fn dispatch_par_branches_with_trace(branch_ptrs: &[i64], parent_ptr: i64) -> Vec
                 // Worker-side: capture and clear this thread's slot so it does
                 // not pollute later rayon work on the same thread.
                 let err = crate::panic::take_runtime_error();
-                ItemResult { positioned: vec![(idx, result)], error: err }
+                ItemResult {
+                    positioned: vec![(idx, result)],
+                    error: err,
+                }
             }
             WorkItem::SerialGroup(entries) => {
                 let mut positioned = Vec::with_capacity(entries.len());

@@ -3,11 +3,9 @@
 // `repl.rs` per `design/int/repl-decomposition.md` §1.1 (S110, FIXME 0606).
 // Pure relocation, behaviour-invariant.
 
-
-use super::*;
-use super::format::*;
 use super::commands::*;
-
+use super::format::*;
+use super::*;
 
 /// Bounded wait for the importable-symbol burn-down to drain before a
 /// `/search` serves results (§25.5 — small projects index promptly; a large
@@ -143,7 +141,8 @@ impl CompilerSession {
     /// note text has ONE source of truth (both the empty-result and the
     /// partial-result-append paths derive from it).
     fn indexing_note_text(pending: usize) -> Option<String> {
-        (pending > 0).then(|| format!("; indexing {pending} module(s)… (results may be incomplete)"))
+        (pending > 0)
+            .then(|| format!("; indexing {pending} module(s)… (results may be incomplete)"))
     }
 
     /// Message for an EMPTY `/search` result (spec §17.19.3, tightened S108).
@@ -244,7 +243,10 @@ impl CompilerSession {
                 .iter()
                 .any(|r| r.hit.name == hit.name && r.hit.module == hit.module)
         {
-            rows.push(SearchRow { hit, in_scope: true });
+            rows.push(SearchRow {
+                hit,
+                in_scope: true,
+            });
         }
 
         // Dedup identical (name, module) rows (a symbol may match on more than one
@@ -260,13 +262,10 @@ impl CompilerSession {
         // first), alphabetical (module, name) tie-break within a tier for
         // deterministic output (§17.19.5).
         rows.sort_by(|a, b| {
-            a.hit
-                .tier
-                .cmp(&b.hit.tier)
-                .then((a.hit.module.as_ref(), a.hit.name.as_ref()).cmp(&(
-                    b.hit.module.as_ref(),
-                    b.hit.name.as_ref(),
-                )))
+            a.hit.tier.cmp(&b.hit.tier).then(
+                (a.hit.module.as_ref(), a.hit.name.as_ref())
+                    .cmp(&(b.hit.module.as_ref(), b.hit.name.as_ref())),
+            )
         });
 
         // Progress note when the burn-down is still in flight (spec §17.19.3).
@@ -342,7 +341,13 @@ impl CompilerSession {
         use crate::session_v4::index_worker::{MatchTier, SearchHit};
         let (entry, module) = self.lookup_with_prelude_fallback(query)?;
         let (resolved, origin) = self.resolve_entry_for_display(&entry, &module);
-        if let ModuleEntry::Def { scheme, docstring, kind, .. } = resolved {
+        if let ModuleEntry::Def {
+            scheme,
+            docstring,
+            kind,
+            ..
+        } = resolved
+        {
             Some(SearchHit {
                 name: Symbol::from(query),
                 module: origin,
@@ -394,8 +399,10 @@ impl CompilerSession {
         }
         let expr = cranelisp_frontend::parse_type_expr(query).ok()?;
         let module = self.current_module_path();
-        let mut ctx =
-            cranelisp_typecheck::SymbolTableAccess::live(&self.shared.symbol_tables, module.clone());
+        let mut ctx = cranelisp_typecheck::SymbolTableAccess::live(
+            &self.shared.symbol_tables,
+            module.clone(),
+        );
         let ty = cranelisp_typecheck::check_type_expr(
             &expr,
             &mut ctx,
@@ -496,12 +503,8 @@ impl CompilerSession {
     }
 }
 
-
 #[cfg(test)]
 mod search_message_selection_tests {
-    
-    
-    
 
     use super::CompilerSession;
 
@@ -554,7 +557,10 @@ mod search_message_selection_tests {
     // partial-append paths derive from).
     #[test]
     fn indexing_note_text_present_iff_pending() {
-        assert!(CompilerSession::indexing_note_text(0).is_none(), "complete → no note");
+        assert!(
+            CompilerSession::indexing_note_text(0).is_none(),
+            "complete → no note"
+        );
         assert_eq!(
             CompilerSession::indexing_note_text(2).as_deref(),
             Some("; indexing 2 module(s)… (results may be incomplete)"),
@@ -566,10 +572,6 @@ mod search_message_selection_tests {
 #[cfg(test)]
 mod search_excerpt_tests {
     use super::*;
-    
-    
-
-    
 
     // spec: repl/spec.md §17.19.2 facet 5 — the docstring excerpt is produced
     // around the matched substring, elided with `…` when the docstring extends
@@ -582,8 +584,14 @@ mod search_excerpt_tests {
                    greatest common divisor of two integers, and then keeps going far past the \
                    right edge of the window too";
         let ex = docstring_excerpt(doc, "greatest common").expect("query is present");
-        assert!(ex.contains("greatest common"), "excerpt shows the match: {ex:?}");
-        assert!(ex.starts_with("… ") && ex.ends_with(" …"), "elided both ends: {ex:?}");
+        assert!(
+            ex.contains("greatest common"),
+            "excerpt shows the match: {ex:?}"
+        );
+        assert!(
+            ex.starts_with("… ") && ex.ends_with(" …"),
+            "elided both ends: {ex:?}"
+        );
     }
 
     // spec: repl/spec.md §17.19.2 facet 5 — a query absent from the docstring
@@ -611,22 +619,20 @@ mod search_excerpt_tests {
         // it must still land on a valid original boundary.
         let doc2 = "straße number is the key detail here in the docs";
         let ex2 = docstring_excerpt(doc2, "NUMBER").expect("case-insensitive match");
-        assert!(ex2.contains("number"), "excerpt contains the match: {ex2:?}");
+        assert!(
+            ex2.contains("number"),
+            "excerpt contains the match: {ex2:?}"
+        );
     }
 }
 
 #[cfg(test)]
 mod fq_arg_search_tests {
     use super::*;
-    
-    
+
     use crate::repl::test_support::*;
-    
-    use cranelisp_types::{
-        ModuleFullPath,
-        Symbol, Visibility,
-    };
-    
+
+    use cranelisp_types::{ModuleFullPath, Symbol, Visibility};
 
     // §8.8.1 at the `/search` synthesis seam: `exact_in_scope_hit` synthesizes an
     // in-scope result row for an exact query that resolves bare but is absent from
@@ -660,8 +666,7 @@ mod fq_arg_search_tests {
 #[cfg(test)]
 mod styling_search_row_tests {
     use super::*;
-    
-    
+
     use crate::style::test_support::ColorGuard;
 
     // K7 — a `/search` row: the `:Type` sig is R4 cyan, the name R15, the `in

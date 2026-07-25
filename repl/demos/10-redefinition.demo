@@ -102,9 +102,11 @@ invoice
 
 ; The truthfulness payoff: introspection lists ONE impl of Sizeable for Box, not
 ; one entry per impl form typed. The session reports what dispatches today, not
-; the history of how it got there:
+; the history of how it got there. The trait-side and type-side questions are
+; inverse views of that same live pair:
 
 /info Sizeable
+/info Box
 
 ; A re-impl REPLACES — it is the whole implementation, not a patch. Omit a
 ; required method and it is rejected at the conformance seam, named:

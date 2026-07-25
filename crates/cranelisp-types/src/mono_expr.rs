@@ -496,7 +496,9 @@ impl MonoExpr {
         // illegal as a `Var`-typed one). The erased `Annotate` node is the one
         // node that reads no `ty` of its own.
         match expr {
-            Expr::Annotate { expr: inner, .. } => MonoExpr::from_expr(inner, pattern_ctors, var_refs, apply_refs),
+            Expr::Annotate { expr: inner, .. } => {
+                MonoExpr::from_expr(inner, pattern_ctors, var_refs, apply_refs)
+            }
 
             Expr::IntLit { value, span, .. } => Ok(MonoExpr::IntLit {
                 value: *value,
@@ -521,13 +523,20 @@ impl MonoExpr {
                 confined: None,
                 unique_static: None,
             }),
-            Expr::Var { name, span, resolved_call, .. } => {
+            Expr::Var {
+                name,
+                span,
+                resolved_call,
+                ..
+            } => {
                 // Verdict BEFORE type: an unresolved reference must surface as
                 // the located `Unresolved` gate error, never leak to the
                 // caller's `NotConcrete` lenient fallback.
-                let resolution = var_verdict(name, *span, var_refs).ok_or(
-                    ViewBuildError::Unresolved { span: *span, name: name.clone() },
-                )?;
+                let resolution =
+                    var_verdict(name, *span, var_refs).ok_or(ViewBuildError::Unresolved {
+                        span: *span,
+                        name: name.clone(),
+                    })?;
                 Ok(MonoExpr::Var {
                     name: name.clone(),
                     span: *span,
@@ -536,41 +545,97 @@ impl MonoExpr {
                     ty: node_ty(expr)?,
                 })
             }
-            Expr::Let { bindings, body, span, .. } => Ok(MonoExpr::Let {
+            Expr::Let {
+                bindings,
+                body,
+                span,
+                ..
+            } => Ok(MonoExpr::Let {
                 bindings: bindings
                     .iter()
-                    .map(|(n, e)| Ok((n.clone(), MonoExpr::from_expr(e, pattern_ctors, var_refs, apply_refs)?)))
+                    .map(|(n, e)| {
+                        Ok((
+                            n.clone(),
+                            MonoExpr::from_expr(e, pattern_ctors, var_refs, apply_refs)?,
+                        ))
+                    })
                     .collect::<Result<_, ViewBuildError>>()?,
-                body: Box::new(MonoExpr::from_expr(body, pattern_ctors, var_refs, apply_refs)?),
+                body: Box::new(MonoExpr::from_expr(
+                    body,
+                    pattern_ctors,
+                    var_refs,
+                    apply_refs,
+                )?),
                 span: *span,
                 ty: node_ty(expr)?,
             }),
-            Expr::If { cond, then_branch, else_branch, span, .. } => Ok(MonoExpr::If {
-                cond: Box::new(MonoExpr::from_expr(cond, pattern_ctors, var_refs, apply_refs)?),
-                then_branch: Box::new(MonoExpr::from_expr(then_branch, pattern_ctors, var_refs, apply_refs)?),
-                else_branch: Box::new(MonoExpr::from_expr(else_branch, pattern_ctors, var_refs, apply_refs)?),
+            Expr::If {
+                cond,
+                then_branch,
+                else_branch,
+                span,
+                ..
+            } => Ok(MonoExpr::If {
+                cond: Box::new(MonoExpr::from_expr(
+                    cond,
+                    pattern_ctors,
+                    var_refs,
+                    apply_refs,
+                )?),
+                then_branch: Box::new(MonoExpr::from_expr(
+                    then_branch,
+                    pattern_ctors,
+                    var_refs,
+                    apply_refs,
+                )?),
+                else_branch: Box::new(MonoExpr::from_expr(
+                    else_branch,
+                    pattern_ctors,
+                    var_refs,
+                    apply_refs,
+                )?),
                 span: *span,
                 ty: node_ty(expr)?,
             }),
-            Expr::Lambda { params, body, span, .. } => Ok(MonoExpr::Lambda {
+            Expr::Lambda {
+                params, body, span, ..
+            } => Ok(MonoExpr::Lambda {
                 // Param `TypeExpr` annotations are erased — the concrete param
                 // types live in the lambda's `ty` (`ConcreteType::Fn`).
                 params: params.iter().map(|(n, _)| n.clone()).collect(),
-                body: Box::new(MonoExpr::from_expr(body, pattern_ctors, var_refs, apply_refs)?),
+                body: Box::new(MonoExpr::from_expr(
+                    body,
+                    pattern_ctors,
+                    var_refs,
+                    apply_refs,
+                )?),
                 span: *span,
                 ty: node_ty(expr)?,
                 escapes: None,
                 confined: None,
                 unique_static: None,
             }),
-            Expr::Apply { callee, args, span, resolved_call, .. } => {
+            Expr::Apply {
+                callee,
+                args,
+                span,
+                resolved_call,
+                ..
+            } => {
                 // Verdict BEFORE walking children/type — same gate-first rule
                 // as the `Var` arm; the error names the callee head.
-                let dispatch = apply_verdict(*span, apply_refs).ok_or_else(|| {
-                    ViewBuildError::Unresolved { span: *span, name: apply_head_name(callee) }
-                })?;
+                let dispatch =
+                    apply_verdict(*span, apply_refs).ok_or_else(|| ViewBuildError::Unresolved {
+                        span: *span,
+                        name: apply_head_name(callee),
+                    })?;
                 Ok(MonoExpr::Apply {
-                    callee: Box::new(MonoExpr::from_expr(callee, pattern_ctors, var_refs, apply_refs)?),
+                    callee: Box::new(MonoExpr::from_expr(
+                        callee,
+                        pattern_ctors,
+                        var_refs,
+                        apply_refs,
+                    )?),
                     args: args
                         .iter()
                         .map(|e| MonoExpr::from_expr(e, pattern_ctors, var_refs, apply_refs))
@@ -585,8 +650,19 @@ impl MonoExpr {
                     provenance: None,
                 })
             }
-            Expr::Match { scrutinee, arms, span, compiler_generated, .. } => Ok(MonoExpr::Match {
-                scrutinee: Box::new(MonoExpr::from_expr(scrutinee, pattern_ctors, var_refs, apply_refs)?),
+            Expr::Match {
+                scrutinee,
+                arms,
+                span,
+                compiler_generated,
+                ..
+            } => Ok(MonoExpr::Match {
+                scrutinee: Box::new(MonoExpr::from_expr(
+                    scrutinee,
+                    pattern_ctors,
+                    var_refs,
+                    apply_refs,
+                )?),
                 arms: arms
                     .iter()
                     .map(|arm| {
@@ -603,7 +679,12 @@ impl MonoExpr {
                         };
                         Ok(MonoMatchArm {
                             pattern: arm.pattern.clone(),
-                            body: MonoExpr::from_expr(&arm.body, pattern_ctors, var_refs, apply_refs)?,
+                            body: MonoExpr::from_expr(
+                                &arm.body,
+                                pattern_ctors,
+                                var_refs,
+                                apply_refs,
+                            )?,
                             span: arm.span,
                             provenance: None,
                             resolved_ctor,
@@ -625,30 +706,74 @@ impl MonoExpr {
                 confined: None,
                 unique_static: None,
             }),
-            Expr::Trace { modules, body, span, .. } => Ok(MonoExpr::Trace {
+            Expr::Trace {
+                modules,
+                body,
+                span,
+                ..
+            } => Ok(MonoExpr::Trace {
                 modules: modules.clone(),
-                body: Box::new(MonoExpr::from_expr(body, pattern_ctors, var_refs, apply_refs)?),
+                body: Box::new(MonoExpr::from_expr(
+                    body,
+                    pattern_ctors,
+                    var_refs,
+                    apply_refs,
+                )?),
                 span: *span,
                 ty: node_ty(expr)?,
             }),
-            Expr::ParBind { bindings, body, span, .. } => Ok(MonoExpr::ParBind {
+            Expr::ParBind {
+                bindings,
+                body,
+                span,
+                ..
+            } => Ok(MonoExpr::ParBind {
                 bindings: bindings
                     .iter()
-                    .map(|(n, e)| Ok((n.clone(), MonoExpr::from_expr(e, pattern_ctors, var_refs, apply_refs)?)))
+                    .map(|(n, e)| {
+                        Ok((
+                            n.clone(),
+                            MonoExpr::from_expr(e, pattern_ctors, var_refs, apply_refs)?,
+                        ))
+                    })
                     .collect::<Result<_, ViewBuildError>>()?,
-                body: Box::new(MonoExpr::from_expr(body, pattern_ctors, var_refs, apply_refs)?),
+                body: Box::new(MonoExpr::from_expr(
+                    body,
+                    pattern_ctors,
+                    var_refs,
+                    apply_refs,
+                )?),
                 span: *span,
                 ty: node_ty(expr)?,
             }),
-            Expr::LaunchContinue { launched, continuation, span, .. } => {
-                Ok(MonoExpr::LaunchContinue {
-                    launched: Box::new(MonoExpr::from_expr(launched, pattern_ctors, var_refs, apply_refs)?),
-                    continuation: Box::new(MonoExpr::from_expr(continuation, pattern_ctors, var_refs, apply_refs)?),
-                    span: *span,
-                    ty: node_ty(expr)?,
-                })
-            }
-            Expr::ConstrADT { type_name, tag, fields, span, .. } => Ok(MonoExpr::ConstrADT {
+            Expr::LaunchContinue {
+                launched,
+                continuation,
+                span,
+                ..
+            } => Ok(MonoExpr::LaunchContinue {
+                launched: Box::new(MonoExpr::from_expr(
+                    launched,
+                    pattern_ctors,
+                    var_refs,
+                    apply_refs,
+                )?),
+                continuation: Box::new(MonoExpr::from_expr(
+                    continuation,
+                    pattern_ctors,
+                    var_refs,
+                    apply_refs,
+                )?),
+                span: *span,
+                ty: node_ty(expr)?,
+            }),
+            Expr::ConstrADT {
+                type_name,
+                tag,
+                fields,
+                span,
+                ..
+            } => Ok(MonoExpr::ConstrADT {
                 type_name: type_name.clone(),
                 tag: *tag,
                 fields: fields
@@ -715,11 +840,35 @@ impl MonoExpr {
 
         match expr {
             Expr::Annotate { expr: inner, .. } => rec(inner),
-            Expr::IntLit { value, span, .. } => MonoExpr::IntLit { value: *value, span: *span, ty: node_ty(expr) },
-            Expr::FloatLit { value, span, .. } => MonoExpr::FloatLit { value: *value, span: *span, ty: node_ty(expr) },
-            Expr::BoolLit { value, span, .. } => MonoExpr::BoolLit { value: *value, span: *span, ty: node_ty(expr) },
-            Expr::StringLit { value, span, .. } => MonoExpr::StringLit { value: value.clone(), span: *span, ty: node_ty(expr), confined: None, escapes: None, unique_static: None },
-            Expr::Var { name, span, resolved_call, .. } => MonoExpr::Var {
+            Expr::IntLit { value, span, .. } => MonoExpr::IntLit {
+                value: *value,
+                span: *span,
+                ty: node_ty(expr),
+            },
+            Expr::FloatLit { value, span, .. } => MonoExpr::FloatLit {
+                value: *value,
+                span: *span,
+                ty: node_ty(expr),
+            },
+            Expr::BoolLit { value, span, .. } => MonoExpr::BoolLit {
+                value: *value,
+                span: *span,
+                ty: node_ty(expr),
+            },
+            Expr::StringLit { value, span, .. } => MonoExpr::StringLit {
+                value: value.clone(),
+                span: *span,
+                ty: node_ty(expr),
+                confined: None,
+                escapes: None,
+                unique_static: None,
+            },
+            Expr::Var {
+                name,
+                span,
+                resolved_call,
+                ..
+            } => MonoExpr::Var {
                 name: name.clone(),
                 span: *span,
                 resolved_call: resolved_call.clone(),
@@ -735,20 +884,33 @@ impl MonoExpr {
                 }),
                 ty: node_ty(expr),
             },
-            Expr::Let { bindings, body, span, .. } => MonoExpr::Let {
+            Expr::Let {
+                bindings,
+                body,
+                span,
+                ..
+            } => MonoExpr::Let {
                 bindings: bindings.iter().map(|(n, e)| (n.clone(), rec(e))).collect(),
                 body: Box::new(rec(body)),
                 span: *span,
                 ty: node_ty(expr),
             },
-            Expr::If { cond, then_branch, else_branch, span, .. } => MonoExpr::If {
+            Expr::If {
+                cond,
+                then_branch,
+                else_branch,
+                span,
+                ..
+            } => MonoExpr::If {
                 cond: Box::new(rec(cond)),
                 then_branch: Box::new(rec(then_branch)),
                 else_branch: Box::new(rec(else_branch)),
                 span: *span,
                 ty: node_ty(expr),
             },
-            Expr::Lambda { params, body, span, .. } => MonoExpr::Lambda {
+            Expr::Lambda {
+                params, body, span, ..
+            } => MonoExpr::Lambda {
                 params: params.iter().map(|(n, _)| n.clone()).collect(),
                 body: Box::new(rec(body)),
                 span: *span,
@@ -757,7 +919,13 @@ impl MonoExpr {
                 escapes: None,
                 unique_static: None,
             },
-            Expr::Apply { callee, args, span, resolved_call, .. } => MonoExpr::Apply {
+            Expr::Apply {
+                callee,
+                args,
+                span,
+                resolved_call,
+                ..
+            } => MonoExpr::Apply {
                 callee: Box::new(rec(callee)),
                 args: args.iter().map(&rec).collect(),
                 span: *span,
@@ -779,23 +947,32 @@ impl MonoExpr {
                 provenance: None,
                 unique_static: None,
             },
-            Expr::Match { scrutinee, arms, span, compiler_generated, .. } => MonoExpr::Match {
+            Expr::Match {
+                scrutinee,
+                arms,
+                span,
+                compiler_generated,
+                ..
+            } => MonoExpr::Match {
                 scrutinee: Box::new(rec(scrutinee)),
-                arms: arms.iter().map(|arm| {
-                    let resolved_ctor = match &arm.pattern {
-                        Pattern::Constructor { span: pat_span, .. } => {
-                            pattern_ctors.get(pat_span).cloned()
+                arms: arms
+                    .iter()
+                    .map(|arm| {
+                        let resolved_ctor = match &arm.pattern {
+                            Pattern::Constructor { span: pat_span, .. } => {
+                                pattern_ctors.get(pat_span).cloned()
+                            }
+                            _ => None,
+                        };
+                        MonoMatchArm {
+                            pattern: arm.pattern.clone(),
+                            body: rec(&arm.body),
+                            span: arm.span,
+                            provenance: None,
+                            resolved_ctor,
                         }
-                        _ => None,
-                    };
-                    MonoMatchArm {
-                        pattern: arm.pattern.clone(),
-                        body: rec(&arm.body),
-                        span: arm.span,
-                        provenance: None,
-                        resolved_ctor,
-                    }
-                }).collect(),
+                    })
+                    .collect(),
                 span: *span,
                 compiler_generated: *compiler_generated,
                 ty: node_ty(expr),
@@ -808,25 +985,46 @@ impl MonoExpr {
                 escapes: None,
                 unique_static: None,
             },
-            Expr::Trace { modules, body, span, .. } => MonoExpr::Trace {
+            Expr::Trace {
+                modules,
+                body,
+                span,
+                ..
+            } => MonoExpr::Trace {
                 modules: modules.clone(),
                 body: Box::new(rec(body)),
                 span: *span,
                 ty: node_ty(expr),
             },
-            Expr::ParBind { bindings, body, span, .. } => MonoExpr::ParBind {
+            Expr::ParBind {
+                bindings,
+                body,
+                span,
+                ..
+            } => MonoExpr::ParBind {
                 bindings: bindings.iter().map(|(n, e)| (n.clone(), rec(e))).collect(),
                 body: Box::new(rec(body)),
                 span: *span,
                 ty: node_ty(expr),
             },
-            Expr::LaunchContinue { launched, continuation, span, .. } => MonoExpr::LaunchContinue {
+            Expr::LaunchContinue {
+                launched,
+                continuation,
+                span,
+                ..
+            } => MonoExpr::LaunchContinue {
                 launched: Box::new(rec(launched)),
                 continuation: Box::new(rec(continuation)),
                 span: *span,
                 ty: node_ty(expr),
             },
-            Expr::ConstrADT { type_name, tag, fields, span, .. } => MonoExpr::ConstrADT {
+            Expr::ConstrADT {
+                type_name,
+                tag,
+                fields,
+                span,
+                ..
+            } => MonoExpr::ConstrADT {
                 type_name: type_name.clone(),
                 tag: *tag,
                 fields: fields.iter().map(&rec).collect(),
@@ -918,7 +1116,12 @@ fn assert_all_synthetic(m: &MonoExpr) {
             }
             assert_all_synthetic(body);
         }
-        MonoExpr::If { cond, then_branch, else_branch, .. } => {
+        MonoExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
             assert_all_synthetic(cond);
             assert_all_synthetic(then_branch);
             assert_all_synthetic(else_branch);
@@ -930,7 +1133,9 @@ fn assert_all_synthetic(m: &MonoExpr) {
                 assert_all_synthetic(a);
             }
         }
-        MonoExpr::Match { scrutinee, arms, .. } => {
+        MonoExpr::Match {
+            scrutinee, arms, ..
+        } => {
             assert_all_synthetic(scrutinee);
             for arm in arms {
                 assert_all_synthetic(&arm.body);
@@ -941,7 +1146,11 @@ fn assert_all_synthetic(m: &MonoExpr) {
                 assert_all_synthetic(e);
             }
         }
-        MonoExpr::LaunchContinue { launched, continuation, .. } => {
+        MonoExpr::LaunchContinue {
+            launched,
+            continuation,
+            ..
+        } => {
             assert_all_synthetic(launched);
             assert_all_synthetic(continuation);
         }
@@ -1055,7 +1264,12 @@ pub fn is_strict_type_concrete(expr: &Expr) -> bool {
                 && bindings.iter().all(|(_, e)| is_strict_type_concrete(e))
                 && is_strict_type_concrete(body)
         }
-        Expr::If { cond, then_branch, else_branch, .. } => {
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
             node_ty(expr).is_ok()
                 && is_strict_type_concrete(cond)
                 && is_strict_type_concrete(then_branch)
@@ -1069,7 +1283,9 @@ pub fn is_strict_type_concrete(expr: &Expr) -> bool {
                 && is_strict_type_concrete(callee)
                 && args.iter().all(is_strict_type_concrete)
         }
-        Expr::Match { scrutinee, arms, .. } => {
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
             node_ty(expr).is_ok()
                 && is_strict_type_concrete(scrutinee)
                 && arms.iter().all(|arm| is_strict_type_concrete(&arm.body))
@@ -1077,7 +1293,11 @@ pub fn is_strict_type_concrete(expr: &Expr) -> bool {
         Expr::VecLit { elements, .. } => {
             node_ty(expr).is_ok() && elements.iter().all(is_strict_type_concrete)
         }
-        Expr::LaunchContinue { launched, continuation, .. } => {
+        Expr::LaunchContinue {
+            launched,
+            continuation,
+            ..
+        } => {
             node_ty(expr).is_ok()
                 && is_strict_type_concrete(launched)
                 && is_strict_type_concrete(continuation)

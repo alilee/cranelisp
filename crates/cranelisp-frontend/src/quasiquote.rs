@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use cranelisp_types::{ErrorLocation, CranelispError, Sexp, Span};
+use cranelisp_types::{CranelispError, ErrorLocation, Sexp, Span};
 
 use crate::synth;
 
@@ -60,8 +60,7 @@ fn is_unquote(children: &[Sexp]) -> bool {
 }
 
 fn is_unquote_splicing(children: &[Sexp]) -> bool {
-    children.len() == 2
-        && matches!(&children[0], Sexp::Symbol(s, _) if s == "unquote-splicing")
+    children.len() == 2 && matches!(&children[0], Sexp::Symbol(s, _) if s == "unquote-splicing")
 }
 
 // ---------------------------------------------------------------------------
@@ -329,8 +328,8 @@ fn expand_qq_list(
         if is_unquote_splicing(children) {
             if depth == 0 {
                 return Err(CranelispError::ParseError {
-                    message:
-                        "unquote-splicing (~@) not valid at top level of quasiquote".to_string(),
+                    message: "unquote-splicing (~@) not valid at top level of quasiquote"
+                        .to_string(),
                     location: ErrorLocation::from_span(span),
                 });
             }

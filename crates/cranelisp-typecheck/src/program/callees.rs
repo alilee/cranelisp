@@ -21,7 +21,6 @@ fn extract_user_fn_ref_edges(
         .collect()
 }
 
-
 /// Group call graph edges by caller, sort + deduplicate, and write to `ModuleEntry`.
 ///
 /// Used by both `merge_form_result` (eager write so the scheduler can read callees
@@ -50,8 +49,7 @@ fn extract_user_fn_ref_edges(
 pub(crate) fn write_callees_to_module_entries<C, L>(
     sym_table: &mut SymbolTable<C, L>,
     edges: &[(Symbol, FQSymbol)],
-)
-where
+) where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
@@ -73,9 +71,7 @@ where
         // Per Submission 22: `ModuleEntry::Macro` retired. Macros are now
         // `ModuleEntry::Def` entries with `kind: DefKind::Macro { clauses_meta }`,
         // so the prior OR-pattern collapses to the single Def arm.
-        if let Some(ModuleEntry::Def { callees: c, .. }) =
-            sym_table.symbols.get_mut(&caller)
-        {
+        if let Some(ModuleEntry::Def { callees: c, .. }) = sym_table.symbols.get_mut(&caller) {
             *c = callees;
         }
     }
@@ -97,8 +93,6 @@ pub(crate) enum CheckPass {
     /// Only meaningful for Defn forms. Other form kinds return an empty result.
     CheckBody,
 }
-
-
 
 impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
     // =================================================================
@@ -127,7 +121,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         edges
     }
-
 
     /// The ONE shared callee-edge harvest, applied at EVERY body-check seam
     /// (FIXME 0472 — the `codegen_view` precedent: one helper, all seams).
@@ -159,12 +152,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         method_resolutions_delta: &HashMap<Span, ResolvedCall>,
         ufr_before: &HashSet<Span>,
     ) -> Vec<(Symbol, FQSymbol)> {
-        let mut edges =
-            self.extract_call_graph_edges(state, caller, method_resolutions_delta);
+        let mut edges = self.extract_call_graph_edges(state, caller, method_resolutions_delta);
         edges.extend(extract_user_fn_ref_edges(state, caller, ufr_before));
         edges
     }
-
 
     /// Derive the callee `FQSymbol` from a `ResolvedCall`, if it represents
     /// a user-defined dependency (not a builtin).
@@ -174,7 +165,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         current_module: &ModuleFullPath,
     ) -> Option<FQSymbol> {
         match resolved {
-            ResolvedCall::TraitMethod { mangled_name, impl_module, .. } => {
+            ResolvedCall::TraitMethod {
+                mangled_name,
+                impl_module,
+                ..
+            } => {
                 // S110 W0.1b (§1.1.1): the mangled method `Def` is STORED in the
                 // impl-WRITER's module, carried on the resolution as
                 // `impl_module` (read off the `TraitImpl` shell in
@@ -193,7 +188,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     symbol: Symbol::from(mangled_name.as_ref()),
                 })
             }
-            ResolvedCall::AutoCurry { trait_resolution, .. } => {
+            ResolvedCall::AutoCurry {
+                trait_resolution, ..
+            } => {
                 // If there's an inner trait resolution, derive the edge from it.
                 if let Some(inner) = trait_resolution {
                     self.resolved_call_to_fqsymbol(inner, current_module)
@@ -244,9 +241,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         resolved: &ResolvedCall,
     ) -> Option<FQSymbol> {
         match resolved {
-            ResolvedCall::BuiltinFn { name } => {
-                Some(self.builtin_storage_fq(state, name))
-            }
+            ResolvedCall::BuiltinFn { .. } => None,
             other => self.resolved_call_to_fqsymbol(other, &state.current_module),
         }
     }
@@ -280,51 +275,28 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         }
     }
 
-    /// Storage FQ of a `BuiltinFn` primitive name (`add-i64`, `sconcat`, …).
-    /// The primitives bootstrap keys entries by their jit name in the synthetic
-    /// `primitives` module (Decision 48); a qualified macro primitive
-    /// (`macros/sconcat`) lives in its own module. Resolve to the exact home
-    /// through the shared `def_resolved` point when the name is reachable in
-    /// scope, else default to `primitives` — the operator/primitive home the
-    /// design pins (§1.4). No second resolver: `def_resolved` is the same
-    /// chain-follow the carrier's Var-span leg uses.
-    ///
-    /// **Kind-gated (FIXME 0619 leg 1).** A JIT/builtin name is NOT a
-    /// source-level reference — resolving it through USER scope can CAPTURE a
-    /// same-named user fn: a prelude-suppressed module with a local
-    /// `(defn add-i64 …)` (legal — `add-i64` is not in scope, so §8.6.4 does not
-    /// fire) plus `(import [primitives [+]])` and `(+ 1 2)` short-circuits to
-    /// `BuiltinFn { add-i64 }` (the FIXME 0185 static table), but the backend
-    /// emits the PRIMITIVE. Grounding the builtin FQ at the user fn would
-    /// mis-dispatch at W1. So the scope probe is accepted ONLY when it terminates
-    /// at a PRIMITIVE-shaped `Def` (`Primitive`/`PrimitiveExtern` — mirroring
-    /// `resolve_primitive_jit_name`'s own kind gate); any other terminal falls
-    /// through to the `primitives` default.
-    ///
-    /// Records `r.storage_fq()` (the terminal storage key surfaced by the walk),
-    /// not `r.fq` — same value today for the unrenamed prelude re-export chains
-    /// this arm accepts, flipped for structural uniformity with the Var-span
-    /// leg per the carrier value-source rule (FIXME 0620, §1.1.2).
-    fn builtin_storage_fq(&self, state: &CheckState, name: &Symbol) -> FQSymbol {
-        self.def_resolved(state, name.as_ref(), Span::default())
-            .filter(|r| {
-                matches!(
-                    &r.entry,
-                    cranelisp_types::ModuleEntry::Def { kind, .. }
-                        if matches!(
-                            kind.as_ref(),
-                            cranelisp_types::DefKind::Primitive { .. }
-                                | cranelisp_types::DefKind::PrimitiveExtern
-                        )
-                )
-            })
-            .map(|r| r.storage_fq())
-            .unwrap_or_else(|| FQSymbol {
-                module: ModuleFullPath::from("primitives"),
-                symbol: name.clone(),
-            })
+    pub(crate) fn settle_dispatch(
+        &self,
+        state: &mut CheckState,
+        span: Span,
+        dispatch: crate::checker::PendingDispatch,
+    ) -> ResolvedCall {
+        match dispatch {
+            crate::checker::PendingDispatch::Builtin(builtin) => {
+                state.method_resolutions.apply_refs.insert(
+                    span,
+                    cranelisp_types::ApplyRef::Dispatch(builtin.storage_fq),
+                );
+                ResolvedCall::BuiltinFn {
+                    name: builtin.jit_name,
+                }
+            }
+            crate::checker::PendingDispatch::Resolved(resolution) => {
+                self.record_dispatch_target(state, span, &resolution);
+                resolution
+            }
+        }
     }
-
 }
 
 #[cfg(test)]

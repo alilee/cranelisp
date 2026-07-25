@@ -220,7 +220,11 @@ unsafe fn render_value(value: i64, desc: *const DisplayDescriptor) -> String {
     match kind {
         k if k == DescriptorKind::Int as i32 => format!("{value}"),
         k if k == DescriptorKind::Bool as i32 => {
-            if value != 0 { "true".to_string() } else { "false".to_string() }
+            if value != 0 {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            }
         }
         k if k == DescriptorKind::Float as i32 => {
             let f = f64::from_bits(value as u64);
@@ -254,22 +258,17 @@ unsafe fn render_vec(value: i64, desc: *const DisplayDescriptor) -> String {
     }
     let base = value as *const u8;
     // SAFETY: value is a heap HeapVec pointer (guarded above).
-    let len = unsafe {
-        *(base.add(crate::vec_runtime::LEN_OFFSET) as *const i64)
-    } as usize;
+    let len = unsafe { *(base.add(crate::vec_runtime::LEN_OFFSET) as *const i64) } as usize;
     if len == 0 {
         return "[]".to_string();
     }
-    let data_ptr = unsafe {
-        *(base.add(crate::vec_runtime::DATA_PTR_OFFSET) as *const *const i64)
-    };
+    let data_ptr = unsafe { *(base.add(crate::vec_runtime::DATA_PTR_OFFSET) as *const *const i64) };
     if data_ptr.is_null() {
         return "[]".to_string();
     }
     // Resolve the element child descriptor (self-relative from child0_off).
     let child0_field = unsafe { ptr::addr_of!((*desc).child0_off) };
-    let elem_desc: Option<*const DisplayDescriptor> =
-        unsafe { follow_self_rel(child0_field) };
+    let elem_desc: Option<*const DisplayDescriptor> = unsafe { follow_self_rel(child0_field) };
     let mut elems = Vec::with_capacity(len);
     for i in 0..len {
         let elem_val = unsafe { *data_ptr.add(i) };
@@ -358,12 +357,9 @@ unsafe fn render_adt(value: i64, desc: *const DisplayDescriptor) -> String {
         // field_offs[i] is a self-relative offset (from its own address) to the
         // field's child DisplayDescriptor.
         let off_field = unsafe { field_offs.add(i) };
-        let field_desc: Option<*const DisplayDescriptor> =
-            unsafe { follow_self_rel(off_field) };
+        let field_desc: Option<*const DisplayDescriptor> = unsafe { follow_self_rel(off_field) };
         // Field value at FIELD0_OFFSET + i*8 of the heap ADT.
-        let field_val = unsafe {
-            *((value as *const u8).add(FIELD0_OFFSET + i * 8) as *const i64)
-        };
+        let field_val = unsafe { *((value as *const u8).add(FIELD0_OFFSET + i * 8) as *const i64) };
         let s = match field_desc {
             Some(fd) => unsafe { render_value(field_val, fd) },
             None => format!("{field_val}"),

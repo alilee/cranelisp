@@ -329,11 +329,9 @@ impl std::fmt::Display for PlatformError {
                 found,
                 expected
             ),
-            PlatformError::DispatchError { fn_name, cause, .. } => write!(
-                f,
-                "platform fn `{}` dispatch failed: {}",
-                &**fn_name, cause
-            ),
+            PlatformError::DispatchError { fn_name, cause, .. } => {
+                write!(f, "platform fn `{}` dispatch failed: {}", &**fn_name, cause)
+            }
             PlatformError::LayoutHashMismatch {
                 dll,
                 platform,

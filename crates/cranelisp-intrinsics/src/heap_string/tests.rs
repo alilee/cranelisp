@@ -61,7 +61,9 @@ fn test_alloc_string_null_ptr() {
         // inner parens the leading `*` would bind to `s as *const u8` (a one-byte
         // read) and the trailing `as *const i64` would reinterpret that byte as a
         // pointer — a null-deref. See sibling tests for the same idiom.
-        let len = *(s as *const u8).add(HeapString::LEN_OFFSET as usize).cast::<i64>();
+        let len = *(s as *const u8)
+            .add(HeapString::LEN_OFFSET as usize)
+            .cast::<i64>();
         assert_eq!(len, 0);
         alloc::dealloc(s as *mut u8);
     }

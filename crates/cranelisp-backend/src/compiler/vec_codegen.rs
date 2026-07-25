@@ -11,14 +11,17 @@
 use cranelift::prelude::*;
 use cranelift_module::{Linkage, Module};
 
-use cranelisp_types::{ErrorLocation,
-    ConcreteType, CranelispError, HeapHeader, MonoExpr, Span, Symbol, Type,
+use cranelisp_types::{
+    ConcreteType, CranelispError, ErrorLocation, HeapHeader, MonoExpr, Span, Symbol, Type,
 };
 
-use crate::heap::{self, HeapAdt, HeapCategory, HeapVec, RcAtomicity, NULLARY_THRESHOLD_I64};
+use crate::heap::{self, HeapAdt, HeapCategory, HeapVec, NULLARY_THRESHOLD_I64, RcAtomicity};
 
 use super::control_flow::emit_extern_call_in_wrapper;
-use super::{collect_var_ids_from_type, signature_heap_category, substitute_type_inline, CtorMeta, FnCompiler};
+use super::{
+    CtorMeta, FnCompiler, collect_var_ids_from_type, signature_heap_category,
+    substitute_type_inline,
+};
 
 /// Bundled operands for [`emit_vec_set_cow_core`] (argument-count budget — the
 /// successor of the former `VecSetElem` bundle after the COW core was
@@ -118,7 +121,13 @@ fn release_consumed_source<M: Module>(
         elem_dec_fn_ptr,
     } = source_ownership
     {
-        emit_vec_rc_dec_with_drop(builder, module, vec_val, *vec_drop_func_id, *elem_dec_fn_ptr);
+        emit_vec_rc_dec_with_drop(
+            builder,
+            module,
+            vec_val,
+            *vec_drop_func_id,
+            *elem_dec_fn_ptr,
+        );
     }
 }
 
@@ -140,7 +149,12 @@ fn retain_reused_source<M: Module>(
     vec_val: Value,
     source_ownership: &SourceOwnership,
 ) {
-    if matches!(source_ownership, SourceOwnership::Borrowed { retain_reused: true }) {
+    if matches!(
+        source_ownership,
+        SourceOwnership::Borrowed {
+            retain_reused: true
+        }
+    ) {
         heap::emit_rc_inc(builder, module, vec_val);
     }
 }
@@ -241,7 +255,12 @@ pub(crate) fn cow_site_retain_verdict(
     analysis_off: bool,
 ) -> Option<bool> {
     let (source, escapes) = cow_site_source(node)?;
-    Some(cow_retains_reused_gate(source, escapes, return_cow_source, analysis_off))
+    Some(cow_retains_reused_gate(
+        source,
+        escapes,
+        return_cow_source,
+        analysis_off,
+    ))
 }
 
 /// **The ONE "is this node a COW-builtin site, and what is its source?"
@@ -264,7 +283,13 @@ pub(crate) fn cow_site_retain_verdict(
 /// upstream of the consolidated gate. Both now call this. Principle 24: the
 /// name is a trigger, the CARRIER is the identity.
 pub(crate) fn cow_site_source(node: &MonoExpr) -> Option<(&MonoExpr, Option<bool>)> {
-    let MonoExpr::Apply { resolved_call, args, escapes, .. } = node else {
+    let MonoExpr::Apply {
+        resolved_call,
+        args,
+        escapes,
+        ..
+    } = node
+    else {
         return None;
     };
     let Some(cranelisp_types::ResolvedCall::BuiltinFn { name }) = resolved_call.as_deref() else {
@@ -308,12 +333,13 @@ where
         elements: &[MonoExpr],
         span: Span,
     ) -> Result<Value, CranelispError> {
-        let vec_new_id = self.ctx.vec_new_func_id.ok_or_else(|| {
-            CranelispError::CodegenError {
+        let vec_new_id = self
+            .ctx
+            .vec_new_func_id
+            .ok_or_else(|| CranelispError::CodegenError {
                 message: "runtime/vec_new not declared (need declare_intrinsics)".into(),
                 location: ErrorLocation::from_span(span),
-            }
-        })?;
+            })?;
 
         let len = elements.len() as i64;
 
@@ -332,11 +358,7 @@ where
         let vec_ptr = self.builder.inst_results(call)[0];
 
         // Load data_ptr from the Vec struct.
-        let data_ptr = heap::heap_load(
-            &mut self.builder,
-            vec_ptr,
-            HeapVec::DATA_PTR_OFFSET,
-        ); // data_ptr: i64 (ptr-width)
+        let data_ptr = heap::heap_load(&mut self.builder, vec_ptr, HeapVec::DATA_PTR_OFFSET); // data_ptr: i64 (ptr-width)
 
         // Store each element into the data buffer at data_ptr + i * 8.
         //
@@ -388,27 +410,19 @@ where
         arg_vals: &[Value],
         span: Span,
     ) -> Result<Option<Value>, CranelispError> {
-
-
         match name {
             "vec-get" if args.len() == 2 => {
-                let result = self.compile_vec_get(
-                    &args[0], arg_vals[0], arg_vals[1], span,
-                )?;
+                let result = self.compile_vec_get(&args[0], arg_vals[0], arg_vals[1], span)?;
                 // Drop temporary Vec after read — it's consumed but not returned.
                 self.emit_vec_drop_if_temporary(&args[0], arg_vals[0], span)?;
                 Ok(Some(result))
             }
             "vec-set" if args.len() == 3 => {
-                let result = self.compile_vec_set(
-                    &args[0], &args[2], arg_vals, span,
-                )?;
+                let result = self.compile_vec_set(&args[0], &args[2], arg_vals, span)?;
                 Ok(Some(result))
             }
             "vec-push" if args.len() == 2 => {
-                let result = self.compile_vec_push(
-                    &args[0], &args[1], arg_vals, span,
-                )?;
+                let result = self.compile_vec_push(&args[0], &args[1], arg_vals, span)?;
                 Ok(Some(result))
             }
             "vec-len" if args.len() == 1 => {
@@ -438,12 +452,13 @@ where
         idx_val: Value,
         span: Span,
     ) -> Result<Value, CranelispError> {
-        let panic_id = self.ctx.panic_func_id.ok_or_else(|| {
-            CranelispError::CodegenError {
+        let panic_id = self
+            .ctx
+            .panic_func_id
+            .ok_or_else(|| CranelispError::CodegenError {
                 message: "runtime/panic not declared".into(),
                 location: ErrorLocation::from_span(span),
-            }
-        })?;
+            })?;
         let elem_category = self
             .vec_elem_type(vec_expr)
             .map(|t| signature_heap_category(&t, Some(self.ctx.symbol_tables)));
@@ -575,7 +590,9 @@ where
             // inc's only the retained copied-over elements; the new `val`'s
             // consuming inc was already emitted up-front above.
             self.emit_extern_call(
-                "vec-set-copy", &[vec_val, idx_val, new_val, inc_fn_ptr], span,
+                "vec-set-copy",
+                &[vec_val, idx_val, new_val, inc_fn_ptr],
+                span,
             )
         }
     }
@@ -656,9 +673,11 @@ where
     /// curried-vec-query path (§12.7).
     pub(crate) fn vec_elem_type(&self, vec_expr: &MonoExpr) -> Option<Type> {
         if let ConcreteType::ADT(fqtn, args) = vec_expr.ty()
-            && fqtn.name.as_ref() == "Vec" && args.len() == 1 {
-                return Some(args[0].to_type());
-            }
+            && fqtn.name.as_ref() == "Vec"
+            && args.len() == 1
+        {
+            return Some(args[0].to_type());
+        }
         None
     }
 
@@ -710,12 +729,13 @@ where
             return Ok(());
         }
 
-        let vec_drop_id = self.ctx.vec_drop_func_id.ok_or_else(|| {
-            CranelispError::CodegenError {
-                message: "runtime/vec_drop not declared".into(),
-                location: ErrorLocation::from_span(span),
-            }
-        })?;
+        let vec_drop_id =
+            self.ctx
+                .vec_drop_func_id
+                .ok_or_else(|| CranelispError::CodegenError {
+                    message: "runtime/vec_drop not declared".into(),
+                    location: ErrorLocation::from_span(span),
+                })?;
 
         let elem_type = self.vec_elem_type(vec_expr);
         let dec_fn_ptr = self.resolve_elem_dec_fn_ptr(&elem_type, span)?;
@@ -747,7 +767,9 @@ where
 
         let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
         match category {
-            HeapCategory::NeverHeap | HeapCategory::Value => Ok(self.builder.ins().iconst(types::I64, 0)),
+            HeapCategory::NeverHeap | HeapCategory::Value => {
+                Ok(self.builder.ins().iconst(types::I64, 0))
+            }
             HeapCategory::AlwaysHeap => {
                 let func_id = self.build_elem_inc_fn(false, span)?;
                 let func_ref = self.module.declare_func_in_func(func_id, self.builder.func);
@@ -845,12 +867,17 @@ where
         span: Span,
     ) -> Result<SourceOwnership, CranelispError> {
         let vec_drop_func_id =
-            self.ctx.vec_drop_func_id.ok_or_else(|| CranelispError::CodegenError {
-                message: "runtime/vec_drop not declared (need declare_intrinsics)".into(),
-                location: ErrorLocation::from_span(span),
-            })?;
+            self.ctx
+                .vec_drop_func_id
+                .ok_or_else(|| CranelispError::CodegenError {
+                    message: "runtime/vec_drop not declared (need declare_intrinsics)".into(),
+                    location: ErrorLocation::from_span(span),
+                })?;
         let elem_dec_fn_ptr = self.resolve_elem_dec_fn_ptr(elem_type, span)?;
-        Ok(SourceOwnership::Owned { vec_drop_func_id, elem_dec_fn_ptr })
+        Ok(SourceOwnership::Owned {
+            vec_drop_func_id,
+            elem_dec_fn_ptr,
+        })
     }
 
     /// R14 count-truth (toggle-off caller-side arg convention): a live-`Var` COW
@@ -879,7 +906,9 @@ where
 
         let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
         match category {
-            HeapCategory::NeverHeap | HeapCategory::Value => Ok(self.builder.ins().iconst(types::I64, 0)),
+            HeapCategory::NeverHeap | HeapCategory::Value => {
+                Ok(self.builder.ins().iconst(types::I64, 0))
+            }
             HeapCategory::AlwaysHeap => {
                 let func_id = self.build_elem_dec_fn(false, ty, span)?;
                 let func_ref = self.module.declare_func_in_func(func_id, self.builder.func);
@@ -913,12 +942,13 @@ where
         span: Span,
         atomicity: RcAtomicity,
     ) -> Result<(), CranelispError> {
-        let vec_drop_id = self.ctx.vec_drop_func_id.ok_or_else(|| {
-            CranelispError::CodegenError {
-                message: "runtime/vec_drop not declared (need declare_intrinsics)".into(),
-                location: ErrorLocation::from_span(span),
-            }
-        })?;
+        let vec_drop_id =
+            self.ctx
+                .vec_drop_func_id
+                .ok_or_else(|| CranelispError::CodegenError {
+                    message: "runtime/vec_drop not declared (need declare_intrinsics)".into(),
+                    location: ErrorLocation::from_span(span),
+                })?;
 
         // Build per-element dec fn (or null for NeverHeap elements).
         let elem_dec_fn_ptr = self.resolve_elem_dec_fn_ptr(&Some(elem_type.clone()), span)?;
@@ -952,8 +982,7 @@ where
         // declare_function is idempotent — it returns the existing FuncId if the
         // signature matches. We only need to skip define_function to avoid the
         // DuplicateDefinition error from Cranelift.
-        if let Some(cranelift_module::FuncOrDataId::Func(existing_id)) =
-            self.module.get_name(&name)
+        if let Some(cranelift_module::FuncOrDataId::Func(existing_id)) = self.module.get_name(&name)
         {
             return Ok(existing_id);
         }
@@ -1044,8 +1073,7 @@ where
         let name = format!("runtime/vec_elem_dec_{suffix}{type_suffix}");
 
         // Check if this function was already built (e.g., by a previous module).
-        if let Some(cranelift_module::FuncOrDataId::Func(existing_id)) =
-            self.module.get_name(&name)
+        if let Some(cranelift_module::FuncOrDataId::Func(existing_id)) = self.module.get_name(&name)
         {
             return Ok(existing_id);
         }
@@ -1216,14 +1244,7 @@ where
 
         if data_ctors.len() == 1 {
             let ctor = &data_ctors[0];
-            self.emit_standalone_field_decs(
-                &mut builder,
-                adt_val,
-                ctor,
-                &subst,
-                dealloc_id,
-                span,
-            )?;
+            self.emit_standalone_field_decs(&mut builder, adt_val, ctor, &subst, dealloc_id, span)?;
         } else {
             // Multiple data constructors: load tag, branch to correct handler.
             let heap_tag = heap::heap_load(&mut builder, adt_val, HeapAdt::TAG_OFFSET);
@@ -1310,23 +1331,23 @@ where
             let category = signature_heap_category(&resolved_ty, Some(self.ctx.symbol_tables));
             match category {
                 HeapCategory::AlwaysHeap => {
-                    let field_val =
-                        heap::heap_load(builder, adt_val, HeapAdt::field_offset(i));
+                    let field_val = heap::heap_load(builder, adt_val, HeapAdt::field_offset(i));
 
                     // Vec-typed fields must route through vec_drop, not dealloc,
                     // so element RCs and the data buffer are released.
                     if let Some(elem_ty) = vec_element_type(&resolved_ty) {
-                        let vdrop = vec_drop_id.ok_or_else(|| {
-                            CranelispError::CodegenError {
-                                message: "runtime/vec_drop not declared for drop-glue Vec field".into(),
-                                location: ErrorLocation::from_span(span),
-                            }
+                        let vdrop = vec_drop_id.ok_or_else(|| CranelispError::CodegenError {
+                            message: "runtime/vec_drop not declared for drop-glue Vec field".into(),
+                            location: ErrorLocation::from_span(span),
                         })?;
                         // Build per-element dec fn (needs &mut self; outer
                         // `builder` is a separate FunctionBuilder owned by
                         // the drop-glue function ctx — safe to nest).
-                        let elem_dec_fn_ptr = self
-                            .resolve_elem_dec_fn_ptr_into(&Some(elem_ty.clone()), builder, span)?;
+                        let elem_dec_fn_ptr = self.resolve_elem_dec_fn_ptr_into(
+                            &Some(elem_ty.clone()),
+                            builder,
+                            span,
+                        )?;
                         emit_vec_rc_dec_with_drop(
                             builder,
                             self.module,
@@ -1340,8 +1361,8 @@ where
                         // when the nested ADT reaches rc=0. Without this, a
                         // Grid-of-Wrapper-of-String would only run Wrapper's
                         // dealloc and leak the inner String's RC.
-                        let nested_glue_id = self
-                            .build_adt_drop_glue_fn(&resolved_ty, dealloc_id, span)?;
+                        let nested_glue_id =
+                            self.build_adt_drop_glue_fn(&resolved_ty, dealloc_id, span)?;
                         heap::emit_rc_dec_guarded(
                             builder,
                             self.module,
@@ -1355,8 +1376,7 @@ where
                     }
                 }
                 HeapCategory::Mixed => {
-                    let field_val =
-                        heap::heap_load(builder, adt_val, HeapAdt::field_offset(i));
+                    let field_val = heap::heap_load(builder, adt_val, HeapAdt::field_offset(i));
                     // Mixed ADT fields (nullary + data constructors) need drop
                     // glue when the data variants carry heap sub-fields. The
                     // guard in emit_rc_dec_guarded skips bare nullary tags;
@@ -1398,12 +1418,13 @@ where
         builder: &mut FunctionBuilder,
         span: Span,
     ) -> Result<SourceOwnership, CranelispError> {
-        let vec_drop_func_id = self.ctx.vec_drop_func_id.ok_or_else(|| {
-            CranelispError::CodegenError {
-                message: "runtime/vec_drop not declared".into(),
-                location: ErrorLocation::from_span(span),
-            }
-        })?;
+        let vec_drop_func_id =
+            self.ctx
+                .vec_drop_func_id
+                .ok_or_else(|| CranelispError::CodegenError {
+                    message: "runtime/vec_drop not declared".into(),
+                    location: ErrorLocation::from_span(span),
+                })?;
         let elem_dec_fn_ptr = self.resolve_elem_dec_fn_ptr_into(elem_type, builder, span)?;
         Ok(SourceOwnership::Owned {
             vec_drop_func_id,
@@ -1423,7 +1444,9 @@ where
 
         let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
         match category {
-            HeapCategory::NeverHeap | HeapCategory::Value => Ok(builder.ins().iconst(types::I64, 0)),
+            HeapCategory::NeverHeap | HeapCategory::Value => {
+                Ok(builder.ins().iconst(types::I64, 0))
+            }
             HeapCategory::AlwaysHeap => {
                 let func_id = self.build_elem_dec_fn(false, ty, span)?;
                 let func_ref = self.module.declare_func_in_func(func_id, builder.func);
@@ -1453,7 +1476,9 @@ where
 
         let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
         match category {
-            HeapCategory::NeverHeap | HeapCategory::Value => Ok(builder.ins().iconst(types::I64, 0)),
+            HeapCategory::NeverHeap | HeapCategory::Value => {
+                Ok(builder.ins().iconst(types::I64, 0))
+            }
             HeapCategory::AlwaysHeap => {
                 let func_id = self.build_elem_inc_fn(false, span)?;
                 let func_ref = self.module.declare_func_in_func(func_id, builder.func);
@@ -1504,20 +1529,21 @@ where
             .map(|t| signature_heap_category(t, Some(self.ctx.symbol_tables)));
         match (name, params.len()) {
             ("vec-get", 2) => {
-                let panic_id = self.ctx.panic_func_id.ok_or_else(|| {
-                    CranelispError::CodegenError {
-                        message: "runtime/panic not declared".into(),
-                        location: ErrorLocation::from_span(span),
-                    }
-                })?;
-                let vec_drop_id = self.ctx.vec_drop_func_id.ok_or_else(|| {
-                    CranelispError::CodegenError {
-                        message: "runtime/vec_drop not declared".into(),
-                        location: ErrorLocation::from_span(span),
-                    }
-                })?;
-                let dec_fn_ptr =
-                    self.resolve_elem_dec_fn_ptr_into(elem_type, builder, span)?;
+                let panic_id =
+                    self.ctx
+                        .panic_func_id
+                        .ok_or_else(|| CranelispError::CodegenError {
+                            message: "runtime/panic not declared".into(),
+                            location: ErrorLocation::from_span(span),
+                        })?;
+                let vec_drop_id =
+                    self.ctx
+                        .vec_drop_func_id
+                        .ok_or_else(|| CranelispError::CodegenError {
+                            message: "runtime/vec_drop not declared".into(),
+                            location: ErrorLocation::from_span(span),
+                        })?;
+                let dec_fn_ptr = self.resolve_elem_dec_fn_ptr_into(elem_type, builder, span)?;
                 let elem = emit_vec_get_core(
                     builder,
                     self.module,
@@ -1535,24 +1561,16 @@ where
                 // Release the consumed (owned) Vec — rc-checked, and AFTER the
                 // element inc inside the core, so the element survives a
                 // last-reference Vec teardown.
-                emit_vec_rc_dec_with_drop(
-                    builder,
-                    self.module,
-                    params[0],
-                    vec_drop_id,
-                    dec_fn_ptr,
-                );
+                emit_vec_rc_dec_with_drop(builder, self.module, params[0], vec_drop_id, dec_fn_ptr);
                 Ok(elem)
             }
             ("vec-set", 3) => {
-                let inc_fn_ptr =
-                    self.resolve_elem_inc_fn_ptr_into(elem_type, builder, span)?;
+                let inc_fn_ptr = self.resolve_elem_inc_fn_ptr_into(elem_type, builder, span)?;
                 // Wrapper / curry body: params arrive OWNED (consuming-closure
                 // protocol), so the copy branch must release the source Vec's
                 // owned reference (§13.3 Ruling 2 — the FIXME-0474 cure). The
                 // vec-get arm's release above is the precedent.
-                let source_ownership =
-                    self.owned_source_release(elem_type, builder, span)?;
+                let source_ownership = self.owned_source_release(elem_type, builder, span)?;
                 emit_vec_set_cow_core(
                     builder,
                     self.module,
@@ -1574,12 +1592,10 @@ where
                 )
             }
             ("vec-push", 2) => {
-                let inc_fn_ptr =
-                    self.resolve_elem_inc_fn_ptr_into(elem_type, builder, span)?;
+                let inc_fn_ptr = self.resolve_elem_inc_fn_ptr_into(elem_type, builder, span)?;
                 // Wrapper / curry body: params arrive owned — release the source
                 // on the copy branch (§13.3 Ruling 2).
-                let source_ownership =
-                    self.owned_source_release(elem_type, builder, span)?;
+                let source_ownership = self.owned_source_release(elem_type, builder, span)?;
                 emit_vec_push_cow_core(
                     builder,
                     self.module,
@@ -1601,7 +1617,6 @@ where
             }),
         }
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -1955,7 +1970,12 @@ pub(crate) fn emit_vec_rc_dec_with_drop<M: Module>(
     elem_dec_fn_ptr: Value,
 ) {
     emit_vec_rc_dec_with_drop_atomicity(
-        builder, module, vec_val, vec_drop_func_id, elem_dec_fn_ptr, RcAtomicity::Atomic,
+        builder,
+        module,
+        vec_val,
+        vec_drop_func_id,
+        elem_dec_fn_ptr,
+        RcAtomicity::Atomic,
     );
 }
 
@@ -1991,7 +2011,9 @@ pub(crate) fn emit_vec_rc_dec_with_drop_atomicity<M: Module>(
         .iadd_imm(vec_val, i64::from(HeapHeader::RC_OFFSET));
     let one = builder.ins().iconst(types::I64, 1);
     let old_rc = if crate::heap::use_nonatomic_arm(atomicity) {
-        let cur = builder.ins().load(types::I64, MemFlags::trusted(), rc_addr, 0);
+        let cur = builder
+            .ins()
+            .load(types::I64, MemFlags::trusted(), rc_addr, 0);
         let new = builder.ins().isub(cur, one);
         builder.ins().store(MemFlags::trusted(), new, rc_addr, 0);
         cur
@@ -2008,9 +2030,7 @@ pub(crate) fn emit_vec_rc_dec_with_drop_atomicity<M: Module>(
     // Branch: if old_rc == 1 (last reference), call vec_drop.
     let cmp = builder.ins().icmp(IntCC::Equal, old_rc, one);
     let drop_block = builder.create_block();
-    builder
-        .ins()
-        .brif(cmp, drop_block, &[], cont_block, &[]);
+    builder.ins().brif(cmp, drop_block, &[], cont_block, &[]);
 
     // Drop path: Acquire fence, then vec_drop(vec, elem_dec_fn_ptr).
     builder.switch_to_block(drop_block);
@@ -2018,7 +2038,9 @@ pub(crate) fn emit_vec_rc_dec_with_drop_atomicity<M: Module>(
     builder.ins().fence();
 
     let vec_drop_ref = module.declare_func_in_func(vec_drop_func_id, builder.func);
-    builder.ins().call(vec_drop_ref, &[vec_val, elem_dec_fn_ptr]);
+    builder
+        .ins()
+        .call(vec_drop_ref, &[vec_val, elem_dec_fn_ptr]);
 
     builder.ins().jump(cont_block, &[]);
 
@@ -2058,12 +2080,13 @@ fn emit_vec_bounds_panic<M: Module>(
     // runtime/panic(msg_ptr, msg_len) — never returns.
     // We store the error message in a data section.
     let msg = b"vec-get: index out of bounds";
-    let data_id = module
-        .declare_anonymous_data(false, false)
-        .map_err(|e| CranelispError::CodegenError {
-            message: format!("failed to declare panic data: {e}"),
-            location: ErrorLocation::from_span(span),
-        })?;
+    let data_id =
+        module
+            .declare_anonymous_data(false, false)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to declare panic data: {e}"),
+                location: ErrorLocation::from_span(span),
+            })?;
     let mut desc = cranelift_module::DataDescription::new();
     desc.define(msg.to_vec().into_boxed_slice());
     module
@@ -2120,10 +2143,7 @@ fn emit_vec_bounds_panic<M: Module>(
 ///
 /// Returns `Some(category)` (AlwaysHeap or Mixed) when the element is a heap-typed
 /// Var that must be inc'd; `None` otherwise.
-fn element_consuming_inc(
-    elem_arg: &MonoExpr,
-    elem_category: HeapCategory,
-) -> Option<HeapCategory> {
+fn element_consuming_inc(elem_arg: &MonoExpr, elem_category: HeapCategory) -> Option<HeapCategory> {
     match elem_arg {
         MonoExpr::Var { .. } => match elem_category {
             HeapCategory::AlwaysHeap => Some(HeapCategory::AlwaysHeap),

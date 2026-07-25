@@ -63,11 +63,19 @@ fn register_callable(tf: &TestFixture, key: &str, body: MonoExpr) {
             vec![cranelisp_types::Type::String],
             Box::new(cranelisp_types::Type::String),
         )),
-        DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot: 1, mode_summary: None } },
+        DefKind::UserFn {
+            fn_state: UserFnState::Concrete {
+                got_slot: 1,
+                mode_summary: None,
+            },
+        },
     )
     .codegen_view(cv)
     .build();
-    tf.modules.get_mut(&ModuleFullPath::from("user")).unwrap().insert(Symbol::from(key), entry);
+    tf.modules
+        .get_mut(&ModuleFullPath::from("user"))
+        .unwrap()
+        .insert(Symbol::from(key), entry);
 }
 
 fn summary() -> ModeSummary {
@@ -89,7 +97,11 @@ fn summary_lands_on_entry_and_codegen_view() {
 
     let mut summaries = HashMap::new();
     summaries.insert(Symbol::from("area"), summary());
-    let cluster = ClusterOwnership { summaries, facts: HashMap::new(), value_used: HashSet::new() };
+    let cluster = ClusterOwnership {
+        summaries,
+        facts: HashMap::new(),
+        value_used: HashSet::new(),
+    };
     let env = tf.env();
     super::publish(&env, &tf.state, &cluster);
 
@@ -97,7 +109,10 @@ fn summary_lands_on_entry_and_codegen_view() {
     let view = read.view();
     let entry = view.lookup(&Symbol::from("area")).unwrap();
     assert_eq!(entry.mode_summary(), Some(&summary()));
-    assert_eq!(entry.codegen_view().unwrap().mode_summary.as_ref(), Some(&summary()));
+    assert_eq!(
+        entry.codegen_view().unwrap().mode_summary.as_ref(),
+        Some(&summary())
+    );
 }
 
 #[test]
@@ -108,21 +123,34 @@ fn site_facts_and_provenance_annotate_the_stored_view() {
 
     let mut facts = SiteFacts::default();
     facts.escapes.insert(Span::new(10, 20), false);
-    facts.provenance.insert(Span::new(10, 20), Symbol::from("g"));
+    facts
+        .provenance
+        .insert(Span::new(10, 20), Symbol::from("g"));
     let mut facts_map = HashMap::new();
     facts_map.insert(Symbol::from("area"), facts);
     let mut summaries = HashMap::new();
     summaries.insert(Symbol::from("area"), summary());
-    let cluster =
-        ClusterOwnership { summaries, facts: facts_map, value_used: HashSet::new() };
+    let cluster = ClusterOwnership {
+        summaries,
+        facts: facts_map,
+        value_used: HashSet::new(),
+    };
     let env = tf.env();
     super::publish(&env, &tf.state, &cluster);
 
     let read = env.current_symbol_table(&tf.state);
     let view = read.view();
-    let cv = view.lookup(&Symbol::from("area")).unwrap().codegen_view().unwrap();
+    let cv = view
+        .lookup(&Symbol::from("area"))
+        .unwrap()
+        .codegen_view()
+        .unwrap();
     match &cv.body {
-        MonoExpr::Apply { escapes, provenance, .. } => {
+        MonoExpr::Apply {
+            escapes,
+            provenance,
+            ..
+        } => {
             assert_eq!(*escapes, Some(false));
             assert_eq!(provenance.as_ref(), Some(&Symbol::from("g")));
         }
@@ -138,8 +166,11 @@ fn value_use_mark_set_for_referenced_callable() {
 
     let mut value_used = HashSet::new();
     value_used.insert(Symbol::from("area"));
-    let cluster =
-        ClusterOwnership { summaries: HashMap::new(), facts: HashMap::new(), value_used };
+    let cluster = ClusterOwnership {
+        summaries: HashMap::new(),
+        facts: HashMap::new(),
+        value_used,
+    };
     let env = tf.env();
     super::publish(&env, &tf.state, &cluster);
 
@@ -169,12 +200,19 @@ fn non_cluster_entry_is_untouched() {
 
     let mut summaries = HashMap::new();
     summaries.insert(Symbol::from("area"), summary());
-    let cluster = ClusterOwnership { summaries, facts: HashMap::new(), value_used: HashSet::new() };
+    let cluster = ClusterOwnership {
+        summaries,
+        facts: HashMap::new(),
+        value_used: HashSet::new(),
+    };
     let env = tf.env();
     super::publish(&env, &tf.state, &cluster);
 
     let read = env.current_symbol_table(&tf.state);
     let view = read.view();
     // `other` was not in the summary map ⇒ stays None.
-    assert_eq!(view.lookup(&Symbol::from("other")).unwrap().mode_summary(), None);
+    assert_eq!(
+        view.lookup(&Symbol::from("other")).unwrap().mode_summary(),
+        None
+    );
 }

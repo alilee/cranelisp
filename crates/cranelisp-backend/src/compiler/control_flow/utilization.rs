@@ -42,13 +42,14 @@ use super::FnCompiler;
 /// present self-edge correctly (for the unit-test matrix and for any future feed
 /// that carries them); at the spark site direct self-recursion is recovered
 /// separately by the per-site self-call check in [`FnCompiler::classify_spark_callee`].
-pub(crate) fn recursive_scc_members(
-    graph: &HashMap<FQSymbol, Vec<FQSymbol>>,
-) -> HashSet<FQSymbol> {
+pub(crate) fn recursive_scc_members(graph: &HashMap<FQSymbol, Vec<FQSymbol>>) -> HashSet<FQSymbol> {
     // Collect the node universe: callers + every referenced callee.
     let mut nodes: Vec<FQSymbol> = Vec::new();
     let mut index_of: HashMap<FQSymbol, usize> = HashMap::new();
-    let intern = |n: &FQSymbol, nodes: &mut Vec<FQSymbol>, index_of: &mut HashMap<FQSymbol, usize>| -> usize {
+    let intern = |n: &FQSymbol,
+                  nodes: &mut Vec<FQSymbol>,
+                  index_of: &mut HashMap<FQSymbol, usize>|
+     -> usize {
         if let Some(&i) = index_of.get(n) {
             i
         } else {
@@ -285,7 +286,13 @@ where
         candidate: &MonoExpr,
         recursive: &HashSet<FQSymbol>,
     ) -> Option<(String, bool, bool, Span)> {
-        let MonoExpr::Apply { callee, span, resolved_call, .. } = candidate else {
+        let MonoExpr::Apply {
+            callee,
+            span,
+            resolved_call,
+            ..
+        } = candidate
+        else {
             return None;
         };
         let MonoExpr::Var { name, .. } = callee.as_ref() else {
@@ -365,8 +372,7 @@ where
         let graph = self.build_call_graph();
         let recursive = recursive_scc_members(&graph);
         for &idx in sparkable {
-            if let Some((fq, scc, tail, span)) =
-                self.classify_spark_callee(&args[idx], &recursive)
+            if let Some((fq, scc, tail, span)) = self.classify_spark_callee(&args[idx], &recursive)
             {
                 record_site(&fq, span, scc, tail);
             }
@@ -533,10 +539,19 @@ mod tests {
     /// realistic shape the producer records for a resolved reference (the self-
     /// recursion carve-out records `{module, fn}` for a genuine self-call). The
     /// carrier-keyed `is_self_call` predicate keys on THIS, not the written name.
-    fn apply_var_c(callee: &str, module: &str, symbol: &str, ret: cranelisp_types::ConcreteType) -> MonoExpr {
+    fn apply_var_c(
+        callee: &str,
+        module: &str,
+        symbol: &str,
+        ret: cranelisp_types::ConcreteType,
+    ) -> MonoExpr {
         apply_var_inner(callee, Some(fq(module, symbol)), ret)
     }
-    fn apply_var_inner(callee: &str, carrier: Option<FQSymbol>, ret: cranelisp_types::ConcreteType) -> MonoExpr {
+    fn apply_var_inner(
+        callee: &str,
+        carrier: Option<FQSymbol>,
+        ret: cranelisp_types::ConcreteType,
+    ) -> MonoExpr {
         MonoExpr::Apply {
             dispatch: cranelisp_types::ApplyRef::ViaCallee,
             callee: Box::new(MonoExpr::Var {
@@ -583,7 +598,10 @@ mod tests {
         // independent of the graph — the seam Task 0 fixes.
         let module_path = ModuleFullPath::from("user");
         let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
-        tables.insert(module_path.clone(), SymbolTable::<(), ()>::new(module_path.clone()));
+        tables.insert(
+            module_path.clone(),
+            SymbolTable::<(), ()>::new(module_path.clone()),
+        );
 
         let mut jit = crate::jit::Jit::new_with_symbols(&[]).unwrap();
         let intrinsic_ids = crate::jit::declare_intrinsics_generic(jit.jit_module()).unwrap();
@@ -620,7 +638,10 @@ mod tests {
         //     with an empty graph.
         compiler.current_fn_name = Some(Symbol::from("fib"));
         assert!(
-            compiler.mstatic_admits_candidate(&apply_var_c("fib", "user", "fib", ConcreteType::Int), &empty),
+            compiler.mstatic_admits_candidate(
+                &apply_var_c("fib", "user", "fib", ConcreteType::Int),
+                &empty
+            ),
             "self-recursive non-tail `fib` → admit"
         );
 
@@ -629,7 +650,10 @@ mod tests {
         //     identity `{user, fib}`, so `is_self_call` declines it (module AND
         //     symbol must match) — no bare-name false-admit. Empty graph ⇒ declined.
         assert!(
-            !compiler.mstatic_admits_candidate(&apply_var_c("other/fib", "other", "fib", ConcreteType::Int), &empty),
+            !compiler.mstatic_admits_candidate(
+                &apply_var_c("other/fib", "other", "fib", ConcreteType::Int),
+                &empty
+            ),
             "cross-module same-bare-name `other/fib` is NOT self-recursive → decline"
         );
 

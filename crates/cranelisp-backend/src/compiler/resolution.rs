@@ -97,7 +97,13 @@ pub(crate) fn inner_fn_discriminator_for(current_fn_name: Option<&Symbol>) -> St
             let sanitized: String = name
                 .as_ref()
                 .chars()
-                .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() || c == '_' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
                 .collect();
             format!("{sanitized}__")
         }
@@ -125,7 +131,10 @@ pub(crate) fn inner_fn_discriminator_for(current_fn_name: Option<&Symbol>) -> St
 /// (different capture layout), so span-only would collide (`Duplicate definition
 /// of identifier: runtime/closure_drop_glue_…`) — the FIXME 0350 class.
 pub(crate) fn closure_drop_glue_name(disc: &str, span: Span) -> String {
-    format!("runtime/closure_drop_glue_{}{}_{}", disc, span.start, span.end)
+    format!(
+        "runtime/closure_drop_glue_{}{}_{}",
+        disc, span.start, span.end
+    )
 }
 
 /// Linker name for an **auto-curry** closure's capture drop glue (S111 R6).
@@ -136,7 +145,10 @@ pub(crate) fn closure_drop_glue_name(disc: &str, span: Span) -> String {
 /// on a span-only glue name, silently mis-dropping captures (ledger item 25).
 /// Folding `disc` makes glue identity track wrapper identity.
 pub(crate) fn curry_drop_glue_name(disc: &str, span: Span) -> String {
-    format!("runtime/curry_drop_glue_{}{}_{}", disc, span.start, span.end)
+    format!(
+        "runtime/curry_drop_glue_{}{}_{}",
+        disc, span.start, span.end
+    )
 }
 
 /// Symbol-safe identity mangle of a fully concrete ADT **instantiation**
@@ -189,7 +201,11 @@ pub(crate) fn adt_instantiation_mangle(ty: &Type) -> String {
          drop-glue identity key unstable across builds; got: {}",
         render_type(ty, PrimitiveNaming::Qualified, VarNaming::Numbered)
     );
-    escape_symbol(&render_type(ty, PrimitiveNaming::Qualified, VarNaming::Numbered))
+    escape_symbol(&render_type(
+        ty,
+        PrimitiveNaming::Qualified,
+        VarNaming::Numbered,
+    ))
 }
 
 /// Injective, prefix-free escaping of an arbitrary string into a legal Cranelift

@@ -1,6 +1,7 @@
 use super::*;
-use cranelisp_types::{DefKind, DefnVariant, Expr, FQSymbol, ImportSpec, ModuleEntry, ModuleFullPath,
-    Scheme, Span as TSpan, Symbol, Type, UserFnState, Visibility,
+use cranelisp_types::{
+    DefKind, DefnVariant, Expr, FQSymbol, ImportSpec, ModuleEntry, ModuleFullPath, Scheme,
+    Span as TSpan, Symbol, Type, UserFnState, Visibility,
 };
 use std::collections::HashMap;
 
@@ -24,7 +25,10 @@ fn make_def(_name: &str) -> ModuleEntry {
         docstring: None,
         param_names: vec![],
         kind: Box::new(DefKind::UserFn {
-            fn_state: UserFnState::Concrete { got_slot: 7, mode_summary: None },
+            fn_state: UserFnState::Concrete {
+                got_slot: 7,
+                mode_summary: None,
+            },
         }),
         callees: vec![],
         trait_origin: None,
@@ -94,7 +98,9 @@ fn cache_schema_version_mismatch_falls_through() {
     let bytes = std::fs::read(&meta_path).unwrap();
     let result = deserialise_meta(&bytes, 1, &meta_path);
     match result {
-        Err(CacheStale::SchemaMismatch { found, expected, .. }) => {
+        Err(CacheStale::SchemaMismatch {
+            found, expected, ..
+        }) => {
             assert_eq!(found, 0);
             assert_eq!(expected, 1);
         }
@@ -111,7 +117,13 @@ fn cache_schema_version_mismatch_falls_through() {
         &meta_path,
     );
     assert!(
-        matches!(result, Err(CacheStale::SchemaMismatch { found: u32::MAX, .. })),
+        matches!(
+            result,
+            Err(CacheStale::SchemaMismatch {
+                found: u32::MAX,
+                ..
+            })
+        ),
         "u32::MAX schema_version must produce SchemaMismatch (not Err / not panic)"
     );
 }
@@ -145,10 +157,11 @@ fn cache_v4_meta_rejected_after_callability_reshape() {
     write_meta(&meta_path, &table, 4).unwrap();
 
     let bytes = std::fs::read(&meta_path).unwrap();
-    let result =
-        deserialise_meta(&bytes, super::super::CACHE_SCHEMA_VERSION, &meta_path);
+    let result = deserialise_meta(&bytes, super::super::CACHE_SCHEMA_VERSION, &meta_path);
     match result {
-        Err(CacheStale::SchemaMismatch { found, expected, .. }) => {
+        Err(CacheStale::SchemaMismatch {
+            found, expected, ..
+        }) => {
             assert_eq!(found, 4, "the stale cache was stamped at v4");
             assert_eq!(
                 expected,
@@ -157,9 +170,7 @@ fn cache_v4_meta_rejected_after_callability_reshape() {
             );
         }
         // Crucially NOT Ok(table): a v4 cache must never load a callable.
-        other => panic!(
-            "v4 cache must be rejected as SchemaMismatch (cache-miss), got {other:?}"
-        ),
+        other => panic!("v4 cache must be rejected as SchemaMismatch (cache-miss), got {other:?}"),
     }
 }
 
@@ -193,10 +204,11 @@ fn cache_v18_meta_rejected_after_resolved_target_carriers() {
     write_meta(&meta_path, &table, 18).unwrap();
 
     let bytes = std::fs::read(&meta_path).unwrap();
-    let result =
-        deserialise_meta(&bytes, super::super::CACHE_SCHEMA_VERSION, &meta_path);
+    let result = deserialise_meta(&bytes, super::super::CACHE_SCHEMA_VERSION, &meta_path);
     match result {
-        Err(CacheStale::SchemaMismatch { found, expected, .. }) => {
+        Err(CacheStale::SchemaMismatch {
+            found, expected, ..
+        }) => {
             assert_eq!(found, 18, "the stale cache was stamped at v18");
             assert_eq!(
                 expected,
@@ -205,9 +217,7 @@ fn cache_v18_meta_rejected_after_resolved_target_carriers() {
             );
         }
         // Crucially NOT Ok(table): a v18 cache must never load post-carrier.
-        other => panic!(
-            "v18 cache must be rejected as SchemaMismatch (cache-miss), got {other:?}"
-        ),
+        other => panic!("v18 cache must be rejected as SchemaMismatch (cache-miss), got {other:?}"),
     }
 }
 
@@ -306,7 +316,10 @@ fn load_meta_corrupt_bytes_returns_cache_stale_deserialise() {
 fn build_id_const_is_nonempty_and_well_formed() {
     let id = super::super::BUILD_ID;
     assert!(!id.is_empty(), "BUILD_ID must not be empty");
-    assert!(id.contains('+'), "BUILD_ID must be <pkg_version>+<sha>: {id}");
+    assert!(
+        id.contains('+'),
+        "BUILD_ID must be <pkg_version>+<sha>: {id}"
+    );
 }
 
 /// Fresh-build round-trip: the current `BUILD_ID` stamps in, load succeeds.
@@ -365,7 +378,9 @@ fn stale_build_id_produces_build_id_mismatch() {
 
     let err = load_meta(&meta_path).expect_err("stale-build-id cache must be stale");
     match err {
-        CacheStale::BuildIdMismatch { found, expected, .. } => {
+        CacheStale::BuildIdMismatch {
+            found, expected, ..
+        } => {
             assert_eq!(found, "0.0.0+deadbeef0000");
             assert_eq!(expected, super::super::BUILD_ID);
         }
@@ -418,7 +433,10 @@ fn make_def_with_slot(slot: usize) -> ModuleEntry {
     let mut entry = make_def("x");
     if let ModuleEntry::Def { kind, .. } = &mut entry {
         **kind = DefKind::UserFn {
-            fn_state: UserFnState::Concrete { got_slot: slot, mode_summary: None },
+            fn_state: UserFnState::Concrete {
+                got_slot: slot,
+                mode_summary: None,
+            },
         };
     }
     entry
@@ -438,19 +456,29 @@ fn cache_load_rejects_out_of_range_got_slot_as_stale() {
 
     // A well-formed within-bounds slot loads cleanly.
     let mut ok_table = SymbolTable::new(ModuleFullPath::from("corrupt"));
-    ok_table.insert(Symbol::from("f"), make_def_with_slot(cranelisp_types::GOT_TABLE_SIZE - 1));
+    ok_table.insert(
+        Symbol::from("f"),
+        make_def_with_slot(cranelisp_types::GOT_TABLE_SIZE - 1),
+    );
     write_meta(&meta_path, &ok_table, super::super::CACHE_SCHEMA_VERSION).unwrap();
     load_meta(&meta_path).expect("in-bounds slot must load");
 
     // Forge a cache with an out-of-range slot (== GOT_TABLE_SIZE, the first
     // illegal index) and confirm the load refuses it as cache-stale.
     let mut bad_table = SymbolTable::new(ModuleFullPath::from("corrupt"));
-    bad_table.insert(Symbol::from("f"), make_def_with_slot(cranelisp_types::GOT_TABLE_SIZE));
+    bad_table.insert(
+        Symbol::from("f"),
+        make_def_with_slot(cranelisp_types::GOT_TABLE_SIZE),
+    );
     write_meta(&meta_path, &bad_table, super::super::CACHE_SCHEMA_VERSION).unwrap();
 
     match load_meta(&meta_path) {
         Err(CacheStale::GotSlotOutOfRange { slot, .. }) => {
-            assert_eq!(slot, cranelisp_types::GOT_TABLE_SIZE, "reports the offending slot");
+            assert_eq!(
+                slot,
+                cranelisp_types::GOT_TABLE_SIZE,
+                "reports the offending slot"
+            );
         }
         other => panic!("expected GotSlotOutOfRange cache-stale, got {other:?}"),
     }
@@ -497,7 +525,13 @@ fn make_def_with_may_alias(index: usize, arity: usize) -> ModuleEntry {
 /// accessor).
 fn make_def_with_result_mode(result: cranelisp_types::ResultMode, arity: usize) -> ModuleEntry {
     let mut entry = make_def("m");
-    if let ModuleEntry::Def { kind, scheme, param_names, .. } = &mut entry {
+    if let ModuleEntry::Def {
+        kind,
+        scheme,
+        param_names,
+        ..
+    } = &mut entry
+    {
         scheme.ty = Type::Fn(vec![Type::Int; arity], Box::new(Type::Int));
         *param_names = (0..arity).map(|i| Symbol::from(format!("p{i}"))).collect();
         **kind = DefKind::UserFn {
@@ -543,7 +577,11 @@ fn make_def_with_view_span(start: u32, end: u32) -> ModuleEntry {
 }
 
 /// Write a one-entry table and attempt to load it back.
-fn roundtrip(dir: &std::path::Path, name: &str, entry: ModuleEntry) -> Result<SymbolTable, CacheStale> {
+fn roundtrip(
+    dir: &std::path::Path,
+    name: &str,
+    entry: ModuleEntry,
+) -> Result<SymbolTable, CacheStale> {
     let meta_path = dir.join(format!("{name}.meta.json"));
     let mut table = SymbolTable::new(ModuleFullPath::from("r6"));
     table.insert(Symbol::from(name), entry);
@@ -559,9 +597,17 @@ fn roundtrip(dir: &std::path::Path, name: &str, entry: ModuleEntry) -> Result<Sy
 #[test]
 fn cache_load_rejects_out_of_range_sibling_slot_as_stale() {
     let dir = tempfile::tempdir().unwrap();
-    roundtrip(dir.path(), "ok", make_primitive_with_sibling_slot(cranelisp_types::GOT_TABLE_SIZE - 1))
-        .expect("an in-bounds sibling slot must load");
-    match roundtrip(dir.path(), "bad", make_primitive_with_sibling_slot(cranelisp_types::GOT_TABLE_SIZE)) {
+    roundtrip(
+        dir.path(),
+        "ok",
+        make_primitive_with_sibling_slot(cranelisp_types::GOT_TABLE_SIZE - 1),
+    )
+    .expect("an in-bounds sibling slot must load");
+    match roundtrip(
+        dir.path(),
+        "bad",
+        make_primitive_with_sibling_slot(cranelisp_types::GOT_TABLE_SIZE),
+    ) {
         Err(CacheStale::SiblingSlotOutOfRange { slot, .. }) => {
             assert_eq!(slot, cranelisp_types::GOT_TABLE_SIZE);
         }
@@ -580,7 +626,11 @@ fn cache_load_rejects_out_of_range_summary_param_index_as_stale() {
         .expect("MayAliasOf(arity-1) is in range and must load");
     match roundtrip(dir.path(), "bad", make_def_with_may_alias(2, 2)) {
         Err(CacheStale::SummaryParamIndexOutOfRange { index, arity, .. }) => {
-            assert_eq!((index, arity), (2, 2), "reports the offending index + arity");
+            assert_eq!(
+                (index, arity),
+                (2, 2),
+                "reports the offending index + arity"
+            );
         }
         other => panic!("expected SummaryParamIndexOutOfRange, got {other:?}"),
     }
@@ -613,7 +663,10 @@ fn cache_load_rejects_out_of_range_index_for_every_result_mode_variant() {
             Err(CacheStale::SummaryParamIndexOutOfRange { index, arity, .. }) => {
                 assert_eq!((index, arity), (2, 2));
             }
-            other => panic!("expected SummaryParamIndexOutOfRange for {:?}, got {other:?}", make(2)),
+            other => panic!(
+                "expected SummaryParamIndexOutOfRange for {:?}, got {other:?}",
+                make(2)
+            ),
         }
         assert!(
             matches!(
@@ -632,8 +685,12 @@ fn cache_load_rejects_out_of_range_index_for_every_result_mode_variant() {
 fn index_free_result_mode_is_never_rejected_neg() {
     let dir = tempfile::tempdir().unwrap();
     for arity in [0usize, 1, 3] {
-        roundtrip(dir.path(), "fresh", make_def_with_result_mode(cranelisp_types::ResultMode::Fresh, arity))
-            .expect("Fresh carries no index and must always load");
+        roundtrip(
+            dir.path(),
+            "fresh",
+            make_def_with_result_mode(cranelisp_types::ResultMode::Fresh, arity),
+        )
+        .expect("Fresh carries no index and must always load");
     }
 }
 
@@ -649,7 +706,9 @@ fn cache_load_rejects_malformed_callee_fq_as_stale() {
     for (module, symbol) in [("", "f"), ("user", ""), ("", "")] {
         match roundtrip(dir.path(), "bad", make_def_with_callee(module, symbol)) {
             Err(CacheStale::MalformedCalleeFq { .. }) => {}
-            other => panic!("expected MalformedCalleeFq for ({module:?}, {symbol:?}), got {other:?}"),
+            other => {
+                panic!("expected MalformedCalleeFq for ({module:?}, {symbol:?}), got {other:?}")
+            }
         }
     }
 }
@@ -681,7 +740,10 @@ fn cache_load_accepts_a_valid_meta_with_every_persisted_index_populated() {
     let dir = tempfile::tempdir().unwrap();
     let meta_path = dir.path().join("all.meta.json");
     let mut table = SymbolTable::new(ModuleFullPath::from("r6"));
-    table.insert(Symbol::from("slot"), make_def_with_slot(cranelisp_types::GOT_TABLE_SIZE - 1));
+    table.insert(
+        Symbol::from("slot"),
+        make_def_with_slot(cranelisp_types::GOT_TABLE_SIZE - 1),
+    );
     table.insert(
         Symbol::from("sib"),
         make_primitive_with_sibling_slot(cranelisp_types::GOT_TABLE_SIZE - 2),
@@ -701,8 +763,16 @@ fn cache_load_accepts_a_valid_meta_with_every_persisted_index_populated() {
 fn r6_stale_classes_are_distinct_per_family() {
     let dir = tempfile::tempdir().unwrap();
     let reasons: Vec<&'static str> = vec![
-        roundtrip(dir.path(), "a", make_def_with_slot(cranelisp_types::GOT_TABLE_SIZE)),
-        roundtrip(dir.path(), "b", make_primitive_with_sibling_slot(cranelisp_types::GOT_TABLE_SIZE)),
+        roundtrip(
+            dir.path(),
+            "a",
+            make_def_with_slot(cranelisp_types::GOT_TABLE_SIZE),
+        ),
+        roundtrip(
+            dir.path(),
+            "b",
+            make_primitive_with_sibling_slot(cranelisp_types::GOT_TABLE_SIZE),
+        ),
         roundtrip(dir.path(), "c", make_def_with_may_alias(5, 1)),
         roundtrip(dir.path(), "d", make_def_with_callee("", "f")),
         roundtrip(dir.path(), "e", make_def_with_view_span(9, 1)),

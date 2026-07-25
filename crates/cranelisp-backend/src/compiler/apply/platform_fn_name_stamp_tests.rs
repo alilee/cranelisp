@@ -1,4 +1,4 @@
-use super::{platform_fn_name_bytes, EFFECT_FN_NAME_ABS_OFFSET};
+use super::{EFFECT_FN_NAME_ABS_OFFSET, platform_fn_name_bytes};
 use cranelisp_types::HeapHeader;
 
 // spec: design/arch/bounded-contexts.md §5 invariant 9 (S81 / FIXME 0327,

@@ -39,7 +39,11 @@ pub fn instantiate(scheme: &Scheme, next_id: &mut TypeId) -> Type {
 ///
 /// `subst` is applied to `ty` before collecting free vars.
 /// `env_free_vars` should contain all free vars from the scope stack and symbol table.
-pub fn generalize(subst: &Subst, ty: &Type, env_free_vars: &std::collections::HashSet<TypeId>) -> Scheme {
+pub fn generalize(
+    subst: &Subst,
+    ty: &Type,
+    env_free_vars: &std::collections::HashSet<TypeId>,
+) -> Scheme {
     let resolved = apply(subst, ty);
     let ty_fv = free_vars(&resolved);
 

@@ -1,5 +1,7 @@
 ; Cranelisp Ring 4D — Developer Tools & Panic Recovery
 
+(import [primitives [div-i64]])
+
 ; Define a function to inspect
 
 (defn factorial [n] (if (= n 0) 1 (* n (factorial (- n 1)))))

@@ -38,3 +38,7 @@
          (defn- ~impl-name [] ~value)
          (defmacro- ~name [] (macros/SexpList (macros/SCons ~(primitives/quote-sexp impl-name) macros/SNil)))))
      _ name]))
+
+;; Backing self-tests include `def` in the representative stdlib macro-cache
+;; parity set. Presentation remains the known 0800/0863 issue.
+(mod- test)

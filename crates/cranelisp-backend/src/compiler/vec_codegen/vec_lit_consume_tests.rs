@@ -18,7 +18,11 @@ use cranelisp_types::{
 };
 
 fn vec_int() -> Type {
-    Type::adt(ModuleFullPath::from("primitives"), TypeName::from("Vec"), vec![Type::Int])
+    Type::adt(
+        ModuleFullPath::from("primitives"),
+        TypeName::from("Vec"),
+        vec![Type::Int],
+    )
 }
 
 /// Probe a single-`Var`-param defn whose body is the given `VecLit` `Expr`, and
@@ -61,13 +65,26 @@ fn rc_inc_count(clif: &str) -> usize {
 }
 
 fn var(name: &str, ty: Type) -> Expr {
-    Expr::Var { name: Symbol::from(name), span: Span::SYNTHETIC, resolved_call: None, inferred_type: Some(Box::new(ty)) }
+    Expr::Var {
+        name: Symbol::from(name),
+        span: Span::SYNTHETIC,
+        resolved_call: None,
+        inferred_type: Some(Box::new(ty)),
+    }
 }
 fn int_lit(n: i64) -> Expr {
-    Expr::IntLit { value: n, span: Span::SYNTHETIC, inferred_type: Some(Box::new(Type::Int)) }
+    Expr::IntLit {
+        value: n,
+        span: Span::SYNTHETIC,
+        inferred_type: Some(Box::new(Type::Int)),
+    }
 }
 fn veclit(elements: Vec<Expr>, ty: Type) -> Expr {
-    Expr::VecLit { elements, span: Span::SYNTHETIC, inferred_type: Some(Box::new(ty)) }
+    Expr::VecLit {
+        elements,
+        span: Span::SYNTHETIC,
+        inferred_type: Some(Box::new(ty)),
+    }
 }
 
 // spec: design/backend/ownership-codegen.md §13.5 / FIXME 0668 — a heap-typed
@@ -77,9 +94,14 @@ fn veclit(elements: Vec<Expr>, ty: Type) -> Expr {
 #[test]
 fn veclit_heap_var_element_takes_its_count() {
     // (defn f [v] [v])  — v : Vec<Int> (AlwaysHeap), element is an owned Var.
-    let body = veclit(vec![var("v", vec_int())], Type::adt(
-        ModuleFullPath::from("primitives"), TypeName::from("Vec"), vec![vec_int()],
-    ));
+    let body = veclit(
+        vec![var("v", vec_int())],
+        Type::adt(
+            ModuleFullPath::from("primitives"),
+            TypeName::from("Vec"),
+            vec![vec_int()],
+        ),
+    );
     let clif = clif_of_veclit_body(body);
     assert_eq!(
         rc_inc_count(&clif),
@@ -97,9 +119,14 @@ fn veclit_heap_var_element_takes_its_count() {
 fn veclit_temporary_element_transfers_no_inc_neg() {
     // (defn f [v] [[1 2 3]])  — the element is a fresh literal (temp).
     let inner = veclit(vec![int_lit(1), int_lit(2), int_lit(3)], vec_int());
-    let body = veclit(vec![inner], Type::adt(
-        ModuleFullPath::from("primitives"), TypeName::from("Vec"), vec![vec_int()],
-    ));
+    let body = veclit(
+        vec![inner],
+        Type::adt(
+            ModuleFullPath::from("primitives"),
+            TypeName::from("Vec"),
+            vec![vec_int()],
+        ),
+    );
     let clif = clif_of_veclit_body(body);
     assert_eq!(
         rc_inc_count(&clif),

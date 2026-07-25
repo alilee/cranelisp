@@ -80,7 +80,8 @@ fn assert_exact(n: usize, ownership_off: bool) {
         "ownership analysis ON"
     };
     assert_eq!(
-        allocs, deallocs,
+        allocs,
+        deallocs,
         "ADT-wrapped supersede loop (N={n}, {toggle}) MUST balance exactly: \
          allocs={allocs} deallocs={deallocs} (residue {}). Each superseded `Gr` \
          box and its cells vec is freed at the tail jump.",

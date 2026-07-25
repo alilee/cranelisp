@@ -51,7 +51,7 @@ use std::time::{Duration, Instant};
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, CrOutput};
+use helpers::e2e::{CrOutput, Cranelisp};
 
 // =============================================================================
 // Raw-process port-parametrized web harness (the Gap-G4 deliverable, /qa-owned).
@@ -172,7 +172,9 @@ fn spawn_server(fixture_rel: &str, port: u16) -> ServerGuard {
 fn http_request(port: u16, method: &str, path: &str) -> String {
     let mut stream =
         TcpStream::connect(format!("127.0.0.1:{port}")).expect("connect to fan-out server");
-    stream.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
     let request = format!("{method} {path} HTTP/1.0\r\n\r\n");
     stream.write_all(request.as_bytes()).expect("write request");
     stream.flush().ok();
@@ -461,7 +463,11 @@ const BACKSTOP_ENV: &str = "CRANELISP_REACTOR_BACKSTOP_MS";
 fn spawn_server_env(fixture_rel: &str, port: u16, env: &[(&str, &str)]) -> ServerGuard {
     let root = workspace_root();
     let binary = root.join("target").join("debug").join("cranelisp");
-    assert!(binary.exists(), "cranelisp binary not found at {} — run `cargo build` first", binary.display());
+    assert!(
+        binary.exists(),
+        "cranelisp binary not found at {} — run `cargo build` first",
+        binary.display()
+    );
 
     let mut cmd = Command::new(&binary);
     cmd.current_dir(&root)

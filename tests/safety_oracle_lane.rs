@@ -31,7 +31,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{assert_safety_matrix, Cranelisp, PreludeVariant, SafetyMatrix};
+use helpers::e2e::{Cranelisp, PreludeVariant, SafetyMatrix, assert_safety_matrix};
 
 // MS-P2 ACCEPTANCE (RED day one) — 0641 B-1. `(defn f [v] (vec-get [v] 0))`
 // returns its own param `v` via a fresh-container projection; the ownership walk
@@ -78,20 +78,17 @@ const COW_SET_READ_PROG: &str = "(defn f [v] (vec-get (vec-set v 0 9) 0))\n\
 
 // 0706 face (a) — nested COW projected out in one frame: inner (vec-set v 0 1) is the
 // unprotected inner may-alias link; f [9 9 9] → 1.
-const CHAINED_NESTED_COW_PROG: &str =
-    "(defn f [v] (vec-get (vec-set (vec-set v 0 1) 1 2) 0))\n\
+const CHAINED_NESTED_COW_PROG: &str = "(defn f [v] (vec-get (vec-set (vec-set v 0 1) 1 2) 0))\n\
      (defn main [] (Pure (f [9 9 9])))\n";
 
 // 0706 face (b) — let-bound intermediate `w`, single set over the alias, projected
 // out; `w` is the unprotected inner may-alias link; f [9 9 9] → 1.
-const CHAINED_LET_COW_PROG: &str =
-    "(defn f [v] (let [w (vec-set v 0 1)] (vec-get (vec-set w 1 2) 0)))\n\
+const CHAINED_LET_COW_PROG: &str = "(defn f [v] (let [w (vec-set v 0 1)] (vec-get (vec-set w 1 2) 0)))\n\
      (defn main [] (Pure (f [9 9 9])))\n";
 
 // 0706 negative control — whole-value nested transfer, caller-projected; CLEAN both
 // modes. f [9 9 9] → [1 2 9]; (vec-get (f …) 0) → 1.
-const WHOLE_VALUE_NESTED_TRANSFER_PROG: &str =
-    "(defn f [v] (vec-set (vec-set v 0 1) 1 2))\n\
+const WHOLE_VALUE_NESTED_TRANSFER_PROG: &str = "(defn f [v] (vec-set (vec-set v 0 1) 1 2))\n\
      (defn main [] (Pure (vec-get (f [9 9 9]) 0)))\n";
 
 // MS-P7 (immediate-link face FIXED S114 W7; chained faces carry — 0706 pins below)
@@ -288,25 +285,21 @@ fn safety_lane_whole_value_nested_transfer_clean_green() {
 // and never inverts on the fix (no cell asserts "it aborts").
 
 // 0772 A1 — bare `If`, COW producer in the SECOND (else) arm. RED (`--link` 134).
-const IF_JOINED_COW_ARM_SECOND_PROG: &str =
-    "(defn f [v b] (vec-get (if b v (vec-set v 0 1)) 0))\n\
+const IF_JOINED_COW_ARM_SECOND_PROG: &str = "(defn f [v b] (vec-get (if b v (vec-set v 0 1)) 0))\n\
      (defn main [] (Pure (f [9 9 9] false)))\n";
 
 // 0772 A2 — the ARM-SWAPPED TWIN of A1. Same runtime path, same contract; only
 // the static arm order differs. GREEN today — which is the finding, not comfort.
-const IF_JOINED_COW_ARM_FIRST_PROG: &str =
-    "(defn f [v b] (vec-get (if b (vec-set v 0 1) v) 0))\n\
+const IF_JOINED_COW_ARM_FIRST_PROG: &str = "(defn f [v b] (vec-get (if b (vec-set v 0 1) v) 0))\n\
      (defn main [] (Pure (f [9 9 9] true)))\n";
 
 // 0772 B1/B2 — the `let`-mediated `If` join: the COW result is bound to `w`, and
 // the join is over {param `v`, binding `w`}. Aborts in BOTH arm orders, so this
 // face is not covered by the row-4 union at all (row 2 / row 4 composition
 // through the binding env).
-const LET_IF_JOINED_COW_ARM_SECOND_PROG: &str =
-    "(defn f [v b] (let [w (vec-set v 0 1)] (vec-get (if b v w) 0)))\n\
+const LET_IF_JOINED_COW_ARM_SECOND_PROG: &str = "(defn f [v b] (let [w (vec-set v 0 1)] (vec-get (if b v w) 0)))\n\
      (defn main [] (Pure (f [9 9 9] false)))\n";
-const LET_IF_JOINED_COW_ARM_FIRST_PROG: &str =
-    "(defn f [v b] (let [w (vec-set v 0 1)] (vec-get (if b w v) 0)))\n\
+const LET_IF_JOINED_COW_ARM_FIRST_PROG: &str = "(defn f [v b] (let [w (vec-set v 0 1)] (vec-get (if b w v) 0)))\n\
      (defn main [] (Pure (f [9 9 9] true)))\n";
 
 // 0772 A1 — `If`-joined COW container, COW producer in the SECOND arm.
@@ -538,14 +531,12 @@ fn safety_lane_if_joined_whole_value_transfer_clean_green() {
 // caller returns the set value and is memory-safe in all modes.
 #[test]
 fn safety_lane_chained_cow_generalization_shapes_clean_green() {
-    const THREE_LINK_NESTED: &str =
-        "(defn f [v] (vec-get (vec-set (vec-set (vec-set v 0 1) 1 2) 2 3) 0))\n\
+    const THREE_LINK_NESTED: &str = "(defn f [v] (vec-get (vec-set (vec-set (vec-set v 0 1) 1 2) 2 3) 0))\n\
          (defn main [] (Pure (f [9 9 9])))\n";
     const ACROSS_FN_BOUNDARY: &str = "(defn g [v] (vec-set v 0 1))\n\
          (defn f [v] (vec-get (vec-set (g v) 1 2) 0))\n\
          (defn main [] (Pure (f [9 9 9])))\n";
-    const NESTED_LET_THREE_LINK: &str =
-        "(defn f [v] (let [w (vec-set v 0 1)] \
+    const NESTED_LET_THREE_LINK: &str = "(defn f [v] (let [w (vec-set v 0 1)] \
            (let [x (vec-set w 1 2)] (vec-get (vec-set x 2 3) 0))))\n\
          (defn main [] (Pure (f [9 9 9])))\n";
     for prog in [THREE_LINK_NESTED, ACROSS_FN_BOUNDARY, NESTED_LET_THREE_LINK] {

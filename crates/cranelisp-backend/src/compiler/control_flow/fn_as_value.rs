@@ -17,7 +17,7 @@ use cranelisp_types::{
 use crate::heap::{self, HeapCategory, HeapClosure};
 use crate::primitives_inline;
 
-use super::{emit_capture_inc_into, CaptureRelease, FnCompiler};
+use super::{CaptureRelease, FnCompiler, emit_capture_inc_into};
 
 /// If `fn_type` is a `Fn` whose first parameter is `(Vec t)`, return `t`.
 ///
@@ -129,24 +129,26 @@ where
         // read and the S10/S15/S16/S17 wrapper-body keyed reads.
         target_fq: Option<&FQSymbol>,
     ) -> Result<Value, CranelispError> {
-        let alloc_id =
-            self.ctx
-                .alloc_func_id
-                .ok_or_else(|| CranelispError::CodegenError {
-                    message: "runtime/alloc not declared (need declare_intrinsics)".into(),
-                    location: ErrorLocation::from_span(span),
-                })?;
+        let alloc_id = self
+            .ctx
+            .alloc_func_id
+            .ok_or_else(|| CranelispError::CodegenError {
+                message: "runtime/alloc not declared (need declare_intrinsics)".into(),
+                location: ErrorLocation::from_span(span),
+            })?;
 
         // S110 W2 (S14): arity read off the carrier's fetched entry
         // (`param_names.len()`), replacing `resolve_func_arity`. The current-unit
         // `func_arities` map stays as the fast-path (a local map, not a resolver).
-        let arity = self.ctx.func_arities.get(name).copied()
+        let arity = self
+            .ctx
+            .func_arities
+            .get(name)
+            .copied()
             .or_else(|| target_fq.and_then(|fq| self.ctx.arity_at(fq)))
-            .ok_or_else(|| {
-                CranelispError::CodegenError {
-                    message: format!("unknown arity for function: {name}"),
-                    location: ErrorLocation::from_span(span),
-                }
+            .ok_or_else(|| CranelispError::CodegenError {
+                message: format!("unknown arity for function: {name}"),
+                location: ErrorLocation::from_span(span),
             })?;
 
         // Compile the wrapper function. Span-derived + mono-discriminated name
@@ -175,17 +177,17 @@ where
 
         let vec_elem = vec_query_elem_from_fn_type(fn_type);
         self.compile_fn_wrapper_body(
-            wrapper_func_id, name, arity, span, vec_elem.as_ref(), target_fq,
+            wrapper_func_id,
+            name,
+            arity,
+            span,
+            vec_elem.as_ref(),
+            target_fq,
         )?;
 
         // Allocate a closure with zero captures: [header | code_ptr].
         let payload_size = HeapClosure::payload_size(0) as i64;
-        let base_ptr = heap::emit_alloc(
-            &mut self.builder,
-            self.module,
-            alloc_id,
-            payload_size,
-        );
+        let base_ptr = heap::emit_alloc(&mut self.builder, self.module, alloc_id, payload_size);
 
         // Store the wrapper function pointer.
         let wrapper_ref = self
@@ -241,21 +243,19 @@ where
         span: Span,
         fn_type: Option<&Type>,
     ) -> Result<Value, CranelispError> {
-        let alloc_id =
-            self.ctx
-                .alloc_func_id
-                .ok_or_else(|| CranelispError::CodegenError {
-                    message: "runtime/alloc not declared (need declare_intrinsics)".into(),
-                    location: ErrorLocation::from_span(span),
-                })?;
+        let alloc_id = self
+            .ctx
+            .alloc_func_id
+            .ok_or_else(|| CranelispError::CodegenError {
+                message: "runtime/alloc not declared (need declare_intrinsics)".into(),
+                location: ErrorLocation::from_span(span),
+            })?;
 
         // The callable name carried by the resolution — used only for a stable,
         // unique wrapper symbol name. The actual dispatch target is chosen by
         // `emit_curry_target_call` from `resolved`.
         let target_name: Symbol = match resolved {
-            ResolvedCall::TraitMethod { mangled_name, .. } => {
-                Symbol::from(mangled_name.as_ref())
-            }
+            ResolvedCall::TraitMethod { mangled_name, .. } => Symbol::from(mangled_name.as_ref()),
             ResolvedCall::BuiltinFn { name, .. } => Symbol::from(name.as_ref()),
             // Other variants are not produced for value-position trait methods
             // by typecheck; emit_curry_target_call falls through to a by-name
@@ -291,8 +291,7 @@ where
         let mut inner_func_ctx = FunctionBuilderContext::new();
         inner_ctx.func.signature = sig;
 
-        let mut builder =
-            FunctionBuilder::new(&mut inner_ctx.func, &mut inner_func_ctx);
+        let mut builder = FunctionBuilder::new(&mut inner_ctx.func, &mut inner_func_ctx);
         let entry = builder.create_block();
         builder.append_block_params_for_function_params(entry);
         builder.switch_to_block(entry);
@@ -329,12 +328,7 @@ where
 
         // Allocate a closure with zero captures: [header | code_ptr | drop_glue(0)].
         let payload_size = HeapClosure::payload_size(0) as i64;
-        let base_ptr = heap::emit_alloc(
-            &mut self.builder,
-            self.module,
-            alloc_id,
-            payload_size,
-        );
+        let base_ptr = heap::emit_alloc(&mut self.builder, self.module, alloc_id, payload_size);
 
         // Store the wrapper function pointer.
         let wrapper_ref = self
@@ -382,12 +376,19 @@ where
 
         // Signature: (env_ptr, params...) -> i64
         for _ in 0..1 + arity {
-            inner_ctx.func.signature.params.push(AbiParam::new(types::I64));
+            inner_ctx
+                .func
+                .signature
+                .params
+                .push(AbiParam::new(types::I64));
         }
-        inner_ctx.func.signature.returns.push(AbiParam::new(types::I64));
+        inner_ctx
+            .func
+            .signature
+            .returns
+            .push(AbiParam::new(types::I64));
 
-        let mut builder =
-            FunctionBuilder::new(&mut inner_ctx.func, &mut inner_func_ctx);
+        let mut builder = FunctionBuilder::new(&mut inner_ctx.func, &mut inner_func_ctx);
 
         let entry_block = builder.create_block();
         builder.append_block_params_for_function_params(entry_block);
@@ -398,7 +399,12 @@ where
         let user_params: Vec<Value> = block_params[1..].to_vec(); // skip env_ptr
 
         let result = self.emit_wrapper_call(
-            &mut builder, target_name, &user_params, span, vec_elem, target_fq,
+            &mut builder,
+            target_name,
+            &user_params,
+            span,
+            vec_elem,
+            target_fq,
         )?;
 
         builder.ins().return_(&[result]);
@@ -513,8 +519,7 @@ where
         // ADT constructors have a compiled constructor function here, so this
         // arm covers `(let [f Box] (f 7))` for user types.
         if let Some(target_id) = self.ctx.func_ids.get(target_name) {
-            let target_ref =
-                self.module.declare_func_in_func(*target_id, builder.func);
+            let target_ref = self.module.declare_func_in_func(*target_id, builder.func);
             let call = builder.ins().call(target_ref, user_params);
             let result = builder.inst_results(call)[0];
             if let Some(ref summary) = target_summary {
@@ -535,9 +540,7 @@ where
         // S110 W2 (S16): keyed `ctor_meta_at` read off the carrier, replacing the
         // `lookup_constructor` chain-follow — the recorder records the canonical
         // `member_key` for a ctor value ref (§1.1.2), so the direct read HITS.
-        if let Some((fqtn, ctor_info)) =
-            target_fq.and_then(|fq| self.ctx.ctor_meta_at(fq))
-        {
+        if let Some((fqtn, ctor_info)) = target_fq.and_then(|fq| self.ctx.ctor_meta_at(fq)) {
             // R5 (§7.1): a value-flattened single-ctor type constructs by a
             // bare-word move of its single field — no alloc. MUST match the
             // use-site (`compile_var_apply`) and synthetic-body
@@ -550,13 +553,13 @@ where
             if let Some(v) = self.value_construct(&adt_ty, user_params) {
                 return Ok(v);
             }
-            let alloc_id =
-                self.ctx
-                    .alloc_func_id
-                    .ok_or_else(|| CranelispError::CodegenError {
-                        message: "runtime/alloc not declared (need declare_intrinsics)".into(),
-                        location: ErrorLocation::from_span(span),
-                    })?;
+            let alloc_id = self
+                .ctx
+                .alloc_func_id
+                .ok_or_else(|| CranelispError::CodegenError {
+                    message: "runtime/alloc not declared (need declare_intrinsics)".into(),
+                    location: ErrorLocation::from_span(span),
+                })?;
             return emit_adt_construct_into(
                 builder,
                 self.module,
@@ -695,7 +698,12 @@ where
                         symbol: sym.clone(),
                     };
                     return self.emit_wrapper_call(
-                        builder, &sym, all_args, span, vec_elem, Some(&method_fq),
+                        builder,
+                        &sym,
+                        all_args,
+                        span,
+                        vec_elem,
+                        Some(&method_fq),
                     );
                 }
                 ResolvedCall::BuiltinFn { name: jit_name } => {
@@ -729,13 +737,21 @@ where
                     // Named builtin resolved by the typechecker.
                     if is_extern_primitive_in_wrapper(jit_name) {
                         return emit_extern_call_in_wrapper(
-                            builder, self.module, jit_name, all_args, span,
+                            builder,
+                            self.module,
+                            jit_name,
+                            all_args,
+                            span,
                         );
                     }
                     if primitives_inline::is_known_builtin(jit_name) {
                         match primitives_inline::try_emit_inline_primitive(
-                            builder, jit_name, all_args, span,
-                            self.module, self.ctx.panic_func_id,
+                            builder,
+                            jit_name,
+                            all_args,
+                            span,
+                            self.module,
+                            self.ctx.panic_func_id,
                         ) {
                             Some(result) => return result,
                             None => {
@@ -749,7 +765,11 @@ where
                                     symbol: sym.clone(),
                                 };
                                 return self.emit_wrapper_call(
-                                    builder, &sym, all_args, span, vec_elem,
+                                    builder,
+                                    &sym,
+                                    all_args,
+                                    span,
+                                    vec_elem,
                                     Some(&prim_fq),
                                 );
                             }
@@ -757,7 +777,11 @@ where
                     }
                     // Unknown builtin: treat as extern.
                     return emit_extern_call_in_wrapper(
-                        builder, self.module, jit_name, all_args, span,
+                        builder,
+                        self.module,
+                        jit_name,
+                        all_args,
+                        span,
                     );
                 }
                 _ => {} // SigDispatch, AutoCurry — fall through to emit_wrapper_call
@@ -800,13 +824,13 @@ where
         // its embedded `CODE_PTR` instead of a GOT slot.
         target_closure: Option<Value>,
     ) -> Result<Value, CranelispError> {
-        let alloc_id =
-            self.ctx
-                .alloc_func_id
-                .ok_or_else(|| CranelispError::CodegenError {
-                    message: "runtime/alloc not declared (need declare_intrinsics)".into(),
-                    location: ErrorLocation::from_span(span),
-                })?;
+        let alloc_id = self
+            .ctx
+            .alloc_func_id
+            .ok_or_else(|| CranelispError::CodegenError {
+                message: "runtime/alloc not declared (need declare_intrinsics)".into(),
+                location: ErrorLocation::from_span(span),
+            })?;
 
         let remaining_count = total_count - applied_count;
 
@@ -850,12 +874,7 @@ where
         // closure VALUE (FIXME 0705) — it rides at index `applied_count`.
         let capture_count = applied_count + usize::from(target_closure.is_some());
         let payload_size = HeapClosure::payload_size(capture_count) as i64;
-        let base_ptr = heap::emit_alloc(
-            &mut self.builder,
-            self.module,
-            alloc_id,
-            payload_size,
-        );
+        let base_ptr = heap::emit_alloc(&mut self.builder, self.module, alloc_id, payload_size);
 
         // Store wrapper code_ptr at CODE_PTR_OFFSET (16).
         let wrapper_ref = self
@@ -871,9 +890,7 @@ where
 
         // Store drop glue pointer at DROP_GLUE_PTR_OFFSET (24).
         let drop_glue_val = if let Some(glue_id) = drop_glue_id {
-            let glue_ref = self
-                .module
-                .declare_func_in_func(glue_id, self.builder.func);
+            let glue_ref = self.module.declare_func_in_func(glue_id, self.builder.func);
             self.builder.ins().func_addr(types::I64, glue_ref)
         } else {
             self.builder.ins().iconst(types::I64, 0)
@@ -986,11 +1003,7 @@ where
         // so the closure env's reference stays intact across calls.
         let mut all_args = Vec::with_capacity(applied_count + remaining_count);
         for (i, category) in arg_categories.iter().enumerate().take(applied_count) {
-            let cap_val = heap::heap_load(
-                &mut builder,
-                env_ptr,
-                HeapClosure::capture_offset(i),
-            );
+            let cap_val = heap::heap_load(&mut builder, env_ptr, HeapClosure::capture_offset(i));
             // Inc heap-typed captures before passing to consuming callee.
             emit_capture_inc_into(&mut builder, self.module, *category, cap_val);
             all_args.push(cap_val);
@@ -1014,8 +1027,7 @@ where
                 env_ptr,
                 HeapClosure::capture_offset(applied_count),
             );
-            let code_ptr =
-                heap::heap_load(&mut builder, target_val, HeapClosure::CODE_PTR_OFFSET);
+            let code_ptr = heap::heap_load(&mut builder, target_val, HeapClosure::CODE_PTR_OFFSET);
             let mut call_sig = self.module.make_signature();
             call_sig.params.push(AbiParam::new(types::I64)); // env ptr
             for _ in &all_args {
@@ -1093,8 +1105,7 @@ where
         // different `arg_categories` collide on a span-only glue name and
         // silently mis-drop captures). Composed by the ONE naming fn (S111 R6
         // §4.1, `resolution::curry_drop_glue_name`).
-        let glue_name =
-            crate::compiler::curry_drop_glue_name(&self.inner_fn_discriminator(), span);
+        let glue_name = crate::compiler::curry_drop_glue_name(&self.inner_fn_discriminator(), span);
         self.emit_capture_dec_glue(&glue_name, span, &heap_indices)
     }
 }

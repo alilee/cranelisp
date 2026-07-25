@@ -6,10 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use cranelisp_types::{ErrorLocation, 
-    CranelispError, ModuleFullPath,
-    Span, Type,
-};
+use cranelisp_types::{CranelispError, ErrorLocation, ModuleFullPath, Span, Type};
 
 // ---------------------------------------------------------------------------
 // Module file resolution
@@ -77,16 +74,19 @@ pub fn execute_compiled_expr(
 ) -> Result<ExprOutcome, CranelispError> {
     // Read the GOT address + inferred type for the compiled `__expr` entry.
     let (got_addr, expr_ty) = {
-        let table = symbol_tables.get(current_module).ok_or_else(|| {
-            CranelispError::CodegenError {
-                message: "no symbol table for current module at expr eval".into(),
+        let table =
+            symbol_tables
+                .get(current_module)
+                .ok_or_else(|| CranelispError::CodegenError {
+                    message: "no symbol table for current module at expr eval".into(),
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
+                })?;
+        let entry = table
+            .get("__expr")
+            .ok_or_else(|| CranelispError::CodegenError {
+                message: "no `__expr` entry found in current module".into(),
                 location: ErrorLocation::from_span(Span::SYNTHETIC),
-            }
-        })?;
-        let entry = table.get("__expr").ok_or_else(|| CranelispError::CodegenError {
-            message: "no `__expr` entry found in current module".into(),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        })?;
+            })?;
         // The callable slot now rides on the `DefKind` variant (S83 reshape,
         // FIXME 0356/0357) — read it via the `callable_got_slot()` chokepoint.
         let Some(slot) = entry.callable_got_slot() else {
@@ -102,9 +102,7 @@ pub fn execute_compiled_expr(
             });
         };
         // `ast` is now `DefnVariant` (S69 Submission 35); `body` is a field.
-        let inferred = ast
-            .as_ref()
-            .and_then(|d| d.body.inferred_type().cloned());
+        let inferred = ast.as_ref().and_then(|d| d.body.inferred_type().cloned());
         (table.got.load_slot(slot), inferred)
     };
 
@@ -145,8 +143,7 @@ pub fn execute_compiled_expr(
     // `__expr` wrapper, written by `compile_to_module`. The `Arc<Jit>` on the
     // `__expr` entry keeps the pages mapped for the duration of this call +
     // the IO drive the program driver performs internally.
-    let outcome =
-        cranelisp_intrinsics::panic::cranelisp_run_program(got_addr, ty.is_io());
+    let outcome = cranelisp_intrinsics::panic::cranelisp_run_program(got_addr, ty.is_io());
 
     program_outcome_to_result(outcome, ty)
 }
@@ -211,19 +208,27 @@ fn program_outcome_to_result(
         // IS a genuine compiler/platform fault (a structured `PlatformError`),
         // so it stays `Err(CranelispError)`.
         2 => {
-            let fault = cranelisp_intrinsics::panic::take_dispatch_fault()
-                .unwrap_or_else(|| cranelisp_intrinsics::panic::DispatchFault {
+            let fault = cranelisp_intrinsics::panic::take_dispatch_fault().unwrap_or_else(|| {
+                cranelisp_intrinsics::panic::DispatchFault {
                     fn_name: "<unknown>".to_string(),
                     cause: "platform dispatch fault".to_string(),
-                });
+                }
+            });
             Err(compose_dispatch_error(fault))
         }
         // 0 = clean: `outcome.exit_code` is the trampolined inner IO value
         // (or `__expr`'s own result for a non-IO expression). Unwrap the
         // type the same way `unwrap_io_inline` used to.
         _ => {
-            let result_ty = if ty.is_io() { ty.unwrap_io().clone() } else { ty };
-            Ok(ExprOutcome::Value { value: outcome.exit_code, ty: result_ty })
+            let result_ty = if ty.is_io() {
+                ty.unwrap_io().clone()
+            } else {
+                ty
+            };
+            Ok(ExprOutcome::Value {
+                value: outcome.exit_code,
+                ty: result_ty,
+            })
         }
     }
 }
@@ -233,9 +238,7 @@ fn program_outcome_to_result(
 /// half). The intrinsics guard captured `(fn_name, cause)` and is
 /// diagnostics-free by charter; int maps it to the typed error surfaced via
 /// `CranelispError::Platform`.
-fn compose_dispatch_error(
-    fault: cranelisp_intrinsics::panic::DispatchFault,
-) -> CranelispError {
+fn compose_dispatch_error(fault: cranelisp_intrinsics::panic::DispatchFault) -> CranelispError {
     CranelispError::Platform(cranelisp_types::PlatformError::DispatchError {
         fn_name: cranelisp_types::Symbol::from(fault.fn_name),
         cause: fault.cause,
@@ -287,10 +290,7 @@ mod tests {
 
     fn io_int_type() -> Type {
         Type::ADT(
-            FQTypeName::new(
-                ModuleFullPath::from("primitives"),
-                TypeName::from("IO"),
-            ),
+            FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("IO")),
             vec![Type::Int],
         )
     }
@@ -324,9 +324,18 @@ mod tests {
     /// REPL case (a bare `Int`/`Bool`/etc result) pays nothing extra.
     #[test]
     fn program_outcome_to_result_clean_non_io_passthrough() {
-        let outcome = ProgramOutcome { exit_code: 42, error_kind: 0 };
+        let outcome = ProgramOutcome {
+            exit_code: 42,
+            error_kind: 0,
+        };
         let got = program_outcome_to_result(outcome, Type::Int).unwrap();
-        assert_eq!(got, ExprOutcome::Value { value: 42, ty: Type::Int });
+        assert_eq!(
+            got,
+            ExprOutcome::Value {
+                value: 42,
+                ty: Type::Int
+            }
+        );
     }
 
     /// error_kind 0 (clean), IO type: the exit_code is already the
@@ -335,11 +344,17 @@ mod tests {
     /// `unwrap_io_inline` used to perform after driving IO itself.
     #[test]
     fn program_outcome_to_result_clean_io_unwraps_type() {
-        let outcome = ProgramOutcome { exit_code: 7, error_kind: 0 };
+        let outcome = ProgramOutcome {
+            exit_code: 7,
+            error_kind: 0,
+        };
         let got = program_outcome_to_result(outcome, io_int_type()).unwrap();
         assert_eq!(
             got,
-            ExprOutcome::Value { value: 7, ty: Type::Int },
+            ExprOutcome::Value {
+                value: 7,
+                ty: Type::Int
+            },
             "IO a result must unwrap to a"
         );
     }
@@ -356,9 +371,12 @@ mod tests {
         cranelisp_intrinsics::panic::set_runtime_error(
             "runtime panic: select over empty collection".to_string(),
         );
-        let outcome = ProgramOutcome { exit_code: 0, error_kind: 1 };
-        let got = program_outcome_to_result(outcome, io_int_type())
-            .expect("a trap is Ok(Trap), not Err");
+        let outcome = ProgramOutcome {
+            exit_code: 0,
+            error_kind: 1,
+        };
+        let got =
+            program_outcome_to_result(outcome, io_int_type()).expect("a trap is Ok(Trap), not Err");
         assert_eq!(
             got,
             ExprOutcome::Trap {
@@ -377,9 +395,17 @@ mod tests {
     #[test]
     fn program_outcome_to_result_runtime_error_missing_slot_falls_back() {
         let _ = cranelisp_intrinsics::panic::take_runtime_error(); // ensure empty
-        let outcome = ProgramOutcome { exit_code: 0, error_kind: 1 };
+        let outcome = ProgramOutcome {
+            exit_code: 0,
+            error_kind: 1,
+        };
         let got = program_outcome_to_result(outcome, Type::Int).unwrap();
-        assert_eq!(got, ExprOutcome::Trap { message: "runtime panic".to_string() });
+        assert_eq!(
+            got,
+            ExprOutcome::Trap {
+                message: "runtime panic".to_string()
+            }
+        );
     }
 
     /// error_kind 2 (platform-dispatch fault, FIXME 0327): composed into a
@@ -393,7 +419,10 @@ mod tests {
                 cause: "device unavailable".to_string(),
             },
         );
-        let outcome = ProgramOutcome { exit_code: 0, error_kind: 2 };
+        let outcome = ProgramOutcome {
+            exit_code: 0,
+            error_kind: 2,
+        };
         let err = program_outcome_to_result(outcome, Type::Int).unwrap_err();
         match err {
             CranelispError::Platform(cranelisp_types::PlatformError::DispatchError {

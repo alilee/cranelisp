@@ -398,3 +398,17 @@ generative harness + adversarial authorship + the "elided-safety-op" audit
 category). Risk retires only as the gate's reach makes the class
 mechanically RED; re-grade the §5 exposure table each sprint the lane
 grows.
+
+## S117 risk read — conformance, recovery, and truthful ownership facts
+
+| Risk | Grade | Detection / mitigation |
+|---|---|---|
+| One syntactic `TraitRef` is interpreted as spelling in one producer and canonical identity in another | Important | The scribed `trait_ref` rule makes QT-1/QT-2 failing-first ready. Keep qualified-reference × declaration-binder controls; never broaden bare-only `trait_binder` while fixing canonical impl identity. |
+| Macro output receives a private registration path and diverges again by definition kind | Important | Literal/expanded twins through the shared Pass-2/3 path; 0800 remains separate from 0816 absent mechanism evidence. |
+| A stdlib `def` macro usability question is mistaken for core-language semantics | Important, ownership/process | Route function-valued behavior to `/stdlib`; `/repl` describes the selected API truthfully. QA tests the choice after design and never labels `def` a special form. Faces 1–2 remain independently testable presentation defects. |
+| A failed codegen transaction permanently poisons a long-lived REPL session | Blocker for REPL release | Failure → literal, definition/call, same-name repair sequence inside one public v4 session; separately assert failing-unit identity. |
+| Type rendering has sparse variant coverage despite a broad `[Tested]` band | Important | Named-type variant × output-surface matrix; constrained-variable negative explicitly removes the concrete-`Int` false proxy. |
+| `/info` trait/type inverse views diverge or duplicate after re-impl | Important | Pair-identity twins with first/rejected/re-impl transitions and local/imported ordering. |
+| Primitive ownership tests restate declarations and remain green when declarations lie | Blocker for R-2 acceptance | Production CLIF plus public behavior for all four nontrivial classes; mandatory false-table-only mutation demonstration. Stop at stable CLIF exposure if absent—do not add blocked instrumentation. |
+| Historical `[Tested]` survives a changed requirement | Important, process integrity | S115 backfill in `s117-test-plan.md` §6; restore only after narrow runtime evidence and two-sided reconciliation. |
+| Non-normative byte-backed text design accidentally creates present-tense coverage obligations | Low but scope-sensitive | No Sprint-117 spec annotation or implementation test; future matrix is advisory only. |

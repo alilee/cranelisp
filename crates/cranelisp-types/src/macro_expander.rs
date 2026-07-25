@@ -92,7 +92,10 @@ impl std::fmt::Display for MacroInvokeError {
                 write!(f, "macro `{fq}` aborted at {span}: {message}")
             }
             MacroInvokeError::Malformed { fq, message, span } => {
-                write!(f, "macro `{fq}` returned malformed sexp at {span}: {message}")
+                write!(
+                    f,
+                    "macro `{fq}` returned malformed sexp at {span}: {message}"
+                )
             }
         }
     }

@@ -172,7 +172,10 @@ fn kc_n4_value_seam_entry_miss_hard_errors() {
         let mut targets: HashMap<Span, FQSymbol> = HashMap::new();
         targets.insert(
             apply_span,
-            FQSymbol { module: other.clone(), symbol: Symbol::from("ghost") },
+            FQSymbol {
+                module: other.clone(),
+                symbol: Symbol::from("ghost"),
+            },
         );
         st.insert(
             useit.name.clone(),
@@ -262,7 +265,10 @@ fn kc_n5_value_seam_slotless_template_hard_errors() {
         let mut targets: HashMap<Span, FQSymbol> = HashMap::new();
         targets.insert(
             ref_span,
-            FQSymbol { module: user.clone(), symbol: Symbol::from("gen") },
+            FQSymbol {
+                module: user.clone(),
+                symbol: Symbol::from("gen"),
+            },
         );
         st.insert(
             useit.name.clone(),
@@ -319,7 +325,10 @@ fn kc_n6_local_none_carrier_is_not_a_miss() {
     {
         let mut st = SymbolTable::new(user.clone());
         let _ = st.allocate_got_slot().expect("fresh table has free slots");
-        st.insert(identity.name.clone(), make_def_entry_slot(identity.clone(), 0));
+        st.insert(
+            identity.name.clone(),
+            make_def_entry_slot(identity.clone(), 0),
+        );
         tables.insert(user.clone(), st);
     }
 

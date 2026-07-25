@@ -57,7 +57,13 @@ fn test_build_cache_packet() {
     assert_eq!(packet.module_path, mp);
     assert_eq!(packet.source_hash, "abc123");
     assert!(!packet.meta_json_bytes.is_empty());
-    assert!(packet.meta_path.to_str().unwrap().contains("module.meta.json"));
+    assert!(
+        packet
+            .meta_path
+            .to_str()
+            .unwrap()
+            .contains("module.meta.json")
+    );
     assert!(packet.object_path.to_str().unwrap().contains("module.o"));
 }
 
@@ -141,7 +147,7 @@ fn table_with_def(
     scheme: cranelisp_types::Scheme,
 ) -> dashmap::DashMap<ModuleFullPath, SymbolTable> {
     use cranelisp_types::{
-        DefKind, MonoDefnVariant, MonoExpr, ModuleEntry, UserFnState, Visibility,
+        DefKind, ModuleEntry, MonoDefnVariant, MonoExpr, UserFnState, Visibility,
     };
     let tables = dashmap::DashMap::new();
     let mut st = SymbolTable::new(module.clone());
@@ -161,8 +167,13 @@ fn table_with_def(
             &v.body,
             &std::collections::HashMap::new(),
         );
-        let body = MonoExpr::from_expr(&v.body, &std::collections::HashMap::new(), &var_refs, &apply_refs)
-            .expect("test fixture body must be concretely typed for the codegen view");
+        let body = MonoExpr::from_expr(
+            &v.body,
+            &std::collections::HashMap::new(),
+            &var_refs,
+            &apply_refs,
+        )
+        .expect("test fixture body must be concretely typed for the codegen view");
         MonoDefnVariant {
             name: name.clone(),
             params: v.params.iter().map(|(n, _)| n.clone()).collect(),
@@ -179,7 +190,10 @@ fn table_with_def(
             docstring: None,
             param_names,
             kind: Box::new(DefKind::UserFn {
-                fn_state: UserFnState::Concrete { got_slot: 0, mode_summary: None },
+                fn_state: UserFnState::Concrete {
+                    got_slot: 0,
+                    mode_summary: None,
+                },
             }),
             callees: vec![],
             trait_origin: None,
@@ -230,7 +244,8 @@ fn test_compile_module_to_object_simple() {
         &tables,
         &mut obj_module,
         false,
-    ).unwrap();
+    )
+    .unwrap();
 
     let product = obj_module.finish();
     let bytes = product.emit().unwrap();
@@ -295,7 +310,8 @@ fn test_compile_module_to_object_with_params() {
         &tables,
         &mut obj_module,
         false,
-    ).unwrap();
+    )
+    .unwrap();
 
     let product = obj_module.finish();
     let bytes = product.emit().unwrap();
@@ -382,7 +398,7 @@ fn test_process_cache_packet_no_object_for_empty_defns() {
     let symbol_table = SymbolTable::new(mp.clone());
     let input = ObjectCompileInput {
         module_path: mp.clone(),
-        defns: vec![],  // No functions
+        defns: vec![], // No functions
         method_resolutions: cranelisp_types::MethodResolutions::new(),
         fn_slot_assignments: HashMap::new(),
         fn_to_module: HashMap::new(),

@@ -116,13 +116,14 @@ pub(crate) fn host_entry_symbols() -> Result<(&'static str, &'static str), Crane
 /// Shared by both impls (the program + args are the impl's own; the spawn is
 /// platform-neutral).
 pub(super) fn run_linker(program: &str, args: &[String]) -> Result<(), CranelispError> {
-    let output = Command::new(program)
-        .args(args)
-        .output()
-        .map_err(|e| CranelispError::CodegenError {
-            message: format!("failed to run {program}: {e}"),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        })?;
+    let output =
+        Command::new(program)
+            .args(args)
+            .output()
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to run {program}: {e}"),
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
+            })?;
 
     if !output.status.success() {
         return Err(CranelispError::CodegenError {

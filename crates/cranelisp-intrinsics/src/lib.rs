@@ -28,7 +28,10 @@
 //!    path, not by emitted-call relocation:
 //!    - `cranelisp-primitives` Rust-calls the allocator (`alloc_string`,
 //!      `alloc_with_rc`, `vec_new`), the drop/RC/panic helpers (`consume_sexp`,
-//!      `consume_slist`, `consume_shallow`, `runtime_panic`), and reads the
+//!      `consume_slist`, `consume_shallow`, `runtime_panic`), constructs and
+//!      callback-borrows Vecs of owned HeapStrings through
+//!      [`vec_runtime::vec_strings_from_owned`] and
+//!      [`vec_runtime::with_vec_strings`], and reads the
 //!      **heap-layout-ABI consts** ([`heap_string::HeapString::LEN_OFFSET`] /
 //!      [`heap_string::HeapString::DATA_OFFSET`], [`vec_runtime::LEN_OFFSET`] /
 //!      [`vec_runtime::CAP_OFFSET`] / [`vec_runtime::DATA_PTR_OFFSET`]).
@@ -171,7 +174,7 @@
 //! | [`panic`](mod@panic) | `runtime/panic` sentinel + `catch-runtime-error` combinator + error-slot mechanism |
 //! | [`rc`]               | RC trace + underflow check + `consume_shallow` (Decision 13/24) |
 //! | [`trace`]            | `(trace ...)` runtime — 12 `cranelisp_trace_*` bodies + `TRACE_STACK` + nested-trace guard + `DisplayDescriptor` (BC §4b inv 12) |
-//! | [`vec_runtime`]      | Vec layout-ABI + COW ops + drop |
+//! | [`vec_runtime`]      | Vec layout-ABI + COW ops + drop + narrow Rust-path Vec-of-String ownership boundary |
 
 pub mod alloc;
 pub mod catalog;
@@ -234,10 +237,10 @@ pub(crate) mod reactor;
 // the per-module path is the canonical reference for everything else (S74 W1
 // narrowing — 17 unused root-duplicate re-exports removed; per-module surface
 // unchanged).
-pub use catalog::{intrinsics_table, IntrinsicEntry}; // backend Jit::new + int worker.rs cache-hit (S76 W1b readers)
-pub use io_observer::{register_io_observer, trace_anchor}; // src/io_trace.rs, src/got_trace.rs
 pub use alloc::{alloc_count, alloc_with_rc, bytes_current, dealloc_count, heap_alloc_payload}; // src/{session_v4,pipeline,platform}.rs
-pub use io::run_io_trampoline; // src/{session_v4,pipeline}.rs
+pub use catalog::{IntrinsicEntry, intrinsics_table}; // backend Jit::new + int worker.rs cache-hit (S76 W1b readers)
+pub use io::run_io_trampoline;
+pub use io_observer::{register_io_observer, trace_anchor}; // src/io_trace.rs, src/got_trace.rs // src/{session_v4,pipeline}.rs
 
 /// The canonical host-callbacks table handed to every platform manifest call.
 ///

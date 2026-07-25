@@ -136,7 +136,7 @@ impl From<ResolveError> for CheckError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cranelisp_types::{ModuleFullPath, SymbolTable, GOT_TABLE_SIZE};
+    use cranelisp_types::{GOT_TABLE_SIZE, ModuleFullPath, SymbolTable};
 
     // spec: 12-runtime §12.2 — GOT exhaustion is a diagnosed compile error (GE-3,
     // typecheck caller-side surface). Exhaust a real module GOT to obtain a

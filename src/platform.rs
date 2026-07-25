@@ -8,12 +8,10 @@
 
 use std::path::{Path, PathBuf};
 
-use cranelisp_platform::{
-    ABI_VERSION, HostCallbacks, OwnedPlatformFnDescriptor, PlatformManifest,
-};
-use cranelisp_types::{ErrorLocation, 
-    CranelispError, DefKind, ModuleEntry, ModuleFullPath, Scheme, Sexp,
-    Span, Symbol, Type, Visibility,
+use cranelisp_platform::{ABI_VERSION, HostCallbacks, OwnedPlatformFnDescriptor, PlatformManifest};
+use cranelisp_types::{
+    CranelispError, DefKind, ErrorLocation, ModuleEntry, ModuleFullPath, Scheme, Sexp, Span,
+    Symbol, Type, Visibility,
 };
 
 /// A loaded platform DLL. Must remain alive for the process lifetime
@@ -267,9 +265,8 @@ pub fn load_platform_dll(
     // — no copy; lifetime = this dlopen handle, kept on `SharedState::kept_dlls`.
     let got_sym_name = format!("__cranelisp_got_platform_{name}");
     let got_base = unsafe {
-        let sym: libloading::Symbol<*const std::sync::atomic::AtomicPtr<u8>> = library
-            .get(got_sym_name.as_bytes())
-            .map_err(|_e| {
+        let sym: libloading::Symbol<*const std::sync::atomic::AtomicPtr<u8>> =
+            library.get(got_sym_name.as_bytes()).map_err(|_e| {
                 CranelispError::Platform(cranelisp_types::PlatformError::LoadFailed {
                     dll: dll_path.to_path_buf(),
                     cause: format!(
@@ -317,7 +314,10 @@ pub fn load_platform_dll(
 /// `(jit_name, ptr)` / `JITBuilder::symbol` direct-extern path is gone — fn
 /// pointers live in the GOT, dispatched GOT-indirect.
 pub fn register_platform_in_tc(
-    symbol_tables: &dashmap::DashMap<cranelisp_types::ModuleFullPath, crate::code::SessionSymbolTable>,
+    symbol_tables: &dashmap::DashMap<
+        cranelisp_types::ModuleFullPath,
+        crate::code::SessionSymbolTable,
+    >,
     module_aliases: &cranelisp_types::ModuleAliases,
     platform: &LoadedPlatform,
 ) -> Result<(), CranelispError> {
@@ -359,7 +359,11 @@ pub fn register_platform_in_tc(
         // (`primitives/Int`, `shapes/Rectangle`) directly against the named
         // modules (auto-loaded per FIXME 0268) — NO injected imports (§5.3).
         let ty = parse_and_check_platform_type_sig(
-            symbol_tables, module_aliases, &module_path, &desc.type_sig, &desc.name,
+            symbol_tables,
+            module_aliases,
+            &module_path,
+            &desc.type_sig,
+            &desc.name,
         )?;
 
         // FIXME 0318 / spec §8.11: a platform fn MUST return `IO _`. Foreign
@@ -376,7 +380,11 @@ pub fn register_platform_in_tc(
             ty,
         };
 
-        let param_names: Vec<Symbol> = desc.param_names.iter().map(|n| Symbol::from(n.as_str())).collect();
+        let param_names: Vec<Symbol> = desc
+            .param_names
+            .iter()
+            .map(|n| Symbol::from(n.as_str()))
+            .collect();
 
         // Insert directly into the module's symbol table with the GOT slot =
         // manifest index (§5.3). The slot now rides on the `PlatformEffect`
@@ -511,7 +519,10 @@ fn split_slashed_type_ref(name: &str) -> Option<cranelisp_types::TypeRef> {
     use cranelisp_types::{ModuleFullPath, TypeName, TypeRef};
     let (module_part, leaf) = name.split_once('/')?;
     if leaf.chars().next().is_some_and(|c| c.is_uppercase()) {
-        Some(TypeRef::new(Some(ModuleFullPath::from(module_part)), TypeName::from(leaf)))
+        Some(TypeRef::new(
+            Some(ModuleFullPath::from(module_part)),
+            TypeName::from(leaf),
+        ))
     } else {
         None
     }
@@ -527,19 +538,23 @@ fn split_slashed_type_ref(name: &str) -> Option<cranelisp_types::TypeRef> {
 /// per FIXME 0268), returning the resolved `Type`. NO imports are injected into
 /// the platform module (platform-interface.md §5.3) — the sigs are FQ.
 fn parse_and_check_platform_type_sig(
-    symbol_tables: &dashmap::DashMap<cranelisp_types::ModuleFullPath, crate::code::SessionSymbolTable>,
+    symbol_tables: &dashmap::DashMap<
+        cranelisp_types::ModuleFullPath,
+        crate::code::SessionSymbolTable,
+    >,
     module_aliases: &cranelisp_types::ModuleAliases,
     module_path: &ModuleFullPath,
     sig: &str,
     fn_name: &str,
 ) -> Result<Type, CranelispError> {
-    let expr = cranelisp_frontend::parse_type_expr(sig).map_err(|e| CranelispError::ModuleError {
-        message: format!(
-            "invalid type signature for platform function '{}': {} ({})",
-            fn_name, sig, e
-        ),
-        location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-    })?;
+    let expr =
+        cranelisp_frontend::parse_type_expr(sig).map_err(|e| CranelispError::ModuleError {
+            message: format!(
+                "invalid type signature for platform function '{}': {} ({})",
+                fn_name, sig, e
+            ),
+            location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+        })?;
     let expr = fqize_type_expr(expr);
 
     let mut ctx = cranelisp_typecheck::SymbolTableAccess::live(symbol_tables, module_path.clone());
@@ -654,11 +669,9 @@ pub fn load_platform_checked(
 ) -> Result<LoadedPlatform, CranelispError> {
     // Step 1: Resolve the DLL path (§8.11.3).
     let dll_path = resolve_platform_path(platform_name, project_root, lib_dirs, platform_dirs)
-        .ok_or_else(|| {
-            CranelispError::ModuleError {
-                message: format!("platform '{}' not found", platform_name),
-                location: ErrorLocation::from_span_file(span, None),
-            }
+        .ok_or_else(|| CranelispError::ModuleError {
+            message: format!("platform '{}' not found", platform_name),
+            location: ErrorLocation::from_span_file(span, None),
         })?;
 
     // Step 2: Load and validate the DLL (dlsym GOT + layout-hash).
@@ -755,7 +768,10 @@ fn collect_type_expr_modules(expr: &cranelisp_types::TypeExpr, acc: &mut Vec<Mod
 /// so it can drive the type-module deps between load and register.
 #[allow(clippy::too_many_arguments)]
 pub fn load_and_register_platform(
-    symbol_tables: &dashmap::DashMap<cranelisp_types::ModuleFullPath, crate::code::SessionSymbolTable>,
+    symbol_tables: &dashmap::DashMap<
+        cranelisp_types::ModuleFullPath,
+        crate::code::SessionSymbolTable,
+    >,
     module_aliases: &cranelisp_types::ModuleAliases,
     platform_name: &str,
     project_root: &Path,
@@ -763,9 +779,8 @@ pub fn load_and_register_platform(
     platform_dirs: &[PathBuf],
     span: Span,
 ) -> Result<LoadedPlatform, CranelispError> {
-    let platform = load_platform_checked(
-        platform_name, project_root, lib_dirs, platform_dirs, span,
-    )?;
+    let platform =
+        load_platform_checked(platform_name, project_root, lib_dirs, platform_dirs, span)?;
 
     // Register in the host symbol tables (GOT wrap + FQ sigs).
     register_platform_in_tc(symbol_tables, module_aliases, &platform)?;

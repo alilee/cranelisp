@@ -138,9 +138,7 @@ extern "C" fn dump_rc_site_stats() {
             r.ops
         );
     }
-    eprintln!(
-        "[RC_SITE_STATS] confined_cells={confined_cells} crossing_cells={crossing_cells}"
-    );
+    eprintln!("[RC_SITE_STATS] confined_cells={confined_cells} crossing_cells={crossing_cells}");
 }
 
 #[cfg(test)]
@@ -152,9 +150,18 @@ mod tests {
     // and None (absent / analysis off) ⇒ Crossing (residual atomic).
     #[test]
     fn n3_confinement_class_maps_the_confined_fact() {
-        assert_eq!(ConfinementClass::from_confined(Some(true)), ConfinementClass::Confined);
-        assert_eq!(ConfinementClass::from_confined(Some(false)), ConfinementClass::Crossing);
-        assert_eq!(ConfinementClass::from_confined(None), ConfinementClass::Crossing);
+        assert_eq!(
+            ConfinementClass::from_confined(Some(true)),
+            ConfinementClass::Confined
+        );
+        assert_eq!(
+            ConfinementClass::from_confined(Some(false)),
+            ConfinementClass::Crossing
+        );
+        assert_eq!(
+            ConfinementClass::from_confined(None),
+            ConfinementClass::Crossing
+        );
     }
 
     // spec: design/backend/ownership-codegen.md §13.2.2 N3 — a site accumulates its
@@ -169,7 +176,11 @@ mod tests {
         let m = RC_SITE_STATS.lock().unwrap();
         let r = m.get(&site).expect("site recorded");
         assert_eq!(r.ops, 3, "three ops at one site advance its op tally to 3");
-        assert_eq!(r.class, ConfinementClass::Crossing, "the site's class is fixed by its fact");
+        assert_eq!(
+            r.class,
+            ConfinementClass::Crossing,
+            "the site's class is fixed by its fact"
+        );
     }
 
     // spec: design/backend/ownership-codegen.md §13.2.2 N3 — NEGATIVE: Confined and
@@ -182,8 +193,14 @@ mod tests {
         record(confined_site.clone(), ConfinementClass::Confined);
         record(crossing_site.clone(), ConfinementClass::Crossing);
         let m = RC_SITE_STATS.lock().unwrap();
-        assert_eq!(m.get(&confined_site).unwrap().class, ConfinementClass::Confined);
-        assert_eq!(m.get(&crossing_site).unwrap().class, ConfinementClass::Crossing);
+        assert_eq!(
+            m.get(&confined_site).unwrap().class,
+            ConfinementClass::Confined
+        );
+        assert_eq!(
+            m.get(&crossing_site).unwrap().class,
+            ConfinementClass::Crossing
+        );
         assert_ne!(
             m.get(&confined_site).unwrap().class,
             m.get(&crossing_site).unwrap().class,

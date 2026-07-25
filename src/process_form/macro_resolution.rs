@@ -12,15 +12,15 @@
 //! *codegen* lives in `macro_clause.rs`; this module drives it.
 
 use cranelisp_types::{
-    CranelispError, DefKind, FQSymbol, MacroClauseInfo, ModuleEntry,
-    ModuleFullPath, Sexp, Span, Symbol,
+    CranelispError, DefKind, FQSymbol, MacroClauseInfo, ModuleEntry, ModuleFullPath, Sexp, Span,
+    Symbol,
 };
 
 use crate::expander::{self, MacroResolver};
 use crate::scheduler::CompileScheduler;
-use crate::worker::{ModuleCompiler, ModuleCheckAccumulator, handle_cached_codegen};
+use crate::worker::{ModuleCheckAccumulator, ModuleCompiler, handle_cached_codegen};
 
-use super::macro_clause::{compile_macro_clause_core, MacroClauseEnv};
+use super::macro_clause::{MacroClauseEnv, compile_macro_clause_core};
 
 // ---------------------------------------------------------------------------
 // SymbolTableMacroResolver — on-demand macro resolution from symbol tables
@@ -50,7 +50,8 @@ pub(super) struct SymbolTableMacroResolver<'a> {
     /// module via the implicit outer scope (S78 §2; public-only per I-1).
     pub(super) prelude_fallback: &'a cranelisp_typecheck::PreludeFallback,
     /// Per-module typecheck products (DashMap, interior mutability).
-    pub(super) typecheck_products: &'a dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
+    pub(super) typecheck_products:
+        &'a dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
     /// Scheduler — for notify_inmem_codegen_complete after on-demand compilation.
     pub(super) scheduler: &'a CompileScheduler,
     /// Shared state — needed for JIT retention during on-demand compilation.
@@ -70,17 +71,11 @@ pub(super) struct SymbolTableMacroResolver<'a> {
 }
 
 impl MacroResolver for SymbolTableMacroResolver<'_> {
-    fn symbol_tables(
-        &self,
-    ) -> &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> {
+    fn symbol_tables(&self) -> &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> {
         self.symbol_tables
     }
 
-    fn recognize(
-        &mut self,
-        name: &str,
-        span: Span,
-    ) -> Result<Option<FQSymbol>, CranelispError> {
+    fn recognize(&mut self, name: &str, span: Span) -> Result<Option<FQSymbol>, CranelispError> {
         // FQ auto-loading (FIXME 0268, spec §9.3.6): an FQ head `mod/macro`
         // whose `mod` is not yet loaded cannot be recognised as a macro yet —
         // `resolve_macro_head` would surface `QualifiedModuleUnknown`. Capture
@@ -179,11 +174,7 @@ impl MacroResolver for SymbolTableMacroResolver<'_> {
             if defining_module != self.current_module
                 && self.scheduler.cached_module_contains(&defining_module)
             {
-                let _ = handle_cached_codegen(
-                    &defining_module,
-                    self.shared_state,
-                    self.scheduler,
-                );
+                let _ = handle_cached_codegen(&defining_module, self.shared_state, self.scheduler);
                 let now_compiled = clauses.iter().enumerate().all(|(idx, _)| {
                     let clause_name = macro_clause_jit_name(&fq.symbol, idx);
                     has_code_ptr(self.symbol_tables, &defining_module, &clause_name)
@@ -256,9 +247,9 @@ fn read_macro_meta(
 ) -> Option<(Vec<MacroClauseInfo>, Option<String>)> {
     let table = symbol_tables.get(&fq.module)?;
     match table.get(fq.symbol.as_ref())? {
-        ModuleEntry::Def { kind, docstring, .. }
-            if matches!(kind.as_ref(), DefKind::Macro { .. }) =>
-        {
+        ModuleEntry::Def {
+            kind, docstring, ..
+        } if matches!(kind.as_ref(), DefKind::Macro { .. }) => {
             let DefKind::Macro { clauses_meta, .. } = kind.as_ref() else {
                 unreachable!("invariant: guard matched DefKind::Macro");
             };
@@ -337,9 +328,7 @@ fn compile_macro_with_state(
             continue;
         }
 
-        compile_macro_clause_core(
-            &env, target_module, &info.name, clause_idx, clause, span,
-        )?;
+        compile_macro_clause_core(&env, target_module, &info.name, clause_idx, clause, span)?;
         // Sprint 57 Wave 4 G9: macro-clause compile must NOT set inmem_done
         // (last=false). Other symbols in the owning module (including
         // `main`) still need compiling. inmem_done is set by the final
@@ -722,7 +711,11 @@ fn qualify_let(
     }
     let body = qualify_scoped(ctx, children[2].clone(), &scope);
     Sexp::List(
-        vec![children[0].clone(), Sexp::Bracket(new_items, bracket_span), body],
+        vec![
+            children[0].clone(),
+            Sexp::Bracket(new_items, bracket_span),
+            body,
+        ],
         span,
     )
 }
@@ -924,15 +917,13 @@ pub(super) fn compile_macro_if_needed(
             continue;
         }
 
-        compile_macro_clause_inline(
-            ctx, &info.name, clause_idx, clause, span,
-            accumulator,
-        )?;
+        compile_macro_clause_inline(ctx, &info.name, clause_idx, clause, span, accumulator)?;
         // Sprint 57 Wave 4 G9: same fix as `compile_macro_with_state` —
         // macro-clause compile must not claim inmem_done on behalf of the
         // module. Module-level codegen at the end of process_module_forms
         // owns that flag.
-        ctx.scheduler.notify_inmem_codegen_complete(module, &clause_name, false);
+        ctx.scheduler
+            .notify_inmem_codegen_complete(module, &clause_name, false);
     }
 
     Ok(())
@@ -1076,7 +1067,9 @@ mod tests {
         for n in names {
             let entry = ModuleEntry::def(
                 empty_scheme(),
-                DefKind::UserFn { fn_state: cranelisp_types::UserFnState::NotDetermined },
+                DefKind::UserFn {
+                    fn_state: cranelisp_types::UserFnState::NotDetermined,
+                },
             )
             .visibility(cranelisp_types::Visibility::Public)
             .build();
@@ -1135,8 +1128,14 @@ mod tests {
             parse_one("(let [name 1] (wrap name))"),
         );
         let lf = let_out.format_flat();
-        assert!(!lf.contains("dm/name"), "let binder/read must stay bare: {lf}");
-        assert!(lf.contains("dm/wrap"), "free `wrap` must qualify (let): {lf}");
+        assert!(
+            !lf.contains("dm/name"),
+            "let binder/read must stay bare: {lf}"
+        );
+        assert!(
+            lf.contains("dm/wrap"),
+            "free `wrap` must qualify (let): {lf}"
+        );
 
         // match: var-pattern `name` + arm body local read held bare; `wrap` free.
         let match_out = qualify_expanded_sexp(
@@ -1146,8 +1145,14 @@ mod tests {
             parse_one("(match 0 [name (wrap name)])"),
         );
         let mf = match_out.format_flat();
-        assert!(!mf.contains("dm/name"), "match binder/read must stay bare: {mf}");
-        assert!(mf.contains("dm/wrap"), "free `wrap` must qualify (match): {mf}");
+        assert!(
+            !mf.contains("dm/name"),
+            "match binder/read must stay bare: {mf}"
+        );
+        assert!(
+            mf.contains("dm/wrap"),
+            "free `wrap` must qualify (match): {mf}"
+        );
     }
 
     // Completeness twin (the shared-enumeration matrix): one cell per value-level
@@ -1168,8 +1173,7 @@ mod tests {
             ("(match 0 [x (wrap x)])", "match"),
         ];
         for (src, label) in cells {
-            let out =
-                qualify_expanded_sexp(&tables, &current, &dms, parse_one(src));
+            let out = qualify_expanded_sexp(&tables, &current, &dms, parse_one(src));
             let flat = out.format_flat();
             assert!(
                 !flat.contains("dm/x"),
@@ -1191,12 +1195,8 @@ mod tests {
         let current = ModuleFullPath::from("user");
         let dms = vec![ModuleFullPath::from("dm")];
         // No binder introduces `helper`; it is a free defining-module reference.
-        let out = qualify_expanded_sexp(
-            &tables,
-            &current,
-            &dms,
-            parse_one("(let [y 1] (helper y))"),
-        );
+        let out =
+            qualify_expanded_sexp(&tables, &current, &dms, parse_one("(let [y 1] (helper y))"));
         let flat = out.format_flat();
         assert!(
             flat.contains("dm/helper"),

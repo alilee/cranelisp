@@ -16,7 +16,10 @@ fn assert_balanced<T>(build: impl FnOnce() -> T, release: impl FnOnce(T)) {
     let deallocs_before = dealloc_count();
     let handle = build();
     let allocated = alloc_count() - allocs_before;
-    assert!(allocated > 0, "harness error: build allocated nothing to balance");
+    assert!(
+        allocated > 0,
+        "harness error: build allocated nothing to balance"
+    );
     release(handle);
     let deallocated = dealloc_count() - deallocs_before;
     assert_eq!(
@@ -198,7 +201,10 @@ fn rc_balance_vec_cow_set() {
     fill_int_vec(v, &[1, 2, 3]);
     let allocs_after_first = alloc_count();
     let v2 = vec_set_copy(v, 1, 99, 0); // 1 more tracked struct alloc
-    assert_ne!(v, v2, "vec-set-copy must produce a distinct allocation (COW)");
+    assert_ne!(
+        v, v2,
+        "vec-set-copy must produce a distinct allocation (COW)"
+    );
     assert_eq!(
         alloc_count() - allocs_after_first,
         1,
@@ -249,10 +255,7 @@ fn rc_balance_vec_of_strings() {
 // `rc_defn_unused_string_param_freed`.
 #[test]
 fn rc_balance_consume_unused_string_param() {
-    assert_balanced(
-        || alloc_string(b"hello") as i64,
-        rc::consume_shallow,
-    );
+    assert_balanced(|| alloc_string(b"hello") as i64, rc::consume_shallow);
 }
 
 // spec: spec/12-runtime.md §12.3 — multiple unused heap params each freed.

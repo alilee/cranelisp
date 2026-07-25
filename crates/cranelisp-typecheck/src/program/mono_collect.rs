@@ -6,11 +6,9 @@ use super::*;
 /// home_of_imported_callee).
 type FnValueArgSite = (Symbol, Symbol, Span, Vec<Type>, Option<ModuleFullPath>);
 
-
 /// A monomorphisation call site collected by `pass4_monomorphise`:
 /// (callee_name, arg_spans, call_span, home_of_imported_callee).
 type MonoCallSite = (Symbol, Vec<Span>, Span, Option<ModuleFullPath>);
-
 
 /// The body expressions a mono-collect scan must walk for one `Defn`.
 ///
@@ -51,8 +49,6 @@ pub(crate) enum AutoCurryDrain {
 }
 
 // --- Name mangling for multi-sig overload dispatch ---
-
-
 
 impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
     /// Monomorphise every reachable polymorphic / constrained call site into
@@ -118,8 +114,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         if !fn_value_rewrites.is_empty() {
             let mut st = self.current_symbol_table_mut(state);
             for (enclosing, arg_span, mangled_sym) in &fn_value_rewrites {
-                if let Some(ModuleEntry::Def { ast: Some(variant), .. }) =
-                    st.symbols.get_mut(enclosing)
+                if let Some(ModuleEntry::Def {
+                    ast: Some(variant), ..
+                }) = st.symbols.get_mut(enclosing)
                 {
                     rename_var_at_span(&mut variant.body, *arg_span, mangled_sym);
                 }
@@ -151,7 +148,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // at `register_mono_entry` — no parallel `Vec` to drain.
         Ok(mono_defns)
     }
-
 
     /// Collect the Pass-4 monomorphisation work list from every defn body
     /// (`program-decomposition.md` §2.2): local constrained calls, imported
@@ -262,14 +258,19 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 let mut sites = Vec::new();
                 self.collect_parametric_fn_value_args(state, body, &mut sites);
                 for (arg_name, arg_span, param_types, home) in sites {
-                    fn_value_arg_sites.push((defn.name.clone(), arg_name, arg_span, param_types, home));
+                    fn_value_arg_sites.push((
+                        defn.name.clone(),
+                        arg_name,
+                        arg_span,
+                        param_types,
+                        home,
+                    ));
                 }
             }
         }
 
         (call_sites, fn_value_arg_sites)
     }
-
 
     /// Drive monomorphisation over the collected call sites
     /// (`program-decomposition.md` §2.2): re-derive each site's concrete arg
@@ -332,22 +333,35 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
             if let Some(mangled) = seen.get(&key) {
                 // Already generated this specialization — just record dispatch
-                let resolution =
-                    ResolvedCall::SigDispatch { mangled_name: mangled.clone() };
+                let resolution = ResolvedCall::SigDispatch {
+                    mangled_name: mangled.clone(),
+                };
                 self.record_dispatch_target(state, *call_span, &resolution);
-                state.method_resolutions.resolved_calls.insert(*call_span, resolution);
+                state
+                    .method_resolutions
+                    .resolved_calls
+                    .insert(*call_span, resolution);
                 continue;
             }
 
             if let Some(mono) = self.monomorphise_call(
-                state, fn_name, &arg_types, *call_span, home_module.as_ref(), None,
+                state,
+                fn_name,
+                &arg_types,
+                *call_span,
+                home_module.as_ref(),
+                None,
             )? {
                 let mangled = JitSymbol::from(mono.defn.name.as_ref());
                 // Record dispatch for this call site
-                let resolution =
-                    ResolvedCall::SigDispatch { mangled_name: mangled.clone() };
+                let resolution = ResolvedCall::SigDispatch {
+                    mangled_name: mangled.clone(),
+                };
                 self.record_dispatch_target(state, *call_span, &resolution);
-                state.method_resolutions.resolved_calls.insert(*call_span, resolution);
+                state
+                    .method_resolutions
+                    .resolved_calls
+                    .insert(*call_span, resolution);
                 seen.insert(key, mangled);
                 mono_defns.push(mono);
             }
@@ -355,7 +369,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         Ok(())
     }
-
 
     /// Drive monomorphisation of polymorphic fn-value arguments
     /// (`program-decomposition.md` §2.2, FIXME 0374 Tier 2): mint each site's
@@ -382,9 +395,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         for (enclosing, arg_name, arg_span, param_types, home) in fn_value_arg_sites {
             // Home-qualified dedup key == the minted name (FIXME 0519): `home`
             // for an IMPORTED generic fn-value (FIXME 0488 sig b), else current.
-            let key_home = home
-                .clone()
-                .unwrap_or_else(|| current_module.clone());
+            let key_home = home.clone().unwrap_or_else(|| current_module.clone());
             let key = crate::traits::build_mangled_name(&key_home, arg_name, param_types);
             let mangled_sym = if let Some(existing) = seen.get(&key) {
                 Symbol::from(existing.as_ref())
@@ -398,7 +409,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 // skips that unify cleanly. `home` is `Some(defining_module)` for
                 // an IMPORTED generic fn-value (FIXME 0488 sig b), `None` local.
                 self.monomorphise_call(
-                    state, arg_name, param_types, Span::SYNTHETIC, home.as_ref(), None,
+                    state,
+                    arg_name,
+                    param_types,
+                    Span::SYNTHETIC,
+                    home.as_ref(),
+                    None,
                 )?
             {
                 let mangled = JitSymbol::from(mono.defn.name.as_ref());
@@ -414,7 +430,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         Ok(fn_value_rewrites)
     }
-
 
     /// Walk a defn body collecting calls to IMPORTED callees that chain-resolve
     /// to a constrained (trait-bound) or pure-parametric polymorphic `Def` in
@@ -462,13 +477,17 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // home-probe as a `/`-bearing key in the home module → no mint. The
             // resolver already split `mod/sym` and resolved the module alias.
             let arg_spans: Vec<Span> = args.iter().map(|a| a.span()).collect();
-            out.push((resolved.fq.symbol.clone(), arg_spans, *span, Some(resolved.home)));
+            out.push((
+                resolved.fq.symbol.clone(),
+                arg_spans,
+                *span,
+                Some(resolved.home),
+            ));
         }
         for_each_child_expr(expr, |child| {
             self.collect_imported_constrained_calls(state, child, constrained_fn_names, out)
         });
     }
-
 
     /// Whether a call site to a LOCAL polymorphic callee should be collected for
     /// monomorphisation. ONE predicate: **every argument is fully concrete**
@@ -523,7 +542,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             })
     }
 
-
     /// Walk a defn body collecting calls to LOCAL (same-module) pure-parametric
     /// polymorphic callees that need a concrete monomorphisation (FIXME 0373,
     /// Tier 1 — the polymorphic-result-hop fix; /arch ruling (A)).
@@ -574,12 +592,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             out.push((resolved.fq.symbol.clone(), arg_spans, *span, None));
         }
         for_each_child_expr(expr, |child| {
-            self.collect_local_parametric_calls(
-                state, child, self_name, constrained_fn_names, out,
-            )
+            self.collect_local_parametric_calls(state, child, self_name, constrained_fn_names, out)
         });
     }
-
 
     /// Walk a defn body collecting bare-`Var` ARGUMENTS that pass a
     /// monomorphisable polymorphic fn as a *value* into a higher-order call
@@ -638,7 +653,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         });
     }
 
-
     /// The per-`Var` fn-value monomorphisation collect (FIXME 0374 / 0488 sig b /
     /// 0571 D1) — records `(bare_symbol, ref_span, param_types, home)` for a
     /// value-position `Var` that resolves to a monomorphisable polymorphic fn
@@ -674,15 +688,19 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         }
     }
 
-
     /// Does this terminal entry need a monomorphised specialisation when called
     /// with concrete arg types? (FIXME 0355 — mirrors `get_constrained_fn`'s two
     /// accepted shapes: a trait-constrained `UserFn`, or a pure-parametric
     /// polymorphic `UserFn` carrying a stored annotated `ast`.)
     pub(crate) fn entry_is_monomorphisable_polymorphic(entry: &ModuleEntry<C>) -> bool {
-        if let ModuleEntry::Def { kind, scheme, ast, .. } = entry {
+        if let ModuleEntry::Def {
+            kind, scheme, ast, ..
+        } = entry
+        {
             match kind.as_ref() {
-                DefKind::UserFn { fn_state: UserFnState::Constrained(_) } => true,
+                DefKind::UserFn {
+                    fn_state: UserFnState::Constrained(_),
+                } => true,
                 DefKind::UserFn { fn_state }
                     if !matches!(fn_state, UserFnState::Constrained(_))
                         && !scheme.type_vars.is_empty()
@@ -696,7 +714,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             false
         }
     }
-
 
     /// Recursively walk an expression tree collecting calls to constrained fns.
     ///
@@ -725,7 +742,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             Self::collect_constrained_calls(child, constrained_fn_names, var_refs, out)
         });
     }
-
 
     /// Like [`collect_constrained_calls`] but excludes calls a constrained fn
     /// makes to ITSELF (FIXME 0349).
@@ -756,13 +772,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         }
         for_each_child_expr(expr, |child| {
             Self::collect_constrained_calls_excluding_self(
-                child, self_name, constrained_fn_names, var_refs, out,
+                child,
+                self_name,
+                constrained_fn_names,
+                var_refs,
+                out,
             )
         });
     }
 
     // --- Result building ---
-
 
     /// Drain pending auto-curry resolutions into method_resolutions.
     ///
@@ -795,8 +814,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// | `program/finalize.rs:607` (finalize) | `Final` | post-drain / post-Phase-A: the state IS settled, and this is where a `Deferrable` seam's held-back entries are retried |
     pub(crate) fn resolve_auto_curry(&self, state: &mut CheckState, drain: AutoCurryDrain) {
         let pending = std::mem::take(&mut state.pending_auto_curry);
-        for (span, name, applied_count, total_count, callee_ty, mut trait_resolution, callee_var_span)
-            in pending
+        for (
+            span,
+            name,
+            applied_count,
+            total_count,
+            callee_ty,
+            mut pending_dispatch,
+            callee_var_span,
+        ) in pending
         {
             // If the trait resolution wasn't determined earlier (types were
             // still unresolved vars during try_auto_curry), attempt it now.
@@ -811,7 +837,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // → 3). `callee_has_keyed_carrier` is the shared P7 carrier guard (TRUE
             // only for `VarRef::Global`); a `None` inner resolution then transports
             // the local carrier downstream (below), currying the closure.
-            if trait_resolution.is_none()
+            if pending_dispatch.is_none()
                 && callee_var_span.is_none_or(|sp| {
                     callee_has_keyed_carrier(&state.method_resolutions.var_refs, sp)
                 })
@@ -822,10 +848,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         .iter()
                         .map(|t| self.apply_subst(state, t))
                         .collect();
-                    if let Ok(Some(r)) = self.try_resolve_trait_method(state, &name, &resolved_params, span) {
-                        trait_resolution = Some(r);
-                    } else if let Some(jit_name) = self.resolve_primitive_jit_name(state, &name) {
-                        trait_resolution = Some(ResolvedCall::BuiltinFn { name: jit_name });
+                    match self.try_resolve_trait_method(state, &name, &resolved_params, span) {
+                        Ok(Some(dispatch)) => pending_dispatch = Some(dispatch),
+                        _ => {
+                            if let Some(builtin) = self.resolve_builtin(state, &name, span) {
+                                pending_dispatch =
+                                    Some(crate::checker::PendingDispatch::Builtin(builtin));
+                            }
+                        }
                     }
                 }
             }
@@ -845,7 +875,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // settled finalize drain, where the call site has pinned the
             // operand concrete and `try_resolve_trait_method` above yields the
             // real impl (`primitives/eq-i64`) — P26, record from settled state.
-            if trait_resolution.is_none()
+            if pending_dispatch.is_none()
                 && let Some(cvs) = callee_var_span
                 && let Some(cranelisp_types::VarRef::Global(fq)) =
                     state.method_resolutions.var_refs.get(&cvs)
@@ -858,7 +888,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         applied_count,
                         total_count,
                         callee_ty,
-                        trait_resolution,
+                        pending_dispatch,
                         callee_var_span,
                     ));
                     continue;
@@ -880,6 +910,18 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 continue;
             }
 
+            let builtin_storage = match &pending_dispatch {
+                Some(crate::checker::PendingDispatch::Builtin(builtin)) => {
+                    Some(builtin.storage_fq.clone())
+                }
+                _ => None,
+            };
+            let trait_resolution = pending_dispatch.map(|dispatch| match dispatch {
+                crate::checker::PendingDispatch::Resolved(resolution) => resolution,
+                crate::checker::PendingDispatch::Builtin(builtin) => ResolvedCall::BuiltinFn {
+                    name: builtin.jit_name,
+                },
+            });
             let has_inner = trait_resolution.is_some();
             let resolution = ResolvedCall::AutoCurry {
                 target_name: name,
@@ -896,7 +938,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // nothing for a local-binding target (`infer_var` records
             // `VarRef::Local`, not a `Global` — S114 carrier flip; was "recorded
             // nothing").
-            if has_inner {
+            if let Some(storage_fq) = builtin_storage {
+                state
+                    .method_resolutions
+                    .apply_refs
+                    .insert(span, cranelisp_types::ApplyRef::Dispatch(storage_fq));
+            } else if has_inner {
                 self.record_dispatch_target(state, span, &resolution);
             } else if let Some(cvs) = callee_var_span
                 && let Some(cranelisp_types::VarRef::Global(fq)) =
@@ -912,10 +959,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     .apply_refs
                     .insert(span, cranelisp_types::ApplyRef::Dispatch(fq));
             }
-            state.method_resolutions.resolved_calls.insert(span, resolution);
+            state
+                .method_resolutions
+                .resolved_calls
+                .insert(span, resolution);
         }
     }
-
 
     /// Is `fq` the storage identity of a trait-method **DECLARATION** (the
     /// `deftrait` method entry carrying `trait_origin`), as opposed to a
@@ -926,17 +975,18 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// dispatch-table key — it never has a GOT slot — so it must never appear in
     /// an `ApplyRef::Dispatch`.
     pub(crate) fn fq_is_trait_method_decl(&self, fq: &cranelisp_types::FQSymbol) -> bool {
-        self.method_to_trait_in_module(&fq.module, &fq.symbol).is_some()
+        self.method_to_trait_in_module(&fq.module, &fq.symbol)
+            .is_some()
     }
 
     /// Resolve all recorded expr_types through the current substitution.
     pub(super) fn resolve_expr_types(&self, state: &CheckState) -> HashMap<Span, Type> {
-        state.expr_types
+        state
+            .expr_types
             .iter()
             .map(|(span, ty)| (*span, apply(&state.subst, ty)))
             .collect()
     }
-
 }
 
 #[cfg(test)]

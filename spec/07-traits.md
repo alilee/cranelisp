@@ -2,7 +2,7 @@
 
 This section defines the trait system of Cranelisp -- the mechanism for ad-hoc polymorphism. Traits declare method signatures parameterized over a type (or type constructor). Implementations provide concrete method bodies for specific types. All trait method calls are resolved at compile time via static dispatch.
 
-## 7.1 Trait Declaration [Tested]
+## 7.1 Trait Declaration [Uncovered S115 — was Tested]
 
 A trait declares one or more method signatures parameterized over an implementing type.
 
@@ -69,7 +69,7 @@ A return type is a type expression: `self` (the implementing type), a named type
   (>= "Test greater-than-or-equal" [a b] (not (< a b))))
 ```
 
-### 7.1.1 The `self` Type [Tested tests/spec_07_traits.rs::trait_method_no_impl_then_recovery]
+### 7.1.1 The `self` Type [Tested+Neg tests/trait_method_tail_s116.rs::nonnullary_no_self_occurrence_rejected_at_declaration_neg, tests/trait_method_tail_s116.rs::required_method_bare_type_tail_control_green, tests/nondispatchable_trait_method_0709.rs::nondispatchable_method_rejected_at_declaration_with_occurrence_reason, tests/nondispatchable_trait_method_0709.rs::return_dispatch_self_method_control_stays_accepted_green]
 
 Bare (unannotated) parameter names in a method signature have the implementing type. In return type position (or any type-expression position), `self` (lowercase) explicitly refers to the implementing type. When a type implements a trait, the implementing type is substituted for `self` and for all bare parameter types.
 
@@ -97,7 +97,7 @@ A trait MUST contain at least one method signature. Each method signature MUST c
 
 **Method-level type variables are unaffected.** The rule bites only on the **absence of the implementing type**; it places no restriction on other type variables. A method MAY introduce its own type variables anywhere in its signature so long as the implementing type also occurs — `(deftrait Mappable (map-val [:(Fn [a] b) f x] self))` is well-formed (`x` is bare, and the return is `self`). Together with the occurrence rule this is the settled answer recorded at [§7.3.6](#736-inline-constraints-on-type-arguments): **method-level type variables only**, subject to the implementing type also occurring. See §7.1.4 for the type-expression forms a signature may use, and §7.2 for the higher-kinded exemption — an HKT method dispatches on its applied constructor variable `(f a)`, so the occurrence rule does not apply to it.
 
-**Zero-method (marker) traits are not currently specified. [S115]** A **marker trait** — a trait declaring **no** methods at all, whose only role is to be asserted by an impl and consumed as a bound, as with other languages' `Send`/`Sync`/`Sized` — has **no specified form in Cranelisp**. §7.1's requirement of **at least one method signature** stands, so there is no way to declare one today, and this section specifies no dispatch, bound-checking, or syntax for such a trait.
+**Zero-method (marker) traits are not currently specified. [Uncovered S115 — was no prior coverage]** A **marker trait** — a trait declaring **no** methods at all, whose only role is to be asserted by an impl and consumed as a bound, as with other languages' `Send`/`Sync`/`Sized` — has **no specified form in Cranelisp**. §7.1's requirement of **at least one method signature** stands, so there is no way to declare one today, and this section specifies no dispatch, bound-checking, or syntax for such a trait.
 
 The boundary is **movable, not principled**: nothing in the design forecloses marker traits — the language already has inline trait constraints ([§7.3.6](#736-inline-constraints-on-type-arguments)), which is the machinery a marker trait would be consumed by — and the capability **MAY be specified in a future language revision** if a concrete scenario shows its absence limiting real programs. Until such a scenario arises the question is deliberately **parked**: the spec is unambiguous today (marker traits are not specified) rather than hedged as a temporary implementation limitation.
 
@@ -126,7 +126,7 @@ A trait MAY declare multiple methods. An implementation of the trait MUST provid
   (/ "Divide two values" [a b] self))
 ```
 
-### 7.1.5 Default Method Implementations [Tested tests/spec_07_traits::default_method_used_when_not_overridden]
+### 7.1.5 Default Method Implementations [Tested+Neg tests/trait_method_tail_s116.rs::inferred_default_body_is_the_single_tail_and_dispatches, tests/trait_method_tail_s116.rs::annotated_default_body_is_one_structural_tail, tests/trait_method_tail_s116.rs::deleted_return_type_plus_body_spelling_rejected_neg, tests/trait_method_tail_s116.rs::reimpl_default_body_calls_replaced_sibling]
 
 A method signature whose trailing element is an **ordinary expression** (rather than a type expression, §7.1) is a **default method**, and that expression is its body. [S115]
 
@@ -260,32 +260,42 @@ In an HKT trait, all method parameters use named params with explicit type annot
 
 The method `fmap` takes a function `(Fn [a] b)` named `func` and a value of type `(f a)` named `x`, returning a value of type `(f b)`.
 
-### 7.2.3 Kind Checking [Tested+Neg tests/spec_07_traits::hkt_impl_on_primitive_type_is_rejected_neg, tests/spec_07_traits::hkt_impl_wrong_arity_pair_rejected_neg, tests/spec_07_traits::impl_hkt_arity_neg_prelude_provided_target_wrong_arity_rejected]
+### 7.2.3 Kind Checking [Tested+Neg tests/spec_07_traits::hkt_impl_on_primitive_type_is_rejected_neg, tests/spec_07_traits::hkt_impl_wrong_arity_pair_rejected_neg, tests/spec_07_traits::impl_hkt_arity_neg_prelude_provided_target_wrong_arity_rejected, tests/spec_07_traits::qualified_hkt_impl_trait_reference_resolves_canonical_home_and_dispatches]
 
 An implementation MUST validate that the impl target's type parameter count matches the expected constructor arity. There is no explicit kind annotation syntax; kind checking is implicit.
 
 ```clojure
 ;; OK -- Option takes 1 type param, matches (f a)
-(impl Functor Option ...)
+(impl (Functor f) (Functor Option) ...)
 
 ;; ERROR -- Int is not a type constructor
-(impl Functor Int ...)
+(impl (Functor f) (Functor Int) ...)
 ;; => "Int is not a type constructor (trait Functor expects arity 1)"
 ```
 
 Primitive types (`Int`, `Bool`, `String`, `Float`) MUST be rejected as HKT impl targets.
 
-## 7.3 Trait Implementation [Tested tests/spec_07_traits::trait_impl_concrete_type, tests/spec_07_traits::user_trait_simple, tests/spec_07_traits::trait_multiple_impls]
+## 7.3 Trait Implementation [Tested+Neg tests/spec_07_traits::trait_impl_concrete_type, tests/spec_07_traits::user_trait_simple, tests/spec_07_traits::trait_multiple_impls, tests/spec_07_traits::qualified_impl_trait_reference_resolves_canonical_home_and_dispatches, tests/spec_07_traits::qualified_impl_trait_reference_neg_does_not_mint_written_qualifier_into_method_name]
 
 The `impl` form provides method bodies for a trait applied to a specific type (conventional trait) or type constructor (higher-kinded trait).
 
-**The `impl` form.** Slot 1 **echoes the `deftrait` head as declared**; slot 2 **names the target**. The two slots differ in *kind of thing* by design, mirroring the semantic difference between the two kinds of trait — a conventional trait is a **property of a type**, so its target is a **type**; a higher-kinded trait is **about a constructor**, so its target is a **trait-constructor pairing**:
+**The `impl` form.** Slot 1 **references the trait declared by `deftrait`**;
+slot 2 **names the target**. A trait reference accepts either the bare trait
+name in scope or its module-qualified name; both resolve to canonical trait
+identity under §8.5. The two slots differ in *kind of thing* by design,
+mirroring the semantic difference between the two kinds of trait — a
+conventional trait is a **property of a type**, so its target is a **type**; a
+higher-kinded trait is **about a constructor**, so its target is a
+**trait-constructor pairing**:
 
 ```ebnf
 trait_impl   = '(' 'impl' impl_head impl_target method_def+ ')'
 
-impl_head    = trait_name                          (* conventional trait, kind * — as declared *)
-             | '(' trait_name con_var ')'          (* higher-kinded trait head — echoed as declared *)
+impl_head    = trait_ref                           (* conventional trait reference, kind * *)
+             | '(' trait_ref con_var ')'           (* HK trait reference + echoed con_var binder *)
+
+trait_ref    = trait_name
+             | module_path '/' trait_name          (* module-qualified reference *)
 
 impl_target  = conventional_target                 (* for a bare (kind-*) impl_head *)
              | hkt_target                          (* for a parenthesized (HK) impl_head *)
@@ -296,22 +306,50 @@ type_arg     = type_name                           (* concrete type argument *)
              | type_var                            (* bare type variable *)
              | ':' trait_name type_var             (* inline constraint: :Display a *)
 
-hkt_target   = '(' trait_name con_target ')'       (* trait-constructor pairing: (Functor Option) *)
+hkt_target   = '(' trait_ref con_target ')'        (* trait-constructor pairing: (Functor Option) *)
 con_target   = type_constructor_name
 
 method_def   = '(' 'defn' method_name '[' param* ']' body ')'
 ```
 
-- **Conventional trait** — slot 1 is the bare trait name (as declared, §7.1), slot 2 is a **type**:
+- **Conventional trait** — slot 1 is a bare or module-qualified trait
+  reference, slot 2 is a **type**:
   - concrete: `(impl Display Int …)`
+  - module-qualified: `(impl text.display/Display Int …)`
   - applied, concrete argument: `(impl Display (Option Int) …)`
   - applied, inline-constrained variable: `(impl Display (Option :Display a) …)`
-- **Higher-kinded trait** — slot 1 echoes the parenthesized head `(Trait con_var)` (as declared, §7.2), slot 2 is a **trait-constructor pairing** `(Trait Constructor)`:
+- **Higher-kinded trait** — slot 1 contains a bare or module-qualified trait
+  reference and echoes the declaration's constructor-variable binder in the
+  parenthesized shape `(Trait con_var)`; slot 2 is a
+  **trait-constructor pairing** `(Trait Constructor)`:
   - `(impl (Functor f) (Functor Option) …)`
+  - `(impl (fmt/Functor f) (Functor Option) …)`
 
-**Slot 1 is fixed, not inferable.** For a higher-kinded impl, slot 1 reproduces the `deftrait` head **verbatim as declared** — the same constructor-variable spelling `(Functor f)`; it is neither renamed nor omitted. A conventional impl's slot 1 is likewise fixed to the bare trait name — it has no binder to vary.
+**Slot 1 is fixed by identity and shape, not inferable.** For a higher-kinded
+impl, slot 1 MUST resolve its `trait_ref` to the declared trait and reproduce
+the declaration's constructor-variable binder **verbatim**; the `f` in
+`(Functor f)` may be neither renamed nor omitted. The trait reference itself
+need not reproduce the declaration's source spelling: bare `Functor` and
+qualified `fmt/Functor` are equivalent when they resolve to the same trait. A
+conventional impl has no constructor-variable binder to echo; its slot 1 is
+simply the bare or qualified reference that resolves to the trait.
 
-**Declaration requires the trait in scope. [S113]** Slot 1 is a trait *reference*, so the trait it names MUST be in scope at the impl site (resolved per §8.5, §7.3.5 step 1); importing only a *method* of the trait is **not** sufficient to declare an impl of it. This is the declaration side of the method-import ruling: **declaration reaches the trait; dispatch reaches the method** (a method reference alone suffices to *call* a trait method — see [§7.11.2](#7112-method-import-dispatch--a-method-reference-suffices) — but not to *declare* an impl).
+**Declaration requires a resolvable trait reference. [Tested+Neg tests/spec_07_traits::qualified_impl_trait_reference_resolves_canonical_home_and_dispatches, tests/spec_07_traits::qualified_impl_trait_reference_neg_does_not_mint_written_qualifier_into_method_name]**
+Slot 1 is a trait *reference*, so the trait it names MUST resolve at the
+impl site under §8.5 and §7.3.5 step 1. A bare reference requires the trait name
+in scope; a module-qualified reference is self-sufficient under the qualified
+reference rules and does not require a separate bare import. Importing only a
+*method* of the trait is **not** sufficient to make a bare trait reference
+resolve, though a module-qualified trait reference remains available. This is
+the declaration side of the method-import ruling: **declaration reaches the
+trait; dispatch reaches the method** (a method reference alone suffices to
+*call* a trait method — see [§7.11.2](#7112-method-import-dispatch--a-method-reference-suffices)
+— but not to serve as the trait reference in an `impl`).
+
+The `deftrait` head is categorically different: it is a declaration binder,
+not a `trait_ref`, and remains bare-only (§7.1, §5). Accepting a qualified
+`impl` reference MUST NOT make `(deftrait fmt/Display …)` or
+`(deftrait (fmt/Functor f) …)` legal.
 
 **Redefinition (hot-reload). [S115]** Re-entering an `impl` for a (trait, type) pair that already has an implementation **replaces** the previous one; subsequent dispatch (§7.4) uses the **new** method bodies, under the same-type constraint that governs `defn` redefinition. Silently ignoring a re-`impl` — confirming the form yet still dispatching to the first implementation — is a defect. The user-facing normative statement and its cross-links to the redefinition runtime machinery (`repl/spec.md` §18) are in [§5.4.5](05-definitions.md#545-implementation-semantics).
 
@@ -381,9 +419,12 @@ The implementation MUST search for matching impls in the following order:
 1. Concrete impls (exact type match)
 2. Polymorphic impls (with constraint satisfaction)
 
-### 7.3.4 Higher-Kinded Implementation [Tested+Neg tests/spec_07_traits::hkt_impl_targets_bare_type_constructor_not_applied_form, tests/spec_07_traits::hkt_impl_on_user_well_kinded_adt_dispatches, tests/spec_07_traits::hkt_functor_impl_on_option_dispatches_via_match, tests/spec_07_traits::old_form_hkt_impl_bare_head_rejected_names_new_form_neg, tests/repl_persist::hkt_new_form_source_reemits_echoed_head]
+### 7.3.4 Higher-Kinded Implementation [Tested+Neg tests/spec_07_traits::qualified_hkt_impl_trait_reference_resolves_canonical_home_and_dispatches, tests/spec_07_traits::hkt_impl_targets_bare_type_constructor_not_applied_form, tests/spec_07_traits::hkt_impl_on_user_well_kinded_adt_dispatches, tests/spec_07_traits::hkt_functor_impl_on_option_dispatches_via_match, tests/spec_07_traits::hkt_impl_pairing_head_qualified_bad_module_rejected_no_dispatch_neg]
 
-A higher-kinded impl echoes the declared head `(Functor f)` in slot 1 and names a **trait-constructor pairing** `(Functor Option)` in slot 2 — the trait applied to the constructor it is being implemented *about*:
+A higher-kinded impl echoes the declared head's shape and constructor-variable
+binder in slot 1, using either a bare or module-qualified reference to the
+trait, and names a **trait-constructor pairing** `(Functor Option)` in slot 2 —
+the trait applied to the constructor it is being implemented *about*:
 
 ```clojure
 (impl (Functor f) (Functor Option)
@@ -426,18 +467,21 @@ A bare / under-applied constructor is the **sole** rejection for a conventional 
 
 #### Case 2 — Higher-kinded trait target
 
-Anchor on `(deftrait (Functor f) (fmap [:(Fn [a] b) g :(f a) x] (f b)))` — `f` is applied, so its usage-derived kind is `* -> *` (§7.2.1). The impl echoes the head in slot 1 and names a **trait-constructor pairing** `(Functor C)` in slot 2; the kind-check lands on `C`, which MUST be a **bare constructor whose arity matches** `f`'s usage-derived kind. Worked:
+Anchor on `(deftrait (Functor f) (fmap [:(Fn [a] b) g :(f a) x] (f b)))` — `f` is applied, so its usage-derived kind is `* -> *` (§7.2.1). The impl echoes the head's shape and `f` binder in slot 1 (while its trait reference may be bare or qualified) and names a **trait-constructor pairing** `(Functor C)` in slot 2; the kind-check lands on `C`, which MUST be a **bare constructor whose arity matches** `f`'s usage-derived kind. Worked:
 
 - `(impl (Functor f) (Functor Option) …)` ✓ and `(impl (Functor f) (Functor List) …)` ✓ — arity matches (both `* -> *`). [Tested tests/spec_07_traits::hkt_impl_on_user_well_kinded_adt_dispatches, tests/spec_07_traits::hkt_functor_impl_on_option_dispatches_via_match]
 - `(impl (Functor f) (Functor Int) …)` ✗ — **"not a type constructor"** (`Int` is a primitive, §7.2.3). [Tested tests/spec_07_traits::hkt_impl_on_primitive_type_is_rejected_neg]
 - `(impl (Functor f) (Functor (Option Int)) …)` ✗ — **kind-mismatch.** Slot 2 wants the *bare* constructor `Option`, not a fully-applied type. [Tested tests/spec_07_traits::hkt_impl_applied_type_in_pairing_rejected_neg — reject lands at the parse layer; this rule's kind-mismatch WORDING is unit-tier reachable only]
 - `(impl (Functor f) (Functor Pair) …)`, where `Pair : * -> * -> *` ✗ — **arity-mismatch** (two args vs. one). [Tested tests/spec_07_traits::hkt_impl_wrong_arity_pair_rejected_neg, tests/spec_07_traits::impl_hkt_arity_neg_prelude_provided_target_wrong_arity_rejected]
 
-#### Case 3 — The cross-check [Tested+Neg tests/spec_07_traits::old_form_hkt_impl_bare_head_rejected_names_new_form_neg, tests/spec_07_traits::hkt_impl_echo_wrong_convar_spelling_rejected_neg, tests/spec_07_traits::conventional_impl_parenthesized_head_rejected_neg, tests/spec_07_traits::hkt_echo_shape_mismatch_reject_is_mode_uniform_neg, tests/spec_07_traits::hkt_impl_pairing_head_nonexistent_trait_rejected_no_dispatch_neg, tests/spec_07_traits::hkt_impl_pairing_head_different_real_trait_rejected_not_registered_neg] [Settled 2026-07-18 (user ruling, TB-25): pairing-head QUALIFICATION resolves by identity — a qualified slot-1 + bare pairing head naming the SAME resolved trait (`(impl (fmt/Functor f) (Functor Option) …)`) ACCEPTS; a head resolving to a different trait or failing to resolve is the bad-pairing rejection; the previously-unpinned cell is now pinnable (plan/s112-0628-ic-wave.md §3.3a TB-25)]
+#### Case 3 — The cross-check [Tested+Neg tests/spec_07_traits::qualified_hkt_impl_trait_reference_resolves_canonical_home_and_dispatches, tests/spec_07_traits::hkt_impl_pairing_head_qualified_resolves_to_slot1_trait_accepts_and_dispatches, tests/spec_07_traits::hkt_impl_pairing_head_nonexistent_trait_rejected_no_dispatch_neg, tests/spec_07_traits::hkt_impl_pairing_head_different_real_trait_rejected_not_registered_neg, tests/spec_07_traits::hkt_impl_pairing_head_qualified_bad_module_rejected_no_dispatch_neg, tests/spec_07_traits::hkt_impl_pairing_head_qualified_different_module_same_named_trait_rejected_not_registered_neg] [Settled 2026-07-18 (user ruling, TB-25): pairing-head QUALIFICATION resolves by identity — a qualified slot-1 + bare pairing head naming the SAME resolved trait (`(impl (fmt/Functor f) (Functor Option) …)`) ACCEPTS; a head resolving to a different trait or failing to resolve is the bad-pairing rejection; the previously-unpinned cell is now pinnable (plan/s112-0628-ic-wave.md §3.3a TB-25)]
 
 `(impl (Functor f) (Functor Option))` and `(impl Display (Option a))` are disambiguated by ONE deterministic path — no ambiguity, and no redundant independent check:
 
-1. Resolve the trait **by name** — from slot 1 (a bare name `Display`, or the head of the echoed parenthesized head `(Functor f)`).
+1. Resolve the trait **by reference** — from slot 1 (a bare or
+   module-qualified conventional reference such as `Display` or
+   `text.display/Display`, or the reference head of a parenthesized HKT form
+   such as `(Functor f)` or `(fmt/Functor f)`).
 2. The trait's **declaration** is authoritative on its kind: a bare head ⇒ conventional, kind `*`; a parenthesized applied-con_var head ⇒ higher-kinded.
 3. Slot 1 MUST **echo that declared head shape** (§7.3, "Slot 1 is fixed, not inferable"); a mismatch is rejected here.
 4. Slot 2 is interpreted **strictly per the trait's known kind** — a type target (Case 1) for a conventional trait, a trait-constructor pairing (Case 2) for a higher-kinded trait.
@@ -450,11 +494,11 @@ Anchor on `(deftrait (Functor f) (fmap [:(Fn [a] b) g :(f a) x] (f b)))` — `f`
 
 An inline trait constraint `:Trait` **attaches to the type variable it immediately precedes, at the position where that variable is introduced**. In `(Option :Display a)`, the constraint reads "**`Option` of `a`, where `a` is `Display`**": `a` is the constructor argument, and `:Display` requires that whatever `a` resolves to at a call site implements `Display`. The constraint is discharged by monomorphisation (§7.3.3): `(show (Some 42))` resolves `a` to `Int`, checks `Int : Display`, and specializes `show$Option$Int`.
 
-**Type parameters in a conventional trait are method-level only. [S115]** A conventional (kind-`*`) trait carries **no trait-level type variable** — its head is bare and the implementing type is `self` ([§7.1](#71-trait-declaration)). Genericity over a type that is neither `self` nor concrete is expressed **per method**: a method MAY introduce its own type variables freely, anywhere in its signature ([§7.1.4](#714-type-expressions-in-signatures) — `a` and `b` in `(map-val [:(Fn [a] b) f x] self)` are bound by that method alone). **And** every method MUST carry the implementing type in at least one parameter or in the return type — the occurrence rule of [§7.1.1](#711-the-self-type). Those two rules are together the complete answer: method-level type variables, subject to the occurrence rule; there is no trait-level non-`self` parameter and no further mechanism. (User ruling 2026-07-21.)
+**Type parameters in a conventional trait are method-level only. [Uncovered S115 — was no prior coverage]** A conventional (kind-`*`) trait carries **no trait-level type variable** — its head is bare and the implementing type is `self` ([§7.1](#71-trait-declaration)). Genericity over a type that is neither `self` nor concrete is expressed **per method**: a method MAY introduce its own type variables freely, anywhere in its signature ([§7.1.4](#714-type-expressions-in-signatures) — `a` and `b` in `(map-val [:(Fn [a] b) f x] self)` are bound by that method alone). **And** every method MUST carry the implementing type in at least one parameter or in the return type — the occurrence rule of [§7.1.1](#711-the-self-type). Those two rules are together the complete answer: method-level type variables, subject to the occurrence rule; there is no trait-level non-`self` parameter and no further mechanism. (User ruling 2026-07-21.)
 
 *Rationale.* Method-level variables already give a method all the genericity it needs over types unrelated to the implementing type, so a trait-level parameter would add no expressive power — and it would collide with §7.1's one-bit head rule, under which a parenthesized head means *higher-kinded* and nothing else. The occurrence requirement is the other half: Cranelisp has no explicit-qualification syntax for a method call (no analogue of `<Foo as Trait>::method`), so the implementing type must occur in the signature for any call site to select an impl. A trait-level variable would let a method be written with no `self` at all, which is exactly the undispatchable shape §7.1.1 rejects.
 
-*(The former sub-question 2 — precise kind-checking rules for impl targets, including the fully-applied HK slot-2 case `(Functor (Option Int))` and the under-applied conventional target `(impl Display Option)` — is settled: see the impl-target kind-matching table in [§7.3.5](#735-kind-checking-of-impl-targets). The former sub-question 3 — whether a higher-kinded impl's slot 1 is verbatim-as-declared or inferable — is settled too: verbatim-as-declared for HK traits, bare trait name for conventional traits; see [§7.3](#73-trait-implementation), "Slot 1 is fixed, not inferable." No sub-question of §7.3.6 remains open.)*
+*(The former sub-question 2 — precise kind-checking rules for impl targets, including the fully-applied HK slot-2 case `(Functor (Option Int))` and the under-applied conventional target `(impl Display Option)` — is settled: see the impl-target kind-matching table in [§7.3.5](#735-kind-checking-of-impl-targets). The former sub-question 3 — whether a higher-kinded impl's slot 1 is verbatim-as-declared or inferable — is settled too: its head shape and constructor-variable binder are echoed, while its trait name is an ordinary bare-or-qualified reference; a conventional slot 1 is likewise a bare-or-qualified trait reference. See [§7.3](#73-trait-implementation), “Slot 1 is fixed by identity and shape, not inferable.” No sub-question of §7.3.6 remains open.)*
 
 ## 7.4 Method Resolution (Static Dispatch) [Tested tests/spec_05_definitions::deftrait_impl_and_dispatch]
 
@@ -923,7 +967,7 @@ The full normative statement and worked example live in [§5.11.1](05-definition
 
 The reason is identity, not search. A method reference carries the method's **fully-qualified identity**, which names the one trait that declares it and hence that trait's **canonical (home) module**. Resolution roots at that home — a bounded keyed-lookup chain, never a scan (consistent with the resolve-once principle) — where the trait's impls are found by key on the method's identity together with the concrete dispatch type (§7.4). Reaching the method therefore reaches everything dispatch needs.
 
-The following edge cells are normative [S113]:
+The following edge cells are normative [Tested+Neg tests/nullary_return_dispatch_method_only_import.rs::method_import_single_of_two_dispatches, tests/nullary_return_dispatch_method_only_import.rs::method_import_same_name_two_modules_conflict_neg, tests/nullary_return_dispatch_method_only_import.rs::method_only_import_no_impl_diagnostic_names_owning_trait, tests/nullary_return_dispatch_method_only_import.rs::nullary_return_dispatch_no_impl_method_only_import_rejects_naming_trait]:
 
 **(a) Impl coherence is global.** Dispatch never depends on an impl being *separately* visible at the call site. Once the method is in scope and the dispatch type is concrete, the matching impl is found by keyed lookup on (method identity, dispatch type); the impl's declaring module need not be named at the call site, and the trait name need not be in scope. (This refines §5.11.1/§7.11.1: a method reference is itself a sufficient trait-side entry point — it brings the trait's canonical home, where impl reach is anchored, into the current module's import closure — so the "reach the trait" leg of the visibility rule is satisfied by reaching *any of its methods*.)
 
@@ -931,7 +975,14 @@ The following edge cells are normative [S113]:
 
 **(c) Diagnostics name the owning trait even when the trait is not in scope.** A resolution or dispatch error on `m` — no impl for the concrete dispatch type, ambiguity, and so on — MUST name the **owning trait** (`m` belongs to trait `T`), even though `T` was never brought into the module's scope. The method's identity is known at the point of error, so the diagnostic MUST surface the trait it belongs to.
 
-**(d) Declaring an impl still requires the trait head in scope.** This ruling governs **dispatch**, not **declaration**. Writing `(impl T Type …)` — or the higher-kinded pairing form — still requires slot 1, the trait reference, to resolve at the impl site (§7.3, §7.3.5 step 1); importing only a *method* of `T` is **not** sufficient to *declare* an impl of `T`. Declaration reaches the trait; dispatch reaches the method.
+**(d) Declaring an impl still requires a resolvable trait reference.** This
+ruling governs **dispatch**, not **declaration**. Writing `(impl T Type …)` —
+or the higher-kinded form — requires slot 1 to resolve the trait at the impl
+site (§7.3, §7.3.5 step 1). Importing only a *method* of `T` does not make the
+bare reference `T` resolve and is therefore not sufficient for that spelling.
+A module-qualified slot-1 reference such as `home/T` is independently
+self-sufficient under §8.5 and needs no bare trait import. Declaration reaches
+the trait reference; dispatch reaches the method reference.
 
 **(e) The nullary return-type-dispatched method-only-import cell must accept and compile.** A **return-type-dispatched** method (empty parameter list, `self` in return position, §7.1.1) imported **without** its trait and used at a resolving site (`:Int (zed)`, §3.3.3) MUST typecheck **and** compile to a working call — this closes S112 defect D2 on the **accept** side (the earlier codegen leak on this cell was a compiler bug, not a language rejection; cf. the §7.1.1 note on defect 0628). By the same ruling the **unary** method-only-import case **inverts to accept**: a unary method imported without its trait — previously reported as "no impl in scope" because the trait was absent — dispatches on its argument's concrete type exactly as it would had the trait itself been imported.
 

@@ -16,7 +16,7 @@
 
 use crate::jit::Jit;
 use cranelisp_types::{
-    DefKind, Defn, DefnVariant, Expr, ModuleEntry, ModuleFullPath, Scheme, SchedulingClass, Span,
+    DefKind, Defn, DefnVariant, Expr, ModuleEntry, ModuleFullPath, SchedulingClass, Scheme, Span,
     Symbol, SymbolTable, Type, Visibility,
 };
 use std::collections::HashMap;
@@ -42,7 +42,9 @@ fn string_lit(s: &str) -> Expr {
 /// pointer). Under v9 `params` is the FULL leaf signature — every param is a leaf
 /// arg marshaled into the env (no leading pair is peeled).
 fn poll_effect_entry(poll_shape: bool, params: Vec<Type>) -> ModuleEntry {
-    let param_names = (0..params.len()).map(|i| Symbol::from(format!("a{i}"))).collect();
+    let param_names = (0..params.len())
+        .map(|i| Symbol::from(format!("a{i}")))
+        .collect();
     ModuleEntry::Def {
         scheme: Scheme {
             type_vars: vec![],
@@ -109,7 +111,10 @@ fn clif_of_body(poll_shape: bool, params: Vec<Type>, body: Expr) -> String {
     let symbol_tables: dashmap::DashMap<ModuleFullPath, SymbolTable> = dashmap::DashMap::new();
     let module_path = ModuleFullPath::from("user");
     let mut st = SymbolTable::new(module_path.clone());
-    st.insert(Symbol::from("async-read"), poll_effect_entry(poll_shape, params));
+    st.insert(
+        Symbol::from("async-read"),
+        poll_effect_entry(poll_shape, params),
+    );
     symbol_tables.insert(module_path.clone(), st);
     // W1 (KC-W0-6): the `(async-read …)` callee Var reads its `resolved_target`
     // at the poll/platform dispatch. The body's callee Var carries `Span::SYNTHETIC`
@@ -150,12 +155,16 @@ fn clif_of_poll_call(leaf_params: Vec<Type>, leaf_args: Vec<Expr>) -> String {
 // ---------------------------------------------------------------------------
 
 fn node_store_region(clif: &str) -> &str {
-    let idx = clif.rfind("call ").expect("node alloc call present in poll CLIF");
+    let idx = clif
+        .rfind("call ")
+        .expect("node alloc call present in poll CLIF");
     &clif[idx..]
 }
 
 fn closure_store_region(clif: &str) -> &str {
-    let idx = clif.rfind("call ").expect("node alloc call present in poll CLIF");
+    let idx = clif
+        .rfind("call ")
+        .expect("node alloc call present in poll CLIF");
     &clif[..idx]
 }
 

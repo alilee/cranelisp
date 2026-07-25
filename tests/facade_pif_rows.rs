@@ -39,8 +39,7 @@ fn read_pub_api(crate_name: &str) -> String {
         .join("crates")
         .join(crate_name)
         .join("public-api.txt");
-    std::fs::read_to_string(&p)
-        .unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
 }
 
 /// cargo-public-api 0.51.0 prefixes declaration lines with the item's
@@ -245,11 +244,7 @@ fn row_21_typecheck_env_narrowed_to_facade_two_methods() {
     // Count `pub fn TypeCheckEnv<...>::xxx(…)` lines. Facade prescribes 2.
     let methods: Vec<&str> = api
         .lines()
-        .filter(|l| {
-            l.starts_with("pub fn ")
-                && l.contains("::TypeCheckEnv")
-                && l.contains(">::")
-        })
+        .filter(|l| l.starts_with("pub fn ") && l.contains("::TypeCheckEnv") && l.contains(">::"))
         .collect();
     // Allow some slack for derive-related methods on impls; the substantive
     // facade-method-count is what we want at ≤ a small N. Facade prescribes 2;
@@ -408,10 +403,7 @@ fn row_33_trace_bodies_hosted_in_intrinsics_pub_api() {
 #[test]
 fn row_31_cranelisp_op_extern_fns_deleted_from_intrinsics() {
     let api = read_pub_api("cranelisp-intrinsics");
-    let remaining = api
-        .lines()
-        .filter(|l| l.contains("cranelisp_op_"))
-        .count();
+    let remaining = api.lines().filter(|l| l.contains("cranelisp_op_")).count();
     assert_eq!(
         remaining, 0,
         "D43 close: ops::cranelisp_op_* still in intrinsics pub-api ({remaining} \
@@ -495,7 +487,9 @@ fn row_42_describe_symbol_family_methods_exist_on_compiler_session() {
 
 fn walk_rust_files(root: &std::path::Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(root) else { return out };
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return out;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -521,8 +515,8 @@ fn row_45_re_register_module_callable_on_compiler_session() {
     // `pub fn re_register_module`. Pre-S67 the method only lives on
     // CompileScheduler at scheduler.rs:412.
     let src = workspace_root().join("src/session_v4.rs");
-    let text = std::fs::read_to_string(&src)
-        .unwrap_or_else(|e| panic!("read {}: {e}", src.display()));
+    let text =
+        std::fs::read_to_string(&src).unwrap_or_else(|e| panic!("read {}: {e}", src.display()));
     // Heuristic: a `pub fn re_register_module(` inside session_v4.rs is a
     // CompilerSession method (the file defines the impl block).
     let on_session = text.contains("pub fn re_register_module(");
@@ -564,8 +558,7 @@ fn fqtypename_binding_resolved_stage_apis_use_fqtypename_not_bare_typename() {
         }
         // Count occurrences of `::TypeName` (bare) vs `::FQTypeName`.
         // Use word-boundary heuristic via the `F` prefix check.
-        for tok in l.split(|c: char| !c.is_alphanumeric() && c != '_' && c != ':')
-        {
+        for tok in l.split(|c: char| !c.is_alphanumeric() && c != '_' && c != ':') {
             if tok.ends_with("::TypeName") {
                 bare_typename += 1;
             }
@@ -692,12 +685,11 @@ fn platform_non_exhaustive_present_on_owned_descriptor_only() {
     let api = read_pub_api("cranelisp-platform");
     // The declaration line for OwnedPlatformFnDescriptor must carry the
     // `#[non_exhaustive]` prefix.
-    let owned_descriptor_line = api.lines().find(|l| {
-        l.contains("pub struct cranelisp_platform::OwnedPlatformFnDescriptor")
-    });
-    let owned_descriptor_line = owned_descriptor_line.expect(
-        "FIXME 0225: OwnedPlatformFnDescriptor not in cranelisp-platform baseline",
-    );
+    let owned_descriptor_line = api
+        .lines()
+        .find(|l| l.contains("pub struct cranelisp_platform::OwnedPlatformFnDescriptor"));
+    let owned_descriptor_line = owned_descriptor_line
+        .expect("FIXME 0225: OwnedPlatformFnDescriptor not in cranelisp-platform baseline");
     assert!(
         owned_descriptor_line.contains("#[non_exhaustive]"),
         "FIXME 0225 (audit C2): `#[non_exhaustive]` dropped from \
@@ -774,9 +766,19 @@ fn platform_repr_c_field_order_frozen() {
     assert_eq!(
         platform_fn_fields,
         vec![
-            "concurrency", "docstring", "docstring_len", "drop_state", "name",
-            "name_len", "param_count", "param_name_count", "param_name_lens",
-            "param_names", "ptr", "type_sig", "type_sig_len",
+            "concurrency",
+            "docstring",
+            "docstring_len",
+            "drop_state",
+            "name",
+            "name_len",
+            "param_count",
+            "param_name_count",
+            "param_name_lens",
+            "param_names",
+            "ptr",
+            "type_sig",
+            "type_sig_len",
         ],
         "PlatformFn field SET drifted — a #[repr(C)] byte-offset change. \
          ABI_VERSION bump + frozen-table update required (§6.8.0)."
@@ -785,8 +787,13 @@ fn platform_repr_c_field_order_frozen() {
     assert_eq!(
         manifest_fields,
         vec![
-            "abi_version", "function_count", "functions", "name", "name_len",
-            "version", "version_len",
+            "abi_version",
+            "function_count",
+            "functions",
+            "name",
+            "name_len",
+            "version",
+            "version_len",
         ],
         "FIXME 0227 (audit C4): PlatformManifest field ORDER drifted — a \
          #[repr(C)] byte-offset change. ABI_VERSION bump + table update required."

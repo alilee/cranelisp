@@ -104,10 +104,7 @@ fn shl_zero_fill_and_sign_bit() {
         "(shl 1 3)\n\
          (shl 1 63)\n",
     )
-    .assert_stdout_contains_all(&[
-        ":primitives/Int 8",
-        ":primitives/Int -9223372036854775808",
-    ]);
+    .assert_stdout_contains_all(&[":primitives/Int 8", ":primitives/Int -9223372036854775808"]);
 }
 
 // spec: spec/appendix-a-builtins.md §A.3 — `shr` `(Fn [Int Int] Int)` is ARITHMETIC

@@ -643,19 +643,25 @@ TyConApp(f1, [A1, ..., An])  ~  TyConApp(f2, [B1, ..., Bn])
   => unify(A1, B1), ..., unify(An, Bn)
 ```
 
-### 3.7.4 Implementing HKT Traits
+### 3.7.4 Implementing HKT Traits [Tested+Neg tests/spec_07_traits::qualified_hkt_impl_trait_reference_resolves_canonical_home_and_dispatches, tests/spec_07_traits::hkt_impl_on_user_well_kinded_adt_dispatches, tests/spec_07_traits::hkt_impl_wrong_arity_pair_rejected_neg]
 
-Implementations supply a bare type constructor name as the target:
+Implementations supply a trait-constructor pairing whose constructor target is
+a bare type constructor name:
 
 ```clojure
-(impl Functor Option
-  (defn fmap [f opt]
+(impl (Functor f) (Functor Option)
+  (defn fmap [g opt]
     (match opt
       [None None
-       (Some x) (Some (f x))])))
+       (Some x) (Some (g x))])))
 ```
 
-The target `Option` (not `(Option a)`) is matched against the constructor variable `f`. The typechecker validates that the target's arity matches the expected constructor arity -- `Option` takes 1 type parameter, matching the usage `(f a)` in the trait declaration.
+The slot-2 pairing head is a trait reference and may be bare or
+module-qualified; it MUST resolve to the same trait as slot 1. The target
+`Option` (not `(Option a)` and not a qualified type name) is matched against
+the constructor variable `f`. The typechecker validates that the target's
+arity matches the expected constructor arity -- `Option` takes 1 type
+parameter, matching the usage `(f a)` in the trait declaration.
 
 Primitive types (`Int`, `Bool`, `String`, `Float`) are rejected as HKT impl targets because they are not type constructors.
 
@@ -758,7 +764,7 @@ unify(Int, Fn(..)):     ERROR "type mismatch"
 
 Unification is symmetric: `unify(A, B)` and `unify(B, A)` produce the same result.
 
-## 3.9 Type Annotations [Tested tests/spec_03_types::annotated_params_int]
+## 3.9 Type Annotations [Tested+Neg crates/cranelisp-frontend/src/reader.rs::annotation_fold_is_recursive_and_stacks, crates/cranelisp-frontend/src/reader.rs::annotation_fold_rejects_dangling_delimiters_at_introducer, tests/spec_03_types::annotated_params_int, tests/spec_03_types::annotation_expression_standalone, tests/spec_03_types::annotation_expression_neg_not_variable_lookup]
 
 The annotation form is **`:Type form`** — the `:Type` (or `:(Applied Type)`) introducer is a reader-macro-style prefix that **binds the immediately-following form**, in **all** positions, and is never a standalone atom or variable reference (e.g. `:(Option Int) None`, `:(Vec Int) []`). It is **not** written `(: Type form)`: a parenthesised bare-colon (or leading-`:Type`) list is an ordinary application, not an annotation. This is the syntax used both to annotate a value expression (see [§4.9](04-expressions.md#49-type-annotation)) and to pin an otherwise-ambiguous polymorphic form to a concrete type (see [§3.11](#311-ambiguous-types)). The remainder of this section covers annotations in parameter position.
 

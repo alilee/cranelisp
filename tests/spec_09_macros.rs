@@ -37,8 +37,7 @@ fn repl_prims(lines: &str) -> helpers::e2e::CrOutput {
 // spec: spec/09-macros.md §9.2 — defmacro registers + expands
 #[test]
 fn defmacro_identity_expands() {
-    repl_prims("(defmacro id [x] x)\n(id 42)\n")
-        .assert_stdout_contains(":primitives/Int 42");
+    repl_prims("(defmacro id [x] x)\n(id 42)\n").assert_stdout_contains(":primitives/Int 42");
 }
 
 // spec: spec/09-macros.md §9.2 — defmacro displays as a macro
@@ -54,10 +53,8 @@ fn defmacro_displays_with_classification() {
 // spec: spec/09-macros.md §9.2 — multi-clause dispatch by arity
 #[test]
 fn defmacro_multi_clause_dispatch() {
-    repl_prims(
-        "(defmacro pick ([x] x) ([x y] x))\n(pick 5)\n(pick 7 8)\n",
-    )
-    .assert_stdout_contains_all(&[":primitives/Int 5", ":primitives/Int 7"]);
+    repl_prims("(defmacro pick ([x] x) ([x y] x))\n(pick 5)\n(pick 7 8)\n")
+        .assert_stdout_contains_all(&[":primitives/Int 5", ":primitives/Int 7"]);
 }
 
 // =============================================================================
@@ -67,19 +64,15 @@ fn defmacro_multi_clause_dispatch() {
 // spec: spec/09-macros.md §9.4 — quasiquote with unquote
 #[test]
 fn quasiquote_with_unquote() {
-    repl_prims(
-        "(defmacro wrap [x] `(add-i64 1 ~x))\n(wrap 10)\n",
-    )
-    .assert_stdout_contains(":primitives/Int 11");
+    repl_prims("(defmacro wrap [x] `(add-i64 1 ~x))\n(wrap 10)\n")
+        .assert_stdout_contains(":primitives/Int 11");
 }
 
 // spec: spec/09-macros.md §9.4 — quasiquote spliced let body
 #[test]
 fn quasiquote_in_let_body() {
-    repl_prims(
-        "(defmacro twice [x] `(add-i64 ~x ~x))\n(twice 5)\n",
-    )
-    .assert_stdout_contains(":primitives/Int 10");
+    repl_prims("(defmacro twice [x] `(add-i64 ~x ~x))\n(twice 5)\n")
+        .assert_stdout_contains(":primitives/Int 10");
 }
 
 // =============================================================================
@@ -111,10 +104,8 @@ fn auto_gensym_introduced_binding_does_not_capture_outer() {
 // spec: spec/09-macros.md §9.6 — begin in macro body executes both forms
 #[test]
 fn macro_begin_two_forms() {
-    repl_prims(
-        "(defmacro inc-then [x] `(add-i64 ~x 1))\n(inc-then 4)\n",
-    )
-    .assert_stdout_contains(":primitives/Int 5");
+    repl_prims("(defmacro inc-then [x] `(add-i64 ~x 1))\n(inc-then 4)\n")
+        .assert_stdout_contains(":primitives/Int 5");
 }
 
 // =============================================================================
@@ -173,8 +164,7 @@ fn macro_body_non_sexp_int_rejected_neg() {
     let out = repl_prims("(defmacro bad [x] 42)\n");
     let combined = format!("{}{}", out.stdout, out.stderr);
     assert!(
-        combined.to_lowercase().contains("error")
-            || combined.contains("Sexp"),
+        combined.to_lowercase().contains("error") || combined.contains("Sexp"),
         "macro body of type Int must be rejected with a type error naming Sexp; got: {combined}"
     );
 }
@@ -200,8 +190,7 @@ fn macro_body_non_sexp_bool_rejected_neg() {
         "macro body of type Bool must be rejected (non-zero exit); combined:\n{combined}"
     );
     assert!(
-        combined.to_lowercase().contains("error")
-            || combined.contains("Sexp"),
+        combined.to_lowercase().contains("error") || combined.contains("Sexp"),
         "macro body of type Bool must be diagnosed with a type error naming Sexp; got: {combined}"
     );
 }
@@ -215,10 +204,8 @@ fn macro_body_non_sexp_bool_rejected_neg() {
 fn macro_persists_across_evals() {
     // Two REPL forms separated; the second invocation succeeds, proving the
     // macro is registered and available on subsequent expansion.
-    repl_prims(
-        "(defmacro double [x] `(add-i64 ~x ~x))\n(double 7)\n(double 11)\n",
-    )
-    .assert_stdout_contains_all(&[":primitives/Int 14", ":primitives/Int 22"]);
+    repl_prims("(defmacro double [x] `(add-i64 ~x ~x))\n(double 7)\n(double 11)\n")
+        .assert_stdout_contains_all(&[":primitives/Int 14", ":primitives/Int 22"]);
 }
 
 // =============================================================================
@@ -291,6 +278,115 @@ fn repl_macro_begin_splicing_defn_then_call() {
          (define-and-call my-fn 99)\n",
     )
     .assert_stdout_contains(":primitives/Int 99");
+}
+
+// spec: spec/09-macros.md §9.6 + spec/08-modules.md §8.2 — expanded
+// top-level definitions are spliced and registered in source order.
+// defect: class=wrong-reject locus=src/session_v4.rs::macro-expanded-definition-registration found=S115 owner=/dev
+#[test]
+fn macro_expanded_begin_deftype_then_impl_registers_in_source_order() {
+    let out = repl_prims(
+        "(deftrait Show (show [self] Int))\n\
+         (defmacro define-shown [name ctor]\n\
+           `(begin (deftype ~name ~ctor)\n\
+                   (impl Show ~name (defn show [_] 41))))\n\
+         (define-shown Token MkToken)\n\
+         (show MkToken)\n",
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        out.stdout.contains(":primitives/Int 41"),
+        "the impl MUST see the deftype immediately preceding it in expanded begin order; got:\n{combined}"
+    );
+}
+
+// spec: spec/09-macros.md §9.6 + spec/08-modules.md §8.2 — expansion does
+// not grant a later definition forward visibility to an earlier impl.
+#[test]
+fn macro_expanded_begin_impl_neg_before_deftype_is_rejected() {
+    let out = repl_prims(
+        "(deftrait Show (show [self] Int))\n\
+         (defmacro reverse-shown [name ctor]\n\
+           `(begin (impl Show ~name (defn show [_] 41))\n\
+                   (deftype ~name ~ctor)))\n\
+         (reverse-shown Token MkToken)\n",
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        combined.to_lowercase().contains("error") && combined.contains("Token"),
+        "an impl preceding its type in expanded source order MUST be rejected; got:\n{combined}"
+    );
+    assert!(
+        !out.stdout.contains(":primitives/Int 41"),
+        "the rejected reversed sequence MUST NOT dispatch; got:\n{combined}"
+    );
+}
+
+// spec: spec/09-macros.md §9.6 — macro-expanded and directly written
+// top-level sequences use the same registrar and have the same result.
+// defect: class=wrong-reject locus=src/session_v4.rs::macro-expanded-definition-registration found=S115 owner=/dev
+#[test]
+fn expanded_and_literal_begin_registration_are_twins() {
+    let expanded = repl_prims(
+        "(deftrait Show (show [self] Int))\n\
+         (defmacro define-shown []\n\
+           `(begin (deftype Token MkToken)\n\
+                   (impl Show Token (defn show [_] 41))))\n\
+         (define-shown)\n\
+         (show MkToken)\n",
+    );
+    let literal = repl_prims(
+        "(deftrait Show (show [self] Int))\n\
+         (begin (deftype Token MkToken)\n\
+                (impl Show Token (defn show [_] 41)))\n\
+         (show MkToken)\n",
+    );
+    for (label, out) in [("expanded", expanded), ("literal", literal)] {
+        assert!(
+            out.stdout.contains(":primitives/Int 41"),
+            "{label} begin registration MUST dispatch identically; stdout:\n{}\nstderr:\n{}",
+            out.stdout,
+            out.stderr
+        );
+    }
+}
+
+// spec: spec/09-macros.md §9.6 + spec/07-traits.md §7.1.5 — expanded
+// declaration staging is uniform across a required-method trait and a trait
+// with a synthesized default sibling; the trait must not select a registrar.
+// defect: class=wrong-reject locus=src/session_v4.rs::macro-expanded-definition-registration found=S115 owner=/dev
+#[test]
+fn expanded_begin_trait_family_registration_is_uniform() {
+    let required = repl_prims(
+        "(deftrait Required (value [self] Int))\n\
+         (defmacro make-required []\n\
+           `(begin (deftype R MkR)\n\
+                   (impl Required R (defn value [_] 40))))\n\
+         (make-required)\n\
+         (value MkR)\n",
+    );
+    let defaulted = repl_prims(
+        "(deftrait Defaulted\n\
+           (value [self] Int)\n\
+           (plus-one [x] (add-i64 (value x) 1)))\n\
+         (defmacro make-defaulted []\n\
+           `(begin (deftype D MkD)\n\
+                   (impl Defaulted D (defn value [_] 40))))\n\
+         (make-defaulted)\n\
+         (plus-one MkD)\n",
+    );
+    assert!(
+        required.stdout.contains(":primitives/Int 40"),
+        "required-method trait expansion MUST register in source order; stdout:\n{}\nstderr:\n{}",
+        required.stdout,
+        required.stderr
+    );
+    assert!(
+        defaulted.stdout.contains(":primitives/Int 41"),
+        "default-sibling trait expansion MUST use the same registrar; stdout:\n{}\nstderr:\n{}",
+        defaulted.stdout,
+        defaulted.stderr
+    );
 }
 
 // spec: spec/09-macros.md §9.6 — macros generating macros via begin
@@ -467,9 +563,7 @@ fn repl_error_recovery_bad_macro() {
 // (carry: legacy/e2e.rs::e2e_s9_9_4_runtime_error_during_expansion)
 #[test]
 fn runtime_error_during_expansion_clean_report() {
-    let out = repl_prims(
-        "(defmacro boom [x] (let [_ (div-i64 1 0)] x))\n(boom 42)\n",
-    );
+    let out = repl_prims("(defmacro boom [x] (let [_ (div-i64 1 0)] x))\n(boom 42)\n");
     // Must not crash — clean exit + error message on stdout.
     assert!(
         out.status.success(),
@@ -893,11 +987,13 @@ fn quasiquote_unquote_at_top_level_desugars() {
 // defect: class=wrong-reject locus=crates/cranelisp-frontend found=S110 owner=/dev
 #[test]
 fn unquote_splicing_at_top_level_desugars() {
-    repl_prims("`(a ~@(macros/SCons (macros/SexpInt 1) (macros/SCons (macros/SexpInt 2) macros/SNil)))\n")
-        .assert_stdout_contains(":macros/Sexp")
-        .assert_stdout_contains("Sexp.SexpInt 1")
-        .assert_stdout_contains("Sexp.SexpInt 2")
-        .assert_stdout_does_not_contain("should have been expanded");
+    repl_prims(
+        "`(a ~@(macros/SCons (macros/SexpInt 1) (macros/SCons (macros/SexpInt 2) macros/SNil)))\n",
+    )
+    .assert_stdout_contains(":macros/Sexp")
+    .assert_stdout_contains("Sexp.SexpInt 1")
+    .assert_stdout_contains("Sexp.SexpInt 2")
+    .assert_stdout_does_not_contain("should have been expanded");
 }
 
 // QQ-4 (--run face) — the desugar is mode-uniform; a quote in a `defn` body

@@ -2,14 +2,14 @@
 
 ; Explore the Display trait
 
-/t show
+/sig show
 (show 42)
 (show true)
 (show "already a string")
 
 ; String equality via the Eq trait
 
-/t =
+/sig =
 (= "hello" "hello")
 (= "hello" "world")
 
@@ -30,8 +30,8 @@ impl
 
 ; Constrained polymorphism — describe works on any Display type
 
-(defn describe "Show a value as a string" [x] (str-concat "value is " (show x)))
-/t describe
+(defn describe "Show a value as a string" [x] (str "value is " (show x)))
+/sig describe
 /d describe
 (describe 42)
 (describe true)
@@ -40,6 +40,6 @@ impl
 ; Constrained across Num — square works on Int and Float
 
 (defn square "Square a number" [x] (* x x))
-/t square
+/sig square
 (square 7)
 (square 3.0)

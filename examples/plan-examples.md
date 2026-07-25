@@ -466,6 +466,88 @@ Deliberately **not** done in 6b: retrofitting 15/17/19/20 to import the
 library. That is a de-duplication pass with exit-code churn across four
 files and belongs in S116 with its own reconciliation batch.
 
+## 2e. S117 Phase-6a assessment record (2026-07-25) — conformance, not invention
+
+Sprint 117 shipped one language-facing capability that belongs in the learning
+sequence: an `impl` trait **reference** may be module-qualified and resolves to
+the same canonical trait identity as the bare spelling. A qualified
+`deftrait` head remains invalid because that position declares a binder rather
+than referring to an existing trait.
+
+The natural teaching home is the existing multi-file trait-resolution project,
+`37-method-import/`. It already establishes that method dispatch carries
+fully-qualified trait identity across a module boundary. Extending that project
+with a sibling implementation module can now show the declaration-side
+counterpart without adding another end-of-sequence file: the sibling imports
+the target type but not the trait, writes
+`(impl main.traits/Describe Target ...)`, and the entry module observes the
+method through its existing method-only import. The lesson stays one concept:
+trait identity, rather than local spelling, controls enrollment and dispatch.
+
+### Actual shipped impact
+
+| S117 delivery | Impact on `examples/` | Phase-6 disposition |
+|---|---|---|
+| Qualified conventional and HKT trait references in `impl` heads | **Teachable positive surface.** The conventional form fits example 37's existing module/trait-identity lesson. HKT resolution is the same rule and does not justify a second beat in the already dense generic examples | Extend 37 in 6b with one conventional cross-module qualified-`impl` case |
+| Canonical constrained-type display and inverse `/info` enumeration | REPL introspection/display behavior, not observable in a free-standing batch example | Route to `/repl` and `/docs`; no numbered-example change |
+| Failed-turn transaction recovery and exact failing-member attribution | Interactive/session recovery and diagnostics, not a batch language construct | No numbered-example change |
+| Cached-macro executable-carrier repair from W7 | **Correctness protection, not a new concept.** Examples 18 and 19 already teach macro definition, composition, and repeated expansion; cache state and the six execution permutations are compiler lifecycle details | In 6b, replay the examples in fresh and warm-cache Run/Link modes; do not teach cache internals |
+| Primitive inventory, ownership evidence, and runtime-owned `Vec String` boundary | Internal boundary cleanup. Existing `split`/`join` semantics and public Cranelisp spelling did not change | No example change |
+| Native `Byte` + `(Vec Byte)` + `Utf8Literal` exploration | Design-only; no type, literal, primitive, or stdlib text API shipped | Add nothing until a later implementation sprint settles and implements the normative surface |
+| Deferred zero-argument-macro presentation (FIXME 0863) and partial R-2 evidence (FIXME 0859) | No shipped positive surface suitable for a runnable example | Do not reopen or encode either deferred contract |
+
+### S117 Phase-6b action plan
+
+1. Extend `37-method-import/` with one sibling module whose implementation
+   names `main.traits/Describe` directly and does not import `Describe`.
+2. Add one entry-module assertion that dispatch reaches that implementation;
+   update the example's comments so the distinction between a reference in
+   `impl` and the bare binder in `deftrait` is explicit.
+3. Keep the change within example 37's trait-identity lesson; do not add a new
+   numbered example or add a separate HKT spelling exercise.
+4. Reconcile example 37's changed exit code through `/testing` in the same 6b
+   change-set, per the ownership rule for `tests/examples.rs`.
+5. Validate every example at its documented result under Run and Link, with
+   both fresh and warm caches. This is regression evidence for W7, not an
+   example of cache behavior.
+6. Add no `Byte`, `Utf8Literal`, compact-Vec, code-point, grapheme, or new text
+   examples; revisit the text lesson only after those facilities ship.
+
+No new usability FIXME is warranted from this assessment. The two unshipped
+surfaces are already represented by FIXME 0863 and FIXME 0859, and the
+examples-owned plan already records the broader learning-sequence gaps.
+
+### S117 Phase-6b execution result
+
+**Attempted, then deferred behind FIXME 0869.** The planned sibling module was
+implemented exactly as above. A fresh Run compiled and exited **5**, proving
+that the shipped qualified-reference semantics work. The immediate warm-cache
+Run then failed with:
+
+```text
+no impl of trait main.traits/Describe for type main.impls/Square
+```
+
+`/testing` reduced the result further: qualification is not causal. Both the
+qualified spelling and an imported-bare sibling impl succeed fresh and
+disappear on the warm-cache twin. The permanent failing-not-ignored guard is
+`tests/cache.rs::cache_restores_sibling_written_trait_impls_for_dispatch`;
+FIXME 0869 records the `/dev` root cause and proposed fix.
+
+Because every checked-in example must remain runnable, example 37 was restored
+to its prior four-test shape and documented exit **4**. The qualified-impl
+teaching beat remains the right design but cannot ship until 0869 is fixed and
+the fresh/warm Run and Link matrix passes. No `tests/examples.rs` exit change
+is therefore required in Sprint 117. The generated failing cache was preserved
+under `target/s117-examples-37.wcl2P9/repro-cache` for local inspection; it is
+derived evidence, not part of the examples corpus.
+
+The restored example was then verified from separate clean caches: fresh Run
+**4**, warm Run **4**, fresh Link executable **4**, and warm Link executable
+**4**, with `TMPDIR` and all temporary outputs under the workspace `target/`
+tree and no `CRANELISP_LIB` override. Its pre-existing cache was restored after
+verification.
+
 ## 2b. S115 Phase-6a assessment record (2026-07-21) — regression replay + rulings
 
 > **Superseded in part by §2c.** The "6b plan" table that closed this section
@@ -1134,6 +1216,19 @@ to reconcile that table.
 
 ## Next skills
 
+- `/dev` — resolve FIXME 0869, covered by
+  `tests/cache.rs::cache_restores_sibling_written_trait_impls_for_dispatch`.
+  The examples teaching beat stays deferred until both qualified and
+  imported-bare sibling impls survive a warm-cache turn.
+- `/examples` (after FIXME 0869) — retry §2e's bounded extension of
+  `37-method-import/`, then replay the complete free-standing sequence in
+  fresh/warm-cache Run and Link modes. Do not introduce the design-only
+  Byte/text surface.
+- `/testing` (with that later examples change) — reconcile only the resulting
+  `37-method-import/main.cl` expected exit in `tests/examples.rs`.
+- `/repl` + `/docs` (S117 Phase 6) — assess the shipped recovery,
+  introspection, and canonical-display behavior; these are intentionally not
+  batch-example beats.
 - `/testing` (S115 Phase 6b) — **FIXME 0824**: three `expected_exits()` rows
   in `tests/examples.rs`, all verified `--run` == `--link` on 2026-07-21:
   `07-polymorphism.cl` **119 → 120**, `25-curry.cl` **118 → 139**,

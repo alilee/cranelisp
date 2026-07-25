@@ -48,7 +48,11 @@ fn b2_cold_then_warm(toggle_off: bool) -> (Option<i32>, Option<i32>, String) {
         warm_b
     };
     let warm = warm_b.output();
-    (cold_code, warm.status.code(), format!("{}{}", warm.stdout, warm.stderr))
+    (
+        cold_code,
+        warm.status.code(),
+        format!("{}{}", warm.stdout, warm.stderr),
+    )
 }
 
 // CS-1 — warm-cache correctness twin of the B-2 shape (both toggles). cold == warm
@@ -135,7 +139,11 @@ fn stale_schema_manifest_invalidated_wholesale_mechanism() {
         .env("CRANELISP_MODULE_TRACE", "1")
         .run("main.cl")
         .output();
-    assert_eq!(second.status.code(), Some(42), "recompile must still exit 42");
+    assert_eq!(
+        second.status.code(),
+        Some(42),
+        "recompile must still exit 42"
+    );
     assert!(
         !second.stderr.contains("cache hit"),
         "a manifest stamped with a pre-bump schema (patched to 1) MUST be \

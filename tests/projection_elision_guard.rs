@@ -395,5 +395,8 @@ fn fn_as_value_projectionof_wrapper_returns_element() {
 // free). Balance iteration-independent proves neither over- nor under-counts.
 #[test]
 fn fn_as_value_projectionof_wrapper_balance_iteration_independent() {
-    assert_iteration_independent_imbalance(FN_AS_VALUE_TEMPLATE, "fn-as-value ProjectionOf wrapper");
+    assert_iteration_independent_imbalance(
+        FN_AS_VALUE_TEMPLATE,
+        "fn-as-value ProjectionOf wrapper",
+    );
 }

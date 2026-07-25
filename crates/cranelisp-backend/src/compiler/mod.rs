@@ -22,7 +22,6 @@
 //! is a name-keyed shortcut over that path, never a parallel dispatch; backend
 //! has no trait knowledge and MUST NOT key on `(trait, method, type)` triples.
 
-
 // Codegen submodules — narrowed to `pub(crate)` in S75 W3 (they export no
 // items externally; codegen lives in `impl FnCompiler` blocks inside them and
 // no out-of-crate consumer exists).
@@ -51,7 +50,7 @@ use cranelisp_types::Type;
 // `pub` so the public API path is preserved. Everything else is `pub(crate)`.
 pub use context::CompileContext;
 pub(crate) use context::CtorMeta;
-pub(crate) use fn_compiler::{is_self_call, match_forwards_scrutinee, FnCompiler, MatchContext};
+pub(crate) use fn_compiler::{FnCompiler, MatchContext, is_self_call, match_forwards_scrutinee};
 pub(crate) use rc_emission::{
     collect_var_ids_from_type, find_var_type_in_expr, signature_heap_category,
     substitute_type_inline,

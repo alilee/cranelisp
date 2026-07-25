@@ -1039,8 +1039,8 @@ fn e3_search_session(cmds: &str) -> helpers::e2e::CrOutput {
 fn search_finds_loaded_module_not_in_scope_symbol_offers_import() {
     let out = e3_search_session("/search count\n");
     out.assert_stdout_contains_all(&[
-        "count",                      // (1) symbol-name facet
-        "(import [foo [count]])",     // (4) the actionable payoff for the LOADED module
+        "count",                  // (1) symbol-name facet
+        "(import [foo [count]])", // (4) the actionable payoff for the LOADED module
     ]);
 }
 

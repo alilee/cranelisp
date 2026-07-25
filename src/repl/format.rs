@@ -2,9 +2,7 @@
 // `src/display.rs`. Extracted from `repl.rs` per `design/int/repl-decomposition.md`
 // §1.2 (S110, FIXME 0606). Pure relocation, behaviour-invariant.
 
-
 use super::*;
-
 
 /// Format the `/mem` snapshot (no-expression form).
 ///
@@ -67,9 +65,7 @@ pub(crate) fn impl_line_home_for(
     // scope's own table resolves through prelude's table when the fallback bit is
     // ON. Public-head filtered (I-1) — a private prelude head is not in scope.
     let prelude = ModuleFullPath::from("prelude");
-    if scope != &prelude
-        && prelude_fallback.get(scope).map(|b| *b).unwrap_or(false)
-    {
+    if scope != &prelude && prelude_fallback.get(scope).map(|b| *b).unwrap_or(false) {
         let head_public = tables
             .get(&prelude)
             .and_then(|t| t.get(name).map(|e| e.is_public()))
@@ -131,58 +127,66 @@ pub(crate) fn collect_related_for(
     // Helper: resolve a bare name to its home module (chain-follow); skip if
     // unreachable.
     let fq_at_home = |name: &str| -> Option<FQSymbol> {
-        cranelisp_types::resolve_terminal_entry_and_home(tables, scope, name).map(
-            |(_, home)| FQSymbol { module: home, symbol: Symbol::from(name) },
-        )
+        cranelisp_types::resolve_terminal_entry_and_home(tables, scope, name).map(|(_, home)| {
+            FQSymbol {
+                module: home,
+                symbol: Symbol::from(name),
+            }
+        })
     };
     match entry {
         // A `TypeDef` is a type → its constructors are the match arms.
         ModuleEntry::TypeDef { info, .. } => {
-                for ctor in &info.constructors {
-                    related.push(FQSymbol {
-                        module: resolved_module.clone(),
-                        symbol: ctor.clone(),
-                    });
-                }
+            for ctor in &info.constructors {
+                related.push(FQSymbol {
+                    module: resolved_module.clone(),
+                    symbol: ctor.clone(),
+                });
             }
-            // A `Constructor` Def → its parent type (defn-related). A product
-            // ctor additionally carries the type facet's constructors.
-            ModuleEntry::Def { kind, .. } => {
-                if let DefKind::Constructor { type_name, type_def, .. } = kind.as_ref() {
-                    related.push(FQSymbol {
-                        module: type_name.module.clone(),
-                        symbol: Symbol::from(type_name.name.as_ref()),
-                    });
-                    if let Some(td) = type_def {
-                        for ctor in &td.constructors {
-                            related.push(FQSymbol {
-                                module: resolved_module.clone(),
-                                symbol: ctor.clone(),
-                            });
-                        }
-                    }
-                }
-            }
-            // A `TraitDecl` → its method defns + its implementing types.
-            ModuleEntry::TraitDecl { .. } => {
-                let tn = TraitName::from(fq.symbol.as_ref());
-                if let Some(decl) = cranelisp_types::lookup_trait_decl_chain(tables, scope, &tn) {
-                    for m in &decl.methods {
+        }
+        // A `Constructor` Def → its parent type (defn-related). A product
+        // ctor additionally carries the type facet's constructors.
+        ModuleEntry::Def { kind, .. } => {
+            if let DefKind::Constructor {
+                type_name,
+                type_def,
+                ..
+            } = kind.as_ref()
+            {
+                related.push(FQSymbol {
+                    module: type_name.module.clone(),
+                    symbol: Symbol::from(type_name.name.as_ref()),
+                });
+                if let Some(td) = type_def {
+                    for ctor in &td.constructors {
                         related.push(FQSymbol {
                             module: resolved_module.clone(),
-                            symbol: m.name.clone(),
+                            symbol: ctor.clone(),
                         });
                     }
                 }
-                for ty in cranelisp_types::get_implementing_types_chain(tables, scope, &tn) {
-                    if let Some(fq) = fq_at_home(ty.as_ref()) {
-                        related.push(fq);
-                    }
+            }
+        }
+        // A `TraitDecl` → its method defns + its implementing types.
+        ModuleEntry::TraitDecl { .. } => {
+            let tn = TraitName::from(fq.symbol.as_ref());
+            if let Some(decl) = cranelisp_types::lookup_trait_decl_chain(tables, scope, &tn) {
+                for m in &decl.methods {
+                    related.push(FQSymbol {
+                        module: resolved_module.clone(),
+                        symbol: m.name.clone(),
+                    });
                 }
             }
-            _ => {}
+            for ty in cranelisp_types::get_implementing_types_chain(tables, scope, &tn) {
+                if let Some(fq) = fq_at_home(ty.as_ref()) {
+                    related.push(fq);
+                }
+            }
         }
-        related
+        _ => {}
+    }
+    related
 }
 
 /// Indent every line of a rendered definition source by two spaces — the
@@ -238,7 +242,11 @@ pub(crate) fn format_symbol_layout(names: &[String]) -> Vec<String> {
     // L2: operators first, on their own rows, capped at LAYOUT_ROW_CAP per row.
     // After the last operator a new row starts — operators never share a row
     // with an alphabetic name.
-    let operators: Vec<&str> = sorted.iter().copied().filter(|n| is_operator_name(n)).collect();
+    let operators: Vec<&str> = sorted
+        .iter()
+        .copied()
+        .filter(|n| is_operator_name(n))
+        .collect();
     for chunk in operators.chunks(LAYOUT_ROW_CAP) {
         rows.push(chunk.join(" "));
     }
@@ -422,15 +430,19 @@ impl CompilerSession {
         // SpecialForm. The scheme/docstring facets are pulled per-entry below.
         let category = crate::worker::classify_listing_entry(&entry)?;
         let (scheme, docstring) = match &entry {
-            ModuleEntry::Def { scheme, docstring, .. } =>
-                (Some(scheme.clone()), docstring.clone()),
-            ModuleEntry::SpecialForm { scheme, docstring, .. } =>
-                (Some(scheme.clone()), docstring.clone()),
-            ModuleEntry::TraitDecl { docstring, .. } =>
-                (None, docstring.clone()),
+            ModuleEntry::Def {
+                scheme, docstring, ..
+            } => (Some(scheme.clone()), docstring.clone()),
+            ModuleEntry::SpecialForm {
+                scheme, docstring, ..
+            } => (Some(scheme.clone()), docstring.clone()),
+            ModuleEntry::TraitDecl { docstring, .. } => (None, docstring.clone()),
             _ => (None, None),
         };
-        let source = self.shared.introspection.as_ref()
+        let source = self
+            .shared
+            .introspection
+            .as_ref()
             .and_then(|m| m.get(&fq))
             .and_then(|intr| intr.source.clone());
         // FIXME 0194: populate `related` from the same cross-ref collectors the
@@ -575,8 +587,7 @@ impl CompilerSession {
                 // FIXME 0647: a trait's empty `; impl:` section is omitted for
                 // BOTH the definition echo and the bare lookup (matching the
                 // deftype `; match:` precedent); no bare-lookup-vs-echo flag.
-                let mut body =
-                    self.format_def_entry_doc(&entry, name, &resolved_module);
+                let mut body = self.format_def_entry_doc(&entry, name, &resolved_module);
                 // S101 (repl/spec.md §18.4): bare lookup of a broken symbol is
                 // self-documenting — the ordinary per-class display (last-good
                 // signature) plus the provenance comment line (R6 metadata).
@@ -603,12 +614,12 @@ impl CompilerSession {
                     let inner_value = cranelisp_intrinsics::io::cranelisp_run_io(*value);
                     let inner_type = ty.unwrap_io().clone();
                     crate::display::result_value_doc(
-                        inner_value, &inner_type, &self.shared.symbol_tables,
+                        inner_value,
+                        &inner_type,
+                        &self.shared.symbol_tables,
                     )
                 } else {
-                    crate::display::result_value_doc(
-                        *value, ty, &self.shared.symbol_tables,
-                    )
+                    crate::display::result_value_doc(*value, ty, &self.shared.symbol_tables)
                 }
             }
             // A runtime TRAP renders as the bare §18.5 line: the `runtime error: `
@@ -651,7 +662,12 @@ impl CompilerSession {
         module: &ModuleFullPath,
     ) -> StyledDoc {
         match entry {
-            ModuleEntry::Def { scheme, kind, docstring, .. } => {
+            ModuleEntry::Def {
+                scheme,
+                kind,
+                docstring,
+                ..
+            } => {
                 match kind.as_ref() {
                     // Multi-sig: emit one line per variant per repl/spec.md
                     // §1.3 + §4.1.1.
@@ -663,11 +679,18 @@ impl CompilerSession {
                         // read guard cannot deadlock against it.
                         let module_table = self.shared.symbol_tables.get(module);
                         return format_overloaded_variants_doc(
-                            name, module, variants, docstring.as_deref(),
+                            name,
+                            module,
+                            variants,
+                            docstring.as_deref(),
                             module_table.as_deref(),
                         );
                     }
-                    DefKind::Constructor { type_name, type_def, .. } => {
+                    DefKind::Constructor {
+                        type_name,
+                        type_def,
+                        ..
+                    } => {
                         let type_str = format_type_qualified(&scheme.ty);
                         let tn = TypeName::from(type_name.name.as_ref());
                         // The display authority builds the ONE canonical
@@ -701,11 +724,15 @@ impl CompilerSession {
                                 // seeded/prelude-globbed ctor resolves its product
                                 // facet instead of missing and mis-qualifying.
                                 cranelisp_types::lookup_type_def_chain(
-                                    &self.shared.symbol_tables, module, &tn,
+                                    &self.shared.symbol_tables,
+                                    module,
+                                    &tn,
                                 )
                             });
                             match info {
-                                Some(info) => crate::display::format_ctor_display(&tn, bare_ctor, &info),
+                                Some(info) => {
+                                    crate::display::format_ctor_display(&tn, bare_ctor, &info)
+                                }
                                 None => format!("{tn}.{bare_ctor}"),
                             }
                         };
@@ -719,7 +746,10 @@ impl CompilerSession {
                     }
                     DefKind::Macro { clauses_meta, .. } => {
                         return format_macro_display_doc(
-                            name, clauses_meta, docstring.as_deref(), module,
+                            name,
+                            clauses_meta,
+                            docstring.as_deref(),
+                            module,
                         );
                     }
                     _ => {}
@@ -748,15 +778,18 @@ impl CompilerSession {
                 // `builtin_docs` table is retired), satisfying the §A.5 MUST +
                 // the §1.1 `; primitive - <doc>` format.
                 doc.plain(" ");
-                push_metadata(&mut doc, classification_metadata(classification, docstring.as_deref()));
+                push_metadata(
+                    &mut doc,
+                    classification_metadata(classification, docstring.as_deref()),
+                );
                 doc
             }
-            ModuleEntry::SpecialForm { scheme, description, .. } => {
-                format_special_form_display_doc(name, scheme, description)
-            }
-            ModuleEntry::TypeDef { .. } => {
-                self.format_type_display_doc(name, module)
-            }
+            ModuleEntry::SpecialForm {
+                scheme,
+                description,
+                ..
+            } => format_special_form_display_doc(name, scheme, description),
+            ModuleEntry::TypeDef { .. } => self.format_type_display_doc(name, module),
             ModuleEntry::TraitDecl { docstring, .. } => {
                 // 0558 (S108, resolve-home-enumeration.md §5): pass the RESOLVED
                 // HOME `module` (the fn param, produced by the gate) so the trait
@@ -819,17 +852,15 @@ impl CompilerSession {
             match &cur_entry {
                 ModuleEntry::Import { source, .. } => {
                     match self.shared.symbol_tables.get(&source.module) {
-                        Some(module_table) => {
-                            match module_table.get(source.symbol.as_ref()) {
-                                Some(resolved) => {
-                                    let next = resolved.clone();
-                                    cur_module = source.module.clone();
-                                    cur_entry = next;
-                                    continue;
-                                }
-                                None => return (cur_entry, cur_module),
+                        Some(module_table) => match module_table.get(source.symbol.as_ref()) {
+                            Some(resolved) => {
+                                let next = resolved.clone();
+                                cur_module = source.module.clone();
+                                cur_entry = next;
+                                continue;
                             }
-                        }
+                            None => return (cur_entry, cur_module),
+                        },
                         None => return (cur_entry, cur_module),
                     }
                 }
@@ -839,20 +870,13 @@ impl CompilerSession {
         // Depth exhausted — return the last resolved entry/module.
         (cur_entry, cur_module)
     }
-
 }
-
 
 #[cfg(test)]
 mod collect_related_tests {
     use super::*;
-    
-    
 
-    
-    use cranelisp_types::{
-        FQTypeName, ModuleFullPath, Scheme, TypeDefInfo, TypeName, Visibility,
-    };
+    use cranelisp_types::{FQTypeName, ModuleFullPath, Scheme, TypeDefInfo, TypeName, Visibility};
     use std::collections::HashMap;
 
     fn tables() -> dashmap::DashMap<ModuleFullPath, SessionSymbolTable> {
@@ -955,17 +979,12 @@ mod collect_related_tests {
 #[cfg(test)]
 mod prelude_group_layout_tests {
     use super::*;
-    
-    
-
-    
 
     // A 12-name set (2 operators + 10 letter-grouped names) that the shared
     // layout MUST pack multi-column (≤6/line), not one-per-line.
     fn names() -> Vec<String> {
         [
-            "+", "-", "abs", "add", "ceil", "cons", "drop", "each", "map",
-            "nth", "when", "zip",
+            "+", "-", "abs", "add", "ceil", "cons", "drop", "each", "map", "nth", "when", "zip",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -1078,8 +1097,14 @@ mod fq_arg_format_tests {
         });
         assert_eq!(out, format!("runtime error: {payload}"));
         assert!(!out.contains("Error:"), "no Error: prefix; got: {out}");
-        assert!(!out.contains("codegen error"), "no codegen wrapper; got: {out}");
-        assert!(!out.contains("runtime panic:"), "no slot prefix; got: {out}");
+        assert!(
+            !out.contains("codegen error"),
+            "no codegen wrapper; got: {out}"
+        );
+        assert!(
+            !out.contains("runtime panic:"),
+            "no slot prefix; got: {out}"
+        );
         assert!(!out.contains("0..0"), "no synthetic span; got: {out}");
     }
 }
@@ -1087,8 +1112,7 @@ mod fq_arg_format_tests {
 #[cfg(test)]
 mod styling_colour_on_tests {
     use super::*;
-    
-    
+
     use crate::style::test_support::ColorGuard;
 
     // K3 — the introspection primary line's metadata suffix `; classification -
@@ -1107,7 +1131,10 @@ mod styling_colour_on_tests {
         let module = ModuleFullPath::from("user");
         let mut doc = crate::display::format_scheme_display_doc("double", &scheme, &module);
         doc.plain(" ");
-        push_metadata(&mut doc, classification_metadata("defn", Some("Multiply by 2")));
+        push_metadata(
+            &mut doc,
+            classification_metadata("defn", Some("Multiply by 2")),
+        );
         assert_eq!(
             render(&doc),
             "\x1b[36m:(Fn [primitives/Int] primitives/Int)\x1b[0m \x1b[2muser/\x1b[0mdouble \
@@ -1120,7 +1147,10 @@ mod styling_colour_on_tests {
     #[test]
     fn colour_on_k4_drawer_header_and_body_dim() {
         let _g = ColorGuard::force(true);
-        let out = render(&format_related_section_doc("match", &["Red", "Green", "Blue"]));
+        let out = render(&format_related_section_doc(
+            "match",
+            &["Red", "Green", "Blue"],
+        ));
         // The name-body layout sorts alphabetically (§3.3); the roles are what
         // this fixture pins — the whole header AND body rows are R6 dim.
         assert_eq!(
@@ -1162,7 +1192,10 @@ mod styling_colour_on_tests {
             "category header must be R12 bold: {buf:?}"
         );
         // The name bodies carry no SGR (default-styled layout, out of scope).
-        assert!(!buf["\x1b[1mFns:\x1b[0m\n".len()..].contains('\u{1b}'), "body plain: {buf:?}");
+        assert!(
+            !buf["\x1b[1mFns:\x1b[0m\n".len()..].contains('\u{1b}'),
+            "body plain: {buf:?}"
+        );
     }
 }
 
@@ -1186,20 +1219,45 @@ mod impl_line_home_tests {
             .or_insert_with(|| SessionSymbolTable::new_with_params(path));
     }
     fn scheme() -> Scheme {
-        Scheme { type_vars: vec![], constraints: HashMap::new(), ty: Type::Int }
+        Scheme {
+            type_vars: vec![],
+            constraints: HashMap::new(),
+            ty: Type::Int,
+        }
     }
-    fn public_def(t: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>, module: &str, name: &str) {
-        let entry = ModuleEntry::def(scheme(), DefKind::UserFn { fn_state: UserFnState::NotDetermined })
-            .visibility(Visibility::Public)
-            .build();
-        t.get_mut(&ModuleFullPath::from(module)).unwrap().insert(Symbol::from(name), entry);
+    fn public_def(
+        t: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
+        module: &str,
+        name: &str,
+    ) {
+        let entry = ModuleEntry::def(
+            scheme(),
+            DefKind::UserFn {
+                fn_state: UserFnState::NotDetermined,
+            },
+        )
+        .visibility(Visibility::Public)
+        .build();
+        t.get_mut(&ModuleFullPath::from(module))
+            .unwrap()
+            .insert(Symbol::from(name), entry);
     }
-    fn public_import(t: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>, importer: &str, name: &str, src_mod: &str) {
+    fn public_import(
+        t: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
+        importer: &str,
+        name: &str,
+        src_mod: &str,
+    ) {
         let entry = ModuleEntry::Import {
-            source: FQSymbol { module: ModuleFullPath::from(src_mod), symbol: Symbol::from(name) },
+            source: FQSymbol {
+                module: ModuleFullPath::from(src_mod),
+                symbol: Symbol::from(name),
+            },
             visibility: Visibility::Public,
         };
-        t.get_mut(&ModuleFullPath::from(importer)).unwrap().insert(Symbol::from(name), entry);
+        t.get_mut(&ModuleFullPath::from(importer))
+            .unwrap()
+            .insert(Symbol::from(name), entry);
     }
 
     // The 0671 repro shape: `Display` (homed in text.display, imported into user)
@@ -1219,10 +1277,16 @@ mod impl_line_home_tests {
 
         let trait_home = impl_line_home_for(&t, &pf, &user, "Display", &user);
         let type_home = impl_line_home_for(&t, &pf, &user, "W", &user);
-        assert_eq!(trait_home, ModuleFullPath::from("text.display"),
-            "Display's canonical home is text.display, not the asking module");
-        assert_eq!(type_home, ModuleFullPath::from("user"),
-            "W's canonical home is user");
+        assert_eq!(
+            trait_home,
+            ModuleFullPath::from("text.display"),
+            "Display's canonical home is text.display, not the asking module"
+        );
+        assert_eq!(
+            type_home,
+            ModuleFullPath::from("user"),
+            "W's canonical home is user"
+        );
     }
 
     // Prelude-provided name (Int) resolves through the fallback to its home
@@ -1241,8 +1305,11 @@ mod impl_line_home_tests {
         let user = ModuleFullPath::from("user");
 
         let home = impl_line_home_for(&t, &pf, &user, "Int", &user);
-        assert_eq!(home, ModuleFullPath::from("primitives"),
-            "Int resolves through the prelude fallback to primitives, not user");
+        assert_eq!(
+            home,
+            ModuleFullPath::from("primitives"),
+            "Int resolves through the prelude fallback to primitives, not user"
+        );
     }
 
     // An unresolvable name falls back to the asking module (no worse than the old
@@ -1255,6 +1322,9 @@ mod impl_line_home_tests {
         let pf = cranelisp_typecheck::PreludeFallback::default();
         let user = ModuleFullPath::from("user");
         let home = impl_line_home_for(&t, &pf, &user, "Nonexistent", &user);
-        assert_eq!(home, user, "an unresolvable name falls back to the asking module");
+        assert_eq!(
+            home, user,
+            "an unresolvable name falls back to the asking module"
+        );
     }
 }

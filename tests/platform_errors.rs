@@ -84,7 +84,9 @@ fn platform_load_failed_carries_form_span() {
         out.stderr
     );
     assert!(
-        out.stderr.contains("not found") || out.stderr.contains("load") || out.stderr.contains("platform"),
+        out.stderr.contains("not found")
+            || out.stderr.contains("load")
+            || out.stderr.contains("platform"),
         "platform-load error must mention the platform/load shape; got stderr:\n{}",
         out.stderr
     );
@@ -155,7 +157,8 @@ fn platform_unknown_name_emits_structured_not_found() {
         !out.status.success(),
         "an unresolvable platform name MUST be a clean compile-time error \
          (non-zero exit, not a crash); status: {:?}\nstderr:\n{}",
-        out.status, out.stderr
+        out.status,
+        out.stderr
     );
     // The error names the requested platform and the not-found mode, and
     // carries the form span (it starts at line 1, col 1 in user.cl).
@@ -213,13 +216,15 @@ fn platform_fn_dispatches_across_dll_boundary() {
     assert!(
         out.status.success(),
         "platform-fn dispatch MUST complete cleanly; status: {:?}\nstderr:\n{}",
-        out.status, out.stderr
+        out.status,
+        out.stderr
     );
     assert!(
         out.stdout.contains("dispatch round-trip"),
         "the dispatched platform fn `print` MUST write its argument to stdout; \
          got stdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
 }
 
@@ -269,7 +274,8 @@ fn platform_abi_version_mismatch_e2e() {
         !out.status.success(),
         "an ABI-version-mismatched platform DLL MUST be refused at load \
          (non-zero exit, not a crash); status: {:?}\nstderr:\n{}",
-        out.status, out.stderr
+        out.status,
+        out.stderr
     );
     // The structured carrier surfaces the ABI-version-mismatch shape.
     assert!(
@@ -359,7 +365,8 @@ fn platform_dispatch_error_carries_fn_name() {
         !out.status.success(),
         "a dispatch-time platform-fn fault MUST surface a structured error \
          (clean non-zero exit, NOT a process abort); status: {:?}\nstderr:\n{}",
-        out.status, out.stderr
+        out.status,
+        out.stderr
     );
     // The carrier surfaces the `DispatchError` shape.
     assert!(
@@ -426,7 +433,8 @@ fn assert_dispatch_fault_surfaced(out: &helpers::e2e::CrOutput, mode: &str) {
         out.status.code().is_some(),
         "[{mode}] a during-IO dispatch fault MUST surface as a clean process \
          exit, NOT a signal kill (SIGSEGV/SIGABRT); status: {:?}\nstderr:\n{}",
-        out.status, out.stderr
+        out.status,
+        out.stderr
     );
     // (2) Non-zero exit (1) — the fault is a failure, not success.
     assert_eq!(
@@ -434,7 +442,8 @@ fn assert_dispatch_fault_surfaced(out: &helpers::e2e::CrOutput, mode: &str) {
         Some(1),
         "[{mode}] a during-IO dispatch fault MUST exit non-zero (1); \
          status: {:?}\nstderr:\n{}",
-        out.status, out.stderr
+        out.status,
+        out.stderr
     );
     // (3) The structured carrier reaches stderr — robust substrings present in
     //     BOTH modes (the parity `/dev` reconciled): the baked FQ fn-name and
@@ -544,7 +553,9 @@ fn platform_dll_resolves_on_current_platform() {
         "a `(platform stdio)` program MUST load the platform DLL via the \
          `CRANELISP_PLATFORM_PATH=target/debug` search path on the current \
          platform; status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        out.status, out.stdout, out.stderr
+        out.status,
+        out.stdout,
+        out.stderr
     );
     assert!(
         !out.stderr.contains("not found"),
@@ -557,6 +568,7 @@ fn platform_dll_resolves_on_current_platform() {
         out.stdout.contains("load-ok"),
         "the loaded platform fn `print` MUST emit its argument once the DLL \
          resolves; got stdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
 }

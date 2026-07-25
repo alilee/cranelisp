@@ -23,18 +23,18 @@
 //! - [`monomorphise`] — the monomorphisation engine + the mangling primitives.
 //! - [`type_resolve`] — the `TypeExpr -> Type` resolution free functions.
 
-mod registry;
-mod impl_check;
 mod dispatch;
+mod impl_check;
 mod monomorphise;
+mod registry;
 mod type_resolve;
 
 // Crate-internal re-exports. The other typecheck modules reach these as
 // `crate::traits::X` (unchanged from the pre-split `traits.rs` paths); the
 // sibling test modules reach the production items through `use super::*`.
 // NONE are `pub` — `mod traits` is private, so `public-api.txt` is unaffected.
-pub(crate) use registry::*;
 pub(crate) use monomorphise::*;
+pub(crate) use registry::*;
 pub(crate) use type_resolve::*;
 // `dispatch`'s only `pub(crate)` free fn (`primitive_for_trait_method`) is
 // consumed internally by `dispatch.rs` directly; its tests moved to the

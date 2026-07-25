@@ -28,10 +28,10 @@
 //!
 //! [`View`]: cranelisp_types::View
 
-use cranelisp_types::{ErrorLocation,
-    CranelispError, FQSymbol, MacroExpander, MacroInvokeError, MacroParam,
-    ModuleAliases, ModuleEntry, ModuleFullPath, ResolutionScope, Sexp, Span, Symbol, View,
-    DefKind, NULLARY_TAG_THRESHOLD,
+use cranelisp_types::{
+    CranelispError, DefKind, ErrorLocation, FQSymbol, MacroExpander, MacroInvokeError, MacroParam,
+    ModuleAliases, ModuleEntry, ModuleFullPath, NULLARY_TAG_THRESHOLD, ResolutionScope, Sexp, Span,
+    Symbol, View,
 };
 
 use std::collections::HashSet;
@@ -46,15 +46,26 @@ pub(crate) const EXPANSION_DEPTH_LIMIT: usize = 100;
 // Types
 // ---------------------------------------------------------------------------
 
-/// A compiled macro clause with its function pointer.
-pub(crate) struct MacroClauseEntry {
-    /// JIT-compiled function: extern "C" fn(i64) -> i64.
-    /// The i64 parameter is a pointer to an (SList Sexp) of marshalled args.
-    pub(crate) func_ptr: *const u8,
+/// Pre-codegen clause shape. It carries no pointer and cannot be invoked.
+pub(crate) struct MacroClauseDescriptor {
+    pub(crate) clause_index: usize,
     /// Fixed parameter patterns (for clause matching).
     pub(crate) params: Vec<MacroParam>,
     /// Rest parameter name, if variadic.
     pub(crate) rest_param: Option<Symbol>,
+}
+
+#[derive(Clone, Copy)]
+enum MacroClauseAbi {
+    SexpListToSexpI64V1,
+}
+
+/// Published, invocable clause state. A live owner and non-null entry point
+/// are required by representation.
+pub(crate) struct ExecutableMacroClause {
+    entry: std::ptr::NonNull<u8>,
+    owner: Code,
+    abi: MacroClauseAbi,
 }
 
 // ---------------------------------------------------------------------------
@@ -97,8 +108,9 @@ impl MacroExpander for JitMacroExpander<'_> {
         call_span: Span,
     ) -> Result<Sexp, MacroInvokeError> {
         // 1. Read the macro entry's clause metadata from its home module.
-        let clauses_meta = self.macro_clauses(fq).ok_or_else(|| {
-            MacroInvokeError::Aborted {
+        let clauses_meta = self
+            .macro_clauses(fq)
+            .ok_or_else(|| MacroInvokeError::Aborted {
                 fq: fq.clone(),
                 message: format!(
                     "macro `{}/{}` has no compiled clauses in its home module \
@@ -106,40 +118,54 @@ impl MacroExpander for JitMacroExpander<'_> {
                     fq.module, fq.symbol
                 ),
                 span: call_span,
-            }
-        })?;
+            })?;
 
-        // 2. Build compiled clause entries (clause-meta + GOT code ptr).
-        let mut compiled: Vec<MacroClauseEntry> = Vec::with_capacity(clauses_meta.len());
-        for (idx, meta) in clauses_meta.iter().enumerate() {
-            let clause_name = Symbol::from(format!("__macro_{}_clause_{}", fq.symbol, idx));
-            let func_ptr = self
-                .clause_code_ptr(&fq.module, &clause_name)
-                .ok_or_else(|| MacroInvokeError::Aborted {
-                    fq: fq.clone(),
-                    message: format!(
-                        "macro `{}/{}` clause {} is not in memory \
-                         (orchestrator-sequencing bug)",
-                        fq.module, fq.symbol, idx
-                    ),
-                    span: call_span,
-                })?;
-            compiled.push(MacroClauseEntry {
-                func_ptr,
+        // 2. Build pointer-free descriptors and select by source shape.
+        let descriptors: Vec<MacroClauseDescriptor> = clauses_meta
+            .iter()
+            .enumerate()
+            .map(|(clause_index, meta)| MacroClauseDescriptor {
+                clause_index,
                 params: meta.params.clone(),
                 rest_param: meta.rest_param.clone(),
-            });
-        }
+            })
+            .collect();
 
-        // 3. Select the matching clause by arity/bracket shape. On no match,
-        //    surface the user-call span (threaded down as `call_span` — the
-        //    ORIGINAL top-level invocation, not a synthetic recursive-expansion
-        //    offset; FIXME 0485) plus the clause set's accepted arities.
-        let clause = find_matching_clause(&compiled, args)
-            .ok_or_else(|| no_matching_clause_error(fq, &compiled, args, call_span))?;
+        let descriptor = find_matching_clause(&descriptors, args)
+            .ok_or_else(|| no_matching_clause_error(fq, &descriptors, args, call_span))?;
+        let clause_name = Symbol::from(format!(
+            "__macro_{}_clause_{}",
+            fq.symbol, descriptor.clause_index
+        ));
+        let (func_ptr, owner) = self
+            .clause_code_lease(&fq.module, &clause_name)
+            .ok_or_else(|| MacroInvokeError::Aborted {
+                fq: fq.clone(),
+                message: format!(
+                    "macro `{}/{}` clause {} is not in memory \
+                     (orchestrator-sequencing bug)",
+                    fq.module, fq.symbol, descriptor.clause_index
+                ),
+                span: call_span,
+            })?;
+        let entry = std::ptr::NonNull::new(func_ptr.cast_mut()).ok_or_else(|| {
+            MacroInvokeError::Aborted {
+                fq: fq.clone(),
+                message: format!(
+                    "macro `{}/{}` clause {} has a null entry point",
+                    fq.module, fq.symbol, descriptor.clause_index
+                ),
+                span: call_span,
+            }
+        })?;
+        let executable = ExecutableMacroClause {
+            entry,
+            owner,
+            abi: MacroClauseAbi::SexpListToSexpI64V1,
+        };
 
         // 4. Marshal + signal-protected invoke + unmarshal + span-rewrite.
-        execute_matched_clause(clause, args, call_span)
+        execute_matched_clause(&executable, args, call_span)
             .map_err(|e| macro_error_to_invoke_error(fq, call_span, e))
     }
 }
@@ -150,7 +176,7 @@ impl MacroExpander for JitMacroExpander<'_> {
 /// through this one function — there is no second executor; the legacy walk
 /// also reaches it via `JitMacroExpander`.
 pub(crate) fn execute_matched_clause(
-    clause: &MacroClauseEntry,
+    clause: &ExecutableMacroClause,
     args: &[Sexp],
     span: Span,
 ) -> Result<Sexp, CranelispError> {
@@ -171,7 +197,7 @@ pub(crate) fn execute_matched_clause(
 /// not just `cond`.
 fn no_matching_clause_error(
     fq: &FQSymbol,
-    clauses: &[MacroClauseEntry],
+    clauses: &[MacroClauseDescriptor],
     args: &[Sexp],
     call_span: Span,
 ) -> MacroInvokeError {
@@ -196,7 +222,7 @@ fn no_matching_clause_error(
 /// display (e.g. `"1 or 2+"`, `"0, 1 or 3+"`, `"2"`).
 ///
 /// General over any multi-clause macro — nothing here is `cond`-specific.
-fn describe_clause_arities(clauses: &[MacroClauseEntry]) -> String {
+fn describe_clause_arities(clauses: &[MacroClauseDescriptor]) -> String {
     let mut descs: Vec<String> = Vec::new();
     for c in clauses {
         let n = c.params.len();
@@ -237,17 +263,28 @@ impl JitMacroExpander<'_> {
 
     /// Load a clause function's compiled code pointer from its per-module GOT
     /// slot. Returns `None` if the entry is absent or its GOT slot is empty.
-    fn clause_code_ptr(&self, module: &ModuleFullPath, clause_name: &Symbol) -> Option<*const u8> {
+    fn clause_code_lease(
+        &self,
+        module: &ModuleFullPath,
+        clause_name: &Symbol,
+    ) -> Option<(*const u8, Code)> {
         let table = self.symbol_tables.get(module)?;
         let entry = table.get(clause_name.as_ref())?;
-        let ModuleEntry::Def { code: Some(_), .. } = entry else {
+        let ModuleEntry::Def {
+            code: Some(code), ..
+        } = entry
+        else {
             return None;
         };
         // The callable slot rides on the `DefKind` variant (S83 reshape,
         // FIXME 0356/0357) — read it via the `callable_got_slot()` chokepoint.
         let slot = entry.callable_got_slot()?;
         let ptr = table.got.load_slot(slot);
-        if ptr.is_null() { None } else { Some(ptr) }
+        if ptr.is_null() {
+            None
+        } else {
+            Some((ptr, code.clone()))
+        }
     }
 }
 
@@ -260,7 +297,11 @@ fn macro_error_to_invoke_error(fq: &FQSymbol, span: Span, e: CranelispError) -> 
         CranelispError::MacroError { message, .. } => message.clone(),
         other => other.to_string(),
     };
-    MacroInvokeError::Aborted { fq: fq.clone(), message, span }
+    MacroInvokeError::Aborted {
+        fq: fq.clone(),
+        message,
+        span,
+    }
 }
 
 /// Construct a committed first-hop [`View`] over the live current-module table,
@@ -354,7 +395,10 @@ pub(crate) fn recognize_macro_head(
     // bare first-hop resolve.
     let prelude_module = ModuleFullPath::from(PRELUDE_MODULE);
     let prelude = if current_module.as_ref() != PRELUDE_MODULE
-        && prelude_fallback.get(current_module).map(|b| *b).unwrap_or(false)
+        && prelude_fallback
+            .get(current_module)
+            .map(|b| *b)
+            .unwrap_or(false)
     {
         Some(&prelude_module)
     } else {
@@ -364,8 +408,16 @@ pub(crate) fn recognize_macro_head(
     // The I-1 public-only filter on the prelude terminal and the not-found-class
     // → `Ok(None)` collapse are both intrinsic to `resolve_macro_head`; only a
     // hard failure (private, unknown qualified module) surfaces as `Err`.
-    let scope = ResolutionScope::new(symbol_tables, module_aliases, &view, current_module, prelude);
-    scope.resolve_macro_head(name, span).map_err(CranelispError::from)
+    let scope = ResolutionScope::new(
+        symbol_tables,
+        module_aliases,
+        &view,
+        current_module,
+        prelude,
+    );
+    scope
+        .resolve_macro_head(name, span)
+        .map_err(CranelispError::from)
 }
 
 // ---------------------------------------------------------------------------
@@ -395,16 +447,10 @@ pub(crate) trait MacroResolver {
     ///   made) in memory, addressable by `fq`.
     /// - `Ok(None)` — not a macro, or a forward / not-yet-visible reference.
     /// - `Err(...)` — hard resolution failure or on-demand compilation failure.
-    fn recognize(
-        &mut self,
-        name: &str,
-        span: Span,
-    ) -> Result<Option<FQSymbol>, CranelispError>;
+    fn recognize(&mut self, name: &str, span: Span) -> Result<Option<FQSymbol>, CranelispError>;
 
     /// The committed symbol tables to execute recognized macros over.
-    fn symbol_tables(
-        &self,
-    ) -> &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>;
+    fn symbol_tables(&self) -> &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>;
 }
 
 // ---------------------------------------------------------------------------
@@ -416,7 +462,7 @@ pub(crate) trait MacroResolver {
 /// - If clause has rest_param: args.len() >= clause.params.len()
 /// - If no rest_param: args.len() == clause.params.len()
 /// - Bracket params must receive Sexp::Bracket arguments
-pub(crate) fn clause_matches(clause: &MacroClauseEntry, args: &[Sexp]) -> bool {
+pub(crate) fn clause_matches(clause: &MacroClauseDescriptor, args: &[Sexp]) -> bool {
     let fixed_count = clause.params.len();
     if clause.rest_param.is_some() {
         if args.len() < fixed_count {
@@ -452,9 +498,9 @@ pub(crate) fn clause_matches(clause: &MacroClauseEntry, args: &[Sexp]) -> bool {
 
 /// Find the first matching clause for the given arguments.
 pub(crate) fn find_matching_clause<'a>(
-    clauses: &'a [MacroClauseEntry],
+    clauses: &'a [MacroClauseDescriptor],
     args: &[Sexp],
-) -> Option<&'a MacroClauseEntry> {
+) -> Option<&'a MacroClauseDescriptor> {
     clauses.iter().find(|c| clause_matches(c, args))
 }
 
@@ -464,10 +510,11 @@ pub(crate) fn find_matching_clause<'a>(
 
 /// Marshal arguments, invoke a clause's function pointer, and unmarshal the result.
 pub(crate) fn invoke_clause(
-    clause: &MacroClauseEntry,
+    clause: &ExecutableMacroClause,
     args: &[Sexp],
     span: Span,
 ) -> Result<Sexp, CranelispError> {
+    let _code_lease = &clause.owner;
     // Marshal each argument to a runtime Sexp ADT value. Deep protection is now
     // applied at every allocation site inside the marshaller (`protect_marshalled_cell`,
     // FIXME 0638): every marshalled cell — top-level, interior, SList spine, and
@@ -487,14 +534,12 @@ pub(crate) fn invoke_clause(
     // illegal instruction -> SIGILL). We install temporary signal handlers
     // that convert these signals to Rust panics, then use catch_unwind
     // to turn them into clean CranelispError results.
-    let result_i64 = invoke_jit_protected(clause.func_ptr, args_slist, span)?;
+    let result_i64 = invoke_jit_protected(clause.entry, clause.abi, args_slist, span)?;
 
     // Validate the result is a heap pointer (all Sexp constructors are data).
     if result_i64 < NULLARY_TAG_THRESHOLD as i64 {
         return Err(CranelispError::MacroError {
-            message: format!(
-                "macro returned invalid value {result_i64} (expected heap pointer)"
-            ),
+            message: format!("macro returned invalid value {result_i64} (expected heap pointer)"),
             location: ErrorLocation::from_span(span),
         });
     }
@@ -514,11 +559,12 @@ pub(crate) fn invoke_clause(
 /// handler `siglongjmp`s back to the recovery point, avoiding the problem
 /// of unwinding through `extern "C"` frames.
 fn invoke_jit_protected(
-    func_ptr: *const u8,
+    entry: std::ptr::NonNull<u8>,
+    abi: MacroClauseAbi,
     args_slist: i64,
     span: Span,
 ) -> Result<i64, CranelispError> {
-    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
 
     // catch_unwind handles Rust panics from runtime_panic.
     let result = catch_unwind(AssertUnwindSafe(|| {
@@ -537,7 +583,16 @@ fn invoke_jit_protected(
             // Install signal handlers that siglongjmp back on trap.
             let old_handlers = install_signal_handlers();
 
-            let func: extern "C" fn(i64) -> i64 = std::mem::transmute(func_ptr);
+            // SAFETY: `ExecutableMacroClause` is constructed only from a
+            // finalized, non-null GOT entry while retaining its required
+            // `Code` owner. `SexpListToSexpI64V1` witnesses the exact
+            // `extern "C" fn(i64) -> i64` ABI. The owner is borrowed by the
+            // caller across marshalling, this signal-recovered call, result
+            // unmarshalling, and span rewriting. Signal recovery is a separate
+            // execution guard; it does not establish pointer/ABI validity.
+            let func: extern "C" fn(i64) -> i64 = match abi {
+                MacroClauseAbi::SexpListToSexpI64V1 => std::mem::transmute(entry.as_ptr()),
+            };
             // Clear any stale error before the JIT call.
             let _ = cranelisp_intrinsics::panic::take_runtime_error();
             let result_i64 = func(args_slist);
@@ -562,12 +617,20 @@ fn invoke_jit_protected(
         Ok(Err(sig)) => {
             // Signal caught via siglongjmp.
             let message = match sig {
-                libc::SIGFPE => "runtime error during macro expansion: arithmetic exception (division by zero)".to_string(),
-                libc::SIGILL => "runtime error during macro expansion: illegal instruction".to_string(),
+                libc::SIGFPE => {
+                    "runtime error during macro expansion: arithmetic exception (division by zero)"
+                        .to_string()
+                }
+                libc::SIGILL => {
+                    "runtime error during macro expansion: illegal instruction".to_string()
+                }
                 libc::SIGBUS => "runtime error during macro expansion: bus error".to_string(),
                 _ => format!("runtime error during macro expansion: signal {sig}"),
             };
-            Err(CranelispError::MacroError { message, location: ErrorLocation::from_span(span) })
+            Err(CranelispError::MacroError {
+                message,
+                location: ErrorLocation::from_span(span),
+            })
         }
         Err(panic_payload) => {
             // Rust panic caught (e.g., from runtime_panic).
@@ -578,7 +641,10 @@ fn invoke_jit_protected(
             } else {
                 "unknown runtime error during macro expansion".to_string()
             };
-            Err(CranelispError::MacroError { message, location: ErrorLocation::from_span(span) })
+            Err(CranelispError::MacroError {
+                message,
+                location: ErrorLocation::from_span(span),
+            })
         }
     }
 }
@@ -761,9 +827,7 @@ pub(crate) fn quote_head(children: &[Sexp]) -> Option<QuoteHead> {
     match &children[0] {
         Sexp::Symbol(h, _) if h == "quote" => Some(QuoteHead::Quote),
         Sexp::Symbol(h, _) if h == "quasiquote" => Some(QuoteHead::Quasiquote),
-        Sexp::Symbol(h, _) if h == "unquote" || h == "unquote-splicing" => {
-            Some(QuoteHead::Unquote)
-        }
+        Sexp::Symbol(h, _) if h == "unquote" || h == "unquote-splicing" => Some(QuoteHead::Unquote),
         _ => None,
     }
 }
@@ -881,9 +945,7 @@ fn expand_scoped(
 ) -> Result<Sexp, CranelispError> {
     if depth > EXPANSION_DEPTH_LIMIT {
         return Err(CranelispError::MacroError {
-            message: format!(
-                "macro expansion depth limit ({EXPANSION_DEPTH_LIMIT}) exceeded"
-            ),
+            message: format!("macro expansion depth limit ({EXPANSION_DEPTH_LIMIT}) exceeded"),
             location: ErrorLocation::from_span(sexp.span()),
         });
     }
@@ -910,8 +972,7 @@ fn expand_scoped(
                         let mut children = children;
                         let body = children.pop().expect("len == 2: quasiquote body");
                         let head_sym = children.pop().expect("len == 2: quasiquote head");
-                        let inner =
-                            shield_qq(body, resolver, depth, origin_span, shadows, 0)?;
+                        let inner = shield_qq(body, resolver, depth, origin_span, shadows, 0)?;
                         return Ok(Sexp::List(vec![head_sym, inner], span));
                     }
                     // A bare `(unquote X)` outside any quasiquote is not shielded
@@ -927,7 +988,13 @@ fn expand_scoped(
             {
                 let head = head.clone();
                 return expand_binding_form(
-                    &head, &children, span, resolver, depth, origin_span, shadows,
+                    &head,
+                    &children,
+                    span,
+                    resolver,
+                    depth,
+                    origin_span,
+                    shadows,
                 );
             }
             // 2. Check if head is a macro name — unless it is lexically shadowed.
@@ -940,9 +1007,7 @@ fn expand_scoped(
                     // Anchor errors at the original user call when we are inside
                     // an expansion; otherwise this form IS the user call.
                     let call_span = origin_span.unwrap_or(span);
-                    return expand_recognized_macro(
-                        fq, args, call_span, resolver, depth, shadows,
-                    );
+                    return expand_recognized_macro(fq, args, call_span, resolver, depth, shadows);
                 }
             }
             // 3. Not a macro call — recurse into children.
@@ -1170,7 +1235,11 @@ fn expand_let(
     }
     let body = expand_scoped(children[2].clone(), resolver, depth, origin_span, &scope)?;
     Ok(Sexp::List(
-        vec![children[0].clone(), Sexp::Bracket(new_items, *bracket_span), body],
+        vec![
+            children[0].clone(),
+            Sexp::Bracket(new_items, *bracket_span),
+            body,
+        ],
         span,
     ))
 }
@@ -1242,19 +1311,37 @@ fn expand_defn(
             let scope = params_scope(param_items, shadows);
             out.push(children[idx].clone()); // params verbatim
             for c in &children[idx + 1..] {
-                out.push(expand_scoped(c.clone(), resolver, depth, origin_span, &scope)?);
+                out.push(expand_scoped(
+                    c.clone(),
+                    resolver,
+                    depth,
+                    origin_span,
+                    &scope,
+                )?);
             }
         }
         // Multi arity: each remaining child is a `([params] body)` variant.
         Some(Sexp::List(..)) => {
             for c in &children[idx..] {
-                out.push(expand_defn_variant(c, resolver, depth, origin_span, shadows)?);
+                out.push(expand_defn_variant(
+                    c,
+                    resolver,
+                    depth,
+                    origin_span,
+                    shadows,
+                )?);
             }
         }
         // Unexpected shape — recurse generically (the AST builder reports it).
         _ => {
             for c in &children[idx..] {
-                out.push(expand_scoped(c.clone(), resolver, depth, origin_span, shadows)?);
+                out.push(expand_scoped(
+                    c.clone(),
+                    resolver,
+                    depth,
+                    origin_span,
+                    shadows,
+                )?);
             }
         }
     }
@@ -1307,7 +1394,13 @@ fn expand_match(
     out.push(children[0].clone()); // match
     // Scrutinee region (possibly a `:Type form` pair) — ordinary reads.
     for c in &children[1..last] {
-        out.push(expand_scoped(c.clone(), resolver, depth, origin_span, shadows)?);
+        out.push(expand_scoped(
+            c.clone(),
+            resolver,
+            depth,
+            origin_span,
+            shadows,
+        )?);
     }
     if !arm_items.len().is_multiple_of(2) {
         // Malformed arms — recurse generically (the AST builder reports it).
@@ -1326,7 +1419,13 @@ fn expand_match(
         let mut scope = shadows.clone();
         scope.extend(pattern_binders(pattern));
         new_arms.push(pattern.clone()); // pattern verbatim (binders, not reads)
-        new_arms.push(expand_scoped(body.clone(), resolver, depth, origin_span, &scope)?);
+        new_arms.push(expand_scoped(
+            body.clone(),
+            resolver,
+            depth,
+            origin_span,
+            &scope,
+        )?);
         i += 2;
     }
     out.push(Sexp::Bracket(new_arms, *arms_span));
@@ -1351,7 +1450,9 @@ fn expand_recognized_macro(
     shadows: &HashSet<String>,
 ) -> Result<Sexp, CranelispError> {
     let result = {
-        let expander = JitMacroExpander { symbol_tables: resolver.symbol_tables() };
+        let expander = JitMacroExpander {
+            symbol_tables: resolver.symbol_tables(),
+        };
         expander
             .invoke(&fq, args, call_span)
             .map_err(|e| CranelispError::MacroError {
@@ -1378,7 +1479,11 @@ mod tests {
     use std::collections::HashMap;
 
     fn empty_scheme() -> Scheme {
-        Scheme { type_vars: vec![], constraints: HashMap::new(), ty: Type::Int }
+        Scheme {
+            type_vars: vec![],
+            constraints: HashMap::new(),
+            ty: Type::Int,
+        }
     }
 
     /// Build a one-module symbol table set with `name` registered as a macro
@@ -1392,7 +1497,10 @@ mod tests {
         let tables = dashmap::DashMap::new();
         let mut st = crate::code::SessionSymbolTable::new_with_params(path.clone());
         let clauses_meta: Vec<MacroClauseInfo> = (0..clause_count)
-            .map(|_| MacroClauseInfo { params: vec![], rest_param: None })
+            .map(|_| MacroClauseInfo {
+                params: vec![],
+                rest_param: None,
+            })
             .collect();
         let entry = ModuleEntry::def(
             empty_scheme(),
@@ -1482,7 +1590,9 @@ mod tests {
             macro_name: "x",
             asked: Vec::new(),
         };
-        let form = cranelisp_frontend::parse("(add-i64 x 1)").unwrap().remove(0);
+        let form = cranelisp_frontend::parse("(add-i64 x 1)")
+            .unwrap()
+            .remove(0);
         let result = expand_sexp_recursive(form, &mut resolver, 0, None);
         assert!(
             resolver.asked.contains(&"x".to_string()),
@@ -1513,7 +1623,9 @@ mod tests {
     #[test]
     fn let_binder_and_body_shadow_zero_arg_macro() {
         let mut resolver = shadow_stub("g");
-        let form = cranelisp_frontend::parse("(let [g 7] g)").unwrap().remove(0);
+        let form = cranelisp_frontend::parse("(let [g 7] g)")
+            .unwrap()
+            .remove(0);
         let expanded = expand_sexp_recursive(form.clone(), &mut resolver, 0, None)
             .expect("a lexically-shadowed g must not be macro-invoked");
         assert_eq!(expanded.format_flat(), form.format_flat());
@@ -1530,11 +1642,17 @@ mod tests {
     #[test]
     fn defn_param_shadows_zero_arg_macro() {
         let mut resolver = shadow_stub("g");
-        let form = cranelisp_frontend::parse("(defn f [:Int g] g)").unwrap().remove(0);
+        let form = cranelisp_frontend::parse("(defn f [:Int g] g)")
+            .unwrap()
+            .remove(0);
         let expanded = expand_sexp_recursive(form.clone(), &mut resolver, 0, None)
             .expect("a shadowing param g must not be macro-invoked");
         assert_eq!(expanded.format_flat(), form.format_flat());
-        assert!(!resolver.asked.contains(&"g".to_string()), "asked={:?}", resolver.asked);
+        assert!(
+            !resolver.asked.contains(&"g".to_string()),
+            "asked={:?}",
+            resolver.asked
+        );
     }
 
     // spec: spec/08-modules.md §8.6.3 — a `match` PATTERN variable `g` shadows the
@@ -1543,11 +1661,17 @@ mod tests {
     #[test]
     fn match_pattern_var_shadows_zero_arg_macro() {
         let mut resolver = shadow_stub("g");
-        let form = cranelisp_frontend::parse("(match b [(Box g) g])").unwrap().remove(0);
+        let form = cranelisp_frontend::parse("(match b [(Box g) g])")
+            .unwrap()
+            .remove(0);
         let expanded = expand_sexp_recursive(form.clone(), &mut resolver, 0, None)
             .expect("a shadowing pattern var g must not be macro-invoked");
         assert_eq!(expanded.format_flat(), form.format_flat());
-        assert!(!resolver.asked.contains(&"g".to_string()), "asked={:?}", resolver.asked);
+        assert!(
+            !resolver.asked.contains(&"g".to_string()),
+            "asked={:?}",
+            resolver.asked
+        );
     }
 
     // spec: spec/08-modules.md §8.6.3 — the defn NAME is in scope inside its own
@@ -1624,7 +1748,9 @@ mod tests {
     #[test]
     fn free_read_in_let_value_still_expands() {
         let mut resolver = shadow_stub("g");
-        let form = cranelisp_frontend::parse("(let [h g] h)").unwrap().remove(0);
+        let form = cranelisp_frontend::parse("(let [h g] h)")
+            .unwrap()
+            .remove(0);
         let result = expand_sexp_recursive(form, &mut resolver, 0, None);
         assert!(
             resolver.asked.contains(&"g".to_string()),
@@ -1647,10 +1773,16 @@ mod tests {
     #[test]
     fn quote_form_held_verbatim_shields_inner_macro() {
         let mut resolver = shadow_stub("m");
-        let form = cranelisp_frontend::parse("(quote (m x))").unwrap().remove(0);
+        let form = cranelisp_frontend::parse("(quote (m x))")
+            .unwrap()
+            .remove(0);
         let expanded = expand_sexp_recursive(form.clone(), &mut resolver, 0, None)
             .expect("quoted data must not be expanded");
-        assert_eq!(expanded.format_flat(), form.format_flat(), "quote round-trips verbatim");
+        assert_eq!(
+            expanded.format_flat(),
+            form.format_flat(),
+            "quote round-trips verbatim"
+        );
         assert!(
             !resolver.asked.contains(&"m".to_string()),
             "a macro under quote must not be recognized: asked={:?}",
@@ -1664,10 +1796,16 @@ mod tests {
     #[test]
     fn quasiquote_template_data_shields_macro() {
         let mut resolver = shadow_stub("m");
-        let form = cranelisp_frontend::parse("(quasiquote (m x))").unwrap().remove(0);
+        let form = cranelisp_frontend::parse("(quasiquote (m x))")
+            .unwrap()
+            .remove(0);
         let expanded = expand_sexp_recursive(form.clone(), &mut resolver, 0, None)
             .expect("quasiquote template data must not be expanded");
-        assert_eq!(expanded.format_flat(), form.format_flat(), "template data round-trips");
+        assert_eq!(
+            expanded.format_flat(),
+            form.format_flat(),
+            "template data round-trips"
+        );
         assert!(
             !resolver.asked.contains(&"m".to_string()),
             "a macro in template data must not be recognized: asked={:?}",
@@ -1705,13 +1843,16 @@ mod tests {
     #[test]
     fn nested_quasiquote_depth_shields_inner_unquote() {
         let mut resolver = shadow_stub("m");
-        let form =
-            cranelisp_frontend::parse("(quasiquote (a (quasiquote (b (unquote (m x))))))")
-                .unwrap()
-                .remove(0);
+        let form = cranelisp_frontend::parse("(quasiquote (a (quasiquote (b (unquote (m x))))))")
+            .unwrap()
+            .remove(0);
         let expanded = expand_sexp_recursive(form.clone(), &mut resolver, 0, None)
             .expect("an inner-quasiquote unquote stays shielded at the outer level");
-        assert_eq!(expanded.format_flat(), form.format_flat(), "nested template round-trips");
+        assert_eq!(
+            expanded.format_flat(),
+            form.format_flat(),
+            "nested template round-trips"
+        );
         assert!(
             !resolver.asked.contains(&"m".to_string()),
             "a depth-1 unquote must not expand at the outer level: asked={:?}",
@@ -1736,7 +1877,10 @@ mod tests {
             "a live unquote inside a quoted list under quasiquote must be found: asked={:?}",
             resolver.asked
         );
-        assert!(result.is_err(), "recognition led to invocation (fails without clause code)");
+        assert!(
+            result.is_err(),
+            "recognition led to invocation (fails without clause code)"
+        );
     }
 
     // spec: macro-availability-model.md §0.7 — recognition is the types primitive
@@ -1762,8 +1906,15 @@ mod tests {
         let aliases = ModuleAliases::default();
         let pf = cranelisp_typecheck::PreludeFallback::default();
         let module = ModuleFullPath::from("user");
-        let r = recognize_macro_head(&tables, &aliases, &pf, &module, "not-yet-defined", Span::SYNTHETIC)
-            .expect("no hard error");
+        let r = recognize_macro_head(
+            &tables,
+            &aliases,
+            &pf,
+            &module,
+            "not-yet-defined",
+            Span::SYNTHETIC,
+        )
+        .expect("no hard error");
         assert!(r.is_none(), "an undefined name is not a macro head");
     }
 
@@ -1789,13 +1940,15 @@ mod tests {
         // The macro entry exists (recognition succeeds) but its clause function
         // was never JIT-compiled, so its GOT slot is empty.
         let tables = tables_with_macro("user", "twice", 1);
-        let expander = JitMacroExpander { symbol_tables: &tables };
+        let expander = JitMacroExpander {
+            symbol_tables: &tables,
+        };
         let fq = FQSymbol {
             module: ModuleFullPath::from("user"),
             symbol: Symbol::from("twice"),
         };
         let err = expander
-            .invoke(&fq, &[Sexp::Int(1, Span::SYNTHETIC)], Span::SYNTHETIC)
+            .invoke(&fq, &[], Span::SYNTHETIC)
             .expect_err("clause code is absent");
         match err {
             MacroInvokeError::Aborted { message, .. } => {
@@ -1811,9 +1964,9 @@ mod tests {
     /// Hand-build a `MacroClauseEntry` with the given fixed-param count and
     /// variadic flag; the `func_ptr` is never dereferenced by the diagnostic
     /// path (clause matching + message building read only `params`/`rest_param`).
-    fn clause(fixed: usize, variadic: bool) -> MacroClauseEntry {
-        MacroClauseEntry {
-            func_ptr: std::ptr::null(),
+    fn clause(fixed: usize, variadic: bool) -> MacroClauseDescriptor {
+        MacroClauseDescriptor {
+            clause_index: 0,
             params: (0..fixed)
                 .map(|i| MacroParam::Name(Symbol::from(format!("p{i}"))))
                 .collect(),
@@ -1841,7 +1994,11 @@ mod tests {
         let args = [Sexp::Bool(false, Span::SYNTHETIC)];
         let err = no_matching_clause_error(&fq, &clauses, &args, user_span);
         match err {
-            MacroInvokeError::Malformed { message, span, fq: efq } => {
+            MacroInvokeError::Malformed {
+                message,
+                span,
+                fq: efq,
+            } => {
                 // (a) span IS the user-call span, never a synthetic offset.
                 assert_eq!(span, user_span, "must carry the user-call span");
                 assert!(
@@ -1853,7 +2010,10 @@ mod tests {
                     message.contains("0 or 2+"),
                     "arity hint from the clause set: {message}"
                 );
-                assert!(message.contains("1 argument(s)"), "the call's grain: {message}");
+                assert!(
+                    message.contains("1 argument(s)"),
+                    "the call's grain: {message}"
+                );
                 assert_eq!(efq.symbol, Symbol::from("mycond"));
             }
             other => panic!("expected Malformed, got {other:?}"),
@@ -1897,7 +2057,10 @@ mod tests {
         let entry = ModuleEntry::def(
             empty_scheme(),
             DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0, mode_summary: None },
+                fn_state: cranelisp_types::UserFnState::Concrete {
+                    got_slot: 0,
+                    mode_summary: None,
+                },
             },
         )
         .visibility(Visibility::Public)
@@ -1923,7 +2086,10 @@ mod tests {
         let path = ModuleFullPath::from(module);
         let tables = dashmap::DashMap::new();
         let mut st = crate::code::SessionSymbolTable::new_with_params(path.clone());
-        let clauses_meta = vec![MacroClauseInfo { params: vec![], rest_param: None }];
+        let clauses_meta = vec![MacroClauseInfo {
+            params: vec![],
+            rest_param: None,
+        }];
         let entry = ModuleEntry::def(
             empty_scheme(),
             DefKind::Macro {
@@ -1946,7 +2112,10 @@ mod tests {
         let tables = tables_with_macro_vis("prelude", "when", cranelisp_types::Visibility::Public);
         // The user module exists but has no `when` in its inner table.
         let user = ModuleFullPath::from("user");
-        tables.insert(user.clone(), crate::code::SessionSymbolTable::new_with_params(user.clone()));
+        tables.insert(
+            user.clone(),
+            crate::code::SessionSymbolTable::new_with_params(user.clone()),
+        );
         let aliases = ModuleAliases::default();
         let pf = cranelisp_typecheck::PreludeFallback::default();
         pf.insert(user.clone(), true);
@@ -1962,15 +2131,22 @@ mod tests {
     // scope (public-only). It is treated as not-a-macro-head and does not leak.
     #[test]
     fn recognize_macro_head_does_not_leak_private_prelude_macro() {
-        let tables = tables_with_macro_vis("prelude", "secret", cranelisp_types::Visibility::Private);
+        let tables =
+            tables_with_macro_vis("prelude", "secret", cranelisp_types::Visibility::Private);
         let user = ModuleFullPath::from("user");
-        tables.insert(user.clone(), crate::code::SessionSymbolTable::new_with_params(user.clone()));
+        tables.insert(
+            user.clone(),
+            crate::code::SessionSymbolTable::new_with_params(user.clone()),
+        );
         let aliases = ModuleAliases::default();
         let pf = cranelisp_typecheck::PreludeFallback::default();
         pf.insert(user.clone(), true);
         let r = recognize_macro_head(&tables, &aliases, &pf, &user, "secret", Span::SYNTHETIC)
             .expect("no hard error");
-        assert!(r.is_none(), "a private prelude macro must not leak to a user module");
+        assert!(
+            r.is_none(),
+            "a private prelude macro must not leak to a user module"
+        );
     }
 
     // spec: design/int/s78-entry-module.md §2.7.1 — absence-is-OFF: with the bit
@@ -1979,13 +2155,19 @@ mod tests {
     fn recognize_macro_head_no_fallback_when_bit_off() {
         let tables = tables_with_macro_vis("prelude", "when", cranelisp_types::Visibility::Public);
         let user = ModuleFullPath::from("user");
-        tables.insert(user.clone(), crate::code::SessionSymbolTable::new_with_params(user.clone()));
+        tables.insert(
+            user.clone(),
+            crate::code::SessionSymbolTable::new_with_params(user.clone()),
+        );
         let aliases = ModuleAliases::default();
         // Bit absent ⇒ OFF.
         let pf = cranelisp_typecheck::PreludeFallback::default();
         let r = recognize_macro_head(&tables, &aliases, &pf, &user, "when", Span::SYNTHETIC)
             .expect("no hard error");
-        assert!(r.is_none(), "no fallback when the prelude_fallback bit is OFF");
+        assert!(
+            r.is_none(),
+            "no fallback when the prelude_fallback bit is OFF"
+        );
     }
 
     // spec: 09-macros.md section 9.7 — marshal round-trip via expand

@@ -110,7 +110,11 @@ fn spawn_poll_web_server() -> ServerGuard {
         .spawn()
         .expect("spawn poll web server");
 
-    let mut guard = ServerGuard { child, port, _tmp: tmp };
+    let mut guard = ServerGuard {
+        child,
+        port,
+        _tmp: tmp,
+    };
 
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
@@ -143,7 +147,9 @@ fn spawn_poll_web_server() -> ServerGuard {
 fn http_get(port: u16, path: &str) -> String {
     let mut stream =
         TcpStream::connect(format!("127.0.0.1:{port}")).expect("connect to poll web server");
-    stream.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
     let request = format!("GET {path} HTTP/1.0\r\n\r\n");
     stream.write_all(request.as_bytes()).expect("write request");
     stream.flush().ok();

@@ -79,11 +79,7 @@ impl FileWatcher {
         if self.watched_dirs.contains(dir) {
             return;
         }
-        if self
-            .watcher
-            .watch(dir, RecursiveMode::NonRecursive)
-            .is_ok()
-        {
+        if self.watcher.watch(dir, RecursiveMode::NonRecursive).is_ok() {
             self.watched_dirs.insert(dir.to_path_buf());
         }
     }
@@ -106,9 +102,7 @@ impl FileWatcher {
                         for path in event.paths {
                             // Only .cl files, skip .cl.tmp (atomic save intermediates).
                             if path.extension() == Some(std::ffi::OsStr::new("cl"))
-                                && !path
-                                    .to_str()
-                                    .is_some_and(|s| s.ends_with(".cl.tmp"))
+                                && !path.to_str().is_some_and(|s| s.ends_with(".cl.tmp"))
                             {
                                 let canonical = path.canonicalize().unwrap_or(path);
                                 candidates.insert(canonical);

@@ -32,13 +32,13 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Mutex;
 
 use cranelisp_types::{
-    CranelispError, DefKind, ErrorLocation, FQSymbol, ModuleEntry, ModuleFullPath,
-    ModuleStrategy, Sexp, Span, Symbol, UserFnState, GOT_TABLE_SIZE,
+    CranelispError, DefKind, ErrorLocation, FQSymbol, GOT_TABLE_SIZE, ModuleEntry, ModuleFullPath,
+    ModuleStrategy, Sexp, Span, Symbol, UserFnState,
 };
 
 use crate::code::{Code, SessionSymbolTable};
 use crate::session_v4::CompilerSession;
-use crate::styled::{render, Role, StyledDoc};
+use crate::styled::{Role, StyledDoc, render};
 
 type SymbolTables = dashmap::DashMap<ModuleFullPath, SessionSymbolTable>;
 
@@ -243,15 +243,16 @@ pub(crate) fn allocate_live_got_slot(
     live: &mut SessionSymbolTable,
     module: &ModuleFullPath,
 ) -> Result<usize, CranelispError> {
-    live.allocate_got_slot().map_err(|_e| CranelispError::CodegenError {
-        message: format!(
-            "GOT slot table exhausted for module '{module}' \
+    live.allocate_got_slot()
+        .map_err(|_e| CranelispError::CodegenError {
+            message: format!(
+                "GOT slot table exhausted for module '{module}' \
              ({GOT_TABLE_SIZE} slots): too many definitions and \
              ABI-changing redefinitions in one session. Restart the \
              session to reclaim frozen slots.",
-        ),
-        location: ErrorLocation::from_span(Span::SYNTHETIC),
-    })
+            ),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -388,7 +389,12 @@ pub(crate) fn mark_broken(
             // Frozen supersession: the displaced code stays mapped for
             // in-flight frames / heap closures (cures the `*code = None`
             // page-free hazard — design §6.3).
-            pool_guard.push(RetainedCode::frozen(&fq.module, &fq.symbol, Some(slot), code));
+            pool_guard.push(RetainedCode::frozen(
+                &fq.module,
+                &fq.symbol,
+                Some(slot),
+                code,
+            ));
         }
         // The provenance buffer must live exactly as long as the stub's Code
         // handle: allocate it, bake its address, and push both PAIRED before
@@ -507,8 +513,7 @@ impl ReverseIndex {
         // Deterministic caller order (HashMap iteration is seed-randomised).
         for callers in map.values_mut() {
             callers.sort_by(|a, b| {
-                (a.module.as_ref(), a.symbol.as_ref())
-                    .cmp(&(b.module.as_ref(), b.symbol.as_ref()))
+                (a.module.as_ref(), a.symbol.as_ref()).cmp(&(b.module.as_ref(), b.symbol.as_ref()))
             });
             callers.dedup();
         }
@@ -565,9 +570,8 @@ pub(crate) fn stale_callers(tables: &SymbolTables, target: &FQSymbol) -> Vec<FQS
         let compiled = tables
             .get(&caller.module)
             .and_then(|t| {
-                t.get(caller.symbol.as_ref()).map(|e| {
-                    matches!(e, ModuleEntry::Def { code: Some(_), .. })
-                })
+                t.get(caller.symbol.as_ref())
+                    .map(|e| matches!(e, ModuleEntry::Def { code: Some(_), .. }))
             })
             .unwrap_or(false);
         if !compiled {
@@ -630,8 +634,11 @@ pub(crate) struct ClosureMember {
 /// completes after everything it can reach — i.e. **callees before callers**,
 /// exactly the walk order §4.1 requires.
 pub(crate) fn condense_reverse_topo(members: &[ClosureMember]) -> Vec<Vec<usize>> {
-    let index_of: HashMap<&FQSymbol, usize> =
-        members.iter().enumerate().map(|(i, m)| (&m.fq, i)).collect();
+    let index_of: HashMap<&FQSymbol, usize> = members
+        .iter()
+        .enumerate()
+        .map(|(i, m)| (&m.fq, i))
+        .collect();
     let n = members.len();
     let adj: Vec<Vec<usize>> = members
         .iter()
@@ -947,7 +954,12 @@ fn process_scc(
     target: &FQSymbol,
     walk: &mut TransactionWalk,
 ) {
-    let TransactionWalk { propagates, touched_modules, reported, report } = walk;
+    let TransactionWalk {
+        propagates,
+        touched_modules,
+        reported,
+        report,
+    } = walk;
 
     if !scc_should_visit(scc, members, propagates) {
         for &i in scc {
@@ -1492,15 +1504,11 @@ impl CompilerSession {
             )?;
 
             match result {
-                ClusterOnce::Done { processed, program } => {
-                    crate::worker::inline_jit_codegen_for_module(
-                        &self.shared.scheduler,
-                        module,
-                        &program,
-                        &self.shared.symbol_tables,
-                        self.shared.introspection.as_ref(),
-                        Some(&self.shared),
-                    )?;
+                ClusterOnce::Done {
+                    mut processed,
+                    program: _,
+                } => {
+                    crate::worker::compile_and_publish_processed(&mut processed, &self.shared)?;
                     return Ok(processed.redefinitions().to_vec());
                 }
                 ClusterOnce::Gap { dep } => {
@@ -1520,11 +1528,7 @@ impl CompilerSession {
     /// The provenance comment line for a broken symbol resolved in `module`,
     /// or `None` when the symbol is not broken (`repl/spec.md` §18.4):
     /// `; broken by the redefinition of {cause}: {original error}`.
-    pub(crate) fn broken_status_line(
-        &self,
-        name: &str,
-        module: &ModuleFullPath,
-    ) -> Option<String> {
+    pub(crate) fn broken_status_line(&self, name: &str, module: &ModuleFullPath) -> Option<String> {
         // Accept both bare and module-qualified spellings.
         let (module, bare) = match name.rsplit_once('/') {
             Some((m, n)) => (ModuleFullPath::from(m), n),
@@ -1534,9 +1538,10 @@ impl CompilerSession {
             module,
             symbol: Symbol::from(bare),
         };
-        self.shared.broken.get(&fq).map(|info| {
-            broken_status_render(&info.broken_by, &info.original_error)
-        })
+        self.shared
+            .broken
+            .get(&fq)
+            .map(|info| broken_status_render(&info.broken_by, &info.original_error))
     }
 }
 
@@ -1579,7 +1584,10 @@ mod tests {
             docstring: None,
             param_names: vec![],
             kind: Box::new(DefKind::UserFn {
-                fn_state: UserFnState::Concrete { got_slot: slot, mode_summary: None },
+                fn_state: UserFnState::Concrete {
+                    got_slot: slot,
+                    mode_summary: None,
+                },
             }),
             callees: Vec::new(),
             trait_origin: None,
@@ -1594,7 +1602,10 @@ mod tests {
     fn def_with_callees(callees: Vec<FQSymbol>, slot: Option<usize>) -> ModuleEntry<Code> {
         let kind = match slot {
             Some(got_slot) => DefKind::UserFn {
-                fn_state: UserFnState::Concrete { got_slot, mode_summary: None },
+                fn_state: UserFnState::Concrete {
+                    got_slot,
+                    mode_summary: None,
+                },
             },
             // A slot-less template kind (Polymorphic carries a scheme id
             // payload in some shapes; Constrained carries the template).
@@ -1660,7 +1671,10 @@ mod tests {
         let same = concrete_def(fn_ty(vec![Type::Int], Type::Int), 0);
         let changed = concrete_def(fn_ty(vec![Type::String], Type::Int), 0);
 
-        assert_eq!(classify_redefinition("f", None, &same), (RedefKind::New, false));
+        assert_eq!(
+            classify_redefinition("f", None, &same),
+            (RedefKind::New, false)
+        );
         assert_eq!(
             classify_redefinition("f", Some(&prior), &same),
             (RedefKind::AbiPreserving, true)
@@ -1724,8 +1738,14 @@ mod tests {
         // redefined green → classified New + prior_was_def → CLEARS.
         assert!(outcome_clears_broken(&outcome(RedefKind::New, true)));
         // Ordinary redefinitions clear (both classifications).
-        assert!(outcome_clears_broken(&outcome(RedefKind::AbiPreserving, true)));
-        assert!(outcome_clears_broken(&outcome(RedefKind::AbiChanging, true)));
+        assert!(outcome_clears_broken(&outcome(
+            RedefKind::AbiPreserving,
+            true
+        )));
+        assert!(outcome_clears_broken(&outcome(
+            RedefKind::AbiChanging,
+            true
+        )));
         // Genuinely new (no prior Def, incl. Import-shadow) — no clear claim.
         assert!(!outcome_clears_broken(&outcome(RedefKind::New, false)));
     }
@@ -1740,15 +1760,24 @@ mod tests {
         let mut ut = SessionSymbolTable::new_with_params(user.clone());
         // g calls f; h calls g; unrelated calls add-i64 only.
         ut.insert(Symbol::from("f"), def_with_callees(vec![], Some(0)));
-        ut.insert(Symbol::from("g"), def_with_callees(vec![fq("user", "f")], Some(1)));
-        ut.insert(Symbol::from("h"), def_with_callees(vec![fq("user", "g")], Some(2)));
+        ut.insert(
+            Symbol::from("g"),
+            def_with_callees(vec![fq("user", "f")], Some(1)),
+        );
+        ut.insert(
+            Symbol::from("h"),
+            def_with_callees(vec![fq("user", "g")], Some(2)),
+        );
         ut.insert(
             Symbol::from("unrelated"),
             def_with_callees(vec![fq("primitives", "add-i64")], Some(3)),
         );
         tables.insert(user.clone(), ut);
         let mut ot = SessionSymbolTable::new_with_params(other.clone());
-        ot.insert(Symbol::from("x"), def_with_callees(vec![fq("user", "f")], Some(0)));
+        ot.insert(
+            Symbol::from("x"),
+            def_with_callees(vec![fq("user", "f")], Some(0)),
+        );
         tables.insert(other, ot);
 
         let reverse = ReverseIndex::build(&tables);
@@ -1756,15 +1785,27 @@ mod tests {
         assert_eq!(callers, vec![fq("other", "x"), fq("user", "g")]);
 
         let closure = affected_closure(&reverse, &fq("user", "f"));
-        assert!(closure.contains(&fq("user", "g")), "direct caller in closure");
-        assert!(closure.contains(&fq("user", "h")), "transitive caller in closure");
-        assert!(closure.contains(&fq("other", "x")), "cross-module caller in closure");
+        assert!(
+            closure.contains(&fq("user", "g")),
+            "direct caller in closure"
+        );
+        assert!(
+            closure.contains(&fq("user", "h")),
+            "transitive caller in closure"
+        );
+        assert!(
+            closure.contains(&fq("other", "x")),
+            "cross-module caller in closure"
+        );
         // Negative (L-R3 exactness feed): unaffected symbols never enter.
         assert!(
             !closure.contains(&fq("user", "unrelated")),
             "unrelated must NOT join the closure"
         );
-        assert!(!closure.contains(&fq("user", "f")), "target is not a member");
+        assert!(
+            !closure.contains(&fq("user", "f")),
+            "target is not a member"
+        );
     }
 
     // spec: repl/spec.md §18.3 (FIXME 0491) / design/int/session-transaction.md
@@ -1793,7 +1834,10 @@ mod tests {
             def_with_callees(vec![fq("user", "f")], Some(2)),
         );
         // Control: a real caller with the same edge stays in.
-        ut.insert(Symbol::from("g"), def_with_callees(vec![fq("user", "f")], Some(3)));
+        ut.insert(
+            Symbol::from("g"),
+            def_with_callees(vec![fq("user", "f")], Some(3)),
+        );
         tables.insert(user.clone(), ut);
 
         let reverse = ReverseIndex::build(&tables);
@@ -1812,7 +1856,11 @@ mod tests {
             "a macro-clause caller renders as its owning macro"
         );
         assert_eq!(macro_clause_base_name("__macro_m_clause_0"), Some("m"));
-        assert_eq!(macro_clause_base_name("g"), None, "non-clause names do not fold");
+        assert_eq!(
+            macro_clause_base_name("g"),
+            None,
+            "non-clause names do not fold"
+        );
     }
 
     // spec: design/int/session-transaction.md §4.1 — SCC condensation emits
@@ -1822,14 +1870,26 @@ mod tests {
     fn scc_reverse_topo_order_and_cycles() {
         // g → f(target, not a member); h → g; a ⇄ b (mutual) with a → h.
         let members = vec![
-            ClosureMember { fq: fq("user", "g"), slotless: false, callees: vec![fq("user", "f")] },
-            ClosureMember { fq: fq("user", "h"), slotless: false, callees: vec![fq("user", "g")] },
+            ClosureMember {
+                fq: fq("user", "g"),
+                slotless: false,
+                callees: vec![fq("user", "f")],
+            },
+            ClosureMember {
+                fq: fq("user", "h"),
+                slotless: false,
+                callees: vec![fq("user", "g")],
+            },
             ClosureMember {
                 fq: fq("user", "a"),
                 slotless: false,
                 callees: vec![fq("user", "b"), fq("user", "h")],
             },
-            ClosureMember { fq: fq("user", "b"), slotless: false, callees: vec![fq("user", "a")] },
+            ClosureMember {
+                fq: fq("user", "b"),
+                slotless: false,
+                callees: vec![fq("user", "a")],
+            },
         ];
         let sccs = condense_reverse_topo(&members);
         // Positions: g before h before {a,b}.
@@ -1851,14 +1911,32 @@ mod tests {
     #[test]
     fn slotless_pass_through_propagation_decisions() {
         // Slotted green member: propagates iff own gate diff AbiChanging.
-        assert!(!member_propagates(false, true, Some(false)), "slotted AbiPreserving stops");
-        assert!(member_propagates(false, true, Some(true)), "slotted AbiChanging propagates");
+        assert!(
+            !member_propagates(false, true, Some(false)),
+            "slotted AbiPreserving stops"
+        );
+        assert!(
+            member_propagates(false, true, Some(true)),
+            "slotted AbiChanging propagates"
+        );
         // Slotted BROKEN (no green outcome): does not propagate.
-        assert!(!member_propagates(false, true, None), "slotted BROKEN stops");
+        assert!(
+            !member_propagates(false, true, None),
+            "slotted BROKEN stops"
+        );
         // Slot-less member: pass-through, whatever its own outcome.
-        assert!(member_propagates(true, true, Some(false)), "slot-less green-unchanged passes");
-        assert!(member_propagates(true, true, Some(true)), "slot-less green-changed passes");
-        assert!(member_propagates(true, true, None), "slot-less BROKEN passes");
+        assert!(
+            member_propagates(true, true, Some(false)),
+            "slot-less green-unchanged passes"
+        );
+        assert!(
+            member_propagates(true, true, Some(true)),
+            "slot-less green-changed passes"
+        );
+        assert!(
+            member_propagates(true, true, None),
+            "slot-less BROKEN passes"
+        );
         // Unvisited members never propagate.
         assert!(!member_propagates(true, false, None));
         assert!(!member_propagates(false, false, None));
@@ -1867,8 +1945,16 @@ mod tests {
         // Without pass-through the walk would stop at t (AbiPreserving); with
         // it, c is visited.
         let members = vec![
-            ClosureMember { fq: fq("user", "t"), slotless: true, callees: vec![fq("user", "f")] },
-            ClosureMember { fq: fq("user", "c"), slotless: false, callees: vec![fq("user", "t")] },
+            ClosureMember {
+                fq: fq("user", "t"),
+                slotless: true,
+                callees: vec![fq("user", "f")],
+            },
+            ClosureMember {
+                fq: fq("user", "c"),
+                slotless: false,
+                callees: vec![fq("user", "t")],
+            },
         ];
         let sccs = condense_reverse_topo(&members);
         let mut propagates: HashMap<FQSymbol, bool> = HashMap::new();
@@ -1894,7 +1980,10 @@ mod tests {
         let user = ModuleFullPath::from("user");
         let mut ut = SessionSymbolTable::new_with_params(user.clone());
         let slot = ut.allocate_got_slot().expect("fresh table has free slots");
-        ut.insert(Symbol::from("g"), concrete_def(fn_ty(vec![Type::Int], Type::Int), slot));
+        ut.insert(
+            Symbol::from("g"),
+            concrete_def(fn_ty(vec![Type::Int], Type::Int), slot),
+        );
         let old_ptr = 0xDEAD_0000usize as *const u8;
         ut.got.store_slot(slot, old_ptr);
         tables.insert(user.clone(), ut);
@@ -1913,7 +2002,10 @@ mod tests {
         // Registry: depth-1 provenance in the normative phrasing.
         let info = registry.get(&fq("user", "g")).expect("registry record");
         assert_eq!(info.broken_by, fq("user", "f"));
-        assert!(info.provenance.starts_with("user/g is broken by the redefinition of user/f:"));
+        assert!(
+            info.provenance
+                .starts_with("user/g is broken by the redefinition of user/f:")
+        );
 
         // Pool: the trap stub rides one entry PAIRED with its message buffer.
         let pool_guard = pool.lock().unwrap();
@@ -1960,10 +2052,20 @@ mod tests {
 
         let pool: RetentionPool = Mutex::new(Vec::new());
         let registry: BrokenRegistry = dashmap::DashMap::new();
-        mark_broken(&tables, &pool, &registry, &fq("user", "t"), &fq("user", "f"), "err");
+        mark_broken(
+            &tables,
+            &pool,
+            &registry,
+            &fq("user", "t"),
+            &fq("user", "f"),
+            "err",
+        );
 
         assert!(registry.contains_key(&fq("user", "t")), "registry record");
-        assert!(pool.lock().unwrap().is_empty(), "no pool push for a slot-less member");
+        assert!(
+            pool.lock().unwrap().is_empty(),
+            "no pool push for a slot-less member"
+        );
     }
 
     // spec: design/int/session-transaction.md §"GOT exhaustion" (obligation 3)
@@ -1982,7 +2084,10 @@ mod tests {
             err.to_string().contains("GOT slot table exhausted"),
             "got: {err}"
         );
-        assert_eq!(st.next_got_slot, GOT_TABLE_SIZE, "high-water untouched by refusal");
+        assert_eq!(
+            st.next_got_slot, GOT_TABLE_SIZE,
+            "high-water untouched by refusal"
+        );
     }
 
     /// Attach a real (empty-table) JIT `Code` handle so the entry reads as a
@@ -2030,18 +2135,43 @@ mod tests {
         assert!(is_t1_downgrade(&outcome("f", RedefKind::New, false, true)));
         // Concrete→overloaded/template displacement (slot-less staged): the
         // classifier's conservative arm.
-        assert!(is_t1_downgrade(&outcome("f", RedefKind::AbiPreserving, false, true)));
+        assert!(is_t1_downgrade(&outcome(
+            "f",
+            RedefKind::AbiPreserving,
+            false,
+            true
+        )));
         // Mutual exclusion with the per-symbol transaction (negative cell):
         // a concrete AbiChanging target never produces stale, and a body-only
         // AbiPreserving edit never triggers.
-        assert!(!is_t1_downgrade(&outcome("f", RedefKind::AbiChanging, true, true)));
-        assert!(!is_t1_downgrade(&outcome("f", RedefKind::AbiPreserving, true, true)));
+        assert!(!is_t1_downgrade(&outcome(
+            "f",
+            RedefKind::AbiChanging,
+            true,
+            true
+        )));
+        assert!(!is_t1_downgrade(&outcome(
+            "f",
+            RedefKind::AbiPreserving,
+            true,
+            true
+        )));
         // Genuine New — no prior Def (incl. the prior-Import shadow shape,
         // 0484's territory): never a downgrade.
-        assert!(!is_t1_downgrade(&outcome("f", RedefKind::New, false, false)));
+        assert!(!is_t1_downgrade(&outcome(
+            "f",
+            RedefKind::New,
+            false,
+            false
+        )));
         // Gate-exempt internals: never (an expression turn redefines __expr
         // every time — a per-turn trigger would break the L-D1 lane).
-        assert!(!is_t1_downgrade(&outcome("__expr", RedefKind::AbiPreserving, false, true)));
+        assert!(!is_t1_downgrade(&outcome(
+            "__expr",
+            RedefKind::AbiPreserving,
+            false,
+            true
+        )));
         assert!(!is_t1_downgrade(&outcome(
             "__macro_m_clause_0",
             RedefKind::AbiPreserving,
@@ -2091,7 +2221,10 @@ mod tests {
         let tables: SymbolTables = dashmap::DashMap::new();
         let user = ModuleFullPath::from("user");
         let mut ut = SessionSymbolTable::new_with_params(user.clone());
-        ut.insert(Symbol::from("dep"), concrete_def(fn_ty(vec![Type::Int], Type::Int), 0));
+        ut.insert(
+            Symbol::from("dep"),
+            concrete_def(fn_ty(vec![Type::Int], Type::Int), 0),
+        );
         // A compiled macro clause referencing the redefined dep fn.
         ut.insert(
             Symbol::from("__macro_m_clause_0"),
@@ -2117,7 +2250,10 @@ mod tests {
         let user = ModuleFullPath::from("user");
         let lib = ModuleFullPath::from("lib");
         let mut ut = SessionSymbolTable::new_with_params(user.clone());
-        ut.insert(Symbol::from("id"), concrete_def(fn_ty(vec![Type::Int], Type::Int), 0));
+        ut.insert(
+            Symbol::from("id"),
+            concrete_def(fn_ty(vec![Type::Int], Type::Int), 0),
+        );
         // Compiled caller: IN.
         ut.insert(
             Symbol::from("gcall"),
@@ -2125,7 +2261,10 @@ mod tests {
         );
         // Never-compiled template caller (code: None, slot-less): OUT —
         // late-binds at its next mint (§18.1.1 negative half).
-        ut.insert(Symbol::from("bystander"), def_with_callees(vec![fq("user", "id")], None));
+        ut.insert(
+            Symbol::from("bystander"),
+            def_with_callees(vec![fq("user", "id")], None),
+        );
         // Compiled internal wrapper: OUT (the 0491 rule applies identically).
         ut.insert(
             Symbol::from("__expr"),
@@ -2146,7 +2285,11 @@ mod tests {
         tables.insert(lib, lt);
 
         let stale = stale_callers(&tables, &fq("user", "id"));
-        assert_eq!(stale, vec![fq("lib", "x"), fq("user", "gcall")], "exact set, sorted");
+        assert_eq!(
+            stale,
+            vec![fq("lib", "x"), fq("user", "gcall")],
+            "exact set, sorted"
+        );
     }
 
     // spec: design/int/s102-defect-wave.md §1 — variant-awareness + base
@@ -2159,11 +2302,17 @@ mod tests {
         let tables: SymbolTables = dashmap::DashMap::new();
         let user = ModuleFullPath::from("user");
         let mut ut = SessionSymbolTable::new_with_params(user.clone());
-        ut.insert(Symbol::from("id"), concrete_def(fn_ty(vec![Type::Int], Type::Int), 0));
+        ut.insert(
+            Symbol::from("id"),
+            concrete_def(fn_ty(vec![Type::Int], Type::Int), 0),
+        );
         // Compiled mono caller recorded against the MANGLED mint: IN, as `h`.
         ut.insert(
             Symbol::from("h$primitives/Int"),
-            compiled(def_with_callees(vec![fq("user", "id$primitives/Int")], Some(1))),
+            compiled(def_with_callees(
+                vec![fq("user", "id$primitives/Int")],
+                Some(1),
+            )),
         );
         // The target's own old mint (recursive self-edge shape): excluded.
         ut.insert(
@@ -2173,7 +2322,11 @@ mod tests {
         tables.insert(user.clone(), ut);
 
         let stale = stale_callers(&tables, &fq("user", "id"));
-        assert_eq!(stale, vec![fq("user", "h")], "mangled caller reports at base grain");
+        assert_eq!(
+            stale,
+            vec![fq("user", "h")],
+            "mangled caller reports at base grain"
+        );
 
         assert!(
             stale_callers(&tables, &fq("user", "nobody")).is_empty(),
@@ -2202,7 +2355,11 @@ mod tests {
         assert!(!text.contains("recompiled"), "{text}");
         assert!(!text.contains("broken"), "{text}");
         // Omission: an all-empty report renders nothing.
-        assert!(TransactionReport::new(fq("user", "id")).render(&cur).is_none());
+        assert!(
+            TransactionReport::new(fq("user", "id"))
+                .render(&cur)
+                .is_none()
+        );
     }
 
     // spec: repl/spec.md §18.3 — the cascade report renders `; recompiled:` /
@@ -2212,20 +2369,32 @@ mod tests {
     fn report_render_sections_and_qualification() {
         let cur = ModuleFullPath::from("user");
         let mut r = TransactionReport::new(fq("user", "f"));
-        assert!(r.render(&cur).is_none(), "empty report renders nothing (L-D1/L-R3)");
+        assert!(
+            r.render(&cur).is_none(),
+            "empty report renders nothing (L-D1/L-R3)"
+        );
 
         r.recompiled.push(fq("user", "g"));
         r.recompiled.push(fq("lib", "x"));
-        r.broken.push((fq("user", "k"), "type error: expected primitives/String".into()));
+        r.broken.push((
+            fq("user", "k"),
+            "type error: expected primitives/String".into(),
+        ));
         let text = r.render(&cur).unwrap();
         assert!(text.contains("; recompiled:\n;  g lib/x"), "got: {text}");
-        assert!(text.contains("; broken:\n;  k — type error: expected primitives/String"), "got: {text}");
+        assert!(
+            text.contains("; broken:\n;  k — type error: expected primitives/String"),
+            "got: {text}"
+        );
 
         // Broken-only: no recompiled section at all.
         let mut b = TransactionReport::new(fq("user", "f"));
         b.broken.push((fq("user", "k"), "e".into()));
         let text = b.render(&cur).unwrap();
-        assert!(!text.contains("recompiled"), "empty recompiled section omitted: {text}");
+        assert!(
+            !text.contains("recompiled"),
+            "empty recompiled section omitted: {text}"
+        );
     }
 
     // §10.3 R6 (Wave-D2) — the `; broken by the redefinition of …` provenance line
@@ -2265,8 +2434,7 @@ mod tests {
         r.recompiled.push(fq("user", "g"));
         let text = r.render(&cur).unwrap();
         assert_eq!(
-            text,
-            "\x1b[2m; recompiled:\x1b[0m\n\x1b[2m;  g\x1b[0m",
+            text, "\x1b[2m; recompiled:\x1b[0m\n\x1b[2m;  g\x1b[0m",
             "each report line is R6 dim, reset before the newline"
         );
         // Colour-OFF stays byte-identical to the plain report (non-TTY contract).

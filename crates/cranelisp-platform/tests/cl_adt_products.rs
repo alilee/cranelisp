@@ -8,7 +8,7 @@
 //! the macro's `schema:` embed arm); marker types are author-defined and keyed
 //! by FQ name. No DLL loading.
 
-use cranelisp_platform::{set_global_schema, CLAdt, CLAdtType, CLInt, CLOwned, Schema};
+use cranelisp_platform::{CLAdt, CLAdtType, CLInt, CLOwned, Schema, set_global_schema};
 use std::sync::Once;
 
 // -----------------------------------------------------------------

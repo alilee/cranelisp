@@ -8,7 +8,95 @@ use super::*;
 
 use crate::program::test_support::*;
 
+// spec: 07-traits §7.3 — finalization refreshes the exact settled method name
+// minted by qualified impl registration, never a source-derived remangle.
+#[test]
+fn qualified_impl_finalize_refreshes_canonical_settled_entry() {
+    let mut tc = tc_with_prims();
+    let fmt = ModuleFullPath::from("fmt");
+    let user = ModuleFullPath::from("test");
+    let body_span = span(310, 311);
 
+    tc.set_current_module(fmt.clone());
+    tc.register_trait_decl_self(&crate::traits::test_helpers::parse_trait_decl(
+        "(deftrait Display (shw [self] Int))",
+    ))
+    .unwrap();
+    tc.set_current_module(user.clone());
+
+    let impl_ = TraitImpl {
+        head_con_var: None,
+        trait_name: cranelisp_types::TraitRef::new(Some(fmt), TraitName::from("Display")),
+        target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
+        type_constraints: vec![],
+        methods: vec![Defn {
+            name: Symbol::from("shw"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![(Symbol::from("self"), None)],
+                body: Expr::IntLit {
+                    value: 7,
+                    span: body_span,
+                    inferred_type: None,
+                },
+                span: span(300, 320),
+            }],
+            visibility: Visibility::Public,
+            span: span(300, 320),
+        }],
+        span: span(290, 330),
+    };
+    let program = vec![TopLevel::TraitImpl(impl_)];
+    let mut accumulator = ModuleCheckAccumulator::new();
+    let registered = tc
+        .check_form(&user, &program[0], CheckPass::Register, &mut accumulator)
+        .unwrap();
+    tc.merge_form_result(&user, &mut accumulator, registered);
+
+    let canonical = Symbol::from("Display.shw$primitives/Int");
+    assert!(
+        accumulator
+            .default_method_defns
+            .iter()
+            .any(|defn| defn.name == canonical),
+        "registration must carry the settled canonical method name"
+    );
+
+    // Make the final refresh observable: erase the body annotation on the
+    // canonical entry, then provide the settled span fact finalization owns.
+    {
+        let mut table = tc.symbol_table_mut();
+        let Some(ModuleEntry::Def { ast: Some(ast), .. }) = table.symbols.get_mut(&canonical)
+        else {
+            panic!("qualified impl must publish its canonical method entry");
+        };
+        let Expr::IntLit { inferred_type, .. } = &mut ast.body else {
+            panic!("expected literal impl body");
+        };
+        *inferred_type = None;
+    }
+    accumulator.expr_types.insert(body_span, Type::Int);
+
+    tc.finalize_check_result(&user, &mut accumulator, &program, ModuleStrategy::Additive)
+        .unwrap();
+
+    let table = tc.symbol_table();
+    let Some(ModuleEntry::Def { ast: Some(ast), .. }) = table.get(&canonical) else {
+        panic!("canonical method entry must survive finalization");
+    };
+    let Expr::IntLit { inferred_type, .. } = &ast.body else {
+        panic!("expected literal impl body");
+    };
+    assert_eq!(
+        inferred_type.as_deref(),
+        Some(&Type::Int),
+        "production finalization must refresh the canonical settled entry"
+    );
+    assert!(
+        table.get("fmt/Display.shw$Int").is_none(),
+        "syntax-derived qualified/bare-target decoy must not be minted"
+    );
+}
 
 // spec: spec/05-definitions.md §5.1.2 (0576, MS-8 re-grounding) — the
 // multi-arity ambiguity diagnostic NAMES the offending arity clause + unpinned
@@ -30,16 +118,25 @@ fn ambiguous_form_message_names_clause_and_param() {
         param: Some(Symbol::from("rot")),
     }
     .message();
-    assert!(m.contains("2-arg"), "names the offending clause by arity: {m}");
+    assert!(
+        m.contains("2-arg"),
+        "names the offending clause by arity: {m}"
+    );
     assert!(m.contains("clause"), "says 'clause': {m}");
     assert!(m.contains("rot"), "names the unpinned param: {m}");
-    assert!(m.contains("§3.11"), "cites the §3.11 standalone-equivalence rule: {m}");
+    assert!(
+        m.contains("§3.11"),
+        "cites the §3.11 standalone-equivalence rule: {m}"
+    );
     assert!(
         !m.contains("independently"),
         "MS-8: drops the retired 'each arity clause is type-checked \
          independently' framing: {m}"
     );
-    assert!(!m.contains("__"), "never leaks a synthetic binder (0568): {m}");
+    assert!(
+        !m.contains("__"),
+        "never leaks a synthetic binder (0568): {m}"
+    );
 
     // Single-sig (no clause arity) + no bound param → the plain fn-level
     // message, still `__`-free.
@@ -50,8 +147,14 @@ fn ambiguous_form_message_names_clause_and_param() {
         param: None,
     }
     .message();
-    assert!(plain.contains("main") && plain.contains("ambiguous type"), "{plain}");
-    assert!(!plain.contains("clause"), "single-sig keeps the plain message: {plain}");
+    assert!(
+        plain.contains("main") && plain.contains("ambiguous type"),
+        "{plain}"
+    );
+    assert!(
+        !plain.contains("clause"),
+        "single-sig keeps the plain message: {plain}"
+    );
     assert!(!plain.contains("__"), "no synthetic binder leak: {plain}");
 }
 
@@ -81,11 +184,17 @@ fn test_check_form_identity_simple_defn() {
     // Post-slim (Wave 2 step 4): `expr_types` is no longer on CheckResult.
     let mut any_typed = false;
     let mut all_resolved = true;
-    if let Some(ModuleEntry::Def { ast: Some(defn), .. }) = tc.symbol_table().get("inc") {
+    if let Some(ModuleEntry::Def {
+        ast: Some(defn), ..
+    }) = tc.symbol_table().get("inc")
+    {
         walk_inferred_types(&defn.body, &mut any_typed, &mut all_resolved);
     }
     assert!(any_typed, "expr_types should be populated on annotated AST");
-    assert!(all_resolved, "all expr_types should be resolved (no Var types)");
+    assert!(
+        all_resolved,
+        "all expr_types should be resolved (no Var types)"
+    );
 
     // Verify method_resolutions populated (add-i64 call site resolved)
     assert!(
@@ -99,10 +208,7 @@ fn test_check_form_identity_simple_defn() {
 fn test_check_form_identity_typedef_plus_defn() {
     let mut tc = tc_with_prims();
     let ctx = cf_test_ctx();
-    let program = vec![
-        make_color_typedef(),
-        TopLevel::Defn(make_is_red_defn()),
-    ];
+    let program = vec![make_color_typedef(), TopLevel::Defn(make_is_red_defn())];
 
     let _result = tc.check(&program, &ctx, ModuleStrategy::Additive).unwrap();
 
@@ -127,7 +233,10 @@ fn test_check_form_identity_typedef_plus_defn() {
     // expr_types should be populated on annotated AST (post-slim).
     let mut any_typed = false;
     let mut _all_resolved = true;
-    if let Some(ModuleEntry::Def { ast: Some(defn), .. }) = tc.symbol_table().get("is-red") {
+    if let Some(ModuleEntry::Def {
+        ast: Some(defn), ..
+    }) = tc.symbol_table().get("is-red")
+    {
         walk_inferred_types(&defn.body, &mut any_typed, &mut _all_resolved);
     }
     assert!(any_typed);
@@ -144,19 +253,13 @@ fn test_check_form_identity_forward_reference() {
 
     // Both should be monomorphic Int -> Int
     if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("double") {
-        assert_eq!(
-            scheme.ty,
-            Type::Fn(vec![Type::Int], Box::new(Type::Int)),
-        );
+        assert_eq!(scheme.ty, Type::Fn(vec![Type::Int], Box::new(Type::Int)),);
     } else {
         panic!("double not found");
     }
 
     if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("add-self") {
-        assert_eq!(
-            scheme.ty,
-            Type::Fn(vec![Type::Int], Box::new(Type::Int)),
-        );
+        assert_eq!(scheme.ty, Type::Fn(vec![Type::Int], Box::new(Type::Int)),);
     } else {
         panic!("add-self not found");
     }
@@ -164,7 +267,10 @@ fn test_check_form_identity_forward_reference() {
     // expr_types should be populated on annotated AST (post-slim).
     let mut any_typed = false;
     let mut _all_resolved = true;
-    if let Some(ModuleEntry::Def { ast: Some(defn), .. }) = tc.symbol_table().get("add-self") {
+    if let Some(ModuleEntry::Def {
+        ast: Some(defn), ..
+    }) = tc.symbol_table().get("add-self")
+    {
         walk_inferred_types(&defn.body, &mut any_typed, &mut _all_resolved);
     }
     assert!(any_typed);
@@ -227,7 +333,10 @@ fn test_check_form_identity_expr() {
     // step 4), `__expr` carries its annotated AST on the symbol table.
     let mut any_typed = false;
     let mut _all_resolved = true;
-    if let Some(ModuleEntry::Def { ast: Some(defn), .. }) = tc.symbol_table().get("__expr") {
+    if let Some(ModuleEntry::Def {
+        ast: Some(defn), ..
+    }) = tc.symbol_table().get("__expr")
+    {
         walk_inferred_types(&defn.body, &mut any_typed, &mut _all_resolved);
     }
     assert!(any_typed, "expr_types should contain the literal's type");
@@ -250,7 +359,11 @@ fn test_check_form_identity_multi_sig() {
                     callee: Box::new(Expr::var(Symbol::from("add-i64"), span(610, 617))),
                     args: vec![
                         Expr::var(Symbol::from("x"), span(618, 619)),
-                        Expr::IntLit { value: 1, span: span(620, 621), inferred_type: None, },
+                        Expr::IntLit {
+                            value: 1,
+                            span: span(620, 621),
+                            inferred_type: None,
+                        },
                     ],
                     span: span(609, 622),
                     resolved_call: None,
@@ -294,8 +407,9 @@ fn test_check_form_identity_multi_sig() {
     // expr_types should be populated from both variant bodies (post-slim).
     let mut any_typed = false;
     let mut _all_resolved = true;
-    if let Some(ModuleEntry::Def { ast: Some(defn), .. }) =
-        tc.symbol_table().get("add$Int+Int")
+    if let Some(ModuleEntry::Def {
+        ast: Some(defn), ..
+    }) = tc.symbol_table().get("add$Int+Int")
     {
         walk_inferred_types(&defn.body, &mut any_typed, &mut _all_resolved);
     }
@@ -315,13 +429,17 @@ fn test_check_form_accumulator_merge() {
 
     // Pass 1: Register all
     for form in &program {
-        let result = tc.check_form(&module, form, CheckPass::Register, &mut accumulator).unwrap();
+        let result = tc
+            .check_form(&module, form, CheckPass::Register, &mut accumulator)
+            .unwrap();
         tc.merge_form_result(&module, &mut accumulator, result);
     }
 
     // Pass 2: Check bodies and verify accumulator grows
     let et_before_first = accumulator.expr_types.len();
-    let form0_result = tc.check_form(&module, &program[0], CheckPass::CheckBody, &mut accumulator).unwrap();
+    let form0_result = tc
+        .check_form(&module, &program[0], CheckPass::CheckBody, &mut accumulator)
+        .unwrap();
     let form0_et = form0_result.expr_types.len();
     tc.merge_form_result(&module, &mut accumulator, form0_result);
     let et_after_first = accumulator.expr_types.len();
@@ -331,7 +449,9 @@ fn test_check_form_accumulator_merge() {
         "accumulator should grow after first form's CheckBody"
     );
 
-    let form1_result = tc.check_form(&module, &program[1], CheckPass::CheckBody, &mut accumulator).unwrap();
+    let form1_result = tc
+        .check_form(&module, &program[1], CheckPass::CheckBody, &mut accumulator)
+        .unwrap();
     let form1_et = form1_result.expr_types.len();
     tc.merge_form_result(&module, &mut accumulator, form1_result);
     let et_after_second = accumulator.expr_types.len();
@@ -358,24 +478,31 @@ fn test_check_form_finalize_produces_complete_result() {
 
     // Full two-pass processing
     for form in &program {
-        let result = tc.check_form(&module, form, CheckPass::Register, &mut accumulator).unwrap();
+        let result = tc
+            .check_form(&module, form, CheckPass::Register, &mut accumulator)
+            .unwrap();
         tc.merge_form_result(&module, &mut accumulator, result);
     }
     for form in &program {
-        let result = tc.check_form(&module, form, CheckPass::CheckBody, &mut accumulator).unwrap();
+        let result = tc
+            .check_form(&module, form, CheckPass::CheckBody, &mut accumulator)
+            .unwrap();
         tc.merge_form_result(&module, &mut accumulator, result);
     }
 
-    let _result = tc.finalize_check_result(
-        &module, &mut accumulator, &program, ModuleStrategy::Replace,
-    ).unwrap();
+    let _result = tc
+        .finalize_check_result(&module, &mut accumulator, &program, ModuleStrategy::Replace)
+        .unwrap();
 
     // finalize should produce complete annotated ASTs + method resolutions.
     // Post-slim (Wave 2 step 4): resolutions live on annotated AST nodes;
     // expr_types live on `Expr::inferred_type`.
     let mut any_typed = false;
     let mut all_resolved = true;
-    if let Some(ModuleEntry::Def { ast: Some(defn), .. }) = tc.symbol_table().get("inc") {
+    if let Some(ModuleEntry::Def {
+        ast: Some(defn), ..
+    }) = tc.symbol_table().get("inc")
+    {
         walk_inferred_types(&defn.body, &mut any_typed, &mut all_resolved);
     }
     assert!(any_typed, "finalized result should have expr_types");
@@ -416,21 +543,22 @@ fn test_check_form_constrained_fn_detection() {
     ));
 
     // Register
-    let reg = tc.check_form(&module, &defn_form, CheckPass::Register, &mut accumulator).unwrap();
+    let reg = tc
+        .check_form(&module, &defn_form, CheckPass::Register, &mut accumulator)
+        .unwrap();
     tc.merge_form_result(&module, &mut accumulator, reg);
 
     // Check body
-    let body = tc.check_form(&module, &defn_form, CheckPass::CheckBody, &mut accumulator).unwrap();
+    let body = tc
+        .check_form(&module, &defn_form, CheckPass::CheckBody, &mut accumulator)
+        .unwrap();
 
     // Should detect constrained fn
     assert!(
         body.constrained_fn.is_some(),
         "add should be detected as constrained"
     );
-    assert_eq!(
-        body.constrained_fn.as_ref().unwrap().as_ref(),
-        "add",
-    );
+    assert_eq!(body.constrained_fn.as_ref().unwrap().as_ref(), "add",);
 }
 
 // spec: spec/07-traits.md §7.8 + design/arch/principles/20-model-invariants-by-representation.md
@@ -458,7 +586,9 @@ fn redefine_concrete_fn_reuses_existing_got_slot() {
     // Helper: read a name's concrete callable slot via the single
     // read-through accessor (None for NotDetermined / Constrained).
     let slot_of = |tc: &TestFixture, name: &str| -> Option<usize> {
-        tc.symbol_table().get(name).and_then(|e| e.callable_got_slot())
+        tc.symbol_table()
+            .get(name)
+            .and_then(|e| e.callable_got_slot())
     };
     // Helper: is the entry a slot-less constrained template?
     let is_constrained = |tc: &TestFixture, name: &str| -> bool {
@@ -479,22 +609,26 @@ fn redefine_concrete_fn_reuses_existing_got_slot() {
     // S84 slot gate (FIXME 0374, slot ⟺ concrete) routes to the slot-less
     // `Polymorphic` arm, NOT `Concrete`. This test pins the concrete→concrete
     // redef slot-reuse, so the example must be genuinely concrete.
-    let idf = |s: u32| TopLevel::Defn(make_defn(
-        "idf",
-        vec![Symbol::from("x")],
-        vec![Some(cranelisp_types::TypeExpr::Named(
-            cranelisp_types::TypeRef::new(None, TypeName::from("Int")),
-        ))],
-        Expr::var(Symbol::from("x"), span(s, s + 1)),
-        Visibility::Public,
-        span(s, s + 2),
-    ));
-    tc.check(&[idf(10)], &ctx, ModuleStrategy::Additive).unwrap();
+    let idf = |s: u32| {
+        TopLevel::Defn(make_defn(
+            "idf",
+            vec![Symbol::from("x")],
+            vec![Some(cranelisp_types::TypeExpr::Named(
+                cranelisp_types::TypeRef::new(None, TypeName::from("Int")),
+            ))],
+            Expr::var(Symbol::from("x"), span(s, s + 1)),
+            Visibility::Public,
+            span(s, s + 2),
+        ))
+    };
+    tc.check(&[idf(10)], &ctx, ModuleStrategy::Additive)
+        .unwrap();
     let slot_n = slot_of(&tc, "idf").expect("concrete idf must carry a slot");
 
     // Redefine idf with the SAME (concrete) shape — the determination point
     // must REUSE slot N, not allocate N+1.
-    tc.check(&[idf(20)], &ctx, ModuleStrategy::Additive).unwrap();
+    tc.check(&[idf(20)], &ctx, ModuleStrategy::Additive)
+        .unwrap();
     let slot_after = slot_of(&tc, "idf").expect("redefined concrete idf must carry a slot");
     assert_eq!(
         slot_after, slot_n,
@@ -505,23 +639,25 @@ fn redefine_concrete_fn_reuses_existing_got_slot() {
     // (defn cadd [x y] (+ x y)) — `+` is the Num trait method, so the
     // inferred scheme carries a Num constraint → Constrained template,
     // slot-less by construction.
-    let cadd = || TopLevel::Defn(make_defn(
-        "cadd",
-        vec![Symbol::from("x"), Symbol::from("y")],
-        vec![None, None],
-        Expr::Apply {
-            callee: Box::new(Expr::var(Symbol::from("+"), span(31, 32))),
-            args: vec![
-                Expr::var(Symbol::from("x"), span(33, 34)),
-                Expr::var(Symbol::from("y"), span(35, 36)),
-            ],
-            span: span(30, 37),
-            resolved_call: None,
-            inferred_type: None,
-        },
-        Visibility::Public,
-        span(29, 38),
-    ));
+    let cadd = || {
+        TopLevel::Defn(make_defn(
+            "cadd",
+            vec![Symbol::from("x"), Symbol::from("y")],
+            vec![None, None],
+            Expr::Apply {
+                callee: Box::new(Expr::var(Symbol::from("+"), span(31, 32))),
+                args: vec![
+                    Expr::var(Symbol::from("x"), span(33, 34)),
+                    Expr::var(Symbol::from("y"), span(35, 36)),
+                ],
+                span: span(30, 37),
+                resolved_call: None,
+                inferred_type: None,
+            },
+            Visibility::Public,
+            span(29, 38),
+        ))
+    };
     tc.check(&[cadd()], &ctx, ModuleStrategy::Additive).unwrap();
     assert!(
         is_constrained(&tc, "cadd"),
@@ -541,9 +677,11 @@ fn redefine_concrete_fn_reuses_existing_got_slot() {
     // an unannotated `(defn cadd [x y] x)` is `∀a b. (Fn [a b] a)` —
     // unconstrained but NON-concrete → slot-less `Polymorphic`, not
     // `Concrete`.
-    let int_ann = || Some(cranelisp_types::TypeExpr::Named(
-        cranelisp_types::TypeRef::new(None, TypeName::from("Int")),
-    ));
+    let int_ann = || {
+        Some(cranelisp_types::TypeExpr::Named(
+            cranelisp_types::TypeRef::new(None, TypeName::from("Int")),
+        ))
+    };
     let cadd_concrete = TopLevel::Defn(make_defn(
         "cadd",
         vec![Symbol::from("x"), Symbol::from("y")],
@@ -552,7 +690,8 @@ fn redefine_concrete_fn_reuses_existing_got_slot() {
         Visibility::Public,
         span(39, 42),
     ));
-    tc.check(&[cadd_concrete], &ctx, ModuleStrategy::Additive).unwrap();
+    tc.check(&[cadd_concrete], &ctx, ModuleStrategy::Additive)
+        .unwrap();
     assert!(
         !is_constrained(&tc, "cadd"),
         "constrained→concrete redef must yield a concrete (callable) entry",
@@ -601,7 +740,9 @@ fn generic_unconstrained_def_is_slotless() {
             assert!(
                 matches!(
                     kind.as_ref(),
-                    DefKind::UserFn { fn_state: UserFnState::Polymorphic(_) }
+                    DefKind::UserFn {
+                        fn_state: UserFnState::Polymorphic(_)
+                    }
                 ),
                 "a generic-unconstrained def must be slot-less Polymorphic, \
                  got {kind:?}",
@@ -614,7 +755,9 @@ fn generic_unconstrained_def_is_slotless() {
         other => panic!("id not a Def: {other:?}"),
     }
     assert_eq!(
-        tc.symbol_table().get("id").and_then(|e| e.callable_got_slot()),
+        tc.symbol_table()
+            .get("id")
+            .and_then(|e| e.callable_got_slot()),
         None,
         "a Polymorphic def carries NO callable slot (slot ⟺ concrete)",
     );
@@ -659,9 +802,9 @@ fn concrete_instance_of_generic_def_is_slotted() {
     match tc.symbol_table().get("test/id$Int") {
         Some(ModuleEntry::Def { kind, scheme, .. }) => {
             let slot = match kind.as_ref() {
-                DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot, .. } } => {
-                    Some(*got_slot)
-                }
+                DefKind::UserFn {
+                    fn_state: UserFnState::Concrete { got_slot, .. },
+                } => Some(*got_slot),
                 other => panic!("id$Int must be Concrete, got {other:?}"),
             };
             assert!(slot.is_some(), "id$Int must carry a GOT slot");
@@ -783,7 +926,12 @@ fn constrained_template_carries_no_callable_slot() {
     // A concrete user fn IS callable through its slot.
     let concrete: ModuleEntry = ModuleEntry::def(
         crate::scheme::mono(Type::Fn(vec![Type::Var(0)], Box::new(Type::Var(0)))),
-        DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot: 7, mode_summary: None } },
+        DefKind::UserFn {
+            fn_state: UserFnState::Concrete {
+                got_slot: 7,
+                mode_summary: None,
+            },
+        },
     )
     .build();
     assert_eq!(concrete.callable_got_slot(), Some(7));
@@ -801,7 +949,9 @@ fn constrained_template_carries_no_callable_slot() {
     };
     let template: ModuleEntry = ModuleEntry::def(
         crate::scheme::mono(Type::Fn(vec![Type::Var(0)], Box::new(Type::Var(0)))),
-        DefKind::UserFn { fn_state: UserFnState::Constrained(Box::new(cf)) },
+        DefKind::UserFn {
+            fn_state: UserFnState::Constrained(Box::new(cf)),
+        },
     )
     .build();
     assert!(template.is_constrained_template());
@@ -824,7 +974,11 @@ fn result_only_var_def_is_polymorphic_not_concrete() {
         "empty",
         vec![],
         vec![],
-        Expr::VecLit { elements: vec![], span: span(10, 12), inferred_type: None },
+        Expr::VecLit {
+            elements: vec![],
+            span: span(10, 12),
+            inferred_type: None,
+        },
         Visibility::Public,
         span(8, 13),
     ));
@@ -917,8 +1071,12 @@ fn overloaded_call_caller_generalizes_over_resolved_return_not_deferred_var() {
         Visibility::Public,
         span(25, 36),
     ));
-    tc.check(&[h, caller], &test_ctx(), cranelisp_types::ModuleStrategy::Additive)
-        .unwrap();
+    tc.check(
+        &[h, caller],
+        &test_ctx(),
+        cranelisp_types::ModuleStrategy::Additive,
+    )
+    .unwrap();
     let table = tc.symbol_table();
     let entry = table.get("caller").expect("caller registered");
     // The caller must be `Concrete{slot}` — NOT a spuriously-`Polymorphic`
@@ -928,7 +1086,9 @@ fn overloaded_call_caller_generalizes_over_resolved_return_not_deferred_var() {
             assert!(
                 matches!(
                     kind.as_ref(),
-                    DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
+                    DefKind::UserFn {
+                        fn_state: UserFnState::Concrete { .. }
+                    }
                 ),
                 "caller of an overloaded fn must be `Concrete{{slot}}` (its \
                  deferred return var is pinned by `resolve_pending_overloads`, \
@@ -1009,7 +1169,11 @@ fn deferred_overload_return_var_in_let_value_resolves_post_drain() {
     // a `let` VALUE position, then returned. This is the exact B1 shape.
     let call = Expr::Apply {
         callee: Box::new(Expr::var(Symbol::from("h"), span(41, 42))),
-        args: vec![Expr::IntLit { value: 7, span: span(43, 44), inferred_type: None }],
+        args: vec![Expr::IntLit {
+            value: 7,
+            span: span(43, 44),
+            inferred_type: None,
+        }],
         span: span(40, 45),
         resolved_call: None,
         inferred_type: None,
@@ -1028,11 +1192,12 @@ fn deferred_overload_return_var_in_let_value_resolves_post_drain() {
         Visibility::Public,
         span(25, 50),
     ));
-    tc.check(&[h, caller], &test_ctx(), ModuleStrategy::Additive).expect(
-        "a deferred-overload call bound in a `let` VALUE position must NOT be \
+    tc.check(&[h, caller], &test_ctx(), ModuleStrategy::Additive)
+        .expect(
+            "a deferred-overload call bound in a `let` VALUE position must NOT be \
          spuriously rejected — the §3.11.1 value scan runs POST-drain so `r` \
          is settled `Int` before the verdict (B1)",
-    );
+        );
     let table = tc.symbol_table();
     let entry = table.get("caller").expect("caller registered");
     match entry {
@@ -1040,7 +1205,9 @@ fn deferred_overload_return_var_in_let_value_resolves_post_drain() {
             assert!(
                 matches!(
                     kind.as_ref(),
-                    DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
+                    DefKind::UserFn {
+                        fn_state: UserFnState::Concrete { .. }
+                    }
                 ),
                 "caller settles `Concrete` (its `let`-bound overload return is \
                  pinned to `Int` by the drain, then reslotted by \

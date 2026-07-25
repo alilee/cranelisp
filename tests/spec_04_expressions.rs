@@ -22,7 +22,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{run_through_all_modes, Cranelisp, PreludeVariant};
+use helpers::e2e::{Cranelisp, PreludeVariant, run_through_all_modes};
 
 fn repl_prims(lines: &str) -> helpers::e2e::CrOutput {
     Cranelisp::new()
@@ -177,7 +177,9 @@ fn if_neg_branch_type_mismatch() {
     let out = repl_prims("(if true 1 \"two\")\n");
     let combined = format!("{}{}", out.stdout, out.stderr);
     assert!(
-        combined.to_lowercase().contains("type") || combined.contains("Int") || combined.contains("String"),
+        combined.to_lowercase().contains("type")
+            || combined.contains("Int")
+            || combined.contains("String"),
         "expected branch type mismatch error; output: {combined}"
     );
 }
@@ -226,19 +228,15 @@ fn lambda_multi_args() {
 // spec: spec/04-expressions.md §4.6 — chained function application
 #[test]
 fn application_chained() {
-    repl_prims(
-        "(defn inc [x] (add-i64 x 1))\n(inc (inc (inc 0)))\n",
-    )
-    .assert_stdout_contains(":primitives/Int 3");
+    repl_prims("(defn inc [x] (add-i64 x 1))\n(inc (inc (inc 0)))\n")
+        .assert_stdout_contains(":primitives/Int 3");
 }
 
 // spec: spec/04-expressions.md §4.6 — closure capture
 #[test]
 fn lambda_closure_captures() {
-    repl_prims(
-        "(defn make-add [n] (fn [x] (add-i64 x n)))\n((make-add 10) 5)\n",
-    )
-    .assert_stdout_contains(":primitives/Int 15");
+    repl_prims("(defn make-add [n] (fn [x] (add-i64 x n)))\n((make-add 10) 5)\n")
+        .assert_stdout_contains(":primitives/Int 15");
 }
 
 // spec: spec/04-expressions.md §4.5.1 — closure capturing two outer let
@@ -248,10 +246,8 @@ fn lambda_closure_captures() {
 // (carry: legacy/sketch_port.rs::sketch_closure_multiple_captures)
 #[test]
 fn lambda_closure_multi_captures() {
-    repl_prims(
-        "(let [a 1 b 2] ((fn [x] (add-i64 x (add-i64 a b))) 10))\n",
-    )
-    .assert_stdout_contains(":primitives/Int 13");
+    repl_prims("(let [a 1 b 2] ((fn [x] (add-i64 x (add-i64 a b))) 10))\n")
+        .assert_stdout_contains(":primitives/Int 13");
 }
 
 // spec: spec/04-expressions.md §4.5 — a lambda value bound in `let` and
@@ -290,10 +286,8 @@ fn lambda_passed_as_argument_invoked_inside_callee() {
 // (multi-clause arity-disambig case is covered in spec_05_definitions.rs)
 #[test]
 fn multi_sig_arity_dispatch() {
-    repl_prims(
-        "(defn f ([x] x) ([x y] (add-i64 x y)))\n(f 5)\n(f 3 4)\n",
-    )
-    .assert_stdout_contains_all(&[":primitives/Int 5", ":primitives/Int 7"]);
+    repl_prims("(defn f ([x] x) ([x y] (add-i64 x y)))\n(f 5)\n(f 3 4)\n")
+        .assert_stdout_contains_all(&[":primitives/Int 5", ":primitives/Int 7"]);
 }
 
 // spec: spec/04-expressions.md §4.6.3 — auto-curried partial application
@@ -416,10 +410,8 @@ fn lenient_independent_bindings_correct() {
 // spec: spec/12-runtime.md §12.4.3 — dependent bindings remain correct
 #[test]
 fn lenient_dependent_bindings_correct() {
-    repl_std(
-        "(defn double [x] (* x 2))\n(let [a (double 5) b (+ a 1)] b)\n",
-    )
-    .assert_stdout_contains(":primitives/Int 11");
+    repl_std("(defn double [x] (* x 2))\n(let [a (double 5) b (+ a 1)] b)\n")
+        .assert_stdout_contains(":primitives/Int 11");
 }
 
 // =============================================================================
@@ -439,10 +431,8 @@ fn lenient_dependent_bindings_correct() {
 #[test]
 fn let_independent_bindings_pure_arithmetic() {
     // a=3, b=12, c=5; (+ a (+ b c)) = 20.
-    repl_std(
-        "(let [a (+ 1 2) b (* 3 4) c (- 10 5)] (+ a (+ b c)))\n",
-    )
-    .assert_stdout_contains(":primitives/Int 20");
+    repl_std("(let [a (+ 1 2) b (* 3 4) c (- 10 5)] (+ a (+ b c)))\n")
+        .assert_stdout_contains(":primitives/Int 20");
 }
 
 // spec: spec/12-runtime.md §12.4.3 — heterogeneous bindings (one call + one
@@ -451,10 +441,8 @@ fn let_independent_bindings_pure_arithmetic() {
 #[test]
 fn let_mixed_literal_and_call_binding() {
     // double(5)=10, b=7, sum=17.
-    repl_std(
-        "(defn double [x] (* x 2))\n(let [a (double 5) b 7] (+ a b))\n",
-    )
-    .assert_stdout_contains(":primitives/Int 17");
+    repl_std("(defn double [x] (* x 2))\n(let [a (double 5) b 7] (+ a b))\n")
+        .assert_stdout_contains(":primitives/Int 17");
 }
 
 // spec: spec/12-runtime.md §12.4.3 — nested lets: the inner let's spark group
@@ -522,10 +510,7 @@ fn let_sparked_binding_captures_outer_let_scope() {
 #[test]
 fn let_all_literal_bindings_correct() {
     // a=42, b=true, c="hello"; body returns a.
-    repl_prims(
-        "(let [a 42 b true c \"hello\"] a)\n",
-    )
-    .assert_stdout_contains(":primitives/Int 42");
+    repl_prims("(let [a 42 b true c \"hello\"] a)\n").assert_stdout_contains(":primitives/Int 42");
 }
 
 // =============================================================================
@@ -662,8 +647,7 @@ fn let_bound_capturing_lambda_invoked_with_independent_args() {
 // (carry: legacy/ring1.rs::vec_in_if_branch)
 #[test]
 fn if_branches_heap_typed_vec_result_different_lengths() {
-    repl_prims("(vec-len (if true [1 2 3] [4 5]))\n")
-        .assert_stdout_contains(":primitives/Int 3");
+    repl_prims("(vec-len (if true [1 2 3] [4 5]))\n").assert_stdout_contains(":primitives/Int 3");
 }
 
 // spec: spec/04-expressions.md §4.4 — if-branch type-mismatch
@@ -677,7 +661,10 @@ fn if_branches_heap_typed_vec_result_different_lengths() {
 fn if_branch_mismatch_names_both_types_strict() {
     let out = repl_prims("(if true \"hello\" 42)\n");
     let combined = format!("{}{}", out.stdout, out.stderr);
-    assert!(combined.contains("Int"), "diagnostic MUST name 'Int', got: {combined}");
+    assert!(
+        combined.contains("Int"),
+        "diagnostic MUST name 'Int', got: {combined}"
+    );
     assert!(
         combined.contains("String"),
         "diagnostic MUST name 'String', got: {combined}"
@@ -694,7 +681,10 @@ fn if_branch_mismatch_names_both_types_strict() {
 fn data_constructor_undefined_error_names_constructor_strict() {
     let out = repl_prims("(Foo 1 2)\n");
     let combined = format!("{}{}", out.stdout, out.stderr);
-    assert!(combined.contains("Foo"), "diagnostic MUST name 'Foo', got: {combined}");
+    assert!(
+        combined.contains("Foo"),
+        "diagnostic MUST name 'Foo', got: {combined}"
+    );
 }
 
 // =============================================================================
@@ -899,9 +889,7 @@ fn fn_multi_arity_clause_form_parse_error_neg() {
         "the multi-arity `fn` form MUST be rejected; {text}"
     );
     assert!(
-        text.contains("single-arity")
-            || text.contains("single arity")
-            || text.contains("defn"),
+        text.contains("single-arity") || text.contains("single arity") || text.contains("defn"),
         "the error MUST name `fn` as single-arity and point at `defn` (0575); {text}"
     );
     // --run leg — the same rejection, uniform across modes.
@@ -913,7 +901,8 @@ fn fn_multi_arity_clause_form_parse_error_neg() {
     assert!(
         !run.status.success(),
         "the multi-arity `fn` form MUST be rejected under --run too; {}\n{}",
-        run.stdout, run.stderr
+        run.stdout,
+        run.stderr
     );
 }
 
@@ -1095,7 +1084,8 @@ fn nested_fn_corefering_var_pinned_by_body() {
          rigid/unknown error (§3.3.1 MUST (a)/(g)); got:\n{combined}"
     );
     assert!(
-        out.stdout.contains(":(Fn [primitives/String] primitives/String) user/outer"),
+        out.stdout
+            .contains(":(Fn [primitives/String] primitives/String) user/outer"),
         "applying the co-referring inner `fn` to \"s\" pins `a := String` → \
          `(Fn [String] String)` (§3.3.1 MUST (a)/(g)); got:\n{}",
         out.stdout

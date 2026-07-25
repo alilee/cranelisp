@@ -28,10 +28,10 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use dashmap::DashMap;
 
-use cranelisp_types::{ErrorLocation,
-    CranelispError, FQSymbol, JitSymbol, MethodResolutions, ModuleAliases,
-    ModuleEntry, ModuleFullPath, ResolutionGap, ResolutionScope, ResolveError, ResolvedCall, Scheme,
-    Span, Subst, Symbol, SymbolTable, TraitName, Type, TypeDefInfo, TypeId, TypeName,
+use cranelisp_types::{
+    CranelispError, ErrorLocation, FQSymbol, JitSymbol, MethodResolutions, ModuleAliases,
+    ModuleEntry, ModuleFullPath, ResolutionGap, ResolutionScope, ResolveError, ResolvedCall,
+    Scheme, Span, Subst, Symbol, SymbolTable, TraitName, Type, TypeDefInfo, TypeId, TypeName,
     VarRef, Warning, apply,
 };
 
@@ -41,8 +41,8 @@ use cranelisp_types::{ErrorLocation,
 // `pub(crate)` pair lives in this file.
 pub(crate) use crate::cluster::{SymbolTableMut, SymbolTableRead};
 
-use crate::scope::ScopeStack;
 use crate::scheme;
+use crate::scope::ScopeStack;
 use crate::traits::ActiveConstraints;
 
 /// Maximum depth for following Import/Reexport chains (spec §8.6.2).
@@ -98,13 +98,24 @@ pub(crate) fn type_def_view_of<C: cranelisp_types::CodeStore>(
         ModuleEntry::TypeDef { info, .. } => Some(info),
         ModuleEntry::Def { kind, .. } => match kind.as_ref() {
             cranelisp_types::DefKind::Constructor {
-                type_def: Some(td),
-                ..
+                type_def: Some(td), ..
             } => Some(&**td),
             _ => None,
         },
         _ => None,
     }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ResolvedBuiltin {
+    pub(crate) jit_name: Symbol,
+    pub(crate) storage_fq: FQSymbol,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum PendingDispatch {
+    Resolved(ResolvedCall),
+    Builtin(ResolvedBuiltin),
 }
 
 /// One deferred auto-curry site: `(call_span, function_name, applied_arg_count,
@@ -117,8 +128,15 @@ pub(crate) fn type_def_view_of<C: cranelisp_types::CodeStore>(
 /// `VarRef::Global` terminal storage FQ, or a `VarRef::Local` for a local
 /// binding). `None` when the callee is not a `Var` (auto-curry requires a `Var`
 /// callee, so this is always `Some` in practice).
-pub(crate) type PendingAutoCurry =
-    (Span, Symbol, usize, usize, Type, Option<ResolvedCall>, Option<Span>);
+pub(crate) type PendingAutoCurry = (
+    Span,
+    Symbol,
+    usize,
+    usize,
+    Type,
+    Option<PendingDispatch>,
+    Option<Span>,
+);
 
 /// Per-check transient state for type inference.
 ///
@@ -226,8 +244,7 @@ pub struct CheckState {
     /// union"); the DEFERRED arm could not, having thrown the callee span away.
     /// The drain re-records it from settled state (P26) — see
     /// `register.rs::resolve_one_overload_call`.
-    pub(crate) pending_overload_resolutions:
-        Vec<(Span, Symbol, Vec<Type>, Type, bool, Span)>,
+    pub(crate) pending_overload_resolutions: Vec<(Span, Symbol, Vec<Type>, Type, bool, Span)>,
     /// Deferred self-call dispatch worklist (S112 leg a §11.3.2, the B1 fix).
     /// `(self_call_span, base_name, selected_variant_index)`.
     ///
@@ -253,8 +270,7 @@ pub struct CheckState {
     /// monomorphic recursion to THIS instance (unify + dispatch to
     /// `instance_mangled`), exactly as the standalone-function twin's self-call
     /// resolves. `None` outside a multi-sig template recheck. Stack-saved/restored.
-    pub(crate) mono_recheck_self:
-        Option<(Symbol, JitSymbol, Vec<Type>, Type)>,
+    pub(crate) mono_recheck_self: Option<(Symbol, JitSymbol, Vec<Type>, Type)>,
     /// Field-accessor synthesis collisions with a NON-accessor binding
     /// (a user `defn`, a ctor, …) — `(accessor_name, owning_type_name)`.
     /// Surfaced as a non-fatal `ShadowedName` warning at finalize: the accessor
@@ -273,8 +289,7 @@ pub struct CheckState {
     /// normal first-class accessor; two-or-more means the bare name is poisoned
     /// (§5.2.6) and these are the qualified alternatives (`Box.v`, `Cup.v`)
     /// listed in the ambiguity error when bare `v` is used.
-    pub(crate) accessor_owning_types:
-        HashMap<Symbol, Vec<cranelisp_types::FQTypeName>>,
+    pub(crate) accessor_owning_types: HashMap<Symbol, Vec<cranelisp_types::FQTypeName>>,
     /// The currently active module path for this check.
     pub(crate) current_module: ModuleFullPath,
     /// **RIGID written type variables active for the definition body currently
@@ -576,7 +591,9 @@ where
     /// ctor `Def` carrying `type_def: Some(..)`) resolves as a type just as a
     /// sum/enum `TypeDef` does.
     pub(crate) fn lookup_type_def(&self, name: &TypeName) -> Option<TypeDefInfo> {
-        let entry = self.env.resolve_entry_in_module(self.module_path, name.as_ref())?;
+        let entry = self
+            .env
+            .resolve_entry_in_module(self.module_path, name.as_ref())?;
         type_def_view_of(&entry).cloned()
     }
 
@@ -588,7 +605,10 @@ where
         &self,
         trait_name: &TraitName,
     ) -> Option<cranelisp_types::TraitDeclInfo> {
-        match self.env.resolve_entry_in_module(self.module_path, trait_name.as_ref())? {
+        match self
+            .env
+            .resolve_entry_in_module(self.module_path, trait_name.as_ref())?
+        {
             ModuleEntry::TraitDecl { info, .. } => Some(info),
             _ => None,
         }
@@ -617,7 +637,11 @@ where
             if found {
                 return;
             }
-            if let ModuleEntry::TraitImpl { trait_name: tn, impl_type: it, .. } = entry
+            if let ModuleEntry::TraitImpl {
+                trait_name: tn,
+                impl_type: it,
+                ..
+            } = entry
                 && &tn.name == trait_name
                 && &it.name == impl_type
             {
@@ -715,20 +739,15 @@ where
     /// runtime borrow (Cluster mode) — drop it before acquiring another guard
     /// to avoid deadlocks (see design/typecheck/dashmap-migration.md §4.10) or
     /// `RefCell` borrow-check panics.
-    pub fn current_symbol_table<'b>(
-        &'b self,
-        state: &CheckState,
-    ) -> SymbolTableRead<'b, 'a, C, L> {
-        let live = self.modules
-            .get(&state.current_module)
-            .unwrap_or_else(|| unreachable!("invariant: current_module always exists in modules map"));
+    pub fn current_symbol_table<'b>(&'b self, state: &CheckState) -> SymbolTableRead<'b, 'a, C, L> {
+        let live = self.modules.get(&state.current_module).unwrap_or_else(|| {
+            unreachable!("invariant: current_module always exists in modules map")
+        });
         match &self.staging {
-            Some(staging) if staging.module == state.current_module => {
-                SymbolTableRead::Cluster {
-                    staging: staging.cell.borrow(),
-                    live,
-                }
-            }
+            Some(staging) if staging.module == state.current_module => SymbolTableRead::Cluster {
+                staging: staging.cell.borrow(),
+                live,
+            },
             _ => SymbolTableRead::Live(live),
         }
     }
@@ -773,12 +792,12 @@ where
         &self,
         module_path: &ModuleFullPath,
     ) -> dashmap::mapref::one::RefMut<'_, ModuleFullPath, SymbolTable<C, L>> {
-        self.modules
-            .get_mut(module_path)
-            .unwrap_or_else(|| unreachable!(
+        self.modules.get_mut(module_path).unwrap_or_else(|| {
+            unreachable!(
                 "invariant: target module '{}' must exist before write",
                 module_path
-            ))
+            )
+        })
     }
 
     /// Ensure a module's symbol table exists, creating it if needed.
@@ -823,7 +842,6 @@ where
         self.read_view(module_path).lookup_type_def(name)
     }
 
-
     /// Resolve a name in `module_path` to its terminal `ModuleEntry`, following
     /// `Import`/`Reexport` chains by `source.module` references (Principle 17).
     /// Returns an owned clone of the terminal entry.
@@ -835,7 +853,8 @@ where
         module_path: &ModuleFullPath,
         name: &str,
     ) -> Option<ModuleEntry<C>> {
-        self.resolve_terminal_entry_and_home(module_path, name).map(|(e, _home)| e)
+        self.resolve_terminal_entry_and_home(module_path, name)
+            .map(|(e, _home)| e)
     }
 
     /// Look up the parent type name for a constructor, rooted in
@@ -928,7 +947,8 @@ where
                     // `internal` discriminator.
                     if let Some(entry) = self.resolve_entry_in_module(module_path, c_sym.as_ref())
                         && let ModuleEntry::Def { kind, .. } = entry
-                        && let cranelisp_types::DefKind::Constructor { internal, .. } = kind.as_ref()
+                        && let cranelisp_types::DefKind::Constructor { internal, .. } =
+                            kind.as_ref()
                     {
                         return *internal;
                     }
@@ -972,8 +992,7 @@ where
         // Constructor Def. `resolve_entry_scoped` already applies the
         // prelude fallback (bit-gated, self-guarded) and the I-1 public
         // filter, so a private prelude ctor never reaches here.
-        if let Some(ModuleEntry::Def { kind, .. }) =
-            self.resolve_entry_scoped(state, ctor_name)
+        if let Some(ModuleEntry::Def { kind, .. }) = self.resolve_entry_scoped(state, ctor_name)
             && let cranelisp_types::DefKind::Constructor { internal, .. } = kind.as_ref()
         {
             return *internal;
@@ -993,7 +1012,10 @@ where
         &'v self,
         module_path: &'v ModuleFullPath,
     ) -> ModuleReadView<'v, 'a, C, L> {
-        ModuleReadView { env: self, module_path }
+        ModuleReadView {
+            env: self,
+            module_path,
+        }
     }
 
     /// Access the per-module symbol tables (for display, introspection).
@@ -1015,7 +1037,10 @@ where
     /// Kept for potential internal use by future typecheck code paths;
     /// `#[allow(dead_code)]` while no callers exist.
     #[allow(dead_code)]
-    pub(crate) fn module_table(&self, path: &ModuleFullPath) -> Option<dashmap::mapref::one::Ref<'_, ModuleFullPath, SymbolTable<C, L>>> {
+    pub(crate) fn module_table(
+        &self,
+        path: &ModuleFullPath,
+    ) -> Option<dashmap::mapref::one::Ref<'_, ModuleFullPath, SymbolTable<C, L>>> {
         self.modules.get(path)
     }
 
@@ -1063,7 +1088,11 @@ where
         current_module: &ModuleFullPath,
     ) -> Option<ModuleFullPath> {
         if current_module.as_ref() != PRELUDE_MODULE
-            && self.prelude_fallback.get(current_module).map(|b| *b).unwrap_or(false)
+            && self
+                .prelude_fallback
+                .get(current_module)
+                .map(|b| *b)
+                .unwrap_or(false)
         {
             Some(ModuleFullPath::from(PRELUDE_MODULE))
         } else {
@@ -1140,7 +1169,9 @@ where
         span: Span,
     ) -> Result<cranelisp_types::Resolved<C>, ResolveError> {
         let read = self.current_symbol_table(state);
-        self.with_scope(&read, &state.current_module, |scope| scope.resolve(name, span))
+        self.with_scope(&read, &state.current_module, |scope| {
+            scope.resolve(name, span)
+        })
     }
 
     /// Arbitrary-root scope resolve (S108 Wave-G §3.2 — collapses the former
@@ -1166,9 +1197,10 @@ where
             }
         };
         let read = match &self.staging {
-            Some(staging) if staging.module == *module_path => {
-                SymbolTableRead::Cluster { staging: staging.cell.borrow(), live }
-            }
+            Some(staging) if staging.module == *module_path => SymbolTableRead::Cluster {
+                staging: staging.cell.borrow(),
+                live,
+            },
             _ => SymbolTableRead::Live(live),
         };
         self.with_scope(&read, module_path, |scope| scope.resolve(name, span))
@@ -1198,7 +1230,6 @@ where
         })
     }
 
-
     /// Resolve a bare type name to its `FQTypeName` via symbol-table
     /// chain-follow from `state.current_module`. Phase B Part 5 successor
     /// to the retired `fqtn_for_bare_type_name`: returns
@@ -1226,9 +1257,10 @@ where
             return Ok(info.name.clone());
         }
         match resolved.entry {
-            ModuleEntry::IntrinsicType { .. } => {
-                Ok(cranelisp_types::FQTypeName::new(resolved.home, type_name.clone()))
-            }
+            ModuleEntry::IntrinsicType { .. } => Ok(cranelisp_types::FQTypeName::new(
+                resolved.home,
+                type_name.clone(),
+            )),
             _ => Err(type_not_found()),
         }
     }
@@ -1261,9 +1293,10 @@ where
             return Ok(info.name.clone());
         }
         match resolved.entry {
-            ModuleEntry::IntrinsicType { .. } => {
-                Ok(cranelisp_types::FQTypeName::new(resolved.home, type_name.clone()))
-            }
+            ModuleEntry::IntrinsicType { .. } => Ok(cranelisp_types::FQTypeName::new(
+                resolved.home,
+                type_name.clone(),
+            )),
             _ => Err(type_not_found()),
         }
     }
@@ -1471,8 +1504,7 @@ where
         if module_part.is_empty() || name_part.is_empty() {
             return None;
         }
-        let child =
-            ModuleFullPath::from(format!("{}.{}", state.current_module, module_part));
+        let child = ModuleFullPath::from(format!("{}.{}", state.current_module, module_part));
         let abs = ModuleFullPath::from(module_part);
         Some((name_part, [child, abs]))
     }
@@ -1634,12 +1666,7 @@ where
     /// [`Self::resolve_dotted_member_fq`] leg in `infer_var` (they never
     /// resolve through `scope_resolve`) and, per the S101 residue, feed only
     /// `var_refs` (as `VarRef::Global`), never `callees`.
-    pub(crate) fn record_reference_target(
-        &self,
-        state: &mut CheckState,
-        name: &str,
-        span: Span,
-    ) {
+    pub(crate) fn record_reference_target(&self, state: &mut CheckState, name: &str, span: Span) {
         // Local scope shadows module scope (spec §8.6.1 resolution order).
         if state.env.lookup(name).is_some() {
             // Self-recursion carve-out (S110 0583 leg 2, FIXME 0616):
@@ -1690,10 +1717,7 @@ where
                 // provenance). The former "record nothing for a local" license
                 // is retired — "unresolved" now has no representation, so every
                 // successfully-typed reference records a typed verdict.
-                let binding_span = state
-                    .env
-                    .binding_form_span(name)
-                    .unwrap_or(Span::SYNTHETIC);
+                let binding_span = state.env.binding_form_span(name).unwrap_or(Span::SYNTHETIC);
                 state.method_resolutions.var_refs.insert(
                     span,
                     VarRef::Local {
@@ -1792,11 +1816,7 @@ where
     /// Returns `None` when `name` is not a `Type.member` form, the head does not
     /// name a type in scope, or `member` is not a field accessor of that type
     /// (the caller then proceeds to the `/`-split / undefined-variable path).
-    fn resolve_dotted_member(
-        &self,
-        state: &CheckState,
-        name: &str,
-    ) -> Option<Scheme> {
+    fn resolve_dotted_member(&self, state: &CheckState, name: &str) -> Option<Scheme> {
         let entry = self.resolve_dotted_member_entry(state, name)?;
         self.extract_scheme_from_entry_owned(&entry, 0)
     }
@@ -1821,7 +1841,8 @@ where
         state: &CheckState,
         name: &str,
     ) -> Option<ModuleEntry<C>> {
-        self.dotted_member_identity(state, name).map(|(_, entry)| entry)
+        self.dotted_member_identity(state, name)
+            .map(|(_, entry)| entry)
     }
 
     /// The STORAGE FQ of a dotted `Type.member` reference (S110 0583 leg 3,
@@ -1859,8 +1880,11 @@ where
         let dot = name.find('.')?;
         let type_part = &name[..dot];
         let member_part = &name[dot + 1..];
-        if type_part.is_empty() || member_part.is_empty() || member_part.contains('.')
-            || type_part.contains('/') || member_part.contains('/')
+        if type_part.is_empty()
+            || member_part.is_empty()
+            || member_part.contains('.')
+            || type_part.contains('/')
+            || member_part.contains('/')
         {
             return None;
         }
@@ -1868,9 +1892,7 @@ where
         // Resolve the head to its `FQTypeName` (current-module-or-prelude). A
         // non-type head (a value `Var`, an unknown name) yields `None` — not a
         // member reference.
-        let resolved = self
-            .scope_resolve(state, type_part, Span::default())
-            .ok()?;
+        let resolved = self.scope_resolve(state, type_part, Span::default()).ok()?;
         let fqtn = type_def_view_of(&resolved.entry)?.name.clone();
 
         // Probe the CANONICAL key `Type.member` directly (the real Public member
@@ -1880,7 +1902,10 @@ where
         let entry = self.probe_module_entry_owned(&fqtn.module, key.as_ref())?;
         match crate::adt::committed_member_owner(&entry) {
             Some(owner) if owner == fqtn => Some((
-                FQSymbol { module: fqtn.module, symbol: key },
+                FQSymbol {
+                    module: fqtn.module,
+                    symbol: key,
+                },
                 entry,
             )),
             _ => None,
@@ -1942,11 +1967,7 @@ where
     /// receives owned clones of the names/entries to avoid borrow
     /// entanglement between staging (RefCell::borrow) and live (DashMap
     /// Ref).
-    pub(crate) fn for_each_in_module<F>(
-        &self,
-        module_path: &ModuleFullPath,
-        mut f: F,
-    )
+    pub(crate) fn for_each_in_module<F>(&self, module_path: &ModuleFullPath, mut f: F)
     where
         F: FnMut(&Symbol, &ModuleEntry<C>),
     {
@@ -1991,9 +2012,7 @@ where
             // got-slotted ctor `Def` (S79 Option 3a) — the `TypeDef`-via-
             // `constructor_scheme` smuggling arm is retired.
             ModuleEntry::Def { scheme, .. } => Some(scheme.clone()),
-            ModuleEntry::Import { source, .. } => {
-                self.resolve_fq_symbol(source, depth + 1)
-            }
+            ModuleEntry::Import { source, .. } => self.resolve_fq_symbol(source, depth + 1),
             _ => None,
         }
     }
@@ -2022,13 +2041,19 @@ where
     ///
     /// Staging-aware (FIXME 0179): consults staging first via
     /// [`Self::probe_module_entry_owned`].
-    pub(crate) fn resolve_entry_scoped(&self, state: &CheckState, name: &str) -> Option<ModuleEntry<C>> {
+    pub(crate) fn resolve_entry_scoped(
+        &self,
+        state: &CheckState,
+        name: &str,
+    ) -> Option<ModuleEntry<C>> {
         // Terminal-entry projection over the single scope resolve (S108 Wave-G).
         // The same-cluster same-module member-alias hop (bare ctor/field-accessor
         // → canonical `Type.member`) is handled at the resolution PRIMITIVE
         // (`cranelisp_types::resolve::chain_follow_committed`, staging-view hop,
         // W1 commit 1 / `dotted-ctor-canonical-keys.md` §3.5), not here.
-        self.scope_resolve(state, name, Span::default()).ok().map(|resolved| resolved.entry)
+        self.scope_resolve(state, name, Span::default())
+            .ok()
+            .map(|resolved| resolved.entry)
     }
 
     /// Resolve a **constructor reference** in a pattern to its terminal
@@ -2184,10 +2209,12 @@ where
         module_path: &ModuleFullPath,
         name: &str,
     ) -> Option<(ModuleEntry<C>, ModuleFullPath)> {
-        self.scope_resolve_in(module_path, name, Span::SYNTHETIC).ok().map(|resolved| {
-            let home = resolved.storage_fq().module;
-            (resolved.entry, home)
-        })
+        self.scope_resolve_in(module_path, name, Span::SYNTHETIC)
+            .ok()
+            .map(|resolved| {
+                let home = resolved.storage_fq().module;
+                (resolved.entry, home)
+            })
     }
 
     /// Recursive helper for [`Self::resolve_terminal_entry_and_home`].
@@ -2203,7 +2230,8 @@ where
         match &entry {
             ModuleEntry::Import { source, .. } => {
                 let next_home = source.module.clone();
-                let next_entry = self.probe_module_entry_owned(&source.module, source.symbol.as_ref())?;
+                let next_entry =
+                    self.probe_module_entry_owned(&source.module, source.symbol.as_ref())?;
                 self.chain_follow_to_home(next_entry, next_home, depth + 1)
             }
             _ => Some((entry, home)),
@@ -2237,7 +2265,10 @@ where
         // bare `cranelisp_types::resolve` call.
         let qualified = format!("{module_path}/{name}");
         match self.scope_resolve(state, &qualified, Span::SYNTHETIC) {
-            Ok(resolved) => Ok((self.extract_scheme_from_entry_owned(&resolved.entry, 0), None)),
+            Ok(resolved) => Ok((
+                self.extract_scheme_from_entry_owned(&resolved.entry, 0),
+                None,
+            )),
             // Module present, symbol absent (S109 0571 B4/B5). Yield the gap
             // UNCONDITIONALLY (supersedes FIXME 0513's gap-less arm): typecheck
             // reports "the qualified reference `module/name` did not resolve"
@@ -2263,9 +2294,14 @@ where
             // precise cross-module resolution gap. Reported in-band so the
             // fallback chain is not short-circuited; the `&mut`-holding caller
             // promotes a surviving gap to `CheckError::Gap`.
-            Err(ResolveError::QualifiedModuleUnknown { module, name: sym, .. }) => Ok((
+            Err(ResolveError::QualifiedModuleUnknown {
+                module, name: sym, ..
+            }) => Ok((
                 None,
-                Some(ResolutionGap::SymbolTypechecked(FQSymbol { module, symbol: sym })),
+                Some(ResolutionGap::SymbolTypechecked(FQSymbol {
+                    module,
+                    symbol: sym,
+                })),
             )),
             // Visibility violation: a hard error (the symbol exists but is
             // private to a module outside the accessor's subtree).
@@ -2312,7 +2348,6 @@ where
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         (Type::Var(id), id)
     }
-
 
     // --- Unification (delegate to unify module, borrow-splitting) ---
 
@@ -2477,7 +2512,10 @@ where
     /// Look up the FQTypeName for a bare type name via SymbolTables.
     /// Used for display formatting and diagnostics.
     #[allow(dead_code)] // accessor pair; exercised via TestFixture in `#[cfg(test)]`.
-    pub(crate) fn fqtn_for_type(&self, type_name: &TypeName) -> Option<cranelisp_types::FQTypeName> {
+    pub(crate) fn fqtn_for_type(
+        &self,
+        type_name: &TypeName,
+    ) -> Option<cranelisp_types::FQTypeName> {
         let user_path = ModuleFullPath::from("user");
         self.lookup_type_def_in_module(&user_path, type_name)
             .map(|info| info.name)
@@ -2497,14 +2535,11 @@ where
         // for `module_path`.
         let candidates: Vec<TraitName> = {
             let mut acc = Vec::new();
-            self.for_each_in_module(module_path, |name, entry| {
-                match entry {
-                    ModuleEntry::TraitDecl { .. }
-                    | ModuleEntry::Import { .. } => {
-                        acc.push(TraitName::from(name.as_ref()));
-                    }
-                    _ => {}
+            self.for_each_in_module(module_path, |name, entry| match entry {
+                ModuleEntry::TraitDecl { .. } | ModuleEntry::Import { .. } => {
+                    acc.push(TraitName::from(name.as_ref()));
                 }
+                _ => {}
             });
             acc
         };
@@ -2512,20 +2547,22 @@ where
         let mut visited_homes: std::collections::HashSet<ModuleFullPath> =
             std::collections::HashSet::new();
         for candidate in candidates {
-            let trait_home = match self.resolve_terminal_entry_and_home(
-                module_path,
-                candidate.as_ref(),
-            ) {
-                Some((ModuleEntry::TraitDecl { .. }, home)) => home,
-                _ => continue,
-            };
+            let trait_home =
+                match self.resolve_terminal_entry_and_home(module_path, candidate.as_ref()) {
+                    Some((ModuleEntry::TraitDecl { .. }, home)) => home,
+                    _ => continue,
+                };
             if !visited_homes.insert(trait_home.clone()) {
                 continue;
             }
             // Staging-aware (FIXME 0179): trait_home may equal
             // staging.module when the trait + impl are both in-cluster.
             self.for_each_in_module(&trait_home, |_key, entry| {
-                if let ModuleEntry::TraitImpl { trait_name, impl_type, .. } = entry
+                if let ModuleEntry::TraitImpl {
+                    trait_name,
+                    impl_type,
+                    ..
+                } = entry
                     && &impl_type.name == type_name
                     && !traits.contains(&trait_name.name)
                 {
@@ -2573,13 +2610,13 @@ where
     /// the implicit prelude glob, no `Import` edge) resolves exactly as a bare
     /// `Display` resolves in a lookup position; a genuinely-unknown name yields
     /// `None` (the impl site still raises `unknown trait`).
+    #[cfg(test)]
     pub(crate) fn resolve_trait_decl(
         &self,
         state: &CheckState,
         trait_name: &TraitName,
     ) -> Option<cranelisp_types::TraitDeclInfo> {
-        let (terminal, _home) =
-            self.resolve_terminal_entry_scoped(state, trait_name.as_ref())?;
+        let (terminal, _home) = self.resolve_terminal_entry_scoped(state, trait_name.as_ref())?;
         match terminal {
             ModuleEntry::TraitDecl { info, .. } => Some(info),
             _ => None,
@@ -2606,7 +2643,10 @@ where
     ) -> Option<TraitName> {
         let entry = self.resolve_entry_in_module(module_path, method_name.as_ref())?;
         match entry {
-            ModuleEntry::Def { trait_origin: Some(fqtn), .. } => Some(fqtn.name.clone()),
+            ModuleEntry::Def {
+                trait_origin: Some(fqtn),
+                ..
+            } => Some(fqtn.name.clone()),
             _ => None,
         }
     }
@@ -2631,12 +2671,12 @@ where
         state: &CheckState,
         method_name: &Symbol,
     ) -> Option<(TraitName, ModuleFullPath)> {
-        let (entry, _home) =
-            self.resolve_terminal_entry_scoped(state, method_name.as_ref())?;
+        let (entry, _home) = self.resolve_terminal_entry_scoped(state, method_name.as_ref())?;
         match entry {
-            ModuleEntry::Def { trait_origin: Some(fqtn), .. } => {
-                Some((fqtn.name.clone(), fqtn.module.clone()))
-            }
+            ModuleEntry::Def {
+                trait_origin: Some(fqtn),
+                ..
+            } => Some((fqtn.name.clone(), fqtn.module.clone())),
             _ => None,
         }
     }
@@ -2723,7 +2763,11 @@ where
             if found {
                 return;
             }
-            if let ModuleEntry::TraitImpl { trait_name: tn, impl_type: it, .. } = entry
+            if let ModuleEntry::TraitImpl {
+                trait_name: tn,
+                impl_type: it,
+                ..
+            } = entry
                 && &tn.name == trait_name
                 && &it.name == impl_type
             {
@@ -2786,17 +2830,20 @@ where
     ) -> Vec<TypeName> {
         let mut types: Vec<TypeName> = Vec::new();
         // Chain-follow trait reference to its defining module.
-        let trait_home = match self.resolve_terminal_entry_and_home(
-            module_path,
-            trait_name.as_ref(),
-        ) {
-            Some((ModuleEntry::TraitDecl { .. }, home)) => home,
-            _ => return types, // trait not reachable from this module
-        };
+        let trait_home =
+            match self.resolve_terminal_entry_and_home(module_path, trait_name.as_ref()) {
+                Some((ModuleEntry::TraitDecl { .. }, home)) => home,
+                _ => return types, // trait not reachable from this module
+            };
         // Enumerate impls in the trait's home only. Staging-aware (FIXME 0179).
         self.for_each_in_module(&trait_home, |_name, entry| {
-            if let ModuleEntry::TraitImpl { trait_name: tn, impl_type, .. } = entry
-                && &tn.name == trait_name && !types.contains(&impl_type.name)
+            if let ModuleEntry::TraitImpl {
+                trait_name: tn,
+                impl_type,
+                ..
+            } = entry
+                && &tn.name == trait_name
+                && !types.contains(&impl_type.name)
             {
                 types.push(impl_type.name.clone());
             }
@@ -3200,7 +3247,9 @@ where
                 Some(m) if !is_self_qualified => format!("{m}/{}", tref.name),
                 _ => tref.name.to_string(),
             };
-            self.scope_resolve_in(module_path, &name, span).ok().map(|resolved| resolved.entry)
+            self.scope_resolve_in(module_path, &name, span)
+                .ok()
+                .map(|resolved| resolved.entry)
         };
         let ctx = crate::resolve::TypeExprCtx {
             resolve_terminal: &resolve_terminal,
@@ -3226,7 +3275,6 @@ where
         };
         self.is_internal_constructor_check_with_state(state, bare_name)
     }
-
 }
 
 /// Re-project a `ResolveError` from the general primitive into a kind-specific
@@ -3246,8 +3294,9 @@ fn project_not_found(
     kind_specific: impl FnOnce() -> ResolveError,
 ) -> ResolveError {
     match err {
-        ResolveError::PrivateInaccessible { .. }
-        | ResolveError::QualifiedModuleUnknown { .. } => err,
+        ResolveError::PrivateInaccessible { .. } | ResolveError::QualifiedModuleUnknown { .. } => {
+            err
+        }
         // Every not-found-shaped variant (and any future `#[non_exhaustive]`
         // addition) re-labels with the caller's kind-specific not-found.
         _ => kind_specific(),
@@ -3263,10 +3312,8 @@ fn project_not_found(
 /// prevents fresh vars from colliding with cached vars during
 /// `apply_subst`), so the work stays in this crate; the orchestration is
 /// hoisted to `int` per the FIXME 0192 disposition.
-pub fn advance_next_id_past_table<C, L>(
-    next_id: &AtomicU32,
-    table: &SymbolTable<C, L>,
-) where
+pub fn advance_next_id_past_table<C, L>(next_id: &AtomicU32, table: &SymbolTable<C, L>)
+where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {

@@ -101,7 +101,8 @@ fn assert_balanced(shape: &str, src: &str, expect_exit: i32, modes: &[Mode]) {
                 "ownership analysis ON"
             };
             assert_eq!(
-                allocs, deallocs,
+                allocs,
+                deallocs,
                 "{shape} ({mode:?}, {toggle}) MUST balance exactly: allocs={allocs} \
                  deallocs={deallocs} (residue {}). A freshly-minted heap value that \
                  escapes its defining frame must still be released.",
@@ -138,9 +139,7 @@ const RUN_ONLY: &[Mode] = &[Mode::Run];
 // spec: spec/12-runtime.md §12.3.1 — heap values are freed when no longer reachable.
 #[test]
 fn curried_local_closure_applied_immediately_balances() {
-    let src = format!(
-        "(defn one [] (let [g (fn [a b] (add-i64 a b))] ((g 1) 2)))\n{DRIVER}"
-    );
+    let src = format!("(defn one [] (let [g (fn [a b] (add-i64 a b))] ((g 1) 2)))\n{DRIVER}");
     assert_balanced("A (curry applied immediately)", &src, 44, BOTH_MODES);
 }
 
@@ -149,9 +148,8 @@ fn curried_local_closure_applied_immediately_balances() {
 // spec: spec/12-runtime.md §12.3.1 — heap values are freed when no longer reachable.
 #[test]
 fn curried_local_closure_let_bound_in_same_frame_balances() {
-    let src = format!(
-        "(defn one [] (let [g (fn [a b] (add-i64 a b))] (let [h (g 1)] (h 2))))\n{DRIVER}"
-    );
+    let src =
+        format!("(defn one [] (let [g (fn [a b] (add-i64 a b))] (let [h (g 1)] (h 2))))\n{DRIVER}");
     assert_balanced("B (curry let-bound in frame)", &src, 44, BOTH_MODES);
 }
 

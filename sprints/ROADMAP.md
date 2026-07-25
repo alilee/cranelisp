@@ -326,6 +326,34 @@ three-run loaded-corruption and identical-two-run certification obligations;
 and disposition of the five primitives-audit recommendations. The standing
 SROA / `--release` frontier remains behind this safety work.
 
+### Conformance and Recovery — S117 ✅ CLOSED 2026-07-25
+
+Delivered canonical qualified-trait `impl` resolution, atomic failed-turn
+recovery, exact codegen attribution, canonical constraint display, inverse
+trait/type introspection, cached macro executable-clause recovery, one
+complete-by-construction primitive declaration inventory, ordinary
+production-path ownership witnesses, and runtime-owned Vec-of-String
+construction/read helpers used by `split` and `join`. The non-normative
+Byte-backed text design recommends native `Byte`, initially wide `(Vec Byte)`,
+`Utf8Literal`, stdlib-owned Unicode policy, and deferred compact storage; no
+text semantics entered the specification.
+
+Phase 6 replayed all 38 REPL demos, expanded stdlib guards and text planning,
+updated examples/docs, and verified the Sudoku exemplar at 40/40 in parallel
+and serial modes. The rotating `cranelisp-platform` audit landed for S118
+Phase-1 disposition.
+
+**Suite gate:** 5,511 run / 5,472 passed / 39 failed / 2 skipped; after
+sandbox-only failures are excluded, the Phase-5 product RED set is 26 known
+guards with zero unexpected regressions. Phase 6 added two attributed,
+failing-not-ignored cache guards for S118. **S118 carries:** FIXMEs 0800/0863
+(`def` presentation transaction and stdlib API decision), 0859 (remaining
+ProjectionOf production witness), 0867 (polymorphic field-accessor repro),
+0868 (cache-restored private-child enrollment), and 0869 (sibling-written
+trait-impl cache restoration). Cyber-blocked memory/instrumentation work and
+0850 remain explicitly deferred. Full record:
+`sprints/archive/sprint-117.md`.
+
 ### Pipeline v3 migration — COMPLETE (Sprints 29-38)
 
 Steps 1-10 + 14 delivered. Single-pipeline invariant established. ~2,100 lines of v1 code deleted. Steps 11-13 (concurrency) deferred indefinitely. Step 15 (new main.rs) retired — substantially delivered by Step 6. See `design/arch/archive/pipeline-v3-roadmap.md` §Post-Migration for full assessment.

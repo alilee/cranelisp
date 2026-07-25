@@ -298,7 +298,10 @@ use crate::schema::subst_for_ctor_fields;
 /// (`tracing.md` §3.5). Free function so it is unit-testable against a
 /// hand-built `DashMap` without a full `FnCompiler`.
 fn discover_traced_fns_from_tables<C, L>(
-    symbol_tables: &dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>,
+    symbol_tables: &dashmap::DashMap<
+        cranelisp_types::ModuleFullPath,
+        cranelisp_types::SymbolTable<C, L>,
+    >,
 ) -> Vec<TracedFnInfo>
 where
     C: cranelisp_types::CodeStore,
@@ -615,7 +618,10 @@ where
             .module
             .declare_anonymous_data(false, false)
             .map_err(|e| CranelispError::CodegenError {
-                message: format!("failed to declare trace descriptor data for '{}': {e}", tf.name),
+                message: format!(
+                    "failed to declare trace descriptor data for '{}': {e}",
+                    tf.name
+                ),
                 location: ErrorLocation::from_span(span),
             })?;
         let mut desc = cranelift_module::DataDescription::new();
@@ -625,7 +631,10 @@ where
         self.module
             .define_data(data_id, &desc)
             .map_err(|e| CranelispError::CodegenError {
-                message: format!("failed to define trace descriptor data for '{}': {e}", tf.name),
+                message: format!(
+                    "failed to define trace descriptor data for '{}': {e}",
+                    tf.name
+                ),
                 location: ErrorLocation::from_span(span),
             })?;
 
@@ -709,10 +718,7 @@ where
         // only a stale compiling-process address and is never emitted.
         let mut got_groups: Vec<(cranelisp_types::ModuleFullPath, Vec<&TracedFnInfo>)> = Vec::new();
         for tf in &traced {
-            if let Some(grp) = got_groups
-                .iter_mut()
-                .find(|(m, _)| *m == tf.module_path)
-            {
+            if let Some(grp) = got_groups.iter_mut().find(|(m, _)| *m == tf.module_path) {
                 grp.1.push(tf);
             } else {
                 got_groups.push((tf.module_path.clone(), vec![tf]));
@@ -771,31 +777,35 @@ where
 
             // --- wrappers buffer: WRITTEN at runtime (func_addr fill below),
             // READ by swap_got. Mutable data symbol (no leak, no absolute). ---
-            let wrappers_data_id =
-                self.emit_zero_data(n * 8, 8, true, "trace wrappers", span)?;
+            let wrappers_data_id = self.emit_zero_data(n * 8, 8, true, "trace wrappers", span)?;
 
             // --- originals buffer: WRITTEN at runtime (the pre-swap GOT-slot
             // load below), READ by each wrapper to reach the ORIGINAL fn. This
             // captures the original code pointer from the live GOT *before* the
             // swap installs the wrappers, so the wrapper reaches the real fn and
             // not itself — late-bound, mode-agnostic, no baked absolute. ---
-            let originals_data_id =
-                self.emit_zero_data(n * 8, 8, true, "trace originals", span)?;
+            let originals_data_id = self.emit_zero_data(n * 8, 8, true, "trace originals", span)?;
 
             // Materialise the GOT base once (one global_value → one relocation
             // in object mode; JIT patches it to the runtime slab base).
             let got_base_val = {
-                let gv = self.module.declare_data_in_func(got_data_id, self.builder.func);
+                let gv = self
+                    .module
+                    .declare_data_in_func(got_data_id, self.builder.func);
                 self.builder.ins().global_value(types::I64, gv)
             };
 
             // Materialise the wrappers + originals buffer base addresses.
             let wrappers_base = {
-                let gv = self.module.declare_data_in_func(wrappers_data_id, self.builder.func);
+                let gv = self
+                    .module
+                    .declare_data_in_func(wrappers_data_id, self.builder.func);
                 self.builder.ins().global_value(types::I64, gv)
             };
             let originals_base = {
-                let gv = self.module.declare_data_in_func(originals_data_id, self.builder.func);
+                let gv = self
+                    .module
+                    .declare_data_in_func(originals_data_id, self.builder.func);
                 self.builder.ins().global_value(types::I64, gv)
             };
 
@@ -812,19 +822,16 @@ where
                     .builder
                     .ins()
                     .iadd_imm(got_base_val, (tf.got_slot * 8) as i64);
-                let orig_ptr = self.builder.ins().load(
-                    types::I64,
-                    MemFlags::trusted(),
-                    slot_addr,
-                    0,
-                );
+                let orig_ptr =
+                    self.builder
+                        .ins()
+                        .load(types::I64, MemFlags::trusted(), slot_addr, 0);
                 self.builder
                     .ins()
                     .store(MemFlags::trusted(), orig_ptr, originals_base, buf_off);
 
                 // (b) compile wrapper (reads originals[i] for the indirect call).
-                let wrapper_id =
-                    self.compile_trace_wrapper_fn(tf, originals_data_id, i, span)?;
+                let wrapper_id = self.compile_trace_wrapper_fn(tf, originals_data_id, i, span)?;
                 let func_ref = self
                     .module
                     .declare_func_in_func(wrapper_id, self.builder.func);
@@ -839,22 +846,19 @@ where
 
             // Emit cranelisp_trace_swap_got(got_base, n_slots, slots_ptr, wrappers_ptr).
             let slots_val = {
-                let gv = self.module.declare_data_in_func(slots_data_id, self.builder.func);
+                let gv = self
+                    .module
+                    .declare_data_in_func(slots_data_id, self.builder.func);
                 self.builder.ins().global_value(types::I64, gv)
             };
             let n_val = self.builder.ins().iconst(types::I64, n as i64);
             let swap_ref = self.module.declare_func_in_func(swap_id, self.builder.func);
-            let call = self.builder.ins().call(
-                swap_ref,
-                &[got_base_val, n_val, slots_val, wrappers_base],
-            );
+            let call = self
+                .builder
+                .ins()
+                .call(swap_ref, &[got_base_val, n_val, slots_val, wrappers_base]);
             let saved_got_val = self.builder.inst_results(call)[0];
-            swap_results.push((
-                GotGroupRelocs {
-                    got_data_id,
-                },
-                saved_got_val,
-            ));
+            swap_results.push((GotGroupRelocs { got_data_id }, saved_got_val));
         }
 
         // Compile the body expression.
@@ -1072,13 +1076,12 @@ where
         }
         sig.returns.push(AbiParam::new(types::I64));
 
-        let wrapper_func_id = self
-            .module
-            .declare_anonymous_function(&sig)
-            .map_err(|e| CranelispError::CodegenError {
+        let wrapper_func_id = self.module.declare_anonymous_function(&sig).map_err(|e| {
+            CranelispError::CodegenError {
                 message: format!("failed to declare trace wrapper for '{}': {}", tf.name, e),
                 location: ErrorLocation::from_span(span),
-            })?;
+            }
+        })?;
 
         // Declare trace_enter (4 params), trace_exit (2 params), and trace_format (2 params).
         let enter_id = self.declare_trace_extern("cranelisp_trace_enter", 4, false, span)?;
@@ -1114,9 +1117,7 @@ where
 
             // Materialise the descriptor blob's base address once (one
             // global_value per wrapper → one relocation in object mode).
-            let blob_gv = self
-                .module
-                .declare_data_in_func(desc_set.data_id, wb.func);
+            let blob_gv = self.module.declare_data_in_func(desc_set.data_id, wb.func);
             let blob_base = wb.ins().global_value(types::I64, blob_gv);
 
             // Format each parameter using cranelisp_trace_format(val, descriptor_ptr).

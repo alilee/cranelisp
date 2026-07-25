@@ -7,9 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use cranelisp_types::{ErrorLocation,
-    CranelispError, ModuleFullPath, Program, Span,
-};
+use cranelisp_types::{CranelispError, ErrorLocation, ModuleFullPath, Program, Span};
 
 use cranelisp_backend::cache::manifest as cache_manifest;
 
@@ -97,8 +95,7 @@ impl CacheState {
     ) {
         self.manifest
             .upsert_module(module_path, source_hash.clone(), dep_hashes);
-        self.source_hashes
-            .insert(module_path.clone(), source_hash);
+        self.source_hashes.insert(module_path.clone(), source_hash);
         self.dirty = true;
         self.recompiled.insert(module_path.clone());
     }
@@ -169,7 +166,6 @@ fn manifest_globals_current(manifest: &cache_manifest::CacheManifest) -> bool {
 // Worker sub-structs: group fields by pipeline role
 // ---------------------------------------------------------------------------
 
-
 // ---------------------------------------------------------------------------
 // Free functions: lib dirs, prelude, exit code
 // ---------------------------------------------------------------------------
@@ -216,26 +212,24 @@ pub fn load_project_config_lib_dirs(
     if !candidate.is_file() {
         return Ok(None);
     }
-    let contents = std::fs::read_to_string(&candidate).map_err(|e| {
-        CranelispError::ModuleError {
+    let contents =
+        std::fs::read_to_string(&candidate).map_err(|e| CranelispError::ModuleError {
             message: format!(
                 "cannot read project config '{}': {}",
                 candidate.display(),
                 e
             ),
             location: ErrorLocation::from_span_file(Span::SYNTHETIC, Some(candidate.clone())),
-        }
-    })?;
-    let config: ProjectConfig = toml::from_str(&contents).map_err(|e| {
-        CranelispError::ModuleError {
+        })?;
+    let config: ProjectConfig =
+        toml::from_str(&contents).map_err(|e| CranelispError::ModuleError {
             message: format!(
                 "malformed project config '{}': {} (spec §8.11.4)",
                 candidate.display(),
                 e
             ),
             location: ErrorLocation::from_span_file(Span::SYNTHETIC, Some(candidate.clone())),
-        }
-    })?;
+        })?;
     let resolved: Vec<PathBuf> = config
         .lib_dirs
         .iter()
@@ -369,26 +363,24 @@ pub fn load_project_config_platform_dirs(
     if !candidate.is_file() {
         return Ok(None);
     }
-    let contents = std::fs::read_to_string(&candidate).map_err(|e| {
-        CranelispError::ModuleError {
+    let contents =
+        std::fs::read_to_string(&candidate).map_err(|e| CranelispError::ModuleError {
             message: format!(
                 "cannot read project config '{}': {}",
                 candidate.display(),
                 e
             ),
             location: ErrorLocation::from_span_file(Span::SYNTHETIC, Some(candidate.clone())),
-        }
-    })?;
-    let config: ProjectConfig = toml::from_str(&contents).map_err(|e| {
-        CranelispError::ModuleError {
+        })?;
+    let config: ProjectConfig =
+        toml::from_str(&contents).map_err(|e| CranelispError::ModuleError {
             message: format!(
                 "malformed project config '{}': {} (spec §8.11.5)",
                 candidate.display(),
                 e
             ),
             location: ErrorLocation::from_span_file(Span::SYNTHETIC, Some(candidate.clone())),
-        }
-    })?;
+        })?;
     let resolved: Vec<PathBuf> = config
         .platform_dirs
         .iter()
@@ -480,10 +472,7 @@ pub fn assemble_platform_dirs(project_root: &Path) -> Vec<PathBuf> {
 ///
 /// Returns `None` if no prelude file is found. The system works
 /// without a prelude — named primitives remain available.
-pub fn resolve_prelude(
-    project_root: &Path,
-    lib_dirs: &[PathBuf],
-) -> Option<PathBuf> {
+pub fn resolve_prelude(project_root: &Path, lib_dirs: &[PathBuf]) -> Option<PathBuf> {
     // 1. Project root (local prelude overrides lib prelude).
     let root_prelude = project_root.join("prelude.cl");
     if root_prelude.is_file() {
@@ -536,15 +525,15 @@ pub(crate) fn apply_bind_chain_analysis<
     for item in program.iter_mut() {
         match item {
             TopLevel::Defn(defn) if !defn.is_multi_sig() => {
-                crate::bind_chain_analysis::auto_schedule_defn(
-                    defn, symbol_tables, current_module,
-                );
+                crate::bind_chain_analysis::auto_schedule_defn(defn, symbol_tables, current_module);
             }
             TopLevel::TraitImpl(impl_) => {
                 for method in impl_.methods.iter_mut() {
                     if !method.is_multi_sig() {
                         crate::bind_chain_analysis::auto_schedule_defn(
-                            method, symbol_tables, current_module,
+                            method,
+                            symbol_tables,
+                            current_module,
                         );
                     }
                 }
@@ -665,10 +654,7 @@ mod project_config_tests {
     #[test]
     fn project_config_preserves_absolute_paths() {
         let tmp = tempfile::tempdir().unwrap();
-        write_project_config(
-            tmp.path(),
-            r#"lib-dirs = ["/usr/local/share/cranelisp"]"#,
-        );
+        write_project_config(tmp.path(), r#"lib-dirs = ["/usr/local/share/cranelisp"]"#);
 
         let dirs = load_project_config_lib_dirs(tmp.path()).unwrap().unwrap();
         assert_eq!(dirs.len(), 1);
@@ -691,7 +677,9 @@ mod project_config_tests {
         write_project_config(tmp.path(), "lib-dirs = [\"oops");
         let result = load_project_config_lib_dirs(tmp.path());
         match result {
-            Err(CranelispError::ModuleError { message, location, .. }) => {
+            Err(CranelispError::ModuleError {
+                message, location, ..
+            }) => {
                 assert!(
                     message.contains("malformed project config"),
                     "error must self-identify as project-config parse failure: {message}"
@@ -716,7 +704,10 @@ mod project_config_tests {
         let tmp = tempfile::tempdir().unwrap();
         write_project_config(tmp.path(), r#"lib-dirs = []"#);
         let dirs = load_project_config_lib_dirs(tmp.path()).unwrap().unwrap();
-        assert!(dirs.is_empty(), "explicit empty list must round-trip as empty");
+        assert!(
+            dirs.is_empty(),
+            "explicit empty list must round-trip as empty"
+        );
     }
 
     // Missing lib-dirs key entirely: serde(default) yields an empty vec —
@@ -770,11 +761,7 @@ mod project_config_tests {
         // env → toml config → {root}/stdlib.
         assert_eq!(
             dirs,
-            vec![
-                PathBuf::from("/env/dir"),
-                tmp.path().join("vendor"),
-                stdlib,
-            ],
+            vec![PathBuf::from("/env/dir"), tmp.path().join("vendor"), stdlib,],
             "additive union must include all three tiers in search order"
         );
     }
@@ -809,7 +796,10 @@ mod project_config_tests {
             assemble_lib_dirs(tmp.path())
         });
         let count = dirs.iter().filter(|p| **p == shared).count();
-        assert_eq!(count, 1, "a dir in both env+config must appear once; got {dirs:?}");
+        assert_eq!(
+            count, 1,
+            "a dir in both env+config must appear once; got {dirs:?}"
+        );
         assert_eq!(
             dirs[0], shared,
             "the deduped entry must sit at its earliest (env) position"

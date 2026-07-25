@@ -212,9 +212,16 @@ mod eval_result_tests {
             warnings: Vec::new(),
             defined: false,
         };
-        let val = EvalResult::Val { value: 1, ty: Type::Int, warnings: Vec::new() };
+        let val = EvalResult::Val {
+            value: 1,
+            ty: Type::Int,
+            warnings: Vec::new(),
+        };
         assert!(genuine.is_defining());
-        assert!(!display_only.is_defining(), "bare lookup must not trigger regen");
+        assert!(
+            !display_only.is_defining(),
+            "bare lookup must not trigger regen"
+        );
         assert!(!val.is_defining());
     }
 }
@@ -448,20 +455,21 @@ pub(crate) fn dedup_platform_names_preserving_order<'a>(
 pub(crate) fn extract_def_name_from_sexp(sexp: &Sexp) -> Option<String> {
     if let Sexp::List(items, _) = sexp
         && items.len() >= 2
-            && let Sexp::Symbol(head, _) = &items[0] {
-                match head.as_str() {
-                    "defmacro" => {
-                        if let Sexp::Symbol(name, _) = &items[1] {
-                            return Some(name.to_string());
-                        }
-                    }
-                    "import" | "platform" | "mod" => {
-                        // These don't define a named symbol in the usual sense.
-                        return None;
-                    }
-                    _ => {}
+        && let Sexp::Symbol(head, _) = &items[0]
+    {
+        match head.as_str() {
+            "defmacro" => {
+                if let Sexp::Symbol(name, _) = &items[1] {
+                    return Some(name.to_string());
                 }
             }
+            "import" | "platform" | "mod" => {
+                // These don't define a named symbol in the usual sense.
+                return None;
+            }
+            _ => {}
+        }
+    }
     None
 }
 

@@ -319,7 +319,10 @@ mod tests {
     fn from_u32_maps_known_discriminants() {
         assert_eq!(SchedulingClass::from_u32(0), SchedulingClass::Sequential);
         assert_eq!(SchedulingClass::from_u32(1), SchedulingClass::Commutative);
-        assert_eq!(SchedulingClass::from_u32(2), SchedulingClass::ResourceSerial);
+        assert_eq!(
+            SchedulingClass::from_u32(2),
+            SchedulingClass::ResourceSerial
+        );
         assert_eq!(SchedulingClass::from_u32(99), SchedulingClass::Sequential);
     }
 
@@ -381,7 +384,10 @@ mod tests {
             role: ResourceRole::None,
             _reserved: [0; 2],
         };
-        assert_eq!(poll.nearest_scheduling_class(), SchedulingClass::Commutative);
+        assert_eq!(
+            poll.nearest_scheduling_class(),
+            SchedulingClass::Commutative
+        );
         // A native cardinality-N pool maps to the nearest unbounded class.
         let pool = ConcurrencyDescriptor {
             token: 0,
@@ -391,7 +397,10 @@ mod tests {
             role: ResourceRole::None,
             _reserved: [0; 2],
         };
-        assert_eq!(pool.nearest_scheduling_class(), SchedulingClass::Commutative);
+        assert_eq!(
+            pool.nearest_scheduling_class(),
+            SchedulingClass::Commutative
+        );
     }
 
     // ======================================================================

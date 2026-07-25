@@ -10,7 +10,7 @@
 ; === Domain types — a cell is one of three things ===
 ; This is exactly exemplar/grid.cl's Cell, in miniature:
 
-(deftype Cell (Given [:Int value]) (Solved [:Int value]) (Candidates [:Int mask]))
+(deftype Cell (Given [:Int given]) (Solved [:Int solved]) (Candidates [:Int mask]))
 (Given 5)
 (defn cell-value [c] (match c [(Given v) v (Solved v) v (Candidates _) 0]))
 (cell-value (Given 5))

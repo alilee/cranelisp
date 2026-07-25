@@ -6,8 +6,6 @@
 use super::*;
 use crate::program::test_support::*;
 
-
-
 // spec: spec/03-types.md §3.11.1 — a CODEGEN-REACHING unpinned polymorphic
 //       value is an ambiguity error. A `let`-bound `None` whose type stays
 //       `(Option a)` (the `match` scrutinises only the tag) must be
@@ -33,7 +31,11 @@ fn ambiguity_check_rejects_codegen_reaching_unpinned_let_binding() {
                         bindings: vec![],
                         span: span(73, 77),
                     },
-                    body: Expr::IntLit { value: 0, span: span(78, 79), inferred_type: None },
+                    body: Expr::IntLit {
+                        value: 0,
+                        span: span(78, 79),
+                        inferred_type: None,
+                    },
                     span: span(73, 79),
                 },
                 cranelisp_types::MatchArm {
@@ -42,7 +44,11 @@ fn ambiguity_check_rejects_codegen_reaching_unpinned_let_binding() {
                         bindings: vec![Symbol::from("_")],
                         span: span(82, 87),
                     },
-                    body: Expr::IntLit { value: 1, span: span(88, 89), inferred_type: None },
+                    body: Expr::IntLit {
+                        value: 1,
+                        span: span(88, 89),
+                        inferred_type: None,
+                    },
                     span: span(82, 89),
                 },
             ],
@@ -54,7 +60,12 @@ fn ambiguity_check_rejects_codegen_reaching_unpinned_let_binding() {
         inferred_type: None,
     };
     let m = TopLevel::Defn(make_defn(
-        "m", vec![], vec![], body, Visibility::Public, span(50, 92),
+        "m",
+        vec![],
+        vec![],
+        body,
+        Visibility::Public,
+        span(50, 92),
     ));
     let result = tc.check(&[option_typedef(), m], &ctx, ModuleStrategy::Additive);
     let err = result.expect_err(
@@ -135,7 +146,11 @@ fn mixed_adt_free_var_in_match_scrutinee_is_ambiguous() {
                     bindings: vec![],
                     span: span(126, 130),
                 },
-                body: Expr::IntLit { value: 0, span: span(131, 132), inferred_type: None },
+                body: Expr::IntLit {
+                    value: 0,
+                    span: span(131, 132),
+                    inferred_type: None,
+                },
                 span: span(126, 132),
             },
             cranelisp_types::MatchArm {
@@ -144,7 +159,11 @@ fn mixed_adt_free_var_in_match_scrutinee_is_ambiguous() {
                     bindings: vec![Symbol::from("_")],
                     span: span(135, 140),
                 },
-                body: Expr::IntLit { value: 1, span: span(141, 142), inferred_type: None },
+                body: Expr::IntLit {
+                    value: 1,
+                    span: span(141, 142),
+                    inferred_type: None,
+                },
                 span: span(135, 142),
             },
         ],
@@ -199,7 +218,11 @@ fn mixed_adt_free_var_in_ctor_field_is_ambiguous() {
 fn mixed_adt_free_var_in_if_branch_is_ambiguous() {
     // (defn m [] (consume (if true (identity None) (identity None))))
     let body = consume_wrap(Expr::If {
-        cond: Box::new(Expr::BoolLit { value: true, span: span(118, 122), inferred_type: None }),
+        cond: Box::new(Expr::BoolLit {
+            value: true,
+            span: span(118, 122),
+            inferred_type: None,
+        }),
         then_branch: Box::new(identity_none(span(123, 137))),
         else_branch: Box::new(identity_none(span(138, 152))),
         span: span(115, 155),
@@ -232,7 +255,12 @@ fn vec_result_only_free_var_definition_is_admitted() {
         inferred_type: None,
     };
     let m = TopLevel::Defn(make_defn(
-        "m", vec![], vec![], body, Visibility::Public, span(100, 110),
+        "m",
+        vec![],
+        vec![],
+        body,
+        Visibility::Public,
+        span(100, 110),
     ));
     tc.check(&[m], &ctx, ModuleStrategy::Additive)
         .expect("a result-only `(Vec a)` defn (§3.11.3 disposition 1) MUST be admitted");
@@ -290,13 +318,22 @@ fn concrete_value_position_is_admitted() {
     // (defn m [] (consume (identity 7)))
     let identity_int = Expr::Apply {
         callee: Box::new(Expr::var(Symbol::from("identity"), span(116, 124))),
-        args: vec![Expr::IntLit { value: 7, span: span(125, 126), inferred_type: None }],
+        args: vec![Expr::IntLit {
+            value: 7,
+            span: span(125, 126),
+            inferred_type: None,
+        }],
         span: span(115, 127),
         resolved_call: None,
         inferred_type: None,
     };
     let m = TopLevel::Defn(make_defn(
-        "m", vec![], vec![], consume_wrap(identity_int), Visibility::Public, span(100, 130),
+        "m",
+        vec![],
+        vec![],
+        consume_wrap(identity_int),
+        Visibility::Public,
+        span(100, 130),
     ));
     tc.check(
         &[identity_defn(), consume_defn(), m],

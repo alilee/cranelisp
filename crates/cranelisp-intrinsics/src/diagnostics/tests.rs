@@ -20,7 +20,11 @@ fn quarantine_withholds_all_blocks_without_cap() {
     for &b in &bases {
         unsafe { q.withhold(b as *mut u8, layout, None) };
     }
-    assert_eq!(q.blocks.len(), 5, "all 5 withheld, none released (unbounded)");
+    assert_eq!(
+        q.blocks.len(),
+        5,
+        "all 5 withheld, none released (unbounded)"
+    );
     assert_eq!(q.retained_bytes, 5 * 24);
     for (base, l) in q.blocks.drain(..) {
         // SAFETY: withheld (never freed) — released exactly once here.
@@ -115,7 +119,10 @@ fn parity_report_flags_double_free() {
 #[test]
 fn parity_report_flags_nonempty_live_set() {
     let r = alloc_parity_report(5, 5, &[(0x1000, 24, 0x3)]);
-    assert!(r.is_some(), "a non-empty live set at exit is a leak even at count parity");
+    assert!(
+        r.is_some(),
+        "a non-empty live set at exit is a leak even at count parity"
+    );
     assert!(r.unwrap().contains("live set non-empty"));
 }
 

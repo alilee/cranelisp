@@ -170,11 +170,7 @@ impl CompilerSession {
     /// (`self.agent == None`) — feature-on-without-`--agent` records nothing
     /// until the agent is enabled; feature-off this method does not exist and
     /// the read-loop call site is absent, so the loop is byte-identical (§5.5(4)).
-    pub fn record_repl_turn(
-        &mut self,
-        input: &str,
-        outcome: crate::agent::types::ReplTurnOutcome,
-    ) {
+    pub fn record_repl_turn(&mut self, input: &str, outcome: crate::agent::types::ReplTurnOutcome) {
         if let Some(agent) = self.agent.as_mut() {
             agent.record_turn(input, outcome);
         }
@@ -378,8 +374,7 @@ impl CompilerSession {
     /// is no separate feedback channel.
     pub(crate) fn assemble_request(&self, text: &str) -> AgentRequest {
         let mentions = crate::agent::harvest::mentions_from_text(text);
-        let harvest =
-            self.harvest_context(&mentions, crate::agent::harvest::DEFAULT_TOKEN_BUDGET);
+        let harvest = self.harvest_context(&mentions, crate::agent::harvest::DEFAULT_TOKEN_BUDGET);
         let transcript = self
             .agent
             .as_ref()
@@ -393,7 +388,10 @@ impl CompilerSession {
         // deterministic stub never enforces this, so this guard is the only thing
         // that catches a give-up/decline/repair mis-pairing in CI.
         if let Err(why) = crate::agent::types::assert_transcript_wire_valid(&transcript) {
-            debug_assert!(false, "agent transcript is not wire-valid at assemble_request: {why}");
+            debug_assert!(
+                false,
+                "agent transcript is not wire-valid at assemble_request: {why}"
+            );
         }
         // The current loop-step turn id (§28.2), stashed on `AgentState` by the
         // `agent_turn` loop. `RigModel::complete` forwards it to the trace
@@ -695,7 +693,10 @@ mod tests {
             "primer must carry the :Type convention, got: {}",
             &reqs[0].primer[..reqs[0].primer.len().min(80)]
         );
-        assert!(reqs[0].primer.contains("deftype"), "primer must carry special forms");
+        assert!(
+            reqs[0].primer.contains("deftype"),
+            "primer must carry special forms"
+        );
     }
 
     // spec: repl/spec.md §17 — the read-only tool allowlist is offered every
@@ -706,14 +707,23 @@ mod tests {
         drive(&mut s, "anything");
         let reqs = capture.lock().unwrap();
         let names: Vec<&str> = reqs[0].tools.iter().map(|t| t.name.as_str()).collect();
-        assert!(names.contains(&"source"), "source must be offered: {names:?}");
+        assert!(
+            names.contains(&"source"),
+            "source must be offered: {names:?}"
+        );
         assert!(names.contains(&"refs"));
         // The ONE write tool `submit` is offered (Build mode, §15.1) — always
         // confirm-gated, so the offer is not a consent loosening.
-        assert!(names.contains(&"submit"), "submit must be offered in Build mode: {names:?}");
+        assert!(
+            names.contains(&"submit"),
+            "submit must be offered in Build mode: {names:?}"
+        );
         // +neg: no OTHER write tool leaks into the offered set.
         assert!(!names.contains(&"sh"), "no /sh tool: {names:?}");
-        assert!(!names.iter().any(|n| n.contains("def")), "no def/write tool: {names:?}");
+        assert!(
+            !names.iter().any(|n| n.contains("def")),
+            "no def/write tool: {names:?}"
+        );
     }
 
     // spec: repl/spec.md §17 — a fn NAMED in the turn is harvested (its source);
@@ -732,12 +742,9 @@ mod tests {
             use cranelisp_types::{DefKind, ModuleEntry, Symbol, Visibility};
             if let Some(mut table) = s.shared.symbol_tables.get_mut(&module) {
                 for name in ["target", "unrelated"] {
-                    let entry = ModuleEntry::def(
-                        empty_scheme(),
-                        DefKind::PrimitiveExtern,
-                    )
-                    .visibility(Visibility::Public)
-                    .build();
+                    let entry = ModuleEntry::def(empty_scheme(), DefKind::PrimitiveExtern)
+                        .visibility(Visibility::Public)
+                        .build();
                     table.insert(Symbol::from(name), entry);
                 }
             }
@@ -770,7 +777,10 @@ mod tests {
             &["target".to_string()],
             crate::agent::harvest::DEFAULT_TOKEN_BUDGET,
         );
-        assert!(harvest.contains("Current module"), "pin header present: {harvest}");
+        assert!(
+            harvest.contains("Current module"),
+            "pin header present: {harvest}"
+        );
         assert!(
             harvest.contains("mul-by-two"),
             "the mentioned fn `target` must be harvested: {harvest}"
@@ -809,7 +819,10 @@ mod tests {
         }
         // Tight budget: 1 token (~4 chars) — only the pin (always-included) fits.
         let tight = s.harvest_context(&["geometry".to_string()], 1);
-        assert!(tight.contains("Current module"), "pin survives the floor: {tight}");
+        assert!(
+            tight.contains("Current module"),
+            "pin survives the floor: {tight}"
+        );
         assert!(
             !tight.contains("geometry preamble") && !tight.contains("geometry exports"),
             "the mentioned-module block must drop under a 1-token budget: {tight}"
@@ -817,8 +830,10 @@ mod tests {
         // Generous budget: the mentioned module's preamble + exports appear, and
         // the preamble text is read from `module_preamble` (FIXME 0428).
         let roomy = s.harvest_context(&["geometry".to_string()], 4000);
-        assert!(roomy.contains("geometry — points and shapes"),
-            "module_preamble must be read into the harvest: {roomy}");
+        assert!(
+            roomy.contains("geometry — points and shapes"),
+            "module_preamble must be read into the harvest: {roomy}"
+        );
     }
 
     // spec: repl/spec.md §17 — across a multi-step turn (ToolCalls then Done),
@@ -898,8 +913,12 @@ mod tests {
             crate::agent::types::Turn::ToolResult(r) => Some(r.output.clone()),
             _ => None,
         });
-        let output = tool_result_output.expect("turn-2 request must carry the fed-back tool result");
-        assert!(!output.is_empty(), "the fed-back tool_result content must NOT be empty");
+        let output =
+            tool_result_output.expect("turn-2 request must carry the fed-back tool result");
+        assert!(
+            !output.is_empty(),
+            "the fed-back tool_result content must NOT be empty"
+        );
         assert!(
             output.contains("(defn f [x] x)"),
             "the fed-back tool_result must carry the command output (the source), got: {output:?}"
@@ -1006,13 +1025,22 @@ mod tests {
         assert!(!dumped.is_empty(), "the dumped context must be non-empty");
 
         // The three required section headers are present (send-order).
-        assert!(dumped.contains("=== SYSTEM PRIMER ==="), "primer header: {dumped}");
-        assert!(dumped.contains("=== HARVESTED CONTEXT ==="), "harvest header");
+        assert!(
+            dumped.contains("=== SYSTEM PRIMER ==="),
+            "primer header: {dumped}"
+        );
+        assert!(
+            dumped.contains("=== HARVESTED CONTEXT ==="),
+            "harvest header"
+        );
         assert!(dumped.contains("=== TRANSCRIPT ==="), "transcript header");
 
         // It dumped the REAL assembled request: the primer marker (:Type) AND the
         // harvested symbol/source (proving harvest ran), AND the transcript turn.
-        assert!(dumped.contains(":Type"), "the real language primer must be present");
+        assert!(
+            dumped.contains(":Type"),
+            "the real language primer must be present"
+        );
         assert!(
             dumped.contains("some-marker-body"),
             "the harvested source of `f` must be present (proves harvest ran): {dumped}"
@@ -1030,7 +1058,10 @@ mod tests {
         let s = repl_session();
         // A path inside a non-existent directory cannot be written.
         let out = s.handle_context("/nonexistent-dir-xyz/sub/ctx.txt");
-        assert!(out.starts_with("error:"), "expected a graceful error line, got: {out}");
+        assert!(
+            out.starts_with("error:"),
+            "expected a graceful error line, got: {out}"
+        );
         // An empty path is a usage hint, not a panic.
         assert_eq!(s.handle_context(""), "Usage: /context <path>");
     }
@@ -1046,7 +1077,10 @@ mod tests {
         s.agent_turn("hello", &mut sink, &mut consent);
         let out = String::from_utf8_lossy(&sink);
         // The prose frame gutter must be present (rendered through agent_prose).
-        assert!(out.contains('\u{258c}'), "dormant notice must be framed: {out}");
+        assert!(
+            out.contains('\u{258c}'),
+            "dormant notice must be framed: {out}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1065,10 +1099,7 @@ mod tests {
     /// Wire a stub agent with `auto_accept` so a clean submit commits without a
     /// `[y/N]` line-read (the give-up tests care about the submit OUTCOME, not
     /// the consent gate).
-    fn session_with_stub_auto(
-        script: Vec<ModelResponse>,
-        auto_accept: bool,
-    ) -> CompilerSession {
+    fn session_with_stub_auto(script: Vec<ModelResponse>, auto_accept: bool) -> CompilerSession {
         let mut s = repl_session();
         s.agent = Some(AgentState {
             transcript: Vec::new(),

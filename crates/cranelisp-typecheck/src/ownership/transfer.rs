@@ -33,7 +33,7 @@ use cranelisp_types::{
     ResultMode, Span, Symbol,
 };
 
-use super::classify::{classify_call, CallClass, CopyClassifier, TerminalKind};
+use super::classify::{CallClass, CopyClassifier, TerminalKind, classify_call};
 
 /// The harvested dependency set (§13.3): every in-cluster callee whose summary
 /// an `Apply` classification consulted, at the grain consulted. Drives fixpoint
@@ -125,7 +125,10 @@ impl UseCtx {
     fn field_flow(self) -> ParamFlow {
         match self {
             UseCtx::Return => ParamFlow::IntoResult,
-            UseCtx::Arg { mode: Mode::Owned, flow } => flow,
+            UseCtx::Arg {
+                mode: Mode::Owned,
+                flow,
+            } => flow,
             UseCtx::Decision24Arg | UseCtx::EscapingCapture => ParamFlow::Retained,
             UseCtx::Field { flow } => flow,
             UseCtx::Arg { .. } | UseCtx::CalleePos | UseCtx::Neutral => ParamFlow::Consumed,
@@ -179,7 +182,11 @@ enum Origin {
     /// Walk-internal ONLY: it never crosses the summary boundary (the persisted
     /// `ResultMode` is unchanged — §17.6, no `cranelisp-types` edit, no
     /// `CACHE_SCHEMA_VERSION` bump).
-    Conditional { rep: Symbol, projection: bool, cow: Vec<Span> },
+    Conditional {
+        rep: Symbol,
+        projection: bool,
+        cow: Vec<Span>,
+    },
 }
 
 impl Origin {
@@ -191,7 +198,11 @@ impl Origin {
     /// Construct a conditional (may-reach) origin — the ex-`MayParam` variant —
     /// carrying `cow`, the §17.2 may-alias link set.
     fn conditional(rep: Symbol, projection: bool, cow: Vec<Span>) -> Origin {
-        Origin::Conditional { rep, projection, cow }
+        Origin::Conditional {
+            rep,
+            projection,
+            cow,
+        }
     }
     fn root(&self) -> Option<&Symbol> {
         match self {
@@ -280,7 +291,10 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                 // the chain. An unconditional PROJECTION is a borrowed view, NOT an
                 // alias, so it is NOT followed here (a projection rooted in a param
                 // is reached by `classify_capture_escape`'s recursion instead).
-                Origin::Unconditional { root, projection: false } => cur = root.clone(),
+                Origin::Unconditional {
+                    root,
+                    projection: false,
+                } => cur = root.clone(),
                 // A conditional binding roots (on its param-reaching path) in `rep`;
                 // follow it (either projection kind) so a store of such a binding
                 // widens the param (over-approximating toward Owned — always sound).
@@ -330,12 +344,12 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
     fn reach(&self, o: &Origin) -> Option<(usize, bool, Symbol)> {
         match o {
             Origin::Fresh => None,
-            Origin::Unconditional { root, projection } => {
-                self.param_root(root).map(|i| (i, *projection, root.clone()))
-            }
-            Origin::Conditional { rep, projection, .. } => {
-                self.param_root(rep).map(|i| (i, *projection, rep.clone()))
-            }
+            Origin::Unconditional { root, projection } => self
+                .param_root(root)
+                .map(|i| (i, *projection, root.clone())),
+            Origin::Conditional {
+                rep, projection, ..
+            } => self.param_root(rep).map(|i| (i, *projection, rep.clone())),
         }
     }
 
@@ -410,11 +424,19 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
             return;
         }
         match ctx {
-            UseCtx::Arg { mode: Mode::Borrowed, .. }
-            | UseCtx::Arg { mode: Mode::Copy, .. }
+            UseCtx::Arg {
+                mode: Mode::Borrowed,
+                ..
+            }
+            | UseCtx::Arg {
+                mode: Mode::Copy, ..
+            }
             | UseCtx::CalleePos
             | UseCtx::Neutral => { /* non-widening read / borrowed handoff */ }
-            UseCtx::Arg { mode: Mode::Owned, flow } => {
+            UseCtx::Arg {
+                mode: Mode::Owned,
+                flow,
+            } => {
                 self.param_modes[idx] = Mode::Owned;
                 self.join_flow(idx, flow);
             }
@@ -478,7 +500,13 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                     // §13.6(d) let-shadow provenance guard (blocker 3, F2 helper).
                     self.drop_shadowed_provenance(n);
                     // Save the shadowed prior BEFORE inserting (scope discipline).
-                    let prior = self.bindings.insert(n.clone(), BindState { origin, param_idx: None });
+                    let prior = self.bindings.insert(
+                        n.clone(),
+                        BindState {
+                            origin,
+                            param_idx: None,
+                        },
+                    );
                     frame.push((n.clone(), prior));
                 }
                 let body_origin = self.walk(body, ctx);
@@ -491,7 +519,12 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                 body_origin
             }
 
-            MonoExpr::If { cond, then_branch, else_branch, .. } => {
+            MonoExpr::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
                 self.walk(cond, UseCtx::Neutral);
                 // Both branches are in the enclosing context (tail-preserving).
                 let a = self.walk(then_branch, ctx);
@@ -501,7 +534,9 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                 self.join_origin(a, b)
             }
 
-            MonoExpr::Match { scrutinee, arms, .. } => {
+            MonoExpr::Match {
+                scrutinee, arms, ..
+            } => {
                 let scrut_origin = self.walk(scrutinee, UseCtx::Neutral);
                 let mut acc: Option<Origin> = None;
                 // ESCAPE half of §16 row 3 (0641 B-2) — the scrutinee is walked
@@ -538,7 +573,8 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                         if arm_local.iter().any(|(n, _)| n == vn) {
                             scrut_escapes = true;
                         }
-                        self.escaped.extend(arm_local.into_iter().filter(|(n, _)| n != vn));
+                        self.escaped
+                            .extend(arm_local.into_iter().filter(|(n, _)| n != vn));
                     }
                     self.restore_frame(frame);
                     acc = Some(match acc.take() {
@@ -558,7 +594,12 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
 
             MonoExpr::Apply { .. } => self.walk_apply(expr, ctx),
 
-            MonoExpr::VecLit { elements, span, .. } | MonoExpr::ConstrADT { fields: elements, span, .. } => {
+            MonoExpr::VecLit { elements, span, .. }
+            | MonoExpr::ConstrADT {
+                fields: elements,
+                span,
+                ..
+            } => {
                 self.facts.escapes.insert(*span, ctx.escapes());
                 let flow = ctx.field_flow();
                 // Row 5 (§16.2, 0641 B-1 + I-2 CORRECTION) — the container Origin is
@@ -579,7 +620,9 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                 acc
             }
 
-            MonoExpr::Lambda { params, body, span, .. } => {
+            MonoExpr::Lambda {
+                params, body, span, ..
+            } => {
                 // The closure value is an allocation; if it escapes, its captured
                 // free vars escape (rule 3 / R6). The closure's OWN span carries
                 // the value-escape verdict; the body-return escape (below) is about
@@ -664,7 +707,13 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                 for (n, rhs) in bindings {
                     let origin = self.walk(rhs, UseCtx::Neutral);
                     self.drop_shadowed_provenance(n);
-                    let prior = self.bindings.insert(n.clone(), BindState { origin, param_idx: None });
+                    let prior = self.bindings.insert(
+                        n.clone(),
+                        BindState {
+                            origin,
+                            param_idx: None,
+                        },
+                    );
                     frame.push((n.clone(), prior));
                 }
                 let body_origin = self.walk(body, ctx);
@@ -677,7 +726,11 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                 body_origin
             }
 
-            MonoExpr::LaunchContinue { launched, continuation, .. } => {
+            MonoExpr::LaunchContinue {
+                launched,
+                continuation,
+                ..
+            } => {
                 // `launched` is a suspension escape edge (R6): every free var it
                 // captures escapes — independent of use-position, the same gap as
                 // closure capture (FIXME 0523). The continuation proceeds in the
@@ -723,10 +776,19 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
     }
 
     fn walk_apply(&mut self, expr: &MonoExpr, ctx: UseCtx) -> Origin {
-        let MonoExpr::Apply { callee, args, resolved_call, span, .. } = expr else {
+        let MonoExpr::Apply {
+            callee,
+            args,
+            resolved_call,
+            span,
+            ..
+        } = expr
+        else {
             unreachable!()
         };
-        let class = classify_call(resolved_call.as_deref(), callee, |n| self.env.terminal_kind(n));
+        let class = classify_call(resolved_call.as_deref(), callee, |n| {
+            self.env.terminal_kind(n)
+        });
         // The callee position (never a value-use).
         self.walk(callee, UseCtx::CalleePos);
 
@@ -752,7 +814,10 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                 // `ProjectionOf` result of a param-reaching arg never collapses
                 // to `Fresh`, so a partial param-return composes soundly through
                 // an `Apply` body (the borrow-elision consumer's binary read).
-                let result = summary.as_ref().map(|s| s.result).unwrap_or(ResultMode::Fresh);
+                let result = summary
+                    .as_ref()
+                    .map(|s| s.result)
+                    .unwrap_or(ResultMode::Fresh);
                 let origin = match result {
                     ResultMode::ProjectionOf(k) => {
                         // Row 6 (§16.2) — a projection-out roots at the container's
@@ -839,9 +904,11 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                         // aliased param can be double-dec'd, so no link is
                         // recorded (the fresh container's own dec is balanced).
                         match self.join_origin(Origin::Fresh, arg) {
-                            Origin::Conditional { rep, projection, cow } => {
-                                Origin::conditional(rep, projection, union_cow(&cow, &[*span]))
-                            }
+                            Origin::Conditional {
+                                rep,
+                                projection,
+                                cow,
+                            } => Origin::conditional(rep, projection, union_cow(&cow, &[*span])),
                             other => other,
                         }
                     }
@@ -905,9 +972,7 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
             // above): follow to the owning binding and escape it. `param_root` does
             // not chase an unconditional projection, so a projection rooted in a
             // param is reached here and resolves on the recursion.
-            Origin::Unconditional { root: s, .. } if s != *name => {
-                self.classify_capture_escape(&s)
-            }
+            Origin::Unconditional { root: s, .. } if s != *name => self.classify_capture_escape(&s),
             Origin::Unconditional { .. } => {}
         }
     }
@@ -978,7 +1043,10 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                 .into_iter()
                 .partition(|(name, _)| bindings.iter().any(|(n, _)| n == name));
             self.escaped = rest;
-            let todo: Vec<_> = mine.into_iter().filter(|pair| !done.contains(pair)).collect();
+            let todo: Vec<_> = mine
+                .into_iter()
+                .filter(|pair| !done.contains(pair))
+                .collect();
             if todo.is_empty() {
                 break;
             }
@@ -1075,7 +1143,13 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                     Origin::Fresh => Origin::Fresh,
                 }
             };
-            let prior = self.bindings.insert(n.clone(), BindState { origin, param_idx: None });
+            let prior = self.bindings.insert(
+                n.clone(),
+                BindState {
+                    origin,
+                    param_idx: None,
+                },
+            );
             frame.push((n, prior));
         }
         frame
@@ -1099,7 +1173,10 @@ fn free_vars(expr: &MonoExpr, params: &[Symbol], out: &mut HashSet<Symbol>) {
 /// Push `names` that are newly bound into `bound`, returning the ones actually
 /// added (a name already bound — a shadow — is NOT re-added, so it is not
 /// removed on scope exit and stays bound as its outer occurrence).
-fn enter_scope(names: impl IntoIterator<Item = Symbol>, bound: &mut HashSet<Symbol>) -> Vec<Symbol> {
+fn enter_scope(
+    names: impl IntoIterator<Item = Symbol>,
+    bound: &mut HashSet<Symbol>,
+) -> Vec<Symbol> {
     let mut added = Vec::new();
     for n in names {
         if bound.insert(n.clone()) {
@@ -1133,12 +1210,19 @@ fn collect_free(expr: &MonoExpr, bound: &mut HashSet<Symbol>, out: &mut HashSet<
                 bound.remove(&n);
             }
         }
-        MonoExpr::If { cond, then_branch, else_branch, .. } => {
+        MonoExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
             collect_free(cond, bound, out);
             collect_free(then_branch, bound, out);
             collect_free(else_branch, bound, out);
         }
-        MonoExpr::Match { scrutinee, arms, .. } => {
+        MonoExpr::Match {
+            scrutinee, arms, ..
+        } => {
             collect_free(scrutinee, bound, out);
             for arm in arms {
                 let mut names = Vec::new();
@@ -1174,7 +1258,11 @@ fn collect_free(expr: &MonoExpr, bound: &mut HashSet<Symbol>, out: &mut HashSet<
                 collect_free(f, bound, out);
             }
         }
-        MonoExpr::LaunchContinue { launched, continuation, .. } => {
+        MonoExpr::LaunchContinue {
+            launched,
+            continuation,
+            ..
+        } => {
             collect_free(launched, bound, out);
             collect_free(continuation, bound, out);
         }
@@ -1209,7 +1297,10 @@ pub(crate) fn transfer<E: TransferEnv>(
         param_modes.push(if is_copy { Mode::Copy } else { Mode::Borrowed });
         bindings.insert(
             name.clone(),
-            BindState { origin: Origin::unconditional(name.clone(), false), param_idx: Some(i) },
+            BindState {
+                origin: Origin::unconditional(name.clone(), false),
+                param_idx: Some(i),
+            },
         );
     }
     let mut w = Walker {
@@ -1233,7 +1324,12 @@ pub(crate) fn transfer<E: TransferEnv>(
         spark_ops: vec![false; n], // optimistic-clear; widened by confinement (CS-3)
         result_unique: false,      // increment-I pin (§10)
     };
-    TransferResult { summary, facts: w.facts, deps: w.deps, value_uses: w.value_uses }
+    TransferResult {
+        summary,
+        facts: w.facts,
+        deps: w.deps,
+        value_uses: w.value_uses,
+    }
 }
 
 #[cfg(test)]

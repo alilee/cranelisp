@@ -74,8 +74,8 @@
 use std::alloc::{self as alloc_mod, Layout};
 use std::cell::Cell;
 use std::ptr;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::Instant;
 
 use cranelisp_types::HeapHeader;
@@ -89,7 +89,7 @@ use crate::{alloc as intrinsics_alloc, rc as intrinsics_rc};
 // cross-crate API (`cranelisp_intrinsics::trace::{DisplayDescriptor,
 // DescriptorKind, cranelisp_trace_format}` — read by backend `trace_codegen.rs`
 // and named in `catalog.rs`) is unchanged after the split.
-pub use crate::trace_format::{cranelisp_trace_format, DescriptorKind, DisplayDescriptor};
+pub use crate::trace_format::{DescriptorKind, DisplayDescriptor, cranelisp_trace_format};
 
 /// Lock the trace stack, recovering from mutex poisoning.
 /// Poisoning can occur if a JIT-compiled function panics while the lock is
@@ -363,8 +363,7 @@ fn arbitrate_trace_role(got_base: i64) -> SwapDecision {
         //
         // A legitimate multi-module swap of the SAME form contributes a NEW
         // `got_base` each call (one per module), so it trips neither signal.
-        let already_swapped =
-            SWAPPED_GOT_BASES.with(|s| s.borrow().contains(&got_base));
+        let already_swapped = SWAPPED_GOT_BASES.with(|s| s.borrow().contains(&got_base));
         if TRACE_BODY_RUNNING.with(Cell::get) || already_swapped {
             let msg = "nested trace is not supported: (trace ...) may not appear \
                        inside an actively-tracing (trace ...)";
@@ -415,8 +414,7 @@ unsafe fn install_wrapper_got(
     // values (GOT slot indices). `wrappers_ptr` points to a caller-allocated
     // array of `n_slots` i64 values (wrapper code pointers). Both arrays are
     // leaked Box allocations that remain valid for the program lifetime.
-    let slots =
-        unsafe { std::slice::from_raw_parts(slots_ptr as *const u32, n_slots as usize) };
+    let slots = unsafe { std::slice::from_raw_parts(slots_ptr as *const u32, n_slots as usize) };
     let wrappers =
         unsafe { std::slice::from_raw_parts(wrappers_ptr as *const i64, n_slots as usize) };
     for (&slot, &wrapper) in slots.iter().zip(wrappers.iter()) {
@@ -708,11 +706,11 @@ pub(crate) fn clear_trace_guard_on_panic() {
 // TraceCall layout (base-pointer convention):
 // [alloc_size(+0) | rc(+8) | tag=0(+16) | tname(+24) | tparams(+32) | tresult(+40) | tchildren(+48) | tnanos(+56)]
 
-const TRACE_TNAME_OFFSET: usize = FIELD0_OFFSET;            // 24
-const TRACE_TPARAMS_OFFSET: usize = FIELD0_OFFSET + 8;      // 32
-const TRACE_TRESULT_OFFSET: usize = FIELD0_OFFSET + 16;     // 40
-const TRACE_TCHILDREN_OFFSET: usize = FIELD0_OFFSET + 24;   // 48
-const TRACE_TNANOS_OFFSET: usize = FIELD0_OFFSET + 32;      // 56
+const TRACE_TNAME_OFFSET: usize = FIELD0_OFFSET; // 24
+const TRACE_TPARAMS_OFFSET: usize = FIELD0_OFFSET + 8; // 32
+const TRACE_TRESULT_OFFSET: usize = FIELD0_OFFSET + 16; // 40
+const TRACE_TCHILDREN_OFFSET: usize = FIELD0_OFFSET + 24; // 48
+const TRACE_TNANOS_OFFSET: usize = FIELD0_OFFSET + 32; // 56
 
 /// RC-inc a heap value via the blessed `rc::rc_inc` entry point.
 ///
@@ -816,9 +814,8 @@ pub extern "C" fn cranelisp_trace_nanos(trace_ptr: i64) -> i64 {
 /// `ptr` must be a valid heap pointer with `rc > 0`.
 #[inline]
 unsafe fn trace_atomic_dec_rc(ptr: i64) -> i64 {
-    let rc_ptr = unsafe {
-        &*((ptr as *const u8).add(HeapHeader::RC_OFFSET as usize) as *const AtomicI64)
-    };
+    let rc_ptr =
+        unsafe { &*((ptr as *const u8).add(HeapHeader::RC_OFFSET as usize) as *const AtomicI64) };
     let old = rc_ptr.fetch_sub(1, Ordering::Release);
     debug_assert!(
         old > 0,

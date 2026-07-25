@@ -10,8 +10,7 @@ use cranelisp_intrinsics::heap_string;
 /// Convert a float to its string representation.
 /// The float is received as its i64 bit pattern (IEEE 754 double).
 /// Returns a new HeapString (rc=1).
-#[unsafe(export_name = "float-to-string")]
-pub(crate) extern "C" fn float_to_string(f_bits: i64) -> i64 {
+pub(crate) fn float_to_string(f_bits: i64) -> i64 {
     let f = f64::from_bits(f_bits as u64);
     let s = if f.fract() == 0.0 && f.is_finite() {
         // Ensure floats like 3.0 display as "3.0" not "3"

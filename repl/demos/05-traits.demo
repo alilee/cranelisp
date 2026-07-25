@@ -49,6 +49,13 @@ grow
 (impl Sizeable Box (defn size [b] (match b [(MkBox w h) (* w h)])))
 (size (MkBox 3 4))
 
+; Introspection answers the relationship in both directions. /info Sizeable
+; lists the types implementing it; /info Box lists the traits implemented by
+; Box. They are inverse views of the same live implementation:
+
+/info Sizeable
+/info Box
+
 ; impl confirms what it wired up — and it names the CANONICAL HOME of both the
 ; trait and the target, not the bare spelling you typed. Extend the same trait
 ; to a primitive and the confirmation resolves Int to its home, primitives/Int:

@@ -29,11 +29,10 @@ use cranelift_object::ObjectModule;
 
 use serde::{Deserialize, Serialize};
 
-use cranelisp_types::{ErrorLocation, 
-    CranelispError, Defn, MethodResolutions, ModuleFullPath,
-    Scheme, Span, Symbol, SymbolTable, Type,
+use cranelisp_types::{
+    CranelispError, Defn, ErrorLocation, MethodResolutions, ModuleFullPath, Scheme, Span, Symbol,
+    SymbolTable, Type,
 };
-
 
 /// All inputs needed to compile a module to an ObjectModule.
 /// Grouped to replace the sketch's 21 positional parameters (HIGH-3).
@@ -158,11 +157,10 @@ pub fn build_isa(
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
 
-    let isa_builder =
-        cranelift_native::builder().map_err(|msg| CranelispError::CodegenError {
-            message: format!("host architecture not supported: {msg}"),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        })?;
+    let isa_builder = cranelift_native::builder().map_err(|msg| CranelispError::CodegenError {
+        message: format!("host architecture not supported: {msg}"),
+        location: ErrorLocation::from_span(Span::SYNTHETIC),
+    })?;
 
     isa_builder
         .finish(settings::Flags::new(flag_builder))

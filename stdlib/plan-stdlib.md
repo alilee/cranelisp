@@ -1854,6 +1854,97 @@ DEF-1 entry (the fix that unblocks the bare promotion).
 
 ---
 
+## 27. Future byte-backed text track (Sprint 117 design record)
+
+**Status: UNIMPLEMENTED.** This section records a future stdlib shape; it does
+not describe the current language. Cranelisp currently has native `String`.
+There is no native `Byte`, `(Vec Byte)` text representation, `Utf8Literal`,
+transparent one-field text wrapper, or stdlib replacement for the native
+`int-to-string` primitive.
+
+The architecture recommendation in `design/arch/byte-backed-text.md` is:
+
+- a future native `Byte` with user-settled semantics, occupying one `i64`
+  register and one ordinary wide Vec slot initially;
+- ordinary `(Vec Byte)`, using the generic Vec surface rather than a native
+  `Bytes` type or a Byte-only Vec implementation;
+- a compiler-certified nominal `Utf8Literal` candidate whose payload is
+  representation-identical to `(Vec Byte)`;
+- Unicode policy in stdlib, not in primitive `Char` types;
+- compact Byte storage deferred to a later general element-layout extension
+  of Vec.
+
+### 27.1 Prospective module split
+
+Names remain provisional until the user settles the public text type and
+conversion contracts. The responsibility split should be:
+
+| Prospective module | Responsibility |
+|---|---|
+| `text.bytes` | Byte-vector construction, slicing, comparison, and explicit byte indexing |
+| `text.utf8` | UTF-8 validation plus checked conversion between arbitrary `(Vec Byte)` and validated text |
+| `text.code-point` | Unicode scalar decoding/encoding and code-point iteration |
+| `text.grapheme` | Grapheme segmentation and grapheme-oriented traversal |
+| `text.normalize` | Explicit normalization transforms and normalization-form policy |
+| `text.encoding` | UTF-16/UTF-32 and other approved alternate representations |
+| `text.format` | Numeric and value formatting, including stdlib `int-to-string` |
+
+The modules must expose whether an index is a byte, code point, or grapheme;
+plain ambiguous indexing is forbidden. Invalid UTF handling, normalization,
+certification, and literal naming remain user/spec gates. Native `String` and
+its primitives stay live until behavioral coverage, mode parity, migration,
+and removal policy are separately approved.
+
+### 27.2 `int-to-string` algorithm
+
+The future implementation needs no native character type or host formatter.
+It uses a ten-entry certified ASCII digit table and keeps the working integer
+non-positive:
+
+1. zero produces the single zero digit;
+2. a positive input is converted to its negative counterpart;
+3. while `n < 0`, compute `q = n / 10`;
+4. compute the digit as `-(n - q * 10)`, which is in `0..9`;
+5. append or prepend the corresponding digit byte and continue with `q`;
+6. add the minus byte iff the original input was negative.
+
+The negative domain is essential: `INT_MIN` is representable, while
+`abs(INT_MIN)` is not. The exact builder and checked validated-text result
+wait for the Byte/literal boundary.
+
+Required future self-tests:
+
+| Case | Required result/property |
+|---|---|
+| zero | `"0"` |
+| positive | decimal digits with no leading zero |
+| negative | one leading `-`, correct magnitude |
+| `INT_MAX` | exact maximum signed-64 decimal spelling |
+| `INT_MIN` | exact minimum signed-64 decimal spelling without overflow |
+
+### 27.3 Delivery gates
+
+No stdlib implementation begins until:
+
+1. the user settles Byte, literal, validation, invalid-input, and public text
+   naming semantics;
+2. `/spec` records those decisions;
+3. `/arch` promotes the representation and cache/ABI contracts;
+4. ordinary wide-slot `(Vec Byte)` and certified literal construction exist;
+5. `/qa` approves the byte/text verification matrix.
+
+Packing is an independent later gate. The initial wide representation is the
+same language API at lower storage precision, not a temporary `Bytes` model.
+
+### 27.4 `def` function-value API
+
+Sprint 117 did not settle FIXME 0800 face 3. The concrete stdlib options,
+trade-offs, and decision gate are recorded in
+`stdlib/def-face-3-options.md`. No option is selected here, and the question
+remains independent of FIXME 0863's compiler-side presentation transaction.
+
+---
+
 ## Next Skills
 
 - `/arch` — Confirm the builtin-to-trait transition strategy. Validate that cross-module trait impls work (trait in module A, type in module B, impl in module B). Review Map/Set implementation strategy.

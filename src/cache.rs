@@ -82,7 +82,9 @@ impl ObjectCache {
     /// `--no-cache` and `--run`-without-`--link` produce `false`.
     pub fn is_enabled(&self) -> bool {
         self.dir.is_some()
-            && self.state.lock()
+            && self
+                .state
+                .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .is_some()
     }
@@ -158,7 +160,8 @@ impl ObjectCache {
     /// recording its manifest entry.
     pub fn source_hash(&self, module: &ModuleFullPath) -> Option<String> {
         let guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        guard.as_ref()
+        guard
+            .as_ref()
             .and_then(|cs| cs.source_hashes().get(module).cloned())
     }
 
@@ -184,7 +187,9 @@ impl ObjectCache {
     /// keeps `all_paths()` clean for both writers (Principle 18 — enforce the
     /// no-duplicate invariant structurally at the one mutation site).
     pub fn append_o_path(&self, path: PathBuf) {
-        let mut guard = self.compiled_o_paths.lock()
+        let mut guard = self
+            .compiled_o_paths
+            .lock()
             .unwrap_or_else(|e| e.into_inner());
         if !guard.contains(&path) {
             guard.push(path);
@@ -193,7 +198,8 @@ impl ObjectCache {
 
     /// Snapshot the collected `.o` paths for `--link`. Returns a clone.
     pub fn all_paths(&self) -> Vec<PathBuf> {
-        self.compiled_o_paths.lock()
+        self.compiled_o_paths
+            .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
@@ -218,13 +224,19 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cs = cache_state_for(tmp.path());
         let cache = ObjectCache::new(Some(tmp.path().to_path_buf()), Some(cs));
-        assert!(cache.is_enabled(), "ObjectCache with dir + state must report enabled");
+        assert!(
+            cache.is_enabled(),
+            "ObjectCache with dir + state must report enabled"
+        );
     }
 
     #[test]
     fn new_with_none_dir_is_disabled() {
         let cache = ObjectCache::new(None, None);
-        assert!(!cache.is_enabled(), "ObjectCache with no dir must report disabled");
+        assert!(
+            !cache.is_enabled(),
+            "ObjectCache with no dir must report disabled"
+        );
     }
 
     #[test]
@@ -250,8 +262,11 @@ mod tests {
         let cache = ObjectCache::new(None, None);
         let m = ModuleFullPath::from("user");
         cache.record_source_hash(&m, "abc123".to_string());
-        assert_eq!(cache.source_hash(&m), None,
-            "disabled cache must not retain source hashes");
+        assert_eq!(
+            cache.source_hash(&m),
+            None,
+            "disabled cache must not retain source hashes"
+        );
     }
 
     #[test]
@@ -260,7 +275,10 @@ mod tests {
         cache.append_o_path(PathBuf::from("/tmp/a.o"));
         cache.append_o_path(PathBuf::from("/tmp/b.o"));
         let paths = cache.all_paths();
-        assert_eq!(paths, vec![PathBuf::from("/tmp/a.o"), PathBuf::from("/tmp/b.o")]);
+        assert_eq!(
+            paths,
+            vec![PathBuf::from("/tmp/a.o"), PathBuf::from("/tmp/b.o")]
+        );
     }
 
     #[test]
@@ -268,8 +286,10 @@ mod tests {
         let cache = ObjectCache::new(None, None);
         let m = ModuleFullPath::from("user");
         let dep_hashes = std::collections::HashMap::new();
-        assert!(!cache.is_cache_valid(&m, "anyhash", &dep_hashes),
-            "disabled cache must always miss");
+        assert!(
+            !cache.is_cache_valid(&m, "anyhash", &dep_hashes),
+            "disabled cache must always miss"
+        );
     }
 
     #[test]
@@ -301,18 +321,27 @@ mod tests {
         cache.append_o_path(user_o.clone());
 
         let paths = cache.all_paths();
-        assert!(paths.contains(&dep_o),
-            "cache-restored dep .o must be in the --link set, got {paths:?}");
+        assert!(
+            paths.contains(&dep_o),
+            "cache-restored dep .o must be in the --link set, got {paths:?}"
+        );
         assert!(paths.contains(&user_o));
 
         // A module that is both cache-restored AND later freshly recompiled
         // (or any double-append) must not double-list.
         cache.append_o_path(dep_o.clone());
         let after = cache.all_paths();
-        assert_eq!(after.iter().filter(|p| **p == dep_o).count(), 1,
+        assert_eq!(
+            after.iter().filter(|p| **p == dep_o).count(),
+            1,
             "append_o_path must dedup — a duplicated .o on the cc line risks \
-             duplicate-symbol link errors; got {after:?}");
-        assert_eq!(after.len(), 2, "exactly two distinct objects, got {after:?}");
+             duplicate-symbol link errors; got {after:?}"
+        );
+        assert_eq!(
+            after.len(),
+            2,
+            "exactly two distinct objects, got {after:?}"
+        );
     }
 
     #[test]

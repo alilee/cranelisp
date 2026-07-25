@@ -1,5 +1,7 @@
 ; Cranelisp Ring 3 — Macros & Metaprogramming
 
+(import [primitives [split join replace trim starts-with?]])
+
 ; What is defmacro?
 
 defmacro

@@ -1,4 +1,4 @@
-# 5. Definitions [Tested]
+# 5. Definitions [Uncovered S115 — was Tested]
 
 This section specifies the top-level definition forms in Cranelisp. All definitions appear at the top level of a source file or module. They introduce named functions, types, traits, macros, constants, and module structure into the program.
 
@@ -183,7 +183,7 @@ When any function (single or multi-signature) is called with fewer arguments tha
   (inc 5))              ; -> 6
 ```
 
-## 5.2 Type Definition (`deftype` / `deftype-`) [Tested]
+## 5.2 Type Definition (`deftype` / `deftype-`) [Tested+Neg tests/deftype_constructor_form_rulings_s116.rs::deftype_content_free_paren_constructor_rejected_neg, tests/deftype_constructor_form_rulings_s116.rs::deftype_empty_field_list_arm_rejected_neg, tests/deftype_constructor_form_rulings_s116.rs::deftype_nullary_constructor_sharing_type_name_rejected_neg, tests/deftype_constructor_form_rulings_s116.rs::deftype_unit_zero_field_product_control_green]
 
 ```ebnf
 deftype_form   = '(' ('deftype' | 'deftype-') type_head docstring? type_body ')'
@@ -207,7 +207,7 @@ A type definition introduces an algebraic data type (ADT) into scope. Three shap
 
 The `type_head` name is a **binder** (§5, *Declaration heads are binders*) — a **bare (unqualified)** symbol; a qualified **or dotted** head (`(deftype fmt/Point …)`, `(deftype (fmt/Pair a b) …)`, `(deftype A.B …)`) is a compile-time error (§5, *Binder positions*). The type parameters are binders on the same rule — `(deftype (Pair prim/a b) …)` is a **located** reject with the span on the parameter, not an incidental resolution failure. [S113] [S115]
 
-### 5.2.1 Product Type (Single Constructor) [Tested crates/cranelisp-typecheck/src/adt.rs::test_register_product_type_with_fields]
+### 5.2.1 Product Type (Single Constructor) [Tested+Neg tests/deftype_constructor_form_rulings_s116.rs::deftype_unit_zero_field_product_control_green, tests/deftype_constructor_form_rulings_s116.rs::deftype_product_constructor_sharing_type_name_control_green, tests/deftype_constructor_form_rulings_s116.rs::deftype_nullary_constructor_sharing_type_name_rejected_neg]
 
 When the type body is a bracketed field list, the type name doubles as the sole constructor.
 
@@ -231,7 +231,7 @@ This is not a new construct; it is `field_list` with zero `field_def`s, so it ne
 
 The alternative spelling `(deftype Unit)` — a bare head with no body at all — is **rejected**, and deliberately so (user ruling 2026-07-21): a `deftype` with no body is the shape of a **truncated declaration**, and the compiler's existing `deftype missing constructors` diagnostic is what catches it. Legalising the bare spelling would convert a caught truncation (`(deftype Color)`, where the author meant `(deftype Color Red Green Blue)`) into a silently-declared unit type. The brackets are cheap and they make the intent explicit.
 
-### 5.2.2 Sum Type (Multiple Constructors)
+### 5.2.2 Sum Type (Multiple Constructors) [Tested+Neg tests/deftype_constructor_form_rulings_s116.rs::deftype_content_free_paren_constructor_rejected_neg, tests/deftype_constructor_form_rulings_s116.rs::deftype_empty_field_list_arm_rejected_neg, tests/deftype_constructor_form_rulings_s116.rs::deftype_documented_nullary_sharing_type_name_rejected_neg, tests/deftype_constructor_form_rulings_s116.rs::deftype_mixed_bare_nullary_and_fielded_control_green]
 
 When the type body contains one or more constructor forms, each introduces a distinct variant.
 
@@ -353,7 +353,7 @@ When field brackets contain bare names (no `:Type` prefix), each unique bare nam
 ;; => (deftype (Named a) (Named [:String name :a value]))
 ```
 
-### 5.2.5 Docstrings on Types and Constructors [Tested tests/spec_05_definitions::deftype_with_docstring_does_not_affect_construct_or_match]
+### 5.2.5 Docstrings on Types and Constructors [Tested+Neg tests/spec_05_definitions::deftype_with_docstring_does_not_affect_construct_or_match, tests/deftype_constructor_form_rulings_s116.rs::deftype_documented_nullary_control_green, tests/deftype_constructor_form_rulings_s116.rs::deftype_documented_nullary_sharing_type_name_rejected_neg]
 
 An optional docstring MAY appear after the type head (before the body) and after each constructor name (before its field list).
 
@@ -406,7 +406,7 @@ A field accessor can never be shadowed by a same-named trait method: a trait `im
 
 Alias contention is scoped to the colliding bare name only: a bare field name **not** in contention still resolves uniquely to its canonical accessor and remains first-class (passable as an argument or bound to a variable). A contested bare alias has no single denotation (the coherence reason it cannot silently become an overload), but its canonical accessors each do.
 
-### 5.2.7 Constructor Semantics [Tested tests/spec_05_definitions::deftype_product_constructor_arity_mismatch_neg]
+### 5.2.7 Constructor Semantics [Tested+Neg tests/deftype_constructor_form_rulings_s116.rs::deftype_content_free_paren_constructor_rejected_neg, tests/deftype_constructor_form_rulings_s116.rs::deftype_empty_field_list_arm_rejected_neg, tests/deftype_constructor_form_rulings_s116.rs::deftype_nullary_constructor_sharing_type_name_rejected_neg, tests/deftype_constructor_form_rulings_s116.rs::deftype_unit_zero_field_product_control_green]
 
 - **Nullary constructors** are values, not functions. Entering a nullary constructor at the REPL displays its type. Because a nullary constructor is a value, it is written **bare** in value position — `Unit`, `None` — never `(Unit)` / `(None)`: parens denote application, and applying a non-`Fn` value is ill-formed (§4.2.1). This is the value-position instance of the cross-position principle that no position spells a nullary constructor `(Ctor)` (§5.2.2). [S115]
 - **Data constructors** are functions. They participate in auto-currying: `(let [f Some] (f 42))` works.
@@ -470,28 +470,38 @@ When the trait head includes type parameters, the trait operates on type constru
 - Method signatures declare the type contract. Implementations MUST conform to the declared signature.
 - Traits are the mechanism for operator overloading: `+`, `-`, `*`, `/` are methods of the `Num` trait; `=` is a method of `Eq`; `<`, `>`, `<=`, `>=` are methods of `Ord`.
 
-## 5.4 Trait Implementation (`impl`) [Tested]
+## 5.4 Trait Implementation (`impl`) [Tested+Neg tests/spec_07_traits::trait_impl_concrete_type, tests/spec_07_traits::qualified_impl_trait_reference_resolves_canonical_home_and_dispatches, tests/spec_07_traits::qualified_impl_trait_reference_neg_does_not_mint_written_qualifier_into_method_name, tests/spec_07_traits::qualified_hkt_impl_trait_reference_resolves_canonical_home_and_dispatches]
 
 ```ebnf
 impl_form      = '(' 'impl' impl_head impl_target method_defn+ ')'
-impl_head      = trait_name                       (* conventional trait — bare, as declared *)
-               | '(' trait_name con_var ')'       (* higher-kinded trait head — echoed as declared *)
+impl_head      = trait_ref                        (* conventional trait reference *)
+               | '(' trait_ref con_var ')'        (* higher-kinded trait reference + echoed binder *)
+trait_ref      = trait_name
+               | module_path '/' trait_name       (* module-qualified reference *)
 impl_target    = type_name                        (* conventional concrete:  Int *)
                | '(' type_name type_arg+ ')'      (* conventional applied:    (Option Int), (Option :Display a) *)
-               | '(' trait_name con_target ')'    (* HK trait-constructor pairing: (Functor Option) *)
+               | '(' trait_ref con_target ')'     (* HK trait-constructor pairing: (Functor Option) *)
 type_arg       = type_name                        (* concrete type or type var *)
                | colon_prefix symbol              (* inline constraint: :Display a *)
 method_defn    = '(' 'defn' name params body ')'  (* follows defn syntax *)
 ```
 
 A trait implementation provides method bodies for a specific type. Slot 1
-**echoes the `deftrait` head as declared** — the bare trait name for a
-conventional trait, the parenthesized `(Trait con_var)` head for a higher-kinded
-trait — and slot 2 **names the target**: a **type** for a conventional trait
-(`(impl Display Int …)`, `(impl Display (Option :Display a) …)`), a
+**references the declared trait**: the conventional form accepts either a bare
+or module-qualified trait reference, and the higher-kinded form combines that
+reference with the declaration's echoed constructor-variable binder. Thus
+`Display` and `text.display/Display` are alternative references to the same
+trait when they resolve to the same declaration; neither spelling binds a new
+trait. Slot 2 **names the target**: a **type** for a conventional trait
+(`(impl Display Int …)`, `(impl text.display/Display Int …)`,
+`(impl Display (Option :Display a) …)`), a
 **trait-constructor pairing** `(Trait Constructor)` for a higher-kinded trait
 (`(impl (Functor f) (Functor Option) …)`). The authoritative grammar, examples,
 and rationale live in [§7.3](07-traits.md#73-trait-implementation).
+
+This reference grammar does not apply to a `deftrait` declaration head. A
+declaration head is the bare-only binder specified by §5.3; qualifying it
+remains a compile-time error.
 
 > **Kind-matching (settled).** The precise **impl-target kind-matching
 > table** — exactly which targets are well-kinded for a given trait head, and
@@ -544,9 +554,13 @@ This implements Display for `(Option Int)` specifically. The `(show x)` call in 
 - The implementation methods become constrained polymorphic functions, monomorphised at each call site.
 - `(show (Some 42))` generates a specialization `show$Option$Int`.
 
-### 5.4.4 Higher-Kinded Implementation [Tested+Neg tests/spec_07_traits::hkt_impl_targets_bare_type_constructor_not_applied_form, tests/spec_07_traits::hkt_impl_on_user_well_kinded_adt_dispatches, tests/spec_07_traits::old_form_hkt_impl_bare_head_rejected_names_new_form_neg]
+### 5.4.4 Higher-Kinded Implementation [Tested+Neg tests/spec_07_traits::qualified_hkt_impl_trait_reference_resolves_canonical_home_and_dispatches, tests/spec_07_traits::hkt_impl_targets_bare_type_constructor_not_applied_form, tests/spec_07_traits::hkt_impl_on_user_well_kinded_adt_dispatches, tests/spec_07_traits::hkt_impl_pairing_head_qualified_bad_module_rejected_no_dispatch_neg, tests/spec_07_traits::hkt_impl_pairing_head_qualified_different_module_same_named_trait_rejected_not_registered_neg]
 
-For HKT traits, the impl echoes the declared head `(Functor f)` in slot 1 and names a trait-constructor pairing `(Functor Option)` in slot 2 (the constructor named in the pairing is bare, never an applied type — see [§7.3.4](07-traits.md#734-higher-kinded-implementation)):
+For HKT traits, the impl echoes the declared head's **shape and constructor
+variable** in slot 1 while referencing the trait either bare or qualified, and
+names a trait-constructor pairing `(Functor Option)` in slot 2 (the constructor
+named in the pairing is bare, never an applied type — see
+[§7.3.4](07-traits.md#734-higher-kinded-implementation)):
 
 ```clojure
 (impl (Functor f) (Functor Option)
@@ -556,7 +570,10 @@ For HKT traits, the impl echoes the declared head `(Functor f)` in slot 1 and na
        (Some v) (Some (g v))])))
 ```
 
-### 5.4.5 Implementation Semantics [Tested tests/spec_07_traits::user_trait_simple, tests/spec_07_traits::trait_method_no_impl_then_recovery]
+The same trait may be referenced as `(fmt/Functor f)` when its canonical home
+is module `fmt`; the `f` binder still echoes the declaration verbatim.
+
+### 5.4.5 Implementation Semantics [Tested+Neg tests/impl_redefinition_dispatch.rs::reimpl_same_type_hot_reloads_dispatch, tests/impl_redefinition_dispatch.rs::reimpl_omitting_a_method_reverts_it_to_the_trait_default, tests/impl_redefinition_dispatch.rs::reimpl_default_then_override_then_default_cycles, tests/impl_redefinition_dispatch.rs::reimpl_neg_type_changing_body_rejected_and_prior_impl_keeps_dispatching]
 
 - `impl` has no private variant. All trait implementations are visible wherever both the trait and type are visible — i.e., wherever both are reachable through the current module's transitive import closure. See [§5.11.1](#5111-impl-visibility--transitive-import-closure) for the full visibility rule and worked example, and [§7.11.1](07-traits.md#7111-impl-visibility--transitive-import-closure) for resolution-side consequences.
 - Method definitions within `impl` follow `defn` syntax but MUST NOT include docstrings (the docstring comes from the trait declaration).
@@ -784,7 +801,18 @@ N reaches `Display` and `Color` through M's re-export of L's names. The `(impl D
 
 **Visibility is a property of the trait + type pair, not the impl form.** An impl becomes invisible from N only when at least one of `Trait` or `Type` is unreachable from N. In particular, a private name (`defn-`, `deftype-`, `deftrait-`, see §5.11) breaks the chain: an impl declared in L for a private trait or type cannot reach beyond L's submodule subtree, because the names themselves cannot.
 
-**A trait *method* is a sufficient trait-side entry point (D2, user ruling 2026-07-19). [S113]** The "reach `Trait`" leg above is satisfied by reaching **any of the trait's methods**: importing a method of `Trait` directly (`(import [home [m]])`, without importing the `Trait` name) brings `Trait`'s canonical home into N's import closure and suffices to **dispatch** `m` — the trait name need not separately be in scope. This governs dispatch only; **declaring** an impl of `Trait` still requires the trait head in scope (§7.3). See [§7.11.2](07-traits.md#7112-method-import-dispatch--a-method-reference-suffices) for the full ruling and its edge cells.
+**A trait *method* is a sufficient trait-side entry point (D2, user ruling
+2026-07-19). [Tested+Neg tests/nullary_return_dispatch_method_only_import.rs::method_import_single_of_two_dispatches, tests/nullary_return_dispatch_method_only_import.rs::method_import_same_name_two_modules_conflict_neg, tests/nullary_return_dispatch_method_only_import.rs::method_only_import_no_impl_diagnostic_names_owning_trait]** The "reach `Trait`" leg above is
+satisfied by reaching **any of the trait's methods**: importing a method of
+`Trait` directly (`(import [home [m]])`, without importing the `Trait` name)
+brings `Trait`'s canonical home into N's import closure and suffices to
+**dispatch** `m` — the trait name need not separately be in scope. This governs
+dispatch only; **declaring** an impl still requires slot 1 to be a resolvable
+trait reference (§7.3). A method-only import does not make the bare trait name
+resolve, but the module-qualified trait reference is independently
+self-sufficient under §8.5. See
+[§7.11.2](07-traits.md#7112-method-import-dispatch--a-method-reference-suffices)
+for the full ruling and its edge cells.
 
 **Implementation note (non-normative).** The lookup mechanism — pre-computed per-module impl index, on-demand walk of `current_module.imports`, or another shape — is **implementation-defined**. The spec pins the visibility rule, not the algorithm.
 

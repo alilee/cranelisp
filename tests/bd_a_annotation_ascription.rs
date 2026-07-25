@@ -194,10 +194,8 @@ fn m1_fn_body_ascription_accepted_spot() {
 // spec: spec/03-types.md §2.3.8 — an annotation may appear in an `if` branch.
 #[test]
 fn m1_if_branch_ascription_accepted_spot() {
-    run_prims(
-        "(defn f [c] (if (eq-i64 c 0) :Int 10 :Int 20))\n(defn main [] (Pure (f 0)))\n",
-    )
-    .assert_exit(10);
+    run_prims("(defn f [c] (if (eq-i64 c 0) :Int 10 :Int 20))\n(defn main [] (Pure (f 0)))\n")
+        .assert_exit(10);
 }
 
 // M1 ascribed spot-pin — MATCH ARM BODY. `(match v [x :Int x])` — the arm body

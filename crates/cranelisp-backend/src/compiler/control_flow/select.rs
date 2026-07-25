@@ -87,13 +87,13 @@ where
         branches_val: Value,
         span: Span,
     ) -> Result<Value, CranelispError> {
-        let alloc_id =
-            self.ctx
-                .alloc_func_id
-                .ok_or_else(|| CranelispError::CodegenError {
-                    message: "runtime/alloc not declared (need declare_intrinsics)".into(),
-                    location: ErrorLocation::from_span(span),
-                })?;
+        let alloc_id = self
+            .ctx
+            .alloc_func_id
+            .ok_or_else(|| CranelispError::CodegenError {
+                message: "runtime/alloc not declared (need declare_intrinsics)".into(),
+                location: ErrorLocation::from_span(span),
+            })?;
 
         // Allocate the thin node: tag + 1 field = HeapAdt::payload_size(1) = 16
         // payload (32 total with the 16-byte header).
@@ -103,7 +103,12 @@ where
         let tag = self.builder.ins().iconst(types::I64, IO_TAG_SELECT);
         heap::heap_store(&mut self.builder, tag, node, HeapAdt::TAG_OFFSET);
         // field 0: ownership transfer of the branch Vec (rc=1) — NO inc.
-        heap::heap_store(&mut self.builder, branches_val, node, HeapAdt::field_offset(0));
+        heap::heap_store(
+            &mut self.builder,
+            branches_val,
+            node,
+            HeapAdt::field_offset(0),
+        );
 
         Ok(node)
     }

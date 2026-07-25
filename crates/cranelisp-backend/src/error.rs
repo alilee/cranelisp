@@ -106,10 +106,7 @@ pub enum LinkerError {
     /// Object relocation pass produced an error during `load_object` or
     /// per-symbol resolution. Signals corruption, ABI mismatch, or
     /// unresolved external reference.
-    RelocationFailed {
-        name: LinkerSymbol,
-        cause: String,
-    },
+    RelocationFailed { name: LinkerSymbol, cause: String },
 }
 
 impl std::fmt::Display for CompilationError {
@@ -171,9 +168,7 @@ impl From<CompilationError> for cranelisp_types::CranelispError {
     fn from(err: CompilationError) -> Self {
         let location = match &err {
             CompilationError::CodegenFailed { location, .. } => location.clone(),
-            _ => cranelisp_types::ErrorLocation::from_span(
-                cranelisp_types::Span::SYNTHETIC,
-            ),
+            _ => cranelisp_types::ErrorLocation::from_span(cranelisp_types::Span::SYNTHETIC),
         };
         cranelisp_types::CranelispError::CodegenError {
             message: err.to_string(),
@@ -206,12 +201,9 @@ impl std::fmt::Display for LinkerError {
             LinkerError::SymbolNotFound { name } => {
                 write!(f, "symbol not found in cache linker: {}", name.as_ref())
             }
-            LinkerError::RelocationFailed { name, cause } => write!(
-                f,
-                "relocation failed for {}: {}",
-                name.as_ref(),
-                cause
-            ),
+            LinkerError::RelocationFailed { name, cause } => {
+                write!(f, "relocation failed for {}: {}", name.as_ref(), cause)
+            }
         }
     }
 }

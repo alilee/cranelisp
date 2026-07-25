@@ -89,17 +89,50 @@ pub enum IoTraceTag {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IoTracePayload {
-    TrampolineEnter { io_ptr: i64 },
-    TrampolineExit { result: i64 },
-    PureStep { value: i64, is_fresh: bool },
-    BindEnter { inner_ptr: i64, cont_ptr: i64, is_fresh: bool },
-    BindExit { new_current: i64 },
-    PlatformEffect { thunk_ptr: i64, resource_token: i64, scheduling_class: u8 },
-    Cont { cont_ptr: i64, is_fresh: bool, new_depth: u32 },
-    ParSpark { parent_ptr: i64, branch_idx: u32, token: i64 },
-    ParSerialGroupEnter { token: i64, branch_count: u32 },
-    ParJoin { parent_ptr: i64, count: u32 },
-    ParBarrierForce { token: i64 },
+    TrampolineEnter {
+        io_ptr: i64,
+    },
+    TrampolineExit {
+        result: i64,
+    },
+    PureStep {
+        value: i64,
+        is_fresh: bool,
+    },
+    BindEnter {
+        inner_ptr: i64,
+        cont_ptr: i64,
+        is_fresh: bool,
+    },
+    BindExit {
+        new_current: i64,
+    },
+    PlatformEffect {
+        thunk_ptr: i64,
+        resource_token: i64,
+        scheduling_class: u8,
+    },
+    Cont {
+        cont_ptr: i64,
+        is_fresh: bool,
+        new_depth: u32,
+    },
+    ParSpark {
+        parent_ptr: i64,
+        branch_idx: u32,
+        token: i64,
+    },
+    ParSerialGroupEnter {
+        token: i64,
+        branch_count: u32,
+    },
+    ParJoin {
+        parent_ptr: i64,
+        count: u32,
+    },
+    ParBarrierForce {
+        token: i64,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -221,51 +254,118 @@ pub fn bench_record_event_off_path() {
 /// the ring-buffer taxonomy and pushes to this thread's ring buffer.
 pub fn record(tag: IoEventTag, event: &IoEvent) {
     let (ring_tag, ring_payload) = match (tag, *event) {
-        (IoEventTag::TrampolineEnter, IoEvent::TrampolineEnter { io_ptr }) => {
-            (IoTraceTag::TrampolineEnter, IoTracePayload::TrampolineEnter { io_ptr })
-        }
-        (IoEventTag::TrampolineExit, IoEvent::TrampolineExit { result }) => {
-            (IoTraceTag::TrampolineExit, IoTracePayload::TrampolineExit { result })
-        }
-        (IoEventTag::PureStep, IoEvent::PureStep { value, is_fresh }) => {
-            (IoTraceTag::PureStep, IoTracePayload::PureStep { value, is_fresh })
-        }
-        (IoEventTag::BindEnter, IoEvent::BindEnter { inner_ptr, cont_ptr, is_fresh }) => (
-            IoTraceTag::BindEnter,
-            IoTracePayload::BindEnter { inner_ptr, cont_ptr, is_fresh },
+        (IoEventTag::TrampolineEnter, IoEvent::TrampolineEnter { io_ptr }) => (
+            IoTraceTag::TrampolineEnter,
+            IoTracePayload::TrampolineEnter { io_ptr },
         ),
-        (IoEventTag::BindExit, IoEvent::BindExit { new_current }) => {
-            (IoTraceTag::BindExit, IoTracePayload::BindExit { new_current })
-        }
+        (IoEventTag::TrampolineExit, IoEvent::TrampolineExit { result }) => (
+            IoTraceTag::TrampolineExit,
+            IoTracePayload::TrampolineExit { result },
+        ),
+        (IoEventTag::PureStep, IoEvent::PureStep { value, is_fresh }) => (
+            IoTraceTag::PureStep,
+            IoTracePayload::PureStep { value, is_fresh },
+        ),
+        (
+            IoEventTag::BindEnter,
+            IoEvent::BindEnter {
+                inner_ptr,
+                cont_ptr,
+                is_fresh,
+            },
+        ) => (
+            IoTraceTag::BindEnter,
+            IoTracePayload::BindEnter {
+                inner_ptr,
+                cont_ptr,
+                is_fresh,
+            },
+        ),
+        (IoEventTag::BindExit, IoEvent::BindExit { new_current }) => (
+            IoTraceTag::BindExit,
+            IoTracePayload::BindExit { new_current },
+        ),
         (
             IoEventTag::PlatformEffect,
-            IoEvent::PlatformEffect { thunk_ptr, resource_token, scheduling_class },
+            IoEvent::PlatformEffect {
+                thunk_ptr,
+                resource_token,
+                scheduling_class,
+            },
         ) => (
             IoTraceTag::PlatformEffect,
-            IoTracePayload::PlatformEffect { thunk_ptr, resource_token, scheduling_class },
+            IoTracePayload::PlatformEffect {
+                thunk_ptr,
+                resource_token,
+                scheduling_class,
+            },
         ),
-        (IoEventTag::ContPush, IoEvent::Cont { cont_ptr, is_fresh, new_depth }) => (
+        (
+            IoEventTag::ContPush,
+            IoEvent::Cont {
+                cont_ptr,
+                is_fresh,
+                new_depth,
+            },
+        ) => (
             IoTraceTag::ContPush,
-            IoTracePayload::Cont { cont_ptr, is_fresh, new_depth },
+            IoTracePayload::Cont {
+                cont_ptr,
+                is_fresh,
+                new_depth,
+            },
         ),
-        (IoEventTag::ContPop, IoEvent::Cont { cont_ptr, is_fresh, new_depth }) => (
+        (
+            IoEventTag::ContPop,
+            IoEvent::Cont {
+                cont_ptr,
+                is_fresh,
+                new_depth,
+            },
+        ) => (
             IoTraceTag::ContPop,
-            IoTracePayload::Cont { cont_ptr, is_fresh, new_depth },
+            IoTracePayload::Cont {
+                cont_ptr,
+                is_fresh,
+                new_depth,
+            },
         ),
-        (IoEventTag::ParSpark, IoEvent::ParSpark { parent_ptr, branch_idx, token }) => (
+        (
+            IoEventTag::ParSpark,
+            IoEvent::ParSpark {
+                parent_ptr,
+                branch_idx,
+                token,
+            },
+        ) => (
             IoTraceTag::ParSpark,
-            IoTracePayload::ParSpark { parent_ptr, branch_idx, token },
+            IoTracePayload::ParSpark {
+                parent_ptr,
+                branch_idx,
+                token,
+            },
         ),
-        (IoEventTag::ParSerialGroupEnter, IoEvent::ParSerialGroupEnter { token, branch_count }) => (
+        (
+            IoEventTag::ParSerialGroupEnter,
+            IoEvent::ParSerialGroupEnter {
+                token,
+                branch_count,
+            },
+        ) => (
             IoTraceTag::ParSerialGroupEnter,
-            IoTracePayload::ParSerialGroupEnter { token, branch_count },
+            IoTracePayload::ParSerialGroupEnter {
+                token,
+                branch_count,
+            },
         ),
-        (IoEventTag::ParJoin, IoEvent::ParJoin { parent_ptr, count }) => {
-            (IoTraceTag::ParJoin, IoTracePayload::ParJoin { parent_ptr, count })
-        }
-        (IoEventTag::ParBarrierForce, IoEvent::ParBarrierForce { token }) => {
-            (IoTraceTag::ParBarrierForce, IoTracePayload::ParBarrierForce { token })
-        }
+        (IoEventTag::ParJoin, IoEvent::ParJoin { parent_ptr, count }) => (
+            IoTraceTag::ParJoin,
+            IoTracePayload::ParJoin { parent_ptr, count },
+        ),
+        (IoEventTag::ParBarrierForce, IoEvent::ParBarrierForce { token }) => (
+            IoTraceTag::ParBarrierForce,
+            IoTracePayload::ParBarrierForce { token },
+        ),
         // Tag / payload mismatch — observer contract specifies the tag and
         // payload share their family, but `#[non_exhaustive]` defends
         // against future additions. Drop the event silently rather than
@@ -290,7 +390,8 @@ pub fn install_if_enabled() {
 // ---------------------------------------------------------------------------
 
 pub fn dump_thread_buffer() -> Vec<IoTraceEvent> {
-    let mut out: Vec<IoTraceEvent> = IO_TRACE_BUF.with(|cell| cell.borrow_mut().drain(..).collect());
+    let mut out: Vec<IoTraceEvent> =
+        IO_TRACE_BUF.with(|cell| cell.borrow_mut().drain(..).collect());
     out.sort_by_key(|e| (e.timestamp_ns, e.thread_ord_id));
     out
 }
@@ -337,22 +438,39 @@ pub fn format_event_line(e: &IoTraceEvent) -> String {
         IoTracePayload::TrampolineEnter { io_ptr } => format!("io_ptr={io_ptr:#x}"),
         IoTracePayload::TrampolineExit { result } => format!("result={result}"),
         IoTracePayload::PureStep { value, is_fresh } => format!("value={value} fresh={is_fresh}"),
-        IoTracePayload::BindEnter { inner_ptr, cont_ptr, is_fresh } => {
+        IoTracePayload::BindEnter {
+            inner_ptr,
+            cont_ptr,
+            is_fresh,
+        } => {
             format!("inner={inner_ptr:#x} cont={cont_ptr:#x} fresh={is_fresh}")
         }
         IoTracePayload::BindExit { new_current } => format!("new_current={new_current:#x}"),
-        IoTracePayload::PlatformEffect { thunk_ptr, resource_token, scheduling_class } => {
-            format!(
-                "thunk={thunk_ptr:#x} token={resource_token} sched_class={scheduling_class}"
-            )
+        IoTracePayload::PlatformEffect {
+            thunk_ptr,
+            resource_token,
+            scheduling_class,
+        } => {
+            format!("thunk={thunk_ptr:#x} token={resource_token} sched_class={scheduling_class}")
         }
-        IoTracePayload::Cont { cont_ptr, is_fresh, new_depth } => {
+        IoTracePayload::Cont {
+            cont_ptr,
+            is_fresh,
+            new_depth,
+        } => {
             format!("cont={cont_ptr:#x} fresh={is_fresh} depth={new_depth}")
         }
-        IoTracePayload::ParSpark { parent_ptr, branch_idx, token } => {
+        IoTracePayload::ParSpark {
+            parent_ptr,
+            branch_idx,
+            token,
+        } => {
             format!("parent={parent_ptr:#x} idx={branch_idx} token={token}")
         }
-        IoTracePayload::ParSerialGroupEnter { token, branch_count } => {
+        IoTracePayload::ParSerialGroupEnter {
+            token,
+            branch_count,
+        } => {
             format!("token={token} count={branch_count}")
         }
         IoTracePayload::ParJoin { parent_ptr, count } => {
@@ -526,7 +644,10 @@ mod tests {
                     thread_id: std::thread::current().id(),
                     thread_ord_id: thread_ord_id(),
                     tag: IoTraceTag::PureStep,
-                    payload: IoTracePayload::PureStep { value: i as i64, is_fresh: false },
+                    payload: IoTracePayload::PureStep {
+                        value: i as i64,
+                        is_fresh: false,
+                    },
                 });
             }
         });
@@ -570,14 +691,18 @@ mod tests {
         // unrelated to mapping correctness).
         unsafe { std::env::set_var("CRANELISP_IO_TRACE", "1") };
         let _ = dump_thread_buffer();
-        record(IoEventTag::TrampolineEnter, &IoEvent::TrampolineEnter { io_ptr: 0xABCD });
+        record(
+            IoEventTag::TrampolineEnter,
+            &IoEvent::TrampolineEnter { io_ptr: 0xABCD },
+        );
         // The filter OnceLock may already have been initialised by another
         // test before we set the env var. Only assert under the enabled
         // branch.
         if filter().is_some() {
             let dump = dump_thread_buffer();
             assert!(
-                dump.iter().any(|e| matches!(e.tag, IoTraceTag::TrampolineEnter)),
+                dump.iter()
+                    .any(|e| matches!(e.tag, IoTraceTag::TrampolineEnter)),
                 "expected TrampolineEnter event in ring buffer; got: {dump:?}"
             );
         }

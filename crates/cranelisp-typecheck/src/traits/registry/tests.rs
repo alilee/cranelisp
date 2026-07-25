@@ -77,10 +77,8 @@ fn default_occurrence_accepts_bare_parameter() {
 #[test]
 fn default_occurrence_accepts_self_result_constraint() {
     let mut tc = tf_prims();
-    tc.register_trait_decl_self(&parse_trait_decl(
-        "(deftrait T (m [:Int x] :self x))",
-    ))
-    .unwrap();
+    tc.register_trait_decl_self(&parse_trait_decl("(deftrait T (m [:Int x] :self x))"))
+        .unwrap();
 }
 
 // spec: 07-traits §7.1.1 — body references do not create dispatch positions.
@@ -88,12 +86,11 @@ fn default_occurrence_accepts_self_result_constraint() {
 fn default_body_self_reference_does_not_satisfy_occurrence() {
     let mut tc = tf_prims();
     let err = tc
-        .register_trait_decl_self(&parse_trait_decl(
-            "(deftrait T (m [:Int x] :Bool self))",
-        ))
+        .register_trait_decl_self(&parse_trait_decl("(deftrait T (m [:Int x] :Bool self))"))
         .unwrap_err();
     assert!(
-        err.message().contains("no occurrence of the implementing type"),
+        err.message()
+            .contains("no occurrence of the implementing type"),
         "{err:?}"
     );
     assert!(tc.lookup_trait_decl(&TraitName::from("T")).is_none());
@@ -104,12 +101,13 @@ fn default_body_self_reference_does_not_satisfy_occurrence() {
 #[test]
 fn unknown_type_looking_tail_classifies_as_default_body() {
     let mut tc = tf_prims();
-    tc.register_trait_decl_self(&parse_trait_decl(
-        "(deftrait T (m [x] MissingType))",
-    ))
-    .unwrap();
+    tc.register_trait_decl_self(&parse_trait_decl("(deftrait T (m [x] MissingType))"))
+        .unwrap();
     let decl = tc.lookup_trait_decl(&TraitName::from("T")).unwrap();
-    assert!(matches!(decl.methods[0].kind, TraitMethodKind::Default { .. }));
+    assert!(matches!(
+        decl.methods[0].kind,
+        TraitMethodKind::Default { .. }
+    ));
 }
 
 // spec: 07-traits §7.1 — the canonical resolver rejects malformed applied
@@ -117,12 +115,13 @@ fn unknown_type_looking_tail_classifies_as_default_body() {
 #[test]
 fn malformed_applied_type_tail_classifies_as_default_body() {
     let mut tc = tf_prims();
-    tc.register_trait_decl_self(&parse_trait_decl(
-        "(deftrait T (m [x] (Int Bool)))",
-    ))
-    .unwrap();
+    tc.register_trait_decl_self(&parse_trait_decl("(deftrait T (m [x] (Int Bool)))"))
+        .unwrap();
     let decl = tc.lookup_trait_decl(&TraitName::from("T")).unwrap();
-    assert!(matches!(decl.methods[0].kind, TraitMethodKind::Default { .. }));
+    assert!(matches!(
+        decl.methods[0].kind,
+        TraitMethodKind::Default { .. }
+    ));
 }
 
 // spec: 07-traits §7.1 — probing is transactional and never advances the
@@ -151,9 +150,7 @@ fn type_tail_probe_does_not_mint_shared_ids() {
 #[test]
 fn hkt_type_tail_probe_ignores_unrelated_parameter_resolution_error() {
     let tc = tf_prims();
-    let decl = parsed_trait(
-        "(deftrait (Functor f) (fmap [:(Fn [a] b) func :(Bogus a) x] (f b)))",
-    );
+    let decl = parsed_trait("(deftrait (Functor f) (fmap [:(Fn [a] b) func :(Bogus a) x] (f b)))");
     let tail = cranelisp_frontend::parse_type_expr("(f b)").unwrap();
     assert!(tc.env().probe_trait_sig_type_expr(
         &decl.methods[0].params,

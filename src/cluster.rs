@@ -108,6 +108,11 @@ pub struct ProcessedCluster {
     /// dies with the §3.11 ambiguity instead of leaking the backend
     /// `__expr`-has-no-GOT-slot error.
     pub(crate) unresolved_dispatch: Vec<cranelisp_typecheck::UnresolvedDispatchSite>,
+
+    /// Sprint 117 W3a transaction carrier. Typecheck writes and the complete
+    /// slot/redefinition plan remain private until the exact batch compiles.
+    pub(crate) prepared: Option<Box<crate::worker::PreparedCommit>>,
+    pub(crate) pending_codegen_notification: Option<(ModuleFullPath, Vec<Symbol>)>,
 }
 
 impl ProcessedCluster {
@@ -118,6 +123,8 @@ impl ProcessedCluster {
             && self.warnings.is_empty()
             && self.resolved_imports.is_empty()
             && self.introspection_records.is_empty()
+            && self.prepared.is_none()
+            && self.pending_codegen_notification.is_none()
     }
 
     /// Consume the cluster, yielding its drained entries. Used by
@@ -191,6 +198,8 @@ impl ProcessedCluster {
             introspection_records,
             redefinitions: Vec::new(),
             unresolved_dispatch: Vec::new(),
+            prepared: None,
+            pending_codegen_notification: None,
         }
     }
 
@@ -206,7 +215,13 @@ impl ProcessedCluster {
             introspection_records: Vec::new(),
             redefinitions: Vec::new(),
             unresolved_dispatch: Vec::new(),
+            prepared: None,
+            pending_codegen_notification: None,
         }
+    }
+
+    pub(crate) fn set_prepared(&mut self, prepared: crate::worker::PreparedCommit) {
+        self.prepared = Some(Box::new(prepared));
     }
 }
 
@@ -252,16 +267,22 @@ pub fn process_cluster(
     forms: std::sync::Arc<[cranelisp_types::Sexp]>,
     scope: &ModuleFullPath,
 ) -> Result<ClusterOutcome, CranelispError> {
-    use crate::worker::{ClusterOnce, ModuleCompiler};
     use crate::process_form;
+    use crate::worker::{ClusterOnce, ModuleCompiler};
     use cranelisp_typecheck::CheckState;
 
     cranelisp_types::ensure_module_exists(&shared.symbol_tables, scope);
 
-    let lib_dirs = shared.lib_dirs.lock()
-        .unwrap_or_else(|e| e.into_inner()).clone();
-    let platform_dirs = shared.platform_dirs.lock()
-        .unwrap_or_else(|e| e.into_inner()).clone();
+    let lib_dirs = shared
+        .lib_dirs
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let platform_dirs = shared
+        .platform_dirs
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let mut ctx = ModuleCompiler {
         symbol_tables: &shared.symbol_tables,
         next_type_id: &shared.next_type_id,
@@ -293,9 +314,7 @@ pub fn process_cluster(
         &forms,
         cranelisp_types::ModuleStrategy::Replace,
     )? {
-        ClusterOnce::Done { processed, program } => {
-            Ok(ClusterOutcome::Done { processed, program })
-        }
+        ClusterOnce::Done { processed, program } => Ok(ClusterOutcome::Done { processed, program }),
         ClusterOnce::Gap { dep } => Ok(ClusterOutcome::Gap { dep }),
     }
 }
@@ -332,9 +351,7 @@ pub fn insert_cluster(
     // rider (`assert_prelude_closure`) stays as a defense-in-depth tripwire.
     let declared = shared.declared_exports.get(target).map(|d| d.clone());
     for (sym, entry) in &processed.entries {
-        crate::imports::assert_prelude_closure(
-            &shared.symbol_tables, target, sym.as_ref(), entry,
-        );
+        crate::imports::assert_prelude_closure(&shared.symbol_tables, target, sym.as_ref(), entry);
         crate::imports::check_terminal_closure(
             target,
             sym.as_ref(),
@@ -397,12 +414,7 @@ mod tests {
             message: "test-warning".into(),
             span: Span::SYNTHETIC,
         }];
-        let cluster = ProcessedCluster::from_parts(
-            Vec::new(),
-            warnings,
-            Vec::new(),
-            Vec::new(),
-        );
+        let cluster = ProcessedCluster::from_parts(Vec::new(), warnings, Vec::new(), Vec::new());
         assert!(!cluster.is_empty(), "cluster with warnings is non-empty");
         assert_eq!(cluster.warnings().len(), 1);
         assert_eq!(cluster.warnings()[0].message, "test-warning");
@@ -417,18 +429,13 @@ mod tests {
             },
             Introspection::default(),
         )];
-        let cluster = ProcessedCluster::from_parts(
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            records,
+        let cluster = ProcessedCluster::from_parts(Vec::new(), Vec::new(), Vec::new(), records);
+        assert!(
+            !cluster.is_empty(),
+            "introspection records make cluster non-empty"
         );
-        assert!(!cluster.is_empty(), "introspection records make cluster non-empty");
         assert_eq!(cluster.introspection_records().len(), 1);
-        assert_eq!(
-            cluster.introspection_records()[0].0.symbol.as_ref(),
-            "foo"
-        );
+        assert_eq!(cluster.introspection_records()[0].0.symbol.as_ref(), "foo");
     }
 
     #[test]

@@ -2,7 +2,6 @@
 
 use crate::test_support::*;
 
-
 // --- Ring 2A: TraitMethod dispatch tests ---
 
 // spec: 07-traits §7.7, appendix-a-builtins §A.3 — Num.+ primitive dispatch inlines to add-i64.
@@ -27,8 +26,16 @@ fn test_trait_method_dispatch_inline_add() {
             inferred_type: None,
         }),
         args: vec![
-            Expr::IntLit { value: 3, span: Span::new(103, 104), inferred_type: None },
-            Expr::IntLit { value: 4, span: Span::new(105, 106), inferred_type: None },
+            Expr::IntLit {
+                value: 3,
+                span: Span::new(103, 104),
+                inferred_type: None,
+            },
+            Expr::IntLit {
+                value: 4,
+                span: Span::new(105, 106),
+                inferred_type: None,
+            },
         ],
         span: apply_span,
         resolved_call: None,
@@ -48,7 +55,6 @@ fn test_trait_method_dispatch_inline_add() {
     assert_eq!(value, 7);
 }
 
-
 // spec: 07-traits §7.7, appendix-a-builtins §A.3 — Eq.= primitive dispatch on Bool.
 //
 // Per Decision 43 + FIXME 0185: same shape change as the Num.+ test.
@@ -67,8 +73,16 @@ fn test_trait_method_dispatch_eq_bool() {
             inferred_type: None,
         }),
         args: vec![
-            Expr::BoolLit { value: true, span: Span::new(203, 207), inferred_type: None },
-            Expr::BoolLit { value: true, span: Span::new(208, 212), inferred_type: None },
+            Expr::BoolLit {
+                value: true,
+                span: Span::new(203, 207),
+                inferred_type: None,
+            },
+            Expr::BoolLit {
+                value: true,
+                span: Span::new(208, 212),
+                inferred_type: None,
+            },
         ],
         span: apply_span,
         resolved_call: None,
@@ -87,7 +101,6 @@ fn test_trait_method_dispatch_eq_bool() {
         .expect("BuiltinFn eq-bool should compile inline");
     assert_eq!(value, 1); // true == true → true (1)
 }
-
 
 // spec: design/arch/bounded-contexts.md §5 invariant 9 (S81 / FIXME 0327,
 //       the fault-guarded dispatch funnel step 2/4 — fault-path fn-name).
@@ -116,8 +129,7 @@ fn platform_effect_dispatch_stamps_fn_name_on_bare_import_var_apply_path() {
     // The absolute byte offset of the Effect node's fn-name field (field-3),
     // composed from the public ABI constants — must equal 40 today and match
     // the (module-private) EFFECT_FN_NAME_ABS_OFFSET the stamp emits.
-    let field3_off: i64 =
-        HeapHeader::SIZE as i64 + cranelisp_platform::IO_EFFECT_FN_NAME_OFFSET;
+    let field3_off: i64 = HeapHeader::SIZE as i64 + cranelisp_platform::IO_EFFECT_FN_NAME_OFFSET;
 
     let plat = ModuleFullPath::from("platform.boom");
     let user = ModuleFullPath::from("user");
@@ -202,7 +214,10 @@ fn platform_effect_dispatch_stamps_fn_name_on_bare_import_var_apply_path() {
         let mut caller_targets: HashMap<Span, FQSymbol> = HashMap::new();
         caller_targets.insert(
             Span::SYNTHETIC,
-            FQSymbol { module: plat.clone(), symbol: Symbol::from("crash") },
+            FQSymbol {
+                module: plat.clone(),
+                symbol: Symbol::from("crash"),
+            },
         );
         st.insert(
             Symbol::from("caller"),
@@ -232,7 +247,6 @@ fn platform_effect_dispatch_stamps_fn_name_on_bare_import_var_apply_path() {
         artifacts.clif_ir,
     );
 }
-
 
 // spec: design/arch/bounded-contexts.md §5 invariant 9 (negative) — a NON
 //       platform-effect callee dispatched GOT-indirect must NOT stamp
@@ -278,7 +292,10 @@ fn non_platform_effect_dispatch_does_not_stamp_field3() {
         let mut caller_targets: HashMap<Span, cranelisp_types::FQSymbol> = HashMap::new();
         caller_targets.insert(
             Span::SYNTHETIC,
-            cranelisp_types::FQSymbol { module: user.clone(), symbol: Symbol::from("helper") },
+            cranelisp_types::FQSymbol {
+                module: user.clone(),
+                symbol: Symbol::from("helper"),
+            },
         );
         st.insert(helper.name.clone(), make_def_entry_slot(helper.clone(), 0));
         st.insert(
@@ -288,8 +305,8 @@ fn non_platform_effect_dispatch_does_not_stamp_field3() {
         tables.insert(user.clone(), st);
     }
 
-    let field3_off: i64 = cranelisp_types::HeapHeader::SIZE as i64
-        + cranelisp_platform::IO_EFFECT_FN_NAME_OFFSET;
+    let field3_off: i64 =
+        cranelisp_types::HeapHeader::SIZE as i64 + cranelisp_platform::IO_EFFECT_FN_NAME_OFFSET;
     let store_at_field3 = format!("+{field3_off}");
 
     let mut obj = make_object_module();

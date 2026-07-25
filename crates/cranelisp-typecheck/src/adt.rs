@@ -10,10 +10,10 @@
 
 use std::collections::HashMap;
 
-use cranelisp_types::{ErrorLocation,
-    ConstructorDef, CranelispError, DefKind, DefnVariant, Expr, FQSymbol, FQTypeName, FieldInfo,
-    ModuleEntry, ModuleFullPath, Scheme, Span, Symbol, Type, TypeDefInfo, TypeId, TypeName,
-    Visibility, member_key,
+use cranelisp_types::{
+    ConstructorDef, CranelispError, DefKind, DefnVariant, ErrorLocation, Expr, FQSymbol,
+    FQTypeName, FieldInfo, ModuleEntry, ModuleFullPath, Scheme, Span, Symbol, Type, TypeDefInfo,
+    TypeId, TypeName, Visibility, member_key,
 };
 
 use crate::checker::{CheckState, TypeCheckEnv};
@@ -81,16 +81,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Build constructor infos with resolved field types.
         // If resolution fails, remove the pre-seeded placeholder so it
         // doesn't pollute known_types for subsequent definitions.
-        let ctor_infos = match self.build_constructor_infos(
-            state, name, constructors, &var_map, span,
-        ) {
-            Ok(infos) => infos,
-            Err(e) => {
-                self.current_symbol_table_mut(state)
-                    .symbols.remove(&Symbol::from(name.as_ref()));
-                return Err(e);
-            }
-        };
+        let ctor_infos =
+            match self.build_constructor_infos(state, name, constructors, &var_map, span) {
+                Ok(infos) => infos,
+                Err(e) => {
+                    self.current_symbol_table_mut(state)
+                        .symbols
+                        .remove(&Symbol::from(name.as_ref()));
+                    return Err(e);
+                }
+            };
 
         self.register_type_def_with_ctor_infos(
             state,
@@ -133,8 +133,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let type_args: Vec<Type> = type_var_ids.iter().map(|&id| Type::Var(id)).collect();
         let adt_type = Type::ADT(fqtn.clone(), type_args);
 
-        let is_product = ctor_infos.len() == 1
-            && ctor_infos[0].name.as_ref() == name.as_ref();
+        let is_product = ctor_infos.len() == 1 && ctor_infos[0].name.as_ref() == name.as_ref();
 
         // Sum/enum: pre-seed the type-name placeholder before minting ctor `Def`s
         // (the `register_type_def` path pre-seeds; direct callers may not have —
@@ -203,7 +202,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // backend build (`lib.rs:909`). The mono-view carrier is set directly
             // here because the synthetic body's `Span::SYNTHETIC` is outside the
             // span-keyed sidecar transport.
-            if let ModuleEntry::Def { ast: Some(v), codegen_view, .. } = &mut entry {
+            if let ModuleEntry::Def {
+                ast: Some(v),
+                codegen_view,
+                ..
+            } = &mut entry
+            {
                 *codegen_view = Some(cranelisp_types::MonoDefnVariant {
                     name: key.clone(),
                     params: v.params.iter().map(|(n, _)| n.clone()).collect(),
@@ -220,9 +224,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 // bare-name alias onto its canonical `member_key(Type, Ctor)`
                 // `Def` — route it through the §8.6.5 contest classifier.
                 ModuleEntry::Import { source, .. } => {
-                    self.install_bare_ctor_alias(
-                        state, &fqtn, &key, &source.symbol, visibility,
-                    );
+                    self.install_bare_ctor_alias(state, &fqtn, &key, &source.symbol, visibility);
                 }
                 // Canonical ctor `Def`, product ctor `Def` (dual facet), and the
                 // sum `TypeDef` insert verbatim.
@@ -238,7 +240,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // none). Sum/enum fields have no total accessor.
         if is_product {
             self.synthesise_field_accessors(
-                state, &fqtn, &ctor_infos[0], &adt_type, type_var_ids, visibility,
+                state,
+                &fqtn,
+                &ctor_infos[0],
+                &adt_type,
+                type_var_ids,
+                visibility,
             )?;
         }
 
@@ -269,11 +276,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Follow the bare binding's one committed edge to read its owner.
         let probed = self.probe_module_entry_owned(&fqtn.module, bare_name.as_ref());
         let committed_owner: Option<FQTypeName> = match probed.as_ref() {
-            Some(ModuleEntry::Import { source, .. }) if source.module == fqtn.module => {
-                self.probe_module_entry_owned(&source.module, source.symbol.as_ref())
-                    .as_ref()
-                    .and_then(committed_member_owner)
-            }
+            Some(ModuleEntry::Import { source, .. }) if source.module == fqtn.module => self
+                .probe_module_entry_owned(&source.module, source.symbol.as_ref())
+                .as_ref()
+                .and_then(committed_member_owner),
             Some(entry) => committed_member_owner(entry),
             None => None,
         };
@@ -296,10 +302,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             Some(ref owner) if owner == fqtn => install_alias(self, state),
             // Cross-type contest (§8.6.5): poison the bare name.
             Some(_) => {
-                self.current_symbol_table_mut(state).insert(
-                    bare_name.clone(),
-                    ModuleEntry::Ambiguous { visibility },
-                );
+                self.current_symbol_table_mut(state)
+                    .insert(bare_name.clone(), ModuleEntry::Ambiguous { visibility });
             }
             // Bare name absent → install the convenience alias.
             None if probed.is_none() => install_alias(self, state),
@@ -335,11 +339,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ) -> Result<Vec<CtorBuild>, CranelispError> {
         constructors
             .iter()
-            .map(|ctor| {
-                self.build_single_ctor_info(
-                    state, type_name, ctor, var_map, span,
-                )
-            })
+            .map(|ctor| self.build_single_ctor_info(state, type_name, ctor, var_map, span))
             .collect()
     }
 
@@ -359,7 +359,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             .iter()
             .map(|field| {
                 let ty = self.resolve_type_expr_in_module(
-                    &field.type_expr, var_map, &state.current_module, span,
+                    &field.type_expr,
+                    var_map,
+                    &state.current_module,
+                    span,
                 )?;
                 Ok(FieldInfo {
                     name: field.name.clone(),
@@ -408,8 +411,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         type_var_ids: &[TypeId],
         visibility: Visibility,
     ) -> Result<(), CranelispError> {
-        let all_field_names: Vec<Symbol> =
-            ctor.fields.iter().map(|f| f.name.clone()).collect();
+        let all_field_names: Vec<Symbol> = ctor.fields.iter().map(|f| f.name.clone()).collect();
         for field in &ctor.fields {
             self.synthesise_one_accessor(
                 state,
@@ -444,10 +446,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         // Accessor scheme `(Fn [ProductType] FieldType)`, quantified over the
         // type's params (so `(Fn [(Box a)] a)` for a polymorphic product).
-        let accessor_ty = Type::Fn(
-            vec![adt_type.clone()],
-            Box::new(field.ty.clone()),
-        );
+        let accessor_ty = Type::Fn(vec![adt_type.clone()], Box::new(field.ty.clone()));
         let scheme = Scheme {
             type_vars: type_var_ids.to_vec(),
             constraints: HashMap::new(),
@@ -512,8 +511,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // `Accessor` poison the same-cluster path produces. A committed accessor
         // for the SAME type (a redefinition of that one deftype) is NOT a
         // cross-type collision and must NOT poison.
-        let probed = self
-            .probe_module_entry_owned(&state.current_module, accessor_name.as_ref());
+        let probed = self.probe_module_entry_owned(&state.current_module, accessor_name.as_ref());
         let existing_present = probed.is_some();
         // Structurally classify a COMMITTED (prior-cluster) entry under the bare
         // name as a synthesised accessor (FIXME 0366). Under the INVERTED model
@@ -527,9 +525,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // (third+ colliding type); `NotAccessor` is a genuine non-accessor (user
         // defn, ctor) or absent entry.
         let committed = match probed.as_ref() {
-            Some(ModuleEntry::Import { source, .. })
-                if source.module == fqtn.module =>
-            {
+            Some(ModuleEntry::Import { source, .. }) if source.module == fqtn.module => {
                 // Follow the bare alias to its canonical accessor source.
                 self.probe_module_entry_owned(&source.module, source.symbol.as_ref())
                     .as_ref()
@@ -603,7 +599,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let mut accessor_pattern_ctors = HashMap::new();
         accessor_pattern_ctors.insert(
             body_span,
-            FQSymbol { module: fqtn.module.clone(), symbol: ctor.name.clone() },
+            FQSymbol {
+                module: fqtn.module.clone(),
+                symbol: ctor.name.clone(),
+            },
         );
         let accessor_view = cranelisp_types::MonoDefnVariant {
             name: qualified_key.clone(),
@@ -622,7 +621,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let canonical = ModuleEntry::def(
             scheme,
             DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Concrete { got_slot: canonical_slot, mode_summary: None },
+                fn_state: cranelisp_types::UserFnState::Concrete {
+                    got_slot: canonical_slot,
+                    mode_summary: None,
+                },
             },
         )
         .visibility(Visibility::Public)
@@ -637,7 +639,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             .insert(qualified_key.clone(), canonical.build());
 
         // Track the field's owning type for the bare-alias ambiguity diagnostic.
-        state.synthesised_accessor_names.insert(accessor_name.clone());
+        state
+            .synthesised_accessor_names
+            .insert(accessor_name.clone());
         state
             .accessor_owning_types
             .entry(accessor_name.clone())
@@ -678,10 +682,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 // import collision installs, §8.6.4), listing the canonical
                 // alternatives `Box.v` / `Cup.v`. Any later BARE use of `v` is a
                 // compile-time error naming those alternatives.
-                self.current_symbol_table_mut(state).insert(
-                    accessor_name.clone(),
-                    ModuleEntry::Ambiguous { visibility },
-                );
+                self.current_symbol_table_mut(state)
+                    .insert(accessor_name.clone(), ModuleEntry::Ambiguous { visibility });
                 // Seed the FIRST owning type (cross-cluster: recorded in a now-
                 // discarded prior cluster's state, FIXME 0366) before this one so
                 // the ambiguity hint's alternatives are complete. The per-cluster
@@ -706,10 +708,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 // conflicting user binding (no silent shadow / dispatch
                 // corruption); record a deferred diagnostic and leave bare `v` as
                 // the user's binding (§1.6.2).
-                state.deferred_accessor_collisions.push((
-                    accessor_name.clone(),
-                    fqtn.name.as_ref().to_string(),
-                ));
+                state
+                    .deferred_accessor_collisions
+                    .push((accessor_name.clone(), fqtn.name.as_ref().to_string()));
             }
         }
 
@@ -835,14 +836,18 @@ pub(crate) fn committed_accessor_kind<C: cranelisp_types::CodeStore>(
 ) -> CommittedAccessor {
     match entry {
         ModuleEntry::Ambiguous { .. } => CommittedAccessor::Poisoned,
-        ModuleEntry::Def { kind, scheme, param_names, .. }
-            if matches!(
-                kind.as_ref(),
-                DefKind::UserFn {
-                    fn_state: cranelisp_types::UserFnState::Concrete { .. }
-                }
-            ) && param_names.len() == 1
-                && param_names[0].as_ref() == "self$accessor" =>
+        ModuleEntry::Def {
+            kind,
+            scheme,
+            param_names,
+            ..
+        } if matches!(
+            kind.as_ref(),
+            DefKind::UserFn {
+                fn_state: cranelisp_types::UserFnState::Concrete { .. }
+            }
+        ) && param_names.len() == 1
+            && param_names[0].as_ref() == "self$accessor" =>
         {
             match &scheme.ty {
                 Type::Fn(params, _) if params.len() == 1 => match &params[0] {
@@ -905,11 +910,7 @@ enum AccessorCollision {
 /// free function is retained only for the `adt/tests.rs` scheme-shape unit
 /// tests, which assert the scheme grammar independently of the builder.
 #[cfg(test)]
-fn build_constructor_scheme(
-    ctor: &CtorBuild,
-    adt_type: &Type,
-    type_var_ids: &[TypeId],
-) -> Scheme {
+fn build_constructor_scheme(ctor: &CtorBuild, adt_type: &Type, type_var_ids: &[TypeId]) -> Scheme {
     let type_vars: Vec<TypeId> = type_var_ids.to_vec();
 
     let ty = if ctor.fields.is_empty() {
@@ -917,11 +918,7 @@ fn build_constructor_scheme(
         adt_type.clone()
     } else {
         // Data constructor: Fn([field types...], ADT type)
-        let param_types: Vec<Type> = ctor
-            .fields
-            .iter()
-            .map(|f| f.ty.clone())
-            .collect();
+        let param_types: Vec<Type> = ctor.fields.iter().map(|f| f.ty.clone()).collect();
         Type::Fn(param_types, Box::new(adt_type.clone()))
     };
 
@@ -972,12 +969,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             return Ok(());
         }
 
-        let type_def = self.lookup_type_def_in_module(&fq_type_name.module, &fq_type_name.name).ok_or_else(|| {
-            CranelispError::TypeError {
+        let type_def = self
+            .lookup_type_def_in_module(&fq_type_name.module, &fq_type_name.name)
+            .ok_or_else(|| CranelispError::TypeError {
                 message: format!("unknown type in match: {}", fq_type_name.name),
                 location: ErrorLocation::from_span(span),
-            }
-        })?;
+            })?;
 
         // Exclude internal constructors from exhaustiveness — user code cannot
         // and need not cover them (design/typecheck/io-types.md §1). Per-ctor
@@ -1039,7 +1036,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             .map(|c| {
                 let s = c.as_ref();
                 let after_slash = s.rsplit('/').next().unwrap_or(s);
-                after_slash.rsplit('.').next().unwrap_or(after_slash).to_string()
+                after_slash
+                    .rsplit('.')
+                    .next()
+                    .unwrap_or(after_slash)
+                    .to_string()
             })
             .collect();
 

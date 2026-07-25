@@ -22,9 +22,9 @@
 //! module's own path per spec §8.3.7.
 
 use crate::ast_builder::{HeadKind, StructuralKind, classify_head};
-use cranelisp_types::{ErrorLocation,
-    CranelispError, ExportSpec, ImportNames, ImportSpec, ModDecl, ModuleFullPath, ModuleName,
-    PlatformSpec, Sexp, Span, Visibility,
+use cranelisp_types::{
+    CranelispError, ErrorLocation, ExportSpec, ImportNames, ImportSpec, ModDecl, ModuleFullPath,
+    ModuleName, PlatformSpec, Sexp, Span, Visibility,
 };
 
 /// Extracted module-level declarations from top-level S-expressions.
@@ -160,7 +160,11 @@ pub fn extract_module_declarations(
 // ---------------------------------------------------------------------------
 
 /// Parse `(mod name)`, `(mod name form...)`, `(mod- name)`, or `(mod- name form...)`.
-fn parse_mod_decl(elems: &[Sexp], span: Span, visibility: Visibility) -> Result<ModDecl, CranelispError> {
+fn parse_mod_decl(
+    elems: &[Sexp],
+    span: Span,
+    visibility: Visibility,
+) -> Result<ModDecl, CranelispError> {
     if elems.len() < 2 {
         return Err(CranelispError::ModuleError {
             message: "mod declaration requires a name".to_string(),
@@ -345,10 +349,7 @@ fn parse_names_list(sexp: &Sexp) -> Result<(ImportNames, Span), CranelispError> 
                 }
                 // Check for member glob: `Display.*`
                 if let Some(base) = name.strip_suffix(".*") {
-                    return Ok((
-                        ImportNames::MemberGlob(base.to_string().into()),
-                        *span,
-                    ));
+                    return Ok((ImportNames::MemberGlob(base.to_string().into()), *span));
                 }
             }
 
@@ -358,10 +359,7 @@ fn parse_names_list(sexp: &Sexp) -> Result<(ImportNames, Span), CranelispError> 
                 let name = expect_symbol(item, "import name")?;
                 // Check for member glob in multi-item list
                 if let Some(base) = name.strip_suffix(".*") {
-                    return Ok((
-                        ImportNames::MemberGlob(base.to_string().into()),
-                        *span,
-                    ));
+                    return Ok((ImportNames::MemberGlob(base.to_string().into()), *span));
                 }
                 names.push(name.into());
             }
@@ -401,7 +399,10 @@ fn parse_export(elems: &[Sexp], span: Span) -> Result<Vec<ExportSpec>, Cranelisp
 }
 
 /// Parse pairs of `module names-list` from bracket contents.
-fn parse_export_entries(items: &[Sexp], form_span: Span) -> Result<Vec<ExportSpec>, CranelispError> {
+fn parse_export_entries(
+    items: &[Sexp],
+    form_span: Span,
+) -> Result<Vec<ExportSpec>, CranelispError> {
     let mut specs = Vec::new();
     let mut i = 0;
 
@@ -477,7 +478,11 @@ fn expect_symbol(sexp: &Sexp, context: &str) -> Result<String, CranelispError> {
             // form (`Sexp::format_flat`) — NOT `{:?}`, which would leak a Debug
             // `Sexp`/`Span { .. }` struct dump into user-facing text (the P6
             // diagnostic-quality class the 0500 rendered-diagnostic tier guards).
-            message: format!("expected symbol for {}, got {}", context, other.format_flat()),
+            message: format!(
+                "expected symbol for {}, got {}",
+                context,
+                other.format_flat()
+            ),
             location: ErrorLocation::from_span_file(other.span(), None),
         }),
     }

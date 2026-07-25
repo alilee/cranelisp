@@ -124,13 +124,13 @@ pub struct HeapVec {
 }
 
 impl HeapVec {
-    pub const LEN_OFFSET: i32 = offset_of!(Self, len) as i32;           // 16
-    pub const CAP_OFFSET: i32 = offset_of!(Self, cap) as i32;           // 24
+    pub const LEN_OFFSET: i32 = offset_of!(Self, len) as i32; // 16
+    pub const CAP_OFFSET: i32 = offset_of!(Self, cap) as i32; // 24
     pub const DATA_PTR_OFFSET: i32 = offset_of!(Self, data_ptr) as i32; // 32
 
     /// Payload size after the header: len + cap + data_ptr.
     pub const fn payload_size() -> usize {
-        3 * mem::size_of::<i64>()  // 24 bytes
+        3 * mem::size_of::<i64>() // 24 bytes
     }
 }
 
@@ -254,7 +254,9 @@ pub(crate) fn emit_rc_inc_atomicity<M: Module>(
     if use_nonatomic_arm(atomicity) {
         // Non-atomic inc — the S99 measurement arm, per-site-gated on a
         // Confined cell (or forced by the CRANELISP_NONATOMIC_RC probe).
-        let cur = builder.ins().load(types::I64, MemFlags::trusted(), rc_addr, 0);
+        let cur = builder
+            .ins()
+            .load(types::I64, MemFlags::trusted(), rc_addr, 0);
         let new = builder.ins().iadd(cur, one);
         builder.ins().store(MemFlags::trusted(), new, rc_addr, 0);
     } else {
@@ -295,9 +297,7 @@ pub(crate) fn emit_rc_inc_guarded_atomicity<M: Module>(
 
     let threshold = builder.ins().iconst(types::I64, NULLARY_THRESHOLD_I64);
     let is_tag = builder.ins().icmp(IntCC::UnsignedLessThan, ptr, threshold);
-    builder
-        .ins()
-        .brif(is_tag, cont_block, &[], inc_block, &[]);
+    builder.ins().brif(is_tag, cont_block, &[], inc_block, &[]);
 
     builder.switch_to_block(inc_block);
     builder.seal_block(inc_block);
@@ -311,7 +311,9 @@ pub(crate) fn emit_rc_inc_guarded_atomicity<M: Module>(
     if use_nonatomic_arm(atomicity) {
         // Non-atomic inc — the S99 measurement arm, per-site-gated on a
         // Confined cell (or forced by the CRANELISP_NONATOMIC_RC probe).
-        let cur = builder.ins().load(types::I64, MemFlags::trusted(), rc_addr, 0);
+        let cur = builder
+            .ins()
+            .load(types::I64, MemFlags::trusted(), rc_addr, 0);
         let new = builder.ins().iadd(cur, one);
         builder.ins().store(MemFlags::trusted(), new, rc_addr, 0);
     } else {
@@ -372,9 +374,11 @@ pub(crate) fn emit_rc_dec_check_gated<M: Module>(
         let mut sig = module.make_signature();
         sig.params.push(AbiParam::new(types::I64));
         sig.returns.push(AbiParam::new(types::I64));
-        if let Ok(check_id) =
-            module.declare_function("runtime/rc_dec_check", cranelift_module::Linkage::Import, &sig)
-        {
+        if let Ok(check_id) = module.declare_function(
+            "runtime/rc_dec_check",
+            cranelift_module::Linkage::Import,
+            &sig,
+        ) {
             let check_ref = module.declare_func_in_func(check_id, builder.func);
             builder.ins().call(check_ref, &[ptr]);
         }
@@ -443,7 +447,13 @@ pub(crate) fn emit_rc_dec<M: Module>(
     drop_glue_id: Option<FuncId>,
 ) {
     emit_rc_dec_guarded_atomicity(
-        builder, module, ptr, dealloc_func_id, drop_glue_id, false, RcAtomicity::Atomic,
+        builder,
+        module,
+        ptr,
+        dealloc_func_id,
+        drop_glue_id,
+        false,
+        RcAtomicity::Atomic,
     );
 }
 
@@ -464,7 +474,13 @@ pub(crate) fn emit_rc_dec_guarded<M: Module>(
     guard_nullary: bool,
 ) {
     emit_rc_dec_guarded_atomicity(
-        builder, module, ptr, dealloc_func_id, drop_glue_id, guard_nullary, RcAtomicity::Atomic,
+        builder,
+        module,
+        ptr,
+        dealloc_func_id,
+        drop_glue_id,
+        guard_nullary,
+        RcAtomicity::Atomic,
     );
 }
 
@@ -489,9 +505,7 @@ pub(crate) fn emit_rc_dec_guarded_atomicity<M: Module>(
         let threshold = builder.ins().iconst(types::I64, NULLARY_THRESHOLD_I64);
         let is_tag = builder.ins().icmp(IntCC::UnsignedLessThan, ptr, threshold);
         let dec_block = builder.create_block();
-        builder
-            .ins()
-            .brif(is_tag, cont_block, &[], dec_block, &[]);
+        builder.ins().brif(is_tag, cont_block, &[], dec_block, &[]);
         builder.switch_to_block(dec_block);
         builder.seal_block(dec_block);
     }
@@ -514,7 +528,9 @@ pub(crate) fn emit_rc_dec_guarded_atomicity<M: Module>(
         // Non-atomic dec — the S99 measurement arm, per-site-gated on a
         // Confined cell (or forced by the CRANELISP_NONATOMIC_RC probe). The
         // pre-decrement value stands in for the atomic_rmw's returned old value.
-        let cur = builder.ins().load(types::I64, MemFlags::trusted(), rc_addr, 0);
+        let cur = builder
+            .ins()
+            .load(types::I64, MemFlags::trusted(), rc_addr, 0);
         let new = builder.ins().isub(cur, one);
         builder.ins().store(MemFlags::trusted(), new, rc_addr, 0);
         cur
@@ -532,9 +548,7 @@ pub(crate) fn emit_rc_dec_guarded_atomicity<M: Module>(
     let cmp = builder.ins().icmp(IntCC::Equal, old_rc, one);
     let free_block = builder.create_block();
 
-    builder
-        .ins()
-        .brif(cmp, free_block, &[], cont_block, &[]);
+    builder.ins().brif(cmp, free_block, &[], cont_block, &[]);
 
     // Free path: Acquire fence, optional drop glue, then dealloc.
     builder.switch_to_block(free_block);
@@ -650,9 +664,12 @@ pub(crate) fn emit_stack_alloc(builder: &mut FunctionBuilder, payload_size: i64)
 
     // Header init — byte-identical to `alloc_with_rc`, with the immortal sentinel.
     let size_val = builder.ins().iconst(types::I64, total_size);
-    builder
-        .ins()
-        .store(MemFlags::trusted(), size_val, base, HeapHeader::ALLOC_SIZE_OFFSET);
+    builder.ins().store(
+        MemFlags::trusted(),
+        size_val,
+        base,
+        HeapHeader::ALLOC_SIZE_OFFSET,
+    );
     let rc_val = builder.ins().iconst(types::I64, IMMORTAL_RC);
     builder
         .ins()
@@ -675,7 +692,8 @@ where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
-    symbol_tables.get(&fqtn.module)
+    symbol_tables
+        .get(&fqtn.module)
         .map(|table| {
             // Constructor name-list via the SINGLE shared
             // `cranelisp_types::type_ctor_names` reader (FIXME 0528 mirror cure) —
@@ -706,10 +724,7 @@ where
 /// `ModuleEntry::Def { kind: DefKind::Constructor { field_count, .. }, .. }`
 /// entry within the given symbol table. Returns `None` if the name is not a
 /// constructor in this table.
-fn ctor_field_count<C, L>(
-    table: &SymbolTable<C, L>,
-    ctor_name: &Symbol,
-) -> Option<usize>
+fn ctor_field_count<C, L>(table: &SymbolTable<C, L>, ctor_name: &Symbol) -> Option<usize>
 where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
@@ -793,9 +808,7 @@ impl HeapCategory {
         // property — the §3.11.1 ambiguity is caught upstream at the typecheck
         // check + the `MonoExpr::from_expr` conversion choke point, never here.
         match ty {
-            ConcreteType::Int | ConcreteType::Bool | ConcreteType::Float => {
-                HeapCategory::NeverHeap
-            }
+            ConcreteType::Int | ConcreteType::Bool | ConcreteType::Float => HeapCategory::NeverHeap,
             ConcreteType::String => HeapCategory::AlwaysHeap,
             ConcreteType::Fn(_, _) => {
                 // In Ring 0, functions are bare pointers (NeverHeap).
@@ -932,7 +945,6 @@ impl HeapCategory {
 #[cfg(test)]
 mod heap_category_tests;
 
-
 // ---------------------------------------------------------------------------
 // Last-use analysis
 // ---------------------------------------------------------------------------
@@ -945,9 +957,9 @@ mod heap_category_tests;
 /// Ring 1 simplified approach: walk the expression tree and for each variable,
 /// record all use sites. The last one in a pre-order traversal is the last use.
 pub(crate) fn compute_last_uses(
-expr: &cranelisp_types::MonoExpr,
+    expr: &cranelisp_types::MonoExpr,
 ) -> HashMap<(cranelisp_types::Symbol, cranelisp_types::Span), bool> {
-    use cranelisp_types::{Symbol, Span};
+    use cranelisp_types::{Span, Symbol};
 
     let mut uses: HashMap<Symbol, Vec<Span>> = HashMap::new();
     // Pure-SSA alias map (alias name -> ultimate root), built as `Let` bindings
@@ -980,10 +992,10 @@ expr: &cranelisp_types::MonoExpr,
 /// of `w` counts as a use of BOTH `w` and `v` — the two share one buffer, so the
 /// root's live range must cover the alias's uses (see `compute_last_uses`).
 fn record_var_use(
-name: &cranelisp_types::Symbol,
-span: cranelisp_types::Span,
-uses: &mut HashMap<cranelisp_types::Symbol, Vec<cranelisp_types::Span>>,
-aliases: &HashMap<cranelisp_types::Symbol, cranelisp_types::Symbol>,
+    name: &cranelisp_types::Symbol,
+    span: cranelisp_types::Span,
+    uses: &mut HashMap<cranelisp_types::Symbol, Vec<cranelisp_types::Span>>,
+    aliases: &HashMap<cranelisp_types::Symbol, cranelisp_types::Symbol>,
 ) {
     uses.entry(name.clone()).or_default().push(span);
     if let Some(root) = aliases.get(name) {
@@ -996,9 +1008,9 @@ aliases: &HashMap<cranelisp_types::Symbol, cranelisp_types::Symbol>,
 /// ordered after all nested uses — see the comment there). For any non-`Var`
 /// expression this is identical to `collect_var_uses`.
 fn collect_var_uses_nested_only(
-expr: &cranelisp_types::MonoExpr,
-uses: &mut HashMap<cranelisp_types::Symbol, Vec<cranelisp_types::Span>>,
-aliases: &mut HashMap<cranelisp_types::Symbol, cranelisp_types::Symbol>,
+    expr: &cranelisp_types::MonoExpr,
+    uses: &mut HashMap<cranelisp_types::Symbol, Vec<cranelisp_types::Span>>,
+    aliases: &mut HashMap<cranelisp_types::Symbol, cranelisp_types::Symbol>,
 ) {
     if matches!(expr, cranelisp_types::MonoExpr::Var { .. }) {
         // Direct Var: recorded by the caller after nested uses.
@@ -1013,9 +1025,9 @@ aliases: &mut HashMap<cranelisp_types::Symbol, cranelisp_types::Symbol>,
 /// bindings whose value is a bare `Var` add an `alias -> root` edge, and every
 /// `Var`/`Apply` occurrence propagates a use to the root via [`record_var_use`].
 fn collect_var_uses(
-expr: &cranelisp_types::MonoExpr,
-uses: &mut HashMap<cranelisp_types::Symbol, Vec<cranelisp_types::Span>>,
-aliases: &mut HashMap<cranelisp_types::Symbol, cranelisp_types::Symbol>,
+    expr: &cranelisp_types::MonoExpr,
+    uses: &mut HashMap<cranelisp_types::Symbol, Vec<cranelisp_types::Span>>,
+    aliases: &mut HashMap<cranelisp_types::Symbol, cranelisp_types::Symbol>,
 ) {
     use cranelisp_types::MonoExpr;
 
@@ -1036,7 +1048,12 @@ aliases: &mut HashMap<cranelisp_types::Symbol, cranelisp_types::Symbol>,
             }
             collect_var_uses(body, uses, aliases);
         }
-        MonoExpr::If { cond, then_branch, else_branch, .. } => {
+        MonoExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
             collect_var_uses(cond, uses, aliases);
             collect_var_uses(then_branch, uses, aliases);
             collect_var_uses(else_branch, uses, aliases);
@@ -1080,7 +1097,9 @@ aliases: &mut HashMap<cranelisp_types::Symbol, cranelisp_types::Symbol>,
                 }
             }
         }
-        MonoExpr::Match { scrutinee, arms, .. } => {
+        MonoExpr::Match {
+            scrutinee, arms, ..
+        } => {
             collect_var_uses(scrutinee, uses, aliases);
             for arm in arms {
                 collect_var_uses(&arm.body, uses, aliases);
@@ -1100,7 +1119,11 @@ aliases: &mut HashMap<cranelisp_types::Symbol, cranelisp_types::Symbol>,
             }
             collect_var_uses(body, uses, aliases);
         }
-        MonoExpr::LaunchContinue { launched, continuation, .. } => {
+        MonoExpr::LaunchContinue {
+            launched,
+            continuation,
+            ..
+        } => {
             // Union over both sub-trees — the launched effect binds no name (its
             // result is discarded), so var uses come from both arms.
             collect_var_uses(launched, uses, aliases);

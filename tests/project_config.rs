@@ -94,10 +94,7 @@ fn scaffold_resolution_unchanged_lib_still_loads() {
         .expect("write env_lib/foo.cl");
 
     let out = Cranelisp::new()
-        .file(
-            "myproject/user.cl",
-            "(import [foo [val]])\n(val)\n",
-        )
+        .file("myproject/user.cl", "(import [foo [val]])\n(val)\n")
         .cli_flag("myproject")
         .env(
             "CRANELISP_LIB",
@@ -116,7 +113,11 @@ fn scaffold_resolution_unchanged_lib_still_loads() {
 #[test]
 fn scaffold_carries_commented_lib_paths() {
     let env_lib_td = tempfile::tempdir().expect("env_lib TempDir");
-    let env_path = env_lib_td.path().to_str().expect("env path utf8").to_string();
+    let env_path = env_lib_td
+        .path()
+        .to_str()
+        .expect("env path utf8")
+        .to_string();
 
     let out = Cranelisp::new()
         .file("myproject/user.cl", "(defn greet [] 0)\n")

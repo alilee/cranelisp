@@ -85,7 +85,8 @@ fn assert_balanced(shape: &str, src: &str) {
             "ownership analysis ON"
         };
         assert_eq!(
-            allocs, deallocs,
+            allocs,
+            deallocs,
             "{shape} ({toggle}) MUST balance exactly: allocs={allocs} \
              deallocs={deallocs} (residue {}). A release must reach everything the \
              released value owns.",
@@ -163,7 +164,10 @@ fn closure_capture_controls_balance_green() {
            (let [g (fn [b] (add-i64 b (str-len s)))] (fn [c] (g c)))))\n\
          (defn one [] ((mk) 2))\n{DRIVER}"
     );
-    assert_balanced("control (capture a closure that captures a String)", &closure_capture);
+    assert_balanced(
+        "control (capture a closure that captures a String)",
+        &closure_capture,
+    );
 }
 
 // CONTROLS (GREEN) — the POSITION twins of K and L: the identical values passed as
@@ -185,7 +189,10 @@ fn borrowed_argument_twins_of_k_and_l_balance_green() {
          (defn use [w c] (add-i64 c (match w [(Wr s) (str-len s)])))\n\
          (defn one [] (let [w (Wr \"hello\")] (use w 2)))\n{DRIVER}"
     );
-    assert_balanced("control (ADT with a String field as a Borrowed argument)", &adt_arg);
+    assert_balanced(
+        "control (ADT with a String field as a Borrowed argument)",
+        &adt_arg,
+    );
 }
 
 // =============================================================================
@@ -258,7 +265,10 @@ fn nested_adt_chain_past_glue_depth_limit_does_not_leak() {
         .iter()
         .filter(|(_, _, a, d)| a != d)
         .map(|(depth, off, a, d)| {
-            format!("depth {depth} (NO_OWNERSHIP={off}): {a}/{d}, residue {}", a - d)
+            format!(
+                "depth {depth} (NO_OWNERSHIP={off}): {a}/{d}, residue {}",
+                a - d
+            )
         })
         .collect();
     assert!(

@@ -1,5 +1,7 @@
 ; Cranelisp Ring 4A — IO Foundation
 
+(import [primitives [Pure bind add-i64 mul-i64]])
+
 ; What is IO?
 
 Pure

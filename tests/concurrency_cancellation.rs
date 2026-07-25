@@ -62,7 +62,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, CrOutput};
+use helpers::e2e::{CrOutput, Cranelisp};
 
 // =============================================================================
 // Tuning. Matches the poll-carrier calibration in `concurrency_poll_capacity.rs`

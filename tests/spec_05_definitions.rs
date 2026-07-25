@@ -21,7 +21,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{run_through_all_modes, Cranelisp, PreludeVariant};
+use helpers::e2e::{Cranelisp, PreludeVariant, run_through_all_modes};
 
 fn repl_prims(lines: &str) -> helpers::e2e::CrOutput {
     Cranelisp::new()
@@ -73,8 +73,7 @@ fn defn_one_param() {
 // → /frontend (reader/symbol tokenisation).
 #[test]
 fn defn_name_with_arrow_in_symbol_parses() {
-    repl_prims("(defn char->digit [c] c)\n")
-        .assert_stdout_contains("user/char->digit");
+    repl_prims("(defn char->digit [c] c)\n").assert_stdout_contains("user/char->digit");
 }
 
 // spec: spec/05-definitions.md §5.1.1 — CONTROL for D-name: the SAME defn shape
@@ -82,8 +81,7 @@ fn defn_name_with_arrow_in_symbol_parses() {
 // (not the docstring or any other element) as the D-name trigger. GREEN today.
 #[test]
 fn defn_name_without_arrow_control_parses() {
-    repl_prims("(defn chardigit \"d\" [c] c)\n")
-        .assert_stdout_contains("user/chardigit");
+    repl_prims("(defn chardigit \"d\" [c] c)\n").assert_stdout_contains("user/chardigit");
 }
 
 // spec: spec/05-definitions.md §5 — "Declaration heads are binders" + §5.1.1 (user
@@ -421,14 +419,12 @@ fn defn_multiple_discard_params_accepted() {
 // spec: spec/05-definitions.md §5.1.2 — multi-clause arity dispatch
 #[test]
 fn defn_multi_clause_arity() {
-    repl_prims(
-        "(defn f ([] 0) ([x] x) ([x y] (add-i64 x y)))\n(f)\n(f 5)\n(f 3 4)\n",
-    )
-    .assert_stdout_contains_all(&[
-        ":primitives/Int 0",
-        ":primitives/Int 5",
-        ":primitives/Int 7",
-    ]);
+    repl_prims("(defn f ([] 0) ([x] x) ([x y] (add-i64 x y)))\n(f)\n(f 5)\n(f 3 4)\n")
+        .assert_stdout_contains_all(&[
+            ":primitives/Int 0",
+            ":primitives/Int 5",
+            ":primitives/Int 7",
+        ]);
 }
 
 // =============================================================================
@@ -438,10 +434,8 @@ fn defn_multi_clause_arity() {
 // spec: spec/05-definitions.md §5.1.3 — calling with fewer args returns closure
 #[test]
 fn defn_auto_curry_call_with_fewer_args() {
-    repl_prims(
-        "(defn add [x y] (add-i64 x y))\n(let [inc (add 1)] (inc 4))\n",
-    )
-    .assert_stdout_contains(":primitives/Int 5");
+    repl_prims("(defn add [x y] (add-i64 x y))\n(let [inc (add 1)] (inc 4))\n")
+        .assert_stdout_contains(":primitives/Int 5");
 }
 
 // =============================================================================
@@ -467,8 +461,7 @@ fn defn_multi_clause_type_dispatch() {
 fn defn_multi_clause_duplicate_sig_neg() {
     let out = repl_prims("(defn dup ([x] (add-i64 x 1)) ([y] (add-i64 y 2)))\n");
     assert!(
-        out.stdout.to_lowercase().contains("error")
-            || out.stdout.contains("duplicate"),
+        out.stdout.to_lowercase().contains("error") || out.stdout.contains("duplicate"),
         "duplicate clause signature MUST error per §5.1.2; got:\n{}",
         out.stdout
     );
@@ -481,10 +474,8 @@ fn defn_multi_clause_duplicate_sig_neg() {
 // spec: spec/05-definitions.md §5.2 — enum (nullary constructors)
 #[test]
 fn deftype_enum_construct_and_match() {
-    repl_prims(
-        "(deftype Color Red Green Blue)\n(match Red [Red 0 Green 1 Blue 2 _ 99])\n",
-    )
-    .assert_stdout_contains(":primitives/Int 0");
+    repl_prims("(deftype Color Red Green Blue)\n(match Red [Red 0 Green 1 Blue 2 _ 99])\n")
+        .assert_stdout_contains(":primitives/Int 0");
 }
 
 // spec: spec/05-definitions.md §5.2 — sum type with field
@@ -847,10 +838,8 @@ fn data_constructor_arg_from_closure_call_result() {
 // auto-generated free fns (not match-only), so this is a genuine defect.
 #[test]
 fn generated_field_accessor_resolves_as_free_callable() {
-    repl_prims(
-        "(deftype Box [:primitives/Int v])\n(v (Box 5))\n",
-    )
-    .assert_stdout_contains(":primitives/Int 5");
+    repl_prims("(deftype Box [:primitives/Int v])\n(v (Box 5))\n")
+        .assert_stdout_contains(":primitives/Int 5");
 }
 
 // spec: spec/05-definitions.md §5.2.6 — Generated Accessors are first-class.
@@ -865,10 +854,8 @@ fn generated_field_accessor_resolves_as_free_callable() {
 // test pins the value-passing path. The Wave-2 typecheck synthesis flips it.
 #[test]
 fn accessor_is_first_class_value_passable() {
-    repl_prims(
-        "(deftype Box [:primitives/Int v])\n(let [g v] (g (Box 7)))\n",
-    )
-    .assert_stdout_contains(":primitives/Int 7");
+    repl_prims("(deftype Box [:primitives/Int v])\n(let [g v] (g (Box 7)))\n")
+        .assert_stdout_contains(":primitives/Int 7");
 }
 
 // spec: spec/05-definitions.md §5.2.6 — Generated Accessors, collision case.
@@ -1217,10 +1204,8 @@ fn data_constructor_undefined_lookup_neg() {
 #[test]
 fn vec_containing_adt_elements_get_and_match() {
     // Reuse the prelude-seeded `primitives/Option` (see §8.6.4 note above).
-    repl_prims(
-        "(match (vec-get [(Some 1) None (Some 3)] 0) [(Some x) x None 0])\n",
-    )
-    .assert_stdout_contains(":primitives/Int 1");
+    repl_prims("(match (vec-get [(Some 1) None (Some 3)] 0) [(Some x) x None 0])\n")
+        .assert_stdout_contains(":primitives/Int 1");
 }
 
 // =============================================================================
@@ -1311,8 +1296,7 @@ fn deftrait_with_docstring_and_method_docstring_does_not_affect_dispatch() {
 /// The Face-B shape: unannotated multi-clause `defn` + cross-variant self-call.
 /// Bare primitive names resolve through the PrimitivesOnly prelude. Under the
 /// settled §5.1.2 it compiles; `(sum-to 5)` = 15.
-const SUM_TO_FACE_B: &str =
-    "(defn sum-to ([n] (sum-to n 0)) ([n acc] (if (eq-i64 n 0) acc (sum-to (sub-i64 n 1) (add-i64 acc n)))))";
+const SUM_TO_FACE_B: &str = "(defn sum-to ([n] (sum-to n 0)) ([n acc] (if (eq-i64 n 0) acc (sum-to (sub-i64 n 1) (add-i64 acc n)))))";
 
 // spec: spec/05-definitions.md §5.1.2 — UW-7.E1: the Face-B form via the REPL
 // COMPILES and `(sum-to 5)` = 15; the session does NOT crash (no panic banner,
@@ -1365,7 +1349,9 @@ fn multi_clause_defn_self_call_run_computes_15() {
     let out = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
-        .user(&format!("{SUM_TO_FACE_B}\n(defn main [] (Pure (sum-to 5)))"))
+        .user(&format!(
+            "{SUM_TO_FACE_B}\n(defn main [] (Pure (sum-to 5)))"
+        ))
         .output();
     let combined = format!("{}{}", out.stdout, out.stderr);
 
@@ -1853,9 +1839,7 @@ fn same_arity_unifiable_clauses_call_site_ambiguous_neg() {
          and `[:a x]` clauses can unify (§5.1.1); got:\n{c}"
     );
     // `--run` facet: the ambiguity is mode-uniform.
-    let run = run_prims_05(
-        "(defn f ([:Int x] x) ([:a x] x))\n(defn main [] (Pure (f 1)))\n",
-    );
+    let run = run_prims_05("(defn f ([:Int x] x) ([:a x] x))\n(defn main [] (Pure (f 1)))\n");
     assert!(
         !run.status.success(),
         "the same-arity-unifiable call ambiguity MUST also fire under `--run` \
@@ -1887,9 +1871,7 @@ fn same_arity_unifiable_clauses_definition_site_error_neg() {
          (§5.1.2 MUST), NOT accepted silently and deferred to the call; got:\n{c}"
     );
     // `--run` facet: the definition-site rejection is mode-uniform.
-    let run = run_prims_05(
-        "(defn f ([:Int x] x) ([:a x] x))\n(defn main [] (Pure 0))\n",
-    );
+    let run = run_prims_05("(defn f ([:Int x] x) ([:a x] x))\n(defn main [] (Pure 0))\n");
     assert!(
         !run.status.success(),
         "the same-arity-unifiable definition-site rejection MUST also fire under \
@@ -2019,11 +2001,13 @@ fn ambiguous_clause_diagnostic_cites_standalone_equivalence() {
 fn constrained_clause_nonoverlapping_arity_dispatches_two_instantiations() {
     // Two-instantiation facet (REPL): the constrained `([:a x] (+ x x))` clause
     // monomorphises at Int AND Float.
-    let out = repl_std("(defn g ([:a x] (+ x x)) ([:Int x :Int y] (add-i64 x y)))\n(g 3)\n(g 1.5)\n(g 2 3)\n");
+    let out = repl_std(
+        "(defn g ([:a x] (+ x x)) ([:Int x :Int y] (add-i64 x y)))\n(g 3)\n(g 1.5)\n(g 2 3)\n",
+    );
     out.assert_stdout_contains_all(&[
-        ":primitives/Int 6",       // constrained clause at Int
-        ":primitives/Float 3.0",   // constrained clause at Float — 2nd instance
-        ":primitives/Int 5",       // concrete 2-arg clause: 2+3
+        ":primitives/Int 6",     // constrained clause at Int
+        ":primitives/Float 3.0", // constrained clause at Float — 2nd instance
+        ":primitives/Int 5",     // concrete 2-arg clause: 2+3
     ]);
     // Mode-×3 facet: the Int-summable observation is equivalent across modes.
     run_through_all_modes(
@@ -2133,9 +2117,7 @@ fn constrained_clause_same_arity_concrete_overlap_ambiguous_neg() {
 // the constraint; an unsatisfied constraint is a clean type error.
 #[test]
 fn constrained_clause_unsatisfied_constraint_call_rejected_neg() {
-    let out = repl_std(
-        "(defn g ([:a x] (+ x x)) ([:Int x :Int y] (add-i64 x y)))\n(g \"s\")\n",
-    );
+    let out = repl_std("(defn g ([:a x] (+ x x)) ([:Int x :Int y] (add-i64 x y)))\n(g \"s\")\n");
     let c = format!("{}{}", out.stdout, out.stderr);
     // g's defn is admitted (RED at HEAD until the constrained cell lands).
     assert!(

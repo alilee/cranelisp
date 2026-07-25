@@ -59,7 +59,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{run_through_all_modes, Cranelisp, PreludeVariant};
+use helpers::e2e::{Cranelisp, PreludeVariant, run_through_all_modes};
 
 const ASSOC_PARAM_RETURN: &str = "(defn assoc [v i x] (vec-set v i x))\n";
 
@@ -86,7 +86,9 @@ fn vec_set_on_param_returned_and_consumed_repl_yields_correct_value() {
     let out = Cranelisp::new()
         .repl()
         .with_prelude(PreludeVariant::PrimitivesOnly)
-        .stdin(&format!("{ASSOC_PARAM_RETURN}(vec-get (assoc [1 2 3] 1 99) 1)\n"))
+        .stdin(&format!(
+            "{ASSOC_PARAM_RETURN}(vec-get (assoc [1 2 3] 1 99) 1)\n"
+        ))
         .output();
     let n = last_int_value(&out.stdout);
     assert_eq!(

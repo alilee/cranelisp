@@ -160,7 +160,10 @@ fn test_ivar_force_ferries_panic_to_joiner() {
     assert_eq!(result, 0, "panicked thunk yields the sentinel 0");
 
     let err = crate::panic::take_runtime_error();
-    assert!(err.is_some(), "panic must be re-raised on the joining thread");
+    assert!(
+        err.is_some(),
+        "panic must be re-raised on the joining thread"
+    );
     assert!(
         err.unwrap().contains("ivar boom"),
         "the ferried message must be the thunk's panic"
@@ -475,20 +478,48 @@ fn spark_budget_zero_try_reserve_always_rejects() {
 fn saturation_gate_effective_cap_policy() {
     // Gate OFF, M-dynamic default (core_mult = 2): the S104 Wave-2 default is
     // 2× the worker count (~2/core utilization cap, §2.8.3).
-    assert_eq!(effective_spark_cap(None, false, 2, 1), 2, "off ⇒ 2×threads (k=2)");
-    assert_eq!(effective_spark_cap(None, false, 2, 8), 16, "off ⇒ 2×threads (k=2)");
+    assert_eq!(
+        effective_spark_cap(None, false, 2, 1),
+        2,
+        "off ⇒ 2×threads (k=2)"
+    );
+    assert_eq!(
+        effective_spark_cap(None, false, 2, 8),
+        16,
+        "off ⇒ 2×threads (k=2)"
+    );
 
     // Gate ON (no explicit budget): cap at exactly the worker count — the
     // saturation policy (spark iff a worker is free; inline the overflow).
     // The saturation gate takes precedence over the M-dynamic multiplier.
-    assert_eq!(effective_spark_cap(None, true, 2, 1), 1, "saturation ⇒ 1×threads");
-    assert_eq!(effective_spark_cap(None, true, 2, 8), 8, "saturation ⇒ 1×threads");
+    assert_eq!(
+        effective_spark_cap(None, true, 2, 1),
+        1,
+        "saturation ⇒ 1×threads"
+    );
+    assert_eq!(
+        effective_spark_cap(None, true, 2, 8),
+        8,
+        "saturation ⇒ 1×threads"
+    );
 
     // An explicit `CRANELISP_SPARK_BUDGET` override always wins, gate or not —
     // including the `=0` always-reject cap.
-    assert_eq!(effective_spark_cap(Some(3), true, 2, 8), 3, "explicit override wins over gate");
-    assert_eq!(effective_spark_cap(Some(3), false, 2, 8), 3, "explicit override wins by default");
-    assert_eq!(effective_spark_cap(Some(0), true, 2, 8), 0, "explicit 0 wins (always-reject)");
+    assert_eq!(
+        effective_spark_cap(Some(3), true, 2, 8),
+        3,
+        "explicit override wins over gate"
+    );
+    assert_eq!(
+        effective_spark_cap(Some(3), false, 2, 8),
+        3,
+        "explicit override wins by default"
+    );
+    assert_eq!(
+        effective_spark_cap(Some(0), true, 2, 8),
+        0,
+        "explicit 0 wins (always-reject)"
+    );
 }
 
 // spec: design/backend/lenient-eval.md §3.6 — the grant decision is the
@@ -500,12 +531,21 @@ fn saturation_gate_budget_grants_iff_spare_capacity() {
     let cap = 4;
     // Spare capacity: fewer sparks in flight than workers ⇒ grant (spark).
     assert!(budget_grants(0, 1, cap), "empty pool ⇒ spark");
-    assert!(budget_grants(3, 1, cap), "1 free worker ⇒ spark the last slot");
+    assert!(
+        budget_grants(3, 1, cap),
+        "1 free worker ⇒ spark the last slot"
+    );
     // Saturated: a full pool rejects ⇒ the caller inlines the branch.
-    assert!(!budget_grants(4, 1, cap), "saturated pool ⇒ inline (no spark)");
+    assert!(
+        !budget_grants(4, 1, cap),
+        "saturated pool ⇒ inline (no spark)"
+    );
     assert!(!budget_grants(5, 1, cap), "over-saturated ⇒ inline");
     // All-or-nothing for a batch: 1 free slot cannot admit a 2-spark batch.
-    assert!(!budget_grants(3, 2, cap), "batch overflowing by 1 ⇒ inline wholesale");
+    assert!(
+        !budget_grants(3, 2, cap),
+        "batch overflowing by 1 ⇒ inline wholesale"
+    );
     assert!(budget_grants(2, 2, cap), "an exact-fit batch ⇒ spark");
 }
 
@@ -560,19 +600,39 @@ fn mdynamic_effective_cap_core_mult_sweep() {
     // Default k=2 across pool widths (~2/core).
     assert_eq!(effective_spark_cap(None, false, 2, 1), 2, "k=2 ⇒ 2×threads");
     assert_eq!(effective_spark_cap(None, false, 2, 4), 8, "k=2 ⇒ 2×threads");
-    assert_eq!(effective_spark_cap(None, false, 2, 8), 16, "k=2 ⇒ 2×threads");
+    assert_eq!(
+        effective_spark_cap(None, false, 2, 8),
+        16,
+        "k=2 ⇒ 2×threads"
+    );
 
     // k=1 == the saturation cap (tightest collapse).
     assert_eq!(effective_spark_cap(None, false, 1, 8), 8, "k=1 ⇒ 1×threads");
     // k=4 recovers the pre-Wave-2 static budget (M-dynamic effectively OFF).
-    assert_eq!(effective_spark_cap(None, false, 4, 8), 32, "k=4 ⇒ pre-Wave-2 4×threads");
+    assert_eq!(
+        effective_spark_cap(None, false, 4, 8),
+        32,
+        "k=4 ⇒ pre-Wave-2 4×threads"
+    );
     // k=0 ⇒ cap 0 ⇒ always-reject ⇒ fully serial (== CRANELISP_SPARK_BUDGET=0).
-    assert_eq!(effective_spark_cap(None, false, 0, 8), 0, "k=0 ⇒ cap 0 (fully serial)");
+    assert_eq!(
+        effective_spark_cap(None, false, 0, 8),
+        0,
+        "k=0 ⇒ cap 0 (fully serial)"
+    );
 
     // Precedence is unchanged: an explicit budget still wins over the multiplier,
     // and the saturation gate still wins over the multiplier default.
-    assert_eq!(effective_spark_cap(Some(5), false, 2, 8), 5, "explicit budget wins over k");
-    assert_eq!(effective_spark_cap(None, true, 2, 8), 8, "saturation gate wins over k");
+    assert_eq!(
+        effective_spark_cap(Some(5), false, 2, 8),
+        5,
+        "explicit budget wins over k"
+    );
+    assert_eq!(
+        effective_spark_cap(None, true, 2, 8),
+        8,
+        "saturation gate wins over k"
+    );
 }
 
 // spec: design/backend/lenient-eval.md §2.8.3/§2.8.6 — the M-dynamic cap-boundary:
@@ -588,13 +648,19 @@ fn mdynamic_cap_boundary_sparks_under_inlines_at_cap() {
 
     // Under the cap ⇒ spark.
     assert!(budget_grants(0, 1, cap), "empty pool ⇒ spark");
-    assert!(budget_grants(cap - 1, 1, cap), "one slot free ⇒ spark the last strand");
+    assert!(
+        budget_grants(cap - 1, 1, cap),
+        "one slot free ⇒ spark the last strand"
+    );
     // At / over the cap ⇒ inline (the ~2/core collapse: deeper sites take the
     // direct arm and run their subtree serially, allocation-free).
     assert!(!budget_grants(cap, 1, cap), "saturated at ~2/core ⇒ inline");
     assert!(!budget_grants(cap + 3, 1, cap), "over-saturated ⇒ inline");
     // All-or-nothing for a batch of nested candidates.
-    assert!(!budget_grants(cap - 1, 2, cap), "a 2-batch overflowing by 1 ⇒ inline wholesale");
+    assert!(
+        !budget_grants(cap - 1, 2, cap),
+        "a 2-batch overflowing by 1 ⇒ inline wholesale"
+    );
     assert!(budget_grants(cap - 2, 2, cap), "an exact-fit batch ⇒ spark");
 }
 
@@ -609,7 +675,10 @@ fn mdynamic_cap_boundary_sparks_under_inlines_at_cap() {
 #[test]
 fn mdynamic_hierarchical_decline_busy_pool_inlines_nested() {
     let cap = *SPARK_BUDGET as isize;
-    assert!(cap >= 2, "default cap (k=2 × threads) is ≥ 2 in a fresh process");
+    assert!(
+        cap >= 2,
+        "default cap (k=2 × threads) is ≥ 2 in a fresh process"
+    );
     let base = IN_FLIGHT_SPARKS.load(Ordering::SeqCst);
 
     // Pool saturated at the ~2/core cap: a strand's nested candidate INLINES.
@@ -717,10 +786,18 @@ fn hier_decline_depth_cutoff_forces_inline_at_or_above_max_depth() {
     let base = IN_FLIGHT_SPARKS.load(Ordering::SeqCst);
     // Spare capacity, so the DEPTH is the only thing that can force inline.
     IN_FLIGHT_SPARKS.store(0, Ordering::SeqCst);
-    assert_eq!(SPARK_DEPTH.with(|c| c.get()), 0, "depth starts at 0 on this thread");
+    assert_eq!(
+        SPARK_DEPTH.with(|c| c.get()),
+        0,
+        "depth starts at 0 on this thread"
+    );
 
     // Depth 0 < MAX (>= 1) + spare capacity ⇒ grant (a top-level site sparks).
-    assert_eq!(spark_budget_try_reserve(1), 1, "depth 0 < MAX ⇒ spark under cap");
+    assert_eq!(
+        spark_budget_try_reserve(1),
+        1,
+        "depth 0 < MAX ⇒ spark under cap"
+    );
     IN_FLIGHT_SPARKS.store(0, Ordering::SeqCst); // undo the committed permit
 
     // Just below the threshold (depth == MAX - 1) still grants.
@@ -737,7 +814,11 @@ fn hier_decline_depth_cutoff_forces_inline_at_or_above_max_depth() {
     // At the threshold (depth == MAX) ⇒ inline regardless of spare capacity.
     {
         let _g = SparkDepthGuard::enter_base(max);
-        assert_eq!(SPARK_DEPTH.with(|c| c.get()), max, "guard set the depth to MAX");
+        assert_eq!(
+            SPARK_DEPTH.with(|c| c.get()),
+            max,
+            "guard set the depth to MAX"
+        );
         assert_eq!(
             spark_budget_try_reserve(1),
             0,
@@ -760,8 +841,16 @@ fn hier_decline_depth_cutoff_forces_inline_at_or_above_max_depth() {
         assert_eq!(spark_budget_try_reserve(1), 0, "depth > MAX ⇒ inline");
     }
     // Depth restored to 0 on guard drop ⇒ top-level sites spark again.
-    assert_eq!(SPARK_DEPTH.with(|c| c.get()), 0, "depth restored on scope exit");
-    assert_eq!(spark_budget_try_reserve(1), 1, "restored depth 0 ⇒ spark again");
+    assert_eq!(
+        SPARK_DEPTH.with(|c| c.get()),
+        0,
+        "depth restored on scope exit"
+    );
+    assert_eq!(
+        spark_budget_try_reserve(1),
+        1,
+        "restored depth 0 ⇒ spark again"
+    );
 
     IN_FLIGHT_SPARKS.store(base, Ordering::SeqCst);
 }
@@ -778,7 +867,11 @@ fn spark_depth_guard_increments_and_restores_including_nesting_and_unwind() {
     // Normal scope: +1 inside, restored after.
     {
         let _g = SparkDepthGuard::enter();
-        assert_eq!(SPARK_DEPTH.with(|c| c.get()), 1, "enter() descends one level");
+        assert_eq!(
+            SPARK_DEPTH.with(|c| c.get()),
+            1,
+            "enter() descends one level"
+        );
     }
     assert_eq!(SPARK_DEPTH.with(|c| c.get()), 0, "restored on normal exit");
 
@@ -802,7 +895,11 @@ fn spark_depth_guard_increments_and_restores_including_nesting_and_unwind() {
     // path), and a claim-arm +1 on top of it lands at parent + 1.
     {
         let _base = SparkDepthGuard::enter_base(5);
-        assert_eq!(SPARK_DEPTH.with(|c| c.get()), 5, "enter_base sets the captured base");
+        assert_eq!(
+            SPARK_DEPTH.with(|c| c.get()),
+            5,
+            "enter_base sets the captured base"
+        );
         {
             let _claim = SparkDepthGuard::enter();
             assert_eq!(
@@ -811,7 +908,11 @@ fn spark_depth_guard_increments_and_restores_including_nesting_and_unwind() {
                 "claim-arm +1 lands a stolen child at parent + 1"
             );
         }
-        assert_eq!(SPARK_DEPTH.with(|c| c.get()), 5, "claim drop restores the base");
+        assert_eq!(
+            SPARK_DEPTH.with(|c| c.get()),
+            5,
+            "claim drop restores the base"
+        );
     }
     assert_eq!(SPARK_DEPTH.with(|c| c.get()), 0, "base drop restores 0");
 
@@ -819,7 +920,11 @@ fn spark_depth_guard_increments_and_restores_including_nesting_and_unwind() {
     // exact path a thunk that raises a Rust panic takes through the guard's Drop.
     let outcome = std::panic::catch_unwind(|| {
         let _g = SparkDepthGuard::enter();
-        assert_eq!(SPARK_DEPTH.with(|c| c.get()), 1, "descended before the panic");
+        assert_eq!(
+            SPARK_DEPTH.with(|c| c.get()),
+            1,
+            "descended before the panic"
+        );
         panic!("simulated thunk unwind inside the spark body");
     });
     assert!(outcome.is_err(), "the bracketed body must have unwound");
@@ -842,7 +947,11 @@ fn default_spark_max_depth_is_floor_log2_clamped() {
     assert_eq!(default_spark_max_depth(4), 2, "floor(log2 4) = 2");
     assert_eq!(default_spark_max_depth(7), 2, "floor(log2 7) = 2");
     assert_eq!(default_spark_max_depth(8), 3, "floor(log2 8) = 3");
-    assert_eq!(default_spark_max_depth(10), 3, "floor(log2 10) = 3 (the 10-core host)");
+    assert_eq!(
+        default_spark_max_depth(10),
+        3,
+        "floor(log2 10) = 3 (the 10-core host)"
+    );
     assert_eq!(default_spark_max_depth(16), 4, "floor(log2 16) = 4");
     assert_eq!(default_spark_max_depth(1024), 10, "floor(log2 1024) = 10");
 }
@@ -866,7 +975,11 @@ fn hier_decline_worker_spark_runs_at_parent_plus_one_depth() {
     // InFlightGuard drop pairs with it).
     IN_FLIGHT_SPARKS.store(1, Ordering::SeqCst);
     // The main test thread sparks from depth 0.
-    assert_eq!(SPARK_DEPTH.with(|c| c.get()), 0, "main thread sparks from depth 0");
+    assert_eq!(
+        SPARK_DEPTH.with(|c| c.get()),
+        0,
+        "main thread sparks from depth 0"
+    );
 
     let thunk = {
         let b = alloc_with_rc(16); // code_ptr + drop_glue, no captures
@@ -924,7 +1037,11 @@ fn hier_decline_main_thread_claim_increments_depth() {
     }
     let base = IN_FLIGHT_SPARKS.load(Ordering::SeqCst);
     IN_FLIGHT_SPARKS.store(0, Ordering::SeqCst);
-    assert_eq!(SPARK_DEPTH.with(|c| c.get()), 0, "depth starts at 0 on this thread");
+    assert_eq!(
+        SPARK_DEPTH.with(|c| c.get()),
+        0,
+        "depth starts at 0 on this thread"
+    );
 
     let thunk = {
         let b = alloc_with_rc(16);
@@ -946,7 +1063,11 @@ fn hier_decline_main_thread_claim_increments_depth() {
         "an inline claim-compute from depth 0 runs the thunk at depth 1 (symmetric increment)"
     );
     // Depth is restored to 0 after the claim arm exits.
-    assert_eq!(SPARK_DEPTH.with(|c| c.get()), 0, "depth restored after the claim arm");
+    assert_eq!(
+        SPARK_DEPTH.with(|c| c.get()),
+        0,
+        "depth restored after the claim arm"
+    );
 
     // Thunk was freed by ivar_force; free the cell.
     unsafe { dealloc(ivar as *mut u8) };
@@ -1095,7 +1216,10 @@ fn ivar_force_backoff_wait_reraises_ferried_panic() {
     let (jv, je) = joiner.join().expect("joiner thread panicked");
 
     assert_eq!(cv, 0, "panicked thunk yields the sentinel on the claimant");
-    assert_eq!(jv, 0, "panicked thunk yields the sentinel through the backoff wait");
+    assert_eq!(
+        jv, 0,
+        "panicked thunk yields the sentinel through the backoff wait"
+    );
     assert!(
         ce.map(|m| m.contains("backoff boom")).unwrap_or(false),
         "claimant re-raises the ferried panic"

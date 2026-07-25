@@ -18,9 +18,8 @@ pub mod compiler {
     /// `/time` line. Matches: `elapsed: 1.234 ms` (or `µs`, `s`).
     /// Captures: (1) value, (2) unit.
     pub fn time_line() -> &'static Regex {
-        static RE: Lazy<Regex> = Lazy::new(|| {
-            Regex::new(r"(?m)^elapsed:\s+(\d+(?:\.\d+)?)\s+(ms|µs|s)\s*$").unwrap()
-        });
+        static RE: Lazy<Regex> =
+            Lazy::new(|| Regex::new(r"(?m)^elapsed:\s+(\d+(?:\.\d+)?)\s+(ms|µs|s)\s*$").unwrap());
         &RE
     }
 

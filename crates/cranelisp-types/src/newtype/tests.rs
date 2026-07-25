@@ -87,7 +87,10 @@ fn fq_names_render_module_slash_name() {
 fn trait_ref_display_both_arms() {
     let unqualified = TraitRef::new(None, TraitName::from("Display"));
     assert_eq!(unqualified.to_string(), "Display");
-    let qualified = TraitRef::new(Some(ModuleFullPath::from("fmt")), TraitName::from("Display"));
+    let qualified = TraitRef::new(
+        Some(ModuleFullPath::from("fmt")),
+        TraitName::from("Display"),
+    );
     assert_eq!(qualified.to_string(), "fmt/Display");
 }
 
@@ -108,7 +111,10 @@ fn symbol_ref_display_both_arms() {
 fn type_ref_display_both_arms() {
     let unqualified = TypeRef::new(None, TypeName::from("Option"));
     assert_eq!(unqualified.to_string(), "Option");
-    let qualified = TypeRef::new(Some(ModuleFullPath::from("option")), TypeName::from("Option"));
+    let qualified = TypeRef::new(
+        Some(ModuleFullPath::from("option")),
+        TypeName::from("Option"),
+    );
     assert_eq!(qualified.to_string(), "option/Option");
 }
 

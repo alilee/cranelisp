@@ -51,7 +51,7 @@ use crate::style::{self, Style, styled};
 /// `agent>` (byte-identical to the pre-composite dim rendering's colour-off text).
 /// The trailing space separates it from the echoed command text.
 pub(crate) fn agent_input_prefix() -> String {
-    use crate::styled::{render, Role, StyledDoc};
+    use crate::styled::{Role, StyledDoc, render};
     let mut doc = StyledDoc::new();
     doc.push(Role::AgentGutter, "agent"); // R14 bright-magenta — who issued the line
     doc.push(Role::Prompt, ">"); // R13 dim prompt line
@@ -367,7 +367,10 @@ mod tests {
         );
         // The fence is pretty-printed, NOT echoed raw.
         assert!(!out.contains("```"), "raw fence must not survive: {out:?}");
-        assert!(out.contains("double") && out.contains("add-i64"), "form rendered: {out:?}");
+        assert!(
+            out.contains("double") && out.contains("add-i64"),
+            "form rendered: {out:?}"
+        );
         // Framed.
         assert!(out.contains('\u{258c}'), "framed: {out:?}");
     }
@@ -429,7 +432,10 @@ mod tests {
     fn markdown_strips_markers_color_off() {
         let out = markdown_to_terminal("## Heading\nUse **defn** to define a `function`.");
         assert!(out.contains("Heading"), "heading text survives: {out:?}");
-        assert!(out.contains("defn") && out.contains("function"), "words survive: {out:?}");
+        assert!(
+            out.contains("defn") && out.contains("function"),
+            "words survive: {out:?}"
+        );
         assert!(
             !out.contains("##") && !out.contains("**") && !out.contains('`'),
             "raw markers must NOT survive: {out:?}"
@@ -441,10 +447,16 @@ mod tests {
     fn markdown_bullet_renders_glyph() {
         let out = markdown_to_terminal("- first point\n- second point");
         assert!(out.contains('\u{2022}'), "bullet glyph present: {out:?}");
-        assert!(out.contains("first point") && out.contains("second point"), "{out:?}");
+        assert!(
+            out.contains("first point") && out.contains("second point"),
+            "{out:?}"
+        );
         // The literal `- ` list marker at line start must not survive.
         for line in out.lines() {
-            assert!(!line.trim_start().starts_with("- "), "raw `- ` survived: {line:?}");
+            assert!(
+                !line.trim_start().starts_with("- "),
+                "raw `- ` survived: {line:?}"
+            );
         }
     }
 
@@ -476,8 +488,14 @@ mod tests {
     fn render_agent_prose_frames_and_formats() {
         let out = render_agent_prose("## Title\nsome **bold** prose");
         assert!(out.contains('\u{258c}'), "framed: {out:?}");
-        assert!(out.contains("Title") && out.contains("bold"), "text survives: {out:?}");
-        assert!(!out.contains("##") && !out.contains("**"), "markers stripped: {out:?}");
+        assert!(
+            out.contains("Title") && out.contains("bold"),
+            "text survives: {out:?}"
+        );
+        assert!(
+            !out.contains("##") && !out.contains("**"),
+            "markers stripped: {out:?}"
+        );
         assert!(!out.contains('\u{1b}'), "no escape colour-off: {out:?}");
         // Every non-empty line carries the gutter (there is no code run here).
         for line in out.lines() {
@@ -505,7 +523,8 @@ mod tests {
         // No code line carries the gutter — identify code lines by the code-only
         // token `add-i64` (never in the prose).
         assert!(
-            !out.lines().any(|l| l.contains("add-i64") && l.contains('\u{258c}')),
+            !out.lines()
+                .any(|l| l.contains("add-i64") && l.contains('\u{258c}')),
             "code lines MUST be un-guttered (`▌`-free): {out:?}"
         );
         // Byte parity: every pretty-printer line for the form appears VERBATIM
@@ -523,9 +542,8 @@ mod tests {
     // and leaves the code un-guttered (the code-only split).
     #[test]
     fn prose_fence_prose_gutters_only_the_prose() {
-        let out = render_agent_prose(
-            "Before the block.\n```lisp\n(add-i64 1 2)\n```\nAfter the block.",
-        );
+        let out =
+            render_agent_prose("Before the block.\n```lisp\n(add-i64 1 2)\n```\nAfter the block.");
         assert!(
             out.lines()
                 .any(|l| l.contains("Before the block") && l.starts_with('\u{258c}')),
@@ -537,7 +555,8 @@ mod tests {
             "trailing prose guttered: {out:?}"
         );
         assert!(
-            !out.lines().any(|l| l.contains("add-i64") && l.contains('\u{258c}')),
+            !out.lines()
+                .any(|l| l.contains("add-i64") && l.contains('\u{258c}')),
             "code line un-guttered: {out:?}"
         );
     }
@@ -555,7 +574,8 @@ mod tests {
         );
         // The code still rendered, un-guttered.
         assert!(
-            out.lines().any(|l| l.contains("add-i64") && !l.contains('\u{258c}')),
+            out.lines()
+                .any(|l| l.contains("add-i64") && !l.contains('\u{258c}')),
             "code rendered un-guttered: {out:?}"
         );
     }
@@ -630,9 +650,19 @@ mod tests {
         // Split INSIDE the fence body (mid-form).
         let split = stream_render(&["```lisp\n(defn double [x]", " (add-i64 x x))\n```"]);
         assert_eq!(split, whole, "a fence split mid-body renders identically");
-        assert_eq!(whole, render_agent_prose(full), "and equals the single-shot render");
-        assert!(!whole.contains('\u{258c}'), "the fence block is un-guttered: {whole:?}");
-        assert!(!whole.contains("```"), "no raw fence marker survives: {whole:?}");
+        assert_eq!(
+            whole,
+            render_agent_prose(full),
+            "and equals the single-shot render"
+        );
+        assert!(
+            !whole.contains('\u{258c}'),
+            "the fence block is un-guttered: {whole:?}"
+        );
+        assert!(
+            !whole.contains("```"),
+            "no raw fence marker survives: {whole:?}"
+        );
         // Byte parity with the pretty-printer for the whole form.
         for pl in crate::pretty::pretty_print_str("(defn double [x] (add-i64 x x))").lines() {
             assert!(
@@ -648,7 +678,10 @@ mod tests {
     fn prose_line_split_across_deltas_yields_one_gutter_line() {
         let out = stream_render(&["hello ", "world\n"]);
         let gutter_lines = out.lines().filter(|l| l.starts_with('\u{258c}')).count();
-        assert_eq!(gutter_lines, 1, "one reassembled prose line ⇒ one gutter line: {out:?}");
+        assert_eq!(
+            gutter_lines, 1,
+            "one reassembled prose line ⇒ one gutter line: {out:?}"
+        );
         assert!(out.contains("hello world"), "the line reassembled: {out:?}");
         // Identical to the single-shot render of the reassembled text.
         assert_eq!(out, render_agent_prose("hello world"));
@@ -659,8 +692,14 @@ mod tests {
     #[test]
     fn streaming_no_literal_escape_color_off() {
         let out = stream_render(&["Here is ", "**bold**\n```lisp\n", "(add-i64 1 2)\n```"]);
-        assert!(!out.contains('\u{1b}'), "no ANSI escape under colour-off: {out:?}");
-        assert!(!out.contains("```"), "no raw fence marker survives: {out:?}");
+        assert!(
+            !out.contains('\u{1b}'),
+            "no ANSI escape under colour-off: {out:?}"
+        );
+        assert!(
+            !out.contains("```"),
+            "no raw fence marker survives: {out:?}"
+        );
         assert!(out.contains("add-i64"), "the form rendered: {out:?}");
         assert!(out.contains('\u{258c}'), "prose is framed: {out:?}");
     }
@@ -670,7 +709,10 @@ mod tests {
     #[test]
     fn unterminated_fence_flushes_at_finish() {
         let out = stream_render(&["```lisp\n(add-i64 1 2)"]);
-        assert!(out.contains("add-i64"), "the buffered fence body flushed: {out:?}");
+        assert!(
+            out.contains("add-i64"),
+            "the buffered fence body flushed: {out:?}"
+        );
         assert!(!out.contains("```"), "no raw fence marker: {out:?}");
         assert_eq!(out, render_agent_prose("```lisp\n(add-i64 1 2)"));
     }

@@ -6,7 +6,7 @@
 //!
 //! Commas are whitespace (Clojure convention). Comments run from `;` to EOL.
 
-use cranelisp_types::{ErrorLocation, CranelispError, Sexp, Span};
+use cranelisp_types::{CranelispError, ErrorLocation, Sexp, Span};
 
 // ---------------------------------------------------------------------------
 // Parser state
@@ -24,11 +24,21 @@ struct Reader<'a> {
 
 impl<'a> Reader<'a> {
     fn new(src: &'a str) -> Self {
-        Reader { src, pos: 0, preserve_comments: false, hoisted_comments: Vec::new() }
+        Reader {
+            src,
+            pos: 0,
+            preserve_comments: false,
+            hoisted_comments: Vec::new(),
+        }
     }
 
     fn new_preserving_comments(src: &'a str) -> Self {
-        Reader { src, pos: 0, preserve_comments: true, hoisted_comments: Vec::new() }
+        Reader {
+            src,
+            pos: 0,
+            preserve_comments: true,
+            hoisted_comments: Vec::new(),
+        }
     }
 
     /// Remaining source text from current position.
@@ -479,20 +489,28 @@ fn read_number_from(r: &mut Reader, negative: bool) -> Result<Sexp, CranelispErr
             r.pos = digits_end;
         } else {
             let end = r.pos as u32;
-            let text = &r.src[if negative { digits_start - 1 } else { digits_start }..r.pos];
-            let value = text.parse::<f64>().map_err(|_| {
-                r.error_at("invalid float literal", start, end)
-            })?;
+            let text = &r.src[if negative {
+                digits_start - 1
+            } else {
+                digits_start
+            }..r.pos];
+            let value = text
+                .parse::<f64>()
+                .map_err(|_| r.error_at("invalid float literal", start, end))?;
             return Ok(Sexp::Float(value, Span::new(start, end)));
         }
     }
 
     // Integer
     let end = r.pos as u32;
-    let text = &r.src[if negative { digits_start - 1 } else { digits_start }..r.pos];
-    let value = text.parse::<i64>().map_err(|_| {
-        r.error_at("invalid integer literal", start, end)
-    })?;
+    let text = &r.src[if negative {
+        digits_start - 1
+    } else {
+        digits_start
+    }..r.pos];
+    let value = text
+        .parse::<i64>()
+        .map_err(|_| r.error_at("invalid integer literal", start, end))?;
     Ok(Sexp::Int(value, Span::new(start, end)))
 }
 

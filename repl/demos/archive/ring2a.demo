@@ -6,8 +6,8 @@
 
 ; Operators are trait methods
 
-/t +
-/t <
+/sig +
+/sig <
 (+ 1 2)
 (* 4 5)
 
@@ -24,7 +24,7 @@
 ; Constrained polymorphism — one definition, both types
 
 (defn double "Multiply by 2" [x] (+ x x))
-/t double
+/sig double
 /d double
 (double 5)
 (double 2.5)
@@ -46,6 +46,6 @@ impl
 ; Constrained across Ord
 
 (defn clamp "Clamp x between lo and hi" [x lo hi] (if (< x lo) lo (if (> x hi) hi x)))
-/t clamp
+/sig clamp
 (clamp 15 0 10)
 (clamp -3 0 10)

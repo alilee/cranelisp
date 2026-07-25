@@ -5,7 +5,94 @@
 
 use super::*;
 
+#[test]
+fn builtin_qualified_extern_keeps_abi_name_and_exact_storage_home() {
+    let mut tc = tc_with_prims();
+    check_src(
+        &mut tc,
+        "(defn main [] (macros/sconcat macros/SNil macros/SNil))",
+    );
 
+    let view = main_codegen_view_of(&tc, "main");
+    let mut targets = Vec::new();
+    collect_resolved_targets(&view.body, &mut targets);
+    assert!(
+        targets.iter().any(|(label, fq)| {
+            label == "@apply"
+                && fq.as_ref()
+                    == Some(&FQSymbol {
+                        module: ModuleFullPath::from("macros"),
+                        symbol: Symbol::from("sconcat"),
+                    })
+        }),
+        "qualified builtin Apply must carry macros/sconcat; collected: {targets:?}"
+    );
+    let resolved_call = match &view.body {
+        cranelisp_types::MonoExpr::Apply { resolved_call, .. } => resolved_call.as_deref(),
+        other => panic!("expected Apply body, got {other:?}"),
+    };
+    assert!(matches!(
+        resolved_call,
+        Some(ResolvedCall::BuiltinFn { name }) if name.as_ref() == "sconcat"
+    ));
+}
+
+#[test]
+fn builtin_renamed_import_uses_terminal_abi_name_and_storage_home() {
+    let mut tc = tc_with_prims();
+    tc.symbol_table_mut().insert(
+        Symbol::from("sum"),
+        ModuleEntry::Import {
+            source: FQSymbol {
+                module: ModuleFullPath::from("primitives"),
+                symbol: Symbol::from("add-i64"),
+            },
+            visibility: Visibility::Public,
+        },
+    );
+    check_src(&mut tc, "(defn main [] (sum 1 2))");
+
+    let view = main_codegen_view_of(&tc, "main");
+    let mut targets = Vec::new();
+    collect_resolved_targets(&view.body, &mut targets);
+    assert!(targets.iter().any(|(label, fq)| {
+        label == "@apply"
+            && fq.as_ref()
+                == Some(&FQSymbol {
+                    module: ModuleFullPath::from("primitives"),
+                    symbol: Symbol::from("add-i64"),
+                })
+    }));
+    let resolved_call = match &view.body {
+        cranelisp_types::MonoExpr::Apply { resolved_call, .. } => resolved_call.as_deref(),
+        other => panic!("expected Apply body, got {other:?}"),
+    };
+    assert!(matches!(
+        resolved_call,
+        Some(ResolvedCall::BuiltinFn { name }) if name.as_ref() == "add-i64"
+    ));
+}
+
+#[test]
+fn builtin_immediate_autocurry_keeps_exact_storage_home() {
+    let mut tc = tc_with_prims();
+    check_src(&mut tc, "(defn main [] (macros/sconcat macros/SNil))");
+
+    let view = main_codegen_view_of(&tc, "main");
+    let mut targets = Vec::new();
+    collect_resolved_targets(&view.body, &mut targets);
+    assert!(
+        targets.iter().any(|(label, fq)| {
+            label == "@apply"
+                && fq.as_ref()
+                    == Some(&FQSymbol {
+                        module: ModuleFullPath::from("macros"),
+                        symbol: Symbol::from("sconcat"),
+                    })
+        }),
+        "immediate builtin auto-curry must retain macros/sconcat; collected: {targets:?}"
+    );
+}
 
 // Leg 1 (dispatch/operator): an operator call — a trait method the primitive
 // short-circuit collapses to `add-i64` — carries its dispatch-leg carrier at
@@ -23,8 +110,16 @@ fn resolved_target_operator_call_carries_primitive_fq_at_apply_span() {
         Expr::Apply {
             callee: Box::new(Expr::var(Symbol::from("+"), span(10, 11))),
             args: vec![
-                Expr::IntLit { value: 1, span: span(12, 13), inferred_type: None },
-                Expr::IntLit { value: 2, span: span(14, 15), inferred_type: None },
+                Expr::IntLit {
+                    value: 1,
+                    span: span(12, 13),
+                    inferred_type: None,
+                },
+                Expr::IntLit {
+                    value: 2,
+                    span: span(14, 15),
+                    inferred_type: None,
+                },
             ],
             span: span(9, 16),
             resolved_call: None,
@@ -71,13 +166,21 @@ fn resolved_target_self_recursion_carries_own_fq_at_var_span() {
                     callee: Box::new(Expr::var(Symbol::from("eq-i64"), span(20, 26))),
                     args: vec![
                         Expr::var(Symbol::from("n"), span(27, 28)),
-                        Expr::IntLit { value: 0, span: span(29, 30), inferred_type: None },
+                        Expr::IntLit {
+                            value: 0,
+                            span: span(29, 30),
+                            inferred_type: None,
+                        },
                     ],
                     span: span(19, 31),
                     resolved_call: None,
                     inferred_type: None,
                 }),
-                then_branch: Box::new(Expr::IntLit { value: 1, span: span(33, 34), inferred_type: None }),
+                then_branch: Box::new(Expr::IntLit {
+                    value: 1,
+                    span: span(33, 34),
+                    inferred_type: None,
+                }),
                 else_branch: Box::new(Expr::Apply {
                     callee: Box::new(Expr::var(Symbol::from("mul-i64"), span(36, 43))),
                     args: vec![
@@ -88,7 +191,11 @@ fn resolved_target_self_recursion_carries_own_fq_at_var_span() {
                                 callee: Box::new(Expr::var(Symbol::from("sub-i64"), span(53, 60))),
                                 args: vec![
                                     Expr::var(Symbol::from("n"), span(61, 62)),
-                                    Expr::IntLit { value: 1, span: span(63, 64), inferred_type: None },
+                                    Expr::IntLit {
+                                        value: 1,
+                                        span: span(63, 64),
+                                        inferred_type: None,
+                                    },
                                 ],
                                 span: span(52, 65),
                                 resolved_call: None,
@@ -162,11 +269,13 @@ fn local_var_ref_carries_binding_form_span_per_frame() {
     let x_span = x_span.expect("param `x` reference must record VarRef::Local");
     let y_span = y_span.expect("let name `y` reference must record VarRef::Local");
     assert_ne!(
-        x_span, Span::SYNTHETIC,
+        x_span,
+        Span::SYNTHETIC,
         "the defn-param binding-form span must be real, not SYNTHETIC"
     );
     assert_ne!(
-        y_span, Span::SYNTHETIC,
+        y_span,
+        Span::SYNTHETIC,
         "the let binding-form span must be real, not SYNTHETIC"
     );
     assert_ne!(
@@ -311,7 +420,11 @@ fn resolved_target_dotted_ctor_carries_member_key_at_var_span() {
             vec![],
             Expr::Apply {
                 callee: Box::new(Expr::var(Symbol::from("Maybe.Some"), span(80, 90))),
-                args: vec![Expr::IntLit { value: 3, span: span(91, 92), inferred_type: None }],
+                args: vec![Expr::IntLit {
+                    value: 3,
+                    span: span(91, 92),
+                    inferred_type: None,
+                }],
                 span: span(79, 93),
                 resolved_call: None,
                 inferred_type: None,
@@ -440,8 +553,10 @@ fn resolved_target_bare_ctor_carrier_is_canonical_member_key() {
     let view = main_codegen_view_of(&tc, "use-some");
     let mut targets = Vec::new();
     collect_resolved_targets(&view.body, &mut targets);
-    let bare_fq =
-        targets.iter().find(|(l, _)| l == "Some").and_then(|(_, fq)| fq.clone());
+    let bare_fq = targets
+        .iter()
+        .find(|(l, _)| l == "Some")
+        .and_then(|(_, fq)| fq.clone());
     assert_eq!(
         bare_fq,
         Some(FQSymbol {
@@ -470,8 +585,10 @@ fn resolved_target_bare_accessor_carrier_is_canonical_member_key() {
     let view = main_codegen_view_of(&tc, "get-v");
     let mut targets = Vec::new();
     collect_resolved_targets(&view.body, &mut targets);
-    let accessor_fq =
-        targets.iter().find(|(l, _)| l == "v").and_then(|(_, fq)| fq.clone());
+    let accessor_fq = targets
+        .iter()
+        .find(|(l, _)| l == "v")
+        .and_then(|(_, fq)| fq.clone());
     assert_eq!(
         accessor_fq,
         Some(FQSymbol {
@@ -511,8 +628,10 @@ fn resolved_target_renamed_import_carrier_is_source_storage_key() {
     let view = main_codegen_view_of(&tc, "use-bar");
     let mut targets = Vec::new();
     collect_resolved_targets(&view.body, &mut targets);
-    let bar_fq =
-        targets.iter().find(|(l, _)| l == "bar").and_then(|(_, fq)| fq.clone());
+    let bar_fq = targets
+        .iter()
+        .find(|(l, _)| l == "bar")
+        .and_then(|(_, fq)| fq.clone());
     assert_eq!(
         bar_fq,
         Some(FQSymbol {
@@ -524,16 +643,9 @@ fn resolved_target_renamed_import_carrier_is_source_storage_key() {
     );
 }
 
-// FIXME 0619 leg 1 (Important) — `builtin_storage_fq` must NOT capture a
-// same-named USER fn when grounding a `BuiltinFn` jit name. In a
-// prelude-suppressed module (no primitives glob) a local `(defn add-i64 …)`
-// prelude-suppressed module (no primitives glob) a local `(defn add-i64 …)`
-// is legal (add-i64 is not in scope, §8.6.4 does not fire); `(+ 1 2)`
-// short-circuits to `BuiltinFn { add-i64 }` (FIXME 0185), and the Apply-span
-// carrier MUST ground at `primitives/add-i64` (the primitive the backend
-// emits), never the shadowing local `test/add-i64`. The kind gate
-// (Primitive/PrimitiveExtern only) is what rejects the user fn. Without the
-// gate the carrier would name test/add-i64 → wrong dispatch at W1.
+// A trait short-circuit carries its builtin identity as one correlated product.
+// A same-named USER fn in caller scope therefore cannot capture the storage key:
+// there is no bare-name re-resolution after the short-circuit selection.
 // spec: design/arch/backend-keyed-consumer.md §1.1.1 (BuiltinFn leg)
 #[test]
 fn resolved_target_builtin_fq_ignores_shadowing_user_fn() {
@@ -541,10 +653,8 @@ fn resolved_target_builtin_fq_ignores_shadowing_user_fn() {
     // `+` dispatches to the Int impl (short-circuit → jit name add-i64).
     register_num_trait_inline(&mut tc);
     // Model the prelude-suppressed shadow: a local UserFn named `add-i64`
-    // (the primitive's JIT name) installed OVER the primitives-import in the
-    // test module. `builtin_storage_fq` resolves the jit name through this
-    // scope; the kind gate must reject this non-primitive Def and ground the
-    // carrier at `primitives/add-i64` regardless.
+    // installed over the primitives import. The already-selected builtin
+    // product must remain authoritative.
     let local_add = cranelisp_types::ModuleEntry::def(
         cranelisp_types::Scheme {
             type_vars: vec![],
@@ -560,7 +670,8 @@ fn resolved_target_builtin_fq_ignores_shadowing_user_fn() {
     )
     .param_names(vec![Symbol::from("a"), Symbol::from("b")])
     .build();
-    tc.symbol_table_mut().insert(Symbol::from("add-i64"), local_add);
+    tc.symbol_table_mut()
+        .insert(Symbol::from("add-i64"), local_add);
     check_src(&mut tc, "(defn main [] (+ 1 2))");
 
     let view = main_codegen_view_of(&tc, "main");
@@ -576,9 +687,67 @@ fn resolved_target_builtin_fq_ignores_shadowing_user_fn() {
             module: ModuleFullPath::from("primitives"),
             symbol: Symbol::from("add-i64"),
         }),
-        "builtin_storage_fq must ground the PRIMITIVE home, not the shadowing \
-         user fn test/add-i64 (FIXME 0619 leg 1); collected: {targets:?}"
+        "the selected builtin product must retain primitives/add-i64, not capture \
+         the caller's test/add-i64; collected: {targets:?}"
     );
+}
+
+#[test]
+fn builtin_settled_autocurry_retry_keeps_renamed_nonprimitive_home() {
+    let mut tc = tc_with_prims();
+    tc.symbol_table_mut().insert(
+        Symbol::from("cat"),
+        ModuleEntry::Import {
+            source: FQSymbol {
+                module: ModuleFullPath::from("macros"),
+                symbol: Symbol::from("sconcat"),
+            },
+            visibility: Visibility::Public,
+        },
+    );
+    let callee_ty = tc.lookup("cat").expect("renamed builtin scheme").ty;
+    let call_span = span(700, 710);
+    let callee_span = span(701, 704);
+    tc.state.method_resolutions.var_refs.insert(
+        callee_span,
+        cranelisp_types::VarRef::Global(FQSymbol {
+            module: ModuleFullPath::from("macros"),
+            symbol: Symbol::from("sconcat"),
+        }),
+    );
+    tc.state.pending_auto_curry.push((
+        call_span,
+        Symbol::from("cat"),
+        1,
+        2,
+        callee_ty,
+        None,
+        Some(callee_span),
+    ));
+
+    let env = TypeCheckEnv::new(
+        &tc.modules,
+        &tc.next_id,
+        &tc.module_aliases,
+        &tc.prelude_fallback,
+    );
+    env.resolve_auto_curry(&mut tc.state, AutoCurryDrain::Final);
+
+    assert_eq!(
+        tc.state.method_resolutions.apply_refs.get(&call_span),
+        Some(&cranelisp_types::ApplyRef::Dispatch(FQSymbol {
+            module: ModuleFullPath::from("macros"),
+            symbol: Symbol::from("sconcat"),
+        })),
+        "settled retry must preserve the renamed builtin's terminal macros home"
+    );
+    assert!(matches!(
+        tc.state.method_resolutions.resolved_calls.get(&call_span),
+        Some(ResolvedCall::AutoCurry {
+            trait_resolution: Some(inner),
+            ..
+        }) if matches!(inner.as_ref(), ResolvedCall::BuiltinFn { name } if name.as_ref() == "sconcat")
+    ));
 }
 
 // W0.b (§5 proof obligation 1) — every synthesised field accessor's
@@ -595,7 +764,10 @@ fn w0b_synth_accessor_view_carries_resolved_ctor() {
     check_src(&mut tc, "(deftype Point [:Int x :Int y])");
     let accessor_key = cranelisp_types::member_key(&TypeName::from("Point"), "x");
     let view = match tc.symbol_table().get(accessor_key.as_ref()) {
-        Some(ModuleEntry::Def { codegen_view: Some(v), .. }) => v.clone(),
+        Some(ModuleEntry::Def {
+            codegen_view: Some(v),
+            ..
+        }) => v.clone(),
         other => panic!("accessor {accessor_key} has no codegen_view: {other:?}"),
     };
     let ctor = match &view.body {
@@ -762,11 +934,16 @@ fn u_a1_same_module_fq_call_mints_bare_and_dispatches() {
             assert!(
                 matches!(
                     kind.as_ref(),
-                    DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
+                    DefKind::UserFn {
+                        fn_state: UserFnState::Concrete { .. }
+                    }
                 ),
                 "test/iden$Int must be a Concrete (slotted) mono instance, got {kind:?}",
             );
-            assert!(scheme.ty.is_concrete(), "test/iden$Int type must be concrete");
+            assert!(
+                scheme.ty.is_concrete(),
+                "test/iden$Int type must be concrete"
+            );
         }
         other => panic!(
             "same-module FQ call must mint `test/iden$Int` (FIXME 0488 sig a); got {other:?}"

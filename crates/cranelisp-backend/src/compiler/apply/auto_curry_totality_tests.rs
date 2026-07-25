@@ -15,14 +15,16 @@
 //! `target_fq = None` — the 0705 defect, with typecheck complete and correct.
 
 use cranelisp_types::{
-    ConcreteType, FQSymbol, JitSymbol, ModuleFullPath, MonoExpr, ResolvedCall, Span, Symbol,
-    VarRef,
+    ConcreteType, FQSymbol, JitSymbol, ModuleFullPath, MonoExpr, ResolvedCall, Span, Symbol, VarRef,
 };
 
-use super::{classify_auto_curry_target, AutoCurryTarget};
+use super::{AutoCurryTarget, classify_auto_curry_target};
 
 fn fq(module: &str, symbol: &str) -> FQSymbol {
-    FQSymbol { module: ModuleFullPath::from(module), symbol: Symbol::from(symbol) }
+    FQSymbol {
+        module: ModuleFullPath::from(module),
+        symbol: Symbol::from(symbol),
+    }
 }
 
 fn local_callee(name: &str) -> MonoExpr {
@@ -66,11 +68,15 @@ fn computed_callee() -> MonoExpr {
 }
 
 fn builtin_resolution() -> ResolvedCall {
-    ResolvedCall::BuiltinFn { name: Symbol::from("eq-i64") }
+    ResolvedCall::BuiltinFn {
+        name: Symbol::from("eq-i64"),
+    }
 }
 
 fn sig_resolution() -> ResolvedCall {
-    ResolvedCall::SigDispatch { mangled_name: JitSymbol::from("user/f$Int") }
+    ResolvedCall::SigDispatch {
+        mangled_name: JitSymbol::from("user/f$Int"),
+    }
 }
 
 // spec: design/backend/s115-carrier-and-rc-sweep.md §3 row 1–3 — a Dispatch
@@ -78,7 +84,11 @@ fn sig_resolution() -> ResolvedCall {
 #[test]
 fn dispatch_carrier_takes_the_table_symbol_arms() {
     let target = fq("user", "f");
-    for callee in [local_callee("g"), global_callee("user", "f"), computed_callee()] {
+    for callee in [
+        local_callee("g"),
+        global_callee("user", "f"),
+        computed_callee(),
+    ] {
         assert_eq!(
             classify_auto_curry_target(Some(&target), None, &callee),
             AutoCurryTarget::Dispatch
@@ -87,7 +97,11 @@ fn dispatch_carrier_takes_the_table_symbol_arms() {
     // A Dispatch carrier WITH an inner resolution is still Dispatch — the
     // carrier is the more specific fact and the landed arms consume it.
     assert_eq!(
-        classify_auto_curry_target(Some(&target), Some(&builtin_resolution()), &local_callee("g")),
+        classify_auto_curry_target(
+            Some(&target),
+            Some(&builtin_resolution()),
+            &local_callee("g")
+        ),
         AutoCurryTarget::Dispatch
     );
 }
@@ -136,7 +150,10 @@ fn via_callee_over_a_computed_callee_is_the_same_closure_value_arm() {
 #[test]
 fn via_callee_over_a_global_callee_is_a_located_producer_contradiction_neg() {
     let verdict = classify_auto_curry_target(None, None, &global_callee("prelude", "="));
-    assert_eq!(verdict, AutoCurryTarget::ProducerContradiction(fq("prelude", "=")));
+    assert_eq!(
+        verdict,
+        AutoCurryTarget::ProducerContradiction(fq("prelude", "="))
+    );
     // The FQ is carried so the diagnostic NAMES the seam and the offending key
     // — the attribution evidence the 0705/`'='` split turned on.
     match verdict {

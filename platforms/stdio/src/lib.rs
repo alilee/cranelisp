@@ -106,7 +106,9 @@ fn set_stdin_nonblocking() {
     // SAFETY: `F_GETFL` on fd 0 is sound.
     let flags = unsafe { libc::fcntl(0, libc::F_GETFL) };
     if flags >= 0 {
-        let mut orig = ORIG_STDIN_FLAGS.lock().expect("stdio ORIG_STDIN_FLAGS mutex poisoned");
+        let mut orig = ORIG_STDIN_FLAGS
+            .lock()
+            .expect("stdio ORIG_STDIN_FLAGS mutex poisoned");
         if orig.is_none() {
             *orig = Some(flags);
         }
@@ -118,7 +120,9 @@ fn set_stdin_nonblocking() {
 /// 0551 (A)). Called on the poll terminal (`Ready`/EOF), never on `Park` — while
 /// parked the fd must stay non-blocking for the re-poll.
 fn restore_stdin_flags() {
-    let mut orig = ORIG_STDIN_FLAGS.lock().expect("stdio ORIG_STDIN_FLAGS mutex poisoned");
+    let mut orig = ORIG_STDIN_FLAGS
+        .lock()
+        .expect("stdio ORIG_STDIN_FLAGS mutex poisoned");
     if let Some(flags) = orig.take() {
         restore_fd_flags(0, flags);
     }

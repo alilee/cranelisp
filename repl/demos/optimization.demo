@@ -71,7 +71,7 @@
 ; scalar, and does not escape its frame, the backend puts it in a stack slot
 ; instead of calling the allocator:
 
-(deftype Rect (Portrait [:Int w :Int h]) (Landscape [:Int w :Int h]))
+(deftype Rect (Portrait [:Int portrait-w :Int portrait-h]) (Landscape [:Int landscape-w :Int landscape-h]))
 (defn area [:Int a :Int b :Int flip] (let [r (if (eq-i64 flip 0) (Portrait a b) (Landscape a b))] (match r [(Portrait w h) (mul-i64 w h) (Landscape w h) (mul-i64 w h)])))
 /clif area
 
@@ -122,7 +122,7 @@
 ; The stack path requires an all-scalar payload. One String field (itself a
 ; heap value) disqualifies the whole aggregate:
 
-(deftype Tagged (TA [:Int n :String s]) (TB [:Int n :String s]))
+(deftype Tagged (TA [:Int ta-n :String ta-s]) (TB [:Int tb-n :String tb-s]))
 (defn label [:Int n :String s :Int flip] (let [t (if (eq-i64 flip 0) (TA n s) (TB n s))] (match t [(TA k u) k (TB k u) k])))
 /clif label
 

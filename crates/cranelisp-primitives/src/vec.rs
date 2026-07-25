@@ -19,8 +19,7 @@ use cranelisp_intrinsics::vec_runtime::LEN_OFFSET;
 /// Read the length of a Vec.
 ///
 /// JIT name: `vec-len` (exported via `export_name`).
-#[unsafe(export_name = "vec-len")]
-pub(crate) extern "C" fn vec_len(vec: i64) -> i64 {
+pub(crate) fn vec_len(vec: i64) -> i64 {
     // SAFETY: `vec` is a valid Vec base pointer from JIT code; len field is at +16.
     unsafe { *((vec as *const u8).add(LEN_OFFSET) as *const i64) }
 }

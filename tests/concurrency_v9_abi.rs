@@ -49,7 +49,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, CrOutput};
+use helpers::e2e::{CrOutput, Cranelisp};
 
 /// The `poll-pool` fixture platform (`concurrency_fanout.rs`).
 const POLL_PLATFORM: &str = "poll-pool";
@@ -69,8 +69,14 @@ const POLL_CONSUME: &str = "poll-consume";
 /// Count `[RC] alloc` / `[RC]  free` events in a `CRANELISP_RC_TRACE=1` stderr.
 /// Mirrors `concurrency_spark.rs::rc_alloc_free_counts`.
 fn rc_alloc_free_counts(stderr: &str) -> (usize, usize) {
-    let allocs = stderr.lines().filter(|l| l.contains("[RC]") && l.contains(" alloc ")).count();
-    let frees = stderr.lines().filter(|l| l.contains("[RC]") && l.contains(" free ")).count();
+    let allocs = stderr
+        .lines()
+        .filter(|l| l.contains("[RC]") && l.contains(" alloc "))
+        .count();
+    let frees = stderr
+        .lines()
+        .filter(|l| l.contains("[RC]") && l.contains(" free "))
+        .count();
     (allocs, frees)
 }
 
@@ -187,7 +193,10 @@ fn send_conn_handle_plus_response_typechecks() {
         "(import [web [Connection Response]])\n(import [platform.web [send-conn]])",
         "(defn snd [:web/Connection conn :web/Response r] (send-conn conn r))",
     );
-    assert_v9_typechecks(pos, "send_conn_handle_plus_response_typechecks (2-arg positive)");
+    assert_v9_typechecks(
+        pos,
+        "send_conn_handle_plus_response_typechecks (2-arg positive)",
+    );
 
     // Negative companion: the v8 4-arg `(send-conn token capacity fd resp)` is gone.
     let neg = run_v9(
@@ -195,7 +204,10 @@ fn send_conn_handle_plus_response_typechecks() {
         "(defn snd4 [:primitives/Int t :primitives/Int c :primitives/Int f :web/Response r] \
          (send-conn t c f r))",
     );
-    assert_v9_rejected(neg, "send_conn_handle_plus_response_typechecks (4-arg neg companion)");
+    assert_v9_rejected(
+        neg,
+        "send_conn_handle_plus_response_typechecks (4-arg neg companion)",
+    );
 }
 
 // spec: design/platform/poll-support.md §3.5.2 — v9 `accept-conn:(Fn [Listener]
@@ -382,7 +394,10 @@ fn produce_consume_descriptor_no_rc_leak() {
         out.stderr
     );
     let (allocs, frees) = rc_alloc_free_counts(&out.stderr);
-    assert!(allocs > 0, "expected the RC trace to record allocations; got 0");
+    assert!(
+        allocs > 0,
+        "expected the RC trace to record allocations; got 0"
+    );
     assert_eq!(
         allocs, frees,
         "the opaque handle carries NO value-side scheduling region (scheduling is \

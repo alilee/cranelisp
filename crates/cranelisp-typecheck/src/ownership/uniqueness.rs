@@ -40,7 +40,7 @@ use std::collections::{HashMap, HashSet};
 
 use cranelisp_types::{ConcreteType, Mode, ModeSummary, MonoExpr, Span, Symbol};
 
-use super::classify::{classify_call, CallClass, TerminalKind};
+use super::classify::{CallClass, TerminalKind, classify_call};
 use super::transfer::collect_pattern_bindings;
 
 /// The uniqueness stratum's per-callable output.
@@ -111,7 +111,10 @@ pub(crate) fn analyze_uniqueness<E: UniqEnv>(
     let result_unique = w.is_fresh_unique_value(body);
     // Pass 2b — the unique_static site facts (Consume = return position).
     w.emit(body, Pos::Consume, None);
-    UniquenessResult { result_unique, unique_sites: w.unique_sites }
+    UniquenessResult {
+        result_unique,
+        unique_sites: w.unique_sites,
+    }
 }
 
 struct UniqWalker<'e, E: UniqEnv> {
@@ -144,13 +147,16 @@ impl<E: UniqEnv> UniqWalker<'_, E> {
             | MonoExpr::FloatLit { .. }
             | MonoExpr::BoolLit { .. }
             | MonoExpr::StringLit { .. } => {}
-            MonoExpr::Apply { callee, args, resolved_call, .. } => {
+            MonoExpr::Apply {
+                callee,
+                args,
+                resolved_call,
+                ..
+            } => {
                 self.count(callee, Pos::Borrow);
-                let summary = match classify_call(
-                    resolved_call.as_deref(),
-                    callee,
-                    |n| self.env.terminal_kind(n),
-                ) {
+                let summary = match classify_call(resolved_call.as_deref(), callee, |n| {
+                    self.env.terminal_kind(n)
+                }) {
                     CallClass::Summarised(name) => Some((true, self.env.summary_of(&name))),
                     CallClass::Decision24 => None,
                 };
@@ -186,12 +192,19 @@ impl<E: UniqEnv> UniqWalker<'_, E> {
                 }
                 self.count(body, pos);
             }
-            MonoExpr::If { cond, then_branch, else_branch, .. } => {
+            MonoExpr::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
                 self.count(cond, Pos::Borrow);
                 self.count(then_branch, pos);
                 self.count(else_branch, pos);
             }
-            MonoExpr::Match { scrutinee, arms, .. } => {
+            MonoExpr::Match {
+                scrutinee, arms, ..
+            } => {
                 self.count(scrutinee, Pos::Borrow);
                 for arm in arms {
                     let mut names = Vec::new();
@@ -203,7 +216,11 @@ impl<E: UniqEnv> UniqWalker<'_, E> {
                 }
             }
             MonoExpr::Trace { body, .. } => self.count(body, pos),
-            MonoExpr::LaunchContinue { launched, continuation, .. } => {
+            MonoExpr::LaunchContinue {
+                launched,
+                continuation,
+                ..
+            } => {
                 self.count(launched, Pos::Consume);
                 self.count(continuation, pos);
             }
@@ -224,9 +241,14 @@ impl<E: UniqEnv> UniqWalker<'_, E> {
             | MonoExpr::StringLit { .. }
             | MonoExpr::Lambda { .. } => true,
             MonoExpr::IntLit { .. } | MonoExpr::FloatLit { .. } | MonoExpr::BoolLit { .. } => true,
-            MonoExpr::Apply { callee, resolved_call, .. } => {
-                match classify_call(resolved_call.as_deref(), callee, |n| self.env.terminal_kind(n))
-                {
+            MonoExpr::Apply {
+                callee,
+                resolved_call,
+                ..
+            } => {
+                match classify_call(resolved_call.as_deref(), callee, |n| {
+                    self.env.terminal_kind(n)
+                }) {
                     CallClass::Summarised(name) => self.env.result_unique_of(&name),
                     CallClass::Decision24 => false,
                 }
@@ -241,9 +263,11 @@ impl<E: UniqEnv> UniqWalker<'_, E> {
     /// bound-`Var` single-use rule.
     fn is_fresh_unique_value(&self, expr: &MonoExpr) -> bool {
         match expr {
-            MonoExpr::If { then_branch, else_branch, .. } => {
-                self.is_fresh_unique_value(then_branch) && self.is_fresh_unique_value(else_branch)
-            }
+            MonoExpr::If {
+                then_branch,
+                else_branch,
+                ..
+            } => self.is_fresh_unique_value(then_branch) && self.is_fresh_unique_value(else_branch),
             MonoExpr::Match { arms, .. } => {
                 !arms.is_empty() && arms.iter().all(|a| self.is_fresh_unique_value(&a.body))
             }
@@ -286,13 +310,16 @@ impl<E: UniqEnv> UniqWalker<'_, E> {
         // branch value IS the bound value on that path); everything else clears
         // it (a child is not the binding's top-level value).
         match expr {
-            MonoExpr::Apply { callee, args, resolved_call, .. } => {
+            MonoExpr::Apply {
+                callee,
+                args,
+                resolved_call,
+                ..
+            } => {
                 self.emit(callee, Pos::Borrow, None);
-                let summary = match classify_call(
-                    resolved_call.as_deref(),
-                    callee,
-                    |n| self.env.terminal_kind(n),
-                ) {
+                let summary = match classify_call(resolved_call.as_deref(), callee, |n| {
+                    self.env.terminal_kind(n)
+                }) {
                     CallClass::Summarised(name) => Some((true, self.env.summary_of(&name))),
                     CallClass::Decision24 => None,
                 };
@@ -317,19 +344,30 @@ impl<E: UniqEnv> UniqWalker<'_, E> {
                 }
                 self.emit(body, pos, bound_to);
             }
-            MonoExpr::If { cond, then_branch, else_branch, .. } => {
+            MonoExpr::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
                 self.emit(cond, Pos::Borrow, None);
                 self.emit(then_branch, pos, bound_to);
                 self.emit(else_branch, pos, bound_to);
             }
-            MonoExpr::Match { scrutinee, arms, .. } => {
+            MonoExpr::Match {
+                scrutinee, arms, ..
+            } => {
                 self.emit(scrutinee, Pos::Borrow, None);
                 for arm in arms {
                     self.emit(&arm.body, pos, bound_to);
                 }
             }
             MonoExpr::Trace { body, .. } => self.emit(body, pos, bound_to),
-            MonoExpr::LaunchContinue { launched, continuation, .. } => {
+            MonoExpr::LaunchContinue {
+                launched,
+                continuation,
+                ..
+            } => {
                 self.emit(launched, Pos::Consume, None);
                 self.emit(continuation, pos, bound_to);
             }

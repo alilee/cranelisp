@@ -171,7 +171,8 @@ fn process_form_dispatch_bare_forward_ref_errors_clearly() {
         combined.contains('g'),
         "error message must name the unresolved identifier `g`\n\
          stdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
     // Atomicity: the second defn (`g`) is its own one-form cluster and
     // has no forward refs, so it commits successfully. `/list` should

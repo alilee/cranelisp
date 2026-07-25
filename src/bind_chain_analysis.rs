@@ -60,7 +60,11 @@ pub fn auto_schedule_defn<C: CodeStore, L: LinkerStore>(
     }
     let body = std::mem::replace(
         &mut defn.variants[0].body,
-        Expr::BoolLit { value: false, span: defn.span, inferred_type: None },
+        Expr::BoolLit {
+            value: false,
+            span: defn.span,
+            inferred_type: None,
+        },
     );
     defn.variants[0].body = transform_expr(body, symbol_tables, current_module);
 }
@@ -123,7 +127,13 @@ type BindStep = (Symbol, Expr, Option<TypeExpr>, Span, Symbol);
 /// annotation for round-tripping. The `bind_callee` field preserves the
 /// original (possibly qualified) `bind` name so reconstruction is faithful.
 fn collect_bind_chain(expr: Expr) -> (Vec<BindStep>, Expr) {
-    let Expr::Apply { callee, mut args, span, .. } = expr else {
+    let Expr::Apply {
+        callee,
+        mut args,
+        span,
+        ..
+    } = expr
+    else {
         unreachable!("invariant: collect_bind_chain called on non-bind expr")
     };
 
@@ -139,9 +149,7 @@ fn collect_bind_chain(expr: Expr) -> (Vec<BindStep>, Expr) {
     let io_expr = args.remove(0);
 
     let Expr::Lambda {
-        mut params,
-        body,
-        ..
+        mut params, body, ..
     } = lambda
     else {
         unreachable!("invariant: bind lambda is not a Lambda")
@@ -158,7 +166,10 @@ fn collect_bind_chain(expr: Expr) -> (Vec<BindStep>, Expr) {
         rest.insert(0, (name, io_expr, annotation, binding_span, bind_callee));
         (rest, final_body)
     } else {
-        (vec![(name, io_expr, annotation, binding_span, bind_callee)], inner)
+        (
+            vec![(name, io_expr, annotation, binding_span, bind_callee)],
+            inner,
+        )
     }
 }
 
@@ -214,7 +225,8 @@ fn effect_descriptor<C: CodeStore, L: LinkerStore>(
             }
         }
         // Bare name: resolve via the current module (follows Import chains).
-        if let Some(d) = effect_descriptor_from_table(symbol_tables, current_module, name.as_ref()) {
+        if let Some(d) = effect_descriptor_from_table(symbol_tables, current_module, name.as_ref())
+        {
             return Some(d);
         }
     }
@@ -244,7 +256,12 @@ fn effect_descriptor_from_table<C: CodeStore, L: LinkerStore>(
         let entry = table.get(name)?;
         match entry {
             ModuleEntry::Def { kind, .. } => {
-                if let DefKind::PlatformEffect { scheduling_class, poll_shape, .. } = kind.as_ref() {
+                if let DefKind::PlatformEffect {
+                    scheduling_class,
+                    poll_shape,
+                    ..
+                } = kind.as_ref()
+                {
                     Some((*scheduling_class, *poll_shape))
                 } else {
                     None
@@ -371,8 +388,7 @@ fn launch_eligible<C: CodeStore, L: LinkerStore>(
         // ⇒ still launches.
         let s_free = free_vars_expr(io_expr, &globals);
         let c_free = free_vars_expr(continuation, &globals);
-        is_launchable_leaf(io_expr, symbol_tables, current_module)
-            && s_free.is_disjoint(&c_free)
+        is_launchable_leaf(io_expr, symbol_tables, current_module) && s_free.is_disjoint(&c_free)
     }
 }
 
@@ -537,9 +553,17 @@ fn flush_par_group(
             group.into_iter().map(|(n, e, _, s, _)| (n, e, s)).collect();
         segments.push(Segment::Parallel(par_bindings));
     } else {
-        let (name, io_expr, annotation, span, bind_callee) = group.into_iter().next()
+        let (name, io_expr, annotation, span, bind_callee) = group
+            .into_iter()
+            .next()
             .expect("invariant: group is non-empty");
-        segments.push(Segment::Sequential(name, Box::new(io_expr), annotation, span, bind_callee));
+        segments.push(Segment::Sequential(
+            name,
+            Box::new(io_expr),
+            annotation,
+            span,
+            bind_callee,
+        ));
     }
 }
 
@@ -573,7 +597,13 @@ fn rebuild_chain<C: CodeStore, L: LinkerStore>(
                 std::mem::take(&mut current_par),
             );
             bound_so_far.insert(name.clone());
-            segments.push(Segment::Sequential(name, Box::new(io_expr), annotation, span, bind_callee));
+            segments.push(Segment::Sequential(
+                name,
+                Box::new(io_expr),
+                annotation,
+                span,
+                bind_callee,
+            ));
         }
     }
     // Flush any remaining parallel group.
@@ -682,7 +712,12 @@ fn recurse_children<C: CodeStore, L: LinkerStore>(
     current_module: &ModuleFullPath,
 ) -> Expr {
     match expr {
-        Expr::Let { bindings, body, span, inferred_type } => Expr::Let {
+        Expr::Let {
+            bindings,
+            body,
+            span,
+            inferred_type,
+        } => Expr::Let {
             bindings: bindings
                 .into_iter()
                 .map(|(n, v)| (n, transform_expr(v, symbol_tables, current_module)))
@@ -691,20 +726,37 @@ fn recurse_children<C: CodeStore, L: LinkerStore>(
             span,
             inferred_type,
         },
-        Expr::If { cond, then_branch, else_branch, span, inferred_type } => Expr::If {
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+            span,
+            inferred_type,
+        } => Expr::If {
             cond: Box::new(transform_expr(*cond, symbol_tables, current_module)),
             then_branch: Box::new(transform_expr(*then_branch, symbol_tables, current_module)),
             else_branch: Box::new(transform_expr(*else_branch, symbol_tables, current_module)),
             span,
             inferred_type,
         },
-        Expr::Lambda { params, body, span, inferred_type } => Expr::Lambda {
+        Expr::Lambda {
+            params,
+            body,
+            span,
+            inferred_type,
+        } => Expr::Lambda {
             params,
             body: Box::new(transform_expr(*body, symbol_tables, current_module)),
             span,
             inferred_type,
         },
-        Expr::Apply { callee, args, span, resolved_call, inferred_type } => Expr::Apply {
+        Expr::Apply {
+            callee,
+            args,
+            span,
+            resolved_call,
+            inferred_type,
+        } => Expr::Apply {
             callee: Box::new(transform_expr(*callee, symbol_tables, current_module)),
             args: args
                 .into_iter()
@@ -714,7 +766,13 @@ fn recurse_children<C: CodeStore, L: LinkerStore>(
             resolved_call,
             inferred_type,
         },
-        Expr::Match { scrutinee, arms, span, compiler_generated, inferred_type } => Expr::Match {
+        Expr::Match {
+            scrutinee,
+            arms,
+            span,
+            compiler_generated,
+            inferred_type,
+        } => Expr::Match {
             scrutinee: Box::new(transform_expr(*scrutinee, symbol_tables, current_module)),
             arms: arms
                 .into_iter()
@@ -728,7 +786,11 @@ fn recurse_children<C: CodeStore, L: LinkerStore>(
             compiler_generated,
             inferred_type,
         },
-        Expr::VecLit { elements, span, inferred_type } => Expr::VecLit {
+        Expr::VecLit {
+            elements,
+            span,
+            inferred_type,
+        } => Expr::VecLit {
             elements: elements
                 .into_iter()
                 .map(|e| transform_expr(e, symbol_tables, current_module))
@@ -736,13 +798,23 @@ fn recurse_children<C: CodeStore, L: LinkerStore>(
             span,
             inferred_type,
         },
-        Expr::Annotate { annotation, expr, span, inferred_type } => Expr::Annotate {
+        Expr::Annotate {
+            annotation,
+            expr,
+            span,
+            inferred_type,
+        } => Expr::Annotate {
             annotation,
             expr: Box::new(transform_expr(*expr, symbol_tables, current_module)),
             span,
             inferred_type,
         },
-        Expr::ParBind { bindings, body, span, inferred_type } => Expr::ParBind {
+        Expr::ParBind {
+            bindings,
+            body,
+            span,
+            inferred_type,
+        } => Expr::ParBind {
             bindings: bindings
                 .into_iter()
                 .map(|(n, v)| (n, transform_expr(v, symbol_tables, current_module)))
@@ -751,7 +823,12 @@ fn recurse_children<C: CodeStore, L: LinkerStore>(
             span,
             inferred_type,
         },
-        Expr::Trace { modules, body, span, inferred_type } => Expr::Trace {
+        Expr::Trace {
+            modules,
+            body,
+            span,
+            inferred_type,
+        } => Expr::Trace {
             modules,
             body: Box::new(transform_expr(*body, symbol_tables, current_module)),
             span,
@@ -760,13 +837,24 @@ fn recurse_children<C: CodeStore, L: LinkerStore>(
         // Idempotency (§5.2): a pre-existing `LaunchContinue` (from a prior pass, or
         // built by a future caller) recurses its children without re-grouping —
         // exactly like the `ParBind` arm above.
-        Expr::LaunchContinue { launched, continuation, span, inferred_type } => Expr::LaunchContinue {
+        Expr::LaunchContinue {
+            launched,
+            continuation,
+            span,
+            inferred_type,
+        } => Expr::LaunchContinue {
             launched: Box::new(transform_expr(*launched, symbol_tables, current_module)),
             continuation: Box::new(transform_expr(*continuation, symbol_tables, current_module)),
             span,
             inferred_type,
         },
-        Expr::ConstrADT { type_name, tag, fields, span, inferred_type } => Expr::ConstrADT {
+        Expr::ConstrADT {
+            type_name,
+            tag,
+            fields,
+            span,
+            inferred_type,
+        } => Expr::ConstrADT {
             type_name,
             tag,
             fields: fields

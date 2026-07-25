@@ -86,10 +86,13 @@ fn cache_lives_under_project_root() {
 // spec: design/backend/module-caching.md §5 — single-file compile with caching works
 #[test]
 fn cache_single_file_sanity() {
-    project(&[("main.cl", "(import [primitives [Pure]])\n(defn main [] (Pure 42))")])
-        .run("main.cl")
-        .output()
-        .assert_exit(42);
+    project(&[(
+        "main.cl",
+        "(import [primitives [Pure]])\n(defn main [] (Pure 42))",
+    )])
+    .run("main.cl")
+    .output()
+    .assert_exit(42);
 }
 
 // spec: design/backend/module-caching.md §5 — .o file generated after cached compile
@@ -109,7 +112,10 @@ fn cache_object_file_loadable() {
     let obj_size = fs::metadata(out.tmpdir.join(".cranelisp-cache/main.o"))
         .unwrap()
         .len();
-    assert!(obj_size > 0, ".o file should be non-empty (got {obj_size} bytes)");
+    assert!(
+        obj_size > 0,
+        ".o file should be non-empty (got {obj_size} bytes)"
+    );
 }
 
 // =============================================================================
@@ -127,11 +133,7 @@ fn cache_load_fresh_compile_equivalence() {
     .output()
     .assert_exit(42);
 
-    fresh
-        .run_again()
-        .run("main.cl")
-        .output()
-        .assert_exit(42);
+    fresh.run_again().run("main.cl").output().assert_exit(42);
 }
 
 // spec: design/backend/module-caching.md §8 — install_module_scope shared path
@@ -145,37 +147,111 @@ fn cache_load_imports_macros_traits_installed() {
     .output()
     .assert_exit(10);
 
-    fresh
+    fresh.run_again().run("main.cl").output().assert_exit(10);
+}
+
+// spec: spec/07-traits.md §7.3 + spec/08-modules.md §8.5 +
+// design/backend/module-caching.md §8 — a sibling module's impl remains
+// available after cache restoration. Qualified and imported-bare trait
+// references are equivalent controls: the cache must preserve both.
+// defect: class=enumeration-miss locus=src/process_form/cache_restore.rs::cross-module-impl-enrollment found=S117 owner=/dev
+#[test]
+fn cache_restores_sibling_written_trait_impls_for_dispatch() {
+    fn program(qualified: bool) -> Cranelisp {
+        let impl_head = if qualified {
+            "main.lib/Show"
+        } else {
+            "Show"
+        };
+        let impl_import = if qualified {
+            ""
+        } else {
+            "(import [main.lib [Show]])\n"
+        };
+        project(&[
+            ("main/lib.cl", "(deftrait Show (show [self] Int))\n"),
+            (
+                "main/impls.cl",
+                &format!(
+                    "(import [primitives [Int]])\n\
+                     {impl_import}\
+                     (deftype W [:Int n])\n\
+                     (impl {impl_head} W\n\
+                       (defn show [w] (match w [(W n) n])))\n"
+                ),
+            ),
+            (
+                "main.cl",
+                "(mod lib)\n\
+                 (mod impls)\n\
+                 (import [primitives [Pure]])\n\
+                 (import [main.lib [show]])\n\
+                 (import [main.impls [W]])\n\
+                 (defn main [] (Pure (show (W 7))))\n",
+            ),
+        ])
+    }
+
+    let qualified_fresh = program(true).run("main.cl").output().assert_exit(7);
+    let qualified_warm = qualified_fresh
         .run_again()
         .run("main.cl")
-        .output()
-        .assert_exit(10);
+        .output();
+
+    let bare_fresh = program(false).run("main.cl").output().assert_exit(7);
+    let bare_warm = bare_fresh
+        .run_again()
+        .run("main.cl")
+        .output();
+
+    let failures = [
+        ("qualified", qualified_warm),
+        ("bare/imported", bare_warm),
+    ]
+    .into_iter()
+    .filter(|(_, out)| out.status.code() != Some(7))
+    .map(|(label, out)| {
+        format!(
+            "[{label}] exit={:?}\nstdout:\n{}\nstderr:\n{}",
+            out.status.code(),
+            out.stdout,
+            out.stderr
+        )
+    })
+    .collect::<Vec<_>>();
+    assert!(
+        failures.is_empty(),
+        "cache-restored sibling impls MUST remain dispatchable for both trait-reference spellings:\n{}",
+        failures.join("\n")
+    );
 }
 
 // spec: design/backend/module-caching.md §8 — pipeline cache hit second compile
 #[test]
 fn cache_pipeline_hit_second_compile() {
-    let first = project(&[("main.cl", "(import [primitives [Pure]])\n(defn val [] 77)\n(defn main [] (Pure (val)))")])
-        .run("main.cl")
-        .output()
-        .assert_exit(77);
+    let first = project(&[(
+        "main.cl",
+        "(import [primitives [Pure]])\n(defn val [] 77)\n(defn main [] (Pure (val)))",
+    )])
+    .run("main.cl")
+    .output()
+    .assert_exit(77);
 
     assert!(first.tmp_exists(".cranelisp-cache/main.meta.json"));
 
-    first
-        .run_again()
-        .run("main.cl")
-        .output()
-        .assert_exit(77);
+    first.run_again().run("main.cl").output().assert_exit(77);
 }
 
 // spec: design/backend/module-caching.md §8 — pipeline cache miss on source change
 #[test]
 fn cache_pipeline_miss_on_source_change() {
-    let first = project(&[("main.cl", "(import [primitives [Pure]])\n(defn val [] 100)\n(defn main [] (Pure (val)))")])
-        .run("main.cl")
-        .output()
-        .assert_exit(100);
+    let first = project(&[(
+        "main.cl",
+        "(import [primitives [Pure]])\n(defn val [] 100)\n(defn main [] (Pure (val)))",
+    )])
+    .run("main.cl")
+    .output()
+    .assert_exit(100);
 
     let second = first.run_again().file(
         "main.cl",
@@ -190,14 +266,20 @@ fn cache_pipeline_miss_on_source_change() {
 // dependent producing the new value rather than a stale-cache value.)
 #[test]
 fn cache_invalidation_transitive_pipeline() {
-    let first = project(&[("main.cl", "(import [primitives [Pure]])\n(defn base [] 10)\n(defn main [] (Pure (base)))")])
-        .run("main.cl")
-        .output()
-        .assert_exit(10);
+    let first = project(&[(
+        "main.cl",
+        "(import [primitives [Pure]])\n(defn base [] 10)\n(defn main [] (Pure (base)))",
+    )])
+    .run("main.cl")
+    .output()
+    .assert_exit(10);
 
     first
         .run_again()
-        .file("main.cl", "(import [primitives [Pure]])\n(defn base [] 20)\n(defn main [] (Pure (base)))")
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n(defn base [] 20)\n(defn main [] (Pure (base)))",
+        )
         .run("main.cl")
         .output()
         .assert_exit(20);
@@ -228,11 +310,7 @@ fn cache_multi_module_hit_cross_module_call() {
     assert!(fresh.tmp_exists(".cranelisp-cache/util.meta.json"));
     assert!(fresh.tmp_exists(".cranelisp-cache/util.o"));
 
-    fresh
-        .run_again()
-        .run("main.cl")
-        .output()
-        .assert_exit(42);
+    fresh.run_again().run("main.cl").output().assert_exit(42);
 }
 
 // spec: design/backend/module-caching.md §8 — multi-module cache hit with transitive imports
@@ -263,11 +341,41 @@ fn cache_multi_module_transitive_imports() {
         "submodule cache directory should exist for main/"
     );
 
+    fresh.run_again().run("main.cl").output().assert_exit(77);
+}
+
+// spec: spec/08-modules.md §8.2.3/§8.2.5 + design/backend/module-caching.md §8
+// — a declared private child is loaded on both the fresh and cache-hit paths.
+// defect: class=enumeration-miss locus=src/process_form/cache_restore.rs::declared-submodule-enrollment found=S117 owner=/dev
+#[test]
+fn cache_restored_parent_enrols_private_test_child() {
+    let fresh = project(&[
+        (
+            "m.cl",
+            "(import [primitives [Int]])\n\
+             (mod- test)\n\
+             (defn probe [] :Int 42)\n",
+        ),
+        (
+            "m/test.cl",
+            "(import [primitives [*]])\n\
+             (defn test-cache-child [] :(Option String)\n\
+               (if true None (Some \"never\")))\n",
+        ),
+    ])
+    .repl()
+    .stdin("(import [m [probe]])\n/run-tests m.test\n")
+    .output()
+    .assert_ok()
+    .assert_stdout_contains("1 passed");
+
     fresh
         .run_again()
-        .run("main.cl")
+        .repl()
+        .stdin("(import [m [probe]])\n/run-tests m.test\n")
         .output()
-        .assert_exit(77);
+        .assert_ok()
+        .assert_stdout_contains("1 passed");
 }
 
 // spec: design/backend/module-caching.md §6 — multi-module cache invalidation on dep change
@@ -400,7 +508,10 @@ fn cache_multi_module_two_deps() {
 #[test]
 fn cache_prelude_modules_cached() {
     let first = project(&[
-        ("main.cl", "(import [primitives [Pure]])\n(defn main [] (Pure 42))"),
+        (
+            "main.cl",
+            "(import [primitives [Pure]])\n(defn main [] (Pure 42))",
+        ),
         ("prelude.cl", "(defn id [x] x)"),
     ])
     .run("main.cl")
@@ -412,11 +523,7 @@ fn cache_prelude_modules_cached() {
     let mtime1 = mtime(&first, ".cranelisp-cache/prelude.meta.json");
     nap_for_mtime();
 
-    let second = first
-        .run_again()
-        .run("main.cl")
-        .output()
-        .assert_exit(42);
+    let second = first.run_again().run("main.cl").output().assert_exit(42);
 
     let mtime2 = mtime(&second, ".cranelisp-cache/prelude.meta.json");
     assert_eq!(
@@ -429,7 +536,10 @@ fn cache_prelude_modules_cached() {
 #[test]
 fn cache_prelude_change_invalidates_user_module() {
     let first = project(&[
-        ("main.cl", "(import [primitives [Pure]])\n(defn main [] (Pure 42))"),
+        (
+            "main.cl",
+            "(import [primitives [Pure]])\n(defn main [] (Pure 42))",
+        ),
         ("prelude.cl", "(defn id [x] x)"),
     ])
     .run("main.cl")
@@ -490,14 +600,13 @@ fn cache_repl_restart_cache_hit() {
     let m1 = mtime(&first, ".cranelisp-cache/helper.meta.json");
     nap_for_mtime();
 
-    let second = first
-        .run_again()
-        .run("main.cl")
-        .output()
-        .assert_exit(42);
+    let second = first.run_again().run("main.cl").output().assert_exit(42);
 
     let m2 = mtime(&second, ".cranelisp-cache/helper.meta.json");
-    assert_eq!(m1, m2, "helper .meta.json must not be rewritten on REPL-restart cache hit");
+    assert_eq!(
+        m1, m2,
+        "helper .meta.json must not be rewritten on REPL-restart cache hit"
+    );
 }
 
 // spec: design/backend/module-caching.md §10 — incremental monomorphisation (cached dep usable)
@@ -554,11 +663,7 @@ fn cache_quick_build_links_cached_objects() {
     let m1 = mtime(&first, ".cranelisp-cache/helper.o");
     nap_for_mtime();
 
-    let second = first
-        .run_again()
-        .run("main.cl")
-        .output()
-        .assert_exit(42);
+    let second = first.run_again().run("main.cl").output().assert_exit(42);
 
     let m2 = mtime(&second, ".cranelisp-cache/helper.o");
     assert_eq!(m1, m2, "helper.o must not be rewritten on cache hit");
@@ -593,18 +698,17 @@ fn cache_quick_build_fallback_on_missing_cache() {
 // spec: design/backend/module-caching.md §14 — single-module round-trip
 #[test]
 fn cache_round_trip_single_module_observable_equivalence() {
-    let fresh = project(&[("main.cl", "(import [primitives [Pure]])\n(defn main [] (Pure 99))")])
-        .run("main.cl")
-        .output()
-        .assert_exit(99);
+    let fresh = project(&[(
+        "main.cl",
+        "(import [primitives [Pure]])\n(defn main [] (Pure 99))",
+    )])
+    .run("main.cl")
+    .output()
+    .assert_exit(99);
 
     assert!(fresh.tmp_exists(".cranelisp-cache/main.meta.json"));
 
-    fresh
-        .run_again()
-        .run("main.cl")
-        .output()
-        .assert_exit(99);
+    fresh.run_again().run("main.cl").output().assert_exit(99);
 }
 
 // spec: design/backend/module-caching.md §14 — multi-module round-trip with cross-module call
@@ -626,18 +730,17 @@ fn cache_round_trip_multi_module_observable_equivalence() {
 
     assert!(fresh.tmp_exists(".cranelisp-cache/util.meta.json"));
 
-    fresh
-        .run_again()
-        .run("main.cl")
-        .output()
-        .assert_exit(42);
+    fresh.run_again().run("main.cl").output().assert_exit(42);
 }
 
 // spec: design/backend/module-caching.md §14.4 — cache invalidation on dep change is observable
 #[test]
 fn cache_invalidation_on_dep_change_e2e() {
     let first = project(&[
-        ("main.cl", "(import [primitives [Pure]])\n(import [dep [val]])\n(defn main [] (Pure (val)))"),
+        (
+            "main.cl",
+            "(import [primitives [Pure]])\n(import [dep [val]])\n(defn main [] (Pure (val)))",
+        ),
         ("dep.cl", "(defn val [] 11)"),
     ])
     .run("main.cl")
@@ -1000,9 +1103,8 @@ fn cache_meta_carries_build_id_after_first_compile() {
         "main.meta.json must be written under .cranelisp-cache/"
     );
     let text = fs::read_to_string(&meta_path).expect("read main.meta.json");
-    let build_id = extract_build_id(&text).unwrap_or_else(|| {
-        panic!("meta.json must carry a build_id field; got:\n{text}")
-    });
+    let build_id = extract_build_id(&text)
+        .unwrap_or_else(|| panic!("meta.json must carry a build_id field; got:\n{text}"));
     assert!(
         !build_id.is_empty(),
         "build_id must be non-empty; meta=\n{text}"
@@ -1035,8 +1137,7 @@ fn cache_meta_with_stale_build_id_triggers_recompile() {
 
     let meta_path = first.tmpdir.join(".cranelisp-cache").join("main.meta.json");
     let original_text = fs::read_to_string(&meta_path).expect("read main.meta.json");
-    let original_build_id =
-        extract_build_id(&original_text).expect("first compile wrote build_id");
+    let original_build_id = extract_build_id(&original_text).expect("first compile wrote build_id");
 
     // Patch meta.build_id to a synthetic stale value.
     let patched_text = set_build_id(&original_text, "0.0.0+stale-synthetic");
@@ -1048,16 +1149,14 @@ fn cache_meta_with_stale_build_id_triggers_recompile() {
     fs::write(&meta_path, &patched_text).expect("write patched meta");
 
     // Second compile in the same TempDir — cache must miss and re-emit.
-    let second = first
-        .run_again()
-        .run("main.cl")
-        .output()
-        .assert_ok();
+    let second = first.run_again().run("main.cl").output().assert_ok();
 
-    let after_path = second.tmpdir.join(".cranelisp-cache").join("main.meta.json");
+    let after_path = second
+        .tmpdir
+        .join(".cranelisp-cache")
+        .join("main.meta.json");
     let after_text = fs::read_to_string(&after_path).expect("read meta after rebuild");
-    let rewritten_build_id =
-        extract_build_id(&after_text).expect("rebuild must restore build_id");
+    let rewritten_build_id = extract_build_id(&after_text).expect("rebuild must restore build_id");
     // Negative: the stale sentinel MUST NOT survive — its survival would
     // mean the cache honoured the patched meta (i.e. invalidation didn't fire).
     assert_ne!(
@@ -1088,8 +1187,7 @@ fn cache_meta_without_build_id_field_triggers_recompile() {
 
     let meta_path = first.tmpdir.join(".cranelisp-cache").join("main.meta.json");
     let original_text = fs::read_to_string(&meta_path).expect("read main.meta.json");
-    let original_build_id =
-        extract_build_id(&original_text).expect("first compile wrote build_id");
+    let original_build_id = extract_build_id(&original_text).expect("first compile wrote build_id");
 
     // Strip the build_id field entirely — pre-Sprint-60 cache shape.
     let patched_text = remove_build_id(&original_text);
@@ -1101,13 +1199,12 @@ fn cache_meta_without_build_id_field_triggers_recompile() {
     );
 
     // Second compile — cache must miss and rebuild.
-    let second = first
-        .run_again()
-        .run("main.cl")
-        .output()
-        .assert_ok();
+    let second = first.run_again().run("main.cl").output().assert_ok();
 
-    let after_path = second.tmpdir.join(".cranelisp-cache").join("main.meta.json");
+    let after_path = second
+        .tmpdir
+        .join(".cranelisp-cache")
+        .join("main.meta.json");
     let after_text = fs::read_to_string(&after_path).expect("read meta after rebuild");
     let restored = extract_build_id(&after_text).expect("rebuild must restore build_id");
     assert_eq!(
@@ -1137,7 +1234,8 @@ fn cache_meta_without_build_id_field_triggers_recompile() {
 // stderr under CRANELISP_MODULE_TRACE=1 (tests/CLAUDE.md §Diagnostic Logging);
 // recompilation is additionally pinned via the dep's `.o` mtime.
 
-const LB3_MAIN: &str = "(import [primitives [Pure]])\n(import [util [helper]])\n(defn main [] (Pure (helper 21)))";
+const LB3_MAIN: &str =
+    "(import [primitives [Pure]])\n(import [util [helper]])\n(defn main [] (Pure (helper 21)))";
 const LB3_UTIL: &str = "(import [primitives [add-i64]])\n(defn helper [x] (add-i64 x x))";
 
 // spec: design/backend/ownership-codegen.md §2.3 — flipping the ownership
@@ -1488,10 +1586,7 @@ fn pre_schema_18_cache_rejected_and_warm_18_green() {
         "the schema_version patch must land; meta:\n{text}"
     );
     fs::write(&meta_path, &stale).expect("write stale-schema meta");
-    warm.run_again()
-        .run("main.cl")
-        .output()
-        .assert_exit(35);
+    warm.run_again().run("main.cl").output().assert_exit(35);
 }
 
 // =============================================================================

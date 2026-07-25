@@ -12,11 +12,11 @@ use cranelift_module::Module;
 
 use cranelisp_types::{ConcreteType, CranelispError, MonoExpr, Span, Symbol};
 
-use super::sparkability::{
-    find_sparkable_bindings, find_sparkable_bindings_with, SparkAdmit, LENIENT_DISABLED,
-    SPARK_ADMIT,
-};
 use super::FnCompiler;
+use super::sparkability::{
+    LENIENT_DISABLED, SPARK_ADMIT, SparkAdmit, find_sparkable_bindings,
+    find_sparkable_bindings_with,
+};
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
 where
@@ -55,9 +55,7 @@ where
                     // (`bare_member_name`) so a sum-ctor call is not silently
                     // dropped from the spark-exclusion set (heuristic-only surface:
                     // terminal-segment granularity is acceptable).
-                    .map(|(name, _)| {
-                        Symbol::from(cranelisp_types::bare_member_name(name.as_ref()))
-                    })
+                    .map(|(name, _)| Symbol::from(cranelisp_types::bare_member_name(name.as_ref())))
                     .collect()
             })
             .unwrap_or_default()
@@ -135,7 +133,8 @@ where
         for (name, val_expr) in bindings {
             // Record the binding's concrete type (embedded as a `Type` for the
             // `Type`-keyed RC machinery).
-            self.variable_types.insert(name.clone(), val_expr.ty().to_type());
+            self.variable_types
+                .insert(name.clone(), val_expr.ty().to_type());
 
             let val = self.compile_expr(val_expr)?;
 
@@ -213,7 +212,8 @@ where
         // order, lenient-eval.md §2.6.1), so when a *dependent* binding's thunk
         // is built every IVar it depends on has already been created and recorded
         // in `sparked_name_to_ivar`.
-        let mut ivar_map: std::collections::HashMap<usize, Value> = std::collections::HashMap::new();
+        let mut ivar_map: std::collections::HashMap<usize, Value> =
+            std::collections::HashMap::new();
         // Earlier sparked bindings: name -> (IVar pointer, value type). Used to
         // resolve a dependent binding's dependencies to their IVars (§4.5).
         let mut sparked_name_to_ivar: std::collections::HashMap<Symbol, (Value, ConcreteType)> =
@@ -276,14 +276,10 @@ where
             };
 
             // Call cranelisp_ivar_create(thunk_ptr) -> ivar_ptr
-            let ivar_val = self.emit_extern_call(
-                "cranelisp_ivar_create", &[thunk_val], span,
-            )?;
+            let ivar_val = self.emit_extern_call("cranelisp_ivar_create", &[thunk_val], span)?;
 
             // Call cranelisp_ivar_spark(ivar_ptr)
-            let _spark_result = self.emit_extern_call(
-                "cranelisp_ivar_spark", &[ivar_val], span,
-            )?;
+            let _spark_result = self.emit_extern_call("cranelisp_ivar_spark", &[ivar_val], span)?;
 
             ivar_map.insert(idx, ivar_val);
             sparked_name_to_ivar.insert(name.clone(), (ivar_val, val_expr.ty().clone()));
@@ -291,14 +287,14 @@ where
 
         // Phase 2: Process all bindings in order.
         for (i, (name, val_expr)) in bindings.iter().enumerate() {
-            self.variable_types.insert(name.clone(), val_expr.ty().to_type());
+            self.variable_types
+                .insert(name.clone(), val_expr.ty().to_type());
 
             let val = if sparkable_set.contains(&i) {
                 // Force the IVar and dec our reference.
                 let ivar_val = ivar_map[&i];
-                let forced_val = self.emit_extern_call(
-                    "cranelisp_ivar_force", &[ivar_val], span,
-                )?;
+                let forced_val =
+                    self.emit_extern_call("cranelisp_ivar_force", &[ivar_val], span)?;
 
                 // Dec the IVar (main thread's reference).
                 // The IVar has atomic RC; the spark task also dec's.
@@ -446,7 +442,11 @@ where
     /// fork-join error-slot ferry (a panicked thunk's message). Plain
     /// `runtime/dealloc` would leak that String; `cranelisp_ivar_dealloc` is the
     /// IVar-aware drop path (`ivar.rs`, test-discovery.md §6).
-    pub(crate) fn emit_rc_dec_for_ivar(&mut self, ivar_val: Value, span: Span) -> Result<(), CranelispError> {
+    pub(crate) fn emit_rc_dec_for_ivar(
+        &mut self,
+        ivar_val: Value,
+        span: Span,
+    ) -> Result<(), CranelispError> {
         // Load current RC from ivar + 8
         let rc_offset = self.builder.ins().iconst(types::I64, 8);
         let rc_addr = self.builder.ins().iadd(ivar_val, rc_offset);
@@ -480,8 +480,7 @@ where
         // (consistent with Decision 13).
         self.builder.ins().fence();
 
-        let _dealloc_result = self
-            .emit_extern_call("cranelisp_ivar_dealloc", &[ivar_val], span)?;
+        let _dealloc_result = self.emit_extern_call("cranelisp_ivar_dealloc", &[ivar_val], span)?;
         self.builder.ins().jump(cont_block, &[]);
 
         // Continue.

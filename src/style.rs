@@ -363,7 +363,10 @@ mod tests {
     #[test]
     fn colour_off_k8_error_line_is_plain() {
         let _g = test_support::ColorGuard::force(false);
-        assert_eq!(error_line("undefined variable: foo"), "Error: undefined variable: foo");
+        assert_eq!(
+            error_line("undefined variable: foo"),
+            "Error: undefined variable: foo"
+        );
     }
 
     // K12 — the `; search index complete.` lifecycle note is R6 dim (FIXME 0561
@@ -385,7 +388,10 @@ mod tests {
     fn colour_on_k10_banner_dim() {
         use crate::styled::{Role, StyledDoc, render};
         let _g = test_support::ColorGuard::force(true);
-        let banner = render(&StyledDoc::span(Role::Prompt, "cranelisp REPL — type /help for help"));
+        let banner = render(&StyledDoc::span(
+            Role::Prompt,
+            "cranelisp REPL — type /help for help",
+        ));
         assert_eq!(banner, "\x1b[2mcranelisp REPL — type /help for help\x1b[0m");
     }
 

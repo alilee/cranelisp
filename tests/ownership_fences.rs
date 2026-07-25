@@ -815,10 +815,7 @@ fn clif_golden_single_module_smoke() {
     // NOTE (review F6): this extraction mirrors the Python one in
     // tests/scripts/clif_golden.sh dump() — keep the two in lockstep; a
     // THIRD consumer is the bar for unifying them into one tool.
-    let re = regex::Regex::new(
-        r"(?s); === CLIF (\S+) ===\n.*?; === end CLIF (\S+) ===\n",
-    )
-    .unwrap();
+    let re = regex::Regex::new(r"(?s); === CLIF (\S+) ===\n.*?; === end CLIF (\S+) ===\n").unwrap();
     let mut frames: std::collections::BTreeMap<String, String> = Default::default();
     for cap in re.captures_iter(&out.stderr) {
         assert_eq!(

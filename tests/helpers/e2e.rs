@@ -42,12 +42,18 @@ impl std::fmt::Display for CrError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CrError::BinaryNotFound(p) => {
-                write!(f, "cranelisp binary not found at {} — run `cargo build` first", p.display())
+                write!(
+                    f,
+                    "cranelisp binary not found at {} — run `cargo build` first",
+                    p.display()
+                )
             }
             CrError::SpawnFailed(e) => write!(f, "spawn failed: {e}"),
             CrError::Timeout(d) => write!(f, "child did not exit within {d:?}"),
             CrError::StdinWriteFailed(e) => write!(f, "stdin write failed: {e}"),
-            CrError::FixtureMissing(p) => write!(f, "fixture missing or unreadable: {}", p.display()),
+            CrError::FixtureMissing(p) => {
+                write!(f, "fixture missing or unreadable: {}", p.display())
+            }
         }
     }
 }
@@ -188,8 +194,7 @@ impl Cranelisp {
             fs::create_dir_all(parent)
                 .unwrap_or_else(|e| panic!("create_dir_all {}: {e}", parent.display()));
         }
-        fs::write(&full, contents)
-            .unwrap_or_else(|e| panic!("write {}: {e}", full.display()));
+        fs::write(&full, contents).unwrap_or_else(|e| panic!("write {}: {e}", full.display()));
         self
     }
 
@@ -236,7 +241,10 @@ impl Cranelisp {
 
     /// Recursive variant: copy `tests/fixtures/<src_dir>/` tree into `<dst_dir>/`.
     pub fn fixture_tree(self, src_dir: &str, dst_dir: &str) -> Self {
-        let from = workspace_root().join("tests").join("fixtures").join(src_dir);
+        let from = workspace_root()
+            .join("tests")
+            .join("fixtures")
+            .join(src_dir);
         if !from.exists() {
             panic!("fixture tree missing: {}", from.display());
         }
@@ -261,7 +269,8 @@ impl Cranelisp {
 
     /// Add a directory under TempDir to `CRANELISP_LIB`.
     pub fn lib_dir(mut self, dir_under_tmpdir: &str) -> Self {
-        self.lib_dirs.push(self.tmpdir.path().join(dir_under_tmpdir));
+        self.lib_dirs
+            .push(self.tmpdir.path().join(dir_under_tmpdir));
         self
     }
 
@@ -547,9 +556,7 @@ impl CrInvocationOwned {
             }
         }
 
-        let output = child
-            .wait_with_output()
-            .map_err(CrError::SpawnFailed)?;
+        let output = child.wait_with_output().map_err(CrError::SpawnFailed)?;
         let elapsed = started.elapsed();
 
         let mut status = output.status;
@@ -788,7 +795,11 @@ impl CrOutput {
             .join("fixtures")
             .join("golden")
             .join(format!("{name}.txt"));
-        if std::env::var("CRANELISP_TEST_UPDATE_GOLDENS").ok().as_deref() == Some("1") {
+        if std::env::var("CRANELISP_TEST_UPDATE_GOLDENS")
+            .ok()
+            .as_deref()
+            == Some("1")
+        {
             if let Some(p) = path.parent() {
                 fs::create_dir_all(p).expect("create golden dir");
             }
@@ -819,7 +830,11 @@ impl CrOutput {
             .join("fixtures")
             .join("golden")
             .join(format!("{name}.txt"));
-        if std::env::var("CRANELISP_TEST_UPDATE_GOLDENS").ok().as_deref() == Some("1") {
+        if std::env::var("CRANELISP_TEST_UPDATE_GOLDENS")
+            .ok()
+            .as_deref()
+            == Some("1")
+        {
             if let Some(p) = path.parent() {
                 fs::create_dir_all(p).expect("create golden dir");
             }
@@ -842,8 +857,7 @@ impl CrOutput {
     /// Read a file under the per-test TempDir. Panics if missing.
     pub fn read_tmp(&self, rel_path: &str) -> String {
         let full = self.tmpdir.join(rel_path);
-        fs::read_to_string(&full)
-            .unwrap_or_else(|e| panic!("read_tmp {}: {e}", full.display()))
+        fs::read_to_string(&full).unwrap_or_else(|e| panic!("read_tmp {}: {e}", full.display()))
     }
 
     /// Test whether a path exists under the per-test TempDir.
@@ -996,7 +1010,8 @@ impl AllModesResult {
     /// Assert all six observations agree on the canonical Int. Panics
     /// with a per-permutation diff when any path diverges.
     pub fn assert_all_equivalent(self) -> Self {
-        let observations: Vec<Option<i32>> = self.permutations().iter().map(|p| p.observed).collect();
+        let observations: Vec<Option<i32>> =
+            self.permutations().iter().map(|p| p.observed).collect();
         let baseline = observations[0];
         let all_match = observations.iter().all(|o| *o == baseline);
         if !all_match {
@@ -1061,11 +1076,13 @@ impl AllModesResult {
 /// is the typical choice (gives operators `+`, `-`, `=`, etc.).
 pub fn run_through_all_modes(program: &str, prelude: PreludeVariant) -> AllModesResult {
     let repl_fresh = run_repl_observation(program, prelude, "repl_fresh", /* fresh = */ true);
-    let repl_cached = run_repl_observation(program, prelude, "repl_cached", /* fresh = */ false);
+    let repl_cached =
+        run_repl_observation(program, prelude, "repl_cached", /* fresh = */ false);
     let run_fresh = run_run_observation(program, prelude, "run_fresh", /* fresh = */ true);
     let run_cached = run_run_observation(program, prelude, "run_cached", /* fresh = */ false);
     let link_fresh = run_link_observation(program, prelude, "link_fresh", /* fresh = */ true);
-    let link_cached = run_link_observation(program, prelude, "link_cached", /* fresh = */ false);
+    let link_cached =
+        run_link_observation(program, prelude, "link_cached", /* fresh = */ false);
 
     AllModesResult {
         repl_fresh,
@@ -1092,10 +1109,7 @@ fn run_repl_observation(
     // session.
     let stdin = format!("{program}\n(main)\n");
 
-    let cr = Cranelisp::new()
-        .repl()
-        .with_prelude(prelude)
-        .stdin(&stdin);
+    let cr = Cranelisp::new().repl().with_prelude(prelude).stdin(&stdin);
 
     let cr = if fresh {
         cr

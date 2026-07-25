@@ -176,7 +176,11 @@ impl LogEvent {
 
     /// F4 — stamp the context-version stamp (`primer_hash` + `harvest_len`,
     /// §17.20.3a). Both together — the pair is the comparable-runs key.
-    pub(crate) fn context_stamp(mut self, primer_hash: impl Into<String>, harvest_len: usize) -> Self {
+    pub(crate) fn context_stamp(
+        mut self,
+        primer_hash: impl Into<String>,
+        harvest_len: usize,
+    ) -> Self {
         self.primer_hash = Some(primer_hash.into());
         self.harvest_len = Some(harvest_len);
         self
@@ -369,12 +373,19 @@ mod tests {
 
         let log = std::fs::read_to_string(&path).expect("the log file must exist");
         let lines: Vec<&str> = log.lines().filter(|l| !l.trim().is_empty()).collect();
-        assert_eq!(lines.len(), 2, "each record appends one line (JSONL): {log:?}");
+        assert_eq!(
+            lines.len(),
+            2,
+            "each record appends one line (JSONL): {log:?}"
+        );
 
         // Every line is a JSON object carrying the `event` key.
         for line in &lines {
             let v: serde_json::Value = serde_json::from_str(line).expect("each line is JSON");
-            assert!(v.get("event").is_some(), "every record carries `event`: {line}");
+            assert!(
+                v.get("event").is_some(),
+                "every record carries `event`: {line}"
+            );
         }
 
         // The repair line carries the full struggle-signal key set.
@@ -385,7 +396,11 @@ mod tests {
         assert_eq!(repair["error_class"], "ParseError");
         assert_eq!(repair["iteration"], 1);
         // Absent optional keys are OMITTED (skip_serializing_if), not null.
-        assert!(repair.get("tool").is_none(), "absent key omitted: {}", lines[0]);
+        assert!(
+            repair.get("tool").is_none(),
+            "absent key omitted: {}",
+            lines[0]
+        );
 
         // The pull line carries `tool` + `symbol`, no repair keys.
         let pull: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
@@ -402,14 +417,24 @@ mod tests {
         let bad = dir.path().join("no-such-dir").join("activity.jsonl");
         let _g = LogEnvGuard::set(bad.to_str().unwrap());
         // Must NOT panic — the IO error is discarded.
-        record(LogEvent::new("repair").symbol("helper").error_class("ParseError"));
-        assert!(!bad.exists(), "an unwritable path must not be created: {bad:?}");
+        record(
+            LogEvent::new("repair")
+                .symbol("helper")
+                .error_class("ParseError"),
+        );
+        assert!(
+            !bad.exists(),
+            "an unwritable path must not be created: {bad:?}"
+        );
     }
 
     // The error-class deriver buckets the validator's `to_string()` error prefixes.
     #[test]
     fn classify_error_buckets_by_prefix() {
-        assert_eq!(classify_error("parse error at 1:2: unbalanced"), "ParseError");
+        assert_eq!(
+            classify_error("parse error at 1:2: unbalanced"),
+            "ParseError"
+        );
         assert_eq!(classify_error("type error at 3:4: mismatch"), "TypeError");
         assert_eq!(classify_error("codegen error: boom"), "CodegenError");
         assert_eq!(classify_error("something weird"), "OtherError");
@@ -420,8 +445,14 @@ mod tests {
     #[test]
     fn defined_symbol_extracts_name_even_when_unbalanced() {
         // Balanced and unbalanced `(defn helper …)` both yield `helper`.
-        assert_eq!(defined_symbol("(defn helper [x] (add-i64 x x))").as_deref(), Some("helper"));
-        assert_eq!(defined_symbol("(defn helper [x] (add-i64 x x)").as_deref(), Some("helper"));
+        assert_eq!(
+            defined_symbol("(defn helper [x] (add-i64 x x))").as_deref(),
+            Some("helper")
+        );
+        assert_eq!(
+            defined_symbol("(defn helper [x] (add-i64 x x)").as_deref(),
+            Some("helper")
+        );
         assert_eq!(defined_symbol("  (def k 1)").as_deref(), Some("k"));
         assert_eq!(defined_symbol("(defmacro m [x] x)").as_deref(), Some("m"));
         // A non-defining form has no defined symbol.

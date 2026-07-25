@@ -87,9 +87,7 @@ impl CaptureRelease {
             // A `Fn`-typed value is ALWAYS a heap closure box, so the embedded
             // glue is always the right release and no nullary guard applies.
             _ if is_fn_type => Some(CaptureRelease::ClosureBox),
-            HeapCategory::AlwaysHeap | HeapCategory::Mixed => {
-                Some(CaptureRelease::Plain(category))
-            }
+            HeapCategory::AlwaysHeap | HeapCategory::Mixed => Some(CaptureRelease::Plain(category)),
         }
     }
 }
@@ -172,9 +170,15 @@ mod tests {
     // not in the glue at all — and `is_fn_type` cannot smuggle one in.
     #[test]
     fn non_heap_slots_are_not_in_the_dec_set_neg() {
-        assert_eq!(CaptureRelease::classify(HeapCategory::NeverHeap, false), None);
+        assert_eq!(
+            CaptureRelease::classify(HeapCategory::NeverHeap, false),
+            None
+        );
         assert_eq!(CaptureRelease::classify(HeapCategory::Value, false), None);
-        assert_eq!(CaptureRelease::classify(HeapCategory::NeverHeap, true), None);
+        assert_eq!(
+            CaptureRelease::classify(HeapCategory::NeverHeap, true),
+            None
+        );
         assert_eq!(CaptureRelease::classify(HeapCategory::Value, true), None);
     }
 }

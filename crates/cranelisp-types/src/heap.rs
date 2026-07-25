@@ -294,7 +294,9 @@ where
                 .collect(),
         ),
         ModuleEntry::Def { kind, .. } => match &**kind {
-            DefKind::Constructor { type_def: Some(td), .. } => Some(td.constructors.clone()),
+            DefKind::Constructor {
+                type_def: Some(td), ..
+            } => Some(td.constructors.clone()),
             _ => None,
         },
         _ => None,

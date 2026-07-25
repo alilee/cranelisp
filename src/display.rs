@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    DefKind, FQTypeName, ModuleEntry, ModuleFullPath, PrimitiveNaming, Scheme, Symbol, SymbolTable,
-    Type, TypeDefInfo, TypeId, VarNaming, NULLARY_TAG_THRESHOLD, render_type,
+    DefKind, FQTypeName, ModuleEntry, ModuleFullPath, NULLARY_TAG_THRESHOLD, PrimitiveNaming,
+    Scheme, Symbol, SymbolTable, Type, TypeDefInfo, TypeId, VarNaming, render_type,
 };
 
 use cranelisp_backend::heap::{HeapAdt, HeapVec};
@@ -88,16 +88,22 @@ where
     match ty {
         Type::Bool => {
             let display_val = if value != 0 { "true" } else { "false" };
-            envelope(&mut doc, ":primitives/Bool", |d| d.push(Role::LitNumBool, display_val));
+            envelope(&mut doc, ":primitives/Bool", |d| {
+                d.push(Role::LitNumBool, display_val)
+            });
         }
         Type::Float => {
             let f = f64::from_bits(value as u64);
             let s = format!("{f}");
             let s = if s.contains('.') { s } else { format!("{s}.0") };
-            envelope(&mut doc, ":primitives/Float", |d| d.push(Role::LitNumBool, s));
+            envelope(&mut doc, ":primitives/Float", |d| {
+                d.push(Role::LitNumBool, s)
+            });
         }
         Type::Int => {
-            envelope(&mut doc, ":primitives/Int", |d| d.push(Role::LitNumBool, value.to_string()));
+            envelope(&mut doc, ":primitives/Int", |d| {
+                d.push(Role::LitNumBool, value.to_string())
+            });
         }
         Type::String => {
             if value == 0 || (value as usize) < NULLARY_TAG_THRESHOLD {
@@ -124,7 +130,9 @@ where
         }
         other => {
             let type_str = format_type_qualified(other);
-            envelope(&mut doc, &format!(":{type_str}"), |d| d.plain(value.to_string()));
+            envelope(&mut doc, &format!(":{type_str}"), |d| {
+                d.plain(value.to_string())
+            });
         }
     }
     doc
@@ -153,14 +161,16 @@ pub(crate) fn format_result(value: i64, ty: &Type) -> String {
 ///
 /// Primitive types get `primitives/` prefix, ADT types get their module prefix,
 /// `Fn` keyword and type variables stay unqualified.
-pub fn format_type_qualified(
-    ty: &Type,
-) -> String {
+pub fn format_type_qualified(ty: &Type) -> String {
     // Compute var names from the full type, then render through the shared walk
     // (S87 consolidation, FIXME 0420): FQ primitives + lettered vars reproduce
     // the former `format_type_qualified_inner` byte-for-byte.
     let var_names = cranelisp_types::type_var_names(ty);
-    render_type(ty, PrimitiveNaming::Qualified, VarNaming::Lettered(&var_names))
+    render_type(
+        ty,
+        PrimitiveNaming::Qualified,
+        VarNaming::Lettered(&var_names),
+    )
 }
 
 /// Format a constrained function's scheme for REPL display (spec §1.3).
@@ -172,11 +182,7 @@ pub fn format_type_qualified(
 /// is shown as `:TraitName var` (spec §3.5.1).
 /// Unconstrained variables appear bare.
 #[cfg(test)]
-pub fn format_scheme_display(
-    name: &str,
-    scheme: &Scheme,
-    module: &ModuleFullPath,
-) -> String {
+pub fn format_scheme_display(name: &str, scheme: &Scheme, module: &ModuleFullPath) -> String {
     format_scheme_display_doc(name, scheme, module).text()
 }
 
@@ -223,22 +229,18 @@ pub fn format_scheme_type(scheme: &Scheme) -> String {
         );
     }
 
-    // Build a map from TypeId to the constraint traits for quick lookup.
-    // Use sorted trait names for deterministic output.
-    // Constraints are now Vec<FQTraitName>; use local trait name for display.
-    let mut constraint_map: HashMap<TypeId, Vec<&str>> = HashMap::new();
+    // Build a map from TypeId to the canonical constraint-trait identities for
+    // quick lookup.  The typechecker has already resolved these names; display
+    // must consume that settled identity rather than narrowing it back to a
+    // bare name and trying to qualify it again later.
+    let mut constraint_map: HashMap<TypeId, Vec<String>> = HashMap::new();
     for (type_id, traits) in &scheme.constraints {
-        let mut trait_strs: Vec<&str> = traits.iter().map(|t| t.name.as_ref()).collect();
+        let mut trait_strs: Vec<String> = traits.iter().map(ToString::to_string).collect();
         trait_strs.sort();
         constraint_map.insert(*type_id, trait_strs);
     }
 
-    format_type_with_inline_constraints(
-        &scheme.ty,
-        &var_names,
-        &constraint_map,
-        false,
-    )
+    format_type_with_inline_constraints(&scheme.ty, &var_names, &constraint_map, false)
 }
 
 // ---------------------------------------------------------------------------
@@ -263,22 +265,16 @@ pub fn format_scheme_type(scheme: &Scheme) -> String {
 fn format_type_with_inline_constraints(
     ty: &Type,
     var_names: &HashMap<TypeId, String>,
-    constraints: &HashMap<TypeId, Vec<&str>>,
+    constraints: &HashMap<TypeId, Vec<String>>,
     in_params: bool,
 ) -> String {
     match ty {
         Type::Fn(params, ret) => {
             let parts: Vec<String> = params
                 .iter()
-                .map(|p| {
-                    format_type_with_inline_constraints(
-                        p, var_names, constraints, true,
-                    )
-                })
+                .map(|p| format_type_with_inline_constraints(p, var_names, constraints, true))
                 .collect();
-            let ret_s = format_type_with_inline_constraints(
-                ret, var_names, constraints, false,
-            );
+            let ret_s = format_type_with_inline_constraints(ret, var_names, constraints, false);
             format!("(Fn [{}] {ret_s})", parts.join(" "))
         }
         Type::Var(id) => {
@@ -305,10 +301,16 @@ fn format_type_with_inline_constraints(
         // their args are always rendered bare), so they delegate fully to the
         // shared walk — FQ primitives + lettered vars, byte-identical to the
         // former local arms.
-        Type::Int | Type::Bool | Type::String | Type::Float | Type::ADT(_, _)
-        | Type::TyConApp(_, _) => {
-            render_type(ty, PrimitiveNaming::Qualified, VarNaming::Lettered(var_names))
-        }
+        Type::Int
+        | Type::Bool
+        | Type::String
+        | Type::Float
+        | Type::ADT(_, _)
+        | Type::TyConApp(_, _) => render_type(
+            ty,
+            PrimitiveNaming::Qualified,
+            VarNaming::Lettered(var_names),
+        ),
     }
 }
 
@@ -326,11 +328,7 @@ fn is_single_matching_constructor(type_name: &str, type_info: &TypeDefInfo) -> b
 /// For single-constructor types where the constructor name matches the type name,
 /// returns just the constructor name (e.g., `Point`). For multi-constructor types,
 /// returns `Type.Constructor` (e.g., `Color.Red`, `Option.Some`).
-pub fn format_ctor_display(
-    type_name: &str,
-    ctor_name: &str,
-    type_info: &TypeDefInfo,
-) -> String {
+pub fn format_ctor_display(type_name: &str, ctor_name: &str, type_info: &TypeDefInfo) -> String {
     if is_single_matching_constructor(type_name, type_info) {
         ctor_name.to_string()
     } else {
@@ -362,7 +360,9 @@ where
         // A single-ctor product type: the entry is the ctor `Def` carrying the
         // type facet on its `DefKind::Constructor.type_def`.
         Some(ModuleEntry::Def { kind, .. }) => match kind.as_ref() {
-            DefKind::Constructor { type_def: Some(td), .. } => Some((**td).clone()),
+            DefKind::Constructor {
+                type_def: Some(td), ..
+            } => Some((**td).clone()),
             _ => None,
         },
         _ => None,
@@ -419,7 +419,14 @@ fn push_adt_value_form<C, L>(
         doc.plain(format_ctor_display(type_name_str, &ctor_name, &type_info));
     } else {
         // Data constructor: read tag and fields from heap.
-        push_adt_heap_value(value, type_name_str, &type_info, type_args, symbol_tables, doc);
+        push_adt_heap_value(
+            value,
+            type_name_str,
+            &type_info,
+            type_args,
+            symbol_tables,
+            doc,
+        );
     }
 }
 
@@ -473,18 +480,12 @@ where
 
 /// Format the type portion of an ADT display with qualification (spec §1.4).
 /// Simple types: `user/Color`. Parameterized: `(user/Option primitives/Int)`.
-pub fn format_adt_type_qualified(
-    fqtn: &FQTypeName,
-    type_args: &[Type],
-) -> String {
+pub fn format_adt_type_qualified(fqtn: &FQTypeName, type_args: &[Type]) -> String {
     let qname = format!("{}/{}", fqtn.module, fqtn.name);
     if type_args.is_empty() {
         qname
     } else {
-        let arg_strs: Vec<String> = type_args
-            .iter()
-            .map(format_type_qualified)
-            .collect();
+        let arg_strs: Vec<String> = type_args.iter().map(format_type_qualified).collect();
         format!("({qname} {})", arg_strs.join(" "))
     }
 }
@@ -538,7 +539,10 @@ where
     // exist so the bare fallback serves). Without the canonical probe a data ctor
     // renders with its fields dropped (`(Cons 2 …)` → `Lst.Cons`).
     let canonical = cranelisp_types::member_key(&fqtn.name, ctor_name);
-    let scheme_ty = match table.get(canonical.as_ref()).or_else(|| table.get(ctor_name)) {
+    let scheme_ty = match table
+        .get(canonical.as_ref())
+        .or_else(|| table.get(ctor_name))
+    {
         // Every constructor — sum, enum, and single-ctor product — is now a
         // got-slotted `Def`; field types come off its `scheme`.
         Some(ModuleEntry::Def { scheme, .. }) => Some(&scheme.ty),
@@ -666,10 +670,7 @@ fn collect_var_ids(ty: &Type, ids: &mut Vec<TypeId>) {
 }
 
 /// Substitute type variables in a field type using the given substitution.
-fn substitute_field_type(
-    ty: &Type,
-    subst: &HashMap<TypeId, Type>,
-) -> Type {
+fn substitute_field_type(ty: &Type, subst: &HashMap<TypeId, Type>) -> Type {
     cranelisp_types::apply(subst, ty)
 }
 
@@ -817,7 +818,10 @@ mod tests {
         // A real heap string (base pointer > NULLARY_TAG_THRESHOLD).
         let ptr = cranelisp_intrinsics::heap_string::alloc_string(b"hi") as i64;
         let out = format_result_value(ptr, &Type::String, &empty);
-        assert_eq!(out, "\x1b[36m:primitives/String\x1b[0m \x1b[32m\"hi\"\x1b[0m");
+        assert_eq!(
+            out,
+            "\x1b[36m:primitives/String\x1b[0m \x1b[32m\"hi\"\x1b[0m"
+        );
     }
 
     // K1 sibling — Bool literal is R2 yellow too.
@@ -837,7 +841,10 @@ mod tests {
     fn colour_off_k1_result_value_is_plain() {
         let _g = ColorGuard::force(false);
         let empty: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
-        assert_eq!(format_result_value(3, &Type::Int, &empty), ":primitives/Int 3");
+        assert_eq!(
+            format_result_value(3, &Type::Int, &empty),
+            ":primitives/Int 3"
+        );
     }
 
     // K3 primary-line building block — `:(Fn …) module/name` is R4 (whole type)
@@ -902,14 +909,20 @@ mod tests {
     fn find_constructor_by_tag_out_of_range_falls_back() {
         let ti = type_info("Color", &["Red", "Green", "Blue"]);
         assert_eq!(find_constructor_by_tag(&ti, 3), "<tag:3>");
-        assert_eq!(find_constructor_by_tag(&type_info("Empty", &[]), 0), "<tag:0>");
+        assert_eq!(
+            find_constructor_by_tag(&type_info("Empty", &[]), 0),
+            "<tag:0>"
+        );
     }
 
     // spec: repl/spec.md §1.5 — single-ctor product (ctor name == type name)
     // is the prefix-suppression trigger.
     #[test]
     fn is_single_matching_constructor_product_true() {
-        assert!(is_single_matching_constructor("Point", &type_info("Point", &["Point"])));
+        assert!(is_single_matching_constructor(
+            "Point",
+            &type_info("Point", &["Point"])
+        ));
     }
 
     // spec: repl/spec.md §1.5 — a multi-ctor type is NOT prefix-suppressed
@@ -917,9 +930,15 @@ mod tests {
     #[test]
     fn is_single_matching_constructor_negatives() {
         // two ctors → not a product
-        assert!(!is_single_matching_constructor("Color", &type_info("Color", &["Red", "Green"])));
+        assert!(!is_single_matching_constructor(
+            "Color",
+            &type_info("Color", &["Red", "Green"])
+        ));
         // single ctor but name differs from the type
-        assert!(!is_single_matching_constructor("Wrap", &type_info("Wrap", &["MkWrap"])));
+        assert!(!is_single_matching_constructor(
+            "Wrap",
+            &type_info("Wrap", &["MkWrap"])
+        ));
     }
 
     // spec: repl/spec.md §1.5 — product suppresses `Type.`; sum/enum keeps it.
@@ -979,7 +998,10 @@ mod tests {
         // 3.25, not 3.14: clippy::approx_constant (deny) rejects near-PI literals.
         let bits = 3.25_f64.to_bits() as i64;
         let v = format_value(bits, &Type::Float, &empty);
-        assert!(v.contains('.'), "float display should contain a decimal point: {v}");
+        assert!(
+            v.contains('.'),
+            "float display should contain a decimal point: {v}"
+        );
     }
 
     #[test]
@@ -1075,14 +1097,18 @@ mod tests {
     // spec: spec/03-types.md §3.5.1 — constraint prefix repeated on every occurrence
     #[test]
     fn format_scheme_display_repeats_constraints_on_every_var_occurrence() {
-        // (Fn [:Num a :Num a] a) — two params with same constrained var
+        // The stored `core.num/Num` identity is rendered unchanged on both
+        // occurrences; display performs no bare-name re-resolution.
         let var_id = 100;
         let scheme = Scheme {
             type_vars: vec![var_id],
-            constraints: HashMap::from([(var_id, vec![FQTraitName::new(
-                ModuleFullPath::from("core.num"),
-                "Num".into(),
-            )])]),
+            constraints: HashMap::from([(
+                var_id,
+                vec![FQTraitName::new(
+                    ModuleFullPath::from("core.num"),
+                    "Num".into(),
+                )],
+            )]),
             ty: Type::Fn(
                 vec![Type::Var(var_id), Type::Var(var_id)],
                 Box::new(Type::Var(var_id)),
@@ -1090,13 +1116,13 @@ mod tests {
         };
         let module = ModuleFullPath::from("user");
         let s = format_scheme_display("add", &scheme, &module);
-        assert_eq!(s, ":(Fn [:Num a :Num a] a) user/add");
+        assert_eq!(s, ":(Fn [:core.num/Num a :core.num/Num a] a) user/add");
     }
 
     // spec: spec/03-types.md §3.5.1 — multiple constraints repeated on every occurrence
     #[test]
     fn format_scheme_display_repeats_multiple_constraints() {
-        // (Fn [:Eq :Num a :Eq :Num a] a)
+        // Multiple canonical identities sort by their fully-qualified text.
         let var_id = 100;
         let scheme = Scheme {
             type_vars: vec![var_id],
@@ -1114,8 +1140,10 @@ mod tests {
         };
         let module = ModuleFullPath::from("user");
         let s = format_scheme_display("bar", &scheme, &module);
-        // Traits are sorted alphabetically: Eq before Num
-        assert_eq!(s, ":(Fn [:Eq :Num a :Eq :Num a] a) user/bar");
+        assert_eq!(
+            s,
+            ":(Fn [:core.eq/Eq :core.num/Num a :core.eq/Eq :core.num/Num a] a) user/bar"
+        );
     }
 
     // --- format_result: convenience wrapper ---
@@ -1161,15 +1189,18 @@ mod tests {
         };
         table.insert(
             Symbol::from("Point"),
-            ModuleEntry::def(ctor_scheme, DefKind::Constructor {
-                got_slot: 0,
-                type_name: point_fqtn(),
-                tag: 0,
-                field_count: 2,
-                internal: false,
-                type_def: Some(Box::new(info)),
-                mode_summary: None,
-            })
+            ModuleEntry::def(
+                ctor_scheme,
+                DefKind::Constructor {
+                    got_slot: 0,
+                    type_name: point_fqtn(),
+                    tag: 0,
+                    field_count: 2,
+                    internal: false,
+                    type_def: Some(Box::new(info)),
+                    mode_summary: None,
+                },
+            )
             .param_names(vec![Symbol::from("x"), Symbol::from("y")])
             .build(),
         );
@@ -1208,19 +1239,25 @@ mod tests {
         let ctor_scheme = Scheme {
             type_vars: Vec::new(),
             constraints: HashMap::new(),
-            ty: Type::Fn(vec![Type::Float], Box::new(Type::ADT(fqtn.clone(), Vec::new()))),
+            ty: Type::Fn(
+                vec![Type::Float],
+                Box::new(Type::ADT(fqtn.clone(), Vec::new())),
+            ),
         };
         table.insert(
             Symbol::from("Circle"),
-            ModuleEntry::def(ctor_scheme, DefKind::Constructor {
-                got_slot: 0,
-                type_name: fqtn.clone(),
-                tag: 0,
-                field_count: 1,
-                internal: false,
-                type_def: None,
-                mode_summary: None,
-            })
+            ModuleEntry::def(
+                ctor_scheme,
+                DefKind::Constructor {
+                    got_slot: 0,
+                    type_name: fqtn.clone(),
+                    tag: 0,
+                    field_count: 1,
+                    internal: false,
+                    type_def: None,
+                    mode_summary: None,
+                },
+            )
             .build(),
         );
         tables.insert(ModuleFullPath::from("user"), table);
@@ -1269,19 +1306,25 @@ mod tests {
         let ctor_scheme = Scheme {
             type_vars: Vec::new(),
             constraints: HashMap::new(),
-            ty: Type::Fn(vec![field_ty], Box::new(Type::ADT(fqtn.clone(), Vec::new()))),
+            ty: Type::Fn(
+                vec![field_ty],
+                Box::new(Type::ADT(fqtn.clone(), Vec::new())),
+            ),
         };
         table.insert(
             Symbol::from(name),
-            ModuleEntry::def(ctor_scheme, DefKind::Constructor {
-                got_slot: 0,
-                type_name: fqtn.clone(),
-                tag: 0,
-                field_count: 1,
-                internal: false,
-                type_def: Some(Box::new(info)),
-                mode_summary: None,
-            })
+            ModuleEntry::def(
+                ctor_scheme,
+                DefKind::Constructor {
+                    got_slot: 0,
+                    type_name: fqtn.clone(),
+                    tag: 0,
+                    field_count: 1,
+                    internal: false,
+                    type_def: Some(Box::new(info)),
+                    mode_summary: None,
+                },
+            )
             .param_names(vec![Symbol::from("v")])
             .build(),
         );

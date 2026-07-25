@@ -251,9 +251,7 @@ fn capture_let_bound_param_alias_link_does_not_corrupt_heap() {
     Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .link_then_run("user.cl")
-        .user(&format!(
-            "{I1_MK}(defn main [] (Pure ((mk [1 2 3]))))\n"
-        ))
+        .user(&format!("{I1_MK}(defn main [] (Pure ((mk [1 2 3]))))\n"))
         .output()
         .assert_exit(2);
 }

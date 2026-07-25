@@ -2,7 +2,6 @@
 
 use crate::test_support::*;
 
-
 // --- Vec codegen tests ---
 
 // spec: 04-expressions §4.10 — empty Vec literal codegen
@@ -16,7 +15,10 @@ fn test_compile_empty_vec_literal() {
     let check = empty_check();
 
     let result = test_compile_and_run(&expr, &check, &empty_tables());
-    assert!(result.is_ok(), "empty vec literal should compile: {result:?}");
+    assert!(
+        result.is_ok(),
+        "empty vec literal should compile: {result:?}"
+    );
     let ptr = result.unwrap();
     // ptr should be a heap pointer (> NULLARY_TAG_THRESHOLD)
     assert!(ptr > 1024, "expected heap pointer, got {ptr}");
@@ -28,15 +30,26 @@ fn test_compile_empty_vec_literal() {
     cranelisp_intrinsics::vec_runtime::vec_drop(ptr, 0);
 }
 
-
 // spec: 04-expressions §4.10 — Vec literal with integer elements
 #[test]
 fn test_compile_vec_literal_with_ints() {
     let expr = Expr::VecLit {
         elements: vec![
-            Expr::IntLit { value: 10, span: Span::new(1, 3), inferred_type: None },
-            Expr::IntLit { value: 20, span: Span::new(4, 6), inferred_type: None },
-            Expr::IntLit { value: 30, span: Span::new(7, 9), inferred_type: None },
+            Expr::IntLit {
+                value: 10,
+                span: Span::new(1, 3),
+                inferred_type: None,
+            },
+            Expr::IntLit {
+                value: 20,
+                span: Span::new(4, 6),
+                inferred_type: None,
+            },
+            Expr::IntLit {
+                value: 30,
+                span: Span::new(7, 9),
+                inferred_type: None,
+            },
         ],
         span: Span::new(0, 10),
         inferred_type: None,
@@ -63,21 +76,25 @@ fn test_compile_vec_literal_with_ints() {
     cranelisp_intrinsics::vec_runtime::vec_drop(ptr, 0);
 }
 
-
 // spec: 04-expressions §4.10 — single-element Vec literal
 #[test]
 fn test_compile_vec_literal_single_element() {
     let expr = Expr::VecLit {
-        elements: vec![
-            Expr::IntLit { value: 42, span: Span::new(1, 3), inferred_type: None },
-        ],
+        elements: vec![Expr::IntLit {
+            value: 42,
+            span: Span::new(1, 3),
+            inferred_type: None,
+        }],
         span: Span::new(0, 4),
         inferred_type: None,
     };
     let check = empty_check();
 
     let result = test_compile_and_run(&expr, &check, &empty_tables());
-    assert!(result.is_ok(), "single-element vec should compile: {result:?}");
+    assert!(
+        result.is_ok(),
+        "single-element vec should compile: {result:?}"
+    );
     let ptr = result.unwrap();
 
     assert_eq!(vec_len_for_test(ptr), 1);
@@ -91,14 +108,21 @@ fn test_compile_vec_literal_single_element() {
     cranelisp_intrinsics::vec_runtime::vec_drop(ptr, 0);
 }
 
-
 // spec: 04-expressions §4.10 — Vec literal with boolean elements
 #[test]
 fn test_compile_vec_literal_with_bool_elements() {
     let expr = Expr::VecLit {
         elements: vec![
-            Expr::BoolLit { value: true, span: Span::new(1, 5), inferred_type: None },
-            Expr::BoolLit { value: false, span: Span::new(6, 11), inferred_type: None },
+            Expr::BoolLit {
+                value: true,
+                span: Span::new(1, 5),
+                inferred_type: None,
+            },
+            Expr::BoolLit {
+                value: false,
+                span: Span::new(6, 11),
+                inferred_type: None,
+            },
         ],
         span: Span::new(0, 12),
         inferred_type: None,
@@ -119,7 +143,6 @@ fn test_compile_vec_literal_with_bool_elements() {
 
     cranelisp_intrinsics::vec_runtime::vec_drop(ptr, 0);
 }
-
 
 // spec: appendix-a-builtins §A.3 — vec-len inline primitive codegen
 #[test]
@@ -147,9 +170,21 @@ fn test_compile_vec_len_inline() {
         }),
         args: vec![Expr::VecLit {
             elements: vec![
-                Expr::IntLit { value: 10, span: Span::new(11, 13), inferred_type: None },
-                Expr::IntLit { value: 20, span: Span::new(14, 16), inferred_type: None },
-                Expr::IntLit { value: 30, span: Span::new(17, 19), inferred_type: None },
+                Expr::IntLit {
+                    value: 10,
+                    span: Span::new(11, 13),
+                    inferred_type: None,
+                },
+                Expr::IntLit {
+                    value: 20,
+                    span: Span::new(14, 16),
+                    inferred_type: None,
+                },
+                Expr::IntLit {
+                    value: 30,
+                    span: Span::new(17, 19),
+                    inferred_type: None,
+                },
             ],
             span: vec_span,
             inferred_type: None,
@@ -168,14 +203,13 @@ fn test_compile_vec_len_inline() {
         expr_types: HashMap::new(),
         default_method_defns: Vec::new(),
         warnings: Vec::new(),
-    display: None,
+        display: None,
     };
 
     let result = test_compile_and_run(&expr, &check, &empty_tables());
     assert!(result.is_ok(), "vec-len should compile: {result:?}");
     assert_eq!(result.unwrap(), 3);
 }
-
 
 // spec: appendix-a-builtins §A.3 — vec-get bounds-checked index codegen
 #[test]
@@ -199,9 +233,21 @@ fn test_compile_vec_get_inline() {
             Symbol::from("v"),
             Expr::VecLit {
                 elements: vec![
-                    Expr::IntLit { value: 10, span: Span::new(9, 11), inferred_type: None },
-                    Expr::IntLit { value: 20, span: Span::new(12, 14), inferred_type: None },
-                    Expr::IntLit { value: 30, span: Span::new(15, 17), inferred_type: None },
+                    Expr::IntLit {
+                        value: 10,
+                        span: Span::new(9, 11),
+                        inferred_type: None,
+                    },
+                    Expr::IntLit {
+                        value: 20,
+                        span: Span::new(12, 14),
+                        inferred_type: None,
+                    },
+                    Expr::IntLit {
+                        value: 30,
+                        span: Span::new(15, 17),
+                        inferred_type: None,
+                    },
                 ],
                 span: vec_span,
                 inferred_type: None,
@@ -221,7 +267,11 @@ fn test_compile_vec_get_inline() {
                     resolved_call: None,
                     inferred_type: None,
                 },
-                Expr::IntLit { value: 1, span: Span::new(32, 33), inferred_type: None },
+                Expr::IntLit {
+                    value: 1,
+                    span: Span::new(32, 33),
+                    inferred_type: None,
+                },
             ],
             span: get_span,
             resolved_call: None,
@@ -240,14 +290,13 @@ fn test_compile_vec_get_inline() {
         expr_types: HashMap::new(),
         default_method_defns: Vec::new(),
         warnings: Vec::new(),
-    display: None,
+        display: None,
     };
 
     let result = test_compile_and_run(&expr, &check, &empty_tables());
     assert!(result.is_ok(), "vec-get should compile: {result:?}");
     assert_eq!(result.unwrap(), 20);
 }
-
 
 // spec: appendix-a-builtins §A.3 — vec-get index 0 boundary
 #[test]
@@ -270,8 +319,16 @@ fn test_compile_vec_get_first_element() {
             Symbol::from("v"),
             Expr::VecLit {
                 elements: vec![
-                    Expr::IntLit { value: 100, span: Span::new(101, 104), inferred_type: None },
-                    Expr::IntLit { value: 200, span: Span::new(105, 108), inferred_type: None },
+                    Expr::IntLit {
+                        value: 100,
+                        span: Span::new(101, 104),
+                        inferred_type: None,
+                    },
+                    Expr::IntLit {
+                        value: 200,
+                        span: Span::new(105, 108),
+                        inferred_type: None,
+                    },
                 ],
                 span: vec_span,
                 inferred_type: None,
@@ -291,7 +348,11 @@ fn test_compile_vec_get_first_element() {
                     resolved_call: None,
                     inferred_type: None,
                 },
-                Expr::IntLit { value: 0, span: Span::new(131, 132), inferred_type: None },
+                Expr::IntLit {
+                    value: 0,
+                    span: Span::new(131, 132),
+                    inferred_type: None,
+                },
             ],
             span: get_span,
             resolved_call: None,
@@ -310,14 +371,13 @@ fn test_compile_vec_get_first_element() {
         expr_types: HashMap::new(),
         default_method_defns: Vec::new(),
         warnings: Vec::new(),
-    display: None,
+        display: None,
     };
 
     let result = test_compile_and_run(&expr, &check, &empty_tables());
     assert!(result.is_ok(), "vec-get index 0 should work: {result:?}");
     assert_eq!(result.unwrap(), 100);
 }
-
 
 // spec: appendix-a-builtins §A.3 — vec-get last index boundary
 #[test]
@@ -340,9 +400,21 @@ fn test_compile_vec_get_last_element() {
             Symbol::from("v"),
             Expr::VecLit {
                 elements: vec![
-                    Expr::IntLit { value: 1, span: Span::new(201, 202), inferred_type: None },
-                    Expr::IntLit { value: 2, span: Span::new(203, 204), inferred_type: None },
-                    Expr::IntLit { value: 3, span: Span::new(205, 206), inferred_type: None },
+                    Expr::IntLit {
+                        value: 1,
+                        span: Span::new(201, 202),
+                        inferred_type: None,
+                    },
+                    Expr::IntLit {
+                        value: 2,
+                        span: Span::new(203, 204),
+                        inferred_type: None,
+                    },
+                    Expr::IntLit {
+                        value: 3,
+                        span: Span::new(205, 206),
+                        inferred_type: None,
+                    },
                 ],
                 span: vec_span,
                 inferred_type: None,
@@ -362,7 +434,11 @@ fn test_compile_vec_get_last_element() {
                     resolved_call: None,
                     inferred_type: None,
                 },
-                Expr::IntLit { value: 2, span: Span::new(231, 232), inferred_type: None },
+                Expr::IntLit {
+                    value: 2,
+                    span: Span::new(231, 232),
+                    inferred_type: None,
+                },
             ],
             span: get_span,
             resolved_call: None,
@@ -381,14 +457,13 @@ fn test_compile_vec_get_last_element() {
         expr_types: HashMap::new(),
         default_method_defns: Vec::new(),
         warnings: Vec::new(),
-    display: None,
+        display: None,
     };
 
     let result = test_compile_and_run(&expr, &check, &empty_tables());
     assert!(result.is_ok(), "vec-get last index should work: {result:?}");
     assert_eq!(result.unwrap(), 3);
 }
-
 
 // spec: 12-runtime §12.3.3 — vec-set copy-on-write path codegen
 #[test]
@@ -420,9 +495,21 @@ fn test_compile_vec_set_copy_path() {
             Symbol::from("v"),
             Expr::VecLit {
                 elements: vec![
-                    Expr::IntLit { value: 10, span: Span::new(301, 303), inferred_type: None },
-                    Expr::IntLit { value: 20, span: Span::new(304, 306), inferred_type: None },
-                    Expr::IntLit { value: 30, span: Span::new(307, 309), inferred_type: None },
+                    Expr::IntLit {
+                        value: 10,
+                        span: Span::new(301, 303),
+                        inferred_type: None,
+                    },
+                    Expr::IntLit {
+                        value: 20,
+                        span: Span::new(304, 306),
+                        inferred_type: None,
+                    },
+                    Expr::IntLit {
+                        value: 30,
+                        span: Span::new(307, 309),
+                        inferred_type: None,
+                    },
                 ],
                 span: vec_span,
                 inferred_type: None,
@@ -449,8 +536,16 @@ fn test_compile_vec_set_copy_path() {
                         resolved_call: None,
                         inferred_type: None,
                     },
-                    Expr::IntLit { value: 1, span: Span::new(331, 332), inferred_type: None },
-                    Expr::IntLit { value: 99, span: Span::new(333, 335), inferred_type: None },
+                    Expr::IntLit {
+                        value: 1,
+                        span: Span::new(331, 332),
+                        inferred_type: None,
+                    },
+                    Expr::IntLit {
+                        value: 99,
+                        span: Span::new(333, 335),
+                        inferred_type: None,
+                    },
                 ],
                 span: set_span,
                 resolved_call: None,
@@ -473,7 +568,7 @@ fn test_compile_vec_set_copy_path() {
         expr_types: HashMap::new(),
         default_method_defns: Vec::new(),
         warnings: Vec::new(),
-    display: None,
+        display: None,
     };
 
     let result = test_compile_and_run(&expr, &check, &empty_tables());
@@ -481,7 +576,6 @@ fn test_compile_vec_set_copy_path() {
     // vec-set returns a new Vec with same length.
     assert_eq!(result.unwrap(), 3);
 }
-
 
 // spec: 12-runtime §12.3.3 — vec-push copy-on-write path codegen
 #[test]
@@ -524,13 +618,25 @@ fn test_compile_vec_push_copy_path() {
             args: vec![
                 Expr::VecLit {
                     elements: vec![
-                        Expr::IntLit { value: 10, span: Span::new(401, 403), inferred_type: None },
-                        Expr::IntLit { value: 20, span: Span::new(404, 406), inferred_type: None },
+                        Expr::IntLit {
+                            value: 10,
+                            span: Span::new(401, 403),
+                            inferred_type: None,
+                        },
+                        Expr::IntLit {
+                            value: 20,
+                            span: Span::new(404, 406),
+                            inferred_type: None,
+                        },
                     ],
                     span: vec_span,
                     inferred_type: None,
                 },
-                Expr::IntLit { value: 30, span: Span::new(425, 427), inferred_type: None },
+                Expr::IntLit {
+                    value: 30,
+                    span: Span::new(425, 427),
+                    inferred_type: None,
+                },
             ],
             span: push_span,
             resolved_call: None,
@@ -550,7 +656,7 @@ fn test_compile_vec_push_copy_path() {
         expr_types: HashMap::new(),
         default_method_defns: Vec::new(),
         warnings: Vec::new(),
-    display: None,
+        display: None,
     };
 
     let result = test_compile_and_run(&expr, &check, &empty_tables());
@@ -558,7 +664,6 @@ fn test_compile_vec_push_copy_path() {
     // [10 20] pushed 30 -> len 3
     assert_eq!(result.unwrap(), 3);
 }
-
 
 // spec: 04-expressions §4.3, §4.10 — Vec literal bound in let, accessed via vec-len
 #[test]
@@ -582,9 +687,21 @@ fn test_compile_vec_literal_in_let() {
             Symbol::from("v"),
             Expr::VecLit {
                 elements: vec![
-                    Expr::IntLit { value: 1, span: Span::new(501, 502), inferred_type: None },
-                    Expr::IntLit { value: 2, span: Span::new(503, 504), inferred_type: None },
-                    Expr::IntLit { value: 3, span: Span::new(505, 506), inferred_type: None },
+                    Expr::IntLit {
+                        value: 1,
+                        span: Span::new(501, 502),
+                        inferred_type: None,
+                    },
+                    Expr::IntLit {
+                        value: 2,
+                        span: Span::new(503, 504),
+                        inferred_type: None,
+                    },
+                    Expr::IntLit {
+                        value: 3,
+                        span: Span::new(505, 506),
+                        inferred_type: None,
+                    },
                 ],
                 span: vec_span,
                 inferred_type: None,
@@ -620,14 +737,13 @@ fn test_compile_vec_literal_in_let() {
         expr_types: HashMap::new(),
         default_method_defns: Vec::new(),
         warnings: Vec::new(),
-    display: None,
+        display: None,
     };
 
     let result = test_compile_and_run(&expr, &check, &empty_tables());
     assert!(result.is_ok(), "vec in let should compile: {result:?}");
     assert_eq!(result.unwrap(), 3);
 }
-
 
 // spec: 04-expressions §4.10, §4.11 — Vec literal with computed elements, left-to-right eval
 #[test]
@@ -647,7 +763,11 @@ fn test_compile_vec_literal_with_computed_elements() {
 
     let expr = Expr::VecLit {
         elements: vec![
-            Expr::IntLit { value: 1, span: Span::new(601, 602), inferred_type: None },
+            Expr::IntLit {
+                value: 1,
+                span: Span::new(601, 602),
+                inferred_type: None,
+            },
             Expr::Apply {
                 callee: Box::new(Expr::Var {
                     name: Symbol::from("+"),
@@ -656,14 +776,26 @@ fn test_compile_vec_literal_with_computed_elements() {
                     inferred_type: None,
                 }),
                 args: vec![
-                    Expr::IntLit { value: 2, span: Span::new(606, 607), inferred_type: None },
-                    Expr::IntLit { value: 3, span: Span::new(608, 609), inferred_type: None },
+                    Expr::IntLit {
+                        value: 2,
+                        span: Span::new(606, 607),
+                        inferred_type: None,
+                    },
+                    Expr::IntLit {
+                        value: 3,
+                        span: Span::new(608, 609),
+                        inferred_type: None,
+                    },
                 ],
                 span: add_span,
                 resolved_call: None,
                 inferred_type: None,
             },
-            Expr::IntLit { value: 10, span: Span::new(611, 613), inferred_type: None },
+            Expr::IntLit {
+                value: 10,
+                span: Span::new(611, 613),
+                inferred_type: None,
+            },
         ],
         span: Span::new(600, 614),
         inferred_type: None,
@@ -678,11 +810,14 @@ fn test_compile_vec_literal_with_computed_elements() {
         expr_types: HashMap::new(),
         default_method_defns: Vec::new(),
         warnings: Vec::new(),
-    display: None,
+        display: None,
     };
 
     let result = test_compile_and_run(&expr, &check, &empty_tables());
-    assert!(result.is_ok(), "vec with computed elements should compile: {result:?}");
+    assert!(
+        result.is_ok(),
+        "vec with computed elements should compile: {result:?}"
+    );
     let ptr = result.unwrap();
 
     assert_eq!(vec_len_for_test(ptr), 3);
@@ -697,7 +832,6 @@ fn test_compile_vec_literal_with_computed_elements() {
     cranelisp_intrinsics::vec_runtime::vec_drop(ptr, 0);
 }
 
-
 // spec: 05-definitions §5.1, 04-expressions §4.10 — Vec literal as function return value
 #[test]
 fn test_compile_vec_in_function_defn() {
@@ -709,13 +843,25 @@ fn test_compile_vec_in_function_defn() {
         variants: vec![DefnVariant {
             params: vec![],
             body: Expr::VecLit {
-            elements: vec![
-            Expr::IntLit { value: 1, span: Span::new(701, 702), inferred_type: None },
-            Expr::IntLit { value: 2, span: Span::new(703, 704), inferred_type: None },
-            Expr::IntLit { value: 3, span: Span::new(705, 706), inferred_type: None },
-            ],
-            span: Span::new(700, 707),
-            inferred_type: None,
+                elements: vec![
+                    Expr::IntLit {
+                        value: 1,
+                        span: Span::new(701, 702),
+                        inferred_type: None,
+                    },
+                    Expr::IntLit {
+                        value: 2,
+                        span: Span::new(703, 704),
+                        inferred_type: None,
+                    },
+                    Expr::IntLit {
+                        value: 3,
+                        span: Span::new(705, 706),
+                        inferred_type: None,
+                    },
+                ],
+                span: Span::new(700, 707),
+                inferred_type: None,
             },
             span: Span::new(700, 710),
         }],
@@ -732,7 +878,6 @@ fn test_compile_vec_in_function_defn() {
 
     cranelisp_intrinsics::vec_runtime::vec_drop(ptr, 0);
 }
-
 
 // spec: appendix-a-builtins §A.3 — vec-get returns correct element value
 #[test]
@@ -756,9 +901,21 @@ fn test_compile_vec_get_verify_value() {
             Symbol::from("v"),
             Expr::VecLit {
                 elements: vec![
-                    Expr::IntLit { value: 100, span: Span::new(809, 812), inferred_type: None },
-                    Expr::IntLit { value: 200, span: Span::new(813, 816), inferred_type: None },
-                    Expr::IntLit { value: 300, span: Span::new(817, 820), inferred_type: None },
+                    Expr::IntLit {
+                        value: 100,
+                        span: Span::new(809, 812),
+                        inferred_type: None,
+                    },
+                    Expr::IntLit {
+                        value: 200,
+                        span: Span::new(813, 816),
+                        inferred_type: None,
+                    },
+                    Expr::IntLit {
+                        value: 300,
+                        span: Span::new(817, 820),
+                        inferred_type: None,
+                    },
                 ],
                 span: vec_span,
                 inferred_type: None,
@@ -778,7 +935,11 @@ fn test_compile_vec_get_verify_value() {
                     resolved_call: None,
                     inferred_type: None,
                 },
-                Expr::IntLit { value: 2, span: Span::new(832, 833), inferred_type: None },
+                Expr::IntLit {
+                    value: 2,
+                    span: Span::new(832, 833),
+                    inferred_type: None,
+                },
             ],
             span: get_span,
             resolved_call: None,
@@ -797,14 +958,13 @@ fn test_compile_vec_get_verify_value() {
         expr_types: HashMap::new(),
         default_method_defns: Vec::new(),
         warnings: Vec::new(),
-    display: None,
+        display: None,
     };
 
     let result = test_compile_and_run(&expr, &check, &empty_tables());
     assert!(result.is_ok(), "vec-get value should compile: {result:?}");
     assert_eq!(result.unwrap(), 300);
 }
-
 
 // spec: 12-runtime §12.3.3 — vec-push on temporary Vec (COW in-place path)
 #[test]
@@ -847,13 +1007,19 @@ fn test_compile_vec_push_on_temp() {
             }),
             args: vec![
                 Expr::VecLit {
-                    elements: vec![
-                        Expr::IntLit { value: 1, span: Span::new(901, 902), inferred_type: None },
-                    ],
+                    elements: vec![Expr::IntLit {
+                        value: 1,
+                        span: Span::new(901, 902),
+                        inferred_type: None,
+                    }],
                     span: vec_span,
                     inferred_type: None,
                 },
-                Expr::IntLit { value: 2, span: Span::new(920, 921), inferred_type: None },
+                Expr::IntLit {
+                    value: 2,
+                    span: Span::new(920, 921),
+                    inferred_type: None,
+                },
             ],
             span: push_span,
             resolved_call: None,
@@ -873,14 +1039,16 @@ fn test_compile_vec_push_on_temp() {
         expr_types: HashMap::new(),
         default_method_defns: Vec::new(),
         warnings: Vec::new(),
-    display: None,
+        display: None,
     };
 
     let result = test_compile_and_run(&expr, &check, &empty_tables());
-    assert!(result.is_ok(), "vec-push on temp should compile: {result:?}");
+    assert!(
+        result.is_ok(),
+        "vec-push on temp should compile: {result:?}"
+    );
     assert_eq!(result.unwrap(), 2);
 }
-
 
 // spec: 12-runtime §12.3.3 — vec-set on temporary Vec (COW in-place path)
 #[test]
@@ -923,15 +1091,35 @@ fn test_compile_vec_set_on_temp() {
             args: vec![
                 Expr::VecLit {
                     elements: vec![
-                        Expr::IntLit { value: 10, span: Span::new(1001, 1003), inferred_type: None },
-                        Expr::IntLit { value: 20, span: Span::new(1004, 1006), inferred_type: None },
-                        Expr::IntLit { value: 30, span: Span::new(1007, 1009), inferred_type: None },
+                        Expr::IntLit {
+                            value: 10,
+                            span: Span::new(1001, 1003),
+                            inferred_type: None,
+                        },
+                        Expr::IntLit {
+                            value: 20,
+                            span: Span::new(1004, 1006),
+                            inferred_type: None,
+                        },
+                        Expr::IntLit {
+                            value: 30,
+                            span: Span::new(1007, 1009),
+                            inferred_type: None,
+                        },
                     ],
                     span: vec_span,
                     inferred_type: None,
                 },
-                Expr::IntLit { value: 0, span: Span::new(1024, 1025), inferred_type: None },
-                Expr::IntLit { value: 99, span: Span::new(1026, 1028), inferred_type: None },
+                Expr::IntLit {
+                    value: 0,
+                    span: Span::new(1024, 1025),
+                    inferred_type: None,
+                },
+                Expr::IntLit {
+                    value: 99,
+                    span: Span::new(1026, 1028),
+                    inferred_type: None,
+                },
             ],
             span: set_span,
             resolved_call: None,
@@ -951,14 +1139,13 @@ fn test_compile_vec_set_on_temp() {
         expr_types: HashMap::new(),
         default_method_defns: Vec::new(),
         warnings: Vec::new(),
-    display: None,
+        display: None,
     };
 
     let result = test_compile_and_run(&expr, &check, &empty_tables());
     assert!(result.is_ok(), "vec-set on temp should compile: {result:?}");
     assert_eq!(result.unwrap(), 3);
 }
-
 
 // ===== FIXME 0134 harvest (backend slice): Vec-COW value-correctness +
 // RC-balance kernels of the quarantined `tests/legacy/{ring1,ring2,e2e}.rs`
@@ -986,7 +1173,9 @@ fn vec_get(
 ) -> Expr {
     resolutions.insert(
         get_span,
-        cranelisp_types::ResolvedCall::BuiltinFn { name: Symbol::from("vec-get") },
+        cranelisp_types::ResolvedCall::BuiltinFn {
+            name: Symbol::from("vec-get"),
+        },
     );
     Expr::Apply {
         callee: Box::new(Expr::Var {
@@ -997,14 +1186,17 @@ fn vec_get(
         }),
         args: vec![
             vec_expr,
-            Expr::IntLit { value: idx, span: Span::new(get_span.end - 1, get_span.end), inferred_type: None },
+            Expr::IntLit {
+                value: idx,
+                span: Span::new(get_span.end - 1, get_span.end),
+                inferred_type: None,
+            },
         ],
         span: get_span,
         resolved_call: None,
         inferred_type: None,
     }
 }
-
 
 fn vec_lit(elems: &[i64], base: u32) -> Expr {
     Expr::VecLit {
@@ -1025,7 +1217,6 @@ fn vec_lit(elems: &[i64], base: u32) -> Expr {
     }
 }
 
-
 // spec: spec/12-runtime.md §12.3.3 — vec-set on a NON-last-use vec takes
 //       the COPY path; the ORIGINAL vec is untouched. Backend kernel of the
 //       legacy `vec_set_cow_preserves_original` reg-guard. The original `v`
@@ -1036,7 +1227,12 @@ fn vec_set_copy_path_preserves_original() {
     use cranelisp_types::ResolvedCall;
     let mut res = HashMap::new();
     let set_span = Span::new(2010, 2030);
-    res.insert(set_span, ResolvedCall::BuiltinFn { name: Symbol::from("vec-set") });
+    res.insert(
+        set_span,
+        ResolvedCall::BuiltinFn {
+            name: Symbol::from("vec-set"),
+        },
+    );
 
     // (let [v [10 20 30]]
     //   (let [_ (vec-set v 1 99)]   ; copy path: v not at last use
@@ -1049,16 +1245,34 @@ fn vec_set_copy_path_preserves_original() {
             inferred_type: None,
         }),
         args: vec![
-            Expr::Var { name: Symbol::from("v"), span: Span::new(2019, 2020), resolved_call: None, inferred_type: None },
-            Expr::IntLit { value: 1, span: Span::new(2021, 2022), inferred_type: None },
-            Expr::IntLit { value: 99, span: Span::new(2023, 2025), inferred_type: None },
+            Expr::Var {
+                name: Symbol::from("v"),
+                span: Span::new(2019, 2020),
+                resolved_call: None,
+                inferred_type: None,
+            },
+            Expr::IntLit {
+                value: 1,
+                span: Span::new(2021, 2022),
+                inferred_type: None,
+            },
+            Expr::IntLit {
+                value: 99,
+                span: Span::new(2023, 2025),
+                inferred_type: None,
+            },
         ],
         span: set_span,
         resolved_call: None,
         inferred_type: None,
     };
     let read_original = vec_get(
-        Expr::Var { name: Symbol::from("v"), span: Span::new(2040, 2041), resolved_call: None, inferred_type: None },
+        Expr::Var {
+            name: Symbol::from("v"),
+            span: Span::new(2040, 2041),
+            resolved_call: None,
+            inferred_type: None,
+        },
         1,
         Span::new(2042, 2060),
         &mut res,
@@ -1094,7 +1308,6 @@ fn vec_set_copy_path_preserves_original() {
     );
 }
 
-
 // spec: spec/12-runtime.md §12.3.3 — a vec-set preserves the values at
 //       OTHER positions. Backend kernel of the legacy
 //       `vec_set_preserves_other_elements` GAP (distinct from the
@@ -1105,7 +1318,12 @@ fn vec_set_preserves_other_elements() {
     use cranelisp_types::ResolvedCall;
     let mut res = HashMap::new();
     let set_span = Span::new(2110, 2130);
-    res.insert(set_span, ResolvedCall::BuiltinFn { name: Symbol::from("vec-set") });
+    res.insert(
+        set_span,
+        ResolvedCall::BuiltinFn {
+            name: Symbol::from("vec-set"),
+        },
+    );
 
     // (vec-get (vec-set [10 20 30] 0 99) 2)  →  30 (index 2 untouched)
     let set_expr = Expr::Apply {
@@ -1117,8 +1335,16 @@ fn vec_set_preserves_other_elements() {
         }),
         args: vec![
             vec_lit(&[10, 20, 30], 2101),
-            Expr::IntLit { value: 0, span: Span::new(2121, 2122), inferred_type: None },
-            Expr::IntLit { value: 99, span: Span::new(2123, 2125), inferred_type: None },
+            Expr::IntLit {
+                value: 0,
+                span: Span::new(2121, 2122),
+                inferred_type: None,
+            },
+            Expr::IntLit {
+                value: 99,
+                span: Span::new(2123, 2125),
+                inferred_type: None,
+            },
         ],
         span: set_span,
         resolved_call: None,
@@ -1144,7 +1370,6 @@ fn vec_set_preserves_other_elements() {
     );
 }
 
-
 // spec: spec/12-runtime.md §12.3 — RC balance: a complete Vec lifecycle
 //       (allocate literal, set, drop) returns live bytes to baseline — no
 //       leak, no double-free. Backend kernel of the legacy
@@ -1165,8 +1390,18 @@ fn vec_lifecycle_is_rc_balanced() {
     let mut res = HashMap::new();
     let set_span = Span::new(2210, 2230);
     let len_span = Span::new(2240, 2260);
-    res.insert(set_span, ResolvedCall::BuiltinFn { name: Symbol::from("vec-set") });
-    res.insert(len_span, ResolvedCall::BuiltinFn { name: Symbol::from("vec-len") });
+    res.insert(
+        set_span,
+        ResolvedCall::BuiltinFn {
+            name: Symbol::from("vec-set"),
+        },
+    );
+    res.insert(
+        len_span,
+        ResolvedCall::BuiltinFn {
+            name: Symbol::from("vec-len"),
+        },
+    );
     let set_expr = Expr::Apply {
         callee: Box::new(Expr::Var {
             name: Symbol::from("vec-set"),
@@ -1176,8 +1411,16 @@ fn vec_lifecycle_is_rc_balanced() {
         }),
         args: vec![
             vec_lit(&[10, 20, 30], 2201),
-            Expr::IntLit { value: 0, span: Span::new(2221, 2222), inferred_type: None },
-            Expr::IntLit { value: 99, span: Span::new(2223, 2225), inferred_type: None },
+            Expr::IntLit {
+                value: 0,
+                span: Span::new(2221, 2222),
+                inferred_type: None,
+            },
+            Expr::IntLit {
+                value: 99,
+                span: Span::new(2223, 2225),
+                inferred_type: None,
+            },
         ],
         span: set_span,
         resolved_call: None,
@@ -1220,30 +1463,31 @@ fn vec_lifecycle_is_rc_balanced() {
     );
 }
 
-
 // spec: 04-expressions §4.10 — Vec literal in interactive (REPL) mode
 #[test]
 fn test_compile_vec_literal_interactive_mode() {
     let expr = Expr::VecLit {
-        elements: vec![
-            Expr::IntLit { value: 42, span: Span::new(1101, 1103), inferred_type: None },
-        ],
+        elements: vec![Expr::IntLit {
+            value: 42,
+            span: Span::new(1101, 1103),
+            inferred_type: None,
+        }],
         span: Span::new(1100, 1104),
         inferred_type: None,
     };
     let check = empty_check();
 
-    let result = test_compile_and_run(
-        &expr, &check, &empty_tables(),
+    let result = test_compile_and_run(&expr, &check, &empty_tables());
+    assert!(
+        result.is_ok(),
+        "vec in interactive mode should compile: {result:?}"
     );
-    assert!(result.is_ok(), "vec in interactive mode should compile: {result:?}");
     let ptr = result.unwrap();
     assert!(ptr > 1024);
     assert_eq!(vec_len_for_test(ptr), 1);
 
     cranelisp_intrinsics::vec_runtime::vec_drop(ptr, 0);
 }
-
 
 // spec: appendix-a-builtins §A.3 — vec-len on empty Vec returns 0
 #[test]
@@ -1288,14 +1532,13 @@ fn test_compile_vec_empty_len() {
         expr_types: HashMap::new(),
         default_method_defns: Vec::new(),
         warnings: Vec::new(),
-    display: None,
+        display: None,
     };
 
     let result = test_compile_and_run(&expr, &check, &empty_tables());
     assert!(result.is_ok(), "empty vec len should compile: {result:?}");
     assert_eq!(result.unwrap(), 0);
 }
-
 
 // spec: appendix-a-builtins §A.3 — vec-push on empty Vec
 #[test]
@@ -1341,7 +1584,11 @@ fn test_compile_vec_push_empty_vec() {
                     span: vec_span,
                     inferred_type: None,
                 },
-                Expr::IntLit { value: 42, span: Span::new(1315, 1317), inferred_type: None },
+                Expr::IntLit {
+                    value: 42,
+                    span: Span::new(1315, 1317),
+                    inferred_type: None,
+                },
             ],
             span: push_span,
             resolved_call: None,
@@ -1361,14 +1608,16 @@ fn test_compile_vec_push_empty_vec() {
         expr_types: HashMap::new(),
         default_method_defns: Vec::new(),
         warnings: Vec::new(),
-    display: None,
+        display: None,
     };
 
     let result = test_compile_and_run(&expr, &check, &empty_tables());
-    assert!(result.is_ok(), "push to empty vec should compile: {result:?}");
+    assert!(
+        result.is_ok(),
+        "push to empty vec should compile: {result:?}"
+    );
     assert_eq!(result.unwrap(), 1);
 }
-
 
 // spec: appendix-a-builtins §A.3 — vec-len on empty Vec (duplicate boundary check)
 #[test]
@@ -1411,14 +1660,13 @@ fn test_compile_vec_len_empty_vec() {
         expr_types: HashMap::new(),
         default_method_defns: Vec::new(),
         warnings: Vec::new(),
-    display: None,
+        display: None,
     };
 
     let result = test_compile_and_run(&expr, &check, &empty_tables());
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), 0);
 }
-
 
 // spec: 04-expressions §4.10 — nested Vec literals (Vec of Vecs)
 #[test]
@@ -1428,16 +1676,32 @@ fn test_compile_nested_vec_literals() {
         elements: vec![
             Expr::VecLit {
                 elements: vec![
-                    Expr::IntLit { value: 1, span: Span::new(1502, 1503), inferred_type: None },
-                    Expr::IntLit { value: 2, span: Span::new(1504, 1505), inferred_type: None },
+                    Expr::IntLit {
+                        value: 1,
+                        span: Span::new(1502, 1503),
+                        inferred_type: None,
+                    },
+                    Expr::IntLit {
+                        value: 2,
+                        span: Span::new(1504, 1505),
+                        inferred_type: None,
+                    },
                 ],
                 span: Span::new(1501, 1506),
                 inferred_type: None,
             },
             Expr::VecLit {
                 elements: vec![
-                    Expr::IntLit { value: 3, span: Span::new(1508, 1509), inferred_type: None },
-                    Expr::IntLit { value: 4, span: Span::new(1510, 1511), inferred_type: None },
+                    Expr::IntLit {
+                        value: 3,
+                        span: Span::new(1508, 1509),
+                        inferred_type: None,
+                    },
+                    Expr::IntLit {
+                        value: 4,
+                        span: Span::new(1510, 1511),
+                        inferred_type: None,
+                    },
                 ],
                 span: Span::new(1507, 1512),
                 inferred_type: None,
@@ -1472,7 +1736,6 @@ fn test_compile_nested_vec_literals() {
     }
     cranelisp_intrinsics::vec_runtime::vec_drop(outer_ptr, 0);
 }
-
 
 // spec: 04-expressions §4.10 — large Vec literal (10 elements)
 #[test]

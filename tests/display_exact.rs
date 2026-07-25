@@ -155,7 +155,10 @@ fn display_exact_type_error_line() {
 #[test]
 fn display_exact_unbound_symbol_error_line() {
     let out = repl("nosuch\n").assert_ok();
-    assert_answer_line(&out, "Error: type error at 0..6: undefined variable: nosuch");
+    assert_answer_line(
+        &out,
+        "Error: type error at 0..6: undefined variable: nosuch",
+    );
 }
 
 // spec: repl/spec.md §18.3 — the cascade report as a WHOLE BLOCK: golden
@@ -645,7 +648,9 @@ fn sexp_odd_count_match_arm_no_crash_neg() {
     );
     // A clean diagnostic is produced (the odd count is reported, not swallowed).
     assert!(
-        out.stdout.to_lowercase().contains("even number of elements")
+        out.stdout
+            .to_lowercase()
+            .contains("even number of elements")
             || out.stdout.to_lowercase().contains("error"),
         "an odd-count `match` MUST produce a clean diagnostic, not a panic; got:\n{}",
         out.stdout

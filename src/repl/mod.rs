@@ -5,33 +5,30 @@
 // submodules. Cut per `design/int/repl-decomposition.md` (S110, FIXME 0606);
 // pure relocation, behaviour-invariant.
 
-
 pub(crate) mod commands;
 pub(crate) mod format;
 pub(crate) mod format_type;
 pub(crate) mod search;
 
-
 pub(crate) use std::io::Write;
 
 pub(crate) use cranelisp_types::{
-    CranelispError, DefKind, ErrorLocation, FQSymbol, MacroClauseInfo,
-    MacroParam, ModuleEntry, ModuleFullPath, OverloadVariant, Scheme, Sexp, Span, Symbol,
-    TopLevel, TraitName, Type, TypeName,
+    CranelispError, DefKind, ErrorLocation, FQSymbol, FQTraitName, FQTypeName, MacroClauseInfo,
+    MacroParam, ModuleEntry, ModuleFullPath, OverloadVariant, Scheme, Sexp, Span, Symbol, TopLevel,
+    TraitName, Type, TypeName,
 };
 
 pub(crate) use cranelisp_typecheck::CheckState;
 
 pub(crate) use crate::code::{Code, SessionSymbolTable};
 pub(crate) use crate::display::format_type_qualified;
-pub(crate) use crate::styled::{Role, StyledDoc, render};
 pub(crate) use crate::session_v4::{
-    discover_test_names, intrinsic_type_from_name, is_comment_only, parens_balanced,
-    run_test_by_name, CommandResult, CompilerSession, EvalResult, Introspection,
-    ReadOnlyMacroResolver, SymbolCategory, SymbolDescription, TestOutcome,
+    CommandResult, CompilerSession, EvalResult, Introspection, ReadOnlyMacroResolver,
+    SymbolCategory, SymbolDescription, TestOutcome, discover_test_names, intrinsic_type_from_name,
+    is_comment_only, parens_balanced, run_test_by_name,
 };
+pub(crate) use crate::styled::{Role, StyledDoc, render};
 pub(crate) use crate::worker::ModuleCompiler;
-
 
 use format::*;
 use format_type::*;
@@ -166,24 +163,72 @@ pub(crate) fn print_help(stdout: &mut impl Write) {
     let _ = writeln!(stdout, "  /sexp NAME          Show parsed S-expression");
     let _ = writeln!(stdout, "  /ast NAME           Show AST");
     let _ = writeln!(stdout, "  /clif NAME          Show Cranelift IR");
-    let _ = writeln!(stdout, "  /disasm NAME        Show disassembled native code");
-    let _ = writeln!(stdout, "  /list (/l) [FILTER] List symbols in current module");
-    let _ = writeln!(stdout, "  /mem (/m) [EXPR]    Show allocation statistics (with delta if EXPR given)");
-    let _ = writeln!(stdout, "  /time EXPR          Evaluate with timing breakdown");
+    let _ = writeln!(
+        stdout,
+        "  /disasm NAME        Show disassembled native code"
+    );
+    let _ = writeln!(
+        stdout,
+        "  /list (/l) [FILTER] List symbols in current module"
+    );
+    let _ = writeln!(
+        stdout,
+        "  /mem (/m) [EXPR]    Show allocation statistics (with delta if EXPR given)"
+    );
+    let _ = writeln!(
+        stdout,
+        "  /time EXPR          Evaluate with timing breakdown"
+    );
     let _ = writeln!(stdout, "  /expand (/e) FORM   Macro-expand a form");
-    let _ = writeln!(stdout, "  /imports [MODULE]   Show imports and special forms");
+    let _ = writeln!(
+        stdout,
+        "  /imports [MODULE]   Show imports and special forms"
+    );
     let _ = writeln!(stdout, "  /exports MODULE     Show module's public symbols");
-    let _ = writeln!(stdout, "  /mod [NAME]         Switch module namespace (default: user)");
-    let _ = writeln!(stdout, "  /run-tests (/rt) [MOD]  Run test-* functions (current module or named)");
-    let _ = writeln!(stdout, "  /run-all-tests      Run all tests in project modules");
-    let _ = writeln!(stdout, "  /platform-schema NAME  Print the generated layout schema for a loaded platform");
-    let _ = writeln!(stdout, "  /refs NAME          List definitions whose body references NAME");
-    let _ = writeln!(stdout, "  /tests-for NAME     List test functions that reference NAME");
-    let _ = writeln!(stdout, "  /syntax [TOPIC]     Core-language syntax cheat-sheet (bare lists topics)");
-    let _ = writeln!(stdout, "  /search QUERY       Find an importable symbol by name or type signature");
-    let _ = writeln!(stdout, "  /ask <text>         Ask the embedded agent (if built in)");
-    let _ = writeln!(stdout, "  /context <path>     Dump the assembled agent request to a file (debug; if built in)");
-    let _ = writeln!(stdout, "  /reset              Clear all state and reload prelude");
+    let _ = writeln!(
+        stdout,
+        "  /mod [NAME]         Switch module namespace (default: user)"
+    );
+    let _ = writeln!(
+        stdout,
+        "  /run-tests (/rt) [MOD]  Run test-* functions (current module or named)"
+    );
+    let _ = writeln!(
+        stdout,
+        "  /run-all-tests      Run all tests in project modules"
+    );
+    let _ = writeln!(
+        stdout,
+        "  /platform-schema NAME  Print the generated layout schema for a loaded platform"
+    );
+    let _ = writeln!(
+        stdout,
+        "  /refs NAME          List definitions whose body references NAME"
+    );
+    let _ = writeln!(
+        stdout,
+        "  /tests-for NAME     List test functions that reference NAME"
+    );
+    let _ = writeln!(
+        stdout,
+        "  /syntax [TOPIC]     Core-language syntax cheat-sheet (bare lists topics)"
+    );
+    let _ = writeln!(
+        stdout,
+        "  /search QUERY       Find an importable symbol by name or type signature"
+    );
+    let _ = writeln!(
+        stdout,
+        "  /ask <text>         Ask the embedded agent (if built in)"
+    );
+    let _ = writeln!(
+        stdout,
+        "  /context <path>     Dump the assembled agent request to a file (debug; if built in)"
+    );
+    let _ = writeln!(
+        stdout,
+        "  /reset              Clear all state and reload prelude"
+    );
     let _ = writeln!(stdout, "  /sh <cmd>       Run a shell command");
 }
 
@@ -197,11 +242,7 @@ pub(crate) fn run_shell_command(cmd: &str, stdout: &mut impl Write) {
         let _ = writeln!(stdout, "Usage: /sh <command>");
         return;
     }
-    match std::process::Command::new("sh")
-        .arg("-c")
-        .arg(cmd)
-        .status()
-    {
+    match std::process::Command::new("sh").arg("-c").arg(cmd).status() {
         Ok(status) => {
             if !status.success() {
                 #[cfg(unix)]
@@ -316,7 +357,10 @@ fn symbol_token_matches(token: &str, target: &str) -> bool {
 /// Operators (`+`, `-`, `<=`, `!=`, …) sort before, and never share a row with,
 /// alphabetic names (repl/spec.md §3.3 L2).
 fn is_operator_name(name: &str) -> bool {
-    name.chars().next().map(|c| !c.is_alphabetic()).unwrap_or(true)
+    name.chars()
+        .next()
+        .map(|c| !c.is_alphabetic())
+        .unwrap_or(true)
 }
 
 /// Is `src` a pure DEFINITION (or structural) turn — the §14.4/§18.8 error-
@@ -341,8 +385,18 @@ pub(crate) fn is_repair_definition_turn(src: &str) -> bool {
         {
             matches!(
                 head.as_str(),
-                "defn" | "defn-" | "defmacro" | "defmacro-" | "deftype" | "deftrait"
-                    | "impl" | "import" | "export" | "mod" | "mod-" | "platform"
+                "defn"
+                    | "defn-"
+                    | "defmacro"
+                    | "defmacro-"
+                    | "deftype"
+                    | "deftrait"
+                    | "impl"
+                    | "import"
+                    | "export"
+                    | "mod"
+                    | "mod-"
+                    | "platform"
             )
         } else {
             false
@@ -382,7 +436,9 @@ impl CompilerSession {
         // carve-out — a successful definition clears its failed form via
         // `clear_repaired_failed_form`).
         if !self.error_modules.is_empty() && !is_repair_definition_turn(trimmed) {
-            let names: Vec<String> = self.error_modules.iter()
+            let names: Vec<String> = self
+                .error_modules
+                .iter()
                 .map(|mp| mp.as_ref().to_string())
                 .collect();
             let msg = format!(
@@ -407,9 +463,7 @@ impl CompilerSession {
                 print_help(stdout);
                 CommandResult::Nothing
             }
-            ReplCommand::Quit => {
-                CommandResult::Quit
-            }
+            ReplCommand::Quit => CommandResult::Quit,
             ReplCommand::Sig(name) => {
                 let output = self.handle_sig(name);
                 CommandResult::Final(output)
@@ -426,42 +480,18 @@ impl CompilerSession {
                 self.handle_mod(name);
                 CommandResult::Nothing
             }
-            ReplCommand::Source(name) => {
-                CommandResult::Final(self.handle_source(name))
-            }
-            ReplCommand::SexpCmd(name) => {
-                CommandResult::Final(self.handle_sexp_cmd(name))
-            }
-            ReplCommand::Ast(name) => {
-                CommandResult::Final(self.handle_ast(name))
-            }
-            ReplCommand::Clif(name) => {
-                CommandResult::Final(self.handle_clif(name))
-            }
-            ReplCommand::Disasm(name) => {
-                CommandResult::Final(self.handle_disasm(name))
-            }
-            ReplCommand::Info(name) => {
-                CommandResult::Final(self.handle_info(name))
-            }
-            ReplCommand::Type(expr) => {
-                CommandResult::Final(self.handle_type(expr))
-            }
-            ReplCommand::Imports(filter) => {
-                CommandResult::Final(self.handle_imports(filter))
-            }
-            ReplCommand::Exports(arg) => {
-                CommandResult::Final(self.handle_exports(arg))
-            }
-            ReplCommand::Expand(form) => {
-                CommandResult::Final(self.handle_expand(form))
-            }
-            ReplCommand::Time(expr) => {
-                CommandResult::Final(self.handle_time(expr))
-            }
-            ReplCommand::Mem(expr) => {
-                CommandResult::Final(self.handle_mem(expr))
-            }
+            ReplCommand::Source(name) => CommandResult::Final(self.handle_source(name)),
+            ReplCommand::SexpCmd(name) => CommandResult::Final(self.handle_sexp_cmd(name)),
+            ReplCommand::Ast(name) => CommandResult::Final(self.handle_ast(name)),
+            ReplCommand::Clif(name) => CommandResult::Final(self.handle_clif(name)),
+            ReplCommand::Disasm(name) => CommandResult::Final(self.handle_disasm(name)),
+            ReplCommand::Info(name) => CommandResult::Final(self.handle_info(name)),
+            ReplCommand::Type(expr) => CommandResult::Final(self.handle_type(expr)),
+            ReplCommand::Imports(filter) => CommandResult::Final(self.handle_imports(filter)),
+            ReplCommand::Exports(arg) => CommandResult::Final(self.handle_exports(arg)),
+            ReplCommand::Expand(form) => CommandResult::Final(self.handle_expand(form)),
+            ReplCommand::Time(expr) => CommandResult::Final(self.handle_time(expr)),
+            ReplCommand::Mem(expr) => CommandResult::Final(self.handle_mem(expr)),
             ReplCommand::Sh(cmd) => {
                 run_shell_command(cmd, stdout);
                 CommandResult::Nothing
@@ -490,12 +520,8 @@ impl CompilerSession {
                     )
                 }
             }
-            ReplCommand::Refs(sym) => {
-                CommandResult::Final(self.handle_refs(sym))
-            }
-            ReplCommand::TestsFor(sym) => {
-                CommandResult::Final(self.handle_tests_for(sym))
-            }
+            ReplCommand::Refs(sym) => CommandResult::Final(self.handle_refs(sym)),
+            ReplCommand::TestsFor(sym) => CommandResult::Final(self.handle_tests_for(sym)),
             ReplCommand::Syntax(topic) => {
                 // Deterministic curated output (repl/spec.md §17.17.2) — a free
                 // fn over the static cheat-sheet, NOT agent prose (no `▌` frame)
@@ -520,20 +546,12 @@ impl CompilerSession {
                     )
                 }
             }
-            ReplCommand::Search(query) => {
-                CommandResult::Final(self.handle_search(query))
-            }
-            ReplCommand::Unknown(cmd) => {
-                CommandResult::Final(format!(
-                    "error: unknown command '{cmd}'. Type /help for available commands."
-                ))
-            }
-            ReplCommand::RunTests(arg) => {
-                CommandResult::Final(self.handle_run_tests(arg))
-            }
-            ReplCommand::RunAllTests => {
-                CommandResult::Final(self.handle_run_all_tests())
-            }
+            ReplCommand::Search(query) => CommandResult::Final(self.handle_search(query)),
+            ReplCommand::Unknown(cmd) => CommandResult::Final(format!(
+                "error: unknown command '{cmd}'. Type /help for available commands."
+            )),
+            ReplCommand::RunTests(arg) => CommandResult::Final(self.handle_run_tests(arg)),
+            ReplCommand::RunAllTests => CommandResult::Final(self.handle_run_all_tests()),
             ReplCommand::PlatformSchema(name) => {
                 CommandResult::Final(self.handle_platform_schema(name))
             }
@@ -693,7 +711,10 @@ impl CompilerSession {
     /// module-qualified (§17.6.1 / FIXME 0487: `/source`, `/sexp`, `/clif`, and
     /// `/info`'s code-size read accept the FQ names the reports print). A bare
     /// name keeps the current-module home, so bare-name behaviour is unchanged.
-    pub(crate) fn get_introspection(&self, name: &str) -> Option<dashmap::mapref::one::Ref<'_, FQSymbol, Introspection>> {
+    pub(crate) fn get_introspection(
+        &self,
+        name: &str,
+    ) -> Option<dashmap::mapref::one::Ref<'_, FQSymbol, Introspection>> {
         let (module, bare) = self.resolve_symbol_arg(name);
         let fq = FQSymbol {
             module,
@@ -728,9 +749,11 @@ impl CompilerSession {
         let root = ModuleFullPath::from("");
         let table = self.shared.symbol_tables.get(&root)?;
         match table.get(name)? {
-            ModuleEntry::SpecialForm { scheme, description, .. } => {
-                Some((scheme.clone(), description.clone()))
-            }
+            ModuleEntry::SpecialForm {
+                scheme,
+                description,
+                ..
+            } => Some((scheme.clone(), description.clone())),
             _ => None,
         }
     }
@@ -793,7 +816,6 @@ impl CompilerSession {
     }
 }
 
-
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
@@ -826,7 +848,10 @@ pub(crate) mod test_support {
             docstring: doc.map(|s| s.to_string()),
             param_names: vec![Symbol::from("x")],
             kind: Box::new(DefKind::UserFn {
-                fn_state: UserFnState::Concrete { got_slot: 0, mode_summary: None },
+                fn_state: UserFnState::Concrete {
+                    got_slot: 0,
+                    mode_summary: None,
+                },
             }),
             callees: Vec::new(),
             trait_origin: None,
@@ -858,7 +883,11 @@ pub(crate) mod test_support {
             type_params: Vec::new(),
             // Multi-ctor sum ⇒ `format_ctor_display` KEEPS the `Color.` prefix
             // (the doubling-prone case, unlike a single-ctor product).
-            constructors: vec![Symbol::from("Red"), Symbol::from("Green"), Symbol::from("Blue")],
+            constructors: vec![
+                Symbol::from("Red"),
+                Symbol::from("Green"),
+                Symbol::from("Blue"),
+            ],
         };
         let ctor = ModuleEntry::def(
             Scheme {
@@ -913,7 +942,11 @@ pub(crate) mod test_support {
         }
     }
     /// A `TraitImpl` entry `impl <trait> <type>` written to `home` (Decision 0045).
-    pub(crate) fn impl_entry(home: &ModuleFullPath, trait_name: &str, type_name: &str) -> ModuleEntry<Code> {
+    pub(crate) fn impl_entry(
+        home: &ModuleFullPath,
+        trait_name: &str,
+        type_name: &str,
+    ) -> ModuleEntry<Code> {
         ModuleEntry::TraitImpl {
             trait_name: cranelisp_types::FQTraitName::new(
                 home.clone(),
@@ -934,14 +967,37 @@ pub(crate) mod test_support {
     /// helper's private-head sibling — for the prelude public-only gate tests).
     pub(crate) fn userfn_def_vis(vis: Visibility) -> ModuleEntry<Code> {
         match userfn_def(None) {
-            ModuleEntry::Def { scheme, docstring, param_names, kind, callees, trait_origin, seq, ast, codegen_view, code, value_use, .. } => {
-                ModuleEntry::Def { scheme, visibility: vis, docstring, param_names, kind, callees, trait_origin, seq, ast, codegen_view, code, value_use }
-            }
+            ModuleEntry::Def {
+                scheme,
+                docstring,
+                param_names,
+                kind,
+                callees,
+                trait_origin,
+                seq,
+                ast,
+                codegen_view,
+                code,
+                value_use,
+                ..
+            } => ModuleEntry::Def {
+                scheme,
+                visibility: vis,
+                docstring,
+                param_names,
+                kind,
+                callees,
+                trait_origin,
+                seq,
+                ast,
+                codegen_view,
+                code,
+                value_use,
+            },
             other => other,
         }
     }
 }
-
 
 // ==============================================================================
 // Tests migrated with their code from session_v4.rs (FIXME 0109 Wave D)
@@ -949,9 +1005,6 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod repair_definition_turn_tests {
-    
-    
-    
 
     use super::is_repair_definition_turn;
 
@@ -987,15 +1040,10 @@ mod repair_definition_turn_tests {
 #[cfg(test)]
 mod prelude_fallback_tests {
     use super::*;
-    
-    
+
     use crate::repl::test_support::*;
-    
-    use cranelisp_types::{
-        ModuleFullPath,
-        Symbol, Visibility,
-    };
-    
+
+    use cranelisp_types::{ModuleFullPath, Symbol, Visibility};
 
     // §8.8.1 gate: the prelude provides only its PUBLIC names, so the
     // prelude-fallback seam MUST NOT return a PRIVATE prelude head — it falls
@@ -1014,7 +1062,8 @@ mod prelude_fallback_tests {
 
         // Two-tier (the display hop) — a private prelude head is NOT in scope.
         assert!(
-            s.lookup_with_prelude_fallback_opt("secret", false).is_none(),
+            s.lookup_with_prelude_fallback_opt("secret", false)
+                .is_none(),
             "a PRIVATE prelude head MUST NOT resolve through the fallback (§8.8.1)"
         );
         // Three-tier (describe/`/sig`/`/search`) — the private head still does
@@ -1038,7 +1087,10 @@ mod prelude_fallback_tests {
         s.shared.prelude_fallback.insert(scope, true);
 
         let hit = s.lookup_with_prelude_fallback_opt("shown", false);
-        assert!(hit.is_some(), "a PUBLIC prelude head MUST resolve through the fallback");
+        assert!(
+            hit.is_some(),
+            "a PUBLIC prelude head MUST resolve through the fallback"
+        );
         assert_eq!(
             hit.unwrap().1,
             prelude,

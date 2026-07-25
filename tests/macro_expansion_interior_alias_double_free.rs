@@ -206,9 +206,7 @@ fn macro_clause_interior_alias_double_free_m1_on_quarantine_face() {
         .output();
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
-        out.status.code() == Some(3)
-            && !c.contains("double free")
-            && !c.contains("invalid free"),
+        out.status.code() == Some(3) && !c.contains("double free") && !c.contains("invalid free"),
         "[M1-ON/quarantine] the macro-clause interior-alias invocation MUST run to \
          exit 3 abort-free even with quarantine ON; today the withheld block's \
          second free is deterministically detected (exit 134 'double free'); got \

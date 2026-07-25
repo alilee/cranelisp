@@ -9,14 +9,14 @@
 //! `check_forms` consume.
 
 use cranelisp_types::{
-    CranelispError, DefKind, Defn, ErrorLocation, ExportSpec, FQSymbol,
-    ImportSpec, MacroClauseInfo, ModuleAliases, ModuleEntry, ModuleFullPath, PlatformSpec,
-    ResolutionScope, Sexp, Span, Symbol, TopLevel, View, Visibility,
+    CranelispError, DefKind, Defn, ErrorLocation, ExportSpec, FQSymbol, ImportSpec,
+    MacroClauseInfo, ModuleAliases, ModuleEntry, ModuleFullPath, PlatformSpec, ResolutionScope,
+    Sexp, Span, Symbol, TopLevel, View, Visibility,
 };
 
 use cranelisp_typecheck::{CheckState, PreludeFallback};
 
-use crate::worker::{ModuleCompiler, ModuleCheckAccumulator};
+use crate::worker::{ModuleCheckAccumulator, ModuleCompiler};
 
 // ---------------------------------------------------------------------------
 // FormKind — per-sexp form classification for Pass 2
@@ -118,27 +118,24 @@ pub(super) fn classify_form(
                     // single sexp's structural decl out — it returns the
                     // typed shape the worker needs.
                     "import" => {
-                        let (decls, _remaining) =
-                            cranelisp_frontend::extract_module_declarations(
-                                &containing_module,
-                                std::slice::from_ref(sexp),
-                            )?;
+                        let (decls, _remaining) = cranelisp_frontend::extract_module_declarations(
+                            &containing_module,
+                            std::slice::from_ref(sexp),
+                        )?;
                         Ok(FormKind::Import(decls.import_specs))
                     }
                     "export" => {
-                        let (decls, _remaining) =
-                            cranelisp_frontend::extract_module_declarations(
-                                &containing_module,
-                                std::slice::from_ref(sexp),
-                            )?;
+                        let (decls, _remaining) = cranelisp_frontend::extract_module_declarations(
+                            &containing_module,
+                            std::slice::from_ref(sexp),
+                        )?;
                         Ok(FormKind::Export(decls.export_specs))
                     }
                     "mod" | "mod-" => {
-                        let (decls, _remaining) =
-                            cranelisp_frontend::extract_module_declarations(
-                                &containing_module,
-                                std::slice::from_ref(sexp),
-                            )?;
+                        let (decls, _remaining) = cranelisp_frontend::extract_module_declarations(
+                            &containing_module,
+                            std::slice::from_ref(sexp),
+                        )?;
                         let decl = decls.mod_decls.into_iter().next().ok_or_else(|| {
                             CranelispError::ParseError {
                                 message: "classify_form: no mod decl produced".into(),
@@ -148,11 +145,10 @@ pub(super) fn classify_form(
                         Ok(FormKind::Mod(decl))
                     }
                     "platform" => {
-                        let (decls, _remaining) =
-                            cranelisp_frontend::extract_module_declarations(
-                                &containing_module,
-                                std::slice::from_ref(sexp),
-                            )?;
+                        let (decls, _remaining) = cranelisp_frontend::extract_module_declarations(
+                            &containing_module,
+                            std::slice::from_ref(sexp),
+                        )?;
                         let spec = decls.platform_specs.into_iter().next().ok_or_else(|| {
                             CranelispError::ParseError {
                                 message: "classify_form: no platform spec produced".into(),
@@ -177,7 +173,13 @@ pub(super) fn classify_form(
 pub(super) fn separate_macros(
     sexps: &[Sexp],
     containing_module: &ModuleFullPath,
-) -> Result<(Vec<Sexp>, Vec<(Symbol, cranelisp_frontend::DefmacroInfo, Sexp)>), CranelispError> {
+) -> Result<
+    (
+        Vec<Sexp>,
+        Vec<(Symbol, cranelisp_frontend::DefmacroInfo, Sexp)>,
+    ),
+    CranelispError,
+> {
     let mut regular_sexps = Vec::new();
     let mut macro_infos = Vec::new();
 
@@ -189,7 +191,10 @@ pub(super) fn separate_macros(
             // Skip import/export/mod/platform in Pass 1 regular forms.
             // They don't contribute type signatures and are handled in Pass 2.
             match classify_form(sexp, containing_module)? {
-                FormKind::Import(_) | FormKind::Export(_) | FormKind::Mod(_) | FormKind::Platform(_) => {
+                FormKind::Import(_)
+                | FormKind::Export(_)
+                | FormKind::Mod(_)
+                | FormKind::Platform(_) => {
                     // Skip — handled during Pass 2.
                 }
                 _ => {
@@ -269,10 +274,8 @@ fn reject_defmacro_over_binding(
 /// stays under the 8-param cap (Principle 6). Each call site builds it from its
 /// own reference sources; the values threaded are unchanged.
 pub(crate) struct MacroRegisterEnv<'a> {
-    pub symbol_tables:
-        &'a dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-    pub introspection:
-        Option<&'a dashmap::DashMap<FQSymbol, crate::session_v4::Introspection>>,
+    pub symbol_tables: &'a dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    pub introspection: Option<&'a dashmap::DashMap<FQSymbol, crate::session_v4::Introspection>>,
     pub module_aliases: &'a ModuleAliases,
     pub prelude_fallback: &'a PreludeFallback,
 }
@@ -296,7 +299,12 @@ pub(crate) fn register_macro_in_module(
     // introspection or symbol-table write, so the error propagates through the
     // normal form-error path with nothing registered.
     reject_defmacro_over_binding(
-        env.symbol_tables, env.module_aliases, env.prelude_fallback, module, name, sexp.span(),
+        env.symbol_tables,
+        env.module_aliases,
+        env.prelude_fallback,
+        module,
+        name,
+        sexp.span(),
     )?;
     let clause_infos: Vec<MacroClauseInfo> = info
         .clauses
@@ -353,8 +361,9 @@ pub(crate) fn register_macro_in_module(
             // S102 CS-D2: prefer the verbatim authored text (the caller's
             // consistency-gated `source_text` span slice — preserves reader
             // shorthand like `` `(… ~e) ``); fall back to the pretty render.
-            entry.source =
-                Some(authored_source.unwrap_or_else(|| crate::pretty::pretty_print_plain(authored)));
+            entry.source = Some(
+                authored_source.unwrap_or_else(|| crate::pretty::pretty_print_plain(authored)),
+            );
         }
     }
     if let Some(mut table) = env.symbol_tables.get_mut(module) {
@@ -446,7 +455,7 @@ pub(super) fn register_default_methods(
 
 /// Wrap `Expr` variants as synthetic zero-arg `Defn` named `__expr`.
 /// Mirrors `TypeChecker::wrap_exprs_as_defns`.
-pub(super) fn wrap_exprs_as_defns(program: &[TopLevel]) -> Vec<TopLevel> {
+pub(crate) fn wrap_exprs_as_defns(program: &[TopLevel]) -> Vec<TopLevel> {
     use cranelisp_types::{DefnVariant, Visibility};
 
     let mut working = Vec::with_capacity(program.len());
@@ -454,10 +463,8 @@ pub(super) fn wrap_exprs_as_defns(program: &[TopLevel]) -> Vec<TopLevel> {
         match top {
             TopLevel::Expr(expr) => {
                 let span = expr.span();
-                let wrapper_span = Span::new(
-                    span.start.saturating_sub(1),
-                    span.end.saturating_add(1),
-                );
+                let wrapper_span =
+                    Span::new(span.start.saturating_sub(1), span.end.saturating_add(1));
                 let synthetic_defn = Defn {
                     name: Symbol::from("__expr"),
                     docstring: None,

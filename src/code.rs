@@ -40,8 +40,8 @@ mod tests {
         use cranelisp_backend::cache::linker::Linker;
         use cranelisp_backend::jit::Jit;
         use cranelisp_types::{
-            DefKind, DefnVariant, Expr, ModuleEntry, ModuleFullPath, Scheme, Span,
-            Symbol, Type, Visibility,
+            DefKind, DefnVariant, Expr, ModuleEntry, ModuleFullPath, Scheme, Span, Symbol, Type,
+            Visibility,
         };
         use std::collections::HashMap;
         use std::sync::Arc;
@@ -72,7 +72,10 @@ mod tests {
                 docstring: None,
                 param_names: vec![],
                 kind: Box::new(DefKind::UserFn {
-                    fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0, mode_summary: None },
+                    fn_state: cranelisp_types::UserFnState::Concrete {
+                        got_slot: 0,
+                        mode_summary: None,
+                    },
                 }),
                 callees: Vec::new(),
                 trait_origin: None,
@@ -89,9 +92,7 @@ mod tests {
         let linker = Arc::new(Linker::new().expect("Linker::new must succeed"));
 
         let mut st: SessionSymbolTable =
-            cranelisp_types::SymbolTable::<Code, ()>::new_with_params(
-                ModuleFullPath::from("user"),
-            );
+            cranelisp_types::SymbolTable::<Code, ()>::new_with_params(ModuleFullPath::from("user"));
         st.insert(
             Symbol::from("fresh"),
             mk_def(Some(Code::jit(Arc::clone(&jit))), "fresh"),
@@ -104,11 +105,17 @@ mod tests {
         // Both variants coexist in the same table (S75 slim: lifecycle owner
         // only; callable address lives in the GOT, not on `Code`).
         match st.get("fresh") {
-            Some(ModuleEntry::Def { code: Some(Code::Jit(_)), .. }) => {}
+            Some(ModuleEntry::Def {
+                code: Some(Code::Jit(_)),
+                ..
+            }) => {}
             other => panic!("expected Code::Jit, got {:?}", other),
         }
         match st.get("cached") {
-            Some(ModuleEntry::Def { code: Some(Code::Linker(_)), .. }) => {}
+            Some(ModuleEntry::Def {
+                code: Some(Code::Linker(_)),
+                ..
+            }) => {}
             other => panic!("expected Code::Linker, got {:?}", other),
         }
     }

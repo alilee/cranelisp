@@ -16,9 +16,10 @@
 
 (color-name Color.Blue)
 
-; Accessors work on product types
+; Pattern extraction works on polymorphic product types
 
-(fst (MkPair 42 false))
+(defn pair-fst [p] (match p [(MkPair x _) x]))
+(pair-fst (MkPair 42 false))
 
 ; Nested ADTs
 
@@ -30,4 +31,4 @@
 
 (defn unbox [b] (match b [(MkBox x) x]))
 
-(fst (unbox (MkBox (MkPair 99 0))))
+(pair-fst (unbox (MkBox (MkPair 99 0))))

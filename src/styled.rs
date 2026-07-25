@@ -75,21 +75,21 @@ pub(crate) enum Role {
 /// The per-role SGR bytes are pinned by unit tests (`role_style_matches_10_3_table`).
 pub(crate) fn role_style(role: Role) -> Option<Style> {
     match role {
-        Role::Head => Some(Style::Bold),           // R1  — 1
-        Role::LitNumBool => Some(Style::Yellow),   // R2  — 33
-        Role::LitStr => Some(Style::Green),        // R3  — 32
-        Role::TypeAnnotation => Some(Style::Cyan), // R4  — 36
-        Role::SourceComment => Some(Style::Italic),// R5  — 3
-        Role::ReplMetadata => Some(Style::Dim),    // R6  — 2
-        Role::ModulePrefix => Some(Style::Dim),    // R7  — 2
-        Role::ErrorKeyword => Some(Style::BoldRed),// R8  — 1;31
-        Role::ErrorDetail => Some(Style::Red),     // R9  — 31
-        Role::WarnKeyword => Some(Style::BoldYellow), // R10 — 1;33
-        Role::WarnDetail => Some(Style::Yellow),   // R11 — 33
-        Role::Header => Some(Style::Bold),         // R12 — 1
-        Role::Prompt => Some(Style::Dim),          // R13 — 2
+        Role::Head => Some(Style::Bold),                 // R1  — 1
+        Role::LitNumBool => Some(Style::Yellow),         // R2  — 33
+        Role::LitStr => Some(Style::Green),              // R3  — 32
+        Role::TypeAnnotation => Some(Style::Cyan),       // R4  — 36
+        Role::SourceComment => Some(Style::Italic),      // R5  — 3
+        Role::ReplMetadata => Some(Style::Dim),          // R6  — 2
+        Role::ModulePrefix => Some(Style::Dim),          // R7  — 2
+        Role::ErrorKeyword => Some(Style::BoldRed),      // R8  — 1;31
+        Role::ErrorDetail => Some(Style::Red),           // R9  — 31
+        Role::WarnKeyword => Some(Style::BoldYellow),    // R10 — 1;33
+        Role::WarnDetail => Some(Style::Yellow),         // R11 — 33
+        Role::Header => Some(Style::Bold),               // R12 — 1
+        Role::Prompt => Some(Style::Dim),                // R13 — 2
         Role::AgentGutter => Some(Style::BrightMagenta), // R14 — 95
-        Role::Plain => None,                       // R15 — default
+        Role::Plain => None,                             // R15 — default
     }
 }
 
@@ -246,7 +246,10 @@ mod tests {
         // Every styled run is reset-terminated; no ESC precedes a raw '\n'.
         let r = render(&doc);
         for (i, _) in r.match_indices('\n') {
-            assert!(r[..i].ends_with("\x1b[0m"), "reset must precede newline: {r:?}");
+            assert!(
+                r[..i].ends_with("\x1b[0m"),
+                "reset must precede newline: {r:?}"
+            );
         }
     }
 

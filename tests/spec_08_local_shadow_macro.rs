@@ -30,7 +30,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, CrOutput, PreludeVariant};
+use helpers::e2e::{CrOutput, Cranelisp, PreludeVariant};
 
 // The stdlib `def` macro, inlined VERBATIM (from stdlib/defs.cl §def) so the
 // repro is stdlib-free per tests/CLAUDE.md §Test-Isolation. `(def g v)` expands

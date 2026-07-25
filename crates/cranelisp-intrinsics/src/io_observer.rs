@@ -87,20 +87,36 @@ pub enum IoEvent {
     PureStep { value: i64, is_fresh: bool },
     /// `BindEnter` — pointers to the Bind node's inner subtree and
     /// continuation closure, plus the fresh flag.
-    BindEnter { inner_ptr: i64, cont_ptr: i64, is_fresh: bool },
+    BindEnter {
+        inner_ptr: i64,
+        cont_ptr: i64,
+        is_fresh: bool,
+    },
     /// `BindExit` — the new `current` installed after calling the
     /// continuation.
     BindExit { new_current: i64 },
     /// `PlatformEffect` — thunk pointer, resource token, and scheduling
     /// class (as `u8`; `cranelisp_types::SchedulingClass::from_u32`
     /// decodes the discriminant at dump time).
-    PlatformEffect { thunk_ptr: i64, resource_token: i64, scheduling_class: u8 },
+    PlatformEffect {
+        thunk_ptr: i64,
+        resource_token: i64,
+        scheduling_class: u8,
+    },
     /// `ContPush` / `ContPop` — pointer to the continuation closure,
     /// the fresh flag, and the resulting stack depth after the op.
-    Cont { cont_ptr: i64, is_fresh: bool, new_depth: u32 },
+    Cont {
+        cont_ptr: i64,
+        is_fresh: bool,
+        new_depth: u32,
+    },
     /// `ParSpark` — parent Par node, branch index within the parent,
     /// resource token grouping this branch.
-    ParSpark { parent_ptr: i64, branch_idx: u32, token: i64 },
+    ParSpark {
+        parent_ptr: i64,
+        branch_idx: u32,
+        token: i64,
+    },
     /// `ParSerialGroupEnter` — the shared token and the number of
     /// branches this group will execute sequentially.
     ParSerialGroupEnter { token: i64, branch_count: u32 },

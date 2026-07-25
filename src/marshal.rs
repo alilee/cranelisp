@@ -18,10 +18,9 @@
 //! batch compiler and REPL where macro expansion is bounded per session.
 
 use cranelisp_types::{
-    Sexp, Span, NULLARY_TAG_THRESHOLD,
-    TAG_SNIL, TAG_SCONS,
-    TAG_SEXP_ANNOTATED, TAG_SEXP_INT, TAG_SEXP_FLOAT, TAG_SEXP_BOOL, TAG_SEXP_STR,
-    TAG_SEXP_SYM, TAG_SEXP_LIST, TAG_SEXP_BRACKET,
+    NULLARY_TAG_THRESHOLD, Sexp, Span, TAG_SCONS, TAG_SEXP_ANNOTATED, TAG_SEXP_BOOL,
+    TAG_SEXP_BRACKET, TAG_SEXP_FLOAT, TAG_SEXP_INT, TAG_SEXP_LIST, TAG_SEXP_STR, TAG_SEXP_SYM,
+    TAG_SNIL,
 };
 
 /// NULLARY_TAG_THRESHOLD cast to i64 for comparison with runtime values.
@@ -70,7 +69,9 @@ pub fn sexp_to_runtime(sexp: &Sexp) -> i64 {
             sexp_to_runtime(subject),
         ),
         Sexp::Comment(_, _) => {
-            unreachable!("invariant: Comment nodes should not reach marshal (compiler pipeline uses non-preserving reader)")
+            unreachable!(
+                "invariant: Comment nodes should not reach marshal (compiler pipeline uses non-preserving reader)"
+            )
         }
     }
 }
@@ -371,8 +372,16 @@ mod tests {
     #[test]
     fn field_offsets_are_i64_strided_past_the_tag() {
         const STRIDE: usize = core::mem::size_of::<i64>(); // 8
-        assert_eq!(FIELD0_OFFSET, PAYLOAD_OFFSET + STRIDE, "field 0 is one i64 past the tag");
-        assert_eq!(FIELD1_OFFSET, PAYLOAD_OFFSET + 2 * STRIDE, "field 1 is two i64s past the tag");
+        assert_eq!(
+            FIELD0_OFFSET,
+            PAYLOAD_OFFSET + STRIDE,
+            "field 0 is one i64 past the tag"
+        );
+        assert_eq!(
+            FIELD1_OFFSET,
+            PAYLOAD_OFFSET + 2 * STRIDE,
+            "field 1 is two i64s past the tag"
+        );
         // Pin the concrete post-header values the raw accessors were written for
         // (mirrors the `const _` asserts on the primitives side).
         assert_eq!((PAYLOAD_OFFSET, FIELD0_OFFSET, FIELD1_OFFSET), (16, 24, 32));
@@ -630,7 +639,10 @@ mod tests {
         collect_cell_rcs(rt, &mut rcs);
         // The tree has interior structure (root cell, spine, element cells,
         // nested list, HeapStrings) — many cells, not just the top.
-        assert!(rcs.len() >= 6, "expected a deep tree of protected cells: {rcs:?}");
+        assert!(
+            rcs.len() >= 6,
+            "expected a deep tree of protected cells: {rcs:?}"
+        );
         for (kind, rc) in &rcs {
             assert_eq!(
                 *rc, 2,
@@ -651,7 +663,10 @@ mod tests {
             Sexp::Str("s".to_string(), Span::SYNTHETIC),
             Sexp::Symbol("y".to_string(), Span::SYNTHETIC),
             Sexp::List(vec![Sexp::Int(2, Span::SYNTHETIC)], Span::SYNTHETIC),
-            Sexp::Bracket(vec![Sexp::Symbol("z".to_string(), Span::SYNTHETIC)], Span::SYNTHETIC),
+            Sexp::Bracket(
+                vec![Sexp::Symbol("z".to_string(), Span::SYNTHETIC)],
+                Span::SYNTHETIC,
+            ),
         ];
         for arg in &args {
             let rt = sexp_to_runtime(arg);
@@ -678,9 +693,15 @@ mod tests {
         let slist = build_runtime_slist(&items);
         let mut rcs = Vec::new();
         collect_slist_rcs(slist, &mut rcs);
-        assert!(rcs.iter().any(|(k, _)| *k == "scons"), "expected spine cells: {rcs:?}");
+        assert!(
+            rcs.iter().any(|(k, _)| *k == "scons"),
+            "expected spine cells: {rcs:?}"
+        );
         for (kind, rc) in &rcs {
-            assert_eq!(*rc, 2, "args-SList {kind} cell must be protected at RC = 2: {rcs:?}");
+            assert_eq!(
+                *rc, 2,
+                "args-SList {kind} cell must be protected at RC = 2: {rcs:?}"
+            );
         }
     }
 

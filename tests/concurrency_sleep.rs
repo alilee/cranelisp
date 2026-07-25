@@ -19,7 +19,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, CrOutput};
+use helpers::e2e::{CrOutput, Cranelisp};
 
 /// A park duration (ms) large enough that "parked then resumed" is unambiguously
 /// distinguishable from "returned immediately" by wall-clock, even allowing for the

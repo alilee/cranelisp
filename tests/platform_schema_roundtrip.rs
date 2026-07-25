@@ -28,8 +28,8 @@
 use cranelisp_backend::schema::generate_schema;
 use cranelisp_platform::{FieldType, Schema};
 use cranelisp_types::{
-    DefKind, FQTypeName, ModuleEntry, ModuleFullPath, Scheme, Symbol, SymbolTable,
-    Type, TypeDefInfo, Visibility,
+    DefKind, FQTypeName, ModuleEntry, ModuleFullPath, Scheme, Symbol, SymbolTable, Type,
+    TypeDefInfo, Visibility,
 };
 use dashmap::DashMap;
 use std::collections::HashMap;
@@ -76,12 +76,15 @@ fn register_type(
     );
 
     for (ctor_name, tag, fields) in ctors {
-        let field_names: Vec<Symbol> =
-            fields.iter().map(|(n, _)| Symbol::from(*n)).collect();
+        let field_names: Vec<Symbol> = fields.iter().map(|(n, _)| Symbol::from(*n)).collect();
         let field_types: Vec<Type> = fields.iter().map(|(_, t)| t.clone()).collect();
         let scheme = if field_types.is_empty() {
             // Nullary ctor: scheme is the bare ADT (no Fn).
-            Scheme { type_vars: vec![], constraints: HashMap::new(), ty: adt.clone() }
+            Scheme {
+                type_vars: vec![],
+                constraints: HashMap::new(),
+                ty: adt.clone(),
+            }
         } else {
             Scheme {
                 type_vars: vec![],
@@ -102,10 +105,7 @@ fn register_type(
                     type_def: Some(Box::new(TypeDefInfo {
                         name: fqtn(module, type_name),
                         type_params: vec![],
-                        constructors: ctors
-                            .iter()
-                            .map(|(c, _, _)| Symbol::from(*c))
-                            .collect(),
+                        constructors: ctors.iter().map(|(c, _, _)| Symbol::from(*c)).collect(),
                     })),
                     mode_summary: None,
                 },
@@ -186,8 +186,9 @@ fn build_and_parse(roots: &[Type]) -> (String, Schema) {
     );
 
     let text = generate_schema(&tables, roots);
-    let schema = Schema::parse(&text)
-        .unwrap_or_else(|e| panic!("generated schema must parse; parser said:\n  {e}\n\nGENERATED TEXT:\n{text}"));
+    let schema = Schema::parse(&text).unwrap_or_else(|e| {
+        panic!("generated schema must parse; parser said:\n  {e}\n\nGENERATED TEXT:\n{text}")
+    });
     (text, schema)
 }
 
@@ -200,7 +201,10 @@ fn roundtrip_scalar_product() {
     let root = Type::ADT(fqtn("shapes", "Rectangle"), vec![]);
     let (text, schema) = build_and_parse(std::slice::from_ref(&root));
 
-    assert!(text.starts_with(";; layout-hash: "), "header line present:\n{text}");
+    assert!(
+        text.starts_with(";; layout-hash: "),
+        "header line present:\n{text}"
+    );
 
     let shape = schema
         .lookup_type("shapes/Rectangle")
@@ -253,12 +257,22 @@ fn roundtrip_sum_with_nullary_and_typed_ctors() {
     let (_text, schema) = build_and_parse(std::slice::from_ref(&root));
 
     let names = schema.ctor_names("shapes/Tag").expect("Tag resolves");
-    assert_eq!(names, vec!["None", "Named", "Coded"], "all ctors + order survive");
+    assert_eq!(
+        names,
+        vec!["None", "Named", "Coded"],
+        "all ctors + order survive"
+    );
 
     // Nullary ctor: no fields.
-    assert_eq!(schema.field_offset("shapes/Tag", Some("None"), "label"), None);
+    assert_eq!(
+        schema.field_offset("shapes/Tag", Some("None"), "label"),
+        None
+    );
     // Typed ctors: per-ctor field lookup + scalar field types.
-    assert_eq!(schema.field_offset("shapes/Tag", Some("Named"), "label"), Some(8));
+    assert_eq!(
+        schema.field_offset("shapes/Tag", Some("Named"), "label"),
+        Some(8)
+    );
     assert_eq!(
         schema.field_type("shapes/Tag", Some("Named"), "label"),
         Some(&FieldType::Scalar("primitives/String".to_string())),
@@ -342,8 +356,13 @@ fn generator_keys_are_exactly_parser_keys() {
     // Re-generation stability: re-parsing the SAME text yields the same key set
     // (the parser is a pure function of the artifact text — no hidden state).
     let reparsed = Schema::parse(&text).expect("re-parse of identical text");
-    for key in ["shapes/Rectangle", "shapes/Box", "geometry/Point", "shapes/Tag", "shapes/Poly"]
-    {
+    for key in [
+        "shapes/Rectangle",
+        "shapes/Box",
+        "geometry/Point",
+        "shapes/Tag",
+        "shapes/Poly",
+    ] {
         assert_eq!(
             schema.lookup_type(key).is_some(),
             reparsed.lookup_type(key).is_some(),

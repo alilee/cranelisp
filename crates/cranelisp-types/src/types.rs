@@ -55,12 +55,8 @@ impl Type {
     pub fn contains_var(&self) -> bool {
         match self {
             Type::Var(_) => true,
-            Type::Fn(params, ret) => {
-                params.iter().any(|p| p.contains_var()) || ret.contains_var()
-            }
-            Type::ADT(_, args) | Type::TyConApp(_, args) => {
-                args.iter().any(|a| a.contains_var())
-            }
+            Type::Fn(params, ret) => params.iter().any(|p| p.contains_var()) || ret.contains_var(),
+            Type::ADT(_, args) | Type::TyConApp(_, args) => args.iter().any(|a| a.contains_var()),
             Type::Int | Type::Bool | Type::String | Type::Float => false,
         }
     }
@@ -95,14 +91,11 @@ impl Type {
             // A type-constructor application's head is an unresolved HKT variable;
             // a concrete callable never carries one at the slot gate.
             Type::TyConApp(_, _) => false,
-            Type::Fn(params, ret) => {
-                params.iter().all(|p| p.is_concrete()) && ret.is_concrete()
-            }
+            Type::Fn(params, ret) => params.iter().all(|p| p.is_concrete()) && ret.is_concrete(),
             Type::ADT(_, args) => args.iter().all(|a| a.is_concrete()),
             Type::Int | Type::Bool | Type::String | Type::Float => true,
         }
     }
-
 }
 
 impl std::fmt::Display for Type {
@@ -151,9 +144,7 @@ pub fn render_type(ty: &Type, prim: PrimitiveNaming, vars: VarNaming<'_>) -> Str
     let head = |id: &TypeId| -> String {
         match vars {
             VarNaming::Numbered => format!("t{id}"),
-            VarNaming::Lettered(map) => {
-                map.get(id).cloned().unwrap_or_else(|| format!("t{id}"))
-            }
+            VarNaming::Lettered(map) => map.get(id).cloned().unwrap_or_else(|| format!("t{id}")),
         }
     };
     match ty {
@@ -174,8 +165,7 @@ pub fn render_type(ty: &Type, prim: PrimitiveNaming, vars: VarNaming<'_>) -> Str
             PrimitiveNaming::Qualified => "primitives/Float".to_string(),
         },
         Type::Fn(params, ret) => {
-            let parts: Vec<String> =
-                params.iter().map(|p| render_type(p, prim, vars)).collect();
+            let parts: Vec<String> = params.iter().map(|p| render_type(p, prim, vars)).collect();
             let ret_s = render_type(ret, prim, vars);
             format!("(Fn [{}] {ret_s})", parts.join(" "))
         }
@@ -190,8 +180,7 @@ pub fn render_type(ty: &Type, prim: PrimitiveNaming, vars: VarNaming<'_>) -> Str
         }
         Type::Var(id) => head(id),
         Type::TyConApp(id, args) => {
-            let arg_strs: Vec<String> =
-                args.iter().map(|a| render_type(a, prim, vars)).collect();
+            let arg_strs: Vec<String> = args.iter().map(|a| render_type(a, prim, vars)).collect();
             match vars {
                 // The `Display` / `format_type_fq` shape: literal `TyCon` prefix,
                 // parens even when args are empty.

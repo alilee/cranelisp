@@ -14,9 +14,9 @@ use cranelisp_types::{ConcreteType, CranelispError, ErrorLocation, MonoExpr, Spa
 
 use crate::heap::{self, HeapAdt, HeapClosure};
 
-use crate::compiler::signature_heap_category;
 use super::sparkability::CAPTURE_BORROW_ENABLED;
-use super::{find_free_vars, FnCompiler};
+use super::{FnCompiler, find_free_vars};
+use crate::compiler::signature_heap_category;
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
 where
@@ -48,13 +48,13 @@ where
         body: &MonoExpr,
         span: Span,
     ) -> Result<Value, CranelispError> {
-        let alloc_id =
-            self.ctx
-                .alloc_func_id
-                .ok_or_else(|| CranelispError::CodegenError {
-                    message: "runtime/alloc not declared (need declare_intrinsics)".into(),
-                    location: ErrorLocation::from_span(span),
-                })?;
+        let alloc_id = self
+            .ctx
+            .alloc_func_id
+            .ok_or_else(|| CranelispError::CodegenError {
+                message: "runtime/alloc not declared (need declare_intrinsics)".into(),
+                location: ErrorLocation::from_span(span),
+            })?;
 
         let n = bindings.len();
         let saved_tail = self.in_tail_position;
@@ -71,12 +71,7 @@ where
         // Layout: [header(16) | tag=3(8) | count(8) | branch_0(8) | ... | branch_{N-1}(8)]
         // Payload size = tag(8) + count(8) + N*8
         let par_payload_size = (8 + 8 + n * 8) as i64;
-        let par_ptr = heap::emit_alloc(
-            &mut self.builder,
-            self.module,
-            alloc_id,
-            par_payload_size,
-        );
+        let par_ptr = heap::emit_alloc(&mut self.builder, self.module, alloc_id, par_payload_size);
 
         // Store tag=3 (IO_TAG_PAR) at offset 16.
         let tag_val = self.builder.ins().iconst(types::I64, 3);
@@ -84,7 +79,12 @@ where
 
         // Store count at offset 24.
         let count_val = self.builder.ins().iconst(types::I64, n as i64);
-        heap::heap_store(&mut self.builder, count_val, par_ptr, HeapAdt::field_offset(0));
+        heap::heap_store(
+            &mut self.builder,
+            count_val,
+            par_ptr,
+            HeapAdt::field_offset(0),
+        );
 
         // Store branch IO pointers at offsets 32, 40, 48, ...
         // No RC inc — ownership transfer (constructor convention, Decision 20).
@@ -115,22 +115,28 @@ where
         // Phase 4: Allocate Bind node.
         // Layout: [header(16) | tag=2(8) | inner(8) | cont(8)]
         let bind_payload_size = HeapAdt::payload_size(2) as i64; // tag + 2 fields = 24
-        let bind_ptr = heap::emit_alloc(
-            &mut self.builder,
-            self.module,
-            alloc_id,
-            bind_payload_size,
-        );
+        let bind_ptr =
+            heap::emit_alloc(&mut self.builder, self.module, alloc_id, bind_payload_size);
 
         // Store tag=2 (IO_TAG_BIND).
         let bind_tag = self.builder.ins().iconst(types::I64, 2);
         heap::heap_store(&mut self.builder, bind_tag, bind_ptr, HeapAdt::TAG_OFFSET);
 
         // Store par_ptr at field_offset(0) (24).
-        heap::heap_store(&mut self.builder, par_ptr, bind_ptr, HeapAdt::field_offset(0));
+        heap::heap_store(
+            &mut self.builder,
+            par_ptr,
+            bind_ptr,
+            HeapAdt::field_offset(0),
+        );
 
         // Store cont_ptr at field_offset(1) (32).
-        heap::heap_store(&mut self.builder, cont_ptr, bind_ptr, HeapAdt::field_offset(1));
+        heap::heap_store(
+            &mut self.builder,
+            cont_ptr,
+            bind_ptr,
+            HeapAdt::field_offset(1),
+        );
 
         // No RC inc on par_ptr or cont_ptr — ownership transfer (Decision 20).
 
@@ -236,11 +242,8 @@ where
 
             // Load captured variables from env_ptr at CAPTURES_START + i*8.
             for (i, cap_name) in captures.iter().enumerate() {
-                let cap_val = heap::heap_load(
-                    &mut inner.builder,
-                    env_ptr,
-                    HeapClosure::capture_offset(i),
-                );
+                let cap_val =
+                    heap::heap_load(&mut inner.builder, env_ptr, HeapClosure::capture_offset(i));
                 let var = inner.fresh_variable();
                 inner.builder.declare_var(var, types::I64);
                 inner.builder.def_var(var, cap_val);
@@ -267,11 +270,8 @@ where
             // Let's use HeapAdt::field_offset(i) = 24 + i*8 to be consistent with the decision.
             inner.push_scope();
             for (i, (name, val_expr)) in bindings.iter().enumerate() {
-                let result_val = heap::heap_load(
-                    &mut inner.builder,
-                    results_ptr,
-                    HeapAdt::field_offset(i),
-                );
+                let result_val =
+                    heap::heap_load(&mut inner.builder, results_ptr, HeapAdt::field_offset(i));
                 let var = inner.fresh_variable();
                 inner.builder.declare_var(var, types::I64);
                 inner.builder.def_var(var, result_val);
@@ -339,13 +339,13 @@ where
         captures: &[Symbol],
         span: Span,
     ) -> Result<Value, CranelispError> {
-        let alloc_id =
-            self.ctx
-                .alloc_func_id
-                .ok_or_else(|| CranelispError::CodegenError {
-                    message: "runtime/alloc not declared (need declare_intrinsics)".into(),
-                    location: ErrorLocation::from_span(span),
-                })?;
+        let alloc_id = self
+            .ctx
+            .alloc_func_id
+            .ok_or_else(|| CranelispError::CodegenError {
+                message: "runtime/alloc not declared (need declare_intrinsics)".into(),
+                location: ErrorLocation::from_span(span),
+            })?;
 
         // Allocate the continuation closure at the call site.
         // Layout: [header(16) | code_ptr(8) | drop_glue_ptr(8) | cap_0(8) | ...]
@@ -372,9 +372,7 @@ where
         // Build and store drop glue for heap-typed captures.
         let drop_glue = self.build_closure_drop_glue(captures, span)?;
         let drop_glue_val = if let Some(glue_id) = drop_glue {
-            let glue_ref = self
-                .module
-                .declare_func_in_func(glue_id, self.builder.func);
+            let glue_ref = self.module.declare_func_in_func(glue_id, self.builder.func);
             self.builder.ins().func_addr(types::I64, glue_ref)
         } else {
             self.builder.ins().iconst(types::I64, 0)

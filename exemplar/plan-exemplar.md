@@ -1208,10 +1208,82 @@ regression.
 
 ---
 
+## Sprint 117 Phase-6a shipped-impact assessment
+
+Sprint 117 changes three surfaces that the Sudoku exemplar actually reaches,
+and two that it does not:
+
+- `grid.cl` defines the exemplar-owned `Display Cell` implementation. Qualified
+  trait references in `impl` are now implemented and reviewed, so the exemplar
+  can exercise that shipped spelling instead of leaving it covered only by
+  compiler tests.
+- `grid.cl`'s `const` and the imported prelude/stdlib macros exercise cached
+  macro clauses. W7 repaired the cold/warm-cache recovery case where a
+  semantically equal restored clause had no executable Code/GOT entry. The
+  exemplar is an appropriate application-scale cold-then-warm Run/Link
+  sentinel because macro expansion is required before any Sudoku code runs.
+- `form.cl` calls primitive `split` on both `=` and `&`. R-3 moved
+  Vec-of-String construction and access behind the intrinsics-owned boundary
+  without changing the language API or result semantics. The existing form
+  tests and headline form-to-solution pipeline are therefore the correct
+  shipped-behaviour checks. The exemplar does not call `join`, so adding an
+  artificial use would not improve the showcase.
+- W3b's canonical constraint rendering and inverse implementation enumeration
+  are REPL presentation features. The committed showcase is a batch
+  application and has no introspection dependency; no exemplar action is
+  warranted.
+- `Byte`, `(Vec Byte)`, `Utf8Literal`, transparent products, and compact Vec
+  storage are design-only in Sprint 117. No such type or API exists to adopt.
+  The exemplar must retain its current `String` APIs and must not anticipate
+  the future text design.
+
+W3c's zero-argument-macro presentation work is deferred. Sudoku needs macro
+execution, not the deferred presentation projection, so neither the assessment
+nor the action plan depends on W3c.
+
+No new exemplar usability gap was found. The existing FIXME 0719 collapse
+gate, ownership/leak sentinels, and performance backlog remain distinct from
+the Sprint 117 delivery and are not widened by this assessment.
+
+### Sprint 117 Phase-6b result
+
+- Headline Run is green from cold and warm cache: both executions exit 0 and
+  stdout is byte-identical.
+- `tests.cl` exits 40 under both default parallel and
+  `CRANELISP_NO_LENIENT=1` serial execution. Its eight form cases and the
+  headline form-to-solution path exercise the real R-3-backed `split` calls on
+  `=` and `&`; no synthetic `join` use was added.
+- The qualified `Display Cell` adoption was attempted and reverted. Fresh
+  compilation accepts `(impl text.display/Display Cell …)`, but an explicit
+  warm-cache dispatch probe rejects `(show (Given 5))` with
+  `no impl of trait text.display/Display for type grid/Cell`. This is exactly
+  the sibling-written implementation restoration defect recorded in FIXME
+  0869; qualification is not causal, and the exemplar adds no workaround.
+- Standalone Link verification is blocked before executable production by an
+  unrelated platform-archive linker failure. Both the existing project and an
+  isolated cold-cache copy fail with unresolved Rust/platform symbols from the
+  stdio/web archives. Consequently Sprint 117 does not claim fresh/warm Link
+  parity. The failure is distinct from FIXME 0869 and no product or exemplar
+  workaround was attempted.
+- `exemplar/CLAUDE.md` records the exact results and the no-impact disposition
+  for W3b introspection, deferred W3c presentation, and design-only Byte-backed
+  text.
+
+Phase 6b added no text APIs, solver ownership rewrite, hard-puzzle performance
+case, artificial `join` dependency, or memory diagnostic work.
+
+---
+
 ## Next Skills
 
-- `/stdlib` — String primitives (`char-at`, `str-split`, `str-contains`, `str-sub`) remain the critical path for the exemplar (U1.1). Also: `mod`/`rem`, `vec-filter`, `vec-map`, `vec-fold`. Consider a variadic `str` function for string building ergonomics (U1.11).
-- `/platform` — Review the web platform API above. Confirm that `declare_platform!` can handle: (a) a function receiving a function pointer callback (`serve`), (b) opaque heap values for Request/Response. Flag if the platform ABI needs extension for callbacks.
-- `/examples` — The exemplar's ADT patterns (sum types with data, enum types with derive) should align with the learning sequence.
-- `/docs` — The exemplar will serve as the capstone tutorial/walkthrough. The web platform authoring is a natural "advanced topic" chapter.
-- `/port` — At Sprint 5 (Ring 2B, post-modules, post-string-primitives): decompose into multi-module structure, implement `make-grid` (needs `char-at`). At Ring 3: implement full exemplar core with macros, `derive`, and testing. At Ring 4: web platform DLL and IO wiring.
+- `/sprint` — Record the Phase-6b result, including qualified-impl adoption
+  deferred under FIXME 0869 and the unverified Link cell.
+- `/testing` and `/qa` — FIXME 0869 already owns the permanent warm-cache
+  sibling-impl discriminator and planning handoff; no duplicate exemplar
+  finding is needed. Attribute the platform-archive Link failure if it also
+  reproduces in the controlled gate environment.
+- `/port` — Re-attempt the qualified `Display Cell` adoption only after FIXME
+  0869 is resolved, then restore the cold/warm Run and Link parity claim.
+- `/docs` — Consume the verified exemplar state if Sprint 117 user
+  documentation mentions qualified `impl` syntax or the showcase's form
+  pipeline.

@@ -23,9 +23,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::agent::types::{
-    AgentModel, AgentRequest, ModelResponse, ToolCallRequest,
-};
+use crate::agent::types::{AgentModel, AgentRequest, ModelResponse, ToolCallRequest};
 
 /// The streaming-delta split marker for the stub script DSL (S107, FIXME 0555 —
 /// unblocks harness gap G-1 for `/qa`). A `done:`/`prose:` fixture may embed one
@@ -268,7 +266,10 @@ mod tests {
             }
             other => panic!("expected ToolCalls, got {other:?}"),
         }
-        assert_eq!(script[1].response, ModelResponse::Done("here is the answer".to_string()));
+        assert_eq!(
+            script[1].response,
+            ModelResponse::Done("here is the answer".to_string())
+        );
         // No `<|delta|>` markers ⇒ default one-delta streaming (deltas None).
         assert!(script.iter().all(|s| s.deltas.is_none()));
     }
@@ -292,7 +293,11 @@ mod tests {
         assert_eq!(steps[0].response, ModelResponse::Done(full.to_string()));
         // The deltas concatenate to the full text, with a boundary INSIDE the fence.
         let chunks = steps[0].deltas.clone().expect("delta chunks scripted");
-        assert_eq!(chunks.concat(), full, "deltas concatenate to the full answer");
+        assert_eq!(
+            chunks.concat(),
+            full,
+            "deltas concatenate to the full answer"
+        );
         assert!(chunks.len() >= 3, "multiple deltas scripted: {chunks:?}");
         assert!(
             chunks
@@ -331,7 +336,10 @@ mod tests {
             }
             other => panic!("expected ToolCalls(submit), got {other:?}"),
         }
-        assert_eq!(script[2].response, ModelResponse::Done("defined double for you".to_string()));
+        assert_eq!(
+            script[2].response,
+            ModelResponse::Done("defined double for you".to_string())
+        );
     }
 
     // S89 Cluster C: `tool: set-preamble <MODULE> <TEXT>` / `tool: set-doc
@@ -372,9 +380,15 @@ mod tests {
     fn complete_consumes_script_then_terminates() {
         let mut stub = StubModel::new(vec![ModelResponse::Done("ok".to_string())]);
         let req = AgentRequest::default();
-        assert_eq!(stub.complete(&req).unwrap(), ModelResponse::Done("ok".to_string()));
+        assert_eq!(
+            stub.complete(&req).unwrap(),
+            ModelResponse::Done("ok".to_string())
+        );
         // Exhausted → terminal empty Done.
-        assert_eq!(stub.complete(&req).unwrap(), ModelResponse::Done(String::new()));
+        assert_eq!(
+            stub.complete(&req).unwrap(),
+            ModelResponse::Done(String::new())
+        );
         // Two requests captured.
         assert_eq!(stub.requests.lock().unwrap().len(), 2);
     }
@@ -405,6 +419,10 @@ mod tests {
         let mut got: Vec<String> = Vec::new();
         let mut sink = |d: &str| got.push(d.to_string());
         stub.complete_streaming(&req, &mut sink).unwrap();
-        assert_eq!(got, vec!["whole answer".to_string()], "one delta = the whole answer");
+        assert_eq!(
+            got,
+            vec!["whole answer".to_string()],
+            "one delta = the whole answer"
+        );
     }
 }

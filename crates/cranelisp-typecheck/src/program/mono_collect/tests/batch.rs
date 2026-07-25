@@ -4,8 +4,6 @@
 
 use super::*;
 
-
-
 // spec: 03-types §3.6 — batch mode monomorphises constrained fn at concrete call site
 #[test]
 fn test_batch_monomorphise_generates_mono_defn() {
@@ -42,8 +40,16 @@ fn test_batch_monomorphise_generates_mono_defn() {
                 body: Expr::Apply {
                     callee: Box::new(Expr::var(Symbol::from("add"), span(40, 43))),
                     args: vec![
-                        Expr::IntLit { value: 3, span: span(44, 45), inferred_type: None, },
-                        Expr::IntLit { value: 4, span: span(46, 47), inferred_type: None, },
+                        Expr::IntLit {
+                            value: 3,
+                            span: span(44, 45),
+                            inferred_type: None,
+                        },
+                        Expr::IntLit {
+                            value: 4,
+                            span: span(46, 47),
+                            inferred_type: None,
+                        },
                     ],
                     span: span(39, 48),
                     resolved_call: None,
@@ -173,8 +179,16 @@ fn test_repl_expr_monomorphise() {
     let expr_input = TopLevel::Expr(Expr::Apply {
         callee: Box::new(Expr::var(Symbol::from("add"), span(100, 103))),
         args: vec![
-            Expr::IntLit { value: 3, span: span(104, 105), inferred_type: None, },
-            Expr::IntLit { value: 4, span: span(106, 107), inferred_type: None, },
+            Expr::IntLit {
+                value: 3,
+                span: span(104, 105),
+                inferred_type: None,
+            },
+            Expr::IntLit {
+                value: 4,
+                span: span(106, 107),
+                inferred_type: None,
+            },
         ],
         span: span(99, 108),
         resolved_call: None,
@@ -233,8 +247,16 @@ fn test_repl_defn_body_monomorphise() {
             body: Expr::Apply {
                 callee: Box::new(Expr::var(Symbol::from("add"), span(200, 203))),
                 args: vec![
-                    Expr::IntLit { value: 1, span: span(204, 205), inferred_type: None, },
-                    Expr::IntLit { value: 2, span: span(206, 207), inferred_type: None, },
+                    Expr::IntLit {
+                        value: 1,
+                        span: span(204, 205),
+                        inferred_type: None,
+                    },
+                    Expr::IntLit {
+                        value: 2,
+                        span: span(206, 207),
+                        inferred_type: None,
+                    },
                 ],
                 span: span(199, 208),
                 resolved_call: None,
@@ -274,7 +296,11 @@ fn test_batch_mono_no_constrained_fns_produces_empty() {
                 callee: Box::new(Expr::var(Symbol::from("add-i64"), span(16, 23))),
                 args: vec![
                     Expr::var(Symbol::from("x"), span(24, 25)),
-                    Expr::IntLit { value: 1, span: span(26, 27), inferred_type: None, },
+                    Expr::IntLit {
+                        value: 1,
+                        span: span(26, 27),
+                        inferred_type: None,
+                    },
                 ],
                 span: span(15, 28),
                 resolved_call: None,
@@ -395,7 +421,8 @@ fn fold_polymorphic_accumulator_does_not_over_unify() {
             !is_vec(&params[1]) && !is_vec(ret),
             "reduce's accumulator param and result must stay polymorphic, \
              not collapse to (Vec _): init={:?} ret={:?} (FIXME 0344)",
-            params[1], ret,
+            params[1],
+            ret,
         );
         // params[0] is the folding fn `(Fn [b a] b)`.
         let (b_acc, a_elem) = match &params[0] {
@@ -411,7 +438,8 @@ fn fold_polymorphic_accumulator_does_not_over_unify() {
                 };
                 // Fold fn returns the accumulator type `b`.
                 assert_eq!(
-                    f_ret.as_ref(), &Type::Var(b),
+                    f_ret.as_ref(),
+                    &Type::Var(b),
                     "fold fn must return the accumulator var b, got {f_ret:?}",
                 );
                 (b, a)
@@ -424,13 +452,25 @@ fn fold_polymorphic_accumulator_does_not_over_unify() {
             "accumulator var b and element var a must be DISTINCT (FIXME 0344)",
         );
         // init (params[1]) and result (ret) are both the accumulator var b.
-        assert_eq!(params[1], Type::Var(b_acc), "init must be the accumulator var b");
-        assert_eq!(ret.as_ref(), &Type::Var(b_acc), "result must be the accumulator var b");
+        assert_eq!(
+            params[1],
+            Type::Var(b_acc),
+            "init must be the accumulator var b"
+        );
+        assert_eq!(
+            ret.as_ref(),
+            &Type::Var(b_acc),
+            "result must be the accumulator var b"
+        );
         // v (params[2]) is `(Vec a)` — element type a.
         match &params[2] {
             Type::ADT(name, args) if name.name.as_ref() == "Vec" => {
                 assert_eq!(args.len(), 1, "Vec is unary");
-                assert_eq!(args[0], Type::Var(a_elem), "v must be (Vec a) over the element var");
+                assert_eq!(
+                    args[0],
+                    Type::Var(a_elem),
+                    "v must be (Vec a) over the element var"
+                );
             }
             other => panic!("reduce's third param must be (Vec a), got {other:?}"),
         }
@@ -447,7 +487,11 @@ fn fold_polymorphic_accumulator_does_not_over_unify() {
     // populate the subst-resolved result type.
     let call_sexps = cranelisp_frontend::parse("(reduce add-i64 0 [1 2 3])").expect("parse call");
     let call_prog = cranelisp_frontend::build_forms(&call_sexps).expect("build_forms call");
-    assert_eq!(call_prog.len(), 1, "expected a single trailing expression form");
+    assert_eq!(
+        call_prog.len(),
+        1,
+        "expected a single trailing expression form"
+    );
     let call_result = tc
         .check_program_self(&call_prog)
         .expect("Int-accumulator reduce call must type-check (FIXME 0344)");
@@ -455,7 +499,8 @@ fn fold_polymorphic_accumulator_does_not_over_unify() {
         .display
         .expect("trailing expression must produce a display type");
     assert_eq!(
-        display.ty, Type::Int,
+        display.ty,
+        Type::Int,
         "(reduce add-i64 0 [1 2 3]) must infer Int (FIXME 0344), got {:?}",
         display.ty,
     );
@@ -548,7 +593,8 @@ fn forward_reference_polymorphic_call_creates_mono_variant() {
         Type::Fn(params, ret) => {
             assert!(params.is_empty(), "main takes no args");
             assert_eq!(
-                ret.as_ref(), &Type::Int,
+                ret.as_ref(),
+                &Type::Int,
                 "main folds Ints to an Int (FIXME 0349); got ret {:?}",
                 ret,
             );
@@ -608,8 +654,10 @@ fn fold_helper_mints_only_concrete_instance_no_partial() {
     // exact string is `test/reduce-loop$Fn(...)+Int+.../Vec$Int+Int+Int`. The
     // test's invariant is unchanged: exactly ONE genuine concrete instance,
     // and NO spurious partial (a residual `Var` token in the sig).
-    let reduce_loop_monos: Vec<&String> =
-        mono_names.iter().filter(|n| n.contains("reduce-loop$")).collect();
+    let reduce_loop_monos: Vec<&String> = mono_names
+        .iter()
+        .filter(|n| n.contains("reduce-loop$"))
+        .collect();
     assert!(
         !reduce_loop_monos.is_empty(),
         "the genuine concrete `reduce-loop` mono must be minted; \

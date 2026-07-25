@@ -17,8 +17,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::{Arc, Mutex};
 
 use cranelisp_types::{
-    CranelispError, ErrorLocation, FQSymbol, ModuleEntry, ModuleFullPath, Sexp, Span,
-    Symbol, Type, Warning,
+    CranelispError, ErrorLocation, FQSymbol, ModuleEntry, ModuleFullPath, Sexp, Span, Symbol, Type,
+    Warning,
 };
 
 use cranelisp_typecheck::CheckState;
@@ -27,9 +27,9 @@ use crate::code::{Code, SessionSymbolTable};
 use crate::scheduler::CompileScheduler;
 
 use super::{
-    dedup_platform_names_preserving_order, nice_worker_loop, resolve_priority_worker_count,
     CompilerSession, FailedForm, ModuleIntroductionOutcome, SessionSettings, SharedState,
-    SymbolCategory, SymbolInfo, TestRunnerState,
+    SymbolCategory, SymbolInfo, TestRunnerState, dedup_platform_names_preserving_order,
+    nice_worker_loop, resolve_priority_worker_count,
 };
 
 /// Pillar-3 (S91): bounded grace period at shutdown for the in-flight
@@ -54,11 +54,7 @@ impl CompilerSession {
     /// "auto-detect" (`available_parallelism()-1`, clamped to `[1, 8]`);
     /// explicit values are clamped to `[1, 8]`. Tests pass
     /// `priority_workers: 1` for determinism.
-    pub fn new(
-        settings: SessionSettings,
-        project_root: PathBuf,
-        entry_module_name: &str,
-    ) -> Self {
+    pub fn new(settings: SessionSettings, project_root: PathBuf, entry_module_name: &str) -> Self {
         // Lib dirs: stdlib location(s), NOT including project_root.
         // Project root is tier 2 in §8.11.2, searched separately.
         let lib_dirs = crate::session_setup::assemble_lib_dirs(&project_root);
@@ -121,7 +117,9 @@ impl CompilerSession {
             failed_forms: HashMap::new(),
             watcher: None,
             worker_pool: crate::worker_pool::WorkerPool::new(
-                priority_worker_handles, nice_worker_handles, nice_workers,
+                priority_worker_handles,
+                nice_worker_handles,
+                nice_workers,
             ),
             // S78 §1: the REPL cursor + carry-forward CheckState start at the
             // ENTRY module (its real name), not a hardcoded "user".
@@ -193,7 +191,8 @@ impl CompilerSession {
             let _ = std::fs::create_dir_all(&dir);
             Some(dir)
         };
-        let cache_state = cache_dir_opt.as_ref()
+        let cache_state = cache_dir_opt
+            .as_ref()
             .map(|d| crate::session_setup::CacheState::new(d.clone()));
         std::sync::Arc::new(crate::cache::ObjectCache::new(cache_dir_opt, cache_state))
     }
@@ -333,7 +332,9 @@ impl CompilerSession {
             // D1b: the introspection STORE is REPL-only — `Some(empty map)`
             // under `RunMode::Repl`, `None` in `--run`/`--link` (no allocation
             // in batch). Same `run_mode` carrier that gates population (D1 §4).
-            introspection: run_mode.populates_introspection().then(dashmap::DashMap::new),
+            introspection: run_mode
+                .populates_introspection()
+                .then(dashmap::DashMap::new),
             // Pillar-3 indices start empty + unarmed; the burn-down is armed at
             // REPL startup only (R17 — REPL-only by construction). In
             // `--run`/`--link`/`--release` the worklist is never enumerated.
@@ -343,6 +344,7 @@ impl CompilerSession {
             // empty; populated only by dev-session redefinition transactions.
             broken: dashmap::DashMap::new(),
             retained_code: Mutex::new(Vec::new()),
+            fresh_jit_drop_glues: dashmap::DashMap::new(),
             run_mode,
             test_runner_state,
         });
@@ -426,14 +428,18 @@ impl CompilerSession {
 
     /// Convenience accessor: lib search directories (snapshot clone).
     pub fn lib_dirs(&self) -> Vec<PathBuf> {
-        self.shared.lib_dirs.lock()
+        self.shared
+            .lib_dirs
+            .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
 
     /// Convenience accessor: platform DLL search directories (snapshot clone).
     pub fn platform_dirs(&self) -> Vec<PathBuf> {
-        self.shared.platform_dirs.lock()
+        self.shared
+            .platform_dirs
+            .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
@@ -443,21 +449,30 @@ impl CompilerSession {
     /// fresh clone for each file-resolution call, so the change is
     /// observed by subsequent typechecks.
     pub fn set_lib_dirs(&mut self, dirs: Vec<PathBuf>) {
-        *self.shared.lib_dirs.lock()
+        *self
+            .shared
+            .lib_dirs
+            .lock()
             .unwrap_or_else(|e| e.into_inner()) = dirs;
     }
 
     /// Update the platform search directory set. Same semantics as
     /// `set_lib_dirs`.
     pub fn set_platform_dirs(&mut self, dirs: Vec<PathBuf>) {
-        *self.shared.platform_dirs.lock()
+        *self
+            .shared
+            .platform_dirs
+            .lock()
             .unwrap_or_else(|e| e.into_inner()) = dirs;
     }
 
     /// Append a single platform search directory to the current set.
     /// Convenience wrapper around `set_platform_dirs` for tests/CLI.
     pub fn push_platform_dir(&mut self, dir: PathBuf) {
-        let mut guard = self.shared.platform_dirs.lock()
+        let mut guard = self
+            .shared
+            .platform_dirs
+            .lock()
             .unwrap_or_else(|e| e.into_inner());
         guard.push(dir);
     }
@@ -525,22 +540,34 @@ impl CompilerSession {
         // `test_runner_state` lives behind the `Arc<SharedState>` so the
         // JIT-emitted intrinsics may dereference a stable pointer; only
         // the inner `Mutex<ModuleFullPath>` needs updating here.
-        *self.shared.test_runner_state.current_module.lock()
+        *self
+            .shared
+            .test_runner_state
+            .current_module
+            .lock()
             .unwrap_or_else(|e| e.into_inner()) = path.clone();
         // Create a new CheckState for the new module.
-        *self.repl_check_state.lock()
+        *self
+            .repl_check_state
+            .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(CheckState::new(path));
     }
 
     /// Get a read guard for the current module's symbol table.
-    pub(crate) fn current_symbol_table(&self) -> dashmap::mapref::one::Ref<'_, ModuleFullPath, SessionSymbolTable> {
+    pub(crate) fn current_symbol_table(
+        &self,
+    ) -> dashmap::mapref::one::Ref<'_, ModuleFullPath, SessionSymbolTable> {
         let module = self.current_module_path();
-        self.shared.symbol_tables.get(&module)
-            .unwrap_or_else(|| unreachable!("invariant: current_module always exists in symbol_tables"))
+        self.shared.symbol_tables.get(&module).unwrap_or_else(|| {
+            unreachable!("invariant: current_module always exists in symbol_tables")
+        })
     }
 
     /// Get a read guard for any module's symbol table.
-    pub(crate) fn module_table(&self, path: &ModuleFullPath) -> Option<dashmap::mapref::one::Ref<'_, ModuleFullPath, SessionSymbolTable>> {
+    pub(crate) fn module_table(
+        &self,
+        path: &ModuleFullPath,
+    ) -> Option<dashmap::mapref::one::Ref<'_, ModuleFullPath, SessionSymbolTable>> {
         self.shared.symbol_tables.get(path)
     }
 
@@ -579,12 +606,8 @@ impl CompilerSession {
         // Branch 2 — cache hit. Probe the backend cache for a valid entry;
         // if present, decode and install atomically.
         if let Some(decoded) = self.try_load_cached_for_introduction(path)? {
-            cranelisp_typecheck::advance_next_id_past_table(
-                &self.shared.next_type_id, &decoded,
-            );
-            cranelisp_types::install_module(
-                &self.shared.symbol_tables, path.clone(), decoded,
-            );
+            cranelisp_typecheck::advance_next_id_past_table(&self.shared.next_type_id, &decoded);
+            cranelisp_types::install_module(&self.shared.symbol_tables, path.clone(), decoded);
             // S102 CS-D3a (§6.2): uniformly with the worker's `try_cache_hit_load`
             // route, establish the session-env companions (prelude-fallback bit +
             // aliases) and the `file_path` authority from the restored table.
@@ -612,9 +635,7 @@ impl CompilerSession {
         }
 
         // Branch 4 — blank create-if-absent.
-        let _ = cranelisp_types::ensure_module_exists(
-            &self.shared.symbol_tables, path,
-        );
+        let _ = cranelisp_types::ensure_module_exists(&self.shared.symbol_tables, path);
         Ok(ModuleIntroductionOutcome::Blank)
     }
 
@@ -640,18 +661,24 @@ impl CompilerSession {
         if !cached.has_object {
             return Ok(None);
         }
-        Ok(Some(
-            cached.symbol_table.into_concrete::<Code, ()>(),
-        ))
+        Ok(Some(cached.symbol_table.into_concrete::<Code, ()>()))
     }
 
     /// Branch-3 probe: returns the source file path for `module` if one is
     /// known to the session (registered in `file_to_module`'s reverse map).
     pub(crate) fn find_module_source(&self, module: &ModuleFullPath) -> Option<std::path::PathBuf> {
-        let guard = self.shared.file_to_module.lock()
+        let guard = self
+            .shared
+            .file_to_module
+            .lock()
             .unwrap_or_else(|e| e.into_inner());
-        guard.iter()
-            .find_map(|(file, mp)| if mp == module { Some(file.clone()) } else { None })
+        guard.iter().find_map(|(file, mp)| {
+            if mp == module {
+                Some(file.clone())
+            } else {
+                None
+            }
+        })
     }
 
     /// Resolve a module by name (for /exports command).
@@ -680,7 +707,9 @@ impl CompilerSession {
         };
 
         // Register all source files already loaded (prelude + its deps).
-        let file_to_mod = self.shared.file_to_module
+        let file_to_mod = self
+            .shared
+            .file_to_module
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         for path in file_to_mod.keys() {
@@ -710,7 +739,9 @@ impl CompilerSession {
     /// symbol has no introspection record (production batch mode) or no
     /// captured source. Reads `shared.introspection[fq]`.
     pub fn symbol_source(&self, fq: &FQSymbol) -> Option<String> {
-        self.shared.introspection.as_ref()
+        self.shared
+            .introspection
+            .as_ref()
             .and_then(|m| m.get(fq))
             .and_then(|intr| intr.source.clone())
     }
@@ -718,7 +749,9 @@ impl CompilerSession {
     /// REPL `/sexp` — parsed s-expression of a symbol's defining form, or
     /// `None`. Reads `shared.introspection[fq]`.
     pub fn symbol_sexp(&self, fq: &FQSymbol) -> Option<Sexp> {
-        self.shared.introspection.as_ref()
+        self.shared
+            .introspection
+            .as_ref()
             .and_then(|m| m.get(fq))
             .and_then(|intr| intr.sexp.clone())
     }
@@ -727,11 +760,12 @@ impl CompilerSession {
     /// Populated only when `CRANELISP_CODEGEN_TRACE` or REPL-trace mode is
     /// active. Reads `shared.introspection[fq]`.
     pub fn symbol_clif(&self, fq: &FQSymbol) -> Option<String> {
-        self.shared.introspection.as_ref()
+        self.shared
+            .introspection
+            .as_ref()
             .and_then(|m| m.get(fq))
             .and_then(|intr| intr.clif_ir.clone())
     }
-
 }
 
 /// Is `form` a top-level **definition** form (§15.7 persisted forms) — one the
@@ -752,13 +786,20 @@ fn restored_definition_count(source: &str, failed: &[FailedForm]) -> Option<usiz
         return None; // empty backing file — suppress
     }
     let forms = cranelisp_frontend::parse(source).ok()?;
-    let total = forms.iter().filter(|f| is_persisted_definition_form(f)).count();
+    let total = forms
+        .iter()
+        .filter(|f| is_persisted_definition_form(f))
+        .count();
     let failed_persisted: usize = failed
         .iter()
         .map(|f| {
             cranelisp_frontend::parse(&f.text)
                 .ok()
-                .map(|fs| fs.iter().filter(|x| is_persisted_definition_form(x)).count())
+                .map(|fs| {
+                    fs.iter()
+                        .filter(|x| is_persisted_definition_form(x))
+                        .count()
+                })
                 .unwrap_or(0)
         })
         .sum();
@@ -778,15 +819,19 @@ fn is_persisted_definition_form(form: &cranelisp_types::Sexp) -> bool {
     };
     matches!(
         head.as_str(),
-        "defn" | "defn-"
-            | "def" | "def-"
-            | "const" | "const-"
-            | "deftype" | "deftrait"
-            | "defmacro" | "defmacro-"
+        "defn"
+            | "defn-"
+            | "def"
+            | "def-"
+            | "const"
+            | "const-"
+            | "deftype"
+            | "deftrait"
+            | "defmacro"
+            | "defmacro-"
             | "impl"
     )
 }
-
 
 impl CompilerSession {
     /// REPL `/list` — user-defined symbols in the current REPL module (excludes
@@ -813,10 +858,10 @@ impl CompilerSession {
                     Some(c) => c,
                 };
                 let (scheme, docstring) = match entry {
-                    ModuleEntry::Def { scheme, docstring, .. } =>
-                        (Some(scheme.clone()), docstring.clone()),
-                    ModuleEntry::TraitDecl { docstring, .. } =>
-                        (None, docstring.clone()),
+                    ModuleEntry::Def {
+                        scheme, docstring, ..
+                    } => (Some(scheme.clone()), docstring.clone()),
+                    ModuleEntry::TraitDecl { docstring, .. } => (None, docstring.clone()),
                     _ => (None, None),
                 };
                 out.push(SymbolInfo {
@@ -908,7 +953,8 @@ impl CompilerSession {
     /// is FIXME 0205's broader scope (S68 facade refresh); landing the
     /// field + accessor here is the load-bearing structural change.
     pub fn set_repl_input_active(&self, active: bool) {
-        self.repl_input_active.store(active, std::sync::atomic::Ordering::Release);
+        self.repl_input_active
+            .store(active, std::sync::atomic::Ordering::Release);
     }
 
     /// Accumulated session warnings (per facade L140).
@@ -937,7 +983,9 @@ impl CompilerSession {
             Some(w) => w,
             None => return,
         };
-        let file_to_mod = self.shared.file_to_module
+        let file_to_mod = self
+            .shared
+            .file_to_module
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         for path in file_to_mod.keys() {
@@ -1011,20 +1059,21 @@ impl CompilerSession {
         };
 
         // Map file paths → module paths via SharedState.file_to_module.
-        let file_to_mod = self.shared.file_to_module
+        let file_to_mod = self
+            .shared
+            .file_to_module
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let mut modules_to_reload: Vec<(ModuleFullPath, PathBuf)> = Vec::new();
         for path in &changed_paths {
             if let Some(module_path) = file_to_mod.get(path)
-                && !modules_to_reload.iter().any(|(mp, _)| mp == module_path) {
-                    modules_to_reload.push((module_path.clone(), path.clone()));
-                }
+                && !modules_to_reload.iter().any(|(mp, _)| mp == module_path)
+            {
+                modules_to_reload.push((module_path.clone(), path.clone()));
+            }
         }
-        let changed_modules: HashSet<ModuleFullPath> = modules_to_reload
-            .iter()
-            .map(|(mp, _)| mp.clone())
-            .collect();
+        let changed_modules: HashSet<ModuleFullPath> =
+            modules_to_reload.iter().map(|(mp, _)| mp.clone()).collect();
         drop(file_to_mod);
         // Cascade invalidation: find modules that import any changed module
         // and add them to the reload list — via the SHARED dependent-scan
@@ -1039,7 +1088,8 @@ impl CompilerSession {
         let mut messages = Vec::new();
         for (module_path, file_path) in modules_to_reload {
             // Extract just the filename for the notification message.
-            let file_name = file_path.file_name()
+            let file_name = file_path
+                .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or_else(|| module_path.as_ref());
             match self.reload_module(&module_path, &file_path, &[]) {
@@ -1090,13 +1140,21 @@ impl CompilerSession {
         // (`append_failed_forms`), so a bare re-parse over-counts them as
         // "restored". Subtract the module's persisted-definition FAILED forms —
         // the count of definitions the session actually restored (§15.2.2).
-        let failed = self.failed_forms.get(module).map(Vec::as_slice).unwrap_or(&[]);
+        let failed = self
+            .failed_forms
+            .get(module)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
         let count = restored_definition_count(&source, failed)?;
         let name = file_path
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("the backing file");
-        let plural = if count == 1 { "definition" } else { "definitions" };
+        let plural = if count == 1 {
+            "definition"
+        } else {
+            "definitions"
+        };
         Some(format!("; resumed {count} {plural} from {name}"))
     }
 
@@ -1156,11 +1214,8 @@ impl CompilerSession {
         }
 
         // Generate source text.
-        let source = crate::save::generate_module_source(
-            &st,
-            self.shared.introspection.as_ref(),
-            &module,
-        );
+        let source =
+            crate::save::generate_module_source(&st, self.shared.introspection.as_ref(), &module);
 
         // S102 CS-0489 (§18.8 no-silent-drop): re-emit the retained
         // failed-form verbatim texts — the degraded startup load's broken
@@ -1191,13 +1246,16 @@ impl CompilerSession {
         // Update watcher content hash so the self-write is suppressed
         // (design/int/session-persistence.md §4).
         if let Some(ref mut watcher) = self.watcher {
-            let canonical = file_path.canonicalize().unwrap_or_else(|_| file_path.clone());
+            let canonical = file_path
+                .canonicalize()
+                .unwrap_or_else(|_| file_path.clone());
             watcher.update_content_hash(canonical.clone(), hash.clone());
         }
 
         // Register the file in file_to_module so the watcher can find it.
         if let Ok(canonical) = file_path.canonicalize() {
-            self.shared.file_to_module
+            self.shared
+                .file_to_module
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .insert(canonical, module.clone());
@@ -1258,12 +1316,14 @@ impl CompilerSession {
             crate::observability::SchedulerTraceTag::RecompileModule,
             module_path.as_ref(),
         );
-        let source = std::fs::read_to_string(file_path).map_err(|e| {
-            CranelispError::ModuleError {
+        let source =
+            std::fs::read_to_string(file_path).map_err(|e| CranelispError::ModuleError {
                 message: format!("cannot read {}: {e}", file_path.display()),
-                location: ErrorLocation::from_span_file(Span::new(0, 0), Some(file_path.to_path_buf())),
-            }
-        })?;
+                location: ErrorLocation::from_span_file(
+                    Span::new(0, 0),
+                    Some(file_path.to_path_buf()),
+                ),
+            })?;
 
         // Remove stale products before recompilation.
         // Sprint 57 Wave 2 G6: `codegen_products` was deleted; compiled code
@@ -1331,16 +1391,23 @@ impl CompilerSession {
         // module already exists) — the reload would be silently dropped and the
         // stale table survives. Wait for the in-flight pass to settle so the
         // re-register reliably takes.
-        self.shared.scheduler.wait_module_typecheck_settled(module_path);
+        self.shared
+            .scheduler
+            .wait_module_typecheck_settled(module_path);
 
         // `re_register_module` clears `inmem_done` and re-queues the module
         // for typecheck with the fresh sexps. `register_module` would be a
         // no-op because the module is already in `scheduler.modules`.
-        let re_registered = self.shared.scheduler.re_register_module(module_path, sexps.clone());
+        let re_registered = self
+            .shared
+            .scheduler
+            .re_register_module(module_path, sexps.clone());
         if !re_registered {
             // Module isn't known to the scheduler yet (first-time seed from
             // file watcher) — fall back to register_module.
-            self.shared.scheduler.register_module(module_path.clone(), sexps, false);
+            self.shared
+                .scheduler
+                .register_module(module_path.clone(), sexps, false);
         }
 
         // Block until inmem-done for every registered module. The workers
@@ -1376,10 +1443,7 @@ impl CompilerSession {
     /// Resolves source file, parses, enqueues for typechecking.
     /// TODO: currently runs inline worker loop. Will just enqueue
     /// once persistent workers are wired.
-    pub fn register_module(
-        &mut self,
-        module_name: &str,
-    ) -> Result<(), CranelispError> {
+    pub fn register_module(&mut self, module_name: &str) -> Result<(), CranelispError> {
         self.register_entry_module(module_name)?;
         Ok(())
     }
@@ -1447,7 +1511,9 @@ impl CompilerSession {
         // a worker that wakes on the scheduler notify reads them off the
         // packet. Wakes parked priority workers via
         // `priority_work_available.notify_all()`.
-        self.shared.scheduler.register_module(module.clone(), sexps, false);
+        self.shared
+            .scheduler
+            .register_module(module.clone(), sexps, false);
 
         // Block until every registered module reaches inmem_done (or a
         // module fails). The persistent priority workers do the typecheck
@@ -1459,9 +1525,6 @@ impl CompilerSession {
         Ok(Vec::new())
     }
 
-
-
-
     /// Execute the entry module's main function via the trampoline.
     ///
     /// For the v4 scheduler path: GOT is already populated by the worker
@@ -1469,10 +1532,7 @@ impl CompilerSession {
     ///
     /// Looks up `main` in the GOT, calls it, and runs the IO trampoline
     /// if the return type is IO.
-    pub fn trampoline(
-        &mut self,
-        module_name: &str,
-    ) -> Result<(i64, Type), CranelispError> {
+    pub fn trampoline(&mut self, module_name: &str) -> Result<(i64, Type), CranelispError> {
         // Enforce the batch-mode signature `(Fn [] (IO _))` before running
         // (spec §10.6 / §12.6). `--run` reaches `main` through this seam (NOT
         // `link_by_name`), so the same `validate_main` gate the `--link` path
@@ -1513,10 +1573,8 @@ impl CompilerSession {
         // Cranelift via `compile_and_register_defn`, with the
         // `extern "C" fn() -> i64` calling convention (zero-arg defn, i64
         // return) the driver transmutes to.
-        let outcome = cranelisp_intrinsics::panic::cranelisp_run_program(
-            code_ptr,
-            result_type.is_io(),
-        );
+        let outcome =
+            cranelisp_intrinsics::panic::cranelisp_run_program(code_ptr, result_type.is_io());
 
         // Translate the outcome → structured error / (value, Type) for
         // `main.rs::run`. The host (NOT the driver) drains the SET slot to
@@ -1537,10 +1595,12 @@ impl CompilerSession {
             // intrinsics-captured `(fn_name, cause)` (BC §4b invariant 14 / §5
             // invariant 9 — two-layer split).
             2 => {
-                let fault = cranelisp_intrinsics::panic::take_dispatch_fault()
-                    .unwrap_or_else(|| cranelisp_intrinsics::panic::DispatchFault {
-                        fn_name: "<unknown>".to_string(),
-                        cause: "platform dispatch fault".to_string(),
+                let fault =
+                    cranelisp_intrinsics::panic::take_dispatch_fault().unwrap_or_else(|| {
+                        cranelisp_intrinsics::panic::DispatchFault {
+                            fn_name: "<unknown>".to_string(),
+                            cause: "platform dispatch fault".to_string(),
+                        }
                     });
                 Err(CranelispError::Platform(
                     cranelisp_types::PlatformError::DispatchError {
@@ -1613,9 +1673,7 @@ impl CompilerSession {
     /// Wait until all registered modules have object codegen complete.
     ///
     /// Block until all in-memory codegen (JIT) is complete.
-    pub fn wait_inmem_complete(
-        &self,
-    ) -> Result<(), crate::scheduler::SchedulerError> {
+    pub fn wait_inmem_complete(&self) -> Result<(), crate::scheduler::SchedulerError> {
         self.shared.scheduler.wait_inmem_complete()
     }
 
@@ -1636,16 +1694,16 @@ impl CompilerSession {
     /// flag. The call drops the entry's startup sexps so even a stray dispatch
     /// would find an empty cluster (belt-and-braces).
     pub fn mark_entry_eval_owned(&self) {
-        self.shared.scheduler.release_entry_sexps(&self.entry_module);
+        self.shared
+            .scheduler
+            .release_entry_sexps(&self.entry_module);
     }
 
     /// Promotes nice workers to normal priority before blocking, ensuring
     /// object codegen completes promptly (e.g., before linking). Wakes
     /// the `object_work_available` condvar so workers observe the promotion
     /// flag on their next loop iteration.
-    pub fn wait_object_complete(
-        &self,
-    ) -> Result<(), crate::scheduler::SchedulerError> {
+    pub fn wait_object_complete(&self) -> Result<(), crate::scheduler::SchedulerError> {
         // When no nice workers are running (e.g., tests with nice_workers: 0),
         // no .o files will be produced. Skip the wait to avoid blocking
         // forever. Sprint 67 Cluster B sub-fire 2a/2b: nice-worker count
@@ -1655,10 +1713,9 @@ impl CompilerSession {
         }
 
         // Promote nice workers so object codegen runs at full speed.
-        self.shared.promote_nice_workers.store(
-            true,
-            std::sync::atomic::Ordering::Release,
-        );
+        self.shared
+            .promote_nice_workers
+            .store(true, std::sync::atomic::Ordering::Release);
         // Wake workers so they observe the promotion flag.
         self.shared.scheduler.wake_object_workers();
 
@@ -1800,7 +1857,9 @@ impl CompilerSession {
         let _ = self.shared.scheduler.reset_all_failed_modules();
         cranelisp_types::ensure_module_exists(&self.shared.symbol_tables, &module);
         let empty: std::sync::Arc<[Sexp]> = std::sync::Arc::from(Vec::<Sexp>::new());
-        self.shared.scheduler.register_module(module.clone(), empty, false);
+        self.shared
+            .scheduler
+            .register_module(module.clone(), empty, false);
         let _ = self.shared.scheduler.wait_inmem_complete_blocking();
 
         // 2. Disk-read-only re-read + degraded form-by-form load.
@@ -1896,7 +1955,12 @@ impl CompilerSession {
     /// and the next regen writes a green backing file. Display-only `Def`s
     /// (`defined: false`) and expression turns never clear anything.
     pub(crate) fn clear_repaired_failed_form(&mut self, result: &super::EvalResult) {
-        let super::EvalResult::Def { symbol, defined: true, .. } = result else {
+        let super::EvalResult::Def {
+            symbol,
+            defined: true,
+            ..
+        } = result
+        else {
             return;
         };
         let Some(list) = self.failed_forms.get_mut(&symbol.module) else {
@@ -1919,7 +1983,8 @@ impl CompilerSession {
         let module = ModuleFullPath::from(module_name);
         // Resolve source file: project_root (tier 2) then lib_dirs (tier 3).
         let lib_dirs = self.lib_dirs();
-        let file_path = crate::pipeline::resolve_module_file(&module, &self.shared.project_root, &lib_dirs);
+        let file_path =
+            crate::pipeline::resolve_module_file(&module, &self.shared.project_root, &lib_dirs);
         let (source, entry_path) = match file_path {
             Some(path) => {
                 let src = std::fs::read_to_string(&path).unwrap_or_default();
@@ -1935,7 +2000,8 @@ impl CompilerSession {
         // Register the entry module's own file in file_to_module so the
         // file watcher can detect changes to it (not just its dependencies).
         if let Ok(canonical) = entry_path.canonicalize() {
-            self.shared.file_to_module
+            self.shared
+                .file_to_module
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .insert(canonical, module.clone());
@@ -1985,15 +2051,11 @@ impl CompilerSession {
         let Ok(Some(cached)) = cache::try_load_cached_module(&cache_dir, module) else {
             return;
         };
-        let mut table = cached
-            .symbol_table
-            .into_concrete::<Code, ()>();
+        let mut table = cached.symbol_table.into_concrete::<Code, ()>();
         // The synthetic `__expr` wrapper is a per-turn artifact, not a user
         // definition — dropping it keeps the codegen batch sweep from
         // recompiling a stale persisted expression body.
-        table
-            .symbols
-            .remove(crate::worker::SYNTHETIC_EXPR_WRAPPER);
+        table.symbols.remove(crate::worker::SYNTHETIC_EXPR_WRAPPER);
         // Fresh type vars must not collide with the persisted schemes' ids.
         cranelisp_typecheck::advance_next_id_past_table(&self.shared.next_type_id, &table);
         cranelisp_types::install_module(&self.shared.symbol_tables, module.clone(), table);
@@ -2012,12 +2074,12 @@ impl CompilerSession {
         let module = ModuleFullPath::from(module_name);
 
         // Validate main exists and determine return kind (Int vs IO).
-        let entry_table = self.module_table(&module).ok_or_else(|| {
-            CranelispError::ModuleError {
-                message: format!("entry module '{}' not found in typechecker", module_name),
-                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-            }
-        })?;
+        let entry_table =
+            self.module_table(&module)
+                .ok_or_else(|| CranelispError::ModuleError {
+                    message: format!("entry module '{}' not found in typechecker", module_name),
+                    location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+                })?;
         // Enforce the batch-mode signature `(Fn [] (IO _))` (spec §10.6 /
         // §12.6). A valid `main` always returns `IO _` after this gate — the
         // startup stub therefore always trampolines the IO result.
@@ -2039,12 +2101,12 @@ impl CompilerSession {
         // every linked module (not just the entry); the offending callee can
         // live in any module dragged into the link.
         crate::exe::reject_dev_session_externs_in_link(&self.shared.symbol_tables)?;
-        let entry_table = self.module_table(&module).ok_or_else(|| {
-            CranelispError::ModuleError {
-                message: format!("entry module '{}' not found in typechecker", module_name),
-                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-            }
-        })?;
+        let entry_table =
+            self.module_table(&module)
+                .ok_or_else(|| CranelispError::ModuleError {
+                    message: format!("entry module '{}' not found in typechecker", module_name),
+                    location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+                })?;
         // Sprint 58 Wave 2 / Decision 36: read the entry module's `main`
         // GOT slot index now (before dropping the table guard). The alias
         // `.o` (emitted below) routes the system linker's `_main` import
@@ -2106,17 +2168,22 @@ impl CompilerSession {
         )?;
 
         // Sprint 67 Cluster B sub-fire 3: cache dir via ObjectCache facade.
-        let cache_dir = self.shared.cache.cache_dir().ok_or_else(|| {
-            CranelispError::ModuleError {
-                message: "cache directory not configured — cannot write startup .o".into(),
-                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-            }
-        })?;
+        let cache_dir =
+            self.shared
+                .cache
+                .cache_dir()
+                .ok_or_else(|| CranelispError::ModuleError {
+                    message: "cache directory not configured — cannot write startup .o".into(),
+                    location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+                })?;
         let startup_o_path = cache_dir.join("__startup.o");
         std::fs::write(&startup_o_path, &startup_bytes).map_err(|e| {
             CranelispError::ModuleError {
                 message: format!("failed to write startup .o: {e}"),
-                location: ErrorLocation::from_span_file(Span::SYNTHETIC, Some(startup_o_path.clone())),
+                location: ErrorLocation::from_span_file(
+                    Span::SYNTHETIC,
+                    Some(startup_o_path.clone()),
+                ),
             }
         })?;
 
@@ -2129,11 +2196,9 @@ impl CompilerSession {
         let alias_bytes =
             crate::exe::generate_main_alias_object(&module, main_got_slot, entry_fn_name)?;
         let alias_o_path = cache_dir.join("__main_alias.o");
-        std::fs::write(&alias_o_path, &alias_bytes).map_err(|e| {
-            CranelispError::ModuleError {
-                message: format!("failed to write main alias .o: {e}"),
-                location: ErrorLocation::from_span_file(Span::SYNTHETIC, Some(alias_o_path.clone())),
-            }
+        std::fs::write(&alias_o_path, &alias_bytes).map_err(|e| CranelispError::ModuleError {
+            message: format!("failed to write main alias .o: {e}"),
+            location: ErrorLocation::from_span_file(Span::SYNTHETIC, Some(alias_o_path.clone())),
         })?;
 
         // Find the runtime bundle library.
@@ -2225,8 +2290,7 @@ impl CompilerSession {
         // platform NAMES drive the symbol list, not the count, so two distinct
         // platforms produce two distinct `cranelisp_platform_manifest_<name>`
         // imports instead of colliding on a shared bare name.
-        let manifest_names =
-            crate::exe::collect_platform_manifest_names(&platform_names);
+        let manifest_names = crate::exe::collect_platform_manifest_names(&platform_names);
 
         let rlib_paths = crate::exe::find_platform_rlibs(
             &platform_names,
@@ -2264,8 +2328,7 @@ impl CompilerSession {
                 continue;
             }
             {
-                let module_path =
-                    ModuleFullPath::from(format!("platform.{}", name));
+                let module_path = ModuleFullPath::from(format!("platform.{}", name));
                 let roots = self
                     .shared
                     .symbol_tables
@@ -2285,7 +2348,6 @@ impl CompilerSession {
 
         Ok((manifest_names, rlib_paths, layout_checks))
     }
-
 }
 
 impl Drop for CompilerSession {
@@ -2338,7 +2400,14 @@ pub(crate) fn render_startup_error_report(file_name: &str, failed: &[FailedForm]
     for f in failed {
         let label = match &f.symbol {
             Some(sym) => sym.to_string(),
-            None => f.text.lines().next().unwrap_or("").chars().take(40).collect(),
+            None => f
+                .text
+                .lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(40)
+                .collect(),
         };
         out.push_str(&format!("\n  {} — {}", label, f.error));
     }
@@ -2462,9 +2531,14 @@ mod link_output_path_tests {
     // `examples/hello.cl` (project root `examples/`, entry `hello`) → `examples/hello`.
     #[test]
     fn file_target_output_is_entry_stem_beside_source() {
-        let out =
-            derive_link_output_path(Path::new("/work/examples"), "hello", None);
-        assert_eq!(out, PathBuf::from(format!("/work/examples/hello{}", std::env::consts::EXE_SUFFIX)));
+        let out = derive_link_output_path(Path::new("/work/examples"), "hello", None);
+        assert_eq!(
+            out,
+            PathBuf::from(format!(
+                "/work/examples/hello{}",
+                std::env::consts::EXE_SUFFIX
+            ))
+        );
     }
 
     // spec: repl/spec.md §0.2.1.1 — directory-project target: entry defaults to
@@ -2472,9 +2546,14 @@ mod link_output_path_tests {
     // (beside the source), NOT `myproject/myproject` and NOT `./user`.
     #[test]
     fn directory_project_output_is_user_stem_in_project_root() {
-        let out =
-            derive_link_output_path(Path::new("/work/myproject"), "user", None);
-        assert_eq!(out, PathBuf::from(format!("/work/myproject/user{}", std::env::consts::EXE_SUFFIX)));
+        let out = derive_link_output_path(Path::new("/work/myproject"), "user", None);
+        assert_eq!(
+            out,
+            PathBuf::from(format!(
+                "/work/myproject/user{}",
+                std::env::consts::EXE_SUFFIX
+            ))
+        );
         // Negative: it is NOT the project-directory name, NOT the CWD stem.
         assert_ne!(out, PathBuf::from("/work/myproject/myproject"));
         assert_ne!(out, PathBuf::from("user"));
@@ -2503,7 +2582,10 @@ mod link_output_path_tests {
     #[test]
     fn entry_name_with_cl_extension_is_stripped() {
         let out = derive_link_output_path(Path::new("/work"), "hello.cl", None);
-        assert_eq!(out, PathBuf::from(format!("/work/hello{}", std::env::consts::EXE_SUFFIX)));
+        assert_eq!(
+            out,
+            PathBuf::from(format!("/work/hello{}", std::env::consts::EXE_SUFFIX))
+        );
     }
 
     // spec: repl/spec.md §0.2.1.1 — collision floor: an existing directory at
@@ -2522,7 +2604,10 @@ mod link_output_path_tests {
             "diagnostic must name that the path is a directory: {msg}"
         );
         // Negative: no raw linker error phrasing leaks from the cranelisp floor.
-        assert!(!msg.contains("cannot open output file"), "must not be a raw ld error: {msg}");
+        assert!(
+            !msg.contains("cannot open output file"),
+            "must not be a raw ld error: {msg}"
+        );
     }
 
     // spec: repl/spec.md §0.2.1.1 — a non-directory (or absent) output path is
@@ -2561,10 +2646,22 @@ mod degraded_startup_tests {
     // "backing BROKEN" row, classification cells.
     #[test]
     fn defined_symbol_of_form_defining_heads_yield_symbol() {
-        assert_eq!(defined_symbol_of_form(&p("(defn k [:Int y] (f y))")), Some("k".into()));
-        assert_eq!(defined_symbol_of_form(&p("(defmacro m [e] e)")), Some("m".into()));
-        assert_eq!(defined_symbol_of_form(&p("(deftype P [:Int x])")), Some("P".into()));
-        assert_eq!(defined_symbol_of_form(&p("(deftrait Show (show [a] String))")), Some("Show".into()));
+        assert_eq!(
+            defined_symbol_of_form(&p("(defn k [:Int y] (f y))")),
+            Some("k".into())
+        );
+        assert_eq!(
+            defined_symbol_of_form(&p("(defmacro m [e] e)")),
+            Some("m".into())
+        );
+        assert_eq!(
+            defined_symbol_of_form(&p("(deftype P [:Int x])")),
+            Some("P".into())
+        );
+        assert_eq!(
+            defined_symbol_of_form(&p("(deftrait Show (show [a] String))")),
+            Some("Show".into())
+        );
     }
 
     // Negative cells: structural forms define no repairable symbol;
@@ -2589,7 +2686,11 @@ mod degraded_startup_tests {
         let report = render_startup_error_report(
             "user.cl",
             &[
-                failed(Some("k"), "type error at 49..60: expected Int", "(defn k [:Int y] (f y))"),
+                failed(
+                    Some("k"),
+                    "type error at 49..60: expected Int",
+                    "(defn k [:Int y] (f y))",
+                ),
                 failed(None, "macro error: boom", "(mystery-form 1)"),
             ],
         );
@@ -2607,11 +2708,14 @@ mod degraded_startup_tests {
         let generated = "(defn f [:String s] (str-len s))\n";
         let out = append_failed_forms(
             generated,
-            &[failed(Some("k"), "type error", "(defn k [:Int y]\n  (f y))")],
+            &[failed(
+                Some("k"),
+                "type error",
+                "(defn k [:Int y]\n  (f y))",
+            )],
         );
         assert_eq!(
-            out,
-            "(defn f [:String s] (str-len s))\n\n(defn k [:Int y]\n  (f y))\n",
+            out, "(defn f [:String s] (str-len s))\n\n(defn k [:Int y]\n  (f y))\n",
             "authored text is the authority — appended verbatim, own block"
         );
         assert_eq!(
@@ -2634,8 +2738,14 @@ mod degraded_startup_tests {
     // FailedForm must key it by name so regen re-emits it and `/info` names it.
     #[test]
     fn defined_symbol_of_form_private_defining_heads_yield_symbol() {
-        assert_eq!(defined_symbol_of_form(&p("(defn- helper [x] x)")), Some("helper".into()));
-        assert_eq!(defined_symbol_of_form(&p("(defmacro- m- [e] e)")), Some("m-".into()));
+        assert_eq!(
+            defined_symbol_of_form(&p("(defn- helper [x] x)")),
+            Some("helper".into())
+        );
+        assert_eq!(
+            defined_symbol_of_form(&p("(defmacro- m- [e] e)")),
+            Some("m-".into())
+        );
     }
 
     // spec: repl/spec.md §18.8 (FIXME 0496) — the CS-3 error-blocked floor may
@@ -2664,7 +2774,10 @@ mod degraded_startup_tests {
     // trimmed); a single-line or empty input passes through.
     #[test]
     fn first_line_reduces_to_leading_trimmed_line() {
-        assert_eq!(first_line("  type error at 0..4: boom  \n  detail\n more"), "type error at 0..4: boom");
+        assert_eq!(
+            first_line("  type error at 0..4: boom  \n  detail\n more"),
+            "type error at 0..4: boom"
+        );
         assert_eq!(first_line("single line"), "single line");
         assert_eq!(first_line(""), "");
     }
@@ -2672,15 +2785,19 @@ mod degraded_startup_tests {
 
 #[cfg(test)]
 mod restore_notice_tests {
-    use super::{is_persisted_definition_form, restored_definition_count};
     use super::FailedForm;
+    use super::{is_persisted_definition_form, restored_definition_count};
 
     fn parse_one(src: &str) -> cranelisp_types::Sexp {
         cranelisp_frontend::parse(src).unwrap().remove(0)
     }
 
     fn failed_form(text: &str) -> FailedForm {
-        FailedForm { symbol: None, error: "load error".to_string(), text: text.to_string() }
+        FailedForm {
+            symbol: None,
+            error: "load error".to_string(),
+            text: text.to_string(),
+        }
     }
 
     // FIXME 0674 — the startup restore notice counts §15.7 persisted DEFINITION
@@ -2699,7 +2816,10 @@ mod restore_notice_tests {
             "(defmacro m [] 1)",
             "(impl Show Int (defn show [x] x))",
         ] {
-            assert!(is_persisted_definition_form(&parse_one(src)), "def form: {src}");
+            assert!(
+                is_persisted_definition_form(&parse_one(src)),
+                "def form: {src}"
+            );
         }
     }
 
@@ -2712,7 +2832,10 @@ mod restore_notice_tests {
             "(+ 1 2)",
             "42",
         ] {
-            assert!(!is_persisted_definition_form(&parse_one(src)), "non-def: {src}");
+            assert!(
+                !is_persisted_definition_form(&parse_one(src)),
+                "non-def: {src}"
+            );
         }
     }
 
@@ -2763,6 +2886,9 @@ mod restore_notice_tests {
     fn restored_count_empty_and_imports_only_suppress() {
         assert_eq!(restored_definition_count("", &[]), None);
         assert_eq!(restored_definition_count("   \n", &[]), None);
-        assert_eq!(restored_definition_count("(import [primitives [Int]])\n", &[]), None);
+        assert_eq!(
+            restored_definition_count("(import [primitives [Int]])\n", &[]),
+            None
+        );
     }
 }

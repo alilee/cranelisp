@@ -26,8 +26,12 @@ use helpers::e2e::Cranelisp;
 
 // Test-authoring shortcuts: see `tests/helpers/e2e.rs`
 // `Cranelisp::repl_capture` / `repl_prims_capture`.
-fn repl(lines: &str) -> helpers::e2e::CrOutput { Cranelisp::repl_capture(lines) }
-fn repl_prims(lines: &str) -> helpers::e2e::CrOutput { Cranelisp::repl_prims_capture(lines) }
+fn repl(lines: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::repl_capture(lines)
+}
+fn repl_prims(lines: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::repl_prims_capture(lines)
+}
 
 // =============================================================================
 // Type errors — repl/spec.md §5.1
@@ -221,9 +225,11 @@ fn unbound_bare_symbol_error() {
 // spec: repl/spec.md §5.1 — too many args produces clear error
 #[test]
 fn wrong_arity_too_many_args() {
-    let out = repl_prims("(defn foo [x] x)
+    let out = repl_prims(
+        "(defn foo [x] x)
 (foo 1 2 3)
-");
+",
+    );
     assert!(
         out.stdout.to_lowercase().contains("error"),
         "wrong arity must error; got:\n{}",
@@ -236,9 +242,11 @@ fn wrong_arity_too_many_args() {
 // spec: repl/spec.md §5.1 — too few args produces auto-curry (NOT an error)
 #[test]
 fn auto_curry_too_few_args_not_error() {
-    let out = repl_prims("(defn add [x y] (add-i64 x y))
+    let out = repl_prims(
+        "(defn add [x y] (add-i64 x y))
 (add 1)
-");
+",
+    );
     // `add 1` partial application returns a closure — the type display has Fn.
     assert!(
         out.stdout.contains("Fn"),
@@ -254,9 +262,11 @@ fn auto_curry_too_few_args_not_error() {
 // spec: repl/spec.md §5.1 — undefined constructor produces clear error
 #[test]
 fn undefined_constructor_error() {
-    let out = repl("(deftype Color Red Green Blue)
+    let out = repl(
+        "(deftype Color Red Green Blue)
 NotAConstructor
-");
+",
+    );
     assert!(
         out.stdout.to_lowercase().contains("error") || out.stdout.contains("undefined"),
         "undefined constructor must error; got:\n{}",
@@ -269,9 +279,11 @@ NotAConstructor
 // spec: repl/spec.md §5.1 — constructor wrong arg count
 #[test]
 fn constructor_wrong_arg_count_error() {
-    let out = repl("(deftype Pair (Pair [a b]))
+    let out = repl(
+        "(deftype Pair (Pair [a b]))
 (Pair 1)
-");
+",
+    );
     assert!(
         out.stdout.to_lowercase().contains("error"),
         "constructor with wrong arg count must error; got:\n{}",
@@ -331,9 +343,11 @@ fn defmacro_missing_body_error() {
 // spec: spec/09-macros.md §9.9 — macro call with wrong arity
 #[test]
 fn macro_wrong_arity_error() {
-    let out = repl("(defmacro double [x] `(add-i64 ~x ~x))
+    let out = repl(
+        "(defmacro double [x] `(add-i64 ~x ~x))
 (double 1 2)
-");
+",
+    );
     assert!(
         out.stdout.to_lowercase().contains("error"),
         "macro with wrong arity must error; got:\n{}",
@@ -357,9 +371,11 @@ fn list_neg_no_primitives_in_user() {
 // spec: repl/spec.md §3.3 (neg) — /list does NOT include the constructor in Fns
 #[test]
 fn list_neg_constructors_not_in_fns() {
-    let out = repl("(deftype Color Red Green Blue)
+    let out = repl(
+        "(deftype Color Red Green Blue)
 /list
-");
+",
+    );
     // Constructors should NOT appear under "Fns:" label.
     let stdout = out.stdout.clone();
     if let Some(fns_pos) = stdout.find("Fns:") {
@@ -418,19 +434,23 @@ fn display_neg_type_vars_normalized() {
 // spec: repl/spec.md §5.2 — REPL exits 0 even after errors
 #[test]
 fn repl_exits_clean_after_errors() {
-    repl_prims("(undefined-name)
+    repl_prims(
+        "(undefined-name)
 )bad
 (this-also-fails)
-")
+",
+    )
     .assert_ok();
 }
 
 // spec: repl/spec.md §5.2 — error followed by valid form: form succeeds
 #[test]
 fn error_then_valid_form_succeeds() {
-    let out = repl_prims("(undefined-name)
+    let out = repl_prims(
+        "(undefined-name)
 (add-i64 1 2)
-");
+",
+    );
     assert!(
         out.stdout.contains(":primitives/Int 3"),
         "after error, next valid form must succeed; got:\n{}",
@@ -446,9 +466,11 @@ fn error_then_valid_form_succeeds() {
 // (carry: legacy/sketch_port.rs::sketch_repl_type_error_recovers)
 #[test]
 fn type_error_recovery_continues_session() {
-    let out = repl_prims("(add-i64 1 true)
+    let out = repl_prims(
+        "(add-i64 1 true)
 (add-i64 1 2)
-");
+",
+    );
     assert!(
         out.stdout.to_lowercase().contains("error"),
         "type error MUST surface a diagnostic; got:\n{}",
@@ -689,9 +711,11 @@ fn disasm_unknown_name_graceful() {
 // spec: repl/spec.md §5.2 (neg) — failed defn does NOT enter symbol table
 #[test]
 fn failed_defn_neg_no_partial_binding() {
-    let out = repl_prims("(defn broken [x] (add-i64 x \"oops\"))
+    let out = repl_prims(
+        "(defn broken [x] (add-i64 x \"oops\"))
 (broken 5)
-");
+",
+    );
     // Calling broken should produce an "undefined" error, not run the defn.
     assert!(
         !out.stdout.contains(":primitives/Int"),
@@ -705,10 +729,12 @@ fn failed_defn_neg_no_partial_binding() {
 // spec: repl/spec.md §5.2 (neg) — failed redefn preserves original
 #[test]
 fn failed_redefn_neg_original_preserved() {
-    let out = repl_prims("(defn foo [x] (add-i64 x 1))
+    let out = repl_prims(
+        "(defn foo [x] (add-i64 x 1))
 (defn foo [x] (add-i64 x \"oops\"))
 (foo 10)
-");
+",
+    );
     // After the failed redef, original `foo` (x+1) survives.
     assert!(
         out.stdout.contains(":primitives/Int 11"),
@@ -727,9 +753,11 @@ fn failed_redefn_neg_original_preserved() {
 // (carry: legacy/ring0.rs::error_duplicate_param_names)
 #[test]
 fn duplicate_param_names_neg() {
-    let out = repl_prims("(defn bad [x x] (add-i64 x x))
+    let out = repl_prims(
+        "(defn bad [x x] (add-i64 x x))
 (bad 1)
-");
+",
+    );
     let combined = format!("{}{}", out.stdout, out.stderr);
     // The defn must fail with a diagnostic (not silently bind one of
     // the params). The follow-up `(bad 1)` then errors on unbound name.
@@ -775,9 +803,11 @@ fn duplicate_param_names_neg() {
 // (carry: legacy/e2e.rs::e2e_s5_1_errors_on_stdout_neg_stderr_empty)
 #[test]
 fn type_error_neg_stderr_empty_and_session_survives() {
-    let out = repl_prims("(add-i64 2 true)
+    let out = repl_prims(
+        "(add-i64 2 true)
 (add-i64 1 2)
-");
+",
+    );
     // (a) Error body MUST NOT appear on stderr.
     assert!(
         !out.stderr.contains("type mismatch"),
@@ -858,10 +888,12 @@ fn parse_error_unclosed_paren_neg() {
 // (carry: legacy/repl_negative_old.rs::list_neg_no_item_in_two_categories)
 #[test]
 fn list_neg_no_item_in_two_categories() {
-    let out = repl_prims("(defn foo [x] x)
+    let out = repl_prims(
+        "(defn foo [x] x)
 (deftype Color Red Green Blue)
 /list
-");
+",
+    );
     let stdout = out.stdout.clone();
     // Isolate the Types section (from "Types:" up to the next category header).
     let types_section = stdout
@@ -892,9 +924,11 @@ fn list_neg_no_item_in_two_categories() {
 //        + display_neg_defn_monomorphic_fully_qualified)
 #[test]
 fn display_neg_type_always_qualified() {
-    let out = repl_prims("(import [primitives [mul-i64]])
+    let out = repl_prims(
+        "(import [primitives [mul-i64]])
 (defn double [x] (mul-i64 x 2))
-");
+",
+    );
     // Positive: the qualified form appears.
     assert!(
         out.stdout.contains("primitives/Int"),
@@ -915,9 +949,11 @@ fn display_neg_type_always_qualified() {
 // (carry: legacy/repl_negative_old.rs::display_neg_defn_bool_return_fully_qualified)
 #[test]
 fn display_neg_defn_bool_return_fully_qualified() {
-    let out = repl_prims("(import [primitives [gt-i64]])
+    let out = repl_prims(
+        "(import [primitives [gt-i64]])
 (defn is-pos [x] (gt-i64 x 0))
-");
+",
+    );
     out.assert_stdout_contains("primitives/Bool")
         .assert_stdout_contains("primitives/Int");
 }
@@ -949,9 +985,11 @@ fn display_neg_type_vars_normalized_multi_param() {
 // (carry: legacy/repl_negative_old.rs::display_neg_polymorphic_adt_return_no_raw_vars)
 #[test]
 fn display_neg_polymorphic_adt_return_no_raw_vars() {
-    let out = repl("(deftype (Option a) None (Some [:a val]))
+    let out = repl(
+        "(deftype (Option a) None (Some [:a val]))
 (defn wrap [x] (Some x))
-");
+",
+    );
     let stdout = out.stdout.clone();
     for i in 0..30 {
         assert!(
@@ -982,8 +1020,7 @@ fn display_neg_deftype_enum_not_function() {
 fn display_deftype_with_fields_qualified_name() {
     // `repl_prims` brings primitive type names (`Int`) into scope so the
     // product-type field annotations resolve.
-    repl_prims("(deftype Point [:Int x :Int y])\n")
-        .assert_stdout_contains("user/Point");
+    repl_prims("(deftype Point [:Int x :Int y])\n").assert_stdout_contains("user/Point");
 }
 
 // spec: repl/spec.md §5.1 (neg) — using a type name as a function MUST error,
@@ -991,9 +1028,11 @@ fn display_deftype_with_fields_qualified_name() {
 // (carry: legacy/repl_negative_old.rs::module_neg_type_name_not_callable)
 #[test]
 fn module_neg_type_name_not_callable() {
-    let out = repl_prims("(Int 42)
+    let out = repl_prims(
+        "(Int 42)
 42
-");
+",
+    );
     let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
     assert!(
         combined.contains("error"),
@@ -1011,9 +1050,11 @@ fn module_neg_type_name_not_callable() {
 // (carry: legacy/repl_negative_old.rs::list_neg_data_constructor_not_in_functions)
 #[test]
 fn list_neg_data_constructor_not_in_fns() {
-    let out = repl("(deftype (Option a) None (Some [:a val]))
+    let out = repl(
+        "(deftype (Option a) None (Some [:a val]))
 /list
-");
+",
+    );
     let stdout = out.stdout.clone();
     if let Some(fns_pos) = stdout.find("Fns:") {
         let after_fns = &stdout[fns_pos..];

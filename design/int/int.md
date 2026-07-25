@@ -2,6 +2,22 @@
 
 Owner: `/design`. Single source of design intent for the integration layer (`src/` + `crates/cranelisp-exe-bundle/`). Authored Sprint 63; refreshed Sprint 64 against the pinned Decision 40 / 41 / 42 + Principle 14 / 15 configuration.
 
+**Sprint 117 conformance and recovery.**
+`s117-conformance-recovery.md` is the active subordinate design for the
+Binary/int portion of Tracks A and B. One entered cluster now remains a
+prepared turn through expansion, ordinary Passes-2/3 staging, exact codegen
+batch derivation, and JIT completion; only successful codegen reaches the
+existing live commit and dependent-redefinition gates. The same design pins
+uniform macro-expanded declaration ordering, exact failing-unit attribution,
+the shared inverse impl relation for `/info <Type>`, fully-qualified
+constraint rendering, and generic zero-arg-macro presentation for `def`
+faces DF-1/DF-2. Its macro-clause refinement uses an int-owned shadow check
+world and an exact canonical-key delta/closure, so cross-module `$` mints
+remain uncommitted and unrelated concurrent mints cannot enter the turn.
+Pre-codegen clause descriptors are distinct from executable clauses, whose
+non-null entry pointer is inseparable from a required `Code` owner and ABI
+witness. `def` remains a stdlib macro and DF-3 is not included.
+
 **Sprint 116 result-owner refinement.** `result-owner.md` is the active
 subordinate design for R15/FIXME 0745. A clean generated result remains owned as
 `(i64, Type)` through its last observation and is then released exactly once
@@ -131,6 +147,32 @@ The two structural facts that dominate the tree today:
 | `Code` carrier + aliases | `code.rs` — `SessionSymbolTable`/`SessionModuleEntry` aliases; `Code` is re-exported from `cranelisp-backend` (Decision 41) |
 | Pipeline helpers | `pipeline.rs` (`resolve_module_file`, shared worker/eval helpers) |
 | File watcher | `watch.rs` |
+
+Sprint 117 refines the REPL-eval row through
+`s117-conformance-recovery.md`: `eval.rs` owns the prepared-turn terminal
+decision; `worker.rs` retains the single staging/commit and codegen-enrollment
+authorities; `repl/{commands,format,format_type}.rs` consume shared canonical
+introspection projections. W3c carries the outer expansion's resolved macro
+identity and exact emitted PUBLIC-subject set into crate-private
+`PreparedCommit::presentation`; it derives any zero-argument-macro projection
+against the settled candidate tables before backend entry, then atomically
+publishes the authored source and `presentation_scheme` on the subject's one
+`Introspection` record. A direct redefinition replaces that field with `None`
+unless it supplies a new projection; removal removes the record. There is no
+parallel `SharedState.presentation_schemes`, post-publication introspection
+scan, reader-side inference, runtime execution, or cache field. This changes
+no module or legitimate public-surface boundary.
+
+The candidate tables begin at cluster entry, not after typecheck: the
+int-owned `TurnCheckWorld` is the write target for Pass-1 and
+expansion-emitted macro parents plus pending introspection. This preserves
+established same-cluster macro availability without exposing the macro live.
+A needed clause is compiled once by the existing
+`prepare_macro_clause_turn` mechanism and absorbed—with its exact closure,
+owners, and reserved-slot rollback guard—into the parent prepared turn. Final
+`TurnDelta` enrolls macros and ordinary staging rows together; success
+publishes them through one commit, while any later failure clears unreachable
+reserved cells and drops the candidate world.
 
 ### 3.3 REPL decomposition (FIXME 0606, S110) — LANDED
 

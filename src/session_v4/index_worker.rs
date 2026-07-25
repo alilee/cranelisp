@@ -209,7 +209,10 @@ impl ImportableIndices {
     /// Number of reachable modules NOT yet indexed — the "indexing N modules…"
     /// partial-results count (0 ⇒ burn-down complete).
     pub(crate) fn pending_count(&self) -> usize {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).pending()
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pending()
     }
 
     /// Latch that a "indexing N modules…" not-ready note was served this
@@ -217,7 +220,10 @@ impl ImportableIndices {
     /// notice. Called by `/search` (`repl.rs::handle_search`) whenever it
     /// appends the not-ready note (`pending_count > 0`).
     pub(crate) fn mark_note_shown(&self) {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).note_shown = true;
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .note_shown = true;
     }
 
     /// The one-shot `search index complete.` completion latch (spec §17.19.3,
@@ -315,7 +321,13 @@ impl ImportableIndices {
     /// Each `(name, scheme.ty, docstring)` is one importable symbol.
     fn record_entries(&self, module: &ModuleFullPath, entries: Vec<ImportableRow>) {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        for ImportableRow { name, scheme, docstring, is_macro } in entries {
+        for ImportableRow {
+            name,
+            scheme,
+            docstring,
+            is_macro,
+        } in entries
+        {
             g.entries.push(IndexedEntry {
                 name,
                 module: module.clone(),
@@ -338,17 +350,19 @@ impl ImportableIndices {
     /// enumerated_total − indexed.len()` would UNDERCOUNT N (and the not-ready
     /// note + completion notice would fire early). Idempotent: a re-add of an
     /// already-indexed module is a no-op (no double count, no duplicate rows).
-    fn record_preindexed(
-        &self,
-        module: &ModuleFullPath,
-        entries: Vec<ImportableRow>,
-    ) {
+    fn record_preindexed(&self, module: &ModuleFullPath, entries: Vec<ImportableRow>) {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if !g.indexed.insert(module.clone()) {
             return; // already indexed — do not double-count or double-push.
         }
         g.enumerated_total += 1;
-        for ImportableRow { name, scheme, docstring, is_macro } in entries {
+        for ImportableRow {
+            name,
+            scheme,
+            docstring,
+            is_macro,
+        } in entries
+        {
             g.entries.push(IndexedEntry {
                 name,
                 module: module.clone(),
@@ -380,15 +394,17 @@ impl ImportableIndices {
     /// bumps `enumerated_total` so `pending_count = enumerated_total −
     /// indexed.len()` stays ≥ 0 and reaches 0. Idempotent on both tallies across
     /// re-records (a re-record neither double-counts nor double-pushes).
-    fn record_loaded_replace(
-        &self,
-        module: &ModuleFullPath,
-        entries: Vec<ImportableRow>,
-    ) {
+    fn record_loaded_replace(&self, module: &ModuleFullPath, entries: Vec<ImportableRow>) {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         // REPLACE: drop any existing rows for this module first (refresh).
         g.entries.retain(|e| &e.module != module);
-        for ImportableRow { name, scheme, docstring, is_macro } in entries {
+        for ImportableRow {
+            name,
+            scheme,
+            docstring,
+            is_macro,
+        } in entries
+        {
             g.entries.push(IndexedEntry {
                 name,
                 module: module.clone(),
@@ -420,12 +436,20 @@ impl ImportableIndices {
             .into_iter()
             .map(|(name, scheme, e)| {
                 let (docstring, is_macro) = match &e {
-                    ModuleEntry::Def { docstring, kind, .. } => {
-                        (docstring.clone(), matches!(kind.as_ref(), DefKind::Macro { .. }))
-                    }
+                    ModuleEntry::Def {
+                        docstring, kind, ..
+                    } => (
+                        docstring.clone(),
+                        matches!(kind.as_ref(), DefKind::Macro { .. }),
+                    ),
                     _ => (None, false),
                 };
-                ImportableRow { name, scheme, docstring, is_macro }
+                ImportableRow {
+                    name,
+                    scheme,
+                    docstring,
+                    is_macro,
+                }
             })
             .collect();
         self.record_entries(module, rows);
@@ -580,7 +604,9 @@ pub(crate) fn arm_burndown(shared: &SharedState) {
     // single point that sees the searcher's module, so it covers the loaded-module
     // E3 feed too (a LOADED private submodule bypasses the file-worklist drop
     // below; that was the 0570 residual leak).
-    shared.importable_indices.record_private_roots(private_roots.clone());
+    shared
+        .importable_indices
+        .record_private_roots(private_roots.clone());
     if !private_roots.is_empty() {
         modules.retain(|m| !private_roots.iter().any(|p| path_in_subtree(m, p)));
     }
@@ -649,7 +675,9 @@ pub(crate) fn arm_burndown(shared: &SharedState) {
 fn feed_loaded_module(shared: &SharedState, module: &ModuleFullPath) {
     if let Some(table) = shared.symbol_tables.get(module) {
         let entries = public_entries_from_table(table.value());
-        shared.importable_indices.record_loaded_replace(module, entries);
+        shared
+            .importable_indices
+            .record_loaded_replace(module, entries);
     }
 }
 
@@ -809,7 +837,9 @@ fn enumerate_cl_modules_excluding(
         };
         // `a/b.cl` → `a.b`; `foo.cl` → `foo`.
         let rel_str = rel.with_extension("");
-        let dotted = rel_str.to_string_lossy().replace(std::path::MAIN_SEPARATOR, ".");
+        let dotted = rel_str
+            .to_string_lossy()
+            .replace(std::path::MAIN_SEPARATOR, ".");
         if dotted == "prelude" || dotted.is_empty() {
             continue;
         }
@@ -860,7 +890,10 @@ fn index_one_module(shared: &SharedState, module: &ModuleFullPath) {
                 // genuinely row-less, so a zero-row skip is legal (§4 rule 2).
                 shared.importable_indices.mark_skipped(module);
             }
-        } else if matches!(shared.scheduler.module_pool(module), Some(ModulePool::Failed)) {
+        } else if matches!(
+            shared.scheduler.module_pool(module),
+            Some(ModulePool::Failed)
+        ) {
             // Registered but FAILED typecheck (e.g. a broken lib module the
             // prelude imports, registered + `Failed` before this worklist pop):
             // a failed module publishes NO valid public symbols, so it is
@@ -934,7 +967,10 @@ fn try_branch_b(
     // the live import path (§25.5 — index→import is a `.meta` cache-hit).
     shared.cache.record_source_hash(module, source_hash.clone());
     let empty_deps = HashMap::new();
-    if !shared.cache.is_cache_valid(module, &source_hash, &empty_deps) {
+    if !shared
+        .cache
+        .is_cache_valid(module, &source_hash, &empty_deps)
+    {
         return None;
     }
 
@@ -993,9 +1029,7 @@ fn index_branch_c(
             {
                 write_index_meta(shared, module, dir, &entries);
             }
-            shared
-                .importable_indices
-                .record_triples(module, entries);
+            shared.importable_indices.record_triples(module, entries);
         }
         Ok(None) => {
             // No checkable forms (empty module) — mark indexed, nothing to add.
@@ -1046,8 +1080,7 @@ fn write_index_meta(
     if let Some(parent) = meta_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if let Err(e) =
-        cache::serialize::write_meta(&meta_path, &table, cache::CACHE_SCHEMA_VERSION)
+    if let Err(e) = cache::serialize::write_meta(&meta_path, &table, cache::CACHE_SCHEMA_VERSION)
         && std::env::var("CRANELISP_MODULE_TRACE").is_ok()
     {
         eprintln!("index: .meta write failed for {module}: {}", e.message());
@@ -1150,11 +1183,7 @@ fn checked_typecheck_module(
             match private_tables.get(module) {
                 Some(t) => {
                     let e = public_entries_with_entry(&t);
-                    if e.is_empty() {
-                        Ok(None)
-                    } else {
-                        Ok(Some(e))
-                    }
+                    if e.is_empty() { Ok(None) } else { Ok(Some(e)) }
                 }
                 None => Ok(None),
             }
@@ -1180,18 +1209,29 @@ fn index_typecheck_into_private(
     // Pass-0 structural peel: extract the module's own import/export decls and
     // install them into the PRIVATE module table (so the body's bare refs
     // resolve). `super` is resolved at the frontend boundary.
-    let (decls, remaining) =
-        cranelisp_frontend::extract_module_declarations(module, sexps)
-            .map_err(|e| format!("structural peel error: {e}"))?;
+    let (decls, remaining) = cranelisp_frontend::extract_module_declarations(module, sexps)
+        .map_err(|e| format!("structural peel error: {e}"))?;
 
-    crate::imports::install_imports(priv_tables, module, priv_aliases, prelude_fallback, &decls.import_specs)
-        .map_err(|e| format!("import install error: {e}"))?;
+    crate::imports::install_imports(
+        priv_tables,
+        module,
+        priv_aliases,
+        prelude_fallback,
+        &decls.import_specs,
+    )
+    .map_err(|e| format!("import install error: {e}"))?;
     // FIXME 0604 §2.2: the BACKGROUND index typecheck is isolated (R13 — never
     // writes live session state), so it passes `None` for `declared_exports` — it
     // records no `D(M)` into the live map. (Its private tables are discarded; the
     // gate here is a no-op over `D(M) == None`.)
-    crate::imports::install_exports(priv_tables, module, prelude_fallback, None, &decls.export_specs)
-        .map_err(|e| format!("export install error: {e}"))?;
+    crate::imports::install_exports(
+        priv_tables,
+        module,
+        prelude_fallback,
+        None,
+        &decls.export_specs,
+    )
+    .map_err(|e| format!("export install error: {e}"))?;
 
     // Register `defmacro` entries so user macros are SEARCHABLE (0569). Macro
     // registration is int-orchestrated (`register_macro_in_module`) and is NOT
@@ -1228,8 +1268,8 @@ fn index_typecheck_into_private(
         }
     }
 
-    let program = crate::worker::build_program_compat(&regular)
-        .map_err(|e| format!("build error: {e}"))?;
+    let program =
+        crate::worker::build_program_compat(&regular).map_err(|e| format!("build error: {e}"))?;
     let parsed = crate::worker::top_level_to_parsed_entries(&program);
     if parsed.is_empty() {
         // Regular-defn typecheck is a no-op, but any macros registered above are
@@ -1297,7 +1337,10 @@ fn public_entries_with_entry(
 /// imports, non-public entries, and `$`-mangled internal names (mirrors
 /// `/exports`). The docstring feeds the §17.19.1 docstring axis (S106).
 fn public_entries_from_table(
-    table: &cranelisp_types::SymbolTable<impl cranelisp_types::CodeStore, impl cranelisp_types::LinkerStore>,
+    table: &cranelisp_types::SymbolTable<
+        impl cranelisp_types::CodeStore,
+        impl cranelisp_types::LinkerStore,
+    >,
 ) -> Vec<ImportableRow> {
     let mut out = Vec::new();
     for (sym, entry) in table.all_symbols() {
@@ -1314,7 +1357,13 @@ fn public_entries_from_table(
         // Only function/value/macro defs carry a usable index row. A macro's
         // `scheme.ty` is a placeholder scalar (§17.19.2a); `is_macro` carries the
         // §1.1 classification so the row renders `; defmacro` instead of it (0569).
-        if let ModuleEntry::Def { scheme, docstring, kind, .. } = entry {
+        if let ModuleEntry::Def {
+            scheme,
+            docstring,
+            kind,
+            ..
+        } = entry
+        {
             out.push(ImportableRow {
                 name: sym.clone(),
                 scheme: scheme.ty.clone(),
@@ -1345,22 +1394,34 @@ mod tests {
     }
     /// `(Fn [Int Int] Int)` — the gcd2 shape.
     fn int_arrow_int() -> Type {
-        Type::Fn(
-            vec![Type::Int, Type::Int],
-            Box::new(Type::Int),
-        )
+        Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int))
     }
     /// A `(name, scheme, no-docstring)` row for the common test case.
     fn row(name: &str, ty: Type) -> ImportableRow {
-        ImportableRow { name: sym(name), scheme: ty, docstring: None, is_macro: false }
+        ImportableRow {
+            name: sym(name),
+            scheme: ty,
+            docstring: None,
+            is_macro: false,
+        }
     }
     /// A `(name, scheme, docstring)` row for the docstring-axis tests.
     fn row_doc(name: &str, ty: Type, doc: &str) -> ImportableRow {
-        ImportableRow { name: sym(name), scheme: ty, docstring: Some(doc.to_string()), is_macro: false }
+        ImportableRow {
+            name: sym(name),
+            scheme: ty,
+            docstring: Some(doc.to_string()),
+            is_macro: false,
+        }
     }
     /// A macro index row (`is_macro = true`) for the §17.19.2a classification test.
     fn row_macro(name: &str, ty: Type) -> ImportableRow {
-        ImportableRow { name: sym(name), scheme: ty, docstring: None, is_macro: true }
+        ImportableRow {
+            name: sym(name),
+            scheme: ty,
+            docstring: None,
+            is_macro: true,
+        }
     }
 
     // spec: repl/spec.md §17.19.2a (0569) — the `is_macro` classification rides
@@ -1375,10 +1436,16 @@ mod tests {
         );
         let macro_hit = idx.search_by_name("twice");
         assert_eq!(macro_hit.len(), 1);
-        assert!(macro_hit[0].is_macro, "a macro entry's hit must carry is_macro");
+        assert!(
+            macro_hit[0].is_macro,
+            "a macro entry's hit must carry is_macro"
+        );
         let fn_hit = idx.search_by_name("gcd2");
         assert_eq!(fn_hit.len(), 1);
-        assert!(!fn_hit[0].is_macro, "a fn entry's hit must NOT carry is_macro");
+        assert!(
+            !fn_hit[0].is_macro,
+            "a fn entry's hit must NOT carry is_macro"
+        );
     }
 
     // spec: spec/08-modules.md §8.2.3 (0570) — `private_submodule_paths` reads the
@@ -1483,9 +1550,16 @@ mod tests {
     fn search_by_name_partial_substring_case_insensitive() {
         let idx = ImportableIndices::default();
         idx.record_entries(&m("mathx"), vec![row("is-zero", int_arrow_int())]);
-        assert_eq!(idx.search_by_name("ZERO").len(), 1, "case-insensitive substring");
+        assert_eq!(
+            idx.search_by_name("ZERO").len(),
+            1,
+            "case-insensitive substring"
+        );
         assert_eq!(idx.search_by_name("is-zero").len(), 1, "exact also matches");
-        assert!(idx.search_by_name("nope").is_empty(), "non-substring misses");
+        assert!(
+            idx.search_by_name("nope").is_empty(),
+            "non-substring misses"
+        );
     }
 
     // spec: repl/spec.md §17.19.1a — the name axis assigns exact/prefix/substring
@@ -1518,7 +1592,11 @@ mod tests {
         idx.record_entries(
             &m("docmod"),
             vec![
-                row_doc("gcd2", int_arrow_int(), "greatest common divisor of two ints"),
+                row_doc(
+                    "gcd2",
+                    int_arrow_int(),
+                    "greatest common divisor of two ints",
+                ),
                 row("no-doc", int_arrow_int()), // no docstring — cannot match
             ],
         );
@@ -1552,7 +1630,11 @@ mod tests {
         let idx = ImportableIndices::default();
         idx.record_entries(&m("mathx"), vec![row("gcd2", int_arrow_int())]);
         let hits = idx.search_by_scheme(&Type::Int);
-        assert_eq!(hits.len(), 1, "Int is a sub-structure of (Fn [Int Int] Int)");
+        assert_eq!(
+            hits.len(),
+            1,
+            "Int is a sub-structure of (Fn [Int Int] Int)"
+        );
         assert_eq!(hits[0].tier, MatchTier::StructuralScheme);
     }
 
@@ -1597,8 +1679,14 @@ mod tests {
     fn take_index_task_drains_fifo_then_none() {
         let idx = ImportableIndices::default();
         idx.arm(vec![m("a"), m("b")]);
-        assert_eq!(idx.take_index_task().as_ref().map(|m| m.to_string()), Some("a".to_string()));
-        assert_eq!(idx.take_index_task().as_ref().map(|m| m.to_string()), Some("b".to_string()));
+        assert_eq!(
+            idx.take_index_task().as_ref().map(|m| m.to_string()),
+            Some("a".to_string())
+        );
+        assert_eq!(
+            idx.take_index_task().as_ref().map(|m| m.to_string()),
+            Some("b".to_string())
+        );
         assert!(idx.take_index_task().is_none(), "drained → None");
     }
 
@@ -1678,7 +1766,10 @@ mod tests {
     fn take_completion_notice_one_shot_gated_on_note_shown() {
         let idx = ImportableIndices::default();
         // Unarmed → never fires (nothing to complete).
-        assert!(!idx.take_completion_notice(), "unarmed → no completion notice");
+        assert!(
+            !idx.take_completion_notice(),
+            "unarmed → no completion notice"
+        );
         idx.arm(vec![]); // armed, 0 file modules
         idx.record_preindexed(&m("primitives"), vec![row("vec-len", int_arrow_int())]);
         // Armed + complete, but NO not-ready note shown → timing (b) suppresses.
@@ -1744,7 +1835,11 @@ mod tests {
         idx.mark_note_shown(); // a `/search` served the not-ready note this session
         // Burn down the one genuine file module.
         idx.record_entries(&m("a"), vec![row("f", int_arrow_int())]);
-        assert_eq!(idx.pending_count(), 0, "no perpetual pending — burn-down completes");
+        assert_eq!(
+            idx.pending_count(),
+            0,
+            "no perpetual pending — burn-down completes"
+        );
         assert!(
             idx.take_completion_notice(),
             "completion fires once the file module drains (the collision no longer wedges it)"
@@ -1803,7 +1898,11 @@ mod tests {
             "foo single-tallied (already counted by arm) — only `a` pends"
         );
         let hits = idx.search_by_name("count");
-        assert_eq!(hits.len(), 1, "the loaded module's importable symbol is searchable");
+        assert_eq!(
+            hits.len(),
+            1,
+            "the loaded module's importable symbol is searchable"
+        );
         assert_eq!(hits[0].module.as_ref(), "foo");
         assert_eq!(hits[0].tier, MatchTier::ExactName);
     }
@@ -1818,11 +1917,19 @@ mod tests {
         let idx = ImportableIndices::default();
         idx.arm(vec![m("foo")]); // enum=1, pending=1
         // In-flight at arm: branch (a) records nothing → foo stays pending.
-        assert_eq!(idx.pending_count(), 1, "an in-flight registered module is left pending");
+        assert_eq!(
+            idx.pending_count(),
+            1,
+            "an in-flight registered module is left pending"
+        );
         // foo reaches terminal later → the publication hook feeds it.
         let table = public_def_table("foo", "count", int_arrow_int());
         idx.record_loaded_replace(&m("foo"), public_entries_from_table(&table));
-        assert_eq!(idx.pending_count(), 0, "the publication hook completes the burn-down");
+        assert_eq!(
+            idx.pending_count(),
+            0,
+            "the publication hook completes the burn-down"
+        );
         assert_eq!(idx.search_by_name("count").len(), 1);
     }
 
@@ -1850,7 +1957,11 @@ mod tests {
             0,
             "the late load dual-tallies (enum + indexed) — pending stays 0"
         );
-        assert_eq!(idx.search_by_name("count").len(), 1, "the late-loaded symbol is searchable");
+        assert_eq!(
+            idx.search_by_name("count").len(),
+            1,
+            "the late-loaded symbol is searchable"
+        );
         assert!(
             !idx.take_completion_notice(),
             "a late load fires NO second completion notice (one-shot latch)"
@@ -1866,7 +1977,13 @@ mod tests {
         idx.arm(vec![m("foo")]);
         let t1 = public_def_table("foo", "count", int_arrow_int());
         idx.record_loaded_replace(&m("foo"), public_entries_from_table(&t1));
-        assert_eq!(idx.search_by_name("count").iter().filter(|h| h.name.as_ref() == "count").count(), 1);
+        assert_eq!(
+            idx.search_by_name("count")
+                .iter()
+                .filter(|h| h.name.as_ref() == "count")
+                .count(),
+            1
+        );
         // Watcher reload: `foo` redefined — `count` renamed to `counter`.
         let t2 = public_def_table("foo", "counter", int_arrow_int());
         idx.record_loaded_replace(&m("foo"), public_entries_from_table(&t2));
@@ -1876,10 +1993,16 @@ mod tests {
             "the new `counter` row is present after re-record"
         );
         assert!(
-            !idx.search_by_name("count").iter().any(|h| h.name.as_ref() == "count"),
+            !idx.search_by_name("count")
+                .iter()
+                .any(|h| h.name.as_ref() == "count"),
             "the stale exact `count` row is REPLACED, not duplicated or retained"
         );
-        assert_eq!(idx.pending_count(), 0, "a re-record does not perturb the tallies");
+        assert_eq!(
+            idx.pending_count(),
+            0,
+            "a re-record does not perturb the tallies"
+        );
     }
 
     // spec: repl/spec.md §17.19.3 — obligation 5 (accounting): `pending_count =
@@ -1894,13 +2017,25 @@ mod tests {
         // Loaded feed records `foo` FIRST (outside any file set yet → dual tally).
         let table = public_def_table("foo", "count", int_arrow_int());
         idx.record_loaded_replace(&m("foo"), public_entries_from_table(&table));
-        assert_eq!(idx.pending_count(), 0, "pending never negative — foo dual-tallied once");
+        assert_eq!(
+            idx.pending_count(),
+            0,
+            "pending never negative — foo dual-tallied once"
+        );
         // arm enumerates a file worklist COLLIDING on `foo` (a `foo.cl`) plus `a`.
         idx.arm(vec![m("foo"), m("a")]);
-        assert_eq!(idx.pending_count(), 1, "foo counted once (dup dropped); only `a` pends");
+        assert_eq!(
+            idx.pending_count(),
+            1,
+            "foo counted once (dup dropped); only `a` pends"
+        );
         idx.mark_skipped(&m("a"));
         assert_eq!(idx.pending_count(), 0, "the burn-down reaches zero");
-        assert_eq!(idx.search_by_name("count").len(), 1, "foo's row survives the collision");
+        assert_eq!(
+            idx.search_by_name("count").len(),
+            1,
+            "foo's row survives the collision"
+        );
     }
 
     // spec: repl/spec.md §17.19 R10 — obligation 6 (no zero-row skip for a
@@ -1923,8 +2058,15 @@ mod tests {
         let idx2 = ImportableIndices::default();
         idx2.arm(vec![m("empty")]);
         idx2.mark_skipped(&m("empty"));
-        assert!(idx2.search_by_name("count").is_empty(), "a row-less skip adds no rows");
-        assert_eq!(idx2.pending_count(), 0, "a row-less skip still completes the burn-down");
+        assert!(
+            idx2.search_by_name("count").is_empty(),
+            "a row-less skip adds no rows"
+        );
+        assert_eq!(
+            idx2.pending_count(),
+            0,
+            "a row-less skip still completes the burn-down"
+        );
     }
 
     // =======================================================================
@@ -1941,8 +2083,8 @@ mod tests {
     /// The only fields the index-worker branch reads are `scheduler`,
     /// `symbol_tables`, and `importable_indices`. Caching disabled.
     fn test_shared_state() -> SharedState {
-        use std::sync::atomic::{AtomicBool, AtomicU32};
         use std::sync::Mutex;
+        use std::sync::atomic::{AtomicBool, AtomicU32};
         SharedState {
             scheduler: crate::scheduler::CompileScheduler::new(),
             project_root: std::path::PathBuf::new(),
@@ -1962,6 +2104,7 @@ mod tests {
             importable_indices: ImportableIndices::default(),
             broken: dashmap::DashMap::new(),
             retained_code: Mutex::new(Vec::new()),
+            fresh_jit_drop_glues: dashmap::DashMap::new(),
             run_mode: crate::session_v4::RunMode::Repl,
             test_runner_state: Box::new(crate::session_v4::TestRunnerState::stub()),
         }
@@ -1995,15 +2138,22 @@ mod tests {
             .iter()
             .map(|e| (e.key().clone(), *e.value()))
             .collect();
-        let live_keys_before: HashSet<ModuleFullPath> =
-            shared.symbol_tables.iter().map(|e| e.key().clone()).collect();
+        let live_keys_before: HashSet<ModuleFullPath> = shared
+            .symbol_tables
+            .iter()
+            .map(|e| e.key().clone())
+            .collect();
 
         // Drive the index typecheck against a real source file. Its outcome
         // (Ok/Err) is immaterial to this pin — the invariant is that NONE of the
         // live maps are written, whatever the result.
         let tmp = tempfile::tempdir().unwrap();
         let src = tmp.path().join("mod1.cl");
-        std::fs::write(&src, "(import [primitives [Int]])\n(defn f [:Int x] :Int x)\n").unwrap();
+        std::fs::write(
+            &src,
+            "(import [primitives [Int]])\n(defn f [:Int x] :Int x)\n",
+        )
+        .unwrap();
         let _ = checked_typecheck_module(&shared, &module, &src);
 
         // The indexed module was typechecked into the PRIVATE snapshot and MUST
@@ -2015,8 +2165,11 @@ mod tests {
              the live symbol_tables (typecheck runs against the private snapshot)"
         );
         // The live table set is byte-unchanged (no adds, no drops).
-        let live_keys_after: HashSet<ModuleFullPath> =
-            shared.symbol_tables.iter().map(|e| e.key().clone()).collect();
+        let live_keys_after: HashSet<ModuleFullPath> = shared
+            .symbol_tables
+            .iter()
+            .map(|e| e.key().clone())
+            .collect();
         assert_eq!(
             live_keys_before, live_keys_after,
             "IN-MEMORY ISOLATION: the index typecheck must not add/remove live tables"
@@ -2075,10 +2228,17 @@ mod tests {
         // Arm the burn-down with the broken module on the file worklist (enum=1).
         shared.importable_indices.arm(vec![broken.clone()]);
         shared.importable_indices.mark_note_shown(); // a /search served the note
-        assert_eq!(shared.importable_indices.pending_count(), 1, "one pending at arm");
+        assert_eq!(
+            shared.importable_indices.pending_count(),
+            1,
+            "one pending at arm"
+        );
 
         // Pop + dispatch the real branch (a) — the failure arm marks it skipped.
-        assert!(run_one_index_task(&shared), "a task was popped and processed");
+        assert!(
+            run_one_index_task(&shared),
+            "a task was popped and processed"
+        );
 
         assert_eq!(
             shared.importable_indices.pending_count(),
@@ -2090,7 +2250,10 @@ mod tests {
             "burn-down complete + note shown → the completion notice fires"
         );
         assert!(
-            shared.importable_indices.search_by_name("anything").is_empty(),
+            shared
+                .importable_indices
+                .search_by_name("anything")
+                .is_empty(),
             "a Failed module contributes no importable rows"
         );
     }
@@ -2114,7 +2277,10 @@ mod tests {
         shared.importable_indices.mark_note_shown();
 
         // Pop + dispatch branch (a): in-flight → LEFT PENDING (the hook owns it).
-        assert!(run_one_index_task(&shared), "the in-flight module is popped");
+        assert!(
+            run_one_index_task(&shared),
+            "the in-flight module is popped"
+        );
         assert_eq!(
             shared.importable_indices.pending_count(),
             1,
@@ -2146,7 +2312,11 @@ mod tests {
         // Idempotent: a redundant hook call (e.g. a cascaded failure) does not
         // perturb the accounting or re-fire the one-shot latch.
         on_module_failed(&shared, &foo);
-        assert_eq!(shared.importable_indices.pending_count(), 0, "hook is idempotent");
+        assert_eq!(
+            shared.importable_indices.pending_count(),
+            0,
+            "hook is idempotent"
+        );
         assert!(
             !shared.importable_indices.take_completion_notice(),
             "one-shot latch: no second completion notice"
@@ -2160,7 +2330,10 @@ mod tests {
     fn on_module_failed_is_armed_gated_noop_when_unarmed() {
         let shared = test_shared_state();
         let foo = m("foo");
-        assert!(!shared.importable_indices.is_armed(), "unarmed by default (batch)");
+        assert!(
+            !shared.importable_indices.is_armed(),
+            "unarmed by default (batch)"
+        );
         on_module_failed(&shared, &foo); // no-op: not armed
         // Arming afterwards enumerates foo fresh — the pre-arm hook left no trace
         // in `indexed` (which would have wrongly pre-satisfied the burn-down).

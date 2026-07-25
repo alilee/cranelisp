@@ -1,13 +1,16 @@
 ; Cranelisp Ring 4E — Trace, IO Display, Module Switching
 
+(import [primitives [Pure str-concat mul-i64]])
+
 ; Corrected IO display — constructor is now visible
 
 (Pure 42)
 (Pure "hello")
 
-; Import trace primitives and SList for tree traversal
+; Import trace values and SList for tree traversal. trace itself is a special
+; form, so it needs no import.
 
-(import [primitives [trace Trace TraceCall name params result children nanos]])
+(import [core.trace [Trace TraceCall name params result children nanos trace-show-tree]])
 (import [macros [SCons SNil]])
 
 ; Define a recursive function to trace
@@ -36,11 +39,13 @@
 ; Show the trace tree — the satisfying payoff
 
 (let [t (trace (factorial 4))] (match t [(TraceCall _ _ _ ch _) (show-tree ch "")]))
+(let [t (trace (factorial 4))] (trace-show-tree t))
 
 ; /mod — bare goes to user, /mod name switches silently
 
 /mod
 /mod math
+(import [primitives [mul-i64]])
 (defn square [x] (mul-i64 x x))
 (square 7)
 /mod user

@@ -112,7 +112,10 @@ fn strip_marker(line: &str) -> String {
     let after_semis = trimmed.trim_start_matches(';');
 
     // Strip exactly one immediately-following space, if present.
-    after_semis.strip_prefix(' ').unwrap_or(after_semis).to_string()
+    after_semis
+        .strip_prefix(' ')
+        .unwrap_or(after_semis)
+        .to_string()
 }
 
 #[cfg(test)]
@@ -237,10 +240,7 @@ mod tests {
     #[test]
     fn only_one_following_space_stripped() {
         let src = ";;   indented\n(mod m)\n";
-        assert_eq!(
-            capture_module_preamble(src),
-            Some("  indented".to_string())
-        );
+        assert_eq!(capture_module_preamble(src), Some("  indented".to_string()));
     }
 
     // spec: spec/08-modules.md §8.16.1 — the first non-comment form terminates

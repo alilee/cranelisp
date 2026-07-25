@@ -302,6 +302,13 @@ The mini-monolith condition is what makes feature work in `control_flow.rs` slow
 
 **Current state**:
 
+- Sprint 117's per-member diagnostic lift is specified in
+  `s117-failed-member-attribution.md`. The private body loop attaches the
+  explicit current `module_path` + `defn.name` to the existing
+  `CompilationError::CodegenFailed` while preserving the original cause and
+  `ErrorLocation`. Other batch errors retain the existing generic conversion.
+  This is diagnostic-only: no phase, finalisation, GOT publication, public
+  API, or cache shape changes.
 - `CRANELISP_CODEGEN_DUMP=*|<module>|<module>::<symbol>` writes CLIF to stderr during `compile_to_module` (filter parser in `lib.rs:68`, dump writer at `lib.rs:83`). Cache-hit paths do NOT re-codegen, so use `/clif <name>` from the REPL for those (reads the introspection store).
 - `CRANELISP_CODEGEN_TRACE=1` populates the int-side introspection store's `clif_ir` + `disasm` per Decision 38. **S80 D1b refinement (`d1-introspection-repl-only.md`):** the int-side introspection store is now `Option<DashMap>` — `None` outside the REPL — so the mode discriminator is "introspection store present" (REPL-only), not the old per-symbol `is_some()` on a value the backend always returned. Production `--run`/`--link` retains zero record. **The "no wasted generation" floor is the open follow-up (FIXME 0325, §9):** `compile_to_module` still runs `format!("{}", func.display())` unconditionally and returns the CLIF text in `CompilationArtifacts.clif_ir`; int drops it unread in batch. The design intent is a `capture_clif` codegen-input flag (set only when int's `RunMode` populates introspection — REPL) that short-circuits the `func.display()` formatting in `compile_defn_in_module` when false. The `CRANELISP_CODEGEN_DUMP` stderr-dump path is an independent, env-gated debugging aid and MUST stay live regardless of `capture_clif` (it is not introspection-store-bound) — so when `capture_clif` is false the dump path, if its filter matches, formats CLIF for that one defn locally rather than reading a skipped aggregate.
 - `CRANELISP_RC_TRACE=1` emits inc/dec events; `LIVE_ALLOCS` debug-asserts catch double-frees (per the runtime crate, but consumed from backend test paths).
@@ -458,6 +465,7 @@ The existing docs under `design/backend/` (this `backend.md` is the master; 5 in
 
 | Topic | File | Status |
 |---|---|---|
+| S117 failed batch-member attribution | `s117-failed-member-attribution.md` | **Live (DESIGN, S117 W3a)**. Minimal private lift at the `compile_module_bodies` → `compile_defn_in_module` failure seam; exact module/name plus original cause/location, unchanged public API and GOT phase order. |
 | S111 audit-drain (R4/R5/R6/R7) | `audit-drain-s111.md` | **Live**. The `/dev` spec for the hygiene batch, the two funnel splits, the drop-glue consolidation, and the GOT-exhaustion consumption + the byte-identity strategy. Cited from §Status banner 2 + §3.1. |
 | Compilation function shape | `compile-to-module.md` | **Live** (with a currency caveat). Authoritative on §17 generics activation; describes Decision 25 + 32 + 35 outcome. **S75 banner at top of file** states the D41-rotated target (`Result<CompilationArtifacts, CompilationError>` + `produce_disasm`; `compile_to_object` retracted; 3-entry boundary; `Code` slim + `Primitive` drop; `compile_constr_adt` §2.6). **Caveat**: the banner's `module_aliases` param and any `resolve_*` narrative are S110/S111-superseded (the resolvers are deleted, the param is dropped — §2.7 + `audit-drain-s111.md` §1.4). The body §8/§9.1 `CompilationResult` text is pre-rotation migration narrative superseded by the banner. |
 | Minimal JIT-setup boundary (S76) | `jit-setup-boundary.md` | **Live**. Authoritative on the `Jit::new(symbol_tables)` constructor (the BC §3 minimal-JIT-setup boundary), `cranelisp_intrinsics::INTRINSICS_TABLE` consumption (construct + cache-hit), the `.meta.json` platform `schema_literal` round-trip (FIXME 0232), and the 0122 `--link` GOT-alignment re-test (fix already in `lib.rs:388`). Confirms the S76 W-Macro change is a backend NO-OP. |

@@ -48,7 +48,10 @@ static HOST: cranelisp_platform::HostContext = cranelisp_platform::HostContext::
 /// reactor's timer wheel reads (`HostCtx::register_timer` takes a monotonic-nanos
 /// deadline). Both sides reading `CLOCK_MONOTONIC` keeps the deadline skew-free.
 fn monotonic_nanos() -> u64 {
-    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     // SAFETY: `ts` is a valid out-param for `clock_gettime`.
     unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
     (ts.tv_sec as u64) * 1_000_000_000 + (ts.tv_nsec as u64)
@@ -537,7 +540,10 @@ mod tests {
     unsafe extern "C" fn noop_wake(_d: *const c_void) {}
     unsafe extern "C" fn noop_wake_by_ref(_d: *const c_void) {}
     unsafe extern "C" fn noop_clone(_d: *const c_void) -> Waker {
-        Waker { data: core::ptr::null(), vtable: core::ptr::null() }
+        Waker {
+            data: core::ptr::null(),
+            vtable: core::ptr::null(),
+        }
     }
     unsafe extern "C" fn noop_drop(_d: *const c_void) {}
 
@@ -577,14 +583,16 @@ mod tests {
             retire: noop_retire,
             host: core::ptr::null(),
         };
-        let waker = Waker { data: core::ptr::null(), vtable: &WAKER_VTABLE };
+        let waker = Waker {
+            data: core::ptr::null(),
+            vtable: &WAKER_VTABLE,
+        };
         // env: [result_slot = 1 (a past deadline => fired), ms = 0].
         let mut env_slots: [i64; 2] = [1, 0];
         FAULT_SIGNALLED.store(false, Ordering::SeqCst);
         // SAFETY: env_slots is a valid [result | ms] env; host/waker are live.
-        let poll = unsafe {
-            poll_fault_pollfn(env_slots.as_mut_ptr() as *mut c_void, &host, &waker)
-        };
+        let poll =
+            unsafe { poll_fault_pollfn(env_slots.as_mut_ptr() as *mut c_void, &host, &waker) };
         assert!(matches!(poll, Poll::Ready), "a fired timer => Ready");
         assert!(
             FAULT_SIGNALLED.load(Ordering::SeqCst),
@@ -611,15 +619,23 @@ mod tests {
     #[test]
     fn poll_produce_mints_handle_and_readies() {
         let host = fixture_host();
-        let waker = Waker { data: core::ptr::null(), vtable: &WAKER_VTABLE };
+        let waker = Waker {
+            data: core::ptr::null(),
+            vtable: &WAKER_VTABLE,
+        };
         // env: [result_slot = 0, seed = 7].
         let mut env_slots: [i64; 2] = [0, 7];
         // SAFETY: env_slots is a valid [result | seed] env; host/waker are live.
-        let poll = unsafe {
-            poll_produce_pollfn(env_slots.as_mut_ptr() as *mut c_void, &host, &waker)
-        };
-        assert!(matches!(poll, Poll::Ready), "produce readies on the first poll");
-        assert_eq!(env_slots[0], 7, "the result slot carries the minted handle (== seed)");
+        let poll =
+            unsafe { poll_produce_pollfn(env_slots.as_mut_ptr() as *mut c_void, &host, &waker) };
+        assert!(
+            matches!(poll, Poll::Ready),
+            "produce readies on the first poll"
+        );
+        assert_eq!(
+            env_slots[0], 7,
+            "the result slot carries the minted handle (== seed)"
+        );
     }
 
     // design: design/arch/fixmes/0490-platform-poll-produce-consume-bounded-fixture.md
@@ -628,14 +644,19 @@ mod tests {
     #[test]
     fn poll_consume_threads_handle_and_readies() {
         let host = fixture_host();
-        let waker = Waker { data: core::ptr::null(), vtable: &WAKER_VTABLE };
+        let waker = Waker {
+            data: core::ptr::null(),
+            vtable: &WAKER_VTABLE,
+        };
         // env: [result_slot = 0, handle = 7 (as minted by produce)].
         let mut env_slots: [i64; 2] = [0, 7];
         // SAFETY: env_slots is a valid [result | handle] env; host/waker are live.
-        let poll = unsafe {
-            poll_consume_pollfn(env_slots.as_mut_ptr() as *mut c_void, &host, &waker)
-        };
-        assert!(matches!(poll, Poll::Ready), "consume readies on the first poll");
+        let poll =
+            unsafe { poll_consume_pollfn(env_slots.as_mut_ptr() as *mut c_void, &host, &waker) };
+        assert!(
+            matches!(poll, Poll::Ready),
+            "consume readies on the first poll"
+        );
         assert_eq!(env_slots[0], 0, "consume readies with 0");
     }
 }

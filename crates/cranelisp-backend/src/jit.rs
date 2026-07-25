@@ -15,10 +15,9 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 
 use cranelisp_types::{
-    got_data_symbol_name, CranelispError, Defn, DefKind, ErrorLocation, ModuleEntry,
-    Span, Symbol, SymbolTables,
+    CranelispError, DefKind, Defn, ErrorLocation, ModuleEntry, Span, Symbol, SymbolTables,
+    got_data_symbol_name,
 };
-
 
 /// Register all runtime intrinsics on a JITBuilder by function pointer.
 ///
@@ -188,8 +187,7 @@ pub struct Jit {
 impl Drop for Jit {
     fn drop(&mut self) {
         if let Some(module) = self.module.take() {
-            JIT_FREE_MEMORY_CALL_COUNT
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            JIT_FREE_MEMORY_CALL_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             // SAFETY (Decision 31 / `cranelift-jit-0.116.1/src/backend.rs:219`):
             // `free_memory` requires that no fn pointer derived from this JIT
             // is called after this point. The invariant is upheld by the
@@ -252,8 +250,7 @@ impl Jit {
         L: cranelisp_types::LinkerStore,
     {
         let isa = crate::cache::object::build_isa(false)?;
-        let mut builder =
-            JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+        let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
 
         // (1) Runtime + backend-emitted-call intrinsic Import targets.
         register_intrinsics(&mut builder);
@@ -340,8 +337,7 @@ impl Jit {
         // `Linkage::Import` relocation not already satisfied by an eager
         // `JITBuilder::symbol`. It reads the shared map; `define_symbol`
         // inserts into the same `Arc` post-construction.
-        let host_symbols: Arc<Mutex<HashMap<String, usize>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let host_symbols: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
         {
             let lookup = Arc::clone(&host_symbols);
             builder.symbol_lookup_fn(Box::new(move |name: &str| {
@@ -436,11 +432,19 @@ impl Jit {
 
         Ok(IntrinsicIds {
             alloc: generic_ids.alloc.expect("runtime/alloc must be declared"),
-            dealloc: generic_ids.dealloc.expect("runtime/dealloc must be declared"),
-            alloc_string: generic_ids.alloc_string.expect("runtime/alloc_string must be declared"),
+            dealloc: generic_ids
+                .dealloc
+                .expect("runtime/dealloc must be declared"),
+            alloc_string: generic_ids
+                .alloc_string
+                .expect("runtime/alloc_string must be declared"),
             panic: generic_ids.panic.expect("runtime/panic must be declared"),
-            vec_new: generic_ids.vec_new.expect("runtime/vec_new must be declared"),
-            vec_drop: generic_ids.vec_drop.expect("runtime/vec_drop must be declared"),
+            vec_new: generic_ids
+                .vec_new
+                .expect("runtime/vec_new must be declared"),
+            vec_drop: generic_ids
+                .vec_drop
+                .expect("runtime/vec_drop must be declared"),
         })
     }
 
@@ -486,10 +490,7 @@ impl Jit {
                 .module_mut()
                 .declare_function(name, Linkage::Import, &sig)
                 .map_err(|e| CranelispError::CodegenError {
-                    message: format!(
-                        "failed to declare imported function '{}': {e}",
-                        name
-                    ),
+                    message: format!("failed to declare imported function '{}': {e}", name),
                     location: ErrorLocation::from_span(Span::SYNTHETIC),
                 })?;
             func_ids.insert(name.clone(), func_id);
@@ -509,15 +510,14 @@ impl Jit {
     // has been removed; callers now fold GOT registrations into
     // `extra_symbols`.
 
-
     /// Finalize all pending function definitions.
     pub(crate) fn finalize(&mut self) -> Result<(), CranelispError> {
-        self.module_mut().finalize_definitions().map_err(|e| {
-            CranelispError::CodegenError {
+        self.module_mut()
+            .finalize_definitions()
+            .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to finalize JIT definitions: {e}"),
                 location: ErrorLocation::from_span(Span::SYNTHETIC),
-            }
-        })
+            })
     }
 
     /// Get the finalized code pointer for a function by FuncId.
@@ -583,7 +583,6 @@ impl Jit {
         sig.returns.push(AbiParam::new(types::I64));
         sig
     }
-
 }
 
 /// FuncIds for declared runtime intrinsics.

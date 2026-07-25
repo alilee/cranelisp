@@ -325,9 +325,9 @@ fn test_run_io_par_with_effects() {
         base as i64
     };
 
-    let e0 = make_tracking_effect(1, 0);  // token=0, independent
-    let e1 = make_tracking_effect(2, 1);  // token=1, serial group
-    let e2 = make_tracking_effect(3, 1);  // token=1, serial group
+    let e0 = make_tracking_effect(1, 0); // token=0, independent
+    let e1 = make_tracking_effect(2, 1); // token=1, serial group
+    let e2 = make_tracking_effect(3, 1); // token=1, serial group
 
     let par = make_par_node(&[e0, e1, e2]);
     let cont = make_sum_results_closure(3);
@@ -341,7 +341,10 @@ fn test_run_io_par_with_effects() {
     let executed = order.lock().unwrap();
     let pos_2 = executed.iter().position(|&x| x == 2).unwrap();
     let pos_3 = executed.iter().position(|&x| x == 3).unwrap();
-    assert!(pos_2 < pos_3, "Token=1 effects should run in order: {executed:?}");
+    assert!(
+        pos_2 < pos_3,
+        "Token=1 effects should run in order: {executed:?}"
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -541,7 +544,10 @@ fn trampoline_runtime_panic_in_continuation_stops_and_leaves_slot_set() {
 
     // Drive the trampoline (NOT the extern wrapper). It must NOT SIGSEGV.
     let result = run_io_trampoline(io);
-    assert_eq!(result, 0, "panicking continuation aborts the walk with the sentinel");
+    assert_eq!(
+        result, 0,
+        "panicking continuation aborts the walk with the sentinel"
+    );
 
     // The slot is left SET — the trampoline peeked, did not take. The host
     // is the surfacing point; if the slot were cleared here the SIGSEGV would
@@ -555,7 +561,9 @@ fn trampoline_runtime_panic_in_continuation_stops_and_leaves_slot_set() {
     // Bind/Pure/closure spine the trampoline left untouched on the abort).
     let drained = crate::panic::take_runtime_error();
     assert!(
-        drained.as_deref().is_some_and(|m| m.contains("division by zero")),
+        drained
+            .as_deref()
+            .is_some_and(|m| m.contains("division by zero")),
         "the surfaced message must carry the panic cause (got {drained:?})"
     );
     crate::drop::consume_io_tree(io);
@@ -601,9 +609,8 @@ fn force_effect_thunk_protected_happy_path_returns_value() {
     let _ = crate::panic::take_dispatch_fault(); // clear
     // Clean wrapper thunk (ABI v5): EffectOutcome with null fault_cause.
     let thunk_ptr = clean_effect_thunk(1234);
-    let outcome = unsafe {
-        crate::io_guard::force_effect_thunk_protected(thunk_ptr, "stdio/read-line")
-    };
+    let outcome =
+        unsafe { crate::io_guard::force_effect_thunk_protected(thunk_ptr, "stdio/read-line") };
     match outcome {
         crate::io_guard::ForceOutcome::Value(v) => assert_eq!(v, 1234),
         crate::io_guard::ForceOutcome::Faulted => panic!("clean thunk must not fault"),
@@ -626,9 +633,8 @@ fn force_effect_thunk_protected_faulted_outcome_captures_fn_name() {
     // The DLL-local catch already converted the panic into an EffectOutcome
     // carrying the cause; the guard reads it (no host-side catch_unwind).
     let thunk_ptr = faulting_effect_thunk("device unavailable");
-    let outcome = unsafe {
-        crate::io_guard::force_effect_thunk_protected(thunk_ptr, "stdio/read-line")
-    };
+    let outcome =
+        unsafe { crate::io_guard::force_effect_thunk_protected(thunk_ptr, "stdio/read-line") };
     assert!(
         matches!(outcome, crate::io_guard::ForceOutcome::Faulted),
         "faulted EffectOutcome must fault"
@@ -650,9 +656,8 @@ fn force_effect_thunk_protected_dll_caught_panic_is_read() {
     let _ = crate::panic::take_dispatch_fault();
     let _ = crate::panic::take_runtime_error();
     let thunk_ptr = faulting_effect_thunk("boom in platform fn");
-    let outcome = unsafe {
-        crate::io_guard::force_effect_thunk_protected(thunk_ptr, "net/connect")
-    };
+    let outcome =
+        unsafe { crate::io_guard::force_effect_thunk_protected(thunk_ptr, "net/connect") };
     assert!(
         matches!(outcome, crate::io_guard::ForceOutcome::Faulted),
         "DLL-caught panic must surface as a fault"
@@ -711,7 +716,10 @@ fn trampoline_effect_fault_null_fn_name_degrades_to_unknown() {
     let result = run_io_trampoline(base as i64);
     assert_eq!(result, 0);
     let fault = crate::panic::take_dispatch_fault().expect("fault captured");
-    assert_eq!(fault.fn_name, "<unknown>", "null field-3 degrades to <unknown>");
+    assert_eq!(
+        fault.fn_name, "<unknown>",
+        "null field-3 degrades to <unknown>"
+    );
     assert!(fault.cause.contains("unstamped fault"));
     unsafe { crate::alloc::dealloc(base) };
 }
@@ -784,7 +792,7 @@ fn blocking_par_sync_dispatcher_runs_without_semaphore_neg() {
 
 mod poll_arm {
     use super::*;
-    use crate::strand::{drain_strand_events, start_strand_recording, StrandEvent, StrandId};
+    use crate::strand::{StrandEvent, StrandId, drain_strand_events, start_strand_recording};
     use cranelisp_platform::{HostCtx, Poll as CPoll, Waker as CWaker};
 
     /// A minimal poll-shape leaf: env `[result@0 | arg(N)@8]`. First poll stashes
@@ -855,18 +863,27 @@ mod poll_arm {
             run_io_trampoline_inner_async(node, env, StrandId::ROOT).await
         })
         .expect("reactor");
-        assert_eq!(result, 55, "poll node result reads back via the generic env slot");
+        assert_eq!(
+            result, 55,
+            "poll node result reads back via the generic env slot"
+        );
         let events = drain_strand_events();
         assert!(
-            events.contains(&StrandEvent::EffectDispatched { strand: StrandId::ROOT }),
+            events.contains(&StrandEvent::EffectDispatched {
+                strand: StrandId::ROOT
+            }),
             "async arm must dispatch an EffectPoll for IO_TAG_EFFECT_POLL: {events:?}"
         );
         assert!(
-            events.contains(&StrandEvent::EffectSuspended { strand: StrandId::ROOT }),
+            events.contains(&StrandEvent::EffectSuspended {
+                strand: StrandId::ROOT
+            }),
             "poll node must suspend on the reactor: {events:?}"
         );
         assert!(
-            events.contains(&StrandEvent::EffectResumed { strand: StrandId::ROOT }),
+            events.contains(&StrandEvent::EffectResumed {
+                strand: StrandId::ROOT
+            }),
             "poll node must resume: {events:?}"
         );
         crate::drop::consume_io_tree(node); // tag-4 consume path frees node + closure
@@ -905,14 +922,30 @@ mod poll_arm {
     fn poll_node_token_capacity_read_live_not_sentinel() {
         // A poll node declaring token 42, capacity 3 reads back the LIVE values.
         let live = build_poll_node_tc(0, 42, 3);
-        assert_eq!(read_resource_token(live), 42, "poll node token read live off abs offset 32");
-        assert_eq!(read_capacity(live), 3, "poll node capacity read live off abs offset 40");
+        assert_eq!(
+            read_resource_token(live),
+            42,
+            "poll node token read live off abs offset 32"
+        );
+        assert_eq!(
+            read_capacity(live),
+            3,
+            "poll node capacity read live off abs offset 40"
+        );
 
         // A sentinel-shaped poll node (token 0, capacity 1) reads back 0/1 — the
         // read distinguishes live from sentinel; it is the SAME read path.
         let sentinel = build_poll_node(7);
-        assert_eq!(read_resource_token(sentinel), 0, "sentinel poll node token reads 0 (unrestricted)");
-        assert_eq!(read_capacity(sentinel), 1, "sentinel poll node capacity reads 1");
+        assert_eq!(
+            read_resource_token(sentinel),
+            0,
+            "sentinel poll node token reads 0 (unrestricted)"
+        );
+        assert_eq!(
+            read_capacity(sentinel),
+            1,
+            "sentinel poll node capacity reads 1"
+        );
 
         crate::drop::consume_io_tree(live);
         crate::drop::consume_io_tree(sentinel);
@@ -925,7 +958,10 @@ mod poll_arm {
     fn drive_io_routes_poll_node_through_reactor() {
         let node = build_poll_node(42);
         let result = drive_io(node);
-        assert_eq!(result, 42, "drive_io routes a poll node through the reactor");
+        assert_eq!(
+            result, 42,
+            "drive_io routes a poll node through the reactor"
+        );
         crate::drop::consume_io_tree(node);
     }
 
@@ -946,7 +982,10 @@ mod poll_arm {
             run_io_trampoline_inner_async(node, env, StrandId::ROOT).await
         })
         .expect("reactor");
-        assert_eq!(result, 63, "live-capacity poll node completes (acquire→own→release) via the generic env slot");
+        assert_eq!(
+            result, 63,
+            "live-capacity poll node completes (acquire→own→release) via the generic env slot"
+        );
         crate::drop::consume_io_tree(node);
     }
 
@@ -1042,10 +1081,9 @@ mod poll_arm {
         let par = make_par_node(&[blocking, poll]);
 
         let start = std::time::Instant::now();
-        let results_buf = crate::reactor::block_on_reactor(async |env| {
-            run_par_node_async(par, env).await
-        })
-        .expect("reactor");
+        let results_buf =
+            crate::reactor::block_on_reactor(async |env| run_par_node_async(par, env).await)
+                .expect("reactor");
         let elapsed_ms = start.elapsed().as_millis() as u64;
 
         // Both branches ran; results merged in binding order.
@@ -1140,8 +1178,11 @@ mod poll_arm {
         // The (D+1)th launch PARKED on the global budget, then resumed (the
         // backpressure witness at the unit tier).
         assert!(
-            events.contains(&StrandEvent::GlobalBudgetParked { strand: StrandId(2) })
-                || events.iter().any(|e| matches!(e, StrandEvent::GlobalBudgetParked { .. })),
+            events.contains(&StrandEvent::GlobalBudgetParked {
+                strand: StrandId(2)
+            }) || events
+                .iter()
+                .any(|e| matches!(e, StrandEvent::GlobalBudgetParked { .. })),
             "the over-budget launch parked on the global budget: {events:?}"
         );
     }
@@ -1209,8 +1250,10 @@ mod poll_arm {
         crate::reactor::block_on_reactor(async |env| {
             let mut fut = run_io_trampoline_inner_async(bind, env, StrandId::ROOT);
             // One poll drives Pure → continuation → the fresh poll node → Pending.
-            assert!(matches!(poll_boxed(&mut fut), std::task::Poll::Pending),
-                "the branch suspends on the fresh in-flight poll node");
+            assert!(
+                matches!(poll_boxed(&mut fut), std::task::Poll::Pending),
+                "the branch suspends on the fresh in-flight poll node"
+            );
             drop(fut); // CANCEL mid-flight → the frame guard frees the fresh subtree.
             0
         })
@@ -1239,7 +1282,7 @@ mod poll_arm {
 // design: design/intrinsics/reactor.md §2.11 / §2.12
 // ===========================================================================
 
-use crate::strand::{drain_strand_events, start_strand_recording, StrandEvent, StrandId};
+use crate::strand::{StrandEvent, StrandId, drain_strand_events, start_strand_recording};
 
 /// Build a thin `IO_TAG_LAUNCH` node wrapping `sub_tree` at field 0 (the backend's
 /// `compile_launch` shape, `io-trampoline.md §15.4`).
@@ -1311,13 +1354,15 @@ fn launch_arm_detaches_subtree_continuation_proceeds_without_awaiting() {
 
     let events = drain_strand_events();
     assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, StrandEvent::StrandLaunched { parent, .. } if *parent == StrandId::ROOT)),
+        events.iter().any(
+            |e| matches!(e, StrandEvent::StrandLaunched { parent, .. } if *parent == StrandId::ROOT)
+        ),
         "the launch records StrandLaunched under the root strand: {events:?}"
     );
     assert!(
-        events.iter().any(|e| matches!(e, StrandEvent::StrandCompleted { .. })),
+        events
+            .iter()
+            .any(|e| matches!(e, StrandEvent::StrandCompleted { .. })),
         "the detached strand RAN to completion (drained before exit): {events:?}"
     );
 }
@@ -1357,9 +1402,9 @@ fn supervisor_catches_panicking_strand_records_failed_drive_survives() {
 
     let events = drain_strand_events();
     assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, StrandEvent::StrandFailed { message, .. } if message == "<panicked>")),
+        events.iter().any(
+            |e| matches!(e, StrandEvent::StrandFailed { message, .. } if message == "<panicked>")
+        ),
         "a panicking strand must record StrandFailed (NOT a silent drop): {events:?}"
     );
 }
@@ -1379,13 +1424,16 @@ fn supervisor_catches_runtime_error_strand_records_failed_with_message() {
     let bind = make_bind_node(launch, cont);
 
     let result = cranelisp_run_io(bind);
-    assert_eq!(result, 3, "the launcher's continuation completed (0+3); the drive survived");
+    assert_eq!(
+        result, 3,
+        "the launcher's continuation completed (0+3); the drive survived"
+    );
 
     let events = drain_strand_events();
     assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, StrandEvent::StrandFailed { message, .. } if message == "eff-boom")),
+        events.iter().any(
+            |e| matches!(e, StrandEvent::StrandFailed { message, .. } if message == "eff-boom")
+        ),
         "a runtime-error strand records StrandFailed with the ferried message: {events:?}"
     );
     // The supervisor TOOK the error at the strand's completion boundary (captured,
@@ -1451,7 +1499,10 @@ fn empty_select_raises_runtime_error_and_does_not_feed_continuation() {
 
     // The sentinel is returned (the trampoline aborts to `0`; int reads the slot,
     // not the return value).
-    assert_eq!(result, 0, "an aborted empty-select drive returns the sentinel 0");
+    assert_eq!(
+        result, 0,
+        "an aborted empty-select drive returns the sentinel 0"
+    );
     // The runtime-error slot carries the message of record.
     assert_eq!(
         crate::panic::take_runtime_error().as_deref(),

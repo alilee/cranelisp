@@ -111,10 +111,8 @@ fn adt_sum_some_alloc_and_match() {
     // Reuse the prelude-seeded `primitives/Option` (§8.6.4: a local Option
     // deftype under the Option-providing prelude is a define-over-prelude
     // collision). The Some-alloc-and-match RC path is unchanged.
-    repl_prims(
-        "(match (Some 42) [(Some x) x None 0])\n",
-    )
-    .assert_stdout_contains(":primitives/Int 42");
+    repl_prims("(match (Some 42) [(Some x) x None 0])\n")
+        .assert_stdout_contains(":primitives/Int 42");
 }
 
 // spec: spec/12-runtime.md §12.1.4 — Nullary constructors (None) are bare tags, no heap alloc
@@ -134,10 +132,8 @@ fn adt_sum_none_no_heap_alloc() {
 #[test]
 fn adt_with_string_field_freed() {
     // Reuse the prelude-seeded `primitives/Option` (see §8.6.4 note above).
-    repl_prims(
-        "(match (Some \"hello\") [(Some s) (str-len s) None 0])\n",
-    )
-    .assert_stdout_contains(":primitives/Int 5");
+    repl_prims("(match (Some \"hello\") [(Some s) (str-len s) None 0])\n")
+        .assert_stdout_contains(":primitives/Int 5");
 }
 
 // spec: spec/12-runtime.md §12.3.1 / §12.1.3 — Closure environment alloc / call / drop
@@ -150,10 +146,8 @@ fn closure_capture_alloc_and_invoke() {
 // spec: spec/12-runtime.md §12.1.3 — Closure with multiple captures
 #[test]
 fn closure_multiple_captures() {
-    repl_prims(
-        "(let [a 1 b 2 c 3] ((fn [x] (add-i64 a (add-i64 b (add-i64 c x)))) 4))\n",
-    )
-    .assert_stdout_contains(":primitives/Int 10");
+    repl_prims("(let [a 1 b 2 c 3] ((fn [x] (add-i64 a (add-i64 b (add-i64 c x)))) 4))\n")
+        .assert_stdout_contains(":primitives/Int 10");
 }
 
 // =============================================================================
@@ -175,17 +169,14 @@ fn vec_set_cow_preserves_original() {
 #[test]
 fn vec_push_cow_preserves_original_length() {
     // Original len=2, pushed len=3, sum=5.
-    repl_prims(
-        "(let [v [1 2]] (let [v2 (vec-push v 3)] (add-i64 (vec-len v) (vec-len v2))))\n",
-    )
-    .assert_stdout_contains(":primitives/Int 5");
+    repl_prims("(let [v [1 2]] (let [v2 (vec-push v 3)] (add-i64 (vec-len v) (vec-len v2))))\n")
+        .assert_stdout_contains(":primitives/Int 5");
 }
 
 // spec: spec/12-runtime.md §12.1.5 — Vec of Strings; each element freed with the Vec
 #[test]
 fn vec_of_strings_alloc_drop() {
-    repl_prims("(vec-len [\"a\" \"b\" \"c\"])\n")
-        .assert_stdout_contains(":primitives/Int 3");
+    repl_prims("(vec-len [\"a\" \"b\" \"c\"])\n").assert_stdout_contains(":primitives/Int 3");
 }
 
 // =============================================================================
@@ -211,8 +202,7 @@ fn nested_let_inner_string_freed_before_outer() {
 // (carry: legacy/sketch_port.rs::sketch_rc_vec_int_freed_on_scope_exit)
 #[test]
 fn vec_of_int_let_bound_freed() {
-    repl_prims("(let [xs [1 2 3]] (vec-len xs))\n")
-        .assert_stdout_contains(":primitives/Int 3");
+    repl_prims("(let [xs [1 2 3]] (vec-len xs))\n").assert_stdout_contains(":primitives/Int 3");
 }
 
 // spec: spec/12-runtime.md §12.1.5 / §12.3.1 — empty vec literal is still
@@ -239,10 +229,8 @@ fn empty_vec_let_bound_freed() {
 fn match_temporary_scrutinee_freed_on_exit() {
     // Reuse the prelude-seeded `primitives/Option` (see §8.6.4 note above).
     // The temporary-scrutinee cleanup path is exercised identically.
-    repl_prims(
-        "(match (Some \"hello\") [None 0 (Some s) (str-len s)])\n",
-    )
-    .assert_stdout_contains(":primitives/Int 5");
+    repl_prims("(match (Some \"hello\") [None 0 (Some s) (str-len s)])\n")
+        .assert_stdout_contains(":primitives/Int 5");
 }
 
 // spec: spec/12-runtime.md §12.1.3 / §12.3.1 — closure capturing another
@@ -258,10 +246,8 @@ fn match_temporary_scrutinee_freed_on_exit() {
 // (carry: legacy/sketch_port.rs::sketch_rc_closure_capturing_closure)
 #[test]
 fn closure_capturing_closure_balanced() {
-    repl_prims(
-        "(let [f :(Fn [Int] Int) (fn [x] x)] (let [g (fn [] f)] 42))\n",
-    )
-    .assert_stdout_contains(":primitives/Int 42");
+    repl_prims("(let [f :(Fn [Int] Int) (fn [x] x)] (let [g (fn [] f)] 42))\n")
+        .assert_stdout_contains(":primitives/Int 42");
 }
 
 // =============================================================================
@@ -545,8 +531,7 @@ fn catch_runtime_error_caught_leaks_one_heap_cell_per_catch_neg() {
 
 // The minimal free-standing div-by-zero entry (per FIXME 0399). Zero stdlib;
 // explicit `primitives` imports. An uncaught `(div-i64 1 0)` inside `main`.
-const UNCAUGHT_PANIC_PROGRAM: &str =
-    "(import [primitives [Pure div-i64]])\n\
+const UNCAUGHT_PANIC_PROGRAM: &str = "(import [primitives [Pure div-i64]])\n\
      (defn main [] (Pure (div-i64 1 0)))\n";
 
 // spec: spec/12-runtime.md §12.7.4.2 — batch-mode CONTROL (the `--run` leg).
@@ -565,21 +550,24 @@ fn uncaught_runtime_panic_surfaces_message_and_clean_exit_run() {
         Some(0),
         "--run uncaught div-by-zero: expected non-zero exit (§12.7.4.2); \
          got exit 0.\nstdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
     // Clean batch exit, not a signal-kill: code() is Some(_), not a SIGSEGV.
     assert!(
         out.status.code().is_some(),
         "--run uncaught div-by-zero: expected a clean process exit code \
          (§12.7.4.2), not a signal kill.\nstdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
     assert!(
         out.stderr.contains("division by zero") || out.stdout.contains("division by zero"),
         "--run uncaught div-by-zero: expected the 'division by zero' panic \
          message to surface (§12.7.4.2 — MUST print to stderr before exiting).\n\
          stdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
 }
 
@@ -605,7 +593,9 @@ fn uncaught_runtime_panic_surfaces_message_and_clean_exit_link() {
          (SIGSEGV / exit 139) instead of exiting cleanly — §12.7.4.2 requires a \
          clean non-zero batch exit code, and the panic boundary must not \
          null-deref.\nstatus={:?}\nstdout:\n{}\nstderr:\n{}",
-        out.status, out.stdout, out.stderr
+        out.status,
+        out.stdout,
+        out.stderr
     );
     // (2) Non-zero exit (the panic was not swallowed).
     assert_ne!(
@@ -614,7 +604,8 @@ fn uncaught_runtime_panic_surfaces_message_and_clean_exit_link() {
         "--link uncaught div-by-zero: produced binary exited 0 — the panic was \
          swallowed (§12.7.4.2 requires non-zero exit on a runtime panic).\n\
          stdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
     // (3) The message surfaces, mirroring `--run` (§12.7.4.2 MUST print to stderr).
     assert!(
@@ -622,7 +613,8 @@ fn uncaught_runtime_panic_surfaces_message_and_clean_exit_link() {
         "--link uncaught div-by-zero: expected the 'division by zero' panic \
          message to surface in the produced binary, matching `--run` \
          (§12.7.4.2). Got no message.\nstdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
 }
 
@@ -656,8 +648,7 @@ fn uncaught_runtime_panic_surfaces_message_and_clean_exit_link() {
 // (per FIXME 0401). Zero stdlib; explicit `primitives` imports. The `div-i64`
 // runs in the `(fn [x] ...)` passed to `bind` — i.e. during the IO trampoline,
 // not in `main`'s body before IO.
-const UNCAUGHT_PANIC_IN_IO_PROGRAM: &str =
-    "(import [primitives [Pure bind div-i64 Int]])\n\
+const UNCAUGHT_PANIC_IN_IO_PROGRAM: &str = "(import [primitives [Pure bind div-i64 Int]])\n\
      (defn main [] (bind (Pure 1) (fn [x] (Pure (div-i64 x 0)))))\n";
 
 // spec: spec/12-runtime.md §12.7.4.2 — a runtime panic raised inside an IO
@@ -683,7 +674,9 @@ fn runtime_panic_in_io_continuation_surfaces_run() {
          (SIGSEGV / exit 139) instead of exiting cleanly — §12.7.4.2 requires a \
          clean non-zero batch exit code, and the IO trampoline panic boundary \
          must not null-deref.\nstatus={:?}\nstdout:\n{}\nstderr:\n{}",
-        out.status, out.stdout, out.stderr
+        out.status,
+        out.stdout,
+        out.stderr
     );
     // (2) Non-zero exit (the panic was not swallowed).
     assert_ne!(
@@ -692,7 +685,8 @@ fn runtime_panic_in_io_continuation_surfaces_run() {
         "--run panic-in-IO-continuation: process exited 0 — the panic was \
          swallowed (§12.7.4.2 requires non-zero exit on a runtime panic).\n\
          stdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
     // (3) The message surfaces (§12.7.4.2 MUST print to stderr before exiting).
     assert!(
@@ -700,7 +694,8 @@ fn runtime_panic_in_io_continuation_surfaces_run() {
         "--run panic-in-IO-continuation: expected the 'division by zero' panic \
          message to surface (§12.7.4.2 — MUST print to stderr before exiting).\n\
          stdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
 }
 
@@ -726,7 +721,9 @@ fn runtime_panic_in_io_continuation_surfaces_link() {
          (SIGSEGV / exit 139) instead of exiting cleanly — §12.7.4.2 requires a \
          clean non-zero batch exit code, and the IO trampoline panic boundary \
          must not null-deref.\nstatus={:?}\nstdout:\n{}\nstderr:\n{}",
-        out.status, out.stdout, out.stderr
+        out.status,
+        out.stdout,
+        out.stderr
     );
     // (2) Non-zero exit (the panic was not swallowed).
     assert_ne!(
@@ -735,7 +732,8 @@ fn runtime_panic_in_io_continuation_surfaces_link() {
         "--link panic-in-IO-continuation: produced binary exited 0 — the panic \
          was swallowed (§12.7.4.2 requires non-zero exit on a runtime panic).\n\
          stdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
     // (3) The message surfaces, mirroring `--run` (§12.7.4.2 MUST print to stderr).
     assert!(
@@ -743,7 +741,8 @@ fn runtime_panic_in_io_continuation_surfaces_link() {
         "--link panic-in-IO-continuation: expected the 'division by zero' panic \
          message to surface in the produced binary, matching `--run` \
          (§12.7.4.2). Got no message.\nstdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
 }
 
@@ -1637,10 +1636,7 @@ fn clean_program_produces_no_error_in_run_mode() {
 #[test]
 fn three_level_cascade_does_not_duplicate_error_output_neg() {
     let out = Cranelisp::new()
-        .file(
-            "main.cl",
-            "(import [mid [relay]])\n(defn main [] (relay))",
-        )
+        .file("main.cl", "(import [mid [relay]])\n(defn main [] (relay))")
         .file(
             "mid.cl",
             "(import [leaf [broken]])\n(defn relay [] (broken))",
@@ -2396,9 +2392,7 @@ fn strip_repl_timing(s: &str) -> String {
 #[test]
 fn apply_arg_pair_equiv_run() {
     // fib(10)=55, fib(9)=34 → 89. Both args are fib Applys → ≥2 sparkable.
-    let src = format!(
-        "{AA_FIB_DEF}(defn main [] (Pure (add-i64 (fib 10) (fib 9))))\n"
-    );
+    let src = format!("{AA_FIB_DEF}(defn main [] (Pure (add-i64 (fib 10) (fib 9))))\n");
     let on = aa_run_exit(&src, &[]);
     let off = aa_run_exit(&src, &[("CRANELISP_NO_LENIENT", "1")]);
     assert_eq!(
@@ -2413,9 +2407,7 @@ fn apply_arg_pair_equiv_run() {
 // (ferry + barrier sound across modes).
 #[test]
 fn apply_arg_pair_equiv_link() {
-    let src = format!(
-        "{AA_FIB_DEF}(defn main [] (Pure (add-i64 (fib 10) (fib 9))))\n"
-    );
+    let src = format!("{AA_FIB_DEF}(defn main [] (Pure (add-i64 (fib 10) (fib 9))))\n");
     let on = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .user(&src)
@@ -2431,17 +2423,22 @@ fn apply_arg_pair_equiv_link() {
         .output()
         .status
         .code();
-    assert_eq!(on, off, "§12.4.3: --link lenient ON vs OFF differ ({on:?} vs {off:?})");
-    assert_eq!(on, Some(89), "expected fib(10)+fib(9)=89 under --link; got {on:?}");
+    assert_eq!(
+        on, off,
+        "§12.4.3: --link lenient ON vs OFF differ ({on:?} vs {off:?})"
+    );
+    assert_eq!(
+        on,
+        Some(89),
+        "expected fib(10)+fib(9)=89 under --link; got {on:?}"
+    );
 }
 
 // spec: spec/12-runtime.md §12.4.3 — same constructor-arg apply at the REPL top
 // level prints `:primitives/Int 89` lenient-ON and lenient-OFF identically.
 #[test]
 fn apply_arg_pair_equiv_repl() {
-    let input = format!(
-        "{AA_FIB_DEF}(add-i64 (fib 10) (fib 9))\n"
-    );
+    let input = format!("{AA_FIB_DEF}(add-i64 (fib 10) (fib 9))\n");
     let on = aa_repl_stdout(&input, &[]);
     let off = aa_repl_stdout(&input, &[("CRANELISP_NO_LENIENT", "1")]);
     assert!(
@@ -2473,7 +2470,10 @@ fn apply_arg_dc_map_reduce_equiv_run() {
     );
     let on = aa_run_exit(&src, &[]);
     let off = aa_run_exit(&src, &[("CRANELISP_NO_LENIENT", "1")]);
-    assert_eq!(on, off, "§12.4.3 par-map transparency: ON vs OFF differ ({on:?} vs {off:?})");
+    assert_eq!(
+        on, off,
+        "§12.4.3 par-map transparency: ON vs OFF differ ({on:?} vs {off:?})"
+    );
     assert_eq!(on, Some(220), "expected 4×fib(10)=220; got {on:?}");
 }
 
@@ -2483,9 +2483,7 @@ fn apply_arg_dc_map_reduce_equiv_run() {
 #[test]
 fn apply_arg_no_lenient_determinism_oracle() {
     // fib(12)=144, fib(11)=89 → 233. REPL stdout carries `:primitives/Int 233`.
-    let input = format!(
-        "{AA_FIB_DEF}(add-i64 (fib 12) (fib 11))\n"
-    );
+    let input = format!("{AA_FIB_DEF}(add-i64 (fib 12) (fib 11))\n");
     let on = strip_repl_timing(&aa_repl_stdout(&input, &[]));
     let off = strip_repl_timing(&aa_repl_stdout(&input, &[("CRANELISP_NO_LENIENT", "1")]));
     assert!(
@@ -2552,7 +2550,10 @@ fn apply_arg_all_cheap_stays_serial() {
                (defn main [] (Pure (cheapsum 20 22)))\n";
     let on = aa_run_exit(src, &[]);
     let off = aa_run_exit(src, &[("CRANELISP_NO_LENIENT", "1")]);
-    assert_eq!(on, off, "§12.4.3: trivial-arg apply ON vs OFF differ ({on:?} vs {off:?})");
+    assert_eq!(
+        on, off,
+        "§12.4.3: trivial-arg apply ON vs OFF differ ({on:?} vs {off:?})"
+    );
     assert_eq!(on, Some(42), "expected 20+22=42; got {on:?}");
 }
 
@@ -2561,8 +2562,7 @@ fn apply_arg_all_cheap_stays_serial() {
 // Ferry programs use explicit `primitives` imports (the ferry combinator set)
 // and the naive imports needed; the default (None) prelude, matching the
 // existing CATCH_ERR_PROGRAM convention.
-const AA_FERRY_CAUGHT_PROGRAM: &str =
-    "(import [primitives [catch-runtime-error div-i64 add-i64 sub-i64 le-i64 Int Result Ok Err Pure]])\n\
+const AA_FERRY_CAUGHT_PROGRAM: &str = "(import [primitives [catch-runtime-error div-i64 add-i64 sub-i64 le-i64 Int Result Ok Err Pure]])\n\
      (defn work [:Int n :Int acc] (if (le-i64 n 0) acc (work (sub-i64 n 1) (add-i64 acc 1))))\n\
      (defn main []\n\
        (Pure (match (catch-runtime-error (fn [] (add-i64 (div-i64 10 0) (work 100000 0))))\n\
@@ -2602,12 +2602,16 @@ fn apply_arg_panic_not_swallowed_neg() {
     let src = "(import [primitives [div-i64 add-i64 sub-i64 le-i64 Int Pure]])\n\
                (defn work [:Int n :Int acc] (if (le-i64 n 0) acc (work (sub-i64 n 1) (add-i64 acc 1))))\n\
                (defn main [] (Pure (add-i64 (div-i64 10 0) (work 100000 0))))\n";
-    let out = Cranelisp::new().file("user.cl", src).run("user.cl").output();
+    let out = Cranelisp::new()
+        .file("user.cl", src)
+        .run("user.cl")
+        .output();
     assert!(
         out.stderr.contains("division by zero") || out.stdout.contains("division by zero"),
         "uncaught sparked-arg div-by-zero MUST surface 'division by zero' (§12.4.3, not swallowed).\n\
          stdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
     assert_ne!(out.status.code(), Some(0), "uncaught panic must NOT exit 0");
 }
@@ -2623,7 +2627,10 @@ fn apply_arg_panic_not_swallowed_neg() {
 fn apply_arg_dual_panic_first_error_wins() {
     let src = "(import [primitives [div-i64 vec-get add-i64 Pure]])\n\
                (defn main [] (Pure (add-i64 (div-i64 10 0) (vec-get [1 2 3] 9))))\n";
-    let out = Cranelisp::new().file("user.cl", src).run("user.cl").output();
+    let out = Cranelisp::new()
+        .file("user.cl", src)
+        .run("user.cl")
+        .output();
     let combined = format!("{}{}", out.stdout, out.stderr);
     assert!(
         combined.contains("division by zero"),
@@ -2651,7 +2658,11 @@ fn apply_arg_tail_panic_ferried() {
                  (Pure (match (catch-runtime-error (fn [] (f 100000)))\n\
                          [(Ok v)  1\n\
                           (Err m) 0])))\n";
-    Cranelisp::new().file("user.cl", src).run("user.cl").output().assert_exit(0);
+    Cranelisp::new()
+        .file("user.cl", src)
+        .run("user.cl")
+        .output()
+        .assert_exit(0);
 }
 
 // spec: spec/12-runtime.md §12.5 — a TAIL SELF-recursive call carrying ≥2
@@ -2762,9 +2773,7 @@ const BUDGET_FLOOR_DEN: u128 = 10;
 // in an apply-arg-sparking-WITHOUT-budget intermediate state.
 #[test]
 fn budget_naive_fib_floor_not_slower_than_serial() {
-    let src = format!(
-        "{AA_FIB_DEF}(defn main [] (Pure (div-i64 (fib 30) 1)))\n"
-    );
+    let src = format!("{AA_FIB_DEF}(defn main [] (Pure (div-i64 (fib 30) 1)))\n");
     // BEST-OF-N (not majority): an O(2ⁿ) spark explosion is SYSTEMATIC — it makes
     // ON many-× OFF in EVERY attempt, so it fails best-of-N too. On a bounded
     // (HEAD-serial or budget-capped) run, a FAIR attempt has ON < 5.0·OFF (fib(30)
@@ -2806,15 +2815,23 @@ fn budget_naive_fib_floor_not_slower_than_serial() {
 // equivalence): inline-vs-spawned never changes the answer.
 #[test]
 fn budget_three_regime_result_equivalence() {
-    let src = format!(
-        "{AA_FIB_DEF}(defn main [] (Pure (add-i64 (fib 12) (fib 11))))\n"
-    );
+    let src = format!("{AA_FIB_DEF}(defn main [] (Pure (add-i64 (fib 12) (fib 11))))\n");
     let inline = aa_run_exit(&src, &[("CRANELISP_SPARK_BUDGET", "1")]);
     let under_cap = aa_run_exit(&src, &[("CRANELISP_SPARK_BUDGET", "1000000000")]);
     let serial = aa_run_exit(&src, &[("CRANELISP_NO_LENIENT", "1")]);
-    assert_eq!(inline, Some(233), "inline (BUDGET=1): expected fib(12)+fib(11)=233; got {inline:?}");
-    assert_eq!(under_cap, inline, "under-cap (BUDGET high) result differs from inline");
-    assert_eq!(serial, inline, "serial (NO_LENIENT) result differs from inline");
+    assert_eq!(
+        inline,
+        Some(233),
+        "inline (BUDGET=1): expected fib(12)+fib(11)=233; got {inline:?}"
+    );
+    assert_eq!(
+        under_cap, inline,
+        "under-cap (BUDGET high) result differs from inline"
+    );
+    assert_eq!(
+        serial, inline,
+        "serial (NO_LENIENT) result differs from inline"
+    );
 }
 
 // spec: spec/12-runtime.md §12.4.3 — the two degenerate-to-serial paths coincide
@@ -2823,10 +2840,9 @@ fn budget_three_regime_result_equivalence() {
 // (codegen-layer serial — no spark emitted).
 #[test]
 fn budget_zero_equiv_no_lenient() {
-    let input = format!(
-        "{AA_FIB_DEF}(add-i64 (fib 12) (fib 11))\n"
-    );
-    let budget_zero = strip_repl_timing(&aa_repl_stdout(&input, &[("CRANELISP_SPARK_BUDGET", "0")]));
+    let input = format!("{AA_FIB_DEF}(add-i64 (fib 12) (fib 11))\n");
+    let budget_zero =
+        strip_repl_timing(&aa_repl_stdout(&input, &[("CRANELISP_SPARK_BUDGET", "0")]));
     let no_lenient = strip_repl_timing(&aa_repl_stdout(&input, &[("CRANELISP_NO_LENIENT", "1")]));
     assert!(
         budget_zero.contains(":primitives/Int 233"),
@@ -2845,13 +2861,23 @@ fn budget_zero_equiv_no_lenient() {
 // P+N: the garbage value must not crash and must still produce the right answer.
 #[test]
 fn budget_knob_default_override_and_garbage() {
-    let src = format!(
-        "{AA_FIB_DEF}(defn main [] (Pure (add-i64 (fib 10) (fib 9))))\n"
-    );
+    let src = format!("{AA_FIB_DEF}(defn main [] (Pure (add-i64 (fib 10) (fib 9))))\n");
     let unset = aa_run_exit(&src, &[]);
     let override_n = aa_run_exit(&src, &[("CRANELISP_SPARK_BUDGET", "8")]);
     let garbage = aa_run_exit(&src, &[("CRANELISP_SPARK_BUDGET", "banana")]);
-    assert_eq!(unset, Some(89), "unset (default cap): expected 89; got {unset:?}");
-    assert_eq!(override_n, Some(89), "BUDGET=8: expected 89; got {override_n:?}");
-    assert_eq!(garbage, Some(89), "BUDGET=banana (fallback to default, no crash): expected 89; got {garbage:?}");
+    assert_eq!(
+        unset,
+        Some(89),
+        "unset (default cap): expected 89; got {unset:?}"
+    );
+    assert_eq!(
+        override_n,
+        Some(89),
+        "BUDGET=8: expected 89; got {override_n:?}"
+    );
+    assert_eq!(
+        garbage,
+        Some(89),
+        "BUDGET=banana (fallback to default, no crash): expected 89; got {garbage:?}"
+    );
 }

@@ -254,10 +254,7 @@ fn if_joined_fresh_vec_literals_still_release_the_temporary() {
         span: Span::SYNTHETIC,
         inferred_type: Some(Box::new(vec_ty())),
     };
-    let clif = clif_of_body_with_params(
-        vec_get_of(if_fresh),
-        vec![(Symbol::from("b"), None)],
-    );
+    let clif = clif_of_body_with_params(vec_get_of(if_fresh), vec![(Symbol::from("b"), None)]);
 
     assert!(
         clif.contains("atomic_rmw.i64 sub"),

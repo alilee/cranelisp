@@ -48,17 +48,15 @@ fn code_enum_jit_variant_carries_arc_jit() {
 //       fresh-build (Jit) and cache-hit (Linker) into one shape.
 #[test]
 fn code_enum_linker_variant_constructible() {
-    let linker = Arc::new(
-        crate::cache::linker::Linker::new().expect("Linker::new must succeed for test"),
-    );
+    let linker =
+        Arc::new(crate::cache::linker::Linker::new().expect("Linker::new must succeed for test"));
     let code = Code::linker(Arc::clone(&linker));
 
-    assert!(matches!(code, Code::Linker(_)), "Code::linker builds Code::Linker");
-    assert_eq!(
-        Arc::strong_count(&linker),
-        2,
-        "Code::linker clones the Arc"
+    assert!(
+        matches!(code, Code::Linker(_)),
+        "Code::linker builds Code::Linker"
     );
+    assert_eq!(Arc::strong_count(&linker), 2, "Code::linker clones the Arc");
 
     drop(code);
     assert_eq!(
@@ -89,10 +87,13 @@ fn code_implements_code_store() {
 //       a clean drop chain).
 #[test]
 fn code_linker_multiple_entries_share_one_batch() {
-    let linker = Arc::new(
-        crate::cache::linker::Linker::new().expect("Linker::new must succeed for test"),
+    let linker =
+        Arc::new(crate::cache::linker::Linker::new().expect("Linker::new must succeed for test"));
+    assert_eq!(
+        Arc::strong_count(&linker),
+        1,
+        "fresh Arc<Linker> refcount 1"
     );
-    assert_eq!(Arc::strong_count(&linker), 1, "fresh Arc<Linker> refcount 1");
 
     // Two `Def` entries reference the same cache-loaded batch.
     let code1 = Code::linker(Arc::clone(&linker));

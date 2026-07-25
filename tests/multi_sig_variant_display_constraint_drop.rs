@@ -32,7 +32,7 @@ mod helpers;
 use helpers::e2e::{Cranelisp, PreludeVariant};
 
 // TestStandard provides `Num` (+, -, *, /) so a clause using `+` infers the
-// `Num` bound. In this prelude the trait renders short as `:Num`.
+// `Num` bound. Its stored canonical identity is `prelude/Num`.
 fn repl_std(lines: &str) -> helpers::e2e::CrOutput {
     Cranelisp::new()
         .repl()
@@ -65,9 +65,9 @@ fn multi_sig_variant_display_carries_inferred_num_constraint() {
     // constraint; if this ever goes RED the whole constraint-display path broke,
     // not just the multi-sig variant path.
     assert!(
-        c.contains("(Fn [:Num a :Num a] a) user/add2"),
-        "GREEN fence: single-signature `add2` MUST render `(Fn [:Num a :Num a] \
-         a) user/add2` — the renderer is capable of emitting the `:Num` \
+        c.contains("(Fn [:prelude/Num a :prelude/Num a] a) user/add2"),
+        "GREEN fence: single-signature `add2` MUST render `(Fn [:prelude/Num a \
+         :prelude/Num a] a) user/add2` — the renderer is capable of emitting the `:Num` \
          constraint; got:\n{c}"
     );
 
@@ -76,7 +76,7 @@ fn multi_sig_variant_display_carries_inferred_num_constraint() {
     // `add2` does (§4.1.1). At HEAD it renders the constraint-stripped
     // `(Fn [a a] a) user/h` — the D1 defect.
     assert!(
-        c.contains("(Fn [:Num a :Num a] a) user/h"),
+        c.contains("(Fn [:prelude/Num a :prelude/Num a] a) user/h"),
         "the 2-arg variant of `h` infers `Num` (it uses `+`) and MUST display it \
          inline as `(Fn [:Num a :Num a] a) user/h` — exactly as single-signature \
          `add2` does (§4.1.1); it MUST NOT drop the constraint to `(Fn [a a] a) \

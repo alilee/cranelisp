@@ -175,7 +175,10 @@ struct Quarantine {
 
 impl Quarantine {
     fn new() -> Self {
-        Quarantine { blocks: VecDeque::new(), retained_bytes: 0 }
+        Quarantine {
+            blocks: VecDeque::new(),
+            retained_bytes: 0,
+        }
     }
 
     /// Withhold a freed block. If `cap` is set and retained bytes exceed it,
@@ -193,8 +196,7 @@ impl Quarantine {
             while self.retained_bytes > cap {
                 match self.blocks.pop_front() {
                     Some((old_base, old_layout)) => {
-                        self.retained_bytes =
-                            self.retained_bytes.saturating_sub(old_layout.size());
+                        self.retained_bytes = self.retained_bytes.saturating_sub(old_layout.size());
                         // SAFETY: `old_base` was allocated with `old_layout` and
                         // has been withheld (never freed) until now.
                         unsafe { std::alloc::dealloc(old_base as *mut u8, old_layout) };
@@ -206,8 +208,7 @@ impl Quarantine {
     }
 }
 
-static QUARANTINE: LazyLock<Mutex<Quarantine>> =
-    LazyLock::new(|| Mutex::new(Quarantine::new()));
+static QUARANTINE: LazyLock<Mutex<Quarantine>> = LazyLock::new(|| Mutex::new(Quarantine::new()));
 
 /// The scrub → quarantine-or-release step of `dealloc` (the fixed-order tail,
 /// after the `FREED_TRACKED` identity capture). Returns `true` if the block was
@@ -242,7 +243,11 @@ pub(crate) unsafe fn scrub_and_dispose(base: *mut u8, layout: Layout, total_size
 /// aborting. `live` is the debug live-set snapshot `(addr, size, payload@16)`;
 /// empty in release (the live set cannot be enumerated without the debug side
 /// table, so release catches only the count imbalance).
-fn alloc_parity_report(allocs: usize, deallocs: usize, live: &[(usize, usize, i64)]) -> Option<String> {
+fn alloc_parity_report(
+    allocs: usize,
+    deallocs: usize,
+    live: &[(usize, usize, i64)],
+) -> Option<String> {
     if allocs == deallocs && live.is_empty() {
         return None;
     }
@@ -281,7 +286,9 @@ fn alloc_parity_report(allocs: usize, deallocs: usize, live: &[(usize, usize, i6
 
 /// The balanced-ledger line for the dump-only face (print-and-continue).
 fn balanced_ledger(allocs: usize, deallocs: usize, live_len: usize) -> String {
-    format!("[ALLOC_PARITY] balanced: ALLOC_COUNT={allocs} DEALLOC_COUNT={deallocs} live={live_len}")
+    format!(
+        "[ALLOC_PARITY] balanced: ALLOC_COUNT={allocs} DEALLOC_COUNT={deallocs} live={live_len}"
+    )
 }
 
 /// The atexit handler registered by [`ensure_parity_registered`]. On imbalance

@@ -19,7 +19,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{run_through_all_modes, Cranelisp, PreludeVariant};
+use helpers::e2e::{Cranelisp, PreludeVariant, run_through_all_modes};
 
 fn repl_prims(lines: &str) -> helpers::e2e::CrOutput {
     Cranelisp::new()
@@ -81,6 +81,182 @@ fn trait_impl_concrete_type() {
          (twice 21)\n",
     )
     .assert_stdout_contains(":primitives/Int 42");
+}
+
+// spec: spec/07-traits.md §7.3 — a conventional impl's trait slot is a
+// bare-or-qualified reference resolved by canonical identity.
+// defect: class=resolver-mirror locus=crates/cranelisp-typecheck/src/traits/impl_check.rs::check_impl_method found=S115 owner=/dev
+#[test]
+fn qualified_impl_trait_reference_resolves_canonical_home_and_dispatches() {
+    let src = "(mod tlib (deftrait Show (show [self] Int)))\n\
+               (import [tlib [show]])\n\
+               (deftype Widget (MkWidget [:Int n]))\n\
+               (impl tlib/Show Widget (defn show [_] 41))\n\
+               (defn main [] (Pure (show (MkWidget 0))))\n";
+    let stdin = format!("{src}\n(main)\n");
+
+    let repl_fresh = repl_prims(&stdin);
+    let repl_fresh_capture = (repl_fresh.stdout.clone(), repl_fresh.stderr.clone());
+    let repl_cached = repl_fresh
+        .run_again()
+        .repl()
+        .with_prelude_no_overwrite(PreludeVariant::PrimitivesOnly)
+        .stdin(&stdin)
+        .output();
+
+    let run_fresh = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .user(src)
+        .run("user.cl")
+        .output();
+    let run_fresh_capture = (
+        run_fresh.status.code(),
+        run_fresh.stdout.clone(),
+        run_fresh.stderr.clone(),
+    );
+    let run_cached = run_fresh
+        .run_again()
+        .with_prelude_no_overwrite(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .output();
+
+    fn link_observation(src: &str, cached: bool) -> (Option<i32>, String, String) {
+        let link = Cranelisp::new()
+            .with_prelude(PreludeVariant::PrimitivesOnly)
+            .user(src)
+            .link("user.cl")
+            .cli_flag("-o")
+            .cli_flag("qualified-impl-bin");
+        let link = if cached {
+            link.output()
+                .run_again()
+                .with_prelude_no_overwrite(PreludeVariant::PrimitivesOnly)
+                .link("user.cl")
+                .cli_flag("-o")
+                .cli_flag("qualified-impl-bin")
+        } else {
+            link
+        };
+        let linked = link.output();
+        if !linked.status.success() {
+            return (linked.status.code(), linked.stdout, linked.stderr);
+        }
+        let run = std::process::Command::new(linked.tmpdir.join("qualified-impl-bin"))
+            .current_dir(&linked.tmpdir)
+            .output()
+            .expect("execute explicitly named qualified-impl Link output");
+        (
+            run.status.code(),
+            String::from_utf8_lossy(&run.stdout).into_owned(),
+            String::from_utf8_lossy(&run.stderr).into_owned(),
+        )
+    }
+
+    let (link_fresh_code, link_fresh_stdout, link_fresh_stderr) = link_observation(src, false);
+    let (link_cached_code, link_cached_stdout, link_cached_stderr) = link_observation(src, true);
+    let observations = [
+        (
+            "repl_fresh",
+            repl_fresh_capture.0.contains(":primitives/Int 41"),
+            repl_fresh_capture.0,
+            repl_fresh_capture.1,
+        ),
+        (
+            "repl_cached",
+            repl_cached.stdout.contains(":primitives/Int 41"),
+            repl_cached.stdout,
+            repl_cached.stderr,
+        ),
+        (
+            "run_fresh",
+            run_fresh_capture.0 == Some(41),
+            run_fresh_capture.1,
+            run_fresh_capture.2,
+        ),
+        (
+            "run_cached",
+            run_cached.status.code() == Some(41),
+            run_cached.stdout,
+            run_cached.stderr,
+        ),
+        (
+            "link_fresh",
+            link_fresh_code == Some(41),
+            link_fresh_stdout,
+            link_fresh_stderr,
+        ),
+        (
+            "link_cached",
+            link_cached_code == Some(41),
+            link_cached_stdout,
+            link_cached_stderr,
+        ),
+    ];
+    let failures = observations
+        .iter()
+        .filter(|(_, ok, _, _)| !ok)
+        .map(|(label, _, stdout, stderr)| {
+            format!("[{label}]\nstdout:\n{stdout}\nstderr:\n{stderr}")
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        failures.is_empty(),
+        "qualified impl reference MUST dispatch to 41 through every fresh/cached \
+         REPL, Run, and Link face; failures:\n{}",
+        failures.join("\n")
+    );
+}
+
+// spec: spec/07-traits.md §7.3 + §7.4 — qualification is reference syntax,
+// never part of the canonical method mint; impl introspection and dispatch
+// therefore name the trait's declared home and no writer-home phantom.
+// defect: class=resolver-mirror locus=crates/cranelisp-typecheck/src/traits/impl_check.rs::check_impl_method found=S115 owner=/dev
+#[test]
+fn qualified_impl_trait_reference_neg_does_not_mint_written_qualifier_into_method_name() {
+    let out = repl_prims(
+        "(mod tlib (deftrait Show (show [self] Int)))\n\
+         (import [tlib [show]])\n\
+         (deftype Widget (MkWidget [:Int n]))\n\
+         (impl tlib/Show Widget (defn show [_] 41))\n\
+         (show (MkWidget 0))\n\
+         /info tlib/Show\n",
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        out.stdout.contains(":primitives/Int 41"),
+        "qualified impl reference MUST dispatch through its canonical trait; got:\n{combined}"
+    );
+    assert!(
+        !combined.contains("user/Show.show$user/Widget")
+            && !combined.contains("missing")
+            && !combined.contains("codegen error"),
+        "the as-written qualifier MUST NOT mint an unreachable writer-home method; got:\n{combined}"
+    );
+}
+
+// spec: spec/07-traits.md §7.3.4 + §7.3.5 — an HKT impl's slot-1 trait
+// reference may be qualified while its constructor-variable binder is echoed
+// verbatim; slot 2 resolves the same trait by canonical identity.
+// defect: class=resolver-mirror locus=crates/cranelisp-typecheck/src/traits/impl_check.rs found=S117 owner=/dev
+#[test]
+fn qualified_hkt_impl_trait_reference_resolves_canonical_home_and_dispatches() {
+    let out = repl_prims(
+        "(mod fmt (deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b))))\n\
+         (import [fmt [fmap]])\n\
+         (impl (fmt/Functor f) (fmt/Functor Option)\n\
+           (defn fmap [func opt]\n\
+             (match opt [None None (Some x) (Some (func x))])))\n\
+         (match (fmap (fn [x] (add-i64 x 1)) (Some 40)) [(Some v) v None 0])\n",
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        out.stdout.contains(":primitives/Int 41"),
+        "qualified HKT slot 1 and pairing head MUST resolve to one canonical trait; got:\n{combined}"
+    );
+    assert!(
+        !combined.contains("codegen error") && !combined.contains("unknown trait"),
+        "qualified HKT reference MUST not leak a second written-spelling identity; got:\n{combined}"
+    );
 }
 
 // spec: spec/07-traits.md §7.3 — multiple impls registered for distinct types
@@ -151,10 +327,8 @@ fn operator_as_first_class_value() {
 // spec: spec/07-traits.md §7.8 — constrained defn instantiates per call site
 #[test]
 fn constrained_polymorphism_int_then_float() {
-    repl_std(
-        "(defn dbl [x] (+ x x))\n(dbl 3)\n(dbl 1.5)\n",
-    )
-    .assert_stdout_contains_all(&[":primitives/Int 6", ":primitives/Float"]);
+    repl_std("(defn dbl [x] (+ x x))\n(dbl 3)\n(dbl 1.5)\n")
+        .assert_stdout_contains_all(&[":primitives/Int 6", ":primitives/Float"]);
 }
 
 // =============================================================================
@@ -525,10 +699,8 @@ fn trait_deftrait_impl_in_child_module_imported_dispatch_from_parent() {
 // (carry: legacy/ring2.rs::hkt_type_variable_in_trait)
 #[test]
 fn hkt_deftrait_declaration_with_type_constructor_parameter_succeeds() {
-    repl_prims(
-        "(deftrait (Functor f)\n  (fmap [:(Fn [a] b) func :(f a) x] (f b)))\n",
-    )
-    .assert_stdout_contains_all(&["user/Functor", "deftrait"]);
+    repl_prims("(deftrait (Functor f)\n  (fmap [:(Fn [a] b) func :(f a) x] (f b)))\n")
+        .assert_stdout_contains_all(&["user/Functor", "deftrait"]);
 }
 
 // spec: spec/07-traits.md §7.2.3 / §7.3.5 Case 2 — negative HKT: a primitive
@@ -552,8 +724,7 @@ fn hkt_impl_on_primitive_type_is_rejected_neg() {
          (impl (Functor f) (Functor Int) (defn fmap [func x] x))\n",
     );
     assert!(
-        out.stdout.contains("not a type constructor")
-            || out.stdout.contains("type constructor"),
+        out.stdout.contains("not a type constructor") || out.stdout.contains("type constructor"),
         "impl of a HKT trait on the primitive `Int` MUST be rejected with a \
          not-a-type-constructor diagnostic per spec/07-traits.md §7.2.3; \
          got:\n{}",
@@ -781,8 +952,16 @@ fn hkt_on_primitive_no_backend_undefined_function_leak_neg() {
              `undefined function` / `codegen error` leak (0628 core symptom); got:\n{c}"
         );
     }
-    assert_ne!(run.status.code(), Some(0), "--run must not compile the primitive HK impl clean");
-    assert_ne!(link.status.code(), Some(0), "--link must not compile the primitive HK impl clean");
+    assert_ne!(
+        run.status.code(),
+        Some(0),
+        "--run must not compile the primitive HK impl clean"
+    );
+    assert_ne!(
+        link.status.code(),
+        Some(0),
+        "--link must not compile the primitive HK impl clean"
+    );
 }
 
 // ---- con_var axis: never-applied (bare-return / bare-arg) → declaration reject
@@ -1019,8 +1198,16 @@ fn never_applied_head_declaration_reject_is_mode_uniform_neg() {
              §7.2.1 diagnostic core (mode-uniform, AG-2); got:\n{c}"
         );
     }
-    assert_ne!(run.status.code(), Some(0), "--run must reject the malformed decl");
-    assert_ne!(link.status.code(), Some(0), "--link must reject the malformed decl");
+    assert_ne!(
+        run.status.code(),
+        Some(0),
+        "--run must reject the malformed decl"
+    );
+    assert_ne!(
+        link.status.code(),
+        Some(0),
+        "--link must reject the malformed decl"
+    );
 }
 
 // spec: spec/07-traits.md §7.3.5 Case-3 — the ECHO-shape-mismatch class is
@@ -1041,8 +1228,16 @@ fn hkt_echo_shape_mismatch_reject_is_mode_uniform_neg() {
              diagnostic core (mode-uniform, AG-2); got:\n{c}"
         );
     }
-    assert_ne!(run.status.code(), Some(0), "--run must reject the bare-head HK impl");
-    assert_ne!(link.status.code(), Some(0), "--link must reject the bare-head HK impl");
+    assert_ne!(
+        run.status.code(),
+        Some(0),
+        "--run must reject the bare-head HK impl"
+    );
+    assert_ne!(
+        link.status.code(),
+        Some(0),
+        "--link must reject the bare-head HK impl"
+    );
 }
 
 // =============================================================================
@@ -1122,8 +1317,16 @@ fn hkt_impl_pairing_head_nonexistent_trait_rejected_no_dispatch_neg() {
              §7.3.5 diagnostic core (mode-uniform); got:\n{c}"
         );
     }
-    assert_ne!(run.status.code(), Some(0), "--run must reject the mismatched pairing head");
-    assert_ne!(link.status.code(), Some(0), "--link must reject the mismatched pairing head");
+    assert_ne!(
+        run.status.code(),
+        Some(0),
+        "--run must reject the mismatched pairing head"
+    );
+    assert_ne!(
+        link.status.code(),
+        Some(0),
+        "--link must reject the mismatched pairing head"
+    );
 }
 
 // spec: spec/07-traits.md §7.3.5 Case 2 — pairing-head mismatch, the DIFFERENT-
@@ -1162,7 +1365,9 @@ fn hkt_impl_pairing_head_different_real_trait_rejected_not_registered_neg() {
         .map(|l| l.trim_start_matches(';').trim().to_string())
         .collect();
     assert!(
-        !impl_body.iter().any(|l| l.split_whitespace().any(|t| t == "Option")),
+        !impl_body
+            .iter()
+            .any(|l| l.split_whitespace().any(|t| t == "Option")),
         "the rejected impl MUST NOT register under `Functor` — its `; impl:` section \
          MUST NOT list `Option`; impl body={impl_body:?}\nstdout:\n{}",
         out.stdout
@@ -1282,7 +1487,9 @@ fn hkt_impl_pairing_head_qualified_different_module_same_named_trait_rejected_no
         .map(|l| l.trim_start_matches(';').trim().to_string())
         .collect();
     assert!(
-        !impl_body.iter().any(|l| l.split_whitespace().any(|t| t == "Option")),
+        !impl_body
+            .iter()
+            .any(|l| l.split_whitespace().any(|t| t == "Option")),
         "the rejected impl MUST NOT register under `Functor` — its `; impl:` section \
          MUST NOT list `Option`; impl body={impl_body:?}\nstdout:\n{}",
         out.stdout
@@ -2447,7 +2654,9 @@ fn trait_head_uppercase_convar_rejected_both_forms_neg() {
 // defect: class=silent-accept locus=crates/cranelisp-frontend/src/ast_builder.rs::parse_trait_head_shape found=S113 owner=/dev
 #[test]
 fn trait_head_qualified_convar_rejected_binder_neg() {
-    let out = repl_prims("(deftrait (Functor prim/x) (fmap [:(Fn [a] b) func :(prim/x a) y] (func b)))\n");
+    let out = repl_prims(
+        "(deftrait (Functor prim/x) (fmap [:(Fn [a] b) func :(prim/x a) y] (func b)))\n",
+    );
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
         c.to_lowercase().contains("error"),

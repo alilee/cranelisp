@@ -79,7 +79,7 @@
 use std::path::Path;
 
 use cranelisp_types::{
-    ErrorLocation, CranelispError, GOT_TABLE_SIZE, ModuleFullPath, Span, SymbolTable,
+    CranelispError, ErrorLocation, GOT_TABLE_SIZE, ModuleFullPath, Span, SymbolTable,
 };
 
 // ---------------------------------------------------------------------------
@@ -193,9 +193,7 @@ impl CacheStale {
             CacheStale::PathMismatch { .. } => "path_mismatch",
             CacheStale::GotSlotOutOfRange { .. } => "got_slot_out_of_range",
             CacheStale::SiblingSlotOutOfRange { .. } => "sibling_slot_out_of_range",
-            CacheStale::SummaryParamIndexOutOfRange { .. } => {
-                "summary_param_index_out_of_range"
-            }
+            CacheStale::SummaryParamIndexOutOfRange { .. } => "summary_param_index_out_of_range",
             CacheStale::MalformedCalleeFq { .. } => "malformed_callee_fq",
             CacheStale::MalformedSpanKey { .. } => "malformed_span_key",
         }
@@ -266,7 +264,12 @@ impl std::fmt::Display for CacheStale {
                  an empty module or symbol component",
                 path.display()
             ),
-            CacheStale::MalformedSpanKey { path, symbol, start, end } => write!(
+            CacheStale::MalformedSpanKey {
+                path,
+                symbol,
+                start,
+                end,
+            } => write!(
                 f,
                 "cache malformed span at {}: entry {symbol} codegen view span \
                  {start}..{end} is inverted",
@@ -478,12 +481,14 @@ pub(crate) fn deserialise_meta_with_build_id(
             // the consume seam's `arg_origins` is built over. The `param_names`
             // list is the fallback for entries whose scheme is not a `Fn` shape.
             let arity = match entry {
-                cranelisp_types::ModuleEntry::Def { scheme, param_names, .. } => {
-                    match &scheme.ty {
-                        cranelisp_types::Type::Fn(params, _) => params.len(),
-                        _ => param_names.len(),
-                    }
-                }
+                cranelisp_types::ModuleEntry::Def {
+                    scheme,
+                    param_names,
+                    ..
+                } => match &scheme.ty {
+                    cranelisp_types::Type::Fn(params, _) => params.len(),
+                    _ => param_names.len(),
+                },
                 _ => 0,
             };
             if k >= arity {

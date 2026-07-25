@@ -98,7 +98,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // clause's `Concrete` entry — carriers 5–6 join carriers 1–4 at ONE source.
         let mut deferred_by_variant: HashMap<(Symbol, usize), Vec<Span>> = HashMap::new();
         for (span, base, idx) in std::mem::take(&mut state.deferred_self_call_dispatch) {
-            deferred_by_variant.entry((base, idx)).or_default().push(span);
+            deferred_by_variant
+                .entry((base, idx))
+                .or_default()
+                .push(span);
         }
 
         if multi_sig_mangled_names.is_empty() {
@@ -116,13 +119,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             };
             for (i, dispatch_name) in names.iter().enumerate() {
                 let internal_name = Symbol::from(format!("{}__v{}", defn.name, i));
-                let Some((param_tys, ret_ty)) =
-                    accumulator.defn_type_vars.get(&internal_name)
+                let Some((param_tys, ret_ty)) = accumulator.defn_type_vars.get(&internal_name)
                 else {
                     continue;
                 };
-                let concrete_params: Vec<Type> =
-                    param_tys.iter().map(|t| self.apply_subst(state, t)).collect();
+                let concrete_params: Vec<Type> = param_tys
+                    .iter()
+                    .map(|t| self.apply_subst(state, t))
+                    .collect();
                 let concrete_ret = self.apply_subst(state, ret_ty);
 
                 // The clause's finalised mangle — over the post-drain subst-applied
@@ -168,13 +172,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 }
                 // Back-flow clause: promote its `$Var` `Polymorphic` template to a
                 // `Concrete{slot}` sibling under the concrete mangle.
-                let (annotated_ast, doc): (Option<DefnVariant>, Option<String>) =
-                    match self.current_symbol_table(state).view().lookup(dispatch_name) {
-                        Some(ModuleEntry::Def { ast, docstring, .. }) => {
-                            (ast.clone(), docstring.clone())
-                        }
-                        _ => (None, None),
-                    };
+                let (annotated_ast, doc): (Option<DefnVariant>, Option<String>) = match self
+                    .current_symbol_table(state)
+                    .view()
+                    .lookup(dispatch_name)
+                {
+                    Some(ModuleEntry::Def { ast, docstring, .. }) => {
+                        (ast.clone(), docstring.clone())
+                    }
+                    _ => (None, None),
+                };
                 let fn_ty = Type::Fn(concrete_params.clone(), Box::new(concrete_ret.clone()));
                 let scheme = self.generalize(state, &fn_ty);
                 let variant = &defn.variants[i];
@@ -186,7 +193,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     let mut builder = ModuleEntry::def(
                         scheme.clone(),
                         DefKind::UserFn {
-                            fn_state: UserFnState::Concrete { got_slot: slot, mode_summary: None },
+                            fn_state: UserFnState::Concrete {
+                                got_slot: slot,
+                                mode_summary: None,
+                            },
                         },
                     )
                     .visibility(defn.visibility)
@@ -223,7 +233,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 if let Some(vs) = state.resolved_overloads.get_mut(&defn.name)
                     && let Some(v) = vs.get_mut(i)
                 {
-                    *v = (concrete_params.clone(), concrete_ret.clone(), concrete_mangled.clone());
+                    *v = (
+                        concrete_params.clone(),
+                        concrete_ret.clone(),
+                        concrete_mangled.clone(),
+                    );
                 }
                 // Re-point the re-annotation name map so
                 // `finalize_annotations_and_publish` re-annotates the concrete
@@ -278,15 +292,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         for (i, variant) in defn.variants.iter().enumerate() {
             let internal_name = Symbol::from(format!("{}__v{}", defn.name, i));
 
-            let (param_tys, ret_ty) = type_vars
-                .get(&internal_name)
-                .ok_or_else(|| CranelispError::TypeError {
-                    message: format!(
-                        "internal: missing type vars for multi-sig variant {}",
-                        internal_name
-                    ),
-                    location: ErrorLocation::from_span(variant.span),
-                })?;
+            let (param_tys, ret_ty) =
+                type_vars
+                    .get(&internal_name)
+                    .ok_or_else(|| CranelispError::TypeError {
+                        message: format!(
+                            "internal: missing type vars for multi-sig variant {}",
+                            internal_name
+                        ),
+                        location: ErrorLocation::from_span(variant.span),
+                    })?;
 
             let concrete_params: Vec<Type> = param_tys
                 .iter()
@@ -411,10 +426,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 continue;
             }
 
-            let fn_ty = Type::Fn(
-                concrete_params.clone(),
-                Box::new(concrete_ret.clone()),
-            );
+            let fn_ty = Type::Fn(concrete_params.clone(), Box::new(concrete_ret.clone()));
             let scheme = self.generalize(state, &fn_ty);
 
             // Remove internal name, register mangled name.
@@ -440,7 +452,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 .map_err(crate::result::got_exhausted_error)?;
             let mut builder = ModuleEntry::def(
                 scheme.clone(),
-                DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot: slot, mode_summary: None } },
+                DefKind::UserFn {
+                    fn_state: UserFnState::Concrete {
+                        got_slot: slot,
+                        mode_summary: None,
+                    },
+                },
             )
             .visibility(defn.visibility)
             .param_names(variant.params.iter().map(|(n, _)| n.clone()).collect());
@@ -496,38 +513,33 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ) {
         let overload_variants = resolved
             .iter()
-            .map(|(params, ret, mangled)| {
-                cranelisp_types::OverloadVariant {
-                    param_types: params.clone(),
-                    ret_type: ret.clone(),
-                    mangled_name: mangled.clone(),
-                }
+            .map(|(params, ret, mangled)| cranelisp_types::OverloadVariant {
+                param_types: params.clone(),
+                ret_type: ret.clone(),
+                mangled_name: mangled.clone(),
             })
             .collect();
 
         // Build a union scheme for the base name — use first variant's
         // scheme for now. The base name is registered as Overloaded so
         // `infer_apply` detects it and records a pending overload.
-        let first_fn_ty = Type::Fn(
-            resolved[0].0.clone(),
-            Box::new(resolved[0].1.clone()),
-        );
+        let first_fn_ty = Type::Fn(resolved[0].0.clone(), Box::new(resolved[0].1.clone()));
         let base_scheme = self.generalize(state, &first_fn_ty);
 
         let mut builder = ModuleEntry::def(
             base_scheme,
-            DefKind::Overloaded { variants: overload_variants },
+            DefKind::Overloaded {
+                variants: overload_variants,
+            },
         )
         .visibility(defn.visibility);
         if let Some(doc) = defn.docstring.clone() {
             builder = builder.docstring(doc);
         }
-        self.current_symbol_table_mut(state).insert(defn.name.clone(), builder.build());
+        self.current_symbol_table_mut(state)
+            .insert(defn.name.clone(), builder.build());
 
-        state.resolved_overloads.insert(
-            defn.name.clone(),
-            resolved,
-        );
+        state.resolved_overloads.insert(defn.name.clone(), resolved);
     }
 
     /// Resolve pending overload dispatch resolutions (the sole drain, §5.1.2).
@@ -546,7 +558,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ///    TEMPLATE clause monomorphises at this call's args (fresh instantiation) so
     ///    distinct external calls at distinct types never conflict, and dispatches
     ///    to the minted instance.
-    pub(crate) fn resolve_pending_overloads(&self, state: &mut CheckState) -> Result<(), CranelispError> {
+    pub(crate) fn resolve_pending_overloads(
+        &self,
+        state: &mut CheckState,
+    ) -> Result<(), CranelispError> {
         let pending = std::mem::take(&mut state.pending_overload_resolutions);
 
         // Pass 1 — self-calls (monomorphic recursion).
@@ -555,7 +570,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 continue;
             }
             self.resolve_one_overload_call(
-                state, *span, base_name, arg_types, ret_type_var, true, *callee_span,
+                state,
+                *span,
+                base_name,
+                arg_types,
+                ret_type_var,
+                true,
+                *callee_span,
             )?;
         }
         // Pass 2 — external calls.
@@ -564,7 +585,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 continue;
             }
             self.resolve_one_overload_call(
-                state, *span, base_name, arg_types, ret_type_var, false, *callee_span,
+                state,
+                *span,
+                base_name,
+                arg_types,
+                ret_type_var,
+                false,
+                *callee_span,
             )?;
         }
 
@@ -585,8 +612,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         is_self_call: bool,
         callee_span: Span,
     ) -> Result<(), CranelispError> {
-        let concrete_args: Vec<Type> =
-            arg_types.iter().map(|t| apply(&state.subst, t)).collect();
+        let concrete_args: Vec<Type> = arg_types.iter().map(|t| apply(&state.subst, t)).collect();
 
         let variants = state
             .resolved_overloads
@@ -743,13 +769,20 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // base the qualified reference `mlib/h` must NOT leak into the mangle
             // (`mangle_sig("mlib/h",…) = "mlib/h$Int"` → the bad `mlib/mlib/h$Int`)
             // — the stored entry is `h$Int` in `mlib`. Bare-name mangle serves both.
-            let bare_base = base_name.as_ref().rsplit('/').next().unwrap_or(base_name.as_ref());
+            let bare_base = base_name
+                .as_ref()
+                .rsplit('/')
+                .next()
+                .unwrap_or(base_name.as_ref());
             let concrete_mangled = mangle_sig(bare_base, &resolved_variant_params);
             let resolution = ResolvedCall::SigDispatch {
                 mangled_name: JitSymbol::from(concrete_mangled.as_ref()),
             };
             self.record_dispatch_target(state, span, &resolution);
-            state.method_resolutions.resolved_calls.insert(span, resolution);
+            state
+                .method_resolutions
+                .resolved_calls
+                .insert(span, resolution);
             // MC-X2 (W2-close) — an IMPORTED base's concrete clause `Def` lives in
             // its HOME module, not the caller's. `record_dispatch_target` keyed the
             // carrier at `current_module` (the `SigDispatch` arm's "always local"
@@ -794,7 +827,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // recursion to THIS instance (§11.3.1 caveat (b) / I1), instead of
             // orphaning a pending entry the drain has taken.
             let mono = self.monomorphise_call(
-                state, &mangled_name, &concrete_args, span, None, Some(base_name),
+                state,
+                &mangled_name,
+                &concrete_args,
+                span,
+                None,
+                Some(base_name),
             )?;
             let instance = match mono {
                 Some(md) => md.defn.name.clone(),
@@ -814,7 +852,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 mangled_name: JitSymbol::from(instance.as_ref()),
             };
             self.record_dispatch_target(state, span, &resolution);
-            state.method_resolutions.resolved_calls.insert(span, resolution);
+            state
+                .method_resolutions
+                .resolved_calls
+                .insert(span, resolution);
             // FIXME 0719 — retype the callee node to the MINTED INSTANCE's
             // signature (see the self-call arm above for the rationale). The
             // instance's params ARE this call's concrete args by construction.

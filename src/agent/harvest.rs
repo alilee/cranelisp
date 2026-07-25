@@ -77,7 +77,10 @@ impl CompilerSession {
         if let Some(table) = self.shared.symbol_tables.get(&cur)
             && let Some(preamble) = table.module_preamble.as_ref()
         {
-            out.push_str(&format!("== module {} preamble ==\n{preamble}\n", cur.as_ref()));
+            out.push_str(&format!(
+                "== module {} preamble ==\n{preamble}\n",
+                cur.as_ref()
+            ));
         }
         self.push_module_full_source(&cur, &mut out);
 
@@ -117,7 +120,11 @@ impl CompilerSession {
             if m == cur.as_ref() {
                 continue; // already pinned as the current module
             }
-            if self.shared.symbol_tables.contains_key(&cranelisp_types::ModuleFullPath::from(m)) {
+            if self
+                .shared
+                .symbol_tables
+                .contains_key(&cranelisp_types::ModuleFullPath::from(m))
+            {
                 mentioned_modules.push(m.to_string());
             } else if self.symbol_is_mentionable(m) {
                 mentioned_fns.push(m.to_string());
@@ -151,7 +158,8 @@ impl CompilerSession {
                     .public_symbols()
                     .map(|(s, _)| s.as_ref().to_string())
                     .collect();
-                let exports_line = format!("== module {module} exports ==\n{}\n", exports.join(" "));
+                let exports_line =
+                    format!("== module {module} exports ==\n{}\n", exports.join(" "));
                 exports_only.push_str(&exports_line);
 
                 let mut block = String::new();
@@ -323,7 +331,11 @@ impl CompilerSession {
         // sig → name) under pressure — `strip_entry_docstring` is that sig rung,
         // never the default for imports/prelude.
         let full = self.format_def_entry(entry, name, home);
-        InScopeEntry { name: name.to_string(), sig, full }
+        InScopeEntry {
+            name: name.to_string(),
+            sig,
+            full,
+        }
     }
 
     /// Push the full source of a module — every defined symbol's stored source —
@@ -407,7 +419,10 @@ impl CompilerSession {
         if self.lookup_with_prelude_fallback(name).is_some() {
             return true;
         }
-        self.shared.symbol_tables.iter().any(|t| t.get(name).is_some())
+        self.shared
+            .symbol_tables
+            .iter()
+            .any(|t| t.get(name).is_some())
     }
 }
 
@@ -452,7 +467,10 @@ fn render_recent_turn(turn: &crate::agent::types::ReplTurn) -> String {
         ReplTurnOutcome::Error(diag) => ("errored", diag.as_str()),
         ReplTurnOutcome::Ok(result) => ("ok", result.as_str()),
     };
-    format!("-- recent turn ({label}) --\ninput: {}\n{saw}\n", turn.input)
+    format!(
+        "-- recent turn ({label}) --\ninput: {}\n{saw}\n",
+        turn.input
+    )
 }
 
 /// Extract candidate symbol/module mentions from a turn's text (§5.3 "names in
@@ -485,7 +503,10 @@ mod in_scope_tests {
         let entry = ModuleEntry::def(
             scheme,
             DefKind::UserFn {
-                fn_state: UserFnState::Concrete { got_slot: 0, mode_summary: None },
+                fn_state: UserFnState::Concrete {
+                    got_slot: 0,
+                    mode_summary: None,
+                },
             },
         )
         .visibility(Visibility::Public)
@@ -574,11 +595,23 @@ mod in_scope_tests {
         let entry = table.get("inc-doc").unwrap().clone();
         drop(table);
         let rendered = s.render_in_scope_entry(&entry, "inc-doc", &module);
-        assert!(rendered.full.contains("a docstring"), "full carries doc: {}", rendered.full);
-        assert!(!rendered.sig.contains("a docstring"), "sig drops doc: {}", rendered.sig);
         assert!(
-            rendered.sig.contains("(Fn [primitives/Int] primitives/Int)")
-                && rendered.full.contains("(Fn [primitives/Int] primitives/Int)"),
+            rendered.full.contains("a docstring"),
+            "full carries doc: {}",
+            rendered.full
+        );
+        assert!(
+            !rendered.sig.contains("a docstring"),
+            "sig drops doc: {}",
+            rendered.sig
+        );
+        assert!(
+            rendered
+                .sig
+                .contains("(Fn [primitives/Int] primitives/Int)")
+                && rendered
+                    .full
+                    .contains("(Fn [primitives/Int] primitives/Int)"),
             "both grains carry the FQ signature: sig={} full={}",
             rendered.sig,
             rendered.full
@@ -647,7 +680,10 @@ mod recent_turns_tests {
             ReplTurnOutcome::Error("Error: undefined variable: frobnicate".to_string()),
         );
         // A later GREEN turn — newest, but a green turn is the first to drop.
-        s.record_repl_turn("(+ 1 2)", ReplTurnOutcome::Ok(":primitives/Int 3".to_string()));
+        s.record_repl_turn(
+            "(+ 1 2)",
+            ReplTurnOutcome::Ok(":primitives/Int 3".to_string()),
+        );
 
         // Tight budget: ~1 token (~4 chars). The pinned error survives; the green
         // turn's rendering does not fit and is dropped.
@@ -669,9 +705,18 @@ mod recent_turns_tests {
     #[test]
     fn recent_turns_ordered_errored_first_newest_first() {
         let mut s = session_with_agent();
-        s.record_repl_turn("(older-err)", ReplTurnOutcome::Error("Error: OLDER-ERR".to_string()));
-        s.record_repl_turn("(a-green)", ReplTurnOutcome::Ok(":GREEN-RESULT".to_string()));
-        s.record_repl_turn("(newer-err)", ReplTurnOutcome::Error("Error: NEWER-ERR".to_string()));
+        s.record_repl_turn(
+            "(older-err)",
+            ReplTurnOutcome::Error("Error: OLDER-ERR".to_string()),
+        );
+        s.record_repl_turn(
+            "(a-green)",
+            ReplTurnOutcome::Ok(":GREEN-RESULT".to_string()),
+        );
+        s.record_repl_turn(
+            "(newer-err)",
+            ReplTurnOutcome::Error("Error: NEWER-ERR".to_string()),
+        );
 
         let harvest = s.harvest_context(&[], DEFAULT_TOKEN_BUDGET);
         let pos_newer = harvest.find("NEWER-ERR").expect("newer error present");
@@ -701,7 +746,10 @@ mod recent_turns_tests {
             );
         }
         let ring_len = s.agent.as_ref().unwrap().turn_ring.len();
-        assert_eq!(ring_len, TURN_RING_CAP, "the ring must be bounded at the cap");
+        assert_eq!(
+            ring_len, TURN_RING_CAP,
+            "the ring must be bounded at the cap"
+        );
 
         let harvest = s.harvest_context(&[], DEFAULT_TOKEN_BUDGET);
         // The most-recent turn is retained; the two oldest (turn-0, turn-1) are
@@ -727,7 +775,10 @@ mod recent_turns_tests {
             "(defn x [y] y)",
             ReplTurnOutcome::Error("Error: whatever".to_string()),
         );
-        assert!(s.agent.is_none(), "record_repl_turn must not construct an agent");
+        assert!(
+            s.agent.is_none(),
+            "record_repl_turn must not construct an agent"
+        );
         let harvest = s.harvest_context(&[], DEFAULT_TOKEN_BUDGET);
         assert!(
             !harvest.contains("recent REPL turns"),

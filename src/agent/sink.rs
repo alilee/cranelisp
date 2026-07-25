@@ -112,6 +112,9 @@ mod tests {
         let bad = dir.path().join("no-such-dir").join("sink.txt");
         let _g = EnvGuard::set(TEST_VAR, bad.to_str().unwrap());
         append_to_env_path(TEST_VAR, "data"); // must NOT panic
-        assert!(!bad.exists(), "an unwritable path must not be created: {bad:?}");
+        assert!(
+            !bad.exists(),
+            "an unwritable path must not be created: {bad:?}"
+        );
     }
 }

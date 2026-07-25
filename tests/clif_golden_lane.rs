@@ -40,8 +40,7 @@ use std::process::Command;
 // the lane cannot silently rot between wave-gate script runs.
 #[test]
 fn clif_golden_lane_no_drift() {
-    let script = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/scripts/clif_golden.sh");
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scripts/clif_golden.sh");
     assert!(
         script.is_file(),
         "clif_golden.sh missing at {} — the L-B1 lane script is the gate's \

@@ -10,14 +10,14 @@ use cranelift::prelude::*;
 use cranelift_module::{FuncId, Module};
 
 use cranelisp_types::{
-    ApplyRef, CranelispError, Defn, ModuleFullPath, MonoExpr, ModuleEntry, ResolvedCall, Span,
+    ApplyRef, CranelispError, Defn, ModuleEntry, ModuleFullPath, MonoExpr, ResolvedCall, Span,
     Symbol, Type, VarRef,
 };
 
 use crate::heap::{self, HeapCategory};
 
 use super::{
-    find_var_type_in_expr, inner_fn_discriminator_for, signature_heap_category, CompileContext,
+    CompileContext, find_var_type_in_expr, inner_fn_discriminator_for, signature_heap_category,
 };
 
 /// Match-arm-invariant data bundled to reduce parameter counts in
@@ -92,7 +92,6 @@ where
     //   - Let body: inherits tail position
     //   - Match arm bodies: inherit tail position
     //   - Args, conditions, bindings: NOT in tail position
-
     /// Name of the current function being compiled (for self-call detection).
     pub(crate) current_fn_name: Option<Symbol>,
     /// Loop header block for TCO (back-edge target for self-recursive tail calls).
@@ -103,7 +102,6 @@ where
     pub(crate) fn_param_count: usize,
 
     // --- Ring 1 heap state (scaffolding for RC emission in Ring 2) ---
-
     /// Types of local variables, for RC management.
     pub(crate) variable_types: HashMap<Symbol, Type>,
     /// Last-use information: (var_name, span) -> is_last_use.
@@ -207,8 +205,9 @@ where
     /// runs once per compiler instance rather than per candidate site. Empty until
     /// the first M-static admission decision; never built under the `syntactic`
     /// filter or when no site is spark-eligible.
-    pub(crate) mstatic_recursive_cache:
-        std::cell::RefCell<Option<std::rc::Rc<std::collections::HashSet<cranelisp_types::FQSymbol>>>>,
+    pub(crate) mstatic_recursive_cache: std::cell::RefCell<
+        Option<std::rc::Rc<std::collections::HashSet<cranelisp_types::FQSymbol>>>,
+    >,
 
     /// Accumulated create-gate **arm discriminator** for span-derived inner-
     /// function names (lenient-eval.md §3.6.2). The create-gate compiles the
@@ -392,7 +391,6 @@ where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
-
     /// Create an inner `FnCompiler` for lambda bodies, continuations,
     /// or (future) drop glue. This is the single construction point for
     /// inner compilers (ring1-checklist section 5.9).
@@ -544,8 +542,7 @@ where
         // entry block (the caller's incoming value, executed exactly once — NOT
         // per iteration, which the loop header would give). See the
         // `tco_owned_params` field rustdoc for the invariant this establishes.
-        let promoted =
-            tco_promoted_borrowed_params(defn, body, mode_summary.as_ref(), &ctx);
+        let promoted = tco_promoted_borrowed_params(defn, body, mode_summary.as_ref(), &ctx);
         let entry_params: Vec<Value> = builder.block_params(entry_block).to_vec();
         for (i, _, category) in &promoted {
             match category {
@@ -615,8 +612,7 @@ where
 
         // Seed the function's parameters into scope + variable_types.
         compiler.bind_defn_params(defn, body, loop_header);
-        compiler.tco_owned_params =
-            promoted.into_iter().map(|(_, name, _)| name).collect();
+        compiler.tco_owned_params = promoted.into_iter().map(|(_, name, _)| name).collect();
 
         // Compile the function body with scope cleanup for parameters.
         // This implements the consuming calling convention: the callee owns
@@ -629,8 +625,7 @@ where
         // `v`'s scope-exit dec (fold it into `skip_var`, mutually exclusive with a
         // bare-Var return) and record it so the COW site flips its copy branch to
         // the `Owned` polarity (see the `return_cow_source` field rustdoc).
-        let cow_return_source =
-            return_cow_source_in_scope(body, compiler.scope_stack.last());
+        let cow_return_source = return_cow_source_in_scope(body, compiler.scope_stack.last());
         compiler.return_cow_source = cow_return_source.clone();
         let skip_var = skip_var.or(cow_return_source);
         // §3.2 soundness tripwire (`design/backend/ownership-codegen.md` §3.2):
@@ -642,9 +637,7 @@ where
         // + elided callee-side dec would hand the caller a borrowed view it then
         // frees (UAF). Cheap debug-build guard; no emission rule is owed.
         debug_assert!(
-            skip_var
-                .as_ref()
-                .is_none_or(|rv| !compiler.is_borrowed(rv)),
+            skip_var.as_ref().is_none_or(|rv| !compiler.is_borrowed(rv)),
             "§3.2 invariant violated: Borrowed param {skip_var:?} reached the return path \
              — the ownership analysis must widen returned params off Borrowed"
         );
@@ -696,8 +689,7 @@ where
             self.builder.declare_var(var, types::I64);
             self.builder.def_var(var, val);
             self.variables.insert(param_name.clone(), var);
-            self
-                .scope_stack
+            self.scope_stack
                 .last_mut()
                 .unwrap_or_else(|| unreachable!("invariant: scope_stack non-empty"))
                 .push(param_name.clone());
@@ -800,7 +792,11 @@ where
                 ..
             } => self.compile_if(cond, then_branch, else_branch),
             MonoExpr::Lambda {
-                params, body, span, ty, ..
+                params,
+                body,
+                span,
+                ty,
+                ..
             } => {
                 let lambda_type = ty.to_type();
                 self.compile_lambda(params, body, *span, Some(&lambda_type))
@@ -1102,18 +1098,16 @@ where
     /// ADT field cleanup happens inside the RC=0 dealloc path (via
     /// `emit_rc_dec_with_inline_drop_glue`), NOT as a separate step before dec.
     /// This prevents double-free when fields are independently referenced.
-    pub(crate) fn pop_scope_with_cleanup(
-        &mut self,
-        skip_var: Option<&Symbol>,
-    ) {
+    pub(crate) fn pop_scope_with_cleanup(&mut self, skip_var: Option<&Symbol>) {
         if let Some(frame) = self.scope_stack.last() {
             let frame = frame.clone();
             let to_dec = self.collect_frame_heap_decs(&frame, |this, name| {
                 // Skip the return value variable.
                 if let Some(skip) = skip_var
-                    && name == skip {
-                        return true;
-                    }
+                    && name == skip
+                {
+                    return true;
+                }
                 // Skip borrowed variables (owner handles cleanup) — EXCEPT a
                 // TCO-promoted param, whose frame-owned reference (the entry inc)
                 // this exit dec discharges (FIXME 0720).
@@ -1188,9 +1182,8 @@ where
                     // analysis produces no confined let-bindings today, so this
                     // dec was provably always atomic. The `_atomicity` mechanism
                     // is retained (probe-reachable); it is fed `Atomic` here.
-                    let _ = self.emit_vec_aware_rc_dec(
-                        val, &elem_ty, span, heap::RcAtomicity::Atomic,
-                    );
+                    let _ =
+                        self.emit_vec_aware_rc_dec(val, &elem_ty, span, heap::RcAtomicity::Atomic);
                     continue;
                 }
 
@@ -1345,11 +1338,7 @@ where
     /// `protect_return_value` inc (the tail flush being the balancing "caller"
     /// dec), so this helper only needs to cover the DIRECT bare-`Var` branch.
     /// Returns `val` unchanged so callers can thread it inline.
-    pub(crate) fn maybe_protect_tail_arg_alias(
-        &mut self,
-        branch: &MonoExpr,
-        val: Value,
-    ) -> Value {
+    pub(crate) fn maybe_protect_tail_arg_alias(&mut self, branch: &MonoExpr, val: Value) -> Value {
         if !self.tail_arg_protect {
             return val;
         }
@@ -1370,7 +1359,10 @@ where
                 }
                 HeapCategory::Mixed => {
                     heap::emit_rc_inc_guarded_atomicity(
-                        &mut self.builder, self.module, val, atomicity,
+                        &mut self.builder,
+                        self.module,
+                        val,
+                        atomicity,
                     );
                 }
                 HeapCategory::NeverHeap | HeapCategory::Value => {}
@@ -1387,9 +1379,10 @@ where
     ) -> Option<Symbol> {
         if let MonoExpr::Var { name, .. } = body
             && let Some(frame) = scope_frame
-                && frame.contains(name) {
-                    return Some(name.clone());
-                }
+            && frame.contains(name)
+        {
+            return Some(name.clone());
+        }
         None
     }
 
@@ -1712,7 +1705,9 @@ pub(crate) fn operand_live_binding_root(
             }
         }
         MonoExpr::Let { body, .. } => operand_live_binding_root(body, is_live),
-        MonoExpr::Match { scrutinee, arms, .. } => {
+        MonoExpr::Match {
+            scrutinee, arms, ..
+        } => {
             if match_forwards_scrutinee(arms) {
                 operand_live_binding_root(scrutinee, is_live)
             } else {
@@ -1803,7 +1798,9 @@ const fn stack_alloc_gate_value(no_stack_alloc_env: bool) -> bool {
 /// soundness sharpening is unaffected.
 fn stack_alloc_enabled() -> bool {
     static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *E.get_or_init(|| stack_alloc_gate_value(std::env::var_os("CRANELISP_NO_STACK_ALLOC").is_some()))
+    *E.get_or_init(|| {
+        stack_alloc_gate_value(std::env::var_os("CRANELISP_NO_STACK_ALLOC").is_some())
+    })
 }
 
 /// B3.4 (`design/backend/ownership-codegen.md` §4.1): read the `escapes` site
@@ -2006,7 +2003,11 @@ pub(crate) fn value_provenance(
         // spelling or shape (Principle 24). It is still OWNED: the
         // Decision-24 ABI hands the caller an owned reference on every return
         // path, which is exactly what the temporary-release gates consume.
-        MonoExpr::Apply { callee, resolved_call, .. } => {
+        MonoExpr::Apply {
+            callee,
+            resolved_call,
+            ..
+        } => {
             if matches!(
                 resolved_call.as_deref(),
                 Some(cranelisp_types::ResolvedCall::AutoCurry { .. })
@@ -2014,7 +2015,10 @@ pub(crate) fn value_provenance(
                 return Fresh;
             }
             match callee.as_ref() {
-                MonoExpr::Var { resolution: VarRef::Global(fq), .. } if is_ctor(fq) => Fresh,
+                MonoExpr::Var {
+                    resolution: VarRef::Global(fq),
+                    ..
+                } if is_ctor(fq) => Fresh,
                 _ => OwnedTemporary,
             }
         }
@@ -2023,8 +2027,11 @@ pub(crate) fn value_provenance(
         // mixed arms (a join is its weakest arm — one borrowing arm makes the
         // whole join borrowing, which is what cures 0781).
         MonoExpr::Let { body, .. } => value_provenance(body, is_ctor),
-        MonoExpr::If { then_branch, else_branch, .. } => value_provenance(then_branch, is_ctor)
-            .join(value_provenance(else_branch, is_ctor)),
+        MonoExpr::If {
+            then_branch,
+            else_branch,
+            ..
+        } => value_provenance(then_branch, is_ctor).join(value_provenance(else_branch, is_ctor)),
         // An arm-less `Match` yields no value on any path; ⊤ is the only safe
         // reading (an empty `all()` would read as `Fresh`).
         MonoExpr::Match { arms, .. } if arms.is_empty() => NotOwnedHere,
@@ -2070,10 +2077,7 @@ pub(crate) fn yields_owned_temporary(expr: &MonoExpr) -> bool {
 /// classify heap-ness against exactly the types the binder records). `None` at a
 /// position ⇒ no authoritative type (the binder falls back to use-site inference;
 /// the promotion declines).
-fn defn_param_types<C, L>(
-    ctx: &CompileContext<'_, C, L>,
-    defn: &Defn,
-) -> Vec<Option<Type>>
+fn defn_param_types<C, L>(ctx: &CompileContext<'_, C, L>, defn: &Defn) -> Vec<Option<Type>>
 where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
@@ -2201,9 +2205,18 @@ fn visit_self_calls(
 ) {
     use cranelisp_types::MonoExpr as E;
     match body {
-        E::Apply { callee, args, resolved_call, .. } => {
-            if is_self_call(callee, resolved_call.as_deref(), current_module, Some(fn_name))
-                || matches!(callee.as_ref(), E::Var { name, .. } if name == fn_name)
+        E::Apply {
+            callee,
+            args,
+            resolved_call,
+            ..
+        } => {
+            if is_self_call(
+                callee,
+                resolved_call.as_deref(),
+                current_module,
+                Some(fn_name),
+            ) || matches!(callee.as_ref(), E::Var { name, .. } if name == fn_name)
             {
                 f(args);
             }
@@ -2218,7 +2231,12 @@ fn visit_self_calls(
             }
             visit_self_calls(body, fn_name, current_module, f);
         }
-        E::If { cond, then_branch, else_branch, .. } => {
+        E::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
             visit_self_calls(cond, fn_name, current_module, f);
             visit_self_calls(then_branch, fn_name, current_module, f);
             visit_self_calls(else_branch, fn_name, current_module, f);
@@ -2226,7 +2244,9 @@ fn visit_self_calls(
         E::Lambda { body, .. } | E::Trace { body, .. } => {
             visit_self_calls(body, fn_name, current_module, f);
         }
-        E::Match { scrutinee, arms, .. } => {
+        E::Match {
+            scrutinee, arms, ..
+        } => {
             visit_self_calls(scrutinee, fn_name, current_module, f);
             for a in arms {
                 visit_self_calls(&a.body, fn_name, current_module, f);
@@ -2237,7 +2257,11 @@ fn visit_self_calls(
                 visit_self_calls(el, fn_name, current_module, f);
             }
         }
-        E::LaunchContinue { launched, continuation, .. } => {
+        E::LaunchContinue {
+            launched,
+            continuation,
+            ..
+        } => {
             visit_self_calls(launched, fn_name, current_module, f);
             visit_self_calls(continuation, fn_name, current_module, f);
         }
@@ -2291,7 +2315,10 @@ pub(crate) fn is_self_call(
     let Some(fn_name) = current_fn_name else {
         return false;
     };
-    if let MonoExpr::Var { resolution: VarRef::Global(fq), .. } = callee
+    if let MonoExpr::Var {
+        resolution: VarRef::Global(fq),
+        ..
+    } = callee
         && fq.module == *current_module
         && fq.symbol == *fn_name
     {
@@ -2313,11 +2340,11 @@ mod b34_stack_eligibility_tests {
     //! `body_has_self_call` (gate 3, the TCO-back-edge decline), and the composed
     //! method itself (gate 5, the FIXME-0525 spark-relocation decline). B3.4 is
     //! ACTIVATED (2026-07-05); these pin every gate.
-    use super::{
-        body_has_self_call, node_escapes, stack_alloc_enabled, stack_alloc_gate_value,
-        STACK_ALLOC_ESCAPE_FACT_SOUND,
-    };
     use super::is_self_call;
+    use super::{
+        STACK_ALLOC_ESCAPE_FACT_SOUND, body_has_self_call, node_escapes, stack_alloc_enabled,
+        stack_alloc_gate_value,
+    };
     use cranelisp_types::{
         ConcreteType, FQSymbol, FQTypeName, JitSymbol, ModuleFullPath, MonoExpr, ResolvedCall,
         Span, Symbol, TypeName,
@@ -2334,29 +2361,60 @@ mod b34_stack_eligibility_tests {
     fn var(name: &str) -> MonoExpr {
         // No carrier ⇒ a `VarRef::Local` (a scope-stack/shadow reference); the
         // is_self_call carrier arm never matches a `Local`.
-        MonoExpr::Var { name: Symbol::from(name), span: Span::new(0, 1), resolved_call: None, ty: int(), resolution: cranelisp_types::VarRef::Local { binder: Symbol::from(name), binding_span: Span::SYNTHETIC } }
+        MonoExpr::Var {
+            name: Symbol::from(name),
+            span: Span::new(0, 1),
+            resolved_call: None,
+            ty: int(),
+            resolution: cranelisp_types::VarRef::Local {
+                binder: Symbol::from(name),
+                binding_span: Span::SYNTHETIC,
+            },
+        }
     }
     /// A `Var` carrying a `VarRef::Global` storage FQ — the fp1 carrier shape.
     fn var_with_target(name: &str, module: &str, symbol: &str) -> MonoExpr {
         MonoExpr::Var {
-            name: Symbol::from(name), span: Span::new(0, 1), resolved_call: None, ty: int(),
-            resolution: cranelisp_types::VarRef::Global(FQSymbol { module: ModuleFullPath::from(module), symbol: Symbol::from(symbol) }),
+            name: Symbol::from(name),
+            span: Span::new(0, 1),
+            resolved_call: None,
+            ty: int(),
+            resolution: cranelisp_types::VarRef::Global(FQSymbol {
+                module: ModuleFullPath::from(module),
+                symbol: Symbol::from(symbol),
+            }),
         }
     }
     fn constr(escapes: Option<bool>) -> MonoExpr {
         MonoExpr::ConstrADT {
             type_name: FQTypeName::new(ModuleFullPath::from("m"), TypeName::from("T")),
-            tag: 0, fields: vec![], span: Span::new(0, 1), ty: int(),
-            escapes, confined: None, unique_static: None,
+            tag: 0,
+            fields: vec![],
+            span: Span::new(0, 1),
+            ty: int(),
+            escapes,
+            confined: None,
+            unique_static: None,
         }
     }
     /// An `(f args…)` apply with the given callee name, escape fact, and resolved call.
-    fn apply(callee: &str, args: Vec<MonoExpr>, escapes: Option<bool>, resolved: Option<ResolvedCall>) -> MonoExpr {
+    fn apply(
+        callee: &str,
+        args: Vec<MonoExpr>,
+        escapes: Option<bool>,
+        resolved: Option<ResolvedCall>,
+    ) -> MonoExpr {
         MonoExpr::Apply {
             dispatch: cranelisp_types::ApplyRef::ViaCallee,
-            callee: Box::new(var(callee)), args, span: Span::new(0, 3),
-            resolved_call: resolved.map(Box::new), ty: int(),
-            escapes, confined: None, unique_static: None, provenance: None,
+            callee: Box::new(var(callee)),
+            args,
+            span: Span::new(0, 3),
+            resolved_call: resolved.map(Box::new),
+            ty: int(),
+            escapes,
+            confined: None,
+            unique_static: None,
+            provenance: None,
         }
     }
 
@@ -2367,13 +2425,31 @@ mod b34_stack_eligibility_tests {
         assert_eq!(node_escapes(&constr(Some(false))), Some(false));
         assert_eq!(node_escapes(&constr(Some(true))), Some(true));
         assert_eq!(node_escapes(&constr(None)), None);
-        assert_eq!(node_escapes(&apply("f", vec![], Some(false), None)), Some(false));
         assert_eq!(
-            node_escapes(&MonoExpr::VecLit { elements: vec![], span: Span::new(0, 1), ty: int(), escapes: Some(false), confined: None, unique_static: None }),
+            node_escapes(&apply("f", vec![], Some(false), None)),
             Some(false)
         );
         assert_eq!(
-            node_escapes(&MonoExpr::Lambda { params: vec![], body: Box::new(var("x")), span: Span::new(0, 1), ty: ConcreteType::Fn(vec![], Box::new(int())), escapes: Some(true), confined: None, unique_static: None }),
+            node_escapes(&MonoExpr::VecLit {
+                elements: vec![],
+                span: Span::new(0, 1),
+                ty: int(),
+                escapes: Some(false),
+                confined: None,
+                unique_static: None
+            }),
+            Some(false)
+        );
+        assert_eq!(
+            node_escapes(&MonoExpr::Lambda {
+                params: vec![],
+                body: Box::new(var("x")),
+                span: Span::new(0, 1),
+                ty: ConcreteType::Fn(vec![], Box::new(int())),
+                escapes: Some(true),
+                confined: None,
+                unique_static: None
+            }),
             Some(true)
         );
     }
@@ -2381,7 +2457,14 @@ mod b34_stack_eligibility_tests {
     fn escapes_is_none_for_non_allocating_variants() {
         // spec: design/backend/ownership-codegen.md §4.1 — non-fact-bearing ⇒ None ⇒ heap
         assert_eq!(node_escapes(&var("v")), None);
-        assert_eq!(node_escapes(&MonoExpr::IntLit { value: 0, span: Span::new(0, 1), ty: int() }), None);
+        assert_eq!(
+            node_escapes(&MonoExpr::IntLit {
+                value: 0,
+                span: Span::new(0, 1),
+                ty: int()
+            }),
+            None
+        );
     }
 
     // --- body_has_self_call (gate 3): the TCO-back-edge whole-function decline --
@@ -2389,7 +2472,11 @@ mod b34_stack_eligibility_tests {
     fn detects_direct_self_call() {
         // spec: design/backend/ownership-codegen.md §4.1 gate 3 — self-call present
         let f = Symbol::from("f");
-        assert!(body_has_self_call(&apply("f", vec![], None, None), &f, &m()));
+        assert!(body_has_self_call(
+            &apply("f", vec![], None, None),
+            &f,
+            &m()
+        ));
     }
     #[test]
     fn detects_self_call_nested_in_let_if_match_and_arg() {
@@ -2397,25 +2484,57 @@ mod b34_stack_eligibility_tests {
         let call = || apply("f", vec![], None, None);
         // in a let body
         assert!(body_has_self_call(
-            &MonoExpr::Let { bindings: vec![], body: Box::new(call()), span: Span::new(0, 4), ty: int() }, &f, &m()));
+            &MonoExpr::Let {
+                bindings: vec![],
+                body: Box::new(call()),
+                span: Span::new(0, 4),
+                ty: int()
+            },
+            &f,
+            &m()
+        ));
         // in an if branch
         assert!(body_has_self_call(
-            &MonoExpr::If { cond: Box::new(var("c")), then_branch: Box::new(var("a")), else_branch: Box::new(call()), span: Span::new(0, 5), ty: int() }, &f, &m()));
+            &MonoExpr::If {
+                cond: Box::new(var("c")),
+                then_branch: Box::new(var("a")),
+                else_branch: Box::new(call()),
+                span: Span::new(0, 5),
+                ty: int()
+            },
+            &f,
+            &m()
+        ));
         // in an ARGUMENT position (non-tail self-call — still declined, conservative)
-        assert!(body_has_self_call(&apply("g", vec![call()], None, None), &f, &m()));
+        assert!(body_has_self_call(
+            &apply("g", vec![call()], None, None),
+            &f,
+            &m()
+        ));
     }
     #[test]
     fn detects_sig_dispatch_mangled_self_call() {
         // spec: design/backend/ownership-codegen.md §4.1 gate 3 — mono self-call by mangled name
         let f = Symbol::from("f$Int");
-        let e = apply("f", vec![], None, Some(ResolvedCall::SigDispatch { mangled_name: JitSymbol::from("f$Int") }));
+        let e = apply(
+            "f",
+            vec![],
+            None,
+            Some(ResolvedCall::SigDispatch {
+                mangled_name: JitSymbol::from("f$Int"),
+            }),
+        );
         assert!(body_has_self_call(&e, &f, &m()));
     }
     #[test]
     fn no_self_call_for_foreign_callee() {
         // spec: design/backend/ownership-codegen.md §4.1 gate 3 — a different name is not self
         let f = Symbol::from("f");
-        assert!(!body_has_self_call(&apply("g", vec![var("x")], None, None), &f, &m()));
+        assert!(!body_has_self_call(
+            &apply("g", vec![var("x")], None, None),
+            &f,
+            &m()
+        ));
         assert!(!body_has_self_call(&var("x"), &f, &m()));
     }
 
@@ -2437,9 +2556,15 @@ mod b34_stack_eligibility_tests {
         let callee = var_with_target("qloop", "user", "s1");
         let node = MonoExpr::Apply {
             dispatch: cranelisp_types::ApplyRef::ViaCallee,
-            callee: Box::new(callee.clone()), args: vec![], span: Span::new(0, 3),
-            resolved_call: None, ty: int(),
-            escapes: None, confined: None, unique_static: None, provenance: None,
+            callee: Box::new(callee.clone()),
+            args: vec![],
+            span: Span::new(0, 3),
+            resolved_call: None,
+            ty: int(),
+            escapes: None,
+            confined: None,
+            unique_static: None,
+            provenance: None,
         };
         // The TCO lowering's predicate fires (carrier match, module+symbol)…
         assert!(is_self_call(&callee, None, &m(), Some(&f)));
@@ -2475,7 +2600,10 @@ mod b34_stack_eligibility_tests {
             STACK_ALLOC_ESCAPE_FACT_SOUND,
             "env unset must yield the const default (byte-identical-off, §2.2)"
         );
-        assert!(stack_alloc_gate_value(false), "with the const activated, env-unset fires the stack path");
+        assert!(
+            stack_alloc_gate_value(false),
+            "with the const activated, env-unset fires the stack path"
+        );
         // env set (CRANELISP_NO_STACK_ALLOC=1) ⇒ the FINE oracle OFF ⇒ decline.
         assert!(
             !stack_alloc_gate_value(true),
@@ -2513,15 +2641,20 @@ mod b34_stack_eligibility_tests {
         // eligibility off for this shape is the N4 gate. Model the composed method's
         // gate-first decision: gate=false ⇒ declined regardless of the rest.
         let escape_ok = node_escapes(&app) == Some(false);
-        assert!(escape_ok && !args.is_empty(), "fixture is otherwise eligible");
-        let eligible_when_gate_off =
-            stack_alloc_gate_value(true) && escape_ok; // gate is the leading conjunct
+        assert!(
+            escape_ok && !args.is_empty(),
+            "fixture is otherwise eligible"
+        );
+        let eligible_when_gate_off = stack_alloc_gate_value(true) && escape_ok; // gate is the leading conjunct
         assert!(
             !eligible_when_gate_off,
             "with the N4 gate OFF, even a fully-eligible NoEscape scalar constructor is declined"
         );
         // And with the gate ON the leading conjunct does not itself block the win.
-        assert!(stack_alloc_gate_value(false), "gate ON must not block the eligible shape");
+        assert!(
+            stack_alloc_gate_value(false),
+            "gate ON must not block the eligible shape"
+        );
     }
 
     // --- gate 5 (FIXME 0525): a spark-relocated construction stays HEAP ---------
@@ -2680,7 +2813,10 @@ mod return_cow_source_tests {
             name: Symbol::from(name),
             span: Span::new(0, 1),
             resolved_call: None,
-            resolution: cranelisp_types::VarRef::Local { binder: Symbol::from(name), binding_span: Span::SYNTHETIC },
+            resolution: cranelisp_types::VarRef::Local {
+                binder: Symbol::from(name),
+                binding_span: Span::SYNTHETIC,
+            },
             ty: int_ty(),
         }
     }
@@ -2698,7 +2834,9 @@ mod return_cow_source_tests {
             args: vec![src, var("i"), var("x")],
             span: Span::new(0, 9),
             resolved_call: carrier.map(|n| {
-                Box::new(cranelisp_types::ResolvedCall::BuiltinFn { name: Symbol::from(n) })
+                Box::new(cranelisp_types::ResolvedCall::BuiltinFn {
+                    name: Symbol::from(n),
+                })
             }),
             ty: ConcreteType::ADT(
                 cranelisp_types::FQTypeName::new(
@@ -2754,7 +2892,10 @@ mod return_cow_source_tests {
     #[test]
     fn cow_on_non_frame_source_is_not_flagged() {
         let f = frame(&["i", "x"]); // `v` deliberately absent from the frame
-        assert_eq!(return_cow_source_in_scope(&cow_call("vec-set", var("v")), Some(&f)), None);
+        assert_eq!(
+            return_cow_source_in_scope(&cow_call("vec-set", var("v")), Some(&f)),
+            None
+        );
     }
 
     // Control: a non-COW callee (`vec-get`) is not a mutating op — no source move.
@@ -2808,7 +2949,10 @@ mod return_protect_tests {
         MonoExpr::Apply {
             dispatch: cranelisp_types::ApplyRef::ViaCallee,
             callee: Box::new(MonoExpr::Var {
-                resolution: cranelisp_types::VarRef::Local { binder: Symbol::from("f"), binding_span: Span::SYNTHETIC },
+                resolution: cranelisp_types::VarRef::Local {
+                    binder: Symbol::from("f"),
+                    binding_span: Span::SYNTHETIC,
+                },
                 name: Symbol::from("f"),
                 span: Span::new(0, 1),
                 resolved_call: None,
@@ -2827,26 +2971,66 @@ mod return_protect_tests {
 
     fn if_body() -> MonoExpr {
         MonoExpr::If {
-            cond: Box::new(MonoExpr::BoolLit { value: true, span: Span::new(0, 1), ty: ConcreteType::Bool }),
-            then_branch: Box::new(MonoExpr::Var { name: Symbol::from("v"), span: Span::new(1, 2), resolved_call: None, resolution: cranelisp_types::VarRef::Local { binder: Symbol::from("v"), binding_span: Span::SYNTHETIC }, ty: int_ty() }),
-            else_branch: Box::new(MonoExpr::Var { name: Symbol::from("w"), span: Span::new(2, 3), resolved_call: None, resolution: cranelisp_types::VarRef::Local { binder: Symbol::from("w"), binding_span: Span::SYNTHETIC }, ty: int_ty() }),
+            cond: Box::new(MonoExpr::BoolLit {
+                value: true,
+                span: Span::new(0, 1),
+                ty: ConcreteType::Bool,
+            }),
+            then_branch: Box::new(MonoExpr::Var {
+                name: Symbol::from("v"),
+                span: Span::new(1, 2),
+                resolved_call: None,
+                resolution: cranelisp_types::VarRef::Local {
+                    binder: Symbol::from("v"),
+                    binding_span: Span::SYNTHETIC,
+                },
+                ty: int_ty(),
+            }),
+            else_branch: Box::new(MonoExpr::Var {
+                name: Symbol::from("w"),
+                span: Span::new(2, 3),
+                resolved_call: None,
+                resolution: cranelisp_types::VarRef::Local {
+                    binder: Symbol::from("w"),
+                    binding_span: Span::SYNTHETIC,
+                },
+                ty: int_ty(),
+            }),
             span: Span::new(0, 4),
             ty: int_ty(),
         }
     }
 
     fn var_body() -> MonoExpr {
-        MonoExpr::Var { name: Symbol::from("v"), span: Span::new(0, 1), resolved_call: None, ty: int_ty(), resolution: cranelisp_types::VarRef::Local { binder: Symbol::from("v"), binding_span: Span::SYNTHETIC } }
+        MonoExpr::Var {
+            name: Symbol::from("v"),
+            span: Span::new(0, 1),
+            resolved_call: None,
+            ty: int_ty(),
+            resolution: cranelisp_types::VarRef::Local {
+                binder: Symbol::from("v"),
+                binding_span: Span::SYNTHETIC,
+            },
+        }
     }
 
     fn fresh() -> ModeSummary {
-        ModeSummary { result: ResultMode::Fresh, ..Default::default() }
+        ModeSummary {
+            result: ResultMode::Fresh,
+            ..Default::default()
+        }
     }
     fn alias0() -> ModeSummary {
-        ModeSummary { result: ResultMode::AliasOf(0), ..Default::default() }
+        ModeSummary {
+            result: ResultMode::AliasOf(0),
+            ..Default::default()
+        }
     }
     fn proj0() -> ModeSummary {
-        ModeSummary { result: ResultMode::ProjectionOf(0), ..Default::default() }
+        ModeSummary {
+            result: ResultMode::ProjectionOf(0),
+            ..Default::default()
+        }
     }
 
     // POSITIVE: a PRESENT Fresh summary elides for ANY body shape (post-0520 —
@@ -2890,30 +3074,93 @@ mod b33_node_confined_tests {
     use crate::heap::RcAtomicity;
     use cranelisp_types::{ConcreteType, FQTypeName, ModuleFullPath, MonoExpr, Span, TypeName};
 
-    fn int() -> ConcreteType { ConcreteType::Int }
+    fn int() -> ConcreteType {
+        ConcreteType::Int
+    }
 
     // The five fact-bearing variants, each parameterised over its `confined`.
     fn string_lit(c: Option<bool>) -> MonoExpr {
-        MonoExpr::StringLit { value: "x".into(), span: Span::new(0, 1), ty: ConcreteType::String, escapes: None, confined: c, unique_static: None }
+        MonoExpr::StringLit {
+            value: "x".into(),
+            span: Span::new(0, 1),
+            ty: ConcreteType::String,
+            escapes: None,
+            confined: c,
+            unique_static: None,
+        }
     }
     fn lambda(c: Option<bool>) -> MonoExpr {
-        MonoExpr::Lambda { params: vec![], body: Box::new(MonoExpr::IntLit { value: 0, span: Span::new(0, 1), ty: int() }), span: Span::new(0, 1), ty: ConcreteType::Fn(vec![], Box::new(int())), escapes: None, confined: c, unique_static: None }
+        MonoExpr::Lambda {
+            params: vec![],
+            body: Box::new(MonoExpr::IntLit {
+                value: 0,
+                span: Span::new(0, 1),
+                ty: int(),
+            }),
+            span: Span::new(0, 1),
+            ty: ConcreteType::Fn(vec![], Box::new(int())),
+            escapes: None,
+            confined: c,
+            unique_static: None,
+        }
     }
     fn apply(c: Option<bool>) -> MonoExpr {
-        MonoExpr::Apply { callee: Box::new(MonoExpr::Var { name: "f".into(), span: Span::new(0, 1), resolved_call: None, resolution: cranelisp_types::VarRef::Local { binder: "f".into(), binding_span: Span::SYNTHETIC }, ty: int() }), args: vec![], span: Span::new(0, 2), resolved_call: None, ty: int(), escapes: None, confined: c, unique_static: None, provenance: None, dispatch: cranelisp_types::ApplyRef::ViaCallee }
+        MonoExpr::Apply {
+            callee: Box::new(MonoExpr::Var {
+                name: "f".into(),
+                span: Span::new(0, 1),
+                resolved_call: None,
+                resolution: cranelisp_types::VarRef::Local {
+                    binder: "f".into(),
+                    binding_span: Span::SYNTHETIC,
+                },
+                ty: int(),
+            }),
+            args: vec![],
+            span: Span::new(0, 2),
+            resolved_call: None,
+            ty: int(),
+            escapes: None,
+            confined: c,
+            unique_static: None,
+            provenance: None,
+            dispatch: cranelisp_types::ApplyRef::ViaCallee,
+        }
     }
     fn vec_lit(c: Option<bool>) -> MonoExpr {
         // node_confined reads only `confined`; the ty is immaterial here.
-        MonoExpr::VecLit { elements: vec![], span: Span::new(0, 1), ty: int(), escapes: None, confined: c, unique_static: None }
+        MonoExpr::VecLit {
+            elements: vec![],
+            span: Span::new(0, 1),
+            ty: int(),
+            escapes: None,
+            confined: c,
+            unique_static: None,
+        }
     }
     fn constr_adt(c: Option<bool>) -> MonoExpr {
-        MonoExpr::ConstrADT { type_name: FQTypeName::new(ModuleFullPath::from("m"), TypeName::from("T")), tag: 0, fields: vec![], span: Span::new(0, 1), ty: int(), escapes: None, confined: c, unique_static: None }
+        MonoExpr::ConstrADT {
+            type_name: FQTypeName::new(ModuleFullPath::from("m"), TypeName::from("T")),
+            tag: 0,
+            fields: vec![],
+            span: Span::new(0, 1),
+            ty: int(),
+            escapes: None,
+            confined: c,
+            unique_static: None,
+        }
     }
 
     // POSITIVE: each fact-bearing variant reports its own confined field.
     #[test]
     fn fact_bearing_variants_report_confined() {
-        for mk in [string_lit as fn(Option<bool>) -> MonoExpr, lambda, apply, vec_lit, constr_adt] {
+        for mk in [
+            string_lit as fn(Option<bool>) -> MonoExpr,
+            lambda,
+            apply,
+            vec_lit,
+            constr_adt,
+        ] {
             assert_eq!(node_confined(&mk(Some(true))), Some(true));
             assert_eq!(node_confined(&mk(Some(false))), Some(false));
             assert_eq!(node_confined(&mk(None)), None);
@@ -2925,9 +3172,32 @@ mod b33_node_confined_tests {
     // never the fact source.
     #[test]
     fn non_fact_bearing_variants_are_none() {
-        let var = MonoExpr::Var { name: "v".into(), span: Span::new(0, 1), resolved_call: None, resolution: cranelisp_types::VarRef::Local { binder: "v".into(), binding_span: Span::SYNTHETIC }, ty: int() };
-        let iflit = MonoExpr::If { cond: Box::new(MonoExpr::BoolLit { value: true, span: Span::new(0, 1), ty: ConcreteType::Bool }), then_branch: Box::new(var.clone()), else_branch: Box::new(var.clone()), span: Span::new(0, 2), ty: int() };
-        let intlit = MonoExpr::IntLit { value: 0, span: Span::new(0, 1), ty: int() };
+        let var = MonoExpr::Var {
+            name: "v".into(),
+            span: Span::new(0, 1),
+            resolved_call: None,
+            resolution: cranelisp_types::VarRef::Local {
+                binder: "v".into(),
+                binding_span: Span::SYNTHETIC,
+            },
+            ty: int(),
+        };
+        let iflit = MonoExpr::If {
+            cond: Box::new(MonoExpr::BoolLit {
+                value: true,
+                span: Span::new(0, 1),
+                ty: ConcreteType::Bool,
+            }),
+            then_branch: Box::new(var.clone()),
+            else_branch: Box::new(var.clone()),
+            span: Span::new(0, 2),
+            ty: int(),
+        };
+        let intlit = MonoExpr::IntLit {
+            value: 0,
+            span: Span::new(0, 1),
+            ty: int(),
+        };
         assert_eq!(node_confined(&var), None);
         assert_eq!(node_confined(&iflit), None);
         assert_eq!(node_confined(&intlit), None);
@@ -2937,9 +3207,18 @@ mod b33_node_confined_tests {
     // (mirrors `FnCompiler::rc_atomicity_for_node`; the classifier is the seam).
     #[test]
     fn atomicity_derivation_from_confined_fact() {
-        let map = |c: Option<bool>| match c { Some(true) => RcAtomicity::NonAtomic, _ => RcAtomicity::Atomic };
-        assert_eq!(map(node_confined(&constr_adt(Some(true)))), RcAtomicity::NonAtomic);
-        assert_eq!(map(node_confined(&constr_adt(Some(false)))), RcAtomicity::Atomic);
+        let map = |c: Option<bool>| match c {
+            Some(true) => RcAtomicity::NonAtomic,
+            _ => RcAtomicity::Atomic,
+        };
+        assert_eq!(
+            map(node_confined(&constr_adt(Some(true)))),
+            RcAtomicity::NonAtomic
+        );
+        assert_eq!(
+            map(node_confined(&constr_adt(Some(false)))),
+            RcAtomicity::Atomic
+        );
         assert_eq!(map(node_confined(&constr_adt(None))), RcAtomicity::Atomic);
     }
 }
@@ -2952,9 +3231,7 @@ mod binding_indirection_classifier_tests {
     //! liveness predicate, never an ownership fact. Cells: Var-root, producing-op
     //! temp, let-forward, match-var-forward, nested; a non-live Var ⇒ None.
     use super::{match_forwards_scrutinee, operand_live_binding_root};
-    use cranelisp_types::{
-        ConcreteType, MonoExpr, MonoMatchArm, Pattern, Span, Symbol, VarRef,
-    };
+    use cranelisp_types::{ConcreteType, MonoExpr, MonoMatchArm, Pattern, Span, Symbol, VarRef};
 
     fn var(name: &str) -> MonoExpr {
         MonoExpr::Var {
@@ -3017,7 +3294,10 @@ mod binding_indirection_classifier_tests {
     // NOT an alias: it mints its own value ⇒ None (a NeverHeap/fresh Var ⇒ no inc).
     #[test]
     fn var_not_live_is_not_an_alias() {
-        assert_eq!(operand_live_binding_root(&var("v"), &live(&["other"])), None);
+        assert_eq!(
+            operand_live_binding_root(&var("v"), &live(&["other"])),
+            None
+        );
     }
 
     // Cell 3 — a producing op (vec-lit, ctor, …) delivers its own count ⇒ None.
@@ -3090,7 +3370,9 @@ mod binding_indirection_classifier_tests {
             args: vec![src, var("i"), var("x")],
             span: Span::new(0, 1),
             resolved_call: carrier.map(|n| {
-                Box::new(cranelisp_types::ResolvedCall::BuiltinFn { name: Symbol::from(n) })
+                Box::new(cranelisp_types::ResolvedCall::BuiltinFn {
+                    name: Symbol::from(n),
+                })
             }),
             ty: ConcreteType::Int,
             escapes: None,
@@ -3169,7 +3451,9 @@ mod binding_indirection_classifier_tests {
         // Even the own-position in-place COW is NOT exempt toggle-off (0695): the
         // COW always copies (rc≥2 force-count), so the superseded dec is owed.
         let own = [cow_call("vec-set", var("v")), var("n")];
-        assert!(!param_flush_exempts_inplace_cow(&own, &v, /* analysis_off = */ true));
+        assert!(!param_flush_exempts_inplace_cow(
+            &own, &v, /* analysis_off = */ true
+        ));
         let cross = [cow_call("vec-set", var("v")), vec_lit(), var("n")];
         assert!(!param_flush_exempts_inplace_cow(&cross, &v, true));
     }
@@ -3185,9 +3469,8 @@ mod binding_indirection_classifier_tests {
         let set = |names: &[&str]| -> HashSet<Symbol> {
             names.iter().map(|n| Symbol::from(*n)).collect()
         };
-        let frame = |names: &[&str]| -> Vec<Symbol> {
-            names.iter().map(|n| Symbol::from(*n)).collect()
-        };
+        let frame =
+            |names: &[&str]| -> Vec<Symbol> { names.iter().map(|n| Symbol::from(*n)).collect() };
 
         // Shadow: outer `q` borrowed (frame 1), inner `q` OWNED (frame 2). The
         // inner binding resolves to its OWN (empty) mark ⇒ NOT borrowed.
@@ -3278,8 +3561,8 @@ mod rc_release_sweep_tests {
     //!    toggle-ON half of FIXME 0720.
 
     use super::{
-        is_fresh_construction, self_call_supersedes_param, tail_arg_supersedes_param,
-        value_provenance, yields_owned_temporary, ValueProvenance,
+        ValueProvenance, is_fresh_construction, self_call_supersedes_param,
+        tail_arg_supersedes_param, value_provenance, yields_owned_temporary,
     };
     use cranelisp_types::{
         ConcreteType, FQSymbol, ModuleFullPath, MonoExpr, MonoMatchArm, Pattern, Span, Symbol,
@@ -3287,7 +3570,10 @@ mod rc_release_sweep_tests {
     };
 
     fn fq(module: &str, symbol: &str) -> FQSymbol {
-        FQSymbol { module: ModuleFullPath::from(module), symbol: Symbol::from(symbol) }
+        FQSymbol {
+            module: ModuleFullPath::from(module),
+            symbol: Symbol::from(symbol),
+        }
     }
 
     fn var(name: &str) -> MonoExpr {
@@ -3351,7 +3637,10 @@ mod rc_release_sweep_tests {
             arms: bodies
                 .into_iter()
                 .map(|body| MonoMatchArm {
-                    pattern: Pattern::Var { name: Symbol::from("x"), span: Span::SYNTHETIC },
+                    pattern: Pattern::Var {
+                        name: Symbol::from("x"),
+                        span: Span::SYNTHETIC,
+                    },
                     body,
                     span: Span::SYNTHETIC,
                     provenance: None,
@@ -3460,7 +3749,10 @@ mod rc_release_sweep_tests {
         };
         assert!(!is_fresh_construction(&if_mixed, &is_ctor));
         // An arm-less match yields no value that could be fresh.
-        assert!(!is_fresh_construction(&match_of(var("g"), vec![]), &is_ctor));
+        assert!(!is_fresh_construction(
+            &match_of(var("g"), vec![]),
+            &is_ctor
+        ));
     }
 
     // ---- 1b. the box-MINTING node kinds (FIXME 0749) -----------------------
@@ -3468,7 +3760,14 @@ mod rc_release_sweep_tests {
     /// An `Apply` carrying the `AutoCurry` resolution — `compile_auto_curry`
     /// unconditionally `emit_alloc`s a fresh curry env for every arm.
     fn auto_curry_apply(callee: MonoExpr) -> MonoExpr {
-        let MonoExpr::Apply { callee, args, span, dispatch, ty, .. } = apply(callee, vec![])
+        let MonoExpr::Apply {
+            callee,
+            args,
+            span,
+            dispatch,
+            ty,
+            ..
+        } = apply(callee, vec![])
         else {
             unreachable!()
         };
@@ -3548,9 +3847,15 @@ mod rc_release_sweep_tests {
     // twin leaked identically at TWO `let`s of depth.
     #[test]
     fn minted_boxes_forward_freshness_through_binding_indirection() {
-        assert!(is_fresh_construction(&let_of(auto_curry_apply(var("g"))), &is_ctor));
+        assert!(is_fresh_construction(
+            &let_of(auto_curry_apply(var("g"))),
+            &is_ctor
+        ));
         assert!(is_fresh_construction(&let_of(let_of(lambda())), &is_ctor));
-        assert!(is_fresh_construction(&let_of(let_of(string_lit())), &is_ctor));
+        assert!(is_fresh_construction(
+            &let_of(let_of(string_lit())),
+            &is_ctor
+        ));
         assert!(is_fresh_construction(&let_of(vec_lit()), &is_ctor));
         assert!(is_fresh_construction(
             &match_of(var("g"), vec![lambda(), auto_curry_apply(var("h"))]),
@@ -3564,8 +3869,14 @@ mod rc_release_sweep_tests {
     // its own and may return an aliased argument, so it keeps its protect.
     #[test]
     fn a_non_curry_apply_through_the_same_callee_is_not_fresh_neg() {
-        assert!(!is_fresh_construction(&apply(var("g"), vec![var("x")]), &is_ctor));
-        assert!(!is_fresh_construction(&let_of(apply(var("g"), vec![])), &is_ctor));
+        assert!(!is_fresh_construction(
+            &apply(var("g"), vec![var("x")]),
+            &is_ctor
+        ));
+        assert!(!is_fresh_construction(
+            &let_of(apply(var("g"), vec![])),
+            &is_ctor
+        ));
         // ...and one non-minting arm still poisons the join.
         assert!(!is_fresh_construction(
             &match_of(var("g"), vec![lambda(), var("v")]),
@@ -3612,7 +3923,10 @@ mod rc_release_sweep_tests {
         assert!(yields_owned_temporary(&lambda()));
         assert!(yields_owned_temporary(&string_lit()));
         assert!(yields_owned_temporary(&ctor_adt()));
-        assert!(yields_owned_temporary(&apply(global_var("user", "mk"), vec![])));
+        assert!(yields_owned_temporary(&apply(
+            global_var("user", "mk"),
+            vec![]
+        )));
     }
 
     // spec: FIXME 0781 (the DEFECT cell, NEGATIVE) — the join that aborted. An
@@ -3642,8 +3956,14 @@ mod rc_release_sweep_tests {
         assert!(!yields_owned_temporary(&match_of(var("g"), vec![var("v")])));
         // MIXED arms take the weakest point — one borrowing arm poisons the
         // join, exactly as for freshness. This is the UAF direction.
-        assert!(!yields_owned_temporary(&match_of(var("g"), vec![vec_lit(), var("v")])));
-        assert!(!yields_owned_temporary(&match_of(var("g"), vec![var("v"), vec_lit()])));
+        assert!(!yields_owned_temporary(&match_of(
+            var("g"),
+            vec![vec_lit(), var("v")]
+        )));
+        assert!(!yields_owned_temporary(&match_of(
+            var("g"),
+            vec![var("v"), vec_lit()]
+        )));
         // An arm-less match yields nothing to release.
         assert!(!yields_owned_temporary(&match_of(var("g"), vec![])));
     }
@@ -3655,12 +3975,21 @@ mod rc_release_sweep_tests {
     #[test]
     fn the_two_thresholds_differ_exactly_at_a_general_apply() {
         let call = apply(global_var("user", "id"), vec![var("x")]);
-        assert_eq!(value_provenance(&call, &is_ctor), ValueProvenance::OwnedTemporary);
+        assert_eq!(
+            value_provenance(&call, &is_ctor),
+            ValueProvenance::OwnedTemporary
+        );
         assert!(yields_owned_temporary(&call));
         assert!(!is_fresh_construction(&call, &is_ctor));
         // ...and they agree at both ends of the lattice.
-        assert_eq!(value_provenance(&ctor_adt(), &is_ctor), ValueProvenance::Fresh);
-        assert_eq!(value_provenance(&var("v"), &is_ctor), ValueProvenance::NotOwnedHere);
+        assert_eq!(
+            value_provenance(&ctor_adt(), &is_ctor),
+            ValueProvenance::Fresh
+        );
+        assert_eq!(
+            value_provenance(&var("v"), &is_ctor),
+            ValueProvenance::NotOwnedHere
+        );
     }
 
     // spec: FIXME 0781 — `Trace`/`ParBind`/`LaunchContinue` FORWARD the
@@ -3730,7 +4059,10 @@ mod rc_release_sweep_tests {
         ));
         assert!(tail_arg_supersedes_param(&var("w"), &g));
         assert!(tail_arg_supersedes_param(&ctor_adt(), &g));
-        assert!(tail_arg_supersedes_param(&match_of(var("g"), vec![ctor_adt()]), &g));
+        assert!(tail_arg_supersedes_param(
+            &match_of(var("g"), vec![ctor_adt()]),
+            &g
+        ));
     }
 
     // spec: §2.2 — the promotion TRIGGER: the exact 0720 body
@@ -3753,8 +4085,20 @@ mod rc_release_sweep_tests {
             span: Span::SYNTHETIC,
             ty: ConcreteType::Int,
         };
-        assert!(self_call_supersedes_param(&body, &go, &module, 0, &Symbol::from("g")));
-        assert!(!self_call_supersedes_param(&body, &go, &module, 1, &Symbol::from("m")));
+        assert!(self_call_supersedes_param(
+            &body,
+            &go,
+            &module,
+            0,
+            &Symbol::from("g")
+        ));
+        assert!(!self_call_supersedes_param(
+            &body,
+            &go,
+            &module,
+            1,
+            &Symbol::from("m")
+        ));
     }
 
     // spec: §2.2 (NEGATIVE / byte-identical fence) — a body with NO self-call, and
@@ -3767,12 +4111,33 @@ mod rc_release_sweep_tests {
         let go = Symbol::from("go");
         let v = Symbol::from("v");
         let no_self_call = apply(global_var("user", "other"), vec![var("v")]);
-        assert!(!self_call_supersedes_param(&no_self_call, &go, &module, 0, &v));
-        let carry_only = apply(var("go"), vec![var("v"), apply(global_var("user", "dec"), vec![var("n")])]);
-        assert!(!self_call_supersedes_param(&carry_only, &go, &module, 0, &v));
+        assert!(!self_call_supersedes_param(
+            &no_self_call,
+            &go,
+            &module,
+            0,
+            &v
+        ));
+        let carry_only = apply(
+            var("go"),
+            vec![var("v"), apply(global_var("user", "dec"), vec![var("n")])],
+        );
+        assert!(!self_call_supersedes_param(
+            &carry_only,
+            &go,
+            &module,
+            0,
+            &v
+        ));
         // ...and the SECOND position of that same call IS superseded (the walk
         // reaches nested calls, so the detection is not accidentally position-blind).
-        assert!(self_call_supersedes_param(&carry_only, &go, &module, 1, &Symbol::from("n")));
+        assert!(self_call_supersedes_param(
+            &carry_only,
+            &go,
+            &module,
+            1,
+            &Symbol::from("n")
+        ));
     }
 }
 
@@ -3801,16 +4166,32 @@ mod cow_retain_reconciliation_tests {
     // case must be untouched by the 0751 correction).
     #[test]
     fn agreement_passes_the_verdict_through() {
-        assert!(reconcile_cow_retain_verdict(Some(Some(true)), true, Span::SYNTHETIC));
-        assert!(!reconcile_cow_retain_verdict(Some(Some(false)), false, Span::SYNTHETIC));
+        assert!(reconcile_cow_retain_verdict(
+            Some(Some(true)),
+            true,
+            Span::SYNTHETIC
+        ));
+        assert!(!reconcile_cow_retain_verdict(
+            Some(Some(false)),
+            false,
+            Span::SYNTHETIC
+        ));
     }
 
     // spec: §13.7 — an ambiguous span (two COW sites collapsed under one
     // synthetic span) takes the leak-safe verdict.
     #[test]
     fn ambiguous_record_is_leak_safe() {
-        assert!(!reconcile_cow_retain_verdict(Some(None), true, Span::SYNTHETIC));
-        assert!(!reconcile_cow_retain_verdict(Some(None), false, Span::SYNTHETIC));
+        assert!(!reconcile_cow_retain_verdict(
+            Some(None),
+            true,
+            Span::SYNTHETIC
+        ));
+        assert!(!reconcile_cow_retain_verdict(
+            Some(None),
+            false,
+            Span::SYNTHETIC
+        ));
     }
 
     // spec: §13.7 — an ABSENT record means the producer ran in another compiler
@@ -3838,7 +4219,15 @@ mod cow_retain_reconciliation_tests {
     #[cfg(not(debug_assertions))]
     #[test]
     fn disagreement_takes_the_leak_safe_verdict_in_release_neg() {
-        assert!(!reconcile_cow_retain_verdict(Some(Some(true)), false, Span::SYNTHETIC));
-        assert!(!reconcile_cow_retain_verdict(Some(Some(false)), true, Span::SYNTHETIC));
+        assert!(!reconcile_cow_retain_verdict(
+            Some(Some(true)),
+            false,
+            Span::SYNTHETIC
+        ));
+        assert!(!reconcile_cow_retain_verdict(
+            Some(Some(false)),
+            true,
+            Span::SYNTHETIC
+        ));
     }
 }

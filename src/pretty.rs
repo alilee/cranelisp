@@ -26,8 +26,7 @@ const FLAT_THRESHOLD: usize = 40;
 
 /// Special forms that use 2-space body indentation instead of argument alignment.
 const SPECIAL_FORM_INDENT: &[&str] = &[
-    "defn", "deftype", "deftrait", "impl", "let", "match",
-    "fn", "if", "do", "defmacro",
+    "defn", "deftype", "deftrait", "impl", "let", "match", "fn", "if", "do", "defmacro",
 ];
 
 /// Pretty-print and syntax-highlight a Sexp tree (`/sexp`, agent code blocks).
@@ -278,7 +277,14 @@ fn emit_source_spans(
             *cursor = e;
         }
         Sexp::Int(_, _) | Sexp::Float(_, _) | Sexp::Bool(_, _) => {
-            doc.push(if in_head { Role::Head } else { Role::LitNumBool }, &code[s..e]);
+            doc.push(
+                if in_head {
+                    Role::Head
+                } else {
+                    Role::LitNumBool
+                },
+                &code[s..e],
+            );
             *cursor = e;
         }
         Sexp::Str(_, _) => {
@@ -331,7 +337,10 @@ fn pp(sexp: &Sexp, indent: usize, in_head: bool) -> StyledDoc {
             ..
         } => {
             let mut doc = StyledDoc::new();
-            doc.push(Role::TypeAnnotation, format!(":{}", annotation.format_flat()));
+            doc.push(
+                Role::TypeAnnotation,
+                format!(":{}", annotation.format_flat()),
+            );
             doc.plain(" ");
             doc.extend(pp(subject, indent + 2, false));
             doc
@@ -582,7 +591,11 @@ fn pp_type_annotation_list(children: &[Sexp], indent: usize, in_head: bool) -> S
     // Compute the flat representation.
     let flat = flat_list(children);
 
-    let role = if in_head { Role::Head } else { Role::TypeAnnotation };
+    let role = if in_head {
+        Role::Head
+    } else {
+        Role::TypeAnnotation
+    };
     if flat.len() <= FLAT_THRESHOLD {
         // Single-line: the whole annotation is one span.
         let inner = flat_content_unstyled(children);
@@ -860,9 +873,15 @@ mod tests {
         let input = "(defn factorial [n] (if (= n 0) 1 (* n (factorial (- n 1)))))";
         let result = pretty_print_str(input);
         // Should be multi-line with 2-space body indent.
-        assert!(result.contains('\n'), "Expected multi-line output for: {input}");
+        assert!(
+            result.contains('\n'),
+            "Expected multi-line output for: {input}"
+        );
         // First line should start with (defn.
-        assert!(result.starts_with("(defn"), "Expected to start with (defn: {result}");
+        assert!(
+            result.starts_with("(defn"),
+            "Expected to start with (defn: {result}"
+        );
     }
 
     #[test]
@@ -934,11 +953,7 @@ mod tests {
         // spec: repl/spec.md §3.11 P0/P1/P2/P3 — a >=2-pair let renders one pair
         // per line with a shared right column at leftCol + W + 1.
         let out = pp_form("(let [a 1 bb 2] a)");
-        let expected = concat!(
-            "(let [a  1\n",
-            "      bb 2]\n",
-            "  a)",
-        );
+        let expected = concat!("(let [a  1\n", "      bb 2]\n", "  a)",);
         assert_eq!(out, expected, "got:\n{out}");
     }
 
@@ -947,13 +962,11 @@ mod tests {
         // spec: repl/spec.md §3.11 P0 — a two-arm match that would fit flat MUST
         // render multi-line aligned; the arm patterns MUST NOT share a line.
         let out = pp_form("(match x [(A a) 1 (B b) 2])");
-        let expected = concat!(
-            "(match x [(A a) 1\n",
-            "          (B b) 2])",
-        );
+        let expected = concat!("(match x [(A a) 1\n", "          (B b) 2])",);
         assert_eq!(out, expected, "got:\n{out}");
         assert!(
-            !out.lines().any(|l| l.contains("(A a)") && l.contains("(B b)")),
+            !out.lines()
+                .any(|l| l.contains("(A a)") && l.contains("(B b)")),
             "arm patterns must not share a line:\n{out}"
         );
     }
@@ -1014,7 +1027,10 @@ mod tests {
         );
         let out = pretty_print(&form);
         // No panic; all three binding elements are preserved somewhere.
-        assert!(out.contains('a') && out.contains('1') && out.contains('b'), "got:\n{out}");
+        assert!(
+            out.contains('a') && out.contains('1') && out.contains('b'),
+            "got:\n{out}"
+        );
     }
 
     #[test]
@@ -1097,7 +1113,10 @@ mod tests {
         // render single-line (which would place the let at column 0). The let is
         // pushed to its own line and aligns correctly.
         let out = pp_form("[x (let [a 1 bb 2] a)]");
-        assert!(out.contains('\n'), "bracket must break to multi-line:\n{out}");
+        assert!(
+            out.contains('\n'),
+            "bracket must break to multi-line:\n{out}"
+        );
         let a_col = out.lines().find_map(|l| l.find("[a ")).map(|c| c + 1);
         let bb_col = out.lines().find_map(|l| l.find("bb "));
         assert_eq!(a_col, bb_col, "nested let left column must align:\n{out}");

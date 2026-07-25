@@ -37,7 +37,7 @@ mod utilization;
 // `super::…` (children can reach a parent's private `use` items). Re-exported
 // `pub(crate)` so the hub is a single resolution point and the imports are not
 // flagged unused.
-pub(crate) use capture_rc::{emit_capture_dec_into, emit_capture_inc_into, CaptureRelease};
+pub(crate) use capture_rc::{CaptureRelease, emit_capture_dec_into, emit_capture_inc_into};
 // The borrowed-builder extern-call helper — reached by `compiler::vec_codegen`
 // (the vec-query COW emission cores) through this hub.
 pub(crate) use fn_as_value::emit_extern_call_in_wrapper;
@@ -47,8 +47,8 @@ pub(crate) use free_vars::find_free_vars;
 // the `sparkability` submodule itself is private to `control_flow`. The unit
 // tests reach `find_sparkable_args` via `super::` on the same re-export.
 pub(crate) use sparkability::{
-    find_sparkable_args, find_sparkable_args_with, SparkAdmit, CAPTURE_BORROW_ENABLED,
-    LENIENT_DISABLED, SPARK_ADMIT,
+    CAPTURE_BORROW_ENABLED, LENIENT_DISABLED, SPARK_ADMIT, SparkAdmit, find_sparkable_args,
+    find_sparkable_args_with,
 };
 // `spark_density` (B4 density axis, lenient-eval.md §2.7) — reached by the
 // `sparkability_tests` sibling via `super::` for exact-score matrix assertions.

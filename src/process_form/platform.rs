@@ -12,7 +12,7 @@ use cranelisp_types::{CranelispError, ModuleFullPath, PlatformSpec};
 
 use crate::worker::ModuleCompiler;
 
-use super::{BlockAction, fq_module_is_loaded, drive_module_dep};
+use super::{BlockAction, drive_module_dep, fq_module_is_loaded};
 
 /// Outcome of the layout-hash gate (platform-interface.md §5.5.4).
 ///
@@ -126,11 +126,7 @@ pub(super) fn handle_platform(
 
     // All referenced type modules are live — register the platform's sigs (GOT
     // wrap in place + FQ-resolved schemes + got_slot = manifest index).
-    crate::platform::register_platform_in_tc(
-        ctx.symbol_tables,
-        ctx.module_aliases,
-        &platform,
-    )?;
+    crate::platform::register_platform_in_tc(ctx.symbol_tables, ctx.module_aliases, &platform)?;
 
     // The platform module's `SymbolTable` now wraps the DLL's exported GOT in
     // place (`register_platform_in_tc`, platform-interface.md §6.4) and carries
@@ -153,8 +149,7 @@ pub(super) fn handle_platform(
             .get(&module_path)
             .map(|t| cranelisp_backend::schema::platform_effect_roots(&t))
             .unwrap_or_default();
-        let host_hash =
-            cranelisp_backend::schema::compute_layout_hash(ctx.symbol_tables, &roots);
+        let host_hash = cranelisp_backend::schema::compute_layout_hash(ctx.symbol_tables, &roots);
         // is_repl: the explicit run-mode signal (D1 ruling §4). REPL warns-and-
         // loads on layout-hash drift (the regeneration bootstrap, §5.5.1);
         // `--run`/`--link` hard-refuse. Read from `SharedState.run_mode` — the

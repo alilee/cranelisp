@@ -32,7 +32,7 @@
 use cranelift::prelude::*;
 use cranelift_module::{FuncId, Module};
 
-use cranelisp_types::{ErrorLocation, CranelispError, Span};
+use cranelisp_types::{CranelispError, ErrorLocation, Span};
 
 /// Try to emit inline Cranelift IR for a Ring 0 primitive call.
 ///
@@ -205,7 +205,9 @@ fn emit_binary_float(
     let lhs = builder.ins().bitcast(types::F64, MemFlags::new(), args[0]);
     let rhs = builder.ins().bitcast(types::F64, MemFlags::new(), args[1]);
     let result_f64 = op(builder, lhs, rhs);
-    Ok(builder.ins().bitcast(types::I64, MemFlags::new(), result_f64))
+    Ok(builder
+        .ins()
+        .bitcast(types::I64, MemFlags::new(), result_f64))
 }
 
 // --- Comparison helpers ---
@@ -350,12 +352,13 @@ fn emit_panic_return<M: Module>(
     msg: &[u8],
     span: Span,
 ) -> Result<(), CranelispError> {
-    let data_id = module
-        .declare_anonymous_data(false, false)
-        .map_err(|e| CranelispError::CodegenError {
-            message: format!("failed to declare panic data: {e}"),
-            location: ErrorLocation::from_span(span),
-        })?;
+    let data_id =
+        module
+            .declare_anonymous_data(false, false)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to declare panic data: {e}"),
+                location: ErrorLocation::from_span(span),
+            })?;
     let mut desc = cranelift_module::DataDescription::new();
     desc.define(msg.to_vec().into_boxed_slice());
     module
@@ -394,7 +397,12 @@ fn emit_panic_return<M: Module>(
 // --- Utility ---
 
 /// Return an error if `args.len() != expected`.
-fn require_args(name: &str, args: &[Value], expected: usize, span: Span) -> Result<(), CranelispError> {
+fn require_args(
+    name: &str,
+    args: &[Value],
+    expected: usize,
+    span: Span,
+) -> Result<(), CranelispError> {
     if args.len() != expected {
         return Err(CranelispError::CodegenError {
             message: format!(

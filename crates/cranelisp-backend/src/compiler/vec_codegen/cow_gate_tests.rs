@@ -27,7 +27,9 @@ use cranelisp_types::{
     ConcreteType, FQSymbol, JitSymbol, MonoExpr, ResolvedCall, Span, Symbol, VarRef,
 };
 
-use super::{cow_retains_reused_gate, cow_site_retain_verdict, cow_source_is_borrowed, is_cow_vec_op};
+use super::{
+    cow_retains_reused_gate, cow_site_retain_verdict, cow_source_is_borrowed, is_cow_vec_op,
+};
 
 fn var(name: &str) -> MonoExpr {
     MonoExpr::Var {
@@ -59,13 +61,21 @@ fn temp() -> MonoExpr {
 /// `Some(name)` = typecheck resolved it to the builtin `name` (the real COW
 /// site); `None` = it resolved to something else (a user-defined fn that merely
 /// spells `vec-set`, a trait/sig dispatch, …).
-fn cow_apply(callee_spelling: &str, carrier: Option<&str>, source: MonoExpr, escapes: Option<bool>) -> MonoExpr {
+fn cow_apply(
+    callee_spelling: &str,
+    carrier: Option<&str>,
+    source: MonoExpr,
+    escapes: Option<bool>,
+) -> MonoExpr {
     MonoExpr::Apply {
         callee: Box::new(var(callee_spelling)),
         args: vec![source, var("i"), var("x")],
         span: Span::SYNTHETIC,
-        resolved_call: carrier
-            .map(|n| Box::new(ResolvedCall::BuiltinFn { name: Symbol::from(n) })),
+        resolved_call: carrier.map(|n| {
+            Box::new(ResolvedCall::BuiltinFn {
+                name: Symbol::from(n),
+            })
+        }),
         dispatch: cranelisp_types::ApplyRef::ViaCallee,
         ty: ConcreteType::Int,
         escapes,
@@ -117,7 +127,8 @@ fn consumer_verdict_matches_producer_emitted_inc_over_the_matrix() {
                 ] {
                     for return_cow_source in [None, Some(&ret_src)] {
                         let node = cow_apply(op, Some(op), source.clone(), escapes);
-                        let consumer = cow_site_retain_verdict(&node, return_cow_source, analysis_off);
+                        let consumer =
+                            cow_site_retain_verdict(&node, return_cow_source, analysis_off);
                         let producer =
                             producer_emitted_inc(&source, escapes, return_cow_source, analysis_off);
                         assert_eq!(

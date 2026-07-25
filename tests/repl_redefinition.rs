@@ -774,7 +774,10 @@ fn sig_broken_symbol_primary_line_matches_bare_lookup_fully_qualified() {
     // primary line once; bare lookup emits it once; /sig MUST emit the same
     // line — so a conforming session shows it 3 times. Today /sig renders the
     // short form `:(Fn [Int] Int) g ; defn` and the count is 2.
-    let fq_primary = count(&cap.stdout, ":(Fn [primitives/Int] primitives/Int) user/g ; defn");
+    let fq_primary = count(
+        &cap.stdout,
+        ":(Fn [primitives/Int] primitives/Int) user/g ; defn",
+    );
     assert!(
         fq_primary >= 3,
         "/sig and bare lookup MUST render the same fully-qualified primary \

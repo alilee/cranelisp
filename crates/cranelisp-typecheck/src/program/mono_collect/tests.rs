@@ -14,8 +14,6 @@ mod carriers;
 
 mod multi_sig;
 
-
-
 // spec: 03-types §3.6 — collect_constrained_calls finds direct call to constrained fn
 #[test]
 fn test_collect_constrained_calls_finds_direct_call() {
@@ -33,7 +31,12 @@ fn test_collect_constrained_calls_finds_direct_call() {
     };
 
     let mut calls = Vec::new();
-    TypeCheckEnv::<()>::collect_constrained_calls(&expr, &constrained, &all_var_carriers(&expr), &mut calls);
+    TypeCheckEnv::<()>::collect_constrained_calls(
+        &expr,
+        &constrained,
+        &all_var_carriers(&expr),
+        &mut calls,
+    );
 
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].0.as_ref(), "add");
@@ -58,7 +61,12 @@ fn test_collect_constrained_calls_ignores_non_constrained() {
     };
 
     let mut calls = Vec::new();
-    TypeCheckEnv::<()>::collect_constrained_calls(&expr, &constrained, &all_var_carriers(&expr), &mut calls);
+    TypeCheckEnv::<()>::collect_constrained_calls(
+        &expr,
+        &constrained,
+        &all_var_carriers(&expr),
+        &mut calls,
+    );
 
     assert!(calls.is_empty());
 }
@@ -88,7 +96,12 @@ fn test_collect_constrained_calls_recurses_into_let() {
     };
 
     let mut calls = Vec::new();
-    TypeCheckEnv::<()>::collect_constrained_calls(&expr, &constrained, &all_var_carriers(&expr), &mut calls);
+    TypeCheckEnv::<()>::collect_constrained_calls(
+        &expr,
+        &constrained,
+        &all_var_carriers(&expr),
+        &mut calls,
+    );
 
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].0.as_ref(), "add");
@@ -100,12 +113,24 @@ fn test_collect_constrained_calls_recurses_into_if() {
     let constrained = HashSet::from([Symbol::from("add")]);
     // (if true (add 1 2) (add 3 4))
     let expr = Expr::If {
-        cond: Box::new(Expr::BoolLit { value: true, span: span(4, 8), inferred_type: None, }),
+        cond: Box::new(Expr::BoolLit {
+            value: true,
+            span: span(4, 8),
+            inferred_type: None,
+        }),
         then_branch: Box::new(Expr::Apply {
             callee: Box::new(Expr::var(Symbol::from("add"), span(10, 13))),
             args: vec![
-                Expr::IntLit { value: 1, span: span(14, 15), inferred_type: None, },
-                Expr::IntLit { value: 2, span: span(16, 17), inferred_type: None, },
+                Expr::IntLit {
+                    value: 1,
+                    span: span(14, 15),
+                    inferred_type: None,
+                },
+                Expr::IntLit {
+                    value: 2,
+                    span: span(16, 17),
+                    inferred_type: None,
+                },
             ],
             span: span(9, 18),
             resolved_call: None,
@@ -114,8 +139,16 @@ fn test_collect_constrained_calls_recurses_into_if() {
         else_branch: Box::new(Expr::Apply {
             callee: Box::new(Expr::var(Symbol::from("add"), span(20, 23))),
             args: vec![
-                Expr::IntLit { value: 3, span: span(24, 25), inferred_type: None, },
-                Expr::IntLit { value: 4, span: span(26, 27), inferred_type: None, },
+                Expr::IntLit {
+                    value: 3,
+                    span: span(24, 25),
+                    inferred_type: None,
+                },
+                Expr::IntLit {
+                    value: 4,
+                    span: span(26, 27),
+                    inferred_type: None,
+                },
             ],
             span: span(19, 28),
             resolved_call: None,
@@ -126,7 +159,12 @@ fn test_collect_constrained_calls_recurses_into_if() {
     };
 
     let mut calls = Vec::new();
-    TypeCheckEnv::<()>::collect_constrained_calls(&expr, &constrained, &all_var_carriers(&expr), &mut calls);
+    TypeCheckEnv::<()>::collect_constrained_calls(
+        &expr,
+        &constrained,
+        &all_var_carriers(&expr),
+        &mut calls,
+    );
 
     assert_eq!(calls.len(), 2, "should find calls in both branches");
 }
@@ -171,8 +209,16 @@ fn mono_instance_carries_concrete_boundary_monoexpr_body() {
     let expr_input = TopLevel::Expr(Expr::Apply {
         callee: Box::new(Expr::var(Symbol::from("add"), span(100, 103))),
         args: vec![
-            Expr::IntLit { value: 3, span: span(104, 105), inferred_type: None },
-            Expr::IntLit { value: 4, span: span(106, 107), inferred_type: None },
+            Expr::IntLit {
+                value: 3,
+                span: span(104, 105),
+                inferred_type: None,
+            },
+            Expr::IntLit {
+                value: 4,
+                span: span(106, 107),
+                inferred_type: None,
+            },
         ],
         span: span(99, 108),
         resolved_call: None,
@@ -245,7 +291,11 @@ fn caller_codegen_view_carries_post_mono_sigdispatch() {
             params: vec![],
             body: Expr::Apply {
                 callee: Box::new(Expr::var(Symbol::from("id"), span(40, 42))),
-                args: vec![Expr::IntLit { value: 7, span: span(43, 44), inferred_type: None }],
+                args: vec![Expr::IntLit {
+                    value: 7,
+                    span: span(43, 44),
+                    inferred_type: None,
+                }],
                 span: span(39, 45),
                 resolved_call: None,
                 inferred_type: None,
@@ -271,13 +321,21 @@ fn caller_codegen_view_carries_post_mono_sigdispatch() {
     // rebuilt AFTER the mono pass rewrote the dispatch.
     let st = tc.symbol_table();
     let main_view = match st.get("main") {
-        Some(ModuleEntry::Def { codegen_view: Some(v), .. }) => v.clone(),
+        Some(ModuleEntry::Def {
+            codegen_view: Some(v),
+            ..
+        }) => v.clone(),
         other => panic!("main has no codegen_view: {other:?}"),
     };
 
     fn collect_sig_dispatch(e: &MonoExpr, out: &mut Vec<String>) {
         let rc = match e {
-            MonoExpr::Apply { callee, args, resolved_call, .. } => {
+            MonoExpr::Apply {
+                callee,
+                args,
+                resolved_call,
+                ..
+            } => {
                 collect_sig_dispatch(callee, out);
                 for a in args {
                     collect_sig_dispatch(a, out);
@@ -292,7 +350,12 @@ fn caller_codegen_view_carries_post_mono_sigdispatch() {
                 collect_sig_dispatch(body, out);
                 None
             }
-            MonoExpr::If { cond, then_branch, else_branch, .. } => {
+            MonoExpr::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
                 collect_sig_dispatch(cond, out);
                 collect_sig_dispatch(then_branch, out);
                 collect_sig_dispatch(else_branch, out);
@@ -370,7 +433,9 @@ fn box_field_through_hof_monomorphises_concrete() {
             assert!(
                 matches!(
                     kind.as_ref(),
-                    DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
+                    DefKind::UserFn {
+                        fn_state: UserFnState::Concrete { .. }
+                    }
                 ),
                 "mk$Int must be a Concrete (slotted) mono instance, got {kind:?}",
             );
@@ -510,7 +575,9 @@ fn cross_module_imported_constrained_fn_monomorphises_in_defining_scope() {
         Some(ModuleEntry::Def { kind, .. }) => assert!(
             matches!(
                 kind.as_ref(),
-                DefKind::UserFn { fn_state: UserFnState::Constrained(_) }
+                DefKind::UserFn {
+                    fn_state: UserFnState::Constrained(_)
+                }
             ),
             "cmp must be a constrained UserFn in `helper`, got {kind:?}",
         ),
@@ -585,7 +652,11 @@ fn cross_module_imported_constrained_fn_monomorphises_in_defining_scope() {
          defining module `helper`, FIXME 0519); found: {monos:?}",
     );
     assert!(
-        monos.iter().find(|(n, _)| n == "helper/cmp$Int").map(|(_, c)| *c).unwrap_or(false),
+        monos
+            .iter()
+            .find(|(n, _)| n == "helper/cmp$Int")
+            .map(|(_, c)| *c)
+            .unwrap_or(false),
         "the `cmp$Int` mono entry must be a concrete UserFn owning its own \
          GOT slot (Option-A concrete-shape-owns-the-slot); found: {monos:?}",
     );
@@ -862,7 +933,9 @@ fn cross_module_polymorphic_result_hops_monomorphise_with_concrete_result_type()
                 assert!(
                     matches!(
                         kind.as_ref(),
-                        DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
+                        DefKind::UserFn {
+                            fn_state: UserFnState::Concrete { .. }
+                        }
                     ),
                     "{name} mono must be a Concrete UserFn (its own GOT slot), got {kind:?}",
                 );
@@ -918,9 +991,7 @@ fn u_c1_fold_bodied_scheme_ties_result_to_params() {
     // (Fn [(Vec x) (Vec x)] (Vec x)) — same inner var x throughout.
     let vec_var = |t: &Type| -> Option<u32> {
         match t {
-            Type::ADT(name, args)
-                if name.name.as_ref() == "Vec" && args.len() == 1 =>
-            {
+            Type::ADT(name, args) if name.name.as_ref() == "Vec" && args.len() == 1 => {
                 match &args[0] {
                     Type::Var(id) => Some(*id),
                     _ => None,
@@ -932,15 +1003,11 @@ fn u_c1_fold_bodied_scheme_ties_result_to_params() {
     match &scheme.ty {
         Type::Fn(params, ret) => {
             assert_eq!(params.len(), 2, "vconcat takes (va vb)");
-            let a = vec_var(&params[0]).unwrap_or_else(|| {
-                panic!("param 0 must be (Vec x), got {:?}", params[0])
-            });
-            let b = vec_var(&params[1]).unwrap_or_else(|| {
-                panic!("param 1 must be (Vec x), got {:?}", params[1])
-            });
-            let r = vec_var(ret).unwrap_or_else(|| {
-                panic!("result must be (Vec x), got {:?}", ret)
-            });
+            let a = vec_var(&params[0])
+                .unwrap_or_else(|| panic!("param 0 must be (Vec x), got {:?}", params[0]));
+            let b = vec_var(&params[1])
+                .unwrap_or_else(|| panic!("param 1 must be (Vec x), got {:?}", params[1]));
+            let r = vec_var(ret).unwrap_or_else(|| panic!("result must be (Vec x), got {:?}", ret));
             assert!(
                 a == b && b == r,
                 "vconcat's two (Vec _) params and its (Vec _) result must \
@@ -1042,7 +1109,14 @@ fn method_only_import_foreign_dispatch_type_resolves_at_home_d2() {
 /// reads (`control_flow/fn_as_value.rs::emit_wrapper_call`).
 fn autocurry_dispatch_in(view: &MonoDefnVariant) -> cranelisp_types::ApplyRef {
     fn find(e: &MonoExpr) -> Option<cranelisp_types::ApplyRef> {
-        if let MonoExpr::Apply { dispatch, resolved_call, args, callee, .. } = e {
+        if let MonoExpr::Apply {
+            dispatch,
+            resolved_call,
+            args,
+            callee,
+            ..
+        } = e
+        {
             if matches!(
                 resolved_call.as_deref(),
                 Some(cranelisp_types::ResolvedCall::AutoCurry { .. })
@@ -1086,11 +1160,14 @@ fn autocurry_over_trait_operator_never_carries_the_decl_fq() {
     let view = main_codegen_view_of(&tc, "g");
     match autocurry_dispatch_in(&view) {
         cranelisp_types::ApplyRef::Dispatch(fq) => {
-            assert!(
-                !tc.env().fq_is_trait_method_decl(&fq),
-                "the auto-curry carrier MUST NOT be the trait-method DECLARATION \
-                 `{fq}` — a declaration entry has no GOT slot, so the fn-as-value \
-                 wrapper cannot resolve it (S115 §1.3)"
+            assert_eq!(
+                fq,
+                FQSymbol {
+                    module: ModuleFullPath::from("primitives"),
+                    symbol: Symbol::from("add-i64"),
+                },
+                "the settled operator curry must retain the exact builtin storage \
+                 identity, never the trait declaration or a reconstructed name"
             );
         }
         other => panic!(
@@ -1107,7 +1184,10 @@ fn autocurry_over_trait_operator_never_carries_the_decl_fq() {
 fn fq_is_trait_method_decl_discriminates_decl_from_callable() {
     let mut tc = tc_with_prims();
     register_num_trait_inline(&mut tc);
-    check_src(&mut tc, "(defn plus2 [:primitives/Int x] :primitives/Int x)");
+    check_src(
+        &mut tc,
+        "(defn plus2 [:primitives/Int x] :primitives/Int x)",
+    );
     let module = tc.state.current_module.clone();
     assert!(
         tc.env().fq_is_trait_method_decl(&FQSymbol {
@@ -1126,7 +1206,6 @@ fn fq_is_trait_method_decl_discriminates_decl_from_callable() {
          boundary must not over-reach and strand ordinary plain-fn curries"
     );
 }
-
 
 // spec: design/backend/s115-carrier-and-rc-sweep.md §1.3 — the MULTI-SIG
 // per-variant TWIN of `autocurry_over_trait_operator_never_carries_the_decl_fq`

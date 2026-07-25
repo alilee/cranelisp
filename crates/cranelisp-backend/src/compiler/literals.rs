@@ -87,13 +87,8 @@ where
             })?;
 
         // Get the data pointer as a Cranelift value.
-        let data_gv = self
-            .module
-            .declare_data_in_func(data_id, self.builder.func);
-        let data_ptr = self
-            .builder
-            .ins()
-            .global_value(types::I64, data_gv);
+        let data_gv = self.module.declare_data_in_func(data_id, self.builder.func);
+        let data_ptr = self.builder.ins().global_value(types::I64, data_gv);
 
         let len_val = self.builder.ins().iconst(types::I64, len);
 
@@ -246,7 +241,10 @@ where
         // undefined table reference (unreachable post-typecheck — the located
         // `ViewBuildError::Unresolved` fires at `from_expr`) and keeps the message.
         match resolution {
-            VarRef::Local { binder, binding_span } => Err(CranelispError::CodegenError {
+            VarRef::Local {
+                binder,
+                binding_span,
+            } => Err(CranelispError::CodegenError {
                 message: format!(
                     "internal invariant violation (VarRef::Local): binder '{binder}' \
                      for reference '{name}' is absent from the backend scope stack \
@@ -269,7 +267,10 @@ where
     /// §1.1.2), NO name resolution / chain-follow. Returns the tag iff the fetched
     /// entry is a fieldless (nullary) `DefKind::Constructor`. `None` carrier (a
     /// non-ctor value ref) ⇒ `None`.
-    pub(crate) fn nullary_constructor_tag(&self, resolved_target: Option<&FQSymbol>) -> Option<usize> {
+    pub(crate) fn nullary_constructor_tag(
+        &self,
+        resolved_target: Option<&FQSymbol>,
+    ) -> Option<usize> {
         let (_fqtn, ctor_info) = self.ctx.ctor_meta_at(resolved_target?)?;
         if ctor_info.fields.is_empty() {
             Some(ctor_info.tag)
@@ -277,7 +278,6 @@ where
             None
         }
     }
-
 
     // --- Operator-as-value support (spec §7.6) ---
 
@@ -323,13 +323,13 @@ where
         primitive_name: &str,
         span: Span,
     ) -> Result<Value, CranelispError> {
-        let alloc_id =
-            self.ctx
-                .alloc_func_id
-                .ok_or_else(|| CranelispError::CodegenError {
-                    message: "runtime/alloc not declared (need declare_intrinsics)".into(),
-                    location: ErrorLocation::from_span(span),
-                })?;
+        let alloc_id = self
+            .ctx
+            .alloc_func_id
+            .ok_or_else(|| CranelispError::CodegenError {
+                message: "runtime/alloc not declared (need declare_intrinsics)".into(),
+                location: ErrorLocation::from_span(span),
+            })?;
 
         // S110 W2 (S13; §1.4 backend-synthesized name — direct keyed read, no
         // resolver). The target is a FIXED compile-time mapping into the
@@ -342,14 +342,15 @@ where
             module: ModuleFullPath::from("primitives"),
             symbol: Symbol::from(primitive_name),
         };
-        let (target_module, slot) = self.ctx.got_entry_at(&prim_fq).ok_or_else(|| {
-            CranelispError::CodegenError {
-                message: format!(
-                    "operator-as-value: no GOT slot for primitive '{primitive_name}'"
-                ),
-                location: ErrorLocation::from_span(span),
-            }
-        })?;
+        let (target_module, slot) =
+            self.ctx
+                .got_entry_at(&prim_fq)
+                .ok_or_else(|| CranelispError::CodegenError {
+                    message: format!(
+                        "operator-as-value: no GOT slot for primitive '{primitive_name}'"
+                    ),
+                    location: ErrorLocation::from_span(span),
+                })?;
 
         // Declare the GOT data symbol for the primitive's owning module.
         // The data symbol's address IS the slab base (per Decision 23).
@@ -395,12 +396,19 @@ where
 
             // Signature: (env_ptr, a, b) -> i64
             for _ in 0..3 {
-                inner_ctx.func.signature.params.push(AbiParam::new(types::I64));
+                inner_ctx
+                    .func
+                    .signature
+                    .params
+                    .push(AbiParam::new(types::I64));
             }
-            inner_ctx.func.signature.returns.push(AbiParam::new(types::I64));
+            inner_ctx
+                .func
+                .signature
+                .returns
+                .push(AbiParam::new(types::I64));
 
-            let mut builder =
-                FunctionBuilder::new(&mut inner_ctx.func, &mut inner_func_ctx);
+            let mut builder = FunctionBuilder::new(&mut inner_ctx.func, &mut inner_func_ctx);
 
             let entry_block = builder.create_block();
             builder.append_block_params_for_function_params(entry_block);
@@ -415,18 +423,12 @@ where
             // GOT-indirect: slab_base = global_value(got_data_id);
             //               fn_ptr = load(slab_base + slot * 8);
             //               call_indirect(fn_ptr, [a, b]).
-            let gv = self
-                .module
-                .declare_data_in_func(got_data_id, builder.func);
+            let gv = self.module.declare_data_in_func(got_data_id, builder.func);
             let slab_base = builder.ins().global_value(types::I64, gv);
-            let slot_addr =
-                builder.ins().iadd_imm(slab_base, (slot * 8) as i64);
-            let fn_ptr = builder.ins().load(
-                types::I64,
-                MemFlags::trusted(),
-                slot_addr,
-                0,
-            );
+            let slot_addr = builder.ins().iadd_imm(slab_base, (slot * 8) as i64);
+            let fn_ptr = builder
+                .ins()
+                .load(types::I64, MemFlags::trusted(), slot_addr, 0);
 
             // Build call_indirect signature: (i64, i64) -> i64.
             let mut prim_sig = self.module.make_signature();
@@ -452,12 +454,7 @@ where
 
         // Allocate a closure with zero captures: [header | code_ptr | drop_glue_ptr(0)].
         let payload_size = HeapClosure::payload_size(0) as i64;
-        let base_ptr = heap::emit_alloc(
-            &mut self.builder,
-            self.module,
-            alloc_id,
-            payload_size,
-        );
+        let base_ptr = heap::emit_alloc(&mut self.builder, self.module, alloc_id, payload_size);
 
         // Store the wrapper function pointer.
         let wrapper_ref = self
@@ -490,83 +487,78 @@ mod tests {
     // `crate::test_support`. Verbatim bodies from the former `src/tests.rs`.
     use crate::test_support::*;
 
+    // spec: 04-expressions §4.1.1 — integer literal codegen
+    #[test]
+    fn test_compile_and_run_expr() {
+        let expr = Expr::IntLit {
+            value: 99,
+            span: Span::new(0, 2),
+            inferred_type: None,
+        };
+        let check = empty_check();
 
-// spec: 04-expressions §4.1.1 — integer literal codegen
-#[test]
-fn test_compile_and_run_expr() {
-    let expr = Expr::IntLit {
-        value: 99,
-        span: Span::new(0, 2),
-        inferred_type: None,
-    };
-    let check = empty_check();
+        let value = test_compile_and_run(&expr, &check, &empty_tables()).unwrap();
+        assert_eq!(value, 99);
+    }
 
-    let value = test_compile_and_run(&expr, &check, &empty_tables()).unwrap();
-    assert_eq!(value, 99);
-}
+    // spec: 04-expressions §4.1.3 — boolean literal codegen
+    #[test]
+    fn test_compile_and_run_expr_bool() {
+        let expr = Expr::BoolLit {
+            value: true,
+            span: Span::new(0, 4),
+            inferred_type: None,
+        };
+        let check = empty_check();
 
+        let value = test_compile_and_run(&expr, &check, &empty_tables()).unwrap();
+        assert_eq!(value, 1);
+    }
 
-// spec: 04-expressions §4.1.3 — boolean literal codegen
-#[test]
-fn test_compile_and_run_expr_bool() {
-    let expr = Expr::BoolLit {
-        value: true,
-        span: Span::new(0, 4),
-        inferred_type: None,
-    };
-    let check = empty_check();
+    // --- Ring 1 tests ---
 
-    let value = test_compile_and_run(&expr, &check, &empty_tables()).unwrap();
-    assert_eq!(value, 1);
-}
+    // spec: 04-expressions §4.1.4 — string literal codegen, heap allocation
+    #[test]
+    fn test_compile_string_literal() {
+        let expr = Expr::StringLit {
+            value: "hello".to_string(),
+            span: Span::new(0, 7),
+            inferred_type: None,
+        };
+        let check = empty_check();
 
+        let result = test_compile_and_run(&expr, &check, &empty_tables());
+        assert!(result.is_ok(), "string literal should compile: {result:?}");
+        let ptr = result.unwrap();
+        // ptr should be a heap pointer (> NULLARY_TAG_THRESHOLD)
+        assert!(ptr > 1024, "expected heap pointer, got {ptr}");
 
-// --- Ring 1 tests ---
+        // Read back the string content via runtime API.
+        let s = unsafe { cranelisp_intrinsics::heap_string::read_string_as_str(ptr) };
+        assert_eq!(s, "hello");
 
-// spec: 04-expressions §4.1.4 — string literal codegen, heap allocation
-#[test]
-fn test_compile_string_literal() {
-    let expr = Expr::StringLit {
-        value: "hello".to_string(),
-        span: Span::new(0, 7),
-        inferred_type: None,
-    };
-    let check = empty_check();
+        // Clean up the allocation.
+        cranelisp_intrinsics::alloc::heap_dealloc(ptr);
+    }
 
-    let result = test_compile_and_run(&expr, &check, &empty_tables());
-    assert!(result.is_ok(), "string literal should compile: {result:?}");
-    let ptr = result.unwrap();
-    // ptr should be a heap pointer (> NULLARY_TAG_THRESHOLD)
-    assert!(ptr > 1024, "expected heap pointer, got {ptr}");
+    // spec: 04-expressions §4.1.4 — empty string literal codegen
+    #[test]
+    fn test_compile_empty_string_literal() {
+        let expr = Expr::StringLit {
+            value: String::new(),
+            span: Span::new(0, 2),
+            inferred_type: None,
+        };
+        let check = empty_check();
 
-    // Read back the string content via runtime API.
-    let s = unsafe { cranelisp_intrinsics::heap_string::read_string_as_str(ptr) };
-    assert_eq!(s, "hello");
+        let result = test_compile_and_run(&expr, &check, &empty_tables());
+        assert!(result.is_ok(), "empty string should compile: {result:?}");
+        let ptr = result.unwrap();
+        assert!(ptr > 1024, "expected heap pointer, got {ptr}");
 
-    // Clean up the allocation.
-    cranelisp_intrinsics::alloc::heap_dealloc(ptr);
-}
+        let s = unsafe { cranelisp_intrinsics::heap_string::read_string_as_str(ptr) };
+        assert_eq!(s, "");
 
-
-// spec: 04-expressions §4.1.4 — empty string literal codegen
-#[test]
-fn test_compile_empty_string_literal() {
-    let expr = Expr::StringLit {
-        value: String::new(),
-        span: Span::new(0, 2),
-        inferred_type: None,
-    };
-    let check = empty_check();
-
-    let result = test_compile_and_run(&expr, &check, &empty_tables());
-    assert!(result.is_ok(), "empty string should compile: {result:?}");
-    let ptr = result.unwrap();
-    assert!(ptr > 1024, "expected heap pointer, got {ptr}");
-
-    let s = unsafe { cranelisp_intrinsics::heap_string::read_string_as_str(ptr) };
-    assert_eq!(s, "");
-
-    cranelisp_intrinsics::alloc::heap_dealloc(ptr);
-}
-
+        cranelisp_intrinsics::alloc::heap_dealloc(ptr);
+    }
 }

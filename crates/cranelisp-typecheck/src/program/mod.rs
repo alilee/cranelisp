@@ -21,11 +21,11 @@
 
 use std::collections::{HashMap, HashSet};
 
-use cranelisp_types::{ErrorLocation,
-    ConstrainedFn, CranelispError, Defn, DefKind, DefnVariant,
-    Expr, FQSymbol, JitSymbol, ModuleEntry, ModuleFullPath, ParametricFn,
-    ModuleStrategy, MonoDefn, ResolvedCall, Span, Subst, Symbol, SymbolTable, TopLevel, Type,
-    TypeId, UserFnState, Visibility, Warning, apply,
+use cranelisp_types::{
+    ConstrainedFn, CranelispError, DefKind, Defn, DefnVariant, ErrorLocation, Expr, FQSymbol,
+    JitSymbol, ModuleEntry, ModuleFullPath, ModuleStrategy, MonoDefn, ParametricFn, ResolvedCall,
+    Span, Subst, Symbol, SymbolTable, TopLevel, Type, TypeId, UserFnState, Visibility, Warning,
+    apply,
 };
 
 use crate::result::CheckResult;
@@ -34,12 +34,12 @@ use crate::result::{DispatchGap, UnresolvedDispatchSite};
 use crate::checker::{CheckState, TypeCheckEnv};
 use crate::scheme::mono;
 
-mod support;
-mod callees;
-mod register;
 mod body;
+mod callees;
 mod finalize;
 mod mono_collect;
+mod register;
+mod support;
 #[cfg(test)]
 mod test_driver;
 
@@ -47,9 +47,9 @@ mod test_driver;
 // level so sibling submodules reach them via `use super::*` and the
 // existing `crate::program::<fn>` call sites in checker/adt/traits/infer
 // keep resolving unchanged (a pure decomposition moves no path).
+pub(crate) use callees::*;
 pub(crate) use mono_collect::AutoCurryDrain;
 pub(crate) use support::*;
-pub(crate) use callees::*;
 
 pub(crate) struct FormCheckResult {
     /// Method resolutions discovered while checking this form.
@@ -108,7 +108,6 @@ pub(crate) struct FormCheckResult {
     pub(crate) call_graph_edges: Vec<(Symbol, FQSymbol)>,
 }
 
-
 impl FormCheckResult {
     /// Create an empty FormCheckResult (used for no-op passes).
     pub(super) fn empty() -> Self {
@@ -127,7 +126,6 @@ impl FormCheckResult {
         }
     }
 }
-
 
 /// Per-module accumulator for form-by-form typecheck results.
 ///
@@ -184,13 +182,11 @@ pub(crate) struct ModuleCheckAccumulator {
     pub(crate) redef_slots: HashMap<Symbol, usize>,
 }
 
-
 impl Default for ModuleCheckAccumulator {
     fn default() -> Self {
         Self::new()
     }
 }
-
 
 impl ModuleCheckAccumulator {
     /// Create a new empty accumulator for a module.
@@ -221,15 +217,12 @@ impl ModuleCheckAccumulator {
 // `finalize_check_result`'s `resolve_multi_sig_overloads` post-pass — part
 // of the production `check_forms` path.
 
-
 /// Map from a multi-sig defn's base name to the MANGLED variant names that
 /// `register_mangled_variants` inserted for it (S91 Wave-7, FIXME 0432 Face A).
 /// Drives the finalize re-annotation + return-type refresh, both of which must
 /// key variant entries by their live mangled names, not the removed internal
 /// `{name}__v{i}` keys.
 type MangledNamesByBase = HashMap<Symbol, Vec<Symbol>>;
-
-
 
 impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
     /// Check a single `TopLevel` form through one pass.
@@ -260,7 +253,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             CheckPass::CheckBody => self.check_form_body(state, form, accumulator),
         }
     }
-
 }
 
 #[cfg(test)]

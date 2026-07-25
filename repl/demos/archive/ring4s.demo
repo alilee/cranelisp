@@ -1,5 +1,7 @@
 ; Cranelisp Ring 4S — Sprint 61: Bare-primitive echo, observability, IO closure fix
 
+(import [primitives [add-i64 mul-i64 not str-concat]])
+
 ; Sprint 61 delivered three user-visible wins: re-exported primitives now
 ; display a spec-conforming introspection card at the bare-value path;
 ; two new env-var-gated event logs (scheduler + IO) make concurrency
@@ -37,7 +39,7 @@ str-concat
 ; SIGABRT — one root cause. The backend-side `emit_capture_return_inc`
 ; in control_flow.rs now balances the drop. The 7-line repro runs clean.
 
-(import [primitives [Pure bind add-i64]])
+(import [primitives [Pure bind]])
 
 (defn then [a b] (bind a (fn [_] b)))
 

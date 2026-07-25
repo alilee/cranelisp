@@ -37,8 +37,12 @@ use helpers::e2e::{Cranelisp, PreludeVariant};
 // `Cranelisp::repl_prims_capture(lines)` for REPL with PrimitivesOnly prelude.
 // Both collapse `Cranelisp::new().repl()[.with_prelude(...)].stdin(lines).output()`
 // into one call. The local one-liners below keep call-sites short.
-fn repl(lines: &str) -> helpers::e2e::CrOutput { Cranelisp::repl_capture(lines) }
-fn repl_prims(lines: &str) -> helpers::e2e::CrOutput { Cranelisp::repl_prims_capture(lines) }
+fn repl(lines: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::repl_capture(lines)
+}
+fn repl_prims(lines: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::repl_prims_capture(lines)
+}
 
 // =============================================================================
 // Universal display format — repl/spec.md §1.2 / §4.1
@@ -105,8 +109,10 @@ fn display_format_has_colon_prefix() {
 // spec: repl/spec.md §1.2 — String literal display
 #[test]
 fn display_string_literal() {
-    repl(r#""hello"
-"#)
+    repl(
+        r#""hello"
+"#,
+    )
     .assert_stdout_contains(":primitives/String");
     // The quotes around the value are tolerated; we only require the type tag.
 }
@@ -171,23 +177,23 @@ fn defn_display_neg_not_closure() {
 // spec: repl/spec.md §1.3 — deftype enum produces `:user/Name ; deftype`
 #[test]
 fn deftype_display_enum() {
-    repl("(deftype Color Red Green Blue)\n")
-        .assert_stdout_contains(":user/Color ; deftype");
+    repl("(deftype Color Red Green Blue)\n").assert_stdout_contains(":user/Color ; deftype");
 }
 
 // spec: repl/spec.md §1.3 — deftype enum lists constructors in match line
 #[test]
 fn deftype_display_lists_constructors() {
-    repl("(deftype Color Red Green Blue)\n")
-        .assert_stdout_contains_all(&["Red", "Green", "Blue"]);
+    repl("(deftype Color Red Green Blue)\n").assert_stdout_contains_all(&["Red", "Green", "Blue"]);
 }
 
 // spec: repl/spec.md §1.3 — constructor display tags type and name
 #[test]
 fn constructor_display() {
-    repl("(deftype Color Red Green Blue)
+    repl(
+        "(deftype Color Red Green Blue)
 Red
-")
+",
+    )
     .assert_stdout_contains(":user/Color");
 }
 
@@ -204,9 +210,11 @@ fn list_empty_session() {
 // spec: repl/spec.md §3.3 — defn appears under Fns category
 #[test]
 fn list_shows_fn_after_defn() {
-    repl_prims("(defn foo [] 42)
+    repl_prims(
+        "(defn foo [] 42)
 /list
-")
+",
+    )
     .assert_stdout_contains_all(&["Fns:", "foo"]);
 }
 
@@ -225,9 +233,11 @@ fn list_neg_no_primitives_in_user() {
 // spec: repl/spec.md §3.3 — /list groups types under Types category
 #[test]
 fn list_shows_types_category() {
-    let out = repl("(deftype Color Red Green Blue)
+    let out = repl(
+        "(deftype Color Red Green Blue)
 /list
-");
+",
+    );
     assert!(
         out.stdout.contains("Color"),
         "/list must include the user-defined type 'Color'; got:\n{}",
@@ -326,9 +336,11 @@ fn imports_lists_special_forms() {
 // spec: repl/spec.md §3.4 — /imports shows imported symbols after import
 #[test]
 fn imports_shows_imported_primitive() {
-    let out = repl("(import [primitives [add-i64]])
+    let out = repl(
+        "(import [primitives [add-i64]])
 /imports
-");
+",
+    );
     assert!(
         out.stdout.contains("add-i64"),
         "/imports must show imported primitive 'add-i64'; got:\n{}",
@@ -479,9 +491,11 @@ fn imports_neg_no_prelude_group_when_refused() {
 // spec: repl/spec.md §3.1 — /sig shows the type signature
 #[test]
 fn sig_shows_type_signature() {
-    let out = repl_prims("(defn inc [x] (add-i64 x 1))
+    let out = repl_prims(
+        "(defn inc [x] (add-i64 x 1))
 /sig inc
-");
+",
+    );
     assert!(
         out.stdout.contains("Fn"),
         "/sig must show a function type; got:\n{}",
@@ -492,9 +506,11 @@ fn sig_shows_type_signature() {
 // spec: repl/spec.md §3.1 — /doc on un-documented fn says no docstring
 #[test]
 fn doc_no_docstring() {
-    let out = repl_prims("(defn foo [] 42)
+    let out = repl_prims(
+        "(defn foo [] 42)
 /doc foo
-");
+",
+    );
     assert!(
         out.stdout.contains("no docstring"),
         "/doc must report 'no docstring' for un-documented fn; got:\n{}",
@@ -505,9 +521,11 @@ fn doc_no_docstring() {
 // spec: repl/spec.md §3.1 — /doc shows the docstring when present
 #[test]
 fn doc_shows_docstring() {
-    let out = repl_prims(r#"(defn foo "increments by zero" [] 42)
+    let out = repl_prims(
+        r#"(defn foo "increments by zero" [] 42)
 /doc foo
-"#);
+"#,
+    );
     // The docstring text should appear in /doc output.
     assert!(
         out.stdout.contains("increments by zero"),
@@ -534,8 +552,7 @@ fn type_shows_int_for_arithmetic() {
 // spec: repl/spec.md §3.2 — /help lists the command catalogue
 #[test]
 fn help_lists_commands() {
-    repl("/help\n")
-        .assert_stdout_contains_all(&["/help", "/list", "/sig"]);
+    repl("/help\n").assert_stdout_contains_all(&["/help", "/list", "/sig"]);
 }
 
 // =============================================================================
@@ -545,9 +562,11 @@ fn help_lists_commands() {
 // spec: repl/spec.md §11.1 — /expand shows the macro expansion
 #[test]
 fn expand_user_defmacro() {
-    let out = repl_prims("(defmacro double [x] `(add-i64 ~x ~x))
+    let out = repl_prims(
+        "(defmacro double [x] `(add-i64 ~x ~x))
 /expand (double 5)
-");
+",
+    );
     // The expansion should reveal `add-i64` (the macro template).
     assert!(
         out.stdout.contains("add-i64"),
@@ -575,16 +594,20 @@ fn expand_neg_non_macro_unchanged() {
 // spec: repl/spec.md §4.1.6 — single-clause defmacro classified as `; defmacro`
 #[test]
 fn defmacro_display_single_clause() {
-    repl("(defmacro double [x] `(add-i64 ~x ~x))
-")
+    repl(
+        "(defmacro double [x] `(add-i64 ~x ~x))
+",
+    )
     .assert_stdout_contains(":user/double ; defmacro");
 }
 
 // spec: repl/spec.md §4.1.6 — multi-clause defmacro
 #[test]
 fn defmacro_display_multi_clause() {
-    let out = repl("(defmacro pick ([x] x) ([x y] x))
-");
+    let out = repl(
+        "(defmacro pick ([x] x) ([x y] x))
+",
+    );
     assert!(
         out.stdout.contains(":user/pick ; defmacro"),
         "multi-clause defmacro must display ':user/pick ; defmacro'; got:\n{}",
@@ -595,9 +618,11 @@ fn defmacro_display_multi_clause() {
 // spec: repl/spec.md §11.4 — bare macro lookup shows it's a macro
 #[test]
 fn bare_macro_lookup() {
-    let out = repl("(defmacro double [x] `(add-i64 ~x ~x))
+    let out = repl(
+        "(defmacro double [x] `(add-i64 ~x ~x))
 double
-");
+",
+    );
     assert!(
         out.stdout.contains("defmacro") || out.stdout.contains("macro"),
         "bare macro lookup must surface its 'macro' classification; got:\n{}",
@@ -612,9 +637,11 @@ double
 // spec: repl/spec.md §11.2.1 — defmacro appears in /list under Macros
 #[test]
 fn list_shows_macros_after_defmacro() {
-    let out = repl("(defmacro double [x] `(add-i64 ~x ~x))
+    let out = repl(
+        "(defmacro double [x] `(add-i64 ~x ~x))
 /list
-");
+",
+    );
     assert!(
         out.stdout.contains("double"),
         "/list must include defmacro 'double'; got:\n{}",
@@ -625,10 +652,12 @@ fn list_shows_macros_after_defmacro() {
 // spec: repl/spec.md §11.2.1 (negative) — defmacro NOT under Fns category
 #[test]
 fn list_neg_macros_not_in_functions() {
-    let out = repl_prims("(defn inc [x] (add-i64 x 1))
+    let out = repl_prims(
+        "(defn inc [x] (add-i64 x 1))
 (defmacro double [x] `(add-i64 ~x ~x))
 /list
-");
+",
+    );
     // Both 'inc' and 'double' should appear, but 'double' should be in Macros,
     // not Fns. Check for Macros section header presence.
     assert!(
@@ -809,8 +838,12 @@ fn list_layout_l2_neg_operator_never_shares_name_row() {
 ",
     );
     let body = category_body_lines(&out.stdout, "Fns");
-    let is_operator =
-        |tok: &str| tok.chars().next().map(|c| !c.is_alphabetic()).unwrap_or(false);
+    let is_operator = |tok: &str| {
+        tok.chars()
+            .next()
+            .map(|c| !c.is_alphabetic())
+            .unwrap_or(false)
+    };
     for line in &body {
         let toks: Vec<&str> = line.split_whitespace().collect();
         let has_op = toks.iter().any(|t| is_operator(t));
@@ -881,7 +914,10 @@ fn list_layout_l3_neg_no_group_straddles_row() {
         for tok in line.split_whitespace() {
             if let Some(c) = tok.chars().next() {
                 if c.is_alphabetic() {
-                    letter_rows.entry(c.to_ascii_lowercase()).or_default().insert(row);
+                    letter_rows
+                        .entry(c.to_ascii_lowercase())
+                        .or_default()
+                        .insert(row);
                 }
             }
         }
@@ -1000,19 +1036,23 @@ fn list_layout_neg_names_only_no_type_sigs() {
 // spec: repl/spec.md §15.2 — defns persist across REPL eval rounds
 #[test]
 fn defn_persists_across_evals() {
-    repl_prims("(defn double [x] (mul-i64 x 2))
+    repl_prims(
+        "(defn double [x] (mul-i64 x 2))
 (double 21)
-")
+",
+    )
     .assert_stdout_contains(":primitives/Int 42");
 }
 
 // spec: repl/spec.md §15.2 — multiple defns coexist
 #[test]
 fn multi_defn_coexist() {
-    repl_prims("(defn one [] 1)
+    repl_prims(
+        "(defn one [] 1)
 (defn two [] 2)
 (add-i64 (one) (two))
-")
+",
+    )
     .assert_stdout_contains(":primitives/Int 3");
 }
 
@@ -1090,9 +1130,11 @@ fn sig_unknown_name_graceful() {
 // for genuine runtime values (§1.5, e.g. `(Some 42)`).
 #[test]
 fn nullary_constructor_bare_lookup_shows_deftype_and_qualified_home() {
-    let out = repl("(deftype Color Red Green)
+    let out = repl(
+        "(deftype Color Red Green)
 Red
-");
+",
+    );
     // Assert the FULL §4.1.2 line as one substring — the `; deftype` and the
     // qualified `user/Color.Red` together. A looser `contains("; deftype")`
     // would false-pass on the `deftype` DEFINITION echo (`:user/Color ; deftype`).
@@ -1148,8 +1190,11 @@ fn dotted_nullary_constructor_input_does_not_double_type_segment() {
 // As-built /list shows only the type `Color` under Types — ZERO constructor rows.
 #[test]
 fn list_types_includes_constructor_rows_under_canonical_dotted_form() {
-    repl("(deftype Color Red Green Blue)\n/list\n")
-        .assert_stdout_contains_all(&["Color.Red", "Color.Green", "Color.Blue"]);
+    repl("(deftype Color Red Green Blue)\n/list\n").assert_stdout_contains_all(&[
+        "Color.Red",
+        "Color.Green",
+        "Color.Blue",
+    ]);
 }
 
 // spec: repl/spec.md §1.5 — applied data constructor displays in
@@ -1157,9 +1202,11 @@ fn list_types_includes_constructor_rows_under_canonical_dotted_form() {
 // (carry: legacy/e2e.rs::e2e_s1_5_data_ctor_dot_notation)
 #[test]
 fn data_constructor_applied_dot_notation_display() {
-    repl("(deftype (Option a) None (Some [:a val]))
+    repl(
+        "(deftype (Option a) None (Some [:a val]))
 (Some 42)
-")
+",
+    )
     .assert_stdout_contains("(Option.Some 42)");
 }
 
@@ -1182,14 +1229,11 @@ fn prelude_option_some_display_neg_raw_pointer() {
     );
     // Negative: must NOT contain a long-digit-string raw heap pointer where
     // the value should appear. Allow the `(Option.Some 42)` token itself.
-    let leak = out
-        .stdout
-        .lines()
-        .any(|l| {
-            l.contains("Option")
-                && l.chars().filter(|c| c.is_ascii_digit()).count() > 5
-                && !l.contains("(Option.Some 42)")
-        });
+    let leak = out.stdout.lines().any(|l| {
+        l.contains("Option")
+            && l.chars().filter(|c| c.is_ascii_digit()).count() > 5
+            && !l.contains("(Option.Some 42)")
+    });
     assert!(
         !leak,
         "result must not contain a raw heap pointer; got:\n{}",
@@ -1260,9 +1304,11 @@ fn prelude_option_some_string_payload_display() {
 // (carry: legacy/e2e.rs::e2e_s3_4_info)
 #[test]
 fn info_shows_symbol_metadata_with_code_size() {
-    let out = repl_prims("(defn double [x] (mul-i64 x 2))
+    let out = repl_prims(
+        "(defn double [x] (mul-i64 x 2))
 /info double
-");
+",
+    );
     assert!(
         out.stdout.contains("double"),
         "/info MUST surface the symbol name 'double'; got:\n{}",
@@ -1338,9 +1384,11 @@ fn bare_primitive_type_int_displays_type_info() {
 // (carry: legacy/e2e.rs::e2e_s1_1_bare_type_user_defined)
 #[test]
 fn bare_user_defined_type_lookup_displays_type_info() {
-    let out = repl("(deftype Color Red Green Blue)
+    let out = repl(
+        "(deftype Color Red Green Blue)
 Color
-")
+",
+    )
     .assert_ok();
     assert!(
         !out.stdout.contains("Error:"),
@@ -1519,9 +1567,11 @@ fn operator_lt_bare_lookup_displays_signature() {
 // (carry: legacy/e2e.rs::e2e_s3_3_list_traits)
 #[test]
 fn list_shows_traits_after_deftrait() {
-    let out = repl_prims("(deftrait Sizeable (size [self] Int))
+    let out = repl_prims(
+        "(deftrait Sizeable (size [self] Int))
 /list
-");
+",
+    );
     assert!(
         out.stdout.contains("Traits"),
         "/list MUST surface 'Traits' category after deftrait; got:\n{}",
@@ -1541,19 +1591,23 @@ fn list_shows_traits_after_deftrait() {
 // (carry: legacy/e2e.rs::e2e_s11_1_expand_nested_macros)
 #[test]
 fn expand_recursively_to_fixpoint() {
-    let out = repl_prims("(defmacro inc [x] `(add-i64 ~x 1))
+    let out = repl_prims(
+        "(defmacro inc [x] `(add-i64 ~x 1))
 (defmacro double-inc [x] `(inc (inc ~x)))
 /expand (double-inc 5)
-");
+",
+    );
     // The /expand line must contain `add-i64` (fully expanded form).
     let expand_line = out
         .stdout
         .lines()
         .find(|l| l.contains("add-i64"))
-        .unwrap_or_else(|| panic!(
-            "/expand MUST recursively expand to add-i64; got:\n{}",
-            out.stdout
-        ));
+        .unwrap_or_else(|| {
+            panic!(
+                "/expand MUST recursively expand to add-i64; got:\n{}",
+                out.stdout
+            )
+        });
     // Negative: the expansion MUST NOT contain `inc` — fixpoint reached.
     assert!(
         !expand_line.contains("inc"),
@@ -1568,9 +1622,11 @@ fn expand_recursively_to_fixpoint() {
 // (carry: legacy/e2e.rs::e2e_s11_2_4_doc_macro_no_docstring)
 #[test]
 fn doc_macro_no_docstring() {
-    let out = repl("(defmacro my-mac [x] x)
+    let out = repl(
+        "(defmacro my-mac [x] x)
 /doc my-mac
-");
+",
+    );
     assert!(
         out.stdout.contains("my-mac"),
         "/doc on docstringless macro MUST mention the macro name; got:\n{}",
@@ -1584,9 +1640,11 @@ fn doc_macro_no_docstring() {
 // (carry: legacy/e2e.rs::e2e_s11_2_4_doc_macro_with_docstring)
 #[test]
 fn doc_macro_with_docstring() {
-    let out = repl_prims("(defmacro my-inc \"Increment by one\" [x] `(add-i64 ~x 1))
+    let out = repl_prims(
+        "(defmacro my-inc \"Increment by one\" [x] `(add-i64 ~x 1))
 /doc my-inc
-");
+",
+    );
     assert!(
         out.stdout.contains("Increment by one"),
         "/doc on documented macro MUST surface the docstring text; got:\n{}",
@@ -1634,9 +1692,11 @@ fn info_multi_clause_macro_shows_clause_count() {
 // (carry: legacy/e2e.rs::e2e_s3_4_imports_filter_by_module)
 #[test]
 fn imports_filter_by_source_module() {
-    let out = repl("(import [primitives [add-i64]])
+    let out = repl(
+        "(import [primitives [add-i64]])
 /imports primitives
-");
+",
+    );
     assert!(
         out.stdout.contains("add-i64"),
         "/imports primitives MUST show the imported primitive 'add-i64'; got:\n{}",
@@ -1650,8 +1710,10 @@ fn imports_filter_by_source_module() {
 // (carry: legacy/e2e.rs::e2e_s3_4_neg_imports_nonexistent_not_error)
 #[test]
 fn imports_filter_neg_nonexistent_module_not_error() {
-    let out = repl("/imports nonexistent
-");
+    let out = repl(
+        "/imports nonexistent
+",
+    );
     assert!(
         !out.stdout.contains("Error:"),
         "/imports <nonexistent> MUST NOT error; got:\n{}",
@@ -1666,11 +1728,13 @@ fn imports_filter_neg_nonexistent_module_not_error() {
 // (carry: legacy/e2e.rs::e2e_s3_3_list_prefix_filter)
 #[test]
 fn list_prefix_filter_matches_names() {
-    let out = repl("(defn foo [x] x)
+    let out = repl(
+        "(defn foo [x] x)
 (defn bar [x] x)
 (defn fuzz [x] x)
 /list f
-");
+",
+    );
     assert!(
         out.stdout.contains("foo"),
         "/list f MUST surface 'foo' (prefix match); got:\n{}",
@@ -1697,9 +1761,11 @@ fn list_prefix_filter_matches_names() {
 // (carry: legacy/e2e.rs::e2e_s3_4_neg_imports_nonexistent_silent)
 #[test]
 fn imports_filter_neg_nonexistent_silent_recovery() {
-    let out = repl("/imports nonexistent
+    let out = repl(
+        "/imports nonexistent
 42
-")
+",
+    )
     .assert_ok();
     assert!(
         !out.stdout.contains("Error:"),
@@ -1746,11 +1812,13 @@ fn exports_neg_nonexistent_module_not_found() {
 // (carry: legacy/e2e.rs::e2e_s3_5_exports_lists_symbols)
 #[test]
 fn exports_lists_public_symbols_after_defn() {
-    let out = repl("/mod mymod
+    let out = repl(
+        "/mod mymod
 (defn bar [x] x)
 /mod user
 /exports mymod
-");
+",
+    );
     assert!(
         out.stdout.contains("bar"),
         "/exports mymod MUST list the public symbol 'bar'; got:\n{}",
@@ -1811,9 +1879,11 @@ fn deftrait_display_defn_section_lists_methods() {
 // (carry: legacy/e2e.rs::e2e_s4_1_bare_fn_classification)
 #[test]
 fn bare_fn_lookup_after_defn_shows_defn_classification() {
-    let out = repl_prims("(defn inc [n] (add-i64 n 1))
+    let out = repl_prims(
+        "(defn inc [n] (add-i64 n 1))
 inc
-");
+",
+    );
     assert!(
         out.stdout.contains("; defn"),
         "bare fn lookup MUST surface '; defn' classification; got:\n{}",
@@ -1828,9 +1898,11 @@ inc
 // (carry: legacy/e2e.rs::e2e_s4_1_bare_type_match_section)
 #[test]
 fn bare_type_lookup_includes_match_section() {
-    let out = repl("(deftype Color Red Green Blue)
+    let out = repl(
+        "(deftype Color Red Green Blue)
 Color
-");
+",
+    );
     assert!(
         out.stdout.contains("; deftype"),
         "bare type 'Color' MUST surface '; deftype' classification; got:\n{}",
@@ -1891,9 +1963,11 @@ fn seeded_option_bare_lookup_includes_match_section() {
 fn bare_trait_lookup_includes_defn_section() {
     // b1-migration (S112): `(Sizeable a)` never-applied head → bare-head + `self`.
     // Assertion subject UNCHANGED: bare-lookup `; deftrait` + `; defn:` section.
-    let out = repl("(deftrait Sizeable (size [self] Int))
+    let out = repl(
+        "(deftrait Sizeable (size [self] Int))
 Sizeable
-");
+",
+    );
     assert!(
         out.stdout.contains("; deftrait"),
         "bare trait 'Sizeable' MUST surface '; deftrait' classification; got:\n{}",
@@ -2114,9 +2188,11 @@ fn bare_special_form_if_classification_token() {
 // (carry: legacy/e2e.rs::e2e_s4_1_bare_macro_defmacro)
 #[test]
 fn bare_macro_lookup_shows_clause_signature() {
-    let out = repl_prims("(defmacro inc [x] `(add-i64 ~x 1))
+    let out = repl_prims(
+        "(defmacro inc [x] `(add-i64 ~x 1))
 inc
-");
+",
+    );
     assert!(
         out.stdout.contains("; defmacro"),
         "bare macro 'inc' MUST surface '; defmacro' classification; got:\n{}",
@@ -2157,9 +2233,11 @@ fn bare_builtin_type_int_shows_type_classification() {
 // (carry: legacy/e2e.rs::e2e_s3_3_list_neg_ctors_not_in_fns)
 #[test]
 fn list_neg_no_fns_category_when_only_types() {
-    let out = repl("(deftype Color Red Green Blue)
+    let out = repl(
+        "(deftype Color Red Green Blue)
 /list
-");
+",
+    );
     assert!(
         !out.stdout.contains("Fns:"),
         "/list MUST NOT render 'Fns:' header when only deftype defined; got:\n{}",
@@ -2207,9 +2285,11 @@ fn doc_no_arg_shows_usage() {
 // (carry: legacy/e2e.rs::e2e_s3_1_source_user_fn)
 #[test]
 fn source_user_fn_shows_original_text() {
-    let out = repl_prims("(defn double [x] (add-i64 x x))
+    let out = repl_prims(
+        "(defn double [x] (add-i64 x x))
 /source double
-");
+",
+    );
     let s = &out.stdout;
     assert!(
         s.contains("defn double") || s.contains("(defn double"),
@@ -2223,9 +2303,11 @@ fn source_user_fn_shows_original_text() {
 // (carry: legacy/e2e.rs::e2e_s3_1_sexp_user_fn)
 #[test]
 fn sexp_user_fn_shows_parsed_form() {
-    let out = repl_prims("(defn double [x] (add-i64 x x))
+    let out = repl_prims(
+        "(defn double [x] (add-i64 x x))
 /sexp double
-");
+",
+    );
     let s = &out.stdout;
     assert!(
         !s.contains("unknown command"),
@@ -2244,9 +2326,11 @@ fn sexp_user_fn_shows_parsed_form() {
 // (carry: legacy/e2e.rs::e2e_s3_1_ast_user_fn)
 #[test]
 fn ast_user_fn_shows_ast_structure() {
-    let out = repl_prims("(defn double [x] (add-i64 x x))
+    let out = repl_prims(
+        "(defn double [x] (add-i64 x x))
 /ast double
-");
+",
+    );
     let s = &out.stdout;
     assert!(
         !s.contains("unknown command"),
@@ -2265,9 +2349,11 @@ fn ast_user_fn_shows_ast_structure() {
 // (carry: legacy/e2e.rs::e2e_s3_1_clif_user_fn)
 #[test]
 fn clif_user_fn_shows_cranelift_ir() {
-    let out = repl_prims("(defn double [x] (add-i64 x x))
+    let out = repl_prims(
+        "(defn double [x] (add-i64 x x))
 /clif double
-");
+",
+    );
     let s = &out.stdout;
     assert!(
         !s.contains("unknown command"),
@@ -2288,9 +2374,11 @@ fn clif_user_fn_shows_cranelift_ir() {
 // (carry: legacy/e2e.rs::e2e_s3_1_disasm_user_fn)
 #[test]
 fn disasm_user_fn_recognized_command() {
-    let out = repl_prims("(defn double [x] (add-i64 x x))
+    let out = repl_prims(
+        "(defn double [x] (add-i64 x x))
 /disasm double
-");
+",
+    );
     assert!(
         !out.stdout.contains("unknown command"),
         "/disasm MUST be a recognised command; got:\n{}",
@@ -2317,10 +2405,12 @@ fn disasm_user_fn_recognized_command() {
 #[test]
 fn disasm_command_shows_native_code_for_compiled_fn() {
     // `sq` actually JIT-compiles, so native code (hence disassembly) exists.
-    let out = repl_prims("(defn sq [x] (mul-i64 x x))
+    let out = repl_prims(
+        "(defn sq [x] (mul-i64 x x))
 (sq 7)
 /disasm sq
-");
+",
+    );
     let s = &out.stdout;
     assert!(
         !s.contains("no disassembly available"),
@@ -2572,13 +2662,148 @@ fn constrained_fn_display_shows_inline_num_constraint() {
         .stdin("(defn double [x] (+ x x))\n")
         .output();
     assert!(
-        out.stdout.contains(":(Fn [:Num a] a) user/double"),
+        out.stdout.contains(":(Fn [:prelude/Num a] a) user/double"),
         "constrained fn display MUST use inline constraint notation per §1.3 + §3.4.1; got:\n{}",
         out.stdout
     );
     assert!(
         out.stdout.contains("; defn"),
         "constrained fn display MUST include '; defn' classification per §1.3; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §1.4 — constraint-position trait names use their
+// canonical qualified home; no bare trait spelling remains in the scheme.
+// defect: class=display-envelope-mirror locus=src/display.rs::format_scheme_type found=S115 owner=/dev
+#[test]
+fn constraint_trait_name_displays_canonical_home_neg_no_bare_trait() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::TestStandard)
+        .stdin("(defn double [x] (+ x x))\n")
+        .output();
+    assert!(
+        out.stdout.contains(":(Fn [:prelude/Num a] a) user/double"),
+        "constraint trait MUST display its fixture's canonical `prelude/Num` home; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("[:Num a]"),
+        "constraint position MUST NOT fall back to bare `Num`; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §1.4 + §3.8 — definition echo, `/sig`, `/info`, and
+// bare lookup share one canonical scheme renderer.
+// defect: class=display-envelope-mirror locus=src/display.rs::format_scheme_type found=S115 owner=/dev
+#[test]
+fn constraint_display_is_identical_across_definition_sig_and_bare_lookup() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::TestStandard)
+        .stdin("(defn double [x] (+ x x))\n/sig double\n/info double\ndouble\n")
+        .output();
+    let needle = ":(Fn [:prelude/Num a] a) user/double";
+    assert!(
+        out.stdout.matches(needle).count() >= 4,
+        "echo, /sig, /info, and bare lookup MUST use one qualified constraint rendering; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §4.1.3 — `/info <Type>` lists every implemented trait
+// exactly once, including after method replacement by a re-impl.
+// defect: class=enumeration-miss locus=src/repl.rs::type_info found=S115 owner=/dev
+#[test]
+fn info_type_lists_each_implemented_trait_once() {
+    let out = repl_prims(
+        "(deftrait Sizeable (size [self] Int))\n\
+         (deftype Box (MkBox [:Int n]))\n\
+         (impl Sizeable Box (defn size [_] 1))\n\
+         (impl Sizeable Box (defn size [_] 2))\n\
+         /info Box\n",
+    );
+    let info = out.stdout.rsplit(":user/Box").next().unwrap_or(&out.stdout);
+    assert!(
+        info.contains("; impl:") && info.matches("Sizeable").count() == 1,
+        "/info Box MUST list its Sizeable impl exactly once after re-impl; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §4.1.3 + §4.1.4 — trait-side and type-side impl
+// drawers are inverse views of the same canonical pair relation.
+// defect: class=enumeration-miss locus=src/repl.rs::type_info found=S115 owner=/dev
+#[test]
+fn info_trait_and_type_impl_views_are_inverse_twins() {
+    let setup = "(deftrait Sizeable (size [self] Int))\n\
+                 (deftrait Paintable (paint [self] Int))\n\
+                 (deftype Box (MkBox [:Int n]))\n\
+                 (deftype Other MkOther)\n\
+                 (impl Sizeable Box (defn size [_] 1))\n\
+                 (impl Paintable Other (defn paint [_] 2))\n";
+    let trait_out = repl_prims(&format!("{setup}/info Sizeable\n"));
+    let trait_info = trait_out
+        .stdout
+        .rsplit(":user/Sizeable")
+        .next()
+        .unwrap_or(&trait_out.stdout);
+    assert!(
+        trait_info.contains("; impl:") && trait_info.matches("Box").count() == 1,
+        "/info Sizeable MUST list its Box impl exactly once; got:\n{}",
+        trait_out.stdout
+    );
+    assert!(
+        !trait_info.contains("Paintable") && !trait_info.contains("Other"),
+        "/info Sizeable MUST exclude unrelated impl pairs; got:\n{}",
+        trait_out.stdout
+    );
+
+    let type_out = repl_prims(&format!("{setup}/info Box\n"));
+    let type_info = type_out
+        .stdout
+        .rsplit(":user/Box")
+        .next()
+        .unwrap_or(&type_out.stdout);
+    assert!(
+        type_info.contains("; impl:") && type_info.matches("Sizeable").count() == 1,
+        "/info Box MUST list its Sizeable impl exactly once; got:\n{}",
+        type_out.stdout
+    );
+    assert!(
+        !type_info.contains("Paintable") && !type_info.contains("Other"),
+        "/info Box MUST exclude unrelated impl pairs; got:\n{}",
+        type_out.stdout
+    );
+}
+
+// spec: repl/spec.md §4.1.3 — `/info <Type>` lists local traits before
+// imported traits, using unqualified related-symbol names.
+// defect: class=enumeration-miss locus=src/repl.rs::type_info found=S115 owner=/dev
+#[test]
+fn info_type_impls_include_local_and_imported_traits_in_canonical_order() {
+    let out = repl_prims(
+        "(mod foreign (deftrait Imported (imported [self] Int)))\n\
+         (import [foreign [Imported imported]])\n\
+         (deftrait Local (local [self] Int))\n\
+         (deftype Box (MkBox [:Int n]))\n\
+         (impl foreign/Imported Box (defn imported [_] 1))\n\
+         (impl Local Box (defn local [_] 2))\n\
+         /info Box\n",
+    );
+    let info = out.stdout.rsplit(":user/Box").next().unwrap_or(&out.stdout);
+    let local = info.find("Local").unwrap_or(usize::MAX);
+    let imported = info.find("Imported").unwrap_or(usize::MAX);
+    assert!(
+        local < imported && imported != usize::MAX,
+        "type impl drawer MUST include local then imported traits; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        !info.contains("user/Local") && !info.contains("user.foreign/Imported"),
+        "related trait rows under `; impl:` MUST be unqualified; got:\n{}",
         out.stdout
     );
 }
@@ -2599,7 +2824,8 @@ fn constrained_fn_display_repeats_num_on_each_param_neg_no_elision() {
         .stdin("(defn add [x y] (+ x y))\n")
         .output();
     assert!(
-        out.stdout.contains(":(Fn [:Num a :Num a] a) user/add"),
+        out.stdout
+            .contains(":(Fn [:prelude/Num a :prelude/Num a] a) user/add"),
         "constrained fn display MUST repeat ':Num' on every constrained \
          param per §3.4.1 (no elision to ':Num a a' or ':Num a :a'); got:\n{}",
         out.stdout
@@ -2679,7 +2905,8 @@ fn hkt_echo_head_impl_registration_echo_names_resolved_constructor_not_pairing_h
     // home (0671, repl/spec.md §1.3), never the pairing head. The defect printed
     // `impl user/Functor for user/Functor`.
     assert!(
-        out.stdout.contains("impl user/Functor for primitives/Option"),
+        out.stdout
+            .contains("impl user/Functor for primitives/Option"),
         "the echo-the-head HKT impl registration echo MUST name the resolved \
          constructor at its canonical home: `impl user/Functor for \
          primitives/Option` per repl/spec.md §1.1/§1.3 (§7.3.5 Case 2); got:\n{}",
@@ -2708,13 +2935,17 @@ fn hkt_echo_head_impl_registration_echo_names_resolved_constructor_not_pairing_h
         .map(|l| l.trim_start_matches(';').trim().to_string())
         .collect();
     assert!(
-        impl_body.iter().any(|l| l.split_whitespace().any(|t| t == "Option")),
+        impl_body
+            .iter()
+            .any(|l| l.split_whitespace().any(|t| t == "Option")),
         "the `; impl:` section MUST list the implementing constructor `Option` \
          (§4.1.4); impl body={impl_body:?}\nstdout:\n{}",
         out.stdout
     );
     assert!(
-        !impl_body.iter().any(|l| l.split_whitespace().any(|t| t == "Functor")),
+        !impl_body
+            .iter()
+            .any(|l| l.split_whitespace().any(|t| t == "Functor")),
         "the `; impl:` section MUST NOT list the pairing head `Functor` as an \
          implementing type (§4.1.4 +neg — the resolved constructor is `Option`); \
          impl body={impl_body:?}\nstdout:\n{}",
@@ -2845,7 +3076,14 @@ fn bare_primitive_surface_resolves_identically_across_five_plus_symbols() {
     let out = repl_prims(input);
     let combined = &out.stdout;
 
-    for name in ["add-i64", "eq-i64", "mul-i64", "sub-i64", "not", "str-concat"] {
+    for name in [
+        "add-i64",
+        "eq-i64",
+        "mul-i64",
+        "sub-i64",
+        "not",
+        "str-concat",
+    ] {
         let fqn = format!("primitives/{name}");
         assert!(
             combined.contains(&fqn),
@@ -3025,9 +3263,7 @@ fn bare_primitive_two_hop_reexport_chain_lands_on_terminal_def() {
 // (carry: legacy/wave6_demo_repros.rs::display_defn_with_docstring_uses_dash_separator)
 #[test]
 fn display_defn_with_docstring_uses_dash_separator() {
-    let out = repl_prims(
-        "(defn double \"Multiply by 2\" [:Int x] (add-i64 x x))\ndouble\n",
-    );
+    let out = repl_prims("(defn double \"Multiply by 2\" [:Int x] (add-i64 x x))\ndouble\n");
     let combined = format!("{}\n{}", out.stdout, out.stderr);
     assert!(
         combined.contains("; defn - Multiply by 2"),
@@ -3103,7 +3339,8 @@ fn public_api_check_backend_display_absent_neg() {
     // hasn't completed.
     let has_display_pub = s.lines().any(|line| {
         let t = line.trim();
-        t.contains("::display::") || t.contains("pub mod display")
+        t.contains("::display::")
+            || t.contains("pub mod display")
             || t.contains("pub use cranelisp_backend::display")
     });
     assert!(
@@ -3148,10 +3385,7 @@ fn bare_trace_special_form_carries_type_prefix() {
 //   the pair documents the inconsistency. FIXME(/int 0338).
 #[test]
 fn bare_if_special_form_carries_type_prefix_control() {
-    repl("if\n").assert_stdout_contains_all(&[
-        ":(Fn [primitives/Bool a a] a) if",
-        "special form",
-    ]);
+    repl("if\n").assert_stdout_contains_all(&[":(Fn [primitives/Bool a a] a) if", "special form"]);
 }
 
 // spec: repl/spec.md §3.6 — `/info trace` MUST resolve and display details,
@@ -3256,7 +3490,8 @@ fn display_polymorphic_adt_multi_field_value() {
         out.stdout
     );
     assert!(
-        out.stdout.contains("(user/Pair primitives/Int primitives/String)"),
+        out.stdout
+            .contains("(user/Pair primitives/Int primitives/String)"),
         "type MUST be the fully-instantiated `(user/Pair primitives/Int \
          primitives/String)`; got:\n{}",
         out.stdout
@@ -3610,7 +3845,10 @@ fn syntax_bare_lists_topics() {
     // The index lists topic names — at least one known topic name from the
     // shipped asset must appear (mechanism, not exhaustive content).
     let names = cheatsheet_topic_names(&cheatsheet_asset());
-    assert!(!names.is_empty(), "the asset must declare at least one topic");
+    assert!(
+        !names.is_empty(),
+        "the asset must declare at least one topic"
+    );
     assert!(
         out.stdout.contains(&names[0]),
         "bare /syntax must list topic names (expected e.g. {:?}), stdout={}",
@@ -3864,20 +4102,14 @@ fn assert_preamble_invariant(body: &str, needle: &str) {
 // regardless of session history (L-S1 generalization of the §18.4 surface).
 #[test]
 fn ls1_sig_of_defn_invariant_to_session_history() {
-    assert_preamble_invariant(
-        "(defn foo [:Int x] (add-i64 x 1))\n/sig foo\n",
-        "user/foo",
-    );
+    assert_preamble_invariant("(defn foo [:Int x] (add-i64 x 1))\n/sig foo\n", "user/foo");
 }
 
 // spec: repl/spec.md §1.4 — bare-name lookup of a user type resolves to its
 // qualified name regardless of session history.
 #[test]
 fn ls1_bare_lookup_of_type_invariant_to_session_history() {
-    assert_preamble_invariant(
-        "(deftype Color Red Green)\nColor\n",
-        "user/Color",
-    );
+    assert_preamble_invariant("(deftype Color Red Green)\nColor\n", "user/Color");
 }
 
 // spec: repl/spec.md §18.4 — `/info` on a defn includes its definition source
@@ -3951,10 +4183,7 @@ fn ls1_list_layout_invariant_to_session_history() {
 // identically under every preamble (bare-lookup type-display generalization).
 #[test]
 fn ls1_bare_type_display_invariant_to_session_history() {
-    assert_preamble_invariant(
-        "(deftype Shade Dark Light)\nShade\n",
-        "user/Shade",
-    );
+    assert_preamble_invariant("(deftype Shade Dark Light)\nShade\n", "user/Shade");
 }
 
 // =============================================================================
@@ -4013,14 +4242,18 @@ fn bare_user_trait_lookup_impl_section_lists_type_not_others() {
         .map(|l| l.trim_start_matches(';').trim().to_string())
         .collect();
     assert!(
-        impl_body.iter().any(|l| l.split_whitespace().any(|t| t == "Int")),
+        impl_body
+            .iter()
+            .any(|l| l.split_whitespace().any(|t| t == "Int")),
         "the '; impl:' section MUST list the implementing type `Int` (§4.1.4); \
          impl body={impl_body:?}\nstdout:\n{}",
         out.stdout
     );
     // +neg: no unrelated type (e.g. `Bool`) leaks into the impl section.
     assert!(
-        !impl_body.iter().any(|l| l.split_whitespace().any(|t| t == "Bool")),
+        !impl_body
+            .iter()
+            .any(|l| l.split_whitespace().any(|t| t == "Bool")),
         "the '; impl:' section MUST NOT leak an unrelated type `Bool` (§4.1.4 +neg); \
          impl body={impl_body:?}\nstdout:\n{}",
         out.stdout
@@ -4231,7 +4464,8 @@ fn fq_bare_display_parity_with_imported_introspection() {
     assert!(
         !a.stdout.contains("codegen") && !a.stderr.contains("codegen"),
         "a bare FQ display MUST NOT force codegen (§1.5); got:\n{}\n{}",
-        a.stdout, a.stderr
+        a.stdout,
+        a.stderr
     );
     assert!(
         a.stdout.contains("mathx/gcount") && a.stdout.contains("; defn"),
@@ -4258,9 +4492,7 @@ fn fq_bare_display_parity_with_imported_introspection() {
 // (couples 0572/E4): the constructor `Some` must not be duplicated in /list.
 #[test]
 fn list_shows_ctor_once_canonical() {
-    let out = repl_prims(
-        "(deftype (Maybe a) Nil (Some [:a v]))\n/list\n",
-    );
+    let out = repl_prims("(deftype (Maybe a) Nil (Some [:a v]))\n/list\n");
     // Count the canonical dotted form `Maybe.Some` — the deftype echo's
     // `; match:` hint prints the bare `Some`, so counting bare would double-count
     // the hint and the (now-required) /list constructor row. The canonical form
@@ -4278,16 +4510,10 @@ fn list_shows_ctor_once_canonical() {
 // under its canonical form; the bare alias is never a second row.
 #[test]
 fn exports_show_ctor_once_canonical() {
-    let out = repl_prims(
-        "(deftype (Maybe a) Nil (Some [:a v]))\n/exports user\n",
-    );
+    let out = repl_prims("(deftype (Maybe a) Nil (Some [:a v]))\n/exports user\n");
     // Isolate the /exports listing body (after the module header) so the
     // definition echo's own `Some` is excluded from the count.
-    let body = out
-        .stdout
-        .split("Module '")
-        .nth(1)
-        .unwrap_or("");
+    let body = out.stdout.split("Module '").nth(1).unwrap_or("");
     assert_eq!(
         body.matches("Some").count(),
         1,
@@ -4318,8 +4544,7 @@ fn data_ctor_value_displays_with_fields_not_bare_name_neg() {
     // Neg: the fields-dropped bare render `:user/Lst Lst.Cons` (no fields,
     // no parens) MUST be absent.
     assert!(
-        !out.stdout.contains(":user/Lst Lst.Cons\n")
-            && !out.stdout.contains(":user/Lst Cons\n"),
+        !out.stdout.contains(":user/Lst Lst.Cons\n") && !out.stdout.contains(":user/Lst Cons\n"),
         "the fields-dropped bare-ctor-name render MUST be absent (§1.5, AN-3); \
          got:\n{}",
         out.stdout
@@ -4376,7 +4601,8 @@ fn private_fq_member_errors_not_displays_mode_uniform_neg() {
         !run.status.success()
             && (run_text.contains("private") || run_text.contains("not accessible")),
         "--run: a private FQ member MUST error (§8.7.3); {}\n{}",
-        run.stdout, run.stderr
+        run.stdout,
+        run.stderr
     );
     // Control — a PUBLIC FQ member DOES display in the REPL (proves the private
     // rejection is the visibility gate, not a dead display path).

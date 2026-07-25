@@ -71,7 +71,7 @@ use cranelisp_platform::{
     Acquire as CAcquire, HostCtx, Poll as CPoll, PollFn, Waker as CWaker, WakerVTable,
 };
 
-use crate::strand::{emit_strand_event, StrandEvent, StrandId};
+use crate::strand::{StrandEvent, StrandId, emit_strand_event};
 
 /// The reserved mio `Token` for the reactor's cross-thread wakeup
 /// ([`Reactor::bridge_waker`]). fd registrations hand out tokens from
@@ -88,7 +88,10 @@ const BRIDGE_WAKE_TOKEN: Token = Token(0);
 
 /// Current `CLOCK_MONOTONIC` time in nanoseconds.
 pub fn monotonic_nanos() -> u64 {
-    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     // SAFETY: `ts` is a valid out-param for `clock_gettime`.
     unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
     (ts.tv_sec as u64) * 1_000_000_000 + (ts.tv_nsec as u64)
@@ -349,7 +352,12 @@ impl Reactor {
     /// # Safety
     /// `waker` is the live C-ABI waker the platform passed; its `data` is the boxed
     /// `std::task::Waker` [`make_cabi_waker`] produced.
-    unsafe fn acquire_permit(&mut self, token: u64, capacity: u32, waker: *const CWaker) -> CAcquire {
+    unsafe fn acquire_permit(
+        &mut self,
+        token: u64,
+        capacity: u32,
+        waker: *const CWaker,
+    ) -> CAcquire {
         if token == 0 {
             return CAcquire::Acquired; // commutative — never touches map/ledger.
         }
@@ -482,7 +490,11 @@ impl Reactor {
         let token = self.next_fd_token;
         self.next_fd_token += 1;
         let mut src = SourceFd(&fd);
-        match self.poll.registry().register(&mut src, Token(token), interest) {
+        match self
+            .poll
+            .registry()
+            .register(&mut src, Token(token), interest)
+        {
             Ok(()) => {
                 let owned = unsafe { OwnedCWaker::clone_from_ref(waker) };
                 // Stamp the entry with the leaf currently being polled (finding #3,
@@ -509,7 +521,8 @@ impl Reactor {
         let owned = unsafe { OwnedCWaker::clone_from_ref(waker) };
         // Stamp with the current registrant (finding #3, §2.16).
         let reg = self.current_registrant.unwrap_or(0);
-        self.timer_heap.push(Reverse(TimerEntry { deadline_nanos, id }));
+        self.timer_heap
+            .push(Reverse(TimerEntry { deadline_nanos, id }));
         self.timer_waiters.insert(id, (owned, reg));
     }
 
@@ -607,7 +620,6 @@ impl Reactor {
             }
         }
     }
-
 }
 
 // --- The three `HostCtx` register callbacks (C-ABI) ------------------------
@@ -636,7 +648,11 @@ unsafe extern "C" fn host_register_writable(host: *const c_void, fd: i32, waker:
     unsafe { r.register_fd(fd as RawFd, waker, Interest::WRITABLE) };
 }
 
-unsafe extern "C" fn host_register_timer(host: *const c_void, deadline_nanos: u64, waker: *const CWaker) {
+unsafe extern "C" fn host_register_timer(
+    host: *const c_void,
+    deadline_nanos: u64,
+    waker: *const CWaker,
+) {
     // SAFETY: see the B1 provenance invariant above.
     let r = unsafe { &mut *(host as *mut Reactor) };
     unsafe { r.register_timer(deadline_nanos, waker) };
@@ -1025,7 +1041,13 @@ impl Future for EffectPoll<'_> {
         };
         // SAFETY: `state`/`host`/`poll_fn` honour the v7 contract (constructor
         // safety obligation); `&cwaker` is a live C-ABI waker.
-        let result = unsafe { (this.poll_fn)(this.state, this.host as *const HostCtx, &cwaker as *const CWaker) };
+        let result = unsafe {
+            (this.poll_fn)(
+                this.state,
+                this.host as *const HostCtx,
+                &cwaker as *const CWaker,
+            )
+        };
         // Clear the registrant bracket now (the guard's drop is the panic-path
         // backstop; this explicit drop keeps the common-path timing unchanged).
         drop(_reg_guard);
@@ -1038,9 +1060,8 @@ impl Future for EffectPoll<'_> {
                 // slot at `state + RESULT_SLOT_OFFSET`.
                 // SAFETY: `state` points at the env whose first `i64` slot is the
                 // result slot (constructor obligation).
-                let value = unsafe {
-                    *((this.state as *const i64).byte_offset(RESULT_SLOT_OFFSET))
-                };
+                let value =
+                    unsafe { *((this.state as *const i64).byte_offset(RESULT_SLOT_OFFSET)) };
                 // Keep-alive release (`bounded-contexts.md §4b` invariant 15; FIXME
                 // 0486): the effect has resolved, so the runtime releases its
                 // net-zero-inc keep-alive ref on the state-closure NOW — after the
@@ -1285,9 +1306,14 @@ impl Future for AcquirePermit {
             // no-op, not a spurious `retain`).
             this.parked_id = None;
             emit_strand_event(if this.is_global {
-                StrandEvent::GlobalBudgetAcquired { strand: this.strand }
+                StrandEvent::GlobalBudgetAcquired {
+                    strand: this.strand,
+                }
             } else {
-                StrandEvent::TokenAcquired { strand: this.strand, token: this.token }
+                StrandEvent::TokenAcquired {
+                    strand: this.strand,
+                    token: this.token,
+                }
             });
             TaskPoll::Ready(Permit {
                 pool: Rc::clone(&this.pool),
@@ -1327,9 +1353,14 @@ impl Future for AcquirePermit {
             if !this.parked {
                 this.parked = true;
                 emit_strand_event(if this.is_global {
-                    StrandEvent::GlobalBudgetParked { strand: this.strand }
+                    StrandEvent::GlobalBudgetParked {
+                        strand: this.strand,
+                    }
                 } else {
-                    StrandEvent::TokenParked { strand: this.strand, token: this.token }
+                    StrandEvent::TokenParked {
+                        strand: this.strand,
+                        token: this.token,
+                    }
                 });
             }
             TaskPoll::Pending
@@ -1365,9 +1396,14 @@ impl Drop for Permit {
             };
             slot.permits += 1;
             emit_strand_event(if self.is_global {
-                StrandEvent::GlobalBudgetReleased { strand: self.strand }
+                StrandEvent::GlobalBudgetReleased {
+                    strand: self.strand,
+                }
             } else {
-                StrandEvent::TokenReleased { strand: self.strand, token: self.token }
+                StrandEvent::TokenReleased {
+                    strand: self.strand,
+                    token: self.token,
+                }
             });
             // Detach the front waiter (FIFO). It will re-poll, find a free permit,
             // and acquire (re-establishing exclusion). Finding #4 (§2.17): the
@@ -2154,14 +2190,7 @@ pub(crate) unsafe extern "C" fn async_read_pollfn(
     let st = unsafe { &mut *(state as *mut AsyncReadState) };
     let mut buf = [0u8; 64];
     // SAFETY: `st.fd` is a valid non-blocking fd; `buf` is a valid out-buffer.
-    let n = unsafe {
-        libc::recv(
-            st.fd,
-            buf.as_mut_ptr() as *mut c_void,
-            buf.len(),
-            0,
-        )
-    };
+    let n = unsafe { libc::recv(st.fd, buf.as_mut_ptr() as *mut c_void, buf.len(), 0) };
     if n >= 0 {
         st.result = n as i64; // n == 0 ⇒ EOF, still a completed read.
         return CPoll::Ready;

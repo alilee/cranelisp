@@ -6,7 +6,7 @@
 //! types are author-defined and FQ-keyed. Sum-type fields are dot-qualified by
 //! constructor name (`"Some.val"`, `"Cons.head"`).
 
-use cranelisp_platform::{set_global_schema, CLAdt, CLAdtType, CLInt, CLOwned, Schema};
+use cranelisp_platform::{CLAdt, CLAdtType, CLInt, CLOwned, Schema, set_global_schema};
 use std::sync::Once;
 
 struct OptionInt;
@@ -103,8 +103,7 @@ fn list_recursive_walk() {
             0 => break,
             1 => {
                 sum += i64::from(node.read_field::<CLInt>("Cons.head"));
-                let tail: CLOwned<CLAdt<ListInt>> =
-                    node.own_field::<CLAdt<ListInt>>("Cons.tail");
+                let tail: CLOwned<CLAdt<ListInt>> = node.own_field::<CLAdt<ListInt>>("Cons.tail");
                 node = CLAdt::from_raw(raw_ptr(&tail));
                 owned_tails.push(tail);
             }

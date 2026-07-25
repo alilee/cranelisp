@@ -22,7 +22,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{run_through_all_modes, Cranelisp, PreludeVariant};
+use helpers::e2e::{Cranelisp, PreludeVariant, run_through_all_modes};
 
 // =============================================================================
 // PART A — Smoke set (one per CLI surface)
@@ -121,8 +121,11 @@ fn smoke_run_warms_project_root_cache() {
 // correctly for the trivial case before more interesting programs.
 #[test]
 fn mode_equiv_constant_main() {
-    run_through_all_modes("(import [primitives [Pure]]) (defn main [] (Pure 0))", PreludeVariant::None)
-        .assert_all_equal(0);
+    run_through_all_modes(
+        "(import [primitives [Pure]]) (defn main [] (Pure 0))",
+        PreludeVariant::None,
+    )
+    .assert_all_equal(0);
 }
 
 // spec: spec/appendix-a-builtins.md — primitive arithmetic returns the
@@ -207,6 +210,7 @@ fn mode_equiv_module_import_resolves() {
 // same through the REPL form-by-form scheduler and the batch driver.
 // (Avoids dependence on stdlib `cond`/`when` etc.; uses an inline defmacro
 // so the test stands on its own.)
+// defect: class=carrier-loss locus=src/process_form/macro_clause.rs::cache-restored-macro-clause-executable-carrier found=S117 owner=/dev
 #[test]
 fn mode_equiv_macro_user_defined() {
     run_through_all_modes(

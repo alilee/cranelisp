@@ -78,7 +78,11 @@ fn clif_of_body_with_fns(body: Expr, extra: &[(&str, usize)]) -> String {
     let probe = Defn {
         name: probe_name.clone(),
         docstring: None,
-        variants: vec![DefnVariant { params: vec![], body, span: Span::SYNTHETIC }],
+        variants: vec![DefnVariant {
+            params: vec![],
+            body,
+            span: Span::SYNTHETIC,
+        }],
         visibility: Visibility::Public,
         span: Span::SYNTHETIC,
     };
@@ -115,8 +119,7 @@ fn clif_of_body_with_fns(body: Expr, extra: &[(&str, usize)]) -> String {
     symbol_tables.insert(module_path.clone(), st);
     let mut known: Vec<&str> = extra.iter().map(|(n, _)| *n).collect();
     known.push("par_codegen_probe");
-    let resolved_targets =
-        crate::test_support::call_carriers(probe.body(), &module_path, &known);
+    let resolved_targets = crate::test_support::call_carriers(probe.body(), &module_path, &known);
     let extra_refs: Vec<&Defn> = extra_defns.iter().collect();
     crate::test_support::probe_defn_clif(
         &probe,
@@ -192,7 +195,11 @@ fn heap_capturing_launch() -> Expr {
         bindings: vec![(Symbol::from("s"), str_lit("hi"))],
         body: Box::new(Expr::LaunchContinue {
             launched: Box::new(probe_call(Span::new(1, 2))),
-            continuation: Box::new(user_call1("strwork", str_var("s", Span::new(3, 4)), Span::new(3, 5))),
+            continuation: Box::new(user_call1(
+                "strwork",
+                str_var("s", Span::new(3, 4)),
+                Span::new(3, 5),
+            )),
             span: Span::SYNTHETIC,
             inferred_type: Some(Box::new(Type::Int)),
         }),
@@ -416,7 +423,11 @@ fn let_path_dependent_binding_sparks_as_ivar_forced_on_demand() {
             (Symbol::from("a"), probe_call(Span::new(1, 2))),
             (
                 Symbol::from("b"),
-                add_i64(var_ref("a", Span::new(3, 4)), var_ref("a", Span::new(5, 6)), Span::new(3, 6)),
+                add_i64(
+                    var_ref("a", Span::new(3, 4)),
+                    var_ref("a", Span::new(5, 6)),
+                    Span::new(3, 6),
+                ),
             ),
         ],
         body: Box::new(int_lit(0)),

@@ -109,7 +109,9 @@ fn value_position_trait_method_no_impl_wrong_accepts_neg() {
 // defect: class=wrong-accept locus=crates/cranelisp-typecheck/src/infer.rs:1274 value-position no-impl swallow (REPL face) found=S114 owner=/dev
 #[test]
 fn value_position_trait_method_no_impl_wrong_accepts_repl_neg() {
-    let out = repl(&format!("{WIDGET}(let [eq =] (eq (Widget 1) (Widget 2)))\n"));
+    let out = repl(&format!(
+        "{WIDGET}(let [eq =] (eq (Widget 1) (Widget 2)))\n"
+    ));
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
         names_eq_no_impl(&out),

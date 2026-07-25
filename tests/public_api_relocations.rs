@@ -131,10 +131,7 @@ fn public_api_check_runs_against_all_seven_crates() {
         let expected = std::fs::read_to_string(&baseline)
             .unwrap_or_else(|e| panic!("read {}: {e}", baseline.display()));
         if normalise(&actual) != normalise(&expected) {
-            drifted.push((
-                crate_name.to_string(),
-                diff_summary(&expected, &actual),
-            ));
+            drifted.push((crate_name.to_string(), diff_summary(&expected, &actual)));
         }
     }
 
@@ -175,13 +172,21 @@ fn diff_summary(expected: &str, actual: &str) -> String {
     let mut out = String::new();
     let cap = 20usize;
     if !added.is_empty() {
-        out.push_str(&format!("    +{} additions (showing up to {}):\n", added.len(), cap));
+        out.push_str(&format!(
+            "    +{} additions (showing up to {}):\n",
+            added.len(),
+            cap
+        ));
         for s in added.iter().take(cap) {
             out.push_str(&format!("      + {s}\n"));
         }
     }
     if !removed.is_empty() {
-        out.push_str(&format!("    -{} removals (showing up to {}):\n", removed.len(), cap));
+        out.push_str(&format!(
+            "    -{} removals (showing up to {}):\n",
+            removed.len(),
+            cap
+        ));
         for s in removed.iter().take(cap) {
             out.push_str(&format!("      - {s}\n"));
         }

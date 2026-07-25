@@ -31,7 +31,10 @@ fn test_declare_imported_functions() {
         (Symbol::from("math/mul"), 2usize),
     ];
     let result = jit.declare_imported_functions(&imports, &mut func_ids);
-    assert!(result.is_ok(), "imported function declaration should succeed");
+    assert!(
+        result.is_ok(),
+        "imported function declaration should succeed"
+    );
     assert!(func_ids.contains_key(&Symbol::from("math/add")));
     assert!(func_ids.contains_key(&Symbol::from("math/mul")));
     assert_eq!(func_ids.len(), 2);
@@ -64,7 +67,8 @@ fn test_declare_imported_functions_merges_with_existing() {
 
     // Now declare an imported function -- should merge into the same map.
     let imports = vec![(Symbol::from("other/helper"), 1usize)];
-    jit.declare_imported_functions(&imports, &mut func_ids).unwrap();
+    jit.declare_imported_functions(&imports, &mut func_ids)
+        .unwrap();
     assert_eq!(func_ids.len(), 2);
     assert!(func_ids.contains_key(&Symbol::from("local_fn")));
     assert!(func_ids.contains_key(&Symbol::from("other/helper")));
@@ -75,7 +79,10 @@ fn test_declare_imported_functions_merges_with_existing() {
 fn test_jit_new_with_symbols() {
     // An empty extra_symbols list should work identically to new().
     let jit = Jit::new_with_symbols(&[]);
-    assert!(jit.is_ok(), "new_with_symbols with empty list should succeed");
+    assert!(
+        jit.is_ok(),
+        "new_with_symbols with empty list should succeed"
+    );
 
     // Extra symbols should be accepted (though we can't call them in
     // this unit test, we verify the builder doesn't reject them).
@@ -121,7 +128,8 @@ fn drop_invokes_free_memory() {
     }
     let after = JIT_FREE_MEMORY_CALL_COUNT.load(Ordering::Relaxed);
     assert_eq!(
-        after, before + 1,
+        after,
+        before + 1,
         "Jit::drop must call free_memory exactly once (counter before={before}, after={after})"
     );
 }
@@ -190,7 +198,8 @@ fn compile_call_drop_roundtrip() {
     drop(jit);
     let after = JIT_FREE_MEMORY_CALL_COUNT.load(Ordering::Relaxed);
     assert_eq!(
-        after, before + 1,
+        after,
+        before + 1,
         "Drop after compile+call must still invoke free_memory"
     );
 }
@@ -209,8 +218,8 @@ fn compile_call_drop_roundtrip() {
 // cell that itself contains the slab base.
 #[test]
 fn jit_got_symbol_address_is_slab_base() {
-    use cranelisp_types::{Defn, DefnVariant, Expr, Type, Visibility};
     use cranelift_module::Linkage;
+    use cranelisp_types::{Defn, DefnVariant, Expr, Type, Visibility};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     // Use a static, address-stable backing storage as the "slab base".
@@ -275,9 +284,7 @@ fn jit_got_symbol_address_is_slab_base() {
             let entry = fb.create_block();
             fb.switch_to_block(entry);
             fb.seal_block(entry);
-            let addr = fb
-                .ins()
-                .global_value(cranelift::prelude::types::I64, gv);
+            let addr = fb.ins().global_value(cranelift::prelude::types::I64, gv);
             fb.ins().return_(&[addr]);
             fb.finalize();
         }
@@ -293,13 +300,11 @@ fn jit_got_symbol_address_is_slab_base() {
     let returned = f() as u64;
 
     assert_eq!(
-        returned,
-        slab_base_ptr as u64,
+        returned, slab_base_ptr as u64,
         "JIT-resolved address of __cranelisp_got_test_module must equal \
          the registered slab base directly (no pointer-cell indirection); \
          returned={:#x}, expected={:#x}",
-        returned,
-        slab_base_ptr as u64,
+        returned, slab_base_ptr as u64,
     );
 
     // Regression guard: read the SLAB content. If the JIT had defined
@@ -328,7 +333,7 @@ fn jit_got_symbol_address_is_slab_base() {
 #[test]
 fn jit_cross_module_got_dispatch_end_to_end() {
     use cranelift_module::Linkage;
-    use std::alloc::{alloc_zeroed, Layout};
+    use std::alloc::{Layout, alloc_zeroed};
 
     // 1. Build a "producer" JIT, compile `producer_fn` returning 99.
     //    Read out its finalised pointer.
@@ -390,8 +395,8 @@ fn jit_cross_module_got_dispatch_end_to_end() {
     //    pointing at the slab base directly (Decision 23 — symbol
     //    address IS the slab base, no pointer-cell indirection).
     let got_sym = "__cranelisp_got_producer";
-    let mut consumer = Jit::new_with_symbols(&[(got_sym, slab_base as *const u8)])
-        .expect("consumer JIT");
+    let mut consumer =
+        Jit::new_with_symbols(&[(got_sym, slab_base as *const u8)]).expect("consumer JIT");
     consumer.declare_intrinsics().expect("intrinsics");
 
     // 4. Hand-build a thunk that emits the unified GOT call shape:
@@ -414,8 +419,7 @@ fn jit_cross_module_got_dispatch_end_to_end() {
 
         let mut ctx = module.make_context();
         ctx.func.signature = sig.clone();
-        ctx.func.name =
-            cranelift::codegen::ir::UserFuncName::testcase(thunk_name.as_bytes());
+        ctx.func.name = cranelift::codegen::ir::UserFuncName::testcase(thunk_name.as_bytes());
         let mut fbc = FunctionBuilderContext::new();
         {
             let gv = module.declare_data_in_func(data_id, &mut ctx.func);
@@ -423,9 +427,7 @@ fn jit_cross_module_got_dispatch_end_to_end() {
             let entry = fb.create_block();
             fb.switch_to_block(entry);
             fb.seal_block(entry);
-            let slab = fb
-                .ins()
-                .global_value(cranelift::prelude::types::I64, gv);
+            let slab = fb.ins().global_value(cranelift::prelude::types::I64, gv);
             let slot_addr = fb.ins().iadd_imm(slab, (slot * 8) as i64);
             let fn_ptr = fb.ins().load(
                 cranelift::prelude::types::I64,
@@ -443,9 +445,7 @@ fn jit_cross_module_got_dispatch_end_to_end() {
             fb.ins().return_(&[result]);
             fb.finalize();
         }
-        module
-            .define_function(id, &mut ctx)
-            .expect("define thunk");
+        module.define_function(id, &mut ctx).expect("define thunk");
         module.clear_context(&mut ctx);
         id
     };
@@ -470,9 +470,7 @@ fn jit_cross_module_got_dispatch_end_to_end() {
 
 // ----- §1 `Jit::new(symbol_tables)` — the minimal JIT-setup boundary -----
 
-use cranelisp_types::{
-    ModuleFullPath, Scheme, SchedulingClass, SymbolTable, Type, Visibility,
-};
+use cranelisp_types::{ModuleFullPath, SchedulingClass, Scheme, SymbolTable, Type, Visibility};
 
 /// Build a `DefKind::PlatformEffect` Def entry with a populated GOT slot,
 /// returning the entry. Mirrors what the platform DLL loader writes — the
@@ -509,7 +507,10 @@ fn platform_effect_def(slot: usize) -> ModuleEntry {
 fn jit_new_from_empty_symbol_tables() {
     let tables: SymbolTables<(), ()> = dashmap::DashMap::new();
     let jit = Jit::new(&tables);
-    assert!(jit.is_ok(), "Jit::new with empty symbol_tables must succeed");
+    assert!(
+        jit.is_ok(),
+        "Jit::new with empty symbol_tables must succeed"
+    );
 }
 
 // spec: design/backend/jit-setup-boundary.md §1.3 — `Jit::new` derives the
@@ -538,7 +539,9 @@ fn jit_new_registers_platform_effect_and_got_symbols() {
     // holds `platform_ptr`.
     let plat_mod = ModuleFullPath::from("platform.stdio");
     let mut plat_table = SymbolTable::new(plat_mod.clone());
-    let slot = plat_table.allocate_got_slot().expect("fresh table has free slots");
+    let slot = plat_table
+        .allocate_got_slot()
+        .expect("fresh table has free slots");
     plat_table.got.store_slot(slot, platform_ptr);
     plat_table.insert(Symbol::from("cranelisp_print"), platform_effect_def(slot));
     tables.insert(plat_mod.clone(), plat_table);
@@ -562,8 +565,7 @@ fn jit_new_registers_platform_effect_and_got_symbols() {
             .expect("declare platform symbol");
         let mut ctx = module.make_context();
         ctx.func.signature = sig;
-        ctx.func.name =
-            cranelift::codegen::ir::UserFuncName::testcase(name.as_bytes());
+        ctx.func.name = cranelift::codegen::ir::UserFuncName::testcase(name.as_bytes());
         let mut fbc = FunctionBuilderContext::new();
         {
             let gv = module.declare_data_in_func(data_id, &mut ctx.func);
@@ -614,7 +616,9 @@ fn jit_new_follows_import_edge_for_platform_effect() {
     // Defining module: platform.stdio defines `print` as a PlatformEffect.
     let plat_mod = ModuleFullPath::from("platform.stdio");
     let mut plat_table = SymbolTable::new(plat_mod.clone());
-    let slot = plat_table.allocate_got_slot().expect("fresh table has free slots");
+    let slot = plat_table
+        .allocate_got_slot()
+        .expect("fresh table has free slots");
     plat_table.got.store_slot(slot, platform_ptr);
     plat_table.insert(Symbol::from("print"), platform_effect_def(slot));
     tables.insert(plat_mod.clone(), plat_table);
@@ -652,8 +656,7 @@ fn jit_new_follows_import_edge_for_platform_effect() {
             .expect("declare platform symbol");
         let mut ctx = module.make_context();
         ctx.func.signature = sig;
-        ctx.func.name =
-            cranelift::codegen::ir::UserFuncName::testcase(name.as_bytes());
+        ctx.func.name = cranelift::codegen::ir::UserFuncName::testcase(name.as_bytes());
         let mut fbc = FunctionBuilderContext::new();
         {
             let gv = module.declare_data_in_func(data_id, &mut ctx.func);
@@ -727,8 +730,7 @@ fn define_symbol_settles_host_promised_import() {
             .expect("declare host symbol");
         let mut ctx = module.make_context();
         ctx.func.signature = sig;
-        ctx.func.name =
-            cranelift::codegen::ir::UserFuncName::testcase(name.as_bytes());
+        ctx.func.name = cranelift::codegen::ir::UserFuncName::testcase(name.as_bytes());
         let mut fbc = FunctionBuilderContext::new();
         {
             let gv = module.declare_data_in_func(data_id, &mut ctx.func);
@@ -745,7 +747,8 @@ fn define_symbol_settles_host_promised_import() {
         id
     };
 
-    jit.finalize().expect("finalize must settle the host-promised import");
+    jit.finalize()
+        .expect("finalize must settle the host-promised import");
     let ptr = jit.get_finalized_ptr(func_id);
     // SAFETY: thunk just finalised; signature is `extern "C" fn() -> i64`.
     let f: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
@@ -872,7 +875,8 @@ fn sole_holder_batch_reclaims_on_drop() {
     } // drops here
     let after = jit_free_memory_call_count();
     assert_eq!(
-        after, before + 1,
+        after,
+        before + 1,
         "a batch with a single Arc holder must reclaim exactly once when \
          that holder drops (counter before={before}, after={after})"
     );
@@ -913,7 +917,8 @@ fn batch_not_reclaimed_while_a_clone_survives() {
     drop(captured_clone);
     let after_final_drop = jit_free_memory_call_count();
     assert_eq!(
-        after_final_drop, before + 1,
+        after_final_drop,
+        before + 1,
         "dropping the LAST Arc<Jit> clone must reclaim exactly once"
     );
 }

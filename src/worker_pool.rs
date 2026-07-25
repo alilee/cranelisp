@@ -51,7 +51,11 @@ impl WorkerPool {
         nice_handles: Vec<JoinHandle<()>>,
         nice_workers: usize,
     ) -> Self {
-        Self { priority_handles, nice_handles, nice_workers }
+        Self {
+            priority_handles,
+            nice_handles,
+            nice_workers,
+        }
     }
 
     /// Number of nice workers requested at construction.

@@ -4,16 +4,22 @@
 ;; `(mod- test)`. Exercises the string helpers plus the new `char-to-digit`/
 ;; `digit-to-char` (gap G4) and `replace-at`/`str-assoc` (gap G5).
 
-(import [super [blank? repeat-str index-of reverse-str pad-left pad-right
+(import [super [str blank? repeat-str index-of reverse-str pad-left pad-right
                 char-to-digit digit-to-char replace-at str-assoc]])
 (import [testing.assertions [assert-true assert-false assert-eq]])
-(import [primitives [Option String]])
+(import [primitives [Option String Vec split join vec-len vec-get]])
 
 (defn test-blank-empty [] :(Option String)
   (assert-true (blank? "")))
 
 (defn test-not-blank [] :(Option String)
   (assert-false (blank? "x")))
+
+(defn test-str-empty [] :(Option String)
+  (assert-eq "" (str)))
+
+(defn test-str-values [] :(Option String)
+  (assert-eq "n=42" (str "n=" 42)))
 
 (defn test-repeat-str [] :(Option String)
   (assert-eq "aaa" (repeat-str "a" 3)))
@@ -61,3 +67,30 @@
 
 (defn test-str-assoc-alias [] :(Option String)
   (assert-eq "aXc" (str-assoc "abc" 1 "X")))
+
+;; split / join — S117 R-3 language-level guards. These deliberately use only
+;; the public primitives and ordinary Vec access. The Rust runtime boundary is
+;; an implementation detail and is not reproduced in stdlib.
+(defn test-split-nonempty [] :(Option String)
+  (assert-eq 3 (vec-len (split "a,b,c" ","))))
+
+(defn test-split-empty-input [] :(Option String)
+  (assert-eq "" (vec-get (split "" ",") 0)))
+
+(defn test-split-multichar-delimiter [] :(Option String)
+  (assert-eq "b" (vec-get (split "a::b::c" "::") 1)))
+
+(defn test-join-empty-vec [] :(Option String)
+  (assert-eq "" (join "," :(Vec String) [])))
+
+(defn test-split-join-roundtrip [] :(Option String)
+  (assert-eq "one::two::three" (join "::" (split "one::two::three" "::"))))
+
+;; The element and joined result escape their construction expressions. These
+;; are the user-observable lifetime faces of R-3: no source String, separator,
+;; or intermediate Vec remains available to prop up the returned String.
+(defn test-split-element-has-independent-lifetime [] :(Option String)
+  (assert-eq "right" (vec-get (split "left=right" "=") 1)))
+
+(defn test-join-result-has-independent-lifetime [] :(Option String)
+  (assert-eq "left=right" (join "=" ["left" "right"])))

@@ -106,14 +106,24 @@ mod tests {
     use std::collections::HashMap;
 
     fn mono_scheme(ty: Type) -> Scheme {
-        Scheme { type_vars: vec![], constraints: HashMap::new(), ty }
+        Scheme {
+            type_vars: vec![],
+            constraints: HashMap::new(),
+            ty,
+        }
     }
 
     // spec: design/arch/fixmes/0241 — Tier-2 SymbolTableBuilder round-trip
     #[test]
     fn builder_populates_and_round_trips() {
         let table: SymbolTable = SymbolTableBuilder::new(ModuleFullPath::from("test"))
-            .def("id", mono_scheme(Type::Int), DefKind::UserFn { fn_state: UserFnState::NotDetermined })
+            .def(
+                "id",
+                mono_scheme(Type::Int),
+                DefKind::UserFn {
+                    fn_state: UserFnState::NotDetermined,
+                },
+            )
             .entry(
                 Symbol::from("k"),
                 ModuleEntry::def(mono_scheme(Type::Bool), DefKind::primitive(0))
@@ -123,7 +133,10 @@ mod tests {
             .build();
 
         assert_eq!(&*table.path, "test");
-        assert!(table.get("id").is_some(), "def(...) entry must round-trip via lookup");
+        assert!(
+            table.get("id").is_some(),
+            "def(...) entry must round-trip via lookup"
+        );
         match table.get("k") {
             Some(ModuleEntry::Def { docstring, .. }) => {
                 assert_eq!(docstring.as_deref(), Some("constant"));

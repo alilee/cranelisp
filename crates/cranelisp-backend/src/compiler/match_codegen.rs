@@ -8,12 +8,17 @@
 use cranelift::prelude::*;
 use cranelift_module::Module;
 
-use cranelisp_types::{ErrorLocation, CranelispError, MonoExpr, MonoMatchArm, Pattern, Span, Symbol};
 use crate::heap::{HeapCategory, RcAtomicity};
+use cranelisp_types::{
+    CranelispError, ErrorLocation, MonoExpr, MonoMatchArm, Pattern, Span, Symbol,
+};
 
 use crate::heap::{self, HeapAdt};
 
-use super::{FnCompiler, MatchContext, collect_var_ids_from_type, signature_heap_category, substitute_type_inline};
+use super::{
+    FnCompiler, MatchContext, collect_var_ids_from_type, signature_heap_category,
+    substitute_type_inline,
+};
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
 where
@@ -77,14 +82,17 @@ where
                     // call arg aliasing a live let-binding (F1 UAF cure).
                     self.in_tail_position = saved_tail;
                     let body_val = self.compile_expr(&arm.body)?;
-                    let body_val =
-                        self.maybe_protect_tail_arg_alias(&arm.body, body_val);
+                    let body_val = self.maybe_protect_tail_arg_alias(&arm.body, body_val);
                     self.builder.ins().jump(merge_block, &[body_val]);
                 }
                 Pattern::Var { name, .. } => {
                     self.compile_var_pattern_arm(
-                        name, scrut_val, scrutinee, &arm.body,
-                        saved_tail, merge_block,
+                        name,
+                        scrut_val,
+                        scrutinee,
+                        &arm.body,
+                        saved_tail,
+                        merge_block,
                     )?;
                 }
                 Pattern::Constructor { name, bindings, .. } => {
@@ -164,7 +172,8 @@ where
         self.builder.def_var(var, scrut_val);
         self.variables.insert(name.clone(), var);
         // Record type for RC management.
-        self.variable_types.insert(name.clone(), scrutinee.ty().to_type());
+        self.variable_types
+            .insert(name.clone(), scrutinee.ty().to_type());
 
         // P7 fix: Only register the alias in scope_stack for RC cleanup when
         // this frame OWNS the scrutinee's value. When the scrutinee is a scope
@@ -182,9 +191,7 @@ where
         if !is_alias {
             self.scope_stack
                 .last_mut()
-                .unwrap_or_else(|| {
-                    unreachable!("invariant: scope_stack non-empty")
-                })
+                .unwrap_or_else(|| unreachable!("invariant: scope_stack non-empty"))
                 .push(name.clone());
         }
 
@@ -225,25 +232,27 @@ where
     fn dec_temporary_scrutinee(&mut self, scrutinee: &MonoExpr, scrut_val: Value) {
         let is_temp = crate::compiler::fn_compiler::yields_owned_temporary(scrutinee);
         if is_temp {
-                let scrut_ty = scrutinee.ty().to_type();
-                let category = HeapCategory::classify(scrutinee.ty(), Some(self.ctx.symbol_tables));
-                if matches!(category, HeapCategory::AlwaysHeap | HeapCategory::Mixed) {
-                    // Vec-typed scrutinee: route through vec_drop so element
-                    // RCs and the data buffer are released on rc=0.
-                    if let Some(elem_ty) =
-                        crate::compiler::vec_codegen::vec_element_type(&scrut_ty)
-                    {
-                        let elem_ty = elem_ty.clone();
-                        let span = cranelisp_types::Span::new(0, 0);
-                        let _ = self.emit_vec_aware_rc_dec(scrut_val, &elem_ty, span, RcAtomicity::Atomic);
-                        return;
-                    }
-                    let needs_guard = matches!(category, HeapCategory::Mixed);
-                    self.emit_rc_dec_with_inline_drop_glue(
-                        scrut_val, &scrut_ty, self.ctx.dealloc_func_id, needs_guard,
-                    );
+            let scrut_ty = scrutinee.ty().to_type();
+            let category = HeapCategory::classify(scrutinee.ty(), Some(self.ctx.symbol_tables));
+            if matches!(category, HeapCategory::AlwaysHeap | HeapCategory::Mixed) {
+                // Vec-typed scrutinee: route through vec_drop so element
+                // RCs and the data buffer are released on rc=0.
+                if let Some(elem_ty) = crate::compiler::vec_codegen::vec_element_type(&scrut_ty) {
+                    let elem_ty = elem_ty.clone();
+                    let span = cranelisp_types::Span::new(0, 0);
+                    let _ =
+                        self.emit_vec_aware_rc_dec(scrut_val, &elem_ty, span, RcAtomicity::Atomic);
+                    return;
                 }
+                let needs_guard = matches!(category, HeapCategory::Mixed);
+                self.emit_rc_dec_with_inline_drop_glue(
+                    scrut_val,
+                    &scrut_ty,
+                    self.ctx.dealloc_func_id,
+                    needs_guard,
+                );
             }
+        }
     }
 
     /// Compile a constructor pattern arm.
@@ -323,13 +332,9 @@ where
         );
 
         if is_nullary && bindings.is_empty() {
-            self.compile_nullary_pattern(
-                tag, is_mixed, match_ctx, body,
-            )
+            self.compile_nullary_pattern(tag, is_mixed, match_ctx, body)
         } else if !is_nullary && bindings.len() == ctor_info.fields.len() {
-            self.compile_data_pattern(
-                fq, tag, is_mixed, is_value, bindings, match_ctx, body,
-            )
+            self.compile_data_pattern(fq, tag, is_mixed, is_value, bindings, match_ctx, body)
         } else {
             Err(CranelispError::CodegenError {
                 message: format!(
@@ -359,11 +364,10 @@ where
                 .builder
                 .ins()
                 .iconst(types::I64, heap::NULLARY_THRESHOLD_I64);
-            let is_tag = self.builder.ins().icmp(
-                IntCC::UnsignedLessThan,
-                match_ctx.scrut_val,
-                threshold,
-            );
+            let is_tag =
+                self.builder
+                    .ins()
+                    .icmp(IntCC::UnsignedLessThan, match_ctx.scrut_val, threshold);
 
             let tag_check_block = self.builder.create_block();
             self.builder
@@ -398,9 +402,7 @@ where
         self.builder.seal_block(body_block);
         self.in_tail_position = match_ctx.saved_tail;
         let body_val = self.compile_expr(body)?;
-        self.builder
-            .ins()
-            .jump(match_ctx.merge_block, &[body_val]);
+        self.builder.ins().jump(match_ctx.merge_block, &[body_val]);
 
         Ok(())
     }
@@ -465,12 +467,18 @@ where
                 match category {
                     HeapCategory::AlwaysHeap => {
                         heap::emit_rc_inc_atomicity(
-                            &mut self.builder, self.module, body_val, atomicity,
+                            &mut self.builder,
+                            self.module,
+                            body_val,
+                            atomicity,
                         );
                     }
                     HeapCategory::Mixed => {
                         heap::emit_rc_inc_guarded_atomicity(
-                            &mut self.builder, self.module, body_val, atomicity,
+                            &mut self.builder,
+                            self.module,
+                            body_val,
+                            atomicity,
                         );
                     }
                     HeapCategory::NeverHeap | HeapCategory::Value => {}
@@ -487,9 +495,7 @@ where
         }
 
         self.pop_scope_with_cleanup(skip_var.as_ref());
-        self.builder
-            .ins()
-            .jump(match_ctx.merge_block, &[body_val]);
+        self.builder.ins().jump(match_ctx.merge_block, &[body_val]);
 
         Ok(())
     }
@@ -519,13 +525,9 @@ where
                 threshold,
             );
 
-            self.builder.ins().brif(
-                is_heap,
-                tag_check_block,
-                &[],
-                match_ctx.next_block,
-                &[],
-            );
+            self.builder
+                .ins()
+                .brif(is_heap, tag_check_block, &[], match_ctx.next_block, &[]);
         } else {
             // Non-mixed (all data constructors): jump directly to tag check.
             self.builder.ins().jump(tag_check_block, &[]);
@@ -535,13 +537,12 @@ where
         self.builder.switch_to_block(tag_check_block);
         self.builder.seal_block(tag_check_block);
 
-        let heap_tag = heap::heap_load(
-            &mut self.builder,
-            match_ctx.scrut_val,
-            HeapAdt::TAG_OFFSET,
-        ); // tag: i64
+        let heap_tag = heap::heap_load(&mut self.builder, match_ctx.scrut_val, HeapAdt::TAG_OFFSET); // tag: i64
         let expected_tag = self.builder.ins().iconst(types::I64, tag as i64);
-        let cmp = self.builder.ins().icmp(IntCC::Equal, heap_tag, expected_tag);
+        let cmp = self
+            .builder
+            .ins()
+            .icmp(IntCC::Equal, heap_tag, expected_tag);
         self.builder
             .ins()
             .brif(cmp, body_block, &[], match_ctx.next_block, &[]);
@@ -580,11 +581,7 @@ where
             let field_val = if is_value {
                 scrut_val
             } else {
-                heap::heap_load(
-                    &mut self.builder,
-                    scrut_val,
-                    HeapAdt::field_offset(i),
-                ) // field_i: i64
+                heap::heap_load(&mut self.builder, scrut_val, HeapAdt::field_offset(i)) // field_i: i64
             };
 
             // Record the field type for RC classification (needed by
@@ -650,7 +647,9 @@ where
         // Try to get the scrutinee's concrete type from the match context.
         // This gives us e.g. `ADT("Option", [String])` which we can use
         // to substitute type variables in the field types.
-        let concrete_type_args: Vec<Type> = match_ctx.scrut_type.as_ref()
+        let concrete_type_args: Vec<Type> = match_ctx
+            .scrut_type
+            .as_ref()
             .and_then(|ty| match ty {
                 Type::ADT(_, args) => Some(args.clone()),
                 _ => None,
@@ -696,12 +695,13 @@ where
     /// REPL eval boundary can recover, then emits a trailing trap as an
     /// unreachable terminator (Cranelift requires one).
     fn emit_match_panic(&mut self) -> Result<(), CranelispError> {
-        let panic_id = self.ctx.panic_func_id.ok_or_else(|| {
-            CranelispError::CodegenError {
+        let panic_id = self
+            .ctx
+            .panic_func_id
+            .ok_or_else(|| CranelispError::CodegenError {
                 message: "runtime/panic not declared".into(),
                 location: ErrorLocation::from_span(Span::new(0, 0)),
-            }
-        })?;
+            })?;
 
         let msg = b"match failed";
         let data_id = self
@@ -724,7 +724,9 @@ where
         let msg_ptr = self.builder.ins().global_value(types::I64, gv);
         let msg_len = self.builder.ins().iconst(types::I64, msg.len() as i64);
 
-        let panic_ref = self.module.declare_func_in_func(panic_id, self.builder.func);
+        let panic_ref = self
+            .module
+            .declare_func_in_func(panic_id, self.builder.func);
         self.builder.ins().call(panic_ref, &[msg_ptr, msg_len]);
 
         // runtime_panic sets a thread-local error flag and returns.
@@ -747,153 +749,153 @@ mod tests {
     // `crate::test_support`. Verbatim bodies from the former `src/tests.rs`.
     use crate::test_support::*;
 
-
-// spec: 12-runtime §12.1.4 — data constructor heap layout [tag | fields]
-#[test]
-fn test_compile_adt_data_constructor() {
-    // Expression: (Some 42)
-    let some_span = Span::new(0, 10);
-    let expr = Expr::Apply {
-        callee: Box::new(Expr::Var {
-            name: Symbol::from("Some"),
-            span: Span::new(1, 5),
+    // spec: 12-runtime §12.1.4 — data constructor heap layout [tag | fields]
+    #[test]
+    fn test_compile_adt_data_constructor() {
+        // Expression: (Some 42)
+        let some_span = Span::new(0, 10);
+        let expr = Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("Some"),
+                span: Span::new(1, 5),
+                resolved_call: None,
+                inferred_type: None,
+            }),
+            args: vec![Expr::IntLit {
+                value: 42,
+                span: Span::new(6, 8),
+                inferred_type: None,
+            }],
+            span: some_span,
             resolved_call: None,
             inferred_type: None,
-        }),
-        args: vec![Expr::IntLit {
-            value: 42,
-            span: Span::new(6, 8),
-            inferred_type: None,
-        }],
-        span: some_span,
-        resolved_call: None,
-        inferred_type: None,
-    };
+        };
 
-    // W1 (KC-W0-6): the S3/S4 ctor `Apply` now reads the callee Var's carrier.
-    // `option_type_tables` stores `Some` bare in `main`, so the storage FQ is
-    // `main/Some` — `ctor_meta_at` reads the Constructor Def there.
-    let mut check = empty_check();
-    check.resolved_targets.insert(
-        Span::new(1, 5),
-        cranelisp_types::FQSymbol {
-            module: ModuleFullPath::from("main"),
-            symbol: Symbol::from("Some"),
-        },
-    );
-    let tables = option_type_tables();
+        // W1 (KC-W0-6): the S3/S4 ctor `Apply` now reads the callee Var's carrier.
+        // `option_type_tables` stores `Some` bare in `main`, so the storage FQ is
+        // `main/Some` — `ctor_meta_at` reads the Constructor Def there.
+        let mut check = empty_check();
+        check.resolved_targets.insert(
+            Span::new(1, 5),
+            cranelisp_types::FQSymbol {
+                module: ModuleFullPath::from("main"),
+                symbol: Symbol::from("Some"),
+            },
+        );
+        let tables = option_type_tables();
 
-    let result = test_compile_and_run(&expr, &check, &tables);
-    assert!(result.is_ok(), "ADT constructor should compile: {result:?}");
-    let ptr = result.unwrap();
-    assert!(ptr > 1024, "expected heap pointer, got {ptr}");
+        let result = test_compile_and_run(&expr, &check, &tables);
+        assert!(result.is_ok(), "ADT constructor should compile: {result:?}");
+        let ptr = result.unwrap();
+        assert!(ptr > 1024, "expected heap pointer, got {ptr}");
 
-    // Verify the heap layout: [header(16) | tag(1) | field(42)]
-    unsafe {
-        let base = ptr as *const u8;
-        let tag = *(base.add(16) as *const i64);
-        assert_eq!(tag, 1, "tag should be 1 for Some");
-        let val = *(base.add(24) as *const i64);
-        assert_eq!(val, 42, "field should be 42");
+        // Verify the heap layout: [header(16) | tag(1) | field(42)]
+        unsafe {
+            let base = ptr as *const u8;
+            let tag = *(base.add(16) as *const i64);
+            assert_eq!(tag, 1, "tag should be 1 for Some");
+            let val = *(base.add(24) as *const i64);
+            assert_eq!(val, 42, "field should be 42");
+        }
+
+        cranelisp_intrinsics::alloc::heap_dealloc(ptr);
     }
 
-    cranelisp_intrinsics::alloc::heap_dealloc(ptr);
-}
+    // spec: 04-expressions §4.8 — match expression with constructor patterns and field extraction
+    #[test]
+    fn test_compile_match_with_fields() {
+        use cranelisp_types::{MatchArm, Pattern};
 
-
-// spec: 04-expressions §4.8 — match expression with constructor patterns and field extraction
-#[test]
-fn test_compile_match_with_fields() {
-    use cranelisp_types::{MatchArm, Pattern};
-
-    // (match (Some 99) [(Some x) x (None) 0])
-    let some_span = Span::new(10, 20);
-    let match_span = Span::new(0, 50);
-    let scrutinee = Expr::Apply {
-        callee: Box::new(Expr::Var {
-            name: Symbol::from("Some"),
-            span: Span::new(11, 15),
+        // (match (Some 99) [(Some x) x (None) 0])
+        let some_span = Span::new(10, 20);
+        let match_span = Span::new(0, 50);
+        let scrutinee = Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("Some"),
+                span: Span::new(11, 15),
+                resolved_call: None,
+                inferred_type: None,
+            }),
+            args: vec![Expr::IntLit {
+                value: 99,
+                span: Span::new(16, 18),
+                inferred_type: None,
+            }],
+            span: some_span,
             resolved_call: None,
             inferred_type: None,
-        }),
-        args: vec![Expr::IntLit {
-            value: 99,
-            span: Span::new(16, 18),
+        };
+
+        let expr = Expr::Match {
+            scrutinee: Box::new(scrutinee),
+            arms: vec![
+                MatchArm {
+                    pattern: Pattern::Constructor {
+                        name: cranelisp_types::SymbolRef::new(None, Symbol::from("Some")),
+                        bindings: vec![Symbol::from("x")],
+                        span: Span::new(22, 30),
+                    },
+                    body: Expr::Var {
+                        name: Symbol::from("x"),
+                        span: Span::new(31, 32),
+                        resolved_call: None,
+                        inferred_type: None,
+                    },
+                    span: Span::new(22, 32),
+                },
+                MatchArm {
+                    pattern: Pattern::Constructor {
+                        name: cranelisp_types::SymbolRef::new(None, Symbol::from("None")),
+                        bindings: vec![],
+                        span: Span::new(34, 40),
+                    },
+                    body: Expr::IntLit {
+                        value: 0,
+                        span: Span::new(41, 42),
+                        inferred_type: None,
+                    },
+                    span: Span::new(34, 42),
+                },
+            ],
+            span: match_span,
+            compiler_generated: false,
             inferred_type: None,
-        }],
-        span: some_span,
-        resolved_call: None,
-        inferred_type: None,
-    };
+        };
 
-    let expr = Expr::Match {
-        scrutinee: Box::new(scrutinee),
-        arms: vec![
-            MatchArm {
-                pattern: Pattern::Constructor {
-                    name: cranelisp_types::SymbolRef::new(None, Symbol::from("Some")),
-                    bindings: vec![Symbol::from("x")],
-                    span: Span::new(22, 30),
-                },
-                body: Expr::Var {
-                    name: Symbol::from("x"),
-                    span: Span::new(31, 32),
-                    resolved_call: None,
-                    inferred_type: None,
-                },
-                span: Span::new(22, 32),
+        // W1 (KC-W0-6): the scrutinee `(Some 99)` ctor `Apply` reads the callee Var
+        // carrier (`main/Some`, the bare storage key in `option_type_tables`).
+        // W3 (KC-W0-6): the S19 `lookup_constructor` fallback is deleted, so each
+        // match ARM ctor pattern now REQUIRES a `pattern_ctors` carrier keyed by the
+        // pattern span → the ctor's storage FQ (both bare in `main`).
+        let mut check = empty_check();
+        check.resolved_targets.insert(
+            Span::new(11, 15),
+            cranelisp_types::FQSymbol {
+                module: ModuleFullPath::from("main"),
+                symbol: Symbol::from("Some"),
             },
-            MatchArm {
-                pattern: Pattern::Constructor {
-                    name: cranelisp_types::SymbolRef::new(None, Symbol::from("None")),
-                    bindings: vec![],
-                    span: Span::new(34, 40),
-                },
-                body: Expr::IntLit {
-                    value: 0,
-                    span: Span::new(41, 42),
-                    inferred_type: None,
-                },
-                span: Span::new(34, 42),
+        );
+        check.pattern_ctors.insert(
+            Span::new(22, 30),
+            cranelisp_types::FQSymbol {
+                module: ModuleFullPath::from("main"),
+                symbol: Symbol::from("Some"),
             },
-        ],
-        span: match_span,
-        compiler_generated: false,
-        inferred_type: None,
-    };
+        );
+        check.pattern_ctors.insert(
+            Span::new(34, 40),
+            cranelisp_types::FQSymbol {
+                module: ModuleFullPath::from("main"),
+                symbol: Symbol::from("None"),
+            },
+        );
+        let tables = option_type_tables();
 
-    // W1 (KC-W0-6): the scrutinee `(Some 99)` ctor `Apply` reads the callee Var
-    // carrier (`main/Some`, the bare storage key in `option_type_tables`).
-    // W3 (KC-W0-6): the S19 `lookup_constructor` fallback is deleted, so each
-    // match ARM ctor pattern now REQUIRES a `pattern_ctors` carrier keyed by the
-    // pattern span → the ctor's storage FQ (both bare in `main`).
-    let mut check = empty_check();
-    check.resolved_targets.insert(
-        Span::new(11, 15),
-        cranelisp_types::FQSymbol {
-            module: ModuleFullPath::from("main"),
-            symbol: Symbol::from("Some"),
-        },
-    );
-    check.pattern_ctors.insert(
-        Span::new(22, 30),
-        cranelisp_types::FQSymbol {
-            module: ModuleFullPath::from("main"),
-            symbol: Symbol::from("Some"),
-        },
-    );
-    check.pattern_ctors.insert(
-        Span::new(34, 40),
-        cranelisp_types::FQSymbol {
-            module: ModuleFullPath::from("main"),
-            symbol: Symbol::from("None"),
-        },
-    );
-    let tables = option_type_tables();
-
-    let result = test_compile_and_run(&expr, &check, &tables);
-    assert!(result.is_ok(), "match with fields should compile: {result:?}");
-    assert_eq!(result.unwrap(), 99, "match should extract field value");
-}
-
+        let result = test_compile_and_run(&expr, &check, &tables);
+        assert!(
+            result.is_ok(),
+            "match with fields should compile: {result:?}"
+        );
+        assert_eq!(result.unwrap(), 99, "match should extract field value");
+    }
 }

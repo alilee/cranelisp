@@ -147,7 +147,10 @@ impl<'a> CopyClassifier<'a> {
     /// withheld until B3 per §14.5); tests supply a stub to exercise the seam
     /// without rebuilding the tables.
     pub(crate) fn new(is_value: impl Fn(&ConcreteType) -> bool + 'a) -> Self {
-        Self { memo: RefCell::new(HashMap::new()), is_value: Box::new(is_value) }
+        Self {
+            memo: RefCell::new(HashMap::new()),
+            is_value: Box::new(is_value),
+        }
     }
 
     /// The scalars-only classifier — `value_layout` with **no** type tables,

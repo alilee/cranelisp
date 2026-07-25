@@ -8,11 +8,9 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Condvar, Mutex, MutexGuard};
 
-use cranelisp_types::{ErrorLocation, CranelispError, ModuleFullPath, Sexp, Span, Symbol};
+use cranelisp_types::{CranelispError, ErrorLocation, ModuleFullPath, Sexp, Span, Symbol};
 
-use crate::observability::{
-    self, SchedulerTraceTag,
-};
+use crate::observability::{self, SchedulerTraceTag};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -281,10 +279,9 @@ impl PartialEq for PriorityWork {
                 PriorityWork::Typecheck { module: a, .. },
                 PriorityWork::Typecheck { module: b, .. },
             ) => a == b,
-            (
-                PriorityWork::JitCodegen(am, asym),
-                PriorityWork::JitCodegen(bm, bsym),
-            ) => am == bm && asym == bsym,
+            (PriorityWork::JitCodegen(am, asym), PriorityWork::JitCodegen(bm, bsym)) => {
+                am == bm && asym == bsym
+            }
             _ => false,
         }
     }
@@ -411,7 +408,9 @@ impl CompileScheduler {
     /// because scheduler state is pure coordination metadata with no
     /// complex invariants that a partial update would corrupt.
     fn lock(&self) -> MutexGuard<'_, SchedulerState> {
-        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     // -----------------------------------------------------------------------
@@ -452,7 +451,9 @@ impl CompileScheduler {
         } else {
             ModulePool::TypecheckNext
         };
-        state.modules.insert(module.clone(), ModuleState::new(pool, Some(sexps)));
+        state
+            .modules
+            .insert(module.clone(), ModuleState::new(pool, Some(sexps)));
         if delays_other {
             state.typecheck_first.push_back(module);
         } else {
@@ -468,11 +469,7 @@ impl CompileScheduler {
     /// Enters TypecheckDone with type info available but in-memory code
     /// not yet loaded. Object codegen is pre-satisfied.
     /// Satisfies any pending typecheck waiters on this module's symbols.
-    pub fn register_module_cached(
-        &self,
-        module: ModuleFullPath,
-        symbols: HashSet<Symbol>,
-    ) {
+    pub fn register_module_cached(&self, module: ModuleFullPath, symbols: HashSet<Symbol>) {
         observability::record_module_event(
             SchedulerTraceTag::RegisterModuleCached,
             module.as_ref(),
@@ -495,9 +492,7 @@ impl CompileScheduler {
         state.ever_terminal.insert(module.clone());
 
         // Satisfy any pending typecheck waiters on symbols from this module.
-        Self::satisfy_typecheck_waiters_for_all_symbols_locked(
-            &mut state, &module, &symbols,
-        );
+        Self::satisfy_typecheck_waiters_for_all_symbols_locked(&mut state, &module, &symbols);
 
         // Wake BOTH worker classes. Nice workers get the new TypecheckDone
         // module (already object_done for cached, but wake for consistency).
@@ -549,9 +544,7 @@ impl CompileScheduler {
         state.ever_terminal.insert(module.clone());
 
         // Satisfy pending typecheck waiters on this module's symbols.
-        Self::satisfy_typecheck_waiters_for_all_symbols_locked(
-            &mut state, &module, &symbols,
-        );
+        Self::satisfy_typecheck_waiters_for_all_symbols_locked(&mut state, &module, &symbols);
         // The module is already inmem_done; satisfy any codegen waiters and run
         // the completion transition so a `wait_*_inmem_complete` caller wakes.
         Self::satisfy_codegen_waiters_batch_locked(&mut state, &module, &[]);
@@ -582,10 +575,7 @@ impl CompileScheduler {
         module: &ModuleFullPath,
         sexps: std::sync::Arc<[Sexp]>,
     ) -> bool {
-        observability::record_module_event(
-            SchedulerTraceTag::ReRegisterModule,
-            module.as_ref(),
-        );
+        observability::record_module_event(SchedulerTraceTag::ReRegisterModule, module.as_ref());
         let mut state = self.lock();
         let ms = match state.modules.get(module) {
             Some(ms) => ms,
@@ -708,7 +698,9 @@ impl CompileScheduler {
             // No work available — park until woken by register_module,
             // unblock, notify_typecheck_done, or shutdown. We do NOT exit
             // on "all work complete" — see Wave 4 doc comment above.
-            state = self.priority_work_available.wait(state)
+            state = self
+                .priority_work_available
+                .wait(state)
                 .unwrap_or_else(|e| e.into_inner());
         }
     }
@@ -740,9 +732,7 @@ impl CompileScheduler {
     /// Try to take a work item from the priority ladder (locked).
     ///
     /// Shared implementation for both blocking and non-blocking variants.
-    fn try_take_work_locked(
-        state: &mut SchedulerState,
-    ) -> Option<PriorityWork> {
+    fn try_take_work_locked(state: &mut SchedulerState) -> Option<PriorityWork> {
         if state.shutdown {
             return None;
         }
@@ -766,7 +756,9 @@ impl CompileScheduler {
         // Sprint 58 Wave 2c: split claim-vs-done so `wait_inmem_complete`
         // only sees `inmem_done = true` after the worker actually finishes.
         let cached_needing_inmem = state.typecheck_done.iter().find_map(|module| {
-            state.modules.get(module)
+            state
+                .modules
+                .get(module)
                 .filter(|ms| !ms.inmem_done && !ms.inmem_claimed && ms.object_done)
                 .map(|_| module.clone())
         });
@@ -781,7 +773,10 @@ impl CompileScheduler {
             }
             // Use a synthetic symbol name — the worker will batch-load the
             // entire .o file regardless of which symbol triggered the item.
-            return Some(PriorityWork::JitCodegen(module, Symbol::from("__cache_load")));
+            return Some(PriorityWork::JitCodegen(
+                module,
+                Symbol::from("__cache_load"),
+            ));
         }
 
         None
@@ -829,10 +824,7 @@ impl CompileScheduler {
         needed_symbol: &Symbol,
         ref_span: Span,
     ) -> Result<(), CranelispError> {
-        observability::record_module_event(
-            SchedulerTraceTag::ModuleStateBlocked,
-            module.as_ref(),
-        );
+        observability::record_module_event(SchedulerTraceTag::ModuleStateBlocked, module.as_ref());
         let mut state = self.lock();
 
         // I3 fail-fast (0571.2): if the dependency has ALREADY FAILED, surface
@@ -853,9 +845,7 @@ impl CompileScheduler {
                 .error
                 .as_ref()
                 .map(|e| (e.to_string(), e.span()))
-                .unwrap_or_else(|| {
-                    (format!("module '{needed_module}' failed to load"), ref_span)
-                });
+                .unwrap_or_else(|| (format!("module '{needed_module}' failed to load"), ref_span));
             return Err(CranelispError::ModuleError {
                 message,
                 location: ErrorLocation::from_span_file(span, None),
@@ -895,9 +885,7 @@ impl CompileScheduler {
         // terminal `needed_module` has published ALL its symbols, so a `"*"`
         // waiter is definitively satisfiable. The specific-symbol form is
         // test-only and keeps the register-a-waiter behaviour.
-        if needed_symbol.as_ref() == "*"
-            && Self::signatures_ready_locked(&state, needed_module)
-        {
+        if needed_symbol.as_ref() == "*" && Self::signatures_ready_locked(&state, needed_module) {
             // Clear any stale edge, move to TypecheckBlocked so
             // `try_unblock_locked`'s `pool == TypecheckBlocked` precondition holds,
             // then immediately requeue (→ TypecheckFirst/Next). Mirrors
@@ -921,7 +909,8 @@ impl CompileScheduler {
 
         // Check for cycles before adding the waiter.
         if let Some(cycle) = Self::detect_cycle_locked(&state, module) {
-            let cycle_str = cycle.iter()
+            let cycle_str = cycle
+                .iter()
                 .map(|m| m.to_string())
                 .collect::<Vec<_>>()
                 .join(" -> ");
@@ -931,20 +920,29 @@ impl CompileScheduler {
             // `Span::SYNTHETIC` module head — every diagnostic actionable (AL-3
             // parity).
             // Fail the module in the scheduler.
-            Self::notify_module_failed_locked(&mut state, module, CranelispError::ModuleError {
-                message: msg.clone(),
-                location: ErrorLocation::from_span_file(ref_span, None),
-            });
+            Self::notify_module_failed_locked(
+                &mut state,
+                module,
+                CranelispError::ModuleError {
+                    message: msg.clone(),
+                    location: ErrorLocation::from_span_file(ref_span, None),
+                },
+            );
             return Err(CranelispError::ModuleError {
                 message: msg,
                 location: ErrorLocation::from_span_file(ref_span, None),
             });
         }
 
-        Self::add_waiter_locked(&mut state, needed_module, needed_symbol, Waiter {
-            module: module.clone(),
-            need: WaitKind::Typecheck,
-        });
+        Self::add_waiter_locked(
+            &mut state,
+            needed_module,
+            needed_symbol,
+            Waiter {
+                module: module.clone(),
+                need: WaitKind::Typecheck,
+            },
+        );
         Ok(())
     }
 
@@ -980,23 +978,23 @@ impl CompileScheduler {
 
         // Sweep: collect all modules waiting for typecheck on any symbol
         // in this module, then clear those waiters and unblock.
-        let all_waiters: Vec<ModuleFullPath> =
-            if let Some(ms) = state.modules.get_mut(module) {
-                let waiters: Vec<ModuleFullPath> = ms.waiters
-                    .values()
-                    .flat_map(|ws| ws.iter())
-                    .filter(|w| w.need == WaitKind::Typecheck)
-                    .map(|w| w.module.clone())
-                    .collect();
-                // Remove typecheck waiters (keep codegen waiters).
-                ms.waiters.retain(|_, ws| {
-                    ws.retain(|w| w.need != WaitKind::Typecheck);
-                    !ws.is_empty()
-                });
-                waiters
-            } else {
-                Vec::new()
-            };
+        let all_waiters: Vec<ModuleFullPath> = if let Some(ms) = state.modules.get_mut(module) {
+            let waiters: Vec<ModuleFullPath> = ms
+                .waiters
+                .values()
+                .flat_map(|ws| ws.iter())
+                .filter(|w| w.need == WaitKind::Typecheck)
+                .map(|w| w.module.clone())
+                .collect();
+            // Remove typecheck waiters (keep codegen waiters).
+            ms.waiters.retain(|_, ws| {
+                ws.retain(|w| w.need != WaitKind::Typecheck);
+                !ws.is_empty()
+            });
+            waiters
+        } else {
+            Vec::new()
+        };
 
         // Unblock each waiting module and clear its blocked_on edge.
         for waiter_module in all_waiters {
@@ -1050,7 +1048,9 @@ impl CompileScheduler {
             match state.modules.get(module).map(|ms| ms.pool) {
                 None => return, // Unknown module — nothing to wait on.
                 Some(ModulePool::TypecheckWorking) | Some(ModulePool::TypecheckBlocked) => {
-                    state = self.completion.wait(state)
+                    state = self
+                        .completion
+                        .wait(state)
                         .unwrap_or_else(|e| e.into_inner());
                 }
                 Some(_) => return, // Settled (queued or terminal).
@@ -1061,11 +1061,7 @@ impl CompileScheduler {
     /// A module has failed (parse, type, macro, or codegen error).
     /// Moves module to Failed. Stores the error. Cascades failure
     /// to any modules in TypecheckBlocked waiting on this module's symbols.
-    pub fn notify_module_failed(
-        &self,
-        module: &ModuleFullPath,
-        error: CranelispError,
-    ) {
+    pub fn notify_module_failed(&self, module: &ModuleFullPath, error: CranelispError) {
         let mut state = self.lock();
         Self::notify_module_failed_locked(&mut state, module, error);
 
@@ -1101,11 +1097,7 @@ impl CompileScheduler {
     /// Used when a Linker load resolves all symbols in a cached .o at once.
     /// Sprint 58 Wave 2c: clears `inmem_claimed` alongside setting
     /// `inmem_done` so the claim and the completion are released atomically.
-    pub fn notify_inmem_codegen_batch_complete(
-        &self,
-        module: &ModuleFullPath,
-        symbols: &[Symbol],
-    ) {
+    pub fn notify_inmem_codegen_batch_complete(&self, module: &ModuleFullPath, symbols: &[Symbol]) {
         let mut state = self.lock();
         if let Some(ms) = state.modules.get_mut(module) {
             for sym in symbols {
@@ -1148,7 +1140,9 @@ impl CompileScheduler {
             // Scan for a TypecheckDone module needing object codegen
             // that is not already being worked on by another nice worker.
             let found = state.typecheck_done.iter().find_map(|module| {
-                state.modules.get(module)
+                state
+                    .modules
+                    .get(module)
                     .filter(|ms| !ms.object_done && !ms.object_working)
                     .map(|_| module.clone())
             });
@@ -1162,7 +1156,9 @@ impl CompileScheduler {
                 return Some(module);
             }
             // No work available — park until woken.
-            state = self.object_work_available.wait(state)
+            state = self
+                .object_work_available
+                .wait(state)
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
         }
     }
@@ -1352,10 +1348,16 @@ impl CompileScheduler {
             if ms.pool == ModulePool::Failed {
                 return Err(SchedulerError::ModuleFailed {
                     module: path.clone(),
-                    message: ms.error.as_ref()
+                    message: ms
+                        .error
+                        .as_ref()
                         .map(|e| e.to_string())
                         .unwrap_or_else(|| "unknown error".to_string()),
-                    span: ms.error.as_ref().map(|e| e.span()).unwrap_or(Span::SYNTHETIC),
+                    span: ms
+                        .error
+                        .as_ref()
+                        .map(|e| e.span())
+                        .unwrap_or(Span::SYNTHETIC),
                 });
             }
             if !ms.inmem_done && ms.pool != ModulePool::Complete {
@@ -1382,16 +1384,25 @@ impl CompileScheduler {
     ) -> Result<(), SchedulerError> {
         let mut state = self.lock();
         loop {
-            let ms = state.modules.get(target).ok_or_else(|| {
-                SchedulerError::InmemIncomplete { module: target.clone() }
-            })?;
+            let ms = state
+                .modules
+                .get(target)
+                .ok_or_else(|| SchedulerError::InmemIncomplete {
+                    module: target.clone(),
+                })?;
             if ms.pool == ModulePool::Failed {
                 return Err(SchedulerError::ModuleFailed {
                     module: target.clone(),
-                    message: ms.error.as_ref()
+                    message: ms
+                        .error
+                        .as_ref()
                         .map(|e| e.to_string())
                         .unwrap_or_else(|| "unknown error".to_string()),
-                    span: ms.error.as_ref().map(|e| e.span()).unwrap_or(Span::SYNTHETIC),
+                    span: ms
+                        .error
+                        .as_ref()
+                        .map(|e| e.span())
+                        .unwrap_or(Span::SYNTHETIC),
                 });
             }
             if ms.inmem_done || ms.pool == ModulePool::Complete {
@@ -1400,7 +1411,9 @@ impl CompileScheduler {
             if state.shutdown {
                 return Ok(());
             }
-            state = self.completion.wait(state)
+            state = self
+                .completion
+                .wait(state)
                 .unwrap_or_else(|e| e.into_inner());
         }
     }
@@ -1418,10 +1431,16 @@ impl CompileScheduler {
                 if ms.pool == ModulePool::Failed {
                     return Err(SchedulerError::ModuleFailed {
                         module: path.clone(),
-                        message: ms.error.as_ref()
+                        message: ms
+                            .error
+                            .as_ref()
                             .map(|e| e.to_string())
                             .unwrap_or_else(|| "unknown error".to_string()),
-                        span: ms.error.as_ref().map(|e| e.span()).unwrap_or(Span::SYNTHETIC),
+                        span: ms
+                            .error
+                            .as_ref()
+                            .map(|e| e.span())
+                            .unwrap_or(Span::SYNTHETIC),
                     });
                 }
                 if !ms.inmem_done && ms.pool != ModulePool::Complete {
@@ -1432,7 +1451,9 @@ impl CompileScheduler {
             if all_done || state.shutdown {
                 return Ok(());
             }
-            state = self.completion.wait(state)
+            state = self
+                .completion
+                .wait(state)
                 .unwrap_or_else(|e| e.into_inner());
         }
     }
@@ -1448,10 +1469,16 @@ impl CompileScheduler {
                 if ms.pool == ModulePool::Failed {
                     return Err(SchedulerError::ModuleFailed {
                         module: path.clone(),
-                        message: ms.error.as_ref()
+                        message: ms
+                            .error
+                            .as_ref()
                             .map(|e| e.to_string())
                             .unwrap_or_else(|| "unknown error".to_string()),
-                        span: ms.error.as_ref().map(|e| e.span()).unwrap_or(Span::SYNTHETIC),
+                        span: ms
+                            .error
+                            .as_ref()
+                            .map(|e| e.span())
+                            .unwrap_or(Span::SYNTHETIC),
                     });
                 }
                 if !ms.object_done {
@@ -1463,7 +1490,9 @@ impl CompileScheduler {
                 return Ok(());
             }
             // Not all done — park until a module completes or shutdown.
-            state = self.completion.wait(state)
+            state = self
+                .completion
+                .wait(state)
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
         }
     }
@@ -1475,7 +1504,9 @@ impl CompileScheduler {
     /// Check whether a module is in the Failed pool.
     pub fn is_failed(&self, module: &ModuleFullPath) -> bool {
         let state = self.lock();
-        state.modules.get(module)
+        state
+            .modules
+            .get(module)
             .is_some_and(|ms| ms.pool == ModulePool::Failed)
     }
 
@@ -1618,10 +1649,7 @@ impl CompileScheduler {
     /// to here, and on to the body's read of `symbol_tables[sibling]` (§3.3). No
     /// body is admitted to Phase B until this opens, so the §3.6 publish/read
     /// window cannot occur.
-    pub fn await_signature_barrier(
-        &self,
-        closure: &ClosureOrder,
-    ) -> Result<(), SchedulerError> {
+    pub fn await_signature_barrier(&self, closure: &ClosureOrder) -> Result<(), SchedulerError> {
         let mut state = self.lock();
         loop {
             if state.shutdown {
@@ -1640,7 +1668,11 @@ impl CompileScheduler {
                             .as_ref()
                             .map(|e| e.to_string())
                             .unwrap_or_else(|| "unknown error".to_string()),
-                        span: ms.error.as_ref().map(|e| e.span()).unwrap_or(Span::SYNTHETIC),
+                        span: ms
+                            .error
+                            .as_ref()
+                            .map(|e| e.span())
+                            .unwrap_or(Span::SYNTHETIC),
                     });
                 }
             }
@@ -1707,10 +1739,7 @@ impl CompileScheduler {
             return Ok(None); // barrier open — every member is terminal
         };
 
-        observability::record_module_event(
-            SchedulerTraceTag::ModuleStateBlocked,
-            module.as_ref(),
-        );
+        observability::record_module_event(SchedulerTraceTag::ModuleStateBlocked, module.as_ref());
         // Inline the `block_for_typecheck` transition under THIS lock — the scan
         // above and this waiter registration must not have a gap.
         Self::set_pool_locked(&mut state, module, ModulePool::TypecheckBlocked);
@@ -1901,12 +1930,11 @@ impl CompileScheduler {
     /// - Module is removed from all deques.
     /// - Any priority queue entries for this module are removed.
     pub fn reset_module(&self, module: &ModuleFullPath) {
-        observability::record_module_event(
-            SchedulerTraceTag::ResetModule,
-            module.as_ref(),
-        );
+        observability::record_module_event(SchedulerTraceTag::ResetModule, module.as_ref());
         let mut state = self.lock();
-        let Some(ms) = state.modules.get(module) else { return };
+        let Some(ms) = state.modules.get(module) else {
+            return;
+        };
         if ms.pool != ModulePool::Failed {
             return; // Only reset Failed modules.
         }
@@ -1931,15 +1959,13 @@ impl CompileScheduler {
     /// as "loaded" (I1, 0571.2).
     pub fn reset_all_failed_modules(&self) -> Vec<ModuleFullPath> {
         let mut state = self.lock();
-        let failed: Vec<ModuleFullPath> = state.modules
+        let failed: Vec<ModuleFullPath> = state
+            .modules
             .iter()
             .filter(|(_, ms)| ms.pool == ModulePool::Failed)
             .map(|(path, _)| path.clone())
             .collect();
-        observability::record_bulk_event(
-            SchedulerTraceTag::ResetAllFailed,
-            failed.len(),
-        );
+        observability::record_bulk_event(SchedulerTraceTag::ResetAllFailed, failed.len());
         for m in &failed {
             // Inline the reset logic to avoid re-locking.
             state.modules.remove(m);
@@ -2039,9 +2065,21 @@ impl CompileScheduler {
         let _ = writeln!(
             s,
             "  queues: typecheck_first={:?} typecheck_next={:?} typecheck_done={:?}",
-            state.typecheck_first.iter().map(|m| m.as_ref()).collect::<Vec<_>>(),
-            state.typecheck_next.iter().map(|m| m.as_ref()).collect::<Vec<_>>(),
-            state.typecheck_done.iter().map(|m| m.as_ref()).collect::<Vec<_>>(),
+            state
+                .typecheck_first
+                .iter()
+                .map(|m| m.as_ref())
+                .collect::<Vec<_>>(),
+            state
+                .typecheck_next
+                .iter()
+                .map(|m| m.as_ref())
+                .collect::<Vec<_>>(),
+            state
+                .typecheck_done
+                .iter()
+                .map(|m| m.as_ref())
+                .collect::<Vec<_>>(),
         );
         // Stable iteration order for deterministic dumps across runs.
         let mut paths: Vec<&ModuleFullPath> = state.modules.keys().collect();
@@ -2089,12 +2127,7 @@ impl CompileScheduler {
             let listed_as_waiter = state
                 .modules
                 .get(dep)
-                .map(|d| {
-                    d.waiters
-                        .values()
-                        .flatten()
-                        .any(|w| &w.module == path)
-                })
+                .map(|d| d.waiters.values().flatten().any(|w| &w.module == path))
                 .unwrap_or(false);
             if dep_terminal && !listed_as_waiter {
                 let _ = writeln!(
@@ -2115,11 +2148,7 @@ impl CompileScheduler {
 
     /// Set a module's pool. Does NOT add/remove from deques — caller
     /// is responsible for deque management.
-    fn set_pool_locked(
-        state: &mut SchedulerState,
-        module: &ModuleFullPath,
-        pool: ModulePool,
-    ) {
+    fn set_pool_locked(state: &mut SchedulerState, module: &ModuleFullPath, pool: ModulePool) {
         if let Some(ms) = state.modules.get_mut(module) {
             ms.pool = pool;
         }
@@ -2194,11 +2223,10 @@ impl CompileScheduler {
     /// shared in-progress state for a racing worker to read, and the REPL-eval
     /// thread no longer needs to suppress the worker requeue (OQ-3; validated
     /// by the H5-replay gate staying green under stress after this deletion).
-    fn try_unblock_locked(
-        state: &mut SchedulerState,
-        module: &ModuleFullPath,
-    ) {
-        let Some(ms) = state.modules.get(module) else { return };
+    fn try_unblock_locked(state: &mut SchedulerState, module: &ModuleFullPath) {
+        let Some(ms) = state.modules.get(module) else {
+            return;
+        };
         // S93 Invariant SW: the entry module's single-orchestrator property is
         // structural, not a flag. The eval thread NEVER moves its entry to
         // `TypecheckBlocked` (it records a cycle-check edge via
@@ -2236,10 +2264,7 @@ impl CompileScheduler {
         module: &ModuleFullPath,
         error: CranelispError,
     ) {
-        observability::record_module_event(
-            SchedulerTraceTag::ModuleStateFailed,
-            module.as_ref(),
-        );
+        observability::record_module_event(SchedulerTraceTag::ModuleStateFailed, module.as_ref());
         Self::set_pool_locked(state, module, ModulePool::Failed);
         if let Some(ms) = state.modules.get_mut(module) {
             ms.error = Some(error);
@@ -2249,14 +2274,12 @@ impl CompileScheduler {
 
     /// Cascade failure from a failed module to all modules waiting
     /// on any of its symbols.
-    fn cascade_failure_locked(
-        state: &mut SchedulerState,
-        failed_module: &ModuleFullPath,
-    ) {
-        let waiting_modules =
-            Self::collect_waiters_for_module_locked(state, failed_module);
+    fn cascade_failure_locked(state: &mut SchedulerState, failed_module: &ModuleFullPath) {
+        let waiting_modules = Self::collect_waiters_for_module_locked(state, failed_module);
 
-        let original_error_msg = state.modules.get(failed_module)
+        let original_error_msg = state
+            .modules
+            .get(failed_module)
             .and_then(|ms| ms.error.as_ref())
             .map(|e| e.to_string())
             .unwrap_or_else(|| "unknown error".to_string());
@@ -2265,8 +2288,7 @@ impl CompileScheduler {
             let error = CranelispError::ModuleError {
                 message: format!(
                     "dependency '{}' failed: {}",
-                    failed_module,
-                    original_error_msg,
+                    failed_module, original_error_msg,
                 ),
                 location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
             };
@@ -2303,7 +2325,9 @@ impl CompileScheduler {
         let mut current = start.clone();
 
         loop {
-            let next = state.modules.get(&current)
+            let next = state
+                .modules
+                .get(&current)
                 .and_then(|ms| ms.blocked_on.clone());
             match next {
                 None => return None,
@@ -2323,11 +2347,10 @@ impl CompileScheduler {
     }
 
     /// Move module to Complete if inmem_done and object_done.
-    fn try_complete_locked(
-        state: &mut SchedulerState,
-        module: &ModuleFullPath,
-    ) {
-        let Some(ms) = state.modules.get(module) else { return };
+    fn try_complete_locked(state: &mut SchedulerState, module: &ModuleFullPath) {
+        let Some(ms) = state.modules.get(module) else {
+            return;
+        };
         if ms.pool != ModulePool::TypecheckDone {
             return;
         }
@@ -2345,9 +2368,8 @@ impl CompileScheduler {
         symbols: &HashSet<Symbol>,
     ) {
         for symbol in symbols {
-            let waiters = Self::take_waiters_for_symbol_locked(
-                state, module, symbol, WaitKind::Typecheck,
-            );
+            let waiters =
+                Self::take_waiters_for_symbol_locked(state, module, symbol, WaitKind::Typecheck);
             for waiter_module in waiters {
                 Self::try_unblock_locked(state, &waiter_module);
             }
@@ -2361,9 +2383,8 @@ impl CompileScheduler {
         symbols: &[Symbol],
     ) {
         for symbol in symbols {
-            let waiters = Self::take_waiters_for_symbol_locked(
-                state, module, symbol, WaitKind::Codegen,
-            );
+            let waiters =
+                Self::take_waiters_for_symbol_locked(state, module, symbol, WaitKind::Codegen);
             for waiter_module in waiters {
                 Self::try_unblock_locked(state, &waiter_module);
             }
@@ -2387,19 +2408,17 @@ pub enum SchedulerError {
         span: Span,
     },
     /// In-memory codegen not yet complete for a module.
-    InmemIncomplete {
-        module: ModuleFullPath,
-    },
+    InmemIncomplete { module: ModuleFullPath },
     /// Object codegen not yet complete for a module.
-    ObjectIncomplete {
-        module: ModuleFullPath,
-    },
+    ObjectIncomplete { module: ModuleFullPath },
 }
 
 impl std::fmt::Display for SchedulerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SchedulerError::ModuleFailed { module, message, .. } => {
+            SchedulerError::ModuleFailed {
+                module, message, ..
+            } => {
                 write!(f, "module '{}' failed: {}", module, message)
             }
             SchedulerError::InmemIncomplete { module } => {
@@ -2511,10 +2530,8 @@ pub fn dependency_closure(
                     Some(Colour::Black) => continue, // already finished
                     Some(Colour::Gray) => {
                         // Back-edge — reconstruct the cycle from `path`.
-                        let start = path.iter().position(|m| *m == node)
-                            .unwrap_or(0);
-                        let mut cycle: Vec<ModuleFullPath> =
-                            path[start..].to_vec();
+                        let start = path.iter().position(|m| *m == node).unwrap_or(0);
+                        let mut cycle: Vec<ModuleFullPath> = path[start..].to_vec();
                         cycle.push(node);
                         return Err(CycleError { cycle });
                     }
@@ -2551,28 +2568,22 @@ pub fn dependency_closure(
 impl From<SchedulerError> for CranelispError {
     fn from(e: SchedulerError) -> Self {
         match e {
-            SchedulerError::ModuleFailed { module, message, span } => {
-                CranelispError::ModuleError {
-                    message: format!("module '{}' failed: {}", module, message),
-                    location: ErrorLocation::from_span_file(span, None),
-                }
-            }
-            SchedulerError::InmemIncomplete { module } => {
-                CranelispError::ModuleError {
-                    message: format!(
-                        "in-memory codegen incomplete for '{}'", module
-                    ),
-                    location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-                }
-            }
-            SchedulerError::ObjectIncomplete { module } => {
-                CranelispError::ModuleError {
-                    message: format!(
-                        "object codegen incomplete for '{}'", module
-                    ),
-                    location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-                }
-            }
+            SchedulerError::ModuleFailed {
+                module,
+                message,
+                span,
+            } => CranelispError::ModuleError {
+                message: format!("module '{}' failed: {}", module, message),
+                location: ErrorLocation::from_span_file(span, None),
+            },
+            SchedulerError::InmemIncomplete { module } => CranelispError::ModuleError {
+                message: format!("in-memory codegen incomplete for '{}'", module),
+                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+            },
+            SchedulerError::ObjectIncomplete { module } => CranelispError::ModuleError {
+                message: format!("object codegen incomplete for '{}'", module),
+                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+            },
         }
     }
 }

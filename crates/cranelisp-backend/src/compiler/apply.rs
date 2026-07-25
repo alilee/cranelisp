@@ -9,16 +9,19 @@ use std::collections::HashMap;
 use cranelift::prelude::*;
 use cranelift_module::Module;
 
-use cranelisp_types::{DefKind, ErrorLocation, ConcreteType, CranelispError, FQSymbol, HeapHeader, ModuleEntry, MonoExpr, ResolvedCall, Span, Symbol, VarRef};
 use crate::heap::HeapCategory;
+use cranelisp_types::{
+    ConcreteType, CranelispError, DefKind, ErrorLocation, FQSymbol, HeapHeader, ModuleEntry,
+    MonoExpr, ResolvedCall, Span, Symbol, VarRef,
+};
 
 use crate::heap::{self, HeapAdt, HeapClosure};
 use crate::primitives_inline;
 
 use super::control_flow::{
-    find_sparkable_args, find_sparkable_args_with, SparkAdmit, LENIENT_DISABLED, SPARK_ADMIT,
+    LENIENT_DISABLED, SPARK_ADMIT, SparkAdmit, find_sparkable_args, find_sparkable_args_with,
 };
-use super::{signature_heap_category, FnCompiler};
+use super::{FnCompiler, signature_heap_category};
 
 /// Absolute byte offset of the `IO_TAG_EFFECT` node's fn-name handle field
 /// (field-3) from the node **base** pointer.
@@ -138,12 +141,20 @@ pub(crate) fn moded_arg_rc(
             let guarded = matches!(category, HeapCategory::Mixed);
             match (owned_binding, mode) {
                 (true, Mode::Owned) => {
-                    if guarded { ModedArgRc::IncGuarded } else { ModedArgRc::Inc }
+                    if guarded {
+                        ModedArgRc::IncGuarded
+                    } else {
+                        ModedArgRc::Inc
+                    }
                 }
                 (true, Mode::Borrowed | Mode::Copy) => ModedArgRc::None,
                 (false, Mode::Owned | Mode::Copy) => ModedArgRc::None,
                 (false, Mode::Borrowed) => {
-                    if guarded { ModedArgRc::PostDecGuarded } else { ModedArgRc::PostDec }
+                    if guarded {
+                        ModedArgRc::PostDecGuarded
+                    } else {
+                        ModedArgRc::PostDec
+                    }
                 }
             }
         }
@@ -258,9 +269,7 @@ where
                 }
                 SparkAdmit::Mstatic => {
                     let recursive = self.mstatic_recursive_set();
-                    find_sparkable_args_with(args, |e| {
-                        self.mstatic_admits_candidate(e, &recursive)
-                    })
+                    find_sparkable_args_with(args, |e| self.mstatic_admits_candidate(e, &recursive))
                 }
             };
             if sparkable.len() >= 2 {
@@ -316,11 +325,8 @@ where
                             //    in the thunk body declines stack allocation (its slot
                             //    would dangle at the join — hard UAF).
                             let thunk_val = this.compile_spark_thunk(&thunk_expr)?;
-                            let ivar_val = this.emit_extern_call(
-                                "cranelisp_ivar_create",
-                                &[thunk_val],
-                                span,
-                            )?;
+                            let ivar_val =
+                                this.emit_extern_call("cranelisp_ivar_create", &[thunk_val], span)?;
                             this.emit_extern_call("cranelisp_ivar_spark", &[ivar_val], span)?;
                             map.insert(idx, ivar_val);
                         }
@@ -375,7 +381,17 @@ where
         // non-lenient apply does NOT touch `sparked_args`; the pointer-identity
         // guard in `maybe_force_sparked_arg` ensures its own argument slice never
         // matches an enclosing apply's installed map.
-        self.dispatch_apply(callee, args, span, resolved_call, apply_target, apply_type, saved_tail, stack, apply_escapes)
+        self.dispatch_apply(
+            callee,
+            args,
+            span,
+            resolved_call,
+            apply_target,
+            apply_type,
+            saved_tail,
+            stack,
+            apply_escapes,
+        )
     }
 
     /// Dispatch a (non-TCO, args-not-in-tail) application through the resolved-
@@ -403,7 +419,13 @@ where
         // Check for resolved call (builtin, trait method, sig-dispatch, auto-curry).
         if let Some(resolved) = resolved_call {
             return self.compile_resolved_call(
-                resolved.clone(), callee, args, span, saved_tail, apply_target, apply_escapes,
+                resolved.clone(),
+                callee,
+                args,
+                span,
+                saved_tail,
+                apply_target,
+                apply_escapes,
             );
         }
 
@@ -432,8 +454,7 @@ where
         // the inc prevents premature deallocation. The caller's later
         // dec (scope cleanup or parent expression) restores balance.
         if let Some(ty) = apply_type {
-            let category =
-                signature_heap_category(ty, Some(self.ctx.symbol_tables));
+            let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
             match category {
                 HeapCategory::AlwaysHeap => {
                     heap::emit_rc_inc(&mut self.builder, self.module, result);
@@ -478,10 +499,17 @@ where
         apply_escapes: Option<bool>,
     ) -> Result<Value, CranelispError> {
         match resolved {
-            ResolvedCall::BuiltinFn { name: ref op_name } => {
-                self.compile_builtin_fn_call(op_name, args, span, saved_tail, apply_target, apply_escapes)
-            }
-            ResolvedCall::TraitMethod { ref mangled_name, .. } => {
+            ResolvedCall::BuiltinFn { name: ref op_name } => self.compile_builtin_fn_call(
+                op_name,
+                args,
+                span,
+                saved_tail,
+                apply_target,
+                apply_escapes,
+            ),
+            ResolvedCall::TraitMethod {
+                ref mangled_name, ..
+            } => {
                 let sym = Symbol::from(mangled_name.as_ref());
                 self.compile_moded_user_call(&sym, args, span, saved_tail, apply_target)
             }
@@ -637,13 +665,23 @@ where
         }
 
         if is_extern_primitive(op_name) {
-            return self.compile_extern_primitive_call(op_name, args, span, saved_tail, apply_target);
+            return self.compile_extern_primitive_call(
+                op_name,
+                args,
+                span,
+                saved_tail,
+                apply_target,
+            );
         }
 
         // Unrecognized builtin: a platform-effect function or a direct-extern.
         if !primitives_inline::is_known_builtin(op_name) {
             return self.compile_platform_or_direct_extern_call(
-                op_name, args, span, saved_tail, apply_target,
+                op_name,
+                args,
+                span,
+                saved_tail,
+                apply_target,
             );
         }
 
@@ -811,8 +849,12 @@ where
         let arg_vals = self.compile_arg_list(args)?;
         self.in_tail_position = saved_tail;
         match primitives_inline::try_emit_inline_primitive(
-            &mut self.builder, op_name, &arg_vals, span,
-            self.module, self.ctx.panic_func_id,
+            &mut self.builder,
+            op_name,
+            &arg_vals,
+            span,
+            self.module,
+            self.ctx.panic_func_id,
         ) {
             Some(result) => result,
             None => {
@@ -918,26 +960,25 @@ where
                 });
             }
             AutoCurryTarget::ClosureValue => {
-            // Curry the CLOSURE VALUE. Source order: the callee is evaluated
-            // before the arguments. Routed through `compile_consuming_arg_list`
-            // so the target gets exactly the capture ownership the applied args
-            // get — a live-`Var` closure is inc'd (the enclosing scope keeps its
-            // own reference, dec'd at scope exit), a computed temporary transfers.
-            let target_val =
-                self.compile_consuming_arg_list(std::slice::from_ref(callee))?[0];
-            let arg_vals = self.compile_consuming_arg_list(args)?;
-            self.in_tail_position = saved_tail;
-            return self.compile_auto_curry(
-                target_name,
-                &arg_vals,
-                applied_count,
-                total_count,
-                args,
-                span,
-                trait_resolution,
-                apply_target,
-                Some(target_val),
-            );
+                // Curry the CLOSURE VALUE. Source order: the callee is evaluated
+                // before the arguments. Routed through `compile_consuming_arg_list`
+                // so the target gets exactly the capture ownership the applied args
+                // get — a live-`Var` closure is inc'd (the enclosing scope keeps its
+                // own reference, dec'd at scope exit), a computed temporary transfers.
+                let target_val = self.compile_consuming_arg_list(std::slice::from_ref(callee))?[0];
+                let arg_vals = self.compile_consuming_arg_list(args)?;
+                self.in_tail_position = saved_tail;
+                return self.compile_auto_curry(
+                    target_name,
+                    &arg_vals,
+                    applied_count,
+                    total_count,
+                    args,
+                    span,
+                    trait_resolution,
+                    apply_target,
+                    Some(target_val),
+                );
             }
             // The landed table-symbol arms (Dispatch / inner trait-or-builtin
             // resolution) fall through to the shared tail below.
@@ -1168,30 +1209,31 @@ where
 
             // Inc heap-typed variable arguments for consuming convention.
             if let MonoExpr::Var { name, .. } = arg
-                && let Some(ty) = self.variable_types.get(name) {
-                    let category =
-                        signature_heap_category(ty, Some(self.ctx.symbol_tables));
-                    // B3.3-R (§5.1): the consuming inc is always atomic. This was
-                    // a through-binding site (per-binding Confined carrier),
-                    // dropped as dead + latent-race code (/review B3.3) — the
-                    // analysis produces no confined let-bindings today. The
-                    // `_atomicity` mechanism is retained (probe-reachable); it is
-                    // fed `Atomic` here.
-                    let atomicity = heap::RcAtomicity::Atomic;
-                    match category {
-                        HeapCategory::AlwaysHeap => {
-                            heap::emit_rc_inc_atomicity(
-                                &mut self.builder, self.module, val, atomicity,
-                            );
-                        }
-                        HeapCategory::Mixed => {
-                            heap::emit_rc_inc_guarded_atomicity(
-                                &mut self.builder, self.module, val, atomicity,
-                            );
-                        }
-                        HeapCategory::NeverHeap | HeapCategory::Value => {}
+                && let Some(ty) = self.variable_types.get(name)
+            {
+                let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
+                // B3.3-R (§5.1): the consuming inc is always atomic. This was
+                // a through-binding site (per-binding Confined carrier),
+                // dropped as dead + latent-race code (/review B3.3) — the
+                // analysis produces no confined let-bindings today. The
+                // `_atomicity` mechanism is retained (probe-reachable); it is
+                // fed `Atomic` here.
+                let atomicity = heap::RcAtomicity::Atomic;
+                match category {
+                    HeapCategory::AlwaysHeap => {
+                        heap::emit_rc_inc_atomicity(&mut self.builder, self.module, val, atomicity);
                     }
+                    HeapCategory::Mixed => {
+                        heap::emit_rc_inc_guarded_atomicity(
+                            &mut self.builder,
+                            self.module,
+                            val,
+                            atomicity,
+                        );
+                    }
+                    HeapCategory::NeverHeap | HeapCategory::Value => {}
                 }
+            }
 
             vals.push(val);
         }
@@ -1305,12 +1347,20 @@ where
             // from that binding's authoritative type, else from the node type.
             let (owned_binding, category) = match arg {
                 MonoExpr::Var { name, .. } if self.variable_types.contains_key(name) => {
-                    let ty = self.variable_types.get(name).cloned().unwrap_or_else(|| {
-                        unreachable!("contains_key checked above")
-                    });
-                    (true, signature_heap_category(&ty, Some(self.ctx.symbol_tables)))
+                    let ty = self
+                        .variable_types
+                        .get(name)
+                        .cloned()
+                        .unwrap_or_else(|| unreachable!("contains_key checked above"));
+                    (
+                        true,
+                        signature_heap_category(&ty, Some(self.ctx.symbol_tables)),
+                    )
                 }
-                _ => (false, HeapCategory::classify(arg.ty(), Some(self.ctx.symbol_tables))),
+                _ => (
+                    false,
+                    HeapCategory::classify(arg.ty(), Some(self.ctx.symbol_tables)),
+                ),
             };
             // B3.3-R (§5.1): the consuming inc (the adaptation path too) is
             // always atomic. This was a through-binding/arg site, dropped as dead
@@ -1324,11 +1374,12 @@ where
                 ModedArgRc::Inc => {
                     heap::emit_rc_inc_atomicity(&mut self.builder, self.module, val, atomicity)
                 }
-                ModedArgRc::IncGuarded => {
-                    heap::emit_rc_inc_guarded_atomicity(
-                        &mut self.builder, self.module, val, atomicity,
-                    )
-                }
+                ModedArgRc::IncGuarded => heap::emit_rc_inc_guarded_atomicity(
+                    &mut self.builder,
+                    self.module,
+                    val,
+                    atomicity,
+                ),
                 ModedArgRc::PostDec => {
                     post_call_decs.push((val, HeapCategory::AlwaysHeap, Some(arg.ty().to_type())))
                 }
@@ -1367,7 +1418,12 @@ where
             match ty {
                 Some(ty) => self.emit_typed_rc_dec(*val, ty, dealloc_id, guarded),
                 None if guarded => heap::emit_rc_dec_guarded(
-                    &mut self.builder, self.module, *val, dealloc_id, None, true,
+                    &mut self.builder,
+                    self.module,
+                    *val,
+                    dealloc_id,
+                    None,
+                    true,
                 ),
                 None => heap::emit_rc_dec(&mut self.builder, self.module, *val, dealloc_id, None),
             }
@@ -1402,13 +1458,16 @@ where
             ),
             location: ErrorLocation::from_span(span),
         })?;
-        let (home, entry) = self.ctx.entry_at(fq).ok_or_else(|| CranelispError::CodegenError {
-            message: format!(
-                "resolved_target '{fq}' for call '{name}' fetched no symbol-table \
+        let (home, entry) = self
+            .ctx
+            .entry_at(fq)
+            .ok_or_else(|| CranelispError::CodegenError {
+                message: format!(
+                    "resolved_target '{fq}' for call '{name}' fetched no symbol-table \
                  entry (S110 W1 entry-miss; backend-keyed-consumer.md §1.3)"
-            ),
-            location: ErrorLocation::from_span(span),
-        })?;
+                ),
+                location: ErrorLocation::from_span(span),
+            })?;
 
         // Whether the fetched entry is a platform effect (drives S6 poll + S8
         // stamp). Read once off the ONE fetched entry.
@@ -1416,7 +1475,10 @@ where
             ModuleEntry::Def { kind, scheme, .. }
                 if matches!(
                     kind.as_ref(),
-                    DefKind::PlatformEffect { poll_shape: true, .. }
+                    DefKind::PlatformEffect {
+                        poll_shape: true,
+                        ..
+                    }
                 ) =>
             {
                 let DefKind::PlatformEffect { got_slot, .. } = kind.as_ref() else {
@@ -1462,7 +1524,8 @@ where
         // the emitted (symbol, slot) pair is byte-identical to the pre-W1 scan.
         if let Some(slot) = entry.callable_got_slot() {
             let got_sym = crate::compiler::got_data_symbol_name(&home);
-            let data_id = self.module
+            let data_id = self
+                .module
                 .declare_data(&got_sym, cranelift_module::Linkage::Import, false, false)
                 .map_err(|e| CranelispError::CodegenError {
                     message: format!("failed to declare GOT data '{}': {e}", got_sym),
@@ -1522,12 +1585,14 @@ where
         // carries no dispatch mechanism (no GOT slot, not extern, not poll) — in
         // the live session path every callable carries a GOT slot, so the S7 arm
         // wins and this is effectively the batch/test-harness tail.
-        let func_id = self.ctx.func_ids.get(name).ok_or_else(|| {
-            CranelispError::CodegenError {
+        let func_id = self
+            .ctx
+            .func_ids
+            .get(name)
+            .ok_or_else(|| CranelispError::CodegenError {
                 message: format!("undefined function: {name}"),
                 location: ErrorLocation::from_span(span),
-            }
-        })?;
+            })?;
         let local_func = self
             .module
             .declare_func_in_func(*func_id, self.builder.func);
@@ -1575,7 +1640,9 @@ where
 
         // Materialise the baked name's address (one relocation in object mode;
         // JIT patches the runtime address).
-        let name_gv = self.module.declare_data_in_func(name_data_id, self.builder.func);
+        let name_gv = self
+            .module
+            .declare_data_in_func(name_data_id, self.builder.func);
         let name_ptr = self.builder.ins().global_value(types::I64, name_gv);
 
         // Stamp it into field-3 at the absolute offset composed from the named
@@ -1611,11 +1678,7 @@ where
     /// (`compile_poll_effect`) LOADs then bakes the pointer as the state-closure
     /// `code_ptr` (no call at the site). Both flow through this one helper so the
     /// GOT mechanism stays single-source (`design/backend/io-trampoline.md §12.3`).
-    fn emit_got_slot_load(
-        &mut self,
-        data_id: cranelift_module::DataId,
-        slot: usize,
-    ) -> Value {
+    fn emit_got_slot_load(&mut self, data_id: cranelift_module::DataId, slot: usize) -> Value {
         // The symbol address IS the slab base (Decision 23 — unified shape).
         let gv = self.module.declare_data_in_func(data_id, self.builder.func);
         let slab_base = self.builder.ins().global_value(types::I64, gv);
@@ -1644,7 +1707,10 @@ where
         sig.returns.push(AbiParam::new(types::I64));
         let sig_ref = self.builder.import_signature(sig);
 
-        let call = self.builder.ins().call_indirect(sig_ref, func_ptr, arg_vals);
+        let call = self
+            .builder
+            .ins()
+            .call_indirect(sig_ref, func_ptr, arg_vals);
         Ok(self.builder.inst_results(call)[0])
     }
 
@@ -1687,10 +1753,13 @@ where
         arg_vals: &[Value],
         span: Span,
     ) -> Result<Value, CranelispError> {
-        let alloc_id = self.ctx.alloc_func_id.ok_or_else(|| CranelispError::CodegenError {
-            message: "runtime/alloc not declared (need declare_intrinsics)".into(),
-            location: ErrorLocation::from_span(span),
-        })?;
+        let alloc_id = self
+            .ctx
+            .alloc_func_id
+            .ok_or_else(|| CranelispError::CodegenError {
+                message: "runtime/alloc not declared (need declare_intrinsics)".into(),
+                location: ErrorLocation::from_span(span),
+            })?;
 
         // 0. v9 ctx-vtable (`io-trampoline.md §17.3`): the v8 leading-pair peel is
         //    DELETED. Under the ctx-vtable handle model the descriptor `(token,
@@ -1722,7 +1791,12 @@ where
         let clo = heap::emit_alloc(&mut self.builder, self.module, alloc_id, closure_size);
 
         // code_ptr = the GOT-loaded poll-fn.
-        heap::heap_store(&mut self.builder, poll_fn, clo, HeapClosure::CODE_PTR_OFFSET);
+        heap::heap_store(
+            &mut self.builder,
+            poll_fn,
+            clo,
+            HeapClosure::CODE_PTR_OFFSET,
+        );
 
         // drop_glue_ptr = capture-dec glue (null when no arg is heap-typed).
         //
@@ -1747,19 +1821,34 @@ where
         } else {
             self.builder.ins().iconst(types::I64, 0)
         };
-        heap::heap_store(&mut self.builder, drop_glue_val, clo, HeapClosure::DROP_GLUE_PTR_OFFSET);
+        heap::heap_store(
+            &mut self.builder,
+            drop_glue_val,
+            clo,
+            HeapClosure::DROP_GLUE_PTR_OFFSET,
+        );
 
         // env(0) = result slot, init to the `0` sentinel (the poll-fn reads `0`
         // as "not yet armed"; `EffectPoll` reads the result here on Ready).
         let sentinel = self.builder.ins().iconst(types::I64, 0);
-        heap::heap_store(&mut self.builder, sentinel, clo, HeapClosure::capture_offset(0));
+        heap::heap_store(
+            &mut self.builder,
+            sentinel,
+            clo,
+            HeapClosure::capture_offset(0),
+        );
 
         // env(1+i) = leaf arg i (ownership transfer, no inc — consuming conv).
         // leaf_args = arg_vals[2..]; leaf_0 (the re-passed resource handle) lands at
         // capture(1) = state+8 (the poll-fn's fd). The leading-pair peel does not
         // shift any arg the poll-fn relies on — env layout is unchanged from S94/S95.
         for (i, &arg) in leaf_args.iter().enumerate() {
-            heap::heap_store(&mut self.builder, arg, clo, HeapClosure::capture_offset(1 + i));
+            heap::heap_store(
+                &mut self.builder,
+                arg,
+                clo,
+                HeapClosure::capture_offset(1 + i),
+            );
         }
 
         // 3. Build the IO_TAG_EFFECT_POLL node — the v8-UNIFORM shape
@@ -1785,9 +1874,19 @@ where
         heap::heap_store(&mut self.builder, clo, node, HeapAdt::field_offset(0));
         // fields 1/2: INERT under v9 (no scheduling state on the node) — zero/sentinel.
         let inert_token = self.builder.ins().iconst(types::I64, 0);
-        heap::heap_store(&mut self.builder, inert_token, node, HeapAdt::field_offset(1));
+        heap::heap_store(
+            &mut self.builder,
+            inert_token,
+            node,
+            HeapAdt::field_offset(1),
+        );
         let inert_capacity = self.builder.ins().iconst(types::I64, 1);
-        heap::heap_store(&mut self.builder, inert_capacity, node, HeapAdt::field_offset(2));
+        heap::heap_store(
+            &mut self.builder,
+            inert_capacity,
+            node,
+            HeapAdt::field_offset(2),
+        );
 
         Ok(node)
     }
@@ -1814,11 +1913,7 @@ where
     /// result slot (`0`, the Unit the leaf writes on `Ready`), `env(1)` =
     /// `duration_nanos` (the `d`-ms arg × 1_000_000), `env(2)` = `deadline_nanos`
     /// (`0` — the first-poll "not yet armed" sentinel). All scalars ⇒ null drop glue.
-    fn compile_sleep(
-        &mut self,
-        args: &[MonoExpr],
-        span: Span,
-    ) -> Result<Value, CranelispError> {
+    fn compile_sleep(&mut self, args: &[MonoExpr], span: Span) -> Result<Value, CranelispError> {
         let arg_vals = self.compile_arg_list(args)?;
         let [d_ms] = arg_vals[..] else {
             return Err(CranelispError::CodegenError {
@@ -1826,10 +1921,13 @@ where
                 location: ErrorLocation::from_span(span),
             });
         };
-        let alloc_id = self.ctx.alloc_func_id.ok_or_else(|| CranelispError::CodegenError {
-            message: "runtime/alloc not declared (need declare_intrinsics)".into(),
-            location: ErrorLocation::from_span(span),
-        })?;
+        let alloc_id = self
+            .ctx
+            .alloc_func_id
+            .ok_or_else(|| CranelispError::CodegenError {
+                message: "runtime/alloc not declared (need declare_intrinsics)".into(),
+                location: ErrorLocation::from_span(span),
+            })?;
 
         // duration_nanos = d (milliseconds) × 1_000_000 (the leaf works in nanos —
         // `reactor.rs::sleep_pollfn` does `monotonic_nanos() + duration_nanos`).
@@ -1847,26 +1945,47 @@ where
         sig.returns.push(AbiParam::new(types::I64)); // Poll
         let poll_fn_id = self
             .module
-            .declare_function("runtime/sleep_pollfn", cranelift_module::Linkage::Import, &sig)
+            .declare_function(
+                "runtime/sleep_pollfn",
+                cranelift_module::Linkage::Import,
+                &sig,
+            )
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to declare runtime symbol 'runtime/sleep_pollfn': {e}"),
                 location: ErrorLocation::from_span(span),
             })?;
-        let poll_fn_ref = self.module.declare_func_in_func(poll_fn_id, self.builder.func);
+        let poll_fn_ref = self
+            .module
+            .declare_func_in_func(poll_fn_id, self.builder.func);
         let poll_fn = self.builder.ins().func_addr(types::I64, poll_fn_ref);
 
         // State-closure: [header | code_ptr | drop_glue=0 | env(0)=result(0) |
         // env(1)=duration_nanos | env(2)=deadline(0)] — 3 env slots (SleepState).
         let closure_size = HeapClosure::payload_size(3) as i64;
         let clo = heap::emit_alloc(&mut self.builder, self.module, alloc_id, closure_size);
-        heap::heap_store(&mut self.builder, poll_fn, clo, HeapClosure::CODE_PTR_OFFSET);
+        heap::heap_store(
+            &mut self.builder,
+            poll_fn,
+            clo,
+            HeapClosure::CODE_PTR_OFFSET,
+        );
         let zero = self.builder.ins().iconst(types::I64, 0);
         // drop_glue = null (SleepState is all scalars — nothing to dec).
-        heap::heap_store(&mut self.builder, zero, clo, HeapClosure::DROP_GLUE_PTR_OFFSET);
+        heap::heap_store(
+            &mut self.builder,
+            zero,
+            clo,
+            HeapClosure::DROP_GLUE_PTR_OFFSET,
+        );
         // env(0) = result slot (Unit `0`; the poll-fn / EffectPoll read it on Ready).
         heap::heap_store(&mut self.builder, zero, clo, HeapClosure::capture_offset(0));
         // env(1) = duration_nanos (the baked d-ms × 1e6).
-        heap::heap_store(&mut self.builder, duration_nanos, clo, HeapClosure::capture_offset(1));
+        heap::heap_store(
+            &mut self.builder,
+            duration_nanos,
+            clo,
+            HeapClosure::capture_offset(1),
+        );
         // env(2) = deadline_nanos = 0 (first-poll "not yet armed" sentinel).
         heap::heap_store(&mut self.builder, zero, clo, HeapClosure::capture_offset(2));
 
@@ -2122,11 +2241,7 @@ where
     /// invariant-consistent guard, not an independent predicate. The single field
     /// is itself value-eligible (nested values compose), so the move needs no
     /// per-field RC.
-    pub(crate) fn value_construct(
-        &self,
-        ty: &ConcreteType,
-        field_vals: &[Value],
-    ) -> Option<Value> {
+    pub(crate) fn value_construct(&self, ty: &ConcreteType, field_vals: &[Value]) -> Option<Value> {
         if matches!(
             HeapCategory::classify(ty, Some(self.ctx.symbol_tables)),
             HeapCategory::Value
@@ -2185,13 +2300,13 @@ where
             // B3.4: NoEscape scalar-payload ADT → Cranelift stack slot (§4.1/§4.2).
             heap::emit_stack_alloc(&mut self.builder, payload_size)
         } else {
-            let alloc_id =
-                self.ctx
-                    .alloc_func_id
-                    .ok_or_else(|| CranelispError::CodegenError {
-                        message: "runtime/alloc not declared (need declare_intrinsics)".into(),
-                        location: ErrorLocation::from_span(span),
-                    })?;
+            let alloc_id = self
+                .ctx
+                .alloc_func_id
+                .ok_or_else(|| CranelispError::CodegenError {
+                    message: "runtime/alloc not declared (need declare_intrinsics)".into(),
+                    location: ErrorLocation::from_span(span),
+                })?;
             heap::emit_alloc(&mut self.builder, self.module, alloc_id, payload_size)
         };
 
@@ -2259,9 +2374,7 @@ where
                 location: ErrorLocation::from_span(span),
             })?;
 
-        let local_func = self
-            .module
-            .declare_func_in_func(func_id, self.builder.func);
+        let local_func = self.module.declare_func_in_func(func_id, self.builder.func);
         let call = self.builder.ins().call(local_func, arg_vals);
         Ok(self.builder.inst_results(call)[0])
     }
@@ -2275,11 +2388,8 @@ where
         _span: Span,
     ) -> Result<Value, CranelispError> {
         // Load code_ptr from offset HeapClosure::CODE_PTR_OFFSET (16).
-        let code_ptr = heap::heap_load(
-            &mut self.builder,
-            closure_val,
-            HeapClosure::CODE_PTR_OFFSET,
-        ); // code_ptr: i64
+        let code_ptr =
+            heap::heap_load(&mut self.builder, closure_val, HeapClosure::CODE_PTR_OFFSET); // code_ptr: i64
 
         // Build signature: (env_ptr, params...) -> i64
         let mut sig = self.module.make_signature();
@@ -2324,10 +2434,7 @@ where
     ) -> Result<Value, CranelispError> {
         if arg_vals.len() != 2 {
             return Err(CranelispError::CodegenError {
-                message: format!(
-                    "bind requires 2 arguments, got {}",
-                    arg_vals.len()
-                ),
+                message: format!("bind requires 2 arguments, got {}", arg_vals.len()),
                 location: ErrorLocation::from_span(span),
             });
         }
@@ -2335,33 +2442,38 @@ where
         let io_val = arg_vals[0]; // inner IO tree
         let cont_val = arg_vals[1]; // continuation closure
 
-        let alloc_id =
-            self.ctx
-                .alloc_func_id
-                .ok_or_else(|| CranelispError::CodegenError {
-                    message: "runtime/alloc not declared (need declare_intrinsics)".into(),
-                    location: ErrorLocation::from_span(span),
-                })?;
+        let alloc_id = self
+            .ctx
+            .alloc_func_id
+            .ok_or_else(|| CranelispError::CodegenError {
+                message: "runtime/alloc not declared (need declare_intrinsics)".into(),
+                location: ErrorLocation::from_span(span),
+            })?;
 
         // Allocate Bind node: 3 fields x 8 bytes = 24 bytes payload
         // (tag + inner_io + cont)
         let payload_size = HeapAdt::payload_size(2) as i64; // tag + 2 fields = 24 bytes
-        let base_ptr = heap::emit_alloc(
-            &mut self.builder,
-            self.module,
-            alloc_id,
-            payload_size,
-        );
+        let base_ptr = heap::emit_alloc(&mut self.builder, self.module, alloc_id, payload_size);
 
         // Store tag=2 at TAG_OFFSET (16)
         let tag_val = self.builder.ins().iconst(types::I64, 2);
         heap::heap_store(&mut self.builder, tag_val, base_ptr, HeapAdt::TAG_OFFSET);
 
         // Store inner_io at field_offset(0) (24)
-        heap::heap_store(&mut self.builder, io_val, base_ptr, HeapAdt::field_offset(0));
+        heap::heap_store(
+            &mut self.builder,
+            io_val,
+            base_ptr,
+            HeapAdt::field_offset(0),
+        );
 
         // Store cont at field_offset(1) (32)
-        heap::heap_store(&mut self.builder, cont_val, base_ptr, HeapAdt::field_offset(1));
+        heap::heap_store(
+            &mut self.builder,
+            cont_val,
+            base_ptr,
+            HeapAdt::field_offset(1),
+        );
 
         // RC: No explicit inc needed here.
         // bind uses consuming calling convention (compile_consuming_arg_list):
@@ -2460,9 +2572,10 @@ pub(crate) fn classify_auto_curry_target(
         return AutoCurryTarget::InnerResolution;
     }
     match callee {
-        MonoExpr::Var { resolution: VarRef::Global(fq), .. } => {
-            AutoCurryTarget::ProducerContradiction(fq.clone())
-        }
+        MonoExpr::Var {
+            resolution: VarRef::Global(fq),
+            ..
+        } => AutoCurryTarget::ProducerContradiction(fq.clone()),
         // `VarRef::Local` — the 0705 arm; and a computed (non-`Var`) callee,
         // which `ApplyRef::ViaCallee` explicitly admits ("the identity rides the
         // callee expression … or a computed closure value").

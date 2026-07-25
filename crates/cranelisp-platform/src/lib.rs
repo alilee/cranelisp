@@ -142,7 +142,7 @@ mod schema;
 pub use schema::{Ctor, Field, FieldType, ParseLoc, Schema, SchemaParseError, TypeShape};
 
 mod adt;
-pub use adt::{set_global_schema, CLAdt, CLAdtType, CLTypeWitness, ExpectedFieldType};
+pub use adt::{CLAdt, CLAdtType, CLTypeWitness, ExpectedFieldType, set_global_schema};
 
 // Host-reactor C-ABI (effect-concurrency track) — the host-owned reactor vtable
 // (`HostCtx`), the C-ABI `Waker`/`WakerVTable`, and the poll-shape `PollFn`. Under
@@ -420,6 +420,7 @@ pub const IO_EFFECT_CAPACITY_OFFSET: i64 = 32;
 /// continue to import `cranelisp_platform::SchedulingClass` unchanged.
 pub use cranelisp_types::SchedulingClass;
 
+use cranelisp_types::ErrorLocation;
 /// Platform-boundary error type, re-exported from `cranelisp-types`.
 ///
 /// Per Decision 0042 / FIXME 0104, `PlatformError` lives in
@@ -443,7 +444,6 @@ pub use cranelisp_types::SchedulingClass;
 /// out-of-tree DLL author crates depend only on `cranelisp-platform`
 /// and would not otherwise see `cranelisp-types`.
 pub use cranelisp_types::PlatformError;
-use cranelisp_types::ErrorLocation;
 
 /// Heap header size: `[i64 total_size][i64 rc]` = 16 bytes.
 /// The host allocator returns payload pointer = base + HEAP_HEADER_SIZE.
@@ -618,11 +618,7 @@ pub struct HostCallbacks {
     /// uninitialized-host fallback [`null_alloc_with_tag`], which panics on
     /// call. Install a synthetic callback via `HostContext::init` to exercise
     /// construction without a real host.
-    pub alloc_with_tag: extern "C" fn(
-        tag: u32,
-        field_count: u32,
-        fields_ptr: *const i64,
-    ) -> i64,
+    pub alloc_with_tag: extern "C" fn(tag: u32, field_count: u32, fields_ptr: *const i64) -> i64,
 }
 
 /// Permanent uninitialized-host fallback for `HostCallbacks::alloc_with_tag`.
@@ -1605,12 +1601,10 @@ pub unsafe fn manifest_to_descriptors(
 
         let mut param_names = Vec::with_capacity(func.param_name_count);
         if func.param_name_count > 0 {
-            let name_ptrs = unsafe {
-                std::slice::from_raw_parts(func.param_names, func.param_name_count)
-            };
-            let name_lens = unsafe {
-                std::slice::from_raw_parts(func.param_name_lens, func.param_name_count)
-            };
+            let name_ptrs =
+                unsafe { std::slice::from_raw_parts(func.param_names, func.param_name_count) };
+            let name_lens =
+                unsafe { std::slice::from_raw_parts(func.param_name_lens, func.param_name_count) };
             for i in 0..func.param_name_count {
                 let pname = unsafe {
                     let bytes = std::slice::from_raw_parts(name_ptrs[i], name_lens[i]);

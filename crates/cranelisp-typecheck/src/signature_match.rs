@@ -82,14 +82,16 @@ fn candidate_contains_canonical(candidate: &Type, q_canon: &Type) -> bool {
     }
     match candidate {
         Type::Fn(params, ret) => {
-            params.iter().any(|p| candidate_contains_canonical(p, q_canon))
+            params
+                .iter()
+                .any(|p| candidate_contains_canonical(p, q_canon))
                 || candidate_contains_canonical(ret, q_canon)
         }
         // For `ADT`/`TyConApp` the head/`FQTypeName` is a leaf, not an
         // independently-walkable subtree (§4.2) — only the args recurse.
-        Type::ADT(_, args) | Type::TyConApp(_, args) => {
-            args.iter().any(|a| candidate_contains_canonical(a, q_canon))
-        }
+        Type::ADT(_, args) | Type::TyConApp(_, args) => args
+            .iter()
+            .any(|a| candidate_contains_canonical(a, q_canon)),
         // Concrete leaves and `Var` have no children — already tested above.
         Type::Int | Type::Bool | Type::String | Type::Float | Type::Var(_) => false,
     }
@@ -104,9 +106,10 @@ fn rename(ty: &Type, renaming: &HashMap<TypeId, TypeId>) -> Type {
             params.iter().map(|p| rename(p, renaming)).collect(),
             Box::new(rename(ret, renaming)),
         ),
-        Type::ADT(fqtn, args) => {
-            Type::ADT(fqtn.clone(), args.iter().map(|a| rename(a, renaming)).collect())
-        }
+        Type::ADT(fqtn, args) => Type::ADT(
+            fqtn.clone(),
+            args.iter().map(|a| rename(a, renaming)).collect(),
+        ),
         Type::TyConApp(head, args) => Type::TyConApp(
             *renaming.get(head).unwrap_or(head),
             args.iter().map(|a| rename(a, renaming)).collect(),

@@ -190,11 +190,12 @@ fn test_atomic_write_creates_parents() {
 // spec: design/backend/module-caching.md §13 — end-to-end: compile .o, load via linker, execute
 #[test]
 fn test_compile_load_and_execute_cached_module() {
-    use cranelisp_types::{DefKind, Defn, DefnVariant, Expr, ModuleEntry, ModuleFullPath, Scheme, Span, Symbol,
-        SymbolTable, Type, UserFnState, Visibility,
-    };
     use cranelift_module::default_libcall_names;
     use cranelift_object::{ObjectBuilder, ObjectModule};
+    use cranelisp_types::{
+        DefKind, Defn, DefnVariant, Expr, ModuleEntry, ModuleFullPath, Scheme, Span, Symbol,
+        SymbolTable, Type, UserFnState, Visibility,
+    };
 
     // Step 1: Create a minimal module with (defn answer [] 42)
     let defn = Defn {
@@ -259,7 +260,8 @@ fn test_compile_load_and_execute_cached_module() {
         &tables,
         &mut obj_module,
         false,
-    ).unwrap();
+    )
+    .unwrap();
 
     let product = obj_module.finish();
     let obj_bytes = product.emit().unwrap();
@@ -270,7 +272,9 @@ fn test_compile_load_and_execute_cached_module() {
     linker.load_object("test", &obj_bytes).unwrap();
 
     // Step 4: Get function pointer and execute it
-    let answer_ptr = linker.get_symbol("answer").expect("should find 'answer' symbol");
+    let answer_ptr = linker
+        .get_symbol("answer")
+        .expect("should find 'answer' symbol");
     let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(answer_ptr) };
     let result = func();
     assert_eq!(result, 42, "cached function should return 42");
@@ -310,7 +314,10 @@ fn test_imported_modules_extracts_deps() {
             docstring: None,
             param_names: vec![],
             kind: Box::new(cranelisp_types::DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0, mode_summary: None },
+                fn_state: cranelisp_types::UserFnState::Concrete {
+                    got_slot: 0,
+                    mode_summary: None,
+                },
             }),
             callees: vec![],
             trait_origin: None,

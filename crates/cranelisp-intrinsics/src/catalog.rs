@@ -122,41 +122,137 @@ pub struct IntrinsicEntry {
 pub fn intrinsics_table() -> &'static [IntrinsicEntry] {
     &[
         // Runtime infrastructure (internal, not user-callable).
-        IntrinsicEntry { name: "runtime/alloc", ptr: crate::alloc::heap_alloc as *const u8, param_count: 1, has_return: true, is_runtime: true },
-        IntrinsicEntry { name: "runtime/dealloc", ptr: crate::alloc::heap_dealloc as *const u8, param_count: 1, has_return: true, is_runtime: true },
-        IntrinsicEntry { name: "runtime/panic", ptr: crate::panic::runtime_panic as *const u8, param_count: 2, has_return: true, is_runtime: true },
+        IntrinsicEntry {
+            name: "runtime/alloc",
+            ptr: crate::alloc::heap_alloc as *const u8,
+            param_count: 1,
+            has_return: true,
+            is_runtime: true,
+        },
+        IntrinsicEntry {
+            name: "runtime/dealloc",
+            ptr: crate::alloc::heap_dealloc as *const u8,
+            param_count: 1,
+            has_return: true,
+            is_runtime: true,
+        },
+        IntrinsicEntry {
+            name: "runtime/panic",
+            ptr: crate::panic::runtime_panic as *const u8,
+            param_count: 2,
+            has_return: true,
+            is_runtime: true,
+        },
         // `catch-runtime-error` — the language-level protected-call combinator
         // (test-discovery.md §6). Self-contained intrinsic (calls the thunk,
         // reads/clears the slot, marshals a heap `Result`); works in ALL modes
         // incl. `--link`. User-visible name, so `is_runtime: false`.
-        IntrinsicEntry { name: "catch-runtime-error", ptr: crate::panic::catch_runtime_error as *const u8, param_count: 1, has_return: true, is_runtime: false },
-        IntrinsicEntry { name: "runtime/rc_underflow_check", ptr: crate::rc::rc_underflow_check as *const u8, param_count: 1, has_return: true, is_runtime: true },
+        IntrinsicEntry {
+            name: "catch-runtime-error",
+            ptr: crate::panic::catch_runtime_error as *const u8,
+            param_count: 1,
+            has_return: true,
+            is_runtime: false,
+        },
+        IntrinsicEntry {
+            name: "runtime/rc_underflow_check",
+            ptr: crate::rc::rc_underflow_check as *const u8,
+            param_count: 1,
+            has_return: true,
+            is_runtime: true,
+        },
         // FIXME 0494 localization: stale-dec liveness check, emitted before each
         // inline dec ONLY under the codegen-time `CRANELISP_RC_DEC_CHECK` gate
         // (off by default ⇒ never emitted ⇒ this entry is inert). Registered
         // unconditionally so JIT can resolve the symbol when the gate is on.
-        IntrinsicEntry { name: "runtime/rc_dec_check", ptr: crate::rc::rc_dec_check as *const u8, param_count: 1, has_return: true, is_runtime: true },
+        IntrinsicEntry {
+            name: "runtime/rc_dec_check",
+            ptr: crate::rc::rc_dec_check as *const u8,
+            param_count: 1,
+            has_return: true,
+            is_runtime: true,
+        },
         // S99 Wave 0 RC-op instrumentation: zero-arg tally helpers emitted before
         // each inline RC inc/dec ONLY under the backend's codegen-time
         // `CRANELISP_RC_STATS` gate (off by default ⇒ never emitted ⇒ these
         // entries are inert). Registered unconditionally so JIT/link can resolve
         // the symbols when the gate is on. Measurement-only; see `crate::rc`.
-        IntrinsicEntry { name: "runtime/rc_stat_inc", ptr: crate::rc::rc_stat_inc as *const u8, param_count: 0, has_return: true, is_runtime: true },
-        IntrinsicEntry { name: "runtime/rc_stat_dec", ptr: crate::rc::rc_stat_dec as *const u8, param_count: 0, has_return: true, is_runtime: true },
+        IntrinsicEntry {
+            name: "runtime/rc_stat_inc",
+            ptr: crate::rc::rc_stat_inc as *const u8,
+            param_count: 0,
+            has_return: true,
+            is_runtime: true,
+        },
+        IntrinsicEntry {
+            name: "runtime/rc_stat_dec",
+            ptr: crate::rc::rc_stat_dec as *const u8,
+            param_count: 0,
+            has_return: true,
+            is_runtime: true,
+        },
         // Increment-II (§6.5 / §9.2) RC-stats tally helpers: zero-arg runtime
         // tallies emitted on the reuse/copy arm of a COW site (`reuse_hit` /
         // `reuse_miss`) and at each `str-len` call site (`extern_adapt_str_len`)
         // ONLY under the backend's codegen-time `CRANELISP_RC_STATS` gate (off ⇒
         // never emitted ⇒ inert entries). Registered unconditionally so JIT/link
         // can resolve the symbols when the gate is on. Measurement-only.
-        IntrinsicEntry { name: "runtime/reuse_hit", ptr: crate::rc::reuse_hit_stat as *const u8, param_count: 0, has_return: true, is_runtime: true },
-        IntrinsicEntry { name: "runtime/reuse_miss", ptr: crate::rc::reuse_miss_stat as *const u8, param_count: 0, has_return: true, is_runtime: true },
-        IntrinsicEntry { name: "runtime/extern_adapt_str_len", ptr: crate::rc::extern_adapt_str_len_stat as *const u8, param_count: 0, has_return: true, is_runtime: true },
-        IntrinsicEntry { name: "runtime/alloc_string", ptr: crate::heap_string::heap_alloc_string as *const u8, param_count: 2, has_return: true, is_runtime: true },
-        IntrinsicEntry { name: "runtime/string_read", ptr: crate::heap_string::string_read as *const u8, param_count: 1, has_return: true, is_runtime: true },
-        IntrinsicEntry { name: "runtime/vec_new", ptr: crate::vec_runtime::vec_new as *const u8, param_count: 1, has_return: true, is_runtime: true },
-        IntrinsicEntry { name: "runtime/vec_drop", ptr: crate::vec_runtime::vec_drop as *const u8, param_count: 2, has_return: false, is_runtime: true },
-        IntrinsicEntry { name: "runtime/run_io", ptr: crate::io::cranelisp_run_io as *const u8, param_count: 1, has_return: true, is_runtime: true },
+        IntrinsicEntry {
+            name: "runtime/reuse_hit",
+            ptr: crate::rc::reuse_hit_stat as *const u8,
+            param_count: 0,
+            has_return: true,
+            is_runtime: true,
+        },
+        IntrinsicEntry {
+            name: "runtime/reuse_miss",
+            ptr: crate::rc::reuse_miss_stat as *const u8,
+            param_count: 0,
+            has_return: true,
+            is_runtime: true,
+        },
+        IntrinsicEntry {
+            name: "runtime/extern_adapt_str_len",
+            ptr: crate::rc::extern_adapt_str_len_stat as *const u8,
+            param_count: 0,
+            has_return: true,
+            is_runtime: true,
+        },
+        IntrinsicEntry {
+            name: "runtime/alloc_string",
+            ptr: crate::heap_string::heap_alloc_string as *const u8,
+            param_count: 2,
+            has_return: true,
+            is_runtime: true,
+        },
+        IntrinsicEntry {
+            name: "runtime/string_read",
+            ptr: crate::heap_string::string_read as *const u8,
+            param_count: 1,
+            has_return: true,
+            is_runtime: true,
+        },
+        IntrinsicEntry {
+            name: "runtime/vec_new",
+            ptr: crate::vec_runtime::vec_new as *const u8,
+            param_count: 1,
+            has_return: true,
+            is_runtime: true,
+        },
+        IntrinsicEntry {
+            name: "runtime/vec_drop",
+            ptr: crate::vec_runtime::vec_drop as *const u8,
+            param_count: 2,
+            has_return: false,
+            is_runtime: true,
+        },
+        IntrinsicEntry {
+            name: "runtime/run_io",
+            ptr: crate::io::cranelisp_run_io as *const u8,
+            param_count: 1,
+            has_return: true,
+            is_runtime: true,
+        },
         // `sleep` — the runtime-provided timer poll leaf (S96 Chunk C4, slice 7;
         // `design/intrinsics/reactor.md §2.18`). UNLIKE a `declare_platform!` poll effect
         // (whose poll-fn is loaded from `__cranelisp_got_platform_<name>`), `sleep`
@@ -165,39 +261,165 @@ pub fn intrinsics_table() -> &'static [IntrinsicEntry] {
         // state-closure `code_ptr` (the new non-GOT runtime-symbol path, C4). The
         // arity is the C-ABI poll-fn shape `(state, host, waker) -> Poll` — 3 i64
         // params + an i64 return (the backend declares the matching signature).
-        IntrinsicEntry { name: "runtime/sleep_pollfn", ptr: crate::reactor::sleep_pollfn as *const u8, param_count: 3, has_return: true, is_runtime: true },
+        IntrinsicEntry {
+            name: "runtime/sleep_pollfn",
+            ptr: crate::reactor::sleep_pollfn as *const u8,
+            param_count: 3,
+            has_return: true,
+            is_runtime: true,
+        },
         // IVar intrinsics for lenient evaluation (spec §12.4.3).
-        IntrinsicEntry { name: "cranelisp_ivar_create", ptr: crate::ivar::ivar_create as *const u8, param_count: 1, has_return: true, is_runtime: true },
-        IntrinsicEntry { name: "cranelisp_ivar_spark", ptr: crate::ivar::ivar_spark as *const u8, param_count: 1, has_return: true, is_runtime: true },
-        IntrinsicEntry { name: "cranelisp_ivar_force", ptr: crate::ivar::ivar_force as *const u8, param_count: 1, has_return: true, is_runtime: true },
-        IntrinsicEntry { name: "cranelisp_ivar_dealloc", ptr: crate::ivar::ivar_dealloc as *const u8, param_count: 1, has_return: true, is_runtime: true },
+        IntrinsicEntry {
+            name: "cranelisp_ivar_create",
+            ptr: crate::ivar::ivar_create as *const u8,
+            param_count: 1,
+            has_return: true,
+            is_runtime: true,
+        },
+        IntrinsicEntry {
+            name: "cranelisp_ivar_spark",
+            ptr: crate::ivar::ivar_spark as *const u8,
+            param_count: 1,
+            has_return: true,
+            is_runtime: true,
+        },
+        IntrinsicEntry {
+            name: "cranelisp_ivar_force",
+            ptr: crate::ivar::ivar_force as *const u8,
+            param_count: 1,
+            has_return: true,
+            is_runtime: true,
+        },
+        IntrinsicEntry {
+            name: "cranelisp_ivar_dealloc",
+            ptr: crate::ivar::ivar_dealloc as *const u8,
+            param_count: 1,
+            has_return: true,
+            is_runtime: true,
+        },
         // The backend create-gate's reservation primitive (lenient-eval.md §3.6.1,
         // S92). Emitted at each spark site BEFORE any IVar/thunk allocation:
         // returns 1 (granted ⇒ lenient arm) or 0 (over budget ⇒ direct arm).
-        IntrinsicEntry { name: "cranelisp_spark_budget_try_reserve", ptr: crate::ivar::spark_budget_try_reserve as *const u8, param_count: 1, has_return: true, is_runtime: true },
+        IntrinsicEntry {
+            name: "cranelisp_spark_budget_try_reserve",
+            ptr: crate::ivar::spark_budget_try_reserve as *const u8,
+            param_count: 1,
+            has_return: true,
+            is_runtime: true,
+        },
         // Vec COW backend-emitted-call targets (internal, not user-callable via
         // the primitives module — `vec-len` is user-callable and rides the GOT
         // via PRIMITIVES_TABLE, not this catalog).
-        IntrinsicEntry { name: "vec-set-copy", ptr: crate::vec_runtime::vec_set_copy as *const u8, param_count: 4, has_return: true, is_runtime: false },
-        IntrinsicEntry { name: "vec-push-copy", ptr: crate::vec_runtime::vec_push_copy as *const u8, param_count: 3, has_return: true, is_runtime: false },
-        IntrinsicEntry { name: "vec-push-grow", ptr: crate::vec_runtime::vec_push_grow as *const u8, param_count: 2, has_return: true, is_runtime: false },
+        IntrinsicEntry {
+            name: "vec-set-copy",
+            ptr: crate::vec_runtime::vec_set_copy as *const u8,
+            param_count: 4,
+            has_return: true,
+            is_runtime: false,
+        },
+        IntrinsicEntry {
+            name: "vec-push-copy",
+            ptr: crate::vec_runtime::vec_push_copy as *const u8,
+            param_count: 3,
+            has_return: true,
+            is_runtime: false,
+        },
+        IntrinsicEntry {
+            name: "vec-push-grow",
+            ptr: crate::vec_runtime::vec_push_grow as *const u8,
+            param_count: 2,
+            has_return: true,
+            is_runtime: false,
+        },
         // The `(trace ...)` runtime family (S76 trace ruling 2026-06-04 — BC §4b
         // invariant 12; `design/arch/tracing.md`). Backend emits these as
         // `Linkage::Import`; this catalog single-sources the name-agreement
         // contract. `cranelisp_trace_format` is the pure descriptor-driven
         // formatter (arity `(2, true)` — unchanged from the prior int shim).
-        IntrinsicEntry { name: "cranelisp_trace_enter", ptr: crate::trace::cranelisp_trace_enter as *const u8, param_count: 4, has_return: false, is_runtime: true },
-        IntrinsicEntry { name: "cranelisp_trace_exit", ptr: crate::trace::cranelisp_trace_exit as *const u8, param_count: 2, has_return: true, is_runtime: true },
-        IntrinsicEntry { name: "cranelisp_trace_swap_got", ptr: crate::trace::cranelisp_trace_swap_got as *const u8, param_count: 4, has_return: true, is_runtime: true },
-        IntrinsicEntry { name: "cranelisp_trace_restore_got", ptr: crate::trace::cranelisp_trace_restore_got as *const u8, param_count: 2, has_return: false, is_runtime: true },
-        IntrinsicEntry { name: "cranelisp_collect_trace", ptr: crate::trace::cranelisp_collect_trace as *const u8, param_count: 0, has_return: true, is_runtime: true },
-        IntrinsicEntry { name: "cranelisp_trace_first_child_nanos", ptr: crate::trace::cranelisp_trace_first_child_nanos as *const u8, param_count: 1, has_return: true, is_runtime: true },
-        IntrinsicEntry { name: "cranelisp_trace_name", ptr: crate::trace::cranelisp_trace_name as *const u8, param_count: 1, has_return: true, is_runtime: true },
-        IntrinsicEntry { name: "cranelisp_trace_params", ptr: crate::trace::cranelisp_trace_params as *const u8, param_count: 1, has_return: true, is_runtime: true },
-        IntrinsicEntry { name: "cranelisp_trace_result", ptr: crate::trace::cranelisp_trace_result as *const u8, param_count: 1, has_return: true, is_runtime: true },
-        IntrinsicEntry { name: "cranelisp_trace_children", ptr: crate::trace::cranelisp_trace_children as *const u8, param_count: 1, has_return: true, is_runtime: true },
-        IntrinsicEntry { name: "cranelisp_trace_nanos", ptr: crate::trace::cranelisp_trace_nanos as *const u8, param_count: 1, has_return: true, is_runtime: true },
-        IntrinsicEntry { name: "cranelisp_trace_format", ptr: crate::trace::cranelisp_trace_format as *const u8, param_count: 2, has_return: true, is_runtime: true },
+        IntrinsicEntry {
+            name: "cranelisp_trace_enter",
+            ptr: crate::trace::cranelisp_trace_enter as *const u8,
+            param_count: 4,
+            has_return: false,
+            is_runtime: true,
+        },
+        IntrinsicEntry {
+            name: "cranelisp_trace_exit",
+            ptr: crate::trace::cranelisp_trace_exit as *const u8,
+            param_count: 2,
+            has_return: true,
+            is_runtime: true,
+        },
+        IntrinsicEntry {
+            name: "cranelisp_trace_swap_got",
+            ptr: crate::trace::cranelisp_trace_swap_got as *const u8,
+            param_count: 4,
+            has_return: true,
+            is_runtime: true,
+        },
+        IntrinsicEntry {
+            name: "cranelisp_trace_restore_got",
+            ptr: crate::trace::cranelisp_trace_restore_got as *const u8,
+            param_count: 2,
+            has_return: false,
+            is_runtime: true,
+        },
+        IntrinsicEntry {
+            name: "cranelisp_collect_trace",
+            ptr: crate::trace::cranelisp_collect_trace as *const u8,
+            param_count: 0,
+            has_return: true,
+            is_runtime: true,
+        },
+        IntrinsicEntry {
+            name: "cranelisp_trace_first_child_nanos",
+            ptr: crate::trace::cranelisp_trace_first_child_nanos as *const u8,
+            param_count: 1,
+            has_return: true,
+            is_runtime: true,
+        },
+        IntrinsicEntry {
+            name: "cranelisp_trace_name",
+            ptr: crate::trace::cranelisp_trace_name as *const u8,
+            param_count: 1,
+            has_return: true,
+            is_runtime: true,
+        },
+        IntrinsicEntry {
+            name: "cranelisp_trace_params",
+            ptr: crate::trace::cranelisp_trace_params as *const u8,
+            param_count: 1,
+            has_return: true,
+            is_runtime: true,
+        },
+        IntrinsicEntry {
+            name: "cranelisp_trace_result",
+            ptr: crate::trace::cranelisp_trace_result as *const u8,
+            param_count: 1,
+            has_return: true,
+            is_runtime: true,
+        },
+        IntrinsicEntry {
+            name: "cranelisp_trace_children",
+            ptr: crate::trace::cranelisp_trace_children as *const u8,
+            param_count: 1,
+            has_return: true,
+            is_runtime: true,
+        },
+        IntrinsicEntry {
+            name: "cranelisp_trace_nanos",
+            ptr: crate::trace::cranelisp_trace_nanos as *const u8,
+            param_count: 1,
+            has_return: true,
+            is_runtime: true,
+        },
+        IntrinsicEntry {
+            name: "cranelisp_trace_format",
+            ptr: crate::trace::cranelisp_trace_format as *const u8,
+            param_count: 2,
+            has_return: true,
+            is_runtime: true,
+        },
     ]
 }
 

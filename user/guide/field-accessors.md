@@ -75,6 +75,14 @@ introduced the same field, qualify it.
 (The field also stays reachable through `match` pattern destructuring, which is never
 affected by bare-name contention.)
 
+> **Known limitation — polymorphic products.** A product such as
+> `(deftype (Pair a b) (MkPair [:a fst :b snd]))` currently fails to mint both
+> `Pair.fst` and the unique bare `fst` alias. Pattern matching still extracts
+> the fields. This is compiler defect
+> [FIXME 0867](../../design/arch/fixmes/0867-polymorphic-product-bare-field-alias-missing.md),
+> not a different accessor rule; the examples above describe the intended
+> language behavior.
+
 ## See also
 
 - [`spec/05-definitions.md §5.2.6`](../../spec/05-definitions.md) — generated

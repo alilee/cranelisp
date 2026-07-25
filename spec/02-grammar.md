@@ -99,7 +99,7 @@ An optional docstring MAY appear between the name and the parameter list (single
   ([x y z] (+ (+ x y) z)))
 ```
 
-### 2.2.2 `deftype` -- Algebraic Data Type Definition [Tested crates/cranelisp-frontend/src/ast_builder.rs::test_build_deftype_enum]
+### 2.2.2 `deftype` -- Algebraic Data Type Definition [Tested+Neg tests/deftype_constructor_form_rulings_s116.rs::deftype_content_free_paren_constructor_rejected_neg, tests/deftype_constructor_form_rulings_s116.rs::deftype_empty_field_list_arm_rejected_neg, tests/deftype_constructor_form_rulings_s116.rs::deftype_nullary_constructor_sharing_type_name_rejected_neg, tests/deftype_constructor_form_rulings_s116.rs::deftype_documented_nullary_sharing_type_name_rejected_neg, tests/deftype_constructor_form_rulings_s116.rs::deftype_unit_zero_field_product_control_green, tests/deftype_constructor_form_rulings_s116.rs::deftype_documented_nullary_control_green]
 
 ```ebnf
 deftype_form = '(' deftype_kw type_head docstring? type_body ')'
@@ -194,15 +194,18 @@ Constructors in a sum type MAY also have docstrings:
   (Err "The error case" [:b err]))
 ```
 
-### 2.2.3 `deftrait` -- Trait Declaration [Tested tests/spec_07_traits::user_trait_simple]
+### 2.2.3 `deftrait` -- Trait Declaration [Tested+Neg tests/spec_07_traits::user_trait_simple, tests/spec_07_traits::deftrait_qualified_bare_head_rejected_binder_neg, tests/spec_07_traits::deftrait_qualified_parenthesized_head_rejected_binder_neg]
 
 ```ebnf
 deftrait_form   = '(' deftrait_kw trait_head docstring? method_sig* ')'
 
 deftrait_kw     = 'deftrait' | 'deftrait-'
 
-trait_head      = TRAIT_NAME
-                | '(' TRAIT_NAME type_param+ ')'
+trait_head      = trait_binder
+                | '(' trait_binder type_param+ ')'
+
+trait_binder    = TRAIT_NAME
+                  (* bare uppercase name only; no module qualifier *)
 
 method_sig      = '(' method_name docstring? '[' param* ']' ( type_expr | expr ) ')'
                   (* trailing type_expr => required method; any other expr => default
@@ -214,7 +217,13 @@ param           = annotation SYMBOL          (* typed parameter *)
 
 The `deftrait` form declares a trait -- a named collection of method signatures. The `deftrait-` variant makes it module-private. All methods use named parameters in brackets.
 
-The **trait head** is either a bare name (for simple traits) or a parenthesized name with type constructor parameters (for higher-kinded traits). Trait names MUST start with an uppercase letter.
+The **trait head is a declaration binder**, not a reference. It is either a
+bare name (for simple traits) or a parenthesized bare name with type constructor
+parameters (for higher-kinded traits). `trait_binder` MUST be an uppercase
+**unqualified** name: a module-qualified spelling such as `fmt/Display` or
+`(fmt/Functor f)` is a compile-time error. Trait names MUST start with an
+uppercase letter. This bare-only declaration rule is distinct from the
+`trait_ref` accepted by `impl` below.
 
 **Simple traits**: Bare (unannotated) parameter names default to the implementing type. `self` (lowercase) in return type position refers to the implementing type. A method signature has exactly **one** element after the parameter bracket: a **type expression** makes the method **required**, any other **expression** makes it a **default** method whose type is inferred from that body. There is no three-element `[params] ret_type body` form; to pin a default's type, annotate its body (`:Bool (not (> a b))`). See [§7.1](07-traits.md#71-trait-declaration). [S115]
 
@@ -246,22 +255,43 @@ An optional docstring MAY appear between the trait head and the method signature
   (show "Return the string form of a value" [x] String))
 ```
 
-### 2.2.4 `impl` -- Trait Implementation [Tested tests/spec_07_traits::user_trait_simple]
+### 2.2.4 `impl` -- Trait Implementation [Tested+Neg tests/spec_07_traits::user_trait_simple, tests/spec_07_traits::qualified_impl_trait_reference_resolves_canonical_home_and_dispatches, tests/spec_07_traits::qualified_impl_trait_reference_neg_does_not_mint_written_qualifier_into_method_name, tests/spec_07_traits::qualified_hkt_impl_trait_reference_resolves_canonical_home_and_dispatches]
 
 ```ebnf
-impl_form    = '(' 'impl' TRAIT_NAME impl_target impl_method* ')'
+impl_form    = '(' 'impl' impl_head impl_target impl_method* ')'
 
-impl_target  = TYPE_NAME                              (* simple: Int, Bool *)
-             | '(' TYPE_NAME impl_type_arg+ ')'       (* parameterized *)
+impl_head    = trait_ref
+             | '(' trait_ref type_param ')'
+
+trait_ref    = TRAIT_NAME
+             | MODULE_PATH '/' TRAIT_NAME
+
+impl_target  = conventional_target
+             | hkt_target
+
+conventional_target = TYPE_NAME                       (* simple: Int, Bool *)
+                    | '(' TYPE_NAME impl_type_arg+ ')' (* parameterized *)
 
 impl_type_arg = TYPE_NAME                             (* concrete arg *)
               | SYMBOL                                 (* type variable *)
               | annotation SYMBOL                      (* constrained type var *)
 
+hkt_target    = '(' trait_ref con_target ')'           (* trait-constructor pairing *)
+
+con_target    = TYPE_NAME
+                (* bare type constructor only; no module qualifier or application *)
+
 impl_method  = '(' 'defn' name docstring? param_list expr ')'
 ```
 
-The `impl` form provides method bodies for a trait on a specific type. There is no private variant of `impl` -- implementations are always public.
+The `impl` form provides method bodies for a trait on a specific type. There is
+no private variant of `impl` -- implementations are always public. Its trait
+position is a **reference**, not a binder: `trait_ref` accepts either a bare
+trait name in scope (`Display`) or a module-qualified trait name
+(`text.display/Display`). Both forms resolve under the ordinary module-reference
+rules (§8.5) and denote the resolved trait identity. This does not relax
+`deftrait`: the name introduced by a trait declaration remains a bare-only
+`trait_binder`.
 
 **Concrete implementations**: The target is a concrete type or a concrete instantiation of a parameterized type.
 
@@ -286,14 +316,25 @@ The `impl` form provides method bodies for a trait on a specific type. There is 
        (Some v) (str-concat "Some(" (str-concat (show v) ")"))])))
 ```
 
-**Higher-kinded trait implementations**: For HKT traits, the target is a bare type constructor name (without parameters):
+**Higher-kinded trait implementations**: For HKT traits, slot 1 echoes the
+declared constructor-variable binder, while slot 2 is a trait-constructor
+pairing. The pairing head is independently a `trait_ref`: it may be bare or
+module-qualified and MUST resolve to the same canonical trait identity as slot
+1. The `con_target` remains a bare type constructor name without parameters or
+qualification:
 
 ```clojure
-(impl Functor Option
-  (defn fmap [f opt]
+(impl (Functor f) (Functor Option)
+  (defn fmap [g opt]
     (match opt
       [None None
-       (Some v) (Some (f v))])))
+       (Some v) (Some (g v))])))
+
+(impl (fmt/Functor f) (fmt/Functor Option)
+  (defn fmap [g opt]
+    (match opt
+      [None None
+       (Some v) (Some (g v))])))
 ```
 
 Methods within an `impl` block MUST use the `defn` keyword (not `defn-`). They are always public. Each method's name MUST correspond to a method declared in the trait being implemented.
@@ -597,7 +638,7 @@ The arms bracket MUST contain an even number of elements (alternating patterns a
    Blue "blue"])
 ```
 
-### 2.3.8 Type Annotation [Tested+Neg tests/spec_08_modules.rs::annotation_binds_top_level_following_form, tests/spec_08_modules.rs::annotation_type_mismatch_is_unify_error, tests/spec_08_modules.rs::annotation_unknown_type_is_error, tests/spec_08_modules.rs::annotation_in_paren_is_application_of_annotated_element, tests/spec_08_modules.rs::annotation_in_paren_unify_precedes_not_a_function]
+### 2.3.8 Type Annotation [Tested+Neg crates/cranelisp-frontend/src/reader.rs::annotation_fold_is_recursive_and_stacks, crates/cranelisp-frontend/src/reader.rs::annotation_fold_rejects_dangling_delimiters_at_introducer, tests/annotation_fold_macro_arg_0708.rs::annotation_folds_in_macro_argument_position, tests/spec_08_modules.rs::annotation_binds_top_level_following_form, tests/spec_08_modules.rs::annotation_type_mismatch_is_unify_error, tests/spec_08_modules.rs::annotation_unknown_type_is_error, tests/spec_08_modules.rs::annotation_in_paren_is_application_of_annotated_element, tests/spec_08_modules.rs::annotation_in_paren_unify_precedes_not_a_function]
 
 ```ebnf
 annotate_expr = annotation expr

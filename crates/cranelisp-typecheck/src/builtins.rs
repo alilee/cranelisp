@@ -43,13 +43,12 @@
 use std::collections::HashMap;
 
 #[cfg(test)]
-use cranelisp_types::{
-    ConstructorDef, DefKind, FQTypeName, FieldDef,
-    ModuleEntry, ModuleFullPath, Scheme, Span, Symbol, Type, TypeDefInfo, TypeExpr,
-    TypeName, Visibility,
-};
-#[cfg(test)]
 use cranelisp_types::TypeId;
+#[cfg(test)]
+use cranelisp_types::{
+    ConstructorDef, DefKind, FQTypeName, FieldDef, ModuleEntry, ModuleFullPath, Scheme, Span,
+    Symbol, Type, TypeDefInfo, TypeExpr, TypeName, Visibility,
+};
 
 /// Helper: create FQTypeName in the "primitives" module.
 #[cfg(test)]
@@ -135,7 +134,9 @@ pub(crate) struct FixtureBuilder {
 impl FixtureBuilder {
     /// Begin an empty builder — no presets selected.
     pub(crate) fn new() -> Self {
-        FixtureBuilder { contents: Vec::new() }
+        FixtureBuilder {
+            contents: Vec::new(),
+        }
     }
 
     /// All presets composed in bootstrap-valid order — the full synthetic
@@ -187,8 +188,7 @@ impl FixtureBuilder {
         self,
         modules: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable<C, L>>,
         next_id: &std::sync::atomic::AtomicU32,
-    )
-    where
+    ) where
         C: cranelisp_types::CodeStore,
         L: cranelisp_types::LinkerStore,
     {
@@ -233,9 +233,6 @@ impl FixtureBuilder {
 
 #[cfg(test)]
 impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
-
-
-
     /// Register special form entries for REPL introspection.
     ///
     /// Per Principle 17 amendment (FIXME 0193): special-form metadata lives
@@ -253,16 +250,24 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             ("defn", "function definition: (defn name [params] body)"),
             ("deftype", "type definition: (deftype Name ctor1 ctor2 ...)"),
             ("match", "pattern matching: (match expr [pat body] ...)"),
-            ("deftrait", "trait declaration: (deftrait (TraitName a) (method [a ...] ret) ...)"),
-            ("impl", "trait implementation: (impl TraitName Type (method [params] body) ...)"),
-            ("defmacro", "macro definition: (defmacro name [params] body)"),
+            (
+                "deftrait",
+                "trait declaration: (deftrait (TraitName a) (method [a ...] ret) ...)",
+            ),
+            (
+                "impl",
+                "trait implementation: (impl TraitName Type (method [params] body) ...)",
+            ),
+            (
+                "defmacro",
+                "macro definition: (defmacro name [params] body)",
+            ),
         ];
 
         let root_path = ModuleFullPath::from("");
-        let mut root_table = self
-            .modules
-            .get_mut(&root_path)
-            .unwrap_or_else(|| unreachable!("invariant: root `\"\"` module should exist (bootstrap)"));
+        let mut root_table = self.modules.get_mut(&root_path).unwrap_or_else(|| {
+            unreachable!("invariant: root `\"\"` module should exist (bootstrap)")
+        });
 
         for (name, desc) in special_forms {
             root_table.insert(
@@ -294,13 +299,23 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // `Type::ADT(primitives/Vec, [elem])`.
         let intrinsic_scalars: Vec<(&str, Type, &str)> = vec![
             ("Int", Type::Int, "Machine-word signed integer (spec §3.1)."),
-            ("Bool", Type::Bool, "Boolean truth value: true or false (spec §3.1)."),
-            ("Float", Type::Float, "Double-precision floating-point number (spec §3.1)."),
-            ("String", Type::String, "Immutable UTF-8 text value (spec §3.1)."),
+            (
+                "Bool",
+                Type::Bool,
+                "Boolean truth value: true or false (spec §3.1).",
+            ),
+            (
+                "Float",
+                Type::Float,
+                "Double-precision floating-point number (spec §3.1).",
+            ),
+            (
+                "String",
+                Type::String,
+                "Immutable UTF-8 text value (spec §3.1).",
+            ),
         ];
-        let typedef_builtins: Vec<(&str, &str)> = vec![
-            ("Vec", "builtin vector type"),
-        ];
+        let typedef_builtins: Vec<(&str, &str)> = vec![("Vec", "builtin vector type")];
 
         // Per spec §8.9.1: builtin types live in `primitives` and require
         // explicit import. They are NOT seeded into `user`.
@@ -336,7 +351,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             );
         }
     }
-
 
     /// Register the synthetic `macros` module with SList and Sexp ADTs + sconcat extern.
     ///
@@ -437,7 +451,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // stail field resolves during build_constructor_infos.
         {
             let macros_path = ModuleFullPath::from("macros");
-            let mut macros_table = self.modules.get_mut(&macros_path)
+            let mut macros_table = self
+                .modules
+                .get_mut(&macros_path)
                 .unwrap_or_else(|| unreachable!("invariant: macros module should exist"));
             macros_table.insert(
                 Symbol::from("SList"),
@@ -473,7 +489,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     },
                     FieldDef {
                         name: Symbol::from("stail"),
-                        type_expr: TypeExpr::Applied(cranelisp_types::TypeRef::new(None, TypeName::from("SList")),
+                        type_expr: TypeExpr::Applied(
+                            cranelisp_types::TypeRef::new(None, TypeName::from("SList")),
                             vec![TypeExpr::TypeVar(Symbol::from("a"))],
                         ),
                         span: Span::SYNTHETIC,
@@ -483,7 +500,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             },
         ];
 
-        self.register_type_def(state,
+        self.register_type_def(
+            state,
             &TypeName::from("SList"),
             &None,
             &[Symbol::from("a")],
@@ -491,9 +509,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             Visibility::Public,
             Span::SYNTHETIC,
         )
-        .unwrap_or_else(|e| {
-            unreachable!("invariant: SList type registration failed: {e}")
-        });
+        .unwrap_or_else(|e| unreachable!("invariant: SList type registration failed: {e}"));
     }
 
     /// Register the Sexp type with 8 data constructors (SexpInt through SexpAnnotated).
@@ -502,7 +518,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // :(SList Sexp) fields resolve during build_constructor_infos.
         {
             let macros_path = ModuleFullPath::from("macros");
-            let mut macros_table = self.modules.get_mut(&macros_path)
+            let mut macros_table = self
+                .modules
+                .get_mut(&macros_path)
                 .unwrap_or_else(|| unreachable!("invariant: macros module should exist"));
             macros_table.insert(
                 Symbol::from("Sexp"),
@@ -518,16 +536,46 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             );
         }
 
-        let slist_sexp = TypeExpr::Applied(cranelisp_types::TypeRef::new(None, TypeName::from("SList")),
-            vec![TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Sexp")))],
+        let slist_sexp = TypeExpr::Applied(
+            cranelisp_types::TypeRef::new(None, TypeName::from("SList")),
+            vec![TypeExpr::Named(cranelisp_types::TypeRef::new(
+                None,
+                TypeName::from("Sexp"),
+            ))],
         );
 
         let sexp_ctors = vec![
-            Self::sexp_ctor("SexpInt", "sval", TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int")))),
-            Self::sexp_ctor("SexpFloat", "sval", TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Float")))),
-            Self::sexp_ctor("SexpBool", "sval", TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Bool")))),
-            Self::sexp_ctor("SexpStr", "sval", TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("String")))),
-            Self::sexp_ctor("SexpSym", "sname", TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("String")))),
+            Self::sexp_ctor(
+                "SexpInt",
+                "sval",
+                TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
+            ),
+            Self::sexp_ctor(
+                "SexpFloat",
+                "sval",
+                TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Float"))),
+            ),
+            Self::sexp_ctor(
+                "SexpBool",
+                "sval",
+                TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Bool"))),
+            ),
+            Self::sexp_ctor(
+                "SexpStr",
+                "sval",
+                TypeExpr::Named(cranelisp_types::TypeRef::new(
+                    None,
+                    TypeName::from("String"),
+                )),
+            ),
+            Self::sexp_ctor(
+                "SexpSym",
+                "sname",
+                TypeExpr::Named(cranelisp_types::TypeRef::new(
+                    None,
+                    TypeName::from("String"),
+                )),
+            ),
             Self::sexp_ctor("SexpList", "sitems", slist_sexp.clone()),
             Self::sexp_ctor("SexpBracket", "sitems", slist_sexp),
             ConstructorDef {
@@ -536,12 +584,18 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 fields: vec![
                     FieldDef {
                         name: Symbol::from("stype"),
-                        type_expr: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Sexp"))),
+                        type_expr: TypeExpr::Named(cranelisp_types::TypeRef::new(
+                            None,
+                            TypeName::from("Sexp"),
+                        )),
                         span: Span::SYNTHETIC,
                     },
                     FieldDef {
                         name: Symbol::from("sform"),
-                        type_expr: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Sexp"))),
+                        type_expr: TypeExpr::Named(cranelisp_types::TypeRef::new(
+                            None,
+                            TypeName::from("Sexp"),
+                        )),
                         span: Span::SYNTHETIC,
                     },
                 ],
@@ -549,7 +603,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             },
         ];
 
-        self.register_type_def(state,
+        self.register_type_def(
+            state,
             &TypeName::from("Sexp"),
             &None,
             &[],
@@ -557,9 +612,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             Visibility::Public,
             Span::SYNTHETIC,
         )
-        .unwrap_or_else(|e| {
-            unreachable!("invariant: Sexp type registration failed: {e}")
-        });
+        .unwrap_or_else(|e| unreachable!("invariant: Sexp type registration failed: {e}"));
     }
 
     /// Build a single-field Sexp constructor definition.
@@ -628,7 +681,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             },
         ];
 
-        self.register_type_def(state,
+        self.register_type_def(
+            state,
             &TypeName::from("IO"),
             &Some("Deferred IO computation tree".to_string()),
             &[Symbol::from("a")],
@@ -636,9 +690,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             Visibility::Public,
             Span::SYNTHETIC,
         )
-        .unwrap_or_else(|e| {
-            unreachable!("invariant: IO type registration failed: {e}")
-        });
+        .unwrap_or_else(|e| unreachable!("invariant: IO type registration failed: {e}"));
 
         // Add Bind as an internal constructor (tag=2).
         self.add_internal_bind_constructor();
@@ -686,11 +738,17 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         };
         let body_span = Span::SYNTHETIC;
         let synth_params: Vec<(Symbol, Option<TypeExpr>)> = bind_param_names
-            .iter().cloned().map(|n| (n, None)).collect();
+            .iter()
+            .cloned()
+            .map(|n| (n, None))
+            .collect();
         let synth_body = cranelisp_types::Expr::ConstrADT {
             type_name: io_fqtn.clone(),
             tag: 2,
-            fields: bind_param_names.iter().map(|n| cranelisp_types::Expr::var(n.clone(), body_span)).collect(),
+            fields: bind_param_names
+                .iter()
+                .map(|n| cranelisp_types::Expr::var(n.clone(), body_span))
+                .collect(),
             span: body_span,
             inferred_type: None,
         };
@@ -698,9 +756,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Append Bind name to IO TypeDef's constructor list and register the
         // ctor Def in primitives.
         let primitives_path = ModuleFullPath::from("primitives");
-        let mut primitives_table = self.modules.get_mut(&primitives_path)
+        let mut primitives_table = self
+            .modules
+            .get_mut(&primitives_path)
             .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
-        if let Some(ModuleEntry::TypeDef { info, .. }) = primitives_table.symbols.get_mut(&Symbol::from("IO")) {
+        if let Some(ModuleEntry::TypeDef { info, .. }) =
+            primitives_table.symbols.get_mut(&Symbol::from("IO"))
+        {
             info.constructors.push(Symbol::from("Bind"));
         } else {
             unreachable!("invariant: IO type should be registered before adding Bind");
@@ -709,9 +771,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // shape — the real `Bind` `Def` under `IO.Bind` (`member_key`), the bare
         // `Bind` an `Import` alias onto it (this fixture stands in for the int
         // seeds, so it must not keep a bare-keyed sum-ctor `Def`).
-        let bind_ctor_slot = primitives_table
-            .allocate_got_slot()
-            .unwrap_or_else(|_| unreachable!("invariant: bootstrap seeding cannot exhaust a fresh GOT"));
+        let bind_ctor_slot = primitives_table.allocate_got_slot().unwrap_or_else(|_| {
+            unreachable!("invariant: bootstrap seeding cannot exhaust a fresh GOT")
+        });
         let bind_canonical = cranelisp_types::member_key(&io_fqtn.name, "Bind");
         primitives_table.insert(
             bind_canonical.clone(),
@@ -796,7 +858,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 .build(),
         );
     }
-
 }
 
 /// Look up the spec-mandated docstring for a builtin primitive.
@@ -852,8 +913,12 @@ fn builtin_docstring(name: &str) -> Option<String> {
         "str-len" => "String length in bytes",
         "string-length" => "String length in bytes",
         "parse-int" => "Parse decimal integer; None on failure",
-        "substring" => "Extract substring from start (inclusive) to end (exclusive); clamps out-of-bounds indices",
-        "char-at" => "Character at byte index as single-character string; empty string if out of bounds",
+        "substring" => {
+            "Extract substring from start (inclusive) to end (exclusive); clamps out-of-bounds indices"
+        }
+        "char-at" => {
+            "Character at byte index as single-character string; empty string if out of bounds"
+        }
         "split" => "Split string by separator",
         "join" => "Join strings with separator",
         "replace" => "Replace all occurrences of from with to",
@@ -900,8 +965,7 @@ fn builtin_docstring(name: &str) -> Option<String> {
 pub(crate) fn seed_test_primitives<C, L>(
     modules: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable<C, L>>,
     next_id: &std::sync::atomic::AtomicU32,
-)
-where
+) where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
@@ -992,8 +1056,15 @@ where
         // Ring 1 extended string ops
         (
             "substring",
-            Type::Fn(vec![Type::String, Type::Int, Type::Int], Box::new(Type::String)),
-            vec![Symbol::from("s"), Symbol::from("start"), Symbol::from("end")],
+            Type::Fn(
+                vec![Type::String, Type::Int, Type::Int],
+                Box::new(Type::String),
+            ),
+            vec![
+                Symbol::from("s"),
+                Symbol::from("start"),
+                Symbol::from("end"),
+            ],
         ),
         (
             "char-at",
@@ -1059,10 +1130,7 @@ where
             "vec-get",
             |a, vec_fqtn| {
                 Type::Fn(
-                    vec![
-                        Type::ADT(vec_fqtn.clone(), vec![Type::Var(a)]),
-                        Type::Int,
-                    ],
+                    vec![Type::ADT(vec_fqtn.clone(), vec![Type::Var(a)]), Type::Int],
                     Box::new(Type::Var(a)),
                 )
             },
@@ -1073,10 +1141,7 @@ where
             "vec-set",
             |a, vec_fqtn| {
                 let va = Type::ADT(vec_fqtn.clone(), vec![Type::Var(a)]);
-                Type::Fn(
-                    vec![va.clone(), Type::Int, Type::Var(a)],
-                    Box::new(va),
-                )
+                Type::Fn(vec![va.clone(), Type::Int, Type::Var(a)], Box::new(va))
             },
             vec![Symbol::from("v"), Symbol::from("idx"), Symbol::from("val")],
         ),
@@ -1085,10 +1150,7 @@ where
             "vec-push",
             |a, vec_fqtn| {
                 let va = Type::ADT(vec_fqtn.clone(), vec![Type::Var(a)]);
-                Type::Fn(
-                    vec![va.clone(), Type::Var(a)],
-                    Box::new(va),
-                )
+                Type::Fn(vec![va.clone(), Type::Var(a)], Box::new(va))
             },
             vec![Symbol::from("v"), Symbol::from("val")],
         ),
@@ -1117,11 +1179,11 @@ where
                 constraints: HashMap::new(),
                 ty,
             };
-            let got_slot = prims
-                .allocate_got_slot()
-                .unwrap_or_else(|_| unreachable!("invariant: bootstrap seeding cannot exhaust a fresh GOT"));
-            let mut builder = ModuleEntry::def(scheme, DefKind::primitive(got_slot))
-                .param_names(param_names);
+            let got_slot = prims.allocate_got_slot().unwrap_or_else(|_| {
+                unreachable!("invariant: bootstrap seeding cannot exhaust a fresh GOT")
+            });
+            let mut builder =
+                ModuleEntry::def(scheme, DefKind::primitive(got_slot)).param_names(param_names);
             if let Some(doc) = builtin_docstring(name) {
                 builder = builder.docstring(doc);
             }
@@ -1144,7 +1206,9 @@ mod tests {
     use cranelisp_types::{ModuleEntry, Type};
 
     /// Helper: get the `primitives` module's symbol table from a TestFixture.
-    fn primitives_table(tf: &TestFixture) -> dashmap::mapref::one::Ref<'_, ModuleFullPath, cranelisp_types::SymbolTable> {
+    fn primitives_table(
+        tf: &TestFixture,
+    ) -> dashmap::mapref::one::Ref<'_, ModuleFullPath, cranelisp_types::SymbolTable> {
         let path = ModuleFullPath::from("primitives");
         tf.modules
             .get(&path)
@@ -1175,7 +1239,10 @@ mod tests {
         assert!(primitives_table(&tf).get("add-i64").is_some());
         // Special-form metadata at root `""` is absent (preset not selected).
         let root_path = ModuleFullPath::from("");
-        let root = tf.modules.get(&root_path).expect("root `\"\"` always exists");
+        let root = tf
+            .modules
+            .get(&root_path)
+            .expect("root `\"\"` always exists");
         assert!(
             root.get("if").is_none(),
             "with_primitives must NOT seed special forms"
@@ -1189,14 +1256,15 @@ mod tests {
     fn test_tier2_symbol_table_builder_visible() {
         use cranelisp_types::test_support::SymbolTableBuilder;
         use cranelisp_types::{DefKind, Symbol};
-        let table: cranelisp_types::SymbolTable = SymbolTableBuilder::new(ModuleFullPath::from("t"))
-            .entry(
-                Symbol::from("k"),
-                ModuleEntry::def(crate::scheme::mono(Type::Int), DefKind::primitive(0))
-                    .docstring("const")
-                    .build(),
-            )
-            .build();
+        let table: cranelisp_types::SymbolTable =
+            SymbolTableBuilder::new(ModuleFullPath::from("t"))
+                .entry(
+                    Symbol::from("k"),
+                    ModuleEntry::def(crate::scheme::mono(Type::Int), DefKind::primitive(0))
+                        .docstring("const")
+                        .build(),
+                )
+                .build();
         assert!(table.get("k").is_some());
     }
 
@@ -1206,21 +1274,22 @@ mod tests {
     /// dep; the spec names are the durable contract being tested.
     const RING0_PRIMITIVE_NAMES: &[&str] = &[
         // Int arithmetic
-        "add-i64", "sub-i64", "mul-i64", "div-i64",
-        // Float arithmetic
-        "add-f64", "sub-f64", "mul-f64", "div-f64",
-        // Int comparisons
-        "eq-i64", "lt-i64", "gt-i64", "le-i64", "ge-i64",
-        // Float comparisons
-        "eq-f64", "lt-f64", "gt-f64", "le-f64", "ge-f64",
-        // Bool ops
+        "add-i64", "sub-i64", "mul-i64", "div-i64", // Float arithmetic
+        "add-f64", "sub-f64", "mul-f64", "div-f64", // Int comparisons
+        "eq-i64", "lt-i64", "gt-i64", "le-i64", "ge-i64", // Float comparisons
+        "eq-f64", "lt-f64", "gt-f64", "le-f64", "ge-f64", // Bool ops
         "not", "eq-bool",
     ];
 
     /// Spec-mandated Ring 1 primitive names (spec appendix-a-builtins §A.3).
     const RING1_PRIMITIVE_NAMES: &[&str] = &[
-        "str-concat", "string-length", "substring", "char-at",
-        "int-to-string", "float-to-string", "bool-to-string",
+        "str-concat",
+        "string-length",
+        "substring",
+        "char-at",
+        "int-to-string",
+        "float-to-string",
+        "bool-to-string",
         "parse-int",
     ];
 
@@ -1233,9 +1302,13 @@ mod tests {
     ) -> Option<(usize, usize, bool, FQTypeName)> {
         match ctor_entry(table, name)? {
             ModuleEntry::Def { kind, .. } => match kind.as_ref() {
-                DefKind::Constructor { tag, field_count, internal, type_name, .. } => {
-                    Some((*tag, *field_count, *internal, type_name.clone()))
-                }
+                DefKind::Constructor {
+                    tag,
+                    field_count,
+                    internal,
+                    type_name,
+                    ..
+                } => Some((*tag, *field_count, *internal, type_name.clone())),
                 _ => None,
             },
             _ => None,
@@ -1262,7 +1335,10 @@ mod tests {
         let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
         if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tf).get("add-i64") {
             // Monomorphic: no quantified vars
-            assert!(scheme.type_vars.is_empty(), "add-i64 should have no quantified vars");
+            assert!(
+                scheme.type_vars.is_empty(),
+                "add-i64 should have no quantified vars"
+            );
             assert_eq!(
                 scheme.ty,
                 Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
@@ -1278,7 +1354,10 @@ mod tests {
     fn test_add_f64_scheme() {
         let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
         if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tf).get("add-f64") {
-            assert!(scheme.type_vars.is_empty(), "add-f64 should have no quantified vars");
+            assert!(
+                scheme.type_vars.is_empty(),
+                "add-f64 should have no quantified vars"
+            );
             assert_eq!(
                 scheme.ty,
                 Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Float)),
@@ -1294,7 +1373,10 @@ mod tests {
     fn test_eq_i64_scheme() {
         let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
         if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tf).get("eq-i64") {
-            assert!(scheme.type_vars.is_empty(), "eq-i64 should have no quantified vars");
+            assert!(
+                scheme.type_vars.is_empty(),
+                "eq-i64 should have no quantified vars"
+            );
             assert_eq!(
                 scheme.ty,
                 Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Bool)),
@@ -1310,7 +1392,10 @@ mod tests {
     fn test_not_scheme() {
         let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
         if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tf).get("not") {
-            assert!(scheme.type_vars.is_empty(), "not should have no quantified vars");
+            assert!(
+                scheme.type_vars.is_empty(),
+                "not should have no quantified vars"
+            );
             assert_eq!(
                 scheme.ty,
                 Type::Fn(vec![Type::Bool], Box::new(Type::Bool)),
@@ -1327,10 +1412,7 @@ mod tests {
         let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
         if let Some(ModuleEntry::Def { kind, .. }) = primitives_table(&tf).get("add-i64") {
             assert!(
-                matches!(
-                    kind.as_ref(),
-                    DefKind::Primitive { .. }
-                ),
+                matches!(kind.as_ref(), DefKind::Primitive { .. }),
                 "add-i64 should be Primitive::Inline"
             );
         } else {
@@ -1346,13 +1428,20 @@ mod tests {
         // Narrowed to the minimal preset this test consumes: just the
         // special-form metadata, no primitives / macros / IO world.
         let tf = TestFixture::with_content(FixtureBuilder::new().with_special_forms());
-        let forms = ["if", "let", "fn", "defn", "deftype", "match", "deftrait", "impl"];
+        let forms = [
+            "if", "let", "fn", "defn", "deftype", "match", "deftrait", "impl",
+        ];
         let root_path = ModuleFullPath::from("");
-        let root_table = tf.modules.get(&root_path)
+        let root_table = tf
+            .modules
+            .get(&root_path)
             .expect("root `\"\"` module should exist (bootstrap)");
         for name in forms {
             let entry = root_table.get(name);
-            assert!(entry.is_some(), "special form {name} should be registered in root \"\"");
+            assert!(
+                entry.is_some(),
+                "special form {name} should be registered in root \"\""
+            );
             assert!(
                 matches!(entry, Some(ModuleEntry::SpecialForm { .. })),
                 "{name} should be a SpecialForm"
@@ -1383,8 +1472,14 @@ mod tests {
             .count();
         let bool_op = prims.iter().filter(|name| **name == "not").count();
         let bool_cmp = prims.iter().filter(|name| **name == "eq-bool").count();
-        assert_eq!(int_arith, 4, "4 int arithmetic ops (add-i64/sub-i64/mul-i64/div-i64)");
-        assert_eq!(float_arith, 4, "4 float arithmetic ops (add-f64/sub-f64/mul-f64/div-f64)");
+        assert_eq!(
+            int_arith, 4,
+            "4 int arithmetic ops (add-i64/sub-i64/mul-i64/div-i64)"
+        );
+        assert_eq!(
+            float_arith, 4,
+            "4 float arithmetic ops (add-f64/sub-f64/mul-f64/div-f64)"
+        );
         assert_eq!(int_cmp, 5, "5 int comparisons");
         assert_eq!(float_cmp, 5, "5 float comparisons");
         assert_eq!(bool_op, 1, "1 boolean op (not)");
@@ -1410,7 +1505,11 @@ mod tests {
     fn test_vec_get_scheme_is_polymorphic() {
         let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
         if let Some(ModuleEntry::Def { scheme, kind, .. }) = primitives_table(&tf).get("vec-get") {
-            assert_eq!(scheme.type_vars.len(), 1, "vec-get should have 1 quantified var");
+            assert_eq!(
+                scheme.type_vars.len(),
+                1,
+                "vec-get should have 1 quantified var"
+            );
             // Type: (Fn [(Vec a) Int] a)
             if let Type::Fn(params, ret) = &scheme.ty {
                 assert_eq!(params.len(), 2);
@@ -1434,7 +1533,11 @@ mod tests {
     fn test_vec_set_scheme_is_polymorphic() {
         let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
         if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tf).get("vec-set") {
-            assert_eq!(scheme.type_vars.len(), 1, "vec-set should have 1 quantified var");
+            assert_eq!(
+                scheme.type_vars.len(),
+                1,
+                "vec-set should have 1 quantified var"
+            );
             if let Type::Fn(params, ret) = &scheme.ty {
                 assert_eq!(params.len(), 3, "vec-set takes (Vec a), Int, a");
                 assert!(matches!(&params[0], Type::ADT(name, _) if name.name.as_ref() == "Vec"));
@@ -1454,7 +1557,11 @@ mod tests {
     fn test_vec_push_scheme_is_polymorphic() {
         let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
         if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tf).get("vec-push") {
-            assert_eq!(scheme.type_vars.len(), 1, "vec-push should have 1 quantified var");
+            assert_eq!(
+                scheme.type_vars.len(),
+                1,
+                "vec-push should have 1 quantified var"
+            );
             if let Type::Fn(params, ret) = &scheme.ty {
                 assert_eq!(params.len(), 2, "vec-push takes (Vec a), a");
                 assert!(matches!(ret.as_ref(), Type::ADT(name, _) if name.name.as_ref() == "Vec"));
@@ -1471,7 +1578,11 @@ mod tests {
     fn test_vec_len_scheme_is_polymorphic() {
         let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
         if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tf).get("vec-len") {
-            assert_eq!(scheme.type_vars.len(), 1, "vec-len should have 1 quantified var");
+            assert_eq!(
+                scheme.type_vars.len(),
+                1,
+                "vec-len should have 1 quantified var"
+            );
             if let Type::Fn(params, ret) = &scheme.ty {
                 assert_eq!(params.len(), 1, "vec-len takes (Vec a)");
                 assert!(matches!(&params[0], Type::ADT(name, _) if name.name.as_ref() == "Vec"));
@@ -1502,7 +1613,10 @@ mod tests {
             "no traits should be registered at startup (Decision 17 eliminated)"
         );
         assert!(
-            !tf.env().has_impl(&cranelisp_types::TraitName::from("Num"), &cranelisp_types::TypeName::from("Int")),
+            !tf.env().has_impl(
+                &cranelisp_types::TraitName::from("Num"),
+                &cranelisp_types::TypeName::from("Int")
+            ),
             "no impls should be registered at startup"
         );
     }
@@ -1528,7 +1642,11 @@ mod tests {
     // spec: 09-macros §9.1 — macros module exists after initialization
     #[test]
     fn test_macros_module_exists() {
-        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_macros_sexp());
+        let tf = TestFixture::with_content(
+            FixtureBuilder::new()
+                .with_builtin_type_names()
+                .with_macros_sexp(),
+        );
         let macros_path = ModuleFullPath::from("macros");
         assert!(
             tf.modules.get(&macros_path).is_some(),
@@ -1539,30 +1657,49 @@ mod tests {
     // spec: 09-macros §9.1.1 — SList type registered in macros module
     #[test]
     fn test_slist_type_registered() {
-        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_macros_sexp());
+        let tf = TestFixture::with_content(
+            FixtureBuilder::new()
+                .with_builtin_type_names()
+                .with_macros_sexp(),
+        );
         let macros_path = ModuleFullPath::from("macros");
         let info = tf.lookup_type_def_in_module(&macros_path, &TypeName::from("SList"));
         assert!(info.is_some(), "SList type should be registered");
         let info = info.unwrap();
         assert_eq!(info.type_params.len(), 1, "SList has 1 type parameter");
         assert_eq!(info.type_params[0].as_ref(), "a");
-        assert_eq!(info.constructors.len(), 2, "SList has 2 constructors: SNil, SCons");
+        assert_eq!(
+            info.constructors.len(),
+            2,
+            "SList has 2 constructors: SNil, SCons"
+        );
     }
 
     // spec: 09-macros §9.1.1 — SNil is nullary constructor (tag 0)
     #[test]
     fn test_snil_is_nullary() {
-        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_macros_sexp());
+        let tf = TestFixture::with_content(
+            FixtureBuilder::new()
+                .with_builtin_type_names()
+                .with_macros_sexp(),
+        );
         let macros_path = ModuleFullPath::from("macros");
         let macros_table = tf.modules.get(&macros_path).unwrap();
         if let Some(ModuleEntry::Def { kind, scheme, .. }) = ctor_entry(&macros_table, "SNil") {
-            if let DefKind::Constructor { tag, field_count, .. } = kind.as_ref() {
+            if let DefKind::Constructor {
+                tag, field_count, ..
+            } = kind.as_ref()
+            {
                 assert_eq!(*tag, 0, "SNil should be tag 0");
                 assert_eq!(*field_count, 0, "SNil should have no fields");
             } else {
                 panic!("SNil should be DefKind::Constructor, got {:?}", kind);
             }
-            assert_eq!(scheme.type_vars.len(), 1, "SNil should have 1 quantified var (polymorphic)");
+            assert_eq!(
+                scheme.type_vars.len(),
+                1,
+                "SNil should have 1 quantified var (polymorphic)"
+            );
             // SNil :: forall [a]. (SList a)
             match &scheme.ty {
                 Type::ADT(name, args) => {
@@ -1580,11 +1717,24 @@ mod tests {
     // spec: 09-macros §9.1.1 — SCons constructor: (Fn [a (SList a)] (SList a))
     #[test]
     fn test_scons_constructor_type() {
-        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_macros_sexp());
+        let tf = TestFixture::with_content(
+            FixtureBuilder::new()
+                .with_builtin_type_names()
+                .with_macros_sexp(),
+        );
         let macros_path = ModuleFullPath::from("macros");
         let macros_table = tf.modules.get(&macros_path).unwrap();
-        if let Some(ModuleEntry::Def { kind, scheme, param_names, .. }) = ctor_entry(&macros_table, "SCons") {
-            if let DefKind::Constructor { tag, field_count, .. } = kind.as_ref() {
+        if let Some(ModuleEntry::Def {
+            kind,
+            scheme,
+            param_names,
+            ..
+        }) = ctor_entry(&macros_table, "SCons")
+        {
+            if let DefKind::Constructor {
+                tag, field_count, ..
+            } = kind.as_ref()
+            {
                 assert_eq!(*tag, 1, "SCons should be tag 1");
                 assert_eq!(*field_count, 2, "SCons has 2 fields");
             } else {
@@ -1593,13 +1743,20 @@ mod tests {
             assert_eq!(param_names.len(), 2, "SCons has 2 fields: shead, stail");
             assert_eq!(param_names[0].as_ref(), "shead");
             assert_eq!(param_names[1].as_ref(), "stail");
-            assert_eq!(scheme.type_vars.len(), 1, "SCons should have 1 quantified var");
+            assert_eq!(
+                scheme.type_vars.len(),
+                1,
+                "SCons should have 1 quantified var"
+            );
             // SCons :: forall [a]. (Fn [a (SList a)] (SList a))
             match &scheme.ty {
                 Type::Fn(params, ret) => {
                     assert_eq!(params.len(), 2);
                     // First param: a (type var)
-                    assert!(matches!(params[0], Type::Var(_)), "first param should be type var");
+                    assert!(
+                        matches!(params[0], Type::Var(_)),
+                        "first param should be type var"
+                    );
                     // Second param: (SList a)
                     match &params[1] {
                         Type::ADT(name, args) => {
@@ -1630,7 +1787,11 @@ mod tests {
     // spec: 09-macros §9.1.2 — Sexp type registered with 8 constructors
     #[test]
     fn test_sexp_type_registered() {
-        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_macros_sexp());
+        let tf = TestFixture::with_content(
+            FixtureBuilder::new()
+                .with_builtin_type_names()
+                .with_macros_sexp(),
+        );
         let macros_path = ModuleFullPath::from("macros");
         let info = tf.lookup_type_def_in_module(&macros_path, &TypeName::from("Sexp"));
         assert!(info.is_some(), "Sexp type should be registered");
@@ -1640,14 +1801,21 @@ mod tests {
 
         // Verify tag order matches spec: SexpInt=0 through SexpAnnotated=7
         let expected_names = [
-            "SexpInt", "SexpFloat", "SexpBool", "SexpStr",
-            "SexpSym", "SexpList", "SexpBracket", "SexpAnnotated",
+            "SexpInt",
+            "SexpFloat",
+            "SexpBool",
+            "SexpStr",
+            "SexpSym",
+            "SexpList",
+            "SexpBracket",
+            "SexpAnnotated",
         ];
         let macros_path = ModuleFullPath::from("macros");
         let macros_table = tf.modules.get(&macros_path).unwrap();
         for (i, name) in expected_names.iter().enumerate() {
             assert_eq!(
-                info.constructors[i].as_ref(), *name,
+                info.constructors[i].as_ref(),
+                *name,
                 "constructor at tag {i} should be {name}"
             );
             let (tag, _, _, _) = read_ctor_kind(&macros_table, name)
@@ -1659,7 +1827,11 @@ mod tests {
     // spec: 09-macros §9.1.2 — SexpSym constructor: (Fn [String] Sexp)
     #[test]
     fn test_sexpsym_constructor_type() {
-        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_macros_sexp());
+        let tf = TestFixture::with_content(
+            FixtureBuilder::new()
+                .with_builtin_type_names()
+                .with_macros_sexp(),
+        );
         let macros_path = ModuleFullPath::from("macros");
         let macros_table = tf.modules.get(&macros_path).unwrap();
         if let Some(ModuleEntry::Def { scheme, kind, .. }) = ctor_entry(&macros_table, "SexpSym")
@@ -1682,7 +1854,11 @@ mod tests {
     // spec: 09-macros §9.1.2 — all 8 Sexp constructors have correct field types
     #[test]
     fn test_all_sexp_constructor_field_types() {
-        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_macros_sexp());
+        let tf = TestFixture::with_content(
+            FixtureBuilder::new()
+                .with_builtin_type_names()
+                .with_macros_sexp(),
+        );
         let macros_path = ModuleFullPath::from("macros");
         let macros_table = tf.modules.get(&macros_path).unwrap();
 
@@ -1693,19 +1869,54 @@ mod tests {
         );
 
         // (SexpInt [:Int sval]) -> (Fn [Int] Sexp)
-        check_sexp_ctor(&macros_table, "SexpInt", &[("sval", &Type::Int)], &sexp_type);
+        check_sexp_ctor(
+            &macros_table,
+            "SexpInt",
+            &[("sval", &Type::Int)],
+            &sexp_type,
+        );
         // (SexpFloat [:Float sval]) -> (Fn [Float] Sexp)
-        check_sexp_ctor(&macros_table, "SexpFloat", &[("sval", &Type::Float)], &sexp_type);
+        check_sexp_ctor(
+            &macros_table,
+            "SexpFloat",
+            &[("sval", &Type::Float)],
+            &sexp_type,
+        );
         // (SexpBool [:Bool sval]) -> (Fn [Bool] Sexp)
-        check_sexp_ctor(&macros_table, "SexpBool", &[("sval", &Type::Bool)], &sexp_type);
+        check_sexp_ctor(
+            &macros_table,
+            "SexpBool",
+            &[("sval", &Type::Bool)],
+            &sexp_type,
+        );
         // (SexpStr [:String sval]) -> (Fn [String] Sexp)
-        check_sexp_ctor(&macros_table, "SexpStr", &[("sval", &Type::String)], &sexp_type);
+        check_sexp_ctor(
+            &macros_table,
+            "SexpStr",
+            &[("sval", &Type::String)],
+            &sexp_type,
+        );
         // (SexpSym [:String sname]) -> (Fn [String] Sexp)
-        check_sexp_ctor(&macros_table, "SexpSym", &[("sname", &Type::String)], &sexp_type);
+        check_sexp_ctor(
+            &macros_table,
+            "SexpSym",
+            &[("sname", &Type::String)],
+            &sexp_type,
+        );
         // (SexpList [:(SList Sexp) sitems]) -> (Fn [(SList Sexp)] Sexp)
-        check_sexp_ctor(&macros_table, "SexpList", &[("sitems", &slist_sexp_type)], &sexp_type);
+        check_sexp_ctor(
+            &macros_table,
+            "SexpList",
+            &[("sitems", &slist_sexp_type)],
+            &sexp_type,
+        );
         // (SexpBracket [:(SList Sexp) sitems]) -> (Fn [(SList Sexp)] Sexp)
-        check_sexp_ctor(&macros_table, "SexpBracket", &[("sitems", &slist_sexp_type)], &sexp_type);
+        check_sexp_ctor(
+            &macros_table,
+            "SexpBracket",
+            &[("sitems", &slist_sexp_type)],
+            &sexp_type,
+        );
         // (SexpAnnotated [:Sexp stype :Sexp sform]) -> (Fn [Sexp Sexp] Sexp)
         check_sexp_ctor(
             &macros_table,
@@ -1722,7 +1933,13 @@ mod tests {
         expected_fields: &[(&str, &Type)],
         ret_type: &Type,
     ) {
-        if let Some(ModuleEntry::Def { kind, scheme, param_names, .. }) = ctor_entry(table, name) {
+        if let Some(ModuleEntry::Def {
+            kind,
+            scheme,
+            param_names,
+            ..
+        }) = ctor_entry(table, name)
+        {
             let field_count = if let DefKind::Constructor { field_count, .. } = kind.as_ref() {
                 *field_count
             } else {
@@ -1733,25 +1950,24 @@ mod tests {
                 expected_fields.len(),
                 "{name}: field count mismatch"
             );
-            assert_eq!(param_names.len(), expected_fields.len(), "{name}: param_names count");
+            assert_eq!(
+                param_names.len(),
+                expected_fields.len(),
+                "{name}: param_names count"
+            );
             // Read param types from the scheme's Fn signature (per S70: field types fold into scheme).
             let scheme_params = match &scheme.ty {
                 Type::Fn(p, _) => p.clone(),
                 _ => panic!("{name} scheme should be Fn"),
             };
             for (i, (fname, ftype)) in expected_fields.iter().enumerate() {
-                assert_eq!(
-                    param_names[i].as_ref(), *fname,
-                    "{name}: field {i} name"
-                );
-                assert_eq!(
-                    &scheme_params[i], *ftype,
-                    "{name}: field {i} type"
-                );
+                assert_eq!(param_names[i].as_ref(), *fname, "{name}: field {i} name");
+                assert_eq!(&scheme_params[i], *ftype, "{name}: field {i} type");
             }
             // Check the constructor scheme
             assert!(scheme.type_vars.is_empty(), "{name} should be monomorphic");
-            let param_types: Vec<Type> = expected_fields.iter().map(|(_, t)| (*t).clone()).collect();
+            let param_types: Vec<Type> =
+                expected_fields.iter().map(|(_, t)| (*t).clone()).collect();
             assert_eq!(
                 scheme.ty,
                 Type::Fn(param_types, Box::new(ret_type.clone())),
@@ -1765,7 +1981,11 @@ mod tests {
     // spec: 09-macros §9.1.3 — qualified access macros/SexpSym works from user module
     #[test]
     fn test_qualified_access_from_user() {
-        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_macros_sexp());
+        let tf = TestFixture::with_content(
+            FixtureBuilder::new()
+                .with_builtin_type_names()
+                .with_macros_sexp(),
+        );
         // The TypeChecker's current module is "user" by default.
         // Qualified lookup: "macros/SexpSym" should resolve.
         let scheme = tf.lookup("macros/SexpSym");
@@ -1801,7 +2021,11 @@ mod tests {
     // spec: pipeline-orchestration §3 — sconcat registered as extern primitive in macros module
     #[test]
     fn test_sconcat_registered_in_macros() {
-        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_macros_sexp());
+        let tf = TestFixture::with_content(
+            FixtureBuilder::new()
+                .with_builtin_type_names()
+                .with_macros_sexp(),
+        );
         let macros_path = ModuleFullPath::from("macros");
         let macros_table = tf.modules.get(&macros_path).unwrap();
         let entry = macros_table.get("sconcat");
@@ -1815,7 +2039,10 @@ mod tests {
             );
             assert_eq!(
                 scheme.ty,
-                Type::Fn(vec![slist_sexp.clone(), slist_sexp.clone()], Box::new(slist_sexp)),
+                Type::Fn(
+                    vec![slist_sexp.clone(), slist_sexp.clone()],
+                    Box::new(slist_sexp)
+                ),
                 "sconcat :: (Fn [(SList Sexp) (SList Sexp)] (SList Sexp))"
             );
             assert!(scheme.type_vars.is_empty(), "sconcat should be monomorphic");
@@ -1834,7 +2061,11 @@ mod tests {
     // spec: pipeline-orchestration §3 — sconcat accessible via qualified name macros/sconcat
     #[test]
     fn test_sconcat_qualified_access() {
-        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_macros_sexp());
+        let tf = TestFixture::with_content(
+            FixtureBuilder::new()
+                .with_builtin_type_names()
+                .with_macros_sexp(),
+        );
         let scheme = tf.lookup("macros/sconcat");
         assert!(
             scheme.is_some(),
@@ -1845,7 +2076,11 @@ mod tests {
     // spec: pipeline-orchestration §3 — sconcat NOT imported into user module
     #[test]
     fn test_sconcat_not_in_user() {
-        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_macros_sexp());
+        let tf = TestFixture::with_content(
+            FixtureBuilder::new()
+                .with_builtin_type_names()
+                .with_macros_sexp(),
+        );
         assert!(
             tf.symbol_table().get("sconcat").is_none(),
             "sconcat should NOT be in user module (it's in macros, not primitives)"
@@ -1859,7 +2094,12 @@ mod tests {
     // spec: pipeline-orchestration §3 — quote-sexp registered as extern primitive
     #[test]
     fn test_quote_sexp_registered() {
-        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_macros_sexp().with_primitives());
+        let tf = TestFixture::with_content(
+            FixtureBuilder::new()
+                .with_builtin_type_names()
+                .with_macros_sexp()
+                .with_primitives(),
+        );
         let prims = primitives_table(&tf);
         let entry = prims.get("quote-sexp");
         assert!(entry.is_some(), "quote-sexp should be in primitives module");
@@ -1871,7 +2111,10 @@ mod tests {
                 Type::Fn(vec![sexp_type.clone()], Box::new(sexp_type)),
                 "quote-sexp :: (Fn [Sexp] Sexp)"
             );
-            assert!(scheme.type_vars.is_empty(), "quote-sexp should be monomorphic");
+            assert!(
+                scheme.type_vars.is_empty(),
+                "quote-sexp should be monomorphic"
+            );
             // FIXME 0360 (ruled S83 /arch, Path 1): quote-sexp is by-name
             // (`Linkage::Import`) dispatched, so it is slot-less
             // `DefKind::PrimitiveExtern`, not GOT-slotted `Primitive`.
@@ -1887,7 +2130,12 @@ mod tests {
     // spec: pipeline-orchestration §3 — quote-sexp also in primitives module directly
     #[test]
     fn test_quote_sexp_in_primitives_module() {
-        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_macros_sexp().with_primitives());
+        let tf = TestFixture::with_content(
+            FixtureBuilder::new()
+                .with_builtin_type_names()
+                .with_macros_sexp()
+                .with_primitives(),
+        );
         let primitives_path = ModuleFullPath::from("primitives");
         let primitives_table = tf.modules.get(&primitives_path).unwrap();
         assert!(
@@ -1906,11 +2154,20 @@ mod tests {
         // TypeChecker::new() exercises the full registration sequence.
         // If the ordering is wrong (e.g. quote-sexp before macros module),
         // it would either panic or produce invalid types.
-        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_macros_sexp().with_primitives());
+        let tf = TestFixture::with_content(
+            FixtureBuilder::new()
+                .with_builtin_type_names()
+                .with_macros_sexp()
+                .with_primitives(),
+        );
 
         // Verify all expected modules exist
         assert!(tf.modules.get(&ModuleFullPath::from("user")).is_some());
-        assert!(tf.modules.get(&ModuleFullPath::from("primitives")).is_some());
+        assert!(
+            tf.modules
+                .get(&ModuleFullPath::from("primitives"))
+                .is_some()
+        );
         assert!(tf.modules.get(&ModuleFullPath::from("macros")).is_some());
 
         // Verify quote-sexp has the correct type referencing Sexp (proves ordering)
@@ -1932,7 +2189,8 @@ mod tests {
     // spec: 10-io §10.1 — IO type registered in primitives module
     #[test]
     fn test_io_type_registered() {
-        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_io());
+        let tf =
+            TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_io());
         let primitives_path = ModuleFullPath::from("primitives");
         let info = tf.lookup_type_def_in_module(&primitives_path, &TypeName::from("IO"));
         assert!(info.is_some(), "IO type should be registered");
@@ -1940,7 +2198,8 @@ mod tests {
         assert_eq!(info.type_params.len(), 1, "IO has 1 type parameter");
         assert_eq!(info.type_params[0].as_ref(), "a");
         assert_eq!(
-            info.constructors.len(), 3,
+            info.constructors.len(),
+            3,
             "IO has 3 constructors: Pure, Effect, Bind"
         );
         assert_eq!(
@@ -1953,14 +2212,25 @@ mod tests {
     // spec: 10-io §10.1 — Pure constructor: tag=0, field `ioval` of type `a`
     #[test]
     fn test_pure_constructor() {
-        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_io());
+        let tf =
+            TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_io());
         let primitives_path = ModuleFullPath::from("primitives");
         let primitives_table = tf.modules.get(&primitives_path).unwrap();
 
-        if let Some(ModuleEntry::Def { kind, scheme, param_names, .. }) =
-            ctor_entry(&primitives_table, "Pure")
+        if let Some(ModuleEntry::Def {
+            kind,
+            scheme,
+            param_names,
+            ..
+        }) = ctor_entry(&primitives_table, "Pure")
         {
-            if let DefKind::Constructor { tag, field_count, internal, .. } = kind.as_ref() {
+            if let DefKind::Constructor {
+                tag,
+                field_count,
+                internal,
+                ..
+            } = kind.as_ref()
+            {
                 assert_eq!(*tag, 0, "Pure should be tag 0");
                 assert_eq!(*field_count, 1, "Pure has 1 field");
                 assert!(!*internal, "Pure is not internal");
@@ -1969,12 +2239,19 @@ mod tests {
             }
             assert_eq!(param_names.len(), 1);
             assert_eq!(param_names[0].as_ref(), "ioval");
-            assert_eq!(scheme.type_vars.len(), 1, "Pure should have 1 quantified var");
+            assert_eq!(
+                scheme.type_vars.len(),
+                1,
+                "Pure should have 1 quantified var"
+            );
             // Pure :: forall [a]. (Fn [a] (IO a))
             match &scheme.ty {
                 Type::Fn(params, ret) => {
                     assert_eq!(params.len(), 1);
-                    assert!(matches!(params[0], Type::Var(_)), "param should be type var");
+                    assert!(
+                        matches!(params[0], Type::Var(_)),
+                        "param should be type var"
+                    );
                     match ret.as_ref() {
                         Type::ADT(name, args) => {
                             assert_eq!(name.name.as_ref(), "IO");
@@ -1994,14 +2271,25 @@ mod tests {
     // spec: 10-io §10.1 — Effect constructor: tag=1, field `thunk` of type `a`
     #[test]
     fn test_effect_constructor() {
-        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_io());
+        let tf =
+            TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_io());
         let primitives_path = ModuleFullPath::from("primitives");
         let primitives_table = tf.modules.get(&primitives_path).unwrap();
 
-        if let Some(ModuleEntry::Def { kind, scheme, param_names, .. }) =
-            ctor_entry(&primitives_table, "Effect")
+        if let Some(ModuleEntry::Def {
+            kind,
+            scheme,
+            param_names,
+            ..
+        }) = ctor_entry(&primitives_table, "Effect")
         {
-            if let DefKind::Constructor { tag, field_count, internal, .. } = kind.as_ref() {
+            if let DefKind::Constructor {
+                tag,
+                field_count,
+                internal,
+                ..
+            } = kind.as_ref()
+            {
                 assert_eq!(*tag, 1, "Effect should be tag 1");
                 assert_eq!(*field_count, 1, "Effect has 1 field");
                 assert!(!*internal, "Effect is not internal");
@@ -2010,7 +2298,11 @@ mod tests {
             }
             assert_eq!(param_names.len(), 1);
             assert_eq!(param_names[0].as_ref(), "thunk");
-            assert_eq!(scheme.type_vars.len(), 1, "Effect should have 1 quantified var");
+            assert_eq!(
+                scheme.type_vars.len(),
+                1,
+                "Effect should have 1 quantified var"
+            );
             // Effect :: forall [a]. (Fn [a] (IO a))
             match &scheme.ty {
                 Type::Fn(params, ret) => {
@@ -2042,7 +2334,8 @@ mod tests {
     // type variable `b` live in the synthesised constructor scheme's Fn signature.
     #[test]
     fn test_bind_constructor_internal() {
-        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_io());
+        let tf =
+            TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_io());
         let primitives_path = ModuleFullPath::from("primitives");
 
         // Bind name appears in IO's TypeDefInfo.constructors list at index 2.
@@ -2061,7 +2354,12 @@ mod tests {
         assert_eq!(type_name.name.as_ref(), "IO");
 
         // Inspect the synthesised Def: param_names + scheme.ty (Fn).
-        if let Some(ModuleEntry::Def { param_names, scheme, .. }) = ctor_entry(&primitives_table, "Bind") {
+        if let Some(ModuleEntry::Def {
+            param_names,
+            scheme,
+            ..
+        }) = ctor_entry(&primitives_table, "Bind")
+        {
             assert_eq!(param_names.len(), 2);
             assert_eq!(param_names[0].as_ref(), "inner");
             assert_eq!(param_names[1].as_ref(), "cont");
@@ -2094,8 +2392,10 @@ mod tests {
                                 _ => panic!("Bind.cont return should be (IO a)"),
                             }
                             // b in cont's param should match b in inner's IO type arg
-                            assert_eq!(cont_params[0], inner_b,
-                                "b should be the same type var in inner and cont");
+                            assert_eq!(
+                                cont_params[0], inner_b,
+                                "b should be the same type var in inner and cont"
+                            );
                         }
                         _ => panic!("Bind.cont should be Fn type, got {:?}", params[1]),
                     }
@@ -2124,7 +2424,8 @@ mod tests {
     // spec: 10-io §10.1 — Pure and Effect registered as constructors in primitives module
     #[test]
     fn test_io_constructors_in_primitives_module() {
-        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_io());
+        let tf =
+            TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_io());
         let primitives_path = ModuleFullPath::from("primitives");
         let primitives_table = tf.modules.get(&primitives_path).unwrap();
 
@@ -2147,7 +2448,8 @@ mod tests {
     // spec: 10-io §10.1 — IO constructors in primitives module
     #[test]
     fn test_io_constructors_in_primitives() {
-        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_io());
+        let tf =
+            TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_io());
         let prims_path = ModuleFullPath::from("primitives");
         let prims_table = tf.modules.get(&prims_path).unwrap();
         assert!(
@@ -2172,15 +2474,26 @@ mod tests {
     // spec: 10-io §10.2 — bind registered as inline primitive in primitives module
     #[test]
     fn test_bind_primitive_registered() {
-        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_io());
+        let tf =
+            TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_io());
         let prims_path = ModuleFullPath::from("primitives");
         let table_guard = tf.modules.get(&prims_path).unwrap();
         let entry = table_guard.get("bind");
         assert!(entry.is_some(), "bind should be in primitives symbol table");
 
-        if let Some(ModuleEntry::Def { scheme, kind, docstring, .. }) = entry {
+        if let Some(ModuleEntry::Def {
+            scheme,
+            kind,
+            docstring,
+            ..
+        }) = entry
+        {
             // bind :: forall [a, b]. (Fn [(IO a) (Fn [a] (IO b))] (IO b))
-            assert_eq!(scheme.type_vars.len(), 2, "bind should have 2 quantified vars (a, b)");
+            assert_eq!(
+                scheme.type_vars.len(),
+                2,
+                "bind should have 2 quantified vars (a, b)"
+            );
 
             match &scheme.ty {
                 Type::Fn(params, ret) => {
@@ -2264,7 +2577,8 @@ mod tests {
     // spec: 10-io §10.2 — bind also in primitives module
     #[test]
     fn test_bind_in_primitives_module() {
-        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_io());
+        let tf =
+            TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_io());
         let primitives_path = ModuleFullPath::from("primitives");
         let primitives_table = tf.modules.get(&primitives_path).unwrap();
         assert!(
@@ -2355,13 +2669,15 @@ mod tests {
         check("vec-set", "Return new Vec with element at index replaced");
         check("vec-push", "Return new Vec with element appended");
         check("vec-len", "Number of elements");
-        check("quote-sexp", "Convert a runtime Sexp value to constructor source code");
+        check(
+            "quote-sexp",
+            "Convert a runtime Sexp value to constructor source code",
+        );
     }
 
     // -----------------------------------------------------------------------
     // Trace ADT (Ring 4, spec §3.2.4 / §4.12)
     // -----------------------------------------------------------------------
-
 
     // spec: 03-types §3.2.4 — Trace names NOT auto-imported into user module
     #[test]
@@ -2369,13 +2685,34 @@ mod tests {
         let tf = TestFixture::new();
         let user_table = tf.symbol_table();
 
-        assert!(user_table.get("Trace").is_none(), "Trace must NOT be auto-imported");
-        assert!(user_table.get("TraceCall").is_none(), "TraceCall must NOT be auto-imported");
-        assert!(user_table.get("name").is_none(), "name accessor must NOT be auto-imported");
-        assert!(user_table.get("params").is_none(), "params accessor must NOT be auto-imported");
-        assert!(user_table.get("result").is_none(), "result accessor must NOT be auto-imported");
-        assert!(user_table.get("children").is_none(), "children accessor must NOT be auto-imported");
-        assert!(user_table.get("nanos").is_none(), "nanos accessor must NOT be auto-imported");
+        assert!(
+            user_table.get("Trace").is_none(),
+            "Trace must NOT be auto-imported"
+        );
+        assert!(
+            user_table.get("TraceCall").is_none(),
+            "TraceCall must NOT be auto-imported"
+        );
+        assert!(
+            user_table.get("name").is_none(),
+            "name accessor must NOT be auto-imported"
+        );
+        assert!(
+            user_table.get("params").is_none(),
+            "params accessor must NOT be auto-imported"
+        );
+        assert!(
+            user_table.get("result").is_none(),
+            "result accessor must NOT be auto-imported"
+        );
+        assert!(
+            user_table.get("children").is_none(),
+            "children accessor must NOT be auto-imported"
+        );
+        assert!(
+            user_table.get("nanos").is_none(),
+            "nanos accessor must NOT be auto-imported"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2393,7 +2730,10 @@ mod tests {
     #[test]
     fn test_synthetic_modules_have_empty_imports_exports() {
         let tf = TestFixture::with_content(
-            FixtureBuilder::new().with_builtin_type_names().with_macros_sexp().with_primitives(),
+            FixtureBuilder::new()
+                .with_builtin_type_names()
+                .with_macros_sexp()
+                .with_primitives(),
         );
 
         let primitives_path = ModuleFullPath::from("primitives");
@@ -2463,7 +2803,10 @@ mod tests {
             ("program/register.rs", include_str!("program/register.rs")),
             ("program/body.rs", include_str!("program/body.rs")),
             ("program/finalize.rs", include_str!("program/finalize.rs")),
-            ("program/mono_collect.rs", include_str!("program/mono_collect.rs")),
+            (
+                "program/mono_collect.rs",
+                include_str!("program/mono_collect.rs"),
+            ),
             ("resolve.rs", include_str!("resolve.rs")),
             ("result.rs", include_str!("result.rs")),
             ("scheme.rs", include_str!("scheme.rs")),
@@ -2473,8 +2816,14 @@ mod tests {
             ("traits/registry.rs", include_str!("traits/registry.rs")),
             ("traits/impl_check.rs", include_str!("traits/impl_check.rs")),
             ("traits/dispatch.rs", include_str!("traits/dispatch.rs")),
-            ("traits/monomorphise.rs", include_str!("traits/monomorphise.rs")),
-            ("traits/type_resolve.rs", include_str!("traits/type_resolve.rs")),
+            (
+                "traits/monomorphise.rs",
+                include_str!("traits/monomorphise.rs"),
+            ),
+            (
+                "traits/type_resolve.rs",
+                include_str!("traits/type_resolve.rs"),
+            ),
             ("unify.rs", include_str!("unify.rs")),
         ];
         // Construct the forbidden symbol at runtime so this very test

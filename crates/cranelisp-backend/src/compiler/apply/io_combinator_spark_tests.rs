@@ -16,7 +16,9 @@ use super::is_io_combinator_call;
 use cranelisp_types::{JitSymbol, ResolvedCall, Symbol};
 
 fn builtin(name: &str) -> ResolvedCall {
-    ResolvedCall::BuiltinFn { name: Symbol::from(name) }
+    ResolvedCall::BuiltinFn {
+        name: Symbol::from(name),
+    }
 }
 
 #[test]

@@ -4050,3 +4050,25 @@ its runtime result has been certified.
 
 No coverage annotation is promoted to `[Tested]` in this static gate. Runtime
 evidence is required first.
+
+## Sprint 117 — conformance, recovery, and ownership witnesses
+
+Plan of record: `tests/plan/s117-test-plan.md`. Status is **Phase-3
+directed**; named tests below do not exist until `/testing` authors them.
+
+| Requirement / invariant | Planned test family | Status |
+|---|---|---|
+| spec §7.3 + §8.5, qualified trait reference in `impl` resolves once to canonical identity | QT-1/QT-2 | `[S117]` failing-first ready under the scribed `trait_ref` ruling; existing qualified-`deftrait` `trait_binder` rejects are immutable negative controls |
+| repl §1.3/§4.1, stdlib `def` macro presentation describes the user binding rather than leaking its implementation | DF-1/DF-2 | `[S117]` failing-first ready; function-valued `def` behavior is a `/stdlib` API choice, not a `/spec` gate |
+| spec §9.6 + §8.2, macro-expanded `begin` registers preceding definitions before dependent forms | `tests/spec_09_macros.rs::{macro_expanded_begin_deftype_then_impl_registers_in_source_order, macro_expanded_begin_impl_neg_before_deftype_is_rejected, expanded_and_literal_begin_registration_are_twins, expanded_begin_trait_family_registration_is_uniform}` | `[Tested+Neg]` (S117) delivered GREEN; independent from the `def` presentation family |
+| repl §18.4, a failed codegen turn does not poison later v4-session turns or publish partial state | `tests/spec_11_stdlib.rs::{failed_codegen_turn_does_not_poison_following_literal, failed_codegen_turn_does_not_poison_following_definition_and_call, failed_codegen_turn_does_not_publish_partial_definition}` | `[Tested+Neg]` (S117) delivered GREEN |
+| repl §18.4, diagnostic names the actual failing codegen unit | `tests/spec_11_stdlib.rs::failed_codegen_diagnostic_names_actual_failing_unit_not_operator_slash` | `[Tested+Neg]` (S117) delivered GREEN; remains a separate regression guard from transaction recovery |
+| repl §1.4, constrained variables display the trait's canonical qualified home | `tests/repl_introspection.rs::{constraint_trait_name_displays_canonical_home_neg_no_bare_trait, constraint_display_is_identical_across_definition_sig_and_bare_lookup}` | `[Tested+Neg]` (S117) delivered GREEN; `repl/spec.md` constrained-variable coverage band cites these exact witnesses |
+| repl §18.9, `/info <Type>` and `/info <Trait>` enumerate one inverse impl pair each | IN-1..IN-3 | `[S117]` failing-first ready |
+| primitives audit R-2 / ownership design, declared Borrowed/AliasOf/ProjectionOf/MayAliasOf facts affect real lowering | §4 four-class CLIF + Run/Link/REPL witnesses | `[S117]` design/unit/e2e split; every class requires a false-table-only mutation failure |
+| spec §5.2.6 + §8.5.2, polymorphic products mint the same canonical and unique-bare field accessors as concrete products | `polymorphic_product_mints_canonical_and_unique_bare_accessors` with `bare_alias_resolves_when_field_unique` as the concrete control | `[S118]` Phase-6 forward-flow plan; RED not yet authored. `/testing` must preserve both `Pair.fst` and bare `fst` assertions in one narrow failing-not-ignored repro before `/dev` attribution is finalized |
+| spec §8.2.3/§8.2.5 + module-caching design §8, cache-restored parents enrol declared private children | `tests/cache.rs::cache_restored_parent_enrols_private_test_child` | `[S118]` RED, failing-not-ignored; discovered during S117 Phase 6b, FIXME 0868. Fresh parent discovery passes and the unchanged cache-hit leg omits only the declared child |
+| spec §7.3 + §8.5 + module-caching design §8, cache restoration preserves sibling-written trait implementations for dispatch | `tests/cache.rs::cache_restores_sibling_written_trait_impls_for_dispatch` | `[S118]` RED, failing-not-ignored; discovered during S117 Phase 6b, FIXME 0869. Qualified and imported-bare fresh controls pass; both unchanged cache-hit legs lose the same canonical impl |
+
+Byte-backed text remains a non-normative architecture exploration. It creates
+no Sprint-117 spec row or implementation-test obligation.

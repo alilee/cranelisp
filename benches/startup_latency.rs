@@ -27,7 +27,7 @@ use std::env;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 
 /// Workspace root from the bench crate's `CARGO_MANIFEST_DIR` (== workspace
 /// root, since the bench is part of the root `cranelisp` crate).

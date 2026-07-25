@@ -41,7 +41,7 @@
 //! present only to make the manifest a faithful mirror; it is dead at runtime.
 
 use cranelisp_platform::{
-    CLAdt, CLAdtType, CLHeap, CLInt, CLIO, ConcurrencyDescriptor, HostCallbacks, HostContext,
+    CLAdt, CLAdtType, CLHeap, CLIO, CLInt, ConcurrencyDescriptor, HostCallbacks, HostContext,
     PlatformFn, PlatformManifest, SchedulingClass,
 };
 
@@ -84,7 +84,8 @@ const PLATFORM_NAME: &str = "shapes-badabi";
 const PLATFORM_VERSION: &str = "0.1.0";
 const AREA_CL_NAME: &str = "area";
 const AREA_SIG: &str = "(Fn [shapes/Rectangle] (primitives/IO primitives/Int))";
-const AREA_DOC: &str = "Stale-ABI mirror of shapes/area; never dispatched (load refused on ABI mismatch)";
+const AREA_DOC: &str =
+    "Stale-ABI mirror of shapes/area; never dispatched (load refused on ABI mismatch)";
 const AREA_PARAM_R: &str = "r";
 
 /// Hand-rolled C-ABI manifest entry point.
@@ -140,9 +141,7 @@ pub unsafe extern "C" fn cranelisp_platform_manifest(
             param_name_count: 1,
             // Single-ABI cutover (§6.8.0): `scheduling_class: u32` is replaced by
             // the unified `concurrency` descriptor (blocking, Commutative shape).
-            concurrency: ConcurrencyDescriptor::from_scheduling_class(
-                SchedulingClass::Commutative,
-            ),
+            concurrency: ConcurrencyDescriptor::from_scheduling_class(SchedulingClass::Commutative),
         }]
         .into_boxed_slice(),
     );

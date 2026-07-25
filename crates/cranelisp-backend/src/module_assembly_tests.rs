@@ -2,7 +2,6 @@
 
 use crate::test_support::*;
 
-
 // spec: 05-definitions §5.1 — single defn compiles and executes via JIT
 #[test]
 fn test_compile_program_simple() {
@@ -29,7 +28,6 @@ fn test_compile_program_simple() {
     assert_eq!(value, 42);
 }
 
-
 // spec: 12-runtime §12.6 — batch mode requires main entry point
 #[test]
 fn test_compile_program_no_defns() {
@@ -38,7 +36,10 @@ fn test_compile_program_no_defns() {
     let tables = empty_tables();
     // No symbol table for "user" at all — compile_to_module errors out
     // because there's no module entry (and no names anyway).
-    tables.insert(ModuleFullPath::from("user"), SymbolTable::new(ModuleFullPath::from("user")));
+    tables.insert(
+        ModuleFullPath::from("user"),
+        SymbolTable::new(ModuleFullPath::from("user")),
+    );
 
     let mut jit = Jit::new_with_symbols(&[]).unwrap();
     let result = compile_to_module(
@@ -51,7 +52,6 @@ fn test_compile_program_no_defns() {
     assert!(result.is_err());
 }
 
-
 // spec: 05-definitions §5.1 — defn compiles in interactive (REPL) mode
 #[test]
 fn test_compile_program_interactive_mode() {
@@ -61,9 +61,9 @@ fn test_compile_program_interactive_mode() {
         variants: vec![DefnVariant {
             params: vec![],
             body: Expr::IntLit {
-            value: 7,
-            span: Span::new(0, 1),
-            inferred_type: None,
+                value: 7,
+                span: Span::new(0, 1),
+                inferred_type: None,
             },
             span: Span::new(0, 20),
         }],
@@ -78,7 +78,6 @@ fn test_compile_program_interactive_mode() {
     assert_eq!(value, 7);
 }
 
-
 // spec: 04-expressions §4.1.1 — integer literal codegen with GOT state
 // spec: 05-definitions §5.13.1 — multiple function definitions compile together
 #[test]
@@ -90,10 +89,10 @@ fn test_compile_program_multiple_defns() {
         variants: vec![DefnVariant {
             params: vec![(Symbol::from("x"), None)],
             body: Expr::Var {
-            name: Symbol::from("x"),
-            span: Span::new(20, 21),
-            resolved_call: None,
-            inferred_type: None,
+                name: Symbol::from("x"),
+                span: Span::new(20, 21),
+                resolved_call: None,
+                inferred_type: None,
             },
             span: Span::new(10, 30),
         }],
@@ -107,9 +106,9 @@ fn test_compile_program_multiple_defns() {
         variants: vec![DefnVariant {
             params: vec![],
             body: Expr::IntLit {
-            value: 100,
-            span: Span::new(40, 43),
-            inferred_type: None,
+                value: 100,
+                span: Span::new(40, 43),
+                inferred_type: None,
             },
             span: Span::new(35, 50),
         }],
@@ -124,7 +123,6 @@ fn test_compile_program_multiple_defns() {
     assert_eq!(value, 100);
 }
 
-
 // spec: 07-traits §7.7 — constrained polymorphic fn skipped at definition, monomorphised at call
 #[test]
 fn test_constrained_fn_skipped_in_compile_program() {
@@ -134,7 +132,11 @@ fn test_constrained_fn_skipped_in_compile_program() {
         docstring: None,
         variants: vec![DefnVariant {
             params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
-            body: Expr::IntLit { value: 0, span: Span::new(10, 11), inferred_type: None },
+            body: Expr::IntLit {
+                value: 0,
+                span: Span::new(10, 11),
+                inferred_type: None,
+            },
             span: Span::new(0, 20),
         }],
         visibility: cranelisp_types::Visibility::Public,
@@ -146,17 +148,18 @@ fn test_constrained_fn_skipped_in_compile_program() {
         docstring: None,
         variants: vec![DefnVariant {
             params: vec![],
-            body: Expr::IntLit { value: 42, span: Span::new(30, 32), inferred_type: None },
+            body: Expr::IntLit {
+                value: 42,
+                span: Span::new(30, 32),
+                inferred_type: None,
+            },
             span: Span::new(25, 40),
         }],
         visibility: cranelisp_types::Visibility::Public,
         span: Span::new(25, 40),
     };
 
-    let program: Program = vec![
-        TopLevel::Defn(defn),
-        TopLevel::Defn(main_defn),
-    ];
+    let program: Program = vec![TopLevel::Defn(defn), TopLevel::Defn(main_defn)];
 
     let mut check = empty_check();
     // Mark "add" as constrained — should be skipped during compilation.
@@ -167,7 +170,6 @@ fn test_constrained_fn_skipped_in_compile_program() {
     assert_eq!(value, 42);
 }
 
-
 // spec: 07-traits §7.7 — no default method defns produces empty extras
 #[test]
 fn test_collect_extra_defns_empty() {
@@ -175,7 +177,6 @@ fn test_collect_extra_defns_empty() {
     // Verify default_method_defns is empty in a fresh CheckResult.
     assert!(check.default_method_defns.is_empty());
 }
-
 
 // spec: 07-traits §7.7 — default trait methods compiled as extra defns
 #[test]
@@ -195,8 +196,16 @@ fn test_compile_with_default_method_defns() {
                     inferred_type: None,
                 }),
                 args: vec![
-                    Expr::IntLit { value: 1, span: Span::new(21, 22), inferred_type: None },
-                    Expr::IntLit { value: 2, span: Span::new(23, 24), inferred_type: None },
+                    Expr::IntLit {
+                        value: 1,
+                        span: Span::new(21, 22),
+                        inferred_type: None,
+                    },
+                    Expr::IntLit {
+                        value: 2,
+                        span: Span::new(23, 24),
+                        inferred_type: None,
+                    },
                 ],
                 span: Span::new(9, 25),
                 resolved_call: None,
@@ -213,7 +222,11 @@ fn test_compile_with_default_method_defns() {
         docstring: None,
         variants: vec![DefnVariant {
             params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
-            body: Expr::IntLit { value: 77, span: Span::new(0, 2), inferred_type: None },
+            body: Expr::IntLit {
+                value: 77,
+                span: Span::new(0, 2),
+                inferred_type: None,
+            },
             span: Span::new(0, 10),
         }],
         visibility: Visibility::Public,
@@ -238,7 +251,6 @@ fn test_compile_with_default_method_defns() {
         .expect("program with default method defns should compile");
     assert_eq!(value, 77, "should call the default method defn");
 }
-
 
 // spec: 12-runtime §12.5, 07-traits §7.7 — TCO for monomorphised self-recursive call
 //
@@ -270,8 +282,17 @@ fn test_mono_defn_self_recursive_tco() {
             inferred_type: None,
         }),
         args: vec![
-            Expr::Var { name: Symbol::from("n"), span: n_span, resolved_call: None, inferred_type: None },
-            Expr::IntLit { value: 0, span: zero_span, inferred_type: None },
+            Expr::Var {
+                name: Symbol::from("n"),
+                span: n_span,
+                resolved_call: None,
+                inferred_type: None,
+            },
+            Expr::IntLit {
+                value: 0,
+                span: zero_span,
+                inferred_type: None,
+            },
         ],
         span: eq_span,
         resolved_call: None,
@@ -286,8 +307,17 @@ fn test_mono_defn_self_recursive_tco() {
             inferred_type: None,
         }),
         args: vec![
-            Expr::Var { name: Symbol::from("n"), span: Span::new(55, 56), resolved_call: None, inferred_type: None },
-            Expr::IntLit { value: 1, span: Span::new(57, 58), inferred_type: None },
+            Expr::Var {
+                name: Symbol::from("n"),
+                span: Span::new(55, 56),
+                resolved_call: None,
+                inferred_type: None,
+            },
+            Expr::IntLit {
+                value: 1,
+                span: Span::new(57, 58),
+                inferred_type: None,
+            },
         ],
         span: sub_span,
         resolved_call: None,
@@ -311,7 +341,11 @@ fn test_mono_defn_self_recursive_tco() {
 
     let body = Expr::If {
         cond: Box::new(cond),
-        then_branch: Box::new(Expr::IntLit { value: 0, span: result_span, inferred_type: None }),
+        then_branch: Box::new(Expr::IntLit {
+            value: 0,
+            span: result_span,
+            inferred_type: None,
+        }),
         else_branch: Box::new(recurse),
         span: if_span,
         inferred_type: None,
@@ -355,7 +389,11 @@ fn test_mono_defn_self_recursive_tco() {
 
     // Enrich the defn from CheckResult side maps (test bridge).
     let mut enriched_defn = countdown_defn.clone();
-    enrich_defn_from_side_maps(&mut enriched_defn, &check.method_resolutions, &check.expr_types);
+    enrich_defn_from_side_maps(
+        &mut enriched_defn,
+        &check.method_resolutions,
+        &check.expr_types,
+    );
 
     // Compile with direct calls (no GOT), through the PRODUCTION per-body seam
     // (S111 R4 §1.3). The recursion is a TAIL self-call (TCO), so it never
@@ -371,14 +409,18 @@ fn test_mono_defn_self_recursive_tco() {
         ModuleFullPath::from("test"),
         jit.jit_module(),
     );
-    let countdown_ptr = jit.finalize_and_get_ptr(&Symbol::from("countdown$Int"), 1).unwrap();
+    let countdown_ptr = jit
+        .finalize_and_get_ptr(&Symbol::from("countdown$Int"), 1)
+        .unwrap();
 
     // Call with 1_000_000 — without TCO this would stack overflow.
     let func: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(countdown_ptr) };
     let result = func(1_000_000);
-    assert_eq!(result, 0, "TCO should allow 1M recursive calls without stack overflow");
+    assert_eq!(
+        result, 0,
+        "TCO should allow 1M recursive calls without stack overflow"
+    );
 }
-
 
 // --- compile_to_module module tests ---
 
@@ -395,7 +437,11 @@ fn test_module_prefix_applied() {
         docstring: None,
         variants: vec![DefnVariant {
             params: vec![],
-            body: Expr::IntLit { value: 100, span: Span::new(0, 3), inferred_type: None },
+            body: Expr::IntLit {
+                value: 100,
+                span: Span::new(0, 3),
+                inferred_type: None,
+            },
             span: Span::new(0, 20),
         }],
         visibility: Visibility::Public,
@@ -416,11 +462,15 @@ fn test_module_prefix_applied() {
         &tables,
         jit_a.jit_module(),
         true,
-    ).expect("module A should compile");
+    )
+    .expect("module A should compile");
     // Post-G6: compile_to_module finalized internally. `val` is a zero-arg
     // defn with no GOT slot (direct FuncId); read its ptr by name.
     let ptr = jit_a.get_ptr_by_name(&Symbol::from("val"), 0).unwrap();
-    assert!(!ptr.is_null(), "module A 'val' must finalize to a non-null ptr");
+    assert!(
+        !ptr.is_null(),
+        "module A 'val' must finalize to a non-null ptr"
+    );
     let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
     assert_eq!(func(), 100, "module A's val should return 100");
 
@@ -430,7 +480,11 @@ fn test_module_prefix_applied() {
         docstring: None,
         variants: vec![DefnVariant {
             params: vec![],
-            body: Expr::IntLit { value: 200, span: Span::new(100, 103), inferred_type: None },
+            body: Expr::IntLit {
+                value: 200,
+                span: Span::new(100, 103),
+                inferred_type: None,
+            },
             span: Span::new(100, 120),
         }],
         visibility: Visibility::Public,
@@ -450,13 +504,13 @@ fn test_module_prefix_applied() {
         &tables,
         jit_b.jit_module(),
         true,
-    ).expect("module B should compile without collision");
+    )
+    .expect("module B should compile without collision");
     // Post-G6: compile_to_module finalized internally.
     let ptr_b = jit_b.get_ptr_by_name(&Symbol::from("val"), 0).unwrap();
     let func_b: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr_b) };
     assert_eq!(func_b(), 200, "module B's val should return 200");
 }
-
 
 // --- G6 code-write invariants (Sprint 57 Wave 2; S75 W2 D41 rotation) ---
 //
@@ -473,7 +527,11 @@ fn compile_to_module_writes_got_slot_after_finalize() {
         docstring: None,
         variants: vec![DefnVariant {
             params: vec![],
-            body: Expr::IntLit { value: 7, span: Span::new(0, 1), inferred_type: None },
+            body: Expr::IntLit {
+                value: 7,
+                span: Span::new(0, 1),
+                inferred_type: None,
+            },
             span: Span::new(0, 20),
         }],
         visibility: Visibility::Public,
@@ -497,7 +555,8 @@ fn compile_to_module_writes_got_slot_after_finalize() {
         &tables,
         jit.jit_module(),
         true,
-    ).expect("JIT compile should succeed");
+    )
+    .expect("JIT compile should succeed");
 
     // D41 #2: backend wrote the finalised code pointer into the entry's
     // GOT slot (slot 0). Read it back; it must be non-null in JIT mode.
@@ -524,7 +583,6 @@ fn compile_to_module_writes_got_slot_after_finalize() {
     }
 }
 
-
 // spec: design/backend/compile-to-module.md §9.1.6 — ObjectModule has no
 // post-finalize runtime pointer; the GOT slot stays null in object mode.
 #[test]
@@ -537,7 +595,11 @@ fn compile_to_module_object_mode_no_got_write() {
         docstring: None,
         variants: vec![DefnVariant {
             params: vec![],
-            body: Expr::IntLit { value: 42, span: Span::new(0, 2), inferred_type: None },
+            body: Expr::IntLit {
+                value: 42,
+                span: Span::new(0, 2),
+                inferred_type: None,
+            },
             span: Span::new(0, 20),
         }],
         visibility: Visibility::Public,
@@ -555,8 +617,7 @@ fn compile_to_module_object_mode_no_got_write() {
     }
 
     let isa = build_isa(true).unwrap();
-    let obj_builder =
-        ObjectBuilder::new(isa, "test_obj", default_libcall_names()).unwrap();
+    let obj_builder = ObjectBuilder::new(isa, "test_obj", default_libcall_names()).unwrap();
     let mut obj_module = ObjectModule::new(obj_builder);
 
     let _artifacts = compile_to_module(
@@ -565,7 +626,8 @@ fn compile_to_module_object_mode_no_got_write() {
         &tables,
         &mut obj_module,
         true,
-    ).expect("object compile should succeed");
+    )
+    .expect("object compile should succeed");
 
     // Object-mode invariant: `try_get_finalized_function` returns None (no
     // runtime pointer before `finish()`), so backend writes nothing to the
@@ -589,7 +651,6 @@ fn compile_to_module_object_mode_no_got_write() {
         _ => unreachable!("test inserted a Def entry with a GOT slot"),
     }
 }
-
 
 // --- multi-sig defn tests ---
 //
@@ -617,12 +678,22 @@ fn test_compile_multi_sig_defn_end_to_end() {
         variants: vec![
             DefnVariant {
                 params: vec![(Symbol::from("x"), None)],
-                body: Expr::Var { name: Symbol::from("x"), span: Span::new(15, 16), resolved_call: None, inferred_type: None },
+                body: Expr::Var {
+                    name: Symbol::from("x"),
+                    span: Span::new(15, 16),
+                    resolved_call: None,
+                    inferred_type: None,
+                },
                 span: variant1_span,
             },
             DefnVariant {
                 params: vec![(Symbol::from("a"), None), (Symbol::from("b"), None)],
-                body: Expr::Var { name: Symbol::from("a"), span: Span::new(45, 46), resolved_call: None, inferred_type: None },
+                body: Expr::Var {
+                    name: Symbol::from("a"),
+                    span: Span::new(45, 46),
+                    resolved_call: None,
+                    inferred_type: None,
+                },
                 span: variant2_span,
             },
         ],
@@ -644,7 +715,11 @@ fn test_compile_multi_sig_defn_end_to_end() {
                     resolved_call: None,
                     inferred_type: None,
                 }),
-                args: vec![Expr::IntLit { value: 42, span: Span::new(103, 105), inferred_type: None }],
+                args: vec![Expr::IntLit {
+                    value: 42,
+                    span: Span::new(103, 105),
+                    inferred_type: None,
+                }],
                 span: call_span,
                 resolved_call: None,
                 inferred_type: None,
@@ -655,10 +730,7 @@ fn test_compile_multi_sig_defn_end_to_end() {
         span: Span::new(95, 125),
     };
 
-    let program: Program = vec![
-        TopLevel::Defn(multi_defn),
-        TopLevel::Defn(main_defn),
-    ];
+    let program: Program = vec![TopLevel::Defn(multi_defn), TopLevel::Defn(main_defn)];
 
     let mut check = empty_check();
     // Register SigDispatch for the call site.
@@ -686,7 +758,11 @@ fn test_compile_multi_sig_defn_end_to_end() {
     table.insert(
         Symbol::from("f"),
         cranelisp_types::ModuleEntry::Def {
-            scheme: cranelisp_types::Scheme { type_vars: vec![], constraints: Default::default(), ty: Type::Int },
+            scheme: cranelisp_types::Scheme {
+                type_vars: vec![],
+                constraints: Default::default(),
+                ty: Type::Int,
+            },
             visibility: cranelisp_types::Visibility::Public,
             docstring: None,
             param_names: vec![],
@@ -720,7 +796,6 @@ fn test_compile_multi_sig_defn_end_to_end() {
     assert_eq!(result, 42, "should dispatch to f$Int and return 42");
 }
 
-
 // spec: 05-definitions §5.1.2 — multi-sig dispatch to second variant
 #[test]
 fn test_compile_multi_sig_second_variant() {
@@ -733,13 +808,23 @@ fn test_compile_multi_sig_second_variant() {
         variants: vec![
             DefnVariant {
                 params: vec![(Symbol::from("x"), None)],
-                body: Expr::Var { name: Symbol::from("x"), span: Span::new(15, 16), resolved_call: None, inferred_type: None },
+                body: Expr::Var {
+                    name: Symbol::from("x"),
+                    span: Span::new(15, 16),
+                    resolved_call: None,
+                    inferred_type: None,
+                },
                 span: variant1_span,
             },
             DefnVariant {
                 params: vec![(Symbol::from("a"), None), (Symbol::from("b"), None)],
                 // Return b (second param) to prove we dispatched to the right variant.
-                body: Expr::Var { name: Symbol::from("b"), span: Span::new(45, 46), resolved_call: None, inferred_type: None },
+                body: Expr::Var {
+                    name: Symbol::from("b"),
+                    span: Span::new(45, 46),
+                    resolved_call: None,
+                    inferred_type: None,
+                },
                 span: variant2_span,
             },
         ],
@@ -762,8 +847,16 @@ fn test_compile_multi_sig_second_variant() {
                     inferred_type: None,
                 }),
                 args: vec![
-                    Expr::IntLit { value: 10, span: Span::new(103, 105), inferred_type: None },
-                    Expr::IntLit { value: 99, span: Span::new(106, 108), inferred_type: None },
+                    Expr::IntLit {
+                        value: 10,
+                        span: Span::new(103, 105),
+                        inferred_type: None,
+                    },
+                    Expr::IntLit {
+                        value: 99,
+                        span: Span::new(106, 108),
+                        inferred_type: None,
+                    },
                 ],
                 span: call_span,
                 resolved_call: None,
@@ -775,10 +868,7 @@ fn test_compile_multi_sig_second_variant() {
         span: Span::new(95, 125),
     };
 
-    let program: Program = vec![
-        TopLevel::Defn(multi_defn),
-        TopLevel::Defn(main_defn),
-    ];
+    let program: Program = vec![TopLevel::Defn(multi_defn), TopLevel::Defn(main_defn)];
 
     let mut check = empty_check();
     check.method_resolutions.insert(
@@ -804,7 +894,11 @@ fn test_compile_multi_sig_second_variant() {
     table.insert(
         Symbol::from("g"),
         cranelisp_types::ModuleEntry::Def {
-            scheme: cranelisp_types::Scheme { type_vars: vec![], constraints: Default::default(), ty: Type::Int },
+            scheme: cranelisp_types::Scheme {
+                type_vars: vec![],
+                constraints: Default::default(),
+                ty: Type::Int,
+            },
             visibility: cranelisp_types::Visibility::Public,
             docstring: None,
             param_names: vec![],
@@ -835,9 +929,11 @@ fn test_compile_multi_sig_second_variant() {
 
     let result = test_compile_program_and_run(&program, &check, &tables)
         .expect("multi-sig program should compile");
-    assert_eq!(result, 99, "should dispatch to g$Int+Int and return second arg (99)");
+    assert_eq!(
+        result, 99,
+        "should dispatch to g$Int+Int and return second arg (99)"
+    );
 }
-
 
 // -----------------------------------------------------------------
 // Sprint 56 Wave 1 (Step 2a) — direct compile_to_module tests
@@ -859,7 +955,11 @@ fn sprint56_compile_to_module_direct_call_writes_got_and_artifacts() {
         docstring: None,
         variants: vec![DefnVariant {
             params: vec![],
-            body: Expr::IntLit { value: 42, span: Span::new(0, 2), inferred_type: None },
+            body: Expr::IntLit {
+                value: 42,
+                span: Span::new(0, 2),
+                inferred_type: None,
+            },
             span: Span::new(0, 10),
         }],
         visibility: Visibility::Public,
@@ -912,7 +1012,6 @@ fn sprint56_compile_to_module_direct_call_writes_got_and_artifacts() {
         other => panic!("expected Def with ast + got_slot, got {other:?}"),
     }
 }
-
 
 // spec: design/backend/compile-to-module.md §4 — ast: None returns error
 //
@@ -976,8 +1075,28 @@ fn sprint56_compile_to_module_ast_none_errors() {
         msg.contains("ast: None") || msg.contains("ast") && msg.contains("None"),
         "error message should mention the ast: None invariant violation, got: {msg}"
     );
+    match err {
+        crate::CompilationError::CodegenFailed {
+            module,
+            symbol,
+            location,
+            ..
+        } => {
+            assert_eq!(
+                module.as_ref(),
+                "",
+                "non-body target-collection errors retain generic attribution"
+            );
+            assert_eq!(
+                symbol.as_ref(),
+                "",
+                "the body-only helper must not stamp a target-collection error"
+            );
+            assert_eq!(location.span, Span::SYNTHETIC);
+        }
+        other => panic!("ast: None must retain the generic CodegenFailed mapping, got {other:?}"),
+    }
 }
-
 
 // spec: design/backend/compile-to-module.md §4 — no multi-sig expansion in backend
 //
@@ -1069,7 +1188,10 @@ fn sprint56_compile_to_module_mangled_variant_compiles_without_expansion() {
 
     // Compilation succeeding (no expand_multi_sig_defn path) is the
     // verification; the mangled variant's GOT slot is populated.
-    assert!(!artifacts.clif_ir.is_empty(), "variant body must be compiled");
+    assert!(
+        !artifacts.clif_ir.is_empty(),
+        "variant body must be compiled"
+    );
     let guard = tables.get(&module).unwrap();
     match guard.get(variant_name.as_ref()) {
         Some(entry) if entry.callable_got_slot().is_some() => {
@@ -1082,7 +1204,6 @@ fn sprint56_compile_to_module_mangled_variant_compiles_without_expansion() {
         other => panic!("expected mangled-variant Def with got_slot, got {other:?}"),
     }
 }
-
 
 // spec: design/backend/compile-to-module.md §4 — constrained-template exclusion via defined_symbols
 //
@@ -1107,7 +1228,11 @@ fn sprint56_constrained_template_excluded_by_defined_symbols() {
         docstring: None,
         variants: vec![DefnVariant {
             params: vec![],
-            body: Expr::IntLit { value: 1, span: Span::new(0, 1), inferred_type: None },
+            body: Expr::IntLit {
+                value: 1,
+                span: Span::new(0, 1),
+                inferred_type: None,
+            },
             span: Span::new(0, 5),
         }],
         visibility: Visibility::Public,
@@ -1152,16 +1277,14 @@ fn sprint56_constrained_template_excluded_by_defined_symbols() {
                 kind: Box::new(DefKind::UserFn {
                     // A constrained template is slot-less by construction
                     // (S83 reshape) — only its mono variants carry slots.
-                    fn_state: UserFnState::Constrained(Box::new(
-                        cranelisp_types::ConstrainedFn {
-                            variant: template_defn.variants[0].clone(),
-                            scheme: Scheme {
-                                type_vars: vec![],
-                                constraints: HashMap::new(),
-                                ty: Type::Fn(vec![Type::Var(0)], Box::new(Type::Var(0))),
-                            },
+                    fn_state: UserFnState::Constrained(Box::new(cranelisp_types::ConstrainedFn {
+                        variant: template_defn.variants[0].clone(),
+                        scheme: Scheme {
+                            type_vars: vec![],
+                            constraints: HashMap::new(),
+                            ty: Type::Fn(vec![Type::Var(0)], Box::new(Type::Var(0))),
                         },
-                    )),
+                    })),
                 }),
                 callees: vec![],
                 trait_origin: None,
@@ -1189,7 +1312,6 @@ fn sprint56_constrained_template_excluded_by_defined_symbols() {
         defined
     );
 }
-
 
 // spec: design/arch/CLAUDE.md Decision 36 — function symbols are declared
 // with their bare name uniformly across all modules. The pre-Sprint-58
@@ -1229,7 +1351,6 @@ fn decision_36_function_naming_is_bare_for_every_module() {
     }
 }
 
-
 // spec: design/arch/CLAUDE.md Decision 36 — function linkage is Local
 // uniformly. Symbols never need to cross .o boundaries (all-GOT calling).
 #[test]
@@ -1253,7 +1374,9 @@ fn decision_36_function_linkage_is_local_uniformly() {
         let m = jit.jit_module();
         let func_id = match m.get_name("f") {
             Some(FuncOrDataId::Func(id)) => id,
-            other => panic!("module '{module_path_str}': expected FuncOrDataId::Func for 'f', got {other:?}"),
+            other => panic!(
+                "module '{module_path_str}': expected FuncOrDataId::Func for 'f', got {other:?}"
+            ),
         };
         let decl = m.declarations().get_function_decl(func_id);
         assert_eq!(
@@ -1264,7 +1387,6 @@ fn decision_36_function_linkage_is_local_uniformly() {
         );
     }
 }
-
 
 // spec: design/arch/CLAUDE.md Decision 23 (updated) — `__cranelisp_got_{M}`
 // is defined as Linkage::Export data with `slot_count * 8` bytes inside
@@ -1313,8 +1435,8 @@ fn decision_23_got_data_symbol_defined_as_export_in_object_path() {
     let product = obj.finish();
     let bytes = product.emit().expect("ObjectModule should emit");
     use ::object::{Object, ObjectSymbol, SymbolKind, SymbolScope};
-    let parsed = ::object::File::parse(&*bytes)
-        .expect("emitted bytes must parse as an object file");
+    let parsed =
+        ::object::File::parse(&*bytes).expect("emitted bytes must parse as an object file");
     let got_sym = parsed
         .symbols()
         .find(|s| {
@@ -1356,7 +1478,6 @@ fn decision_23_got_data_symbol_defined_as_export_in_object_path() {
     );
 }
 
-
 // spec: design/arch/CLAUDE.md Decision 23 — JIT-mode GOT-data definition
 // remains the integration layer's responsibility (`Jit::define_got_data`).
 // compile_to_module<JITModule>'s `define_module_got_data` is a no-op and
@@ -1396,7 +1517,6 @@ fn decision_23_got_data_symbol_jit_path_is_noop() {
     // doesn't emit a GOT-indirect call so neither path declares it.)
 }
 
-
 // spec: design/arch/CLAUDE.md Decision 23 — GOT data symbol size matches
 // the symbol table's `next_got_slot` (one 8-byte slot per allocated index).
 #[test]
@@ -1409,7 +1529,7 @@ fn decision_23_got_data_size_matches_slot_count() {
 
     // Build symbol table with both defns at slots 0 and 1.
     use cranelisp_types::{
-        DefKind, MonoDefnVariant, MonoExpr, ModuleEntry, Scheme, UserFnState, Visibility,
+        DefKind, ModuleEntry, MonoDefnVariant, MonoExpr, Scheme, UserFnState, Visibility,
     };
     let tables = DashMap::new();
     let mut st = SymbolTable::new(module.clone());
@@ -1431,7 +1551,13 @@ fn decision_23_got_data_size_matches_slot_count() {
             MonoDefnVariant {
                 name: defn.name.clone(),
                 params: vec![],
-                body: MonoExpr::from_expr(&v.body, &std::collections::HashMap::new(), &var_refs, &apply_refs).expect("concrete test body"),
+                body: MonoExpr::from_expr(
+                    &v.body,
+                    &std::collections::HashMap::new(),
+                    &var_refs,
+                    &apply_refs,
+                )
+                .expect("concrete test body"),
                 span: v.span,
                 mode_summary: None,
             }
@@ -1448,7 +1574,10 @@ fn decision_23_got_data_size_matches_slot_count() {
                 docstring: None,
                 param_names: vec![],
                 kind: Box::new(DefKind::UserFn {
-                    fn_state: UserFnState::Concrete { got_slot: slot, mode_summary: None },
+                    fn_state: UserFnState::Concrete {
+                        got_slot: slot,
+                        mode_summary: None,
+                    },
                 }),
                 callees: vec![],
                 trait_origin: None,
@@ -1521,7 +1650,6 @@ fn decision_23_got_data_size_matches_slot_count() {
     );
 }
 
-
 // spec: design/arch/CLAUDE.md Decision 36 — cross-module function refs
 // are NOT declared as Linkage::Import in the importing module's .o. Under
 // all-GOT calling, cross-module calls reach callees through
@@ -1545,8 +1673,7 @@ fn decision_36_no_cross_module_function_imports() {
     let caller = make_int_defn("caller", 7);
 
     use cranelisp_types::{
-        DefKind, FQSymbol, MonoDefnVariant, MonoExpr, ModuleEntry, Scheme, UserFnState,
-        Visibility,
+        DefKind, FQSymbol, ModuleEntry, MonoDefnVariant, MonoExpr, Scheme, UserFnState, Visibility,
     };
     let tables = DashMap::new();
 
@@ -1562,7 +1689,13 @@ fn decision_36_no_cross_module_function_imports() {
         Some(MonoDefnVariant {
             name: d.name.clone(),
             params: vec![],
-            body: MonoExpr::from_expr(&v.body, &std::collections::HashMap::new(), &var_refs, &apply_refs).expect("concrete test body"),
+            body: MonoExpr::from_expr(
+                &v.body,
+                &std::collections::HashMap::new(),
+                &var_refs,
+                &apply_refs,
+            )
+            .expect("concrete test body"),
             span: v.span,
             mode_summary: None,
         })
@@ -1570,7 +1703,9 @@ fn decision_36_no_cross_module_function_imports() {
 
     // util module: helper at slot 0.
     let mut util_st = SymbolTable::new(util_path.clone());
-    let _ = util_st.allocate_got_slot().expect("fresh table has free slots");
+    let _ = util_st
+        .allocate_got_slot()
+        .expect("fresh table has free slots");
     util_st.insert(
         Symbol::from("helper"),
         ModuleEntry::Def {
@@ -1583,7 +1718,10 @@ fn decision_36_no_cross_module_function_imports() {
             docstring: None,
             param_names: vec![],
             kind: Box::new(DefKind::UserFn {
-                fn_state: UserFnState::Concrete { got_slot: 0, mode_summary: None },
+                fn_state: UserFnState::Concrete {
+                    got_slot: 0,
+                    mode_summary: None,
+                },
             }),
             callees: vec![],
             trait_origin: None,
@@ -1598,7 +1736,9 @@ fn decision_36_no_cross_module_function_imports() {
 
     // user module: caller at slot 0, helper imported from util.
     let mut user_st = SymbolTable::new(user_path.clone());
-    let _ = user_st.allocate_got_slot().expect("fresh table has free slots");
+    let _ = user_st
+        .allocate_got_slot()
+        .expect("fresh table has free slots");
     user_st.insert(
         Symbol::from("caller"),
         ModuleEntry::Def {
@@ -1611,7 +1751,10 @@ fn decision_36_no_cross_module_function_imports() {
             docstring: None,
             param_names: vec![],
             kind: Box::new(DefKind::UserFn {
-                fn_state: UserFnState::Concrete { got_slot: 0, mode_summary: None },
+                fn_state: UserFnState::Concrete {
+                    got_slot: 0,
+                    mode_summary: None,
+                },
             }),
             callees: vec![],
             trait_origin: None,
@@ -1668,7 +1811,6 @@ fn decision_36_no_cross_module_function_imports() {
     );
 }
 
-
 // spec: design/arch/CLAUDE.md Decision 23 — Sprint 58 Wave 2 regression
 // guard. The `__cranelisp_got_{M}` data symbol carries function-address
 // relocations (declared via `desc.write_function_addr`). On macOS, `ld`
@@ -1698,8 +1840,8 @@ fn decision_23_got_data_symbol_not_in_bss() {
     let bytes = product.emit().expect("ObjectModule should emit");
 
     use ::object::{Object, ObjectSection, ObjectSymbol, SectionKind};
-    let parsed = ::object::File::parse(&*bytes)
-        .expect("emitted bytes must parse as an object file");
+    let parsed =
+        ::object::File::parse(&*bytes).expect("emitted bytes must parse as an object file");
     let got_name = crate::compiler::got_data_symbol_name(&module);
     let got_sym = parsed
         .symbols()
@@ -1743,4 +1885,149 @@ fn decision_23_got_data_symbol_not_in_bss() {
         matches!(kind, SectionKind::Data | SectionKind::ReadOnlyData),
         "GOT data symbol '{got_name}' must live in a regular initialized data section; got {kind:?}"
     );
+}
+
+fn s117_body_failure_defn(name: &str, span: Span) -> Defn {
+    Defn {
+        name: Symbol::from(name),
+        docstring: None,
+        variants: vec![DefnVariant {
+            params: vec![],
+            body: Expr::Var {
+                name: Symbol::from("missing-local"),
+                span,
+                resolved_call: None,
+                inferred_type: Some(Box::new(Type::Int)),
+            },
+            span,
+        }],
+        visibility: Visibility::Public,
+        span,
+    }
+}
+
+fn s117_assert_attributed_body_failure(
+    names: &[Symbol],
+    expected_symbol: &Symbol,
+    expected_span: Span,
+) {
+    let module = ModuleFullPath::from("diagnostics.batch");
+    let earlier = make_int_defn("earlier", 7);
+    let failing = s117_body_failure_defn("later", expected_span);
+    let tables = empty_tables();
+    let mut table = SymbolTable::new(module.clone());
+    table.insert(earlier.name.clone(), make_def_entry_slot(earlier, 0));
+    table.insert(failing.name.clone(), make_def_entry_slot(failing, 1));
+    table.next_got_slot = 2;
+    tables.insert(module.clone(), table);
+
+    let before = {
+        let table = tables.get(&module).expect("module table");
+        [table.got.load_slot(0), table.got.load_slot(1)]
+    };
+    let mut jit = Jit::new_with_symbols(&[]).expect("JIT");
+    let error = match compile_to_module(module.clone(), names, &tables, jit.jit_module(), true) {
+        Ok(_) => panic!("missing local in a body must fail codegen"),
+        Err(error) => error,
+    };
+
+    match error {
+        crate::CompilationError::CodegenFailed {
+            module: actual_module,
+            symbol,
+            cause,
+            location,
+        } => {
+            assert_eq!(actual_module, module);
+            assert_eq!(&symbol, expected_symbol);
+            assert_eq!(location.span, expected_span);
+            assert_eq!(location.file, None);
+            assert_eq!(location.fq, None);
+            assert_eq!(location.line_col, None);
+            assert_eq!(location.context, None);
+            assert!(
+                cause.contains("missing-local") && cause.contains("VarRef::Local"),
+                "the original body-codegen cause must be preserved, got: {cause}"
+            );
+        }
+        other => panic!("expected CodegenFailed, got {other:?}"),
+    }
+
+    let after = {
+        let table = tables.get(&module).expect("module table");
+        [table.got.load_slot(0), table.got.load_slot(1)]
+    };
+    assert_eq!(
+        before, after,
+        "a body failure before finalization must not publish either GOT slot"
+    );
+}
+
+// spec: design/backend/s117-failed-member-attribution.md §5.1 — a later
+// member's production body-codegen failure carries that member's exact module,
+// symbol, and non-synthetic source span; no GOT value is published.
+#[test]
+fn s117_multi_name_later_body_failure_is_attributed_to_later_member() {
+    let span = Span::new(401, 414);
+    s117_assert_attributed_body_failure(
+        &[Symbol::from("earlier"), Symbol::from("later")],
+        &Symbol::from("later"),
+        span,
+    );
+}
+
+// spec: design/backend/s117-failed-member-attribution.md §5.2 — attribution
+// follows the failing loop member, not first/last position.
+#[test]
+fn s117_multi_name_first_body_failure_is_attributed_to_first_member() {
+    let span = Span::new(501, 514);
+    s117_assert_attributed_body_failure(
+        &[Symbol::from("later"), Symbol::from("earlier")],
+        &Symbol::from("later"),
+        span,
+    );
+}
+
+// spec: design/backend/s117-failed-member-attribution.md §5.2 — the
+// single-member production path uses the same exact attribution.
+#[test]
+fn s117_single_name_body_failure_is_attributed_to_member() {
+    let span = Span::new(601, 614);
+    s117_assert_attributed_body_failure(&[Symbol::from("later")], &Symbol::from("later"), span);
+}
+
+#[test]
+fn s117_attribution_helper_preserves_cause_and_full_location() {
+    let module = ModuleFullPath::from("diagnostics.helper");
+    let defn = make_int_defn("member", 1);
+    let mut location = ErrorLocation::from_span(Span::new(701, 709));
+    location.file = Some(std::path::PathBuf::from("src/diagnostic.cl"));
+    location.fq = Some(cranelisp_types::FQSymbol {
+        module: module.clone(),
+        symbol: defn.name.clone(),
+    });
+    location.context = Some("(missing-local)".into());
+    let error = CranelispError::CodegenError {
+        message: "sentinel body cause".into(),
+        location: location.clone(),
+    };
+
+    match crate::attribute_body_codegen_error(&module, &defn, error) {
+        crate::CompilationError::CodegenFailed {
+            module: actual_module,
+            symbol,
+            cause,
+            location: actual_location,
+        } => {
+            assert_eq!(actual_module, module);
+            assert_eq!(symbol, defn.name);
+            assert_eq!(cause, "codegen error at 701..709: sentinel body cause");
+            assert_eq!(actual_location.span, location.span);
+            assert_eq!(actual_location.file, location.file);
+            assert_eq!(actual_location.fq, location.fq);
+            assert_eq!(actual_location.line_col, location.line_col);
+            assert_eq!(actual_location.context, location.context);
+        }
+        other => panic!("expected CodegenFailed, got {other:?}"),
+    }
 }

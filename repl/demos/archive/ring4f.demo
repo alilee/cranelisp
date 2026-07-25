@@ -1,5 +1,7 @@
 ; Cranelisp Ring 4F — Auto-Currying & Testing
 
+(import [primitives [mul-i64]])
+
 ; Partial application — call with fewer args, get a function back
 
 (defn make-adder [n] (+ n))

@@ -4,11 +4,17 @@ use crate::types::{Scheme, Type};
 use std::collections::HashMap;
 
 fn empty_scheme() -> Scheme {
-    Scheme { type_vars: vec![], constraints: HashMap::new(), ty: Type::Int }
+    Scheme {
+        type_vars: vec![],
+        constraints: HashMap::new(),
+        ty: Type::Int,
+    }
 }
 
 fn def_entry(kind: DefKind, visibility: Visibility) -> ModuleEntry<()> {
-    ModuleEntry::def(empty_scheme(), kind).visibility(visibility).build()
+    ModuleEntry::def(empty_scheme(), kind)
+        .visibility(visibility)
+        .build()
 }
 
 fn macro_kind() -> DefKind {
@@ -71,12 +77,28 @@ fn macro_head_bare<'a>(
 #[test]
 fn resolves_local_short_name() {
     // spec §8.6.6 — unqualified short name in the current module.
-    let tables = tables_with(&[("user", "foo", def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public))]);
+    let tables = tables_with(&[(
+        "user",
+        "foo",
+        def_entry(
+            DefKind::UserFn {
+                fn_state: UserFnState::NotDetermined,
+            },
+            Visibility::Public,
+        ),
+    )]);
     let user = tables.get(&ModuleFullPath::from("user")).unwrap();
     let view = View::single(&user);
     let current = ModuleFullPath::from("user");
-    let r = resolve_bare(&tables, &dashmap::DashMap::new(), &view, &current, "foo", Span::SYNTHETIC)
-        .expect("foo resolves");
+    let r = resolve_bare(
+        &tables,
+        &dashmap::DashMap::new(),
+        &view,
+        &current,
+        "foo",
+        Span::SYNTHETIC,
+    )
+    .expect("foo resolves");
     assert_eq!(r.home, ModuleFullPath::from("user"));
     assert_eq!(r.fq.symbol, Symbol::from("foo"));
 }
@@ -85,14 +107,30 @@ fn resolves_local_short_name() {
 fn chain_follows_import_to_home() {
     // Principle 17 shape 1 — chain-follow an Import edge to the canonical home.
     let tables = tables_with(&[
-        ("dep", "bar", def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public)),
+        (
+            "dep",
+            "bar",
+            def_entry(
+                DefKind::UserFn {
+                    fn_state: UserFnState::NotDetermined,
+                },
+                Visibility::Public,
+            ),
+        ),
         ("user", "bar", import("dep", "bar", Visibility::Private)),
     ]);
     let user = tables.get(&ModuleFullPath::from("user")).unwrap();
     let view = View::single(&user);
     let current = ModuleFullPath::from("user");
-    let r = resolve_bare(&tables, &dashmap::DashMap::new(), &view, &current, "bar", Span::SYNTHETIC)
-        .expect("bar resolves via import");
+    let r = resolve_bare(
+        &tables,
+        &dashmap::DashMap::new(),
+        &view,
+        &current,
+        "bar",
+        Span::SYNTHETIC,
+    )
+    .expect("bar resolves via import");
     assert_eq!(r.home, ModuleFullPath::from("dep"));
 }
 
@@ -102,21 +140,44 @@ fn recognises_macro_head() {
     let user = tables.get(&ModuleFullPath::from("user")).unwrap();
     let view = View::single(&user);
     let current = ModuleFullPath::from("user");
-    let fq = macro_head_bare(&tables, &dashmap::DashMap::new(), &view, &current, "when", Span::SYNTHETIC)
-        .expect("no hard error")
-        .expect("when is a macro head");
+    let fq = macro_head_bare(
+        &tables,
+        &dashmap::DashMap::new(),
+        &view,
+        &current,
+        "when",
+        Span::SYNTHETIC,
+    )
+    .expect("no hard error")
+    .expect("when is a macro head");
     assert_eq!(fq.symbol, Symbol::from("when"));
     assert_eq!(fq.module, ModuleFullPath::from("user"));
 }
 
 #[test]
 fn non_macro_head_is_none_not_error() {
-    let tables = tables_with(&[("user", "plain", def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public))]);
+    let tables = tables_with(&[(
+        "user",
+        "plain",
+        def_entry(
+            DefKind::UserFn {
+                fn_state: UserFnState::NotDetermined,
+            },
+            Visibility::Public,
+        ),
+    )]);
     let user = tables.get(&ModuleFullPath::from("user")).unwrap();
     let view = View::single(&user);
     let current = ModuleFullPath::from("user");
-    let r = macro_head_bare(&tables, &dashmap::DashMap::new(), &view, &current, "plain", Span::SYNTHETIC)
-        .expect("no hard error");
+    let r = macro_head_bare(
+        &tables,
+        &dashmap::DashMap::new(),
+        &view,
+        &current,
+        "plain",
+        Span::SYNTHETIC,
+    )
+    .expect("no hard error");
     assert!(r.is_none(), "a non-macro head is Ok(None), not an Err");
 }
 
@@ -124,12 +185,28 @@ fn non_macro_head_is_none_not_error() {
 fn forward_reference_absent_from_view_is_none() {
     // Locked defmacro-before-use rule: a name not yet in the view is not
     // a macro head — Ok(None), flows on as an ordinary reference.
-    let tables = tables_with(&[("user", "x", def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public))]);
+    let tables = tables_with(&[(
+        "user",
+        "x",
+        def_entry(
+            DefKind::UserFn {
+                fn_state: UserFnState::NotDetermined,
+            },
+            Visibility::Public,
+        ),
+    )]);
     let user = tables.get(&ModuleFullPath::from("user")).unwrap();
     let view = View::single(&user);
     let current = ModuleFullPath::from("user");
-    let r = macro_head_bare(&tables, &dashmap::DashMap::new(), &view, &current, "not-defined-yet", Span::SYNTHETIC)
-        .expect("no hard error");
+    let r = macro_head_bare(
+        &tables,
+        &dashmap::DashMap::new(),
+        &view,
+        &current,
+        "not-defined-yet",
+        Span::SYNTHETIC,
+    )
+    .expect("no hard error");
     assert!(r.is_none());
 }
 
@@ -137,12 +214,28 @@ fn forward_reference_absent_from_view_is_none() {
 fn private_inaccessible_outside_subtree() {
     // spec §8.7.3 — qualified access to a private name from outside the
     // defining subtree fails with PrivateInaccessible.
-    let tables = tables_with(&[("dep", "secret", def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Private))]);
+    let tables = tables_with(&[(
+        "dep",
+        "secret",
+        def_entry(
+            DefKind::UserFn {
+                fn_state: UserFnState::NotDetermined,
+            },
+            Visibility::Private,
+        ),
+    )]);
     let user = tables.get(&ModuleFullPath::from("dep")).unwrap();
     let view = View::single(&user);
     let current = ModuleFullPath::from("user");
-    let err = resolve_bare(&tables, &dashmap::DashMap::new(), &view, &current, "dep/secret", Span::SYNTHETIC)
-        .expect_err("private name is inaccessible from user");
+    let err = resolve_bare(
+        &tables,
+        &dashmap::DashMap::new(),
+        &view,
+        &current,
+        "dep/secret",
+        Span::SYNTHETIC,
+    )
+    .expect_err("private name is inaccessible from user");
     assert!(matches!(err, ResolveError::PrivateInaccessible { .. }));
 }
 
@@ -152,8 +245,15 @@ fn qualified_unknown_module_distinguished() {
     let live = SymbolTable::<(), ()>::new_with_params(ModuleFullPath::from("user"));
     let view = View::single(&live);
     let current = ModuleFullPath::from("user");
-    let err = resolve_bare(&tables, &dashmap::DashMap::new(), &view, &current, "ghost/sym", Span::SYNTHETIC)
-        .expect_err("ghost module is unknown");
+    let err = resolve_bare(
+        &tables,
+        &dashmap::DashMap::new(),
+        &view,
+        &current,
+        "ghost/sym",
+        Span::SYNTHETIC,
+    )
+    .expect_err("ghost module is unknown");
     assert!(matches!(err, ResolveError::QualifiedModuleUnknown { .. }));
 }
 
@@ -169,7 +269,12 @@ fn qualified_current_module_resolves_through_view_like_bare_twin() {
     let mut staging = SymbolTable::<(), ()>::new_with_params(ModuleFullPath::from("user"));
     staging.insert(
         Symbol::from("qloop"),
-        def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public),
+        def_entry(
+            DefKind::UserFn {
+                fn_state: UserFnState::NotDetermined,
+            },
+            Visibility::Public,
+        ),
     );
     let view = View::single(&staging);
     let current = ModuleFullPath::from("user");
@@ -177,8 +282,15 @@ fn qualified_current_module_resolves_through_view_like_bare_twin() {
 
     let bare = resolve_bare(&tables, &aliases, &view, &current, "qloop", Span::SYNTHETIC)
         .expect("bare spelling resolves through the view");
-    let qualified = resolve_bare(&tables, &aliases, &view, &current, "user/qloop", Span::SYNTHETIC)
-        .expect("qualified own-module spelling resolves through the view");
+    let qualified = resolve_bare(
+        &tables,
+        &aliases,
+        &view,
+        &current,
+        "user/qloop",
+        Span::SYNTHETIC,
+    )
+    .expect("qualified own-module spelling resolves through the view");
     assert_eq!(qualified.fq, bare.fq, "one identity, two spellings");
     assert_eq!(qualified.home, bare.home);
     assert_eq!(qualified.storage_key, bare.storage_key);
@@ -194,13 +306,23 @@ fn qualified_current_module_missing_member_is_not_found_never_module_unknown() {
     let staging = SymbolTable::<(), ()>::new_with_params(ModuleFullPath::from("user"));
     let view = View::single(&staging);
     let current = ModuleFullPath::from("user");
-    let err = resolve_bare(&tables, &dashmap::DashMap::new(), &view, &current, "user/ghost", Span::SYNTHETIC)
-        .expect_err("absent own-module member is a miss");
+    let err = resolve_bare(
+        &tables,
+        &dashmap::DashMap::new(),
+        &view,
+        &current,
+        "user/ghost",
+        Span::SYNTHETIC,
+    )
+    .expect_err("absent own-module member is a miss");
     assert!(
         !matches!(err, ResolveError::QualifiedModuleUnknown { .. }),
         "own-module miss must never classify as unknown-module (the 0655 gap mint): {err:?}"
     );
-    assert!(matches!(err, ResolveError::TypeNotFound { .. }), "bare not-found class: {err:?}");
+    assert!(
+        matches!(err, ResolveError::TypeNotFound { .. }),
+        "bare not-found class: {err:?}"
+    );
 }
 
 // spec: spec/08-modules.md §8.6.4 — the prelude fallback applies to BARE names
@@ -212,7 +334,12 @@ fn qualified_current_module_miss_does_not_fall_back_to_prelude() {
     let tables = tables_with(&[(
         "prelude",
         "ghost",
-        def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public),
+        def_entry(
+            DefKind::UserFn {
+                fn_state: UserFnState::NotDetermined,
+            },
+            Visibility::Public,
+        ),
     )]);
     let staging = SymbolTable::<(), ()>::new_with_params(ModuleFullPath::from("user"));
     let view = View::single(&staging);
@@ -223,7 +350,10 @@ fn qualified_current_module_miss_does_not_fall_back_to_prelude() {
     let err = scope
         .resolve("user/ghost", Span::SYNTHETIC)
         .expect_err("qualified miss must not consult the prelude");
-    assert!(matches!(err, ResolveError::TypeNotFound { .. }), "the own-module miss stands: {err:?}");
+    assert!(
+        matches!(err, ResolveError::TypeNotFound { .. }),
+        "the own-module miss stands: {err:?}"
+    );
     // The bare spelling DOES fall back — the guard is qualified-only.
     scope
         .resolve("ghost", Span::SYNTHETIC)
@@ -241,8 +371,16 @@ fn split_qualified_bare_operator_is_not_qualified() {
     assert_eq!(split_qualified("/"), None, "bare `/` is not qualified");
     assert_eq!(split_qualified("//"), None, "bare `//` is not qualified");
     // Leading/trailing slash: one part empty → not qualified.
-    assert_eq!(split_qualified("foo/"), None, "trailing slash is not qualified");
-    assert_eq!(split_qualified("/bar"), None, "leading slash is not qualified");
+    assert_eq!(
+        split_qualified("foo/"),
+        None,
+        "trailing slash is not qualified"
+    );
+    assert_eq!(
+        split_qualified("/bar"),
+        None,
+        "leading slash is not qualified"
+    );
     // A plain short name has no `/` at all.
     assert_eq!(split_qualified("foo"), None, "short name is not qualified");
     // The genuine qualified case still works.
@@ -254,8 +392,16 @@ fn split_qualified_bare_operator_is_not_qualified() {
 
     // canonical_symbol must preserve the bare operator, NOT corrupt it to "".
     // Pre-fix (`rsplit_once('/')` unguarded) yielded Symbol::from("") here.
-    assert_eq!(canonical_symbol("/"), Symbol::from("/"), "bare `/` preserved");
-    assert_eq!(canonical_symbol("mod/sym"), Symbol::from("sym"), "qualified → local symbol");
+    assert_eq!(
+        canonical_symbol("/"),
+        Symbol::from("/"),
+        "bare `/` preserved"
+    );
+    assert_eq!(
+        canonical_symbol("mod/sym"),
+        Symbol::from("sym"),
+        "qualified → local symbol"
+    );
 }
 
 fn alias(target: &str) -> crate::ModuleAliasEntry {
@@ -320,7 +466,10 @@ fn substitute_module_alias_prefers_longest_prefix() {
 // ---------------------------------------------------------------------------
 
 fn remedy() -> FQSymbol {
-    FQSymbol { module: ModuleFullPath::from("util"), symbol: Symbol::from("measure") }
+    FQSymbol {
+        module: ModuleFullPath::from("util"),
+        symbol: Symbol::from("measure"),
+    }
 }
 
 use crate::resolve::{BindingProvenance as BP, check_binding_addition};
@@ -330,7 +479,13 @@ fn binding_addition_def_over_import_rejects() {
     // spec: 08-modules §8.6.4 — the def-event: incoming Definition over an
     // existing explicit import is a collision.
     let name = Symbol::from("measure");
-    let e = check_binding_addition(&name, BP::Definition, BP::Import, &remedy(), Span::SYNTHETIC);
+    let e = check_binding_addition(
+        &name,
+        BP::Definition,
+        BP::Import,
+        &remedy(),
+        Span::SYNTHETIC,
+    );
     let msg = e.unwrap_err().to_string().to_lowercase();
     assert!(msg.contains("conflict"), "{msg}");
     assert!(msg.contains("util/measure"), "remedy FQ present: {msg}");
@@ -355,15 +510,12 @@ fn binding_addition_import_over_def_rejects() {
     // local Definition MUST reject IDENTICALLY to the def-event direction.
     let name = Symbol::from("measure");
     for incoming in [BP::Import, BP::Export] {
-        let e = check_binding_addition(
-            &name,
-            incoming,
-            BP::Definition,
-            &remedy(),
-            Span::SYNTHETIC,
-        );
+        let e = check_binding_addition(&name, incoming, BP::Definition, &remedy(), Span::SYNTHETIC);
         let msg = e.unwrap_err().to_string().to_lowercase();
-        assert!(msg.contains("conflict"), "{incoming:?} over def rejects: {msg}");
+        assert!(
+            msg.contains("conflict"),
+            "{incoming:?} over def rejects: {msg}"
+        );
         assert!(msg.contains("§8.6.4"), "{msg}");
     }
 }
@@ -373,8 +525,14 @@ fn binding_addition_def_over_def_allowed_redefinition() {
     // Own prior definition of the same name — ordinary REPL redefinition.
     let name = Symbol::from("measure");
     assert!(
-        check_binding_addition(&name, BP::Definition, BP::Definition, &remedy(), Span::SYNTHETIC)
-            .is_ok(),
+        check_binding_addition(
+            &name,
+            BP::Definition,
+            BP::Definition,
+            &remedy(),
+            Span::SYNTHETIC
+        )
+        .is_ok(),
         "def-over-def is redefinition, allowed"
     );
 }
@@ -407,13 +565,32 @@ const PRELUDE: &str = "prelude";
 fn user_over_prelude(
     name: &str,
     entry: ModuleEntry<()>,
-) -> (SymbolTables<(), ()>, ModuleAliases, ModuleFullPath, ModuleFullPath) {
+) -> (
+    SymbolTables<(), ()>,
+    ModuleAliases,
+    ModuleFullPath,
+    ModuleFullPath,
+) {
     let tables = tables_with(&[
         // Ensure `user` exists (empty) as the first hop.
-        ("user", "__seed", def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Private)),
+        (
+            "user",
+            "__seed",
+            def_entry(
+                DefKind::UserFn {
+                    fn_state: UserFnState::NotDetermined,
+                },
+                Visibility::Private,
+            ),
+        ),
         (PRELUDE, name, entry),
     ]);
-    (tables, dashmap::DashMap::new(), ModuleFullPath::from("user"), ModuleFullPath::from(PRELUDE))
+    (
+        tables,
+        dashmap::DashMap::new(),
+        ModuleFullPath::from("user"),
+        ModuleFullPath::from(PRELUDE),
+    )
 }
 
 #[test]
@@ -422,12 +599,19 @@ fn scope_falls_back_to_public_prelude_binding() {
     // through the scope's intrinsic fallback (prelude = Some).
     let (tables, aliases, user, prelude) = user_over_prelude(
         "gulp",
-        def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public),
+        def_entry(
+            DefKind::UserFn {
+                fn_state: UserFnState::NotDetermined,
+            },
+            Visibility::Public,
+        ),
     );
     let uref = tables.get(&user).unwrap();
     let view = View::single(&uref);
     let scope = ResolutionScope::new(&tables, &aliases, &view, &user, Some(&prelude));
-    let r = scope.resolve("gulp", Span::SYNTHETIC).expect("gulp resolves via prelude fallback");
+    let r = scope
+        .resolve("gulp", Span::SYNTHETIC)
+        .expect("gulp resolves via prelude fallback");
     assert_eq!(r.home, prelude);
 }
 
@@ -438,7 +622,12 @@ fn scope_no_fallback_when_prelude_none() {
     // construction, is the whole story.
     let (tables, aliases, user, _prelude) = user_over_prelude(
         "gulp",
-        def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public),
+        def_entry(
+            DefKind::UserFn {
+                fn_state: UserFnState::NotDetermined,
+            },
+            Visibility::Public,
+        ),
     );
     let uref = tables.get(&user).unwrap();
     let view = View::single(&uref);
@@ -455,7 +644,12 @@ fn scope_i1_private_prelude_binding_does_not_leak() {
     // not leak, and it does not shadow) — even with fallback ON.
     let (tables, aliases, user, prelude) = user_over_prelude(
         "secret",
-        def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Private),
+        def_entry(
+            DefKind::UserFn {
+                fn_state: UserFnState::NotDetermined,
+            },
+            Visibility::Private,
+        ),
     );
     let uref = tables.get(&user).unwrap();
     let view = View::single(&uref);
@@ -475,12 +669,30 @@ fn scope_i1_filter_gates_on_prelude_head_not_terminal() {
     // `Def` in another module must NOT leak as a bare name in a fallback-ON
     // module; it reads as the original current-module not-found.
     let tables = tables_with(&[
-        ("user", "__seed", def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Private)),
+        (
+            "user",
+            "__seed",
+            def_entry(
+                DefKind::UserFn {
+                    fn_state: UserFnState::NotDetermined,
+                },
+                Visibility::Private,
+            ),
+        ),
         // Private import edge INSIDE the prelude (an `(import …)`, not an
         // `(export …)`) …
         (PRELUDE, "leak", import("lib", "leak", Visibility::Private)),
         // … chaining to a PUBLIC terminal in another module.
-        ("lib", "leak", def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public)),
+        (
+            "lib",
+            "leak",
+            def_entry(
+                DefKind::UserFn {
+                    fn_state: UserFnState::NotDetermined,
+                },
+                Visibility::Public,
+            ),
+        ),
     ]);
     let aliases: ModuleAliases = dashmap::DashMap::new();
     let user = ModuleFullPath::from("user");
@@ -504,9 +716,27 @@ fn scope_falls_back_through_public_prelude_reexport_edge() {
     // of) chaining to a public terminal elsewhere KEEPS resolving through the
     // fallback. The 0567 head filter must be behaviour-invariant here.
     let tables = tables_with(&[
-        ("user", "__seed", def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Private)),
+        (
+            "user",
+            "__seed",
+            def_entry(
+                DefKind::UserFn {
+                    fn_state: UserFnState::NotDetermined,
+                },
+                Visibility::Private,
+            ),
+        ),
         (PRELUDE, "gulp", import("lib", "gulp", Visibility::Public)),
-        ("lib", "gulp", def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public)),
+        (
+            "lib",
+            "gulp",
+            def_entry(
+                DefKind::UserFn {
+                    fn_state: UserFnState::NotDetermined,
+                },
+                Visibility::Public,
+            ),
+        ),
     ]);
     let aliases: ModuleAliases = dashmap::DashMap::new();
     let user = ModuleFullPath::from("user");
@@ -517,7 +747,11 @@ fn scope_falls_back_through_public_prelude_reexport_edge() {
     let r = scope
         .resolve("gulp", Span::SYNTHETIC)
         .expect("a public prelude re-export edge resolves through the fallback");
-    assert_eq!(r.home, ModuleFullPath::from("lib"), "chain-followed to the canonical home");
+    assert_eq!(
+        r.home,
+        ModuleFullPath::from("lib"),
+        "chain-followed to the canonical home"
+    );
 }
 
 #[test]
@@ -528,7 +762,12 @@ fn scope_qualified_never_retries_prelude() {
     // must NOT fall back to it.
     let (tables, aliases, user, prelude) = user_over_prelude(
         "gulp",
-        def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public),
+        def_entry(
+            DefKind::UserFn {
+                fn_state: UserFnState::NotDetermined,
+            },
+            Visibility::Public,
+        ),
     );
     let uref = tables.get(&user).unwrap();
     let view = View::single(&uref);
@@ -548,7 +787,10 @@ fn scope_qualified_never_retries_prelude() {
 fn member_key_mints_dotted_canonical_key() {
     // Field accessor (`Box.v`) and constructor (`Maybe.Some`) share the ONE
     // key grammar — a TypeName deref'd ctor name is accepted as `&str` too.
-    assert_eq!(member_key(&TypeName::from("Box"), "v"), Symbol::from("Box.v"));
+    assert_eq!(
+        member_key(&TypeName::from("Box"), "v"),
+        Symbol::from("Box.v")
+    );
     assert_eq!(
         member_key(&TypeName::from("Maybe"), &TypeName::from("Some")),
         Symbol::from("Maybe.Some")
@@ -631,8 +873,14 @@ fn bare_member_name_leaves_punctuation_operators_literal() {
 fn seam_definition_over_own_prior_def_allowed() {
     // home == current ⇒ ordinary redefinition, ALLOWED.
     let tables = tables_with(&[(
-        "user", "foo",
-        def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public),
+        "user",
+        "foo",
+        def_entry(
+            DefKind::UserFn {
+                fn_state: UserFnState::NotDetermined,
+            },
+            Visibility::Public,
+        ),
     )]);
     let aliases: ModuleAliases = dashmap::DashMap::new();
     let user = ModuleFullPath::from("user");
@@ -648,8 +896,14 @@ fn seam_definition_over_own_prior_def_allowed() {
 #[test]
 fn seam_not_in_scope_free_to_define() {
     let tables = tables_with(&[(
-        "user", "__seed",
-        def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Private),
+        "user",
+        "__seed",
+        def_entry(
+            DefKind::UserFn {
+                fn_state: UserFnState::NotDetermined,
+            },
+            Visibility::Private,
+        ),
     )]);
     let aliases: ModuleAliases = dashmap::DashMap::new();
     let user = ModuleFullPath::from("user");
@@ -666,7 +920,16 @@ fn seam_not_in_scope_free_to_define() {
 fn seam_definition_over_explicit_import_rejected() {
     // current `foo` is an explicit Private import of dep/foo ⇒ Import ⇒ reject.
     let tables = tables_with(&[
-        ("dep", "foo", def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public)),
+        (
+            "dep",
+            "foo",
+            def_entry(
+                DefKind::UserFn {
+                    fn_state: UserFnState::NotDetermined,
+                },
+                Visibility::Public,
+            ),
+        ),
         ("user", "foo", import("dep", "foo", Visibility::Private)),
     ]);
     let aliases: ModuleAliases = dashmap::DashMap::new();
@@ -683,7 +946,16 @@ fn seam_definition_over_explicit_import_rejected() {
 fn seam_definition_over_export_rejected() {
     // current `foo` is a Public import (an export re-export, §8.4.0) ⇒ reject.
     let tables = tables_with(&[
-        ("dep", "foo", def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public)),
+        (
+            "dep",
+            "foo",
+            def_entry(
+                DefKind::UserFn {
+                    fn_state: UserFnState::NotDetermined,
+                },
+                Visibility::Public,
+            ),
+        ),
         ("user", "foo", import("dep", "foo", Visibility::Public)),
     ]);
     let aliases: ModuleAliases = dashmap::DashMap::new();
@@ -702,7 +974,12 @@ fn seam_definition_over_prelude_rejected() {
     // Prelude provenance ⇒ reject.
     let (tables, aliases, user, prelude) = user_over_prelude(
         "foo",
-        def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public),
+        def_entry(
+            DefKind::UserFn {
+                fn_state: UserFnState::NotDetermined,
+            },
+            Visibility::Public,
+        ),
     );
     let uref = tables.get(&user).unwrap();
     let view = View::single(&uref);
@@ -719,7 +996,16 @@ fn seam_definition_over_prelude_rejected() {
 fn seam_synthetic_names_skip() {
     // `$`-containing / `__`-prefixed names are never authored bare definitions.
     let tables = tables_with(&[
-        ("dep", "foo", def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public)),
+        (
+            "dep",
+            "foo",
+            def_entry(
+                DefKind::UserFn {
+                    fn_state: UserFnState::NotDetermined,
+                },
+                Visibility::Public,
+            ),
+        ),
         ("user", "cmp$Int", import("dep", "foo", Visibility::Private)),
         ("user", "__expr", import("dep", "foo", Visibility::Private)),
     ]);
@@ -744,13 +1030,25 @@ fn storage_key_equals_written_name_for_unaliased_terminal() {
     let tables = tables_with(&[(
         "user",
         "foo",
-        def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public),
+        def_entry(
+            DefKind::UserFn {
+                fn_state: UserFnState::NotDetermined,
+            },
+            Visibility::Public,
+        ),
     )]);
     let user = ModuleFullPath::from("user");
     let uref = tables.get(&user).unwrap();
     let view = View::single(&uref);
-    let r = resolve_bare(&tables, &dashmap::DashMap::new(), &view, &user, "foo", Span::SYNTHETIC)
-        .expect("foo resolves");
+    let r = resolve_bare(
+        &tables,
+        &dashmap::DashMap::new(),
+        &view,
+        &user,
+        "foo",
+        Span::SYNTHETIC,
+    )
+    .expect("foo resolves");
     assert_eq!(r.storage_key, Symbol::from("foo"));
     assert_eq!(r.storage_fq(), r.fq);
 }
@@ -761,17 +1059,41 @@ fn storage_key_surfaces_member_alias_terminal_not_written_name() {
     // the canonical `member_key` Def (`v` → `Box.v`, S109 keying). The carrier
     // identity is the terminal storage key; `fq` keeps the written spelling.
     let tables = tables_with(&[
-        ("m", "Box.v", def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public)),
+        (
+            "m",
+            "Box.v",
+            def_entry(
+                DefKind::UserFn {
+                    fn_state: UserFnState::NotDetermined,
+                },
+                Visibility::Public,
+            ),
+        ),
         ("m", "v", import("m", "Box.v", Visibility::Public)),
     ]);
     let m = ModuleFullPath::from("m");
     let mref = tables.get(&m).unwrap();
     let view = View::single(&mref);
-    let r = resolve_bare(&tables, &dashmap::DashMap::new(), &view, &m, "v", Span::SYNTHETIC)
-        .expect("bare alias resolves");
+    let r = resolve_bare(
+        &tables,
+        &dashmap::DashMap::new(),
+        &view,
+        &m,
+        "v",
+        Span::SYNTHETIC,
+    )
+    .expect("bare alias resolves");
     assert_eq!(r.home, m);
-    assert_eq!(r.storage_key, Symbol::from("Box.v"), "storage identity = terminal key");
-    assert_eq!(r.fq.symbol, Symbol::from("v"), "reference identity = written spelling");
+    assert_eq!(
+        r.storage_key,
+        Symbol::from("Box.v"),
+        "storage identity = terminal key"
+    );
+    assert_eq!(
+        r.fq.symbol,
+        Symbol::from("v"),
+        "reference identity = written spelling"
+    );
 }
 
 #[test]
@@ -780,14 +1102,30 @@ fn storage_key_surfaces_renamed_import_terminal() {
     // the alias; the Def's storage key in its home is `foo`. Same gap class as
     // the member alias — only the walk knows the terminal key.
     let tables = tables_with(&[
-        ("dep", "foo", def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public)),
+        (
+            "dep",
+            "foo",
+            def_entry(
+                DefKind::UserFn {
+                    fn_state: UserFnState::NotDetermined,
+                },
+                Visibility::Public,
+            ),
+        ),
         ("user", "bar", import("dep", "foo", Visibility::Private)),
     ]);
     let user = ModuleFullPath::from("user");
     let uref = tables.get(&user).unwrap();
     let view = View::single(&uref);
-    let r = resolve_bare(&tables, &dashmap::DashMap::new(), &view, &user, "bar", Span::SYNTHETIC)
-        .expect("renamed import resolves");
+    let r = resolve_bare(
+        &tables,
+        &dashmap::DashMap::new(),
+        &view,
+        &user,
+        "bar",
+        Span::SYNTHETIC,
+    )
+    .expect("renamed import resolves");
     assert_eq!(r.home, ModuleFullPath::from("dep"));
     assert_eq!(r.storage_key, Symbol::from("foo"));
     assert_eq!(r.fq.symbol, Symbol::from("bar"));
@@ -798,7 +1136,16 @@ fn storage_key_surfaces_through_qualified_renaming_reexport() {
     // Qualified `m2/bar` where m2 publicly re-exports dep's `foo` under `bar`:
     // the qualified walk chain-follows to the terminal — storage key `foo`.
     let tables = tables_with(&[
-        ("dep", "foo", def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public)),
+        (
+            "dep",
+            "foo",
+            def_entry(
+                DefKind::UserFn {
+                    fn_state: UserFnState::NotDetermined,
+                },
+                Visibility::Public,
+            ),
+        ),
         ("m2", "bar", import("dep", "foo", Visibility::Public)),
     ]);
     let user = ModuleFullPath::from("user");
@@ -811,8 +1158,15 @@ fn storage_key_surfaces_through_qualified_renaming_reexport() {
     };
     let uref = tables_user.get(&user).unwrap();
     let view = View::single(&uref);
-    let r = resolve_bare(&tables_user, &dashmap::DashMap::new(), &view, &user, "m2/bar", Span::SYNTHETIC)
-        .expect("qualified renamed re-export resolves");
+    let r = resolve_bare(
+        &tables_user,
+        &dashmap::DashMap::new(),
+        &view,
+        &user,
+        "m2/bar",
+        Span::SYNTHETIC,
+    )
+    .expect("qualified renamed re-export resolves");
     assert_eq!(r.home, ModuleFullPath::from("dep"));
     assert_eq!(r.storage_key, Symbol::from("foo"));
     assert_eq!(r.fq.symbol, Symbol::from("bar"));
@@ -823,8 +1177,21 @@ fn storage_key_surfaces_member_alias_through_prelude_fallback() {
     // A prelude-provided bare ctor alias (`mk` → `P.mk`, both in prelude, the
     // bootstrap-seeded shape): the fallback retry inherits the storage key.
     let tables = tables_with(&[
-        ("prelude", "P.mk", def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public)),
-        ("prelude", "mk", import("prelude", "P.mk", Visibility::Public)),
+        (
+            "prelude",
+            "P.mk",
+            def_entry(
+                DefKind::UserFn {
+                    fn_state: UserFnState::NotDetermined,
+                },
+                Visibility::Public,
+            ),
+        ),
+        (
+            "prelude",
+            "mk",
+            import("prelude", "P.mk", Visibility::Public),
+        ),
     ]);
     let user = ModuleFullPath::from("user");
     tables
@@ -835,7 +1202,9 @@ fn storage_key_surfaces_member_alias_through_prelude_fallback() {
     let view = View::single(&uref);
     let aliases: ModuleAliases = dashmap::DashMap::new();
     let scope = ResolutionScope::new(&tables, &aliases, &view, &user, Some(&prelude));
-    let r = scope.resolve("mk", Span::SYNTHETIC).expect("prelude fallback resolves");
+    let r = scope
+        .resolve("mk", Span::SYNTHETIC)
+        .expect("prelude fallback resolves");
     assert_eq!(r.home, prelude);
     assert_eq!(r.storage_key, Symbol::from("P.mk"));
     assert_eq!(r.fq.symbol, Symbol::from("mk"));

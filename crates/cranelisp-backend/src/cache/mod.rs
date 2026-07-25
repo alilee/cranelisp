@@ -73,10 +73,10 @@
 
 use cranelisp_types::ErrorLocation;
 
-pub mod manifest;
-pub mod serialize;
-pub mod object;
 pub mod linker;
+pub mod manifest;
+pub mod object;
+pub mod serialize;
 
 // Doubled root re-export layer retired (Sprint 67 Wave 4 narrowing per
 // `design/arch/facades/backend-cache.md` §"Wave 4 checklist"). Every item
@@ -603,10 +603,7 @@ pub fn load_cached_object(
 
 /// Atomic file write: write to temp file then rename.
 /// Prevents concurrent readers from seeing partial writes.
-pub(crate) fn atomic_write(
-    path: &std::path::Path,
-    data: &[u8],
-) -> std::io::Result<()> {
+pub(crate) fn atomic_write(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;

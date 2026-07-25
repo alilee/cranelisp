@@ -43,7 +43,10 @@ use e2e::PreludeVariant;
 fn link_hello_produces_executable_with_main_exit_code() {
     Cranelisp::new()
         .link_then_run("hello.cl")
-        .file("hello.cl", "(import [primitives [Pure]])\n(defn main [] (Pure 42))")
+        .file(
+            "hello.cl",
+            "(import [primitives [Pure]])\n(defn main [] (Pure 42))",
+        )
         .output()
         .assert_exit(42);
 }
@@ -56,7 +59,10 @@ fn link_hello_produces_executable_with_main_exit_code() {
 fn link_main_returning_zero_exits_zero() {
     Cranelisp::new()
         .link_then_run("zero.cl")
-        .file("zero.cl", "(import [primitives [Pure]])\n(defn main [] (Pure 0))")
+        .file(
+            "zero.cl",
+            "(import [primitives [Pure]])\n(defn main [] (Pure 0))",
+        )
         .output()
         .assert_exit(0);
 }
@@ -86,7 +92,8 @@ fn link_main_returning_io_pure_zero_exits_zero_or_errors_clearly() {
     assert!(
         combined.contains("main") || combined.contains("IO") || combined.contains("type"),
         "IO main failure should mention main/IO/type: stdout={:?} stderr={:?}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
 }
 
@@ -104,7 +111,10 @@ fn link_main_returning_io_pure_zero_exits_zero_or_errors_clearly() {
 fn link_default_output_is_entry_stem_no_extension() {
     let out = Cranelisp::new()
         .link("examples/hello.cl")
-        .file("examples/hello.cl", "(import [primitives [Pure]])\n(defn main [] (Pure 0))")
+        .file(
+            "examples/hello.cl",
+            "(import [primitives [Pure]])\n(defn main [] (Pure 0))",
+        )
         .output()
         .assert_ok();
 
@@ -112,7 +122,8 @@ fn link_default_output_is_entry_stem_no_extension() {
         out.tmp_exists("examples/hello"),
         "expected output 'examples/hello' (entry stem beside source, §0.2.1.1); \
          tmpdir={}, stdout={:?}",
-        out.tmpdir.display(), out.stdout
+        out.tmpdir.display(),
+        out.stdout
     );
 }
 
@@ -131,7 +142,11 @@ fn link_error_when_main_function_missing() {
         .file("nomain.cl", "(defn helper [] 42)")
         .output();
 
-    assert!(!out.status.success(), "should fail when no main: {:?}", out.stdout);
+    assert!(
+        !out.status.success(),
+        "should fail when no main: {:?}",
+        out.stdout
+    );
     let combined = format!("{}{}", out.stdout, out.stderr);
     assert!(
         combined.contains("main"),
@@ -168,13 +183,13 @@ fn link_error_when_main_returns_wrong_type() {
 // (carry: legacy/sprint23.rs::link_error_file_not_found)
 #[test]
 fn link_error_when_entry_file_not_found() {
-    let out = Cranelisp::new()
-        .link("nonexistent.cl")
-        .output();
+    let out = Cranelisp::new().link("nonexistent.cl").output();
     assert_eq!(
-        out.status.code(), Some(1),
+        out.status.code(),
+        Some(1),
         "missing entry file should exit 1; got {:?}\nstderr:\n{}",
-        out.status, out.stderr
+        out.status,
+        out.stderr
     );
 }
 
@@ -193,7 +208,10 @@ fn link_error_when_bundle_library_missing_names_it() {
     // must name the bundle.
     let out = Cranelisp::new()
         .link("hello.cl")
-        .file("hello.cl", "(import [primitives [Pure]])\n(defn main [] (Pure 0))")
+        .file(
+            "hello.cl",
+            "(import [primitives [Pure]])\n(defn main [] (Pure 0))",
+        )
         .env("CRANELISP_BUNDLE_PATH", "")
         .output();
 
@@ -219,7 +237,10 @@ fn link_neg_no_cache_flag_is_rejected() {
         .cli_flag("--no-cache")
         .output();
 
-    assert!(!out.status.success(), "--no-cache + --link should be rejected");
+    assert!(
+        !out.status.success(),
+        "--no-cache + --link should be rejected"
+    );
     let combined = format!("{}{}", out.stdout, out.stderr);
     assert!(
         combined.contains("--no-cache is not supported with --link"),
@@ -240,7 +261,10 @@ fn link_neg_no_cache_flag_is_rejected() {
 fn link_second_invocation_reuses_cached_objects_and_re_emits_exe() {
     let first = Cranelisp::new()
         .link_then_run("hello.cl")
-        .file("hello.cl", "(import [primitives [Pure]])\n(defn main [] (Pure 7))")
+        .file(
+            "hello.cl",
+            "(import [primitives [Pure]])\n(defn main [] (Pure 7))",
+        )
         .output()
         .assert_exit(7);
 
@@ -373,10 +397,7 @@ fn link_multi_module_project_with_cross_module_call_exits_with_main_value() {
             "main.cl",
             "(import [helper [add-one]])\n(defn main [] (Pure (add-one 41)))",
         )
-        .file(
-            "helper.cl",
-            "(defn add-one [:Int x] (add-i64 x 1))",
-        )
+        .file("helper.cl", "(defn add-one [:Int x] (add-i64 x 1))")
         .output()
         .assert_exit(42);
 }
@@ -436,7 +457,9 @@ fn link_module_referencing_discover_tests_extern_fails_with_friendly_message() {
     assert!(
         !out.status.success(),
         "expected --link rejection (discover-tests is dev-session-only), got exit {:?}\nstdout:\n{}\nstderr:\n{}",
-        out.status.code(), out.stdout, out.stderr
+        out.status.code(),
+        out.stdout,
+        out.stderr
     );
     let combined = format!("{}{}", out.stdout, out.stderr);
     assert!(
@@ -688,8 +711,7 @@ fn link_two_distinct_platforms_namespaced_manifest_coexist() {
     // The `shapes.cl` ADT module the `shapes` platform sig references by FQ
     // identity (`shapes/Rectangle`). Self-contained — no stdlib, no exemplar
     // coupling (matches spec_platforms_adt.rs::SHAPES_MODULE).
-    let shapes_module =
-        "(deftype Rectangle [:primitives/Int w :primitives/Int h])\n";
+    let shapes_module = "(deftype Rectangle [:primitives/Int w :primitives/Int h])\n";
 
     // The entry: declare BOTH platforms, import ONE effect from EACH so both
     // manifests are force-loaded, and a `main` that sequences them. `print` from
@@ -802,8 +824,7 @@ fn link_two_distinct_platforms_namespaced_manifest_coexist() {
 fn link_repeated_platform_adt_marshal_does_not_corrupt_heap() {
     // The `shapes` ADT module the `shapes` platform sig references by FQ identity
     // (`shapes/Rectangle`). Self-contained (matches spec_platforms_adt.rs).
-    let shapes_module =
-        "(deftype Rectangle [:primitives/Int w :primitives/Int h])\n";
+    let shapes_module = "(deftype Rectangle [:primitives/Int w :primitives/Int h])\n";
 
     // A bounded serve-loop analogue: construct a Rectangle and pass it across the
     // host↔DLL boundary to `area` (`(Fn [shapes/Rectangle] (IO Int))`) 200 times,
@@ -861,7 +882,10 @@ fn link_repeated_platform_adt_marshal_does_not_corrupt_heap() {
 fn link_output_artifact_named_after_entry_stem_beside_source() {
     let out = Cranelisp::new()
         .with_prelude(PreludeVariant::None)
-        .file("proj/user.cl", "(import [primitives [Pure]])\n(defn main [] (Pure 5))\n")
+        .file(
+            "proj/user.cl",
+            "(import [primitives [Pure]])\n(defn main [] (Pure 5))\n",
+        )
         .link("proj")
         .output();
     assert!(
@@ -882,7 +906,10 @@ fn link_output_artifact_named_after_entry_stem_beside_source() {
 fn link_output_collision_with_directory_diagnoses_not_raw_ld_error() {
     let out = Cranelisp::new()
         .with_prelude(PreludeVariant::None)
-        .file("proj/user.cl", "(import [primitives [Pure]])\n(defn main [] (Pure 5))\n")
+        .file(
+            "proj/user.cl",
+            "(import [primitives [Pure]])\n(defn main [] (Pure 5))\n",
+        )
         // Make the resolved output path `proj/user` an existing DIRECTORY.
         .file("proj/user/keep.txt", "placeholder\n")
         .link("proj")

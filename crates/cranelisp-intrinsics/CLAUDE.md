@@ -14,16 +14,15 @@ only what the next code-touching agent would otherwise re-derive from source.
 
 ## Submodule seam map (where the `#[cfg(test)]` lives)
 
-Every `foo.rs` externalizes its tests to `foo/tests.rs` via a trailing
-`#[cfg(test)] mod tests;` (the `#[path]` is implicit — the sibling dir). Counts
-current at seeding: `alloc`(9) `catalog`(4) `drop`(19 + `drop/rc_balance.rs`(10))
-`heap_string`(6) `io`(35) `io_observer`(5) `ivar`(28) `layout`(2) `panic`(20)
-`rc`(26) `reactor`(33) `trace`(22) `trace_format`(14) `vec_runtime`(15).
-**Three modules keep tests INLINE** (`mod tests { … }` in the `.rs`, no sibling
-dir): `heap_access`(1), `io_guard`(4), `strand`(13) — plus `lib.rs`(1, the
-DEF-6 `host_callbacks` pin). `drop/rc_balance.rs` is a second test file under
-`drop/` holding the 10 `assert_balanced` alloc==dealloc RC-leak assertions
-(the crate-internal stand-in for the retired `assert_rc_balanced`, FIXME 0129).
+Most modules externalize their tests to `foo/tests.rs` via a trailing
+`#[cfg(test)] mod tests;` (the `#[path]` is implicit — the sibling dir):
+`alloc`, `catalog`, `diagnostics`, `drop`, `heap_string`, `io`, `io_observer`,
+`ivar`, `layout`, `panic`, `rc`, `reactor`, `trace`, `trace_format`, and
+`vec_runtime`. `heap_access`, `io_guard`, and `strand` keep `mod tests { … }`
+inline in their `.rs` files; `lib.rs` also keeps the DEF-6 `host_callbacks`
+pin inline. `drop/rc_balance.rs` is a second test file under `drop/` holding
+the `assert_balanced` alloc==dealloc RC-leak assertions (the crate-internal
+stand-in for the retired `assert_rc_balanced`, FIXME 0129).
 
 ## Heap layout — base-pointer convention (Decision 10/11)
 

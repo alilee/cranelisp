@@ -42,7 +42,13 @@ fn walk(expr: &mut MonoExpr, facts: &SiteFacts) {
     match expr {
         MonoExpr::IntLit { .. } | MonoExpr::FloatLit { .. } | MonoExpr::BoolLit { .. } => {}
         MonoExpr::Var { .. } => {}
-        MonoExpr::StringLit { span, escapes, confined, unique_static, .. } => {
+        MonoExpr::StringLit {
+            span,
+            escapes,
+            confined,
+            unique_static,
+            ..
+        } => {
             set(*span, facts, escapes, confined, unique_static);
         }
         MonoExpr::Let { bindings, body, .. } => {
@@ -51,16 +57,37 @@ fn walk(expr: &mut MonoExpr, facts: &SiteFacts) {
             }
             walk(body, facts);
         }
-        MonoExpr::If { cond, then_branch, else_branch, .. } => {
+        MonoExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
             walk(cond, facts);
             walk(then_branch, facts);
             walk(else_branch, facts);
         }
-        MonoExpr::Lambda { body, span, escapes, confined, unique_static, .. } => {
+        MonoExpr::Lambda {
+            body,
+            span,
+            escapes,
+            confined,
+            unique_static,
+            ..
+        } => {
             set(*span, facts, escapes, confined, unique_static);
             walk(body, facts);
         }
-        MonoExpr::Apply { callee, args, span, escapes, confined, unique_static, provenance, .. } => {
+        MonoExpr::Apply {
+            callee,
+            args,
+            span,
+            escapes,
+            confined,
+            unique_static,
+            provenance,
+            ..
+        } => {
             set(*span, facts, escapes, confined, unique_static);
             if let Some(root) = facts.provenance.get(span) {
                 *provenance = Some(root.clone());
@@ -70,7 +97,9 @@ fn walk(expr: &mut MonoExpr, facts: &SiteFacts) {
                 walk(a, facts);
             }
         }
-        MonoExpr::Match { scrutinee, arms, .. } => {
+        MonoExpr::Match {
+            scrutinee, arms, ..
+        } => {
             walk(scrutinee, facts);
             for arm in arms {
                 if let Some(root) = facts.provenance.get(&arm.span) {
@@ -79,7 +108,14 @@ fn walk(expr: &mut MonoExpr, facts: &SiteFacts) {
                 walk(&mut arm.body, facts);
             }
         }
-        MonoExpr::VecLit { elements, span, escapes, confined, unique_static, .. } => {
+        MonoExpr::VecLit {
+            elements,
+            span,
+            escapes,
+            confined,
+            unique_static,
+            ..
+        } => {
             set(*span, facts, escapes, confined, unique_static);
             for e in elements {
                 walk(e, facts);
@@ -92,11 +128,22 @@ fn walk(expr: &mut MonoExpr, facts: &SiteFacts) {
             }
             walk(body, facts);
         }
-        MonoExpr::LaunchContinue { launched, continuation, .. } => {
+        MonoExpr::LaunchContinue {
+            launched,
+            continuation,
+            ..
+        } => {
             walk(launched, facts);
             walk(continuation, facts);
         }
-        MonoExpr::ConstrADT { fields, span, escapes, confined, unique_static, .. } => {
+        MonoExpr::ConstrADT {
+            fields,
+            span,
+            escapes,
+            confined,
+            unique_static,
+            ..
+        } => {
             set(*span, facts, escapes, confined, unique_static);
             for f in fields {
                 walk(f, facts);

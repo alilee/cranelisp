@@ -30,7 +30,11 @@ fn var(name: &str) -> MonoExpr {
 fn nonvar_callee() -> MonoExpr {
     // A computed callee — an `if` producing a closure value, say.
     MonoExpr::If {
-        cond: Box::new(MonoExpr::BoolLit { value: true, span: Span::SYNTHETIC, ty: ConcreteType::Bool }),
+        cond: Box::new(MonoExpr::BoolLit {
+            value: true,
+            span: Span::SYNTHETIC,
+            ty: ConcreteType::Bool,
+        }),
         then_branch: Box::new(var("f")),
         else_branch: Box::new(var("g")),
         span: Span::SYNTHETIC,
@@ -39,7 +43,10 @@ fn nonvar_callee() -> MonoExpr {
 }
 
 fn adt(name: &str) -> ConcreteType {
-    ConcreteType::ADT(FQTypeName::new(ModuleFullPath::from("user"), TypeName::from(name)), vec![])
+    ConcreteType::ADT(
+        FQTypeName::new(ModuleFullPath::from("user"), TypeName::from(name)),
+        vec![],
+    )
 }
 
 // --- Complexity matrix: the eight §2.1 rows ---
@@ -47,7 +54,9 @@ fn adt(name: &str) -> ConcreteType {
 #[test]
 fn row_sigdispatch_is_summarised_by_mangled_name() {
     // spec: design/typecheck/ownership-inference.md §2.1 — Var+SigDispatch ⇒ static moded
-    let rc = ResolvedCall::SigDispatch { mangled_name: JitSymbol::from("id$Int") };
+    let rc = ResolvedCall::SigDispatch {
+        mangled_name: JitSymbol::from("id$Int"),
+    };
     let got = classify_call(Some(&rc), &var("id"), |_| None);
     assert_eq!(got, CallClass::Summarised(Symbol::from("id$Int")));
 }
@@ -72,7 +81,9 @@ fn row_traitmethod_is_summarised_by_mangled_name() {
 #[test]
 fn row_builtin_is_summarised_declared_leaf() {
     // spec: §2.1 — Var+BuiltinFn ⇒ declared leaf (facts from §9 table)
-    let rc = ResolvedCall::BuiltinFn { name: Symbol::from("vec-get") };
+    let rc = ResolvedCall::BuiltinFn {
+        name: Symbol::from("vec-get"),
+    };
     let got = classify_call(Some(&rc), &var("vec-get"), |_| None);
     assert_eq!(got, CallClass::Summarised(Symbol::from("vec-get")));
 }
@@ -110,7 +121,9 @@ fn row_none_var_closure_binding_is_decision24() {
 #[test]
 fn row_nonvar_callee_is_decision24() {
     // spec: §2.1 — non-Var (computed) callee ⇒ Decision-24
-    let got = classify_call(None, &nonvar_callee(), |_| Some(TerminalKind::UserFnConcrete));
+    let got = classify_call(None, &nonvar_callee(), |_| {
+        Some(TerminalKind::UserFnConcrete)
+    });
     assert_eq!(got, CallClass::Decision24);
 }
 
@@ -123,7 +136,9 @@ fn row_autocurry_is_decision24() {
         total_count: 2,
         trait_resolution: None,
     };
-    let got = classify_call(Some(&rc), &var("add"), |_| Some(TerminalKind::UserFnConcrete));
+    let got = classify_call(Some(&rc), &var("add"), |_| {
+        Some(TerminalKind::UserFnConcrete)
+    });
     assert_eq!(got, CallClass::Decision24);
 }
 
@@ -132,7 +147,9 @@ fn row_autocurry_is_decision24() {
 #[test]
 fn resolved_call_dominates_and_resolver_not_consulted() {
     // spec: §2.1 — a resolved SigDispatch never consults the None-row resolver
-    let rc = ResolvedCall::SigDispatch { mangled_name: JitSymbol::from("f$Int") };
+    let rc = ResolvedCall::SigDispatch {
+        mangled_name: JitSymbol::from("f$Int"),
+    };
     // Resolver would say Decision-24 (PinnedBoundary) but must be ignored.
     let got = classify_call(Some(&rc), &var("f"), |_| Some(TerminalKind::PinnedBoundary));
     assert_eq!(got, CallClass::Summarised(Symbol::from("f$Int")));
@@ -157,7 +174,10 @@ fn copy_scalars_only_rejects_heap_and_fn_types() {
     let c = CopyClassifier::scalars_only();
     assert!(!c.is_copy(&ConcreteType::String));
     assert!(!c.is_copy(&adt("Point")));
-    assert!(!c.is_copy(&ConcreteType::Fn(vec![ConcreteType::Int], Box::new(ConcreteType::Int))));
+    assert!(!c.is_copy(&ConcreteType::Fn(
+        vec![ConcreteType::Int],
+        Box::new(ConcreteType::Int)
+    )));
     // A Vec is an ADT in this representation; value_layout excludes Vec by name.
     assert!(!c.is_copy(&ConcreteType::ADT(
         FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Vec")),
@@ -174,11 +194,12 @@ fn copy_delegates_to_value_layout_predicate() {
     // `(Cell Int)`) makes the ADT classify Copy — the R5 precision growth.
     let cell = adt("Cell");
     let cell2 = cell.clone();
-    let c = CopyClassifier::new(move |ty| {
-        matches!(ty, ConcreteType::Int) || *ty == cell2
-    });
+    let c = CopyClassifier::new(move |ty| matches!(ty, ConcreteType::Int) || *ty == cell2);
     assert!(c.is_copy(&ConcreteType::Int));
-    assert!(c.is_copy(&cell), "delegation admits the value-flattenable ADT");
+    assert!(
+        c.is_copy(&cell),
+        "delegation admits the value-flattenable ADT"
+    );
     // A type the predicate rejects stays non-Copy.
     assert!(!c.is_copy(&ConcreteType::String));
     assert!(!c.is_copy(&adt("Point")));

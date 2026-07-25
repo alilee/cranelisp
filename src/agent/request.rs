@@ -11,9 +11,7 @@
 #![cfg(feature = "agent")]
 
 use rig_core::OneOrMany;
-use rig_core::completion::message::{
-    AssistantContent, Message, ToolResultContent, UserContent,
-};
+use rig_core::completion::message::{AssistantContent, Message, ToolResultContent, UserContent};
 use rig_core::completion::request::ToolDefinition;
 
 use crate::agent::types::{AgentRequest, ModelResponse, ToolCallRequest, Turn};
@@ -300,8 +298,7 @@ mod tests {
         let defs = tool_definitions(&req);
         // The §17.2.1 probe set — one enumerated obligation per tool.
         let probe_tools = [
-            "type", "syntax", "sig", "info", "source", "doc", "exports", "list",
-            "search", "refs",
+            "type", "syntax", "sig", "info", "source", "doc", "exports", "list", "search", "refs",
         ];
         for probe in probe_tools {
             let def = defs
@@ -419,7 +416,11 @@ mod tests {
 
         let msgs = wire_messages(&req);
         // user, assistant(tool_use), user(tool_result) — three messages.
-        assert_eq!(msgs.len(), 3, "expected user + assistant-tool_use + tool_result");
+        assert_eq!(
+            msgs.len(),
+            3,
+            "expected user + assistant-tool_use + tool_result"
+        );
 
         let use_ids = assistant_tool_use_ids(&msgs[1]);
         let result_ids = user_tool_result_ids(&msgs[2]);
@@ -493,7 +494,10 @@ mod tests {
                 if content.iter().any(|c| matches!(
                     c, UserContent::Text(t) if t.text.contains("show me the source")))
         );
-        assert!(!trailing_question, "the original question must not be re-appended as the prompt");
+        assert!(
+            !trailing_question,
+            "the original question must not be re-appended as the prompt"
+        );
     }
 
     // spec: repl/spec.md §17 — the opening step (transcript = just the user turn)
@@ -507,7 +511,11 @@ mod tests {
             ..Default::default()
         };
         let msgs = wire_messages(&req);
-        assert_eq!(msgs.len(), 1, "opening step is a single user message, not a duplicate");
+        assert_eq!(
+            msgs.len(),
+            1,
+            "opening step is a single user message, not a duplicate"
+        );
         let user_texts = msgs
             .iter()
             .filter(|m| matches!(m, Message::User { .. }))
@@ -580,7 +588,10 @@ mod tests {
                 (Message::User { .. }, Message::User { .. })
                     | (Message::Assistant { .. }, Message::Assistant { .. })
             );
-            assert!(!same, "two consecutive same-role messages on the wire: {msgs:?}");
+            assert!(
+                !same,
+                "two consecutive same-role messages on the wire: {msgs:?}"
+            );
         }
     }
 
@@ -619,8 +630,14 @@ mod tests {
              assistant, user), got {} messages: {msgs:?}",
             msgs.len()
         );
-        assert!(matches!(msgs[0], Message::User { .. }), "msg[0] is the user question");
-        assert!(matches!(msgs[1], Message::Assistant { .. }), "msg[1] is the assistant tool_use");
+        assert!(
+            matches!(msgs[0], Message::User { .. }),
+            "msg[0] is the user question"
+        );
+        assert!(
+            matches!(msgs[1], Message::Assistant { .. }),
+            "msg[1] is the assistant tool_use"
+        );
         assert!(
             matches!(msgs[2], Message::User { .. }),
             "msg[2] is the ONE coalesced tool_result user message"
@@ -628,7 +645,11 @@ mod tests {
         // All THREE tool_result ids present, IN ORDER, in the single user message.
         assert_eq!(
             user_tool_result_ids(&msgs[2]),
-            vec!["toolu_a".to_string(), "toolu_b".to_string(), "toolu_c".to_string()],
+            vec![
+                "toolu_a".to_string(),
+                "toolu_b".to_string(),
+                "toolu_c".to_string()
+            ],
             "the coalesced user message must carry all 3 tool_result ids in order"
         );
         // Each block's output content is preserved.

@@ -203,7 +203,7 @@ Display.show      ; method 'show' of trait 'Display'
 Num.+             ; operator '+' of trait 'Num'
 ```
 
-### 1.4.5 Colon-Prefixed Symbols [Tested+Neg crates/cranelisp-frontend/src/reader.rs::test_parse_colon_prefix, tests/spec_08_modules.rs::annotation_binds_top_level_following_form, tests/spec_08_modules.rs::annotation_in_paren_is_application_of_annotated_element]
+### 1.4.5 Colon-Prefixed Symbols [Uncovered S115 — was crates/cranelisp-frontend/src/reader.rs::test_parse_colon_prefix, tests/spec_08_modules.rs::annotation_binds_top_level_following_form, tests/spec_08_modules.rs::annotation_in_paren_is_application_of_annotated_element]
 
 ```ebnf
 colon_prefix = ':' symbol_start symbol_char*
@@ -328,7 +328,7 @@ When multiple token rules could match at a given position, the parser MUST try t
 
 This ordering ensures that longer matches take priority and that ambiguous cases like `-3` (integer, not operator) and `true` (boolean, not symbol) are resolved correctly.
 
-## 1.8 Forms [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_list]
+## 1.8 Forms [Tested+Neg crates/cranelisp-frontend/src/reader.rs::annotation_fold_is_recursive_and_stacks, crates/cranelisp-frontend/src/reader.rs::annotation_fold_rejects_dangling_delimiters_at_introducer, crates/cranelisp-frontend/src/reader.rs::annotation_fold_handles_compound_spaced_quoted_and_full_span_forms, crates/cranelisp-frontend/src/reader.rs::test_parse_multiple_forms]
 
 A **form** is the basic unit of Cranelisp syntax:
 

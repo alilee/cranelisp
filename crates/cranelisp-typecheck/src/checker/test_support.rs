@@ -48,7 +48,10 @@ impl TestFixture {
         let modules = DashMap::new();
         let next_id = AtomicU32::new(0);
         let current_module = ModuleFullPath::from("user");
-        modules.insert(current_module.clone(), SymbolTable::new(current_module.clone()));
+        modules.insert(
+            current_module.clone(),
+            SymbolTable::new(current_module.clone()),
+        );
         builder.seed(&modules, &next_id);
         TestFixture {
             modules,
@@ -63,7 +66,12 @@ impl TestFixture {
     /// fixture's module-alias table so alias-resolution tests see seeded
     /// aliases.
     pub fn env(&self) -> TypeCheckEnv<'_> {
-        TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases, &self.prelude_fallback)
+        TypeCheckEnv::new(
+            &self.modules,
+            &self.next_id,
+            &self.module_aliases,
+            &self.prelude_fallback,
+        )
     }
 
     /// Switch the active module. Creates the module's symbol table if needed.
@@ -74,13 +82,17 @@ impl TestFixture {
 
     /// Get a read guard for the current module's symbol table.
     pub fn symbol_table(&self) -> dashmap::mapref::one::Ref<'_, ModuleFullPath, SymbolTable> {
-        self.modules.get(&self.state.current_module)
+        self.modules
+            .get(&self.state.current_module)
             .unwrap_or_else(|| unreachable!("invariant: current_module always exists"))
     }
 
     /// Get a write guard for the current module's symbol table.
-    pub fn symbol_table_mut(&self) -> dashmap::mapref::one::RefMut<'_, ModuleFullPath, SymbolTable> {
-        self.modules.get_mut(&self.state.current_module)
+    pub fn symbol_table_mut(
+        &self,
+    ) -> dashmap::mapref::one::RefMut<'_, ModuleFullPath, SymbolTable> {
+        self.modules
+            .get_mut(&self.state.current_module)
             .unwrap_or_else(|| unreachable!("invariant: current_module always exists"))
     }
 
@@ -110,8 +122,21 @@ impl TestFixture {
         visibility: cranelisp_types::Visibility,
         span: Span,
     ) -> Result<(), CranelispError> {
-        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases, &self.prelude_fallback);
-        env.register_type_def(&mut self.state, name, docstring, type_params, constructors, visibility, span)
+        let env = TypeCheckEnv::new(
+            &self.modules,
+            &self.next_id,
+            &self.module_aliases,
+            &self.prelude_fallback,
+        );
+        env.register_type_def(
+            &mut self.state,
+            name,
+            docstring,
+            type_params,
+            constructors,
+            visibility,
+            span,
+        )
     }
 
     /// Register a trait decl (test convenience).
@@ -119,7 +144,12 @@ impl TestFixture {
         &mut self,
         decl: &cranelisp_types::TraitDecl,
     ) -> Result<(), CranelispError> {
-        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases, &self.prelude_fallback);
+        let env = TypeCheckEnv::new(
+            &self.modules,
+            &self.next_id,
+            &self.module_aliases,
+            &self.prelude_fallback,
+        );
         env.register_trait_decl(&mut self.state, decl)
     }
 
@@ -128,7 +158,12 @@ impl TestFixture {
         &mut self,
         impl_: &cranelisp_types::TraitImpl,
     ) -> Result<Vec<cranelisp_types::Defn>, CranelispError> {
-        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases, &self.prelude_fallback);
+        let env = TypeCheckEnv::new(
+            &self.modules,
+            &self.next_id,
+            &self.module_aliases,
+            &self.prelude_fallback,
+        );
         env.register_trait_impl(&mut self.state, impl_)
     }
 
@@ -146,8 +181,23 @@ impl TestFixture {
         arg_types: &[Type],
         span: Span,
     ) -> Result<Option<cranelisp_types::ResolvedCall>, CranelispError> {
-        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases, &self.prelude_fallback);
+        let env = TypeCheckEnv::new(
+            &self.modules,
+            &self.next_id,
+            &self.module_aliases,
+            &self.prelude_fallback,
+        );
         env.try_resolve_trait_method(&mut self.state, name, arg_types, span)
+            .map(|resolved| {
+                resolved.map(|dispatch| match dispatch {
+                    crate::checker::PendingDispatch::Builtin(builtin) => {
+                        cranelisp_types::ResolvedCall::BuiltinFn {
+                            name: builtin.jit_name,
+                        }
+                    }
+                    crate::checker::PendingDispatch::Resolved(resolution) => resolution,
+                })
+            })
     }
 
     /// Check program (test convenience).
@@ -161,7 +211,12 @@ impl TestFixture {
         &mut self,
         program: &[cranelisp_types::TopLevel],
     ) -> Result<crate::result::CheckResult, CranelispError> {
-        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases, &self.prelude_fallback);
+        let env = TypeCheckEnv::new(
+            &self.modules,
+            &self.next_id,
+            &self.module_aliases,
+            &self.prelude_fallback,
+        );
         let ctx = cranelisp_types::CompileContext {
             module: self.state.current_module.clone(),
             codegen: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
@@ -184,7 +239,12 @@ impl TestFixture {
         &mut self,
         input: &cranelisp_types::TopLevel,
     ) -> Result<crate::result::CheckResult, CranelispError> {
-        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases, &self.prelude_fallback);
+        let env = TypeCheckEnv::new(
+            &self.modules,
+            &self.next_id,
+            &self.module_aliases,
+            &self.prelude_fallback,
+        );
         let ctx = cranelisp_types::CompileContext {
             module: self.state.current_module.clone(),
             codegen: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
@@ -203,18 +263,25 @@ impl TestFixture {
         &mut self,
         expr: &mut cranelisp_types::Expr,
     ) -> Result<Type, CranelispError> {
-        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases, &self.prelude_fallback);
+        let env = TypeCheckEnv::new(
+            &self.modules,
+            &self.next_id,
+            &self.module_aliases,
+            &self.prelude_fallback,
+        );
         env.infer_expr(&mut self.state, expr)
     }
 
     /// Run the value-position trait-method resolution post-pass over an
     /// already-inferred expression (test convenience). Mirrors what
     /// `check_form_body` does after `check_defn_body`.
-    pub fn resolve_value_position_trait_methods_for_test(
-        &mut self,
-        expr: &cranelisp_types::Expr,
-    ) {
-        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases, &self.prelude_fallback);
+    pub fn resolve_value_position_trait_methods_for_test(&mut self, expr: &cranelisp_types::Expr) {
+        let env = TypeCheckEnv::new(
+            &self.modules,
+            &self.next_id,
+            &self.module_aliases,
+            &self.prelude_fallback,
+        );
         // Test convenience — the no-impl `Err` (F-D2-11) is discarded; the
         // tests using this helper exercise impl-PRESENT resolvable shapes.
         let _ = env.resolve_value_position_trait_methods(&mut self.state, expr, false);
@@ -227,14 +294,17 @@ impl TestFixture {
 
     /// Resolve primitive JIT name (test convenience).
     pub fn resolve_primitive_jit_name_self(&self, name: &str) -> Option<Symbol> {
-        self.env().resolve_primitive_jit_name(&self.state, name)
+        self.env()
+            .resolve_builtin(&self.state, name, Span::default())
+            .map(|builtin| builtin.jit_name)
     }
 
     /// Look up type def (test convenience). Uses `state.current_module` as the
     /// access root so tests that switch the active module via
     /// `set_current_module` see types registered there.
     pub fn lookup_type_def(&self, name: &TypeName) -> Option<TypeDefInfo> {
-        self.env().lookup_type_def_in_module(&self.state.current_module, name)
+        self.env()
+            .lookup_type_def_in_module(&self.state.current_module, name)
     }
 
     /// Look up type def in a specific module (test convenience).
@@ -261,7 +331,10 @@ impl TestFixture {
         module_path: &ModuleFullPath,
         name: &TypeName,
     ) -> Option<String> {
-        match self.env().resolve_entry_in_module(module_path, name.as_ref())? {
+        match self
+            .env()
+            .resolve_entry_in_module(module_path, name.as_ref())?
+        {
             ModuleEntry::TypeDef { docstring, .. } => docstring,
             _ => None,
         }
@@ -281,11 +354,10 @@ impl TestFixture {
         has_wildcard: bool,
         span: Span,
     ) -> Result<(), CranelispError> {
-        let fqtn = cranelisp_types::FQTypeName::new(
-            self.state.current_module.clone(),
-            type_name.clone(),
-        );
-        self.env().check_exhaustiveness_in_module(&fqtn, covered, has_wildcard, span)
+        let fqtn =
+            cranelisp_types::FQTypeName::new(self.state.current_module.clone(), type_name.clone());
+        self.env()
+            .check_exhaustiveness_in_module(&fqtn, covered, has_wildcard, span)
     }
 
     /// Check exhaustiveness in a specific module (test convenience).
@@ -298,7 +370,8 @@ impl TestFixture {
         span: Span,
     ) -> Result<(), CranelispError> {
         let fqtn = cranelisp_types::FQTypeName::new(module_path.clone(), type_name.clone());
-        self.env().check_exhaustiveness_in_module(&fqtn, covered, has_wildcard, span)
+        self.env()
+            .check_exhaustiveness_in_module(&fqtn, covered, has_wildcard, span)
     }
 
     /// Fresh var (test convenience).
@@ -316,19 +389,25 @@ impl TestFixture {
     /// Used to reproduce the cross-module instantiation collision where the
     /// counter has not been advanced past an imported scheme's bound vars.
     pub fn set_next_id(&self, value: TypeId) {
-        self.next_id.store(value, std::sync::atomic::Ordering::Relaxed);
+        self.next_id
+            .store(value, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Has impl (test convenience). State-rooted so tests that switch the
     /// active module via `set_current_module` honour the active module.
     pub fn has_impl(&self, trait_name: &TraitName, impl_type: &TypeName) -> bool {
-        self.env().has_impl_with_state(&self.state, trait_name, impl_type)
+        self.env()
+            .has_impl_with_state(&self.state, trait_name, impl_type)
     }
 
     /// Lookup trait decl (test convenience). Current-module-only (NON-fallback)
     /// — the raw same-module probe the `deftrait` idempotency check now uses.
-    pub fn lookup_trait_decl(&self, trait_name: &TraitName) -> Option<cranelisp_types::TraitDeclInfo> {
-        self.env().lookup_trait_decl_in_module(&self.state.current_module, trait_name)
+    pub fn lookup_trait_decl(
+        &self,
+        trait_name: &TraitName,
+    ) -> Option<cranelisp_types::TraitDeclInfo> {
+        self.env()
+            .lookup_trait_decl_in_module(&self.state.current_module, trait_name)
     }
 
     /// Resolve a trait decl through the ONE scope resolve, prelude fallback
@@ -365,7 +444,12 @@ impl TestFixture {
         pass: crate::program::CheckPass,
         accumulator: &mut crate::program::ModuleCheckAccumulator,
     ) -> Result<crate::program::FormCheckResult, CranelispError> {
-        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases, &self.prelude_fallback);
+        let env = TypeCheckEnv::new(
+            &self.modules,
+            &self.next_id,
+            &self.module_aliases,
+            &self.prelude_fallback,
+        );
         env.check_form(module, form, pass, &mut self.state, accumulator)
     }
 
@@ -376,7 +460,12 @@ impl TestFixture {
         accumulator: &mut crate::program::ModuleCheckAccumulator,
         result: crate::program::FormCheckResult,
     ) {
-        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases, &self.prelude_fallback);
+        let env = TypeCheckEnv::new(
+            &self.modules,
+            &self.next_id,
+            &self.module_aliases,
+            &self.prelude_fallback,
+        );
         env.merge_form_result(module, &mut self.state, accumulator, result);
     }
 
@@ -388,8 +477,19 @@ impl TestFixture {
         working_program: &[cranelisp_types::TopLevel],
         strategy: cranelisp_types::ModuleStrategy,
     ) -> Result<crate::result::CheckResult, CranelispError> {
-        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases, &self.prelude_fallback);
-        env.finalize_check_result(module, &mut self.state, accumulator, working_program, strategy)
+        let env = TypeCheckEnv::new(
+            &self.modules,
+            &self.next_id,
+            &self.module_aliases,
+            &self.prelude_fallback,
+        );
+        env.finalize_check_result(
+            module,
+            &mut self.state,
+            accumulator,
+            working_program,
+            strategy,
+        )
     }
 
     /// Check (unified pipeline, test convenience).
@@ -403,7 +503,12 @@ impl TestFixture {
         ctx: &cranelisp_types::CompileContext,
         strategy: cranelisp_types::ModuleStrategy,
     ) -> Result<crate::result::CheckResult, CranelispError> {
-        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases, &self.prelude_fallback);
+        let env = TypeCheckEnv::new(
+            &self.modules,
+            &self.next_id,
+            &self.module_aliases,
+            &self.prelude_fallback,
+        );
         env.check_via_forms(&mut self.state, program, ctx, strategy)
     }
 
@@ -570,8 +675,15 @@ impl TestFixture {
         impl_: &cranelisp_types::TraitImpl,
         fq_impl_type: &cranelisp_types::FQTypeName,
     ) -> Result<Vec<cranelisp_types::Defn>, CranelispError> {
-        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases, &self.prelude_fallback);
-        env.generate_default_methods(&self.state, decl, impl_, fq_impl_type)
+        let env = TypeCheckEnv::new(
+            &self.modules,
+            &self.next_id,
+            &self.module_aliases,
+            &self.prelude_fallback,
+        );
+        let fq_trait_name =
+            cranelisp_types::FQTraitName::new(self.state.current_module.clone(), decl.name.clone());
+        env.generate_default_methods(&self.state, decl, impl_, &fq_trait_name, fq_impl_type)
     }
 
     // ---------------------------------------------------------------------
@@ -595,7 +707,10 @@ impl TestFixture {
     ) -> std::collections::HashMap<Span, cranelisp_types::ResolvedCall> {
         let mut out = std::collections::HashMap::new();
         for (_name, entry) in self.symbol_table().all_symbols() {
-            if let cranelisp_types::ModuleEntry::Def { ast: Some(variant), .. } = entry {
+            if let cranelisp_types::ModuleEntry::Def {
+                ast: Some(variant), ..
+            } = entry
+            {
                 collect_resolutions_from_expr(&variant.body, &mut out);
             }
         }
@@ -689,7 +804,13 @@ fn collect_resolutions_from_expr(
 ) {
     use cranelisp_types::Expr;
     match expr {
-        Expr::Apply { callee, args, span, resolved_call, .. } => {
+        Expr::Apply {
+            callee,
+            args,
+            span,
+            resolved_call,
+            ..
+        } => {
             if let Some(r) = resolved_call {
                 out.insert(*span, (**r).clone());
             }
@@ -698,7 +819,12 @@ fn collect_resolutions_from_expr(
                 collect_resolutions_from_expr(a, out);
             }
         }
-        Expr::If { cond, then_branch, else_branch, .. } => {
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
             collect_resolutions_from_expr(cond, out);
             collect_resolutions_from_expr(then_branch, out);
             collect_resolutions_from_expr(else_branch, out);
@@ -712,7 +838,9 @@ fn collect_resolutions_from_expr(
         Expr::Lambda { body, .. } => {
             collect_resolutions_from_expr(body, out);
         }
-        Expr::Match { scrutinee, arms, .. } => {
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
             collect_resolutions_from_expr(scrutinee, out);
             for arm in arms {
                 collect_resolutions_from_expr(&arm.body, out);

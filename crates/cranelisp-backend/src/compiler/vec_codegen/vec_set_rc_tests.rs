@@ -28,7 +28,10 @@ use super::*;
 
 fn var(ty: ConcreteType) -> MonoExpr {
     MonoExpr::Var {
-        resolution: cranelisp_types::VarRef::Local { binder: cranelisp_types::Symbol::from("v"), binding_span: Span::SYNTHETIC },
+        resolution: cranelisp_types::VarRef::Local {
+            binder: cranelisp_types::Symbol::from("v"),
+            binding_span: Span::SYNTHETIC,
+        },
         name: cranelisp_types::Symbol::from("v"),
         span: Span::SYNTHETIC,
         resolved_call: None,
@@ -125,7 +128,11 @@ fn vec_set_and_vec_push_share_one_consuming_inc_decision() {
     // (inc), heap temporary (transfer/None), scalar Var (None). Each row is the
     // value vec-set hoists AND the value vec-push hoists — they cannot diverge.
     for (elem, category, expected) in [
-        (&heap_var, HeapCategory::AlwaysHeap, Some(HeapCategory::AlwaysHeap)),
+        (
+            &heap_var,
+            HeapCategory::AlwaysHeap,
+            Some(HeapCategory::AlwaysHeap),
+        ),
         (&heap_var, HeapCategory::Mixed, Some(HeapCategory::Mixed)),
         (&temp, HeapCategory::AlwaysHeap, None),
         (&scalar_var, HeapCategory::NeverHeap, None),

@@ -27,7 +27,7 @@ use cranelisp_types::{CranelispError, ErrorLocation, MonoExpr, Span, Symbol, Typ
 use crate::compiler::signature_heap_category;
 use crate::heap::{self, HeapCategory, HeapClosure};
 
-use super::{find_free_vars, FnCompiler};
+use super::{FnCompiler, find_free_vars};
 
 /// RC_OFFSET for an IVar cell (base-pointer convention, +8). IVars carry an
 /// atomic RC at the same offset as every heap object.
@@ -55,13 +55,13 @@ where
         deps: &[(Symbol, Value, Type)],
         span: Span,
     ) -> Result<Value, CranelispError> {
-        let alloc_id =
-            self.ctx
-                .alloc_func_id
-                .ok_or_else(|| CranelispError::CodegenError {
-                    message: "runtime/alloc not declared (need declare_intrinsics)".into(),
-                    location: ErrorLocation::from_span(span),
-                })?;
+        let alloc_id = self
+            .ctx
+            .alloc_func_id
+            .ok_or_else(|| CranelispError::CodegenError {
+                message: "runtime/alloc not declared (need declare_intrinsics)".into(),
+                location: ErrorLocation::from_span(span),
+            })?;
 
         // Ordinary captures: in-scope free vars of the RHS, excluding the
         // dependency names (those come from the captured IVar pointers, not
@@ -113,20 +113,23 @@ where
         // ---- Closure site allocation ----
         let total_caps = ord_captures.len() + deps.len();
         let payload_size = HeapClosure::payload_size(total_caps) as i64;
-        let base_ptr =
-            heap::emit_alloc(&mut self.builder, self.module, alloc_id, payload_size);
+        let base_ptr = heap::emit_alloc(&mut self.builder, self.module, alloc_id, payload_size);
 
         // code_ptr at offset 16.
         let inner_ref = self
             .module
             .declare_func_in_func(inner_func_id, self.builder.func);
         let code_ptr = self.builder.ins().func_addr(types::I64, inner_ref);
-        heap::heap_store(&mut self.builder, code_ptr, base_ptr, HeapClosure::CODE_PTR_OFFSET);
+        heap::heap_store(
+            &mut self.builder,
+            code_ptr,
+            base_ptr,
+            HeapClosure::CODE_PTR_OFFSET,
+        );
 
         // drop_glue_ptr at offset 24 (custom: ordinary heap caps dec via plain
         // dealloc, IVar caps dec via the IVar-aware dealloc).
-        let glue_id =
-            self.build_dependent_thunk_drop_glue(&ord_captures, deps.len(), body_span)?;
+        let glue_id = self.build_dependent_thunk_drop_glue(&ord_captures, deps.len(), body_span)?;
         let glue_val = if let Some(id) = glue_id {
             let gref = self.module.declare_func_in_func(id, self.builder.func);
             self.builder.ins().func_addr(types::I64, gref)
@@ -253,7 +256,9 @@ where
             inner.builder.declare_var(var, types::I64);
             inner.builder.def_var(var, forced);
             inner.variables.insert(dep_name.clone(), var);
-            inner.variable_types.insert(dep_name.clone(), dep_ty.clone());
+            inner
+                .variable_types
+                .insert(dep_name.clone(), dep_ty.clone());
             inner.captured_vars.insert(dep_name.clone());
         }
 
@@ -346,8 +351,11 @@ where
 
         // Ordinary heap captures: standard dec.
         for (cap_idx, category) in &heap_caps {
-            let cap_val =
-                heap::heap_load(&mut builder, closure_ptr, HeapClosure::capture_offset(*cap_idx));
+            let cap_val = heap::heap_load(
+                &mut builder,
+                closure_ptr,
+                HeapClosure::capture_offset(*cap_idx),
+            );
             match category {
                 HeapCategory::AlwaysHeap => {
                     heap::emit_rc_dec(&mut builder, self.module, cap_val, dealloc_id, None);
@@ -369,8 +377,11 @@ where
         // Dependency IVar captures: IVar-aware dec.
         for j in 0..dep_count {
             let cap_idx = ord_captures.len() + j;
-            let ivar_val =
-                heap::heap_load(&mut builder, closure_ptr, HeapClosure::capture_offset(cap_idx));
+            let ivar_val = heap::heap_load(
+                &mut builder,
+                closure_ptr,
+                HeapClosure::capture_offset(cap_idx),
+            );
             emit_ivar_dec_into(&mut builder, self.module, ivar_val, span)?;
         }
 
@@ -415,7 +426,9 @@ fn emit_ivar_dec_into<M: Module>(
 
     let one_val = builder.ins().iconst(types::I64, 1);
     let is_last = builder.ins().icmp(IntCC::Equal, old_rc, one_val);
-    builder.ins().brif(is_last, free_block, &[], cont_block, &[]);
+    builder
+        .ins()
+        .brif(is_last, free_block, &[], cont_block, &[]);
 
     builder.switch_to_block(free_block);
     builder.seal_block(free_block);

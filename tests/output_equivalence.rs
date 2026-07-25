@@ -22,7 +22,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{run_through_all_modes_output, PreludeVariant};
+use helpers::e2e::{PreludeVariant, run_through_all_modes_output};
 
 /// Common header: declare `stdio`, import `print` + the IO constructors.
 const HDR: &str = "(platform stdio)\n\
@@ -50,11 +50,8 @@ fn output_equiv_single_print() {
 #[test]
 fn output_equiv_sequenced_prints() {
     // Two prints bound in order: the effect stream is `a\nb` in every mode.
-    let program = prog(
-        "(defn main [] (bind (print \"a\") (fn [_] (print \"b\"))))\n",
-    );
-    run_through_all_modes_output(&program, PreludeVariant::PrimitivesOnly)
-        .assert_output_eq("a\nb");
+    let program = prog("(defn main [] (bind (print \"a\") (fn [_] (print \"b\"))))\n");
+    run_through_all_modes_output(&program, PreludeVariant::PrimitivesOnly).assert_output_eq("a\nb");
 }
 
 // spec: spec/10-io.md §10.6.3 — Mode-Output Equivalence (let binding feeds print)
@@ -68,11 +65,8 @@ fn output_equiv_let_binding() {
 // spec: spec/10-io.md §10.6.3 — Mode-Output Equivalence (if branch selects output)
 #[test]
 fn output_equiv_if_branch() {
-    let program = prog(
-        "(defn main [] (if (eq-i64 1 1) (print \"yes\") (print \"no\")))\n",
-    );
-    run_through_all_modes_output(&program, PreludeVariant::PrimitivesOnly)
-        .assert_output_eq("yes");
+    let program = prog("(defn main [] (if (eq-i64 1 1) (print \"yes\") (print \"no\")))\n");
+    run_through_all_modes_output(&program, PreludeVariant::PrimitivesOnly).assert_output_eq("yes");
 }
 
 // spec: spec/10-io.md §10.6.3 — Mode-Output Equivalence (user fn returns the string)
@@ -129,9 +123,7 @@ fn output_equiv_bind_threads_value() {
 // spec: spec/10-io.md §10.6.3 — Mode-Output Equivalence (Pure then print)
 #[test]
 fn output_equiv_pure_then_print() {
-    let program = prog(
-        "(defn main [] (bind (Pure 7) (fn [_] (print \"after-pure\"))))\n",
-    );
+    let program = prog("(defn main [] (bind (Pure 7) (fn [_] (print \"after-pure\"))))\n");
     run_through_all_modes_output(&program, PreludeVariant::PrimitivesOnly)
         .assert_output_eq("after-pure");
 }
@@ -166,9 +158,7 @@ fn output_equiv_hello_world() {
 fn output_equiv_all_modes_agree() {
     // Cross-check without pinning a literal: every mode must agree with itself,
     // catching any mode-specific drift the literal-pinned tests above might miss.
-    let program = prog(
-        "(defn main [] (bind (print \"p\") (fn [_] (print \"q\"))))\n",
-    );
+    let program = prog("(defn main [] (bind (print \"p\") (fn [_] (print \"q\"))))\n");
     run_through_all_modes_output(&program, PreludeVariant::PrimitivesOnly)
         .assert_output_equivalent();
 }

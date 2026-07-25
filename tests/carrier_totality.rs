@@ -20,7 +20,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{run_through_all_modes, PreludeVariant};
+use helpers::e2e::{PreludeVariant, run_through_all_modes};
 
 // CA-2 — TOTALITY POSITIVE, all-local body. `(defn f [x] (let [y x] y))` is an
 // all-local body (param `x`, let-bound `y`); under the carrier every local takes

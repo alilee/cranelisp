@@ -33,9 +33,10 @@ fn test_with_static_backing_store_and_load() {
     // `std::array::from_fn` cannot build a const initializer, so use a
     // leaked Box to obtain a genuine `&'static` for the test (the slab is
     // never freed, satisfying the `'static` + single-backing contract).
-    let slab: &'static [AtomicPtr<u8>; GOT_TABLE_SIZE] = Box::leak(Box::new(
-        std::array::from_fn(|_| AtomicPtr::new(std::ptr::null_mut())),
-    ));
+    let slab: &'static [AtomicPtr<u8>; GOT_TABLE_SIZE] =
+        Box::leak(Box::new(std::array::from_fn(|_| {
+            AtomicPtr::new(std::ptr::null_mut())
+        })));
     let slab_addr = slab.as_ptr() as *const u8;
 
     let got = GotTable::with_static_backing(slab);

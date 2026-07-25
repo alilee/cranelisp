@@ -1,11 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
-use cranelisp_types::{ErrorLocation,
-    ApplyRef, ConstrainedFn, CranelispError, DefKind, Defn, DefnVariant, Expr, FQSymbol,
-    JitSymbol, MethodResolutions, ModuleEntry, ModuleFullPath, MonoDefn, MonoDefnVariant, MonoExpr,
-    NotConcrete, ResolvedCall, Scheme,
-    Span, Symbol, Type,
-    TypeName, UserFnState, VarRef, ViewBuildError, Visibility, apply,
+use cranelisp_types::{
+    ApplyRef, ConstrainedFn, CranelispError, DefKind, Defn, DefnVariant, ErrorLocation, Expr,
+    FQSymbol, JitSymbol, MethodResolutions, ModuleEntry, ModuleFullPath, MonoDefn, MonoDefnVariant,
+    MonoExpr, NotConcrete, ResolvedCall, Scheme, Span, Symbol, Type, TypeName, UserFnState, VarRef,
+    ViewBuildError, Visibility, apply,
 };
 
 use crate::checker::{CheckState, TypeCheckEnv};
@@ -19,11 +18,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ///
     /// Returns the instantiated type. Side effect: adds constraints to
     /// `self.state.active_constraints`.
-    pub(crate) fn instantiate_constrained(
-        &self,
-        state: &mut CheckState,
-        scheme: &Scheme,
-    ) -> Type {
+    pub(crate) fn instantiate_constrained(&self, state: &mut CheckState, scheme: &Scheme) -> Type {
         if scheme.type_vars.is_empty() {
             return scheme.ty.clone();
         }
@@ -255,9 +250,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         home: Option<&ModuleFullPath>,
         call_span: Span,
     ) -> Result<(), CranelispError> {
-        let saved_module = home.map(|h| {
-            std::mem::replace(&mut state.current_module, h.clone())
-        });
+        let saved_module = home.map(|h| std::mem::replace(&mut state.current_module, h.clone()));
         let verify_result = self.verify_constraints(state, scheme, var_mapping, call_span);
         if let Some(prev) = saved_module {
             state.current_module = prev;
@@ -328,8 +321,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         concrete_ret_ty: &Type,
         home: Option<&ModuleFullPath>,
     ) -> Result<(MethodResolutions, HashMap<Span, Type>), CranelispError> {
-        let (mut resolutions, mono_expr_types) =
-            self.recheck_body_for_mono(state, wrap_defn, concrete_param_types, concrete_ret_ty, home)?;
+        let (mut resolutions, mono_expr_types) = self.recheck_body_for_mono(
+            state,
+            wrap_defn,
+            concrete_param_types,
+            concrete_ret_ty,
+            home,
+        )?;
 
         // Add SigDispatch entries for inner constrained fn calls. For an
         // imported callee, inner constrained calls (e.g. self-recursion) are
@@ -475,9 +473,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             let lookup_module = home.unwrap_or(&state.current_module);
             self.resolve_terminal_entry_and_home(lookup_module, fn_name.as_ref())
                 .and_then(|(e, _)| match e {
-                    ModuleEntry::Def { docstring, visibility, .. } => {
-                        Some((docstring.clone(), visibility))
-                    }
+                    ModuleEntry::Def {
+                        docstring,
+                        visibility,
+                        ..
+                    } => Some((docstring.clone(), visibility)),
                     _ => None,
                 })
         };
@@ -578,7 +578,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 // Genuinely concrete instance — carry the concrete-boundary view.
                 MonoDefnVariant {
                     name: Symbol::from(mangled_name),
-                    params: mono_defn_ast.params().iter().map(|(n, _)| n.clone()).collect(),
+                    params: mono_defn_ast
+                        .params()
+                        .iter()
+                        .map(|(n, _)| n.clone())
+                        .collect(),
                     body: mono_body,
                     span: defn_span,
                     mode_summary: None,
@@ -610,7 +614,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // typecheck error at the reference span (should never fire on a
             // valid program; the tier-3 seam altitude surfaced as an error since
             // a `Result` is in hand here).
-            Err(ViewBuildError::Unresolved { span, name: ref_name }) => {
+            Err(ViewBuildError::Unresolved {
+                span,
+                name: ref_name,
+            }) => {
                 return Err(CranelispError::TypeError {
                     message: format!(
                         "unresolved reference `{ref_name}` in monomorphised body \
@@ -670,7 +677,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // the prior concrete entry's slot (read via `callable_got_slot`) to
         // keep call-site GOT indices stable; the slot rides inside the
         // `Concrete` fn_state, not a flat `Def` field.
-        let existing_got_slot = st.get(mono.defn.name.as_ref())
+        let existing_got_slot = st
+            .get(mono.defn.name.as_ref())
             .and_then(|e| e.callable_got_slot());
         let got_slot = match existing_got_slot {
             Some(s) => s,
@@ -681,7 +689,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         let mut builder = ModuleEntry::def(
             scheme,
-            DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot, mode_summary: None } },
+            DefKind::UserFn {
+                fn_state: UserFnState::Concrete {
+                    got_slot,
+                    mode_summary: None,
+                },
+            },
         )
         .visibility(mono.defn.visibility)
         .param_names(mono.defn.params().iter().map(|(n, _)| n.clone()).collect());
@@ -710,8 +723,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         scheme: &Scheme,
         arg_types: &[Type],
         call_span: Span,
-    ) -> Result<(Type, HashMap<cranelisp_types::TypeId, cranelisp_types::TypeId>), CranelispError>
-    {
+    ) -> Result<
+        (
+            Type,
+            HashMap<cranelisp_types::TypeId, cranelisp_types::TypeId>,
+        ),
+        CranelispError,
+    > {
         // Instantiate the scheme with fresh vars, KEEPING the original→fresh
         // var-id mapping. The mapping is needed by `verify_constraints`:
         // `scheme.constraints` are keyed by the scheme's ORIGINAL var_ids, but
@@ -786,10 +804,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     let fq_impl_type =
                         self.fq_type_name_for_diagnostics(state, &impl_type, call_span);
                     return Err(CranelispError::TypeError {
-                        message: format!(
-                            "no impl of trait {} for type {}",
-                            fq_trait, fq_impl_type
-                        ),
+                        message: format!("no impl of trait {} for type {}", fq_trait, fq_impl_type),
                         location: ErrorLocation::from_span(call_span),
                     });
                 }
@@ -830,15 +845,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // the wrong, outer resolutions map — the original R2 carrier-loss) or —
         // for a D3-harvest recheck that runs AFTER that drain — be dropped
         // entirely (the residual-unbound-var wrong-reject, Important 1b).
-        let saved_pending_overloads =
-            std::mem::take(&mut state.pending_overload_resolutions);
+        let saved_pending_overloads = std::mem::take(&mut state.pending_overload_resolutions);
         // Switch into the defining module for an imported callee so the body's
         // bare-name references resolve in its import context (FIXME 0355).
-        let saved_current_module = home.map(|h| {
-            std::mem::replace(&mut state.current_module, h.clone())
-        });
+        let saved_current_module =
+            home.map(|h| std::mem::replace(&mut state.current_module, h.clone()));
 
-        let result = self.check_defn_body_with_types(state, defn, concrete_param_types, concrete_ret_ty);
+        let result =
+            self.check_defn_body_with_types(state, defn, concrete_param_types, concrete_ret_ty);
 
         // Drain the overloaded-base DISPATCH calls the body deferred, reusing the
         // ONE drain (P7 — full concrete/template bifurcation + return-var
@@ -861,7 +875,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         };
 
         let resolutions = std::mem::take(&mut state.method_resolutions);
-        let mono_expr_types: HashMap<Span, Type> = state.expr_types
+        let mono_expr_types: HashMap<Span, Type> = state
+            .expr_types
             .iter()
             .map(|(span, ty)| (*span, apply(&state.subst, ty)))
             .collect();
@@ -899,7 +914,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 let mut names = HashSet::new();
                 self.for_each_in_module(h, |name, entry| {
                     if let ModuleEntry::Def { kind, .. } = entry
-                        && let DefKind::UserFn { fn_state: UserFnState::Constrained(_) } = kind.as_ref()
+                        && let DefKind::UserFn {
+                            fn_state: UserFnState::Constrained(_),
+                        } = kind.as_ref()
                     {
                         names.insert(name.clone());
                     }
@@ -912,7 +929,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     .iter()
                     .filter_map(|(name, entry)| {
                         if let ModuleEntry::Def { kind, .. } = entry
-                            && let DefKind::UserFn { fn_state: UserFnState::Constrained(_) } = kind.as_ref()
+                            && let DefKind::UserFn {
+                                fn_state: UserFnState::Constrained(_),
+                            } = kind.as_ref()
                         {
                             return Some(name.clone());
                         }
@@ -1001,7 +1020,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ) -> Result<(), CranelispError> {
         // The scope the body was re-checked in: `home` for an imported hop, else
         // the caller's current module.
-        let recheck_module = home.cloned().unwrap_or_else(|| state.current_module.clone());
+        let recheck_module = home
+            .cloned()
+            .unwrap_or_else(|| state.current_module.clone());
 
         // Collect inner Apply-of-bare-Var call sites first (immutable walk), then
         // monomorphise (mutable) — avoids borrowing `self`/`state` across the walk.
@@ -1023,7 +1044,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             }
             // Resolve the inner callee's terminal entry + its home, rooted in the
             // module the body was re-checked in.
-            let resolved = self.resolve_terminal_entry_and_home(&recheck_module, inner_name.as_ref());
+            let resolved =
+                self.resolve_terminal_entry_and_home(&recheck_module, inner_name.as_ref());
             let (entry, callee_home) = match resolved {
                 Some(r) => r,
                 None => continue,
@@ -1143,11 +1165,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // reads through staging so in-cluster constrained-fn registrations are
         // visible.
         let entry = match home {
-            Some(h) => self.resolve_terminal_entry_and_home(h, name.as_ref()).map(|(e, _)| e)?,
+            Some(h) => self
+                .resolve_terminal_entry_and_home(h, name.as_ref())
+                .map(|(e, _)| e)?,
             None => self.probe_module_entry_owned(&state.current_module, name.as_ref())?,
         };
         match &entry {
-            ModuleEntry::Def { kind, scheme, ast, .. } => match kind.as_ref() {
+            ModuleEntry::Def {
+                kind, scheme, ast, ..
+            } => match kind.as_ref() {
                 DefKind::UserFn {
                     fn_state: UserFnState::Constrained(cf),
                 } => Some(cf.as_ref().clone()),
@@ -1220,7 +1246,9 @@ pub(super) fn collect_self_apply_calls(
     self_name: &Symbol,
     out: &mut Vec<(Span, Vec<Span>, Span)>,
 ) {
-    if let Expr::Apply { callee, args, span, .. } = expr
+    if let Expr::Apply {
+        callee, args, span, ..
+    } = expr
         && let Expr::Var { name, .. } = callee.as_ref()
         && name == self_name
     {

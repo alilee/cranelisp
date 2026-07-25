@@ -55,7 +55,7 @@
 //! read on the same thread that runs the trampoline, introducing no new race
 //! vs. the existing `take_runtime_error()` slot usage.
 
-use crate::panic::{set_dispatch_fault, take_runtime_error, DispatchFault};
+use crate::panic::{DispatchFault, set_dispatch_fault, take_runtime_error};
 
 /// Outcome of forcing a platform Effect thunk under the fault guard.
 pub(crate) enum ForceOutcome {
@@ -230,7 +230,12 @@ fn install_signal_handlers() -> SavedSignalHandlers {
         let ill = libc::signal(libc::SIGILL, handler);
         let bus = libc::signal(libc::SIGBUS, handler);
         let segv = libc::signal(libc::SIGSEGV, handler);
-        SavedSignalHandlers { fpe, ill, bus, segv }
+        SavedSignalHandlers {
+            fpe,
+            ill,
+            bus,
+            segv,
+        }
     }
 }
 
@@ -340,7 +345,10 @@ mod tests {
                 ("SIGBUS", i_bus),
                 ("SIGSEGV", i_segv),
             ] {
-                assert_eq!(got, expected, "install must route {name} to the sigsetjmp trap handler");
+                assert_eq!(
+                    got, expected,
+                    "install must route {name} to the sigsetjmp trap handler"
+                );
             }
         }
     }

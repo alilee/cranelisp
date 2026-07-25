@@ -275,7 +275,10 @@ pub extern "C" fn cranelisp_run_program(
     //    makes `main` return the panic-path sentinel `0`. Stop BEFORE the IO
     //    trampoline (forcing `0` through it would null-deref — FIXME 0399).
     if let Some(kind) = peek_error_kind() {
-        return ProgramOutcome { exit_code: main_result, error_kind: kind };
+        return ProgramOutcome {
+            exit_code: main_result,
+            error_kind: kind,
+        };
     }
 
     // 4. IO trampoline (if main returns IO).
@@ -298,10 +301,16 @@ pub extern "C" fn cranelisp_run_program(
     //    (a `bind` continuation, or a faulting platform Effect) leaves its slot
     //    SET and the trampoline returns the sentinel `0` (FIXME 0401).
     if let Some(kind) = peek_error_kind() {
-        return ProgramOutcome { exit_code, error_kind: kind };
+        return ProgramOutcome {
+            exit_code,
+            error_kind: kind,
+        };
     }
 
-    ProgramOutcome { exit_code, error_kind: OUTCOME_CLEAN }
+    ProgramOutcome {
+        exit_code,
+        error_kind: OUTCOME_CLEAN,
+    }
 }
 
 /// Non-clearing classification of the error slots for [`cranelisp_run_program`].
@@ -420,10 +429,8 @@ pub extern "C" fn catch_runtime_error(thunk_closure: i64) -> i64 {
     //    pointer itself as env_ptr.
     // SAFETY: caller guarantees `thunk_closure` is a valid zero-arg closure
     // base pointer; the code_ptr lives at CLOSURE_CODE_PTR_OFFSET.
-    let code_ptr =
-        unsafe { *((thunk_closure as isize + CLOSURE_CODE_PTR_OFFSET) as *const i64) };
-    let call: extern "C" fn(i64) -> i64 =
-        unsafe { std::mem::transmute(code_ptr as *const ()) };
+    let code_ptr = unsafe { *((thunk_closure as isize + CLOSURE_CODE_PTR_OFFSET) as *const i64) };
+    let call: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(code_ptr as *const ()) };
     let result = call(thunk_closure);
 
     // 2b. Release the thunk. It is a fresh, one-shot closure the caller hands us

@@ -460,8 +460,7 @@ fn read_step(conn_fd: i32, reactor: &Reactor) -> PollStep {
         let mut chunk = [0u8; 1024];
         // SAFETY: `conn_fd` is a valid nonblocking socket; `chunk` is a valid
         // out-buffer.
-        let n =
-            unsafe { libc::read(conn_fd, chunk.as_mut_ptr() as *mut c_void, chunk.len()) };
+        let n = unsafe { libc::read(conn_fd, chunk.as_mut_ptr() as *mut c_void, chunk.len()) };
         if n > 0 {
             READBUFS
                 .lock()
@@ -614,7 +613,13 @@ fn ensure_write_buffered(conn_fd: i32, env: &PollEnv) {
     let content_type: CLString = resp.read_field("content-type");
     let body: CLString = resp.read_field("body");
     if std::env::var("WEBDBG").is_ok() {
-        eprintln!("[WEB] send fd={conn_fd} resp_ptr={:#x} status={} ctype={:?} body_len={}", unsafe { env.arg(1) }, i64::from(status), content_type.as_str(), body.as_str().len());
+        eprintln!(
+            "[WEB] send fd={conn_fd} resp_ptr={:#x} status={} ctype={:?} body_len={}",
+            unsafe { env.arg(1) },
+            i64::from(status),
+            content_type.as_str(),
+            body.as_str().len()
+        );
     }
     let wire = format_http_response(i64::from(status), content_type.as_str(), body.as_str());
     wbufs.insert(conn_fd, (wire.into_bytes(), 0));
@@ -876,9 +881,16 @@ mod tests {
 
     #[test]
     fn format_known_reason_phrases() {
-        assert!(format_http_response(404, "text/plain", "").starts_with("HTTP/1.0 404 Not Found\r\n"));
-        assert!(format_http_response(400, "text/plain", "").starts_with("HTTP/1.0 400 Bad Request\r\n"));
-        assert!(format_http_response(500, "text/plain", "").starts_with("HTTP/1.0 500 Internal Server Error\r\n"));
+        assert!(
+            format_http_response(404, "text/plain", "").starts_with("HTTP/1.0 404 Not Found\r\n")
+        );
+        assert!(
+            format_http_response(400, "text/plain", "").starts_with("HTTP/1.0 400 Bad Request\r\n")
+        );
+        assert!(
+            format_http_response(500, "text/plain", "")
+                .starts_with("HTTP/1.0 500 Internal Server Error\r\n")
+        );
     }
 
     #[test]

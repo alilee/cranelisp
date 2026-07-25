@@ -39,9 +39,15 @@ fn clif_of_construct(tag: usize, n_fields: usize) -> String {
     builder.seal_block(entry);
     let params: Vec<Value> = builder.block_params(entry).to_vec();
 
-    let result =
-        emit_adt_construct_into(&mut builder, module, alloc_id, tag, &params, Span::SYNTHETIC)
-            .expect("emit_adt_construct_into");
+    let result = emit_adt_construct_into(
+        &mut builder,
+        module,
+        alloc_id,
+        tag,
+        &params,
+        Span::SYNTHETIC,
+    )
+    .expect("emit_adt_construct_into");
     builder.ins().return_(&[result]);
     builder.seal_all_blocks();
     builder.finalize();

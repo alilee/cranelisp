@@ -36,7 +36,13 @@ impl TransferEnv for TestEnv {
     }
     fn summary_of(&self, name: &Symbol) -> Option<(FQSymbol, ModeSummary)> {
         self.summaries.get(name).map(|s| {
-            (FQSymbol { module: ModuleFullPath::from("user"), symbol: name.clone() }, s.clone())
+            (
+                FQSymbol {
+                    module: ModuleFullPath::from("user"),
+                    symbol: name.clone(),
+                },
+                s.clone(),
+            )
         })
     }
 }
@@ -45,7 +51,16 @@ fn s() -> Span {
     Span::SYNTHETIC
 }
 fn var(n: &str) -> MonoExpr {
-    MonoExpr::Var { name: Symbol::from(n), span: s(), resolved_call: None, ty: ConcreteType::String, resolution: cranelisp_types::VarRef::Local { binder: Symbol::from(n), binding_span: cranelisp_types::Span::SYNTHETIC } }
+    MonoExpr::Var {
+        name: Symbol::from(n),
+        span: s(),
+        resolved_call: None,
+        ty: ConcreteType::String,
+        resolution: cranelisp_types::VarRef::Local {
+            binder: Symbol::from(n),
+            binding_span: cranelisp_types::Span::SYNTHETIC,
+        },
+    }
 }
 /// A statically-resolved call `(name args...)` via SigDispatch (classifies
 /// Summarised(name), consulting the summary registered under `name`).
@@ -91,7 +106,10 @@ fn adt_sp(span: Span, fields: Vec<MonoExpr>) -> MonoExpr {
         tag: 0,
         fields,
         span,
-        ty: ConcreteType::ADT(FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Box")), vec![]),
+        ty: ConcreteType::ADT(
+            FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Box")),
+            vec![],
+        ),
         escapes: None,
         confined: None,
         unique_static: None,
@@ -116,7 +134,13 @@ fn call_sp(span: Span, name: &str, args: Vec<MonoExpr>) -> MonoExpr {
 }
 fn sm(param_modes: Vec<Mode>, result: ResultMode, param_flow: Vec<ParamFlow>) -> ModeSummary {
     let n = param_modes.len();
-    ModeSummary { param_modes, result, param_flow, spark_ops: vec![false; n], result_unique: false }
+    ModeSummary {
+        param_modes,
+        result,
+        param_flow,
+        spark_ops: vec![false; n],
+        result_unique: false,
+    }
 }
 fn strparam(n: &str) -> (Symbol, ConcreteType) {
     (Symbol::from(n), ConcreteType::String)
@@ -133,7 +157,14 @@ fn run(params: &[(Symbol, ConcreteType)], body: MonoExpr, env: TestEnv) -> Trans
 #[test]
 fn borrowed_handoff_is_non_widening() {
     // spec: §2.2 rule (load-bearing negative) — a Borrowed handoff does not widen.
-    let env = TestEnv::default().summary("readonly", sm(vec![Mode::Borrowed], ResultMode::Fresh, vec![ParamFlow::Consumed]));
+    let env = TestEnv::default().summary(
+        "readonly",
+        sm(
+            vec![Mode::Borrowed],
+            ResultMode::Fresh,
+            vec![ParamFlow::Consumed],
+        ),
+    );
     let r = run(&[strparam("p")], call("readonly", vec![var("p")]), env);
     assert_eq!(r.summary.param_mode(0), Mode::Borrowed);
 }
@@ -141,7 +172,14 @@ fn borrowed_handoff_is_non_widening() {
 #[test]
 fn owned_handoff_widens_and_applies_flow() {
     // spec: §2.2 — an Owned handoff widens to Owned and applies the callee flow.
-    let env = TestEnv::default().summary("consume", sm(vec![Mode::Owned], ResultMode::Fresh, vec![ParamFlow::Consumed]));
+    let env = TestEnv::default().summary(
+        "consume",
+        sm(
+            vec![Mode::Owned],
+            ResultMode::Fresh,
+            vec![ParamFlow::Consumed],
+        ),
+    );
     let r = run(&[strparam("p")], call("consume", vec![var("p")]), env);
     assert_eq!(r.summary.param_mode(0), Mode::Owned);
     assert_eq!(r.summary.param_flow(0), ParamFlow::Consumed);
@@ -152,8 +190,17 @@ fn decision24_site_widens_owned_retained() {
     // spec: §2.2 rule 5 — a closure-valued (Decision-24) call site widens + Retained.
     // `f` is a param binding used as a callee ⇒ closure value ⇒ Decision-24.
     let env = TestEnv::default();
-    let r = run(&[(Symbol::from("f"), ConcreteType::Fn(vec![], Box::new(ConcreteType::String))), strparam("p")],
-        bare_call("f", vec![var("p")]), env);
+    let r = run(
+        &[
+            (
+                Symbol::from("f"),
+                ConcreteType::Fn(vec![], Box::new(ConcreteType::String)),
+            ),
+            strparam("p"),
+        ],
+        bare_call("f", vec![var("p")]),
+        env,
+    );
     assert_eq!(r.summary.param_mode(1), Mode::Owned);
     assert_eq!(r.summary.param_flow(1), ParamFlow::Retained);
 }
@@ -169,7 +216,14 @@ fn constructor_field_store_into_returned_is_into_result() {
 #[test]
 fn declared_borrowed_leaf_does_not_widen_or_escape() {
     // spec: §9.2 — a declared-Borrowed leaf stops rule 5 (no widen, no escape).
-    let env = TestEnv::default().summary("vec-len", sm(vec![Mode::Borrowed], ResultMode::Fresh, vec![ParamFlow::Consumed]));
+    let env = TestEnv::default().summary(
+        "vec-len",
+        sm(
+            vec![Mode::Borrowed],
+            ResultMode::Fresh,
+            vec![ParamFlow::Consumed],
+        ),
+    );
     let r = run(&[strparam("p")], call("vec-len", vec![var("p")]), env);
     assert_eq!(r.summary.param_mode(0), Mode::Borrowed);
 }
@@ -187,8 +241,22 @@ fn absent_fact_leaf_widens_and_escapes() {
 fn multi_site_join_borrowed_then_owned_is_owned() {
     // spec: §13.7 — Borrowed ⊔ Owned = Owned (multi-site join).
     let env = TestEnv::default()
-        .summary("readonly", sm(vec![Mode::Borrowed], ResultMode::Fresh, vec![ParamFlow::Consumed]))
-        .summary("consume", sm(vec![Mode::Owned], ResultMode::Fresh, vec![ParamFlow::Consumed]));
+        .summary(
+            "readonly",
+            sm(
+                vec![Mode::Borrowed],
+                ResultMode::Fresh,
+                vec![ParamFlow::Consumed],
+            ),
+        )
+        .summary(
+            "consume",
+            sm(
+                vec![Mode::Owned],
+                ResultMode::Fresh,
+                vec![ParamFlow::Consumed],
+            ),
+        );
     // (let [_a (readonly p)] (consume p))
     let body = MonoExpr::Let {
         bindings: vec![(Symbol::from("_a"), call("readonly", vec![var("p")]))],
@@ -204,8 +272,17 @@ fn multi_site_join_borrowed_then_owned_is_owned() {
 fn scalar_param_is_copy_never_widened() {
     // spec: §2.2 — an Int param is Copy and never widens even under Decision-24.
     let env = TestEnv::default();
-    let r = run(&[(Symbol::from("f"), ConcreteType::Fn(vec![], Box::new(ConcreteType::Int))), intparam("n")],
-        bare_call("f", vec![var("n")]), env);
+    let r = run(
+        &[
+            (
+                Symbol::from("f"),
+                ConcreteType::Fn(vec![], Box::new(ConcreteType::Int)),
+            ),
+            intparam("n"),
+        ],
+        bare_call("f", vec![var("n")]),
+        env,
+    );
     assert_eq!(r.summary.param_mode(1), Mode::Copy);
 }
 
@@ -238,7 +315,14 @@ fn return_embedded_in_constr_escapes_and_result_conditional() {
 #[test]
 fn parbind_joined_is_non_escape() {
     // spec: §4.3 — a ParBind binding is a joined spark, non-escape.
-    let env = TestEnv::default().summary("readonly", sm(vec![Mode::Borrowed], ResultMode::Fresh, vec![ParamFlow::Consumed]));
+    let env = TestEnv::default().summary(
+        "readonly",
+        sm(
+            vec![Mode::Borrowed],
+            ResultMode::Fresh,
+            vec![ParamFlow::Consumed],
+        ),
+    );
     let body = MonoExpr::ParBind {
         bindings: vec![(Symbol::from("r"), call("readonly", vec![var("p")]))],
         body: Box::new(var("r")),
@@ -255,11 +339,25 @@ fn launch_continue_launched_is_escape_edge() {
     // spec: R6 — a value used in LaunchContinue.launched escapes (suspension).
     let body = MonoExpr::LaunchContinue {
         launched: Box::new(bare_call("f", vec![var("p")])), // f is a closure value
-        continuation: Box::new(MonoExpr::IntLit { value: 0, span: s(), ty: ConcreteType::Int }),
+        continuation: Box::new(MonoExpr::IntLit {
+            value: 0,
+            span: s(),
+            ty: ConcreteType::Int,
+        }),
         span: s(),
         ty: ConcreteType::Int,
     };
-    let r = run(&[(Symbol::from("f"), ConcreteType::Fn(vec![], Box::new(ConcreteType::String))), strparam("p")], body, TestEnv::default());
+    let r = run(
+        &[
+            (
+                Symbol::from("f"),
+                ConcreteType::Fn(vec![], Box::new(ConcreteType::String)),
+            ),
+            strparam("p"),
+        ],
+        body,
+        TestEnv::default(),
+    );
     assert_eq!(r.summary.param_mode(1), Mode::Owned);
     assert_eq!(r.summary.param_flow(1), ParamFlow::Retained);
 }
@@ -284,7 +382,10 @@ fn binding_mediated_escape_widens_flow_and_escape() {
     // Flow widens Consumed → IntoResult (the returned aggregate carries x out).
     assert_eq!(r.summary.param_flow(0), ParamFlow::IntoResult);
     // The aggregate escapes (returned via the binding).
-    assert!(r.facts.escapes.values().any(|v| *v), "aggregate must escape");
+    assert!(
+        r.facts.escapes.values().any(|v| *v),
+        "aggregate must escape"
+    );
 }
 
 #[test]
@@ -294,13 +395,20 @@ fn binding_local_fresh_aggregate_does_not_escape() {
     // purely-local aggregates). `(defn f [x] (let [box (Some x)] 0))`.
     let body = MonoExpr::Let {
         bindings: vec![(Symbol::from("box"), adt(vec![var("x")]))],
-        body: Box::new(MonoExpr::IntLit { value: 0, span: s(), ty: ConcreteType::Int }),
+        body: Box::new(MonoExpr::IntLit {
+            value: 0,
+            span: s(),
+            ty: ConcreteType::Int,
+        }),
         span: s(),
         ty: ConcreteType::Int,
     };
     let r = run(&[strparam("x")], body, TestEnv::default());
     assert_eq!(r.summary.param_flow(0), ParamFlow::Consumed);
-    assert!(r.facts.escapes.values().all(|v| !*v), "local aggregate must not escape");
+    assert!(
+        r.facts.escapes.values().all(|v| !*v),
+        "local aggregate must not escape"
+    );
 }
 
 #[test]
@@ -321,9 +429,21 @@ fn binding_mediated_escape_flat_fold_chain_widens_all() {
         ty: ConcreteType::String,
     };
     let r = run(&[strparam("x")], body, TestEnv::default());
-    assert_eq!(r.summary.param_flow(0), ParamFlow::IntoResult, "x flows out through the fold-chain");
-    assert_eq!(r.facts.escapes.get(&a_span), Some(&true), "a's aggregate escapes (embedded in returned b)");
-    assert_eq!(r.facts.escapes.get(&b_span), Some(&true), "b's aggregate escapes (returned)");
+    assert_eq!(
+        r.summary.param_flow(0),
+        ParamFlow::IntoResult,
+        "x flows out through the fold-chain"
+    );
+    assert_eq!(
+        r.facts.escapes.get(&a_span),
+        Some(&true),
+        "a's aggregate escapes (embedded in returned b)"
+    );
+    assert_eq!(
+        r.facts.escapes.get(&b_span),
+        Some(&true),
+        "b's aggregate escapes (returned)"
+    );
 }
 
 #[test]
@@ -341,7 +461,11 @@ fn parbind_returned_binding_escapes_folded_param() {
     };
     let r = run(&[strparam("x")], body, TestEnv::default());
     assert_eq!(r.summary.param_flow(0), ParamFlow::IntoResult);
-    assert_eq!(r.facts.escapes.get(&r_span), Some(&true), "returned spark aggregate escapes");
+    assert_eq!(
+        r.facts.escapes.get(&r_span),
+        Some(&true),
+        "returned spark aggregate escapes"
+    );
 }
 
 #[test]
@@ -379,7 +503,10 @@ fn match_arm_shadow_drops_ambiguous_provenance() {
     // match seam. `(defn f [g h] (let [x (gcells g)] (match h [(Box g) x])))`.
     let arm = MonoMatchArm {
         pattern: Pattern::Constructor {
-            name: cranelisp_types::SymbolRef { module: None, name: Symbol::from("Box") },
+            name: cranelisp_types::SymbolRef {
+                module: None,
+                name: Symbol::from("Box"),
+            },
             bindings: vec![Symbol::from("g")],
             span: s(),
         },
@@ -396,7 +523,10 @@ fn match_arm_shadow_drops_ambiguous_provenance() {
         ty: ConcreteType::String,
     };
     let outer = MonoExpr::Let {
-        bindings: vec![(Symbol::from("x"), call_sp(Span::new(50, 51), "gcells", vec![var("g")]))],
+        bindings: vec![(
+            Symbol::from("x"),
+            call_sp(Span::new(50, 51), "gcells", vec![var("g")]),
+        )],
         body: Box::new(m),
         span: s(),
         ty: ConcreteType::String,
@@ -415,7 +545,10 @@ fn match_arm_no_shadow_keeps_provenance() {
     // `(defn f [g h] (let [x (gcells g)] (match h [(Box k) x])))`.
     let arm = MonoMatchArm {
         pattern: Pattern::Constructor {
-            name: cranelisp_types::SymbolRef { module: None, name: Symbol::from("Box") },
+            name: cranelisp_types::SymbolRef {
+                module: None,
+                name: Symbol::from("Box"),
+            },
             bindings: vec![Symbol::from("k")],
             span: s(),
         },
@@ -432,7 +565,10 @@ fn match_arm_no_shadow_keeps_provenance() {
         ty: ConcreteType::String,
     };
     let outer = MonoExpr::Let {
-        bindings: vec![(Symbol::from("x"), call_sp(Span::new(50, 51), "gcells", vec![var("g")]))],
+        bindings: vec![(
+            Symbol::from("x"),
+            call_sp(Span::new(50, 51), "gcells", vec![var("g")]),
+        )],
         body: Box::new(m),
         span: s(),
         ty: ConcreteType::String,
@@ -459,7 +595,10 @@ fn match_whole_var_pattern_returning_scrutinee_records_scrutinee_escape() {
     // scrutinee re-walk.
     let scrut_span = Span::new(10, 20);
     let arm = MonoMatchArm {
-        pattern: Pattern::Var { name: Symbol::from("r"), span: s() },
+        pattern: Pattern::Var {
+            name: Symbol::from("r"),
+            span: s(),
+        },
         body: var("r"),
         span: Span::new(30, 31),
         provenance: None,
@@ -475,7 +614,11 @@ fn match_whole_var_pattern_returning_scrutinee_records_scrutinee_escape() {
     };
     let env = TestEnv::default().summary(
         "vec-set",
-        sm(vec![Mode::Owned], ResultMode::Fresh, vec![ParamFlow::Consumed]),
+        sm(
+            vec![Mode::Owned],
+            ResultMode::Fresh,
+            vec![ParamFlow::Consumed],
+        ),
     );
     let r = run(&[strparam("v")], m, env);
     assert_eq!(
@@ -493,7 +636,10 @@ fn match_whole_var_pattern_scrutinee_not_returned_does_not_escape() {
     // `(defn f [v] (match (vec-set v) [r (other)]))`.
     let scrut_span = Span::new(10, 20);
     let arm = MonoMatchArm {
-        pattern: Pattern::Var { name: Symbol::from("r"), span: s() },
+        pattern: Pattern::Var {
+            name: Symbol::from("r"),
+            span: s(),
+        },
         body: call("other", vec![]),
         span: Span::new(30, 31),
         provenance: None,
@@ -507,7 +653,14 @@ fn match_whole_var_pattern_scrutinee_not_returned_does_not_escape() {
         ty: ConcreteType::String,
     };
     let env = TestEnv::default()
-        .summary("vec-set", sm(vec![Mode::Owned], ResultMode::Fresh, vec![ParamFlow::Consumed]))
+        .summary(
+            "vec-set",
+            sm(
+                vec![Mode::Owned],
+                ResultMode::Fresh,
+                vec![ParamFlow::Consumed],
+            ),
+        )
         .summary("other", sm(vec![], ResultMode::Fresh, vec![]));
     let r = run(&[strparam("v")], m, env);
     assert_eq!(
@@ -564,14 +717,25 @@ fn unshadowed_projection_keeps_provenance() {
 
 /// An accessor call `(acc x)` with a ProjectionOf(0) summary.
 fn accessor_env() -> TestEnv {
-    TestEnv::default().summary("gcells", sm(vec![Mode::Borrowed], ResultMode::ProjectionOf(0), vec![ParamFlow::Consumed]))
+    TestEnv::default().summary(
+        "gcells",
+        sm(
+            vec![Mode::Borrowed],
+            ResultMode::ProjectionOf(0),
+            vec![ParamFlow::Consumed],
+        ),
+    )
 }
 
 #[test]
 fn accessor_result_is_projection_rooted_in_param() {
     // spec: §4.4 — a ProjectionOf accessor result roots in the arg's root; the
     // param stays Borrowed (rc-free read path).
-    let r = run(&[strparam("g")], call("gcells", vec![var("g")]), accessor_env());
+    let r = run(
+        &[strparam("g")],
+        call("gcells", vec![var("g")]),
+        accessor_env(),
+    );
     assert_eq!(r.summary.param_mode(0), Mode::Borrowed);
     assert_eq!(r.summary.result, ResultMode::ProjectionOf(0));
     // Provenance fact recorded on the accessor Apply with root `g`.
@@ -579,10 +743,64 @@ fn accessor_result_is_projection_rooted_in_param() {
 }
 
 #[test]
+fn result_fact_projection_and_alias_take_distinct_transfer_paths() {
+    // Sprint 117 R-2 fallback unit: the production RC shape may legitimately
+    // coincide once either escaping reference is materialised, but the transfer
+    // consumer must not erase the semantic distinction. Projection records the
+    // argument root as site provenance and publishes ProjectionOf; Alias carries
+    // the argument origin verbatim and publishes AliasOf with no projection-site
+    // provenance.
+    let apply_span = Span::new(10, 20);
+    let body = call_sp(apply_span, "leaf", vec![var("v")]);
+    let projection = run(
+        &[strparam("v")],
+        body.clone(),
+        TestEnv::default().summary(
+            "leaf",
+            sm(
+                vec![Mode::Borrowed],
+                ResultMode::ProjectionOf(0),
+                vec![ParamFlow::Consumed],
+            ),
+        ),
+    );
+    let alias = run(
+        &[strparam("v")],
+        body,
+        TestEnv::default().summary(
+            "leaf",
+            sm(
+                vec![Mode::Borrowed],
+                ResultMode::AliasOf(0),
+                vec![ParamFlow::Consumed],
+            ),
+        ),
+    );
+
+    assert_eq!(projection.summary.result, ResultMode::ProjectionOf(0));
+    assert_eq!(
+        projection.facts.provenance.get(&apply_span),
+        Some(&Symbol::from("v"))
+    );
+    assert_eq!(alias.summary.result, ResultMode::AliasOf(0));
+    assert!(
+        !alias.facts.provenance.contains_key(&apply_span),
+        "AliasOf carries the argument origin; it must not mint projection provenance"
+    );
+}
+
+#[test]
 fn chained_projection_collapses_to_one_root() {
     // spec: §4.2 rule 1 — a chained projection collapses to the single root `g`.
     // (get (gcells g))  where get: [Borrowed] -> ProjectionOf(0)
-    let env = accessor_env().summary("get", sm(vec![Mode::Borrowed], ResultMode::ProjectionOf(0), vec![ParamFlow::Consumed]));
+    let env = accessor_env().summary(
+        "get",
+        sm(
+            vec![Mode::Borrowed],
+            ResultMode::ProjectionOf(0),
+            vec![ParamFlow::Consumed],
+        ),
+    );
     let body = call("get", vec![call("gcells", vec![var("g")])]);
     let r = run(&[strparam("g")], body, env);
     assert_eq!(r.summary.param_mode(0), Mode::Borrowed);
@@ -595,7 +813,10 @@ fn match_arm_binding_is_projection_of_scrutinee() {
     // rooted in the scrutinee; the scrutinee param stays Borrowed.
     let arm = MonoMatchArm {
         pattern: Pattern::Constructor {
-            name: cranelisp_types::SymbolRef { module: None, name: Symbol::from("Box") },
+            name: cranelisp_types::SymbolRef {
+                module: None,
+                name: Symbol::from("Box"),
+            },
             bindings: vec![Symbol::from("inner")],
             span: s(),
         },
@@ -639,11 +860,22 @@ fn row5_row6_projection_out_of_container_inherits_reach() {
     // the projection laundered v → `Fresh` (the freed-COW-read B-1 defect).
     let env = TestEnv::default().summary(
         "vec-get",
-        sm(vec![Mode::Borrowed, Mode::Copy], ResultMode::ProjectionOf(0), vec![ParamFlow::Consumed, ParamFlow::Consumed]),
+        sm(
+            vec![Mode::Borrowed, Mode::Copy],
+            ResultMode::ProjectionOf(0),
+            vec![ParamFlow::Consumed, ParamFlow::Consumed],
+        ),
     );
     let getv = call(
         "vec-get",
-        vec![adt(vec![var("v")]), MonoExpr::IntLit { value: 0, span: s(), ty: ConcreteType::Int }],
+        vec![
+            adt(vec![var("v")]),
+            MonoExpr::IntLit {
+                value: 0,
+                span: s(),
+                ty: ConcreteType::Int,
+            },
+        ],
     );
     let r = run(&[strparam("v")], getv, env);
     assert_eq!(
@@ -663,10 +895,17 @@ fn row3_conditional_scrutinee_whole_var_binds_conditional_no_hard_claim() {
     // scrutinee. Pre-§16 the arm bound a hard `Projection(v)` (the narrowing).
     let env = TestEnv::default().summary(
         "cow",
-        sm(vec![Mode::Borrowed], ResultMode::MayAliasOf(0), vec![ParamFlow::Consumed]),
+        sm(
+            vec![Mode::Borrowed],
+            ResultMode::MayAliasOf(0),
+            vec![ParamFlow::Consumed],
+        ),
     );
     let arm = MonoMatchArm {
-        pattern: Pattern::Var { name: Symbol::from("r"), span: s() },
+        pattern: Pattern::Var {
+            name: Symbol::from("r"),
+            span: s(),
+        },
         body: var("r"),
         span: s(),
         provenance: None,
@@ -700,17 +939,33 @@ fn row7_captured_let_bound_param_alias_retains_param() {
     // a fresh local (the freed-heap read I-1).
     let env = TestEnv::default().summary(
         "readonly",
-        sm(vec![Mode::Borrowed], ResultMode::Fresh, vec![ParamFlow::Consumed]),
+        sm(
+            vec![Mode::Borrowed],
+            ResultMode::Fresh,
+            vec![ParamFlow::Consumed],
+        ),
     );
     let body = MonoExpr::Let {
         bindings: vec![(Symbol::from("r"), var("v"))],
-        body: Box::new(lambda_sp(Span::new(300, 301), vec![], call("readonly", vec![var("r")]))),
+        body: Box::new(lambda_sp(
+            Span::new(300, 301),
+            vec![],
+            call("readonly", vec![var("r")]),
+        )),
         span: s(),
         ty: ConcreteType::String,
     };
     let r = run(&[strparam("v")], body, env);
-    assert_eq!(r.summary.param_mode(0), Mode::Owned, "captured param alias retains v (I-1)");
-    assert_eq!(r.summary.param_flow(0), ParamFlow::Retained, "v escapes via the capture");
+    assert_eq!(
+        r.summary.param_mode(0),
+        Mode::Owned,
+        "captured param alias retains v (I-1)"
+    );
+    assert_eq!(
+        r.summary.param_flow(0),
+        ParamFlow::Retained,
+        "v escapes via the capture"
+    );
 }
 
 // A COW call `(cow v)` with an explicit span (a `MayAliasOf(0)` result) — the
@@ -741,11 +996,18 @@ fn row3_escape_whole_var_arm_records_scrutinee_escape() {
     // scrutinee while `r` returns it → UAF.
     let env = TestEnv::default().summary(
         "cow",
-        sm(vec![Mode::Borrowed], ResultMode::MayAliasOf(0), vec![ParamFlow::Consumed]),
+        sm(
+            vec![Mode::Borrowed],
+            ResultMode::MayAliasOf(0),
+            vec![ParamFlow::Consumed],
+        ),
     );
     let cow_span = Span::new(500, 501);
     let arm = MonoMatchArm {
-        pattern: Pattern::Var { name: Symbol::from("r"), span: s() },
+        pattern: Pattern::Var {
+            name: Symbol::from("r"),
+            span: s(),
+        },
         body: var("r"),
         span: s(),
         provenance: None,
@@ -774,12 +1036,23 @@ fn row3_escape_whole_var_arm_scrutinee_stays_non_escaping_when_consumed_in_frame
     // the scrutinee re-walk.
     let env = TestEnv::default().summary(
         "cow",
-        sm(vec![Mode::Borrowed], ResultMode::MayAliasOf(0), vec![ParamFlow::Consumed]),
+        sm(
+            vec![Mode::Borrowed],
+            ResultMode::MayAliasOf(0),
+            vec![ParamFlow::Consumed],
+        ),
     );
     let cow_span = Span::new(510, 511);
     let arm = MonoMatchArm {
-        pattern: Pattern::Var { name: Symbol::from("r"), span: s() },
-        body: MonoExpr::IntLit { value: 0, span: s(), ty: ConcreteType::Int },
+        pattern: Pattern::Var {
+            name: Symbol::from("r"),
+            span: s(),
+        },
+        body: MonoExpr::IntLit {
+            value: 0,
+            span: s(),
+            ty: ConcreteType::Int,
+        },
         span: s(),
         provenance: None,
         resolved_ctor: None,
@@ -815,18 +1088,30 @@ fn cow_container_projected_out_records_escape_msp7() {
     let env = TestEnv::default()
         .summary(
             "vec-get",
-            sm(vec![Mode::Borrowed, Mode::Copy], ResultMode::ProjectionOf(0), vec![ParamFlow::Consumed, ParamFlow::Consumed]),
+            sm(
+                vec![Mode::Borrowed, Mode::Copy],
+                ResultMode::ProjectionOf(0),
+                vec![ParamFlow::Consumed, ParamFlow::Consumed],
+            ),
         )
         .summary(
             "cow",
-            sm(vec![Mode::Owned], ResultMode::MayAliasOf(0), vec![ParamFlow::IntoResult]),
+            sm(
+                vec![Mode::Owned],
+                ResultMode::MayAliasOf(0),
+                vec![ParamFlow::IntoResult],
+            ),
         );
     let cow_span = Span::new(600, 601);
     let getv = call(
         "vec-get",
         vec![
             call_sp(cow_span, "cow", vec![var("v")]),
-            MonoExpr::IntLit { value: 0, span: s(), ty: ConcreteType::Int },
+            MonoExpr::IntLit {
+                value: 0,
+                span: s(),
+                ty: ConcreteType::Int,
+            },
         ],
     );
     let r = run(&[strparam("v")], getv, env);
@@ -846,7 +1131,11 @@ fn fresh_container_projected_out_stays_non_escaping() {
     let env = TestEnv::default()
         .summary(
             "vec-get",
-            sm(vec![Mode::Borrowed, Mode::Copy], ResultMode::ProjectionOf(0), vec![ParamFlow::Consumed, ParamFlow::Consumed]),
+            sm(
+                vec![Mode::Borrowed, Mode::Copy],
+                ResultMode::ProjectionOf(0),
+                vec![ParamFlow::Consumed, ParamFlow::Consumed],
+            ),
         )
         .summary("mk", sm(vec![], ResultMode::Fresh, vec![]));
     let mk_span = Span::new(610, 611);
@@ -854,7 +1143,11 @@ fn fresh_container_projected_out_stays_non_escaping() {
         "vec-get",
         vec![
             call_sp(mk_span, "mk", vec![]),
-            MonoExpr::IntLit { value: 0, span: s(), ty: ConcreteType::Int },
+            MonoExpr::IntLit {
+                value: 0,
+                span: s(),
+                ty: ConcreteType::Int,
+            },
         ],
     );
     let r = run(&[strparam("v")], getv, env);
@@ -878,11 +1171,19 @@ fn cow_container_transferred_to_call_stays_non_escaping_lc3() {
     let env = TestEnv::default()
         .summary(
             "consume",
-            sm(vec![Mode::Borrowed], ResultMode::Fresh, vec![ParamFlow::Consumed]),
+            sm(
+                vec![Mode::Borrowed],
+                ResultMode::Fresh,
+                vec![ParamFlow::Consumed],
+            ),
         )
         .summary(
             "cow",
-            sm(vec![Mode::Owned], ResultMode::MayAliasOf(0), vec![ParamFlow::IntoResult]),
+            sm(
+                vec![Mode::Owned],
+                ResultMode::MayAliasOf(0),
+                vec![ParamFlow::IntoResult],
+            ),
         );
     let cow_span = Span::new(620, 621);
     let body = call("consume", vec![call_sp(cow_span, "cow", vec![var("v")])]);
@@ -917,11 +1218,19 @@ fn chained_env() -> TestEnv {
         )
         .summary(
             "cow",
-            sm(vec![Mode::Owned], ResultMode::MayAliasOf(0), vec![ParamFlow::IntoResult]),
+            sm(
+                vec![Mode::Owned],
+                ResultMode::MayAliasOf(0),
+                vec![ParamFlow::IntoResult],
+            ),
         )
         .summary(
             "consume",
-            sm(vec![Mode::Borrowed], ResultMode::Fresh, vec![ParamFlow::Consumed]),
+            sm(
+                vec![Mode::Borrowed],
+                ResultMode::Fresh,
+                vec![ParamFlow::Consumed],
+            ),
         )
 }
 
@@ -939,7 +1248,11 @@ fn msp7_chained_nested_cow_projection_forces_escape_at_every_link() {
         "vec-get",
         vec![
             call_sp(outer, "cow", vec![call_sp(inner, "cow", vec![var("v")])]),
-            MonoExpr::IntLit { value: 0, span: s(), ty: ConcreteType::Int },
+            MonoExpr::IntLit {
+                value: 0,
+                span: s(),
+                ty: ConcreteType::Int,
+            },
         ],
     );
     let r = run(&[strparam("v")], body, chained_env());
@@ -971,7 +1284,11 @@ fn msp7_chained_let_bound_cow_projection_forces_escape_at_every_link() {
             "vec-get",
             vec![
                 call_sp(outer, "cow", vec![var("w")]),
-                MonoExpr::IntLit { value: 0, span: s(), ty: ConcreteType::Int },
+                MonoExpr::IntLit {
+                    value: 0,
+                    span: s(),
+                    ty: ConcreteType::Int,
+                },
             ],
         )),
         span: s(),
@@ -1011,11 +1328,19 @@ fn msp7_chained_whole_value_transfer_without_projection_stays_non_escaping() {
     let outer = Span::new(722, 723);
     let env = chained_env().summary(
         "cow",
-        sm(vec![Mode::Borrowed], ResultMode::MayAliasOf(0), vec![ParamFlow::Consumed]),
+        sm(
+            vec![Mode::Borrowed],
+            ResultMode::MayAliasOf(0),
+            vec![ParamFlow::Consumed],
+        ),
     );
     let body = call(
         "consume",
-        vec![call_sp(outer, "cow", vec![call_sp(inner, "cow", vec![var("v")])])],
+        vec![call_sp(
+            outer,
+            "cow",
+            vec![call_sp(inner, "cow", vec![var("v")])],
+        )],
     );
     let r = run(&[strparam("v")], body, env);
     assert_eq!(
@@ -1041,7 +1366,11 @@ fn msp7_chained_if_container_projection_forces_escape_in_both_arms() {
     let then_span = Span::new(730, 731);
     let else_span = Span::new(732, 733);
     let container = MonoExpr::If {
-        cond: Box::new(MonoExpr::BoolLit { value: true, span: s(), ty: ConcreteType::Bool }),
+        cond: Box::new(MonoExpr::BoolLit {
+            value: true,
+            span: s(),
+            ty: ConcreteType::Bool,
+        }),
         then_branch: Box::new(call_sp(then_span, "cow", vec![var("v")])),
         else_branch: Box::new(call_sp(else_span, "cow", vec![var("v")])),
         span: s(),
@@ -1049,7 +1378,14 @@ fn msp7_chained_if_container_projection_forces_escape_in_both_arms() {
     };
     let body = call(
         "vec-get",
-        vec![container, MonoExpr::IntLit { value: 0, span: s(), ty: ConcreteType::Int }],
+        vec![
+            container,
+            MonoExpr::IntLit {
+                value: 0,
+                span: s(),
+                ty: ConcreteType::Int,
+            },
+        ],
     );
     let r = run(&[strparam("v")], body, chained_env());
     assert_eq!(
@@ -1070,7 +1406,10 @@ fn shadowed_root_emits_no_provenance() {
     // scrutinee is `p`; arm binds a field also named `p`.
     let arm = MonoMatchArm {
         pattern: Pattern::Constructor {
-            name: cranelisp_types::SymbolRef { module: None, name: Symbol::from("Box") },
+            name: cranelisp_types::SymbolRef {
+                module: None,
+                name: Symbol::from("Box"),
+            },
             bindings: vec![Symbol::from("p")],
             span: s(),
         },
@@ -1104,7 +1443,11 @@ fn shadowed_root_emits_no_provenance() {
 /// An `if` with a `BoolLit` cond over the two given branches.
 fn if_(then_branch: MonoExpr, else_branch: MonoExpr) -> MonoExpr {
     MonoExpr::If {
-        cond: Box::new(MonoExpr::BoolLit { value: true, span: s(), ty: ConcreteType::Bool }),
+        cond: Box::new(MonoExpr::BoolLit {
+            value: true,
+            span: s(),
+            ty: ConcreteType::Bool,
+        }),
         then_branch: Box::new(then_branch),
         else_branch: Box::new(else_branch),
         span: s(),
@@ -1123,7 +1466,11 @@ fn partial_if_one_arm_param_other_fresh_is_alias_not_fresh() {
     let env = TestEnv::default().summary("other", sm(vec![], ResultMode::Fresh, vec![]));
     let body = if_(var("p"), call("other", vec![]));
     let r = run(&[strparam("p")], body, env);
-    assert_eq!(r.summary.result, ResultMode::MayAliasOf(0), "partial param-return must be MayAliasOf(0), not Fresh");
+    assert_eq!(
+        r.summary.result,
+        ResultMode::MayAliasOf(0),
+        "partial param-return must be MayAliasOf(0), not Fresh"
+    );
 }
 
 #[test]
@@ -1135,7 +1482,11 @@ fn nested_partial_if_param_reaches_is_alias_not_fresh() {
     let inner = if_(var("p"), call("other", vec![]));
     let body = if_(inner, call("other", vec![]));
     let r = run(&[strparam("p")], body, env);
-    assert_eq!(r.summary.result, ResultMode::MayAliasOf(0), "param reaching through nested if must be MayAliasOf(0)");
+    assert_eq!(
+        r.summary.result,
+        ResultMode::MayAliasOf(0),
+        "param reaching through nested if must be MayAliasOf(0)"
+    );
 }
 
 #[test]
@@ -1151,7 +1502,11 @@ fn let_bound_alias_returned_partially_is_alias_not_fresh() {
         ty: ConcreteType::String,
     };
     let r = run(&[strparam("p")], body, env);
-    assert_eq!(r.summary.result, ResultMode::MayAliasOf(0), "let-aliased partial param-return must be MayAliasOf(0)");
+    assert_eq!(
+        r.summary.result,
+        ResultMode::MayAliasOf(0),
+        "let-aliased partial param-return must be MayAliasOf(0)"
+    );
 }
 
 #[test]
@@ -1162,7 +1517,10 @@ fn partial_match_some_arms_param_others_fresh_is_alias_not_fresh() {
     let env = TestEnv::default().summary("other", sm(vec![], ResultMode::Fresh, vec![]));
     let arm1 = MonoMatchArm {
         pattern: Pattern::Constructor {
-            name: cranelisp_types::SymbolRef { module: None, name: Symbol::from("Box") },
+            name: cranelisp_types::SymbolRef {
+                module: None,
+                name: Symbol::from("Box"),
+            },
             bindings: vec![Symbol::from("k")],
             span: s(),
         },
@@ -1186,7 +1544,11 @@ fn partial_match_some_arms_param_others_fresh_is_alias_not_fresh() {
         ty: ConcreteType::String,
     };
     let r = run(&[strparam("p")], body, env);
-    assert_eq!(r.summary.result, ResultMode::MayAliasOf(0), "match with one param-returning arm must be MayAliasOf(0)");
+    assert_eq!(
+        r.summary.result,
+        ResultMode::MayAliasOf(0),
+        "match with one param-returning arm must be MayAliasOf(0)"
+    );
 }
 
 #[test]
@@ -1200,7 +1562,11 @@ fn partial_if_projection_arm_is_projection_not_fresh() {
     let env = accessor_env().summary("other", sm(vec![], ResultMode::Fresh, vec![]));
     let body = if_(call("gcells", vec![var("p")]), call("other", vec![]));
     let r = run(&[strparam("p")], body, env);
-    assert_eq!(r.summary.result, ResultMode::MayAliasOf(0), "partial projection-return is a conditional claim ⇒ MayAliasOf(0)");
+    assert_eq!(
+        r.summary.result,
+        ResultMode::MayAliasOf(0),
+        "partial projection-return is a conditional claim ⇒ MayAliasOf(0)"
+    );
 }
 
 #[test]
@@ -1213,8 +1579,16 @@ fn multi_distinct_param_return_is_not_fresh() {
     // protect on a returned param).
     let body = if_(var("v"), var("w"));
     let r = run(&[strparam("v"), strparam("w")], body, TestEnv::default());
-    assert_ne!(r.summary.result, ResultMode::Fresh, "multi-distinct-param return must not be Fresh");
-    assert_eq!(r.summary.result, ResultMode::MayAliasOf(0), "conservative representative is the lowest reaching index");
+    assert_ne!(
+        r.summary.result,
+        ResultMode::Fresh,
+        "multi-distinct-param return must not be Fresh"
+    );
+    assert_eq!(
+        r.summary.result,
+        ResultMode::MayAliasOf(0),
+        "conservative representative is the lowest reaching index"
+    );
 }
 
 // ---- regression pins: the definite cases must stay precise (no OVER-widen) ----
@@ -1225,7 +1599,11 @@ fn full_if_both_arms_same_param_is_alias() {
     // param ⇒ the DEFINITE AliasOf, unchanged by the cure (v is param 1 here).
     let body = if_(var("v"), var("v"));
     let r = run(&[strparam("b"), strparam("v")], body, TestEnv::default());
-    assert_eq!(r.summary.result, ResultMode::AliasOf(1), "full-if same-param stays the precise AliasOf(1)");
+    assert_eq!(
+        r.summary.result,
+        ResultMode::AliasOf(1),
+        "full-if same-param stays the precise AliasOf(1)"
+    );
 }
 
 #[test]
@@ -1237,7 +1615,11 @@ fn both_arms_fresh_stays_fresh_no_over_widen() {
     let env = TestEnv::default().summary("other", sm(vec![], ResultMode::Fresh, vec![]));
     let body = if_(call("other", vec![]), call("other", vec![]));
     let r = run(&[strparam("p")], body, env);
-    assert_eq!(r.summary.result, ResultMode::Fresh, "both-fresh must stay Fresh (no over-widen)");
+    assert_eq!(
+        r.summary.result,
+        ResultMode::Fresh,
+        "both-fresh must stay Fresh (no over-widen)"
+    );
 }
 
 #[test]
@@ -1245,9 +1627,20 @@ fn direct_apply_alias_composition_unchanged() {
     // spec: §4.2 (0520 regression pin) — `(idv v)` where idv: AliasOf(0). A
     // direct Apply body composes the callee result: v (param) flows through ⇒
     // AliasOf(0). The cure preserves this (the fixpoint composes Apply results).
-    let env = TestEnv::default().summary("idv", sm(vec![Mode::Owned], ResultMode::AliasOf(0), vec![ParamFlow::IntoResult]));
+    let env = TestEnv::default().summary(
+        "idv",
+        sm(
+            vec![Mode::Owned],
+            ResultMode::AliasOf(0),
+            vec![ParamFlow::IntoResult],
+        ),
+    );
     let r = run(&[strparam("v")], call("idv", vec![var("v")]), env);
-    assert_eq!(r.summary.result, ResultMode::AliasOf(0), "direct-Apply AliasOf composition stays AliasOf(0)");
+    assert_eq!(
+        r.summary.result,
+        ResultMode::AliasOf(0),
+        "direct-Apply AliasOf composition stays AliasOf(0)"
+    );
 }
 
 #[test]
@@ -1257,10 +1650,25 @@ fn apply_alias_of_fresh_arg_stays_fresh_no_over_widen() {
     // fresh. Carrying the arg origin through must keep `Fresh` (a not-Fresh here
     // would keep an unneeded inc on a fresh temporary → leak, and move codegen).
     let env = TestEnv::default()
-        .summary("idv", sm(vec![Mode::Owned], ResultMode::AliasOf(0), vec![ParamFlow::IntoResult]))
+        .summary(
+            "idv",
+            sm(
+                vec![Mode::Owned],
+                ResultMode::AliasOf(0),
+                vec![ParamFlow::IntoResult],
+            ),
+        )
         .summary("other", sm(vec![], ResultMode::Fresh, vec![]));
-    let r = run(&[strparam("p")], call("idv", vec![call("other", vec![])]), env);
-    assert_eq!(r.summary.result, ResultMode::Fresh, "AliasOf of a fresh arg stays Fresh (no over-widen)");
+    let r = run(
+        &[strparam("p")],
+        call("idv", vec![call("other", vec![])]),
+        env,
+    );
+    assert_eq!(
+        r.summary.result,
+        ResultMode::Fresh,
+        "AliasOf of a fresh arg stays Fresh (no over-widen)"
+    );
 }
 
 // spec: design/arch/ownership-inference.md §3.7/§15.4 — the MayAliasOf CONSUMER
@@ -1274,8 +1682,15 @@ fn apply_alias_of_fresh_arg_stays_fresh_no_over_widen() {
 fn apply_may_alias_of_param_arg_is_may_alias_not_fresh() {
     let env = TestEnv::default().summary(
         "vec-set",
-        sm(vec![Mode::Owned, Mode::Copy, Mode::Owned], ResultMode::MayAliasOf(0),
-           vec![ParamFlow::Consumed, ParamFlow::Consumed, ParamFlow::IntoResult]),
+        sm(
+            vec![Mode::Owned, Mode::Copy, Mode::Owned],
+            ResultMode::MayAliasOf(0),
+            vec![
+                ParamFlow::Consumed,
+                ParamFlow::Consumed,
+                ParamFlow::IntoResult,
+            ],
+        ),
     );
     let body = call("vec-set", vec![var("v"), var("i"), var("x")]);
     let r = run(&[strparam("v"), intparam("i"), strparam("x")], body, env);
@@ -1286,6 +1701,69 @@ fn apply_may_alias_of_param_arg_is_may_alias_not_fresh() {
     );
 }
 
+#[test]
+fn result_fact_may_alias_and_alias_take_distinct_cow_transfer_paths() {
+    // Sprint 117 R-2 fallback unit: compose the leaf result into a projection.
+    // MayAliasOf mints a conditional COW link, so projection-out forces that
+    // allocation site's escape/protect fact. AliasOf is unconditional: the
+    // projection records ordinary root provenance and does not force the leaf
+    // allocation site to escape.
+    let leaf_span = Span::new(30, 40);
+    let project_span = Span::new(50, 60);
+    let body = call_sp(
+        project_span,
+        "project",
+        vec![call_sp(leaf_span, "leaf", vec![var("v")])],
+    );
+    let project = sm(
+        vec![Mode::Borrowed],
+        ResultMode::ProjectionOf(0),
+        vec![ParamFlow::Consumed],
+    );
+    let may_alias = run(
+        &[strparam("v")],
+        body.clone(),
+        TestEnv::default()
+            .summary(
+                "leaf",
+                sm(
+                    vec![Mode::Borrowed],
+                    ResultMode::MayAliasOf(0),
+                    vec![ParamFlow::Consumed],
+                ),
+            )
+            .summary("project", project.clone()),
+    );
+    let alias = run(
+        &[strparam("v")],
+        body,
+        TestEnv::default()
+            .summary(
+                "leaf",
+                sm(
+                    vec![Mode::Borrowed],
+                    ResultMode::AliasOf(0),
+                    vec![ParamFlow::Consumed],
+                ),
+            )
+            .summary("project", project),
+    );
+
+    assert_eq!(may_alias.summary.result, ResultMode::MayAliasOf(0));
+    assert_eq!(may_alias.facts.escapes.get(&leaf_span), Some(&true));
+    assert!(
+        !may_alias.facts.provenance.contains_key(&project_span),
+        "a conditional COW result must not strengthen to projection provenance"
+    );
+
+    assert_eq!(alias.summary.result, ResultMode::ProjectionOf(0));
+    assert_eq!(alias.facts.escapes.get(&leaf_span), Some(&false));
+    assert_eq!(
+        alias.facts.provenance.get(&project_span),
+        Some(&Symbol::from("v"))
+    );
+}
+
 // spec: §3.7/§15.4 — the MayAliasOf consumer arm with a FRESH arg. `(vec-set
 // (fresh) 0 x)`: param 0 is a fresh temporary, so the result cannot reach any
 // of THIS body's params ⇒ genuinely Fresh (join Fresh with a Fresh arg ⇒ Fresh).
@@ -1293,12 +1771,26 @@ fn apply_may_alias_of_param_arg_is_may_alias_not_fresh() {
 #[test]
 fn apply_may_alias_of_fresh_arg_stays_fresh() {
     let env = TestEnv::default()
-        .summary("vec-set", sm(vec![Mode::Owned, Mode::Copy, Mode::Owned], ResultMode::MayAliasOf(0),
-            vec![ParamFlow::Consumed, ParamFlow::Consumed, ParamFlow::IntoResult]))
+        .summary(
+            "vec-set",
+            sm(
+                vec![Mode::Owned, Mode::Copy, Mode::Owned],
+                ResultMode::MayAliasOf(0),
+                vec![
+                    ParamFlow::Consumed,
+                    ParamFlow::Consumed,
+                    ParamFlow::IntoResult,
+                ],
+            ),
+        )
         .summary("fresh", sm(vec![], ResultMode::Fresh, vec![]));
     let body = call("vec-set", vec![call("fresh", vec![]), var("i"), var("x")]);
     let r = run(&[intparam("i"), strparam("x")], body, env);
-    assert_eq!(r.summary.result, ResultMode::Fresh, "MayAliasOf of a fresh source stays Fresh (no over-widen)");
+    assert_eq!(
+        r.summary.result,
+        ResultMode::Fresh,
+        "MayAliasOf of a fresh source stays Fresh (no over-widen)"
+    );
 }
 
 // =================== Lexical-scope discipline (F4) ===================
@@ -1312,8 +1804,14 @@ fn branch_sibling_shadow_does_not_narrow_param_shadow_first() {
     // `Projection(g)` state, `param_root(a)` misses param 0, and `param_modes[0]`
     // narrows Owned→Borrowed (the UNSOUND direction on the ABI-bearing half).
     // `(defn f [a g] (if c (let [a (gcells g)] a) (consume a)))`.
-    let env = accessor_env()
-        .summary("consume", sm(vec![Mode::Owned], ResultMode::Fresh, vec![ParamFlow::Consumed]));
+    let env = accessor_env().summary(
+        "consume",
+        sm(
+            vec![Mode::Owned],
+            ResultMode::Fresh,
+            vec![ParamFlow::Consumed],
+        ),
+    );
     let then_branch = MonoExpr::Let {
         bindings: vec![(Symbol::from("a"), call("gcells", vec![var("g")]))],
         body: Box::new(var("a")),
@@ -1321,7 +1819,11 @@ fn branch_sibling_shadow_does_not_narrow_param_shadow_first() {
         ty: ConcreteType::String,
     };
     let body = MonoExpr::If {
-        cond: Box::new(MonoExpr::BoolLit { value: true, span: s(), ty: ConcreteType::Bool }),
+        cond: Box::new(MonoExpr::BoolLit {
+            value: true,
+            span: s(),
+            ty: ConcreteType::Bool,
+        }),
         then_branch: Box::new(then_branch),
         else_branch: Box::new(call("consume", vec![var("a")])),
         span: s(),
@@ -1329,7 +1831,11 @@ fn branch_sibling_shadow_does_not_narrow_param_shadow_first() {
     };
     let r = run(&[strparam("a"), strparam("g")], body, env);
     // The param `a` is consumed (Owned) in the else branch — truth is Owned.
-    assert_eq!(r.summary.param_mode(0), Mode::Owned, "param a must widen to Owned in the sibling branch");
+    assert_eq!(
+        r.summary.param_mode(0),
+        Mode::Owned,
+        "param a must widen to Owned in the sibling branch"
+    );
 }
 
 #[test]
@@ -1339,8 +1845,14 @@ fn branch_sibling_shadow_does_not_narrow_param_use_first() {
     // orderings; this ordering happens to widen under the pre-cure walker (use
     // precedes shadow), so it is a regression guard the scope discipline must
     // not break. `(defn f [a g] (if c (consume a) (let [a (gcells g)] a)))`.
-    let env = accessor_env()
-        .summary("consume", sm(vec![Mode::Owned], ResultMode::Fresh, vec![ParamFlow::Consumed]));
+    let env = accessor_env().summary(
+        "consume",
+        sm(
+            vec![Mode::Owned],
+            ResultMode::Fresh,
+            vec![ParamFlow::Consumed],
+        ),
+    );
     let else_branch = MonoExpr::Let {
         bindings: vec![(Symbol::from("a"), call("gcells", vec![var("g")]))],
         body: Box::new(var("a")),
@@ -1348,14 +1860,22 @@ fn branch_sibling_shadow_does_not_narrow_param_use_first() {
         ty: ConcreteType::String,
     };
     let body = MonoExpr::If {
-        cond: Box::new(MonoExpr::BoolLit { value: true, span: s(), ty: ConcreteType::Bool }),
+        cond: Box::new(MonoExpr::BoolLit {
+            value: true,
+            span: s(),
+            ty: ConcreteType::Bool,
+        }),
         then_branch: Box::new(call("consume", vec![var("a")])),
         else_branch: Box::new(else_branch),
         span: s(),
         ty: ConcreteType::String,
     };
     let r = run(&[strparam("a"), strparam("g")], body, env);
-    assert_eq!(r.summary.param_mode(0), Mode::Owned, "param a must stay Owned regardless of branch order");
+    assert_eq!(
+        r.summary.param_mode(0),
+        Mode::Owned,
+        "param a must stay Owned regardless of branch order"
+    );
 }
 
 #[test]
@@ -1366,11 +1886,20 @@ fn match_arm_binding_does_not_leak_past_arm() {
     // Without a per-arm scope frame the leaked arm-1 `Projection(h)` state makes
     // `param_root(a)` miss param 0 ⇒ `param_modes[0]` narrows below truth.
     // `(defn f [a h] (match h [(Box a) a] [_ (consume a)]))`.
-    let env = TestEnv::default()
-        .summary("consume", sm(vec![Mode::Owned], ResultMode::Fresh, vec![ParamFlow::Consumed]));
+    let env = TestEnv::default().summary(
+        "consume",
+        sm(
+            vec![Mode::Owned],
+            ResultMode::Fresh,
+            vec![ParamFlow::Consumed],
+        ),
+    );
     let arm1 = MonoMatchArm {
         pattern: Pattern::Constructor {
-            name: cranelisp_types::SymbolRef { module: None, name: Symbol::from("Box") },
+            name: cranelisp_types::SymbolRef {
+                module: None,
+                name: Symbol::from("Box"),
+            },
             bindings: vec![Symbol::from("a")],
             span: s(),
         },
@@ -1394,7 +1923,11 @@ fn match_arm_binding_does_not_leak_past_arm() {
         ty: ConcreteType::String,
     };
     let r = run(&[strparam("a"), strparam("h")], body, env);
-    assert_eq!(r.summary.param_mode(0), Mode::Owned, "param a must widen to Owned in the sibling arm");
+    assert_eq!(
+        r.summary.param_mode(0),
+        Mode::Owned,
+        "param a must widen to Owned in the sibling arm"
+    );
 }
 
 // =================== Negatives ===================
@@ -1436,7 +1969,11 @@ fn intra_direct_closure_capture_of_local_escapes() {
         ty: ConcreteType::String,
     };
     let r = run(&[strparam("x")], body, TestEnv::default());
-    assert_eq!(r.facts.escapes.get(&box_span), Some(&true), "captured local aggregate escapes");
+    assert_eq!(
+        r.facts.escapes.get(&box_span),
+        Some(&true),
+        "captured local aggregate escapes"
+    );
     // x is folded into the escaping aggregate ⇒ Owned/Retained.
     assert_eq!(r.summary.param_mode(0), Mode::Owned);
     assert_eq!(r.summary.param_flow(0), ParamFlow::Retained);
@@ -1452,11 +1989,19 @@ fn intra_closure_capture_through_borrow_arg_escapes() {
     let box_span = Span::new(110, 111);
     let env = TestEnv::default().summary(
         "readonly",
-        sm(vec![Mode::Borrowed], ResultMode::Fresh, vec![ParamFlow::Consumed]),
+        sm(
+            vec![Mode::Borrowed],
+            ResultMode::Fresh,
+            vec![ParamFlow::Consumed],
+        ),
     );
     let body = MonoExpr::Let {
         bindings: vec![(Symbol::from("r"), adt_sp(box_span, vec![var("x")]))],
-        body: Box::new(lambda_sp(Span::new(112, 113), vec![], call("readonly", vec![var("r")]))),
+        body: Box::new(lambda_sp(
+            Span::new(112, 113),
+            vec![],
+            call("readonly", vec![var("r")]),
+        )),
         span: s(),
         ty: ConcreteType::String,
     };
@@ -1475,12 +2020,28 @@ fn intra_closure_capture_of_param_widens_owned_retained() {
     // (so a caller passing a fresh value sees the escape at the call site).
     let env = TestEnv::default().summary(
         "readonly",
-        sm(vec![Mode::Borrowed], ResultMode::Fresh, vec![ParamFlow::Consumed]),
+        sm(
+            vec![Mode::Borrowed],
+            ResultMode::Fresh,
+            vec![ParamFlow::Consumed],
+        ),
     );
-    let body = lambda_sp(Span::new(120, 121), vec![], call("readonly", vec![var("x")]));
+    let body = lambda_sp(
+        Span::new(120, 121),
+        vec![],
+        call("readonly", vec![var("x")]),
+    );
     let r = run(&[strparam("x")], body, env);
-    assert_eq!(r.summary.param_mode(0), Mode::Owned, "captured param widens Owned");
-    assert_eq!(r.summary.param_flow(0), ParamFlow::Retained, "captured param is Retained");
+    assert_eq!(
+        r.summary.param_mode(0),
+        Mode::Owned,
+        "captured param widens Owned"
+    );
+    assert_eq!(
+        r.summary.param_flow(0),
+        ParamFlow::Retained,
+        "captured param is Retained"
+    );
 }
 
 #[test]
@@ -1492,7 +2053,11 @@ fn inter_procedural_capture_via_callee_summary_escapes() {
     let box_span = Span::new(130, 131);
     let env = TestEnv::default().summary(
         "make-clo",
-        sm(vec![Mode::Owned], ResultMode::Fresh, vec![ParamFlow::Retained]),
+        sm(
+            vec![Mode::Owned],
+            ResultMode::Fresh,
+            vec![ParamFlow::Retained],
+        ),
     );
     let body = call("make-clo", vec![adt_sp(box_span, vec![var("x")])]);
     let r = run(&[strparam("x")], body, env);
@@ -1510,8 +2075,16 @@ fn make_clo_infers_captured_param_owned_retained() {
     // summary MUST be Owned/Retained (this is the fact the caller above consumes).
     let body = lambda_sp(Span::new(140, 141), vec![], var("x"));
     let r = run(&[strparam("x")], body, TestEnv::default());
-    assert_eq!(r.summary.param_mode(0), Mode::Owned, "make-clo param is Owned");
-    assert_eq!(r.summary.param_flow(0), ParamFlow::Retained, "make-clo param is Retained");
+    assert_eq!(
+        r.summary.param_mode(0),
+        Mode::Owned,
+        "make-clo param is Owned"
+    );
+    assert_eq!(
+        r.summary.param_flow(0),
+        ParamFlow::Retained,
+        "make-clo param is Retained"
+    );
 }
 
 #[test]
@@ -1529,7 +2102,11 @@ fn nested_closure_capture_escapes() {
         ty: ConcreteType::String,
     };
     let r = run(&[strparam("x")], body, TestEnv::default());
-    assert_eq!(r.facts.escapes.get(&box_span), Some(&true), "nested-captured local escapes");
+    assert_eq!(
+        r.facts.escapes.get(&box_span),
+        Some(&true),
+        "nested-captured local escapes"
+    );
 }
 
 #[test]
@@ -1540,14 +2117,22 @@ fn suspension_capture_through_borrow_arg_escapes() {
     let box_span = Span::new(160, 161);
     let env = TestEnv::default().summary(
         "readonly",
-        sm(vec![Mode::Borrowed], ResultMode::Fresh, vec![ParamFlow::Consumed]),
+        sm(
+            vec![Mode::Borrowed],
+            ResultMode::Fresh,
+            vec![ParamFlow::Consumed],
+        ),
     );
     let launched = call("readonly", vec![var("r")]);
     let body = MonoExpr::Let {
         bindings: vec![(Symbol::from("r"), adt_sp(box_span, vec![var("x")]))],
         body: Box::new(MonoExpr::LaunchContinue {
             launched: Box::new(launched),
-            continuation: Box::new(MonoExpr::IntLit { value: 0, span: s(), ty: ConcreteType::Int }),
+            continuation: Box::new(MonoExpr::IntLit {
+                value: 0,
+                span: s(),
+                ty: ConcreteType::Int,
+            }),
             span: s(),
             ty: ConcreteType::Int,
         }),
@@ -1572,8 +2157,15 @@ fn non_escaping_local_lambda_does_not_escape_capture() {
     // capture (that would defeat stack allocation entirely).
     let box_span = Span::new(170, 171);
     let inner = MonoExpr::Let {
-        bindings: vec![(Symbol::from("c"), lambda_sp(Span::new(172, 173), vec![], var("r")))],
-        body: Box::new(MonoExpr::IntLit { value: 0, span: s(), ty: ConcreteType::Int }),
+        bindings: vec![(
+            Symbol::from("c"),
+            lambda_sp(Span::new(172, 173), vec![], var("r")),
+        )],
+        body: Box::new(MonoExpr::IntLit {
+            value: 0,
+            span: s(),
+            ty: ConcreteType::Int,
+        }),
         span: s(),
         ty: ConcreteType::Int,
     };
@@ -1589,7 +2181,11 @@ fn non_escaping_local_lambda_does_not_escape_capture() {
         Some(&false),
         "a capture by a NON-escaping local closure does not escape (precision)"
     );
-    assert_eq!(r.summary.param_flow(0), ParamFlow::Consumed, "x stays Consumed (no over-widen)");
+    assert_eq!(
+        r.summary.param_flow(0),
+        ParamFlow::Consumed,
+        "x stays Consumed (no over-widen)"
+    );
 }
 
 #[test]
@@ -1600,9 +2196,17 @@ fn lambda_param_shadows_capture_no_spurious_escape() {
     // so `x` (unused) must stay Borrowed. (The lambda escapes, but captures nothing.)
     let env = TestEnv::default().summary(
         "readonly",
-        sm(vec![Mode::Borrowed], ResultMode::Fresh, vec![ParamFlow::Consumed]),
+        sm(
+            vec![Mode::Borrowed],
+            ResultMode::Fresh,
+            vec![ParamFlow::Consumed],
+        ),
     );
-    let body = lambda_sp(Span::new(180, 181), vec!["r"], call("readonly", vec![var("r")]));
+    let body = lambda_sp(
+        Span::new(180, 181),
+        vec!["r"],
+        call("readonly", vec![var("r")]),
+    );
     let r = run(&[strparam("x")], body, env);
     assert_eq!(
         r.summary.param_mode(0),
@@ -1628,12 +2232,23 @@ fn lambda_param_shadows_capture_no_spurious_escape() {
 // `polymorphic_higher_order_returning_adt`, `nested_match_in_arm_body`).
 
 fn int_lit(value: i64) -> MonoExpr {
-    MonoExpr::IntLit { value, span: s(), ty: ConcreteType::Int }
+    MonoExpr::IntLit {
+        value,
+        span: s(),
+        ty: ConcreteType::Int,
+    }
 }
 
 /// A `VecLit` with an explicit span.
 fn vec_sp(span: Span, elements: Vec<MonoExpr>) -> MonoExpr {
-    MonoExpr::VecLit { elements, span, ty: ConcreteType::String, escapes: None, confined: None, unique_static: None }
+    MonoExpr::VecLit {
+        elements,
+        span,
+        ty: ConcreteType::String,
+        escapes: None,
+        confined: None,
+        unique_static: None,
+    }
 }
 
 #[test]
@@ -1678,7 +2293,11 @@ fn lambda_body_return_via_hof_borrowed_arg_escapes() {
     let lam_span = Span::new(212, 213);
     let env = TestEnv::default().summary(
         "apply-it",
-        sm(vec![Mode::Borrowed, Mode::Copy], ResultMode::Fresh, vec![ParamFlow::Consumed, ParamFlow::Consumed]),
+        sm(
+            vec![Mode::Borrowed, Mode::Copy],
+            ResultMode::Fresh,
+            vec![ParamFlow::Consumed, ParamFlow::Consumed],
+        ),
     );
     let lambda = lambda_sp(lam_span, vec!["y"], adt_sp(some_span, vec![var("y")]));
     let body = call("apply-it", vec![lambda, int_lit(7)]);
@@ -1703,12 +2322,24 @@ fn lambda_body_return_veclit_escapes() {
     let vec_span = Span::new(220, 221);
     let env = TestEnv::default().summary(
         "apply-it",
-        sm(vec![Mode::Borrowed, Mode::Copy], ResultMode::Fresh, vec![ParamFlow::Consumed, ParamFlow::Consumed]),
+        sm(
+            vec![Mode::Borrowed, Mode::Copy],
+            ResultMode::Fresh,
+            vec![ParamFlow::Consumed, ParamFlow::Consumed],
+        ),
     );
-    let lambda = lambda_sp(Span::new(222, 223), vec!["y"], vec_sp(vec_span, vec![var("y")]));
+    let lambda = lambda_sp(
+        Span::new(222, 223),
+        vec!["y"],
+        vec_sp(vec_span, vec![var("y")]),
+    );
     let body = call("apply-it", vec![lambda, int_lit(7)]);
     let r = run(&[], body, env);
-    assert_eq!(r.facts.escapes.get(&vec_span), Some(&true), "the lambda body-return VecLit escapes");
+    assert_eq!(
+        r.facts.escapes.get(&vec_span),
+        Some(&true),
+        "the lambda body-return VecLit escapes"
+    );
 }
 
 #[test]
@@ -1748,7 +2379,10 @@ fn lambda_body_return_in_match_arm_escapes() {
     let some_span = Span::new(240, 241);
     let arm = MonoMatchArm {
         pattern: Pattern::Constructor {
-            name: cranelisp_types::SymbolRef { module: None, name: Symbol::from("Box") },
+            name: cranelisp_types::SymbolRef {
+                module: None,
+                name: Symbol::from("Box"),
+            },
             bindings: vec![Symbol::from("k")],
             span: s(),
         },
@@ -1766,7 +2400,11 @@ fn lambda_body_return_in_match_arm_escapes() {
     };
     let env = TestEnv::default().summary(
         "apply-it",
-        sm(vec![Mode::Borrowed, Mode::Copy], ResultMode::Fresh, vec![ParamFlow::Consumed, ParamFlow::Consumed]),
+        sm(
+            vec![Mode::Borrowed, Mode::Copy],
+            ResultMode::Fresh,
+            vec![ParamFlow::Consumed, ParamFlow::Consumed],
+        ),
     );
     let lambda = lambda_sp(Span::new(244, 245), vec!["h"], m);
     let body = call("apply-it", vec![lambda, int_lit(7)]);
@@ -1786,7 +2424,11 @@ fn nested_lambda_body_return_alloc_escapes() {
     // the outer tail (Return.escapes()==true ⇒ escaping branch), and its body
     // `(Some y)` escapes. The inner constructor must escape at BOTH levels.
     let some_span = Span::new(250, 251);
-    let inner = lambda_sp(Span::new(252, 253), vec!["y"], adt_sp(some_span, vec![var("y")]));
+    let inner = lambda_sp(
+        Span::new(252, 253),
+        vec!["y"],
+        adt_sp(some_span, vec![var("y")]),
+    );
     let outer = lambda_sp(Span::new(254, 255), vec![], inner);
     let body = MonoExpr::Let {
         bindings: vec![(Symbol::from("c"), outer)],
@@ -1833,7 +2475,11 @@ fn non_escaping_lambda_returning_captured_local_stays_in_frame() {
         Some(&false),
         "a captured enclosing local returned from a NON-escaping lambda stays in-frame"
     );
-    assert_eq!(r.summary.param_flow(0), ParamFlow::Consumed, "x stays Consumed (no over-widen through the isolated frame)");
+    assert_eq!(
+        r.summary.param_flow(0),
+        ParamFlow::Consumed,
+        "x stays Consumed (no over-widen through the isolated frame)"
+    );
 }
 
 #[test]
@@ -1863,8 +2509,16 @@ fn named_fn_return_edge_reconfirmed_after_0524() {
     // top-level body still escapes and the folded param is IntoResult.
     // `(defn keep [x] (Box x))`.
     let box_span = Span::new(280, 281);
-    let r = run(&[strparam("x")], adt_sp(box_span, vec![var("x")]), TestEnv::default());
-    assert_eq!(r.facts.escapes.get(&box_span), Some(&true), "named-fn returned constructor escapes (edge 1)");
+    let r = run(
+        &[strparam("x")],
+        adt_sp(box_span, vec![var("x")]),
+        TestEnv::default(),
+    );
+    assert_eq!(
+        r.facts.escapes.get(&box_span),
+        Some(&true),
+        "named-fn returned constructor escapes (edge 1)"
+    );
     assert_eq!(r.summary.param_flow(0), ParamFlow::IntoResult);
 }
 
@@ -1880,7 +2534,14 @@ fn value_use_marked_only_in_non_callee_position() {
     // spec: §8.3 — a callable referenced in value position is a value-use;
     // in callee position it is not.
     // (consume helper) — `helper` passed as a value arg to `consume`.
-    let env = TestEnv::default().summary("consume", sm(vec![Mode::Owned], ResultMode::Fresh, vec![ParamFlow::Consumed]));
+    let env = TestEnv::default().summary(
+        "consume",
+        sm(
+            vec![Mode::Owned],
+            ResultMode::Fresh,
+            vec![ParamFlow::Consumed],
+        ),
+    );
     let body = call("consume", vec![var("helper")]);
     let r = run(&[], body, env);
     assert!(r.value_uses.contains(&Symbol::from("helper")));
@@ -1891,7 +2552,14 @@ fn value_use_marked_only_in_non_callee_position() {
 #[test]
 fn deps_harvested_for_summarised_callee() {
     // spec: §13.3 — the DepSet harvests every consulted summarised callee.
-    let env = TestEnv::default().summary("consume", sm(vec![Mode::Owned], ResultMode::Fresh, vec![ParamFlow::Consumed]));
+    let env = TestEnv::default().summary(
+        "consume",
+        sm(
+            vec![Mode::Owned],
+            ResultMode::Fresh,
+            vec![ParamFlow::Consumed],
+        ),
+    );
     let r = run(&[strparam("p")], call("consume", vec![var("p")]), env);
     assert!(r.deps.iter().any(|fq| fq.symbol.as_ref() == "consume"));
 }
@@ -1920,8 +2588,14 @@ fn sequential_shadow_scope_restores_param_reinstates() {
     // sibling-branch cells — here the shadow and the use are SEQUENTIAL, the inner
     // scope fully closing before the use.
     // `(defn f [a g] (let [x (let [a (gcells g)] a)] (consume a)))`.
-    let env = accessor_env()
-        .summary("consume", sm(vec![Mode::Owned], ResultMode::Fresh, vec![ParamFlow::Consumed]));
+    let env = accessor_env().summary(
+        "consume",
+        sm(
+            vec![Mode::Owned],
+            ResultMode::Fresh,
+            vec![ParamFlow::Consumed],
+        ),
+    );
     let inner_let = MonoExpr::Let {
         bindings: vec![(Symbol::from("a"), call("gcells", vec![var("g")]))],
         body: Box::new(var("a")),
@@ -1952,11 +2626,21 @@ fn inner_scope_binding_removed_on_exit_unresolved_after() {
     // inner binding leaked, `t` would resolve to the leaked `Fresh` binding and
     // would NOT be a value-use.
     // `(defn f [p] (let [x (let [t (Some p)] 0)] (consume t)))`.
-    let env = TestEnv::default()
-        .summary("consume", sm(vec![Mode::Owned], ResultMode::Fresh, vec![ParamFlow::Consumed]));
+    let env = TestEnv::default().summary(
+        "consume",
+        sm(
+            vec![Mode::Owned],
+            ResultMode::Fresh,
+            vec![ParamFlow::Consumed],
+        ),
+    );
     let inner_let = MonoExpr::Let {
         bindings: vec![(Symbol::from("t"), adt(vec![var("p")]))],
-        body: Box::new(MonoExpr::IntLit { value: 0, span: s(), ty: ConcreteType::Int }),
+        body: Box::new(MonoExpr::IntLit {
+            value: 0,
+            span: s(),
+            ty: ConcreteType::Int,
+        }),
         span: s(),
         ty: ConcreteType::Int,
     };
@@ -1984,8 +2668,14 @@ fn triple_nested_shadow_unwinds_restore_param() {
     // must stay Borrowed throughout — the negative half (no nesting corruption).
     // `(defn f [a g] (let [x (let [a (gcells g)] (let [a (gcells g)]
     //                        (let [a (gcells g)] a)))] (consume a)))`.
-    let env = accessor_env()
-        .summary("consume", sm(vec![Mode::Owned], ResultMode::Fresh, vec![ParamFlow::Consumed]));
+    let env = accessor_env().summary(
+        "consume",
+        sm(
+            vec![Mode::Owned],
+            ResultMode::Fresh,
+            vec![ParamFlow::Consumed],
+        ),
+    );
     let l3 = MonoExpr::Let {
         bindings: vec![(Symbol::from("a"), call("gcells", vec![var("g")]))],
         body: Box::new(var("a")),
@@ -2034,11 +2724,20 @@ fn two_match_arms_same_name_independent_param_restored() {
     // param `g` ⇒ `param_modes[0]` narrows Owned→Borrowed. Each-arm-own-frame is
     // what keeps arm 2 independent and the param recoverable.
     // `(defn f [g h] (let [x (match h [(Box g) g] [(Cell g) g])] (consume g)))`.
-    let env = TestEnv::default()
-        .summary("consume", sm(vec![Mode::Owned], ResultMode::Fresh, vec![ParamFlow::Consumed]));
+    let env = TestEnv::default().summary(
+        "consume",
+        sm(
+            vec![Mode::Owned],
+            ResultMode::Fresh,
+            vec![ParamFlow::Consumed],
+        ),
+    );
     let arm1 = MonoMatchArm {
         pattern: Pattern::Constructor {
-            name: cranelisp_types::SymbolRef { module: None, name: Symbol::from("Box") },
+            name: cranelisp_types::SymbolRef {
+                module: None,
+                name: Symbol::from("Box"),
+            },
             bindings: vec![Symbol::from("g")],
             span: s(),
         },
@@ -2049,7 +2748,10 @@ fn two_match_arms_same_name_independent_param_restored() {
     };
     let arm2 = MonoMatchArm {
         pattern: Pattern::Constructor {
-            name: cranelisp_types::SymbolRef { module: None, name: Symbol::from("Cell") },
+            name: cranelisp_types::SymbolRef {
+                module: None,
+                name: Symbol::from("Cell"),
+            },
             bindings: vec![Symbol::from("g")],
             span: s(),
         },
@@ -2093,8 +2795,14 @@ fn lambda_binds_no_frame_outer_shadow_over_widens_sound() {
     // though the lambda's `a` shadows it. Over-widening (Borrowed→Owned) is the
     // SOUND/conservative direction (an extra retain, never an elided one). This
     // cell pins the determination; a future lambda-param frame would flip it.
-    let env = TestEnv::default()
-        .summary("consume", sm(vec![Mode::Owned], ResultMode::Fresh, vec![ParamFlow::Consumed]));
+    let env = TestEnv::default().summary(
+        "consume",
+        sm(
+            vec![Mode::Owned],
+            ResultMode::Fresh,
+            vec![ParamFlow::Consumed],
+        ),
+    );
     let lambda = MonoExpr::Lambda {
         params: vec![Symbol::from("a")],
         body: Box::new(call("consume", vec![var("a")])),
@@ -2154,7 +2862,6 @@ fn fold_chain_in_shadowing_scope_drains_in_defining_scope() {
     );
 }
 
-
 // ============ §17.2 row 4 — `join_origin` LATTICE PROPERTY cells (0772) ============
 //
 // These are SEAM-LEVEL ALGEBRAIC-PROPERTY cells over the `Origin` lattice: no
@@ -2192,7 +2899,13 @@ fn lattice_walker(env: &TestEnv) -> Walker<'_, TestEnv> {
         );
     }
     // A local that roots in NO param — the `reach == None` operand source.
-    bindings.insert(Symbol::from("z"), BindState { origin: Origin::Fresh, param_idx: None });
+    bindings.insert(
+        Symbol::from("z"),
+        BindState {
+            origin: Origin::Fresh,
+            param_idx: None,
+        },
+    );
     Walker {
         env,
         bindings,
@@ -2215,13 +2928,34 @@ fn lattice_walker(env: &TestEnv) -> Walker<'_, TestEnv> {
 fn lattice_operands() -> Vec<(&'static str, Origin)> {
     vec![
         ("Fresh", Origin::Fresh),
-        ("Uncond(p,alias)", Origin::unconditional(Symbol::from("p"), false)),
-        ("Uncond(p,proj)", Origin::unconditional(Symbol::from("p"), true)),
-        ("Uncond(q,alias)", Origin::unconditional(Symbol::from("q"), false)),
-        ("Cond(p,alias,[])", Origin::conditional(Symbol::from("p"), false, vec![])),
-        ("Cond(p,alias,[1])", Origin::conditional(Symbol::from("p"), false, vec![lsp(1)])),
-        ("Cond(p,proj,[2])", Origin::conditional(Symbol::from("p"), true, vec![lsp(2)])),
-        ("Cond(q,alias,[3])", Origin::conditional(Symbol::from("q"), false, vec![lsp(3)])),
+        (
+            "Uncond(p,alias)",
+            Origin::unconditional(Symbol::from("p"), false),
+        ),
+        (
+            "Uncond(p,proj)",
+            Origin::unconditional(Symbol::from("p"), true),
+        ),
+        (
+            "Uncond(q,alias)",
+            Origin::unconditional(Symbol::from("q"), false),
+        ),
+        (
+            "Cond(p,alias,[])",
+            Origin::conditional(Symbol::from("p"), false, vec![]),
+        ),
+        (
+            "Cond(p,alias,[1])",
+            Origin::conditional(Symbol::from("p"), false, vec![lsp(1)]),
+        ),
+        (
+            "Cond(p,proj,[2])",
+            Origin::conditional(Symbol::from("p"), true, vec![lsp(2)]),
+        ),
+        (
+            "Cond(q,alias,[3])",
+            Origin::conditional(Symbol::from("q"), false, vec![lsp(3)]),
+        ),
         (
             "Cond(p,alias,[1,4])",
             Origin::conditional(Symbol::from("p"), false, vec![lsp(1), lsp(4)]),
@@ -2244,7 +2978,11 @@ fn lattice_operands() -> Vec<(&'static str, Origin)> {
 fn lattice_norm(w: &Walker<'_, TestEnv>, o: &Origin) -> (bool, Option<(usize, bool)>, Vec<Span>) {
     let mut cow = o.cow_spans().to_vec();
     cow.sort_by_key(|s| (s.start, s.end));
-    (matches!(o, Origin::Conditional { .. }), w.reach(o).map(|(i, p, _)| (i, p)), cow)
+    (
+        matches!(o, Origin::Conditional { .. }),
+        w.reach(o).map(|(i, p, _)| (i, p)),
+        cow,
+    )
 }
 
 #[test]
@@ -2280,9 +3018,10 @@ fn join_lattice_preserves_the_union_of_both_operands_link_sets() {
     let w = lattice_walker(&env);
     for (na, a) in lattice_operands() {
         for (nb, b) in lattice_operands() {
-            for (x, y, nx, ny) in
-                [(a.clone(), b.clone(), na, nb), (b.clone(), a.clone(), nb, na)]
-            {
+            for (x, y, nx, ny) in [
+                (a.clone(), b.clone(), na, nb),
+                (b.clone(), a.clone(), nb, na),
+            ] {
                 let expected = union_cow(x.cow_spans(), y.cow_spans());
                 let joined = w.join_origin(x.clone(), y.clone());
                 for link in &expected {
@@ -2309,14 +3048,15 @@ fn join_lattice_variant_is_the_top_ward_of_both_operands() {
     let w = lattice_walker(&env);
     for (na, a) in lattice_operands() {
         for (nb, b) in lattice_operands() {
-            let either_conditional = matches!(a, Origin::Conditional { .. })
-                || matches!(b, Origin::Conditional { .. });
+            let either_conditional =
+                matches!(a, Origin::Conditional { .. }) || matches!(b, Origin::Conditional { .. });
             if !either_conditional {
                 continue;
             }
-            for (x, y, nx, ny) in
-                [(a.clone(), b.clone(), na, nb), (b.clone(), a.clone(), nb, na)]
-            {
+            for (x, y, nx, ny) in [
+                (a.clone(), b.clone(), na, nb),
+                (b.clone(), a.clone(), nb, na),
+            ] {
                 let joined = w.join_origin(x, y);
                 // `Fresh` is the one legal weakening: when NEITHER operand reaches
                 // a param there is no aliased param to over-claim (row 8).
@@ -2357,8 +3097,14 @@ fn join_lattice_no_param_reach_drops_the_link_set_by_design() {
     // …but the SAME orphan joined with a param-reaching operand keeps its links:
     // the join now reaches a param, so the protect obligation is live again.
     for (x, y) in [
-        (orphan.clone(), Origin::unconditional(Symbol::from("p"), false)),
-        (Origin::unconditional(Symbol::from("p"), false), orphan.clone()),
+        (
+            orphan.clone(),
+            Origin::unconditional(Symbol::from("p"), false),
+        ),
+        (
+            Origin::unconditional(Symbol::from("p"), false),
+            orphan.clone(),
+        ),
     ] {
         let joined = w.join_origin(x, y);
         assert!(

@@ -49,7 +49,11 @@ static FREED_TRACKED: LazyLock<Mutex<std::collections::HashMap<usize, (usize, i6
 /// value. Debug-only diagnostic used by [`crate::rc::rc_dec_check`].
 #[cfg(debug_assertions)]
 pub(crate) fn freed_info(ptr: usize) -> Option<(usize, i64)> {
-    FREED_TRACKED.lock().unwrap_or_else(|e| e.into_inner()).get(&ptr).copied()
+    FREED_TRACKED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&ptr)
+        .copied()
 }
 
 // ---------------------------------------------------------------------------
@@ -86,7 +90,10 @@ pub fn bytes_peak() -> usize {
 /// Check if a pointer is currently live (debug builds only).
 #[cfg(debug_assertions)]
 pub fn is_live(ptr: usize) -> bool {
-    LIVE_ALLOCS.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&ptr)
+    LIVE_ALLOCS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains_key(&ptr)
 }
 
 /// Snapshot of the currently-live tracked allocations `(base, size, payload@16)`
@@ -100,8 +107,11 @@ pub(crate) fn live_alloc_snapshot() -> Vec<(usize, usize, i64)> {
         .map(|(&addr, &size)| {
             // SAFETY: `addr` is a currently-live tracked allocation base of
             // `size` bytes; `payload@16` is within it when `size >= 24`.
-            let payload =
-                if size >= 24 { unsafe { *((addr as *const u8).add(16) as *const i64) } } else { 0 };
+            let payload = if size >= 24 {
+                unsafe { *((addr as *const u8).add(16) as *const i64) }
+            } else {
+                0
+            };
             (addr, size, payload)
         })
         .collect()
@@ -116,7 +126,10 @@ pub fn reset_counts() {
     BYTES_PEAK.store(0, Ordering::Relaxed);
     #[cfg(debug_assertions)]
     {
-        LIVE_ALLOCS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        LIVE_ALLOCS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 }
 

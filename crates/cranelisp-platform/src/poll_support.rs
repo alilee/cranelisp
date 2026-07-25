@@ -29,7 +29,7 @@
 
 use core::ffi::c_void;
 
-use crate::{Acquire, HostCtx, Poll, Waker, HEAP_HEADER_SIZE, STRING_HEADER_BYTES};
+use crate::{Acquire, HEAP_HEADER_SIZE, HostCtx, Poll, STRING_HEADER_BYTES, Waker};
 
 /// Typed accessor over the host-built **state-closure env** — the single home for
 /// the R1 env-layout convention (`io-trampoline.md §12.2`):
@@ -56,7 +56,9 @@ impl PollEnv {
     /// `state` must be the host-built state-closure env base the poll-fn receives
     /// (`result_slot` at `+0`, marshaled leaf args from `+8`).
     pub unsafe fn new(state: *mut c_void) -> Self {
-        PollEnv { base: state as *mut i64 }
+        PollEnv {
+            base: state as *mut i64,
+        }
     }
 
     /// Marshaled leaf arg `i` as a raw i64 (scalar value or heap base pointer).
@@ -256,7 +258,7 @@ mod tests {
     use super::*;
     use crate::{HostCtx, Waker, WakerVTable};
     use core::ffi::c_void;
-    use std::sync::atomic::{AtomicU64, AtomicI32, Ordering};
+    use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
     // -----------------------------------------------------------------------
     // §4A — PollEnv typed env accessor round-trip.
@@ -278,7 +280,11 @@ mod tests {
         // result slot starts at the 0 sentinel; set_result writes state+0.
         assert_eq!(pe.result(), 0, "result slot starts at the 0 sentinel");
         pe.set_result(777);
-        assert_eq!(pe.result(), 777, "set_result must write/read the result slot at state+0");
+        assert_eq!(
+            pe.result(),
+            777,
+            "set_result must write/read the result slot at state+0"
+        );
         assert_eq!(env_slots[0], 777, "set_result lands at env[0] (state+0)");
         // The args are undisturbed by writing the result.
         assert_eq!(env_slots[1], 111);
@@ -312,7 +318,10 @@ mod tests {
     unsafe extern "C" fn noop_wake(_d: *const c_void) {}
     unsafe extern "C" fn noop_wake_by_ref(_d: *const c_void) {}
     unsafe extern "C" fn noop_clone(_d: *const c_void) -> Waker {
-        Waker { data: std::ptr::null(), vtable: std::ptr::null() }
+        Waker {
+            data: std::ptr::null(),
+            vtable: std::ptr::null(),
+        }
     }
     unsafe extern "C" fn noop_drop(_d: *const c_void) {}
 
@@ -343,16 +352,31 @@ mod tests {
             retire: noop_retire,
             host: std::ptr::null(),
         };
-        let waker = Waker { data: std::ptr::null(), vtable: &WAKER_VTABLE };
+        let waker = Waker {
+            data: std::ptr::null(),
+            vtable: &WAKER_VTABLE,
+        };
         let reactor = unsafe { Reactor::new(&host, &waker) };
 
         reactor.wake_on_timer(123_456);
         reactor.wake_on_readable(7);
         reactor.wake_on_writable(9);
 
-        assert_eq!(TIMER_DEADLINE.load(Ordering::SeqCst), 123_456, "wake_on_timer must register the deadline via the vtable");
-        assert_eq!(READABLE_FD.load(Ordering::SeqCst), 7, "wake_on_readable must register the fd via the vtable");
-        assert_eq!(WRITABLE_FD.load(Ordering::SeqCst), 9, "wake_on_writable must register the fd via the vtable");
+        assert_eq!(
+            TIMER_DEADLINE.load(Ordering::SeqCst),
+            123_456,
+            "wake_on_timer must register the deadline via the vtable"
+        );
+        assert_eq!(
+            READABLE_FD.load(Ordering::SeqCst),
+            7,
+            "wake_on_readable must register the fd via the vtable"
+        );
+        assert_eq!(
+            WRITABLE_FD.load(Ordering::SeqCst),
+            9,
+            "wake_on_writable must register the fd via the vtable"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -370,14 +394,33 @@ mod tests {
 
         // First poll: is_first_poll() true; drive runs `setup`, which Parks.
         assert!(ps.is_first_poll(), "result==0 ⇒ first poll");
-        let p1 = ps.drive(0xDEAD, || PollStep::Park, || panic!("resume must not run on first poll"));
+        let p1 = ps.drive(
+            0xDEAD,
+            || PollStep::Park,
+            || panic!("resume must not run on first poll"),
+        );
         assert!(matches!(p1, Poll::Pending), "Park ⇒ Pending");
-        assert_eq!(pe.result(), 0xDEAD, "drive stashes the established marker while parked");
-        assert!(!ps.is_first_poll(), "after setup-park the slot carries the marker ⇒ not first poll");
+        assert_eq!(
+            pe.result(),
+            0xDEAD,
+            "drive stashes the established marker while parked"
+        );
+        assert!(
+            !ps.is_first_poll(),
+            "after setup-park the slot carries the marker ⇒ not first poll"
+        );
 
         // Re-poll: drive runs `resume`, which completes with the result.
-        let p2 = ps.drive(0xDEAD, || panic!("setup must not run on re-poll"), || PollStep::Ready(99));
+        let p2 = ps.drive(
+            0xDEAD,
+            || panic!("setup must not run on re-poll"),
+            || PollStep::Ready(99),
+        );
         assert!(matches!(p2, Poll::Ready), "Ready ⇒ Ready");
-        assert_eq!(pe.result(), 99, "drive overwrites the marker with the real result on Ready");
+        assert_eq!(
+            pe.result(),
+            99,
+            "drive overwrites the marker with the real result on Ready"
+        );
     }
 }

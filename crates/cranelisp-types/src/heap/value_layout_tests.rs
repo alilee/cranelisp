@@ -19,7 +19,11 @@ fn fqtn(name: &str) -> FQTypeName {
 }
 
 fn mono_scheme(ty: Type) -> Scheme {
-    Scheme { type_vars: vec![], constraints: HashMap::new(), ty }
+    Scheme {
+        type_vars: vec![],
+        constraints: HashMap::new(),
+        ty,
+    }
 }
 
 /// A constructor `Def` whose scheme is `field_tys… -> ADT(type)`.
@@ -319,10 +323,7 @@ fn generic_ctor_field_is_conservatively_ineligible() {
     // (deftype Box (Box [:a value])) — the stored ctor-scheme field type is a
     // `Type::Var`; the first landing does no per-instantiation substitution, so
     // even `(Box Int)` is conservatively heap (monotone-sound).
-    let t = tables(vec![(
-        "Box",
-        ctor_entry("Box", vec![Type::Var(0)], true),
-    )]);
+    let t = tables(vec![("Box", ctor_entry("Box", vec![Type::Var(0)], true))]);
     let boxed = ConcreteType::ADT(fqtn("Box"), vec![ConcreteType::Int]);
     assert!(value_layout(&boxed, Some(&t)).is_none());
 }

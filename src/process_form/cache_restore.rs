@@ -14,8 +14,8 @@
 use std::path::Path;
 
 use cranelisp_types::{
-    CranelispError, ErrorLocation, ImportNames, ImportSpec, ModuleEntry,
-    ModuleFullPath, PlatformSpec, Span, Symbol,
+    CranelispError, ErrorLocation, ImportNames, ImportSpec, ModuleEntry, ModuleFullPath,
+    PlatformSpec, Span, Symbol,
 };
 
 use crate::worker::{ModuleCompiler, ensure_typecheck_product};
@@ -72,7 +72,14 @@ pub(super) fn try_cache_hit_load(
 
     // Phases 5–8: scheduler register + typecheck-product + record-hit +
     // cached-module insert + file_to_module.
-    register_cached_with_scheduler(ctx, dep, dep_file, specs.symbols, source_hash, needs_inmem_load);
+    register_cached_with_scheduler(
+        ctx,
+        dep,
+        dep_file,
+        specs.symbols,
+        source_hash,
+        needs_inmem_load,
+    );
 
     // Phase 9: recurse on transitive imports + re-export targets.
     register_transitive_cached_imports(ctx, &specs.imports);
@@ -167,7 +174,8 @@ struct CachedSpecs {
 fn extract_cached_specs(cached: &cranelisp_backend::cache::CachedModule) -> CachedSpecs {
     use std::collections::HashSet as StdHashSet;
 
-    let symbols: StdHashSet<Symbol> = cached.symbol_table
+    let symbols: StdHashSet<Symbol> = cached
+        .symbol_table
         .all_symbols()
         .filter_map(|(name, entry)| match entry {
             ModuleEntry::Def { .. } => Some(name.clone()),
@@ -177,7 +185,8 @@ fn extract_cached_specs(cached: &cranelisp_backend::cache::CachedModule) -> Cach
     // Collect names of functions with GOT slots for trait impl restoration.
     // The callable slot rides on the `DefKind` variant (S83 reshape, FIXME
     // 0356/0357) — a Def with a callable slot is a got-slotted function.
-    let mangled_names: Vec<String> = cached.symbol_table
+    let mangled_names: Vec<String> = cached
+        .symbol_table
         .all_symbols()
         .filter_map(|(name, entry)| match entry {
             ModuleEntry::Def { .. } if entry.callable_got_slot().is_some() => {
@@ -195,15 +204,13 @@ fn extract_cached_specs(cached: &cranelisp_backend::cache::CachedModule) -> Cach
     // `PlatformEffect`-kind entry's `fn_ptr` is repopulated
     // (Decision 26 — re-derive on cache-hit load via the same
     // `load_and_register_platform` path used by fresh build).
-    let platforms: Vec<PlatformSpec> =
-        cached.symbol_table.platforms.clone();
+    let platforms: Vec<PlatformSpec> = cached.symbol_table.platforms.clone();
 
     // Sprint 58 Wave 2c / Decision 37 — capture user-authored imports BEFORE
     // moving the symbol table, so we can recurse and ensure every
     // transitive dep's symbol table (and `__cranelisp_got_{M}` data symbol)
     // is installed before this dep's codegen worker tries to load its `.o`.
-    let imports: Vec<ImportSpec> =
-        cached.symbol_table.imports.clone();
+    let imports: Vec<ImportSpec> = cached.symbol_table.imports.clone();
 
     // S84 Phase 4B / FIXME 0387 — a re-export edge (`(export [mod [names]])`) is
     // ALSO a transitive dependency: the re-exported target module must be
@@ -226,7 +233,12 @@ fn extract_cached_specs(cached: &cranelisp_backend::cache::CachedModule) -> Cach
         })
         .collect();
 
-    CachedSpecs { symbols, platforms, imports, reexport_deps }
+    CachedSpecs {
+        symbols,
+        platforms,
+        imports,
+        reexport_deps,
+    }
 }
 
 /// Install the cached (decoded) symbol table into the live tables — the
@@ -248,14 +260,9 @@ fn install_cached_table(
     dep: &ModuleFullPath,
     cached: cranelisp_backend::cache::CachedModule,
 ) {
-    let concrete_table =
-        cached.symbol_table.into_concrete::<crate::code::Code, ()>();
+    let concrete_table = cached.symbol_table.into_concrete::<crate::code::Code, ()>();
     cranelisp_typecheck::advance_next_id_past_table(ctx.next_type_id, &concrete_table);
-    cranelisp_types::install_module(
-        ctx.symbol_tables,
-        dep.clone(),
-        concrete_table,
-    );
+    cranelisp_types::install_module(ctx.symbol_tables, dep.clone(), concrete_table);
 }
 
 /// Re-resolve platform fn ptrs for each `(platform …)` decl recorded on the
@@ -341,7 +348,8 @@ fn register_cached_with_scheduler(
     if needs_inmem_load {
         ctx.scheduler.register_module_cached(dep.clone(), symbols);
     } else {
-        ctx.scheduler.register_module_cached_no_object(dep.clone(), symbols);
+        ctx.scheduler
+            .register_module_cached_no_object(dep.clone(), symbols);
     }
 
     // 6. Create typecheck product with GOT table for cached module, and make
@@ -399,10 +407,7 @@ fn register_cached_with_scheduler(
 ///   because cache-hit load is called from inside form processing of the
 ///   *outer* module, which is mid-typecheck and cannot also drive a
 ///   fresh build of a transitive dep.
-pub(super) fn register_transitive_cached_imports(
-    ctx: &mut ModuleCompiler,
-    imports: &[ImportSpec],
-) {
+pub(super) fn register_transitive_cached_imports(ctx: &mut ModuleCompiler, imports: &[ImportSpec]) {
     for spec in imports {
         let transitive_dep = &spec.module_path;
         // §8.3.6 Null import — skip.
@@ -449,9 +454,14 @@ pub(super) fn register_transitive_cached_imports(
             CranelispError::ModuleError {
                 message: format!(
                     "failed to read transitive dep '{}' from '{}': {}",
-                    dep_for_err, dep_file_ref.display(), e
+                    dep_for_err,
+                    dep_file_ref.display(),
+                    e
                 ),
-                location: ErrorLocation::from_span_file(Span::SYNTHETIC, Some(dep_file_ref.clone())),
+                location: ErrorLocation::from_span_file(
+                    Span::SYNTHETIC,
+                    Some(dep_file_ref.clone()),
+                ),
             }
         }) {
             Ok(s) => s,
@@ -463,6 +473,7 @@ pub(super) fn register_transitive_cached_imports(
         // module's typecheck); the outer module either already typechecked or
         // its own normal import-block chain handles its dependency on this dep.
         // `delays_other=true` matches worker-side consensus (see §8.2 rationale).
-        ctx.scheduler.register_module(transitive_dep.clone(), dep_sexps, true);
+        ctx.scheduler
+            .register_module(transitive_dep.clone(), dep_sexps, true);
     }
 }

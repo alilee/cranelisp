@@ -1,5 +1,7 @@
 ; Cranelisp Ring 4B — IO Sequencing
 
+(import [primitives [Pure add-i64]])
+
 ; Load the platform and import IO functions
 
 (platform stdio)

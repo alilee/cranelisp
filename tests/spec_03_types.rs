@@ -20,7 +20,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{run_through_all_modes, Cranelisp, PreludeVariant};
+use helpers::e2e::{Cranelisp, PreludeVariant, run_through_all_modes};
 
 // =============================================================================
 // Helpers
@@ -367,7 +367,10 @@ fn vec_as_function_argument() {
 fn unification_error_names_both_types_strict() {
     let out = repl_prims("(add-i64 1 \"hello\")\n");
     let combined = format!("{}{}", out.stdout, out.stderr);
-    assert!(combined.contains("Int"), "diagnostic MUST name 'Int', got: {combined}");
+    assert!(
+        combined.contains("Int"),
+        "diagnostic MUST name 'Int', got: {combined}"
+    );
     assert!(
         combined.contains("String"),
         "diagnostic MUST name 'String', got: {combined}"
@@ -400,7 +403,10 @@ fn unification_error_string_where_int_names_string_strict() {
 fn unification_error_string_where_int_names_int_strict() {
     let out = repl_prims("(add-i64 \"hello\" 1)\n");
     let combined = format!("{}{}", out.stdout, out.stderr);
-    assert!(combined.contains("Int"), "diagnostic MUST name 'Int', got: {combined}");
+    assert!(
+        combined.contains("Int"),
+        "diagnostic MUST name 'Int', got: {combined}"
+    );
 }
 
 // spec: spec/03-types.md §3.8 — Int-where-String-expected diagnostic
@@ -414,7 +420,10 @@ fn unification_error_string_where_int_names_int_strict() {
 fn unification_error_int_where_string_names_int_strict() {
     let out = repl_prims("(str-len 42)\n");
     let combined = format!("{}{}", out.stdout, out.stderr);
-    assert!(combined.contains("Int"), "diagnostic MUST name 'Int', got: {combined}");
+    assert!(
+        combined.contains("Int"),
+        "diagnostic MUST name 'Int', got: {combined}"
+    );
 }
 
 // spec: spec/03-types.md §3.8 — Int-where-String-expected diagnostic
@@ -590,7 +599,7 @@ fn trait_constraint_annotation_unaffected_by_free_var_rule() {
     // TestStandard provides the `Num` trait.
     let out = repl_std("(defn show2 [:Num x] x)\n");
     assert!(
-        out.stdout.contains(":(Fn [:Num a] a) user/show2"),
+        out.stdout.contains(":(Fn [:prelude/Num a] a) user/show2"),
         "a trait-constraint annotation MUST yield the constrained scheme \
          `(Fn [:Num a] a)` (§3.9.2/§3.4.1); got:\n{}",
         out.stdout
@@ -969,7 +978,8 @@ fn written_var_concrete_ascription_pins() {
          error (§3.3.1 MUST (a)); got:\n{combined}"
     );
     assert!(
-        out.stdout.contains(":(Fn [primitives/String] primitives/String) user/f"),
+        out.stdout
+            .contains(":(Fn [primitives/String] primitives/String) user/f"),
         "`:a \"hello\"` MUST relate `a := String` → `(Fn [String] String)` \
          (§3.3.1 MUST (a), row 4); got:\n{}",
         out.stdout
@@ -1055,7 +1065,8 @@ fn applied_annotation_bare_var_pins_through_ctor() {
          never a rigid/unknown error (§3.3.1 MUST (a)); got:\n{combined}"
     );
     assert!(
-        out.stdout.contains(":(Fn [(user/Box primitives/Int)] (user/Box primitives/Int)) user/h"),
+        out.stdout
+            .contains(":(Fn [(user/Box primitives/Int)] (user/Box primitives/Int)) user/h"),
         "asserting `:(Box a)` over a `(Box Int)` param MUST pin `a := Int` through \
          the constructor → `(Fn [(Box Int)] (Box Int))` (§3.3.1 MUST (a)); got:\n{}",
         out.stdout
@@ -1085,7 +1096,8 @@ fn applied_annotation_bare_var_corefers_param() {
          (defn h2 [:(Box a) b] :(Box a) b)\n",
     );
     assert!(
-        out.stdout.contains(":(Fn [(user/Box a)] (user/Box a)) user/h2"),
+        out.stdout
+            .contains(":(Fn [(user/Box a)] (user/Box a)) user/h2"),
         "a body annotation `:(Box a)` co-referring to the param's own \
          `(Box a)` MUST discharge → `(Fn [(Box a)] (Box a))` (§3.3.1 MUST \
          (a)/(g) discharge case); got:\n{}",
@@ -1124,7 +1136,8 @@ fn written_var_body_use_pins_freely() {
          rigid skolem escape (§3.3.1 MUST (a)); got:\n{combined}"
     );
     assert!(
-        out.stdout.contains(":(Fn [primitives/Int] primitives/Int) user/f"),
+        out.stdout
+            .contains(":(Fn [primitives/Int] primitives/Int) user/f"),
         "the body use `(add-i64 1 x)` MUST pin `a := Int` → scheme `(Fn [Int] Int)` \
          (§3.3.1 MUST (a)); got:\n{}",
         out.stdout
@@ -1220,7 +1233,7 @@ fn constraint_param_interface_use_keeps_constrained_scheme() {
         "{NUM2_FIXTURE}(defn f5 [:Num2 x] (nadd x x))\n(f5 3)\n"
     ));
     assert!(
-        out.stdout.contains(":(Fn [:Num2 a] a) user/f5"),
+        out.stdout.contains(":(Fn [:user/Num2 a] a) user/f5"),
         "interface-only use of a `:Num2` param MUST keep the constrained \
          polymorphic scheme `(Fn [:Num2 a] a)` (result = self = a) (§3.3.2 \
          MUST (b)); got:\n{}",
@@ -1255,7 +1268,8 @@ fn constraint_param_body_narrow_skolem_escape_neg() {
          never `unknown type`/codegen (§3.3.2 MUST (b)); got:\n{combined}"
     );
     assert!(
-        !out.stdout.contains(":(Fn [primitives/Int] primitives/Int) user/f6"),
+        !out.stdout
+            .contains(":(Fn [primitives/Int] primitives/Int) user/f6"),
         "the body `(add-i64 1 x)` narrows the held-abstract `:Num2` var to Int — \
          the defn MUST be REJECTED as a skolem escape, NOT accepted as \
          `(Fn [Int] Int)` (§3.3.2 MUST (b)); got:\n{}",
@@ -1300,7 +1314,7 @@ fn bare_var_inferred_constraint_not_held_abstract() {
          MUST (b) inferred-not-asserted); got:\n{combined}"
     );
     assert!(
-        out.stdout.contains(":(Fn [:Num2 a] a) user/f7"),
+        out.stdout.contains(":(Fn [:user/Num2 a] a) user/f7"),
         "`(nadd x x)` on a bare `:a` MUST INFER the `Num2` constraint → \
          `(Fn [:Num2 a] a)`, identical to the asserted R5 scheme (§3.3.2 \
          MUST (b)); got:\n{}",
@@ -1855,7 +1869,9 @@ fn concrete_ascription_resolves_return_type_dispatch_float() {
         } else {
             cl.link("user.cl")
         }
-        .user(&format!("{ZEROABLE_FIXTURE}(defn main [] (Pure :Float (zed)))\n"))
+        .user(&format!(
+            "{ZEROABLE_FIXTURE}(defn main [] (Pure :Float (zed)))\n"
+        ))
         .output();
         let c = format!("{}{}", built.stdout, built.stderr);
         assert!(
@@ -2191,8 +2207,7 @@ fn multi_clause_body_let_bound_resolved_overload_returned_compiles() {
 // standalone function (back-flow through sibling self-calls, no independence).
 #[test]
 fn multi_clause_unconstrained_direct_bodies_accepted() {
-    repl_prims("(defn p ([x] x) ([x y] x))\n(p 5)\n")
-        .assert_stdout_contains(":primitives/Int 5");
+    repl_prims("(defn p ([x] x) ([x y] x))\n(p 5)\n").assert_stdout_contains(":primitives/Int 5");
 }
 
 // OA-3 — UW-10 RE-GROUND (S112 plan §2): the OLD asset asserted `q`'s

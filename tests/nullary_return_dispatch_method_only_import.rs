@@ -32,7 +32,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, CrOutput, PreludeVariant};
+use helpers::e2e::{CrOutput, Cranelisp, PreludeVariant};
 
 // Module `zlib`: a nullary return-type-dispatched trait `Zero` with an `Int`
 // impl. `z` takes no params; `self` (the return type) is the implementing type.
@@ -55,7 +55,10 @@ fn assert_run_and_link_exit(fixture: (&str, &str), user: &str, code: i32) {
         } else {
             b.run("user.cl")
         };
-        b.file(fixture.0, fixture.1).user(user).output().assert_exit(code);
+        b.file(fixture.0, fixture.1)
+            .user(user)
+            .output()
+            .assert_exit(code);
     }
 }
 

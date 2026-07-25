@@ -24,7 +24,10 @@ fn inner_fn_discriminator_uniquifies_per_mono_instance() {
     // distinct symbols.
     let a = inner_fn_discriminator_for(Some(&Symbol::from("reduce$Int+Vec")));
     let b = inner_fn_discriminator_for(Some(&Symbol::from("reduce$Float+Vec")));
-    assert_ne!(a, b, "distinct mono instances must yield distinct discriminators");
+    assert_ne!(
+        a, b,
+        "distinct mono instances must yield distinct discriminators"
+    );
 
     // The composed lambda names (the actual collision surface) differ.
     let span = (305usize, 312usize);
@@ -202,7 +205,9 @@ fn adt_drop_glue_identity_keys_on_full_instantiation() {
     // from the `render_type` walk survive sanitization).
     let mangle = adt_instantiation_mangle(&duo_int_str);
     assert!(
-        mangle.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+        mangle
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_'),
         "instantiation mangle must be a clean symbol: {mangle:?}"
     );
     // The module qualifier of the head AND of each concrete arg is present (the
@@ -302,7 +307,9 @@ fn instantiation_mangle_is_injective_over_special_chars() {
     ] {
         let escaped = escape_symbol(probe);
         assert!(
-            escaped.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+            escaped
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_'),
             "escaped form must be a legal Cranelift symbol: {escaped:?}"
         );
         assert_eq!(
@@ -396,8 +403,16 @@ fn instantiation_mangle_is_injective_over_special_chars() {
 fn got_data_symbol_name_agrees_with_the_types_owned_home() {
     use cranelisp_types::ModuleFullPath;
     for path in [
-        "", "user", "prelude", "primitives", "compare.ord", "fn.option.test",
-        "a.b", "a_b", "a-b", "my-lib.sub_mod.deep",
+        "",
+        "user",
+        "prelude",
+        "primitives",
+        "compare.ord",
+        "fn.option.test",
+        "a.b",
+        "a_b",
+        "a-b",
+        "my-lib.sub_mod.deep",
     ] {
         let m = ModuleFullPath::from(path);
         assert_eq!(

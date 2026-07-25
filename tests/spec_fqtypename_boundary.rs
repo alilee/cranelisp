@@ -91,10 +91,7 @@ fn fqtypename_cross_module_same_short_name_resolve_distinctly() {
 fn fqtypename_cross_module_same_short_name_neg_no_alias_collapse() {
     let out = Cranelisp::new()
         .with_prelude(PreludeVariant::None)
-        .file(
-            "a.cl",
-            "(deftype Box (ABox [:primitives/Int n]))\n",
-        )
+        .file("a.cl", "(deftype Box (ABox [:primitives/Int n]))\n")
         .file(
             "b.cl",
             "(deftype Box (BBox [:primitives/Int x :primitives/Int y]))\n",
@@ -117,7 +114,8 @@ fn fqtypename_cross_module_same_short_name_neg_no_alias_collapse() {
          the two same-short-name types are distinct (FQTypeName; spec §8.5; \
          Decision 0047). A clean exit here would mean the types aliased.\n\
          stdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
 }
 

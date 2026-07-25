@@ -220,6 +220,27 @@ the default-method column under `s116-method-signature-resolution.md` §6.
 
 ## 3. Trait Implementation (`impl`)
 
+### Sprint 117 — slot 1 is resolved once as canonical identity
+
+The conventional and HKT slot-1 trait positions are `trait_ref` reference
+positions: bare and module-qualified spellings resolve to one canonical
+`FQTraitName`. `register_trait_impl` resolves the complete as-written
+`TraitRef` once and carries the result, together with the fetched
+`TraitDeclInfo`, through kind checking, HKT pairing-head comparison, trait-home
+placement, impl-key construction, explicit/default/HKT method minting,
+rollback snapshots, and final enrollment. No post-resolution consumer may
+mint from `TraitRef::to_string()` or re-resolve its bare `TraitName`.
+
+The complete resolution seam, staging order, error behavior, unit matrix, and
+implementation sequence are in `qualified-trait-impl.md`. In particular,
+finalization must consume the settled registered method symbols rather than
+reconstructing a mangle from the original `TopLevel::TraitImpl`.
+
+This does not alter `deftrait`: its head is a frontend-checked bare
+`trait_binder`, not an impl reference. No public API or shared carrier change
+is required; the existing `FQTraitName` is the carrier (Principles 7, 18, 24,
+and 26).
+
 ### Surface syntax
 
 ```clojure
@@ -670,6 +691,10 @@ These must always hold; violations are implementation bugs.
 11. **Per-mono isolation via the entry.** Each mono instance's body view rides its own registered entry's `codegen_view` (§8), not a program-wide map.
 12. **Deduplication.** At most one `MonoDefn` per unique `(fn_name, concrete_arg_types)`; multiple call sites share via `SigDispatch`.
 13. **Mangle lock-step.** Dispatch and definition mint through the ONE `mangle_trait_method` against the same `FQTypeName` (§3.1) — else the call symbol misses the definition symbol.
+13a. **Canonical trait identity lock-step.** Every impl method—explicit,
+default, and HKT—and every re-impl enrollment/finalization lookup mints from
+the slot-1 reference's one resolved `FQTraitName`; source qualification is
+never part of a method symbol and is never re-resolved after the impl seam.
 
 ### Resolution
 
@@ -693,6 +718,8 @@ The ring axis (which structured earlier trait work) was **retired as a schedulin
 - `design/typecheck/typecheck.md` — master design (this doc is subordinate).
 - `design/typecheck/monomorphisation.md` §3.7 — the monomorphisation engine + cross-module scoping.
 - `design/typecheck/signature-match.md` — multi-sig match predicates.
+- `design/typecheck/qualified-trait-impl.md` — Sprint-117 canonical
+  conventional/HKT impl-reference resolution and enrollment.
 - `design/typecheck/s87-traits-decomposition.md` — the `traits/` module cut + `monomorphise_call` phase boundaries.
 - `design/typecheck/fixme-0365-field-accessor-dotted.md` §2 — the impl-time field-accessor collision check (§3 step 3).
 - Sources: `crates/cranelisp-typecheck/src/traits/{mod,registry,impl_check,dispatch,monomorphise,type_resolve}.rs`; `checker.rs` (`TypeCheckEnv`, `CheckState`, `method_to_trait_*`, `has_impl_*`, `generalize`); `program.rs` (§8.6.4 seam arms, `pass4_monomorphise`); `cranelisp-types::module` (`ModuleEntry::TraitDecl`/`TraitImpl`, `Def.trait_origin`); `cranelisp-types::check` (`Scheme`, `ConstrainedFn`, `MonoDefn`).

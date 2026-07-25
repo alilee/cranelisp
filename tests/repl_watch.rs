@@ -79,7 +79,8 @@ fn watch_emits_notification_when_loaded_module_source_changes() {
     assert!(
         combined.contains("[updated: mymod.cl]") || combined.contains("[errors: mymod.cl]"),
         "watcher should emit [updated: mymod.cl] or [errors: mymod.cl] notification: stdout={}\nstderr={}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
 }
 
@@ -197,9 +198,8 @@ fn watch_notification_uses_bracketed_file_format() {
 // (carry: legacy/sprint23.rs::watch_notification_truncation)
 #[test]
 fn watch_emits_per_module_notifications_without_truncation() {
-    let prelude = format!(
-        "{WATCH_PRELUDE_PRIMS}(import [mod_a [val-a]])\n(import [mod_b [val-b]])\n"
-    );
+    let prelude =
+        format!("{WATCH_PRELUDE_PRIMS}(import [mod_a [val-a]])\n(import [mod_b [val-b]])\n");
     let stdin = "\
 (add-i64 1 2)
 /sh sleep 0.5

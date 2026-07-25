@@ -98,7 +98,9 @@ fn test_drain_runtime_error_message_surfaces_and_clears() {
     runtime_panic(msg.as_ptr(), msg.len());
     let drained = drain_runtime_error_message();
     assert!(
-        drained.as_deref().is_some_and(|m| m.contains("division by zero")),
+        drained
+            .as_deref()
+            .is_some_and(|m| m.contains("division by zero")),
         "the --link gate must surface the panic message (got {drained:?})"
     );
     // Draining clears the slot — the stub exits, but a clean re-read is None.
@@ -173,7 +175,10 @@ fn test_catch_runtime_error_ok() {
         assert_eq!(field0, 99, "Ok payload must be the thunk result");
     }
     // Slot left clean after the call.
-    assert!(take_runtime_error().is_none(), "slot must be clean after Ok");
+    assert!(
+        take_runtime_error().is_none(),
+        "slot must be clean after Ok"
+    );
     // The combinator consumed the thunk (one-shot, by-move) — only the Result
     // is ours to free here. Freeing the thunk would double-free.
     unsafe { crate::alloc::dealloc(res as *mut u8) };
@@ -338,7 +343,10 @@ fn run_program_clean_non_io() {
     assert_eq!(outcome.error_kind, OUTCOME_CLEAN, "clean run");
     assert_eq!(outcome.exit_code, 7, "exit_code is main's result");
     assert!(take_runtime_error().is_none(), "no runtime error slot set");
-    assert!(take_dispatch_fault().is_none(), "no dispatch fault slot set");
+    assert!(
+        take_dispatch_fault().is_none(),
+        "no dispatch fault slot set"
+    );
 }
 
 // spec: spec/12-runtime.md §12.7.4.2 — a clean IO main is forced through the
@@ -365,11 +373,16 @@ fn run_program_pre_io_panic_leaves_slot_set() {
     // main_returns_io=true so we also prove the pre-IO peek stops BEFORE the
     // trampoline (forcing sentinel 0 would null-deref).
     let outcome = cranelisp_run_program(main_panics as *const u8, true);
-    assert_eq!(outcome.error_kind, OUTCOME_RUNTIME_ERROR, "pre-IO runtime error");
+    assert_eq!(
+        outcome.error_kind, OUTCOME_RUNTIME_ERROR,
+        "pre-IO runtime error"
+    );
     // The slot is left SET — the caller is the surfacing point.
     let drained = take_runtime_error();
     assert!(
-        drained.as_deref().is_some_and(|m| m.contains("boom in main")),
+        drained
+            .as_deref()
+            .is_some_and(|m| m.contains("boom in main")),
         "runtime-error slot left SET with the panic message (got {drained:?})"
     );
     assert!(take_dispatch_fault().is_none());
@@ -383,10 +396,15 @@ fn run_program_during_io_panic_leaves_slot_set() {
     let _ = take_runtime_error();
     let _ = take_dispatch_fault();
     let outcome = cranelisp_run_program(main_returns_io_bind_panic as *const u8, true);
-    assert_eq!(outcome.error_kind, OUTCOME_RUNTIME_ERROR, "during-IO runtime error");
+    assert_eq!(
+        outcome.error_kind, OUTCOME_RUNTIME_ERROR,
+        "during-IO runtime error"
+    );
     let drained = take_runtime_error();
     assert!(
-        drained.as_deref().is_some_and(|m| m.contains("division by zero")),
+        drained
+            .as_deref()
+            .is_some_and(|m| m.contains("division by zero")),
         "runtime-error slot left SET with the continuation panic (got {drained:?})"
     );
     assert!(take_dispatch_fault().is_none());

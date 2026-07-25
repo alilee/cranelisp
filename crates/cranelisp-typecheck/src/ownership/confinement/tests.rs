@@ -29,7 +29,13 @@ impl TransferEnv for TestEnv {
     }
     fn summary_of(&self, name: &Symbol) -> Option<(FQSymbol, ModeSummary)> {
         self.summaries.get(name).map(|s| {
-            (FQSymbol { module: ModuleFullPath::from("user"), symbol: name.clone() }, s.clone())
+            (
+                FQSymbol {
+                    module: ModuleFullPath::from("user"),
+                    symbol: name.clone(),
+                },
+                s.clone(),
+            )
         })
     }
 }
@@ -38,7 +44,16 @@ fn s() -> Span {
     Span::SYNTHETIC
 }
 fn var(n: &str) -> MonoExpr {
-    MonoExpr::Var { name: Symbol::from(n), span: s(), resolved_call: None, ty: ConcreteType::String, resolution: cranelisp_types::VarRef::Local { binder: Symbol::from(n), binding_span: cranelisp_types::Span::SYNTHETIC } }
+    MonoExpr::Var {
+        name: Symbol::from(n),
+        span: s(),
+        resolved_call: None,
+        ty: ConcreteType::String,
+        resolution: cranelisp_types::VarRef::Local {
+            binder: Symbol::from(n),
+            binding_span: cranelisp_types::Span::SYNTHETIC,
+        },
+    }
 }
 fn call(name: &str, args: Vec<MonoExpr>) -> MonoExpr {
     MonoExpr::Apply {
@@ -123,7 +138,11 @@ fn launch_continue_deferred_op_is_crossing() {
     let env = TestEnv::default().summary("consume", sm(vec![Mode::Owned], vec![false]));
     let body = MonoExpr::LaunchContinue {
         launched: Box::new(call("consume", vec![var("p")])),
-        continuation: Box::new(MonoExpr::IntLit { value: 0, span: s(), ty: ConcreteType::Int }),
+        continuation: Box::new(MonoExpr::IntLit {
+            value: 0,
+            span: s(),
+            ty: ConcreteType::Int,
+        }),
         span: s(),
         ty: ConcreteType::Int,
     };
@@ -171,7 +190,10 @@ fn shadowed_param_name_does_not_false_match_in_spark() {
     let r = confine(&owned_p(), &body, &env);
     // The consumed `p` inside the spark is the inner (shadowing) binding, not the
     // param ⇒ the param's spark_ops stays clear.
-    assert!(!r.spark_ops[0], "shadowed inner p must not false-match the param");
+    assert!(
+        !r.spark_ops[0],
+        "shadowed inner p must not false-match the param"
+    );
 }
 
 #[test]
@@ -190,7 +212,10 @@ fn confined_facts_true_on_parent_false_in_spark() {
         unique_static: None,
     };
     let inner = MonoExpr::ConstrADT {
-        type_name: cranelisp_types::FQTypeName::new(ModuleFullPath::from("user"), cranelisp_types::TypeName::from("Box")),
+        type_name: cranelisp_types::FQTypeName::new(
+            ModuleFullPath::from("user"),
+            cranelisp_types::TypeName::from("Box"),
+        ),
         tag: 0,
         fields: vec![],
         span: Span::new(200, 201),
@@ -311,7 +336,10 @@ fn confine_two_match_arms_same_name_param_restored() {
     let env = TestEnv::default().summary("consume", sm(vec![Mode::Owned], vec![false]));
     let arm1 = cranelisp_types::MonoMatchArm {
         pattern: cranelisp_types::Pattern::Constructor {
-            name: cranelisp_types::SymbolRef { module: None, name: Symbol::from("Box") },
+            name: cranelisp_types::SymbolRef {
+                module: None,
+                name: Symbol::from("Box"),
+            },
             bindings: vec![Symbol::from("p")],
             span: s(),
         },
@@ -322,7 +350,10 @@ fn confine_two_match_arms_same_name_param_restored() {
     };
     let arm2 = cranelisp_types::MonoMatchArm {
         pattern: cranelisp_types::Pattern::Constructor {
-            name: cranelisp_types::SymbolRef { module: None, name: Symbol::from("Cell") },
+            name: cranelisp_types::SymbolRef {
+                module: None,
+                name: Symbol::from("Cell"),
+            },
             bindings: vec![Symbol::from("p")],
             span: s(),
         },
@@ -351,7 +382,10 @@ fn confine_two_match_arms_same_name_param_restored() {
         ty: ConcreteType::String,
     };
     // params: p (Owned, index 0) + h (scrutinee, Owned) so param_idx has both.
-    let params = vec![(Symbol::from("p"), Mode::Owned), (Symbol::from("h"), Mode::Owned)];
+    let params = vec![
+        (Symbol::from("p"), Mode::Owned),
+        (Symbol::from("h"), Mode::Owned),
+    ];
     let r = confine(&params, &body, &env);
     assert!(
         r.spark_ops[0],

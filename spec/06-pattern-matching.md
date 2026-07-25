@@ -44,7 +44,7 @@ wildcard     = '_'
 var_pattern  = symbol                       ; variable binding (see 6.2.4 for disambiguation)
 ```
 
-### 6.2.1 Constructor Pattern (data) [Tested tests/spec_06_pattern_matching::pattern_data_constructor_binds_fields]
+### 6.2.1 Constructor Pattern (data) [Tested+Neg tests/spec_06_pattern_matching::pattern_data_constructor_binds_fields, tests/deftype_constructor_form_rulings_s116.rs::match_nullary_constructor_empty_parens_pattern_rejected_neg, tests/deftype_constructor_form_rulings_s116.rs::match_constructor_pattern_binding_subpattern_control_green]
 
 ```clojure
 (Ctor var1 var2 ...)
@@ -79,7 +79,7 @@ Binding names are arbitrary — they need not match the field names from the typ
 
 This is the unifying rule across positions: a contested bare constructor resolves against whatever **type context** is available, and is poisoned only when there is none. In **value** position there is no such context, so a contested bare constructor always poisons (§8.6.5) and the dotted form is required. In **pattern** position the scrutinee type is the context, so a bare contested pattern resolves whenever the scrutinee type is determined, and poisons only when it is not. The dotted form is always available in either position.
 
-### 6.2.2 Constructor Pattern (nullary) [Tested tests/spec_06_pattern_matching::pattern_nullary_constructor]
+### 6.2.2 Constructor Pattern (nullary) [Tested+Neg tests/spec_06_pattern_matching::pattern_nullary_constructor, tests/deftype_constructor_form_rulings_s116.rs::match_nullary_constructor_empty_parens_pattern_rejected_neg, tests/deftype_constructor_form_rulings_s116.rs::match_nullary_constructor_bare_name_pattern_control_green]
 
 ```clojure
 Ctor
@@ -115,7 +115,7 @@ The wildcard pattern matches any value and binds nothing. It is typically used a
    _   "not red"])
 ```
 
-### 6.2.4 Variable Pattern [Tested tests/spec_06_pattern_matching::pattern_variable_binds_value]
+### 6.2.4 Variable Pattern [Tested+Neg tests/spec_06_pattern_matching::pattern_variable_binds_value, tests/dotted_binder_reject_0702.rs::match_dotted_var_pattern_rejected_binder_neg, tests/dotted_binder_reject_0702.rs::match_bare_var_pattern_accepts_twin_green]
 
 ```clojure
 name

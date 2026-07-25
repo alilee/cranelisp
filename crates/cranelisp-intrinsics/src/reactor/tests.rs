@@ -11,7 +11,7 @@
 //!      d1+d2, on ONE reactor thread (no thread-per-read).
 
 use super::*;
-use crate::strand::{drain_strand_events, next_strand, start_strand_recording, StrandEvent};
+use crate::strand::{StrandEvent, drain_strand_events, next_strand, start_strand_recording};
 use std::collections::HashSet;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -60,14 +60,7 @@ unsafe fn read_leaf<'h>(
     host: &'h HostCtx,
     strand: StrandId,
 ) -> EffectPoll<'h> {
-    unsafe {
-        EffectPoll::new(
-            state as *mut c_void,
-            async_read_pollfn,
-            host,
-            strand,
-        )
-    }
+    unsafe { EffectPoll::new(state as *mut c_void, async_read_pollfn, host, strand) }
 }
 
 /// Build a timer-feeder leaf that writes to `state.peer_fd` after its deadline.
@@ -76,14 +69,7 @@ unsafe fn feeder_leaf<'h>(
     host: &'h HostCtx,
     strand: StrandId,
 ) -> EffectPoll<'h> {
-    unsafe {
-        EffectPoll::new(
-            state as *mut c_void,
-            timer_write_pollfn,
-            host,
-            strand,
-        )
-    }
+    unsafe { EffectPoll::new(state as *mut c_void, timer_write_pollfn, host, strand) }
 }
 
 // ---------------------------------------------------------------------------
@@ -176,9 +162,15 @@ fn async_read_suspends_on_ewouldblock_and_resumes_on_byte() {
 
     let events = drain_strand_events();
     // The read strand must have parked on the fd and resumed.
-    assert!(events.contains(&StrandEvent::EffectDispatched { strand: read_strand }));
-    assert!(events.contains(&StrandEvent::EffectSuspended { strand: read_strand }));
-    assert!(events.contains(&StrandEvent::EffectResumed { strand: read_strand }));
+    assert!(events.contains(&StrandEvent::EffectDispatched {
+        strand: read_strand
+    }));
+    assert!(events.contains(&StrandEvent::EffectSuspended {
+        strand: read_strand
+    }));
+    assert!(events.contains(&StrandEvent::EffectResumed {
+        strand: read_strand
+    }));
 }
 
 // ---------------------------------------------------------------------------
@@ -249,23 +241,61 @@ fn two_async_reads_overlap_max_not_sum_one_thread() {
 
     let results = block_on_reactor(async |env| {
         let host = env.host;
-        let mut r1 = AsyncReadState { result: 0, fd: p1.read_end, registered: false };
-        let mut r2 = AsyncReadState { result: 0, fd: p2.read_end, registered: false };
-        let mut f1 = TimerWriteState { result: 0, peer_fd: p1.write_end, deadline_nanos: dl1, registered: false };
-        let mut f2 = TimerWriteState { result: 0, peer_fd: p2.write_end, deadline_nanos: dl2, registered: false };
+        let mut r1 = AsyncReadState {
+            result: 0,
+            fd: p1.read_end,
+            registered: false,
+        };
+        let mut r2 = AsyncReadState {
+            result: 0,
+            fd: p2.read_end,
+            registered: false,
+        };
+        let mut f1 = TimerWriteState {
+            result: 0,
+            peer_fd: p1.write_end,
+            deadline_nanos: dl1,
+            registered: false,
+        };
+        let mut f2 = TimerWriteState {
+            result: 0,
+            peer_fd: p2.write_end,
+            deadline_nanos: dl2,
+            registered: false,
+        };
         // Reads use the thread-recording wrappers so the test can prove no
         // read ran on a thread other than the reactor's.
         let read1 = unsafe {
-            EffectPoll::new(&mut r1 as *mut _ as *mut c_void, rec_read_pollfn, host, s_read1)
+            EffectPoll::new(
+                &mut r1 as *mut _ as *mut c_void,
+                rec_read_pollfn,
+                host,
+                s_read1,
+            )
         };
         let read2 = unsafe {
-            EffectPoll::new(&mut r2 as *mut _ as *mut c_void, rec_read_pollfn, host, s_read2)
+            EffectPoll::new(
+                &mut r2 as *mut _ as *mut c_void,
+                rec_read_pollfn,
+                host,
+                s_read2,
+            )
         };
         let feed1 = unsafe {
-            EffectPoll::new(&mut f1 as *mut _ as *mut c_void, rec_timer_pollfn, host, s_feed1)
+            EffectPoll::new(
+                &mut f1 as *mut _ as *mut c_void,
+                rec_timer_pollfn,
+                host,
+                s_feed1,
+            )
         };
         let feed2 = unsafe {
-            EffectPoll::new(&mut f2 as *mut _ as *mut c_void, rec_timer_pollfn, host, s_feed2)
+            EffectPoll::new(
+                &mut f2 as *mut _ as *mut c_void,
+                rec_timer_pollfn,
+                host,
+                s_feed2,
+            )
         };
         join_io_leaves(vec![read1, read2, feed1, feed2]).await
     })
@@ -292,9 +322,18 @@ fn two_async_reads_overlap_max_not_sum_one_thread() {
     // strands are interleaved (join_all dispatches all leaves in the first poll).
     let events = drain_strand_events();
     for s in [s_read1, s_read2] {
-        assert!(events.contains(&StrandEvent::EffectDispatched { strand: s }), "dispatched {s:?}");
-        assert!(events.contains(&StrandEvent::EffectSuspended { strand: s }), "suspended {s:?}");
-        assert!(events.contains(&StrandEvent::EffectResumed { strand: s }), "resumed {s:?}");
+        assert!(
+            events.contains(&StrandEvent::EffectDispatched { strand: s }),
+            "dispatched {s:?}"
+        );
+        assert!(
+            events.contains(&StrandEvent::EffectSuspended { strand: s }),
+            "suspended {s:?}"
+        );
+        assert!(
+            events.contains(&StrandEvent::EffectResumed { strand: s }),
+            "resumed {s:?}"
+        );
     }
     // Interleaving: read2's dispatch lands before read1's resume (the strands are
     // in flight concurrently, not run one-after-the-other).
@@ -443,7 +482,10 @@ fn leaf_pending_twice_re_registers_and_completes_no_lost_wakeup() {
 
     feeder.join().expect("feeder thread");
 
-    assert_eq!(result, 2, "the leaf completed only after BOTH bytes (two fires)");
+    assert_eq!(
+        result, 2,
+        "the leaf completed only after BOTH bytes (two fires)"
+    );
 
     // The leaf must have SUSPENDED at least twice (it returned `Pending` after
     // the first fire too) and RESUMED each time — the direct evidence that the
@@ -549,7 +591,10 @@ fn capacity_n_park_resume_recorded_in_strand_stream() {
         _Poll::Ready(p) => p,
         _Poll::Pending => panic!("1st acquire must be Ready"),
     };
-    assert!(matches!(poll_once(&mut a2), _Poll::Pending), "2nd must park");
+    assert!(
+        matches!(poll_once(&mut a2), _Poll::Pending),
+        "2nd must park"
+    );
     drop(p1); // release ⇒ wake the parked waiter
     assert!(
         matches!(poll_once(&mut a2), _Poll::Ready(_)),
@@ -559,13 +604,22 @@ fn capacity_n_park_resume_recorded_in_strand_stream() {
     let events = drain_strand_events();
     let strand2 = StrandId(2);
     // The parked strand parked then acquired (resumed); the releaser released.
-    let parked_at = events
-        .iter()
-        .position(|e| *e == StrandEvent::TokenParked { strand: strand2, token: 5 });
-    let acquired_at = events
-        .iter()
-        .position(|e| *e == StrandEvent::TokenAcquired { strand: strand2, token: 5 });
-    assert!(parked_at.is_some(), "the (N+1)th effect must record TokenParked: {events:?}");
+    let parked_at = events.iter().position(|e| {
+        *e == StrandEvent::TokenParked {
+            strand: strand2,
+            token: 5,
+        }
+    });
+    let acquired_at = events.iter().position(|e| {
+        *e == StrandEvent::TokenAcquired {
+            strand: strand2,
+            token: 5,
+        }
+    });
+    assert!(
+        parked_at.is_some(),
+        "the (N+1)th effect must record TokenParked: {events:?}"
+    );
     assert!(
         acquired_at.is_some(),
         "the parked effect must record TokenAcquired on resume: {events:?}"
@@ -575,7 +629,10 @@ fn capacity_n_park_resume_recorded_in_strand_stream() {
         "TokenParked must precede the resuming TokenAcquired: {events:?}"
     );
     assert!(
-        events.contains(&StrandEvent::TokenReleased { strand: StrandId(1), token: 5 }),
+        events.contains(&StrandEvent::TokenReleased {
+            strand: StrandId(1),
+            token: 5
+        }),
         "the releaser must record TokenReleased: {events:?}"
     );
 }
@@ -633,8 +690,8 @@ fn same_token_conflicting_capacity_first_writer_wins_and_records_event() {
 fn woken_then_cancelled_acquire_forwards_permit_to_next_waiter() {
     use std::future::Future;
     use std::pin::Pin;
-    use std::sync::atomic::{AtomicUsize, Ordering as O};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering as O};
     use std::task::{Context, Poll, Wake, Waker};
 
     struct CountWaker(AtomicUsize);
@@ -841,7 +898,7 @@ fn cap_still_trips_for_stuck_poll_leaf_no_bridge() {
 // strand (server wrongly still-alive at 3s ≪ backstop).
 #[test]
 fn oneshot_backstop_action_ignores_supervisor_holds_off_only_on_bridge() {
-    use crate::reactor::{oneshot_backstop_action, BackstopAction, DriveMode};
+    use crate::reactor::{BackstopAction, DriveMode, oneshot_backstop_action};
     let backstop = Duration::from_millis(2000);
     let over = Duration::from_millis(2500); // past the window
     let under = Duration::from_millis(500); // within the window
@@ -949,7 +1006,11 @@ fn armed_fd_leaf_does_not_trip_detector_reaches_backstop() {
     let _ = block_on_reactor_capped(
         async |env| {
             let host = env.host;
-            let mut st = AsyncReadState { result: 0, fd: read_fd, registered: false };
+            let mut st = AsyncReadState {
+                result: 0,
+                fd: read_fd,
+                registered: false,
+            };
             let leaf = unsafe {
                 EffectPoll::new(
                     &mut st as *mut _ as *mut c_void,
@@ -1036,7 +1097,12 @@ unsafe extern "C" fn ctx_acquire_pollfn(
 /// Acquire a permit from `pool` synchronously (poll once with a noop waker — the
 /// first acquire on a free slot resolves `Ready` immediately). Used by the
 /// `TokenPool`-direct pool tests + the backpressure section below.
-fn acquire_now(pool: &std::rc::Rc<TokenPool>, token: u64, capacity: u32, strand: StrandId) -> Permit {
+fn acquire_now(
+    pool: &std::rc::Rc<TokenPool>,
+    token: u64,
+    capacity: u32,
+    strand: StrandId,
+) -> Permit {
     let mut a = pool.acquire(token, capacity, strand);
     match poll_once(&mut a) {
         _Poll::Ready(p) => p,
@@ -1056,19 +1122,51 @@ fn v9_consume_leaf_acquires_holds_releases_on_ready() {
     let host = make_host_ctx(rptr);
 
     // Token 7, capacity 1; parks twice (establish + one resume) before Ready.
-    let mut st = CtxAcquireState { result: 0, token: 7, capacity: 1, polls_left: 2 };
-    let mut leaf =
-        unsafe { EffectPoll::new(&mut st as *mut _ as *mut c_void, ctx_acquire_pollfn, &host, StrandId(1)) };
+    let mut st = CtxAcquireState {
+        result: 0,
+        token: 7,
+        capacity: 1,
+        polls_left: 2,
+    };
+    let mut leaf = unsafe {
+        EffectPoll::new(
+            &mut st as *mut _ as *mut c_void,
+            ctx_acquire_pollfn,
+            &host,
+            StrandId(1),
+        )
+    };
 
     // Poll #1: the leaf acquires token 7 → the slot's single permit is held (0 free).
-    assert!(matches!(poll_once(&mut leaf), _Poll::Pending), "establish (Pending)");
-    assert_eq!(slot_permits(&pool, 7), Some(0), "the Consume leaf acquired its token permit");
+    assert!(
+        matches!(poll_once(&mut leaf), _Poll::Pending),
+        "establish (Pending)"
+    );
+    assert_eq!(
+        slot_permits(&pool, 7),
+        Some(0),
+        "the Consume leaf acquired its token permit"
+    );
     // Poll #2: a re-poll re-`acquire`s — idempotent, NO second permit consumed.
-    assert!(matches!(poll_once(&mut leaf), _Poll::Pending), "resume (still Pending)");
-    assert_eq!(slot_permits(&pool, 7), Some(0), "re-acquire is idempotent — still exactly one permit held");
+    assert!(
+        matches!(poll_once(&mut leaf), _Poll::Pending),
+        "resume (still Pending)"
+    );
+    assert_eq!(
+        slot_permits(&pool, 7),
+        Some(0),
+        "re-acquire is idempotent — still exactly one permit held"
+    );
     // Poll #3 → Ready: the host releases the permit eagerly (before TaskPoll::Ready).
-    assert!(matches!(poll_once(&mut leaf), _Poll::Ready(99)), "leaf reaches Ready");
-    assert_eq!(slot_permits(&pool, 7), Some(1), "permit released eagerly on Ready");
+    assert!(
+        matches!(poll_once(&mut leaf), _Poll::Ready(99)),
+        "leaf reaches Ready"
+    );
+    assert_eq!(
+        slot_permits(&pool, 7),
+        Some(1),
+        "permit released eagerly on Ready"
+    );
 }
 
 // spec: design/intrinsics/reactor.md §7.3 — cancellation = future drop. A still-Pending
@@ -1084,10 +1182,24 @@ fn v9_dropping_inflight_consume_releases_permit() {
 
     {
         // Never-Ready leaf (huge polls_left) that acquires token 11.
-        let mut st = CtxAcquireState { result: 0, token: 11, capacity: 1, polls_left: i64::MAX };
-        let mut leaf =
-            unsafe { EffectPoll::new(&mut st as *mut _ as *mut c_void, ctx_acquire_pollfn, &host, StrandId(1)) };
-        assert!(matches!(poll_once(&mut leaf), _Poll::Pending), "leaf parked, holding the permit");
+        let mut st = CtxAcquireState {
+            result: 0,
+            token: 11,
+            capacity: 1,
+            polls_left: i64::MAX,
+        };
+        let mut leaf = unsafe {
+            EffectPoll::new(
+                &mut st as *mut _ as *mut c_void,
+                ctx_acquire_pollfn,
+                &host,
+                StrandId(1),
+            )
+        };
+        assert!(
+            matches!(poll_once(&mut leaf), _Poll::Pending),
+            "leaf parked, holding the permit"
+        );
         assert_eq!(slot_permits(&pool, 11), Some(0), "permit held while parked");
         // DROP the future mid-flight (no Ready) — the release-guard fires.
     }
@@ -1114,7 +1226,10 @@ fn v9_dropping_inflight_consume_releases_permit() {
 /// counter@48 that the drop glue bumps. Returns the closure base (rc == 1) — the
 /// same shape `io::await_poll_node` moves out of an `IO_TAG_EFFECT_POLL` node and
 /// hands to `EffectPoll::new_owning`.
-fn make_keepalive_test_closure(polls_left: i64, counter: *const std::sync::atomic::AtomicUsize) -> i64 {
+fn make_keepalive_test_closure(
+    polls_left: i64,
+    counter: *const std::sync::atomic::AtomicUsize,
+) -> i64 {
     // payload = code_ptr(8) + drop_glue(8) + [result(8) + polls_left(8) + counter(8)]
     let clo = crate::alloc::alloc_with_rc(40) as i64;
     unsafe {
@@ -1170,12 +1285,16 @@ fn keepalive_state_closure_consumed_exactly_once_on_ready() {
     // Establish the leaf OWNING the moved-out state-closure; parks ONCE before Ready.
     let clo = make_keepalive_test_closure(1, &counter as *const _);
     let state_env = (clo + 32) as *mut c_void /* closure env base = clo + header(16) + code_ptr(8) + drop_glue(8) */;
-    let mut leaf =
-        unsafe { EffectPoll::new_owning(state_env, keepalive_test_pollfn, &host, StrandId(1), clo) };
+    let mut leaf = unsafe {
+        EffectPoll::new_owning(state_env, keepalive_test_pollfn, &host, StrandId(1), clo)
+    };
 
     // Poll #1 → Pending: the effect suspends. The state-closure MUST stay live
     // (keep-alive) — NOT consumed at establish/suspend.
-    assert!(matches!(poll_once(&mut leaf), _Poll::Pending), "establish → Pending (suspended)");
+    assert!(
+        matches!(poll_once(&mut leaf), _Poll::Pending),
+        "establish → Pending (suspended)"
+    );
     assert_eq!(
         counter.load(std::sync::atomic::Ordering::SeqCst),
         0,
@@ -1183,7 +1302,10 @@ fn keepalive_state_closure_consumed_exactly_once_on_ready() {
     );
 
     // Poll #2 → Ready: the runtime consumes the state-closure EXACTLY ONCE, eagerly.
-    assert!(matches!(poll_once(&mut leaf), _Poll::Ready(77)), "resolve → Ready(77)");
+    assert!(
+        matches!(poll_once(&mut leaf), _Poll::Ready(77)),
+        "resolve → Ready(77)"
+    );
     assert_eq!(
         counter.load(std::sync::atomic::Ordering::SeqCst),
         1,
@@ -1214,10 +1336,14 @@ fn keepalive_state_closure_consumed_exactly_once_on_cancel_drop() {
         // Never-Ready leaf owning the state-closure.
         let clo = make_keepalive_test_closure(i64::MAX, &counter as *const _);
         let state_env = (clo + 32) as *mut c_void /* closure env base = clo + header(16) + code_ptr(8) + drop_glue(8) */;
-        let mut leaf =
-            unsafe { EffectPoll::new_owning(state_env, keepalive_test_pollfn, &host, StrandId(1), clo) };
+        let mut leaf = unsafe {
+            EffectPoll::new_owning(state_env, keepalive_test_pollfn, &host, StrandId(1), clo)
+        };
 
-        assert!(matches!(poll_once(&mut leaf), _Poll::Pending), "parked (never Ready)");
+        assert!(
+            matches!(poll_once(&mut leaf), _Poll::Pending),
+            "parked (never Ready)"
+        );
         assert_eq!(
             counter.load(std::sync::atomic::Ordering::SeqCst),
             0,
@@ -1245,22 +1371,56 @@ fn v9_acquire_idempotent_per_effect_and_parks_second() {
 
     // Effect 1 acquires token 7 (cap 1), then re-acquires — idempotent.
     reactor.current_registrant = Some(1);
-    assert!(matches!(unsafe { reactor.acquire_permit(7, 1, wp) }, CAcquire::Acquired), "effect 1 acquires");
-    assert!(matches!(unsafe { reactor.acquire_permit(7, 1, wp) }, CAcquire::Acquired), "idempotent re-acquire");
-    assert_eq!(slot_permits(&pool, 7), Some(0), "exactly one permit consumed (idempotent)");
+    assert!(
+        matches!(
+            unsafe { reactor.acquire_permit(7, 1, wp) },
+            CAcquire::Acquired
+        ),
+        "effect 1 acquires"
+    );
+    assert!(
+        matches!(
+            unsafe { reactor.acquire_permit(7, 1, wp) },
+            CAcquire::Acquired
+        ),
+        "idempotent re-acquire"
+    );
+    assert_eq!(
+        slot_permits(&pool, 7),
+        Some(0),
+        "exactly one permit consumed (idempotent)"
+    );
 
     // Effect 2 on the same full token → Parked.
     reactor.current_registrant = Some(2);
-    assert!(matches!(unsafe { reactor.acquire_permit(7, 1, wp) }, CAcquire::Parked), "2nd effect parks on a full token");
+    assert!(
+        matches!(
+            unsafe { reactor.acquire_permit(7, 1, wp) },
+            CAcquire::Parked
+        ),
+        "2nd effect parks on a full token"
+    );
 
     // token 0 is unrestricted (no map entry).
-    assert!(matches!(unsafe { reactor.acquire_permit(0, 1, wp) }, CAcquire::Acquired), "token 0 unrestricted");
+    assert!(
+        matches!(
+            unsafe { reactor.acquire_permit(0, 1, wp) },
+            CAcquire::Acquired
+        ),
+        "token 0 unrestricted"
+    );
 
     // Release effect 1 → frees the slot; effect 2 re-acquires.
     reactor.release_all(1);
     assert_eq!(slot_permits(&pool, 7), Some(1), "released by effect 1");
     reactor.current_registrant = Some(2);
-    assert!(matches!(unsafe { reactor.acquire_permit(7, 1, wp) }, CAcquire::Acquired), "the parked effect now acquires");
+    assert!(
+        matches!(
+            unsafe { reactor.acquire_permit(7, 1, wp) },
+            CAcquire::Acquired
+        ),
+        "the parked effect now acquires"
+    );
 }
 
 // spec: design/intrinsics/reactor.md §7.6 / §3.1 — the SINGLETON resource (`read-line`)
@@ -1274,10 +1434,19 @@ fn v9_singleton_token_single_in_flight() {
     const STDIN_TOKEN: u64 = 0x5144_4E49_5453; // any fixed non-zero manifest-static token
 
     reactor.current_registrant = Some(1);
-    assert!(matches!(unsafe { reactor.acquire_permit(STDIN_TOKEN, 1, wp) }, CAcquire::Acquired), "first read-line acquires");
+    assert!(
+        matches!(
+            unsafe { reactor.acquire_permit(STDIN_TOKEN, 1, wp) },
+            CAcquire::Acquired
+        ),
+        "first read-line acquires"
+    );
     reactor.current_registrant = Some(2);
     assert!(
-        matches!(unsafe { reactor.acquire_permit(STDIN_TOKEN, 1, wp) }, CAcquire::Parked),
+        matches!(
+            unsafe { reactor.acquire_permit(STDIN_TOKEN, 1, wp) },
+            CAcquire::Parked
+        ),
         "a second concurrent read-line parks — single-in-flight stdin by construction"
     );
 }
@@ -1292,16 +1461,35 @@ fn v9_retire_drops_token_pool() {
     let wp = &w as *const CWaker;
 
     reactor.current_registrant = Some(1);
-    assert!(matches!(unsafe { reactor.acquire_permit(9, 1, wp) }, CAcquire::Acquired), "acquire token 9");
-    assert!(slot_permits(&pool, 9).is_some(), "slot exists after acquire");
+    assert!(
+        matches!(
+            unsafe { reactor.acquire_permit(9, 1, wp) },
+            CAcquire::Acquired
+        ),
+        "acquire token 9"
+    );
+    assert!(
+        slot_permits(&pool, 9).is_some(),
+        "slot exists after acquire"
+    );
 
     reactor.retire_token(9);
-    assert_eq!(slot_permits(&pool, 9), None, "retire dropped the token's pool");
+    assert_eq!(
+        slot_permits(&pool, 9),
+        None,
+        "retire dropped the token's pool"
+    );
     reactor.retire_token(9); // idempotent — a double-close is a no-op.
 
     // A later acquire on the retired token re-creates a fresh slot.
     reactor.current_registrant = Some(2);
-    assert!(matches!(unsafe { reactor.acquire_permit(9, 1, wp) }, CAcquire::Acquired), "fresh slot after retire");
+    assert!(
+        matches!(
+            unsafe { reactor.acquire_permit(9, 1, wp) },
+            CAcquire::Acquired
+        ),
+        "fresh slot after retire"
+    );
 }
 
 // spec: design/intrinsics/reactor.md §7.3 — release-exactly-once: after an eager `Ready`
@@ -1315,13 +1503,23 @@ fn v9_release_exactly_once_no_double_release() {
     let wp = &w as *const CWaker;
 
     reactor.current_registrant = Some(1);
-    assert!(matches!(unsafe { reactor.acquire_permit(17, 1, wp) }, CAcquire::Acquired), "acquire token 17");
+    assert!(
+        matches!(
+            unsafe { reactor.acquire_permit(17, 1, wp) },
+            CAcquire::Acquired
+        ),
+        "acquire token 17"
+    );
     assert_eq!(slot_permits(&pool, 17), Some(0), "permit held");
 
     reactor.release_all(1); // the eager-on-Ready release
     assert_eq!(slot_permits(&pool, 17), Some(1), "released once");
     reactor.release_all(1); // the drop-path release — a NO-OP (ledger entry already gone)
-    assert_eq!(slot_permits(&pool, 17), Some(1), "no double-release: the slot was credited exactly once");
+    assert_eq!(
+        slot_permits(&pool, 17),
+        Some(1),
+        "no double-release: the slot was credited exactly once"
+    );
 }
 
 // spec: design/intrinsics/reactor.md §2.9 §1A — two distinct poll-shape effect "kinds"
@@ -1341,11 +1539,17 @@ fn poll_effects_sharing_one_token_draw_from_one_pool() {
     // A third on the same token — regardless of "kind" — parks (sum-in-flight ≤ N
     // across both kinds; a per-kind pool would wrongly admit it).
     let mut k3 = pool.acquire(4, 2, StrandId(3));
-    assert!(matches!(poll_once(&mut k3), _Poll::Pending), "the 3rd on a shared capacity-2 token parks (one shared pool, not per-kind)");
+    assert!(
+        matches!(poll_once(&mut k3), _Poll::Pending),
+        "the 3rd on a shared capacity-2 token parks (one shared pool, not per-kind)"
+    );
 
     // token 0 ⇒ unrestricted: no acquire, always Ready, independent of any slot.
     let mut z = pool.acquire(0, 2, StrandId(4));
-    assert!(matches!(poll_once(&mut z), _Poll::Ready(_)), "token 0 is unrestricted on the poll carrier — no acquire");
+    assert!(
+        matches!(poll_once(&mut z), _Poll::Ready(_)),
+        "token 0 is unrestricted on the poll carrier — no acquire"
+    );
 }
 
 // spec: design/intrinsics/reactor.md §2.8 / arch §8.1 — first-writer-wins on the shared
@@ -1366,7 +1570,10 @@ fn poll_same_token_conflicting_capacity_first_writer_wins_and_records_event() {
     // slot stays capacity 2 (full), so this acquire PARKS (it would be Ready if the
     // pool had been resized to 5).
     let mut p3 = pool.acquire(6, 5, StrandId(3));
-    assert!(matches!(poll_once(&mut p3), _Poll::Pending), "first-writer-wins: capacity stays 2 (not resized to 5), so the 3rd parks");
+    assert!(
+        matches!(poll_once(&mut p3), _Poll::Pending),
+        "first-writer-wins: capacity stays 2 (not resized to 5), so the 3rd parks"
+    );
 
     let events = drain_strand_events();
     assert!(
@@ -1472,22 +1679,29 @@ fn global_budget_bounds_inflight_to_degree_nplus1_parks() {
     // The global gate emits the distinct GlobalBudget* events (not Token*).
     let events = drain_strand_events();
     assert!(
-        events.contains(&StrandEvent::GlobalBudgetParked { strand: StrandId(3) }),
+        events.contains(&StrandEvent::GlobalBudgetParked {
+            strand: StrandId(3)
+        }),
         "the over-budget launch records GlobalBudgetParked: {events:?}"
     );
     assert!(
-        events.contains(&StrandEvent::GlobalBudgetAcquired { strand: StrandId(3) }),
+        events.contains(&StrandEvent::GlobalBudgetAcquired {
+            strand: StrandId(3)
+        }),
         "the resumed launch records GlobalBudgetAcquired: {events:?}"
     );
     assert!(
-        events.contains(&StrandEvent::GlobalBudgetReleased { strand: StrandId(1) }),
+        events.contains(&StrandEvent::GlobalBudgetReleased {
+            strand: StrandId(1)
+        }),
         "the releaser records GlobalBudgetReleased: {events:?}"
     );
     // Negative: the global gate must NOT masquerade as a resource-token event.
     assert!(
-        !events
-            .iter()
-            .any(|e| matches!(e, StrandEvent::TokenParked { .. } | StrandEvent::TokenAcquired { .. })),
+        !events.iter().any(|e| matches!(
+            e,
+            StrandEvent::TokenParked { .. } | StrandEvent::TokenAcquired { .. }
+        )),
         "the global budget must emit GlobalBudget* events, NOT Token*: {events:?}"
     );
 }
@@ -1506,7 +1720,10 @@ fn dropping_global_permit_frees_budget_parked_launch_proceeds() {
         _Poll::Pending => panic!("the only global permit must be acquirable"),
     };
     let mut g2 = pool.acquire_global(StrandId(2));
-    assert!(matches!(poll_once(&mut g2), _Poll::Pending), "the 2nd launch parks behind the held global permit");
+    assert!(
+        matches!(poll_once(&mut g2), _Poll::Pending),
+        "the 2nd launch parks behind the held global permit"
+    );
     // Drop the permit as a completing/dropped supervised strand would (RAII).
     drop(g1);
     assert!(
@@ -1568,8 +1785,14 @@ fn dropping_parked_acquire_removes_stale_waker_next_live_waiter_woken() {
 
     let mut stale = pool.acquire(7, 1, StrandId(2));
     let mut live = pool.acquire(7, 1, StrandId(3));
-    assert!(matches!(poll_with(&mut stale, &stale_waker), _Poll::Pending), "stale parks front");
-    assert!(matches!(poll_with(&mut live, &live_waker), _Poll::Pending), "live parks behind");
+    assert!(
+        matches!(poll_with(&mut stale, &stale_waker), _Poll::Pending),
+        "stale parks front"
+    );
+    assert!(
+        matches!(poll_with(&mut live, &live_waker), _Poll::Pending),
+        "live parks behind"
+    );
 
     // Cancel the FRONT waiter while parked (drop it). Finding #4: its Drop
     // `retain`-removes its own entry, so the FIFO front becomes the live waiter.
@@ -1614,8 +1837,14 @@ fn dropping_parked_global_acquire_removes_stale_waker_co_covers_shutdown() {
 
     let mut stale = pool.acquire_global(StrandId(2));
     let mut live = pool.acquire_global(StrandId(3));
-    assert!(matches!(poll_with(&mut stale, &stale_waker), _Poll::Pending), "stale launch parks front");
-    assert!(matches!(poll_with(&mut live, &live_waker), _Poll::Pending), "live launch parks behind");
+    assert!(
+        matches!(poll_with(&mut stale, &stale_waker), _Poll::Pending),
+        "stale launch parks front"
+    );
+    assert!(
+        matches!(poll_with(&mut live, &live_waker), _Poll::Pending),
+        "live launch parks behind"
+    );
 
     drop(stale); // shutdown cancels the front parked launch
     drop(p1); // an in-flight strand completes, freeing the global slot
@@ -1624,7 +1853,10 @@ fn dropping_parked_global_acquire_removes_stale_waker_co_covers_shutdown() {
         live_flag.load(_Ordering::SeqCst),
         "the freed global slot must wake the next LIVE launch (no lost wakeup on the global token)"
     );
-    assert!(!stale_flag.load(_Ordering::SeqCst), "the cancelled launch's stale waker must not be woken");
+    assert!(
+        !stale_flag.load(_Ordering::SeqCst),
+        "the cancelled launch's stale waker must not be woken"
+    );
 }
 
 // spec: design/intrinsics/reactor.md §2.16 — finding #3: an in-flight `EffectPoll` that
@@ -1660,14 +1892,22 @@ fn dropping_inflight_poll_deregisters_reactor_interest() {
                     strand,
                 )
             };
-            assert!(matches!(poll_once(&mut leaf), _Poll::Pending), "sleep leaf arms a timer and parks");
+            assert!(
+                matches!(poll_once(&mut leaf), _Poll::Pending),
+                "sleep leaf arms a timer and parks"
+            );
             let armed = unsafe { (*reactor).waiter_count() };
-            assert_eq!(armed, before + 1, "the parked leaf armed exactly one reactor (timer) interest");
+            assert_eq!(
+                armed,
+                before + 1,
+                "the parked leaf armed exactly one reactor (timer) interest"
+            );
             // Drop the in-flight leaf (cancellation) → ReactorInterest::drop runs.
         }
         let after = unsafe { (*reactor).waiter_count() };
         assert_eq!(
-            after, before,
+            after,
+            before,
             "finding #3: dropping the in-flight EffectPoll deregistered its reactor interest \
              (waiter map back to {before}; a leak would leave it at {})",
             before + 1
@@ -1697,7 +1937,12 @@ fn sleep_leaf_parks_for_duration_then_resumes_unit() {
             deadline_nanos: 0,
         };
         let leaf = unsafe {
-            EffectPoll::new(&mut st as *mut _ as *mut c_void, sleep_pollfn, env.host, strand)
+            EffectPoll::new(
+                &mut st as *mut _ as *mut c_void,
+                sleep_pollfn,
+                env.host,
+                strand,
+            )
         };
         leaf.await
     })

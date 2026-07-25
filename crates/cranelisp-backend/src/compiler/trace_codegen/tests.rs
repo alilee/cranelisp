@@ -204,7 +204,9 @@ fn insert_fn(
     scheme: Scheme,
     fake_ptr: usize,
 ) {
-    let slot = table.allocate_got_slot().expect("fresh table has free slots");
+    let slot = table
+        .allocate_got_slot()
+        .expect("fresh table has free slots");
     let entry = ModuleEntry::def(scheme, make_kind(slot))
         .visibility(Visibility::Public)
         .build();
@@ -221,7 +223,10 @@ fn discovery_includes_all_modules_and_primitives() {
         &mut user,
         "fact",
         |slot| DefKind::UserFn {
-            fn_state: UserFnState::Concrete { got_slot: slot, mode_summary: None },
+            fn_state: UserFnState::Concrete {
+                got_slot: slot,
+                mode_summary: None,
+            },
         },
         fn_scheme(vec![Type::Int], Type::Int),
         0x1000,
@@ -243,13 +248,19 @@ fn discovery_includes_all_modules_and_primitives() {
 
     let traced = discover_traced_fns_from_tables(&tables);
     let names: Vec<&str> = traced.iter().map(|t| t.name.as_str()).collect();
-    assert!(names.contains(&"user/fact"), "user fn must be discovered: {names:?}");
+    assert!(
+        names.contains(&"user/fact"),
+        "user fn must be discovered: {names:?}"
+    );
     assert!(
         names.contains(&"primitives/str-concat"),
         "primitive must be discovered (all symbol tables, primitives included): {names:?}"
     );
     // Arity + types come from the scheme.
-    let prim = traced.iter().find(|t| t.name == "primitives/str-concat").unwrap();
+    let prim = traced
+        .iter()
+        .find(|t| t.name == "primitives/str-concat")
+        .unwrap();
     assert_eq!(prim.arity, 2);
     assert_eq!(prim.param_types, vec![Type::String, Type::String]);
     assert_eq!(prim.result_type, Type::String);
@@ -261,9 +272,7 @@ fn discovery_includes_all_modules_and_primitives() {
 /// primitive `str-concat` (the discovery records `got_slot`, not the raw
 /// code pointer, since the wrapper reaches the original via a runtime
 /// GOT-slot load — FIXME 0275).
-fn prims_slot_of_str_concat(
-    tables: &DashMap<ModuleFullPath, SymbolTable<(), ()>>,
-) -> usize {
+fn prims_slot_of_str_concat(tables: &DashMap<ModuleFullPath, SymbolTable<(), ()>>) -> usize {
     let g = tables.get(&ModuleFullPath::from("primitives")).unwrap();
     match g.get("str-concat") {
         Some(entry) => entry
@@ -301,7 +310,10 @@ fn discovery_skips_constrained_poly_base_and_overloaded() {
         &mut m,
         "double",
         |slot| DefKind::UserFn {
-            fn_state: UserFnState::Concrete { got_slot: slot, mode_summary: None },
+            fn_state: UserFnState::Concrete {
+                got_slot: slot,
+                mode_summary: None,
+            },
         },
         fn_scheme(vec![Type::Int], Type::Int),
         0x3200,
@@ -311,8 +323,14 @@ fn discovery_skips_constrained_poly_base_and_overloaded() {
     let traced = discover_traced_fns_from_tables(&tables);
     let names: Vec<&str> = traced.iter().map(|t| t.name.as_str()).collect();
     assert!(names.contains(&"user/double"), "mono fn kept: {names:?}");
-    assert!(!names.contains(&"user/add"), "constrained-poly base skipped: {names:?}");
-    assert!(!names.contains(&"user/show"), "overloaded base skipped: {names:?}");
+    assert!(
+        !names.contains(&"user/add"),
+        "constrained-poly base skipped: {names:?}"
+    );
+    assert!(
+        !names.contains(&"user/show"),
+        "overloaded base skipped: {names:?}"
+    );
 }
 
 #[test]
@@ -325,7 +343,10 @@ fn discovery_skips_empty_got_slots_and_non_fn_schemes() {
     let entry = ModuleEntry::def(
         fn_scheme(vec![Type::Int], Type::Int),
         DefKind::UserFn {
-            fn_state: UserFnState::Concrete { got_slot: slot, mode_summary: None },
+            fn_state: UserFnState::Concrete {
+                got_slot: slot,
+                mode_summary: None,
+            },
         },
     )
     .build();
@@ -338,7 +359,10 @@ fn discovery_skips_empty_got_slots_and_non_fn_schemes() {
         &mut m,
         "konst",
         |slot| DefKind::UserFn {
-            fn_state: UserFnState::Concrete { got_slot: slot, mode_summary: None },
+            fn_state: UserFnState::Concrete {
+                got_slot: slot,
+                mode_summary: None,
+            },
         },
         Scheme {
             type_vars: vec![],
@@ -351,8 +375,14 @@ fn discovery_skips_empty_got_slots_and_non_fn_schemes() {
 
     let traced = discover_traced_fns_from_tables(&tables);
     let names: Vec<&str> = traced.iter().map(|t| t.name.as_str()).collect();
-    assert!(!names.contains(&"user/uncompiled"), "empty GOT slot skipped: {names:?}");
-    assert!(!names.contains(&"user/konst"), "non-Fn scheme skipped: {names:?}");
+    assert!(
+        !names.contains(&"user/uncompiled"),
+        "empty GOT slot skipped: {names:?}"
+    );
+    assert!(
+        !names.contains(&"user/konst"),
+        "non-Fn scheme skipped: {names:?}"
+    );
 }
 
 // A minimal ConstrainedFn for the skip test. We only need the variant
@@ -496,7 +526,9 @@ fn ctor_meta_at_keyed_read_hits_real_def_and_misses_are_loud() {
         module: module.clone(),
         symbol: Symbol::from("Cons"),
     };
-    let (fqtn, meta) = ctx.ctor_meta_at(&cons_fq).expect("Cons storage key hits its Def");
+    let (fqtn, meta) = ctx
+        .ctor_meta_at(&cons_fq)
+        .expect("Cons storage key hits its Def");
     assert_eq!(fqtn.name.as_ref(), "IntList");
     assert_eq!(meta.tag, 1);
     assert_eq!(meta.fields.len(), 2);
@@ -529,8 +561,7 @@ fn bake_recursive_intlist_blob_size() -> (usize, usize) {
     let intrinsic_ids = crate::jit::declare_intrinsics_generic(jit.jit_module()).unwrap();
     let func_ids: std::collections::HashMap<Symbol, cranelift_module::FuncId> =
         std::collections::HashMap::new();
-    let func_arities: std::collections::HashMap<Symbol, usize> =
-        std::collections::HashMap::new();
+    let func_arities: std::collections::HashMap<Symbol, usize> = std::collections::HashMap::new();
 
     let ctx = crate::compiler::CompileContext {
         func_ids: &func_ids,
@@ -585,7 +616,11 @@ fn bake_recursive_intlist_blob_size() -> (usize, usize) {
     // memoized — only compound ADT/Vec types are). For IntList the distinct
     // ADT set is {IntList} ⇒ exactly one done-entry, and the param + result
     // (both IntList) SHARE it (DAG).
-    assert_eq!(memo.done.len(), 1, "exactly one distinct ADT baked (IntList)");
+    assert_eq!(
+        memo.done.len(),
+        1,
+        "exactly one distinct ADT baked (IntList)"
+    );
     assert_eq!(
         p, _r,
         "param and result are the same type ⇒ DAG-shared (same blob offset)"

@@ -13,7 +13,7 @@
 ; The annotation's type name must be in scope. The stdlib prelude
 ; re-exports primitive FUNCTIONS but not primitive TYPES, so we bring
 ; Int and Float into scope explicitly. (FQ `:primitives/Int` always works.)
-(import [primitives [Int Float]])
+(import [primitives [Int Float mul-i64]])
 
 ; With Int in scope, the bare type name resolves to the primitive type.
 Int

@@ -57,11 +57,11 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use cranelisp_types::TypeName;
 use cranelisp_types::{
     DefKind, DefnVariant, Expr, FQSymbol, FQTypeName, ModuleEntry, ModuleFullPath, Scheme, Span,
     Symbol, Type, TypeDefInfo, TypeExpr, TypeId, Visibility,
 };
-use cranelisp_types::TypeName;
 
 use crate::code::{Code, SessionSymbolTable};
 
@@ -282,15 +282,16 @@ fn ensure_module(
     path: &ModuleFullPath,
 ) {
     if !symbol_tables.contains_key(path) {
-        symbol_tables.insert(path.clone(), SessionSymbolTable::new_with_params(path.clone()));
+        symbol_tables.insert(
+            path.clone(),
+            SessionSymbolTable::new_with_params(path.clone()),
+        );
     }
 }
 
 // --- Step 1: special forms (root "") ---
 
-fn register_special_forms(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
-) {
+fn register_special_forms(symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>) {
     // Each special form carries its REAL type scheme — the SpecialForm entry is
     // the SINGLE SOURCE for the `:Type` prefix the REPL renders (FIXME 0338, S82
     // W2). The former placeholder `mono(Type::Int)` schemes + the parallel
@@ -317,9 +318,21 @@ fn register_special_forms(
         ("if", if_scheme, "conditional: (if cond then else)"),
         ("let", generic(), "local binding: (let [x e] body)"),
         ("fn", generic(), "lambda: (fn [params] body)"),
-        ("defn", generic(), "function definition: (defn name [params] body)"),
-        ("deftype", generic(), "type definition: (deftype Name ctor1 ctor2 ...)"),
-        ("match", generic(), "pattern matching: (match expr [pat body] ...)"),
+        (
+            "defn",
+            generic(),
+            "function definition: (defn name [params] body)",
+        ),
+        (
+            "deftype",
+            generic(),
+            "type definition: (deftype Name ctor1 ctor2 ...)",
+        ),
+        (
+            "match",
+            generic(),
+            "pattern matching: (match expr [pat body] ...)",
+        ),
         (
             "deftrait",
             generic(),
@@ -330,7 +343,11 @@ fn register_special_forms(
             generic(),
             "trait implementation: (impl TraitName Type (method [params] body) ...)",
         ),
-        ("defmacro", generic(), "macro definition: (defmacro name [params] body)"),
+        (
+            "defmacro",
+            generic(),
+            "macro definition: (defmacro name [params] body)",
+        ),
     ];
 
     let root_path = ModuleFullPath::from("");
@@ -799,9 +816,9 @@ fn register_io_type(
     // like `Pure`/`Effect` and every user `deftype` sum ctor — the real `Def` is
     // keyed `IO.Bind` (`member_key`), the bare `Bind` an `Import` alias onto it;
     // `internal: true` rides the `Def` unchanged.
-    let bind_ctor_slot = primitives
-        .allocate_got_slot()
-        .unwrap_or_else(|_| unreachable!("invariant: bootstrap seeding cannot exhaust a fresh GOT"));
+    let bind_ctor_slot = primitives.allocate_got_slot().unwrap_or_else(|_| {
+        unreachable!("invariant: bootstrap seeding cannot exhaust a fresh GOT")
+    });
     let bind_canonical = cranelisp_types::member_key(&io_fqtn.name, "Bind");
     primitives.insert(
         bind_canonical.clone(),
@@ -877,9 +894,7 @@ fn register_bind_primitive(
         Symbol::from("bind"),
         ModuleEntry::def(bind_scheme, DefKind::PrimitiveExtern)
             .visibility(Visibility::Public)
-            .docstring(
-                "Chain IO actions: extract value from first IO, pass to continuation",
-            )
+            .docstring("Chain IO actions: extract value from first IO, pass to continuation")
             .param_names(vec![Symbol::from("io"), Symbol::from("f")])
             .build(),
     );
@@ -910,10 +925,7 @@ fn register_combinators(
     // race : forall a. IO a -> IO a -> IO a — the binary first-to-complete race.
     let ra = fresh_type_id(next_id);
     let io_ra = Type::ADT(io_fqtn.clone(), vec![Type::Var(ra)]);
-    let race_ty = Type::Fn(
-        vec![io_ra.clone(), io_ra.clone()],
-        Box::new(io_ra.clone()),
-    );
+    let race_ty = Type::Fn(vec![io_ra.clone(), io_ra.clone()], Box::new(io_ra.clone()));
     let race_scheme = Scheme {
         type_vars: vec![ra],
         constraints: HashMap::new(),
@@ -939,9 +951,7 @@ fn register_combinators(
         Symbol::from("race"),
         ModuleEntry::def(race_scheme, DefKind::PrimitiveExtern)
             .visibility(Visibility::Public)
-            .docstring(
-                "Race two IO actions: the first to complete wins; the loser is cancelled",
-            )
+            .docstring("Race two IO actions: the first to complete wins; the loser is cancelled")
             .param_names(vec![Symbol::from("a"), Symbol::from("b")])
             .build(),
     );
@@ -988,9 +998,7 @@ fn register_combinators(
 
 // --- Step 7: Trace ADT + field accessors + `trace` form (primitives) ---
 
-fn register_trace_type(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
-) {
+fn register_trace_type(symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>) {
     let primitives_path = ModuleFullPath::from("primitives");
     let trace_fqtn = primitives_fqtn("Trace");
     let trace_ty = Type::ADT(trace_fqtn.clone(), vec![]);
@@ -1091,10 +1099,7 @@ fn register_test_infrastructure(
     let option_string = Type::ADT(primitives_fqtn("Option"), vec![Type::String]);
     let test_callable = Type::Fn(vec![], Box::new(option_string));
     // (Pair String (Fn [] (Option String)))
-    let pair_name_callable = Type::ADT(
-        primitives_fqtn("Pair"),
-        vec![Type::String, test_callable],
-    );
+    let pair_name_callable = Type::ADT(primitives_fqtn("Pair"), vec![Type::String, test_callable]);
     // (Vec (Pair ...)) — return; (Vec String) — argument (module paths).
     let vec_pairs = Type::ADT(primitives_fqtn("Vec"), vec![pair_name_callable]);
     let vec_string = Type::ADT(primitives_fqtn("Vec"), vec![Type::String]);
@@ -1130,10 +1135,7 @@ fn register_test_infrastructure(
     // intrinsics archive (intrinsics_table() entry); no `define_symbol`.
     let a = fresh_type_id(next_id);
     let thunk_ty = Type::Fn(vec![], Box::new(Type::Var(a)));
-    let result_a_string = Type::ADT(
-        primitives_fqtn("Result"),
-        vec![Type::Var(a), Type::String],
-    );
+    let result_a_string = Type::ADT(primitives_fqtn("Result"), vec![Type::Var(a), Type::String]);
     let cre_scheme = Scheme {
         type_vars: vec![a],
         constraints: HashMap::new(),
@@ -1268,8 +1270,14 @@ mod tests {
         let (tables, next_id) = fresh_tables();
         mount_synthetic_modules(&tables, &next_id);
         let macros = tables.get(&ModuleFullPath::from("macros")).unwrap();
-        assert!(matches!(macros.get("Sexp"), Some(ModuleEntry::TypeDef { .. })));
-        assert!(matches!(macros.get("SList"), Some(ModuleEntry::TypeDef { .. })));
+        assert!(matches!(
+            macros.get("Sexp"),
+            Some(ModuleEntry::TypeDef { .. })
+        ));
+        assert!(matches!(
+            macros.get("SList"),
+            Some(ModuleEntry::TypeDef { .. })
+        ));
         // SCons is a data constructor Def.
         assert!(matches!(
             ctor_entry(&macros, "SCons"),
@@ -1278,16 +1286,31 @@ mod tests {
                 ..
             }) if matches!(kind.as_ref(), DefKind::Constructor { .. })
         ));
-        assert!(matches!(macros.get("sconcat"), Some(ModuleEntry::Def { .. })));
+        assert!(matches!(
+            macros.get("sconcat"),
+            Some(ModuleEntry::Def { .. })
+        ));
         // spec: spec/09-macros.md §9.1.2 — reader-folded annotations are
         // available to macro code as (SexpAnnotated stype sform), tag 7.
         match ctor_entry(&macros, "SexpAnnotated") {
-            Some(ModuleEntry::Def { kind, scheme, param_names, .. }) => {
+            Some(ModuleEntry::Def {
+                kind,
+                scheme,
+                param_names,
+                ..
+            }) => {
                 assert!(matches!(
                     kind.as_ref(),
-                    DefKind::Constructor { tag: 7, field_count: 2, .. }
+                    DefKind::Constructor {
+                        tag: 7,
+                        field_count: 2,
+                        ..
+                    }
                 ));
-                assert_eq!(param_names, &vec![Symbol::from("stype"), Symbol::from("sform")]);
+                assert_eq!(
+                    param_names,
+                    &vec![Symbol::from("stype"), Symbol::from("sform")]
+                );
                 assert_eq!(
                     scheme.ty,
                     Type::Fn(
@@ -1308,8 +1331,14 @@ mod tests {
         let (tables, next_id) = fresh_tables();
         mount_synthetic_modules(&tables, &next_id);
         let prims = tables.get(&ModuleFullPath::from("primitives")).unwrap();
-        assert!(matches!(prims.get("Option"), Some(ModuleEntry::TypeDef { .. })));
-        assert!(matches!(ctor_entry(&prims, "Some"), Some(ModuleEntry::Def { .. })));
+        assert!(matches!(
+            prims.get("Option"),
+            Some(ModuleEntry::TypeDef { .. })
+        ));
+        assert!(matches!(
+            ctor_entry(&prims, "Some"),
+            Some(ModuleEntry::Def { .. })
+        ));
         assert!(matches!(prims.get("IO"), Some(ModuleEntry::TypeDef { .. })));
         assert!(matches!(prims.get("bind"), Some(ModuleEntry::Def { .. })));
         // Bind is internal.
@@ -1343,7 +1372,12 @@ mod tests {
 
         // race : IO a -> IO a -> IO a — slot-less PrimitiveExtern, public, binary.
         match prims.get("race") {
-            Some(ModuleEntry::Def { kind, scheme, visibility, .. }) => {
+            Some(ModuleEntry::Def {
+                kind,
+                scheme,
+                visibility,
+                ..
+            }) => {
                 assert!(matches!(kind.as_ref(), DefKind::PrimitiveExtern));
                 assert_eq!(*visibility, Visibility::Public);
                 match &scheme.ty {
@@ -1356,11 +1390,18 @@ mod tests {
 
         // select : Vec (IO a) -> IO a — slot-less PrimitiveExtern, public, unary.
         match prims.get("select") {
-            Some(ModuleEntry::Def { kind, scheme, visibility, .. }) => {
+            Some(ModuleEntry::Def {
+                kind,
+                scheme,
+                visibility,
+                ..
+            }) => {
                 assert!(matches!(kind.as_ref(), DefKind::PrimitiveExtern));
                 assert_eq!(*visibility, Visibility::Public);
                 match &scheme.ty {
-                    Type::Fn(params, _) => assert_eq!(params.len(), 1, "select takes one branch list"),
+                    Type::Fn(params, _) => {
+                        assert_eq!(params.len(), 1, "select takes one branch list")
+                    }
                     other => panic!("select must be a Fn type, got {other:?}"),
                 }
             }
@@ -1368,7 +1409,10 @@ mod tests {
         }
 
         // `timeout` is a C4 stdlib derivation, NOT a seeded builtin.
-        assert!(prims.get("timeout").is_none(), "timeout must NOT be a seeded builtin (C4 stdlib)");
+        assert!(
+            prims.get("timeout").is_none(),
+            "timeout must NOT be a seeded builtin (C4 stdlib)"
+        );
     }
 
     #[test]
@@ -1376,7 +1420,10 @@ mod tests {
         let (tables, next_id) = fresh_tables();
         mount_synthetic_modules(&tables, &next_id);
         let prims = tables.get(&ModuleFullPath::from("primitives")).unwrap();
-        assert!(matches!(prims.get("Trace"), Some(ModuleEntry::TypeDef { .. })));
+        assert!(matches!(
+            prims.get("Trace"),
+            Some(ModuleEntry::TypeDef { .. })
+        ));
         // FIXME 0266 RESOLVED (user ruling 2026-06-04): `trace` is a ROOT
         // special form needing no import; its SpecialForm metadata lives at
         // root `""`, NOT in `primitives`. The `Trace`/`TraceCall` ADT + its
@@ -1391,7 +1438,10 @@ mod tests {
             "trace SpecialForm metadata must resolve at root \"\""
         );
         // TestResult / run-test RETIRED (test-discovery.md, fourth convergence).
-        assert!(prims.get("TestResult").is_none(), "TestResult must be retired");
+        assert!(
+            prims.get("TestResult").is_none(),
+            "TestResult must be retired"
+        );
         assert!(prims.get("run-test").is_none(), "run-test must be retired");
         // discover-tests is now a PrimitiveExtern (host-promised body).
         assert!(matches!(
@@ -1416,9 +1466,18 @@ mod tests {
         // `(match _ [(Pair a b) …])` and `Pair` as a first-class value are
         // unresolvable. Assert the dual facet, not just the name's existence.
         match prims.get("Pair") {
-            Some(ModuleEntry::Def { kind, scheme, param_names, .. }) => {
+            Some(ModuleEntry::Def {
+                kind,
+                scheme,
+                param_names,
+                ..
+            }) => {
                 match kind.as_ref() {
-                    DefKind::Constructor { type_def: Some(td), field_count, .. } => {
+                    DefKind::Constructor {
+                        type_def: Some(td),
+                        field_count,
+                        ..
+                    } => {
                         assert_eq!(
                             td.constructors,
                             vec![Symbol::from("Pair")],
@@ -1448,11 +1507,16 @@ mod tests {
             }
             other => panic!("Pair should be a got-slotted ctor Def, got {other:?}"),
         }
-        assert!(matches!(prims.get("Result"), Some(ModuleEntry::TypeDef { .. })));
+        assert!(matches!(
+            prims.get("Result"),
+            Some(ModuleEntry::TypeDef { .. })
+        ));
         // Ok=tag 0, Err=tag 1 (declaration order — the combinator assumes this).
         match ctor_entry(&prims, "Ok") {
             Some(ModuleEntry::Def { kind, .. }) => match kind.as_ref() {
-                DefKind::Constructor { tag, field_count, .. } => {
+                DefKind::Constructor {
+                    tag, field_count, ..
+                } => {
                     assert_eq!(*tag, 0);
                     assert_eq!(*field_count, 1);
                 }

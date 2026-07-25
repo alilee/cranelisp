@@ -337,12 +337,12 @@
 //! - `design/frontend/wave-3a-build-form.md` — per-form boundary detailed design
 //! - `crates/cranelisp-frontend/public-api.txt` — authoritative surface enumeration
 
-pub mod reader;
 pub mod ast_builder;
+pub mod defmacro;
 pub mod module_extract;
 pub mod preamble;
 pub mod quasiquote;
-pub mod defmacro;
+pub mod reader;
 pub(crate) mod synth;
 
 use cranelisp_types::{CranelispError, Sexp};
@@ -358,18 +358,18 @@ pub use ast_builder::{build_expr, build_form, build_forms, parse_type_expr};
 // placement clarity). `ResolutionGap`'s sole prior re-export justification
 // (`ExpansionError::Gap` consumers) evaporated with `ExpansionError`'s
 // deletion; it now travels with `CheckError::Gap` (a typecheck/types concern).
-pub use module_extract::extract_module_declarations;
 pub use module_extract::ExtractedDeclarations;
+pub use module_extract::extract_module_declarations;
 // Module-preamble capture (spec §8.16) — pure `&str -> Option<String>` that
 // reads the raw source head, orthogonal to structural-decl extraction. The int
 // load seam calls this alongside `extract_module_declarations` to populate
 // `SymbolTable.module_preamble` (wiring is int's, design §5).
+pub use defmacro::{
+    DefmacroInfo, MacroClause, flatten_begin, is_begin, is_defmacro, parse_defmacro,
+    synthesize_macro_clause_defn,
+};
 pub use preamble::capture_module_preamble;
 pub use quasiquote::{expand_quasiquotes, expand_quote_template, next_synthetic_span};
-pub use defmacro::{
-    is_defmacro, is_begin, flatten_begin, parse_defmacro,
-    synthesize_macro_clause_defn, DefmacroInfo, MacroClause,
-};
 
 /// Parse source text into a sequence of S-expressions.
 ///

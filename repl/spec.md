@@ -468,7 +468,7 @@ Types MUST be displayed using Cranelisp type notation with fully-qualified names
 | ADT (no args) | `user/Color` | [Tested tests/repl_negative::display_neg_type_always_qualified] |
 | ADT (with args) | `(user/Option primitives/Int)` | [Tested tests/repl_negative::display_neg_type_always_qualified] |
 | Type variable | lowercase letter: `a`, `b`, `c`, ... | [Tested tests/repl_negative::display_neg_type_always_qualified] |
-| Constrained variable | `:num.num/Num a` | [Tested tests/repl_negative::display_neg_type_always_qualified] |
+| Constrained variable | `:num.num/Num a` | [Tested+Neg tests/repl_introspection::constraint_trait_name_displays_canonical_home_neg_no_bare_trait, tests/repl_introspection::constraint_display_is_identical_across_definition_sig_and_bare_lookup] |
 
 Type names MUST always be fully qualified with their module path. Type variables are bare lowercase — they are not module-scoped.
 

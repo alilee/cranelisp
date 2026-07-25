@@ -643,9 +643,7 @@ fn gen_flows_capability_detects_planted_per_iteration_scaling_leak() {
          report its rate; got {faults:?}"
     );
     assert!(
-        faults.contains(&Fault::Leak {
-            count: ITERS - 1
-        }),
+        faults.contains(&Fault::Leak { count: ITERS - 1 }),
         "the scaled run's absolute imbalance MUST also be reported (the exact \
          balance face is asserted at every iteration count, not only at 1); got \
          {faults:?}"
@@ -660,10 +658,7 @@ fn gen_flows_capability_detects_planted_per_iteration_scaling_leak() {
 #[test]
 fn gen_flows_capability_detects_unmeasured_run() {
     let (single, scaled) = fence_baseline();
-    let blind = Measure {
-        rc: None,
-        ..single
-    };
+    let blind = Measure { rc: None, ..single };
     let faults = verdict(3, blind, single, scaled, scaled, true);
     assert!(
         faults.contains(&Fault::NoMeasurement),

@@ -71,8 +71,8 @@ pub use cranelisp_intrinsics::rc;
 // 2026-06-04 trace ruling retracted D40's trace half: `(trace ...)` now works
 // in all modes incl. `--link`, so `libcranelisp_exe_bundle.a` must carry the
 // trace symbols (the 12 `cranelisp_trace_*` bodies + the descriptor formatter).
-pub use cranelisp_intrinsics::trace;
 pub use cranelisp_intrinsics::heap_string as intrinsics_string;
+pub use cranelisp_intrinsics::trace;
 pub use cranelisp_intrinsics::vec_runtime as intrinsics_vec;
 
 // Primitives force-link `pub use` lines RETIRED in S68 Wave 3 per

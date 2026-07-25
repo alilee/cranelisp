@@ -38,7 +38,7 @@ use crate::checker::{CheckState, TypeCheckEnv};
 
 use super::classify::{CopyClassifier, TerminalKind};
 use super::confinement::confine;
-use super::transfer::{transfer, SiteFacts, TransferEnv};
+use super::transfer::{SiteFacts, TransferEnv, transfer};
 
 /// One codegen-bound callable in the cluster universe.
 struct Callable {
@@ -73,23 +73,34 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TransferEnv
         if self.working.contains_key(name) {
             return Some(TerminalKind::UserFnConcrete);
         }
-        let (entry, _home) =
-            self.env.resolve_terminal_entry_and_home_scoped(&self.current_module, name.as_ref())?;
+        let (entry, _home) = self
+            .env
+            .resolve_terminal_entry_and_home_scoped(&self.current_module, name.as_ref())?;
         kind_of_entry(&entry)
     }
 
     fn summary_of(&self, name: &Symbol) -> Option<(FQSymbol, ModeSummary)> {
         if let Some(s) = self.working.get(name) {
             return Some((
-                FQSymbol { module: self.current_module.clone(), symbol: name.clone() },
+                FQSymbol {
+                    module: self.current_module.clone(),
+                    symbol: name.clone(),
+                },
                 s.clone(),
             ));
         }
-        let (entry, home) =
-            self.env.resolve_terminal_entry_and_home_scoped(&self.current_module, name.as_ref())?;
-        entry
-            .mode_summary()
-            .map(|s| (FQSymbol { module: home, symbol: name.clone() }, s.clone()))
+        let (entry, home) = self
+            .env
+            .resolve_terminal_entry_and_home_scoped(&self.current_module, name.as_ref())?;
+        entry.mode_summary().map(|s| {
+            (
+                FQSymbol {
+                    module: home,
+                    symbol: name.clone(),
+                },
+                s.clone(),
+            )
+        })
     }
 }
 
@@ -97,12 +108,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TransferEnv
 fn kind_of_entry<C: cranelisp_types::CodeStore>(entry: &ModuleEntry<C>) -> Option<TerminalKind> {
     match entry {
         ModuleEntry::Def { kind, .. } => match kind.as_ref() {
-            DefKind::UserFn { fn_state: UserFnState::Concrete { .. } } => {
-                Some(TerminalKind::UserFnConcrete)
-            }
-            DefKind::Primitive { body: PrimitiveBody::Inline | PrimitiveBody::Extern { .. }, .. } => {
-                Some(TerminalKind::DeclaredLeaf)
-            }
+            DefKind::UserFn {
+                fn_state: UserFnState::Concrete { .. },
+            } => Some(TerminalKind::UserFnConcrete),
+            DefKind::Primitive {
+                body: PrimitiveBody::Inline | PrimitiveBody::Extern { .. },
+                ..
+            } => Some(TerminalKind::DeclaredLeaf),
             DefKind::Constructor { .. } | DefKind::PlatformEffect { .. } => {
                 Some(TerminalKind::PinnedBoundary)
             }
@@ -172,15 +184,28 @@ where
     let view = read.view();
     let mut out = Vec::new();
     for (key, entry) in view.iter() {
-        let Some(cv) = entry.codegen_view() else { continue };
-        let ModuleEntry::Def { scheme, ast: Some(ast_variant), .. } = entry else { continue };
+        let Some(cv) = entry.codegen_view() else {
+            continue;
+        };
+        let ModuleEntry::Def {
+            scheme,
+            ast: Some(ast_variant),
+            ..
+        } = entry
+        else {
+            continue;
+        };
         // Pre-flip universe pin: only a STRICT-TYPE-concrete body participates
         // (see the fn rustdoc above; the probe is the types-side single source).
         if !cranelisp_types::is_strict_type_concrete(&ast_variant.body) {
             continue;
         }
         let params = param_types(&cv.params, Some(&scheme.ty));
-        out.push(Callable { key: key.clone(), params, body: cv.body.clone() });
+        out.push(Callable {
+            key: key.clone(),
+            params,
+            body: cv.body.clone(),
+        });
     }
     out
 }
@@ -287,8 +312,11 @@ where
         }
         let Some(c) = by_key.get(&key) else { continue };
 
-        let cluster_env =
-            ClusterEnv { env, current_module: current_module.clone(), working: &summaries };
+        let cluster_env = ClusterEnv {
+            env,
+            current_module: current_module.clone(),
+            working: &summaries,
+        };
         let r = transfer(&c.params, &c.body, &cluster_env, &copy);
 
         deps.insert(key.clone(), r.deps.clone());
@@ -300,7 +328,10 @@ where
         if changed {
             // Re-enter intra-cluster callers: any callable whose harvested
             // DepSet named this key (§13.3 self-describing re-entry).
-            let this_fq = FQSymbol { module: current_module.clone(), symbol: key.clone() };
+            let this_fq = FQSymbol {
+                module: current_module.clone(),
+                symbol: key.clone(),
+            };
             for (other, dset) in &deps {
                 if other != &key && dset.contains(&this_fq) && queued.insert(other.clone()) {
                     queue.push_back(other.clone());
@@ -342,14 +373,26 @@ where
             .iter()
             .enumerate()
             .map(|(i, (n, _))| {
-                (n.clone(), summaries.get(&c.key).map(|s| s.param_mode(i)).unwrap_or(Mode::Owned))
+                (
+                    n.clone(),
+                    summaries
+                        .get(&c.key)
+                        .map(|s| s.param_mode(i))
+                        .unwrap_or(Mode::Owned),
+                )
             })
             .collect();
-        let cluster_env =
-            ClusterEnv { env, current_module: current_module.clone(), working: &summaries };
+        let cluster_env = ClusterEnv {
+            env,
+            current_module: current_module.clone(),
+            working: &summaries,
+        };
         let cr = confine(&param_modes, &c.body, &cluster_env);
 
-        let changed = summaries.get(&c.key).map(|s| s.spark_ops != cr.spark_ops).unwrap_or(true);
+        let changed = summaries
+            .get(&c.key)
+            .map(|s| s.spark_ops != cr.spark_ops)
+            .unwrap_or(true);
         if let Some(s) = summaries.get_mut(&c.key) {
             s.spark_ops = cr.spark_ops;
         }
@@ -359,7 +402,10 @@ where
         if changed {
             // Re-enter callers: any callable whose harvested DepSet named this
             // key inherits the newly-widened spark_ops (§5.3 transitive).
-            let this_fq = FQSymbol { module: current_module.clone(), symbol: key.clone() };
+            let this_fq = FQSymbol {
+                module: current_module.clone(),
+                symbol: key.clone(),
+            };
             for (other, dset) in &deps {
                 if other != &key && dset.contains(&this_fq) && cqueued.insert(other.clone()) {
                     cqueue.push_back(other.clone());
@@ -376,9 +422,22 @@ where
     // here (the driver returned at entry); the modes/confinement cap-reset above
     // leaves `result_unique = false` on every summary (the `top`/optimistic
     // init), which the stratum re-derives from the conservative bodies.
-    run_uniqueness_stratum(env, current_module, universe, &by_key, &deps, &mut summaries, &mut facts, cap);
+    run_uniqueness_stratum(
+        env,
+        current_module,
+        universe,
+        &by_key,
+        &deps,
+        &mut summaries,
+        &mut facts,
+        cap,
+    );
 
-    ClusterOwnership { summaries, facts, value_used }
+    ClusterOwnership {
+        summaries,
+        facts,
+        value_used,
+    }
 }
 
 /// The uniqueness-stratum callee-fact env: converged modes summaries + the
@@ -400,8 +459,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> super::uniq
         if self.summaries.contains_key(name) {
             return Some(TerminalKind::UserFnConcrete);
         }
-        let (entry, _home) =
-            self.env.resolve_terminal_entry_and_home_scoped(&self.current_module, name.as_ref())?;
+        let (entry, _home) = self
+            .env
+            .resolve_terminal_entry_and_home_scoped(&self.current_module, name.as_ref())?;
         kind_of_entry(&entry)
     }
 
@@ -409,8 +469,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> super::uniq
         if let Some(s) = self.summaries.get(name) {
             return Some(s.clone());
         }
-        let (entry, _home) =
-            self.env.resolve_terminal_entry_and_home_scoped(&self.current_module, name.as_ref())?;
+        let (entry, _home) = self
+            .env
+            .resolve_terminal_entry_and_home_scoped(&self.current_module, name.as_ref())?;
         entry.mode_summary().cloned()
     }
 
@@ -492,7 +553,10 @@ fn run_uniqueness_stratum<C, L>(
         let changed = working_unique.get(&key).copied().unwrap_or(true) != r.result_unique;
         working_unique.insert(key.clone(), r.result_unique);
         if changed {
-            let this_fq = FQSymbol { module: current_module.clone(), symbol: key.clone() };
+            let this_fq = FQSymbol {
+                module: current_module.clone(),
+                symbol: key.clone(),
+            };
             for (other, dset) in deps {
                 if other != &key && dset.contains(&this_fq) && queued.insert(other.clone()) {
                     queue.push_back(other.clone());
@@ -535,7 +599,13 @@ fn optimistic(params: &[(Symbol, ConcreteType)], copy: &CopyClassifier<'_>) -> M
     ModeSummary {
         param_modes: params
             .iter()
-            .map(|(_, ty)| if copy.is_copy(ty) { Mode::Copy } else { Mode::Borrowed })
+            .map(|(_, ty)| {
+                if copy.is_copy(ty) {
+                    Mode::Copy
+                } else {
+                    Mode::Borrowed
+                }
+            })
             .collect(),
         result: cranelisp_types::ResultMode::Fresh,
         param_flow: vec![cranelisp_types::ParamFlow::Consumed; n],
@@ -592,7 +662,9 @@ fn collect_escape_spans(expr: &MonoExpr, f: &mut SiteFacts) {
             f.escapes.insert(*span, true);
             collect_escape_spans(body, f);
         }
-        MonoExpr::Apply { span, callee, args, .. } => {
+        MonoExpr::Apply {
+            span, callee, args, ..
+        } => {
             f.escapes.insert(*span, true);
             collect_escape_spans(callee, f);
             for a in args {
@@ -617,19 +689,30 @@ fn collect_escape_spans(expr: &MonoExpr, f: &mut SiteFacts) {
             }
             collect_escape_spans(body, f);
         }
-        MonoExpr::If { cond, then_branch, else_branch, .. } => {
+        MonoExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
             collect_escape_spans(cond, f);
             collect_escape_spans(then_branch, f);
             collect_escape_spans(else_branch, f);
         }
-        MonoExpr::Match { scrutinee, arms, .. } => {
+        MonoExpr::Match {
+            scrutinee, arms, ..
+        } => {
             collect_escape_spans(scrutinee, f);
             for arm in arms {
                 collect_escape_spans(&arm.body, f);
             }
         }
         MonoExpr::Trace { body, .. } => collect_escape_spans(body, f),
-        MonoExpr::LaunchContinue { launched, continuation, .. } => {
+        MonoExpr::LaunchContinue {
+            launched,
+            continuation,
+            ..
+        } => {
             collect_escape_spans(launched, f);
             collect_escape_spans(continuation, f);
         }

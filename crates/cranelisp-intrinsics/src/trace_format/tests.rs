@@ -332,8 +332,7 @@ fn self_rel_offset_round_trip() {
 
     let parent_ptr = b.ptr_at(parent);
     let child0_field = unsafe { ptr::addr_of!((*parent_ptr).child0_off) };
-    let resolved: Option<*const DisplayDescriptor> =
-        unsafe { follow_self_rel(child0_field) };
+    let resolved: Option<*const DisplayDescriptor> = unsafe { follow_self_rel(child0_field) };
     let resolved = resolved.expect("child0 offset must resolve");
     // Resolved pointer must equal the child descriptor's address, and have
     // kind Int.
@@ -349,8 +348,7 @@ fn self_rel_zero_is_absent() {
     // child0_off left 0.
     let dptr = b.ptr_at(d);
     let field = unsafe { ptr::addr_of!((*dptr).child0_off) };
-    let resolved: Option<*const DisplayDescriptor> =
-        unsafe { follow_self_rel(field) };
+    let resolved: Option<*const DisplayDescriptor> = unsafe { follow_self_rel(field) };
     assert!(resolved.is_none(), "zero offset means absent");
 }
 

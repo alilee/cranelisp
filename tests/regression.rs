@@ -305,7 +305,8 @@ fn d45_baseline_trivial_run_tests_no_crash() {
     // (prevents the test from becoming a vacuous pass if discovery breaks).
     let combined = format!("{}{}", out.stdout, out.stderr);
     assert!(
-        combined.contains("test-none-ok") && (combined.contains(" ok") || combined.contains("passed")),
+        combined.contains("test-none-ok")
+            && (combined.contains(" ok") || combined.contains("passed")),
         "baseline trivial test did not run — discovery broke.\n{combined}"
     );
 }
@@ -917,7 +918,9 @@ fn d45_real_html_with_trimmed_grid_no_crash() {
     // Read real html.cl from the workspace and pair with trimmed grid.
     // read-only on project_root: html.cl is sourced from exemplar/html.cl.
     let html_body = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("exemplar").join("html.cl"),
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("exemplar")
+            .join("html.cl"),
     )
     .expect("read exemplar/html.cl");
     let out = Cranelisp::new()
@@ -2311,10 +2314,7 @@ const S60_SINGLE_FILE_WITH_HELPER: &str = r#"(import [primitives [*]])
 // (carry: legacy/sprint60_reduction.rs::s60_control_single_file_no_crash)
 #[test]
 fn s60_control_single_file_no_crash() {
-    assert_single_file_cache_reuse_no_crash(
-        S60_SINGLE_FILE_WITH_HELPER,
-        "s60_control_single_file",
-    );
+    assert_single_file_cache_reuse_no_crash(S60_SINGLE_FILE_WITH_HELPER, "s60_control_single_file");
 }
 
 const S60_GRID_TRIVIAL_WRAPPER: &str = r#"(import [primitives [*]])
@@ -2597,7 +2597,9 @@ fn run_repl_in_tmpdir(cwd: &Path, stdin_input: &str) -> std::process::Output {
             let _ = stdin.write_all(stdin_input.as_bytes());
         }
     }
-    child.wait_with_output().expect("failed to read REPL output")
+    child
+        .wait_with_output()
+        .expect("failed to read REPL output")
 }
 
 /// Drive the REPL binary from `cwd` (a fresh tempdir) with piped stdin,
@@ -2649,7 +2651,9 @@ fn run_repl_in_tmpdir_no_stdlib(cwd: &Path, stdin_input: &str) -> std::process::
             let _ = stdin.write_all(stdin_input.as_bytes());
         }
     }
-    child.wait_with_output().expect("failed to read REPL output")
+    child
+        .wait_with_output()
+        .expect("failed to read REPL output")
 }
 
 fn combined_out(o: &std::process::Output) -> String {
@@ -3087,7 +3091,8 @@ fn regression_0177_cross_form_state_no_bleed() {
     assert!(
         cap.stdout.contains(":primitives/Int 7"),
         "expected ':primitives/Int 7' in stdout; stdout=\n{}\nstderr=\n{}",
-        cap.stdout, cap.stderr,
+        cap.stdout,
+        cap.stderr,
     );
 }
 
@@ -3117,7 +3122,8 @@ fn regression_0179_cluster_union_read_staging_and_live() {
     assert!(
         cap.stdout.contains(":primitives/Int 42"),
         "expected ':primitives/Int 42' in stdout; stdout=\n{}\nstderr=\n{}",
-        cap.stdout, cap.stderr,
+        cap.stdout,
+        cap.stderr,
     );
 }
 
@@ -3244,8 +3250,10 @@ fn regression_0279_cross_module_polymorphic_import_monomorphisation() {
             );
         }
         Err(e2e::CrError::Timeout(_)) => {
-            panic!("FIXME 0279: compile did not complete within 20s (worse than \
-                    the expected overflow-abort); resolver /typecheck");
+            panic!(
+                "FIXME 0279: compile did not complete within 20s (worse than \
+                    the expected overflow-abort); resolver /typecheck"
+            );
         }
         Err(e) => panic!("unexpected harness error: {e}"),
     }
@@ -3283,8 +3291,8 @@ fn shared_state_pub_field_count_guard() {
     // deleted; this guards that they do not creep back while admitting the
     // legitimate sanctioned field additions.
     let src = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/session_v4.rs");
-    let text = std::fs::read_to_string(&src)
-        .unwrap_or_else(|e| panic!("read {}: {e}", src.display()));
+    let text =
+        std::fs::read_to_string(&src).unwrap_or_else(|e| panic!("read {}: {e}", src.display()));
     let start = text
         .find("pub struct SharedState {")
         .expect("SharedState struct in src/session_v4.rs");
@@ -3935,7 +3943,8 @@ fn mono_ambiguous_unconstrained_top_level_var_rejected_neg() {
         "ambiguous codegen-reaching form must be caught at typecheck, NOT crash \
          at codegen (spec §3.11.1) — got signal termination (status.code()==None).\n\
          stdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
     let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
     assert!(
@@ -3943,7 +3952,8 @@ fn mono_ambiguous_unconstrained_top_level_var_rejected_neg() {
         "expected an 'ambiguous type' error for a codegen-reaching unpinned var \
          (spec §3.11.1) — a `let`-bound `(identity None)` consumed at runtime.\n\
          stdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
 }
 
@@ -3980,7 +3990,8 @@ fn mono_ambiguous_neg_does_not_reach_codegen() {
         "a named result-only-var defn must be admitted at typecheck, NOT crash \
          (spec §3.11.3) — got signal termination (status.code()==None).\n\
          stdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
     let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
     assert!(
@@ -3988,7 +3999,8 @@ fn mono_ambiguous_neg_does_not_reach_codegen() {
         "a named polymorphic defn with result-only free vars MUST be ADMITTED, \
          not rejected as ambiguous (spec §3.11.3) — it is structurally identical \
          to a legitimate `(defn empty [] [])` library fn.\nstdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
     out.assert_exit(0);
 }
@@ -4116,7 +4128,8 @@ fn mono_ambiguous_match_scrutinee_rejected_neg() {
         "ambiguous codegen-reaching match scrutinee must be caught at typecheck, \
          NOT crash at codegen (spec §3.11.1) — got signal termination.\n\
          stdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
     let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
     assert!(
@@ -4124,7 +4137,8 @@ fn mono_ambiguous_match_scrutinee_rejected_neg() {
         "expected an 'ambiguous type' error for an unpinned `(Option a)` value as \
          a MATCH SCRUTINEE (spec §3.11.1) — the §3.11.1 scan must be position-\
          complete, not `let`-only (FIXME 0379).\nstdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
 }
 
@@ -4158,7 +4172,8 @@ fn mono_ambiguous_call_arg_rejected_neg() {
         "ambiguous codegen-reaching call argument must be caught at typecheck, \
          NOT crash at codegen (spec §3.11.1) — got signal termination.\n\
          stdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
     let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
     assert!(
@@ -4167,7 +4182,8 @@ fn mono_ambiguous_call_arg_rejected_neg() {
          passed as a FUNCTION-CALL ARGUMENT to a fn that discards it (spec \
          §3.11.1) — the var is not pinned by the call (FIXME 0379).\n\
          stdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
 }
 
@@ -4201,7 +4217,8 @@ fn mono_ambiguous_ctor_field_rejected_neg() {
         "ambiguous codegen-reaching constructor field must be caught at typecheck, \
          NOT crash at codegen (spec §3.11.1) — got signal termination.\n\
          stdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
     let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
     assert!(
@@ -4210,7 +4227,8 @@ fn mono_ambiguous_ctor_field_rejected_neg() {
          stored directly in a CONSTRUCTOR FIELD (spec §3.11.1) — the wrapping \
          `Box` does not pin the inner var (FIXME 0379).\n\
          stdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
 }
 
@@ -4243,7 +4261,8 @@ fn mono_ambiguous_if_branch_rejected_neg() {
         "ambiguous codegen-reaching if branch must be caught at typecheck, NOT \
          crash at codegen (spec §3.11.1) — got signal termination.\n\
          stdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
     let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
     assert!(
@@ -4252,7 +4271,8 @@ fn mono_ambiguous_if_branch_rejected_neg() {
          produced by an IF BRANCH and consumed (spec §3.11.1) — a nested non-\
          `let` codegen-reaching position (FIXME 0379).\n\
          stdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
 }
 
@@ -4288,7 +4308,8 @@ fn mono_vec_free_var_value_rejected_neg() {
         "ambiguous codegen-reaching `(Vec a)` value must be caught at typecheck, \
          NOT crash at codegen (spec §3.11.1) — got signal termination.\n\
          stdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
     // TIGHTENED §3.11.1 — no representation exemption. `(identity [])` is `(Vec a)`
     // with `a` free, passed to `use-vec` (which discards it) — nothing pins `a`.
@@ -4302,7 +4323,8 @@ fn mono_vec_free_var_value_rejected_neg() {
          codegen-reaching position (spec §3.11.1 — NO representation-based \
          exemption; full concreteness, not machine-shape determinacy). The \
          worked example `(id [])`.\nstdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
 }
 
@@ -4337,7 +4359,8 @@ fn mono_fn_free_var_value_rejected_neg() {
         "ambiguous codegen-reaching `(Fn [a] a)` value must be caught at typecheck, \
          NOT crash at codegen (spec §3.11.1) — got signal termination.\n\
          stdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
     // TIGHTENED §3.11.1 — no representation exemption. `(identity identity)` is a
     // polymorphic `(Fn [a] a)` value, passed to `use-fn` (which discards it) —
@@ -4349,7 +4372,8 @@ fn mono_fn_free_var_value_rejected_neg() {
         "expected an 'ambiguous type' error for an unpinned `(Fn [a] a)` polymorphic \
          function value at a codegen-reaching position (spec §3.11.1 — NO \
          representation-based exemption).\nstdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
 }
 
@@ -4427,7 +4451,8 @@ fn mono_vec_empty_annotation_pins_and_compiles_pos() {
          §3.11.1 worked example `(id :(Vec Int) [])`) — got an 'unknown type' \
          resolver error (FIXME 0385: builtin `Vec` unresolvable in annotation \
          position).\nstdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
     out.assert_exit(0);
 }
@@ -4470,7 +4495,8 @@ fn mono_bare_annotated_value_pins_and_compiles_pos() {
         "bare `:(Vec Int) []` MUST pin the element type and compile (spec §3.11.1) \
          — got an 'unknown type' resolver error (FIXME 0385: builtin `Vec` \
          unresolvable in annotation position).\nstdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
     out.assert_exit(0);
 }
@@ -4503,7 +4529,8 @@ fn mono_is_some_unannotated_none_rejected_neg() {
         "ambiguous `(is-some None)` must be caught at typecheck, NOT crash at \
          codegen (spec §3.11.1) — got signal termination.\n\
          stdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
     let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
     assert!(
@@ -4513,7 +4540,8 @@ fn mono_is_some_unannotated_none_rejected_neg() {
          reaching position. Fix is `(is-some :(Option Int) None)`. The impl must \
          report a clean typecheck ambiguity error, NOT a downstream codegen error.\n\
          stdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
 }
 

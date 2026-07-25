@@ -35,7 +35,16 @@ fn span() -> Span {
 }
 
 fn var(name: Symbol) -> MonoExpr {
-    MonoExpr::Var { resolution: cranelisp_types::VarRef::Local { binder: name.clone(), binding_span: cranelisp_types::Span::SYNTHETIC }, name, span: span(), resolved_call: None, ty: ConcreteType::Int }
+    MonoExpr::Var {
+        resolution: cranelisp_types::VarRef::Local {
+            binder: name.clone(),
+            binding_span: cranelisp_types::Span::SYNTHETIC,
+        },
+        name,
+        span: span(),
+        resolved_call: None,
+        ty: ConcreteType::Int,
+    }
 }
 
 /// A function-call binding `(f arg)` against a named callee.
@@ -73,7 +82,11 @@ fn call_with_arg(callee: &str, dep_var: &str) -> MonoExpr {
 
 /// An integer literal expression — never sparkable (not an `Apply`).
 fn literal(value: i64) -> MonoExpr {
-    MonoExpr::IntLit { value, span: span(), ty: ConcreteType::Int }
+    MonoExpr::IntLit {
+        value,
+        span: span(),
+        ty: ConcreteType::Int,
+    }
 }
 
 // spec: design/backend/lenient-eval.md §2 — two independent calls are sparkable
@@ -109,17 +122,21 @@ fn single_sparkable_below_threshold_returns_empty() {
 fn canonically_keyed_sum_ctor_calls_are_excluded_from_sparkable_set() {
     // The exclusion set is what `collect_module_constructors` now produces:
     // `bare_member_name("Maybe.Some") == "Some"`.
-    let ctors: HashSet<Symbol> =
-        [sym(cranelisp_types::bare_member_name("Maybe.Some"))].into_iter().collect();
-    assert!(ctors.contains(&sym("Some")), "the exclusion set holds the bare terminal name");
+    let ctors: HashSet<Symbol> = [sym(cranelisp_types::bare_member_name("Maybe.Some"))]
+        .into_iter()
+        .collect();
+    assert!(
+        ctors.contains(&sym("Some")),
+        "the exclusion set holds the bare terminal name"
+    );
 
     // Two ctor calls (bare + dotted) alongside — both must be excluded (the
     // set is non-empty only if a ctor leaked in). A real `compute` call keeps
     // the min-2 gate reachable so a leak would show as a non-empty result.
     let bindings = vec![
-        (sym("a"), call("Some")),        // bare sum-ctor call
-        (sym("b"), call("Maybe.Some")),  // dotted canonical sum-ctor call
-        (sym("c"), call("mmod/Some")),   // module-qualified sum-ctor call
+        (sym("a"), call("Some")),       // bare sum-ctor call
+        (sym("b"), call("Maybe.Some")), // dotted canonical sum-ctor call
+        (sym("c"), call("mmod/Some")),  // module-qualified sum-ctor call
     ];
     assert!(
         find_sparkable_bindings(&bindings, &ctors).is_empty(),
@@ -165,10 +182,10 @@ fn dependent_binding_on_sparked_is_admitted() {
 #[test]
 fn dependent_binding_on_non_sparked_is_excluded() {
     let bindings = vec![
-        (sym("a"), call("+")),                      // cheap → not sparked
-        (sym("b"), call_with_arg("derive", "a")),   // dep on non-sparked → excluded
-        (sym("c"), call("compute")),                // independent → sparked
-        (sym("d"), call("evaluate")),               // independent → sparked
+        (sym("a"), call("+")),                    // cheap → not sparked
+        (sym("b"), call_with_arg("derive", "a")), // dep on non-sparked → excluded
+        (sym("c"), call("compute")),              // independent → sparked
+        (sym("d"), call("evaluate")),             // independent → sparked
     ];
     let ctors = HashSet::new();
     assert_eq!(
@@ -235,7 +252,14 @@ fn constructors_are_not_sparkable() {
 #[test]
 fn literals_and_var_refs_are_not_sparkable() {
     let bindings = vec![
-        (sym("a"), MonoExpr::IntLit { value: 1, span: span(), ty: ConcreteType::Int }),
+        (
+            sym("a"),
+            MonoExpr::IntLit {
+                value: 1,
+                span: span(),
+                ty: ConcreteType::Int,
+            },
+        ),
         (sym("b"), var(sym("x"))),
     ];
     let ctors = HashSet::new();
@@ -294,9 +318,9 @@ fn find_sparkable_args_with_below_gate_is_empty() {
 #[test]
 fn find_sparkable_bindings_with_dependent_on_declined_dep_is_declined() {
     let bindings = vec![
-        (sym("a"), call("cell-at")),               // declined by predicate
-        (sym("b"), call_with_arg("rec-b", "a")),   // admitted callee, dep on declined `a`
-        (sym("c"), call("rec-c")),                 // independent, admitted
+        (sym("a"), call("cell-at")),             // declined by predicate
+        (sym("b"), call_with_arg("rec-b", "a")), // admitted callee, dep on declined `a`
+        (sym("c"), call("rec-c")),               // independent, admitted
     ];
     let admit = |e: &MonoExpr| callee_name(e).is_some_and(|n| n.starts_with("rec"));
     // `a` declined (flat); `b` depends on non-sparked `a` → declined; only `c`
@@ -309,8 +333,8 @@ fn find_sparkable_bindings_with_dependent_on_declined_dep_is_declined() {
 #[test]
 fn find_sparkable_bindings_with_dependent_on_sparked_dep_is_admitted() {
     let bindings = vec![
-        (sym("a"), call("rec-a")),                 // admitted
-        (sym("b"), call_with_arg("rec-b", "a")),   // admitted, dep on sparked `a`
+        (sym("a"), call("rec-a")),               // admitted
+        (sym("b"), call_with_arg("rec-b", "a")), // admitted, dep on sparked `a`
     ];
     let admit = |e: &MonoExpr| callee_name(e).is_some_and(|n| n.starts_with("rec"));
     assert_eq!(find_sparkable_bindings_with(&bindings, admit), vec![0, 1]);
@@ -429,7 +453,13 @@ fn heap_call(callee: &str, escapes: Option<bool>, confined: Option<bool>) -> Mon
         args: vec![],
         span: span(),
         resolved_call: None,
-        ty: ConcreteType::ADT(FQTypeName { module: "user".into(), name: "SolveResult".into() }, vec![]),
+        ty: ConcreteType::ADT(
+            FQTypeName {
+                module: "user".into(),
+                name: "SolveResult".into(),
+            },
+            vec![],
+        ),
         confined,
         escapes,
         provenance: None,
@@ -478,7 +508,10 @@ fn density_facts_absent_is_inert() {
 // atomic, cross-strand). +1 heap-pressure, +1 surviving-RC ⇒ score 2 (dense).
 #[test]
 fn density_alloc_dense_scores_two() {
-    assert_eq!(spark_density(&heap_call("solve-range", Some(true), None)), Some(2));
+    assert_eq!(
+        spark_density(&heap_call("solve-range", Some(true), None)),
+        Some(2)
+    );
 }
 
 // spec: design/backend/lenient-eval.md §2.7 — compute-dense heap-blind (score 0)
@@ -488,7 +521,10 @@ fn density_alloc_dense_scores_two() {
 // is engaged (a `Some` fact) yet scores 0 ⇒ always admitted.
 #[test]
 fn density_compute_dense_scores_zero() {
-    assert_eq!(spark_density(&scalar_call_with_facts("reduce-tree", Some(true), None)), Some(0));
+    assert_eq!(
+        spark_density(&scalar_call_with_facts("reduce-tree", Some(true), None)),
+        Some(0)
+    );
 }
 
 // spec: design/backend/lenient-eval.md §2.7 — confined heap ⇒ boundary score 1
@@ -498,7 +534,10 @@ fn density_compute_dense_scores_zero() {
 // surviving-RC ⇒ score 1 (== the default threshold ⇒ admitted, not declined).
 #[test]
 fn density_confined_heap_scores_one() {
-    assert_eq!(spark_density(&heap_call("mk", Some(true), Some(true))), Some(1));
+    assert_eq!(
+        spark_density(&heap_call("mk", Some(true), Some(true))),
+        Some(1)
+    );
 }
 
 // spec: design/backend/lenient-eval.md §2.7 — NoEscape ⇒ score 0 (stack/immortal RC)
@@ -508,10 +547,16 @@ fn density_confined_heap_scores_one() {
 // no surviving RC traffic (§4.2). Engaged (a `Some` fact) but score 0.
 #[test]
 fn density_noescape_scores_zero() {
-    assert_eq!(spark_density(&heap_call("mk-box", Some(false), None)), Some(0));
+    assert_eq!(
+        spark_density(&heap_call("mk-box", Some(false), None)),
+        Some(0)
+    );
     // Even a non-confined NoEscape site stays 0 — the NoEscape short-circuit
     // precedes the RC axis.
-    assert_eq!(spark_density(&heap_call("mk-box", Some(false), Some(false))), Some(0));
+    assert_eq!(
+        spark_density(&heap_call("mk-box", Some(false), Some(false))),
+        Some(0)
+    );
 }
 
 // spec: design/backend/lenient-eval.md §2.7 — mixed: nested alloc sites sum
@@ -522,11 +567,20 @@ fn density_noescape_scores_zero() {
 #[test]
 fn density_mixed_nested_sites_sum() {
     let nested_ctor = MonoExpr::ConstrADT {
-        type_name: FQTypeName { module: "user".into(), name: "Cell".into() },
+        type_name: FQTypeName {
+            module: "user".into(),
+            name: "Cell".into(),
+        },
         tag: 0,
         fields: vec![],
         span: span(),
-        ty: ConcreteType::ADT(FQTypeName { module: "user".into(), name: "Cell".into() }, vec![]),
+        ty: ConcreteType::ADT(
+            FQTypeName {
+                module: "user".into(),
+                name: "Cell".into(),
+            },
+            vec![],
+        ),
         escapes: Some(true),
         confined: None,
         unique_static: None,
@@ -537,7 +591,13 @@ fn density_mixed_nested_sites_sum() {
         args: vec![nested_ctor],
         span: span(),
         resolved_call: None,
-        ty: ConcreteType::ADT(FQTypeName { module: "user".into(), name: "SolveResult".into() }, vec![]),
+        ty: ConcreteType::ADT(
+            FQTypeName {
+                module: "user".into(),
+                name: "SolveResult".into(),
+            },
+            vec![],
+        ),
         escapes: Some(true),
         confined: None,
         provenance: None,
@@ -655,7 +715,10 @@ fn density_confined_heap_pair_admitted_at_boundary() {
 #[test]
 fn density_facts_absent_admits_like_pre_b4() {
     // Two heap calls, no facts ⇒ inert ⇒ admitted purely on the compute axis.
-    let args = vec![heap_call("solve", None, None), heap_call("solve", None, None)];
+    let args = vec![
+        heap_call("solve", None, None),
+        heap_call("solve", None, None),
+    ];
     let ctors = HashSet::new();
     assert_eq!(
         find_sparkable_args(&args, &ctors),

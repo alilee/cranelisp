@@ -15,7 +15,11 @@ fn filter_unset_or_empty_never_matches() {
 #[test]
 fn filter_wildcard_matches_every_function() {
     assert!(clif_dump_matches(Some("*"), "user", "foo"));
-    assert!(clif_dump_matches(Some("*"), "exemplar.solver", "cell-at$grid.Cell"));
+    assert!(clif_dump_matches(
+        Some("*"),
+        "exemplar.solver",
+        "cell-at$grid.Cell"
+    ));
     assert!(clif_dump_matches(Some("*"), "", ""));
 }
 
@@ -25,8 +29,16 @@ fn filter_module_only_matches_any_symbol_in_that_module() {
     assert!(clif_dump_matches(Some("user"), "user", "bar"));
     assert!(!clif_dump_matches(Some("user"), "main", "foo"));
     // Dotted module paths are matched literally, not as prefixes.
-    assert!(clif_dump_matches(Some("exemplar.solver"), "exemplar.solver", "go"));
-    assert!(!clif_dump_matches(Some("exemplar"), "exemplar.solver", "go"));
+    assert!(clif_dump_matches(
+        Some("exemplar.solver"),
+        "exemplar.solver",
+        "go"
+    ));
+    assert!(!clif_dump_matches(
+        Some("exemplar"),
+        "exemplar.solver",
+        "go"
+    ));
 }
 
 #[test]
@@ -44,9 +56,18 @@ fn write_clif_dump_frames_header_and_trailer() {
     let mut buf = Vec::<u8>::new();
     write_clif_dump(&mut buf, "user", "foo", "function %foo() -> i64 {\n}\n").unwrap();
     let out = String::from_utf8(buf).unwrap();
-    assert!(out.starts_with("; === CLIF user::foo ===\n"), "output: {out}");
-    assert!(out.contains("function %foo() -> i64 {"), "body missing: {out}");
-    assert!(out.trim_end().ends_with("; === end CLIF user::foo ==="), "trailer missing: {out}");
+    assert!(
+        out.starts_with("; === CLIF user::foo ===\n"),
+        "output: {out}"
+    );
+    assert!(
+        out.contains("function %foo() -> i64 {"),
+        "body missing: {out}"
+    );
+    assert!(
+        out.trim_end().ends_with("; === end CLIF user::foo ==="),
+        "trailer missing: {out}"
+    );
 }
 
 #[test]

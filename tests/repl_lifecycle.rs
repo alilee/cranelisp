@@ -26,8 +26,12 @@ use helpers::e2e::Cranelisp;
 
 // Test-authoring shortcuts: see `tests/helpers/e2e.rs`
 // `Cranelisp::repl_capture` / `repl_prims_capture`.
-fn repl(lines: &str) -> helpers::e2e::CrOutput { Cranelisp::repl_capture(lines) }
-fn repl_prims(lines: &str) -> helpers::e2e::CrOutput { Cranelisp::repl_prims_capture(lines) }
+fn repl(lines: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::repl_capture(lines)
+}
+fn repl_prims(lines: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::repl_prims_capture(lines)
+}
 
 // =============================================================================
 // REPL boot — repl/spec.md §6.2 (Startup Banner) + §0.1 (REPL Mode)
@@ -124,8 +128,7 @@ fn single_expr_evaluates() {
 // spec: repl/spec.md §1.3 — single defn registers and displays type
 #[test]
 fn single_defn_registers() {
-    repl_prims("(defn square [x] (mul-i64 x x))\n")
-        .assert_stdout_contains("user/square ; defn");
+    repl_prims("(defn square [x] (mul-i64 x x))\n").assert_stdout_contains("user/square ; defn");
 }
 
 // =============================================================================
@@ -135,37 +138,45 @@ fn single_defn_registers() {
 // spec: repl/spec.md §15.2 — defns persist across eval rounds in a session
 #[test]
 fn defn_then_call_in_next_form() {
-    repl_prims("(defn double [x] (mul-i64 x 2))
+    repl_prims(
+        "(defn double [x] (mul-i64 x 2))
 (double 21)
-")
+",
+    )
     .assert_stdout_contains(":primitives/Int 42");
 }
 
 // spec: repl/spec.md §15.2 — multiple defns coexist across eval rounds
 #[test]
 fn multiple_defns_coexist() {
-    repl_prims("(defn one [] 1)
+    repl_prims(
+        "(defn one [] 1)
 (defn two [] 2)
 (add-i64 (one) (two))
-")
+",
+    )
     .assert_stdout_contains(":primitives/Int 3");
 }
 
 // spec: spec/05-definitions.md §5.1 — self-recursive defn at REPL (factorial)
 #[test]
 fn recursive_factorial() {
-    repl_prims("(defn fact [n] (if (eq-i64 n 0) 1 (mul-i64 n (fact (sub-i64 n 1)))))
+    repl_prims(
+        "(defn fact [n] (if (eq-i64 n 0) 1 (mul-i64 n (fact (sub-i64 n 1)))))
 (fact 5)
-")
+",
+    )
     .assert_stdout_contains(":primitives/Int 120");
 }
 
 // spec: spec/05-definitions.md §5.1 — self-recursive defn at REPL (fibonacci)
 #[test]
 fn recursive_fibonacci() {
-    repl_prims("(defn fib [n] (if (lt-i64 n 2) n (add-i64 (fib (sub-i64 n 1)) (fib (sub-i64 n 2)))))
+    repl_prims(
+        "(defn fib [n] (if (lt-i64 n 2) n (add-i64 (fib (sub-i64 n 1)) (fib (sub-i64 n 2)))))
 (fib 7)
-")
+",
+    )
     .assert_stdout_contains(":primitives/Int 13");
 }
 
@@ -176,21 +187,25 @@ fn recursive_fibonacci() {
 // spec: spec/05-definitions.md §5.2 — define ADT, then match in next form
 #[test]
 fn deftype_then_match() {
-    repl_prims("(deftype Color Red Green Blue)
+    repl_prims(
+        "(deftype Color Red Green Blue)
 (defn pick [c] (match c [Red 1 Green 2 Blue 3]))
 (pick Green)
-")
+",
+    )
     .assert_stdout_contains(":primitives/Int 2");
 }
 
 // spec: spec/05-definitions.md §5.2 — multiple ADTs coexist in REPL session
 #[test]
 fn multiple_adts_coexist() {
-    repl_prims("(deftype Color Red Green Blue)
+    repl_prims(
+        "(deftype Color Red Green Blue)
 (deftype Size Small Medium Large)
 (defn size-rank [s] (match s [Small 1 Medium 2 Large 3]))
 (size-rank Medium)
-")
+",
+    )
     .assert_stdout_contains(":primitives/Int 2");
 }
 
@@ -201,20 +216,24 @@ fn multiple_adts_coexist() {
 // spec: repl/spec.md §15.6 — redefinition replaces previous defn
 #[test]
 fn redefinition_replaces_value() {
-    repl_prims("(defn foo [] 1)
+    repl_prims(
+        "(defn foo [] 1)
 (defn foo [] 2)
 (foo)
-")
+",
+    )
     .assert_stdout_contains(":primitives/Int 2");
 }
 
 // spec: repl/spec.md §15.6 — redefinition with different body shape
 #[test]
 fn redefinition_different_body() {
-    repl_prims("(defn calc [x] (add-i64 x 1))
+    repl_prims(
+        "(defn calc [x] (add-i64 x 1))
 (defn calc [x] (mul-i64 x 2))
 (calc 5)
-")
+",
+    )
     .assert_stdout_contains(":primitives/Int 10");
 }
 
@@ -222,12 +241,14 @@ fn redefinition_different_body() {
 #[test]
 fn redefinition_propagates_through_callers() {
     // First call: 10*2=20; after redef inner→5: 5*2=10. Both must appear.
-    repl_prims("(defn inner [] 10)
+    repl_prims(
+        "(defn inner [] 10)
 (defn outer [] (mul-i64 (inner) 2))
 (outer)
 (defn inner [] 5)
 (outer)
-")
+",
+    )
     .assert_stdout_contains_all(&[":primitives/Int 20", ":primitives/Int 10"]);
 }
 
@@ -242,13 +263,15 @@ fn redefinition_propagates_through_callers() {
 fn redefinition_propagates_transitively_through_pipeline() {
     // First (pipeline 5): add1 -> 6, double -> 12. After redef add1 to +10:
     // (pipeline 5): add1 -> 15, double -> 30. Both observations required.
-    repl_prims("(defn add1 [x] (add-i64 x 1))
+    repl_prims(
+        "(defn add1 [x] (add-i64 x 1))
 (defn double [x] (mul-i64 x 2))
 (defn pipeline [x] (double (add1 x)))
 (pipeline 5)
 (defn add1 [x] (add-i64 x 10))
 (pipeline 5)
-")
+",
+    )
     .assert_stdout_contains_all(&[":primitives/Int 12", ":primitives/Int 30"]);
 }
 
@@ -259,10 +282,12 @@ fn redefinition_propagates_transitively_through_pipeline() {
 // spec: repl/spec.md §5.2 — type error does not corrupt prior definitions
 #[test]
 fn type_error_preserves_prior_defs() {
-    let out = repl_prims("(defn good [] 42)
+    let out = repl_prims(
+        "(defn good [] 42)
 (add-i64 1 \"oops\")
 (good)
-");
+",
+    );
     // The error is reported; `good` still works.
     assert!(
         out.stdout.contains(":primitives/Int 42"),
@@ -276,10 +301,12 @@ fn type_error_preserves_prior_defs() {
 fn parse_error_preserves_prior_defs() {
     // Use a stray closing paren as the parse error — `((((` triggers
     // multi-line continuation and consumes subsequent lines.
-    let out = repl_prims("(defn good [] 99)
+    let out = repl_prims(
+        "(defn good [] 99)
 )bad
 (good)
-");
+",
+    );
     assert!(
         out.stdout.contains(":primitives/Int 99"),
         "after parse error, good() must still return 99; got:\n{}",
@@ -290,10 +317,12 @@ fn parse_error_preserves_prior_defs() {
 // spec: repl/spec.md §5.2 — multiple consecutive errors then success
 #[test]
 fn multiple_errors_then_success() {
-    let out = repl_prims("(undefined-symbol)
+    let out = repl_prims(
+        "(undefined-symbol)
 (another-undefined)
 (add-i64 1 2)
-");
+",
+    );
     assert!(
         out.stdout.contains(":primitives/Int 3"),
         "session must continue after multiple errors; got:\n{}",
@@ -307,19 +336,23 @@ fn failed_defn_does_not_pollute() {
     // A defn whose body has a type error should NOT register the symbol.
     // `broken` should be undefined; the bare reference produces an error
     // and the symbol must not appear in REPL output as a registered defn.
-    repl_prims("(defn broken [x] (add-i64 x \"nope\"))
+    repl_prims(
+        "(defn broken [x] (add-i64 x \"nope\"))
 broken
-")
+",
+    )
     .assert_stdout_does_not_contain("user/broken ; defn");
 }
 
 // spec: repl/spec.md §5.2 — failed redefn preserves original
 #[test]
 fn failed_redefn_preserves_original() {
-    let out = repl_prims("(defn good [x] (add-i64 x 1))
+    let out = repl_prims(
+        "(defn good [x] (add-i64 x 1))
 (defn good [x] (add-i64 x \"nope\"))
 (good 5)
-");
+",
+    );
     // After the failed redef, `good 5` should still produce 6 from the original.
     assert!(
         out.stdout.contains(":primitives/Int 6"),
@@ -335,9 +368,11 @@ fn failed_redefn_preserves_original() {
 // spec: repl/spec.md §11.4 — defmacro persists across evals (Bare Macro Lookup)
 #[test]
 fn defmacro_persists_across_evals() {
-    repl_prims("(defmacro double [x] `(mul-i64 ~x 2))
+    repl_prims(
+        "(defmacro double [x] `(mul-i64 ~x 2))
 (double 21)
-")
+",
+    )
     .assert_stdout_contains(":primitives/Int 42");
 }
 
@@ -345,10 +380,12 @@ fn defmacro_persists_across_evals() {
 #[test]
 fn multi_clause_defmacro_dispatches() {
     // 1-arg clause returns x → :Int 1; 2-arg clause returns y → :Int 2.
-    repl_prims("(defmacro pick ([x] x) ([x y] y))
+    repl_prims(
+        "(defmacro pick ([x] x) ([x y] y))
 (pick 1)
 (pick 1 2)
-")
+",
+    )
     .assert_stdout_contains_all(&[":primitives/Int 1", ":primitives/Int 2"]);
 }
 
@@ -395,21 +432,25 @@ fn many_redefinitions_same_name() {
 // spec: repl/spec.md §15.2 — incremental program build-up
 #[test]
 fn incremental_build_up() {
-    repl_prims("(defn pair-add [a b] (add-i64 a b))
+    repl_prims(
+        "(defn pair-add [a b] (add-i64 a b))
 (defn triple-add [a b c] (pair-add a (pair-add b c)))
 (triple-add 1 2 3)
-")
+",
+    )
     .assert_stdout_contains(":primitives/Int 6");
 }
 
 // spec: repl/spec.md §15.2 — interleaved defns and bare expressions
 #[test]
 fn interleaved_defns_and_exprs() {
-    repl_prims("(defn x [] 5)
+    repl_prims(
+        "(defn x [] 5)
 (x)
 (defn y [] 10)
 (add-i64 (x) (y))
-")
+",
+    )
     .assert_stdout_contains_all(&[":primitives/Int 5", ":primitives/Int 15"]);
 }
 
@@ -502,9 +543,11 @@ fn boot_prompt_format_timing_and_module() {
 // (carry: legacy/e2e.rs::e2e_s2_2_continuation_prompt)
 #[test]
 fn continuation_prompt_for_unclosed_paren() {
-    let out = repl_prims("(add-i64
+    let out = repl_prims(
+        "(add-i64
   2 3)
-");
+",
+    );
     assert!(
         out.stdout.contains("..."),
         "incomplete input MUST emit `...` continuation marker per §2.2; got:\n{}",
@@ -588,9 +631,11 @@ fn mod_switch_to_named_module_changes_prompt() {
 // (carry: legacy/e2e.rs::e2e_s8_mod_switch_back)
 #[test]
 fn mod_switch_round_trip_math_to_user() {
-    let out = repl("/mod math
+    let out = repl(
+        "/mod math
 /mod user
-");
+",
+    );
     assert!(
         out.stdout.contains("math>") && out.stdout.contains("user>"),
         "/mod round-trip MUST surface both 'math>' and 'user>' prompts per §8 Scenario 2; got:\n{}",
@@ -740,9 +785,7 @@ fn piped_read_line_does_not_leak_next_line_as_undefined_var_neg() {
         .repl()
         .use_workspace_platforms()
         .with_prelude(helpers::e2e::PreludeVariant::PrimitivesOnly)
-        .stdin(&format!(
-            "{READ_LINE_MAIN}(m)\nzzleak\n(add-i64 4 5)\n",
-        ))
+        .stdin(&format!("{READ_LINE_MAIN}(m)\nzzleak\n(add-i64 4 5)\n",))
         .output();
     // Neg: the read-line input line MUST NOT leak to the REPL reader.
     assert!(

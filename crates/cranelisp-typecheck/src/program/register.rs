@@ -5,11 +5,8 @@ mod multi_sig;
 /// Resolved variant info: (concrete_params, concrete_ret, internal_name, variant_index).
 type ResolvedVariant = (Vec<Type>, Type, Symbol, usize);
 
-
 /// Mangled variant info: (concrete_params, concrete_ret, mangled_name).
 type MangledVariantInfo = (Vec<Type>, Type, Symbol);
-
-
 
 impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
     /// Pass 1 (Register) dispatch: register type defs, trait decls/impls, signatures.
@@ -33,7 +30,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 // the same mode-uniform seam as the value-def case below.
                 self.reject_def_over_binding(state, &Symbol::from(name.as_ref()), *span)?;
                 self.register_type_def(
-                    state, name, docstring, type_params, constructors, *visibility, *span,
+                    state,
+                    name,
+                    docstring,
+                    type_params,
+                    constructors,
+                    *visibility,
+                    *span,
                 )?;
                 Ok(FormCheckResult::empty())
             }
@@ -52,9 +55,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 // module-scope binding with a fresh terminal — it can never
                 // dedup — so each method name is checked identically to the
                 // trait name.
-                self.reject_def_over_binding(
-                    state, &Symbol::from(decl.name.as_ref()), decl.span,
-                )?;
+                self.reject_def_over_binding(state, &Symbol::from(decl.name.as_ref()), decl.span)?;
                 for method in &decl.methods {
                     self.reject_def_over_binding(state, &method.name, decl.span)?;
                 }
@@ -89,7 +90,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         }
     }
 
-
     /// Register a single-sig defn's signature (Pass 1).
     pub(super) fn check_form_register_single_defn(
         &self,
@@ -110,11 +110,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             accumulator.redef_slots.insert(defn.name.clone(), slot);
         }
         let (param_types, ret_ty, var_scope) = self.register_defn_signature(state, defn)?;
-        accumulator.defn_type_vars.insert(defn.name.clone(), (param_types, ret_ty));
-        accumulator.defn_var_scopes.insert(defn.name.clone(), var_scope);
+        accumulator
+            .defn_type_vars
+            .insert(defn.name.clone(), (param_types, ret_ty));
+        accumulator
+            .defn_var_scopes
+            .insert(defn.name.clone(), var_scope);
         Ok(FormCheckResult::empty())
     }
-
 
     /// Register a multi-sig defn: expand variants, register each, register base as Overloaded.
     pub(super) fn check_form_register_multi_sig(
@@ -153,27 +156,29 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // Register each variant's signature
             let (param_types, ret_ty, var_scope) =
                 self.register_defn_signature(state, &internal_defn)?;
-            accumulator.defn_var_scopes.insert(internal_name.clone(), var_scope);
-            accumulator.defn_type_vars.insert(internal_name, (param_types, ret_ty));
+            accumulator
+                .defn_var_scopes
+                .insert(internal_name.clone(), var_scope);
+            accumulator
+                .defn_type_vars
+                .insert(internal_name, (param_types, ret_ty));
         }
         state.overloads.insert(defn.name.clone(), overload_entries);
 
         // Register a placeholder for the base name
         let placeholder_ty = self.fresh_var();
         let placeholder_scheme = mono(placeholder_ty);
-        let mut builder = ModuleEntry::def(
-            placeholder_scheme,
-            DefKind::Overloaded { variants: vec![] },
-        )
-        .visibility(defn.visibility);
+        let mut builder =
+            ModuleEntry::def(placeholder_scheme, DefKind::Overloaded { variants: vec![] })
+                .visibility(defn.visibility);
         if let Some(doc) = defn.docstring.clone() {
             builder = builder.docstring(doc);
         }
-        self.current_symbol_table_mut(state).insert(defn.name.clone(), builder.build());
+        self.current_symbol_table_mut(state)
+            .insert(defn.name.clone(), builder.build());
 
         Ok(FormCheckResult::empty())
     }
-
 
     /// Detect constrained polymorphic functions after generalization.
     ///
@@ -191,7 +196,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         for defn in defns {
             let r = self.current_symbol_table(state);
             if let Some(ModuleEntry::Def { kind, .. }) = r.view().lookup(&defn.name)
-                && let DefKind::UserFn { fn_state: UserFnState::Constrained(_) } = kind.as_ref()
+                && let DefKind::UserFn {
+                    fn_state: UserFnState::Constrained(_),
+                } = kind.as_ref()
             {
                 names.insert(defn.name.clone());
             }
@@ -199,7 +206,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         names
     }
-
 
     /// Resolve a stacked trait-bound parameter annotation (`:Eq :Display a`,
     /// spec §3.9.2) to a fresh constrained type variable (spec §3.9.3
@@ -237,7 +243,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         Ok(var_ty)
     }
 
-
     /// Create fresh type variables for a function's parameters and return type,
     /// respecting any annotations, and register the signature in the symbol table.
     ///
@@ -266,8 +271,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // REPL evaluation.
         if is_trait_impl_mangled_name(defn.name.as_ref()) {
             let r = self.current_symbol_table(state);
-            if let Some(ModuleEntry::Def { scheme, ast: Some(_), .. }) =
-                r.view().lookup(&defn.name)
+            if let Some(ModuleEntry::Def {
+                scheme,
+                ast: Some(_),
+                ..
+            }) = r.view().lookup(&defn.name)
                 && scheme.type_vars.is_empty()
                 && scheme.constraints.is_empty()
                 && let Type::Fn(param_types, ret_ty) = &scheme.ty
@@ -308,7 +316,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 }
                 Some(ann) => {
                     match self.resolve_annotation_type_expr_in_module(
-                        ann, &mut var_map, &state.current_module, defn.span,
+                        ann,
+                        &mut var_map,
+                        &state.current_module,
+                        defn.span,
                     ) {
                         // A bare param-annotation var is FLEXIBLE and carries only
                         // its display name (§3.3.1 [S109 W6.3]); the shared scope
@@ -327,22 +338,20 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         // `Bounds([..])` of length 1) iff the annotation's head
                         // resolves as a trait; otherwise the original type error
                         // (the genuine "neither type nor trait" case) propagates.
-                        Err(type_err) => {
-                            match single_trait_bound_from_annotation(ann) {
-                                Some(tref)
-                                    if self
-                                        .resolve_trait(state, tref.name.as_ref(), defn.span)
-                                        .is_ok() =>
-                                {
-                                    self.resolve_bound_param(
-                                        state,
-                                        std::slice::from_ref(&tref),
-                                        defn.span,
-                                    )?
-                                }
-                                _ => return Err(type_err.into()),
+                        Err(type_err) => match single_trait_bound_from_annotation(ann) {
+                            Some(tref)
+                                if self
+                                    .resolve_trait(state, tref.name.as_ref(), defn.span)
+                                    .is_ok() =>
+                            {
+                                self.resolve_bound_param(
+                                    state,
+                                    std::slice::from_ref(&tref),
+                                    defn.span,
+                                )?
                             }
-                        }
+                            _ => return Err(type_err.into()),
+                        },
                     }
                 }
                 None => self.fresh_var(),
@@ -388,7 +397,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // on failure, restore keeps the carried-forward (original) `code`,
         // and the GOT slot remains valid because the Arc never dropped.
         let mut st = self.current_symbol_table_mut(state);
-        let (existing_ast, existing_code) = st.get(defn.name.as_ref())
+        let (existing_ast, existing_code) = st
+            .get(defn.name.as_ref())
             .map(|e| match e {
                 ModuleEntry::Def { ast, code, .. } => (ast.clone(), code.clone()),
                 _ => (None, None),
@@ -427,7 +437,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         Ok((param_types, ret_ty, var_map))
     }
-
 
     /// Pass 4 (batch): scan all defn bodies for calls to constrained functions
     /// and generate monomorphised specializations.
@@ -505,7 +514,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     if !matches!(args[0], Type::Var(_)) {
                         return None;
                     }
-                    ast.clone().map(|variant| (name.clone(), variant, fqtn.clone()))
+                    ast.clone()
+                        .map(|variant| (name.clone(), variant, fqtn.clone()))
                 })
                 .collect()
         };
@@ -587,12 +597,20 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             let got_slot = st
                 .allocate_got_slot()
                 .map_err(crate::result::got_exhausted_error)?;
-            if let Some(ModuleEntry::Def { scheme, kind, ast, codegen_view: cv, .. }) =
-                st.symbols.get_mut(&name)
+            if let Some(ModuleEntry::Def {
+                scheme,
+                kind,
+                ast,
+                codegen_view: cv,
+                ..
+            }) = st.symbols.get_mut(&name)
             {
                 *scheme = concrete_scheme;
                 **kind = DefKind::UserFn {
-                    fn_state: UserFnState::Concrete { got_slot, mode_summary: None },
+                    fn_state: UserFnState::Concrete {
+                        got_slot,
+                        mode_summary: None,
+                    },
                 };
                 *ast = concrete_defn.variants.into_iter().next();
                 *cv = codegen_view;
@@ -600,7 +618,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         }
         Ok(())
     }
-
 }
 
 #[cfg(test)]

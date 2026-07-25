@@ -1,5 +1,7 @@
 ; Cranelisp Ring 1 — Heap Types
 
+(import [primitives [str-concat add-i64 vec-push]])
+
 "hello, world"
 str-concat
 (str-concat "hello" " world")
@@ -9,16 +11,16 @@ str-concat
 deftype
 (deftype Point [:Int x :Int y])
 (Point 3 4)
-(deftype (Option a) None (Some [:a val]))
-(Some 42)
+(deftype (Maybe a) Nothing (Just [:a val]))
+(Just 42)
 
 ; Pattern matching
 
 match
-(defn get-or-zero "Extract or default to zero" [o] (match o [None 0 (Some x) x]))
+(defn get-or-zero "Extract or default to zero" [o] (match o [Nothing 0 (Just x) x]))
 get-or-zero
-(get-or-zero (Some 99))
-(get-or-zero None)
+(get-or-zero (Just 99))
+(get-or-zero Nothing)
 
 ; Closures and higher-order functions
 
@@ -38,7 +40,7 @@ vec-push
 
 ; Composing it all
 
-(defn transform "Apply f inside Some, pass through None" [f opt] (match opt [None None (Some x) (Some (f x))]))
+(defn transform "Apply f inside Just, pass through Nothing" [f opt] (match opt [Nothing Nothing (Just x) (Just (f x))]))
 transform
-(transform (make-adder 1) (Some 41))
-(transform (make-adder 1) None)
+(transform (make-adder 1) (Just 41))
+(transform (make-adder 1) Nothing)

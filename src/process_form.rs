@@ -23,16 +23,14 @@
 //! (they are referenced by both this family and the codegen path / external
 //! callers) and are reached here via `crate::worker::*`.
 
-use cranelisp_types::{ErrorLocation,
-    CranelispError,
-    Expr, MatchArm, ModuleFullPath, ModuleStrategy,
-    Sexp, Span, TopLevel,
+use cranelisp_types::{
+    CranelispError, ErrorLocation, Expr, MatchArm, ModuleFullPath, ModuleStrategy, Sexp, Span,
+    TopLevel,
 };
 
 use crate::worker::{
-    ModuleCheckAccumulator, ModuleCompiler, ClusterOnce,
-    build_program_compat, check_program_compat,
-    leading_annotation_len,
+    ClusterOnce, ModuleCheckAccumulator, ModuleCompiler, build_program_compat,
+    check_program_compat, leading_annotation_len,
 };
 
 // ---------------------------------------------------------------------------
@@ -43,35 +41,35 @@ use crate::worker::{
 // ---------------------------------------------------------------------------
 
 mod cache_restore;
+mod dependency;
+pub(crate) mod form_dispatch;
 mod macro_clause;
 mod macro_resolution;
-pub(crate) mod form_dispatch;
 mod platform;
-mod dependency;
 
-use self::platform::handle_platform;
 use self::dependency::{
-    BlockAction, handle_import, handle_export, handle_mod, drive_submodules,
-    drive_module_dep, ensure_prelude_bit, fq_module_is_loaded, inject_prelude_if_needed,
+    BlockAction, drive_module_dep, drive_submodules, ensure_prelude_bit, fq_module_is_loaded,
+    handle_export, handle_import, handle_mod, inject_prelude_if_needed,
 };
+use self::platform::handle_platform;
 // `register_dep` (the per-dep prologue) lives in `dependency`; `cache_restore`
 // reaches it via `super::register_dep`, so it must be in the parent's scope.
 use self::dependency::register_dep;
-use self::macro_resolution::{try_expand_sexp, ExpandOutcome, compile_macro_if_needed};
 use self::form_dispatch::{
-    FormKind, classify_form, record_exports_on_symbol_table,
-    record_platform_on_symbol_table, separate_macros, register_macro_in_module,
-    pass1_register, register_default_methods, wrap_exprs_as_defns,
+    FormKind, classify_form, pass1_register, record_exports_on_symbol_table,
+    record_platform_on_symbol_table, register_default_methods, register_macro_in_module,
+    separate_macros, wrap_exprs_as_defns,
 };
+use self::macro_resolution::{ExpandOutcome, compile_macro_if_needed, try_expand_sexp};
 
 // Re-export externally-cited items so `crate::process_form::X` paths stay stable
 // (the compatibility membrane, S87 §1.2 / §5).
-pub use self::macro_resolution::compile_macro_for_repl;
+use self::dependency::gap_member;
+pub(crate) use self::dependency::gap_target_module;
 pub(crate) use self::form_dispatch::{
     record_imports_on_symbol_table, record_submodule_on_symbol_table,
 };
-pub(crate) use self::dependency::gap_target_module;
-use self::dependency::gap_member;
+pub use self::macro_resolution::compile_macro_for_repl;
 // `check_private_submodule_import`/`splice_inline_mod_to_bare` are `pub(crate)` in
 // `dependency`; their only callers are the sibling/worker test modules — re-export
 // on the parent path (test-only, gated to avoid a lib-build unused-import warning).
@@ -102,12 +100,11 @@ use self::macro_resolution::SymbolTableMacroResolver;
 #[cfg(test)]
 use crate::scheduler::CompileScheduler;
 #[cfg(test)]
-use cranelisp_types::{FQSymbol, Symbol, Visibility};
-#[cfg(test)]
 use cranelisp_typecheck::CheckState;
 #[cfg(test)]
+use cranelisp_types::{FQSymbol, Symbol, Visibility};
+#[cfg(test)]
 use std::path::Path;
-
 
 // ---------------------------------------------------------------------------
 // process_module_forms — two-pass per-form typecheck (C1)
@@ -184,7 +181,14 @@ pub fn process_cluster_once(
     let program = build_program_compat(&regular_sexps)?;
     let working_program = wrap_exprs_as_defns(&program);
 
-    pass1_register(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, module, &working_program, &mut accumulator)?;
+    pass1_register(
+        ctx.symbol_tables,
+        ctx.next_type_id,
+        &mut ctx.check_state,
+        module,
+        &working_program,
+        &mut accumulator,
+    )?;
 
     let intr = ctx.introspection;
     for (name, info, sexp) in &macro_infos {
@@ -198,19 +202,42 @@ pub fn process_cluster_once(
                 module_aliases: ctx.module_aliases,
                 prelude_fallback: ctx.prelude_fallback,
             },
-            module, name, info, sexp, sexp, authored_source,
+            module,
+            name,
+            info,
+            sexp,
+            sexp,
+            authored_source,
         )?;
     }
 
-    let defaults = register_default_methods(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, module, &mut accumulator)?;
+    let defaults = register_default_methods(
+        ctx.symbol_tables,
+        ctx.next_type_id,
+        &mut ctx.check_state,
+        module,
+        &mut accumulator,
+    )?;
     accumulator.default_method_defns = defaults;
 
     // --- Pass 2: per-sexp expand-then-check ---
     let pass2_result = pass2_check_bodies_with_expansion(
-        ctx, module, sexps, &mut accumulator, &mut expanded_program,
+        ctx,
+        module,
+        sexps,
+        &mut accumulator,
+        &mut expanded_program,
     )?;
 
-    finish_pass2(ctx, module, sexps, &working_program, &expanded_program, &mut accumulator, pass2_result)
+    finish_pass2(
+        ctx,
+        module,
+        sexps,
+        &working_program,
+        &expanded_program,
+        &mut accumulator,
+        pass2_result,
+    )
 }
 
 /// Cluster prologue: strategy-specific setup (active module, static import
@@ -321,38 +348,30 @@ fn pass0_peel_structural(
             // regenerated backing `.cl`. (`Block` is not a failure: the dep must
             // load and the cluster retries from the top, where the successful
             // resume records it.) Applied uniformly across all four forms.
-            FormKind::Import(specs) => {
-                match handle_import(ctx, module, specs.clone())? {
-                    BlockAction::Continue => {
-                        record_imports_on_symbol_table(ctx, module, &specs);
-                    }
-                    BlockAction::Block { dep_module } => return Ok(Some(dep_module)),
+            FormKind::Import(specs) => match handle_import(ctx, module, specs.clone())? {
+                BlockAction::Continue => {
+                    record_imports_on_symbol_table(ctx, module, &specs);
                 }
-            }
-            FormKind::Export(specs) => {
-                match handle_export(ctx, module, &specs)? {
-                    BlockAction::Continue => {
-                        record_exports_on_symbol_table(ctx, module, &specs);
-                    }
-                    BlockAction::Block { dep_module } => return Ok(Some(dep_module)),
+                BlockAction::Block { dep_module } => return Ok(Some(dep_module)),
+            },
+            FormKind::Export(specs) => match handle_export(ctx, module, &specs)? {
+                BlockAction::Continue => {
+                    record_exports_on_symbol_table(ctx, module, &specs);
                 }
-            }
-            FormKind::Mod(decl) => {
-                match handle_mod(ctx, module, &decl)? {
-                    BlockAction::Continue => {
-                        record_submodule_on_symbol_table(ctx, module, &decl);
-                    }
-                    BlockAction::Block { dep_module } => return Ok(Some(dep_module)),
+                BlockAction::Block { dep_module } => return Ok(Some(dep_module)),
+            },
+            FormKind::Mod(decl) => match handle_mod(ctx, module, &decl)? {
+                BlockAction::Continue => {
+                    record_submodule_on_symbol_table(ctx, module, &decl);
                 }
-            }
-            FormKind::Platform(spec) => {
-                match handle_platform(ctx, module, &spec)? {
-                    BlockAction::Continue => {
-                        record_platform_on_symbol_table(ctx, module, &spec);
-                    }
-                    BlockAction::Block { dep_module } => return Ok(Some(dep_module)),
+                BlockAction::Block { dep_module } => return Ok(Some(dep_module)),
+            },
+            FormKind::Platform(spec) => match handle_platform(ctx, module, &spec)? {
+                BlockAction::Continue => {
+                    record_platform_on_symbol_table(ctx, module, &spec);
                 }
-            }
+                BlockAction::Block { dep_module } => return Ok(Some(dep_module)),
+            },
             _ => {} // Regular, Defmacro — handled in Pass 1 / Pass 2.
         }
     }
@@ -376,7 +395,13 @@ fn finish_pass2(
             // Finalize: single `check_program_compat` over the expanded
             // cluster. A surviving FQ-auto-load gap is driven (register +
             // block) and surfaces as `Gap`; any other gap is a hard error.
-            let outcome = finalize_cluster(ctx, module, origin_sexps, expanded_program, accumulator)?;
+            let mut outcome =
+                finalize_cluster(ctx, module, origin_sexps, expanded_program, accumulator)?;
+            if let ClusterOnce::Done { processed, .. } = &mut outcome
+                && let Some(shared) = ctx.shared_state
+            {
+                crate::worker::compile_and_publish_processed_without_notify(processed, shared)?;
+            }
             // FIXME 0342 — only AFTER the parent's symbols are committed to live
             // (finalize_cluster done) do we drive declared submodules. This is
             // the deferral that lets a submodule's `(import [super [helper]])`
@@ -477,20 +502,40 @@ fn finalize_cluster(
     // the SYNTHETIC-LOCATION predicate (outside EVERY origin form's real extent),
     // NEVER on error class — a native finalize error (its span within an origin
     // form) passes through unchanged.
-    let (maybe_gap, cluster_warnings, unresolved_dispatch, redefinitions) = match check_program_compat(
-        ctx.symbol_tables,
-        ctx.module_aliases,
-        ctx.prelude_fallback,
-        module,
-        &final_working,
-        // S101: the session context carries the retention pool the commit
-        // gate's ABI-epoch slot policy freezes superseded code into
-        // (design/int/session-transaction.md §7.1).
-        ctx.shared_state,
-    ) {
-        Ok(t) => t,
-        Err(e) => return Err(reanchor_finalize_error(e, origin_sexps)),
-    };
+    let mut prepared = None;
+    let (maybe_gap, cluster_warnings, unresolved_dispatch, redefinitions) =
+        if let Some(shared) = ctx.shared_state {
+            match crate::worker::prepare_cluster_commit(
+                ctx.symbol_tables,
+                ctx.module_aliases,
+                ctx.prelude_fallback,
+                module,
+                &final_working,
+                expanded_program,
+                shared,
+            ) {
+                Ok(None) => (None, Vec::new(), Vec::new(), Vec::new()),
+                Ok(Some(Err(gap))) => (Some(gap), Vec::new(), Vec::new(), Vec::new()),
+                Ok(Some(Ok((mut turn, check)))) => {
+                    turn.unresolved_dispatch = check.unresolved_dispatch.clone();
+                    prepared = Some(turn);
+                    (None, check.warnings, check.unresolved_dispatch, Vec::new())
+                }
+                Err(error) => return Err(reanchor_finalize_error(error, origin_sexps)),
+            }
+        } else {
+            match check_program_compat(
+                ctx.symbol_tables,
+                ctx.module_aliases,
+                ctx.prelude_fallback,
+                module,
+                &final_working,
+                None,
+            ) {
+                Ok(result) => result,
+                Err(error) => return Err(reanchor_finalize_error(error, origin_sexps)),
+            }
+        };
     if let Some(gap) = maybe_gap {
         // 0571 (B4/B5 + AL-3): the qualified-reference gap now fires
         // unconditionally on a member-absent abs module (typecheck
@@ -566,17 +611,22 @@ fn finalize_cluster(
         Vec::new(),
         Vec::new(),
     );
+    processed.set_redefinitions(redefinitions);
     // S101: the commit gate's redefinition classifications ride the cluster
     // carrier back to the driver; the eval path runs the dependent-
     // recompilation transaction for `AbiChanging` outcomes after the target's
     // own codegen succeeds (design §13).
-    processed.set_redefinitions(redefinitions);
     // 0611 carrier — the return-poly dispatch sites still unresolved at
     // finalize (EMPTY for every valid program). The eval driver consults these
     // at the `__expr` eval-result boundary (class (b), Principle 19): a bare
     // `(zed)` reaching the eval path dies with the §3.11 ambiguity instead of
     // leaking the backend `__expr`-has-no-GOT-slot error.
     processed.set_unresolved_dispatch(unresolved_dispatch);
+    if let Some(prepared) = prepared {
+        processed.set_prepared(prepared);
+    } else if ctx.shared_state.is_some() {
+        processed.pending_codegen_notification = Some((module.clone(), Vec::new()));
+    }
 
     Ok(ClusterOnce::Done { processed, program })
 }
@@ -651,22 +701,28 @@ fn find_var_span_matching(expr: &Expr, pred: &impl Fn(&str) -> bool) -> Option<S
             .iter()
             .find_map(|(_, e)| arm(e))
             .or_else(|| arm(body)),
-        Expr::If { cond, then_branch, else_branch, .. } => {
-            arm(cond).or_else(|| arm(then_branch)).or_else(|| arm(else_branch))
-        }
-        Expr::Lambda { body, .. } | Expr::Annotate { expr: body, .. } | Expr::Trace { body, .. } => {
-            arm(body)
-        }
-        Expr::Apply { callee, args, .. } => {
-            arm(callee).or_else(|| args.iter().find_map(&arm))
-        }
-        Expr::Match { scrutinee, arms, .. } => arm(scrutinee)
-            .or_else(|| arms.iter().find_map(|a: &MatchArm| arm(&a.body))),
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => arm(cond)
+            .or_else(|| arm(then_branch))
+            .or_else(|| arm(else_branch)),
+        Expr::Lambda { body, .. }
+        | Expr::Annotate { expr: body, .. }
+        | Expr::Trace { body, .. } => arm(body),
+        Expr::Apply { callee, args, .. } => arm(callee).or_else(|| args.iter().find_map(&arm)),
+        Expr::Match {
+            scrutinee, arms, ..
+        } => arm(scrutinee).or_else(|| arms.iter().find_map(|a: &MatchArm| arm(&a.body))),
         Expr::VecLit { elements, .. } => elements.iter().find_map(&arm),
         Expr::ConstrADT { fields, .. } => fields.iter().find_map(&arm),
-        Expr::LaunchContinue { launched, continuation, .. } => {
-            arm(launched).or_else(|| arm(continuation))
-        }
+        Expr::LaunchContinue {
+            launched,
+            continuation,
+            ..
+        } => arm(launched).or_else(|| arm(continuation)),
     }
 }
 
@@ -681,9 +737,7 @@ enum Pass2Result {
     /// the top once it is live (FIXME 0268, spec §9.3.6). S78: no `form_index`
     /// — the whole cluster re-runs (retry-from-top), so there is no Pass-2
     /// resume index to honour.
-    BlockedOnFqModule {
-        dep_module: ModuleFullPath,
-    },
+    BlockedOnFqModule { dep_module: ModuleFullPath },
 }
 
 /// Pass 2: per-sexp expand-then-check, with inline macro compilation
@@ -742,7 +796,12 @@ fn pass2_check_bodies_with_expansion(
                 };
                 let next = idx.max(form_idx) + 1;
                 if let Some(dep_module) = process_regular_form(
-                    ctx, module, prefix, &sexps[form_idx], accumulator, expanded_program,
+                    ctx,
+                    module,
+                    prefix,
+                    &sexps[form_idx],
+                    accumulator,
+                    expanded_program,
                 )? {
                     // FQ macro reference to an unloaded module (FIXME 0268).
                     // The cluster retries from the top after the dep is loaded.
@@ -949,7 +1008,12 @@ fn process_regular_form(
                     module_aliases: ctx.module_aliases,
                     prelude_fallback: ctx.prelude_fallback,
                 },
-                module, &info.name, &info, &form, sexp, authored_source,
+                module,
+                &info.name,
+                &info,
+                &form,
+                sexp,
+                authored_source,
             )?;
             compile_macro_if_needed(ctx, module, &info, form.span(), accumulator)?;
         } else {
@@ -994,30 +1058,30 @@ fn process_regular_form(
     // mutation is silenced here.
     let _ = accumulator;
     for form in &working {
-
         // Populate introspection for REPL slash commands (--repl only).
         if let Some(intr_map) = ctx.introspection
-            && let TopLevel::Defn(defn) = form {
-                let fq = cranelisp_types::FQSymbol {
-                    module: module.clone(),
-                    symbol: defn.name.clone(),
-                };
-                let mut entry = intr_map.entry(fq).or_default();
-                // Source: extract VERBATIM from module source_text via sexp
-                // span, consistency-gated (S102 CS-D2 — the slice must
-                // re-parse to the recorded form; a stale `source_text` from a
-                // previous load never mis-slices into the record). REPL eval
-                // may overwrite with the actual input text later.
-                if entry.source.is_none() {
-                    let src = verbatim_source_slice(ctx, module, sexp);
-                    entry.source = src.or_else(|| Some(crate::pretty::pretty_print_plain(sexp)));
-                }
-                entry.sexp = Some(sexp.clone());
-                if let Some(ref expanded) = effective_sexp {
-                    entry.expanded = Some(expanded.clone());
-                }
-                entry.ast = Some(defn.clone());
+            && let TopLevel::Defn(defn) = form
+        {
+            let fq = cranelisp_types::FQSymbol {
+                module: module.clone(),
+                symbol: defn.name.clone(),
+            };
+            let mut entry = intr_map.entry(fq).or_default();
+            // Source: extract VERBATIM from module source_text via sexp
+            // span, consistency-gated (S102 CS-D2 — the slice must
+            // re-parse to the recorded form; a stale `source_text` from a
+            // previous load never mis-slices into the record). REPL eval
+            // may overwrite with the actual input text later.
+            if entry.source.is_none() {
+                let src = verbatim_source_slice(ctx, module, sexp);
+                entry.source = src.or_else(|| Some(crate::pretty::pretty_print_plain(sexp)));
             }
+            entry.sexp = Some(sexp.clone());
+            if let Some(ref expanded) = effective_sexp {
+                entry.expanded = Some(expanded.clone());
+            }
+            entry.ast = Some(defn.clone());
+        }
         // S93 net-neutral subtraction (`signature-body-prepass.md` §6): the
         // former per-symbol `notify_symbol_typechecked(module, defn.name)` is
         // RETIRED. It satisfied only specific-symbol typecheck waiters, but every
@@ -1053,15 +1117,19 @@ fn process_regular_form(
 fn clear_module_codegen(ctx: &mut ModuleCompiler, module: &ModuleFullPath) {
     // Collect qualified symbol names for this module from the TC symbol table.
     let symbols: Vec<cranelisp_types::Symbol> = {
-        let table = ctx.symbol_tables.get(&ctx.current_module).unwrap_or_else(|| {
-            unreachable!(
-                "invariant: clear_module_codegen runs only on the Replace path, whose \
+        let table = ctx
+            .symbol_tables
+            .get(&ctx.current_module)
+            .unwrap_or_else(|| {
+                unreachable!(
+                    "invariant: clear_module_codegen runs only on the Replace path, whose \
                  target module's symbol table was registered (introduced blank / \
                  preserved for slot reuse) before this compile and set as current_module \
                  immediately prior — see process_cluster's Replace arm"
-            )
-        });
-        table.all_symbols()
+                )
+            });
+        table
+            .all_symbols()
             .filter_map(|(name, entry)| {
                 // Only clear codegen for definitions owned by this module,
                 // not imports or special forms. Constructors are now
@@ -1074,9 +1142,8 @@ fn clear_module_codegen(ctx: &mut ModuleCompiler, module: &ModuleFullPath) {
                         if matches!(kind.as_ref(), cranelisp_types::DefKind::Macro { .. }) {
                             None
                         } else {
-                            let qualified = cranelisp_types::Symbol::from(
-                                format!("{}/{}", module, name)
-                            );
+                            let qualified =
+                                cranelisp_types::Symbol::from(format!("{}/{}", module, name));
                             Some(qualified)
                         }
                     }
@@ -1113,20 +1180,22 @@ fn clear_module_codegen(ctx: &mut ModuleCompiler, module: &ModuleFullPath) {
     }
 
     // Clear introspection entries for this module.
-    let fq_keys: Vec<_> = symbols.iter().map(|sym| {
-        let bare = sym.as_ref().rsplit('/').next().unwrap_or(sym.as_ref());
-        cranelisp_types::FQSymbol {
-            module: module.clone(),
-            symbol: cranelisp_types::Symbol::from(bare),
-        }
-    }).collect();
+    let fq_keys: Vec<_> = symbols
+        .iter()
+        .map(|sym| {
+            let bare = sym.as_ref().rsplit('/').next().unwrap_or(sym.as_ref());
+            cranelisp_types::FQSymbol {
+                module: module.clone(),
+                symbol: cranelisp_types::Symbol::from(bare),
+            }
+        })
+        .collect();
     if let Some(intr_map) = ctx.introspection {
         for fq in &fq_keys {
             intr_map.remove(fq);
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests;

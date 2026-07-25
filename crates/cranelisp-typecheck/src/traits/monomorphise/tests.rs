@@ -7,12 +7,12 @@
 //! crate-side pins for the 0488 defect class), per METHOD §2.2 / Principle 23.
 
 use cranelisp_types::{
-    DefKind, Defn, DefnVariant, Expr, ModuleEntry, ModuleFullPath, Span, Symbol, TopLevel,
-    Type, TypeName, UserFnState, Visibility,
+    DefKind, Defn, DefnVariant, Expr, ModuleEntry, ModuleFullPath, Span, Symbol, TopLevel, Type,
+    TypeName, UserFnState, Visibility,
 };
 
-use crate::checker::TypeCheckEnv;
 use super::*;
+use crate::checker::TypeCheckEnv;
 use crate::traits::test_helpers::*;
 
 // -----------------------------------------------------------------------
@@ -76,7 +76,10 @@ fn test_concrete_type_name_var_is_none() {
 #[test]
 fn concrete_type_name_fn_is_none() {
     let fn_ty = Type::Fn(vec![Type::Int], Box::new(Type::Int));
-    assert!(fn_ty.is_concrete(), "a Fn over concrete arg/ret is itself concrete");
+    assert!(
+        fn_ty.is_concrete(),
+        "a Fn over concrete arg/ret is itself concrete"
+    );
     assert_eq!(concrete_type_name(&fn_ty), None);
 }
 
@@ -135,7 +138,11 @@ fn build_mangled_name_single_arg_no_separator() {
 #[test]
 fn build_mangled_name_adt_nullary() {
     assert_eq!(
-        build_mangled_name(&m(), &Symbol::from("f"), &[Type::ADT(test_fqtn("Color"), vec![])]),
+        build_mangled_name(
+            &m(),
+            &Symbol::from("f"),
+            &[Type::ADT(test_fqtn("Color"), vec![])]
+        ),
         "m/f$test/Color"
     );
 }
@@ -151,17 +158,32 @@ fn build_mangled_name_adt_arg_distinguishes_element_type() {
     let ks = build_mangled_name(&m(), &Symbol::from("f"), &[vec_str]);
     assert_eq!(ki, "m/f$test/Vec$Int");
     assert_eq!(ks, "m/f$test/Vec$String");
-    assert_ne!(ki, ks, "distinct ADT element types MUST mint distinct keys (0483)");
+    assert_ne!(
+        ki, ks,
+        "distinct ADT element types MUST mint distinct keys (0483)"
+    );
 }
 
 // spec: design/typecheck/monomorphisation.md §3.5 — edge: NESTED ADT args
 // recurse fully — `Vec (Vec Int)` ≠ `Vec (Vec String)`.
 #[test]
 fn build_mangled_name_nested_adt_arg() {
-    let vv_int = Type::ADT(test_fqtn("Vec"), vec![Type::ADT(test_fqtn("Vec"), vec![Type::Int])]);
-    let vv_str = Type::ADT(test_fqtn("Vec"), vec![Type::ADT(test_fqtn("Vec"), vec![Type::String])]);
-    assert_eq!(build_mangled_name(&m(), &Symbol::from("f"), &[vv_int]), "m/f$test/Vec$test/Vec$Int");
-    assert_eq!(build_mangled_name(&m(), &Symbol::from("f"), &[vv_str]), "m/f$test/Vec$test/Vec$String");
+    let vv_int = Type::ADT(
+        test_fqtn("Vec"),
+        vec![Type::ADT(test_fqtn("Vec"), vec![Type::Int])],
+    );
+    let vv_str = Type::ADT(
+        test_fqtn("Vec"),
+        vec![Type::ADT(test_fqtn("Vec"), vec![Type::String])],
+    );
+    assert_eq!(
+        build_mangled_name(&m(), &Symbol::from("f"), &[vv_int]),
+        "m/f$test/Vec$test/Vec$Int"
+    );
+    assert_eq!(
+        build_mangled_name(&m(), &Symbol::from("f"), &[vv_str]),
+        "m/f$test/Vec$test/Vec$String"
+    );
 }
 
 // spec: design/typecheck/monomorphisation.md §3.5 — edge: a 2-arg ADT preserves
@@ -184,11 +206,22 @@ fn build_mangled_name_two_arg_adt_order_matters() {
 // keys (home-qualified). On HEAD both minted `twist$Int`.
 #[test]
 fn build_mangled_name_home_distinguishes_same_named_generics() {
-    let ka = build_mangled_name(&ModuleFullPath::from("a"), &Symbol::from("twist"), &[Type::Int]);
-    let kb = build_mangled_name(&ModuleFullPath::from("b"), &Symbol::from("twist"), &[Type::Int]);
+    let ka = build_mangled_name(
+        &ModuleFullPath::from("a"),
+        &Symbol::from("twist"),
+        &[Type::Int],
+    );
+    let kb = build_mangled_name(
+        &ModuleFullPath::from("b"),
+        &Symbol::from("twist"),
+        &[Type::Int],
+    );
     assert_eq!(ka, "a/twist$Int");
     assert_eq!(kb, "b/twist$Int");
-    assert_ne!(ka, kb, "same name + same args + different home MUST be distinct (0508)");
+    assert_ne!(
+        ka, kb,
+        "same name + same args + different home MUST be distinct (0508)"
+    );
 }
 
 // spec: design/typecheck/monomorphisation.md §3.5 — NEGATIVE/dedup: same
@@ -196,9 +229,20 @@ fn build_mangled_name_home_distinguishes_same_named_generics() {
 // the fix must NOT over-split the genuine same-instantiation case).
 #[test]
 fn build_mangled_name_same_home_same_args_dedups() {
-    let k1 = build_mangled_name(&ModuleFullPath::from("a"), &Symbol::from("twist"), &[Type::Int]);
-    let k2 = build_mangled_name(&ModuleFullPath::from("a"), &Symbol::from("twist"), &[Type::Int]);
-    assert_eq!(k1, k2, "identical (home, name, sig) MUST mangle identically — dedup still works");
+    let k1 = build_mangled_name(
+        &ModuleFullPath::from("a"),
+        &Symbol::from("twist"),
+        &[Type::Int],
+    );
+    let k2 = build_mangled_name(
+        &ModuleFullPath::from("a"),
+        &Symbol::from("twist"),
+        &[Type::Int],
+    );
+    assert_eq!(
+        k1, k2,
+        "identical (home, name, sig) MUST mangle identically — dedup still works"
+    );
 }
 
 // --- Fn-arg axis (the latent third: filter_map dropped `Fn` params) ---
@@ -226,7 +270,10 @@ fn build_mangled_name_fn_param_distinguishes_instantiations() {
     let k2 = build_mangled_name(&m(), &Symbol::from("apply"), &[fn_bb]);
     assert_eq!(k1, "m/apply$Fn(Int;Int)");
     assert_eq!(k2, "m/apply$Fn(Bool;Bool)");
-    assert_ne!(k1, k2, "a Fn-param-only difference MUST be distinguishing (latent third axis)");
+    assert_ne!(
+        k1, k2,
+        "a Fn-param-only difference MUST be distinguishing (latent third axis)"
+    );
 }
 
 // spec: design/typecheck/monomorphisation.md §3.5 — edge: NESTED `Fn` (a Fn
@@ -253,11 +300,17 @@ fn build_mangled_name_nested_fn_param() {
 fn build_mangled_name_triple_nested_adt_arg() {
     let vvv_int = Type::ADT(
         test_fqtn("Vec"),
-        vec![Type::ADT(test_fqtn("Vec"), vec![Type::ADT(test_fqtn("Vec"), vec![Type::Int])])],
+        vec![Type::ADT(
+            test_fqtn("Vec"),
+            vec![Type::ADT(test_fqtn("Vec"), vec![Type::Int])],
+        )],
     );
     let vvv_str = Type::ADT(
         test_fqtn("Vec"),
-        vec![Type::ADT(test_fqtn("Vec"), vec![Type::ADT(test_fqtn("Vec"), vec![Type::String])])],
+        vec![Type::ADT(
+            test_fqtn("Vec"),
+            vec![Type::ADT(test_fqtn("Vec"), vec![Type::String])],
+        )],
     );
     assert_eq!(
         build_mangled_name(&m(), &Symbol::from("f"), &[vvv_int]),
@@ -331,7 +384,10 @@ fn build_mangled_name_dedup_key_equals_minted_name() {
     let minted = build_mangled_name(&home, &name, &args);
     // "key path" — what the pass4 seen map keys on from the call-site arg_types.
     let dedup_key = build_mangled_name(&home, &name, &args);
-    assert_eq!(minted, dedup_key, "dedup key and minted name MUST be one string (mirror)");
+    assert_eq!(
+        minted, dedup_key,
+        "dedup key and minted name MUST be one string (mirror)"
+    );
     assert_eq!(minted, "a/twist$Int+Int");
 }
 
@@ -387,8 +443,16 @@ fn wave0_mono_entry_registered_with_distinct_got_slot() {
             body: Expr::Apply {
                 callee: Box::new(Expr::var(Symbol::from("add"), Span::new(200, 203))),
                 args: vec![
-                    Expr::IntLit { value: 1, span: Span::new(204, 205), inferred_type: None },
-                    Expr::IntLit { value: 2, span: Span::new(206, 207), inferred_type: None },
+                    Expr::IntLit {
+                        value: 1,
+                        span: Span::new(204, 205),
+                        inferred_type: None,
+                    },
+                    Expr::IntLit {
+                        value: 2,
+                        span: Span::new(206, 207),
+                        inferred_type: None,
+                    },
                 ],
                 span: Span::new(199, 208),
                 resolved_call: None,
@@ -414,7 +478,9 @@ fn wave0_mono_entry_registered_with_distinct_got_slot() {
                 assert!(
                     matches!(
                         kind.as_ref(),
-                        DefKind::UserFn { fn_state: UserFnState::Constrained(_) }
+                        DefKind::UserFn {
+                            fn_state: UserFnState::Constrained(_)
+                        }
                     ),
                     "template 'add' kind should be UserFn(Constrained), got {:?}",
                     kind
@@ -437,7 +503,9 @@ fn wave0_mono_entry_registered_with_distinct_got_slot() {
                 assert!(
                     matches!(
                         kind.as_ref(),
-                        DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
+                        DefKind::UserFn {
+                            fn_state: UserFnState::Concrete { .. }
+                        }
                     ),
                     "mono 'test/add$Int+Int' kind should be UserFn(Concrete), got {:?}",
                     kind
@@ -460,9 +528,14 @@ fn wave0_mono_entry_registered_with_distinct_got_slot() {
                     panic!("mono body should be Apply, got {:?}", defn.body);
                 }
 
-                entry.callable_got_slot().expect("mono must have a GOT slot assigned")
+                entry
+                    .callable_got_slot()
+                    .expect("mono must have a GOT slot assigned")
             }
-            other => panic!("'test/add$Int+Int' mono should be Def entry, got {:?}", other),
+            other => panic!(
+                "'test/add$Int+Int' mono should be Def entry, got {:?}",
+                other
+            ),
         }
     };
 
@@ -600,8 +673,16 @@ fn two_instantiations_mint_two_distinct_concrete_mono_entries() {
             body: Expr::Apply {
                 callee: Box::new(Expr::var(Symbol::from("add"), Span::new(200, 203))),
                 args: vec![
-                    Expr::IntLit { value: 1, span: Span::new(204, 205), inferred_type: None },
-                    Expr::IntLit { value: 2, span: Span::new(206, 207), inferred_type: None },
+                    Expr::IntLit {
+                        value: 1,
+                        span: Span::new(204, 205),
+                        inferred_type: None,
+                    },
+                    Expr::IntLit {
+                        value: 2,
+                        span: Span::new(206, 207),
+                        inferred_type: None,
+                    },
                 ],
                 span: Span::new(199, 208),
                 resolved_call: None,
@@ -623,8 +704,16 @@ fn two_instantiations_mint_two_distinct_concrete_mono_entries() {
             body: Expr::Apply {
                 callee: Box::new(Expr::var(Symbol::from("add"), Span::new(300, 303))),
                 args: vec![
-                    Expr::FloatLit { value: 1.5, span: Span::new(304, 307), inferred_type: None },
-                    Expr::FloatLit { value: 2.5, span: Span::new(308, 311), inferred_type: None },
+                    Expr::FloatLit {
+                        value: 1.5,
+                        span: Span::new(304, 307),
+                        inferred_type: None,
+                    },
+                    Expr::FloatLit {
+                        value: 2.5,
+                        span: Span::new(308, 311),
+                        inferred_type: None,
+                    },
                 ],
                 span: Span::new(299, 312),
                 resolved_call: None,
@@ -657,12 +746,17 @@ fn assert_concrete_mono_slot(tc: &crate::checker::TestFixture, key: &str) -> usi
             assert!(
                 matches!(
                     kind.as_ref(),
-                    DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
+                    DefKind::UserFn {
+                        fn_state: UserFnState::Concrete { .. }
+                    }
                 ),
                 "mono '{key}' kind should be UserFn(Concrete), got {:?}",
                 kind
             );
-            assert!(ast.is_some(), "mono '{key}' must carry a compilable ast: Some(..)");
+            assert!(
+                ast.is_some(),
+                "mono '{key}' must carry a compilable ast: Some(..)"
+            );
             entry
                 .callable_got_slot()
                 .unwrap_or_else(|| panic!("mono '{key}' must have a GOT slot assigned"))

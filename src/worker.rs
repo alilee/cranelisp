@@ -11,12 +11,49 @@
 
 use std::path::{Path, PathBuf};
 
-use cranelisp_types::{ErrorLocation,
-    CranelispError, DefKind, Defn, ModuleEntry, ModuleFullPath,
-    Sexp, Span, Symbol, TopLevel,
+use cranelisp_types::{
+    CranelispError, DefKind, Defn, ErrorLocation, ModuleEntry, ModuleFullPath, Sexp, Span, Symbol,
+    TopLevel,
 };
 
 use cranelisp_typecheck::CheckState;
+
+pub(crate) struct PreparedCommit {
+    module: ModuleFullPath,
+    snapshot_cursor: usize,
+    final_cursor: usize,
+    tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    names: Vec<Symbol>,
+    published_names: Vec<Symbol>,
+    retained: Vec<crate::redefine::RetainedCode>,
+    freezes: Vec<(Symbol, usize, usize)>,
+    redefinition_ptrs: Vec<(Symbol, usize, usize)>,
+    outcomes: Vec<crate::redefine::RedefinitionOutcome>,
+    pub(crate) unresolved_dispatch: Vec<cranelisp_typecheck::UnresolvedDispatchSite>,
+    compiled: Option<PreparedCompilation>,
+}
+
+struct PreparedCompilation {
+    jit: std::sync::Arc<cranelisp_backend::jit::Jit>,
+    clif_ir: String,
+    code_size: usize,
+    drop_glues: std::collections::HashMap<
+        cranelisp_types::ConcreteType,
+        cranelisp_backend::DropGlueArtifact,
+    >,
+}
+
+#[derive(Clone)]
+#[allow(dead_code)] // consumed by the Sprint-116 result-owner seam
+pub(crate) struct FreshJitDropGlue {
+    pub(crate) artifact: cranelisp_backend::DropGlueArtifact,
+    pub(crate) owner: crate::code::Code,
+}
+
+struct PreparedCheck {
+    staging: crate::code::SessionSymbolTable,
+    result: cranelisp_typecheck::CheckResult,
+}
 
 // Internal per-int compatibility shim for the (post-Decision-44, 2026-05-13
 // third amendment) collapsed `check_forms` surface. The legacy multi-call
@@ -70,9 +107,7 @@ impl ModuleCheckAccumulator {
 /// (the trace runtime is not bundled into the staticlib produced by
 /// exe-bundle); no frontend pre-pass check is needed. See
 /// spec/04-expressions.md §4.12.9.
-pub(crate) fn build_program_compat(
-    sexps: &[Sexp],
-) -> Result<Vec<TopLevel>, CranelispError> {
+pub(crate) fn build_program_compat(sexps: &[Sexp]) -> Result<Vec<TopLevel>, CranelispError> {
     // `(begin form₁ … formN)` clusters flatten into their inner forms — both
     // `build_form` and `build_forms` reject `begin` per their facade. This
     // preserves the pre-S66 `build_program` semantics where `flatten_begin`
@@ -97,7 +132,9 @@ pub(crate) fn leading_annotation_len(sexps: &[Sexp]) -> usize {
 /// `cranelisp_typecheck::check_forms`. The worker pipeline still operates in
 /// `TopLevel` shapes downstream of build_form for codegen + display info; we
 /// transcode again here at the typecheck-dispatch boundary.
-pub(crate) fn top_level_to_parsed_entries(program: &[TopLevel]) -> Vec<cranelisp_types::ParsedEntry> {
+pub(crate) fn top_level_to_parsed_entries(
+    program: &[TopLevel],
+) -> Vec<cranelisp_types::ParsedEntry> {
     use cranelisp_types::ParsedEntry;
 
     let mut out = Vec::with_capacity(program.len());
@@ -110,7 +147,14 @@ pub(crate) fn top_level_to_parsed_entries(program: &[TopLevel]) -> Vec<cranelisp
                 docstring: d.docstring.clone(),
                 span: d.span,
             }),
-            TopLevel::TypeDef { name, docstring, type_params, constructors, visibility, span } => {
+            TopLevel::TypeDef {
+                name,
+                docstring,
+                type_params,
+                constructors,
+                visibility,
+                span,
+            } => {
                 // `ParsedEntry::TypeDef.type_params` is `Vec<Symbol>` (the
                 // type-parameter binders, as written) — pass through directly.
                 out.push(ParsedEntry::TypeDef {
@@ -123,7 +167,9 @@ pub(crate) fn top_level_to_parsed_entries(program: &[TopLevel]) -> Vec<cranelisp
                 });
             }
             TopLevel::TraitDecl(decl) => out.push(ParsedEntry::TraitDecl { decl: decl.clone() }),
-            TopLevel::TraitImpl(impl_) => out.push(ParsedEntry::TraitImpl { impl_: impl_.clone() }),
+            TopLevel::TraitImpl(impl_) => out.push(ParsedEntry::TraitImpl {
+                impl_: impl_.clone(),
+            }),
             // Expression forms are wrapped by `wrap_exprs_as_defns` upstream;
             // any remaining `Expr` here would be a workflow bug, so skip silently
             // and let downstream catch the inconsistency. Note: `TopLevel` is
@@ -259,7 +305,7 @@ pub(crate) fn process_cluster_with_staging(
     ),
     CranelispError,
 > {
-    use cranelisp_typecheck::{check_forms, CheckError, SymbolTableAccess};
+    use cranelisp_typecheck::{CheckError, SymbolTableAccess, check_forms};
 
     let parsed = top_level_to_parsed_entries(working_program);
     if parsed.is_empty() {
@@ -267,9 +313,7 @@ pub(crate) fn process_cluster_with_staging(
     }
 
     let mut staging: crate::code::SessionSymbolTable =
-        cranelisp_types::SymbolTable::<crate::code::Code, ()>::new_with_params(
-            module.clone(),
-        );
+        cranelisp_types::SymbolTable::<crate::code::Code, ()>::new_with_params(module.clone());
     let mut ctx: SymbolTableAccess<'_, crate::code::Code, ()> =
         SymbolTableAccess::cluster(symbol_tables, &mut staging, module.clone());
     let result = check_forms(
@@ -302,7 +346,12 @@ pub(crate) fn process_cluster_with_staging(
                     })
                     .unresolved_dispatch = check_result.unresolved_dispatch.clone();
             }
-            Ok((None, check_result.warnings, check_result.unresolved_dispatch, redefs))
+            Ok((
+                None,
+                check_result.warnings,
+                check_result.unresolved_dispatch,
+                redefs,
+            ))
         }
         // A recoverable resolution gap (e.g. an FQ reference to a module not
         // yet loaded). Staging drops here (atomic discard, live unchanged);
@@ -313,6 +362,242 @@ pub(crate) fn process_cluster_with_staging(
         // A genuine type error — staging drops, live unchanged.
         Err(e) => Err(check_error_to_cranelisp_error(e)),
     }
+}
+
+fn check_cluster_to_staging(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    module_aliases: &cranelisp_types::ModuleAliases,
+    prelude_fallback: &cranelisp_typecheck::PreludeFallback,
+    module: &ModuleFullPath,
+    working_program: &[TopLevel],
+) -> Result<Option<Result<PreparedCheck, cranelisp_types::ResolutionGap>>, CranelispError> {
+    use cranelisp_typecheck::{CheckError, SymbolTableAccess, check_forms};
+
+    let parsed = top_level_to_parsed_entries(working_program);
+    if parsed.is_empty() {
+        return Ok(None);
+    }
+    let mut staging =
+        cranelisp_types::SymbolTable::<crate::code::Code, ()>::new_with_params(module.clone());
+    let mut access = SymbolTableAccess::cluster(symbol_tables, &mut staging, module.clone());
+    let result = check_forms(
+        parsed,
+        &mut access,
+        symbol_tables,
+        module_aliases,
+        prelude_fallback,
+    );
+    drop(access);
+    match result {
+        Ok(result) => Ok(Some(Ok(PreparedCheck { staging, result }))),
+        Err(CheckError::Gap(gap)) => Ok(Some(Err(gap))),
+        Err(error) => Err(check_error_to_cranelisp_error(error)),
+    }
+}
+
+#[allow(clippy::type_complexity)]
+pub(crate) fn prepare_cluster_commit(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    module_aliases: &cranelisp_types::ModuleAliases,
+    prelude_fallback: &cranelisp_typecheck::PreludeFallback,
+    module: &ModuleFullPath,
+    working_program: &[TopLevel],
+    codegen_program: &[TopLevel],
+    shared: &crate::session_v4::SharedState,
+) -> Result<
+    Option<
+        Result<(PreparedCommit, cranelisp_typecheck::CheckResult), cranelisp_types::ResolutionGap>,
+    >,
+    CranelispError,
+> {
+    let Some(checked) = check_cluster_to_staging(
+        symbol_tables,
+        module_aliases,
+        prelude_fallback,
+        module,
+        working_program,
+    )?
+    else {
+        return Ok(None);
+    };
+    let checked = match checked {
+        Ok(checked) => checked,
+        Err(gap) => return Ok(Some(Err(gap))),
+    };
+    let prepared = plan_staging_commit(
+        symbol_tables,
+        module,
+        checked.staging,
+        codegen_program,
+        shared,
+    )?;
+    Ok(Some(Ok((prepared, checked.result))))
+}
+
+fn plan_staging_commit(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    module: &ModuleFullPath,
+    staging: crate::code::SessionSymbolTable,
+    codegen_program: &[TopLevel],
+    shared: &crate::session_v4::SharedState,
+) -> Result<PreparedCommit, CranelispError> {
+    use crate::redefine::{RedefKind, RedefinitionOutcome, RetainedCode, classify_redefinition};
+    use cranelisp_types::{FQSymbol, GOT_TABLE_SIZE};
+
+    let tables = dashmap::DashMap::new();
+    for row in symbol_tables.iter() {
+        tables.insert(row.key().clone(), row.value().clone());
+    }
+    let declared = shared.declared_exports.get(module).map(|d| d.clone());
+    let Some(mut candidate) = tables.get_mut(module) else {
+        return Err(CranelispError::ModuleError {
+            message: format!("module '{module}' disappeared while preparing a turn"),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        });
+    };
+    let snapshot_cursor = candidate.next_got_slot;
+    let mut cursor = snapshot_cursor;
+    let mut retained = Vec::new();
+    let mut freezes = Vec::new();
+    let mut redefinition_ptrs = Vec::new();
+    let mut outcomes = Vec::new();
+    let mut published_names = Vec::new();
+    let mut drained: Vec<_> = staging.symbols.into_iter().collect();
+    drained.sort_by(|(a_name, a), (b_name, b)| {
+        match (a.callable_got_slot(), b.callable_got_slot()) {
+            (Some(a), Some(b)) => a.cmp(&b),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a_name.as_ref().cmp(b_name.as_ref()),
+        }
+    });
+
+    for (name, mut entry) in drained {
+        crate::imports::check_terminal_closure(
+            module,
+            name.as_ref(),
+            &entry,
+            Span::SYNTHETIC,
+            declared.as_ref(),
+        )?;
+        let prior = candidate.symbols.get(&name);
+        let prior_was_def = matches!(prior, Some(ModuleEntry::Def { .. }));
+        let prior_slot = prior.and_then(ModuleEntry::callable_got_slot);
+        if let Some(slot) = prior_slot {
+            let prior_ptr = candidate.got.load_slot(slot) as usize;
+            if prior_ptr != 0 {
+                redefinition_ptrs.push((name.clone(), slot, prior_ptr));
+            }
+        }
+        let prior_code = match prior {
+            Some(ModuleEntry::Def { code, .. }) => code.clone(),
+            _ => None,
+        };
+        let (kind, per_symbol) = classify_redefinition(name.as_ref(), prior, &entry);
+        let mut new_slot = None;
+
+        if entry.callable_got_slot().is_some() {
+            let slot = match kind {
+                RedefKind::AbiPreserving => prior_slot.unwrap_or_else(|| {
+                    let slot = cursor;
+                    cursor += 1;
+                    slot
+                }),
+                RedefKind::New | RedefKind::AbiChanging => {
+                    let slot = cursor;
+                    cursor += 1;
+                    slot
+                }
+            };
+            if cursor > GOT_TABLE_SIZE {
+                return Err(CranelispError::ModuleError {
+                    message: format!(
+                        "GOT slot table exhausted for module '{module}' ({GOT_TABLE_SIZE} slots)"
+                    ),
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
+                });
+            }
+            if kind == RedefKind::AbiChanging {
+                let old_slot = prior_slot.ok_or_else(|| CranelispError::ModuleError {
+                    message: format!("ABI-changing '{module}/{name}' has no prior slot"),
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
+                })?;
+                if let Some(code) = prior_code.clone() {
+                    retained.push(RetainedCode::frozen(module, &name, Some(old_slot), code));
+                }
+                freezes.push((name.clone(), old_slot, slot));
+            }
+            if let ModuleEntry::Def {
+                kind: def_kind,
+                code,
+                ..
+            } = &mut entry
+            {
+                repoint_callable_slot(def_kind, slot);
+                if code.is_none() && kind != RedefKind::AbiChanging {
+                    *code = prior_code;
+                }
+            }
+            new_slot = Some(slot);
+            outcomes.push(RedefinitionOutcome {
+                fq: FQSymbol {
+                    module: module.clone(),
+                    symbol: name.clone(),
+                },
+                kind,
+                per_symbol,
+                prior_was_def,
+                old_slot: prior_slot,
+                new_slot,
+            });
+        } else if prior_was_def && matches!(entry, ModuleEntry::Def { .. }) {
+            if let (Some(slot), Some(code)) = (prior_slot, prior_code) {
+                retained.push(RetainedCode::frozen(module, &name, Some(slot), code));
+            }
+            outcomes.push(RedefinitionOutcome {
+                fq: FQSymbol {
+                    module: module.clone(),
+                    symbol: name.clone(),
+                },
+                kind,
+                per_symbol,
+                prior_was_def: true,
+                old_slot: prior_slot,
+                new_slot,
+            });
+        }
+        published_names.push(name.clone());
+        candidate.symbols.insert(name, entry);
+    }
+    candidate.next_got_slot = cursor;
+    drop(candidate);
+    let names = derive_codegen_batch(module, codegen_program, &tables);
+    for name in &names {
+        let valid = tables
+            .get(module)
+            .and_then(|table| table.get(name.as_ref()).cloned())
+            .is_some_and(|entry| entry.callable_got_slot().is_some());
+        if !valid {
+            return Err(CranelispError::ModuleError {
+                message: format!("prepared codegen member '{module}/{name}' is not callable"),
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
+            });
+        }
+    }
+    Ok(PreparedCommit {
+        module: module.clone(),
+        snapshot_cursor,
+        final_cursor: cursor,
+        tables,
+        names,
+        published_names,
+        retained,
+        freezes,
+        redefinition_ptrs,
+        outcomes,
+        unresolved_dispatch: Vec::new(),
+        compiled: None,
+    })
 }
 
 /// The agent Build-mode pre-flight validator (`design/int/agent.md §16.1`,
@@ -497,7 +782,9 @@ fn commit_staging_to_live(
         // displacing a prior live `Def` routes through `commit_slotless_redef`
         // (the T1 downgrade outcome). Both push at most one outcome.
         if entry.callable_got_slot().is_some() {
-            outcomes.push(commit_slotted_def(&mut live, module, &name, &mut entry, shared)?);
+            outcomes.push(commit_slotted_def(
+                &mut live, module, &name, &mut entry, shared,
+            )?);
         } else if let Some(outcome) = commit_slotless_redef(&live, module, &name, &entry, shared) {
             outcomes.push(outcome);
         }
@@ -553,24 +840,26 @@ fn commit_slotted_def(
     shared: Option<&crate::session_v4::SharedState>,
 ) -> Result<crate::redefine::RedefinitionOutcome, CranelispError> {
     use crate::redefine::{
-        allocate_live_got_slot, classify_redefinition, RedefKind, RedefinitionOutcome,
-        RetainedCode,
+        RedefKind, RedefinitionOutcome, RetainedCode, allocate_live_got_slot, classify_redefinition,
     };
     use cranelisp_types::{FQSymbol, ModuleEntry};
 
-    let (prior_slot, prior_code, kind, per_symbol, prior_was_def) =
-        match live.symbols.get(name) {
-            Some(prior @ ModuleEntry::Def { code, .. }) => {
-                let (kind, per_symbol) =
-                    classify_redefinition(name.as_ref(), Some(prior), &*entry);
-                (prior.callable_got_slot(), code.clone(), kind, per_symbol, true)
-            }
-            prior => {
-                let (kind, per_symbol) =
-                    classify_redefinition(name.as_ref(), prior, &*entry);
-                (None, None, kind, per_symbol, false)
-            }
-        };
+    let (prior_slot, prior_code, kind, per_symbol, prior_was_def) = match live.symbols.get(name) {
+        Some(prior @ ModuleEntry::Def { code, .. }) => {
+            let (kind, per_symbol) = classify_redefinition(name.as_ref(), Some(prior), &*entry);
+            (
+                prior.callable_got_slot(),
+                code.clone(),
+                kind,
+                per_symbol,
+                true,
+            )
+        }
+        prior => {
+            let (kind, per_symbol) = classify_redefinition(name.as_ref(), prior, &*entry);
+            (None, None, kind, per_symbol, false)
+        }
+    };
 
     // Fresh-slot is unconditional on ABI change, independent of the
     // recorded caller set (invisible value captures exist — design
@@ -617,7 +906,12 @@ fn commit_slotted_def(
         }
     };
 
-    if let ModuleEntry::Def { kind: def_kind, code, .. } = &mut *entry {
+    if let ModuleEntry::Def {
+        kind: def_kind,
+        code,
+        ..
+    } = &mut *entry
+    {
         repoint_callable_slot(def_kind, new_slot);
         // Preserve the prior code handle on the reuse path if staging
         // didn't already write one (staging-side typecheck does not
@@ -676,7 +970,7 @@ fn commit_slotless_redef(
     entry: &cranelisp_types::ModuleEntry<crate::code::Code>,
     shared: Option<&crate::session_v4::SharedState>,
 ) -> Option<crate::redefine::RedefinitionOutcome> {
-    use crate::redefine::{classify_redefinition, RedefinitionOutcome, RetainedCode};
+    use crate::redefine::{RedefinitionOutcome, RetainedCode, classify_redefinition};
     use cranelisp_types::{FQSymbol, ModuleEntry};
 
     if !matches!(entry, ModuleEntry::Def { .. }) {
@@ -691,7 +985,10 @@ fn commit_slotless_redef(
     let prior_slot = prior.callable_got_slot();
     if let Some(shared) = shared
         && let Some(prior_slot) = prior_slot
-        && let ModuleEntry::Def { code: Some(prior_code), .. } = prior
+        && let ModuleEntry::Def {
+            code: Some(prior_code),
+            ..
+        } = prior
     {
         shared
             .retained_code
@@ -727,12 +1024,15 @@ fn commit_slotless_redef(
 fn repoint_callable_slot(kind: &mut cranelisp_types::DefKind, slot: usize) {
     use cranelisp_types::{DefKind, PrimitiveBody, UserFnState};
     match kind {
-        DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot, .. } } => *got_slot = slot,
+        DefKind::UserFn {
+            fn_state: UserFnState::Concrete { got_slot, .. },
+        } => *got_slot = slot,
         // Only the Extern arm carries a slot; an Inline primitive is
         // slot-less by construction (S102 FIXME 0476) and falls to `_`.
-        DefKind::Primitive { body: PrimitiveBody::Extern { got_slot, .. }, .. } => {
-            *got_slot = slot
-        }
+        DefKind::Primitive {
+            body: PrimitiveBody::Extern { got_slot, .. },
+            ..
+        } => *got_slot = slot,
         DefKind::Constructor { got_slot, .. } => *got_slot = slot,
         DefKind::PlatformEffect { got_slot, .. } => *got_slot = slot,
         // Non-callable kinds carry no slot — nothing to re-point.
@@ -742,7 +1042,9 @@ fn repoint_callable_slot(kind: &mut cranelisp_types::DefKind, slot: usize) {
 
 /// Translate `CheckError` to the legacy `CranelispError` shape used by
 /// the worker's error sites.
-fn check_error_to_cranelisp_error(err: cranelisp_typecheck::CheckError) -> CranelispError {
+pub(crate) fn check_error_to_cranelisp_error(
+    err: cranelisp_typecheck::CheckError,
+) -> CranelispError {
     use cranelisp_typecheck::CheckError;
     match err {
         CheckError::TypeError { message, location } => {
@@ -799,9 +1101,11 @@ pub struct ModuleCompiler<'a> {
     pub current_module: ModuleFullPath,
     pub scheduler: &'a CompileScheduler,
     /// Per-module typecheck products (GOT tables).
-    pub typecheck_products: &'a dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
+    pub typecheck_products:
+        &'a dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
     /// Per-symbol introspection data (REPL slash commands). None in batch mode.
-    pub introspection: Option<&'a dashmap::DashMap<cranelisp_types::FQSymbol, crate::session_v4::Introspection>>,
+    pub introspection:
+        Option<&'a dashmap::DashMap<cranelisp_types::FQSymbol, crate::session_v4::Introspection>>,
     pub lib_dirs: &'a [PathBuf],
     pub platform_dirs: &'a [PathBuf],
     pub project_root: &'a Path,
@@ -879,9 +1183,7 @@ pub enum ClusterOnce {
     /// on; the caller drives the wait + retry. (`dep` may already be loaded in
     /// the cache-hit / already-imported case — the block-then-unblock was
     /// issued so the scheduler requeues this module.)
-    Gap {
-        dep: ModuleFullPath,
-    },
+    Gap { dep: ModuleFullPath },
 }
 
 /// Ensure a `TypecheckProduct` entry exists for a module, creating an empty
@@ -963,8 +1265,8 @@ pub fn derive_codegen_batch(
     let table_ref = tc_modules.get(module);
 
     let try_push = |name: &Symbol,
-                        names: &mut Vec<Symbol>,
-                        seen: &mut std::collections::HashSet<Symbol>|
+                    names: &mut Vec<Symbol>,
+                    seen: &mut std::collections::HashSet<Symbol>|
      -> bool {
         if seen.contains(name) {
             return false;
@@ -975,12 +1277,16 @@ pub fn derive_codegen_batch(
         let Some(entry) = table.get(name.as_ref()) else {
             return false;
         };
-        if let ModuleEntry::Def { kind, ast: Some(_), .. } = entry
+        if let ModuleEntry::Def {
+            kind, ast: Some(_), ..
+        } = entry
             && !matches!(
                 kind.as_ref(),
-                DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Constrained(_) }
-                    | DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Polymorphic(_) }
-                    | DefKind::Overloaded { .. }
+                DefKind::UserFn {
+                    fn_state: cranelisp_types::UserFnState::Constrained(_)
+                } | DefKind::UserFn {
+                    fn_state: cranelisp_types::UserFnState::Polymorphic(_)
+                } | DefKind::Overloaded { .. }
             )
         {
             names.push(name.clone());
@@ -1012,20 +1318,19 @@ pub fn derive_codegen_batch(
     // fallback, no alternate path, and therefore no polarity to get wrong: the
     // instrument is a detector, never a gate. A `None` table (module not yet in
     // `tc_modules`) is a legitimate no-table case and never fires.
-    let force_enroll = |name: &Symbol,
-                        names: &mut Vec<Symbol>,
-                        seen: &mut std::collections::HashSet<Symbol>| {
-        let pushed = try_push(name, names, seen);
-        debug_assert!(
-            pushed || forced_enrollment_resolves(table_ref.as_deref(), name),
-            "derive_codegen_batch: the forced loop enrolled `{name}` in module \
+    let force_enroll =
+        |name: &Symbol, names: &mut Vec<Symbol>, seen: &mut std::collections::HashSet<Symbol>| {
+            let pushed = try_push(name, names, seen);
+            debug_assert!(
+                pushed || forced_enrollment_resolves(table_ref.as_deref(), name),
+                "derive_codegen_batch: the forced loop enrolled `{name}` in module \
              `{module}`, but no live `ModuleEntry::Def` resolves under that name \
              — a DEAD LOOKUP. The push silently no-ops and the symbol is left to \
              the `already_compiled`-gated sweep, which skips any entry that \
              already carries code (the S115 impl-redefinition silent-ignore \
              class). See `design/int/impl-redefinition-hot-reload.md` §2."
-        );
-    };
+            );
+        };
 
     for tl in program {
         match tl {
@@ -1167,18 +1472,20 @@ pub fn derive_codegen_batch(
             // 5))` resolves the name but loads an empty slot → no value.
             let is_uncompiled_synth_def = table
                 .get(name.as_ref())
-                .map(|e| matches!(
-                    &e,
-                    ModuleEntry::Def { kind, ast: Some(_), .. }
-                        if matches!(
-                            kind.as_ref(),
-                            DefKind::Constructor { .. }
-                                | DefKind::Primitive { .. }
-                                | DefKind::UserFn {
-                                    fn_state: cranelisp_types::UserFnState::Concrete { .. }
-                                }
-                        )
-                ))
+                .map(|e| {
+                    matches!(
+                        &e,
+                        ModuleEntry::Def { kind, ast: Some(_), .. }
+                            if matches!(
+                                kind.as_ref(),
+                                DefKind::Constructor { .. }
+                                    | DefKind::Primitive { .. }
+                                    | DefKind::UserFn {
+                                        fn_state: cranelisp_types::UserFnState::Concrete { .. }
+                                    }
+                            )
+                    )
+                })
                 .unwrap_or(false);
             if name.as_ref().contains('$') || name.as_ref() == "__expr" || is_uncompiled_synth_def {
                 try_push(name, &mut names, &mut seen);
@@ -1217,43 +1524,6 @@ pub fn derive_codegen_batch(
 /// The JIT is wrapped in `Arc<Jit>` so a single compile call producing N
 /// functions can store N `Code` entries sharing one JIT (see
 /// `src/session_v4.rs` `Code` doc — /arch Phase 3a §3).
-pub fn inline_jit_codegen_for_module(
-    scheduler: &CompileScheduler,
-    module: &ModuleFullPath,
-    program: &[TopLevel],
-    tc_modules: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-    introspection: Option<&dashmap::DashMap<cranelisp_types::FQSymbol, crate::session_v4::Introspection>>,
-    shared_state: Option<&crate::session_v4::SharedState>,
-) -> Result<(), CranelispError> {
-    // 1. Derive compilation batch from `program` and the module's symbol
-    //    table — see `derive_codegen_batch` for the filter details.
-    let names = derive_codegen_batch(module, program, tc_modules);
-
-    if names.is_empty() {
-        let dummy = Symbol::from("__empty_module");
-        scheduler.notify_inmem_codegen_complete(module, &dummy, true);
-        return Ok(());
-    }
-
-    // Delegate to the names-explicit helper and then notify the scheduler
-    // once per compiled name (last-in-batch flag set for the final entry).
-    inline_jit_codegen_for_names(
-        module,
-        &names,
-        tc_modules,
-        introspection,
-        shared_state,
-    )?;
-
-    let total = names.len();
-    for (i, name) in names.iter().enumerate() {
-        let is_last = i + 1 == total;
-        scheduler.notify_inmem_codegen_complete(module, name, is_last);
-    }
-
-    Ok(())
-}
-
 /// Compile an explicit list of already-registered symbols through the unified
 /// `compile_to_module` entry point.
 ///
@@ -1270,11 +1540,14 @@ pub fn inline_jit_codegen_for_module(
 ///   `compile_macro_clause_inline`) — passes a single-element `names` for the
 ///   synthesised `__macro_{name}_clause_{idx}` defn. Macro-clause callers
 ///   notify the scheduler themselves in their outer loop.
+#[cfg(test)]
 pub fn inline_jit_codegen_for_names(
     module: &ModuleFullPath,
     names: &[Symbol],
     tc_modules: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-    introspection: Option<&dashmap::DashMap<cranelisp_types::FQSymbol, crate::session_v4::Introspection>>,
+    introspection: Option<
+        &dashmap::DashMap<cranelisp_types::FQSymbol, crate::session_v4::Introspection>,
+    >,
     shared_state: Option<&crate::session_v4::SharedState>,
 ) -> Result<(), CranelispError> {
     if names.is_empty() {
@@ -1327,8 +1600,7 @@ pub fn inline_jit_codegen_for_names(
     //    own write); int's only job is lifecycle-owner installation +
     //    redefinition observability.
     for name in names {
-        let prior_ptr: Option<*const u8> =
-            read_got_addr(tc_modules, module, name);
+        let prior_ptr: Option<*const u8> = read_got_addr(tc_modules, module, name);
 
         let Some(mut st) = tc_modules.get_mut(module) else {
             return Err(CranelispError::ModuleError {
@@ -1379,6 +1651,237 @@ pub fn inline_jit_codegen_for_names(
     }
 
     Ok(())
+}
+
+pub(crate) fn compile_prepared_turn(
+    prepared: &mut PreparedCommit,
+    live_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    capture_clif: bool,
+) -> Result<(), CranelispError> {
+    let live_cursor = live_tables
+        .get(&prepared.module)
+        .map(|table| table.next_got_slot)
+        .ok_or_else(|| CranelispError::ModuleError {
+            message: format!("module '{}' disappeared before codegen", prepared.module),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        })?;
+    if live_cursor != prepared.snapshot_cursor {
+        return Err(CranelispError::ModuleError {
+            message: format!(
+                "module '{}' changed while its turn was being prepared",
+                prepared.module
+            ),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        });
+    }
+    if prepared.names.is_empty() {
+        return Ok(());
+    }
+    {
+        let table =
+            prepared
+                .tables
+                .get(&prepared.module)
+                .ok_or_else(|| CranelispError::ModuleError {
+                    message: format!("prepared module '{}' disappeared", prepared.module),
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
+                })?;
+        for name in &prepared.names {
+            let Some(ModuleEntry::Def { .. }) = table.symbols.get(name) else {
+                return Err(CranelispError::ModuleError {
+                    message: format!(
+                        "prepared member '{}/{}' is missing or not a definition",
+                        prepared.module, name
+                    ),
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
+                });
+            };
+        }
+    }
+    let mut jit = build_session_jit(&prepared.tables)?;
+    let artifacts = cranelisp_backend::compile_to_module(
+        prepared.module.clone(),
+        &prepared.names,
+        &prepared.tables,
+        jit.jit_module(),
+        capture_clif,
+    )?;
+    #[allow(clippy::arc_with_non_send_sync)]
+    let jit = std::sync::Arc::new(jit);
+    {
+        let mut table = prepared
+            .tables
+            .get_mut(&prepared.module)
+            .unwrap_or_else(|| {
+                unreachable!("invariant: prevalidated prepared module survives backend call")
+            });
+        for name in &prepared.names {
+            let entry = table.symbols.get_mut(name).unwrap_or_else(|| {
+                unreachable!("invariant: prevalidated prepared member survives backend call")
+            });
+            let ModuleEntry::Def { code, .. } = entry else {
+                unreachable!("invariant: prevalidated prepared member remains a definition")
+            };
+            *code = Some(crate::code::Code::jit(std::sync::Arc::clone(&jit)));
+        }
+    }
+    prepared.compiled = Some(PreparedCompilation {
+        jit,
+        clif_ir: artifacts.clif_ir,
+        code_size: artifacts.code_size,
+        drop_glues: artifacts.drop_glues,
+    });
+    Ok(())
+}
+
+pub(crate) fn publish_prepared_turn(
+    processed: &mut crate::cluster::ProcessedCluster,
+    shared: &crate::session_v4::SharedState,
+) {
+    let Some(prepared) = processed.prepared.take() else {
+        return;
+    };
+    let mut prepared = *prepared;
+    let compiled = prepared.compiled.take();
+    // Install every owner produced by codegen before any live entry or
+    // callable pointer becomes reachable through symbol-table publication.
+    if let Some(compiled) = compiled {
+        let owner = crate::code::Code::jit(std::sync::Arc::clone(&compiled.jit));
+        for (ty, artifact) in compiled.drop_glues {
+            shared.fresh_jit_drop_glues.insert(
+                (prepared.module.clone(), ty),
+                FreshJitDropGlue {
+                    artifact,
+                    owner: owner.clone(),
+                },
+            );
+        }
+        if let Some(introspection) = shared.introspection.as_ref() {
+            for name in &prepared.names {
+                let fq = cranelisp_types::FQSymbol {
+                    module: prepared.module.clone(),
+                    symbol: name.clone(),
+                };
+                let mut record = introspection.entry(fq).or_default();
+                record.clif_ir = Some(compiled.clif_ir.clone());
+                record.code_size = Some(compiled.code_size);
+            }
+        }
+    }
+    let mut live = shared
+        .symbol_tables
+        .get_mut(&prepared.module)
+        .unwrap_or_else(|| unreachable!("invariant: prepared module remains live through publish"));
+    debug_assert_eq!(live.next_got_slot, prepared.snapshot_cursor);
+    live.next_got_slot = prepared.final_cursor;
+
+    shared
+        .retained_code
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .extend(prepared.retained);
+
+    let mut candidate = prepared
+        .tables
+        .get_mut(&prepared.module)
+        .unwrap_or_else(|| unreachable!("invariant: prepared table survives through publish"));
+    for name in &prepared.published_names {
+        let entry = candidate
+            .symbols
+            .remove(name)
+            .unwrap_or_else(|| unreachable!("invariant: planned entry survives through publish"));
+        live.symbols.insert(name.clone(), entry);
+    }
+    drop(candidate);
+    drop(live);
+
+    for (name, old_slot, new_slot) in prepared.freezes {
+        crate::got_trace::emit_slot_freeze(&prepared.module, &name, old_slot, new_slot);
+    }
+    for (name, slot, prior_ptr) in prepared.redefinition_ptrs {
+        let new_ptr = shared
+            .symbol_tables
+            .get(&prepared.module)
+            .map(|table| table.got.load_slot(slot))
+            .unwrap_or(std::ptr::null());
+        crate::got_trace::emit_redefinition(
+            &prepared.module,
+            &name,
+            slot,
+            new_ptr,
+            prior_ptr as *const u8,
+        );
+    }
+    shared
+        .typecheck_products
+        .entry(prepared.module.clone())
+        .or_insert_with(|| crate::session_v4::TypecheckProduct {
+            file_path: None,
+            source_text: None,
+            unresolved_dispatch: Vec::new(),
+        })
+        .unresolved_dispatch = prepared.unresolved_dispatch;
+    processed.set_redefinitions(prepared.outcomes);
+    processed.pending_codegen_notification =
+        Some((prepared.module.clone(), prepared.names.clone()));
+}
+
+pub(crate) fn compile_and_publish_processed_without_notify(
+    processed: &mut crate::cluster::ProcessedCluster,
+    shared: &crate::session_v4::SharedState,
+) -> Result<(), CranelispError> {
+    if let Some(prepared) = processed.prepared.as_mut() {
+        compile_prepared_turn(
+            prepared,
+            &shared.symbol_tables,
+            shared.introspection.is_some(),
+        )?;
+    }
+    publish_prepared_turn(processed, shared);
+    Ok(())
+}
+
+pub(crate) fn compile_and_publish_processed(
+    processed: &mut crate::cluster::ProcessedCluster,
+    shared: &crate::session_v4::SharedState,
+) -> Result<(), CranelispError> {
+    compile_and_publish_processed_without_notify(processed, shared)?;
+    notify_processed_codegen(processed, shared);
+    Ok(())
+}
+
+pub(crate) fn notify_processed_codegen(
+    processed: &mut crate::cluster::ProcessedCluster,
+    shared: &crate::session_v4::SharedState,
+) {
+    if let Some((module, names)) = processed.pending_codegen_notification.take() {
+        if names.is_empty() {
+            shared.scheduler.notify_inmem_codegen_complete(
+                &module,
+                &Symbol::from("__empty_module"),
+                true,
+            );
+        } else {
+            let total = names.len();
+            for (index, name) in names.iter().enumerate() {
+                shared
+                    .scheduler
+                    .notify_inmem_codegen_complete(&module, name, index + 1 == total);
+            }
+        }
+    }
+}
+
+/// Publish a source module's complete scheduler readiness in the only valid
+/// order: finish the post-publish in-memory notification first, then expose
+/// `TypecheckDone` to dependent modules.
+fn notify_processed_ready(
+    processed: &mut crate::cluster::ProcessedCluster,
+    shared: &crate::session_v4::SharedState,
+    module: &ModuleFullPath,
+) {
+    notify_processed_codegen(processed, shared);
+    shared.scheduler.notify_typecheck_done(module);
 }
 
 /// The ABI names of the `DefKind::PrimitiveExtern` symbols whose bodies are
@@ -1465,7 +1968,7 @@ pub(crate) fn classify_listing_entry(
 /// in int (it reads the live typed session state — `cranelisp-intrinsics`
 /// cannot name `Code`, Principle 18). int promises it here via the additive
 /// `Jit::define_symbol` escape hatch (test-discovery.md §6; FIXME 0271/0269).
-fn build_session_jit(
+pub(crate) fn build_session_jit(
     tc_modules: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
 ) -> Result<cranelisp_backend::jit::Jit, CranelispError> {
     let jit = cranelisp_backend::jit::Jit::new(tc_modules)?;
@@ -1475,10 +1978,7 @@ fn build_session_jit(
             "the only dev-session-only extern body wired here is discover-tests; \
              a new entry in DEV_SESSION_ONLY_EXTERNS needs its own define_symbol",
         );
-        jit.define_symbol(
-            name,
-            crate::session_v4::discover_tests_extern as *const u8,
-        );
+        jit.define_symbol(name, crate::session_v4::discover_tests_extern as *const u8);
     }
     Ok(jit)
 }
@@ -1486,6 +1986,7 @@ fn build_session_jit(
 /// Read the runtime GOT address for `name` in `module`, following Import
 /// chains, or `None` if no slot / address is assigned. Used to capture the
 /// prior pointer for redefinition observability.
+#[cfg(test)]
 fn read_got_addr(
     tc_modules: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module: &ModuleFullPath,
@@ -1498,6 +1999,7 @@ fn read_got_addr(
 }
 
 /// Follow Import/Reexport chains to find a symbol's GOT slot.
+#[cfg(test)]
 fn lookup_got_slot(
     tc_modules: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module: &ModuleFullPath,
@@ -1619,17 +2121,21 @@ fn load_cached_module_via_linker(
     use cranelisp_backend::cache;
 
     // Sprint 67 Cluster B sub-fire 3: cache dir via ObjectCache facade.
-    let cache_dir = shared_state.cache.cache_dir().ok_or_else(|| CranelispError::ModuleError {
-        message: format!("no cache directory for cache-hit loading of '{}'", module),
-        location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-    })?;
-
-    // Load metadata from disk.
-    let cached = cache::try_load_cached_module(&cache_dir, module)?
+    let cache_dir = shared_state
+        .cache
+        .cache_dir()
         .ok_or_else(|| CranelispError::ModuleError {
-            message: format!("cache metadata missing for module '{}'", module),
+            message: format!("no cache directory for cache-hit loading of '{}'", module),
             location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
         })?;
+
+    // Load metadata from disk.
+    let cached = cache::try_load_cached_module(&cache_dir, module)?.ok_or_else(|| {
+        CranelispError::ModuleError {
+            message: format!("cache metadata missing for module '{}'", module),
+            location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+        }
+    })?;
 
     if !cached.has_object {
         return Err(CranelispError::ModuleError {
@@ -1708,11 +2214,15 @@ fn load_cached_module_via_linker(
     }
 
     // Get this module's GOT table from the symbol table.
-    let module_got = shared_state.symbol_tables.get(module)
+    let module_got = shared_state
+        .symbol_tables
+        .get(module)
         .ok_or_else(|| CranelispError::ModuleError {
             message: format!("no symbol table for cached module '{}'", module),
             location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-        })?.got.clone();
+        })?
+        .got
+        .clone();
 
     // Load the .o file — one mmap + relocation pass.
     let fn_addrs = cache::load_cached_object(&mut linker, &cached)?;
@@ -1771,7 +2281,9 @@ fn load_cached_module_via_linker(
             if let ModuleEntry::Def { code, .. } = entry
                 && fn_addrs.contains_key(name.as_ref())
             {
-                *code = Some(crate::code::Code::linker(std::sync::Arc::clone(&linker_arc)));
+                *code = Some(crate::code::Code::linker(std::sync::Arc::clone(
+                    &linker_arc,
+                )));
             }
         }
     }
@@ -1924,10 +2436,7 @@ pub fn priority_worker_loop_shared(shared: &crate::session_v4::SharedState) {
                                     "worker thread panicked while compiling module \
                                      '{module}': {msg}"
                                 ),
-                                location: ErrorLocation::from_span_file(
-                                    Span::SYNTHETIC,
-                                    None,
-                                ),
+                                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
                             },
                         );
                         crate::session_v4::index_worker::on_module_failed(shared, &module);
@@ -2144,31 +2653,29 @@ fn handle_typecheck_work_shared(
     sexps: &std::sync::Arc<[Sexp]>,
 ) -> Result<(), CranelispError> {
     match crate::cluster::process_cluster(shared, std::sync::Arc::clone(sexps), module)? {
-        crate::cluster::ClusterOutcome::Done { processed, program } => {
+        crate::cluster::ClusterOutcome::Done {
+            mut processed,
+            program: _,
+        } => {
             // Unified JIT codegen via compile_to_module (Sprint 56 Wave 2).
             // D1b: the introspection store is REPL-only (`None` in batch).
             // `.as_ref()` threads its existence straight to the step-7 sink
             // guard (`inline_jit_codegen_for_names`); in batch the sink is
             // `None`, so no `Introspection` record is allocated and no CLIF is
             // retained — this is the core batch-leak fix.
-            inline_jit_codegen_for_module(
-                &shared.scheduler,
-                module,
-                &program,
-                &shared.symbol_tables,
-                shared.introspection.as_ref(),
-                Some(shared),
-            )?;
-
-            // Commit the cluster-level REPL/scheduler metadata. (Per-symbol
-            // staging entries already committed to live inside
-            // `check_program_compat`; this drains introspection records.)
-            crate::cluster::insert_cluster(shared, processed, module)?;
+            compile_and_publish_processed_without_notify(&mut processed, shared)?;
 
             // Sprint 58 Step 5b: nice workers walk
             // `symbol_tables[module].defined_symbols()` directly. The
             // `program` is consumed only by the inline JIT codegen above.
-            shared.scheduler.notify_typecheck_done(module);
+            // A dependency may invoke an imported helper immediately after the
+            // TypecheckDone transition. The shared helper makes the required
+            // post-publish InMemDone → TypecheckDone order one cadence.
+            notify_processed_ready(&mut processed, shared, module);
+
+            // Commit the cluster-level REPL/scheduler metadata. (Per-symbol
+            // staging entries already published by the prepared turn.)
+            crate::cluster::insert_cluster(shared, processed, module)?;
 
             // E3 publication-edge hook (`resolve-home-enumeration.md` §4): the
             // terminal typecheck transition is the signature-publication edge, so

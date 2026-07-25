@@ -358,7 +358,10 @@ mod tests {
         assert_eq!(StrandId::ROOT, StrandId(0));
         assert_eq!(StrandId::ROOT.get(), 0);
         // repr(transparent) over u64 — same size as the raw correlation value.
-        assert_eq!(core::mem::size_of::<StrandId>(), core::mem::size_of::<u64>());
+        assert_eq!(
+            core::mem::size_of::<StrandId>(),
+            core::mem::size_of::<u64>()
+        );
 
         // The slice-2 kinds all construct and correlate back to their strand.
         let s = StrandId(7);
@@ -381,19 +384,34 @@ mod tests {
     #[test]
     fn strand_cancelled_constructs_carries_reason_and_correlates() {
         let s = StrandId(11);
-        let lost = StrandEvent::StrandCancelled { strand: s, reason: CancelReason::RaceLost };
-        let shut = StrandEvent::StrandCancelled { strand: s, reason: CancelReason::Shutdown };
+        let lost = StrandEvent::StrandCancelled {
+            strand: s,
+            reason: CancelReason::RaceLost,
+        };
+        let shut = StrandEvent::StrandCancelled {
+            strand: s,
+            reason: CancelReason::Shutdown,
+        };
         assert_eq!(lost.strand(), s);
         assert_eq!(shut.strand(), s);
-        assert_ne!(lost, shut, "the reason distinguishes a race-loss from a shutdown cancel");
+        assert_ne!(
+            lost, shut,
+            "the reason distinguishes a race-loss from a shutdown cancel"
+        );
 
         // It flows through the recording sink like the other kinds.
         start_strand_recording();
-        emit_strand_event(StrandEvent::StrandCancelled { strand: s, reason: CancelReason::RaceLost });
+        emit_strand_event(StrandEvent::StrandCancelled {
+            strand: s,
+            reason: CancelReason::RaceLost,
+        });
         let events = drain_strand_events();
         assert_eq!(
             events,
-            vec![StrandEvent::StrandCancelled { strand: s, reason: CancelReason::RaceLost }],
+            vec![StrandEvent::StrandCancelled {
+                strand: s,
+                reason: CancelReason::RaceLost
+            }],
             "StrandCancelled records through the strand sink"
         );
     }
@@ -438,14 +456,20 @@ mod tests {
     #[test]
     fn emit_without_recording_is_dropped() {
         // No start_strand_recording() call.
-        emit_strand_event(StrandEvent::EffectDispatched { strand: StrandId(1) });
+        emit_strand_event(StrandEvent::EffectDispatched {
+            strand: StrandId(1),
+        });
         // A later recording must not see the pre-recording event.
         start_strand_recording();
-        emit_strand_event(StrandEvent::EffectResumed { strand: StrandId(2) });
+        emit_strand_event(StrandEvent::EffectResumed {
+            strand: StrandId(2),
+        });
         let events = drain_strand_events();
         assert_eq!(
             events,
-            vec![StrandEvent::EffectResumed { strand: StrandId(2) }],
+            vec![StrandEvent::EffectResumed {
+                strand: StrandId(2)
+            }],
             "an emit before start_strand_recording must be discarded",
         );
     }
@@ -464,14 +488,20 @@ mod tests {
     #[test]
     fn restart_clears_prior_recording() {
         start_strand_recording();
-        emit_strand_event(StrandEvent::EffectDispatched { strand: StrandId(1) });
+        emit_strand_event(StrandEvent::EffectDispatched {
+            strand: StrandId(1),
+        });
         // Restart: the first event must be dropped.
         start_strand_recording();
-        emit_strand_event(StrandEvent::EffectSuspended { strand: StrandId(2) });
+        emit_strand_event(StrandEvent::EffectSuspended {
+            strand: StrandId(2),
+        });
         let events = drain_strand_events();
         assert_eq!(
             events,
-            vec![StrandEvent::EffectSuspended { strand: StrandId(2) }],
+            vec![StrandEvent::EffectSuspended {
+                strand: StrandId(2)
+            }],
             "restarting recording discards the previous buffer",
         );
     }
@@ -481,11 +511,15 @@ mod tests {
     #[test]
     fn drain_stops_recording() {
         start_strand_recording();
-        emit_strand_event(StrandEvent::EffectDispatched { strand: StrandId(1) });
+        emit_strand_event(StrandEvent::EffectDispatched {
+            strand: StrandId(1),
+        });
         let first = drain_strand_events();
         assert_eq!(first.len(), 1, "first drain returns the recorded event");
         // Recording is now stopped: this emit must be dropped.
-        emit_strand_event(StrandEvent::EffectResumed { strand: StrandId(2) });
+        emit_strand_event(StrandEvent::EffectResumed {
+            strand: StrandId(2),
+        });
         assert!(
             drain_strand_events().is_empty(),
             "after a drain, emit is a no-op and a second drain is empty",
@@ -505,7 +539,10 @@ mod tests {
         let c = next_strand();
         assert_ne!(a, StrandId::ROOT, "minted ids are never the ROOT strand");
         assert!(a.0 >= 1, "minted ids start at 1");
-        assert!(a.0 < b.0 && b.0 < c.0, "minted ids are strictly monotonic: {a:?} {b:?} {c:?}");
+        assert!(
+            a.0 < b.0 && b.0 < c.0,
+            "minted ids are strictly monotonic: {a:?} {b:?} {c:?}"
+        );
     }
 
     // matrix: `strand()` correlates EVERY event kind back to its strand — the
@@ -516,9 +553,18 @@ mod tests {
         let s = StrandId(42);
         let tok = 9u64;
         let kinds = [
-            StrandEvent::TokenAcquired { strand: s, token: tok },
-            StrandEvent::TokenParked { strand: s, token: tok },
-            StrandEvent::TokenReleased { strand: s, token: tok },
+            StrandEvent::TokenAcquired {
+                strand: s,
+                token: tok,
+            },
+            StrandEvent::TokenParked {
+                strand: s,
+                token: tok,
+            },
+            StrandEvent::TokenReleased {
+                strand: s,
+                token: tok,
+            },
             StrandEvent::TokenCapacityMismatch {
                 strand: s,
                 token: tok,
@@ -526,13 +572,20 @@ mod tests {
                 requested_capacity: 8,
             },
             StrandEvent::StrandCompleted { strand: s },
-            StrandEvent::StrandFailed { strand: s, message: "boom".to_string() },
+            StrandEvent::StrandFailed {
+                strand: s,
+                message: "boom".to_string(),
+            },
             StrandEvent::GlobalBudgetParked { strand: s },
             StrandEvent::GlobalBudgetAcquired { strand: s },
             StrandEvent::GlobalBudgetReleased { strand: s },
         ];
         for ev in kinds {
-            assert_eq!(ev.strand(), s, "every kind correlates to its strand: {ev:?}");
+            assert_eq!(
+                ev.strand(),
+                s,
+                "every kind correlates to its strand: {ev:?}"
+            );
         }
     }
 
@@ -543,9 +596,16 @@ mod tests {
     fn strand_launched_correlates_to_child_not_parent() {
         let child = StrandId(100);
         let parent = StrandId(1);
-        let ev = StrandEvent::StrandLaunched { strand: child, parent };
+        let ev = StrandEvent::StrandLaunched {
+            strand: child,
+            parent,
+        };
         assert_eq!(ev.strand(), child, "strand() is the launched child");
-        assert_ne!(ev.strand(), parent, "strand() must not be the launching parent");
+        assert_ne!(
+            ev.strand(),
+            parent,
+            "strand() must not be the launching parent"
+        );
     }
 
     // payload fidelity: TokenCapacityMismatch records the first (surviving) and
@@ -559,7 +619,11 @@ mod tests {
             requested_capacity: 8,
         };
         match ev {
-            StrandEvent::TokenCapacityMismatch { first_capacity, requested_capacity, .. } => {
+            StrandEvent::TokenCapacityMismatch {
+                first_capacity,
+                requested_capacity,
+                ..
+            } => {
                 assert_eq!(first_capacity, 4, "the first capacity stands");
                 assert_ne!(
                     first_capacity, requested_capacity,

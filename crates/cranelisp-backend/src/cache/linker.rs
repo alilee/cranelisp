@@ -42,7 +42,7 @@
 
 use std::collections::HashMap;
 
-use cranelisp_types::{ErrorLocation, CranelispError, LinkerSymbol, Span};
+use cranelisp_types::{CranelispError, ErrorLocation, LinkerSymbol, Span};
 
 use crate::error::LinkerError;
 
@@ -231,7 +231,9 @@ impl Linker {
         module_name: &str,
         bytes: &[u8],
     ) -> Result<(), CranelispError> {
-        use object::{Object, ObjectSection, ObjectSymbol, RelocationFlags, RelocationTarget, SymbolKind};
+        use object::{
+            Object, ObjectSection, ObjectSymbol, RelocationFlags, RelocationTarget, SymbolKind,
+        };
 
         let obj = object::File::parse(bytes).map_err(|e| CranelispError::CodegenError {
             message: format!("failed to parse object file: {e}"),
@@ -249,10 +251,12 @@ impl Linker {
                 message: "object file has no text section".to_string(),
                 location: ErrorLocation::from_span(Span::SYNTHETIC),
             })?;
-        let text_data = text_section.data().map_err(|e| CranelispError::CodegenError {
-            message: format!("failed to read text section: {e}"),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        })?;
+        let text_data = text_section
+            .data()
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to read text section: {e}"),
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
+            })?;
         let text_size = text_data.len();
 
         if text_size == 0 {
@@ -335,12 +339,12 @@ impl Linker {
         for (offset, reloc) in text_section.relocations() {
             let target_name = match reloc.target() {
                 RelocationTarget::Symbol(sym_idx) => {
-                    let sym = obj.symbol_by_index(sym_idx).map_err(|e| {
-                        CranelispError::CodegenError {
-                            message: format!("bad relocation symbol: {e}"),
-                            location: ErrorLocation::from_span(Span::SYNTHETIC),
-                        }
-                    })?;
+                    let sym =
+                        obj.symbol_by_index(sym_idx)
+                            .map_err(|e| CranelispError::CodegenError {
+                                message: format!("bad relocation symbol: {e}"),
+                                location: ErrorLocation::from_span(Span::SYNTHETIC),
+                            })?;
                     let raw_name = sym.name().map_err(|e| CranelispError::CodegenError {
                         message: format!("bad symbol name: {e}"),
                         location: ErrorLocation::from_span(Span::SYNTHETIC),
@@ -439,15 +443,10 @@ impl Linker {
         #[cfg(unix)]
         {
             let ptr = mmap.as_ptr() as *mut libc::c_void;
-            let ret = unsafe {
-                libc::mprotect(ptr, text_size, libc::PROT_READ | libc::PROT_EXEC)
-            };
+            let ret = unsafe { libc::mprotect(ptr, text_size, libc::PROT_READ | libc::PROT_EXEC) };
             if ret != 0 {
                 return Err(CranelispError::CodegenError {
-                    message: format!(
-                        "mprotect failed: {}",
-                        std::io::Error::last_os_error()
-                    ),
+                    message: format!("mprotect failed: {}", std::io::Error::last_os_error()),
                     location: ErrorLocation::from_span(Span::SYNTHETIC),
                 });
             }
@@ -491,11 +490,12 @@ impl Linker {
             }
 
             // Allocate RW memory for this data section.
-            let mut data_mmap = memmap2::MmapMut::map_anon(section_data.len())
-                .map_err(|e| CranelispError::CodegenError {
+            let mut data_mmap = memmap2::MmapMut::map_anon(section_data.len()).map_err(|e| {
+                CranelispError::CodegenError {
                     message: format!("failed to mmap data region: {e}"),
                     location: ErrorLocation::from_span(Span::SYNTHETIC),
-                })?;
+                }
+            })?;
             data_mmap[..section_data.len()].copy_from_slice(section_data);
             let data_base = data_mmap.as_ptr() as usize;
             let section_addr = section.address();
@@ -574,11 +574,7 @@ impl Linker {
                 // `section_data.len()` because it came from the section's
                 // own symbol table.
                 unsafe {
-                    std::ptr::write_bytes(
-                        data_mmap.as_mut_ptr().add(*offset),
-                        0,
-                        *size,
-                    );
+                    std::ptr::write_bytes(data_mmap.as_mut_ptr().add(*offset), 0, *size);
                 }
                 debug_assert!(
                     data_mmap[*offset..*offset + *size].iter().all(|&b| b == 0),
@@ -660,10 +656,8 @@ fn apply_macho_arm64_reloc(
                     location: ErrorLocation::from_span(Span::SYNTHETIC),
                 });
             }
-            let existing =
-                u32::from_le_bytes(mmap[offset..offset + 4].try_into().unwrap());
-            let patched =
-                (existing & 0xFC00_0000) | ((rel_offset as u32) & 0x03FF_FFFF);
+            let existing = u32::from_le_bytes(mmap[offset..offset + 4].try_into().unwrap());
+            let patched = (existing & 0xFC00_0000) | ((rel_offset as u32) & 0x03FF_FFFF);
             mmap[offset..offset + 4].copy_from_slice(&patched.to_le_bytes());
         }
         // ARM64_RELOC_PAGE21 / ARM64_RELOC_GOT_LOAD_PAGE21: ADRP (21-bit page offset)
@@ -672,19 +666,16 @@ fn apply_macho_arm64_reloc(
             let patch_page = (patch_addr as i64 >> 12) << 12;
             let page_offset = ((target_page - patch_page) >> 12) as i32;
 
-            let existing =
-                u32::from_le_bytes(mmap[offset..offset + 4].try_into().unwrap());
+            let existing = u32::from_le_bytes(mmap[offset..offset + 4].try_into().unwrap());
             let immlo = ((page_offset as u32) & 0x3) << 29;
             let immhi = (((page_offset as u32) >> 2) & 0x7FFFF) << 5;
             let patched = (existing & 0x9F00_001F) | immhi | immlo;
             mmap[offset..offset + 4].copy_from_slice(&patched.to_le_bytes());
         }
         // ARM64_RELOC_PAGEOFF12 / ARM64_RELOC_GOT_LOAD_PAGEOFF12: page offset (12-bit)
-        macho_arm64::ARM64_RELOC_PAGEOFF12
-        | macho_arm64::ARM64_RELOC_GOT_LOAD_PAGEOFF12 => {
+        macho_arm64::ARM64_RELOC_PAGEOFF12 | macho_arm64::ARM64_RELOC_GOT_LOAD_PAGEOFF12 => {
             let page_off = ((target_addr as i64 + addend) & 0xFFF) as u32;
-            let existing =
-                u32::from_le_bytes(mmap[offset..offset + 4].try_into().unwrap());
+            let existing = u32::from_le_bytes(mmap[offset..offset + 4].try_into().unwrap());
             // Detect instruction type to determine scaling
             let opc = (existing >> 22) & 0x3FF;
             let shift = if opc & 0x3E0 == 0x3E0 {
@@ -745,10 +736,8 @@ fn apply_elf_aarch64_reloc(
                     location: ErrorLocation::from_span(Span::SYNTHETIC),
                 });
             }
-            let existing =
-                u32::from_le_bytes(mmap[offset..offset + 4].try_into().unwrap());
-            let patched =
-                (existing & 0xFC00_0000) | ((rel_offset as u32) & 0x03FF_FFFF);
+            let existing = u32::from_le_bytes(mmap[offset..offset + 4].try_into().unwrap());
+            let patched = (existing & 0xFC00_0000) | ((rel_offset as u32) & 0x03FF_FFFF);
             mmap[offset..offset + 4].copy_from_slice(&patched.to_le_bytes());
         }
         // R_AARCH64_ADR_GOT_PAGE (GOT-slot variant): identical ADRP page math —
@@ -760,8 +749,7 @@ fn apply_elf_aarch64_reloc(
             let patch_page = (patch_addr as i64 >> 12) << 12;
             let page_offset = ((target_page - patch_page) >> 12) as i32;
 
-            let existing =
-                u32::from_le_bytes(mmap[offset..offset + 4].try_into().unwrap());
+            let existing = u32::from_le_bytes(mmap[offset..offset + 4].try_into().unwrap());
             let immlo = ((page_offset as u32) & 0x3) << 29;
             let immhi = (((page_offset as u32) >> 2) & 0x7FFFF) << 5;
             let patched = (existing & 0x9F00_001F) | immhi | immlo;
@@ -769,8 +757,7 @@ fn apply_elf_aarch64_reloc(
         }
         elf_aarch64::R_AARCH64_ADD_ABS_LO12_NC => {
             let page_off = ((target_addr as i64 + addend) & 0xFFF) as u32;
-            let existing =
-                u32::from_le_bytes(mmap[offset..offset + 4].try_into().unwrap());
+            let existing = u32::from_le_bytes(mmap[offset..offset + 4].try_into().unwrap());
             let patched = (existing & 0xFFC0_03FF) | ((page_off & 0xFFF) << 10);
             mmap[offset..offset + 4].copy_from_slice(&patched.to_le_bytes());
         }
@@ -779,8 +766,7 @@ fn apply_elf_aarch64_reloc(
         // scale-by-8 LDR, same encoding as the plain ABS LO12 form.
         elf_aarch64::R_AARCH64_LDST64_ABS_LO12_NC | elf_aarch64::R_AARCH64_LD64_GOT_LO12_NC => {
             let page_off = ((target_addr as i64 + addend) & 0xFFF) as u32;
-            let existing =
-                u32::from_le_bytes(mmap[offset..offset + 4].try_into().unwrap());
+            let existing = u32::from_le_bytes(mmap[offset..offset + 4].try_into().unwrap());
             let imm12 = (page_off >> 3) & 0xFFF;
             let patched = (existing & 0xFFC0_03FF) | (imm12 << 10);
             mmap[offset..offset + 4].copy_from_slice(&patched.to_le_bytes());

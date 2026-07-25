@@ -194,7 +194,11 @@ fn agent_flag_accepted_on_agent_build() {
         "--agent must be accepted on an agent build, stderr={}",
         out.stderr
     );
-    assert!(out.stdout.contains("3"), "session must still eval, stdout={}", out.stdout);
+    assert!(
+        out.stdout.contains("3"),
+        "session must still eval, stdout={}",
+        out.stdout
+    );
 }
 
 // spec: repl/spec.md §0.6.2 — S106 user ruling: `--yes` on a binary built WITHOUT
@@ -501,10 +505,19 @@ fn agent_on_context_dumps_request_to_file_dormant() {
     let dumped = std::fs::read_to_string(out.tmpdir.join("ctx-dump.txt"))
         .expect("the /context file must exist");
     assert!(!dumped.is_empty(), "the dumped context must be non-empty");
-    assert!(dumped.contains("=== SYSTEM PRIMER ==="), "primer header: {dumped}");
-    assert!(dumped.contains("=== HARVESTED CONTEXT ==="), "harvest header");
+    assert!(
+        dumped.contains("=== SYSTEM PRIMER ==="),
+        "primer header: {dumped}"
+    );
+    assert!(
+        dumped.contains("=== HARVESTED CONTEXT ==="),
+        "harvest header"
+    );
     assert!(dumped.contains("=== TRANSCRIPT ==="), "transcript header");
-    assert!(dumped.contains(":Type"), "the real language primer must be present");
+    assert!(
+        dumped.contains(":Type"),
+        "the real language primer must be present"
+    );
     // The current-module pin in the harvest carries the just-defined fn's source.
     assert!(
         dumped.contains("ctx-marker-fn"),
@@ -719,7 +732,10 @@ fn agent_on_ask_forces_agent_for_bare_word() {
 /// by the stub but a provider must be selected.
 #[cfg(feature = "agent")]
 fn stub_repl(script: &str, prelude: PreludeVariant, stdin: &str) -> helpers::e2e::CrOutput {
-    let cl = Cranelisp::new().repl().with_prelude(prelude).cli_flag("--agent");
+    let cl = Cranelisp::new()
+        .repl()
+        .with_prelude(prelude)
+        .cli_flag("--agent");
     let script_path = cl.tmpdir_path().join("agent_script.txt");
     std::fs::write(&script_path, script).unwrap();
     cl.env("CRANELISP_AGENT_PROVIDER", "stub")
@@ -947,7 +963,10 @@ fn stub_repl_flags(
     flags: &[&str],
     stdin: &str,
 ) -> helpers::e2e::CrOutput {
-    let mut cl = Cranelisp::new().repl().with_prelude(prelude).cli_flag("--agent");
+    let mut cl = Cranelisp::new()
+        .repl()
+        .with_prelude(prelude)
+        .cli_flag("--agent");
     for f in flags {
         cl = cl.cli_flag(f);
     }
@@ -1891,7 +1910,11 @@ fn agent_build_broken_then_fixed_repaired_silently() {
         out.stdout
     );
     // (iii) `double` is NOT reported unbound afterward (the write committed).
-    let after_submit = out.stdout.rsplit("double for you").next().unwrap_or(&out.stdout);
+    let after_submit = out
+        .stdout
+        .rsplit("double for you")
+        .next()
+        .unwrap_or(&out.stdout);
     assert!(
         !after_submit.to_lowercase().contains("unbound")
             && !after_submit.to_lowercase().contains("undefined"),
@@ -1922,9 +1945,7 @@ fn agent_build_broken_intermediate_never_shown_neg() {
     // "repair", "retry", "attempt", or compiler-diagnostic text leaks (§16.2).
     let lc = out.stdout.to_lowercase();
     assert!(
-        !lc.contains("parse error")
-            && !lc.contains("unbalanced")
-            && !lc.contains("unexpected"),
+        !lc.contains("parse error") && !lc.contains("unbalanced") && !lc.contains("unexpected"),
         "the broken intermediate's compiler diagnostic must be ABSENT — the user \
          structurally cannot see an agent compile failure (§17.14.3), stdout={}",
         out.stdout
@@ -2325,8 +2346,7 @@ fn agent_yes_with_no_agent_is_accepted_no_op() {
 /// terminal prose. The recorded prose is STRIPPED (no `;;`); the regen emits
 /// the canonical `;; <prose>` leading block.
 #[cfg(feature = "agent")]
-const SET_PREAMBLE_USER: &str =
-    "tool: set-preamble user Solver core: constraint propagation over a grid.\n\
+const SET_PREAMBLE_USER: &str = "tool: set-preamble user Solver core: constraint propagation over a grid.\n\
      done: recorded the module preamble for you\n";
 
 /// The stripped preamble prose the script records (no `;;`), and its canonical
@@ -3013,8 +3033,7 @@ fn harvest_references_actual_sig_no_relist_needed() {
         .next()
         .unwrap_or("");
     assert!(
-        in_scope.contains("inc-doc")
-            && in_scope.contains("(Fn [primitives/Int] primitives/Int)"),
+        in_scope.contains("inc-doc") && in_scope.contains("(Fn [primitives/Int] primitives/Int)"),
         "the ambient `== in scope ==` harvest must carry `inc-doc`'s actual \
          signature so the agent never needs to relist (§17.18.2), in_scope={in_scope}"
     );
@@ -3065,7 +3084,10 @@ fn stub_repl_logged(
     log_path: &std::path::Path,
     stdin: &str,
 ) -> helpers::e2e::CrOutput {
-    let cl = Cranelisp::new().repl().with_prelude(prelude).cli_flag("--agent");
+    let cl = Cranelisp::new()
+        .repl()
+        .with_prelude(prelude)
+        .cli_flag("--agent");
     let script_path = cl.tmpdir_path().join("agent_script.txt");
     std::fs::write(&script_path, script).unwrap();
     cl.env("CRANELISP_AGENT_PROVIDER", "stub")
@@ -3161,7 +3183,12 @@ fn agent_log_writes_jsonl_with_stable_keys() {
                  (the keystone struggle signal, §17.20.3) — none found, log={log:?}"
             )
         });
-    for key in ["\"symbol\"", "\"module\"", "\"error_class\"", "\"iteration\""] {
+    for key in [
+        "\"symbol\"",
+        "\"module\"",
+        "\"error_class\"",
+        "\"iteration\"",
+    ] {
         assert!(
             repair_line.contains(key),
             "the `repair` record must carry the stable greppable key {key} (the \
@@ -3257,10 +3284,7 @@ fn agent_log_graceful_on_unwritable_path_neg() {
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .cli_flag("--agent");
     // A path under a nonexistent parent directory — opening it for append fails.
-    let unwritable = cl
-        .tmpdir_path()
-        .join("no-such-dir")
-        .join("agent.jsonl");
+    let unwritable = cl.tmpdir_path().join("no-such-dir").join("agent.jsonl");
     let out = stub_repl_logged(
         PULL_REPAIR_SUBMIT_SCRIPT,
         PreludeVariant::PrimitivesOnly,
@@ -3508,7 +3532,10 @@ fn agent_log_carries_turn_correlation_field() {
     );
     let log = std::fs::read_to_string(&log_path).expect("the log file must be readable");
     let lines: Vec<&str> = log.lines().filter(|l| !l.trim().is_empty()).collect();
-    assert!(!lines.is_empty(), "the log must carry event lines, log={log:?}");
+    assert!(
+        !lines.is_empty(),
+        "the log must carry event lines, log={log:?}"
+    );
 
     // EVERY agent-log line must carry the stable `turn` correlation key
     // (§17.21.3 — "the §17.20 log JSONL gains a `turn` field on every line").
@@ -3570,7 +3597,9 @@ fn agent_log_turn_joins_record_to_its_exchange() {
         let i = line.find("\"turn\"")?;
         let rest = &line[i + "\"turn\"".len()..];
         let rest = rest.trim_start_matches([':', ' ']);
-        let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
         rest[..end].parse::<u64>().ok()
     }
 
@@ -3702,7 +3731,10 @@ fn agent_trace_path_is_silent_no_stderr_leak() {
          y\n",
     );
     // Trace ON: `CRANELISP_AGENT_TRACE` pointed at a per-test tmp file PATH.
-    let cl = Cranelisp::new().repl().with_prelude(PreludeVariant::PrimitivesOnly).cli_flag("--agent");
+    let cl = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .cli_flag("--agent");
     let trace_path = cl.tmpdir_path().join("trace.txt");
     let script_path = cl.tmpdir_path().join("agent_script.txt");
     std::fs::write(&script_path, TRACE_TURN_SCRIPT).unwrap();
@@ -3760,7 +3792,10 @@ fn agent_trace_path_is_silent_no_stderr_leak() {
 #[cfg(feature = "agent")]
 #[test]
 fn agent_trace_graceful_on_unwritable_path_neg() {
-    let cl = Cranelisp::new().repl().with_prelude(PreludeVariant::PrimitivesOnly).cli_flag("--agent");
+    let cl = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .cli_flag("--agent");
     // A path under a nonexistent parent directory — opening it for append fails.
     let unwritable = cl.tmpdir_path().join("no-such-dir").join("trace.txt");
     let script_path = cl.tmpdir_path().join("agent_script.txt");
@@ -3899,7 +3934,10 @@ fn stub_repl_with_env(
     stdin: &str,
     extra_env: &[(&str, &str)],
 ) -> helpers::e2e::CrOutput {
-    let mut cl = Cranelisp::new().repl().with_prelude(prelude).cli_flag("--agent");
+    let mut cl = Cranelisp::new()
+        .repl()
+        .with_prelude(prelude)
+        .cli_flag("--agent");
     let script_path = cl.tmpdir_path().join("agent_script.txt");
     std::fs::write(&script_path, script).unwrap();
     cl = cl
@@ -4014,8 +4052,7 @@ const SET_DOC_DOCSTRING: &str = "doubles its argument by adding it to itself";
 
 /// A stub script that records a docstring on `double`, then finishes.
 #[cfg(feature = "agent")]
-const SET_DOC_DOUBLE: &str =
-    "tool: set-doc double doubles its argument by adding it to itself\n\
+const SET_DOC_DOUBLE: &str = "tool: set-doc double doubles its argument by adding it to itself\n\
      done: recorded the docstring for you\n";
 
 // spec: repl/spec.md §17.15.3 — the durable-memory promise ("next session it
@@ -4207,7 +4244,8 @@ fn set_doc_non_function_target_e2e_refused_not_recorded_neg() {
          /doc Red\n",
     );
     assert!(
-        out.stdout.contains("only function definitions persist a docstring"),
+        out.stdout
+            .contains("only function definitions persist a docstring"),
         "the non-function refusal must name the function-only contract \
          (§17.15.4); stdout={}",
         out.stdout
@@ -4452,7 +4490,13 @@ fn agent_log_neg_carries_no_content_fields() {
         &[],
     );
     assert!(!log.is_empty(), "records MUST be written; log={log}");
-    for key in ["\"form\"", "\"prose\"", "\"content\"", "\"message\"", "\"error_message\""] {
+    for key in [
+        "\"form\"",
+        "\"prose\"",
+        "\"content\"",
+        "\"message\"",
+        "\"error_message\"",
+    ] {
         assert!(
             !log.contains(key),
             "§17.20.3: the log MUST NOT carry a content field ({key}); log={log}"

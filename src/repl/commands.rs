@@ -2,10 +2,8 @@
 // per `design/int/repl-decomposition.md` §1.3 (S110, FIXME 0606). Pure
 // relocation, behaviour-invariant.
 
-
-use super::*;
 use super::format::*;
-
+use super::*;
 
 /// Classification of an imported symbol for category-based display.
 pub(crate) enum ImportClass {
@@ -289,12 +287,7 @@ impl CompilerSession {
     /// macro-clause references remain a `/refs` gap. Left for the 0507 drain
     /// (the design's textual-scan-must-cover-macro-clauses leg), not patched by
     /// weakening the 0491 exclusion here.
-    fn collect_referers(
-        &self,
-        home: &ModuleFullPath,
-        bare: &str,
-        tests_only: bool,
-    ) -> Vec<String> {
+    fn collect_referers(&self, home: &ModuleFullPath, bare: &str, tests_only: bool) -> Vec<String> {
         let mut referers: Vec<String> = Vec::new();
         // Callable referents via the reverse index (skip for `/tests-for`,
         // which filters to the token-scanned test-fn shape).
@@ -400,12 +393,13 @@ impl CompilerSession {
             return "usage: /sexp <name>".to_string();
         }
         if let Some(intr) = self.get_introspection(name)
-            && let Some(ref sexp) = intr.sexp {
-                return render(&code_block_doc(
-                    &format!("; sexp for {name}"),
-                    crate::pretty::pretty_print_doc(sexp),
-                ));
-            }
+            && let Some(ref sexp) = intr.sexp
+        {
+            return render(&code_block_doc(
+                &format!("; sexp for {name}"),
+                crate::pretty::pretty_print_doc(sexp),
+            ));
+        }
         crate::style::error_line(&format!("no sexp available for '{name}'"))
     }
 
@@ -415,9 +409,10 @@ impl CompilerSession {
             return "usage: /ast <name>".to_string();
         }
         if let Some(intr) = self.get_introspection(name)
-            && let Some(ref defn) = intr.ast {
-                return format!("; ast for {name}\n{:#?}", defn);
-            }
+            && let Some(ref defn) = intr.ast
+        {
+            return format!("; ast for {name}\n{:#?}", defn);
+        }
         crate::style::error_line(&format!("no AST available for '{name}'"))
     }
 
@@ -427,9 +422,10 @@ impl CompilerSession {
             return "usage: /clif <name>".to_string();
         }
         if let Some(intr) = self.get_introspection(name)
-            && let Some(ref clif) = intr.clif_ir {
-                return format!("; clif ir for {name}\n{}", clif);
-            }
+            && let Some(ref clif) = intr.clif_ir
+        {
+            return format!("; clif ir for {name}\n{}", clif);
+        }
         crate::style::error_line(&format!("no CLIF IR available for '{name}'"))
     }
 
@@ -452,10 +448,7 @@ impl CompilerSession {
             module: self.current_module_path(),
             symbol: Symbol::from(name),
         };
-        let Some(code_size) = self
-            .get_introspection(name)
-            .and_then(|intr| intr.code_size)
-        else {
+        let Some(code_size) = self.get_introspection(name).and_then(|intr| intr.code_size) else {
             return crate::style::error_line(&format!("no disassembly available for '{name}'"));
         };
         match cranelisp_backend::produce_disasm(&fq, code_size, &self.shared.symbol_tables) {
@@ -508,13 +501,18 @@ impl CompilerSession {
         let is_macro = matches!(&resolved_entry,
             ModuleEntry::Def { kind, .. } if matches!(kind.as_ref(), DefKind::Macro { .. }));
         if !is_macro
-            && !matches!(resolved_entry, ModuleEntry::TypeDef { .. } | ModuleEntry::TraitDecl { .. })
-            && let Some(intr) = self.get_introspection(name) {
-                let size_str = intr.code_size
-                    .map(|s| format!("{s} bytes"))
-                    .unwrap_or_else(|| "? bytes".to_string());
-                out.push_str(&format!("\n  {size_str}"));
-            }
+            && !matches!(
+                resolved_entry,
+                ModuleEntry::TypeDef { .. } | ModuleEntry::TraitDecl { .. }
+            )
+            && let Some(intr) = self.get_introspection(name)
+        {
+            let size_str = intr
+                .code_size
+                .map(|s| format!("{s} bytes"))
+                .unwrap_or_else(|| "? bytes".to_string());
+            out.push_str(&format!("\n  {size_str}"));
+        }
         out
     }
 
@@ -613,8 +611,7 @@ impl CompilerSession {
         // Build is mode-agnostic; `(trace ...)` in `--link` standalone-binary
         // mode (not reachable via REPL) fails at link time via the
         // architecture's natural missing-symbol detection.
-        let working_program =
-            crate::worker::build_program_compat(&[sexps[0].clone()])?;
+        let working_program = crate::worker::build_program_compat(&[sexps[0].clone()])?;
         let working_program = self.wrap_exprs_as_synthetic_defns(&working_program);
 
         // Ensure the current module exists before the live ClusterContext
@@ -645,10 +642,8 @@ impl CompilerSession {
             match top {
                 TopLevel::Expr(expr) => {
                     let span = expr.span();
-                    let wrapper_span = Span::new(
-                        span.start.saturating_sub(1),
-                        span.end.saturating_add(1),
-                    );
+                    let wrapper_span =
+                        Span::new(span.start.saturating_sub(1), span.end.saturating_add(1));
                     working.push(TopLevel::Defn(cranelisp_types::Defn {
                         name: Symbol::from("__expr"),
                         docstring: None,
@@ -805,8 +800,12 @@ impl CompilerSession {
                 output.push_str(&format_prelude_implicit_group(&prelude_names));
             }
 
-            if special_forms.is_empty() && macros.is_empty() && traits.is_empty()
-                && types.is_empty() && fns.is_empty() && prelude_names.is_empty()
+            if special_forms.is_empty()
+                && macros.is_empty()
+                && traits.is_empty()
+                && types.is_empty()
+                && fns.is_empty()
+                && prelude_names.is_empty()
             {
                 output.push_str("(no imports)");
             }
@@ -921,7 +920,9 @@ impl CompilerSession {
                 continue;
             }
             if !prefix_filter.is_empty()
-                && !name.to_lowercase().starts_with(&prefix_filter.to_lowercase())
+                && !name
+                    .to_lowercase()
+                    .starts_with(&prefix_filter.to_lowercase())
             {
                 continue;
             }
@@ -943,8 +944,8 @@ impl CompilerSession {
         types.sort();
         fns.sort();
 
-        let has_any = !macros.is_empty() || !traits.is_empty()
-            || !types.is_empty() || !fns.is_empty();
+        let has_any =
+            !macros.is_empty() || !traits.is_empty() || !types.is_empty() || !fns.is_empty();
 
         if !has_any {
             return format!("Module '{mod_name}' has no public symbols");
@@ -1014,8 +1015,7 @@ impl CompilerSession {
                     continue;
                 };
                 let needs_compile = clauses_meta.iter().enumerate().any(|(idx, _)| {
-                    let clause_name =
-                        Symbol::from(format!("__macro_{}_clause_{}", name, idx));
+                    let clause_name = Symbol::from(format!("__macro_{}_clause_{}", name, idx));
                     let compiled = self
                         .shared
                         .symbol_tables
@@ -1039,7 +1039,9 @@ impl CompilerSession {
             let mut accumulator = ModuleCheckAccumulator::new();
 
             cranelisp_types::ensure_module_exists(&self.shared.symbol_tables, &module);
-            let repl_cs = self.repl_check_state.lock()
+            let repl_cs = self
+                .repl_check_state
+                .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .take()
                 .unwrap_or_else(|| CheckState::new(module.clone()));
@@ -1066,10 +1068,16 @@ impl CompilerSession {
             };
 
             crate::process_form::compile_macro_for_repl(
-                &mut wctx, &module, &info, Span::SYNTHETIC, &mut accumulator,
+                &mut wctx,
+                &module,
+                &info,
+                Span::SYNTHETIC,
+                &mut accumulator,
             )?;
             // Restore REPL check_state.
-            *self.repl_check_state.lock()
+            *self
+                .repl_check_state
+                .lock()
                 .unwrap_or_else(|e| e.into_inner()) = Some(wctx.check_state);
         }
         Ok(())
@@ -1084,12 +1092,13 @@ impl CompilerSession {
                 location: ErrorLocation::from_span(Span::SYNTHETIC),
             });
         }
-        let sexp = sexps.into_iter().next().ok_or_else(|| {
-            CranelispError::ParseError {
+        let sexp = sexps
+            .into_iter()
+            .next()
+            .ok_or_else(|| CranelispError::ParseError {
                 message: "empty form".into(),
                 location: ErrorLocation::from_span(Span::SYNTHETIC),
-            }
-        })?;
+            })?;
         let module = self.current_module_path();
         let mut resolver = ReadOnlyMacroResolver {
             symbol_tables: &self.shared.symbol_tables,
@@ -1178,10 +1187,7 @@ impl CompilerSession {
             ModuleFullPath::from(arg)
         };
         // Core discovery — shared with discover_tests_extern.
-        let test_names = discover_test_names(
-            &self.shared.symbol_tables,
-            &module,
-        );
+        let test_names = discover_test_names(&self.shared.symbol_tables, &module);
         if test_names.is_empty() {
             return if arg.is_empty() {
                 "No test-* functions found.".to_string()
@@ -1225,13 +1231,11 @@ impl CompilerSession {
         for entry in self.shared.typecheck_products.iter() {
             let module_path = entry.key();
             if let Some(ref fp) = entry.value().file_path
-                && !fp.starts_with(&self.shared.project_root) {
-                    continue;
-                }
-            let names = discover_test_names(
-                &self.shared.symbol_tables,
-                module_path,
-            );
+                && !fp.starts_with(&self.shared.project_root)
+            {
+                continue;
+            }
+            let names = discover_test_names(&self.shared.symbol_tables, module_path);
             all_names.extend(names);
         }
         all_names.sort();
@@ -1251,11 +1255,8 @@ impl CompilerSession {
 
         for name in test_names {
             // Core test execution — shared with run_test_extern.
-            let outcome = run_test_by_name(
-                &self.shared.symbol_tables,
-                name,
-                &self.current_repl_module,
-            );
+            let outcome =
+                run_test_by_name(&self.shared.symbol_tables, name, &self.current_repl_module);
             let dots = ".".repeat(40usize.saturating_sub(name.len()));
             match &outcome {
                 TestOutcome::Pass { .. } => {
@@ -1291,14 +1292,9 @@ impl CompilerSession {
     }
 }
 
-
 #[cfg(test)]
 mod mem_command_tests {
     use super::*;
-    
-    
-
-    
 
     // spec: repl/spec.md §3.1 — `/mem` dispatches to the Mem variant and
     // accepts the `/m` alias.
@@ -1331,7 +1327,10 @@ mod mem_command_tests {
     fn mem_snapshot_mentions_allocs_deallocs_and_numbers() {
         let out = format_mem_snapshot();
         assert!(out.contains("allocs:"), "snapshot must label allocs: {out}");
-        assert!(out.contains("deallocs:"), "snapshot must label deallocs: {out}");
+        assert!(
+            out.contains("deallocs:"),
+            "snapshot must label deallocs: {out}"
+        );
         assert!(out.contains("live:"), "snapshot must label live: {out}");
         // Every line must be a comment (starts with ';').
         for line in out.lines() {
@@ -1357,10 +1356,7 @@ mod mem_command_tests {
 #[cfg(test)]
 mod sig_display_helper_tests {
     use super::*;
-    
-    
 
-    
     use cranelisp_types::Scheme;
     use std::collections::HashMap as StdHashMap;
 
@@ -1379,7 +1375,11 @@ mod sig_display_helper_tests {
                 vec![],
             )),
         );
-        let scheme = Scheme { type_vars: vec![], constraints: StdHashMap::new(), ty: trace_ty };
+        let scheme = Scheme {
+            type_vars: vec![],
+            constraints: StdHashMap::new(),
+            ty: trace_ty,
+        };
         let out = format_special_form_display("trace", &scheme, "trace desc");
         assert!(
             out.starts_with(":(Fn ") && out.contains("trace ; special form - trace desc"),
@@ -1395,7 +1395,11 @@ mod sig_display_helper_tests {
             vec![Type::Bool, Type::Var(0), Type::Var(0)],
             Box::new(Type::Var(0)),
         );
-        let scheme = Scheme { type_vars: vec![], constraints: StdHashMap::new(), ty: if_ty };
+        let scheme = Scheme {
+            type_vars: vec![],
+            constraints: StdHashMap::new(),
+            ty: if_ty,
+        };
         let out = format_special_form_display("if", &scheme, "cond");
         assert!(
             out.starts_with(":(Fn [primitives/Bool a a] a) if ; special form"),
@@ -1440,15 +1444,12 @@ mod sig_display_helper_tests {
 #[cfg(test)]
 mod fq_arg_commands_tests {
     use super::*;
-    
-    
+
     use crate::repl::test_support::*;
-    
+
     use cranelisp_types::{
-        ModuleAliasEntry, ModuleEntry, ModuleFullPath, Span,
-        Symbol, Visibility,
+        ModuleAliasEntry, ModuleEntry, ModuleFullPath, Span, Symbol, Visibility,
     };
-    
 
     // A bare argument keeps the current module as its home; the FQ split leaves
     // it untouched. spec: §17.6.1
@@ -1475,7 +1476,11 @@ mod fq_arg_commands_tests {
         let s = session();
         s.shared.module_aliases.insert(
             ModuleFullPath::from("u"),
-            ModuleAliasEntry::new(ModuleFullPath::from("real.mod"), Visibility::Private, Span::SYNTHETIC),
+            ModuleAliasEntry::new(
+                ModuleFullPath::from("real.mod"),
+                Visibility::Private,
+                Span::SYNTHETIC,
+            ),
         );
         let (home, bare) = s.resolve_symbol_arg("u/helper");
         assert_eq!(home.as_ref(), "real.mod");
@@ -1501,7 +1506,10 @@ mod fq_arg_commands_tests {
         let out = s.handle_sig("m/mf");
         assert!(!out.contains("unknown symbol"), "got: {out}");
         assert!(out.contains("m/mf"), "the FQ name must appear; got: {out}");
-        assert!(out.contains("(Fn ["), "the full signature must appear; got: {out}");
+        assert!(
+            out.contains("(Fn ["),
+            "the full signature must appear; got: {out}"
+        );
     }
     // §3.8 (FIXME 0492): /sig on a bare LOCAL name renders the SAME
     // fully-qualified primary line as bare-value display — the
@@ -1562,7 +1570,10 @@ mod fq_arg_commands_tests {
         let out = s.handle_info("m/mf");
         assert!(!out.contains("unknown symbol"), "got: {out}");
         assert!(out.contains("m/mf"), "got: {out}");
-        assert!(!out.contains("m/m/mf") && !out.contains("m/mf/mf"), "no double-qualification; got: {out}");
+        assert!(
+            !out.contains("m/m/mf") && !out.contains("m/mf/mf"),
+            "no double-qualification; got: {out}"
+        );
     }
     // /doc on a module-qualified name resolves the symbol (not `unknown
     // symbol`). spec: §3.6 / §17.5.1
@@ -1572,7 +1583,10 @@ mod fq_arg_commands_tests {
         install_m(&s, Some("doc mf"));
         let out = s.handle_doc("m/mf");
         assert!(!out.contains("unknown symbol"), "got: {out}");
-        assert!(out.contains("doc mf"), "the docstring must appear; got: {out}");
+        assert!(
+            out.contains("doc mf"),
+            "the docstring must appear; got: {out}"
+        );
     }
     // /sig on an unknown FQ name is graceful.
     #[test]
@@ -1594,7 +1608,10 @@ mod fq_arg_commands_tests {
         // modules) is present, but no introspection record exists.
         let mut mg = userfn_def(None);
         if let ModuleEntry::Def { callees, .. } = &mut mg {
-            callees.push(FQSymbol { module: m.clone(), symbol: Symbol::from("mf") });
+            callees.push(FQSymbol {
+                module: m.clone(),
+                symbol: Symbol::from("mf"),
+            });
         }
         table.insert(Symbol::from("mg"), mg);
         s.shared.symbol_tables.insert(m.clone(), table);
@@ -1619,14 +1636,20 @@ mod fq_arg_commands_tests {
         // Base template `g` calls mf.
         let mut g = userfn_def(None);
         if let ModuleEntry::Def { callees, .. } = &mut g {
-            callees.push(FQSymbol { module: m.clone(), symbol: Symbol::from("mf") });
+            callees.push(FQSymbol {
+                module: m.clone(),
+                symbol: Symbol::from("mf"),
+            });
         }
         table.insert(Symbol::from("g"), g);
         // A minted mono instance `g$Int` also calls mf — `ReverseIndex::build`
         // records the mangled name verbatim as a caller.
         let mut g_int = userfn_def(None);
         if let ModuleEntry::Def { callees, .. } = &mut g_int {
-            callees.push(FQSymbol { module: m.clone(), symbol: Symbol::from("mf") });
+            callees.push(FQSymbol {
+                module: m.clone(),
+                symbol: Symbol::from("mf"),
+            });
         }
         table.insert(Symbol::from("g$Int"), g_int);
         s.shared.symbol_tables.insert(m.clone(), table);

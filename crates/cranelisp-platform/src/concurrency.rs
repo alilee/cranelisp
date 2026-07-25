@@ -63,11 +63,9 @@ pub struct Waker {
 #[repr(C)]
 pub struct HostCtx {
     /// Register read-readiness on a raw fd; the reactor wakes `waker` when readable.
-    pub register_readable:
-        unsafe extern "C" fn(host: *const c_void, fd: i32, waker: *const Waker),
+    pub register_readable: unsafe extern "C" fn(host: *const c_void, fd: i32, waker: *const Waker),
     /// Register write-readiness on a raw fd; the reactor wakes `waker` when writable.
-    pub register_writable:
-        unsafe extern "C" fn(host: *const c_void, fd: i32, waker: *const Waker),
+    pub register_writable: unsafe extern "C" fn(host: *const c_void, fd: i32, waker: *const Waker),
     /// Register a timer; the reactor wakes `waker` at `deadline_nanos` (monotonic).
     pub register_timer:
         unsafe extern "C" fn(host: *const c_void, deadline_nanos: u64, waker: *const Waker),
@@ -99,11 +97,8 @@ pub struct HostCtx {
 /// [`Waker`] — the projection of `cranelisp_types::PollFn` (which uses opaque
 /// `c_void` for the host pointers because the type crate sits below this one in
 /// the DAG). Both describe the **same C-ABI**.
-pub type PollFn = unsafe extern "C" fn(
-    state: *mut c_void,
-    host: *const HostCtx,
-    waker: *const Waker,
-) -> Poll;
+pub type PollFn =
+    unsafe extern "C" fn(state: *mut c_void, host: *const HostCtx, waker: *const Waker) -> Poll;
 // ---------------------------------------------------------------------
 // Historical note (single-ABI cutover, §6.8.0): `ConcurrentPlatformFn` and
 // `ConcurrentPlatformManifest` were DELETED here — the unified `crate::PlatformFn`

@@ -123,10 +123,16 @@ fn no_rc_decision_reads_a_bare_monoexpr_node_kind() {
 // nothing at all.
 #[test]
 fn the_fence_ignores_comments_and_field_keeping_tests() {
-    assert!(is_comment("        // matches!(scrutinee, MonoExpr::Var { .. })"));
-    assert!(is_comment("    /// was `matches!(source, MonoExpr::Var { .. })`"));
+    assert!(is_comment(
+        "        // matches!(scrutinee, MonoExpr::Var { .. })"
+    ));
+    assert!(is_comment(
+        "    /// was `matches!(source, MonoExpr::Var { .. })`"
+    ));
     assert!(is_comment("//! MonoExpr::Var { .. }"));
-    assert!(!is_comment("        if matches!(v, MonoExpr::Var { .. }) {"));
+    assert!(!is_comment(
+        "        if matches!(v, MonoExpr::Var { .. }) {"
+    ));
 
     // The live field-keeping test in `cow_source_has_separate_owner` is real
     // code and must NOT be a violation — it asks which BINDING this is.

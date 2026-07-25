@@ -20,14 +20,13 @@
 // the crate root, so `super::*` resolved lib.rs's scope). These `pub(crate)`
 // re-exports reproduce exactly that surface for the relocated homes.
 pub(crate) use crate::jit::Jit;
-pub(crate) use crate::{build_isa, compile_to_module, produce_disasm, heap, CompilationArtifacts};
-pub(crate) use dashmap::DashMap;
+pub(crate) use crate::{CompilationArtifacts, build_isa, compile_to_module, heap, produce_disasm};
 pub(crate) use cranelisp_types::{
     CranelispError, Defn, DefnVariant, DisplayInfo, ErrorLocation, Expr, ModuleEntry,
     ModuleFullPath, MonoDefn, Program, Span, Symbol, SymbolTable, TopLevel, Type, Visibility,
 };
+pub(crate) use dashmap::DashMap;
 pub(crate) use std::collections::{HashMap, HashSet};
-
 
 /// Test-only aggregate bridging hand-built `Defn`s through side-map
 /// enrichment to the post-Phase-2 backend API. Carries the fields that
@@ -150,11 +149,11 @@ where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
-    use cranelift::prelude::{types, AbiParam, FunctionBuilderContext};
+    use cranelift::prelude::{AbiParam, FunctionBuilderContext, types};
     use cranelift_module::{Linkage, Module};
 
-    let intrinsic_ids = crate::jit::declare_intrinsics_generic(module)
-        .expect("probe: declare intrinsics");
+    let intrinsic_ids =
+        crate::jit::declare_intrinsics_generic(module).expect("probe: declare intrinsics");
 
     // Declare every fn (Linkage::Local, bare name) — the Step-2 shape.
     let mut func_ids: HashMap<Symbol, cranelift_module::FuncId> = HashMap::new();
@@ -183,10 +182,16 @@ where
         // fixture's `resolved_targets` (present ⇒ Global/Dispatch, absent ⇒
         // Local/ViaCallee).
         let (var_refs, apply_refs) = resolved_targets_to_typed_maps(d.body(), resolved_targets);
-        let body = cranelisp_types::MonoExpr::from_expr(d.body(), &empty_ctors, &var_refs, &apply_refs)
-            .unwrap_or_else(|_| {
-                cranelisp_types::MonoExpr::lenient_from_expr(d.body(), &empty_ctors, &var_refs, &apply_refs)
-            });
+        let body =
+            cranelisp_types::MonoExpr::from_expr(d.body(), &empty_ctors, &var_refs, &apply_refs)
+                .unwrap_or_else(|_| {
+                    cranelisp_types::MonoExpr::lenient_from_expr(
+                        d.body(),
+                        &empty_ctors,
+                        &var_refs,
+                        &apply_refs,
+                    )
+                });
         let compile_ctx = crate::compiler::CompileContext {
             func_ids: &func_ids,
             func_arities: &func_arities,
@@ -202,7 +207,14 @@ where
             vec_drop_func_id: intrinsic_ids.vec_drop,
         };
         let art = crate::compile_defn_in_module(
-            d, &body, None, module, &mut func_ctx, &func_ids, compile_ctx, true,
+            d,
+            &body,
+            None,
+            module,
+            &mut func_ctx,
+            &func_ids,
+            compile_ctx,
+            true,
         )
         .expect("probe: compile_defn_in_module");
         clifs.push(art.clif_ir);
@@ -254,7 +266,9 @@ fn fill_typed_maps(
             };
             var_refs.insert(*span, vr);
         }
-        Expr::Apply { callee, args, span, .. } => {
+        Expr::Apply {
+            callee, args, span, ..
+        } => {
             let ar = match rt.get(span) {
                 Some(fq) => ApplyRef::Dispatch(fq.clone()),
                 None => ApplyRef::ViaCallee,
@@ -271,15 +285,24 @@ fn fill_typed_maps(
             }
             fill_typed_maps(body, rt, var_refs, apply_refs);
         }
-        Expr::If { cond, then_branch, else_branch, .. } => {
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
             fill_typed_maps(cond, rt, var_refs, apply_refs);
             fill_typed_maps(then_branch, rt, var_refs, apply_refs);
             fill_typed_maps(else_branch, rt, var_refs, apply_refs);
         }
-        Expr::Lambda { body, .. } | Expr::Trace { body, .. } | Expr::Annotate { expr: body, .. } => {
+        Expr::Lambda { body, .. }
+        | Expr::Trace { body, .. }
+        | Expr::Annotate { expr: body, .. } => {
             fill_typed_maps(body, rt, var_refs, apply_refs);
         }
-        Expr::Match { scrutinee, arms, .. } => {
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
             fill_typed_maps(scrutinee, rt, var_refs, apply_refs);
             for arm in arms {
                 fill_typed_maps(&arm.body, rt, var_refs, apply_refs);
@@ -295,7 +318,11 @@ fn fill_typed_maps(
                 fill_typed_maps(f, rt, var_refs, apply_refs);
             }
         }
-        Expr::LaunchContinue { launched, continuation, .. } => {
+        Expr::LaunchContinue {
+            launched,
+            continuation,
+            ..
+        } => {
             fill_typed_maps(launched, rt, var_refs, apply_refs);
             fill_typed_maps(continuation, rt, var_refs, apply_refs);
         }
@@ -361,12 +388,19 @@ pub(crate) fn concretize_test_body(expr: &mut Expr) {
             }
             concretize_test_body(body);
         }
-        Expr::If { cond, then_branch, else_branch, .. } => {
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
             concretize_test_body(cond);
             concretize_test_body(then_branch);
             concretize_test_body(else_branch);
         }
-        Expr::Lambda { body, .. } | Expr::Trace { body, .. } | Expr::Annotate { expr: body, .. } => {
+        Expr::Lambda { body, .. }
+        | Expr::Trace { body, .. }
+        | Expr::Annotate { expr: body, .. } => {
             concretize_test_body(body);
         }
         Expr::Apply { callee, args, .. } => {
@@ -375,7 +409,9 @@ pub(crate) fn concretize_test_body(expr: &mut Expr) {
                 concretize_test_body(a);
             }
         }
-        Expr::Match { scrutinee, arms, .. } => {
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
             concretize_test_body(scrutinee);
             for arm in arms {
                 concretize_test_body(&mut arm.body);
@@ -391,7 +427,11 @@ pub(crate) fn concretize_test_body(expr: &mut Expr) {
                 concretize_test_body(f);
             }
         }
-        Expr::LaunchContinue { launched, continuation, .. } => {
+        Expr::LaunchContinue {
+            launched,
+            continuation,
+            ..
+        } => {
             concretize_test_body(launched);
             concretize_test_body(continuation);
         }
@@ -436,9 +476,14 @@ pub(crate) fn enrich_expr_from_side_maps(
     }
 
     // Overlay resolved_call from side map if present (Apply only).
-    if let Expr::Apply { resolved_call, span: apply_span, .. } = expr
-        && let Some(resolution) = resolutions.get(apply_span) {
-            *resolved_call = Some(Box::new(resolution.clone()));
+    if let Expr::Apply {
+        resolved_call,
+        span: apply_span,
+        ..
+    } = expr
+        && let Some(resolution) = resolutions.get(apply_span)
+    {
+        *resolved_call = Some(Box::new(resolution.clone()));
     }
 
     // Recurse into children.
@@ -449,7 +494,12 @@ pub(crate) fn enrich_expr_from_side_maps(
             }
             enrich_expr_from_side_maps(body, resolutions, expr_types);
         }
-        Expr::If { cond, then_branch, else_branch, .. } => {
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
             enrich_expr_from_side_maps(cond, resolutions, expr_types);
             enrich_expr_from_side_maps(then_branch, resolutions, expr_types);
             enrich_expr_from_side_maps(else_branch, resolutions, expr_types);
@@ -463,7 +513,9 @@ pub(crate) fn enrich_expr_from_side_maps(
                 enrich_expr_from_side_maps(arg, resolutions, expr_types);
             }
         }
-        Expr::Match { scrutinee, arms, .. } => {
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
             enrich_expr_from_side_maps(scrutinee, resolutions, expr_types);
             for arm in arms {
                 enrich_expr_from_side_maps(&mut arm.body, resolutions, expr_types);
@@ -491,7 +543,11 @@ pub(crate) fn enrich_expr_from_side_maps(
                 enrich_expr_from_side_maps(f, resolutions, expr_types);
             }
         }
-        Expr::LaunchContinue { launched, continuation, .. } => {
+        Expr::LaunchContinue {
+            launched,
+            continuation,
+            ..
+        } => {
             enrich_expr_from_side_maps(launched, resolutions, expr_types);
             enrich_expr_from_side_maps(continuation, resolutions, expr_types);
         }
@@ -556,7 +612,7 @@ pub(crate) fn make_def_entry_inner(
     resolved_targets: &HashMap<Span, cranelisp_types::FQSymbol>,
 ) -> cranelisp_types::ModuleEntry {
     use cranelisp_types::{
-        DefKind, MonoDefnVariant, MonoExpr, ModuleEntry, Scheme, UserFnState, Visibility,
+        DefKind, ModuleEntry, MonoDefnVariant, MonoExpr, Scheme, UserFnState, Visibility,
     };
     let param_count = defn.params().len();
     // `param_names` is `Vec<Symbol>`; the fused `params` tuples carry the
@@ -606,7 +662,10 @@ pub(crate) fn make_def_entry_inner(
         // → `Concrete`; no slot → the Pass-1 `NotDetermined` interim.
         kind: Box::new(DefKind::UserFn {
             fn_state: match slot {
-                Some(got_slot) => UserFnState::Concrete { got_slot, mode_summary: None },
+                Some(got_slot) => UserFnState::Concrete {
+                    got_slot,
+                    mode_summary: None,
+                },
                 None => UserFnState::NotDetermined,
             },
         }),
@@ -639,10 +698,16 @@ pub(crate) fn test_codegen_view(
 ) -> cranelisp_types::MonoDefnVariant {
     let empty_ctors = HashMap::new();
     let (var_refs, apply_refs) = resolved_targets_to_typed_maps(&variant.body, resolved_targets);
-    let body = cranelisp_types::MonoExpr::from_expr(&variant.body, &empty_ctors, &var_refs, &apply_refs)
-        .unwrap_or_else(|_| {
-            cranelisp_types::MonoExpr::lenient_from_expr(&variant.body, &empty_ctors, &var_refs, &apply_refs)
-        });
+    let body =
+        cranelisp_types::MonoExpr::from_expr(&variant.body, &empty_ctors, &var_refs, &apply_refs)
+            .unwrap_or_else(|_| {
+                cranelisp_types::MonoExpr::lenient_from_expr(
+                    &variant.body,
+                    &empty_ctors,
+                    &var_refs,
+                    &apply_refs,
+                )
+            });
     cranelisp_types::MonoDefnVariant {
         name: name.clone(),
         params: variant.params.iter().map(|(n, _)| n.clone()).collect(),
@@ -677,10 +742,15 @@ fn collect_call_carriers(
     out: &mut HashMap<Span, cranelisp_types::FQSymbol>,
 ) {
     if let Expr::Apply { callee, span, .. } = e
-        && let Expr::Var { name, span: cspan, .. } = &**callee
+        && let Expr::Var {
+            name, span: cspan, ..
+        } = &**callee
         && user_fns.contains(&name.as_ref())
     {
-        let fq = cranelisp_types::FQSymbol { module: module.clone(), symbol: name.clone() };
+        let fq = cranelisp_types::FQSymbol {
+            module: module.clone(),
+            symbol: name.clone(),
+        };
         out.insert(*span, fq.clone());
         out.insert(*cspan, fq);
     }
@@ -691,12 +761,19 @@ fn collect_call_carriers(
             }
             collect_call_carriers(body, module, user_fns, out);
         }
-        Expr::If { cond, then_branch, else_branch, .. } => {
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
             collect_call_carriers(cond, module, user_fns, out);
             collect_call_carriers(then_branch, module, user_fns, out);
             collect_call_carriers(else_branch, module, user_fns, out);
         }
-        Expr::Lambda { body, .. } | Expr::Trace { body, .. } | Expr::Annotate { expr: body, .. } => {
+        Expr::Lambda { body, .. }
+        | Expr::Trace { body, .. }
+        | Expr::Annotate { expr: body, .. } => {
             collect_call_carriers(body, module, user_fns, out);
         }
         Expr::Apply { callee, args, .. } => {
@@ -705,7 +782,9 @@ fn collect_call_carriers(
                 collect_call_carriers(a, module, user_fns, out);
             }
         }
-        Expr::Match { scrutinee, arms, .. } => {
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
             collect_call_carriers(scrutinee, module, user_fns, out);
             for arm in arms {
                 collect_call_carriers(&arm.body, module, user_fns, out);
@@ -721,7 +800,11 @@ fn collect_call_carriers(
                 collect_call_carriers(f, module, user_fns, out);
             }
         }
-        Expr::LaunchContinue { launched, continuation, .. } => {
+        Expr::LaunchContinue {
+            launched,
+            continuation,
+            ..
+        } => {
             collect_call_carriers(launched, module, user_fns, out);
             collect_call_carriers(continuation, module, user_fns, out);
         }
@@ -737,10 +820,7 @@ fn collect_call_carriers(
 /// (or the `BuiltinFn` arm's self-constructed FQ) instead, so this deliberately
 /// records ALL `vec-*` Var spans — a callee that also gets a carrier here is
 /// harmless (the keyed read agrees).
-fn collect_vec_query_value_carriers(
-    e: &Expr,
-    out: &mut HashMap<Span, cranelisp_types::FQSymbol>,
-) {
+fn collect_vec_query_value_carriers(e: &Expr, out: &mut HashMap<Span, cranelisp_types::FQSymbol>) {
     if let Expr::Var { name, span, .. } = e
         && matches!(name.as_ref(), "vec-get" | "vec-set" | "vec-push")
     {
@@ -759,12 +839,19 @@ fn collect_vec_query_value_carriers(
             }
             collect_vec_query_value_carriers(body, out);
         }
-        Expr::If { cond, then_branch, else_branch, .. } => {
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
             collect_vec_query_value_carriers(cond, out);
             collect_vec_query_value_carriers(then_branch, out);
             collect_vec_query_value_carriers(else_branch, out);
         }
-        Expr::Lambda { body, .. } | Expr::Trace { body, .. } | Expr::Annotate { expr: body, .. } => {
+        Expr::Lambda { body, .. }
+        | Expr::Trace { body, .. }
+        | Expr::Annotate { expr: body, .. } => {
             collect_vec_query_value_carriers(body, out);
         }
         Expr::Apply { callee, args, .. } => {
@@ -773,7 +860,9 @@ fn collect_vec_query_value_carriers(
                 collect_vec_query_value_carriers(a, out);
             }
         }
-        Expr::Match { scrutinee, arms, .. } => {
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
             collect_vec_query_value_carriers(scrutinee, out);
             for arm in arms {
                 collect_vec_query_value_carriers(&arm.body, out);
@@ -812,7 +901,9 @@ pub(crate) fn insert_user_fn_stub(table: &mut SymbolTable, name: &str, arity: us
             visibility: Visibility::Public,
             docstring: None,
             param_names: (0..arity).map(|i| Symbol::from(format!("p{i}"))).collect(),
-            kind: Box::new(DefKind::UserFn { fn_state: UserFnState::NotDetermined }),
+            kind: Box::new(DefKind::UserFn {
+                fn_state: UserFnState::NotDetermined,
+            }),
             callees: vec![],
             trait_origin: None,
             seq: 0,
@@ -946,9 +1037,7 @@ pub(crate) fn test_compile_program_and_run(
                 // types, then materialise each variant as its own entry.
                 let variants = match st.get(defn.name.as_ref()) {
                     Some(cranelisp_types::ModuleEntry::Def { kind, .. }) => {
-                        if let cranelisp_types::DefKind::Overloaded { variants } =
-                            kind.as_ref()
-                        {
+                        if let cranelisp_types::DefKind::Overloaded { variants } = kind.as_ref() {
                             variants.clone()
                         } else {
                             continue;
@@ -1002,13 +1091,7 @@ pub(crate) fn test_compile_program_and_run(
     }
 
     let mut jit = Jit::new_with_symbols(&[])?;
-    let _artifacts = compile_to_module(
-        module.clone(),
-        &names,
-        tables,
-        jit.jit_module(),
-        true,
-    )?;
+    let _artifacts = compile_to_module(module.clone(), &names, tables, jit.jit_module(), true)?;
     // S75 W2: `compile_to_module` finalizes the JIT internally. Entries
     // carry `got_slot: None` (intra-module direct FuncId calls; no GOT
     // reference emitted). The entry is the LAST zero-arg defn (matching the
@@ -1045,8 +1128,8 @@ pub(crate) fn test_compile_program_and_run(
 
 /// Build symbol tables with an Option type for ADT tests.
 pub(crate) fn option_type_tables() -> DashMap<ModuleFullPath, SymbolTable> {
-    use cranelisp_types::{DefKind, FQTypeName, ModuleEntry, Scheme, Type,
-        TypeDefInfo, TypeName, Visibility,
+    use cranelisp_types::{
+        DefKind, FQTypeName, ModuleEntry, Scheme, Type, TypeDefInfo, TypeName, Visibility,
     };
 
     let module = ModuleFullPath::from("main");
@@ -1082,7 +1165,9 @@ pub(crate) fn option_type_tables() -> DashMap<ModuleFullPath, SymbolTable> {
         },
         visibility: Visibility::Public,
         docstring: None,
-        param_names: (0..field_count).map(|i| Symbol::from(format!("f{i}"))).collect(),
+        param_names: (0..field_count)
+            .map(|i| Symbol::from(format!("f{i}")))
+            .collect(),
         kind: Box::new(DefKind::Constructor {
             got_slot: 0,
             type_name: fqtn.clone(),
@@ -1102,12 +1187,19 @@ pub(crate) fn option_type_tables() -> DashMap<ModuleFullPath, SymbolTable> {
     };
 
     // None: nullary; scheme is the bare ADT.
-    st.insert(Symbol::from("None"), ctor_def(0, 0, Type::ADT(fqtn.clone(), vec![])));
+    st.insert(
+        Symbol::from("None"),
+        ctor_def(0, 0, Type::ADT(fqtn.clone(), vec![])),
+    );
 
     // Some: one Int field; scheme is Int -> Option.
     st.insert(
         Symbol::from("Some"),
-        ctor_def(1, 1, Type::Fn(vec![Type::Int], Box::new(Type::ADT(fqtn.clone(), vec![])))),
+        ctor_def(
+            1,
+            1,
+            Type::Fn(vec![Type::Int], Box::new(Type::ADT(fqtn.clone(), vec![]))),
+        ),
     );
 
     tables.insert(module, st);
@@ -1139,7 +1231,7 @@ pub(crate) fn table_with_def_and_slot(
     slot: usize,
 ) -> DashMap<ModuleFullPath, SymbolTable> {
     use cranelisp_types::{
-        DefKind, MonoDefnVariant, MonoExpr, ModuleEntry, Scheme, UserFnState, Visibility,
+        DefKind, ModuleEntry, MonoDefnVariant, MonoExpr, Scheme, UserFnState, Visibility,
     };
     let tables = DashMap::new();
     let mut st = SymbolTable::new(module.clone());
@@ -1162,8 +1254,13 @@ pub(crate) fn table_with_def_and_slot(
     });
     let codegen_view = variant.as_ref().map(|v| {
         let (var_refs, apply_refs) = resolved_targets_to_typed_maps(&v.body, &HashMap::new());
-        let body = MonoExpr::from_expr(&v.body, &std::collections::HashMap::new(), &var_refs, &apply_refs)
-            .expect("test fixture body concretizes for the codegen view (FIXME 0391)");
+        let body = MonoExpr::from_expr(
+            &v.body,
+            &std::collections::HashMap::new(),
+            &var_refs,
+            &apply_refs,
+        )
+        .expect("test fixture body concretizes for the codegen view (FIXME 0391)");
         MonoDefnVariant {
             name: defn.name.clone(),
             params: v.params.iter().map(|(n, _)| n.clone()).collect(),
@@ -1187,7 +1284,10 @@ pub(crate) fn table_with_def_and_slot(
             docstring: None,
             param_names,
             kind: Box::new(DefKind::UserFn {
-                fn_state: UserFnState::Concrete { got_slot: slot, mode_summary: None },
+                fn_state: UserFnState::Concrete {
+                    got_slot: slot,
+                    mode_summary: None,
+                },
             }),
             callees: vec![],
             trait_origin: None,
@@ -1209,7 +1309,11 @@ pub(crate) fn make_int_defn(name: &str, value: i64) -> Defn {
         docstring: None,
         variants: vec![DefnVariant {
             params: vec![],
-            body: Expr::IntLit { value, span: Span::SYNTHETIC, inferred_type: None },
+            body: Expr::IntLit {
+                value,
+                span: Span::SYNTHETIC,
+                inferred_type: None,
+            },
             span: Span::SYNTHETIC,
         }],
         visibility: Visibility::Public,
@@ -1249,10 +1353,13 @@ pub(crate) fn insert_inline_vec_query_entry(
         Symbol::from(name),
         ModuleEntry::def(
             scheme,
-            DefKind::Primitive { body: PrimitiveBody::Inline, mode_summary: None },
+            DefKind::Primitive {
+                body: PrimitiveBody::Inline,
+                mode_summary: None,
+            },
         )
-            .param_names(param_names.iter().map(|s| Symbol::from(*s)).collect())
-            .build(),
+        .param_names(param_names.iter().map(|s| Symbol::from(*s)).collect())
+        .build(),
     );
 }
 
@@ -1332,8 +1439,14 @@ pub(crate) fn run_vec_query_value_consumer(consumer: Defn) -> i64 {
     let got_user_name = crate::compiler::got_data_symbol_name(&user);
     let got_prims_name = crate::compiler::got_data_symbol_name(&prims);
     let (got_user_base, got_prims_base) = (
-        tables.get(&user).map(|st| st.got.base_ptr()).expect("user table"),
-        tables.get(&prims).map(|st| st.got.base_ptr()).expect("prims table"),
+        tables
+            .get(&user)
+            .map(|st| st.got.base_ptr())
+            .expect("user table"),
+        tables
+            .get(&prims)
+            .map(|st| st.got.base_ptr())
+            .expect("prims table"),
     );
     let extras: Vec<(&str, *const u8)> = vec![
         (got_user_name.as_str(), got_user_base),
@@ -1353,7 +1466,10 @@ pub(crate) fn run_vec_query_value_consumer(consumer: Defn) -> i64 {
     let ptr = jit
         .get_ptr_by_name(&consumer_name, 0)
         .expect("finalize consumer");
-    assert!(!ptr.is_null(), "consumer must finalize to a non-null fn ptr");
+    assert!(
+        !ptr.is_null(),
+        "consumer must finalize to a non-null fn ptr"
+    );
     let _ = cranelisp_intrinsics::panic::take_runtime_error();
     let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
     let result = func();
@@ -1388,7 +1504,12 @@ pub(crate) fn vec_int_lit(elements: &[i64], span_base: u32) -> Expr {
 /// `(let [f <prim>] (f <args...>))` consumer fixture: the vec-query primitive
 /// referenced as a VALUE (resolved_call: None — the fn-as-value fall-through
 /// in `compile_var`), then applied through the local closure binding.
-pub(crate) fn vec_query_value_consumer(prim: &str, prim_ty: Type, args: Vec<Expr>, result_ty: Type) -> Defn {
+pub(crate) fn vec_query_value_consumer(
+    prim: &str,
+    prim_ty: Type,
+    args: Vec<Expr>,
+    result_ty: Type,
+) -> Defn {
     let body = Expr::Let {
         bindings: vec![(
             Symbol::from("f"),

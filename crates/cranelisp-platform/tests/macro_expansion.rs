@@ -8,7 +8,7 @@
 //! *compilation contract* of the arm surface is in `macro_full_arm_compile.rs`.
 
 use cranelisp_platform::{
-    set_global_schema, CLAdt, CLAdtType, CLInt, HostContext, Schema, SchedulingClass,
+    CLAdt, CLAdtType, CLInt, HostContext, SchedulingClass, Schema, set_global_schema,
 };
 use std::sync::atomic::Ordering;
 
@@ -96,9 +96,8 @@ fn macro_exports_got_in_manifest_order() {
     assert_eq!(manifest.function_count, 2);
 
     // GOT slot i must equal manifest functions[i].ptr — one declared order.
-    let functions = unsafe {
-        std::slice::from_raw_parts(manifest.functions, manifest.function_count)
-    };
+    let functions =
+        unsafe { std::slice::from_raw_parts(manifest.functions, manifest.function_count) };
     for (i, f) in functions.iter().enumerate() {
         let got_ptr = __CRANELISP_PLATFORM_GOT[i].load(Ordering::Acquire) as *const u8;
         assert_eq!(

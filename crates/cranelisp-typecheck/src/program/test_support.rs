@@ -14,9 +14,9 @@
 use super::*;
 
 pub(crate) use crate::checker::TestFixture;
-pub(crate) use cranelisp_types::{CompileContext, DefnVariant, Expr, FQSymbol, FQTypeName,
-    ModuleEntry, ModuleFullPath, MonoDefnVariant, MonoExpr, Symbol,
-    TraitImpl, TraitName, TypeExpr, TypeName, Visibility,
+pub(crate) use cranelisp_types::{
+    CompileContext, DefnVariant, Expr, FQSymbol, FQTypeName, ModuleEntry, ModuleFullPath,
+    MonoDefnVariant, MonoExpr, Symbol, TraitImpl, TraitName, TypeExpr, TypeName, Visibility,
 };
 
 /// Seed glob-import edges from `source` into the fixture's CURRENT module,
@@ -34,7 +34,10 @@ pub(crate) fn seed_glob_import(tc: &mut TestFixture, source: &ModuleFullPath) {
         tc.symbol_table_mut().insert(
             name.clone(),
             ModuleEntry::Import {
-                source: FQSymbol { module: source.clone(), symbol: name },
+                source: FQSymbol {
+                    module: source.clone(),
+                    symbol: name,
+                },
                 visibility: Visibility::Public,
             },
         );
@@ -80,7 +83,11 @@ pub(crate) fn make_defn(
     visibility: Visibility,
     span: Span,
 ) -> Defn {
-    assert_eq!(params.len(), param_annotations.len(), "params/annotations must lockstep");
+    assert_eq!(
+        params.len(),
+        param_annotations.len(),
+        "params/annotations must lockstep"
+    );
     let fused: Vec<(Symbol, Option<TypeExpr>)> = params
         .into_iter()
         .zip(param_annotations.into_iter())
@@ -140,7 +147,12 @@ pub(crate) fn walk_inferred_types(expr: &Expr, any_typed: &mut bool, all_resolve
                 walk_inferred_types(a, any_typed, all_resolved);
             }
         }
-        Expr::If { cond, then_branch, else_branch, .. } => {
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
             walk_inferred_types(cond, any_typed, all_resolved);
             walk_inferred_types(then_branch, any_typed, all_resolved);
             walk_inferred_types(else_branch, any_typed, all_resolved);
@@ -154,7 +166,9 @@ pub(crate) fn walk_inferred_types(expr: &Expr, any_typed: &mut bool, all_resolve
         Expr::Lambda { body, .. } => {
             walk_inferred_types(body, any_typed, all_resolved);
         }
-        Expr::Match { scrutinee, arms, .. } => {
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
             walk_inferred_types(scrutinee, any_typed, all_resolved);
             for arm in arms {
                 walk_inferred_types(&arm.body, any_typed, all_resolved);
@@ -184,18 +198,18 @@ pub(crate) fn walk_inferred_types(expr: &Expr, any_typed: &mut bool, all_resolve
 /// Register a minimal Num trait with `+` method, plus an impl for Int,
 /// so tests using `(+ x y)` work after Decision 17 elimination.
 pub(crate) fn register_num_trait_inline(tc: &mut TestFixture) {
-    let num_decl = crate::traits::test_helpers::parse_trait_decl(
-        "(deftrait Num (+ [lhs rhs] self))",
-    );
+    let num_decl =
+        crate::traits::test_helpers::parse_trait_decl("(deftrait Num (+ [lhs rhs] self))");
     tc.register_trait_decl_self(&num_decl).unwrap();
 
     // impl Num for Int: + → add-i64
     let impl_ = TraitImpl {
         head_con_var: None,
         trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Num")),
-        target: cranelisp_types::TypeExpr::Named(
-            cranelisp_types::TypeRef::new(None, TypeName::from("Int")),
-        ),
+        target: cranelisp_types::TypeExpr::Named(cranelisp_types::TypeRef::new(
+            None,
+            TypeName::from("Int"),
+        )),
         type_constraints: vec![],
         methods: vec![Defn {
             name: Symbol::from("+"),
@@ -257,19 +271,23 @@ pub(crate) fn all_var_carriers(expr: &Expr) -> HashMap<Span, cranelisp_types::Va
 /// local / ViaCallee carries `None`) reads unchanged: `VarRef::Global(fq)` /
 /// `ApplyRef::Dispatch(fq)` → `Some(fq)`; `VarRef::Local` / `ApplyRef::ViaCallee`
 /// → `None`.
-pub(crate) fn collect_resolved_targets(
-    e: &MonoExpr,
-    out: &mut Vec<(String, Option<FQSymbol>)>,
-) {
+pub(crate) fn collect_resolved_targets(e: &MonoExpr, out: &mut Vec<(String, Option<FQSymbol>)>) {
     match e {
-        MonoExpr::Var { name, resolution, .. } => {
+        MonoExpr::Var {
+            name, resolution, ..
+        } => {
             let rt = match resolution {
                 cranelisp_types::VarRef::Global(fq) => Some(fq.clone()),
                 cranelisp_types::VarRef::Local { .. } => None,
             };
             out.push((name.as_ref().to_string(), rt));
         }
-        MonoExpr::Apply { callee, args, dispatch, .. } => {
+        MonoExpr::Apply {
+            callee,
+            args,
+            dispatch,
+            ..
+        } => {
             let rt = match dispatch {
                 cranelisp_types::ApplyRef::Dispatch(fq) => Some(fq.clone()),
                 cranelisp_types::ApplyRef::ViaCallee => None,
@@ -280,7 +298,12 @@ pub(crate) fn collect_resolved_targets(
                 collect_resolved_targets(a, out);
             }
         }
-        MonoExpr::If { cond, then_branch, else_branch, .. } => {
+        MonoExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
             collect_resolved_targets(cond, out);
             collect_resolved_targets(then_branch, out);
             collect_resolved_targets(else_branch, out);
@@ -292,7 +315,9 @@ pub(crate) fn collect_resolved_targets(
             collect_resolved_targets(body, out);
         }
         MonoExpr::Lambda { body, .. } => collect_resolved_targets(body, out),
-        MonoExpr::Match { scrutinee, arms, .. } => {
+        MonoExpr::Match {
+            scrutinee, arms, ..
+        } => {
             collect_resolved_targets(scrutinee, out);
             for arm in arms {
                 collect_resolved_targets(&arm.body, out);
@@ -304,7 +329,10 @@ pub(crate) fn collect_resolved_targets(
 
 pub(crate) fn main_codegen_view_of(tc: &TestFixture, name: &str) -> MonoDefnVariant {
     match tc.symbol_table().get(name) {
-        Some(ModuleEntry::Def { codegen_view: Some(v), .. }) => v.clone(),
+        Some(ModuleEntry::Def {
+            codegen_view: Some(v),
+            ..
+        }) => v.clone(),
         other => panic!("{name} has no codegen_view: {other:?}"),
     }
 }
@@ -328,7 +356,13 @@ pub(crate) fn mono_instance_view_containing(tc: &TestFixture, substr: &str) -> M
         .all_symbols()
         .find(|(n, e)| {
             n.as_ref().contains(substr)
-                && matches!(e, ModuleEntry::Def { codegen_view: Some(_), .. })
+                && matches!(
+                    e,
+                    ModuleEntry::Def {
+                        codegen_view: Some(_),
+                        ..
+                    }
+                )
         })
         .map(|(n, _)| n.as_ref().to_string())
         .unwrap_or_else(|| panic!("no mono instance with codegen_view contains `{substr}`"));
@@ -338,8 +372,14 @@ pub(crate) fn mono_instance_view_containing(tc: &TestFixture, substr: &str) -> M
 /// Walk a `MonoExpr` collecting `(name, VarRef)` for every `Var` node — the
 /// typed-carrier sibling of `collect_resolved_targets` (S114 binder-provenance
 /// pins).
-pub(crate) fn collect_var_resolutions(e: &MonoExpr, out: &mut Vec<(String, cranelisp_types::VarRef)>) {
-    if let MonoExpr::Var { name, resolution, .. } = e {
+pub(crate) fn collect_var_resolutions(
+    e: &MonoExpr,
+    out: &mut Vec<(String, cranelisp_types::VarRef)>,
+) {
+    if let MonoExpr::Var {
+        name, resolution, ..
+    } = e
+    {
         out.push((name.as_ref().to_string(), resolution.clone()));
     }
     match e {
@@ -349,7 +389,12 @@ pub(crate) fn collect_var_resolutions(e: &MonoExpr, out: &mut Vec<(String, crane
                 collect_var_resolutions(a, out);
             }
         }
-        MonoExpr::If { cond, then_branch, else_branch, .. } => {
+        MonoExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
             collect_var_resolutions(cond, out);
             collect_var_resolutions(then_branch, out);
             collect_var_resolutions(else_branch, out);
@@ -361,7 +406,9 @@ pub(crate) fn collect_var_resolutions(e: &MonoExpr, out: &mut Vec<(String, crane
             collect_var_resolutions(body, out);
         }
         MonoExpr::Lambda { body, .. } => collect_var_resolutions(body, out),
-        MonoExpr::Match { scrutinee, arms, .. } => {
+        MonoExpr::Match {
+            scrutinee, arms, ..
+        } => {
             collect_var_resolutions(scrutinee, out);
             for arm in arms {
                 collect_var_resolutions(&arm.body, out);
@@ -373,14 +420,19 @@ pub(crate) fn collect_var_resolutions(e: &MonoExpr, out: &mut Vec<(String, crane
 
 /// The enclosing fn's own storage FQ, for the "must NOT carry this" asserts.
 pub(crate) fn enclosing_test_fq(name: &str) -> FQSymbol {
-    FQSymbol { module: ModuleFullPath::from("test"), symbol: Symbol::from(name) }
+    FQSymbol {
+        module: ModuleFullPath::from("test"),
+        symbol: Symbol::from(name),
+    }
 }
 
 /// Walk a `MonoExpr` collecting every reachable `MonoMatchArm.resolved_ctor`
 /// (source order).
 pub(crate) fn collect_resolved_ctors(e: &MonoExpr, out: &mut Vec<Option<FQSymbol>>) {
     match e {
-        MonoExpr::Match { scrutinee, arms, .. } => {
+        MonoExpr::Match {
+            scrutinee, arms, ..
+        } => {
             collect_resolved_ctors(scrutinee, out);
             for arm in arms {
                 out.push(arm.resolved_ctor.clone());
@@ -393,7 +445,12 @@ pub(crate) fn collect_resolved_ctors(e: &MonoExpr, out: &mut Vec<Option<FQSymbol
                 collect_resolved_ctors(a, out);
             }
         }
-        MonoExpr::If { cond, then_branch, else_branch, .. } => {
+        MonoExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
             collect_resolved_ctors(cond, out);
             collect_resolved_ctors(then_branch, out);
             collect_resolved_ctors(else_branch, out);
@@ -423,7 +480,11 @@ pub(crate) fn mono_match_arm_ctor(
         if !name.as_ref().contains(mangle_frag) {
             continue;
         }
-        if let ModuleEntry::Def { codegen_view: Some(v), .. } = entry {
+        if let ModuleEntry::Def {
+            codegen_view: Some(v),
+            ..
+        } = entry
+        {
             let mut ctors = Vec::new();
             collect_resolved_ctors(&v.body, &mut ctors);
             if let Some(first) = ctors.into_iter().next() {
@@ -443,11 +504,7 @@ pub(crate) fn test_ctx() -> CompileContext {
 }
 
 /// Helper to build a multi-sig Defn.
-pub(crate) fn make_multi_defn(
-    name: &str,
-    variants: Vec<DefnVariant>,
-    span: Span,
-) -> Defn {
+pub(crate) fn make_multi_defn(name: &str, variants: Vec<DefnVariant>, span: Span) -> Defn {
     Defn {
         name: Symbol::from(name),
         docstring: None,
@@ -622,7 +679,12 @@ pub(crate) fn collect_inferred_types(expr: &Expr, out: &mut Vec<(Span, Option<Ty
             }
             collect_inferred_types(body, out);
         }
-        Expr::If { cond, then_branch, else_branch, .. } => {
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
             collect_inferred_types(cond, out);
             collect_inferred_types(then_branch, out);
             collect_inferred_types(else_branch, out);
@@ -630,7 +692,9 @@ pub(crate) fn collect_inferred_types(expr: &Expr, out: &mut Vec<(Span, Option<Ty
         Expr::Lambda { body, .. } => {
             collect_inferred_types(body, out);
         }
-        Expr::Match { scrutinee, arms, .. } => {
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
             collect_inferred_types(scrutinee, out);
             for arm in arms {
                 collect_inferred_types(&arm.body, out);
@@ -653,7 +717,14 @@ pub(crate) fn collect_inferred_types(expr: &Expr, out: &mut Vec<(Span, Option<Ty
 
 /// Find the resolved_call on an Apply node with a given span.
 pub(crate) fn find_resolved_call(expr: &Expr, target_span: Span) -> Option<ResolvedCall> {
-    if let Expr::Apply { resolved_call, span, callee, args, .. } = expr {
+    if let Expr::Apply {
+        resolved_call,
+        span,
+        callee,
+        args,
+        ..
+    } = expr
+    {
         if *span == target_span {
             return resolved_call.as_ref().map(|rc| *rc.clone());
         }
@@ -675,16 +746,21 @@ pub(crate) fn find_resolved_call(expr: &Expr, target_span: Span) -> Option<Resol
             }
             find_resolved_call(body, target_span)
         }
-        Expr::If { cond, then_branch, else_branch, .. } => {
-            find_resolved_call(cond, target_span)
-                .or_else(|| find_resolved_call(then_branch, target_span))
-                .or_else(|| find_resolved_call(else_branch, target_span))
-        }
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => find_resolved_call(cond, target_span)
+            .or_else(|| find_resolved_call(then_branch, target_span))
+            .or_else(|| find_resolved_call(else_branch, target_span)),
         Expr::Lambda { body, .. } => find_resolved_call(body, target_span),
-        Expr::Match { scrutinee, arms, .. } => {
-            find_resolved_call(scrutinee, target_span)
-                .or_else(|| arms.iter().find_map(|arm| find_resolved_call(&arm.body, target_span)))
-        }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => find_resolved_call(scrutinee, target_span).or_else(|| {
+            arms.iter()
+                .find_map(|arm| find_resolved_call(&arm.body, target_span))
+        }),
         Expr::Annotate { expr: inner, .. } | Expr::Trace { body: inner, .. } => {
             find_resolved_call(inner, target_span)
         }
@@ -701,7 +777,22 @@ pub(crate) fn make_add_multi_sig_int_float() -> Defn {
         "add",
         vec![
             DefnVariant {
-                params: vec![(Symbol::from("a"), Some(TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))))), (Symbol::from("b"), Some(TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int")))))],
+                params: vec![
+                    (
+                        Symbol::from("a"),
+                        Some(TypeExpr::Named(cranelisp_types::TypeRef::new(
+                            None,
+                            TypeName::from("Int"),
+                        ))),
+                    ),
+                    (
+                        Symbol::from("b"),
+                        Some(TypeExpr::Named(cranelisp_types::TypeRef::new(
+                            None,
+                            TypeName::from("Int"),
+                        ))),
+                    ),
+                ],
                 body: Expr::Apply {
                     callee: Box::new(Expr::var(Symbol::from("add-i64"), span(510, 517))),
                     args: vec![
@@ -715,7 +806,22 @@ pub(crate) fn make_add_multi_sig_int_float() -> Defn {
                 span: span(505, 523),
             },
             DefnVariant {
-                params: vec![(Symbol::from("a"), Some(TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Float"))))), (Symbol::from("b"), Some(TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Float")))))],
+                params: vec![
+                    (
+                        Symbol::from("a"),
+                        Some(TypeExpr::Named(cranelisp_types::TypeRef::new(
+                            None,
+                            TypeName::from("Float"),
+                        ))),
+                    ),
+                    (
+                        Symbol::from("b"),
+                        Some(TypeExpr::Named(cranelisp_types::TypeRef::new(
+                            None,
+                            TypeName::from("Float"),
+                        ))),
+                    ),
+                ],
                 body: Expr::Apply {
                     callee: Box::new(Expr::var(Symbol::from("add-f64"), span(530, 537))),
                     args: vec![
@@ -803,7 +909,11 @@ pub(crate) fn assert_check_rejects(src: &str) {
     let mut tc = tc_with_prims();
     let sexps = cranelisp_frontend::parse(src).expect("parse must succeed");
     let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms must succeed");
-    let result = tc.check(&program, &test_ctx(), cranelisp_types::ModuleStrategy::Additive);
+    let result = tc.check(
+        &program,
+        &test_ctx(),
+        cranelisp_types::ModuleStrategy::Additive,
+    );
     assert!(result.is_err(), "expected a type error for {src:?}, got Ok");
 }
 
@@ -854,8 +964,14 @@ pub(crate) fn identity_defn() -> TopLevel {
 /// `(identity None)` — an `Apply` producing the unpinned `(Option a)` value.
 pub(crate) fn identity_none(call_span: Span) -> Expr {
     Expr::Apply {
-        callee: Box::new(Expr::var(Symbol::from("identity"), span(call_span.start, call_span.start + 8))),
-        args: vec![Expr::var(Symbol::from("None"), span(call_span.start + 9, call_span.end))],
+        callee: Box::new(Expr::var(
+            Symbol::from("identity"),
+            span(call_span.start, call_span.start + 8),
+        )),
+        args: vec![Expr::var(
+            Symbol::from("None"),
+            span(call_span.start + 9, call_span.end),
+        )],
         span: call_span,
         resolved_call: None,
         inferred_type: None,
@@ -871,7 +987,11 @@ pub(crate) fn consume_defn() -> TopLevel {
         "consume",
         vec![Symbol::from("y")],
         vec![None],
-        Expr::IntLit { value: 0, span: span(30, 31), inferred_type: None },
+        Expr::IntLit {
+            value: 0,
+            span: span(30, 31),
+            inferred_type: None,
+        },
         Visibility::Public,
         span(28, 32),
     ))
@@ -898,7 +1018,12 @@ pub(crate) fn assert_ambiguous(body: Expr, what: &str) {
     let mut tc = tc_with_prims();
     let ctx = cf_test_ctx();
     let m = TopLevel::Defn(make_defn(
-        "m", vec![], vec![], body, Visibility::Public, span(100, 200),
+        "m",
+        vec![],
+        vec![],
+        body,
+        Visibility::Public,
+        span(100, 200),
     ));
     let result = tc.check(
         &[option_typedef(), identity_defn(), consume_defn(), m],
@@ -944,7 +1069,13 @@ pub(crate) fn check_src(tc: &mut TestFixture, src: &str) {
 /// Collect the first `SigDispatch` mangled name found on any Apply node in
 /// a body Expr tree (helper for the 0488 collection-shape tests).
 pub(crate) fn first_sig_dispatch(expr: &Expr) -> Option<String> {
-    if let Expr::Apply { callee, args, resolved_call, .. } = expr {
+    if let Expr::Apply {
+        callee,
+        args,
+        resolved_call,
+        ..
+    } = expr
+    {
         if let Some(ResolvedCall::SigDispatch { mangled_name }) = resolved_call.as_deref() {
             return Some(mangled_name.as_ref().to_string());
         }
@@ -966,10 +1097,14 @@ pub(crate) fn body_has_var_named(expr: &Expr, target: &str) -> bool {
     match expr {
         Expr::Var { name, .. } => name.as_ref() == target,
         Expr::Apply { callee, args, .. } => {
-            body_has_var_named(callee, target)
-                || args.iter().any(|a| body_has_var_named(a, target))
+            body_has_var_named(callee, target) || args.iter().any(|a| body_has_var_named(a, target))
         }
-        Expr::If { cond, then_branch, else_branch, .. } => {
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
             body_has_var_named(cond, target)
                 || body_has_var_named(then_branch, target)
                 || body_has_var_named(else_branch, target)
@@ -981,9 +1116,7 @@ pub(crate) fn body_has_var_named(expr: &Expr, target: &str) -> bool {
         Expr::Lambda { body, .. }
         | Expr::Annotate { expr: body, .. }
         | Expr::Trace { body, .. } => body_has_var_named(body, target),
-        Expr::VecLit { elements, .. } => {
-            elements.iter().any(|e| body_has_var_named(e, target))
-        }
+        Expr::VecLit { elements, .. } => elements.iter().any(|e| body_has_var_named(e, target)),
         _ => false,
     }
 }
@@ -991,7 +1124,9 @@ pub(crate) fn body_has_var_named(expr: &Expr, target: &str) -> bool {
 /// The stored annotated body of `name` in the fixture's current module.
 pub(crate) fn stored_body(tc: &TestFixture, name: &str) -> Expr {
     match tc.symbol_table().get(name) {
-        Some(ModuleEntry::Def { ast: Some(variant), .. }) => variant.body.clone(),
+        Some(ModuleEntry::Def {
+            ast: Some(variant), ..
+        }) => variant.body.clone(),
         other => panic!("`{name}` has no stored annotated body: {other:?}"),
     }
 }

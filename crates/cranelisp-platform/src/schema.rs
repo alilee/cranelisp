@@ -152,8 +152,9 @@ impl FieldType {
     /// The four scalar leaf FQ names (their layout is the ABI).
     fn scalar_name(name: &str) -> Option<FieldType> {
         match name {
-            "primitives/Int" | "primitives/Bool" | "primitives/Float"
-            | "primitives/String" => Some(FieldType::Scalar(name.to_string())),
+            "primitives/Int" | "primitives/Bool" | "primitives/Float" | "primitives/String" => {
+                Some(FieldType::Scalar(name.to_string()))
+            }
             _ => None,
         }
     }
@@ -167,26 +168,58 @@ impl FieldType {
 /// diagnostics stay precise to make such drift fast to find.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SchemaParseError {
-    UnexpectedEof { expected: &'static str, at: ParseLoc },
-    UnexpectedToken { found: String, expected: &'static str, at: ParseLoc },
-    UnclosedParen { opened_at: ParseLoc },
-    ExtraCloseParen { at: ParseLoc },
+    UnexpectedEof {
+        expected: &'static str,
+        at: ParseLoc,
+    },
+    UnexpectedToken {
+        found: String,
+        expected: &'static str,
+        at: ParseLoc,
+    },
+    UnclosedParen {
+        opened_at: ParseLoc,
+    },
+    ExtraCloseParen {
+        at: ParseLoc,
+    },
     /// The outer list was not `(schema …)`.
-    MissingSchemaKeyword { found: String, at: ParseLoc },
+    MissingSchemaKeyword {
+        found: String,
+        at: ParseLoc,
+    },
     /// A constructor's tag token was not a non-negative integer.
-    InvalidTag { found: String, at: ParseLoc },
+    InvalidTag {
+        found: String,
+        at: ParseLoc,
+    },
     /// A field-type token was empty or otherwise unrenderable.
-    InvalidFieldType { found: String, at: ParseLoc },
-    DuplicateTypeKey { key: String, at: ParseLoc, first_at: ParseLoc },
+    InvalidFieldType {
+        found: String,
+        at: ParseLoc,
+    },
+    DuplicateTypeKey {
+        key: String,
+        at: ParseLoc,
+        first_at: ParseLoc,
+    },
 }
 
 impl std::fmt::Display for SchemaParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::UnexpectedEof { expected, at } => {
-                write!(f, "unexpected EOF (expected {expected}) at line {}, col {}", at.line, at.col)
+                write!(
+                    f,
+                    "unexpected EOF (expected {expected}) at line {}, col {}",
+                    at.line, at.col
+                )
             }
-            Self::UnexpectedToken { found, expected, at } => write!(
+            Self::UnexpectedToken {
+                found,
+                expected,
+                at,
+            } => write!(
                 f,
                 "unexpected token '{found}' (expected {expected}) at line {}, col {}",
                 at.line, at.col
@@ -266,7 +299,11 @@ impl Schema {
                     parser.bump();
                     break;
                 }
-                None => return Err(SchemaParseError::UnclosedParen { opened_at: outer_open }),
+                None => {
+                    return Err(SchemaParseError::UnclosedParen {
+                        opened_at: outer_open,
+                    });
+                }
                 _ => {}
             }
             let (shape, at) = parser.parse_type_entry()?;
@@ -336,7 +373,10 @@ impl Schema {
     ) -> Option<&FieldType> {
         let shape = self.lookup_type(type_key)?;
         let ctor = self.select_ctor(shape, ctor_name)?;
-        ctor.fields.iter().find(|f| f.name == field_name).map(|f| &f.field_type)
+        ctor.fields
+            .iter()
+            .find(|f| f.name == field_name)
+            .map(|f| &f.field_type)
     }
 
     /// Constructor names for a type key (a single self-named ctor for a
@@ -353,11 +393,7 @@ impl Schema {
 
     /// Pick the constructor named by `ctor_name`, defaulting to the sole
     /// constructor of a product when `ctor_name` is `None`.
-    fn select_ctor<'s>(
-        &self,
-        shape: &'s TypeShape,
-        ctor_name: Option<&str>,
-    ) -> Option<&'s Ctor> {
+    fn select_ctor<'s>(&self, shape: &'s TypeShape, ctor_name: Option<&str>) -> Option<&'s Ctor> {
         match ctor_name {
             Some(cn) => shape.ctors.iter().find(|c| c.name == cn),
             None if shape.ctors.len() == 1 => Some(&shape.ctors[0]),
@@ -385,11 +421,20 @@ struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     fn new(src: &'a str) -> Self {
-        Parser { src: src.as_bytes(), pos: 0, line: 1, col: 1 }
+        Parser {
+            src: src.as_bytes(),
+            pos: 0,
+            line: 1,
+            col: 1,
+        }
     }
 
     fn loc(&self) -> ParseLoc {
-        ParseLoc { line: self.line, col: self.col, offset: self.pos }
+        ParseLoc {
+            line: self.line,
+            col: self.col,
+            offset: self.pos,
+        }
     }
 
     fn at_eof(&self) -> bool {
@@ -535,10 +580,13 @@ impl<'a> Parser<'a> {
         let open = self.expect_lparen("'(' starting a constructor")?;
         let name = self.parse_atom("a constructor name")?;
         let tag_atom = self.parse_atom("a constructor tag")?;
-        let tag: u32 = tag_atom.text.parse().map_err(|_| SchemaParseError::InvalidTag {
-            found: tag_atom.text.clone(),
-            at: tag_atom.at,
-        })?;
+        let tag: u32 = tag_atom
+            .text
+            .parse()
+            .map_err(|_| SchemaParseError::InvalidTag {
+                found: tag_atom.text.clone(),
+                at: tag_atom.at,
+            })?;
 
         // Field list `(field…)`.
         let fields_open = self.expect_lparen("'(' starting the field list")?;
@@ -550,7 +598,11 @@ impl<'a> Parser<'a> {
                     self.bump();
                     break;
                 }
-                None => return Err(SchemaParseError::UnclosedParen { opened_at: fields_open }),
+                None => {
+                    return Err(SchemaParseError::UnclosedParen {
+                        opened_at: fields_open,
+                    });
+                }
                 _ => {}
             }
             fields.push(self.parse_field()?);
@@ -573,7 +625,11 @@ impl<'a> Parser<'a> {
             }
         }
 
-        Ok(Ctor { name: name.text, tag, fields })
+        Ok(Ctor {
+            name: name.text,
+            tag,
+            fields,
+        })
     }
 
     /// Parse one `(name fieldtype)` field pair. Cursor at the `(`.
@@ -596,7 +652,10 @@ impl<'a> Parser<'a> {
                 });
             }
         }
-        Ok(Field { name: name.text, field_type })
+        Ok(Field {
+            name: name.text,
+            field_type,
+        })
     }
 
     /// Parse a [`FieldType`]: a bare FQ name (scalar or zero-arg ADT) or an
@@ -623,10 +682,13 @@ impl<'a> Parser<'a> {
                     args.push(self.parse_field_type()?);
                 }
                 if head.text == "Vec" {
-                    let elem = args.into_iter().next().ok_or(SchemaParseError::InvalidFieldType {
-                        found: "(Vec)".to_string(),
-                        at: open,
-                    })?;
+                    let elem =
+                        args.into_iter()
+                            .next()
+                            .ok_or(SchemaParseError::InvalidFieldType {
+                                found: "(Vec)".to_string(),
+                                at: open,
+                            })?;
                     Ok(FieldType::Vec(Box::new(elem)))
                 } else {
                     Ok(FieldType::Adt(head.text, args))

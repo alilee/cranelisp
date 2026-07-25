@@ -2,6 +2,8 @@
 ; Sprint 45 delivers PlatformRegistry (Step 8) and error
 ; cascade with REPL recovery (Step 9).
 
+(import [primitives [bind str-concat]])
+
 ; Arithmetic works through the scheduler
 (+ 1 2)
 (* 6 7)

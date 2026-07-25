@@ -58,7 +58,8 @@ fn shell_escape_basic_echo_command_runs() {
     assert!(
         combined.contains("hello_from_shell"),
         "shell echo output should appear: stdout={:?} stderr={:?}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
 }
 
@@ -74,7 +75,8 @@ fn shell_escape_quoted_args_pass_through_to_stdout() {
     assert!(
         combined.contains("hello from shell"),
         "command output should pass through: stdout={:?} stderr={:?}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
 }
 
@@ -93,7 +95,8 @@ fn shell_escape_nonzero_exit_code_is_displayed() {
     assert!(
         combined.contains("exit status: 1"),
         "non-zero exit should display 'exit status: 1': stdout={:?} stderr={:?}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
 }
 
@@ -107,7 +110,8 @@ fn shell_escape_neg_zero_exit_does_not_display_exit_status() {
     assert!(
         !out.stdout.contains("exit status") && !out.stderr.contains("exit status"),
         "success (exit 0) must NOT print 'exit status': stdout={:?} stderr={:?}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
 }
 
@@ -123,7 +127,8 @@ fn shell_escape_command_not_found_propagates_shell_error() {
     assert!(
         combined.contains("not found") || combined.contains("exit status: 127"),
         "command-not-found should produce shell error or exit-127: stdout={:?} stderr={:?}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
 }
 
@@ -145,7 +150,8 @@ fn shell_escape_neg_empty_command_does_not_error_or_crash() {
     assert!(
         out.status.success(),
         "REPL should not crash on empty /sh: status={:?} stderr={:?}",
-        out.status, out.stderr
+        out.status,
+        out.stderr
     );
     // Either silent re-prompt or §13.6 usage hint — neither is an
     // "error" / "failed" message.
@@ -166,8 +172,14 @@ fn shell_escape_neg_empty_command_does_not_error_or_crash() {
 fn shell_escape_chained_commands_via_shell_syntax_run_both() {
     let out = run("/sh echo first && echo second");
     let combined = format!("{}{}", out.stdout, out.stderr);
-    assert!(combined.contains("first"), "first command should run: {combined}");
-    assert!(combined.contains("second"), "second command should run: {combined}");
+    assert!(
+        combined.contains("first"),
+        "first command should run: {combined}"
+    );
+    assert!(
+        combined.contains("second"),
+        "second command should run: {combined}"
+    );
 }
 
 // =============================================================================
@@ -239,7 +251,8 @@ fn shell_escape_neg_child_env_changes_do_not_propagate_or_crash_repl() {
     assert!(
         out.status.success(),
         "REPL should not crash on child-env mutation: status={:?} stderr={:?}",
-        out.status, out.stderr
+        out.status,
+        out.stderr
     );
     let combined = format!("{}{}", out.stdout, out.stderr);
     assert!(

@@ -270,7 +270,7 @@ The cache submodule (`cranelisp_backend::cache`) was the 8th retirement data poi
 
 **What crosses the boundary.**
 - **Outward**: the static `PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable<(), ()>>>` (the synthetic `primitives` module's symbol table + the shared `Arc<GotTable>`); behind it, an `extern "C"` symbol surface — primitives by their kebab-case symbol name, reachable only via GOT slots.
-- **Inward**: identifier newtypes + `SymbolTable`/`ModuleEntry`/`DefKind` etc. from `cranelisp-types` (boundary); the runtime substrate from `cranelisp-intrinsics` — the allocator and the blessed **heap-layout-ABI consts** (`HeapString::{LEN_OFFSET, DATA_OFFSET}`, `vec_runtime::{LEN_OFFSET, CAP_OFFSET, DATA_PTR_OFFSET}`) plus drop/RC/panic helpers (FIXME 0245). **Nothing from `cranelisp-backend`** — `primitives ⟂ backend` (S73 sever; FIXME 0244 made every entry `code: None`, so primitives never names `Code`).
+- **Inward**: identifier newtypes + `SymbolTable`/`ModuleEntry`/`DefKind` etc. from `cranelisp-types` (boundary); the runtime substrate from `cranelisp-intrinsics` — allocator, drop/RC/panic helpers, the blessed String layout ABI, and the purpose-specific Rust-path Vec-of-String construction/read operations described in §4b invariant 17. Once Sprint 117 R-3 lands, primitives' `split`/`join` no longer read `vec_runtime::{LEN_OFFSET, CAP_OFFSET, DATA_PTR_OFFSET}` or perform Vec offset arithmetic; those constants remain public only for any other already-authorised consumers under FIXME 0245. **Nothing from `cranelisp-backend`** — `primitives ⟂ backend` (S73 sever; FIXME 0244 made every entry `code: None`, so primitives never names `Code`).
 - **Window types**: none.
 
 **Evolution driver.** Spec-driven — new primitives appear when the spec requires them.
@@ -301,7 +301,19 @@ The cache submodule (`cranelisp_backend::cache`) was the 8th retirement data poi
 
 ## 4b. Intrinsics — `crates/cranelisp-intrinsics/`
 
-**Bounded context.** Backend-emitted-call targets — runtime support code with stable ABI contracts called by JIT-emitted code or by the IO trampoline. Intrinsics are NOT callable from user code; not in any symbol table; not in any GOT. The ABI is tightly coupled to backend's codegen choices. The crate has no knowledge of compilation, scheduling, REPL, or development tooling; its job is to provide the language's runtime semantics in a way that depends only on the running program — not on how that program was loaded, who is observing it, or what process structure surrounds it. Diagnostic and observability surfaces are explicitly out: those are development concerns, not part of running a program. Per Decision 43 the previous combined `cranelisp-runtime` BC retires; this section and §4a replace it.
+**Bounded context.** Runtime support code reached primarily as stable-ABI
+backend-emitted-call targets, plus narrow Rust-path operations through which
+the sibling runtime-library crate accesses intrinsics-owned representation and
+lifetime mechanics. Intrinsics are NOT callable from user code; not in any
+symbol table; not in any GOT. The emitted-call ABI is tightly coupled to
+backend's codegen choices. The crate has no knowledge of compilation,
+scheduling, REPL, or development tooling; its job is to provide the language's
+runtime semantics in a way that depends only on the running program — not on
+how that program was loaded, who is observing it, or what process structure
+surrounds it. Diagnostic and observability surfaces are explicitly out: those
+are development concerns, not part of running a program. Per Decision 43 the
+previous combined `cranelisp-runtime` BC retires; this section and §4a replace
+it.
 
 **Runtime-library ownership affirmation (S97; FIXME 0486 partial action).** `cranelisp-intrinsics` is the **backend-emitted IO/RC runtime library** — the analog of a language's GC / async executor. `cranelisp-backend` depends on it and declares its functions as imports (invariant 1; §4b: "primitive emission goes through `cranelisp-primitives` + `cranelisp-intrinsics` **directly**"; invariant 2: "**intrinsics owns**" the runtime heap layout, backend reads it only through named externs). **The whole IO-runtime interior lives here, NOT in `/int`:** the effect **reactor** (mio loop, fd/timer registration, permit pools, launch supervision, `Par`/`select` joins), the **async trampoline** + the IO-tree interpreter (`consume_io_tree`/`feed_continuation`), the `HostCtx`/waker C-ABI vtable, RC/drop discipline, and the arg-lifetime-across-suspension contract. The canonical interior design is **`design/intrinsics/reactor.md`** (relocated from `design/int/` at S97 to stop mis-signalling `/int` ownership). `/int` is only a **host-client** of this runtime (§6): it constructs the reactor once via the single C-ABI entry `cranelisp_run_io` and drives `block_on_reactor` for `--run`/REPL — it does not own, and need not understand, the reactor/`consume_io_tree`/permit-map internals (`reactor.md §0` demarcates the thin seam).
 
@@ -343,9 +355,17 @@ The cache submodule (`cranelisp_backend::cache`) was the 8th retirement data poi
 
 **Bounded-context invariants.** These hold across sprints — the contract `cranelisp-intrinsics` makes with the rest of the workspace (folded from the retired `facades/intrinsics.md` §"Bounded-context invariants" at S74 W3; per-item contracts live in the `crates/cranelisp-intrinsics/src/lib.rs` `//!` + per-item `///` rustdoc, which is the canonical surface):
 
-1. **Backend-emitted-call targets only.** Per Decision 43 — every fn in this crate is called by JIT-emitted code or by the IO trampoline; nothing here is callable from user code. Not in any symbol table; not in any GOT. Adding an intrinsic is a backend + intrinsics co-design; deleting one requires backend co-evolution.
+1. **Runtime substrate only.** Per Decision 43, the dominant surface is
+   backend-emitted calls and IO-trampoline operations. A narrowly documented
+   Rust-path operation is also admissible when another runtime-library crate
+   must cross into intrinsics-owned representation or lifetime mechanics
+   (allocator/String helpers and invariant 17 are the current cases). Nothing
+   here is directly callable from Cranelisp user code, in a language symbol
+   table, or in a GOT. Adding an emitted-call intrinsic is a backend +
+   intrinsics co-design; adding a Rust-path operation requires a named
+   cross-crate consumer and `/arch` public-surface approval.
 
-2. **Representation containment.** Per `src/CLAUDE.md` "Heap Access" — within intrinsics, only `alloc.rs`, `heap_string.rs`, `vec_runtime.rs` define the layout constants (`HEAP_HEADER_SIZE`, field offsets). **Backend** reads the layout through the named extern functions, never by hard-coding offsets. **`cranelisp-primitives`** reads it through the blessed layout-ABI consts (`HeapString::{LEN_OFFSET, DATA_OFFSET}`, `vec_runtime::{LEN_OFFSET, CAP_OFFSET, DATA_PTR_OFFSET}`) — the one sanctioned cross-crate reader of the offsets (FIXME 0245), and only via those single-source consts, never by re-deriving them.
+2. **Representation containment.** Per `src/CLAUDE.md` "Heap Access" — within intrinsics, only `alloc.rs`, `heap_string.rs`, `vec_runtime.rs` define the layout constants (`HEAP_HEADER_SIZE`, field offsets). **Backend** reads the layout through the named extern functions, never by hard-coding offsets. **`cranelisp-primitives`** may read only blessed layout-ABI constants, never duplicate or re-derive them (FIXME 0245). Sprint 117 R-3 narrows the Vec-of-String case further: `split`/`join` use invariant 17's owned-construction/scoped-read functions and perform no Vec offset access.
 
 3. **Atomic RC discipline (Decision 13).** RC inc/dec emit `atomic_rmw` at all rings, even Ring 1 single-threaded. Acquire fence on the free path before drop_glue reads object fields. Avoids an ABI break when concurrency arrives at Ring 4.
 
@@ -406,7 +426,51 @@ The cache submodule (`cranelisp_backend::cache`) was the 8th retirement data poi
 
 16. **Deep release is type-directed; every ownership displacement and typed-context exit has a named owner (S116, FIXMEs 0837/0853 + 0688 top-up).** The universal heap header remains exactly two words, `{ alloc_size, rc }`. Intrinsics therefore exposes no generic “release this `i64` deeply” operation: `consume_shallow` is deliberately shallow, while each `consume_*` routine owns one known runtime protocol layout. Generated program values are discharged by backend-emitted type-directed glue at arbitrary finite value depth; a fixed compiler recursion cutoff that falls back to a shallow dec is unsound. Replacement inside generated code is an ownership event too: before a TCO tail jump overwrites a loop-parameter slot, backend releases the superseded typed value through the same glue unless its single replacement/transfer predicate proves that owner moves into the next iteration (including the existing in-place-COW exemption). This is not a separate TCO drop mechanism. When a value leaves generated typed code, ownership transfers rather than vanishes: the `Pure` payload transfers to the program result; int's `(value, Type)` result seam owns it through display/exit-code observation and releases it afterwards, while the linked startup stub owns the compile-time-equivalent release before process exit. Platform crossings retain their typed `CLOwned<T>` / callback ownership contracts. Adding a header glue/type word is rejected for this architecture: it would tax every allocation and change the heap ABI/cache representation to solve a finite, enumerable set of typed displacements/exits that already carry—or can preserve—the necessary type. Canonical safety register: `safety-invariants.md` R15.
 
-**Per-surface documentation.** Like `cranelisp-types` (§7), `cranelisp-frontend` (§1), `cranelisp-platform` (§5), and `cranelisp-typecheck` (§2), this surface has no separate `facades/intrinsics.md` document — the source-side rustdoc (crate-root `//!` narrative in `crates/cranelisp-intrinsics/src/lib.rs` plus per-item `///` comments) IS the facade. Retired in S74 Wave 3 (5th data point of the facade-retirement pattern) per Principle 7 (single source of truth) and the lived-experience cost of dual-maintenance. The cross-surface narrative (this section §4b), invariants 1–16, the cross-crate dependency edges, and the §"What crosses the boundary" 0245 contract live here in BC §4b; the per-item contracts (allocator family, drop helpers, IO trampoline, IVar, panic, IO-observation extension point, the trace family + `DisplayDescriptor` layout, `HeapString`/`vec_runtime` layout-ABI consts), the forbidden-patterns rule, the `JITBuilder::symbol`-narrowing, and the Option-2 DCE-survival wording live in the source rustdoc. The `public-api.txt` baseline gates the surface at PR time per the baseline-diff discipline; rustdoc-coverage is the source-side equivalent of the per-crate facade-compliance test for the other crates.
+**Per-surface documentation.** Like `cranelisp-types` (§7), `cranelisp-frontend` (§1), `cranelisp-platform` (§5), and `cranelisp-typecheck` (§2), this surface has no separate `facades/intrinsics.md` document — the source-side rustdoc (crate-root `//!` narrative in `crates/cranelisp-intrinsics/src/lib.rs` plus per-item `///` comments) IS the facade. Retired in S74 Wave 3 (5th data point of the facade-retirement pattern) per Principle 7 (single source of truth) and the lived-experience cost of dual-maintenance. The cross-surface narrative (this section §4b), invariants 1–17, the cross-crate dependency edges, and the §"What crosses the boundary" 0245 contract live here in BC §4b; the per-item contracts (allocator family, drop helpers, IO trampoline, IVar, panic, IO-observation extension point, the trace family + `DisplayDescriptor` layout, `HeapString`/`vec_runtime` layout-ABI consts and Vec-of-String Rust helpers), the forbidden-patterns rule, the `JITBuilder::symbol`-narrowing, and the Option-2 DCE-survival wording live in the source rustdoc. The `public-api.txt` baseline gates the surface at PR time per the baseline-diff discipline; rustdoc-coverage is the source-side equivalent of the per-crate facade-compliance test for the other crates.
+
+17. **Vec-of-String Rust-path ownership boundary (Sprint 117 R-3).**
+    `cranelisp-primitives::string::{split,join}` cross into the Vec layout owner
+    through exactly two purpose-specific operations:
+    `pub unsafe fn vec_strings_from_owned(elements: Vec<i64>) -> i64` and
+    `pub unsafe fn with_vec_strings<R>(base: i64, read: impl
+    FnOnce(&[i64]) -> R) -> R`. They are ordinary Rust-path functions: absent
+    from `intrinsics_table()`, without `export_name`/`no_mangle`, and never
+    backend-emitted call targets. A crate-private alternative is impossible
+    because primitives is a separate crate; relocating String semantics into
+    intrinsics or publishing a general raw-Vec builder/view would widen the
+    boundary. This pair is therefore the minimum public Rust surface.
+
+    The constructor's `unsafe` contract requires every input word to be the
+    base pointer of one live HeapString allocation and to carry one owned
+    reference that the caller transfers to the function; duplicate words are
+    valid only when the caller actually owns the corresponding number of
+    references. From call entry the caller must neither consume nor separately
+    release those transferred references, including if the function unwinds.
+    On success the returned live Vec owns exactly those references. Before
+    publication the implementation owns the input `Vec<i64>`, any allocated
+    Vec object/data buffer, and the transferred HeapString references: it
+    initialises element slots before writing `len`, writes `len` last, and an
+    unwind guard shallow-consumes each transferred reference exactly once and
+    frees each unpublished allocation exactly once. Only `0..len` is live.
+
+    The reader's `unsafe` contract requires `base` to be a non-null, correctly
+    aligned base pointer to a live Vec whose live elements are HeapString base
+    pointers, with an owning Vec reference kept alive and no concurrent
+    mutation for the complete callback. Before forming a slice it checks
+    `0 <= len <= cap`, checked `cap * size_of::<i64>()` representability, and
+    that `data_ptr` is non-null and correctly aligned when `cap > 0`; the
+    caller remains responsible for allocation provenance and liveness, which
+    runtime field checks cannot establish. The slice borrow cannot escape the
+    callback in safe Rust. The callback may copy an element word only as a
+    non-owning observation; retaining or consuming an element requires an
+    explicit RC operation outside this helper's contract. Normal return and
+    unwind perform no increment, decrement, transfer, or consumption of the
+    Vec or its elements.
+
+    These functions own only representation and lifetime mechanics; String
+    semantics stay in primitives. They do not expose offsets, provide general
+    Vec mutation, change heap layout/C ABI/the intrinsic catalog, or action
+    FIXME 0850's intrinsics-internal `drop.rs` raw-read convergence.
 
 ---
 
@@ -611,7 +675,36 @@ Each cadence accesses shared state only through typed handles owned by the caden
 - Scheduler and worker subsystem (one ownership boundary, both priority and background work)
 - REPL session, slash-command dispatch, prompt formatting, display
 - Development tooling: observability (`io_trace` / `scheduler_trace` / `got_trace` ring buffers), introspection. **Introspection is REPL-mode-only (D1, S80; `design/arch/d1-introspection-repl-only.md`).** `SharedState.introspection` backs the REPL slash-commands (`/sig`/`/doc`/`/source`/`/sexp`/`/clif`/`/disasm`) ONLY and is populated ONLY when the session's run mode is `Repl` — `cluster::process_cluster` gates the `introspection:` field on `RunMode::Repl`, passing `None` under `--run`/`--link`. **Any data the compile pipeline reads lives on the symbol table, never on introspection** ("it's in the name"): the one prior violation — the on-demand macro-clause recompile reading `introspection[fq].sexp` — is fixed by carrying the macro source form on `DefKind::Macro.macro_sexp` (reversing Decision 41 for that one field; §7 types). **D1b (S80) completes this at the storage level: `SharedState.introspection` is `Option<DashMap>`, `None` outside REPL — the store does not merely go unpopulated, it does not exist in batch.** The `Some`/`None` discriminator is the same `run_mode.populates_introspection()` carrier (no second discriminator). Codegen byproducts split two ways: free byproducts codegen knows anyway (`code_size`) are **returned to the worker and conditionally retained** (`Some` → write, `None` → drop); introspection-only products (CLIF-IR text, disasm strings) are **not generated at all in batch** (disasm already on-demand via `produce_disasm`; the CLIF-not-generated refinement at `compile_to_module` is a backend follow-up — see D1b §B4, the int-scoped increment drops it unread). The **run-mode signal** the platform layout-hash gate reads (REPL warns-and-loads; `--run`/`--link` refuse) is the explicit `RunMode` enum on `SharedState`, set from `main.rs`'s `Action` — NOT `introspection.is_some()` (the conflation D1 retires). `RunMode` is int-internal (not `cranelisp-types`); it is a separate axis from backend's `CompileMode` codegen strategy. **NOT `(trace ...)` runtime** — the S76 user ruling (2026-06-04) retracted D40's relocation of the `(trace ...)` bodies to int: the 12 `cranelisp_trace_*` bodies, `TRACE_STACK`/`TRACE_THREAD_ID`, `consume_trace_call`, the value-formatter, the discovery (`build_traced_fns`), and the trace half of `int_intrinsics()` all leave int (the bodies → intrinsics §4b invariant 12; discovery + descriptor baking → backend §3). int's trace work in S76 is **deletion only**. `io_trace`/`scheduler_trace`/`got_trace` (the IO-observation + scheduler + GOT-population ring buffers) STAY in int — they are unrelated to `(trace ...)`. See `design/arch/tracing.md` §4.3 for the deletion inventory.
-- **Cache-hit introspection rehydration — lazy on-demand re-read; NOT eager, NOT cached (S81 / FIXME 0220 ruling).** On a cache-hit module load in the REPL, the int `Introspection` records (`source`/`sexp`/`expanded`/`clif_ir`/`code_size`; disasm is not a persisted field — it is on-demand via `produce_disasm`, S87 Wave 0 / FIXME 0418) are **NOT** populated at restore (the cache stores binary code + the serde'd `SymbolTable`, never the REPL-only `Introspection` map — D1/D1b: introspection does not exist outside REPL, and serializing it would mix concerns + bloat the cache + raise invalidation questions). The disposition, grounded in D1/D1b:
+- **Canonical public-subject presentation (S117 W3c).** A zero-argument macro
+  selected structurally as an entered macro expansion's public subject remains
+  a macro in the symbol table, but REPL echo, `/sig`, and `/info` may present
+  the value scheme obtained by expanding that subject. The canonical surviving
+  record is the subject's existing `Introspection`: its existing `source` field
+  remains the sole authored-source authority, and one new
+  `presentation_scheme: Option<Scheme>` field carries the settled projected
+  scheme. There is no `SharedState.presentation_schemes` side map and no
+  second source field. Both `Introspection` and
+  `SharedState.introspection` are crate-private implementation details; the
+  accidental `pub` exposure through the library module is narrowed rather than
+  expanded with another public DTO. The binary has no `public-api.txt`
+  baseline and no legitimate external consumer of this record; the already
+  public, `#[non_exhaustive]` read views (`SymbolInfo` and
+  `SymbolDescription`) remain the outward introspection surface.
+  `PreparedCommit` carries an int-private
+  `PreparedPresentation { subject: FQSymbol, scheme: Scheme, source: String }`
+  derived from the settled candidate table before codegen. Projection failure
+  aborts preparation; no live symbol or introspection record has changed.
+  `publish_prepared_turn` installs the subject's complete introspection record
+  (authored `source` plus `presentation_scheme`) in the same eval-cadence commit
+  gate that publishes the prepared symbol entries. REPL introspection has no
+  concurrent reader outside that cadence, so the gate is the atomic
+  publication boundary; no post-publication scan or inference is permitted.
+  A successful redefinition replaces that subject's record, with
+  `presentation_scheme: None` unless the new prepared turn supplied a new
+  projection; removal removes the record. Thus echo, `/sig`, and `/info` read
+  one lifecycle-owned record, and redefinition cannot retain stale projection
+  metadata (Principles 7, 24, and 26).
+- **Cache-hit introspection rehydration — lazy on-demand re-read; NOT eager, NOT cached (S81 / FIXME 0220 ruling).** On a cache-hit module load in the REPL, the int `Introspection` records (`source`/`sexp`/`expanded`/`presentation_scheme`/`clif_ir`/`code_size`; disasm is not a persisted field — it is on-demand via `produce_disasm`, S87 Wave 0 / FIXME 0418) are **NOT** populated at restore (the cache stores binary code + the serde'd `SymbolTable`, never the REPL-only `Introspection` map — D1/D1b: introspection does not exist outside REPL, and serializing it would mix concerns + bloat the cache + raise invalidation questions). The disposition, grounded in D1/D1b:
   - **Compile-necessary data is already on the symbol table — no rehydration owed for it.** The one compile-path read that 0220 flagged as "more load-bearing" (on-demand macro-clause recompile + `.cl` regen dropping cached macros) is **resolved by D1**: macro source rides `DefKind::Macro.macro_sexp` (serialized, cache-survives), read by `worker::resolve_macro_sexp_from` and used by `save::generate_fns_and_macros` as the macro fallback when introspection is absent. Every other Def kind carries its compile input as `ast: Option<DefnVariant>` on the symbol table (D1 §1). So nothing the *compiler* needs lives only in introspection on cache-hit.
   - **REPL-display data (`/source`/`/sexp`/`/expand`/`/clif`/`/disasm`) is rehydrated LAZILY ON DEMAND** when an introspection command (or `.cl` regeneration) first asks for a cache-loaded symbol whose record is absent — by re-reading + re-parsing the backing `.cl` file (the cache key, always present) for the symbol's source/sexp, and (for `/clif`/`/disasm`) regenerating from the now-resident GOT-slot code via the existing `produce_disasm` on-demand path. Lazy, not eager-at-restore (the common read-only REPL session pays nothing) and not cached (content fresh at the moment of need; re-parse is cheap — frontend is the fast crate — vs. recompiling). This is option (a) of 0220's open question, chosen over (b) eager-at-restore and over the rejected serialize-into-cache non-fix.
   - **The residual concrete gap is non-macro `.cl` regeneration.** `save::generate_fns_and_macros` regenerates a `UserFn`'s `.cl` text from `introspection_sexp` only (`.or(macro_table_sexp)` covers macros, never UserFns) — so a cache-restored regular function with no introspection record is silently dropped from the regenerated `.cl`. The fix is the same lazy re-read (re-parse the backing file for the symbol's region) or reconstruction from the entry's `ast`; both are REPL-only and touch neither the cache nor D1.

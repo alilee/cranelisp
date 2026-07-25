@@ -55,7 +55,10 @@ fn workspace_root() -> PathBuf {
 }
 
 fn read_cargo_toml(crate_dir: &str) -> String {
-    let p = workspace_root().join("crates").join(crate_dir).join("Cargo.toml");
+    let p = workspace_root()
+        .join("crates")
+        .join(crate_dir)
+        .join("Cargo.toml");
     fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
 }
 
@@ -204,7 +207,11 @@ fn s68_facade_compliance_test_exists_for_s68_touched_crates() {
     // The backend POSITIVE assertion (was: backend MUST be present) is removed
     // at S75 W5c — backend's facade is retired, so it must no longer be
     // required present. This mirrors exactly the S74 primitives/intrinsics flip.
-    for name in ["cranelisp-primitives", "cranelisp-intrinsics", "cranelisp-backend"] {
+    for name in [
+        "cranelisp-primitives",
+        "cranelisp-intrinsics",
+        "cranelisp-backend",
+    ] {
         assert!(
             !pairs_block.contains(name),
             "tests/facade_compliance.rs `facade_pairs()` MUST NOT list `{name}` \
@@ -358,16 +365,16 @@ fn s68_code_enum_has_no_primitive_marker_variant() {
     // `Primitive` marker. Strip `//`-comments first: the module rustdoc
     // legitimately mentions `Code::Primitive` to document that the marker is
     // retired, so the prose that explains the absence must not trip the check.
-    let declares_primitive_variant = src
-        .lines()
-        .map(|l| l.split("//").next().unwrap_or(l))
-        .any(|code| {
-            code.contains("Primitive,")
-                || code.contains("Primitive ,")
-                || code.trim() == "Primitive"
-                || code.contains("Primitive {")
-                || code.contains("Primitive(")
-        });
+    let declares_primitive_variant =
+        src.lines()
+            .map(|l| l.split("//").next().unwrap_or(l))
+            .any(|code| {
+                code.contains("Primitive,")
+                    || code.contains("Primitive ,")
+                    || code.trim() == "Primitive"
+                    || code.contains("Primitive {")
+                    || code.contains("Primitive(")
+            });
     assert!(
         !declares_primitive_variant,
         "Code enum MUST NOT carry a `Primitive` marker variant per FIXME 0244 \
@@ -542,10 +549,7 @@ fn s68_fqtypename_backend_uses_fqtypename_at_resolved_edges() {
 fn s68_trace_in_link_mode_rejected_at_link_time() {
     let out = Cranelisp::new()
         .link("trace_link.cl")
-        .file(
-            "trace_link.cl",
-            "(defn main [] (trace 42))",
-        )
+        .file("trace_link.cl", "(defn main [] (trace 42))")
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .output();
 
@@ -555,7 +559,9 @@ fn s68_trace_in_link_mode_rejected_at_link_time() {
         !out.status.success(),
         "`(trace ...)` in --link mode MUST be rejected per spec/04-expressions.md §4.12.9. \
          status={:?}, stdout={}, stderr={}",
-        out.status, out.stdout, out.stderr,
+        out.status,
+        out.stdout,
+        out.stderr,
     );
 
     let combined = format!("{}{}", out.stdout, out.stderr);

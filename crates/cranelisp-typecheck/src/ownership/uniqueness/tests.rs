@@ -30,7 +30,8 @@ impl TestEnv {
     /// Register a callee as a summarised UserFn with the given param modes +
     /// result_unique bit (for chaining reads).
     fn callee(mut self, name: &str, param_modes: Vec<Mode>, result_unique: bool) -> Self {
-        self.kinds.insert(Symbol::from(name), TerminalKind::UserFnConcrete);
+        self.kinds
+            .insert(Symbol::from(name), TerminalKind::UserFnConcrete);
         let n = param_modes.len();
         self.summaries.insert(
             Symbol::from(name),
@@ -67,10 +68,22 @@ fn sp(n: u32) -> Span {
     Span::new(n, n + 1)
 }
 fn adt_ty() -> ConcreteType {
-    ConcreteType::ADT(FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Box")), vec![])
+    ConcreteType::ADT(
+        FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Box")),
+        vec![],
+    )
 }
 fn var(n: &str) -> MonoExpr {
-    MonoExpr::Var { name: Symbol::from(n), span: sp(900), resolved_call: None, ty: adt_ty(), resolution: cranelisp_types::VarRef::Local { binder: Symbol::from(n), binding_span: cranelisp_types::Span::SYNTHETIC } }
+    MonoExpr::Var {
+        name: Symbol::from(n),
+        span: sp(900),
+        resolved_call: None,
+        ty: adt_ty(),
+        resolution: cranelisp_types::VarRef::Local {
+            binder: Symbol::from(n),
+            binding_span: cranelisp_types::Span::SYNTHETIC,
+        },
+    }
 }
 /// A fresh `(Box fields...)` allocation with an explicit span + type.
 fn boxed(span: Span, ty: ConcreteType, fields: Vec<MonoExpr>) -> MonoExpr {
@@ -107,7 +120,10 @@ fn call(span: Span, name: &str, ty: ConcreteType, args: Vec<MonoExpr>) -> MonoEx
 }
 fn let_(bindings: Vec<(&str, MonoExpr)>, body: MonoExpr) -> MonoExpr {
     MonoExpr::Let {
-        bindings: bindings.into_iter().map(|(n, e)| (Symbol::from(n), e)).collect(),
+        bindings: bindings
+            .into_iter()
+            .map(|(n, e)| (Symbol::from(n), e))
+            .collect(),
         body: Box::new(body),
         span: sp(800),
         ty: adt_ty(),
@@ -115,7 +131,11 @@ fn let_(bindings: Vec<(&str, MonoExpr)>, body: MonoExpr) -> MonoExpr {
 }
 fn if_(then_branch: MonoExpr, else_branch: MonoExpr) -> MonoExpr {
     MonoExpr::If {
-        cond: Box::new(MonoExpr::BoolLit { value: true, span: sp(700), ty: ConcreteType::Bool }),
+        cond: Box::new(MonoExpr::BoolLit {
+            value: true,
+            span: sp(700),
+            ty: ConcreteType::Bool,
+        }),
         then_branch: Box::new(then_branch),
         else_branch: Box::new(else_branch),
         span: sp(701),
@@ -151,7 +171,11 @@ fn result_unique_projected_call_return_is_false() {
     // spec: §14.2 (negative) — a call whose callee is NOT result_unique yields no
     // fresh unique root (the sound chaining read is the bit, never result==Fresh).
     let env = TestEnv::default().callee("proj", vec![Mode::Borrowed], /*unique*/ false);
-    let r = analyze(&[param("x")], call(sp(2), "proj", adt_ty(), vec![var("x")]), &env);
+    let r = analyze(
+        &[param("x")],
+        call(sp(2), "proj", adt_ty(), vec![var("x")]),
+        &env,
+    );
     assert!(!r.result_unique);
 }
 
@@ -186,7 +210,10 @@ fn result_unique_stashed_then_returned_is_false_soundness() {
     let inner = let_(vec![("_", stash)], var("v"));
     let body = let_(vec![("v", fresh(sp(6)))], inner);
     let r = analyze(&[], body, &env);
-    assert!(!r.result_unique, "a stashed-then-returned fresh value is NOT unique");
+    assert!(
+        !r.result_unique,
+        "a stashed-then-returned fresh value is NOT unique"
+    );
 }
 
 // =================== unique_static — site facts (§14.2) ===================
@@ -201,7 +228,11 @@ fn unique_static_fresh_single_use_is_some_true() {
         call(sp(11), "consume", adt_ty(), vec![var("v")]),
     );
     let r = analyze(&[], body, &env);
-    assert_eq!(r.unique_sites.get(&sp(10)), Some(&true), "single-use fresh ⇒ Some(true)");
+    assert_eq!(
+        r.unique_sites.get(&sp(10)),
+        Some(&true),
+        "single-use fresh ⇒ Some(true)"
+    );
 }
 
 #[test]
@@ -227,7 +258,10 @@ fn unique_static_conditional_consume_is_none() {
         if_(call(sp(15), "consume", adt_ty(), vec![var("v")]), var("v")),
     );
     let r = analyze(&[], body, &env);
-    assert!(r.unique_sites.get(&sp(14)).is_none(), "conditional-consume ⇒ None");
+    assert!(
+        r.unique_sites.get(&sp(14)).is_none(),
+        "conditional-consume ⇒ None"
+    );
 }
 
 #[test]
@@ -265,7 +299,11 @@ fn unique_static_cow_copy_is_some_true() {
         call(sp(21), "consume", adt_ty(), vec![var("g")]),
     );
     let r = analyze(&[param("grid")], body, &env);
-    assert_eq!(r.unique_sites.get(&sp(20)), Some(&true), "COW copy single-use ⇒ Some(true)");
+    assert_eq!(
+        r.unique_sites.get(&sp(20)),
+        Some(&true),
+        "COW copy single-use ⇒ Some(true)"
+    );
 }
 
 #[test]
@@ -282,7 +320,10 @@ fn unique_static_layout_ineligible_is_none() {
         call(sp(23), "consume-int", adt_ty(), vec![var("n")]),
     );
     let r = analyze(&[], body, &env);
-    assert!(r.unique_sites.get(&sp(22)).is_none(), "layout-ineligible (Int) ⇒ None");
+    assert!(
+        r.unique_sites.get(&sp(22)).is_none(),
+        "layout-ineligible (Int) ⇒ None"
+    );
 }
 
 #[test]

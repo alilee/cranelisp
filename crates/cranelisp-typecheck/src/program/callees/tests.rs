@@ -8,8 +8,6 @@ use super::*;
 
 use crate::program::test_support::*;
 
-
-
 // spec: tests/plan/s101-coverage-postmortem.md §2.1 item 1(a) — a plain
 //   fully-applied direct call to a single-sig concrete user fn records the
 //   caller→callee edge (the 0470 headline gap: this was EMPTY before).
@@ -231,14 +229,12 @@ fn callees_neg_shadowed_name_records_no_edge() {
            (let [callee (fn [y] (add-i64 y 0))] (callee x)))",
     );
     assert!(
-        !callees_of(&tc, "test", "c")
-            .contains(&fq_sym("test", "callee")),
+        !callees_of(&tc, "test", "c").contains(&fq_sym("test", "callee")),
         "a param-shadowed name must record no module edge; got {:?}",
         callees_of(&tc, "test", "c"),
     );
     assert!(
-        !callees_of(&tc, "test", "c2")
-            .contains(&fq_sym("test", "callee")),
+        !callees_of(&tc, "test", "c2").contains(&fq_sym("test", "callee")),
         "a let-shadowed name must record no module edge; got {:?}",
         callees_of(&tc, "test", "c2"),
     );
@@ -349,9 +345,7 @@ fn callees_records_impl_method_body_reference() {
     );
 
     // (deftrait Sizey [a] (defn bump [self] Int))
-    let decl = crate::traits::test_helpers::parse_trait_decl(
-        "(deftrait Sizey (bump [self] Int))",
-    );
+    let decl = crate::traits::test_helpers::parse_trait_decl("(deftrait Sizey (bump [self] Int))");
     tc.register_trait_decl_self(&decl).unwrap();
 
     // (impl Sizey Int (defn bump [a] (helper a))) — the body calls the
@@ -360,10 +354,7 @@ fn callees_records_impl_method_body_reference() {
     let impl_ = TraitImpl {
         head_con_var: None,
         trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Sizey")),
-        target: TypeExpr::Named(cranelisp_types::TypeRef::new(
-            None,
-            TypeName::from("Int"),
-        )),
+        target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
         type_constraints: vec![],
         methods: vec![Defn {
             name: Symbol::from("bump"),
@@ -371,10 +362,7 @@ fn callees_records_impl_method_body_reference() {
             variants: vec![DefnVariant {
                 params: vec![(Symbol::from("a"), None)],
                 body: Expr::Apply {
-                    callee: Box::new(Expr::var(
-                        Symbol::from("helper"),
-                        Span::new(900, 906),
-                    )),
+                    callee: Box::new(Expr::var(Symbol::from("helper"), Span::new(900, 906))),
                     args: vec![Expr::var(Symbol::from("a"), Span::new(907, 908))],
                     span: Span::new(899, 909),
                     resolved_call: None,
@@ -422,10 +410,7 @@ fn callees_records_default_method_body_reference() {
     let impl_ = TraitImpl {
         head_con_var: None,
         trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Doubly")),
-        target: TypeExpr::Named(cranelisp_types::TypeRef::new(
-            None,
-            TypeName::from("Int"),
-        )),
+        target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
         type_constraints: vec![],
         methods: vec![Defn {
             name: Symbol::from("req"),

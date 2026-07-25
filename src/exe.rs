@@ -11,8 +11,8 @@
 
 use std::path::{Path, PathBuf};
 
-use cranelisp_types::{ErrorLocation,
-    CranelispError, DefKind, FQSymbol, ModuleEntry, ModuleFullPath, Span, Type,
+use cranelisp_types::{
+    CranelispError, DefKind, ErrorLocation, FQSymbol, ModuleEntry, ModuleFullPath, Span, Type,
 };
 
 /// Generate a startup `.o` that defines `start` (exported, referenced by the
@@ -54,7 +54,7 @@ pub fn generate_startup_object(
     stub_entry_symbol: &str,
     platform_layout_checks: &[cranelisp_backend::exe::PlatformLayoutCheck],
 ) -> Result<Vec<u8>, CranelispError> {
-    use cranelisp_backend::cranelift_module::{default_libcall_names, Module};
+    use cranelisp_backend::cranelift_module::{Module, default_libcall_names};
     use cranelisp_backend::cranelift_object::{ObjectBuilder, ObjectModule};
 
     let isa = cranelisp_backend::build_isa(true)?;
@@ -305,7 +305,10 @@ fn declare_layout_checks(
         )?;
         per_platform.push((linked_id, expected_id, name_id));
     }
-    Ok(Some(LayoutCheckIds { check_fn, per_platform }))
+    Ok(Some(LayoutCheckIds {
+        check_fn,
+        per_platform,
+    }))
 }
 
 /// Declare `cranelisp_init_platform` (only when platforms exist) and each
@@ -393,8 +396,7 @@ fn build_startup_func(
         builder.seal_block(entry_block);
 
         // 0. Populate the primitives GOT slab before anything else (FIXME 0280).
-        let init_primitives_ref =
-            obj_module.declare_func_in_func(rt.init_primitives, builder.func);
+        let init_primitives_ref = obj_module.declare_func_in_func(rt.init_primitives, builder.func);
         builder.ins().call(init_primitives_ref, &[]);
 
         // 1. Initialize platforms before calling main.
@@ -437,8 +439,7 @@ fn build_startup_func(
         let returns_io_flag = builder
             .ins()
             .iconst(types::I8, if main_returns_io { 1 } else { 0 });
-        let run_program_ref =
-            obj_module.declare_func_in_func(rt.run_program, builder.func);
+        let run_program_ref = obj_module.declare_func_in_func(rt.run_program, builder.func);
         let run_inst = builder
             .ins()
             .call(run_program_ref, &[main_addr, returns_io_flag]);
@@ -455,16 +456,15 @@ fn build_startup_func(
         let error_block = builder.create_block();
         let clean_block = builder.create_block();
         let zero = builder.ins().iconst(types::I32, 0);
-        let is_error = builder
+        let is_error = builder.ins().icmp(IntCC::NotEqual, error_kind, zero);
+        builder
             .ins()
-            .icmp(IntCC::NotEqual, error_kind, zero);
-        builder.ins().brif(is_error, error_block, &[], clean_block, &[]);
+            .brif(is_error, error_block, &[], clean_block, &[]);
 
         // Error path: drain the SET slot, print, and exit(1) inside the export.
         builder.switch_to_block(error_block);
         builder.seal_block(error_block);
-        let check_re_ref =
-            obj_module.declare_func_in_func(rt.check_runtime_error, builder.func);
+        let check_re_ref = obj_module.declare_func_in_func(rt.check_runtime_error, builder.func);
         builder.ins().call(check_re_ref, &[]);
         // `cranelisp_check_runtime_error` exits on a set slot; defensively trap
         // if control returns (it won't on a genuine error_kind != 0).
@@ -503,12 +503,12 @@ pub fn validate_main(
     entry_symbols: &crate::code::SessionSymbolTable,
     unresolved_dispatch: &[cranelisp_typecheck::UnresolvedDispatchSite],
 ) -> Result<(), CranelispError> {
-    let entry = entry_symbols.get("main").ok_or_else(|| {
-        CranelispError::CodegenError {
+    let entry = entry_symbols
+        .get("main")
+        .ok_or_else(|| CranelispError::CodegenError {
             message: "entry module has no 'main' function".to_string(),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
-        }
-    })?;
+        })?;
 
     match entry {
         ModuleEntry::Def { scheme, ast, .. } => {
@@ -520,8 +520,7 @@ pub fn validate_main(
             // ambiguous at THIS execution boundary. Filtered to main's own body
             // span so a sibling poly defn in the same module is not implicated.
             if let Some(variant) = ast.as_ref()
-                && let Some(site) =
-                    first_dispatch_within(unresolved_dispatch, variant.body.span())
+                && let Some(site) = first_dispatch_within(unresolved_dispatch, variant.body.span())
             {
                 return Err(unresolved_dispatch_error(site));
             }
@@ -612,22 +611,22 @@ pub fn reject_dev_session_externs_in_link(
     // that kind)? Used for `module/extern` FQ body references.
     let resolves_to_dev_session_extern = |fq: &FQSymbol| -> bool {
         crate::worker::DEV_SESSION_ONLY_EXTERNS.contains(&fq.symbol.as_ref())
-            && symbol_tables
-                .get(&fq.module)
-                .is_some_and(|st| {
-                    matches!(
-                        st.get(fq.symbol.as_ref()),
-                        Some(ModuleEntry::Def { kind, .. })
-                            if matches!(kind.as_ref(), DefKind::PrimitiveExtern)
-                    )
-                })
+            && symbol_tables.get(&fq.module).is_some_and(|st| {
+                matches!(
+                    st.get(fq.symbol.as_ref()),
+                    Some(ModuleEntry::Def { kind, .. })
+                        if matches!(kind.as_ref(), DefKind::PrimitiveExtern)
+                )
+            })
     };
 
     for st_entry in symbol_tables.iter() {
         let module = st_entry.key();
         let st = st_entry.value();
         for (caller, entry) in st.all_symbols() {
-            if let ModuleEntry::Def { ast: Some(variant), .. } = entry
+            if let ModuleEntry::Def {
+                ast: Some(variant), ..
+            } = entry
                 && let Some(sym) = body_references_dev_session_extern(
                     &variant.body,
                     &resolves_to_dev_session_extern,
@@ -702,37 +701,41 @@ fn body_references_dev_session_extern(
             .iter()
             .find_map(|(_, e)| body_references_dev_session_extern(e, is_dev_session_extern))
             .or_else(|| body_references_dev_session_extern(body, is_dev_session_extern)),
-        Expr::If { cond, then_branch, else_branch, .. } => {
-            body_references_dev_session_extern(cond, is_dev_session_extern)
-                .or_else(|| body_references_dev_session_extern(then_branch, is_dev_session_extern))
-                .or_else(|| body_references_dev_session_extern(else_branch, is_dev_session_extern))
-        }
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => body_references_dev_session_extern(cond, is_dev_session_extern)
+            .or_else(|| body_references_dev_session_extern(then_branch, is_dev_session_extern))
+            .or_else(|| body_references_dev_session_extern(else_branch, is_dev_session_extern)),
         Expr::Lambda { body, .. }
         | Expr::Annotate { expr: body, .. }
         | Expr::Trace { body, .. } => {
             body_references_dev_session_extern(body, is_dev_session_extern)
         }
         Expr::Apply { callee, args, .. } => {
-            body_references_dev_session_extern(callee, is_dev_session_extern)
-                .or_else(|| {
-                    args.iter().find_map(|a| {
-                        body_references_dev_session_extern(a, is_dev_session_extern)
-                    })
-                })
-        }
-        Expr::Match { scrutinee, arms, .. } => {
-            body_references_dev_session_extern(scrutinee, is_dev_session_extern).or_else(|| {
-                arms.iter()
-                    .find_map(|arm| body_references_dev_session_extern(&arm.body, is_dev_session_extern))
+            body_references_dev_session_extern(callee, is_dev_session_extern).or_else(|| {
+                args.iter()
+                    .find_map(|a| body_references_dev_session_extern(a, is_dev_session_extern))
             })
         }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => body_references_dev_session_extern(scrutinee, is_dev_session_extern).or_else(|| {
+            arms.iter().find_map(|arm| {
+                body_references_dev_session_extern(&arm.body, is_dev_session_extern)
+            })
+        }),
         Expr::VecLit { elements, .. } => elements
             .iter()
             .find_map(|e| body_references_dev_session_extern(e, is_dev_session_extern)),
-        Expr::LaunchContinue { launched, continuation, .. } => {
-            body_references_dev_session_extern(launched, is_dev_session_extern)
-                .or_else(|| body_references_dev_session_extern(continuation, is_dev_session_extern))
-        }
+        Expr::LaunchContinue {
+            launched,
+            continuation,
+            ..
+        } => body_references_dev_session_extern(launched, is_dev_session_extern)
+            .or_else(|| body_references_dev_session_extern(continuation, is_dev_session_extern)),
         Expr::ConstrADT { fields, .. } => fields
             .iter()
             .find_map(|e| body_references_dev_session_extern(e, is_dev_session_extern)),
@@ -841,19 +844,15 @@ pub fn generate_main_alias_object(
     user_main_symbol: &str,
 ) -> Result<Vec<u8>, CranelispError> {
     use cranelift::prelude::*;
-    use cranelisp_backend::cranelift_module::{default_libcall_names, Linkage, Module};
+    use cranelisp_backend::cranelift_module::{Linkage, Module, default_libcall_names};
     use cranelisp_backend::cranelift_object::{ObjectBuilder, ObjectModule};
 
     let isa = cranelisp_backend::build_isa(true)?;
-    let obj_builder = ObjectBuilder::new(
-        isa,
-        "cranelisp_main_alias",
-        default_libcall_names(),
-    )
-    .map_err(|e| CranelispError::CodegenError {
-        message: format!("failed to create ObjectBuilder for main alias: {e}"),
-        location: ErrorLocation::from_span(Span::SYNTHETIC),
-    })?;
+    let obj_builder = ObjectBuilder::new(isa, "cranelisp_main_alias", default_libcall_names())
+        .map_err(|e| CranelispError::CodegenError {
+            message: format!("failed to create ObjectBuilder for main alias: {e}"),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        })?;
     let mut obj_module = ObjectModule::new(obj_builder);
 
     // Declare the per-entry-module GOT data symbol as Linkage::Import.
@@ -897,14 +896,13 @@ pub fn generate_main_alias_object(
         let got_base = builder.ins().symbol_value(types::I64, got_global);
 
         // Load the function pointer at slot `main_got_slot * 8`.
-        let slot_offset: i32 = (main_got_slot * 8).try_into().map_err(|_| {
-            CranelispError::CodegenError {
-                message: format!(
-                    "main GOT slot offset overflows i32 for slot {main_got_slot}"
-                ),
-                location: ErrorLocation::from_span(Span::SYNTHETIC),
-            }
-        })?;
+        let slot_offset: i32 =
+            (main_got_slot * 8)
+                .try_into()
+                .map_err(|_| CranelispError::CodegenError {
+                    message: format!("main GOT slot offset overflows i32 for slot {main_got_slot}"),
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
+                })?;
         let fn_ptr = builder.ins().load(
             types::I64,
             cranelift::codegen::ir::MemFlags::trusted(),
@@ -942,25 +940,29 @@ pub fn generate_main_alias_object(
 /// Returns the slot index pinned at typecheck time. Errors if `main` is
 /// missing or has no slot allocated (defensive — `validate_main` should
 /// have caught the missing case).
-pub fn entry_main_got_slot(entry_table: &crate::code::SessionSymbolTable) -> Result<usize, CranelispError> {
-    let entry = entry_table.get("main").ok_or_else(|| {
-        CranelispError::CodegenError {
+pub fn entry_main_got_slot(
+    entry_table: &crate::code::SessionSymbolTable,
+) -> Result<usize, CranelispError> {
+    let entry = entry_table
+        .get("main")
+        .ok_or_else(|| CranelispError::CodegenError {
             message: "entry module has no 'main' function (alias generation)".to_string(),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
-        }
-    })?;
+        })?;
     // The callable slot now rides on the `DefKind` variant (S83 reshape,
     // FIXME 0356/0357) — read it through the `callable_got_slot()` chokepoint.
     // `main` is a concrete user fn, so a pinned slot is expected.
     match entry {
-        ModuleEntry::Def { .. } => entry.callable_got_slot().ok_or_else(|| {
-            CranelispError::CodegenError {
-                message: "entry module's 'main' has no GOT slot — typecheck did \
+        ModuleEntry::Def { .. } => {
+            entry
+                .callable_got_slot()
+                .ok_or_else(|| CranelispError::CodegenError {
+                    message: "entry module's 'main' has no GOT slot — typecheck did \
                           not pin a slot index"
-                    .to_string(),
-                location: ErrorLocation::from_span(Span::SYNTHETIC),
-            }
-        }),
+                        .to_string(),
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
+                })
+        }
         _ => Err(CranelispError::CodegenError {
             message: "entry module's 'main' is not a Def entry".to_string(),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
@@ -1059,8 +1061,8 @@ pub fn find_platform_rlibs(
 ) -> Result<Vec<PathBuf>, CranelispError> {
     let mut rlibs = Vec::with_capacity(platform_names.len());
     for name in platform_names {
-        let rlib = resolve_platform_rlib(name, project_root, lib_dirs, platform_dirs)
-            .ok_or_else(|| CranelispError::CodegenError {
+        let rlib = resolve_platform_rlib(name, project_root, lib_dirs, platform_dirs).ok_or_else(
+            || CranelispError::CodegenError {
                 message: format!(
                     "platform '{name}' was loaded at compile time but its static \
                      rlib (lib{}.rlib) could not be found for --link; build the \
@@ -1069,7 +1071,8 @@ pub fn find_platform_rlibs(
                     format!("cranelisp_{}", name.replace('-', "_")),
                 ),
                 location: ErrorLocation::from_span(Span::SYNTHETIC),
-            })?;
+            },
+        )?;
         rlibs.push(rlib);
     }
     Ok(rlibs)
@@ -1148,8 +1151,7 @@ pub fn find_bundle_lib() -> Result<PathBuf, CranelispError> {
         // Try sibling directories under target/
         if let Some(target_dir) = exe_dir.parent() {
             for profile in &["debug", "release"] {
-                let candidate =
-                    target_dir.join(profile).join("libcranelisp_exe_bundle.a");
+                let candidate = target_dir.join(profile).join("libcranelisp_exe_bundle.a");
                 if candidate.exists() {
                     return Ok(candidate);
                 }
@@ -1207,9 +1209,16 @@ mod tests {
 
     fn make_main_entry(ty: Type) -> ModuleEntry<crate::code::Code> {
         ModuleEntry::def(
-            Scheme { type_vars: vec![], constraints: HashMap::new(), ty },
+            Scheme {
+                type_vars: vec![],
+                constraints: HashMap::new(),
+                ty,
+            },
             DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0, mode_summary: None },
+                fn_state: cranelisp_types::UserFnState::Concrete {
+                    got_slot: 0,
+                    mode_summary: None,
+                },
             },
         )
         .visibility(Visibility::Public)
@@ -1229,7 +1238,10 @@ mod tests {
         let err = validate_main(&st, &[]).unwrap_err();
         match err {
             CranelispError::CodegenError { message, .. } => {
-                assert!(message.contains("IO"), "names the IO requirement: {message}");
+                assert!(
+                    message.contains("IO"),
+                    "names the IO requirement: {message}"
+                );
                 assert!(
                     message.contains("(Fn [] (IO _))"),
                     "names the required shape: {message}"
@@ -1251,8 +1263,14 @@ mod tests {
         let err = validate_main(&st, &[]).unwrap_err();
         match err {
             CranelispError::CodegenError { message, .. } => {
-                assert!(message.contains("IO"), "names the IO requirement: {message}");
-                assert!(message.contains("(Fn [] (IO _))"), "names the required shape: {message}");
+                assert!(
+                    message.contains("IO"),
+                    "names the IO requirement: {message}"
+                );
+                assert!(
+                    message.contains("(Fn [] (IO _))"),
+                    "names the required shape: {message}"
+                );
             }
             _ => panic!("expected CodegenError"),
         }
@@ -1266,10 +1284,13 @@ mod tests {
             Symbol::from("main"),
             make_main_entry(Type::Fn(
                 vec![],
-                Box::new(Type::ADT(cranelisp_types::FQTypeName::new(
-                    ModuleFullPath::from("primitives"),
-                    TypeName::from("IO"),
-                ), vec![Type::Int])),
+                Box::new(Type::ADT(
+                    cranelisp_types::FQTypeName::new(
+                        ModuleFullPath::from("primitives"),
+                        TypeName::from("IO"),
+                    ),
+                    vec![Type::Int],
+                )),
             )),
         );
         // An `(Fn [] (IO Int))` main is the canonical batch shape — accepted.
@@ -1300,7 +1321,10 @@ mod tests {
         let err = validate_main(&st, &[]).unwrap_err();
         match err {
             CranelispError::CodegenError { message, .. } => {
-                assert!(message.contains("IO"), "names the IO requirement: {message}");
+                assert!(
+                    message.contains("IO"),
+                    "names the IO requirement: {message}"
+                );
             }
             _ => panic!("expected CodegenError"),
         }
@@ -1365,13 +1389,7 @@ mod tests {
     #[test]
     fn find_platform_rlibs_missing_is_error() {
         let dir = tempfile::tempdir().unwrap();
-        let err = find_platform_rlibs(
-            &["shapes".to_string()],
-            dir.path(),
-            &[],
-            &[],
-        )
-        .unwrap_err();
+        let err = find_platform_rlibs(&["shapes".to_string()], dir.path(), &[], &[]).unwrap_err();
         match err {
             CranelispError::CodegenError { message, .. } => {
                 assert!(message.contains("shapes"));
@@ -1391,13 +1409,8 @@ mod tests {
         let rlib = target.join("libcranelisp_shapes.rlib");
         std::fs::write(&rlib, b"fake rlib").unwrap();
 
-        let rlibs = find_platform_rlibs(
-            &["shapes".to_string()],
-            dir.path(),
-            &[],
-            &[target],
-        )
-        .unwrap();
+        let rlibs =
+            find_platform_rlibs(&["shapes".to_string()], dir.path(), &[], &[target]).unwrap();
         assert_eq!(rlibs, vec![rlib]);
     }
 
@@ -1428,7 +1441,10 @@ mod tests {
     // Linux cc). The driver identity is now the impl type, not an enum field.
     #[test]
     fn link_for_host_resolves_on_supported_hosts() {
-        if cfg!(all(target_arch = "aarch64", any(target_os = "macos", target_os = "linux"))) {
+        if cfg!(all(
+            target_arch = "aarch64",
+            any(target_os = "macos", target_os = "linux")
+        )) {
             assert!(crate::link::for_host().is_ok());
         }
     }
@@ -1487,10 +1503,19 @@ mod tests {
                 constraints: HashMap::new(),
                 ty: Type::Fn(vec![], Box::new(Type::Int)),
             },
-            DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot: 0, mode_summary: None } },
+            DefKind::UserFn {
+                fn_state: UserFnState::Concrete {
+                    got_slot: 0,
+                    mode_summary: None,
+                },
+            },
         )
         .visibility(Visibility::Public)
-        .ast(DefnVariant { params: vec![], body, span: Span::SYNTHETIC })
+        .ast(DefnVariant {
+            params: vec![],
+            body,
+            span: Span::SYNTHETIC,
+        })
         .build()
     }
 
@@ -1512,7 +1537,11 @@ mod tests {
         // tested shape). The bare name in the body is the real reference.
         let body = Expr::Apply {
             callee: Box::new(Expr::var(Symbol::from("discover-tests"), Span::SYNTHETIC)),
-            args: vec![Expr::VecLit { elements: vec![], span: Span::SYNTHETIC, inferred_type: None }],
+            args: vec![Expr::VecLit {
+                elements: vec![],
+                span: Span::SYNTHETIC,
+                inferred_type: None,
+            }],
             span: Span::SYNTHETIC,
             resolved_call: None,
             inferred_type: None,
@@ -1525,7 +1554,10 @@ mod tests {
         let err = reject_dev_session_externs_in_link(&tables).unwrap_err();
         match err {
             CranelispError::CodegenError { message, .. } => {
-                assert!(message.contains("discover-tests"), "names the symbol: {message}");
+                assert!(
+                    message.contains("discover-tests"),
+                    "names the symbol: {message}"
+                );
                 assert!(
                     message.contains("dev-session-only") && message.contains("--link"),
                     "explains dev-session-only + unavailable in --link: {message}"
@@ -1573,7 +1605,11 @@ mod tests {
         );
         runner.insert(
             Symbol::from("label"),
-            user_fn_entry_with_body(Expr::StringLit { value: "hi".into(), span: Span::SYNTHETIC, inferred_type: None }),
+            user_fn_entry_with_body(Expr::StringLit {
+                value: "hi".into(),
+                span: Span::SYNTHETIC,
+                inferred_type: None,
+            }),
         );
         tables.insert(ModuleFullPath::from("runner"), runner);
         assert!(
@@ -1599,7 +1635,11 @@ mod tests {
                 Symbol::from("primitives/discover-tests"),
                 Span::SYNTHETIC,
             )),
-            args: vec![Expr::VecLit { elements: vec![], span: Span::SYNTHETIC, inferred_type: None }],
+            args: vec![Expr::VecLit {
+                elements: vec![],
+                span: Span::SYNTHETIC,
+                inferred_type: None,
+            }],
             span: Span::SYNTHETIC,
             resolved_call: None,
             inferred_type: None,
@@ -1631,8 +1671,15 @@ mod tests {
         // `safe/guarded` actually CALLS catch-runtime-error — still accepted, it
         // is a self-contained intrinsic that resolves in --link.
         let body = Expr::Apply {
-            callee: Box::new(Expr::var(Symbol::from("catch-runtime-error"), Span::SYNTHETIC)),
-            args: vec![Expr::IntLit { value: 0, span: Span::SYNTHETIC, inferred_type: None }],
+            callee: Box::new(Expr::var(
+                Symbol::from("catch-runtime-error"),
+                Span::SYNTHETIC,
+            )),
+            args: vec![Expr::IntLit {
+                value: 0,
+                span: Span::SYNTHETIC,
+                inferred_type: None,
+            }],
             span: Span::SYNTHETIC,
             resolved_call: None,
             inferred_type: None,
@@ -1662,7 +1709,11 @@ mod tests {
             crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("user"));
         user.insert(
             Symbol::from("discover-tests"),
-            user_fn_entry_with_body(Expr::IntLit { value: 1, span: Span::SYNTHETIC, inferred_type: None }),
+            user_fn_entry_with_body(Expr::IntLit {
+                value: 1,
+                span: Span::SYNTHETIC,
+                inferred_type: None,
+            }),
         );
         user.insert(Symbol::from("main"), user_fn_entry_with_body(body));
         tables.insert(ModuleFullPath::from("user"), user);
@@ -1681,7 +1732,11 @@ mod tests {
         let tables = dashmap::DashMap::new();
         let body = Expr::Apply {
             callee: Box::new(Expr::var(Symbol::from("str-concat"), Span::SYNTHETIC)),
-            args: vec![Expr::StringLit { value: "hi".into(), span: Span::SYNTHETIC, inferred_type: None }],
+            args: vec![Expr::StringLit {
+                value: "hi".into(),
+                span: Span::SYNTHETIC,
+                inferred_type: None,
+            }],
             span: Span::SYNTHETIC,
             resolved_call: None,
             inferred_type: None,

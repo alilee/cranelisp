@@ -102,8 +102,7 @@ fn healthy_defns_restart_no_cache_restores() {
 #[test]
 fn healthy_defns_restart_cache_wiped_restores() {
     let first = prims_session(HEALTHY).assert_ok();
-    std::fs::remove_dir_all(first.tmpdir.join(".cranelisp-cache"))
-        .expect("wipe .cranelisp-cache");
+    std::fs::remove_dir_all(first.tmpdir.join(".cranelisp-cache")).expect("wipe .cranelisp-cache");
     first
         .run_again()
         .repl()
@@ -361,17 +360,14 @@ fn hand_authored_user_cl_two_expression_only_sessions_byte_identical() {
 // pin (probed: macro + defn + new defn all callable after restart).
 #[test]
 fn hand_authored_user_cl_defining_turn_restart_round_trips_semantically() {
-    prims_session_with_user(
-        HAND_AUTHORED,
-        "(defn extra [y] (add-i64 y 10))\n/quit\n",
-    )
-    .assert_ok()
-    .run_again()
-    .repl()
-    .stdin("(extra (twice (square 3)))\n")
-    .output()
-    .assert_ok()
-    .assert_stdout_contains(":primitives/Int 28");
+    prims_session_with_user(HAND_AUTHORED, "(defn extra [y] (add-i64 y 10))\n/quit\n")
+        .assert_ok()
+        .run_again()
+        .repl()
+        .stdin("(extra (twice (square 3)))\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 28");
 }
 
 fn prims_session_with_user(user_cl: &str, stdin: &str) -> helpers::e2e::CrOutput {

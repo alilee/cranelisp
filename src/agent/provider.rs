@@ -76,7 +76,10 @@ pub fn build_agent_state_with(enabled: bool, auto_accept: bool) -> AgentState {
         "ollama" => build_ollama_state(),
         _ => build_anthropic_state(),
     };
-    AgentState { auto_accept, ..state }
+    AgentState {
+        auto_accept,
+        ..state
+    }
 }
 
 /// Construct an `AgentState`, seeding the §20 autonomy bits (`auto_accept` +
@@ -339,8 +342,7 @@ impl AgentState {
         // empty-id path (see `types.rs::tool_result_key`).
         let mut i = self.transcript.len();
         let mut already_covered = false;
-        while let Some(Turn::ToolResult(r)) =
-            i.checked_sub(1).and_then(|k| self.transcript.get(k))
+        while let Some(Turn::ToolResult(r)) = i.checked_sub(1).and_then(|k| self.transcript.get(k))
         {
             if r.id == result.id {
                 already_covered = true;
@@ -374,6 +376,7 @@ mod tests {
     //! coverage gap the stub (which sits ABOVE rig) cannot close.
 
     use super::*;
+    use rig_core::OneOrMany;
     use rig_core::completion::message::{AssistantContent, Message, ToolFunction, UserContent};
     use rig_core::completion::{
         CompletionError, CompletionModel, CompletionRequest, CompletionResponse, GetTokenUsage,
@@ -381,7 +384,6 @@ mod tests {
     };
     use rig_core::message::ToolCall;
     use rig_core::streaming::StreamingCompletionResponse;
-    use rig_core::OneOrMany;
     use std::sync::{Arc, Mutex};
 
     /// Minimal raw-response type for the mock (the `Response`/`StreamingResponse`
@@ -622,7 +624,11 @@ mod tests {
         s.agent_turn("show me the source of f", &mut sink, &mut consent);
 
         let reqs = captured.lock().unwrap();
-        assert_eq!(reqs.len(), 2, "a tool-call turn drives two completion calls");
+        assert_eq!(
+            reqs.len(),
+            2,
+            "a tool-call turn drives two completion calls"
+        );
 
         // The CONTINUATION request (turn 2) carries the full history including the
         // assistant tool_use turn + the matching tool_result. Walk its
@@ -647,8 +653,14 @@ mod tests {
                 );
             }
         }
-        assert!(saw_tool_use, "the continuation request must carry an assistant tool_use block");
-        assert!(saw_tool_result, "the continuation request must carry the tool_result block");
+        assert!(
+            saw_tool_use,
+            "the continuation request must carry an assistant tool_use block"
+        );
+        assert!(
+            saw_tool_result,
+            "the continuation request must carry the tool_result block"
+        );
         assert!(
             last_use_ids.contains(&"toolu_42".to_string()),
             "the tool_use id from turn 1 (toolu_42) must appear in the continuation history"
@@ -671,7 +683,9 @@ mod tests {
         // The FINAL message of the continuation request is the tool_result
         // (the prompt), NOT a re-asked copy of the original question — the
         // duplicate-prompt-after-tool_result shape was the loop's root cause.
-        let last = history.last().expect("a final message in the continuation request");
+        let last = history
+            .last()
+            .expect("a final message in the continuation request");
         assert!(
             !user_tool_result_ids(last).is_empty(),
             "the final continuation message must be the tool_result, not a re-asked question"
@@ -682,7 +696,10 @@ mod tests {
                 if content.iter().any(|c| matches!(
                     c, UserContent::Text(t) if t.text.contains("show me the source")))
         );
-        assert!(!restated, "the original question must not be re-appended after the tool_result");
+        assert!(
+            !restated,
+            "the original question must not be re-appended after the tool_result"
+        );
     }
 
     // spec: repl/spec.md §17 — Phase-6 Build-mode repair-loop pairing. Drive a
@@ -796,7 +813,9 @@ mod tests {
         // The error feedback must be carried as the tool_result content (paired),
         // and it must be the FINAL message (the prompt the model answers) — not a
         // bare trailing user turn.
-        let last = history.last().expect("a final message in the repair request");
+        let last = history
+            .last()
+            .expect("a final message in the repair request");
         assert!(
             !user_tool_result_ids(last).is_empty(),
             "the final repair message must be the error tool_result (paired), not a bare user turn"
@@ -857,7 +876,9 @@ mod tests {
         // Specifically: the FINAL success tool_result must carry the REPAIR
         // tool_use id (toolu_fixed), and the history must contain the repair
         // tool_use — proving the outer result paired against the actual submit.
-        let cont_last = cont.last().expect("a final message in the post-submit request");
+        let cont_last = cont
+            .last()
+            .expect("a final message in the post-submit request");
         assert_eq!(
             user_tool_result_ids(cont_last),
             vec!["toolu_fixed".to_string()],
@@ -962,7 +983,11 @@ mod tests {
         });
         let mut sink: Vec<u8> = Vec::new();
         let mut consent = crate::agent::types::NoConsent;
-        s.agent_turn("write me a never fn in this module", &mut sink, &mut consent);
+        s.agent_turn(
+            "write me a never fn in this module",
+            &mut sink,
+            &mut consent,
+        );
 
         // Phase-6 (S89) give-up semantics: the per-submit cap exhaustion feeds the
         // MODEL an honest abort (so it can adapt), but the USER-facing
@@ -1119,7 +1144,10 @@ mod tests {
         let mut consent = crate::agent::types::NoConsent;
         s.agent_turn("what is f", &mut sink, &mut consent);
 
-        assert!(trace_path.exists(), "the trace file must be written through the rig boundary");
+        assert!(
+            trace_path.exists(),
+            "the trace file must be written through the rig boundary"
+        );
         let body = std::fs::read_to_string(&trace_path).expect("trace file readable");
         assert!(
             body.contains("[agent-trace]") && body.contains("→request"),
@@ -1147,7 +1175,10 @@ mod tests {
         // would have truncated to an 80-char head + `…`.
         let long_form = "(defn very-long-helper-fn [first-arg second-arg]\n  \
             (add-i64 (mul-i64 first-arg 1000000) second-arg))";
-        assert!(long_form.len() > 80, "fixture must exceed the old compact cap");
+        assert!(
+            long_form.len() > 80,
+            "fixture must exceed the old compact cap"
+        );
 
         // Turn 1: pull `/source f`; turn 2: Done (so turn-2's request carries the
         // fed-back long source as a tool_result that the trace renders Full).
@@ -1215,11 +1246,13 @@ mod tests {
         // belongs to its request's turn) — both `→request` and `←response` lines
         // for turn 1 are present and stamped.
         assert!(
-            body.lines().any(|l| l.contains("turn=1") && l.contains("→request")),
+            body.lines()
+                .any(|l| l.contains("turn=1") && l.contains("→request")),
             "a turn=1 request marker must be present: {body}"
         );
         assert!(
-            body.lines().any(|l| l.contains("turn=1") && l.contains("←response")),
+            body.lines()
+                .any(|l| l.contains("turn=1") && l.contains("←response")),
             "a turn=1 response marker must be present (response shares request's turn): {body}"
         );
     }
@@ -1244,7 +1277,7 @@ mod tests {
     #[test]
     fn record_pull_result_closes_every_call_in_a_multi_call_batch() {
         use crate::agent::types::{
-            assert_transcript_wire_valid, AgentState, ToolCallRequest, ToolCallResult, Turn,
+            AgentState, ToolCallRequest, ToolCallResult, Turn, assert_transcript_wire_valid,
         };
         let mut state = AgentState {
             transcript: Vec::new(),
@@ -1259,9 +1292,24 @@ mod tests {
             turn_ring: std::collections::VecDeque::new(),
         };
         let calls = vec![
-            ToolCallRequest { id: "toolu_a".into(), name: "source".into(), argument: "f".into(), question: None },
-            ToolCallRequest { id: "toolu_b".into(), name: "info".into(), argument: "g".into(), question: None },
-            ToolCallRequest { id: "toolu_c".into(), name: "sig".into(), argument: "h".into(), question: None },
+            ToolCallRequest {
+                id: "toolu_a".into(),
+                name: "source".into(),
+                argument: "f".into(),
+                question: None,
+            },
+            ToolCallRequest {
+                id: "toolu_b".into(),
+                name: "info".into(),
+                argument: "g".into(),
+                question: None,
+            },
+            ToolCallRequest {
+                id: "toolu_c".into(),
+                name: "sig".into(),
+                argument: "h".into(),
+                question: None,
+            },
         ];
         // One assistant turn opens the batch, then one result per call in order.
         state.record_assistant_tool_calls(calls.clone());
@@ -1365,7 +1413,7 @@ mod tests {
     #[test]
     fn submit_repair_interleaved_in_batch_is_known_wire_invalid_residual() {
         use crate::agent::types::{
-            assert_transcript_wire_valid, AgentState, ToolCallRequest, ToolCallResult, Turn,
+            AgentState, ToolCallRequest, ToolCallResult, Turn, assert_transcript_wire_valid,
         };
         let mut state = AgentState {
             transcript: Vec::new(),
@@ -1381,8 +1429,18 @@ mod tests {
         };
         // The batch: [a = submit (will repair), b = a read call]. submit NOT last.
         state.record_assistant_tool_calls(vec![
-            ToolCallRequest { id: "a".into(), name: "submit".into(), argument: "(defn x [".into(), question: None },
-            ToolCallRequest { id: "b".into(), name: "source".into(), argument: "f".into(), question: None },
+            ToolCallRequest {
+                id: "a".into(),
+                name: "submit".into(),
+                argument: "(defn x [".into(),
+                question: None,
+            },
+            ToolCallRequest {
+                id: "b".into(),
+                name: "source".into(),
+                argument: "f".into(),
+                question: None,
+            },
         ]);
         // run_submit(a)'s repair loop records its OWN paired ATC/TR onto the main
         // transcript (the essence of the interposition) before the outer result.
@@ -1445,11 +1503,14 @@ mod tests {
     // assembled `CompletionRequest.max_tokens`.
     #[test]
     fn build_request_sets_max_tokens_for_anthropic() {
-        let rig = RigModel::new(MockModel::new(Vec::new()))
-            .expect("tokio current-thread runtime builds");
+        let rig =
+            RigModel::new(MockModel::new(Vec::new())).expect("tokio current-thread runtime builds");
         // A representative request — a plain user turn, no tools/transcript needed:
         // the missing field is on the shared builder, independent of request content.
-        let req = AgentRequest { user: "what model are you?".to_string(), ..Default::default() };
+        let req = AgentRequest {
+            user: "what model are you?".to_string(),
+            ..Default::default()
+        };
 
         let rig_req = rig.build_request(&req);
 

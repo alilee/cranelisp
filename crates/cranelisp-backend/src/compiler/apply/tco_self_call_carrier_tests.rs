@@ -25,9 +25,7 @@
 //! operand count does.
 
 use crate::jit::Jit;
-use cranelisp_types::{
-    Defn, DefnVariant, Expr, ResolvedCall, Span, Symbol, Type, Visibility,
-};
+use cranelisp_types::{Defn, DefnVariant, Expr, ResolvedCall, Span, Symbol, Type, Visibility};
 
 /// True iff the CLIF contains a `call_indirect` that passes MORE THAN ONE
 /// operand — i.e. an arg-passing call (a closure call `f(closure_ptr, arg)`),
@@ -58,7 +56,11 @@ fn var(name: &str, span: Span, ty: Type) -> Expr {
 fn identity_lambda(span: Span) -> Expr {
     Expr::Lambda {
         params: vec![(Symbol::from("y"), None)],
-        body: Box::new(var("y", Span::new(span.start + 1, span.start + 2), Type::Int)),
+        body: Box::new(var(
+            "y",
+            Span::new(span.start + 1, span.start + 2),
+            Type::Int,
+        )),
         span,
         inferred_type: Some(Box::new(Type::Fn(vec![Type::Int], Box::new(Type::Int)))),
     }
@@ -75,8 +77,16 @@ fn tail_call(
     resolved_call: Option<ResolvedCall>,
 ) -> Expr {
     Expr::Apply {
-        callee: Box::new(var(callee, callee_span, Type::Fn(vec![Type::Int], Box::new(Type::Int)))),
-        args: vec![var(arg, Span::new(apply_span.end - 2, apply_span.end - 1), Type::Int)],
+        callee: Box::new(var(
+            callee,
+            callee_span,
+            Type::Fn(vec![Type::Int], Box::new(Type::Int)),
+        )),
+        args: vec![var(
+            arg,
+            Span::new(apply_span.end - 2, apply_span.end - 1),
+            Type::Int,
+        )],
         span: apply_span,
         resolved_call: resolved_call.map(Box::new),
         inferred_type: Some(Box::new(Type::Int)),
@@ -115,7 +125,8 @@ fn clif_of(defn: &Defn, carrier_names: &[&str]) -> String {
     crate::test_support::insert_user_fn_stub(&mut st, defn.name.as_ref(), 1);
     symbol_tables.insert(module_path.clone(), st);
 
-    let resolved_targets = crate::test_support::call_carriers(defn.body(), &module_path, carrier_names);
+    let resolved_targets =
+        crate::test_support::call_carriers(defn.body(), &module_path, carrier_names);
     crate::test_support::probe_defn_clif(
         defn,
         &[],

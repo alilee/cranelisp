@@ -71,7 +71,7 @@
 
 ; Syntax highlighting — /source shows bold heads, cyan types, yellow literals, green strings
 
-(defn greet [:String name :Int times] (if (> times 0) (str-concat "Hello " (str-concat name (str-concat "! x" (int-to-string times)))) "none"))
+(defn greet [:String name :Int times] (if (> times 0) (str "Hello " name "! x" times) "none"))
 
 /source greet
 (greet "world" 3)

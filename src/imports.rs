@@ -22,12 +22,12 @@
 
 use std::collections::HashSet;
 
+use cranelisp_typecheck::PreludeFallback;
 use cranelisp_types::{
     CranelispError, DefKind, ErrorLocation, ExportSpec, FQSymbol, ImportNames, ImportSpec,
     ModuleAliasEntry, ModuleAliases, ModuleEntry, ModuleFullPath, Span, Symbol, TraitName,
     Visibility,
 };
-use cranelisp_typecheck::PreludeFallback;
 
 /// The session-side declared-export closure map (FIXME 0604 §2.2): `M → D(M)`,
 /// where `D(M)` is the union of the names `M`'s own `(export …)` specs bring in.
@@ -66,11 +66,7 @@ pub(crate) fn install_imports(
             let key = alias_key(current_module, alias.as_ref());
             module_aliases.insert(
                 key,
-                ModuleAliasEntry::new(
-                    spec.module_path.clone(),
-                    Visibility::Private,
-                    spec.span,
-                ),
+                ModuleAliasEntry::new(spec.module_path.clone(), Visibility::Private, spec.span),
             );
         }
 
@@ -85,8 +81,7 @@ pub(crate) fn install_imports(
         let resolved_path = if symbol_tables.contains_key(&spec.module_path) {
             spec.module_path.clone()
         } else {
-            let child =
-                ModuleFullPath::from(format!("{current_module}.{}", spec.module_path));
+            let child = ModuleFullPath::from(format!("{current_module}.{}", spec.module_path));
             if symbol_tables.contains_key(&child) {
                 child
             } else {
@@ -95,12 +90,13 @@ pub(crate) fn install_imports(
         };
 
         let to_add = {
-            let source_guard = symbol_tables.get(&resolved_path).ok_or_else(|| {
-                CranelispError::TypeError {
-                    message: format!("unknown module '{}' in import", spec.module_path),
-                    location: ErrorLocation::from_span(spec.span),
-                }
-            })?;
+            let source_guard =
+                symbol_tables
+                    .get(&resolved_path)
+                    .ok_or_else(|| CranelispError::TypeError {
+                        message: format!("unknown module '{}' in import", spec.module_path),
+                        location: ErrorLocation::from_span(spec.span),
+                    })?;
             collect_bindings(
                 &source_guard,
                 current_module,
@@ -200,7 +196,9 @@ pub(crate) fn install_exports(
         // any phantom write), keyed by the destination module.
         let spec_names: HashSet<Symbol> = to_add.iter().map(|(n, _)| n.clone()).collect();
         if let Some(de) = declared_exports {
-            de.entry(current_module.clone()).or_default().extend(spec_names.iter().cloned());
+            de.entry(current_module.clone())
+                .or_default()
+                .extend(spec_names.iter().cloned());
         }
         // FIXME 0604 chokepoint: `export` edges are Public — the gate routes here
         // too. `D(M)` for these entries is exactly the names being installed (this
@@ -209,7 +207,13 @@ pub(crate) fn install_exports(
         // 18) — a phantom out-of-closure public write is caught at the LIVE commit
         // seam (`commit_staging_to_live`), where `D(M)` is already recorded.
         for (name, entry) in &to_add {
-            check_terminal_closure(current_module, name.as_ref(), entry, spec.span, Some(&spec_names))?;
+            check_terminal_closure(
+                current_module,
+                name.as_ref(),
+                entry,
+                spec.span,
+                Some(&spec_names),
+            )?;
         }
         insert_detecting_ambiguity(
             symbol_tables,
@@ -501,11 +505,7 @@ pub(crate) fn install_module_session_env(
         if let Some(alias) = &spec.alias {
             module_aliases.insert(
                 alias_key(module, alias.as_ref()),
-                ModuleAliasEntry::new(
-                    spec.module_path.clone(),
-                    Visibility::Private,
-                    spec.span,
-                ),
+                ModuleAliasEntry::new(spec.module_path.clone(), Visibility::Private, spec.span),
             );
         }
     }
@@ -527,8 +527,14 @@ pub(crate) fn install_module_session_env(
 /// `prelude` in an import or export? Used by `install_module_session_env` to
 /// decide the prelude-fallback bit without the source sexps in hand.
 fn table_references_prelude(table: &SessionSymbolTable) -> bool {
-    table.imports.iter().any(|s| s.module_path.as_ref() == "prelude")
-        || table.exports.iter().any(|s| s.module_path.as_ref() == "prelude")
+    table
+        .imports
+        .iter()
+        .any(|s| s.module_path.as_ref() == "prelude")
+        || table
+            .exports
+            .iter()
+            .any(|s| s.module_path.as_ref() == "prelude")
 }
 
 /// `<owner>.<alias>` key for the session-level alias table; owner is the
@@ -562,7 +568,10 @@ fn prelude_fallback_target(
     current_module: &ModuleFullPath,
 ) -> Option<ModuleFullPath> {
     if current_module.as_ref() != PRELUDE_MODULE
-        && prelude_fallback.get(current_module).map(|b| *b).unwrap_or(false)
+        && prelude_fallback
+            .get(current_module)
+            .map(|b| *b)
+            .unwrap_or(false)
     {
         Some(ModuleFullPath::from(PRELUDE_MODULE))
     } else {
@@ -597,12 +606,7 @@ fn prelude_terminal(
 }
 
 /// §8.6.5 ambiguity diagnostic naming both qualified alternatives.
-fn ambiguity_error(
-    name: &Symbol,
-    alt_a: &str,
-    alt_b: &str,
-    span: Span,
-) -> CranelispError {
+fn ambiguity_error(name: &Symbol, alt_a: &str, alt_b: &str, span: Span) -> CranelispError {
     CranelispError::TypeError {
         message: format!(
             "ambiguous bare name '{name}' — provided by distinct sources \
@@ -624,12 +628,20 @@ fn collect_bindings(
 ) -> Result<Vec<(Symbol, ModuleEntry<Code>)>, CranelispError> {
     match names {
         ImportNames::Glob => Ok(collect_glob(source_table, module_path, visibility)),
-        ImportNames::Specific(names) => {
-            collect_specific(source_table, current_module, names, module_path, span, visibility)
-        }
-        ImportNames::MemberGlob(parent) => {
-            Ok(collect_member_glob(source_table, parent, module_path, visibility))
-        }
+        ImportNames::Specific(names) => collect_specific(
+            source_table,
+            current_module,
+            names,
+            module_path,
+            span,
+            visibility,
+        ),
+        ImportNames::MemberGlob(parent) => Ok(collect_member_glob(
+            source_table,
+            parent,
+            module_path,
+            visibility,
+        )),
         ImportNames::None => Ok(Vec::new()),
     }
 }
@@ -823,14 +835,17 @@ fn insert_detecting_ambiguity(
             // No prior INNER entry. Before installing, check the prelude OUTER
             // scope: a distinct-terminal overlap poisons the bare name.
             if let Some(prelude_path) = &prelude_target
-                && let Some(prelude_term) = prelude_terminal(symbol_tables, prelude_path, name.as_ref())
+                && let Some(prelude_term) =
+                    prelude_terminal(symbol_tables, prelude_path, name.as_ref())
                 && let Some(new_term) = terminal_identity(symbol_tables, &new_entry)
                 && prelude_term != new_term
             {
                 // R7 grep-guard (§8.3): observe the poison-sentinel insertion too
                 // (an `Ambiguous` entry is non-`Import` → the assert short-circuits
                 // to valid without a map read, so it is safe beside the insert).
-                let poison = ModuleEntry::Ambiguous { visibility: Visibility::Public };
+                let poison = ModuleEntry::Ambiguous {
+                    visibility: Visibility::Public,
+                };
                 assert_prelude_closure(symbol_tables, current_module, name.as_ref(), &poison);
                 if let Some(mut guard) = symbol_tables.get_mut(current_module) {
                     guard.insert(name.clone(), poison);
@@ -879,7 +894,10 @@ fn insert_detecting_ambiguity(
                 .map(|(module, symbol)| FQSymbol { module, symbol })
                 .unwrap_or_else(|| match &new_entry {
                     ModuleEntry::Import { source, .. } => source.clone(),
-                    _ => FQSymbol { module: current_module.clone(), symbol: name.clone() },
+                    _ => FQSymbol {
+                        module: current_module.clone(),
+                        symbol: name.clone(),
+                    },
                 });
             return cranelisp_types::check_binding_addition(
                 &name,
@@ -942,13 +960,20 @@ fn insert_detecting_ambiguity(
         // (spec poison-on-reference model) AND report eagerly with both
         // qualified alternatives so the user can disambiguate.
         // R7 grep-guard (§8.3): observe the poison-sentinel insertion.
-        let poison = ModuleEntry::Ambiguous { visibility: Visibility::Public };
+        let poison = ModuleEntry::Ambiguous {
+            visibility: Visibility::Public,
+        };
         assert_prelude_closure(symbol_tables, current_module, name.as_ref(), &poison);
         if let Some(mut guard) = symbol_tables.get_mut(current_module) {
             guard.insert(name.clone(), poison);
         }
-        let (alt_a, alt_b) =
-            qualified_alternatives(&name, &existing_terminal, &new_terminal, &existing, &new_entry);
+        let (alt_a, alt_b) = qualified_alternatives(
+            &name,
+            &existing_terminal,
+            &new_terminal,
+            &existing,
+            &new_entry,
+        );
         return Err(CranelispError::TypeError {
             message: format!(
                 "ambiguous bare name '{name}' — imported from distinct sources \

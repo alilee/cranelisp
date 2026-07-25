@@ -55,11 +55,10 @@
 //! clean runtime-RED; a non-compiling fixture crate would break the workspace
 //! build. The fixture lands in Wave 2.
 
-
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, CrOutput};
+use helpers::e2e::{CrOutput, Cranelisp};
 
 // =============================================================================
 // Tuning. D is the per-effect delay; small enough to keep each timed run well

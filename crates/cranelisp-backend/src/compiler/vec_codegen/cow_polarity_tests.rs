@@ -23,7 +23,7 @@ use cranelift_module::{Linkage, Module};
 
 use cranelisp_types::Span;
 
-use super::{emit_vec_push_cow_core, emit_vec_set_cow_core, SourceOwnership, VecSetCow};
+use super::{SourceOwnership, VecSetCow, emit_vec_push_cow_core, emit_vec_set_cow_core};
 use crate::jit::Jit;
 
 /// COW source polarity for the probe harness (R14 / §13.7).
@@ -83,8 +83,12 @@ fn cow_core_clif(set: bool, own: Own) -> String {
             vec_drop_func_id: vec_drop_id,
             elem_dec_fn_ptr: dec_fn,
         },
-        Own::BorrowedEscaping => SourceOwnership::Borrowed { retain_reused: true },
-        Own::BorrowedInFrame => SourceOwnership::Borrowed { retain_reused: false },
+        Own::BorrowedEscaping => SourceOwnership::Borrowed {
+            retain_reused: true,
+        },
+        Own::BorrowedInFrame => SourceOwnership::Borrowed {
+            retain_reused: false,
+        },
     };
 
     let result = if set {
@@ -292,4 +296,3 @@ fn cow_core_escaping_minus_inframe_is_exactly_one_retention() {
         );
     }
 }
-

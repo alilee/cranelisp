@@ -155,9 +155,8 @@ fn stdlib_all_public_modules_compile_and_run() {
         // `(import …)` does not receive the implicit prelude glob, so a bare
         // `Pure` would be `undefined variable` — an artefact of the probe, not a
         // module defect.
-        let probe = format!(
-            "(import [{m} [*]])\n(import [primitives [Pure]])\n(defn main [] (Pure 0))\n"
-        );
+        let probe =
+            format!("(import [{m} [*]])\n(import [primitives [Pure]])\n(defn main [] (Pure 0))\n");
         let out = Cranelisp::new()
             .use_workspace_stdlib_for_stdlib_conformance_only()
             .file("main.cl", &probe)

@@ -15,8 +15,8 @@
 use std::path::{Path, PathBuf};
 
 use cranelisp_types::{
-    CranelispError, ErrorLocation, ExportSpec, ImportNames, ImportSpec,
-    ModuleFullPath, Sexp, Span, Symbol, Visibility,
+    CranelispError, ErrorLocation, ExportSpec, ImportNames, ImportSpec, ModuleFullPath, Sexp, Span,
+    Symbol, Visibility,
 };
 
 use crate::worker::{ModuleCompiler, ensure_typecheck_product};
@@ -40,9 +40,7 @@ pub(super) enum BlockAction {
     /// Continue processing the next form.
     Continue,
     /// A dependency was discovered, registered, and blocked on.
-    Block {
-        dep_module: ModuleFullPath,
-    },
+    Block { dep_module: ModuleFullPath },
 }
 
 // ---------------------------------------------------------------------------
@@ -184,9 +182,7 @@ pub(super) fn handle_import(
         // — the signature of the Round 4 heisenbug. Require a terminal
         // typecheck state via `scheduler.is_typechecked(dep)` so the fast
         // path only fires when `dep`'s SymbolTable is fully populated.
-        if ctx.symbol_tables.contains_key(dep)
-            && ctx.scheduler.is_typechecked(dep)
-        {
+        if ctx.symbol_tables.contains_key(dep) && ctx.scheduler.is_typechecked(dep) {
             // Sprint 61 Wave 3 step 3e — H4 race closure (Change B).
             // Emit the reader-side trace tag immediately before
             // `register_imports` consumes `symbol_tables[dep]`. This is
@@ -201,33 +197,43 @@ pub(super) fn handle_import(
                 crate::observability::SchedulerTraceTag::RegisterImportsLookup,
                 dep.as_ref(),
             );
-            crate::imports::install_imports(ctx.symbol_tables, &ctx.current_module, ctx.module_aliases, ctx.prelude_fallback, std::slice::from_ref(spec))?;
+            crate::imports::install_imports(
+                ctx.symbol_tables,
+                &ctx.current_module,
+                ctx.module_aliases,
+                ctx.prelude_fallback,
+                std::slice::from_ref(spec),
+            )?;
             continue;
         }
 
         // Resolve file path.
         let dep_file = crate::pipeline::resolve_module_file(dep, ctx.project_root, ctx.lib_dirs)
             .ok_or_else(|| CranelispError::ModuleError {
-                message: format!(
-                    "module '{}' not found (imported by '{}')",
-                    dep, module
-                ),
+                message: format!("module '{}' not found (imported by '{}')", dep, module),
                 location: ErrorLocation::from_span_file(spec.span, None),
             })?;
 
         // Populate file_to_module mapping for file watcher (Step 14).
         if let Some(shared) = ctx.shared_state
-            && let Ok(canonical) = dep_file.canonicalize() {
-                shared
-                    .file_to_module
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(canonical, dep.clone());
-            }
+            && let Ok(canonical) = dep_file.canonicalize()
+        {
+            shared
+                .file_to_module
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(canonical, dep.clone());
+        }
 
         // Cache check: try to load from disk cache before parsing.
         if try_cache_hit_load(ctx, dep, &dep_file) {
-            crate::imports::install_imports(ctx.symbol_tables, &ctx.current_module, ctx.module_aliases, ctx.prelude_fallback, std::slice::from_ref(spec))?;
+            crate::imports::install_imports(
+                ctx.symbol_tables,
+                &ctx.current_module,
+                ctx.module_aliases,
+                ctx.prelude_fallback,
+                std::slice::from_ref(spec),
+            )?;
             continue;
         }
 
@@ -237,16 +243,14 @@ pub(super) fn handle_import(
         let dep_file_for_err = dep_file.clone();
         let dep_clone_for_err = dep.clone();
         let spec_span = spec.span;
-        let dep_sexps = register_dep(ctx, dep, &dep_file, |e| {
-            CranelispError::ModuleError {
-                message: format!(
-                    "cannot read module '{}' from '{}': {}",
-                    dep_clone_for_err,
-                    dep_file_for_err.display(),
-                    e
-                ),
-                location: ErrorLocation::from_span_file(spec_span, Some(dep_file_for_err.clone())),
-            }
+        let dep_sexps = register_dep(ctx, dep, &dep_file, |e| CranelispError::ModuleError {
+            message: format!(
+                "cannot read module '{}' from '{}': {}",
+                dep_clone_for_err,
+                dep_file_for_err.display(),
+                e
+            ),
+            location: ErrorLocation::from_span_file(spec_span, Some(dep_file_for_err.clone())),
         })?;
 
         // Register dep with scheduler (idempotent — skips if already
@@ -365,7 +369,8 @@ pub(super) fn drive_module_dep(
     // never blocked (S93 Invariant SW); the dep is loaded so there is no cycle.
     if fq_module_is_loaded(ctx, dep) {
         if !ctx.eval_driven {
-            ctx.scheduler.block_for_typecheck(module, dep, &Symbol::from("*"), span)?;
+            ctx.scheduler
+                .block_for_typecheck(module, dep, &Symbol::from("*"), span)?;
             ctx.scheduler.unblock_module(module);
         }
         return Ok(());
@@ -397,7 +402,8 @@ pub(super) fn drive_module_dep(
     // — block-then-immediately-unblock to re-queue the referencing module.
     if try_cache_hit_load(ctx, dep, &dep_file) {
         if !ctx.eval_driven {
-            ctx.scheduler.block_for_typecheck(module, dep, &Symbol::from("*"), span)?;
+            ctx.scheduler
+                .block_for_typecheck(module, dep, &Symbol::from("*"), span)?;
             ctx.scheduler.unblock_module(module);
         }
         return Ok(());
@@ -624,13 +630,11 @@ pub(super) fn static_import_closure(
     }
 
     let mut edges: Vec<(ModuleFullPath, Vec<ModuleFullPath>)> = Vec::new();
-    let mut visited: std::collections::HashSet<ModuleFullPath> =
-        std::collections::HashSet::new();
+    let mut visited: std::collections::HashSet<ModuleFullPath> = std::collections::HashSet::new();
     edges.push((module.clone(), root_deps.clone()));
     visited.insert(module.clone());
 
-    let mut queue: std::collections::VecDeque<ModuleFullPath> =
-        root_deps.into_iter().collect();
+    let mut queue: std::collections::VecDeque<ModuleFullPath> = root_deps.into_iter().collect();
     while let Some(dep) = queue.pop_front() {
         if !visited.insert(dep.clone()) {
             continue; // already walked
@@ -666,10 +670,7 @@ pub(super) fn static_import_closure(
         }
         Err(cycle) => Err(CranelispError::ModuleError {
             message: format!("circular dependency detected: {}", cycle.render()),
-            location: ErrorLocation::from_span_file(
-                first_span.unwrap_or(Span::SYNTHETIC),
-                None,
-            ),
+            location: ErrorLocation::from_span_file(first_span.unwrap_or(Span::SYNTHETIC), None),
         }),
     }
 }
@@ -836,7 +837,13 @@ pub(super) fn handle_export(
 
         // Already loaded — register the re-export and continue.
         if ctx.symbol_tables.contains_key(dep) {
-            crate::imports::install_exports(ctx.symbol_tables, &ctx.current_module, ctx.prelude_fallback, ctx.shared_state.map(|s| &s.declared_exports), std::slice::from_ref(spec))?;
+            crate::imports::install_exports(
+                ctx.symbol_tables,
+                &ctx.current_module,
+                ctx.prelude_fallback,
+                ctx.shared_state.map(|s| &s.declared_exports),
+                std::slice::from_ref(spec),
+            )?;
             continue;
         }
 
@@ -844,22 +851,20 @@ pub(super) fn handle_export(
         // Resolve file path.
         let dep_file = crate::pipeline::resolve_module_file(dep, ctx.project_root, ctx.lib_dirs)
             .ok_or_else(|| CranelispError::ModuleError {
-                message: format!(
-                    "module '{}' not found (re-exported by '{}')",
-                    dep, module
-                ),
+                message: format!("module '{}' not found (re-exported by '{}')", dep, module),
                 location: ErrorLocation::from_span_file(spec.span, None),
             })?;
 
         // Populate file_to_module mapping for file watcher.
         if let Some(shared) = ctx.shared_state
-            && let Ok(canonical) = dep_file.canonicalize() {
-                shared
-                    .file_to_module
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(canonical, dep.clone());
-            }
+            && let Ok(canonical) = dep_file.canonicalize()
+        {
+            shared
+                .file_to_module
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(canonical, dep.clone());
+        }
 
         // Cache check.
         if try_cache_hit_load(ctx, dep, &dep_file) {
@@ -872,14 +877,14 @@ pub(super) fn handle_export(
         let dep_file_for_err = dep_file.clone();
         let dep_clone_for_err = dep.clone();
         let spec_span = spec.span;
-        let dep_sexps = register_dep(ctx, dep, &dep_file, |e| {
-            CranelispError::ModuleError {
-                message: format!(
-                    "cannot read module '{}' from '{}': {}",
-                    dep_clone_for_err, dep_file_for_err.display(), e
-                ),
-                location: ErrorLocation::from_span_file(spec_span, Some(dep_file_for_err.clone())),
-            }
+        let dep_sexps = register_dep(ctx, dep, &dep_file, |e| CranelispError::ModuleError {
+            message: format!(
+                "cannot read module '{}' from '{}': {}",
+                dep_clone_for_err,
+                dep_file_for_err.display(),
+                e
+            ),
+            location: ErrorLocation::from_span_file(spec_span, Some(dep_file_for_err.clone())),
         })?;
 
         // Register dep with scheduler (sexps ride the packet) and record edge.
@@ -894,7 +899,13 @@ pub(super) fn handle_export(
     // All source modules loaded — register the re-exports. Record `D(M)` from
     // these specs into the session-side map (FIXME 0604 §2.2) for the live commit
     // gate; the background index path uses its own isolated call with `None`.
-    crate::imports::install_exports(ctx.symbol_tables, &ctx.current_module, ctx.prelude_fallback, ctx.shared_state.map(|s| &s.declared_exports), specs)?;
+    crate::imports::install_exports(
+        ctx.symbol_tables,
+        &ctx.current_module,
+        ctx.prelude_fallback,
+        ctx.shared_state.map(|s| &s.declared_exports),
+        specs,
+    )?;
     Ok(BlockAction::Continue)
 }
 
@@ -915,11 +926,7 @@ fn register_submodule_alias(
 ) {
     ctx.module_aliases.insert(
         ModuleFullPath::from(name.as_ref()),
-        cranelisp_types::ModuleAliasEntry::new(
-            sub_path.clone(),
-            Visibility::Private,
-            span,
-        ),
+        cranelisp_types::ModuleAliasEntry::new(sub_path.clone(), Visibility::Private, span),
     );
 }
 
@@ -1034,13 +1041,14 @@ fn drive_submodule(
 
     // Populate file_to_module mapping for file watcher.
     if let Some(shared) = ctx.shared_state
-        && let Ok(canonical) = dep_file.canonicalize() {
-            shared
-                .file_to_module
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(canonical, sub_path.clone());
-        }
+        && let Ok(canonical) = dep_file.canonicalize()
+    {
+        shared
+            .file_to_module
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(canonical, sub_path.clone());
+    }
 
     // Cache check: try to load from disk cache before parsing.
     if try_cache_hit_load(ctx, &sub_path, &dep_file) {
@@ -1053,20 +1061,19 @@ fn drive_submodule(
     let dep_file_for_err = dep_file.clone();
     let sub_path_for_err = sub_path.clone();
     let decl_span = decl.span;
-    let dep_sexps = register_dep(ctx, &sub_path, &dep_file, |e| {
-        CranelispError::ModuleError {
-            message: format!(
-                "cannot read submodule '{}' from '{}': {}",
-                sub_path_for_err,
-                dep_file_for_err.display(),
-                e
-            ),
-            location: ErrorLocation::from_span_file(decl_span, Some(dep_file_for_err.clone())),
-        }
+    let dep_sexps = register_dep(ctx, &sub_path, &dep_file, |e| CranelispError::ModuleError {
+        message: format!(
+            "cannot read submodule '{}' from '{}': {}",
+            sub_path_for_err,
+            dep_file_for_err.display(),
+            e
+        ),
+        location: ErrorLocation::from_span_file(decl_span, Some(dep_file_for_err.clone())),
     })?;
 
     // Register dep with scheduler (sexps ride the packet) and record edge.
-    ctx.scheduler.register_module(sub_path.clone(), dep_sexps, true);
+    ctx.scheduler
+        .register_module(sub_path.clone(), dep_sexps, true);
     block_dep(ctx, module, &sub_path, decl_span)?;
 
     Ok(BlockAction::Block {
@@ -1124,11 +1131,8 @@ pub(crate) fn write_inline_mod_to_disk(
 ) -> Result<(), CranelispError> {
     // Resolve the backing-file directory against the PARENT module's own
     // on-disk location (lib-dir-relative, FIXME 0423), not the process CWD.
-    let mod_dir = match crate::pipeline::resolve_module_file(
-        parent_module,
-        project_root,
-        lib_dirs,
-    ) {
+    let mod_dir = match crate::pipeline::resolve_module_file(parent_module, project_root, lib_dirs)
+    {
         // Parent file found (e.g. `lib/accum.cl`): backing dir is the parent's
         // own directory joined with the parent's stem — `lib/accum/`.
         Some(parent_file) => {
@@ -1173,11 +1177,7 @@ pub(crate) fn write_inline_mod_to_disk(
         .collect::<Vec<_>>()
         .join("\n");
     std::fs::write(&file_path, &source).map_err(|e| CranelispError::ModuleError {
-        message: format!(
-            "cannot write inline mod '{}': {}",
-            file_path.display(),
-            e
-        ),
+        message: format!("cannot write inline mod '{}': {}", file_path.display(), e),
         location: ErrorLocation::from_span_file(Span::SYNTHETIC, Some(file_path)),
     })?;
 
@@ -1397,10 +1397,7 @@ pub(super) fn inject_prelude_if_needed(
     // consult); none flatten prelude's symbols into this module.
     if !ctx.symbol_tables.contains_key(&prelude_path) {
         // Discover prelude through the same lazy path as any user import.
-        let prelude_file = crate::session_setup::resolve_prelude(
-            ctx.project_root,
-            ctx.lib_dirs,
-        );
+        let prelude_file = crate::session_setup::resolve_prelude(ctx.project_root, ctx.lib_dirs);
         if let Some(prelude_file) = prelude_file {
             // Cache check: load prelude from disk cache (so the fallback has a
             // table to consult). No flatten — the bit was set above.
@@ -1419,11 +1416,15 @@ pub(super) fn inject_prelude_if_needed(
                         prelude_file_for_err.display(),
                         e
                     ),
-                    location: ErrorLocation::from_span_file(Span::SYNTHETIC, Some(prelude_file_for_err.clone())),
+                    location: ErrorLocation::from_span_file(
+                        Span::SYNTHETIC,
+                        Some(prelude_file_for_err.clone()),
+                    ),
                 }
             })?;
 
-            ctx.scheduler.register_module(prelude_path.clone(), prelude_sexps, true);
+            ctx.scheduler
+                .register_module(prelude_path.clone(), prelude_sexps, true);
             block_dep(ctx, module, &prelude_path, Span::SYNTHETIC)?;
 
             return Ok(Some(prelude_path));
@@ -1447,8 +1448,12 @@ pub(super) fn inject_prelude_if_needed(
 pub(super) fn sexps_reference_prelude(sexps: &[Sexp]) -> bool {
     for sexp in sexps {
         let Sexp::List(items, _) = sexp else { continue };
-        if items.len() < 2 { continue; }
-        let Sexp::Symbol(head, _) = &items[0] else { continue };
+        if items.len() < 2 {
+            continue;
+        }
+        let Sexp::Symbol(head, _) = &items[0] else {
+            continue;
+        };
         if head.as_str() != "import" && head.as_str() != "export" {
             continue;
         }
@@ -1461,7 +1466,9 @@ pub(super) fn sexps_reference_prelude(sexps: &[Sexp]) -> bool {
                 Sexp::List(items, _) => items,
                 _ => continue,
             };
-            if spec_items.is_empty() { continue; }
+            if spec_items.is_empty() {
+                continue;
+            }
             let module_name = match &spec_items[0] {
                 Sexp::Symbol(name, _) => Some(name.as_str()),
                 // Aliased form: [(module alias) [...]] or ((module alias) [...])
@@ -1573,7 +1580,11 @@ mod current_module_relative_tests {
             &ModuleFullPath::from("shell"),
             &ModuleFullPath::from("a.b"),
         );
-        assert_eq!(got, ModuleFullPath::from("a.b"), "a dotted dep is explicit — unchanged");
+        assert_eq!(
+            got,
+            ModuleFullPath::from("a.b"),
+            "a dotted dep is explicit — unchanged"
+        );
     }
 }
 
@@ -1604,8 +1615,14 @@ mod inline_mod_write_tests {
 
         let parent = ModuleFullPath::from("accum");
         let name = ModuleName::from("test");
-        write_inline_mod_to_disk(&parent, &name, &body(), project_root, std::slice::from_ref(&lib_dir))
-            .expect("write_inline_mod_to_disk");
+        write_inline_mod_to_disk(
+            &parent,
+            &name,
+            &body(),
+            project_root,
+            std::slice::from_ref(&lib_dir),
+        )
+        .expect("write_inline_mod_to_disk");
 
         // (a) backing file beside the parent, under the lib dir.
         let expected = lib_dir.join("accum").join("test.cl");
@@ -1646,8 +1663,14 @@ mod inline_mod_write_tests {
         let proj_td = tempfile::tempdir().unwrap();
         let parent = ModuleFullPath::from("accum");
         let name = ModuleName::from("test");
-        write_inline_mod_to_disk(&parent, &name, &body(), proj_td.path(), std::slice::from_ref(&lib_dir))
-            .expect("no-op write");
+        write_inline_mod_to_disk(
+            &parent,
+            &name,
+            &body(),
+            proj_td.path(),
+            std::slice::from_ref(&lib_dir),
+        )
+        .expect("no-op write");
 
         let after = std::fs::read_to_string(&backing).unwrap();
         assert_eq!(

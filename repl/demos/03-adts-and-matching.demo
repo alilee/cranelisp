@@ -3,13 +3,13 @@
 
 ; An enum is a type with several nullary variants:
 
-(deftype Color (Red) (Green) (Blue))
+(deftype Color Red Green Blue)
 Red
 
 ; Two types can share a constructor name. A dotted Type.Ctor names the one
 ; you mean, and the REPL echoes it back in that same clean Type.Ctor form:
 
-(deftype Light (Red) (Amber) (Green))
+(deftype Light Red Amber Green)
 Color.Red
 Light.Red
 ; match dispatches on the dotted patterns, so the two Reds never collide:
@@ -50,7 +50,7 @@ None
 
 ; This is exactly how the Sudoku solver models a cell: Given, Solved, or
 ; Candidates — see the `sudoku` demo for the full domain.
-(deftype Cell (Given [:Int value]) (Solved [:Int value]) (Candidates [:Int mask]))
+(deftype Cell (Given [:Int given]) (Solved [:Int solved]) (Candidates [:Int mask]))
 (defn cell-value [c] (match c [(Given v) v (Solved v) v (Candidates _) 0]))
 (cell-value (Given 5))
 (cell-value (Candidates 30))

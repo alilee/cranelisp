@@ -40,13 +40,12 @@ mod types;
 // `session_v4::X` paths used by main.rs / eval.rs / repl.rs / worker.rs /
 // cluster.rs / platform.rs.
 pub use self::types::{
-    CommandResult, EvalResult, Introspection, ModuleIntroductionOutcome, RunMode,
-    SessionSettings, SymbolCategory, SymbolDescription, SymbolInfo, TypecheckProduct,
-    parens_balanced_pub,
+    CommandResult, EvalResult, Introspection, ModuleIntroductionOutcome, RunMode, SessionSettings,
+    SymbolCategory, SymbolDescription, SymbolInfo, TypecheckProduct, parens_balanced_pub,
 };
 pub(crate) use self::types::{
-    dedup_platform_names_preserving_order, extract_def_name_from_sexp, intrinsic_type_from_name,
-    is_comment_only, parens_balanced, resolve_priority_worker_count, FailedForm,
+    FailedForm, dedup_platform_names_preserving_order, extract_def_name_from_sexp,
+    intrinsic_type_from_name, is_comment_only, parens_balanced, resolve_priority_worker_count,
 };
 
 // test_runner.rs — the `discover-tests` host-promised extern + `TestRunnerState`
@@ -55,8 +54,8 @@ pub(crate) use self::types::{
 mod test_runner;
 pub use self::test_runner::TestRunnerState;
 pub(crate) use self::test_runner::{
-    discover_test_names, discover_tests_extern, run_test_by_name, set_test_runner_state,
-    TestOutcome,
+    TestOutcome, discover_test_names, discover_tests_extern, run_test_by_name,
+    set_test_runner_state,
 };
 
 // nice_worker.rs — the nice-worker object-codegen subsystem (S87 §2.1 / §3.3).
@@ -134,7 +133,6 @@ pub struct SharedState {
     // maps were the S60–S62 heisenbug substrate (state externalized into a
     // shared map and re-read by a different thread after an unblock); removing
     // them removes the substrate. `SharedState` drops 16 → 14 pub fields.
-
     /// Object cache — on-disk `.o` + sidecar pair facade per
     /// `design/arch/facades/int.md` L166 + L519-549. Sprint 67 Cluster B
     /// sub-fire 3 replaces the three pre-S67 SharedState fields
@@ -164,7 +162,6 @@ pub struct SharedState {
     // SharedState duplicate was redundant — every write to it was paired
     // with a `scheduler.register_module_cached` call that already populated
     // the scheduler-side set.
-
     /// File path to module path mapping. Populated during handle_import
     /// when modules are first discovered. Used by the file watcher to
     /// identify which module changed.
@@ -186,7 +183,6 @@ pub struct SharedState {
     // -- Stateless TC: shared state (Sprint 51) --
     // The single source of truth for per-module symbol data. Formerly owned
     // by TypeChecker; now on SharedState for direct access by all workers.
-
     /// Per-module symbol tables. The single source of truth for per-module
     /// symbol data. Workers and session methods access this directly.
     ///
@@ -258,7 +254,6 @@ pub struct SharedState {
     // -- Target data model (session-restructure.md) --
     // DashMaps are inherently concurrent and accessible to both priority
     // and nice workers via Arc<SharedState>.
-
     /// Per-module typecheck products (replaces TC-internal storage).
     pub typecheck_products: dashmap::DashMap<ModuleFullPath, TypecheckProduct>,
     // Sprint 58 Step 5b (Decision 22): the `codegen_programs` transient
@@ -354,6 +349,14 @@ pub struct SharedState {
     /// page-free hazard on the Replace/reload paths (design §6.3).
     pub(crate) retained_code: crate::redefine::RetentionPool,
 
+    /// Fresh-JIT type-directed result-release targets. Each address is paired
+    /// with the `Code` owner that keeps its JIT allocation live. Prepared
+    /// turns replace these rows only after their exact batch compiles.
+    pub(crate) fresh_jit_drop_glues: dashmap::DashMap<
+        (ModuleFullPath, cranelisp_types::ConcreteType),
+        crate::worker::FreshJitDropGlue,
+    >,
+
     /// Test runner state used by the `run-test` / `discover-tests` intrinsics
     /// (Sprint 66 Wave 3a-γ).
     ///
@@ -398,7 +401,6 @@ pub struct CompilerSession {
     pub shared: Arc<SharedState>,
 
     // -- REPL-specific state (pipeline-v4.md §6) --
-
     /// Modules that failed reload (file watcher) or the degraded startup load
     /// (§18.8). While non-empty, expression evaluation is refused with the
     /// §14.4 message — but DEFINITION turns are always accepted (they are the
@@ -540,11 +542,11 @@ impl CompilerSession {
     /// — the bulk of the lifecycle impl moved to `lifecycle.rs`, but this one
     /// stays here so the `session_v4.rs` facade surface (and the row-45 guard)
     /// is preserved.
-    pub fn re_register_module(
-        &mut self,
-        module: &ModuleFullPath,
-    ) -> Result<bool, CranelispError> {
-        let Some(file_path) = self.shared.typecheck_products.get(module)
+    pub fn re_register_module(&mut self, module: &ModuleFullPath) -> Result<bool, CranelispError> {
+        let Some(file_path) = self
+            .shared
+            .typecheck_products
+            .get(module)
             .and_then(|tp| tp.file_path.clone())
         else {
             return Ok(false);
@@ -563,15 +565,12 @@ impl CompilerSession {
     }
 }
 
-
 #[cfg(test)]
 mod platform_enumeration_dedup_tests;
-
 
 // ---------------------------------------------------------------------------
 // Trace format support (repl/spec.md §4.12)
 // ---------------------------------------------------------------------------
-
 
 // ---------------------------------------------------------------------------
 // Trace display support (repl/spec.md §4.12)
@@ -601,7 +600,6 @@ mod platform_enumeration_dedup_tests;
 #[cfg(test)]
 mod persistent_worker_tests;
 
-
 // ---------------------------------------------------------------------------
 // Sprint 61 Slice 1 — bare-primitive-name value path (Defect 4)
 // ---------------------------------------------------------------------------
@@ -623,5 +621,3 @@ mod info_source_tests;
 
 #[cfg(test)]
 mod list_classification_tests;
-
-

@@ -76,7 +76,11 @@ fn name_set_is_exactly_the_expected_37() {
     let mut sorted = names.clone();
     sorted.sort_unstable();
     sorted.dedup();
-    assert_eq!(sorted.len(), names.len(), "duplicate intrinsic name in table");
+    assert_eq!(
+        sorted.len(),
+        names.len(),
+        "duplicate intrinsic name in table"
+    );
 }
 
 /// Non-null ptrs: a mis-pathed fn reference would const-eval to a bad
@@ -164,7 +168,12 @@ fn is_runtime_classification() {
     }
     // Pin the explicit false set — the user-visible-named backend targets
     // plus the `catch-runtime-error` combinator (a language-level primitive).
-    for name in ["vec-set-copy", "vec-push-copy", "vec-push-grow", "catch-runtime-error"] {
+    for name in [
+        "vec-set-copy",
+        "vec-push-copy",
+        "vec-push-grow",
+        "catch-runtime-error",
+    ] {
         let e = intrinsics_table().iter().find(|e| e.name == name).unwrap();
         assert!(!e.is_runtime, "{name} must be is_runtime: false");
     }

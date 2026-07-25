@@ -29,9 +29,8 @@ use cranelisp_intrinsics::drop::{consume_sexp, consume_slist};
 use cranelisp_intrinsics::heap_string::alloc_string;
 use cranelisp_types::HeapHeader;
 use cranelisp_types::{
-    TAG_SNIL, TAG_SCONS,
-    TAG_SEXP_INT, TAG_SEXP_FLOAT, TAG_SEXP_BOOL, TAG_SEXP_STR,
-    TAG_SEXP_SYM, TAG_SEXP_LIST, TAG_SEXP_BRACKET,
+    TAG_SCONS, TAG_SEXP_BOOL, TAG_SEXP_BRACKET, TAG_SEXP_FLOAT, TAG_SEXP_INT, TAG_SEXP_LIST,
+    TAG_SEXP_STR, TAG_SEXP_SYM, TAG_SNIL,
 };
 
 // Heap-layout offsets (base-pointer convention, Decision 10), single-sourced
@@ -193,8 +192,7 @@ fn deep_rc_inc_slist(mut slist: i64) {
 ///
 /// Registered in the JIT as "sconcat" and in the `macros` module typechecker
 /// so that `macros/sconcat` resolves correctly.
-#[unsafe(export_name = "sconcat")]
-pub(crate) extern "C" fn sconcat(xs: i64, ys: i64) -> i64 {
+pub(crate) fn sconcat(xs: i64, ys: i64) -> i64 {
     let items = unsafe { read_slist(xs) };
     let result = if items.is_empty() {
         // No items from xs: result IS ys. Inc it so the caller can't free
@@ -239,8 +237,7 @@ pub(crate) extern "C" fn sconcat(xs: i64, ys: i64) -> i64 {
 /// incs) and then releases the input via `consume_sexp` (runtime-side
 /// recursive drop glue). Callers compile args through
 /// `compile_consuming_arg_list`.
-#[unsafe(export_name = "quote-sexp")]
-pub(crate) extern "C" fn quote_sexp(val: i64) -> i64 {
+pub(crate) fn quote_sexp(val: i64) -> i64 {
     let result = quote_sexp_build(val);
     // Decision 24: consume the heap argument we did not return.
     consume_sexp(val);

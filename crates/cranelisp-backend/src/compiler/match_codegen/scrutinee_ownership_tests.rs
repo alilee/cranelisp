@@ -23,9 +23,7 @@
 //! deleted".
 
 use crate::jit::Jit;
-use cranelisp_types::{
-    Defn, DefnVariant, Expr, MatchArm, Pattern, Span, Symbol, Type, Visibility,
-};
+use cranelisp_types::{Defn, DefnVariant, Expr, MatchArm, Pattern, Span, Symbol, Type, Visibility};
 use std::collections::HashMap;
 
 /// Compile `(defn probe <params> <body>)` and return the emitted CLIF.
@@ -34,7 +32,11 @@ fn clif_of(body: Expr, params: Vec<(Symbol, Option<cranelisp_types::TypeExpr>)>)
     let defn = Defn {
         name: Symbol::from("scrutinee_ownership_probe"),
         docstring: None,
-        variants: vec![DefnVariant { params, body, span: Span::SYNTHETIC }],
+        variants: vec![DefnVariant {
+            params,
+            body,
+            span: Span::SYNTHETIC,
+        }],
         visibility: Visibility::Public,
         span: Span::SYNTHETIC,
     };
@@ -69,7 +71,11 @@ fn vec_ty() -> Type {
 }
 
 fn int_lit(v: i64) -> Expr {
-    Expr::IntLit { value: v, span: Span::SYNTHETIC, inferred_type: Some(Box::new(Type::Int)) }
+    Expr::IntLit {
+        value: v,
+        span: Span::SYNTHETIC,
+        inferred_type: Some(Box::new(Type::Int)),
+    }
 }
 
 fn var(name: &str, ty: Type) -> Expr {

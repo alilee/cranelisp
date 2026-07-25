@@ -9,15 +9,15 @@
 // worker path does. Pure relocation — no behavioural change.
 
 use cranelisp_types::{
-    CranelispError, DefKind, ErrorLocation, FQSymbol, ModuleEntry, ModuleFullPath,
-    ModuleStrategy, Sexp, Span, Symbol, TopLevel, Type,
+    CranelispError, DefKind, ErrorLocation, FQSymbol, ModuleEntry, ModuleFullPath, ModuleStrategy,
+    Sexp, Span, Symbol, TopLevel, Type,
 };
 
 use cranelisp_typecheck::{CheckResult, CheckState};
 
 use crate::session_v4::{
-    extract_def_name_from_sexp, intrinsic_type_from_name, is_comment_only,
-    set_test_runner_state, CompilerSession, EvalResult, Introspection,
+    CompilerSession, EvalResult, Introspection, extract_def_name_from_sexp,
+    intrinsic_type_from_name, is_comment_only, set_test_runner_state,
 };
 use crate::worker::ModuleCompiler;
 
@@ -40,7 +40,12 @@ pub(crate) fn record_defining_turn_source(
     result: &EvalResult,
     src: &str,
 ) {
-    let EvalResult::Def { symbol, defined: true, .. } = result else {
+    let EvalResult::Def {
+        symbol,
+        defined: true,
+        ..
+    } = result
+    else {
         return;
     };
     if let Some(m) = introspection {
@@ -120,7 +125,10 @@ impl CompilerSession {
         // (user module) is in TypecheckBlocked state and can only be resumed by
         // the eval thread's retry loop, not by a persistent worker — so a
         // whole-world wait would deadlock on the user module.
-        let result = self.shared.scheduler.wait_module_inmem_complete_blocking(dep_module);
+        let result = self
+            .shared
+            .scheduler
+            .wait_module_inmem_complete_blocking(dep_module);
 
         // S93 Invariant SW: the eval thread recorded a `current → dep`
         // cycle-check edge (`register_dep_edge_for_cycle_check`, via `block_dep`)
@@ -128,7 +136,9 @@ impl CompilerSession {
         // clear the forward edge so the terminal entry carries no stale
         // `blocked_on` into the next REPL form (which could otherwise mislead a
         // future reverse-direction cycle check).
-        self.shared.scheduler.clear_dep_edge(&self.current_module_path());
+        self.shared
+            .scheduler
+            .clear_dep_edge(&self.current_module_path());
 
         match result {
             Ok(()) => Ok(()),
@@ -244,7 +254,10 @@ impl CompilerSession {
     /// mechanism — a failed form discards its staging table, leaving live
     /// byte-identical (the snapshot/restore primitives it replaced were already
     /// no-ops). Errors propagate directly.
-    pub(crate) fn eval_one_form(&mut self, sexp: &Sexp) -> Result<Option<EvalResult>, CranelispError> {
+    pub(crate) fn eval_one_form(
+        &mut self,
+        sexp: &Sexp,
+    ) -> Result<Option<EvalResult>, CranelispError> {
         // Bare symbol introspection (macros, special forms).
         if let Some(result) = self.check_bare_symbol_introspection(sexp) {
             return Ok(Some(result));
@@ -262,7 +275,10 @@ impl CompilerSession {
     /// for the pool to bring it to inmem-done (`register_dep_for_eval`) then
     /// loops. No saved suspend state — the gap does not recur for that dep
     /// because it is now live.
-    pub(crate) fn process_single_form(&mut self, sexp: &Sexp) -> Result<Option<EvalResult>, CranelispError> {
+    pub(crate) fn process_single_form(
+        &mut self,
+        sexp: &Sexp,
+    ) -> Result<Option<EvalResult>, CranelispError> {
         self.process_form_cluster(std::slice::from_ref(sexp))
     }
 
@@ -274,9 +290,12 @@ impl CompilerSession {
     /// (BC §1 invariant 9; FIXME 0329). The `cluster_head` sexp is the one used
     /// for `Def`-name extraction and `/source` span when the cluster collapses
     /// to a single definition during expansion.
-    pub(crate) fn process_form_cluster(&mut self, cluster: &[Sexp]) -> Result<Option<EvalResult>, CranelispError> {
-        use crate::worker::ClusterOnce;
+    pub(crate) fn process_form_cluster(
+        &mut self,
+        cluster: &[Sexp],
+    ) -> Result<Option<EvalResult>, CranelispError> {
         use crate::process_form;
+        use crate::worker::ClusterOnce;
 
         const MAX_DEP_RETRIES: usize = 100;
 
@@ -310,7 +329,9 @@ impl CompilerSession {
             let result = {
                 // Extract REPL check_state for worker use, restore after.
                 cranelisp_types::ensure_module_exists(&self.shared.symbol_tables, &module);
-                let repl_cs = self.repl_check_state.lock()
+                let repl_cs = self
+                    .repl_check_state
+                    .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .take()
                     .unwrap_or_else(|| CheckState::new(module.clone()));
@@ -348,13 +369,19 @@ impl CompilerSession {
                     ModuleStrategy::Additive,
                 );
                 // Restore REPL check_state.
-                *self.repl_check_state.lock()
+                *self
+                    .repl_check_state
+                    .lock()
                     .unwrap_or_else(|e| e.into_inner()) = Some(wctx.check_state);
                 res?
             };
 
             match result {
-                ClusterOnce::Done { processed, program } => {
+                ClusterOnce::Done {
+                    mut processed,
+                    program,
+                } => {
+                    crate::worker::compile_and_publish_processed(&mut processed, &self.shared)?;
                     // S83 W2 (FIXME 0363): carry the cluster's accumulated
                     // typecheck warnings out to the `EvalResult`. They are
                     // committed onto `ProcessedCluster.warnings` by the
@@ -459,9 +486,7 @@ impl CompilerSession {
                 // OR the synthetic `__expr` wrapper defn (whichever form the
                 // upstream peel produced).
                 TopLevel::Expr(e) => Some(e.span()),
-                TopLevel::Defn(d)
-                    if d.name.as_ref() == crate::worker::SYNTHETIC_EXPR_WRAPPER =>
-                {
+                TopLevel::Defn(d) if d.name.as_ref() == crate::worker::SYNTHETIC_EXPR_WRAPPER => {
                     d.variants.first().map(|v| v.body.span())
                 }
                 _ => None,
@@ -487,20 +512,6 @@ impl CompilerSession {
         // compiled code. The trace-display state is set per-eval when
         // `(trace ...)` is present in the expression.
         set_test_runner_state(&self.shared.test_runner_state);
-
-        // Unified JIT codegen via compile_to_module (Sprint 56 Wave 2).
-        // Derives the compilation batch from `program`, compiles through the
-        // single backend entry point, and populates `ModuleEntry::Def.code`
-        // (Sprint 57 Wave 2 G6) + introspection. No env, no mode
-        // discriminator — see design/int/phase2-codegen-convergence.md §5.
-        crate::worker::inline_jit_codegen_for_module(
-            &self.shared.scheduler,
-            module,
-            program,
-            &self.shared.symbol_tables,
-            self.shared.introspection.as_ref(),
-            Some(&self.shared),
-        )?;
 
         let has_expr = program.iter().any(|tl| matches!(tl, TopLevel::Expr(_)));
 
@@ -541,26 +552,37 @@ impl CompilerSession {
             // impl mangled methods) are appended after the original forms by
             // finalize_module — skip them by finding the last non-Defn form
             // (TraitDecl, TraitImpl, TypeDef) or the first Defn.
-            let last = program.iter().rev().find(|tl| matches!(tl,
-                TopLevel::TraitDecl(_) | TopLevel::TraitImpl(_) | TopLevel::TypeDef { .. }
-            )).or_else(|| program.iter().find(|tl| matches!(tl, TopLevel::Defn(_))))
-              .or(program.last());
+            let last = program
+                .iter()
+                .rev()
+                .find(|tl| {
+                    matches!(
+                        tl,
+                        TopLevel::TraitDecl(_) | TopLevel::TraitImpl(_) | TopLevel::TypeDef { .. }
+                    )
+                })
+                .or_else(|| program.iter().find(|tl| matches!(tl, TopLevel::Defn(_))))
+                .or(program.last());
 
-            let symbol_name = last.map(|tl| match tl {
-                TopLevel::Defn(d) => d.name.to_string(),
-                TopLevel::TraitDecl(t) => t.name.to_string(),
-                TopLevel::TraitImpl(t) => {
-                    // The impl's display label is `Trait.<implementing-type>`
-                    // (later split by the §1.1 `impl <trait> for <type>` echo).
-                    // The implementing type is the SETTLED effective target, not
-                    // the raw slot-2 head — see `impl_echo_type_name`.
-                    format!("{}.{}", t.trait_name.name, impl_echo_type_name(t))
-                }
-                TopLevel::TypeDef { name, .. } => name.to_string(),
-                TopLevel::Expr(_) => unreachable!("has_expr was false"),
-            }).unwrap_or_default();
+            let symbol_name = last
+                .map(|tl| match tl {
+                    TopLevel::Defn(d) => d.name.to_string(),
+                    TopLevel::TraitDecl(t) => t.name.to_string(),
+                    TopLevel::TraitImpl(t) => {
+                        // The impl's display label is `Trait.<implementing-type>`
+                        // (later split by the §1.1 `impl <trait> for <type>` echo).
+                        // The implementing type is the SETTLED effective target, not
+                        // the raw slot-2 head — see `impl_echo_type_name`.
+                        format!("{}.{}", t.trait_name.name, impl_echo_type_name(t))
+                    }
+                    TopLevel::TypeDef { name, .. } => name.to_string(),
+                    TopLevel::Expr(_) => unreachable!("has_expr was false"),
+                })
+                .unwrap_or_default();
 
-            let ty = check.display.as_ref()
+            let ty = check
+                .display
+                .as_ref()
                 .map(|d| d.ty.clone())
                 .unwrap_or(Type::Int);
 
@@ -607,7 +629,9 @@ impl CompilerSession {
         };
 
         // Must be a single bare identifier (no parens, no spaces, no brackets).
-        if name.contains(|c: char| c.is_whitespace() || c == '(' || c == ')' || c == '[' || c == ']') {
+        if name
+            .contains(|c: char| c.is_whitespace() || c == '(' || c == ')' || c == '[' || c == ']')
+        {
             return None;
         }
 
@@ -708,7 +732,10 @@ impl CompilerSession {
                         return None;
                     }
                     Some(EvalResult::Def {
-                        symbol: FQSymbol { module: fq_module, symbol: display_sym.clone() },
+                        symbol: FQSymbol {
+                            module: fq_module,
+                            symbol: display_sym.clone(),
+                        },
                         ty: Type::Int,
                         warnings: Vec::new(),
                         defined: false,
@@ -733,7 +760,10 @@ impl CompilerSession {
                         None
                     } else {
                         Some(EvalResult::Def {
-                            symbol: FQSymbol { module: fq_module, symbol: display_sym.clone() },
+                            symbol: FQSymbol {
+                                module: fq_module,
+                                symbol: display_sym.clone(),
+                            },
                             ty: Type::Int,
                             warnings: Vec::new(),
                             defined: false,
@@ -743,26 +773,33 @@ impl CompilerSession {
                 // Primitives + user functions get introspection display per
                 // spec §4.1.1, §4.1.2.
                 _ => Some(EvalResult::Def {
-                    symbol: FQSymbol { module: fq_module, symbol: display_sym.clone() },
+                    symbol: FQSymbol {
+                        module: fq_module,
+                        symbol: display_sym.clone(),
+                    },
                     ty: scheme.ty.clone(),
                     warnings: Vec::new(),
                     defined: false,
                 }),
             },
             ModuleEntry::SpecialForm { scheme, .. } => Some(EvalResult::Def {
-                symbol: FQSymbol { module: fq_module, symbol: display_sym.clone() },
+                symbol: FQSymbol {
+                    module: fq_module,
+                    symbol: display_sym.clone(),
+                },
                 ty: scheme.ty.clone(),
                 warnings: Vec::new(),
                 defined: false,
             }),
-            ModuleEntry::TypeDef { .. } | ModuleEntry::TraitDecl { .. } => {
-                Some(EvalResult::Def {
-                    symbol: FQSymbol { module: fq_module, symbol: display_sym.clone() },
-                    ty: Type::Int,
-                    warnings: Vec::new(),
-                    defined: false,
-                })
-            }
+            ModuleEntry::TypeDef { .. } | ModuleEntry::TraitDecl { .. } => Some(EvalResult::Def {
+                symbol: FQSymbol {
+                    module: fq_module,
+                    symbol: display_sym.clone(),
+                },
+                ty: Type::Int,
+                warnings: Vec::new(),
+                defined: false,
+            }),
             _ => None,
         }
     }
@@ -847,7 +884,11 @@ mod tests {
         );
         // No record → no creation either (e.g. bare lookup of a prelude name
         // must not seed a bogus record under the resolved primitive's FQ).
-        record_defining_turn_source(Some(&m), &def_result("primitives", "add-i64", false), "add-i64");
+        record_defining_turn_source(
+            Some(&m),
+            &def_result("primitives", "add-i64", false),
+            "add-i64",
+        );
         assert!(
             !m.contains_key(&fq("primitives", "add-i64")),
             "display-only Def must NOT create a record"
@@ -855,7 +896,11 @@ mod tests {
         // Expression turns never write.
         record_defining_turn_source(
             Some(&m),
-            &EvalResult::Val { value: 1, ty: Type::Int, warnings: Vec::new() },
+            &EvalResult::Val {
+                value: 1,
+                ty: Type::Int,
+                warnings: Vec::new(),
+            },
             "(solo 2)",
         );
         assert_eq!(m.len(), 1, "Val results never write");
@@ -952,10 +997,8 @@ mod tests {
     // -----------------------------------------------------------------------
 
     use crate::code::SessionSymbolTable;
-    use crate::session_v4::{CompilerSession, SessionSettings, RunMode};
-    use cranelisp_types::{
-        CodegenBehaviour, FQTypeName, Scheme, TypeName, Visibility,
-    };
+    use crate::session_v4::{CompilerSession, RunMode, SessionSettings};
+    use cranelisp_types::{CodegenBehaviour, FQTypeName, Scheme, TypeName, Visibility};
     use std::collections::HashMap as StdHashMap;
 
     fn d2_session() -> CompilerSession {
@@ -1017,7 +1060,9 @@ mod tests {
         install_in_user(&s, "Red", nullary_ctor_entry("Color", Vec::new()));
         let out = s.check_bare_symbol_introspection(&Sexp::Symbol("Red".into(), Span::SYNTHETIC));
         match out {
-            Some(EvalResult::Def { defined, symbol, .. }) => {
+            Some(EvalResult::Def {
+                defined, symbol, ..
+            }) => {
                 assert!(!defined, "bare lookup must be display-only (defined:false)");
                 assert_eq!(symbol.symbol.as_ref(), "Red");
             }

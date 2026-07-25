@@ -413,7 +413,9 @@ fn generic_value_in_if_branch_indeterminate_neg() {
     ));
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
-        !c.contains("undefined variable") && !c.contains("codegen error") && !c.contains("GOT slot"),
+        !c.contains("undefined variable")
+            && !c.contains("codegen error")
+            && !c.contains("GOT slot"),
         "an indeterminate generic value in if-branch position MUST NOT leak a \
          codegen/undefined-variable frame — it dies check-side (VP-3 die, §3.11); \
          got:\n{c}"
@@ -433,13 +435,11 @@ fn generic_value_in_if_branch_indeterminate_neg() {
 // collect; MUST NOT leak.
 #[test]
 fn generic_value_in_match_arm_mints_and_runs() {
-    repl_prims(&format!(
-        "{GEN_VALUE_MODULE}((match 1 [_ gcount]) [1 2])\n"
-    ))
-    .assert_ok()
-    .assert_stdout_contains(":primitives/Int 2")
-    .assert_stdout_does_not_contain("undefined")
-    .assert_stdout_does_not_contain("codegen");
+    repl_prims(&format!("{GEN_VALUE_MODULE}((match 1 [_ gcount]) [1 2])\n"))
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 2")
+        .assert_stdout_does_not_contain("undefined")
+        .assert_stdout_does_not_contain("codegen");
 }
 
 // spec: spec/03-types.md §3.11 — DIE leg: a generic value produced from a match
@@ -451,7 +451,9 @@ fn generic_value_in_match_arm_indeterminate_neg() {
     let out = repl_prims(&format!("{GEN_VALUE_MODULE}(match 1 [_ gcount])\n"));
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
-        !c.contains("undefined variable") && !c.contains("codegen error") && !c.contains("GOT slot"),
+        !c.contains("undefined variable")
+            && !c.contains("codegen error")
+            && !c.contains("GOT slot"),
         "an indeterminate generic value in match-arm position MUST NOT leak a \
          codegen/undefined-variable frame (VP-4 die, §3.11); got:\n{c}"
     );
@@ -470,13 +472,11 @@ fn generic_value_in_match_arm_indeterminate_neg() {
 // vec-element collect; MUST NOT leak.
 #[test]
 fn generic_value_as_vec_element_mints_and_runs() {
-    repl_prims(&format!(
-        "{GEN_VALUE_MODULE}((vec-get [gcount] 0) [1 2])\n"
-    ))
-    .assert_ok()
-    .assert_stdout_contains(":primitives/Int 2")
-    .assert_stdout_does_not_contain("undefined")
-    .assert_stdout_does_not_contain("codegen");
+    repl_prims(&format!("{GEN_VALUE_MODULE}((vec-get [gcount] 0) [1 2])\n"))
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 2")
+        .assert_stdout_does_not_contain("undefined")
+        .assert_stdout_does_not_contain("codegen");
 }
 
 // spec: spec/03-types.md §3.11 — DIE leg: a generic value held as a vector
@@ -488,7 +488,9 @@ fn generic_value_as_vec_element_indeterminate_neg() {
     let out = repl_prims(&format!("{GEN_VALUE_MODULE}[gcount]\n"));
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
-        !c.contains("undefined variable") && !c.contains("codegen error") && !c.contains("GOT slot"),
+        !c.contains("undefined variable")
+            && !c.contains("codegen error")
+            && !c.contains("GOT slot"),
         "an indeterminate generic value in vec-element position MUST NOT leak a \
          codegen/undefined-variable frame (VP-5 die, §3.11); got:\n{c}"
     );

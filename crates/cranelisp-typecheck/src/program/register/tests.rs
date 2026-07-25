@@ -8,8 +8,6 @@ use super::*;
 
 use crate::program::test_support::*;
 
-
-
 // spec: 05-definitions §5.1 — defn registers function with inferred type
 #[test]
 fn test_check_program_simple_defn() {
@@ -44,10 +42,7 @@ fn test_check_program_simple_defn() {
 
     // Check the function was registered with correct type: Fn([Int], Int)
     if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("add-one") {
-        assert_eq!(
-            scheme.ty,
-            Type::Fn(vec![Type::Int], Box::new(Type::Int))
-        );
+        assert_eq!(scheme.ty, Type::Fn(vec![Type::Int], Box::new(Type::Int)));
     } else {
         panic!("add-one not found in symbol table");
     }
@@ -135,9 +130,7 @@ fn test_check_program_with_typedef() {
                             span: span(33, 41),
                         },
                         cranelisp_types::MatchArm {
-                            pattern: cranelisp_types::Pattern::Wildcard {
-                                span: span(42, 43),
-                            },
+                            pattern: cranelisp_types::Pattern::Wildcard { span: span(42, 43) },
                             body: Expr::BoolLit {
                                 value: false,
                                 span: span(44, 49),
@@ -224,7 +217,10 @@ fn test_check_repl_typedef() {
         span: Span::SYNTHETIC,
     };
     let result = tc.check_repl_input_self(&input).unwrap();
-    assert_eq!(result.display.as_ref().unwrap().ty, Type::ADT(test_fqtn("Dir"), vec![]));
+    assert_eq!(
+        result.display.as_ref().unwrap().ty,
+        Type::ADT(test_fqtn("Dir"), vec![])
+    );
     assert!(tc.lookup_type_def(&TypeName::from("Dir")).is_some());
 }
 
@@ -234,33 +230,31 @@ fn test_check_program_polymorphic_typedef() {
     let mut tc = tc_with_prims();
     // (deftype (Option a) None (Some [:a val]))
     // (defn unwrap-or [opt default] (match opt [(Some x) x (None default)]))
-    let program = vec![
-        TopLevel::TypeDef {
-            name: TypeName::from("Option"),
-            docstring: None,
-            type_params: vec![Symbol::from("a")],
-            constructors: vec![
-                cranelisp_types::ConstructorDef {
-                    name: Symbol::from("None"),
-                    docstring: None,
-                    fields: vec![],
+    let program = vec![TopLevel::TypeDef {
+        name: TypeName::from("Option"),
+        docstring: None,
+        type_params: vec![Symbol::from("a")],
+        constructors: vec![
+            cranelisp_types::ConstructorDef {
+                name: Symbol::from("None"),
+                docstring: None,
+                fields: vec![],
+                span: Span::SYNTHETIC,
+            },
+            cranelisp_types::ConstructorDef {
+                name: Symbol::from("Some"),
+                docstring: None,
+                fields: vec![cranelisp_types::FieldDef {
+                    name: Symbol::from("val"),
+                    type_expr: cranelisp_types::TypeExpr::TypeVar(Symbol::from("a")),
                     span: Span::SYNTHETIC,
-                },
-                cranelisp_types::ConstructorDef {
-                    name: Symbol::from("Some"),
-                    docstring: None,
-                    fields: vec![cranelisp_types::FieldDef {
-                        name: Symbol::from("val"),
-                        type_expr: cranelisp_types::TypeExpr::TypeVar(Symbol::from("a")),
-                        span: Span::SYNTHETIC,
-                    }],
-                    span: Span::SYNTHETIC,
-                },
-            ],
-            visibility: Visibility::Public,
-            span: Span::SYNTHETIC,
-        },
-    ];
+                }],
+                span: Span::SYNTHETIC,
+            },
+        ],
+        visibility: Visibility::Public,
+        span: Span::SYNTHETIC,
+    }];
 
     let _result = tc.check_program_self(&program).unwrap();
     assert!(tc.lookup_type_def(&TypeName::from("Option")).is_some());
@@ -319,10 +313,9 @@ fn u5_trait_constraint_annotation_unaffected_by_free_var_rule() {
         variants: vec![DefnVariant {
             params: vec![(
                 Symbol::from("x"),
-                Some(cranelisp_types::TypeExpr::Named(cranelisp_types::TypeRef::new(
-                    None,
-                    TypeName::from("Num"),
-                ))),
+                Some(cranelisp_types::TypeExpr::Named(
+                    cranelisp_types::TypeRef::new(None, TypeName::from("Num")),
+                )),
             )],
             body: Expr::var(Symbol::from("x"), span(18, 19)),
             span: span(0, 20),
@@ -364,7 +357,10 @@ fn u1_bare_written_param_var_is_flexible_body_may_pin() {
     let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
     tc.check_program_self(&program).unwrap();
     if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("id") {
-        assert!(!scheme.ty.is_concrete(), "id must stay polymorphic (∀a. a→a)");
+        assert!(
+            !scheme.ty.is_concrete(),
+            "id must stay polymorphic (∀a. a→a)"
+        );
         assert!(!scheme.type_vars.is_empty(), "id's `a` must be quantified");
     } else {
         panic!("id not found");
@@ -373,8 +369,7 @@ fn u1_bare_written_param_var_is_flexible_body_may_pin() {
     // (b) a body USE that pins the bare var to a concrete type is ACCEPTED,
     //     and the inferred scheme reflects the pin `(Fn [Int] Int)` (row 2).
     let mut tc2 = tc_with_prims();
-    let sexps2 =
-        cranelisp_frontend::parse("(defn f [:a x] (add-i64 1 x))").expect("parse");
+    let sexps2 = cranelisp_frontend::parse("(defn f [:a x] (add-i64 1 x))").expect("parse");
     let program2 = cranelisp_frontend::build_forms(&sexps2).expect("build_forms");
     tc2.check_program_self(&program2)
         .expect("a bare `:a` pinned by the body MUST be accepted (§3.3.1 MUST (a))");
@@ -403,8 +398,7 @@ fn u1_bare_written_param_var_is_flexible_body_may_pin() {
 #[test]
 fn u1b_bare_param_corefers_body_annotation_pins_param_row4() {
     let mut tc = tc_with_prims();
-    let sexps =
-        cranelisp_frontend::parse("(defn f [:a x] :a \"hello\")").expect("parse");
+    let sexps = cranelisp_frontend::parse("(defn f [:a x] :a \"hello\")").expect("parse");
     let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
     tc.check_program_self(&program)
         .expect("a body `:a` annotation co-referring the param `:a` MUST be accepted (row 4)");
@@ -412,7 +406,10 @@ fn u1b_bare_param_corefers_body_annotation_pins_param_row4() {
     let Some(ModuleEntry::Def { scheme, .. }) = table.get("f") else {
         panic!("f not found");
     };
-    assert!(scheme.type_vars.is_empty(), "the param `a` MUST be pinned, not quantified");
+    assert!(
+        scheme.type_vars.is_empty(),
+        "the param `a` MUST be pinned, not quantified"
+    );
     assert_eq!(
         scheme.ty,
         Type::Fn(vec![Type::String], Box::new(Type::String)),
@@ -435,8 +432,8 @@ fn u3_constraint_param_held_abstract_body_narrow_is_skolem_escape() {
          (impl Num2 Int (defn nadd [a b] (add-i64 a b)))\n";
     // R5 accepted — interface-only use keeps a constrained polymorphic scheme.
     let mut tc = tc_with_prims();
-    let sexps = cranelisp_frontend::parse(&format!("{NUM2}(defn f5 [:Num2 x] (nadd x x))"))
-        .expect("parse");
+    let sexps =
+        cranelisp_frontend::parse(&format!("{NUM2}(defn f5 [:Num2 x] (nadd x x))")).expect("parse");
     let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
     tc.check_program_self(&program)
         .expect("interface-only use of a `:Num2` param MUST be accepted (row 5)");
@@ -447,14 +444,14 @@ fn u3_constraint_param_held_abstract_body_narrow_is_skolem_escape() {
     assert!(
         !scheme.constraints.is_empty() && !scheme.type_vars.is_empty(),
         "f5 MUST stay constrained-polymorphic `∀a. Num2 a => (Fn [a] a)`; got {:?} / {:?}",
-        scheme.ty, scheme.constraints
+        scheme.ty,
+        scheme.constraints
     );
 
     // R6 rejected — the body narrows the held-abstract `:Num2` var to Int.
     let mut tc2 = tc_with_prims();
-    let sexps2 =
-        cranelisp_frontend::parse(&format!("{NUM2}(defn f6 [:Num2 x] (add-i64 1 x))"))
-            .expect("parse");
+    let sexps2 = cranelisp_frontend::parse(&format!("{NUM2}(defn f6 [:Num2 x] (add-i64 1 x))"))
+        .expect("parse");
     let program2 = cranelisp_frontend::build_forms(&sexps2).expect("build_forms");
     let err = tc2
         .check_program_self(&program2)
@@ -497,8 +494,7 @@ fn u9_multi_arity_clauses_pin_written_var_independently() {
 #[test]
 fn u2_nested_fn_written_var_corefers_enclosing_same_typeid() {
     let mut tc = tc_with_prims();
-    let sexps =
-        cranelisp_frontend::parse("(defn g [:a x] (fn [:a y] y))").expect("parse");
+    let sexps = cranelisp_frontend::parse("(defn g [:a x] (fn [:a y] y))").expect("parse");
     let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
     tc.check_program_self(&program).unwrap();
 
@@ -524,9 +520,20 @@ fn u2_nested_fn_written_var_corefers_enclosing_same_typeid() {
     let Type::Fn(inner_params, inner_ret) = outer_ret.as_ref() else {
         panic!("g result is not a Fn: {:?}", outer_ret);
     };
-    assert_eq!(inner_params[0], Type::Var(a_outer), "inner param must be the outer rigid `a`");
-    assert_eq!(**inner_ret, Type::Var(a_outer), "inner result must be the outer rigid `a`");
-    assert_eq!(scheme.type_vars[0], a_outer, "the one quantified var IS `a`");
+    assert_eq!(
+        inner_params[0],
+        Type::Var(a_outer),
+        "inner param must be the outer rigid `a`"
+    );
+    assert_eq!(
+        **inner_ret,
+        Type::Var(a_outer),
+        "inner result must be the outer rigid `a`"
+    );
+    assert_eq!(
+        scheme.type_vars[0], a_outer,
+        "the one quantified var IS `a`"
+    );
 }
 
 // spec: design/typecheck/check-form-api.md §check_form — single defn Register pass
@@ -538,17 +545,33 @@ fn test_check_form_single_defn_register() {
 
     let defn = make_inc_defn();
     let form = TopLevel::Defn(defn);
-    let result = tc.check_form(&module, &form, CheckPass::Register, &mut accumulator).unwrap();
+    let result = tc
+        .check_form(&module, &form, CheckPass::Register, &mut accumulator)
+        .unwrap();
 
     // Register pass should produce empty method_resolutions and expr_types
-    assert!(result.method_resolutions.is_empty(), "Register pass produces no method resolutions");
-    assert!(result.expr_types.is_empty(), "Register pass produces no expr types");
-    assert!(result.constrained_fn.is_none(), "Register pass has no constrained fn");
-    assert!(result.mono_defns.is_empty(), "Register pass has no mono defns");
+    assert!(
+        result.method_resolutions.is_empty(),
+        "Register pass produces no method resolutions"
+    );
+    assert!(
+        result.expr_types.is_empty(),
+        "Register pass produces no expr types"
+    );
+    assert!(
+        result.constrained_fn.is_none(),
+        "Register pass has no constrained fn"
+    );
+    assert!(
+        result.mono_defns.is_empty(),
+        "Register pass has no mono defns"
+    );
 
     // Signature should be registered in the accumulator's defn_type_vars
     assert!(
-        accumulator.defn_type_vars.contains_key(&Symbol::from("inc")),
+        accumulator
+            .defn_type_vars
+            .contains_key(&Symbol::from("inc")),
         "defn_type_vars should contain 'inc' after Register pass"
     );
 
@@ -567,7 +590,9 @@ fn test_check_form_typedef_register() {
     let mut accumulator = ModuleCheckAccumulator::new();
 
     let form = make_color_typedef();
-    let result = tc.check_form(&module, &form, CheckPass::Register, &mut accumulator).unwrap();
+    let result = tc
+        .check_form(&module, &form, CheckPass::Register, &mut accumulator)
+        .unwrap();
 
     // Registration should be mostly empty result (type is registered internally)
     assert!(result.default_method_defns.is_empty());
@@ -590,11 +615,11 @@ fn test_check_form_trait_decl_register() {
     let module = ModuleFullPath::from("test");
     let mut accumulator = ModuleCheckAccumulator::new();
 
-    let decl = crate::traits::test_helpers::parse_trait_decl(
-        "(deftrait Eq (eq [lhs rhs] Bool))",
-    );
+    let decl = crate::traits::test_helpers::parse_trait_decl("(deftrait Eq (eq [lhs rhs] Bool))");
     let form = TopLevel::TraitDecl(decl);
-    let result = tc.check_form(&module, &form, CheckPass::Register, &mut accumulator).unwrap();
+    let result = tc
+        .check_form(&module, &form, CheckPass::Register, &mut accumulator)
+        .unwrap();
 
     // Should produce an empty result (registration is internal)
     assert!(result.method_resolutions.is_empty());
@@ -611,19 +636,20 @@ fn test_check_form_trait_impl_register() {
     let mut accumulator = ModuleCheckAccumulator::new();
 
     // Register a new trait (Eq) then impl it for Int
-    let decl = crate::traits::test_helpers::parse_trait_decl(
-        "(deftrait Eq (eq [a b] Bool))",
-    );
+    let decl = crate::traits::test_helpers::parse_trait_decl("(deftrait Eq (eq [a b] Bool))");
     let decl_form = TopLevel::TraitDecl(decl);
-    let _ = tc.check_form(&module, &decl_form, CheckPass::Register, &mut accumulator).unwrap();
+    let _ = tc
+        .check_form(&module, &decl_form, CheckPass::Register, &mut accumulator)
+        .unwrap();
 
     // Now impl Eq for Int
     let impl_ = TraitImpl {
         head_con_var: None,
         trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Eq")),
-        target: cranelisp_types::TypeExpr::Named(
-            cranelisp_types::TypeRef::new(None, TypeName::from("Int")),
-        ),
+        target: cranelisp_types::TypeExpr::Named(cranelisp_types::TypeRef::new(
+            None,
+            TypeName::from("Int"),
+        )),
         type_constraints: vec![],
         methods: vec![Defn {
             name: Symbol::from("eq"),
@@ -648,7 +674,9 @@ fn test_check_form_trait_impl_register() {
         span: Span::SYNTHETIC,
     };
     let impl_form = TopLevel::TraitImpl(impl_);
-    let result = tc.check_form(&module, &impl_form, CheckPass::Register, &mut accumulator).unwrap();
+    let result = tc
+        .check_form(&module, &impl_form, CheckPass::Register, &mut accumulator)
+        .unwrap();
 
     // Impl registration should succeed (no error).
     // default_method_defns contains mangled-name defns for each impl method
@@ -659,7 +687,10 @@ fn test_check_form_trait_impl_register() {
     );
     // The mangled defn name should follow the pattern Trait.method$Type
     assert!(
-        result.default_method_defns.iter().any(|d| d.name.as_ref().contains("Eq.eq$primitives/Int")),
+        result
+            .default_method_defns
+            .iter()
+            .any(|d| d.name.as_ref().contains("Eq.eq$primitives/Int")),
         "should contain Eq.eq$primitives/Int mangled defn (S102 FQ `$Type` suffix)"
     );
 }
@@ -692,10 +723,14 @@ fn test_check_form_register_populates_defn_type_vars() {
     let defn = make_inc_defn();
     let form = TopLevel::Defn(defn);
 
-    let _ = tc.check_form(&module, &form, CheckPass::Register, &mut accumulator).unwrap();
+    let _ = tc
+        .check_form(&module, &form, CheckPass::Register, &mut accumulator)
+        .unwrap();
 
     // defn_type_vars should contain the defn's name with type vars
-    let (param_types, _ret_ty) = accumulator.defn_type_vars.get(&Symbol::from("inc"))
+    let (param_types, _ret_ty) = accumulator
+        .defn_type_vars
+        .get(&Symbol::from("inc"))
         .expect("inc should be in defn_type_vars");
 
     // inc has 1 parameter
@@ -711,22 +746,43 @@ fn test_check_form_typedef_before_defn() {
 
     // Register TypeDef(Color) first
     let typedef_form = make_color_typedef();
-    let result = tc.check_form(&module, &typedef_form, CheckPass::Register, &mut accumulator).unwrap();
+    let result = tc
+        .check_form(
+            &module,
+            &typedef_form,
+            CheckPass::Register,
+            &mut accumulator,
+        )
+        .unwrap();
     tc.merge_form_result(&module, &mut accumulator, result);
 
     // Then register Defn(is-red) which uses Color constructors
     let defn_form = TopLevel::Defn(make_is_red_defn());
-    let result = tc.check_form(&module, &defn_form, CheckPass::Register, &mut accumulator).unwrap();
+    let result = tc
+        .check_form(&module, &defn_form, CheckPass::Register, &mut accumulator)
+        .unwrap();
     tc.merge_form_result(&module, &mut accumulator, result);
 
     // Pass 2: check body — should resolve constructor types correctly
     // TypeDef is no-op in CheckBody
-    let _ = tc.check_form(&module, &typedef_form, CheckPass::CheckBody, &mut accumulator).unwrap();
+    let _ = tc
+        .check_form(
+            &module,
+            &typedef_form,
+            CheckPass::CheckBody,
+            &mut accumulator,
+        )
+        .unwrap();
 
-    let body_result = tc.check_form(&module, &defn_form, CheckPass::CheckBody, &mut accumulator).unwrap();
+    let body_result = tc
+        .check_form(&module, &defn_form, CheckPass::CheckBody, &mut accumulator)
+        .unwrap();
 
     // Should succeed and produce expr_types
-    assert!(!body_result.expr_types.is_empty(), "is-red body should have expr_types");
+    assert!(
+        !body_result.expr_types.is_empty(),
+        "is-red body should have expr_types"
+    );
 }
 
 // spec: spec/03-types.md §3.9.3 — a stacked trait-bound parameter annotation
@@ -774,7 +830,8 @@ fn stacked_trait_bounds_param_accumulates_constraints() {
     // The scheme generalizes over the single binder var, and that var
     // carries BOTH trait constraints (Eq AND Display).
     assert_eq!(
-        scheme.type_vars.len(), 1,
+        scheme.type_vars.len(),
+        1,
         "identity generalizes over its single constrained binder: {scheme:?}",
     );
     let binder = scheme.type_vars[0];
@@ -820,10 +877,7 @@ fn single_trait_bound_param_resolves_via_try_type_then_trait() {
     // the frontend leaves as `TypeExpr::Named(Eq)`. `Eq` is a trait, not a
     // type, so type resolution fails and the binder must resolve as a trait
     // constraint.
-    let single = TypeExpr::Named(cranelisp_types::TypeRef::new(
-        None,
-        TypeName::from("Eq"),
-    ));
+    let single = TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Eq")));
     let defn = Defn {
         name: Symbol::from("use-it"),
         docstring: None,
@@ -847,7 +901,8 @@ fn single_trait_bound_param_resolves_via_try_type_then_trait() {
     };
     // The single binder is generalized and carries the `Eq` constraint.
     assert_eq!(
-        scheme.type_vars.len(), 1,
+        scheme.type_vars.len(),
+        1,
         "use-it generalizes over its single constrained binder: {scheme:?}",
     );
     let binder = scheme.type_vars[0];
@@ -874,10 +929,7 @@ fn single_concrete_type_annotation_stays_concrete_neg() {
     let mut tc = tc_with_prims();
     // (defn id-int [:Int x] x) — `Int` is a real type, so the binder MUST be
     // the concrete `Int`, never a constrained var.
-    let int_ann = TypeExpr::Named(cranelisp_types::TypeRef::new(
-        None,
-        TypeName::from("Int"),
-    ));
+    let int_ann = TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int")));
     let defn = Defn {
         name: Symbol::from("id-int"),
         docstring: None,
@@ -946,7 +998,9 @@ fn test_fn_registered_as_mono_root_gets_concrete_instance() {
             assert!(
                 matches!(
                     kind.as_ref(),
-                    DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
+                    DefKind::UserFn {
+                        fn_state: UserFnState::Concrete { .. }
+                    }
                 ),
                 "test-x must be `Concrete{{slot}}` after mono-root minting, got {kind:?}",
             );
@@ -1045,7 +1099,10 @@ fn normalize_self_qualified_collapses_current_module_spelling() {
     );
     let env = tc.env();
     // Current-module-qualified → bare local.
-    assert_eq!(env.normalize_self_qualified(&tc.state, "test/qloop"), "qloop");
+    assert_eq!(
+        env.normalize_self_qualified(&tc.state, "test/qloop"),
+        "qloop"
+    );
     // Alias-spelled current module → bare local (MC-X3c).
     assert_eq!(env.normalize_self_qualified(&tc.state, "t/qloop"), "qloop");
     // Bare name → unchanged.
@@ -1079,9 +1136,16 @@ fn qualified_candidate_modules_child_before_absolute() {
         .qualified_candidate_modules(&tc.state, "util/helper")
         .expect("a two-part qualified name yields candidates");
     assert_eq!(name_part, "helper");
-    assert_eq!(child, ModuleFullPath::from("test.util"), "child-of-current first");
+    assert_eq!(
+        child,
+        ModuleFullPath::from("test.util"),
+        "child-of-current first"
+    );
     assert_eq!(abs, ModuleFullPath::from("util"), "absolute path second");
     // A bare name / Principle-16 literal has no qualified candidates.
-    assert!(env.qualified_candidate_modules(&tc.state, "helper").is_none());
+    assert!(
+        env.qualified_candidate_modules(&tc.state, "helper")
+            .is_none()
+    );
     assert!(env.qualified_candidate_modules(&tc.state, "foo/").is_none());
 }

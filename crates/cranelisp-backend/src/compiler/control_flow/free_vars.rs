@@ -39,7 +39,12 @@ fn collect_free_vars(
             }
             collect_free_vars(body, &extended, free, seen);
         }
-        MonoExpr::If { cond, then_branch, else_branch, .. } => {
+        MonoExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
             collect_free_vars(cond, bound, free, seen);
             collect_free_vars(then_branch, bound, free, seen);
             collect_free_vars(else_branch, bound, free, seen);
@@ -57,7 +62,9 @@ fn collect_free_vars(
                 collect_free_vars(arg, bound, free, seen);
             }
         }
-        MonoExpr::Match { scrutinee, arms, .. } => {
+        MonoExpr::Match {
+            scrutinee, arms, ..
+        } => {
             collect_free_vars(scrutinee, bound, free, seen);
             for arm in arms {
                 let mut arm_bound = bound.clone();
@@ -92,7 +99,11 @@ fn collect_free_vars(
             }
             collect_free_vars(body, &extended, free, seen);
         }
-        MonoExpr::LaunchContinue { launched, continuation, .. } => {
+        MonoExpr::LaunchContinue {
+            launched,
+            continuation,
+            ..
+        } => {
             // The launched effect binds no name (its result is discarded), so the
             // free-var set is simply the union over both sub-trees — like a
             // sequential `Bind(launched, λ_. continuation)`.

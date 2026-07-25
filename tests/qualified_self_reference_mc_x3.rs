@@ -121,7 +121,11 @@ fn qualified_self_recursive_equals_bare_twin() {
         "the qualified self-recursive call `user/qloop` MUST behave identically to \
          the bare `qloop` (§8.6.6 resolved-identity); qualified={qualified:?} bare={bare:?}"
     );
-    assert_eq!(qualified, Some(42), "both MUST run to 42; got {qualified:?}");
+    assert_eq!(
+        qualified,
+        Some(42),
+        "both MUST run to 42; got {qualified:?}"
+    );
 }
 
 // The REPL face of the qualified≡bare twin.

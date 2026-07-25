@@ -15,8 +15,8 @@ use std::io::Write;
 use std::path::Path;
 
 use cranelisp_types::{
-    ExportSpec, FQSymbol, ImportNames, ImportSpec, ModDecl, ModuleEntry,
-    ModuleFullPath, PlatformSpec, Sexp,
+    ExportSpec, FQSymbol, ImportNames, ImportSpec, ModDecl, ModuleEntry, ModuleFullPath,
+    PlatformSpec, Sexp,
 };
 
 use dashmap::DashMap;
@@ -598,7 +598,9 @@ pub(crate) fn verbatim_slice(form: &Sexp, text: &str) -> Option<String> {
 /// (`children[2]` is the docstring iff it is a string literal — mirrors
 /// `ast_builder::extract_optional_docstring`).
 fn form_docstring(form: &Sexp) -> Option<String> {
-    let Sexp::List(children, _) = form else { return None };
+    let Sexp::List(children, _) = form else {
+        return None;
+    };
     let is_defn = matches!(
         children.first(),
         Some(Sexp::Symbol(head, _)) if head == "defn" || head == "defn-"
@@ -629,7 +631,13 @@ fn emit_decl_text(sexp: &Sexp, source: Option<&str>, live_doc: Option<&str>) -> 
                 None => true,
                 Some(d) => cranelisp_frontend::parse(src)
                     .ok()
-                    .and_then(|mut v| if v.len() == 1 { Some(v.remove(0)) } else { None })
+                    .and_then(|mut v| {
+                        if v.len() == 1 {
+                            Some(v.remove(0))
+                        } else {
+                            None
+                        }
+                    })
                     .and_then(|form| form_docstring(&form))
                     .is_some_and(|doc| doc == d),
             };
@@ -682,8 +690,7 @@ fn generate_traits(
     let mut items: Vec<(String, String)> = Vec::new();
     for (name, entry) in st.all_symbols() {
         if let ModuleEntry::TraitDecl { .. } = entry {
-            let (sexp, source) =
-                introspection_sexp_and_source(introspection, module_path, name);
+            let (sexp, source) = introspection_sexp_and_source(introspection, module_path, name);
             if let Some(text) = emit_decl_or_source(sexp, source) {
                 items.push((name.to_string(), text));
             }
@@ -713,8 +720,7 @@ fn generate_types(
         // persisted to the backing `.cl` (silent data loss on reload). A sum ctor
         // (`type_def: None`) answers `None`, so each type is emitted exactly once.
         if entry.type_def_info().is_some() {
-            let (sexp, source) =
-                introspection_sexp_and_source(introspection, module_path, name);
+            let (sexp, source) = introspection_sexp_and_source(introspection, module_path, name);
             if let Some(text) = emit_decl_or_source(sexp, source) {
                 items.push((name.to_string(), text));
             }
@@ -784,7 +790,12 @@ fn generate_impls(
 
     // Row 1 — shells homed HERE, written HERE.
     for (_name, entry) in st.all_symbols() {
-        if let ModuleEntry::TraitImpl { trait_name, impl_type, impl_module, .. } = entry
+        if let ModuleEntry::TraitImpl {
+            trait_name,
+            impl_type,
+            impl_module,
+            ..
+        } = entry
             && impl_module == module_path
         {
             keys.insert(format!("{}.{}", trait_name.name, impl_type.name));
@@ -809,8 +820,7 @@ fn generate_impls(
     keys.into_iter()
         .filter_map(|key| {
             let sym = cranelisp_types::Symbol::from(key);
-            let (sexp, source) =
-                introspection_sexp_and_source(introspection, module_path, &sym);
+            let (sexp, source) = introspection_sexp_and_source(introspection, module_path, &sym);
             emit_decl_or_source(sexp, source)
         })
         .collect::<Vec<_>>()
@@ -853,10 +863,7 @@ fn sexp_head_is(sexp: &Sexp, head: &str) -> bool {
 /// is claimed-or-excluded, so this sweep does not fire today — it remains as the
 /// documented seam + `MODULE_TRACE` hook, firing only if a future edit marks a
 /// classification `false` (a persisted-content kind left unclaimed).
-fn assert_section_completeness(
-    st: &crate::code::SessionSymbolTable,
-    module_path: &ModuleFullPath,
-) {
+fn assert_section_completeness(st: &crate::code::SessionSymbolTable, module_path: &ModuleFullPath) {
     for (name, entry) in st.all_symbols() {
         if section_entry_claimed_or_excluded(name.as_ref(), entry) {
             continue;
@@ -890,10 +897,7 @@ fn assert_section_completeness(
 /// design first sketched, since the enums turned out exhaustive to this crate).
 /// The runtime sweep in `assert_section_completeness` remains as the documented
 /// seam + `MODULE_TRACE` hook (it fires if a future classification is set wrong).
-fn section_entry_claimed_or_excluded(
-    name: &str,
-    entry: &ModuleEntry<crate::code::Code>,
-) -> bool {
+fn section_entry_claimed_or_excluded(name: &str, entry: &ModuleEntry<crate::code::Code>) -> bool {
     // Internal synthetic names (`$`-mangled impl methods / mono / multi-sig
     // variants, `__expr` / `__macro_*` wrappers) are never persisted as their
     // own row — they ride their owner's form (§8's `is_internal_listing_name`
@@ -915,8 +919,9 @@ fn section_entry_claimed_or_excluded(
         // trip — the §12.3.1 intent, structurally).
         ModuleEntry::Def { kind, .. } => match kind.as_ref() {
             // §8 fns/macros.
-            cranelisp_types::DefKind::UserFn { .. }
-            | cranelisp_types::DefKind::Macro { .. } => true,
+            cranelisp_types::DefKind::UserFn { .. } | cranelisp_types::DefKind::Macro { .. } => {
+                true
+            }
             // A product-ctor `Def` carries the type facet — claimed by §6 types
             // (`type_def_info()`); a sum ctor rides its `TypeDef` form. Either
             // way a `Constructor` is never a persisted row of its own.
@@ -1009,7 +1014,9 @@ fn generate_fns_and_macros(
         // fallback `regenerate_backing_file` would silently DROP the macro from
         // the regenerated `.cl`, breaking a cached REPL restart that uses it.
         let (is_macro, macro_table_sexp) = match entry {
-            ModuleEntry::Def { kind, docstring, .. } => match kind.as_ref() {
+            ModuleEntry::Def {
+                kind, docstring, ..
+            } => match kind.as_ref() {
                 cranelisp_types::DefKind::Macro { macro_sexp, .. } => {
                     (true, Some(macro_sexp.clone()))
                 }
@@ -1217,7 +1224,10 @@ pub(crate) fn rehydrate_userfn_introspection_from_source(
 /// Sort functions/macros by dependency order using callee lists from the
 /// symbol table (Decision 21). Items with no intra-module deps appear first.
 /// Cycles are broken alphabetically.
-fn dependency_sort(items: Vec<FnMacroItem>, st: &crate::code::SessionSymbolTable) -> Vec<FnMacroItem> {
+fn dependency_sort(
+    items: Vec<FnMacroItem>,
+    st: &crate::code::SessionSymbolTable,
+) -> Vec<FnMacroItem> {
     if items.len() <= 1 {
         return items;
     }
@@ -1244,8 +1254,7 @@ fn dependency_sort(items: Vec<FnMacroItem>, st: &crate::code::SessionSymbolTable
     }
 
     // Kahn's algorithm
-    let mut in_degree: std::collections::HashMap<&str, usize> =
-        std::collections::HashMap::new();
+    let mut in_degree: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
     let mut dependents: std::collections::HashMap<&str, Vec<&str>> =
         std::collections::HashMap::new();
     for item in &items {
@@ -1413,7 +1422,10 @@ mod tests {
             ModuleEntry::def(
                 scheme,
                 DefKind::UserFn {
-                    fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0, mode_summary: None },
+                    fn_state: cranelisp_types::UserFnState::Concrete {
+                        got_slot: 0,
+                        mode_summary: None,
+                    },
                 },
             )
             .build(),
@@ -1430,12 +1442,7 @@ mod tests {
 
         // The backing `.cl` (the cache key) still holds the function source.
         let backing = "(defn answer [] 42)\n";
-        let n = rehydrate_userfn_introspection_from_source(
-            &st,
-            &introspection,
-            &module,
-            backing,
-        );
+        let n = rehydrate_userfn_introspection_from_source(&st, &introspection, &module, backing);
         assert_eq!(n, 1, "exactly one UserFn rehydrated");
 
         // After rehydration, the function regenerates back into the source.
@@ -1477,7 +1484,10 @@ mod tests {
             let mut entry = ModuleEntry::def(
                 scheme,
                 DefKind::UserFn {
-                    fn_state: UserFnState::Concrete { got_slot: slot, mode_summary: None },
+                    fn_state: UserFnState::Concrete {
+                        got_slot: slot,
+                        mode_summary: None,
+                    },
                 },
             )
             .build();
@@ -1540,7 +1550,10 @@ mod tests {
                 ty: Type::Int,
             },
             DefKind::UserFn {
-                fn_state: UserFnState::Concrete { got_slot: slot, mode_summary: None },
+                fn_state: UserFnState::Concrete {
+                    got_slot: slot,
+                    mode_summary: None,
+                },
             },
         )
         .build()
@@ -1554,7 +1567,10 @@ mod tests {
                 constraints: std::collections::HashMap::new(),
                 ty: Type::Int,
             },
-            DefKind::Macro { clauses_meta: vec![], macro_sexp },
+            DefKind::Macro {
+                clauses_meta: vec![],
+                macro_sexp,
+            },
         )
         .build()
     }
@@ -1578,7 +1594,10 @@ mod tests {
         let original = parse1("(mdef x 1)");
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
         for name in ["x", "x-def"] {
-            let fq = FQSymbol { module: module.clone(), symbol: name.into() };
+            let fq = FQSymbol {
+                module: module.clone(),
+                symbol: name.into(),
+            };
             introspection.entry(fq).or_default().sexp = Some(original.clone());
         }
 
@@ -1608,7 +1627,10 @@ mod tests {
         let begin_form = parse1("(begin (defn a [] 1) (defn b [] 2))");
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
         for name in ["a", "b"] {
-            let fq = FQSymbol { module: module.clone(), symbol: name.into() };
+            let fq = FQSymbol {
+                module: module.clone(),
+                symbol: name.into(),
+            };
             introspection.entry(fq).or_default().sexp = Some(begin_form.clone());
         }
 
@@ -1638,22 +1660,34 @@ mod tests {
         let sexps = cranelisp_frontend::parse("(defn f [] 1)\n(defn g [] 1)").unwrap();
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
         introspection
-            .entry(FQSymbol { module: module.clone(), symbol: "f".into() })
+            .entry(FQSymbol {
+                module: module.clone(),
+                symbol: "f".into(),
+            })
             .or_default()
             .sexp = Some(sexps[0].clone());
         introspection
-            .entry(FQSymbol { module: module.clone(), symbol: "g".into() })
+            .entry(FQSymbol {
+                module: module.clone(),
+                symbol: "g".into(),
+            })
             .or_default()
             .sexp = Some(sexps[1].clone());
         introspection
-            .entry(FQSymbol { module: module.clone(), symbol: "twice".into() })
+            .entry(FQSymbol {
+                module: module.clone(),
+                symbol: "twice".into(),
+            })
             .or_default()
             .sexp = Some(twice);
 
         let out = generate_module_source(&st, Some(&introspection), &module);
         assert!(out.contains("(defn f [] 1)"), "f emitted: {out:?}");
         assert!(out.contains("(defn g [] 1)"), "g emitted: {out:?}");
-        assert!(out.contains("(defmacro twice"), "direct defmacro emitted: {out:?}");
+        assert!(
+            out.contains("(defmacro twice"),
+            "direct defmacro emitted: {out:?}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1736,7 +1770,10 @@ mod tests {
         st.insert("twice".into(), macro_entry(desugared.clone()));
 
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
-        let fq = FQSymbol { module: module.clone(), symbol: "twice".into() };
+        let fq = FQSymbol {
+            module: module.clone(),
+            symbol: "twice".into(),
+        };
         {
             let mut rec = introspection.entry(fq).or_default();
             rec.sexp = Some(desugared);
@@ -1765,7 +1802,10 @@ mod tests {
         st.insert("f".into(), userfn_entry(0));
 
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
-        let fq = FQSymbol { module: module.clone(), symbol: "f".into() };
+        let fq = FQSymbol {
+            module: module.clone(),
+            symbol: "f".into(),
+        };
         {
             let mut rec = introspection.entry(fq).or_default();
             rec.sexp = Some(parse1("(defn f [x] (add-i64 x 1))"));
@@ -1777,7 +1817,10 @@ mod tests {
             out.contains("(defn f [x] (add-i64 x 1))"),
             "inconsistent source falls back to the sexp render: {out:?}"
         );
-        assert!(!out.contains("garbage"), "the stale text never reaches the file: {out:?}");
+        assert!(
+            !out.contains("garbage"),
+            "the stale text never reaches the file: {out:?}"
+        );
     }
 
     // Negative: a live `Def.docstring` edited out-of-band (set-doc / agent
@@ -1799,7 +1842,10 @@ mod tests {
                     ty: Type::Int,
                 },
                 DefKind::UserFn {
-                    fn_state: UserFnState::Concrete { got_slot: 0, mode_summary: None },
+                    fn_state: UserFnState::Concrete {
+                        got_slot: 0,
+                        mode_summary: None,
+                    },
                 },
             )
             .docstring("new doc")
@@ -1808,7 +1854,10 @@ mod tests {
 
         let authored = "(defn f \"old doc\" [x] x)";
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
-        let fq = FQSymbol { module: module.clone(), symbol: "f".into() };
+        let fq = FQSymbol {
+            module: module.clone(),
+            symbol: "f".into(),
+        };
         {
             let mut rec = introspection.entry(fq).or_default();
             rec.sexp = Some(parse1(authored));
@@ -1820,7 +1869,10 @@ mod tests {
             out.contains("\"new doc\""),
             "the live docstring wins over the recorded source: {out:?}"
         );
-        assert!(!out.contains("old doc"), "the stale docstring is dropped: {out:?}");
+        assert!(
+            !out.contains("old doc"),
+            "the stale docstring is dropped: {out:?}"
+        );
     }
 
     // Positive twin: a recorded source that ALREADY carries the live docstring
@@ -1840,7 +1892,10 @@ mod tests {
                     ty: Type::Int,
                 },
                 DefKind::UserFn {
-                    fn_state: UserFnState::Concrete { got_slot: 0, mode_summary: None },
+                    fn_state: UserFnState::Concrete {
+                        got_slot: 0,
+                        mode_summary: None,
+                    },
                 },
             )
             .docstring("the doc")
@@ -1849,7 +1904,10 @@ mod tests {
 
         let authored = "(defn f \"the doc\" [x]    x)"; // authored spacing preserved
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
-        let fq = FQSymbol { module: module.clone(), symbol: "f".into() };
+        let fq = FQSymbol {
+            module: module.clone(),
+            symbol: "f".into(),
+        };
         {
             let mut rec = introspection.entry(fq).or_default();
             rec.sexp = Some(parse1(authored));
@@ -1876,14 +1934,12 @@ mod tests {
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
         // Authored formatting a pretty-printer would not reproduce.
         let backing = ";; header\n(defn g [x]\n    (mul-i64 x   2))\n";
-        let n = rehydrate_userfn_introspection_from_source(
-            &st,
-            &introspection,
-            &module,
-            backing,
-        );
+        let n = rehydrate_userfn_introspection_from_source(&st, &introspection, &module, backing);
         assert_eq!(n, 1);
-        let fq = FQSymbol { module: module.clone(), symbol: "g".into() };
+        let fq = FQSymbol {
+            module: module.clone(),
+            symbol: "g".into(),
+        };
         assert_eq!(
             introspection.get(&fq).unwrap().source.as_deref(),
             Some("(defn g [x]\n    (mul-i64 x   2))"),
@@ -2082,8 +2138,14 @@ mod tests {
     fn render_decl_none_no_docstring_unchanged() {
         let sexp = parse1("(defn f [x] x)");
         let rendered = render_decl_sexp(&sexp, None);
-        assert_eq!(rendered, "(defn f [x] x)", "no-op when nothing to inject: {rendered:?}");
-        assert!(!rendered.contains("\"\""), "no spurious empty docstring: {rendered:?}");
+        assert_eq!(
+            rendered, "(defn f [x] x)",
+            "no-op when nothing to inject: {rendered:?}"
+        );
+        assert!(
+            !rendered.contains("\"\""),
+            "no spurious empty docstring: {rendered:?}"
+        );
     }
 
     // Unit (round-trip): the emitted single-sig `defn` re-parses with the
@@ -2100,7 +2162,11 @@ mod tests {
             cranelisp_types::ParsedEntry::Def { docstring, .. } => docstring.clone(),
             other => panic!("expected Def, got {other:?}"),
         };
-        assert_eq!(doc.as_deref(), Some("the doc"), "docstring recovered in slot");
+        assert_eq!(
+            doc.as_deref(),
+            Some("the doc"),
+            "docstring recovered in slot"
+        );
     }
 
     // Unit (round-trip, multi-sig): the docstring slot sits between the name and
@@ -2117,7 +2183,11 @@ mod tests {
         let reparsed = parse1(&rendered);
         let entry = cranelisp_frontend::build_form(&reparsed).expect("re-parses");
         match &entry[0] {
-            cranelisp_types::ParsedEntry::Def { docstring, variants, .. } => {
+            cranelisp_types::ParsedEntry::Def {
+                docstring,
+                variants,
+                ..
+            } => {
                 assert_eq!(docstring.as_deref(), Some("multi doc"));
                 assert_eq!(variants.len(), 2, "both variants preserved");
             }
@@ -2133,7 +2203,10 @@ mod tests {
     fn render_decl_docstring_ignored_for_non_defn() {
         let sexp = parse1("(deftype Point [:Int x])");
         let rendered = render_decl_sexp(&sexp, Some("ignored"));
-        assert!(!rendered.contains("ignored"), "non-defn must be untouched: {rendered:?}");
+        assert!(
+            !rendered.contains("ignored"),
+            "non-defn must be untouched: {rendered:?}"
+        );
     }
 
     // End-to-end via `generate_module_source`: a UserFn whose live `Def.docstring`
@@ -2157,7 +2230,10 @@ mod tests {
             ModuleEntry::def(
                 scheme,
                 DefKind::UserFn {
-                    fn_state: UserFnState::Concrete { got_slot: 0, mode_summary: None },
+                    fn_state: UserFnState::Concrete {
+                        got_slot: 0,
+                        mode_summary: None,
+                    },
                 },
             )
             .docstring("doubles its argument")
@@ -2168,8 +2244,7 @@ mod tests {
             module: module.clone(),
             symbol: "double".into(),
         };
-        introspection.entry(fq).or_default().sexp =
-            Some(parse1("(defn double [x] (add-i64 x x))"));
+        introspection.entry(fq).or_default().sexp = Some(parse1("(defn double [x] (add-i64 x x))"));
 
         let out = generate_module_source(&st, Some(&introspection), &module);
         assert!(
@@ -2247,8 +2322,8 @@ mod tests {
         // Re-capturing the re-emitted block (followed by a form) yields the
         // SAME stored text — the inverse-pair round-trip holds.
         let regen_source = format!("{block}\n(mod solver)\n");
-        let recaptured = cranelisp_frontend::capture_module_preamble(&regen_source)
-            .expect("recaptured");
+        let recaptured =
+            cranelisp_frontend::capture_module_preamble(&regen_source).expect("recaptured");
         assert_eq!(recaptured, captured, "capture ∘ re-emit must be identity");
 
         // A bare-empty preamble line re-marks as bare `;;` and round-trips.
@@ -2278,7 +2353,10 @@ mod tests {
             ModuleEntry::def(
                 scheme,
                 DefKind::UserFn {
-                    fn_state: UserFnState::Concrete { got_slot: 0, mode_summary: None },
+                    fn_state: UserFnState::Concrete {
+                        got_slot: 0,
+                        mode_summary: None,
+                    },
                 },
             )
             .build(),
@@ -2331,11 +2409,17 @@ mod tests {
 
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
         introspection
-            .entry(FQSymbol { module: module.clone(), symbol: "__expr".into() })
+            .entry(FQSymbol {
+                module: module.clone(),
+                symbol: "__expr".into(),
+            })
             .or_default()
             .source = Some("(add-i64 1 2)".to_string());
         introspection
-            .entry(FQSymbol { module: module.clone(), symbol: "g".into() })
+            .entry(FQSymbol {
+                module: module.clone(),
+                symbol: "g".into(),
+            })
             .or_default()
             .sexp = Some(parse1("(defn g [x] (mul-i64 x 2))"));
 
@@ -2344,7 +2428,10 @@ mod tests {
             !out.contains("add-i64") && !out.contains("__expr"),
             "the transient `__expr` expression MUST NOT be persisted: {out:?}"
         );
-        assert!(out.contains("(defn g"), "the real defn MUST be persisted: {out:?}");
+        assert!(
+            out.contains("(defn g"),
+            "the real defn MUST be persisted: {out:?}"
+        );
 
         // The live in-session entry is untouched — only its emission is
         // suppressed (the reload / T1 / cache-restore paths read this entry).
@@ -2371,11 +2458,17 @@ mod tests {
 
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
         introspection
-            .entry(FQSymbol { module: module.clone(), symbol: "__expr-helper".into() })
+            .entry(FQSymbol {
+                module: module.clone(),
+                symbol: "__expr-helper".into(),
+            })
             .or_default()
             .sexp = Some(parse1("(defn __expr-helper [] 1)"));
         introspection
-            .entry(FQSymbol { module: module.clone(), symbol: "__expr".into() })
+            .entry(FQSymbol {
+                module: module.clone(),
+                symbol: "__expr".into(),
+            })
             .or_default()
             .source = Some("(add-i64 1 2)".to_string());
 
@@ -2436,7 +2529,10 @@ mod tests {
         let authored = "(deftype   Pt (MkPt [:Int x]  [:Int y]))";
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
         let mut rec = introspection
-            .entry(FQSymbol { module: module.clone(), symbol: "Pt".into() })
+            .entry(FQSymbol {
+                module: module.clone(),
+                symbol: "Pt".into(),
+            })
             .or_default();
         rec.sexp = Some(parse1(authored));
         rec.source = Some(authored.to_string());
@@ -2461,7 +2557,10 @@ mod tests {
 
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
         let mut rec = introspection
-            .entry(FQSymbol { module: module.clone(), symbol: "Pt".into() })
+            .entry(FQSymbol {
+                module: module.clone(),
+                symbol: "Pt".into(),
+            })
             .or_default();
         rec.sexp = Some(parse1("(deftype Pt (MkPt [:Int x] [:Int y]))"));
         // A stale source describing a DIFFERENT declaration.
@@ -2490,7 +2589,10 @@ mod tests {
         let authored = "(deftrait (Sizeable a) (size [a] Int))";
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
         introspection
-            .entry(FQSymbol { module: module.clone(), symbol: "Sizeable".into() })
+            .entry(FQSymbol {
+                module: module.clone(),
+                symbol: "Sizeable".into(),
+            })
             .or_default()
             .source = Some(authored.to_string()); // sexp intentionally None
 
@@ -2560,7 +2662,10 @@ mod tests {
 
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
         introspection
-            .entry(FQSymbol { module: module.clone(), symbol: "Disp.W".into() })
+            .entry(FQSymbol {
+                module: module.clone(),
+                symbol: "Disp.W".into(),
+            })
             .or_default()
             .source = Some("(impl Disp W (defn dp [w] 42))".to_string());
 
@@ -2592,7 +2697,10 @@ mod tests {
         // under `user`. `user`'s regen must not reach it.
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
         introspection
-            .entry(FQSymbol { module: other.clone(), symbol: "Disp.X".into() })
+            .entry(FQSymbol {
+                module: other.clone(),
+                symbol: "Disp.X".into(),
+            })
             .or_default()
             .source = Some("(impl Disp X (defn dp [w] 7))".to_string());
 
@@ -2619,7 +2727,10 @@ mod tests {
         let st = crate::code::SessionSymbolTable::new_with_params(module.clone());
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
         introspection
-            .entry(FQSymbol { module: module.clone(), symbol: "Disp.W".into() })
+            .entry(FQSymbol {
+                module: module.clone(),
+                symbol: "Disp.W".into(),
+            })
             .or_default()
             .source = Some("(impl Disp W (defn dp [w] 42))".to_string());
 
@@ -2645,7 +2756,10 @@ mod tests {
         );
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
         introspection
-            .entry(FQSymbol { module: module.clone(), symbol: "Disp.W".into() })
+            .entry(FQSymbol {
+                module: module.clone(),
+                symbol: "Disp.W".into(),
+            })
             .or_default()
             .source = Some("(impl Disp W (defn dp [w] 42))".to_string());
 
@@ -2669,7 +2783,10 @@ mod tests {
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
         // A dotted key whose recorded form is a deftype, not an impl.
         introspection
-            .entry(FQSymbol { module: module.clone(), symbol: "Color.Red".into() })
+            .entry(FQSymbol {
+                module: module.clone(),
+                symbol: "Color.Red".into(),
+            })
             .or_default()
             .source = Some("(deftype Color Red Green Blue)".to_string());
 
@@ -2711,6 +2828,4 @@ mod tests {
         // And the full sweep runs clean (no panic).
         assert_section_completeness(&st, &module);
     }
-
 }
-

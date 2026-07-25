@@ -15,7 +15,7 @@ use std::process::Command;
 
 use cranelisp_types::{CranelispError, ErrorLocation, Span};
 
-use super::{describe_args, run_linker, LinkRequest, Linker};
+use super::{LinkRequest, Linker, describe_args, run_linker};
 
 pub(super) struct GnuCcLinker;
 
@@ -29,10 +29,8 @@ impl GnuCcLinker {
     /// (crt's `_start` is the default entry; our `main` is the C entry), no
     /// `-syslibroot`, no `-platform_version`.
     fn build_args(&self, req: &LinkRequest) -> Result<Vec<String>, CranelispError> {
-        let mut cc_args: Vec<String> = vec![
-            "-o".to_string(),
-            req.output.to_string_lossy().to_string(),
-        ];
+        let mut cc_args: Vec<String> =
+            vec!["-o".to_string(), req.output.to_string_lossy().to_string()];
 
         // Startup stub (the C `main`) first.
         cc_args.push(req.startup_obj.to_string_lossy().to_string());
@@ -266,6 +264,11 @@ mod tests {
         assert_eq!(extracted.file_name().unwrap(), "unit.o");
         assert!(extracted.exists(), "extracted .o must be on disk");
         assert!(extracted.starts_with(cache.join("__plat_libfake_platform")));
-        assert!(!cache.join("__plat_libfake_platform").join("lib.rmeta").exists());
+        assert!(
+            !cache
+                .join("__plat_libfake_platform")
+                .join("lib.rmeta")
+                .exists()
+        );
     }
 }

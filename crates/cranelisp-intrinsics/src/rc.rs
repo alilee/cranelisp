@@ -40,7 +40,11 @@ pub fn rc_trace(op: &str, ptr: i64, rc: i64) {
     #[cfg(debug_assertions)]
     {
         if RC_TRACE_ENABLED.load(Ordering::Relaxed) {
-            let tag = if ptr > 0x1000 { unsafe { *((ptr as isize + 16) as *const i64) } } else { -1 };
+            let tag = if ptr > 0x1000 {
+                unsafe { *((ptr as isize + 16) as *const i64) }
+            } else {
+                -1
+            };
             eprintln!("[RC] {op:>5} {ptr:#x} rc={rc} tag@16={tag}");
         }
     }
@@ -534,9 +538,7 @@ pub fn rc_inc(ptr: i64) {
 pub(crate) extern "C" fn rc_dec_check(ptr: i64) -> i64 {
     #[cfg(debug_assertions)]
     {
-        if ptr >= cranelisp_types::NULLARY_TAG_THRESHOLD as i64
-            && !alloc::is_live(ptr as usize)
-        {
+        if ptr >= cranelisp_types::NULLARY_TAG_THRESHOLD as i64 && !alloc::is_live(ptr as usize) {
             let info = alloc::freed_info(ptr as usize);
             panic!(
                 "STALE RC DEC (JIT inline): about to dec non-live heap pointer {ptr:#x} \

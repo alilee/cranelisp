@@ -57,7 +57,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, CrOutput};
+use helpers::e2e::{CrOutput, Cranelisp};
 
 /// A §8.6.4/§8.6.5 shadow/collision rejection: a collision diagnostic is
 /// present AND the shadow did not run to its exit code (no effect). Used by
@@ -310,10 +310,7 @@ fn two_explicit_specific_imports_same_name_is_error() {
 fn explicit_import_no_collision_resolves() {
     Cranelisp::new()
         .prelude(PRELUDE_WITH_GULP)
-        .file(
-            "libc.cl",
-            "(defn other [x] (add-i64 x 7))",
-        )
+        .file("libc.cl", "(defn other [x] (add-i64 x 7))")
         .file(
             "user.cl",
             "(import [libc [other]])\n(defn main [] (Pure (other 5)))",
@@ -341,10 +338,7 @@ fn explicit_import_no_collision_resolves() {
 fn prelude_refusal_neg_prelude_name_not_bare() {
     let out = Cranelisp::new()
         .prelude(PRELUDE_WITH_GULP)
-        .file(
-            "user.cl",
-            "(import [prelude []])\n(defn main [] (gulp 5))",
-        )
+        .file("user.cl", "(import [prelude []])\n(defn main [] (gulp 5))")
         .run("user.cl")
         .output();
     assert!(

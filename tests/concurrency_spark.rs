@@ -132,8 +132,7 @@ fn par_reduce_shaped_inline_results_identical_to_sequential() {
 fn par_map_shaped_inline_not_slower_than_sequential() {
     let parallel_body = "(let [a (fib 30) b (fib 30) c (fib 30) d (fib 30)]\n\
                           (Pure (add-i64 (add-i64 a b) (add-i64 c d))))";
-    let sequential_body =
-        "(let [a (fib 30)\n\
+    let sequential_body = "(let [a (fib 30)\n\
                b (fib (add-i64 30 (sub-i64 a a)))\n\
                c (fib (add-i64 30 (sub-i64 b b)))\n\
                d (fib (add-i64 30 (sub-i64 c c)))]\n\
@@ -169,7 +168,9 @@ fn par_map_shaped_inline_not_slower_than_sequential() {
 /// (`run_exit_ms` above asserts a fixed exit + returns ms; this returns the code
 /// so the three-regime arms can be compared for byte-identical results.)
 fn run_exit_env(main_body: &str, envs: &[(&str, &str)]) -> Option<i32> {
-    let mut b = Cranelisp::new().run("user.cl").user(&fib_program(main_body));
+    let mut b = Cranelisp::new()
+        .run("user.cl")
+        .user(&fib_program(main_body));
     for (k, v) in envs {
         b = b.env(k, v);
     }
@@ -221,8 +222,7 @@ fn dep_clean_program() -> String {
 /// A dependent-spark `let` whose sparked DEPENDENCY `a (div-i64 10 0)` panics; the
 /// dependent binding `c (add-i64 a b)` references it. Wrapped in
 /// `catch-runtime-error` → the `Err` arm fires (exit 0 = caught, not swallowed).
-const DEP_PANIC_CAUGHT_PROGRAM: &str =
-    "(import [primitives [catch-runtime-error div-i64 add-i64 sub-i64 le-i64 Int Result Ok Err Pure]])\n\
+const DEP_PANIC_CAUGHT_PROGRAM: &str = "(import [primitives [catch-runtime-error div-i64 add-i64 sub-i64 le-i64 Int Result Ok Err Pure]])\n\
      (defn work [:Int n :Int acc] (if (le-i64 n 0) acc (work (sub-i64 n 1) (add-i64 acc 1))))\n\
      (defn compute []\n\
        (let [a (div-i64 10 0)\n\
@@ -236,8 +236,7 @@ const DEP_PANIC_CAUGHT_PROGRAM: &str =
 
 /// Same dependent shape, UNCAUGHT — the sparked dependency's div-by-zero must
 /// surface (not be silently dropped) on the joining thread.
-const DEP_PANIC_UNCAUGHT_PROGRAM: &str =
-    "(import [primitives [div-i64 add-i64 sub-i64 le-i64 Int Pure]])\n\
+const DEP_PANIC_UNCAUGHT_PROGRAM: &str = "(import [primitives [div-i64 add-i64 sub-i64 le-i64 Int Pure]])\n\
      (defn work [:Int n :Int acc] (if (le-i64 n 0) acc (work (sub-i64 n 1) (add-i64 acc 1))))\n\
      (defn compute []\n\
        (let [a (div-i64 10 0)\n\
@@ -333,7 +332,8 @@ fn dependent_spark_dependency_panic_not_swallowed_neg() {
         combined.contains("division by zero"),
         "uncaught sparked-DEPENDENCY div-by-zero MUST surface 'division by zero' at the \
          source-order barrier (§4.5.1, not swallowed).\nstdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
     assert_ne!(
         out.status.code(),
@@ -374,7 +374,10 @@ fn dependent_spark_rc_alloc_free_balanced() {
         out.stderr
     );
     let (allocs, frees) = rc_alloc_free_counts(&out.stderr);
-    assert!(allocs > 0, "expected the RC trace to record allocations (IVar cells); got 0");
+    assert!(
+        allocs > 0,
+        "expected the RC trace to record allocations (IVar cells); got 0"
+    );
     assert_eq!(
         allocs, frees,
         "clean dependent-spark workload must be alloc/free balanced (no captured-IVar \
@@ -399,7 +402,10 @@ fn rc_leak(prog: &str, expect_exit: i32) -> i64 {
         out.stderr
     );
     let (allocs, frees) = rc_alloc_free_counts(&out.stderr);
-    assert!(allocs > 0, "expected the RC trace to record allocations; got 0");
+    assert!(
+        allocs > 0,
+        "expected the RC trace to record allocations; got 0"
+    );
     allocs as i64 - frees as i64
 }
 
@@ -579,7 +585,12 @@ fn dependent_spark_partial_dependency_win() {
 
     // (a) value floor — identical to the forced-sequential oracle and the known
     // value (contention-immune; a single ON/OFF pair suffices).
-    let on = Cranelisp::new().run("user.cl").user(&prog).output().status.code();
+    let on = Cranelisp::new()
+        .run("user.cl")
+        .user(&prog)
+        .output()
+        .status
+        .code();
     let off = Cranelisp::new()
         .run("user.cl")
         .user(&prog)
@@ -600,8 +611,9 @@ fn dependent_spark_partial_dependency_win() {
 
     // (b) timing witness — best-of-N min (contention only ever makes a run SLOWER).
     let parallel_ms = best_of_n_ms(5, || run_prog_ms(&prog, 4, &[]));
-    let sequential_ms =
-        best_of_n_ms(3, || run_prog_ms(&prog, 4, &[("CRANELISP_NO_LENIENT", "1")]));
+    let sequential_ms = best_of_n_ms(3, || {
+        run_prog_ms(&prog, 4, &[("CRANELISP_NO_LENIENT", "1")])
+    });
     // Generous floor (×2): the dependent-spark substrate must NOT regress to
     // slower-than-serial. On a genuinely-parallel impl `parallel_ms` is ~half
     // `sequential_ms` (≈4·work serial vs ≈2·work critical path), so this clears by
@@ -758,8 +770,7 @@ fn alloc_rc_heavy_parallel_result_equals_sequential() {
     const VEC_LEN: usize = 81;
     const LEAVES: i64 = 8;
     const ITERS: i64 = 500;
-    let expected =
-        (((LEAVES as i128) * (ITERS as i128) * (ITERS as i128 + 1) / 2) % 256) as i32;
+    let expected = (((LEAVES as i128) * (ITERS as i128) * (ITERS as i128 + 1) / 2) % 256) as i32;
     let prog = churn_dac_program(VEC_LEN, LEAVES, ITERS);
 
     // Lenient ON (sparks fire) vs forced-sequential OFF — must agree, and equal the
@@ -817,8 +828,7 @@ fn alloc_rc_heavy_parallel_cpu_floor_benchmark_ignored() {
     const VEC_LEN: usize = 81; // /port's "~81-element Vec of (Box Int)".
     const LEAVES: i64 = 16; // 16 D&C leaves → a wide parallel frontier.
     const ITERS: i64 = 3000; // heavy per-leaf vec-set churn over the shared Vec.
-    let expected =
-        (((LEAVES as i128) * (ITERS as i128) * (ITERS as i128 + 1) / 2) % 256) as i32;
+    let expected = (((LEAVES as i128) * (ITERS as i128) * (ITERS as i128 + 1) / 2) % 256) as i32;
 
     let td = tempfile::tempdir().expect("tempdir");
     let cl = td.path().join("churn.cl");
@@ -828,8 +838,15 @@ fn alloc_rc_heavy_parallel_cpu_floor_benchmark_ignored() {
     // (hence "in-floor") timing pass.
     let (par_cpu0, par_exit) = run_cpu_seconds(td.path(), &cl, false);
     let (ser_cpu0, ser_exit) = run_cpu_seconds(td.path(), &cl, true);
-    assert_eq!(par_exit, Some(expected), "parallel result must equal the known value");
-    assert_eq!(ser_exit, par_exit, "lenient ON vs OFF differ — equivalence violated");
+    assert_eq!(
+        par_exit,
+        Some(expected),
+        "parallel result must equal the known value"
+    );
+    assert_eq!(
+        ser_exit, par_exit,
+        "lenient ON vs OFF differ — equivalence violated"
+    );
 
     // CPU floor demonstration. Conservative arms: parallel = MIN over 5 (best case),
     // serial = MAX over 3 (worst/highest baseline). On an idle box this reproduces

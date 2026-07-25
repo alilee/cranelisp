@@ -42,7 +42,10 @@ fn apply(unique_static: Option<bool>) -> MonoExpr {
     MonoExpr::Apply {
         dispatch: cranelisp_types::ApplyRef::ViaCallee,
         callee: Box::new(MonoExpr::Var {
-            resolution: cranelisp_types::VarRef::Local { binder: Symbol::from("build"), binding_span: Span::SYNTHETIC },
+            resolution: cranelisp_types::VarRef::Local {
+                binder: Symbol::from("build"),
+                binding_span: Span::SYNTHETIC,
+            },
             name: Symbol::from("build"),
             span: Span::SYNTHETIC,
             resolved_call: None,
@@ -63,7 +66,10 @@ fn apply(unique_static: Option<bool>) -> MonoExpr {
 /// the proof off.
 fn var() -> MonoExpr {
     MonoExpr::Var {
-        resolution: cranelisp_types::VarRef::Local { binder: Symbol::from("v"), binding_span: Span::SYNTHETIC },
+        resolution: cranelisp_types::VarRef::Local {
+            binder: Symbol::from("v"),
+            binding_span: Span::SYNTHETIC,
+        },
         name: Symbol::from("v"),
         span: Span::SYNTHETIC,
         resolved_call: None,

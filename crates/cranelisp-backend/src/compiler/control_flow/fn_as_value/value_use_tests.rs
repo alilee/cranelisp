@@ -2,7 +2,6 @@
 
 use crate::test_support::*;
 
-
 // spec: 05-definitions §5.2.7; appendix-c-nfr §C.1.4 — a data constructor is
 // first-class and its concrete ADT has per-type drop glue. Implementation
 // lock: design/backend/compile-to-module.md §2.6.6 (generic fn-as-value path).
@@ -33,9 +32,7 @@ use crate::test_support::*;
 // GOT entries are not backend's.
 #[test]
 fn constructor_as_value_falls_through_to_fn_as_value() {
-    use cranelisp_types::{
-        DefKind, FQTypeName, ModuleEntry, Scheme, TypeDefInfo, TypeName,
-    };
+    use cranelisp_types::{DefKind, FQTypeName, ModuleEntry, Scheme, TypeDefInfo, TypeName};
 
     let module = ModuleFullPath::from("user");
     let fqtn = FQTypeName::new(module.clone(), TypeName::from("Option"));
@@ -214,7 +211,10 @@ fn constructor_as_value_falls_through_to_fn_as_value() {
             },
         );
         st.insert(ctor_defn.name.clone(), ctor_entry);
-        st.insert(consumer_defn.name.clone(), make_def_entry_slot(consumer_defn.clone(), 1));
+        st.insert(
+            consumer_defn.name.clone(),
+            make_def_entry_slot(consumer_defn.clone(), 1),
+        );
         st.next_got_slot = 2;
         tables.insert(module.clone(), st);
     }
@@ -253,20 +253,27 @@ fn constructor_as_value_falls_through_to_fn_as_value() {
     // Stage 2 assertion: run the consumer end-to-end. It builds `(Some 3)`
     // through the GOT-indirect fn-as-value wrapper and returns the heap
     // pointer to `[.., tag=1, field=3]`. Read the field back.
-    let ptr = jit.get_ptr_by_name(&consumer_defn.name, 0).expect("finalize consumer");
-    assert!(!ptr.is_null(), "consumer must finalize to a non-null fn ptr");
+    let ptr = jit
+        .get_ptr_by_name(&consumer_defn.name, 0)
+        .expect("finalize consumer");
+    assert!(
+        !ptr.is_null(),
+        "consumer must finalize to a non-null fn ptr"
+    );
     let _ = cranelisp_intrinsics::panic::take_runtime_error();
     let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
     let adt_ptr = func();
     if let Some(msg) = cranelisp_intrinsics::panic::take_runtime_error() {
         panic!("runtime panic running consumer: {msg}");
     }
-    assert!(adt_ptr != 0, "constructor-as-value must allocate a heap ADT");
+    assert!(
+        adt_ptr != 0,
+        "constructor-as-value must allocate a heap ADT"
+    );
     // Field 0 lives at HeapAdt::field_offset(0) from the base pointer.
     let field0 = unsafe {
-        let field_addr = (adt_ptr as usize
-            + crate::heap::HeapAdt::field_offset(0) as usize)
-            as *const i64;
+        let field_addr =
+            (adt_ptr as usize + crate::heap::HeapAdt::field_offset(0) as usize) as *const i64;
         *field_addr
     };
     assert_eq!(
@@ -275,7 +282,6 @@ fn constructor_as_value_falls_through_to_fn_as_value() {
          with the passed field; got {field0}"
     );
 }
-
 
 // spec: 07-traits §7.6 — a trait method used as a first-class value
 // dispatches to the impl chosen by typecheck for the value's type, NOT a
@@ -300,11 +306,9 @@ fn value_position_plus_float_dispatches_add_f64_not_add_i64() {
     let plus_as_value = Expr::Var {
         name: Symbol::from("+"),
         span: Span::new(100, 101),
-        resolved_call: Some(Box::new(
-            cranelisp_types::ResolvedCall::BuiltinFn {
-                name: Symbol::from("add-f64"),
-            },
-        )),
+        resolved_call: Some(Box::new(cranelisp_types::ResolvedCall::BuiltinFn {
+            name: Symbol::from("add-f64"),
+        })),
         inferred_type: Some(Box::new(Type::Fn(
             vec![Type::Float, Type::Float],
             Box::new(Type::Float),
@@ -342,12 +346,8 @@ fn value_position_plus_float_dispatches_add_f64_not_add_i64() {
         inferred_type: Some(Box::new(Type::Float)),
     };
 
-    let value = test_compile_and_run(
-        &consumer_body,
-        &empty_check(),
-        &empty_tables(),
-    )
-    .expect("value-position + (add-f64) should compile and run");
+    let value = test_compile_and_run(&consumer_body, &empty_check(), &empty_tables())
+        .expect("value-position + (add-f64) should compile and run");
 
     let result = f64::from_bits(value as u64);
     assert_eq!(
@@ -357,7 +357,6 @@ fn value_position_plus_float_dispatches_add_f64_not_add_i64() {
          (FIXME 0300 Symptom B)"
     );
 }
-
 
 // spec: 07-traits §7.6 — value-position trait method resolved to a TraitMethod
 // (mangled impl) emits a dispatch-wrapper that calls the *mangled name*, NOT
@@ -380,21 +379,19 @@ fn value_position_eq_string_dispatches_to_mangled_impl_not_eq_i64() {
     let eq_as_value = Expr::Var {
         name: Symbol::from("="),
         span: Span::new(50, 51),
-        resolved_call: Some(Box::new(
-            cranelisp_types::ResolvedCall::TraitMethod {
-                trait_name: cranelisp_types::FQTraitName::new(
-                    module.clone(),
-                    cranelisp_types::TraitName::from("Eq"),
-                ),
-                method_name: Symbol::from("="),
-                impl_type: cranelisp_types::FQTypeName::new(
-                    ModuleFullPath::from("primitives"),
-                    cranelisp_types::TypeName::from("String"),
-                ),
-                mangled_name: cranelisp_types::JitSymbol::from("Eq.=$String"),
-                impl_module: module.clone(),
-            },
-        )),
+        resolved_call: Some(Box::new(cranelisp_types::ResolvedCall::TraitMethod {
+            trait_name: cranelisp_types::FQTraitName::new(
+                module.clone(),
+                cranelisp_types::TraitName::from("Eq"),
+            ),
+            method_name: Symbol::from("="),
+            impl_type: cranelisp_types::FQTypeName::new(
+                ModuleFullPath::from("primitives"),
+                cranelisp_types::TypeName::from("String"),
+            ),
+            mangled_name: cranelisp_types::JitSymbol::from("Eq.=$String"),
+            impl_module: module.clone(),
+        })),
         inferred_type: Some(Box::new(Type::Fn(
             vec![Type::String, Type::String],
             Box::new(Type::Bool),
@@ -421,13 +418,7 @@ fn value_position_eq_string_dispatches_to_mangled_impl_not_eq_i64() {
 
     let mut jit = Jit::new_with_symbols(&[]).expect("jit init");
     let names = vec![defn.name.clone()];
-    let result = compile_to_module(
-        module.clone(),
-        &names,
-        &tables,
-        jit.jit_module(),
-        true,
-    );
+    let result = compile_to_module(module.clone(), &names, &tables, jit.jit_module(), true);
     // `CompilationArtifacts` is not `Debug`, so match rather than `expect_err`.
     let err = match result {
         Ok(_) => panic!(
@@ -447,7 +438,6 @@ fn value_position_eq_string_dispatches_to_mangled_impl_not_eq_i64() {
          hard-coded operator path leaked (FIXME 0300 Symptom B). Got: {msg}"
     );
 }
-
 
 // spec: design/backend/ownership-codegen.md §12.7 — `vec-get` used as a VALUE
 // wraps via `compile_fn_as_value` → `emit_wrapper_call`; the wrapper must
@@ -477,7 +467,6 @@ fn vec_get_as_value_wrapper_inline_emits_and_returns_element() {
     );
     assert_eq!(run_vec_query_value_consumer(consumer), 20);
 }
-
 
 // spec: design/backend/ownership-codegen.md §12.7 — `vec-set` as a VALUE: the
 // wrapper takes the owned-temporary polarity (no consuming inc on the new
@@ -519,7 +508,6 @@ fn vec_set_as_value_wrapper_inline_emits_and_updates_element() {
     assert_eq!(vec_elem_for_test(vec_ptr, 0), 10, "element 0 retained");
 }
 
-
 // spec: design/backend/ownership-codegen.md §12.7 — `vec-push` as a VALUE:
 // same owned-temporary polarity; COW rc==1 fast path appends. RED on HEAD:
 // SIGSEGV.
@@ -549,7 +537,6 @@ fn vec_push_as_value_wrapper_inline_emits_and_appends() {
     assert_eq!(vec_len_for_test(vec_ptr), 3, "length incremented");
     assert_eq!(vec_elem_for_test(vec_ptr, 2), 30, "pushed element present");
 }
-
 
 // spec: design/backend/ownership-codegen.md §12.7 — the CURRY seam is distinct:
 // a partial application `(vec-get v)` routes `compile_auto_curry` →

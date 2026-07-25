@@ -5,8 +5,6 @@
 
 use super::*;
 
-
-
 // §11.8.3 leg D3 — a poly callee (`idpoly`) reached ONLY from a MULTI-SIG
 // clause body MUST have its concrete mono instance minted. Pre-fix the
 // multi-sig defn was filtered out of the mono-collect (`collect_single_sig_defns`
@@ -187,8 +185,7 @@ fn multi_sig_base_dispatch_in_mono_body_carrier_r2() {
     // APPLY span (SigDispatch), naming the concrete clause `h$Int` — not absent
     // (the carrier-loss shape the backend keyed read would hard-fail on).
     let has_h_dispatch = targets.iter().any(|(l, fq)| {
-        l == "@apply"
-            && matches!(fq, Some(fq) if fq.symbol.as_ref().contains("h$"))
+        l == "@apply" && matches!(fq, Some(fq) if fq.symbol.as_ref().contains("h$"))
     });
     assert!(
         has_h_dispatch,
@@ -367,9 +364,9 @@ fn mono_recheck_shadowed_self_call_records_no_dispatch() {
     collect_resolved_targets(&view.body, &mut targets);
     // No node in s1$Int's body may dispatch to a `s1$…` mono instance (the
     // shadowed `(s1 x)` is the LOCAL identity, an indirect call).
-    let leaks_self_dispatch = targets.iter().any(|(_, fq)| {
-        matches!(fq, Some(fq) if fq.symbol.as_ref().contains("s1$"))
-    });
+    let leaks_self_dispatch = targets
+        .iter()
+        .any(|(_, fq)| matches!(fq, Some(fq) if fq.symbol.as_ref().contains("s1$")));
     assert!(
         !leaks_self_dispatch,
         "the let-shadowed `(s1 x)` inside `s1$Int` MUST NOT record a \
@@ -397,7 +394,9 @@ fn mono_recheck_shadowed_self_call_non_tail_records_no_dispatch() {
     let mut targets = Vec::new();
     collect_resolved_targets(&view.body, &mut targets);
     assert!(
-        !targets.iter().any(|(_, fq)| matches!(fq, Some(fq) if fq.symbol.as_ref().contains("s1$"))),
+        !targets
+            .iter()
+            .any(|(_, fq)| matches!(fq, Some(fq) if fq.symbol.as_ref().contains("s1$"))),
         "the non-tail let-shadowed `(s1 x)` MUST NOT record a self-recursion \
          dispatch (Fix 1 non-tail cell); collected: {targets:?}"
     );
@@ -415,7 +414,10 @@ fn imported_multi_sig_base_carrier_keyed_by_home_mc_x2() {
     let mlib = ModuleFullPath::from("mlib");
     tc.set_current_module(mlib.clone());
     seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
-    check_src(&mut tc, "(defn h ([x] (add-i64 x 1)) ([a b] (add-i64 a b)))");
+    check_src(
+        &mut tc,
+        "(defn h ([x] (add-i64 x 1)) ([a b] (add-i64 a b)))",
+    );
     let user = ModuleFullPath::from("user");
     tc.set_current_module(user.clone());
     seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
@@ -456,7 +458,10 @@ fn imported_multi_sig_base_qualified_call_stored_identity_fix_a() {
     let mlib = ModuleFullPath::from("mlib");
     tc.set_current_module(mlib.clone());
     seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
-    check_src(&mut tc, "(defn h ([x] (add-i64 x 1)) ([a b] (add-i64 a b)))");
+    check_src(
+        &mut tc,
+        "(defn h ([x] (add-i64 x 1)) ([a b] (add-i64 a b)))",
+    );
     let user = ModuleFullPath::from("user");
     tc.set_current_module(user.clone());
     seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
@@ -506,7 +511,9 @@ fn ruling5_composition_let_shadowed_multi_sig_base_in_mono_recheck() {
     let mut targets = Vec::new();
     collect_resolved_targets(&view.body, &mut targets);
     assert!(
-        !targets.iter().any(|(_, fq)| matches!(fq, Some(fq) if fq.symbol.as_ref().contains("m$"))),
+        !targets
+            .iter()
+            .any(|(_, fq)| matches!(fq, Some(fq) if fq.symbol.as_ref().contains("m$"))),
         "the let-shadowed multi-sig base call `(m p)` inside `poly$Int` MUST \
          resolve to the LOCAL (no `m$…` overload dispatch) — the ruling-5 gate \
          composes under a mono recheck even when the base IS locally bound; \
@@ -531,7 +538,9 @@ fn mono_recheck_genuine_self_recursion_still_records() {
     let mut targets = Vec::new();
     collect_resolved_targets(&view.body, &mut targets);
     assert!(
-        targets.iter().any(|(_, fq)| matches!(fq, Some(fq) if fq.symbol.as_ref().contains("cnt$"))),
+        targets
+            .iter()
+            .any(|(_, fq)| matches!(fq, Some(fq) if fq.symbol.as_ref().contains("cnt$"))),
         "the genuine self-call `(cnt x (sub-i64 n 1))` MUST still dispatch to \
          the mono instance `cnt$Int+Int` (Fix 1 must not break genuine \
          self-recursion); collected: {targets:?}"
@@ -590,7 +599,9 @@ fn shadowed_parametric_in_mono_body_no_record_fix_b() {
     let mut targets = Vec::new();
     collect_resolved_targets(&view.body, &mut targets);
     assert!(
-        !targets.iter().any(|(_, fq)| matches!(fq, Some(fq) if fq.symbol.as_ref().contains("tgt$"))),
+        !targets
+            .iter()
+            .any(|(_, fq)| matches!(fq, Some(fq) if fq.symbol.as_ref().contains("tgt$"))),
         "the shadowed `(tgt p)` in `poly$Int` MUST NOT record a `tgt$…` dispatch \
          (FIXME 0653 site 4); collected: {targets:?}"
     );
@@ -612,7 +623,9 @@ fn shadowed_constrained_in_mono_body_no_record_fix_b() {
     let mut targets = Vec::new();
     collect_resolved_targets(&view.body, &mut targets);
     assert!(
-        !targets.iter().any(|(_, fq)| matches!(fq, Some(fq) if fq.symbol.as_ref().contains("cadd$"))),
+        !targets
+            .iter()
+            .any(|(_, fq)| matches!(fq, Some(fq) if fq.symbol.as_ref().contains("cadd$"))),
         "the shadowed `(cadd p)` in `poly$Int` MUST NOT record a `cadd$…` \
          dispatch (FIXME 0653 site 3); collected: {targets:?}"
     );
@@ -649,7 +662,12 @@ fn multi_sig_self_call_carries_mangled_sig_dispatch() {
     // Walk a body Expr tree collecting every `SigDispatch` mangled name.
     fn collect_sig_dispatch(expr: &Expr, out: &mut Vec<String>) {
         let rc = match expr {
-            Expr::Apply { callee, args, resolved_call, .. } => {
+            Expr::Apply {
+                callee,
+                args,
+                resolved_call,
+                ..
+            } => {
                 collect_sig_dispatch(callee, out);
                 for a in args {
                     collect_sig_dispatch(a, out);
@@ -657,7 +675,12 @@ fn multi_sig_self_call_carries_mangled_sig_dispatch() {
                 resolved_call.as_deref()
             }
             Expr::Var { resolved_call, .. } => resolved_call.as_deref(),
-            Expr::If { cond, then_branch, else_branch, .. } => {
+            Expr::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
                 collect_sig_dispatch(cond, out);
                 collect_sig_dispatch(then_branch, out);
                 collect_sig_dispatch(else_branch, out);
@@ -690,7 +713,9 @@ fn multi_sig_self_call_carries_mangled_sig_dispatch() {
         .get("h$Int")
         .expect("mangled variant `h$Int` must be registered");
     let body = match entry {
-        ModuleEntry::Def { ast: Some(variant), .. } => &variant.body,
+        ModuleEntry::Def {
+            ast: Some(variant), ..
+        } => &variant.body,
         other => panic!("h$Int must carry an annotated ast: {other:?}"),
     };
 
@@ -719,14 +744,17 @@ fn multi_sig_backflow_pins_clause_concrete_no_var_entry_survives() {
                          ([p rot idx] (primitives/add-i64 p (primitives/add-i64 rot idx))))";
     let program =
         cranelisp_frontend::build_forms(&cranelisp_frontend::parse(src).unwrap()).unwrap();
-    tc.check_program_self(&program).expect("rp4 back-flow infers");
+    tc.check_program_self(&program)
+        .expect("rp4 back-flow infers");
     let st = tc.symbol_table();
     match st.get("rp4$Int+Int") {
         Some(ModuleEntry::Def { kind, scheme, .. }) => {
             assert!(
                 matches!(
                     kind.as_ref(),
-                    DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
+                    DefKind::UserFn {
+                        fn_state: UserFnState::Concrete { .. }
+                    }
                 ),
                 "the back-flow-pinned 2-arg clause must be Concrete, got {kind:?}"
             );
@@ -801,7 +829,12 @@ fn multi_sig_delegation_chain_self_call_dispatches_name_live_entries_no_var_resi
     // `$Var` dispatch), and none may contain `$Var`.
     fn collect_sig_dispatch(expr: &Expr, out: &mut Vec<String>) {
         let rc = match expr {
-            Expr::Apply { callee, args, resolved_call, .. } => {
+            Expr::Apply {
+                callee,
+                args,
+                resolved_call,
+                ..
+            } => {
                 collect_sig_dispatch(callee, out);
                 for a in args {
                     collect_sig_dispatch(a, out);
@@ -809,7 +842,12 @@ fn multi_sig_delegation_chain_self_call_dispatches_name_live_entries_no_var_resi
                 resolved_call.as_deref()
             }
             Expr::Var { resolved_call, .. } => resolved_call.as_deref(),
-            Expr::If { cond, then_branch, else_branch, .. } => {
+            Expr::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
                 collect_sig_dispatch(cond, out);
                 collect_sig_dispatch(then_branch, out);
                 collect_sig_dispatch(else_branch, out);
@@ -837,7 +875,10 @@ fn multi_sig_delegation_chain_self_call_dispatches_name_live_entries_no_var_resi
 
     let mut all_dispatches = Vec::new();
     for concrete in ["f3$Int", "f3$Int+Int", "f3$Int+Int+Int"] {
-        if let Some(ModuleEntry::Def { ast: Some(variant), .. }) = st.get(concrete) {
+        if let Some(ModuleEntry::Def {
+            ast: Some(variant), ..
+        }) = st.get(concrete)
+        {
             collect_sig_dispatch(&variant.body, &mut all_dispatches);
         }
     }
@@ -896,7 +937,9 @@ fn recursive_poly_multi_sig_clause_monomorphises_inline_no_residual() {
             assert!(
                 matches!(
                     kind.as_ref(),
-                    DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
+                    DefKind::UserFn {
+                        fn_state: UserFnState::Concrete { .. }
+                    }
                 ),
                 "the mono instance `g$Var$Int` must be Concrete, got {kind:?}",
             );
@@ -970,8 +1013,7 @@ fn constrained_multi_sig_clause_is_template_and_dispatches_via_mono() {
             matches!(
                 kind.as_ref(),
                 DefKind::UserFn {
-                    fn_state:
-                        UserFnState::Constrained(_) | UserFnState::Polymorphic(_)
+                    fn_state: UserFnState::Constrained(_) | UserFnState::Polymorphic(_)
                 }
             ),
             "g$Var must be a slot-less template (never Concrete over Var), got {kind:?}"

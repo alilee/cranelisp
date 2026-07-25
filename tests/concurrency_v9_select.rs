@@ -34,7 +34,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, CrError};
+use helpers::e2e::{CrError, Cranelisp};
 use std::time::Duration;
 
 /// The empty-select message of record (`reactor.md §9` / `spec/10-io.md §10.12.8`).

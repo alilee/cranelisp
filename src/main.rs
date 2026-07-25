@@ -184,9 +184,7 @@ fn main() {
     cranelisp::style::init_color(spec.settings.no_color);
 
     // Captured before `run` consumes `spec` — the error path names the entry file.
-    let entry_file = spec
-        .project_root
-        .join(format!("{}.cl", spec.entry_module));
+    let entry_file = spec.project_root.join(format!("{}.cl", spec.entry_module));
 
     if let Err(e) = run(spec) {
         eprintln!("{}", format_error(&e, &entry_file));
@@ -411,10 +409,7 @@ fn run_repl(
     // 2026-06-09; FIXME 0142). Slash commands and whitespace/comment-
     // only buffers are not incomplete forms.
     let pending = buffer.trim();
-    if !pending.is_empty()
-        && !pending.starts_with('/')
-        && !s.parens_balanced(&buffer)
-    {
+    if !pending.is_empty() && !pending.starts_with('/') && !s.parens_balanced(&buffer) {
         match s.eval(&buffer) {
             Err(e) => {
                 let _ = writeln!(stdout, "{}", cranelisp::style::error_line(&e.to_string()));
@@ -510,14 +505,7 @@ fn repl_read_eval_loop(
                 s.pretty_print(&text, stdout);
             }
             CommandResult::Compile(src) => {
-                handle_compile_result(
-                    s,
-                    &src,
-                    &input_str,
-                    stdout,
-                    &mut compile_ms,
-                    &mut eval_ms,
-                );
+                handle_compile_result(s, &src, &input_str, stdout, &mut compile_ms, &mut eval_ms);
             }
         }
 
@@ -698,8 +686,7 @@ fn try_agent_dispatch(
         None
     };
     if let Some(text) = ask_text.or(agent_text) {
-        let mut consent =
-            cranelisp::agent::types::FnConsent(|| input.read_consent_line());
+        let mut consent = cranelisp::agent::types::FnConsent(|| input.read_consent_line());
         s.agent_turn(&text, stdout, &mut consent);
         drop(consent);
         s.sync_watcher();
@@ -1092,7 +1079,10 @@ mod tests {
         for target in ["main.cl", "main"] {
             let (root, module, is_rule3) = resolve_target_from(Some(target), cwd);
             assert_eq!(root, cwd, "target {target:?}: project root must be cwd");
-            assert_eq!(module, "main", "target {target:?}: entry module must be 'main'");
+            assert_eq!(
+                module, "main",
+                "target {target:?}: entry module must be 'main'"
+            );
             assert!(
                 !is_rule3,
                 "target {target:?}: an entry-`.cl` launch is NOT a rule-3 scaffold trigger"
@@ -1126,7 +1116,10 @@ mod tests {
         let (root, module, is_rule3) = resolve_target_from(None, tmp.path());
         assert_eq!(root, tmp.path());
         assert_eq!(module, "user");
-        assert!(!is_rule3, "the bare no-target launch is NOT a rule-3 trigger");
+        assert!(
+            !is_rule3,
+            "the bare no-target launch is NOT a rule-3 trigger"
+        );
     }
 
     /// Rule 2: a target with a directory component splits into
@@ -1138,7 +1131,10 @@ mod tests {
         let (root, module, is_rule3) = resolve_target_from(Some("examples/hello.cl"), cwd);
         assert_eq!(root, cwd.join("examples"));
         assert_eq!(module, "hello");
-        assert!(!is_rule3, "a directory-component target is NOT a rule-3 trigger");
+        assert!(
+            !is_rule3,
+            "a directory-component target is NOT a rule-3 trigger"
+        );
     }
 
     /// Rule 4: a bare name that matches neither a directory nor a file still
@@ -1151,6 +1147,9 @@ mod tests {
         let (root, module, is_rule3) = resolve_target_from(Some("nope"), cwd);
         assert_eq!(root, cwd);
         assert_eq!(module, "nope");
-        assert!(!is_rule3, "a bare missing-name target is NOT a rule-3 trigger");
+        assert!(
+            !is_rule3,
+            "a bare missing-name target is NOT a rule-3 trigger"
+        );
     }
 }

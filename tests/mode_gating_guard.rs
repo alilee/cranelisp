@@ -44,7 +44,10 @@ const ALLOW_ORIGINS: &[(&str, &str)] = &[
     ("src/process_form.rs", "strategy == ModuleStrategy::Replace"),
     // lifecycle policy gate — allocate the introspection map under REPL only
     // (batch never populates it); allocate-or-not, not program-meaning.
-    ("src/session_v4/lifecycle.rs", "populates_introspection().then"),
+    (
+        "src/session_v4/lifecycle.rs",
+        ".populates_introspection()",
+    ),
     // lifecycle policy gate — the shutdown-settle burn-down runs REPL-only;
     // allocate/settle-or-not, not program-meaning.
     ("src/session_v4/lifecycle.rs", "run_mode.is_repl() &&"),
@@ -96,7 +99,11 @@ fn check(pattern: &str, allow: &[(&str, &str)], what: &str) {
     // (1) Every live hit is allowlisted — trips on a NEW origin.
     let offenders: Vec<String> = hits
         .iter()
-        .filter(|(f, c)| !allow.iter().any(|(af, at)| f.ends_with(af) && c.contains(at)))
+        .filter(|(f, c)| {
+            !allow
+                .iter()
+                .any(|(af, at)| f.ends_with(af) && c.contains(at))
+        })
         .map(|(f, c)| format!("  {}: {}", f, c.trim()))
         .collect();
     assert!(

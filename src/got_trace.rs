@@ -428,6 +428,9 @@ mod tests {
         // Buffer should be empty because the filter parsed `false` and
         // returned early.
         let dump = dump_thread_buffer();
-        assert!(dump.is_empty(), "buffer should be empty when filter disabled");
+        assert!(
+            dump.is_empty(),
+            "buffer should be empty when filter disabled"
+        );
     }
 }

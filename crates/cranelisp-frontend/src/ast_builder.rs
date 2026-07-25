@@ -20,11 +20,11 @@
 
 use std::collections::HashSet;
 
-use cranelisp_types::{ErrorLocation,
-    CranelispError, ConstructorDef, Defn, DefnVariant, Expr, FieldDef, MatchArm,
-    ModuleFullPath, ParsedEntry, Pattern, Sexp, Span, Symbol, SymbolRef, TopLevel,
-    TraitDecl, TraitImpl, TraitName, TraitRef, TypeExpr, TypeName, TypeRef,
-    UnresolvedTraitMethodSig, Visibility,
+use cranelisp_types::{
+    ConstructorDef, CranelispError, Defn, DefnVariant, ErrorLocation, Expr, FieldDef, MatchArm,
+    ModuleFullPath, ParsedEntry, Pattern, Sexp, Span, Symbol, SymbolRef, TopLevel, TraitDecl,
+    TraitImpl, TraitName, TraitRef, TypeExpr, TypeName, TypeRef, UnresolvedTraitMethodSig,
+    Visibility,
 };
 
 // `(trace ...)` build is mode-agnostic and works in ALL build modes including
@@ -40,7 +40,6 @@ use cranelisp_types::{ErrorLocation,
 // code.
 
 use crate::defmacro::parse_defmacro;
-
 
 // ---------------------------------------------------------------------------
 // Error helpers
@@ -248,7 +247,10 @@ fn is_uppercase_start(s: &str) -> bool {
 pub(crate) enum HeadKind {
     /// A definition form (`defn`/`deftype`/`deftrait`, with `-` = private):
     /// its `base` name (suffix stripped) and visibility.
-    Def { base: &'static str, visibility: Visibility },
+    Def {
+        base: &'static str,
+        visibility: Visibility,
+    },
     /// `defmacro` / `defmacro-`.
     Defmacro,
     /// `impl` (no visibility variant).
@@ -285,12 +287,30 @@ pub(crate) enum StructuralKind {
 /// vocabulary (FIXME 0678).
 pub(crate) fn classify_head(head: &str) -> HeadKind {
     match head {
-        "defn" => HeadKind::Def { base: "defn", visibility: Visibility::Public },
-        "defn-" => HeadKind::Def { base: "defn", visibility: Visibility::Private },
-        "deftype" => HeadKind::Def { base: "deftype", visibility: Visibility::Public },
-        "deftype-" => HeadKind::Def { base: "deftype", visibility: Visibility::Private },
-        "deftrait" => HeadKind::Def { base: "deftrait", visibility: Visibility::Public },
-        "deftrait-" => HeadKind::Def { base: "deftrait", visibility: Visibility::Private },
+        "defn" => HeadKind::Def {
+            base: "defn",
+            visibility: Visibility::Public,
+        },
+        "defn-" => HeadKind::Def {
+            base: "defn",
+            visibility: Visibility::Private,
+        },
+        "deftype" => HeadKind::Def {
+            base: "deftype",
+            visibility: Visibility::Public,
+        },
+        "deftype-" => HeadKind::Def {
+            base: "deftype",
+            visibility: Visibility::Private,
+        },
+        "deftrait" => HeadKind::Def {
+            base: "deftrait",
+            visibility: Visibility::Public,
+        },
+        "deftrait-" => HeadKind::Def {
+            base: "deftrait",
+            visibility: Visibility::Private,
+        },
         "defmacro" | "defmacro-" => HeadKind::Defmacro,
         "impl" => HeadKind::Impl,
         "begin" => HeadKind::Begin,
@@ -514,10 +534,27 @@ pub(crate) fn is_top_level_form_sexp(sexp: &Sexp) -> bool {
 /// `build_program_compat`).
 fn parsed_entry_to_top_level(entry: ParsedEntry) -> Option<TopLevel> {
     match entry {
-        ParsedEntry::Def { name, variants, visibility, docstring, span } => {
-            Some(TopLevel::Defn(Defn { name, docstring, variants, visibility, span }))
-        }
-        ParsedEntry::TypeDef { name, type_params, constructors, visibility, docstring, span } => {
+        ParsedEntry::Def {
+            name,
+            variants,
+            visibility,
+            docstring,
+            span,
+        } => Some(TopLevel::Defn(Defn {
+            name,
+            docstring,
+            variants,
+            visibility,
+            span,
+        })),
+        ParsedEntry::TypeDef {
+            name,
+            type_params,
+            constructors,
+            visibility,
+            docstring,
+            span,
+        } => {
             // `TopLevel::TypeDef.type_params` is `Vec<Symbol>` — pass through
             // (both `ParsedEntry::TypeDef` and `TopLevel::TypeDef` carry
             // `Vec<Symbol>` per the S70 Phase 3 newtype fix).
@@ -614,22 +651,18 @@ pub(crate) fn parse_defn(
             if body_start + consumed != children.len() {
                 return Err(parse_err("defn has extra forms after body", span));
             }
-            vec![DefnVariant {
-                params,
-                body,
-                span,
-            }]
+            vec![DefnVariant { params, body, span }]
         }
-        Sexp::List(..) => {
-            children[next..]
-                .iter()
-                .map(build_defn_variant)
-                .collect::<Result<Vec<_>, _>>()?
+        Sexp::List(..) => children[next..]
+            .iter()
+            .map(build_defn_variant)
+            .collect::<Result<Vec<_>, _>>()?,
+        _ => {
+            return Err(parse_err(
+                "defn: expected params [...] or variant (...)",
+                children[next].span(),
+            ));
         }
-        _ => return Err(parse_err(
-            "defn: expected params [...] or variant (...)",
-            children[next].span(),
-        )),
     };
 
     Ok(ParsedEntry::Def {
@@ -669,11 +702,7 @@ fn build_defn_variant(sexp: &Sexp) -> Result<DefnVariant, CranelispError> {
     if 1 + consumed != children.len() {
         return Err(parse_err("defn variant requires params and body", span));
     }
-    Ok(DefnVariant {
-        params,
-        body,
-        span,
-    })
+    Ok(DefnVariant { params, body, span })
 }
 
 // ---------------------------------------------------------------------------
@@ -892,9 +921,7 @@ fn build_constructor_def(sexp: &Sexp) -> Result<ConstructorDef, CranelispError> 
                 let cap = {
                     let mut chars = name.chars();
                     match chars.next() {
-                        Some(first) => {
-                            first.to_uppercase().collect::<String>() + chars.as_str()
-                        }
+                        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
                         None => name.to_string(),
                     }
                 };
@@ -1038,8 +1065,9 @@ fn desugar_type_def(
                     if let TypeExpr::TypeVar(ref v) = f.type_expr {
                         if v.is_empty() {
                             // Check if this field name already has an assigned var
-                            let var_name = if let Some((_, var)) =
-                                field_to_var.iter().find(|(fname, _)| fname.as_str() == f.name.as_ref())
+                            let var_name = if let Some((_, var)) = field_to_var
+                                .iter()
+                                .find(|(fname, _)| fname.as_str() == f.name.as_ref())
                             {
                                 var.clone()
                             } else {
@@ -1107,14 +1135,20 @@ pub(crate) fn parse_deftrait(
     // (deftrait Head "doc"? method_sig+)
     // Head = TraitName | (TraitName type_var)
     if children.len() < 3 {
-        return Err(parse_err("deftrait requires a trait head and at least one method", span));
+        return Err(parse_err(
+            "deftrait requires a trait head and at least one method",
+            span,
+        ));
     }
 
     let (trait_name, type_params, hkt_param_name) = build_trait_head(&children[1])?;
     let (docstring, next) = extract_optional_docstring(children, 2);
 
     if next >= children.len() {
-        return Err(parse_err("deftrait requires at least one method signature", span));
+        return Err(parse_err(
+            "deftrait requires at least one method signature",
+            span,
+        ));
     }
 
     let methods = children[next..]
@@ -1187,10 +1221,7 @@ fn parse_trait_head_shape(
                 }
             };
             if !is_uppercase_start(name) {
-                return Err(parse_err(
-                    "trait name must start with uppercase",
-                    name_span,
-                ));
+                return Err(parse_err("trait name must start with uppercase", name_span));
             }
             match children.len() {
                 1 => Err(parse_err(
@@ -1244,7 +1275,9 @@ fn parse_trait_head_shape(
 /// [`parse_trait_head_shape`] (Principle 7); the deftrait-specific name policy —
 /// keep the name in its home module (`TraitName::from`, no §8.5 split) and fold
 /// the con_var into `type_params` + `hkt_param_name` — stays here.
-fn build_trait_head(sexp: &Sexp) -> Result<(TraitName, Vec<Symbol>, Option<Symbol>), CranelispError> {
+fn build_trait_head(
+    sexp: &Sexp,
+) -> Result<(TraitName, Vec<Symbol>, Option<Symbol>), CranelispError> {
     let (name, name_span, con_var) = parse_trait_head_shape(sexp)?;
     // A `deftrait`/`deftrait-` head is a binder (spec §5; S3) — reject a
     // qualified spelling. This is the deftrait-CALLER policy: it lives here, not
@@ -1272,7 +1305,10 @@ fn build_method_sig(
 ) -> Result<UnresolvedTraitMethodSig, CranelispError> {
     let (children, span) = expect_list(sexp)?;
     if children.len() < 3 {
-        return Err(parse_err("method signature requires name, params, and one trailing form", span));
+        return Err(parse_err(
+            "method signature requires name, params, and one trailing form",
+            span,
+        ));
     }
 
     let (name, name_span) = expect_symbol(&children[0])?;
@@ -1334,10 +1370,7 @@ fn build_method_sig(
 // impl builder
 // ---------------------------------------------------------------------------
 
-pub(crate) fn parse_impl(
-    children: &[Sexp],
-    span: Span,
-) -> Result<ParsedEntry, CranelispError> {
+pub(crate) fn parse_impl(children: &[Sexp], span: Span) -> Result<ParsedEntry, CranelispError> {
     // (impl <head> impl_target method_def+)
     //   <head>      = TraitName | (TraitName con_var)   -- spec §7.2/§7.3
     //   impl_target = Type | (Type :Constraint var ...) -- slot 2, unchanged
@@ -1412,9 +1445,7 @@ type ImplTarget = (TypeExpr, Vec<(Symbol, TraitRef)>);
 ///   - `Type` — concrete: bare type name
 ///   - `(Type :Constraint var ...)` — polymorphic ADT with constraints
 ///   - `(Type var ...)` — parameterized concrete (e.g., `(Option Int)`)
-fn build_impl_target(
-    sexp: &Sexp,
-) -> Result<ImplTarget, CranelispError> {
+fn build_impl_target(sexp: &Sexp) -> Result<ImplTarget, CranelispError> {
     match sexp {
         Sexp::Symbol(name, _) if is_uppercase_start(name) => {
             // §8.5: a qualified target (`primitives/Int`) is canonical — split it
@@ -1486,10 +1517,7 @@ fn build_impl_target(
                         i += 1;
                     }
                     other => {
-                        return Err(parse_err(
-                            "expected symbol in impl target",
-                            other.span(),
-                        ));
+                        return Err(parse_err("expected symbol in impl target", other.span()));
                     }
                 }
             }
@@ -1497,10 +1525,7 @@ fn build_impl_target(
             // §8.5: a qualified applied head (`(primitives/Map K V)`) is canonical —
             // split through the shared splitter rather than stuffing the slash-name
             // into the bare-name slot.
-            let target = TypeExpr::Applied(
-                type_ref_from_name(type_name),
-                type_args,
-            );
+            let target = TypeExpr::Applied(type_ref_from_name(type_name), type_args);
             Ok((target, type_constraints))
         }
         _ => Err(parse_err("expected impl target type", sexp.span())),
@@ -1522,7 +1547,10 @@ fn build_impl_method(sexp: &Sexp) -> Result<Defn, CranelispError> {
         ));
     }
     if children.len() < 4 {
-        return Err(parse_err("method defn requires name, params, and body", span));
+        return Err(parse_err(
+            "method defn requires name, params, and body",
+            span,
+        ));
     }
     let name = get_defn_name(&children[1])?;
     let params = build_annotated_params(&children[2])?;
@@ -1534,11 +1562,7 @@ fn build_impl_method(sexp: &Sexp) -> Result<Defn, CranelispError> {
     Ok(Defn {
         name,
         docstring: None,
-        variants: vec![DefnVariant {
-            params,
-            body,
-            span,
-        }],
+        variants: vec![DefnVariant { params, body, span }],
         visibility: Visibility::Public,
         span,
     })
@@ -1617,10 +1641,7 @@ pub fn build_expr(sexp: &Sexp) -> Result<Expr, CranelispError> {
     }
 }
 
-fn build_list_expr(
-    children: &[Sexp],
-    span: Span,
-) -> Result<Expr, CranelispError> {
+fn build_list_expr(children: &[Sexp], span: Span) -> Result<Expr, CranelispError> {
     if children.is_empty() {
         return Err(parse_err("empty application", span));
     }
@@ -1634,26 +1655,35 @@ fn build_list_expr(
             "match" => return build_match(children, span),
             // Reader-macro forms — should be handled by the expander before reaching AST builder
             "quote" => {
-                return Err(parse_err("unexpected quote form — should have been expanded", *head_span))
+                return Err(parse_err(
+                    "unexpected quote form — should have been expanded",
+                    *head_span,
+                ));
             }
             "quasiquote" => {
-                return Err(parse_err("unexpected quasiquote form — should have been expanded", *head_span))
+                return Err(parse_err(
+                    "unexpected quasiquote form — should have been expanded",
+                    *head_span,
+                ));
             }
             "unquote" => {
-                return Err(parse_err("unexpected unquote form — should have been expanded", *head_span))
+                return Err(parse_err(
+                    "unexpected unquote form — should have been expanded",
+                    *head_span,
+                ));
             }
             "unquote-splicing" => {
                 return Err(parse_err(
                     "unexpected unquote-splicing form — should have been expanded",
                     *head_span,
-                ))
+                ));
             }
             "anon-fn" => {
                 return Err(parse_err(
                     "anonymous-function shorthand `#(…)` is not yet supported — \
                      write an explicit `(fn [x] …)`",
                     *head_span,
-                ))
+                ));
             }
             // Non-Ring-0 expression forms
             "trace" => return build_trace(children, span),
@@ -1668,7 +1698,7 @@ fn build_list_expr(
                 return Err(parse_err(
                     "`par-let` is not yet supported — use a sequential `let`",
                     *head_span,
-                ))
+                ));
             }
             // If an unexpanded macro call reaches here, it will be treated as a
             // regular function application and fail at typecheck. All callers
@@ -1685,10 +1715,7 @@ fn build_list_expr(
 // trace expression
 // ---------------------------------------------------------------------------
 
-fn build_trace(
-    children: &[Sexp],
-    span: Span,
-) -> Result<Expr, CranelispError> {
+fn build_trace(children: &[Sexp], span: Span) -> Result<Expr, CranelispError> {
     // (trace expr)
     //
     // `trace` is a root special form (Principle 10's two-category amendment;
@@ -1723,10 +1750,7 @@ fn build_trace(
     })
 }
 
-fn build_apply(
-    children: &[Sexp],
-    span: Span,
-) -> Result<Expr, CranelispError> {
+fn build_apply(children: &[Sexp], span: Span) -> Result<Expr, CranelispError> {
     // A leading `:Type` inside a parenthesized list annotates the SINGLE
     // following element — it is NOT the application callee and NOT an
     // annotation of the whole list (spec §2.3.8; BC §1 invariant 9). The
@@ -1751,10 +1775,7 @@ fn build_apply(
 // let expression
 // ---------------------------------------------------------------------------
 
-fn build_let(
-    children: &[Sexp],
-    span: Span,
-) -> Result<Expr, CranelispError> {
+fn build_let(children: &[Sexp], span: Span) -> Result<Expr, CranelispError> {
     // (let [name val name val ...] body)
     if children.len() < 3 {
         return Err(parse_err("let requires bindings and body", span));
@@ -1802,10 +1823,7 @@ fn build_let_bindings(
 // if expression
 // ---------------------------------------------------------------------------
 
-fn build_if(
-    children: &[Sexp],
-    span: Span,
-) -> Result<Expr, CranelispError> {
+fn build_if(children: &[Sexp], span: Span) -> Result<Expr, CranelispError> {
     // (if cond then else) — each of the three operands may carry a `:Type form`
     // ascription (spec §2.3.8 — `:Type` binds the immediately-following form in
     // ALL positions, an `if` branch included). Consume each through the
@@ -1844,10 +1862,7 @@ fn build_if(
 // fn / lambda expression
 // ---------------------------------------------------------------------------
 
-fn build_fn(
-    children: &[Sexp],
-    span: Span,
-) -> Result<Expr, CranelispError> {
+fn build_fn(children: &[Sexp], span: Span) -> Result<Expr, CranelispError> {
     // (fn [params] body) or (lambda [params] body) — single-arity ONLY
     // (spec §4.5). A `[params]` is a `Sexp::Bracket`; when the first operand is
     // instead a `Sexp::List` `([params] body)` the user wrote the parenthesised
@@ -1893,10 +1908,7 @@ fn build_fn(
 // match expression
 // ---------------------------------------------------------------------------
 
-fn build_match(
-    children: &[Sexp],
-    span: Span,
-) -> Result<Expr, CranelispError> {
+fn build_match(children: &[Sexp], span: Span) -> Result<Expr, CranelispError> {
     // (match scrutinee [pattern body pattern body ...])
     //
     // The scrutinee may carry a `:Type form` annotation (BC §1 invariant 9;
@@ -1932,9 +1944,7 @@ fn build_match(
     })
 }
 
-fn build_match_arms(
-    items: &[Sexp],
-) -> Result<Vec<MatchArm>, CranelispError> {
+fn build_match_arms(items: &[Sexp]) -> Result<Vec<MatchArm>, CranelispError> {
     let mut arms = Vec::new();
     let mut i = 0;
     while i < items.len() {
@@ -2027,12 +2037,13 @@ fn build_pattern(sexp: &Sexp) -> Result<Pattern, CranelispError> {
 // Vec literal
 // ---------------------------------------------------------------------------
 
-fn build_vec_lit(
-    children: &[Sexp],
-    span: Span,
-) -> Result<Expr, CranelispError> {
+fn build_vec_lit(children: &[Sexp], span: Span) -> Result<Expr, CranelispError> {
     let elements = build_args_with_annotations(children)?;
-    Ok(Expr::VecLit { elements, span, inferred_type: None })
+    Ok(Expr::VecLit {
+        elements,
+        span,
+        inferred_type: None,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -2080,10 +2091,7 @@ fn trait_ref_from_name(name: &str) -> TraitRef {
 ///
 /// An annotation is already one recursive `Sexp::Annotated` node, so every
 /// expression position consumes exactly one item.
-fn build_one_expr_at(
-    items: &[Sexp],
-    pos: usize,
-) -> Result<(Expr, usize), CranelispError> {
+fn build_one_expr_at(items: &[Sexp], pos: usize) -> Result<(Expr, usize), CranelispError> {
     let expr = build_expr(&items[pos])?;
     Ok((expr, 1))
 }
@@ -2116,9 +2124,7 @@ fn build_body_to_end(children: &[Sexp], pos: usize, ctx: &str) -> Result<Expr, C
 }
 
 /// Build arguments, including reader-folded `Sexp::Annotated` operands.
-fn build_args_with_annotations(
-    items: &[Sexp],
-) -> Result<Vec<Expr>, CranelispError> {
+fn build_args_with_annotations(items: &[Sexp]) -> Result<Vec<Expr>, CranelispError> {
     let mut args = Vec::new();
     let mut i = 0;
     while i < items.len() {
@@ -2139,9 +2145,7 @@ fn build_args_with_annotations(
 /// Submission 23 / 24 (Principle 18 — enforce invariants structurally;
 /// the prior parallel-vec `(Vec<Symbol>, Vec<Option<TypeExpr>>)` shape
 /// carried an unenforced `len()` lockstep invariant).
-fn build_annotated_params(
-    sexp: &Sexp,
-) -> Result<Vec<(Symbol, Option<TypeExpr>)>, CranelispError> {
+fn build_annotated_params(sexp: &Sexp) -> Result<Vec<(Symbol, Option<TypeExpr>)>, CranelispError> {
     let (items, _) = expect_bracket(sexp)?;
     let mut params: Vec<(Symbol, Option<TypeExpr>)> = Vec::new();
     for item in items {
@@ -2241,9 +2245,7 @@ fn annotation_run_carrier(mut run: Vec<TypeExpr>) -> TypeExpr {
 /// (P18, `debug_assert`) rather than re-derived downstream.
 fn type_expr_to_trait_ref(te: TypeExpr) -> TraitRef {
     let (module, name): (Option<&str>, &str) = match &te {
-        TypeExpr::Named(r) | TypeExpr::Applied(r, _) => {
-            (r.module.as_deref(), r.name.as_ref())
-        }
+        TypeExpr::Named(r) | TypeExpr::Applied(r, _) => (r.module.as_deref(), r.name.as_ref()),
         TypeExpr::TypeVar(s) => (None, s.as_ref()),
         TypeExpr::SelfType => (None, "Self"),
         TypeExpr::FnType(..) | TypeExpr::Bounds(_) => (None, ""),
@@ -2294,10 +2296,7 @@ fn build_type_expr(sexp: &Sexp) -> Result<TypeExpr, CranelispError> {
     }
 }
 
-fn build_type_expr_from_list(
-    children: &[Sexp],
-    span: Span,
-) -> Result<TypeExpr, CranelispError> {
+fn build_type_expr_from_list(children: &[Sexp], span: Span) -> Result<TypeExpr, CranelispError> {
     if children.is_empty() {
         return Err(parse_err("empty type expression", span));
     }
@@ -2305,10 +2304,7 @@ fn build_type_expr_from_list(
         if head == "Fn" {
             // (Fn [param_types] ret_type)
             if children.len() != 3 {
-                return Err(parse_err(
-                    "Fn requires param types and return type",
-                    span,
-                ));
+                return Err(parse_err("Fn requires param types and return type", span));
             }
             let (param_items, _) = expect_bracket(&children[1])?;
             let params = param_items

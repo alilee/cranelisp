@@ -127,15 +127,18 @@ fn decision24_consume_sexp_preserves_shared_ref() {
 
     // Simulate a second reference (rc 1 -> 2).
     unsafe {
-        let rc_ptr = &*((sym as *const u8).add(HeapHeader::RC_OFFSET as usize)
-            as *const AtomicI64);
+        let rc_ptr = &*((sym as *const u8).add(HeapHeader::RC_OFFSET as usize) as *const AtomicI64);
         rc_ptr.fetch_add(1, Ordering::Release);
     }
 
     consume_sexp(sym); // dec rc to 1 — must NOT free
 
     assert_eq!(alloc_count() - allocs, 2);
-    assert_eq!(dealloc_count() - deallocs, 0, "shared ref must not be freed");
+    assert_eq!(
+        dealloc_count() - deallocs,
+        0,
+        "shared ref must not be freed"
+    );
 
     // Clean up manually.
     consume_sexp(sym);
@@ -446,8 +449,8 @@ fn dec_shallow_io_preserves_shared_reference() {
 
     // Simulate a second reference (rc: 1 -> 2).
     unsafe {
-        let rc_ptr = &*((node as *const u8).add(HeapHeader::RC_OFFSET as usize)
-            as *const AtomicI64);
+        let rc_ptr =
+            &*((node as *const u8).add(HeapHeader::RC_OFFSET as usize) as *const AtomicI64);
         rc_ptr.fetch_add(1, Ordering::Release);
     }
 

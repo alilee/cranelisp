@@ -30,7 +30,10 @@ fn test_build_runtime_list_empty() {
 #[test]
 fn test_build_runtime_list_items() {
     let list = build_runtime_list(&[10, 20, 30]);
-    assert!(list >= NULLARY_THRESHOLD, "list head should be heap pointer");
+    assert!(
+        list >= NULLARY_THRESHOLD,
+        "list head should be heap pointer"
+    );
     let tag = unsafe { read_i64(list, PAYLOAD_OFFSET) };
     assert_eq!(tag, TAG_SCONS);
     let head = unsafe { read_i64(list, FIELD0_OFFSET) };
@@ -89,7 +92,10 @@ fn nested_guard_reentrant_raises() {
         slots.as_ptr() as i64,
         wrappers.as_ptr() as i64,
     );
-    assert_eq!(saved, SENTINEL_SAVED_GOT, "re-entrant swap must not proceed");
+    assert_eq!(
+        saved, SENTINEL_SAVED_GOT,
+        "re-entrant swap must not proceed"
+    );
     let err = crate::panic::take_runtime_error();
     assert!(err.is_some(), "re-entrant swap must raise a runtime error");
     assert!(
@@ -121,12 +127,8 @@ fn nested_guard_lexical_reentrant_raises() {
     let wrappers: Vec<i64> = vec![0xfeed];
 
     // Outer form's swap: claims the role, records `base`.
-    let outer_saved = cranelisp_trace_swap_got(
-        base,
-        1,
-        slots.as_ptr() as i64,
-        wrappers.as_ptr() as i64,
-    );
+    let outer_saved =
+        cranelisp_trace_swap_got(base, 1, slots.as_ptr() as i64, wrappers.as_ptr() as i64);
     assert_ne!(outer_saved, SENTINEL_SAVED_GOT, "outer swap must proceed");
     // CRITICAL: no wrapper has fired, so the boundary flag is still false —
     // this is exactly the lexical-nesting condition the old guard missed.
@@ -136,12 +138,8 @@ fn nested_guard_lexical_reentrant_raises() {
     );
 
     // Inner form's swap of the SAME base while the role is held: re-entrant.
-    let inner_saved = cranelisp_trace_swap_got(
-        base,
-        1,
-        slots.as_ptr() as i64,
-        wrappers.as_ptr() as i64,
-    );
+    let inner_saved =
+        cranelisp_trace_swap_got(base, 1, slots.as_ptr() as i64, wrappers.as_ptr() as i64);
     assert_eq!(
         inner_saved, SENTINEL_SAVED_GOT,
         "lexical re-entrant swap must NOT proceed"
@@ -177,14 +175,18 @@ fn nested_guard_two_distinct_bases_allowed() {
     let slots: Vec<u32> = vec![0];
     let wrappers: Vec<i64> = vec![0xcafe];
 
-    let saved_a = cranelisp_trace_swap_got(
-        base_a, 1, slots.as_ptr() as i64, wrappers.as_ptr() as i64,
+    let saved_a =
+        cranelisp_trace_swap_got(base_a, 1, slots.as_ptr() as i64, wrappers.as_ptr() as i64);
+    let saved_b =
+        cranelisp_trace_swap_got(base_b, 1, slots.as_ptr() as i64, wrappers.as_ptr() as i64);
+    assert_ne!(
+        saved_a, SENTINEL_SAVED_GOT,
+        "first module swap must proceed"
     );
-    let saved_b = cranelisp_trace_swap_got(
-        base_b, 1, slots.as_ptr() as i64, wrappers.as_ptr() as i64,
+    assert_ne!(
+        saved_b, SENTINEL_SAVED_GOT,
+        "second module swap must proceed"
     );
-    assert_ne!(saved_a, SENTINEL_SAVED_GOT, "first module swap must proceed");
-    assert_ne!(saved_b, SENTINEL_SAVED_GOT, "second module swap must proceed");
     assert!(
         crate::panic::take_runtime_error().is_none(),
         "distinct-base multi-module swap must NOT raise"
@@ -215,12 +217,18 @@ fn enter_sets_body_running_collect_clears() {
 
     let name = "f";
     cranelisp_trace_enter(name.as_ptr() as i64, name.len() as i64, 0, 0);
-    assert!(TRACE_BODY_RUNNING.with(Cell::get), "enter must raise the flag");
+    assert!(
+        TRACE_BODY_RUNNING.with(Cell::get),
+        "enter must raise the flag"
+    );
     // Pop the frame enter pushed.
     let _ = cranelisp_trace_exit(0, alloc_string(b"") as i64);
 
     let t = cranelisp_collect_trace();
-    assert!(!TRACE_BODY_RUNNING.with(Cell::get), "collect must clear the flag");
+    assert!(
+        !TRACE_BODY_RUNNING.with(Cell::get),
+        "collect must clear the flag"
+    );
     consume_trace_call(t);
 
     TRACE_THREAD_ID.store(0, Ordering::SeqCst);
@@ -300,8 +308,7 @@ fn capture_fidelity_got_slotted_callee_names_call_and_carries_operands() {
 
     // FIDELITY 1: the child NAMES the call — NOT the "::trace::" placeholder.
     let child_name_heap = unsafe { read_i64(child, TRACE_TNAME_OFFSET) };
-    let child_name =
-        unsafe { crate::heap_string::read_string_as_str(child_name_heap) };
+    let child_name = unsafe { crate::heap_string::read_string_as_str(child_name_heap) };
     assert_eq!(
         child_name, "user/add",
         "captured TraceCall must name the traced call, not the placeholder"
@@ -324,9 +331,11 @@ fn capture_fidelity_got_slotted_callee_names_call_and_carries_operands() {
     let params_tag = unsafe { read_i64(child_params, PAYLOAD_OFFSET) };
     assert_eq!(params_tag, TAG_SCONS, "tparams SList must have an operand");
     let first_param = unsafe { read_i64(child_params, FIELD0_OFFSET) };
-    let first_param_str =
-        unsafe { crate::heap_string::read_string_as_str(first_param) };
-    assert_eq!(first_param_str, "2", "first operand must be captured verbatim");
+    let first_param_str = unsafe { crate::heap_string::read_string_as_str(first_param) };
+    assert_eq!(
+        first_param_str, "2",
+        "first operand must be captured verbatim"
+    );
 
     // Release ownership (consume the marshalled tree).
     consume_trace_call(root);
@@ -368,7 +377,10 @@ fn empty_trace_yields_faithful_placeholder_not_a_defect() {
     let params = unsafe { read_i64(root, TRACE_TPARAMS_OFFSET) };
     assert_eq!(params, TAG_SNIL, "empty-trace operands are faithfully SNil");
     let children = unsafe { read_i64(root, TRACE_TCHILDREN_OFFSET) };
-    assert_eq!(children, TAG_SNIL, "empty-trace children are faithfully SNil");
+    assert_eq!(
+        children, TAG_SNIL,
+        "empty-trace children are faithfully SNil"
+    );
 
     consume_trace_call(root);
 }
@@ -475,8 +487,7 @@ fn build_populated_trace_call() -> (i64, i64, i64, i64, i64, i64) {
 // TraceCall.
 #[test]
 fn accessor_name_reads_offset_and_rc_incs_field() {
-    let (trace, name, params, result, children, _nanos) =
-        build_populated_trace_call();
+    let (trace, name, params, result, children, _nanos) = build_populated_trace_call();
     let rc_before = read_rc(name);
 
     let got = cranelisp_trace_name(trace);
@@ -494,7 +505,10 @@ fn accessor_name_reads_offset_and_rc_incs_field() {
         "field rc net-unchanged: +1 accessor inc, -1 parent consume (Decision 24)"
     );
     // Content fidelity.
-    assert_eq!(unsafe { crate::heap_string::read_string_as_str(got) }, "user/add");
+    assert_eq!(
+        unsafe { crate::heap_string::read_string_as_str(got) },
+        "user/add"
+    );
 
     // The TraceCall was consumed (rc 1 -> 0 -> freed); the returned name
     // survives because of the inc. Drop the remaining fields + the name's
@@ -509,13 +523,15 @@ fn accessor_name_reads_offset_and_rc_incs_field() {
 // RC-incs the SList head, consumes the TraceCall.
 #[test]
 fn accessor_params_reads_offset_and_rc_incs_field() {
-    let (trace, name, params, result, children, _nanos) =
-        build_populated_trace_call();
+    let (trace, name, params, result, children, _nanos) = build_populated_trace_call();
     let rc_before = read_rc(params);
 
     let got = cranelisp_trace_params(trace);
 
-    assert_eq!(got, params, "params must read the tparams field at offset 32");
+    assert_eq!(
+        got, params,
+        "params must read the tparams field at offset 32"
+    );
     assert_eq!(
         read_rc(got),
         rc_before,
@@ -534,13 +550,15 @@ fn accessor_params_reads_offset_and_rc_incs_field() {
 // RC-incs it, consumes the TraceCall.
 #[test]
 fn accessor_result_reads_offset_and_rc_incs_field() {
-    let (trace, name, params, result, children, _nanos) =
-        build_populated_trace_call();
+    let (trace, name, params, result, children, _nanos) = build_populated_trace_call();
     let rc_before = read_rc(result);
 
     let got = cranelisp_trace_result(trace);
 
-    assert_eq!(got, result, "result must read the tresult field at offset 40");
+    assert_eq!(
+        got, result,
+        "result must read the tresult field at offset 40"
+    );
     assert_eq!(
         read_rc(got),
         rc_before,
@@ -556,8 +574,7 @@ fn accessor_result_reads_offset_and_rc_incs_field() {
 // (offset 48), RC-incs the SList head, consumes the TraceCall.
 #[test]
 fn accessor_children_reads_offset_and_rc_incs_field() {
-    let (trace, name, params, result, children, _nanos) =
-        build_populated_trace_call();
+    let (trace, name, params, result, children, _nanos) = build_populated_trace_call();
     let rc_before = read_rc(children);
 
     let got = cranelisp_trace_children(trace);
@@ -582,13 +599,15 @@ fn accessor_children_reads_offset_and_rc_incs_field() {
 // TraceCall.
 #[test]
 fn accessor_nanos_reads_offset_no_rc_inc() {
-    let (trace, _name, _params, _result, _children, nanos) =
-        build_populated_trace_call();
+    let (trace, _name, _params, _result, _children, nanos) = build_populated_trace_call();
     assert_eq!(nanos, 4242, "tnanos stored at offset 56");
 
     let got = cranelisp_trace_nanos(trace);
 
-    assert_eq!(got, 4242, "nanos must read the tnanos Int field at offset 56");
+    assert_eq!(
+        got, 4242,
+        "nanos must read the tnanos Int field at offset 56"
+    );
     // The TraceCall was consumed; all heap fields freed. Nothing survives
     // (nanos is a bare Int, not RC-managed).
 }
@@ -672,19 +691,17 @@ fn concurrent_foreign_owner_skips_with_sentinel() {
     let slots: Vec<u32> = vec![0];
     let wrappers: Vec<i64> = vec![0xabcd];
 
-    let saved = cranelisp_trace_swap_got(
-        base,
-        1,
-        slots.as_ptr() as i64,
-        wrappers.as_ptr() as i64,
-    );
+    let saved = cranelisp_trace_swap_got(base, 1, slots.as_ptr() as i64, wrappers.as_ptr() as i64);
 
     // Skipped: returns the sentinel, does NOT touch the GOT, does NOT raise.
     assert_eq!(
         saved, SENTINEL_SAVED_GOT,
         "concurrent foreign-owned trace must return the skip sentinel"
     );
-    assert_eq!(got[0], 0, "skipped swap must NOT install a wrapper into the GOT");
+    assert_eq!(
+        got[0], 0,
+        "skipped swap must NOT install a wrapper into the GOT"
+    );
     assert!(
         crate::panic::take_runtime_error().is_none(),
         "concurrent skip is NOT an error (distinct from same-thread nesting)"
@@ -730,12 +747,7 @@ fn first_swap_pushes_trace_root_frame() {
     let slots: Vec<u32> = vec![0];
     let wrappers: Vec<i64> = vec![0x1234];
 
-    let saved = cranelisp_trace_swap_got(
-        base,
-        1,
-        slots.as_ptr() as i64,
-        wrappers.as_ptr() as i64,
-    );
+    let saved = cranelisp_trace_swap_got(base, 1, slots.as_ptr() as i64, wrappers.as_ptr() as i64);
     assert_ne!(saved, SENTINEL_SAVED_GOT, "first swap claims the role");
     assert_eq!(
         got[0], 0x1234,

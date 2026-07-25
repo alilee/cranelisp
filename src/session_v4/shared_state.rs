@@ -31,17 +31,11 @@ pub(crate) struct ReadOnlyMacroResolver<'a> {
 }
 
 impl crate::expander::MacroResolver for ReadOnlyMacroResolver<'_> {
-    fn symbol_tables(
-        &self,
-    ) -> &dashmap::DashMap<ModuleFullPath, SessionSymbolTable> {
+    fn symbol_tables(&self) -> &dashmap::DashMap<ModuleFullPath, SessionSymbolTable> {
         self.symbol_tables
     }
 
-    fn recognize(
-        &mut self,
-        name: &str,
-        span: Span,
-    ) -> Result<Option<FQSymbol>, CranelispError> {
+    fn recognize(&mut self, name: &str, span: Span) -> Result<Option<FQSymbol>, CranelispError> {
         // RECOGNITION via the LOCKED types primitive (committed `View`,
         // `macro-availability-model.md` §0.7) — same path as the live
         // compile-time recognition; no second chain-walk copy. Read-only:

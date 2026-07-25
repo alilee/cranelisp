@@ -9,9 +9,9 @@
 use crate::builtins::FixtureBuilder;
 use crate::checker::TestFixture;
 use cranelisp_types::{
-    Defn, DefnVariant, Expr, FQSymbol, FQTraitName, FQTypeName, ModuleEntry,
-    ModuleFullPath, Span, Symbol, TraitDecl, TraitImpl, TraitName,
-    TypeExpr, TypeName, UnresolvedTraitMethodSig, Visibility,
+    Defn, DefnVariant, Expr, FQSymbol, FQTraitName, FQTypeName, ModuleEntry, ModuleFullPath, Span,
+    Symbol, TraitDecl, TraitImpl, TraitName, TypeExpr, TypeName, UnresolvedTraitMethodSig,
+    Visibility,
 };
 
 pub(crate) fn parse_trait_decl(source: &str) -> TraitDecl {
@@ -39,7 +39,10 @@ pub(crate) fn type_expr_sexp(ty: TypeExpr) -> cranelisp_types::Sexp {
         TypeExpr::FnType(params, ret) => Sexp::List(
             vec![
                 Sexp::Symbol("Fn".to_string(), Span::SYNTHETIC),
-                Sexp::Bracket(params.into_iter().map(type_expr_sexp).collect(), Span::SYNTHETIC),
+                Sexp::Bracket(
+                    params.into_iter().map(type_expr_sexp).collect(),
+                    Span::SYNTHETIC,
+                ),
                 type_expr_sexp(*ret),
             ],
             Span::SYNTHETIC,
@@ -66,7 +69,9 @@ pub(crate) fn tf() -> TestFixture {
 /// first (bootstrap order).
 pub(crate) fn tf_prims() -> TestFixture {
     TestFixture::with_content(
-        FixtureBuilder::new().with_builtin_type_names().with_primitives(),
+        FixtureBuilder::new()
+            .with_builtin_type_names()
+            .with_primitives(),
     )
 }
 
@@ -86,7 +91,10 @@ pub(crate) fn seed_glob_import(tc: &mut TestFixture, source: &ModuleFullPath) {
         tc.symbol_table_mut().insert(
             name.clone(),
             ModuleEntry::Import {
-                source: FQSymbol { module: source.clone(), symbol: name },
+                source: FQSymbol {
+                    module: source.clone(),
+                    symbol: name,
+                },
                 visibility: Visibility::Public,
             },
         );
@@ -122,19 +130,17 @@ pub(crate) fn make_test_trait_decl() -> TraitDecl {
         // for the implementing type (S112 settled model — the old
         // `type_params: ["a"]` + bare-`a` form is now a declaration-time reject).
         type_params: vec![],
-        methods: vec![
-            UnresolvedTraitMethodSig {
-                name: Symbol::from("test-op"),
-                docstring: None,
-                params: vec![
-                    (Symbol::from("lhs"), TypeExpr::SelfType),
-                    (Symbol::from("rhs"), TypeExpr::SelfType),
-                ],
-                tail: type_expr_sexp(TypeExpr::SelfType),
-                span: Span::SYNTHETIC,
-                hkt_param_index: None,
-            },
-        ],
+        methods: vec![UnresolvedTraitMethodSig {
+            name: Symbol::from("test-op"),
+            docstring: None,
+            params: vec![
+                (Symbol::from("lhs"), TypeExpr::SelfType),
+                (Symbol::from("rhs"), TypeExpr::SelfType),
+            ],
+            tail: type_expr_sexp(TypeExpr::SelfType),
+            span: Span::SYNTHETIC,
+            hkt_param_index: None,
+        }],
         visibility: Visibility::Public,
         span: Span::SYNTHETIC,
     }
@@ -257,7 +263,10 @@ pub(crate) fn register_num_for_int(tc: &mut TestFixture) {
             variants: vec![DefnVariant {
                 params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
                 body: cranelisp_types::Expr::Apply {
-                    callee: Box::new(cranelisp_types::Expr::var(Symbol::from("add-i64"), Span::SYNTHETIC)),
+                    callee: Box::new(cranelisp_types::Expr::var(
+                        Symbol::from("add-i64"),
+                        Span::SYNTHETIC,
+                    )),
                     args: vec![
                         cranelisp_types::Expr::var(Symbol::from("x"), Span::SYNTHETIC),
                         cranelisp_types::Expr::var(Symbol::from("y"), Span::SYNTHETIC),
@@ -294,7 +303,10 @@ pub(crate) fn register_num_impl_for_float(tc: &mut TestFixture) {
             variants: vec![DefnVariant {
                 params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
                 body: cranelisp_types::Expr::Apply {
-                    callee: Box::new(cranelisp_types::Expr::var(Symbol::from("add-f64"), Span::SYNTHETIC)),
+                    callee: Box::new(cranelisp_types::Expr::var(
+                        Symbol::from("add-f64"),
+                        Span::SYNTHETIC,
+                    )),
                     args: vec![
                         cranelisp_types::Expr::var(Symbol::from("x"), Span::SYNTHETIC),
                         cranelisp_types::Expr::var(Symbol::from("y"), Span::SYNTHETIC),
@@ -338,17 +350,22 @@ pub(crate) fn assert_types_concrete(expr: &cranelisp_types::Expr) {
             }
             assert_types_concrete(body);
         }
-        E::If { cond, then_branch, else_branch, .. } => {
+        E::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
             assert_types_concrete(cond);
             assert_types_concrete(then_branch);
             assert_types_concrete(else_branch);
         }
-        E::Lambda { body, .. }
-        | E::Annotate { expr: body, .. }
-        | E::Trace { body, .. } => {
+        E::Lambda { body, .. } | E::Annotate { expr: body, .. } | E::Trace { body, .. } => {
             assert_types_concrete(body);
         }
-        E::Match { scrutinee, arms, .. } => {
+        E::Match {
+            scrutinee, arms, ..
+        } => {
             assert_types_concrete(scrutinee);
             for arm in arms {
                 assert_types_concrete(&arm.body);

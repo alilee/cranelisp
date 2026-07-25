@@ -111,8 +111,7 @@ fn capture_frames(corpus_rel: &str) -> String {
 /// (cache-pass leak) and zero frames (empty-vs-empty false green) are both hard
 /// errors — the S102 review F3/F4 classes.
 fn extract_sorted_frames(stderr: &str) -> String {
-    let re =
-        regex::Regex::new(r"(?s); === CLIF (\S+) ===\n.*?; === end CLIF (\S+) ===\n").unwrap();
+    let re = regex::Regex::new(r"(?s); === CLIF (\S+) ===\n.*?; === end CLIF (\S+) ===\n").unwrap();
     let mut frames: std::collections::BTreeMap<String, String> = Default::default();
     for cap in re.captures_iter(stderr) {
         assert_eq!(

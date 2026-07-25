@@ -83,16 +83,17 @@ fn bind_pure_to_pure_plus_one() {
 // spec: spec/10-io.md §10.3.1 — bind with identity continuation
 #[test]
 fn bind_identity_continuation() {
-    repl("(bind (Pure 77) (fn [x] (Pure x)))\n")
-        .assert_stdout_contains(":primitives/Int 77");
+    repl("(bind (Pure 77) (fn [x] (Pure x)))\n").assert_stdout_contains(":primitives/Int 77");
 }
 
 // spec: spec/10-io.md §10.3.3 — nested bind chains
 #[test]
 fn bind_nested_chain() {
     // (bind (bind (Pure 10) (fn [x] (Pure (+ x 20)))) (fn [y] (Pure (+ y 100))))
-    repl("(bind (bind (Pure 10) (fn [x] (Pure (add-i64 x 20)))) (fn [y] (Pure (add-i64 y 100))))\n")
-        .assert_stdout_contains(":primitives/Int 130");
+    repl(
+        "(bind (bind (Pure 10) (fn [x] (Pure (add-i64 x 20)))) (fn [y] (Pure (add-i64 y 100))))\n",
+    )
+    .assert_stdout_contains(":primitives/Int 130");
 }
 
 // spec: spec/10-io.md §10.3 — triple bind chain
@@ -105,9 +106,11 @@ fn bind_triple_chain() {
 // spec: spec/10-io.md §10.3 — bind with named defn as continuation
 #[test]
 fn bind_named_defn_continuation() {
-    repl("(defn my-pure [x] (Pure x))
+    repl(
+        "(defn my-pure [x] (Pure x))
 (bind (Pure 99) my-pure)
-")
+",
+    )
     .assert_stdout_contains(":primitives/Int 99");
 }
 
@@ -172,7 +175,8 @@ fn defn_returning_pure_displays_fn_type() {
 fn io_propagates_into_inferred_return_type() {
     let out = repl("(defn mk [] (Pure 5))\nmk\n");
     assert!(
-        out.stdout.contains("(Fn [] (primitives/IO primitives/Int))"),
+        out.stdout
+            .contains("(Fn [] (primitives/IO primitives/Int))"),
         "a fn producing an IO value MUST inherit `IO` in its inferred return \
          type with no annotation (spec/10-io.md §10.1.1 propagation); got:\n{}",
         out.stdout
@@ -205,8 +209,7 @@ fn io_value_in_pure_position_is_type_error_neg() {
 // spec: spec/10-io.md §10.3 — bind result inferred as polymorphic
 #[test]
 fn bind_polymorphic_inference() {
-    repl("(bind (Pure 99) (fn [x] (Pure x)))\n")
-        .assert_stdout_contains(":primitives/Int 99");
+    repl("(bind (Pure 99) (fn [x] (Pure x)))\n").assert_stdout_contains(":primitives/Int 99");
 }
 
 // =============================================================================
@@ -230,8 +233,7 @@ fn repl_pure_int_unwraps() {
 // (Sprint 61 Wave 4 capture-return-inc: `emit_capture_return_inc` rule.)
 #[test]
 fn repl_bind_pure_lambda_no_double_free() {
-    repl("(bind (Pure 42) (fn [x] (Pure x)))\n")
-        .assert_stdout_contains(":primitives/Int 42");
+    repl("(bind (Pure 42) (fn [x] (Pure x)))\n").assert_stdout_contains(":primitives/Int 42");
 }
 
 // =============================================================================
@@ -332,7 +334,8 @@ fn batch_main_pure_int_return_is_rejected() {
         !run_out.status.success(),
         "--run: a pure (bare-Int) main MUST be rejected — `main :: (Fn [] (IO _))` \
          (spec/10-io.md §10.6); compiler accepted it.\nstdout:\n{}\nstderr:\n{}",
-        run_out.stdout, run_out.stderr
+        run_out.stdout,
+        run_out.stderr
     );
     let run_combined = format!("{}{}", run_out.stdout, run_out.stderr);
     assert!(
@@ -353,7 +356,8 @@ fn batch_main_pure_int_return_is_rejected() {
         "--link: a pure (bare-Int) main MUST be rejected — `main :: (Fn [] (IO _))` \
          (spec/02-grammar.md §2.1, spec/10-io.md §10.6); compiler accepted it.\n\
          stdout:\n{}\nstderr:\n{}",
-        link_out.stdout, link_out.stderr
+        link_out.stdout,
+        link_out.stderr
     );
     let link_combined = format!("{}{}", link_out.stdout, link_out.stderr);
     assert!(
@@ -392,7 +396,8 @@ fn batch_main_bool_return_is_rejected() {
         !run_out.status.success(),
         "--run: a pure (bare-Bool) main MUST be rejected — `main :: (Fn [] (IO _))` \
          (spec/10-io.md §10.6); compiler accepted it.\nstdout:\n{}\nstderr:\n{}",
-        run_out.stdout, run_out.stderr
+        run_out.stdout,
+        run_out.stderr
     );
     let run_combined = format!("{}{}", run_out.stdout, run_out.stderr);
     assert!(
@@ -413,7 +418,8 @@ fn batch_main_bool_return_is_rejected() {
         "--link: a pure (bare-Bool) main MUST be rejected — `main :: (Fn [] (IO _))` \
          (spec/02-grammar.md §2.1, spec/10-io.md §10.6); compiler accepted it.\n\
          stdout:\n{}\nstderr:\n{}",
-        link_out.stdout, link_out.stderr
+        link_out.stdout,
+        link_out.stderr
     );
     let link_combined = format!("{}{}", link_out.stdout, link_out.stderr);
     assert!(
@@ -431,8 +437,7 @@ fn batch_main_bool_return_is_rejected() {
 // spec: spec/10-io.md §10.7.2 — both branches IO (branch consistency)
 #[test]
 fn if_both_branches_io() {
-    repl("(if (eq-i64 1 1) (Pure 10) (Pure 20))\n")
-        .assert_stdout_contains(":primitives/Int 10");
+    repl("(if (eq-i64 1 1) (Pure 10) (Pure 20))\n").assert_stdout_contains(":primitives/Int 10");
 }
 
 // spec: spec/10-io.md §10.7.2 — branch consistency (mixed Pure / non-Pure errors)
@@ -485,9 +490,11 @@ fn let_io_body() {
 fn capture_return_inc_does_not_double_free() {
     // The 7-line minimum repro from the Sprint 61 investigation:
     // a string captured by a lambda, returned via the lambda, no double-free.
-    repl(r#"(defn make-bind [s] (bind (Pure s) (fn [x] (Pure x))))
+    repl(
+        r#"(defn make-bind [s] (bind (Pure s) (fn [x] (Pure x))))
 (make-bind "hello")
-"#)
+"#,
+    )
     .assert_stdout_contains(":primitives/String");
 }
 
@@ -509,9 +516,11 @@ fn capture_return_inc_does_not_double_free() {
 #[test]
 fn io_values_deferred() {
     // Defining a fn that returns Pure does not run any side effects.
-    repl("(defn deferred [] (Pure 99))
+    repl(
+        "(defn deferred [] (Pure 99))
 (deferred)
-")
+",
+    )
     .assert_stdout_contains(":primitives/Int 99");
 }
 
@@ -522,9 +531,11 @@ fn io_values_deferred() {
 // spec: spec/04-expressions.md §4.7 — partial application (auto-curry) of IO-returning fn
 #[test]
 fn auto_curry_io_returning_fn() {
-    let out = repl("(defn add-pure [x y] (Pure (add-i64 x y)))
+    let out = repl(
+        "(defn add-pure [x y] (Pure (add-i64 x y)))
 (add-pure 5)
-");
+",
+    );
     // Partial application returns a closure with Fn type — not an error.
     assert!(
         out.stdout.contains("Fn"),
@@ -614,16 +625,17 @@ fn match_arms_mixed_io_and_bare_neg() {
 // spec: spec/10-io.md §10.3 — discard a NeverHeap Int result, keep the next.
 #[test]
 fn then_discard_int_result() {
-    repl("(bind (Pure 999) (fn [_] (Pure 42)))\n")
-        .assert_stdout_contains(":primitives/Int 42");
+    repl("(bind (Pure 999) (fn [_] (Pure 42)))\n").assert_stdout_contains(":primitives/Int 42");
 }
 
 // spec: spec/10-io.md §10.3 — discard an AlwaysHeap String result, keep an Int.
 // Regression guard: the `_` parameter must be dec'd to avoid leaking the String.
 #[test]
 fn then_discard_string_result() {
-    repl(r#"(bind (Pure "discarded") (fn [_] (Pure 42)))
-"#)
+    repl(
+        r#"(bind (Pure "discarded") (fn [_] (Pure 42)))
+"#,
+    )
     .assert_stdout_contains(":primitives/Int 42");
 }
 
@@ -633,17 +645,17 @@ fn then_discard_adt_result() {
     // Reuse the prelude-seeded `primitives/Option` (§8.6.4: a local Option
     // deftype under the Option-providing prelude is a define-over-prelude
     // collision). Discarding a Mixed-heap ADT result is unaffected.
-    repl(
-        "(bind (Pure (Some 99)) (fn [_] (Pure 42)))\n",
-    )
-    .assert_stdout_contains(":primitives/Int 42");
+    repl("(bind (Pure (Some 99)) (fn [_] (Pure 42)))\n")
+        .assert_stdout_contains(":primitives/Int 42");
 }
 
 // spec: spec/10-io.md §10.3 — two discards chained: both heap results dec'd.
 #[test]
 fn then_chained_discards() {
-    repl(r#"(bind (Pure "first") (fn [_] (bind (Pure "second") (fn [_] (Pure 0)))))
-"#)
+    repl(
+        r#"(bind (Pure "first") (fn [_] (bind (Pure "second") (fn [_] (Pure 0)))))
+"#,
+    )
     .assert_stdout_contains(":primitives/Int 0");
 }
 
@@ -651,8 +663,10 @@ fn then_chained_discards() {
 // still be dec'd, same RC obligation as the `_` discard.
 #[test]
 fn then_unused_named_heap_param() {
-    repl(r#"(bind (Pure "unused") (fn [x] (Pure 77)))
-"#)
+    repl(
+        r#"(bind (Pure "unused") (fn [x] (Pure 77)))
+"#,
+    )
     .assert_stdout_contains(":primitives/Int 77");
 }
 
@@ -977,7 +991,8 @@ fn rs_run_elapsed_ms(t1: i64, t2: i64) -> u128 {
         code,
         Some(144),
         "--run: expected exit 144 (both 200ms sleeps ran, summed=400 mod 256)\nstdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
     out.elapsed.as_millis()
 }
@@ -1002,7 +1017,8 @@ fn rs_link_elapsed_ms(t1: i64, t2: i64) -> u128 {
     assert!(
         out.status.success(),
         "--link: link step failed\nstdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
 
     // The linker emits the produced binary as `<stem>` next to the source.
@@ -1196,7 +1212,8 @@ fn prog_run_elapsed_ms(source: &str, expected_exit: i32) -> u128 {
         out.status.code(),
         Some(expected_exit),
         "--run: expected exit {expected_exit} (both effects ran)\nstdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
     out.elapsed.as_millis()
 }
@@ -1220,7 +1237,8 @@ fn prog_link_elapsed_ms(source: &str, expected_exit: i32) -> u128 {
     assert!(
         out.status.success(),
         "--link: link step failed\nstdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
 
     let produced = out.tmpdir.join("main");
@@ -1341,14 +1359,13 @@ fn auto_io_sequential_class_stays_serial_e2e() {
         run_out.status.code(),
         Some(0),
         "--run Sequential: expected exit 0\nstdout:\n{}\nstderr:\n{}",
-        run_out.stdout, run_out.stderr
+        run_out.stdout,
+        run_out.stderr
     );
     let first_idx = run_out.stdout.find("first");
     let second_idx = run_out.stdout.find("second");
     assert!(
-        first_idx.is_some()
-            && second_idx.is_some()
-            && first_idx < second_idx,
+        first_idx.is_some() && second_idx.is_some() && first_idx < second_idx,
         "--run Sequential: expected 'first' to precede 'second' (source order; \
          spec §10.12.1) — Sequential effects must NOT be reordered.\nstdout:\n{}",
         run_out.stdout
@@ -1364,7 +1381,8 @@ fn auto_io_sequential_class_stays_serial_e2e() {
         link_out.status.code(),
         Some(0),
         "--link Sequential: expected exit 0\nstdout:\n{}\nstderr:\n{}",
-        link_out.stdout, link_out.stderr
+        link_out.stdout,
+        link_out.stderr
     );
     let lfirst = link_out.stdout.find("first");
     let lsecond = link_out.stdout.find("second");
@@ -1495,15 +1513,16 @@ fn auto_io_par_branch_panic_surfaces_on_join_neg() {
         "--run Par-branch panic: expected non-zero exit (panic surfaced), got \
          exit 0 — the div-by-zero in a Par branch was silently swallowed \
          (spec §12.4.3 fork-join error propagation).\nstdout:\n{}\nstderr:\n{}",
-        run_out.stdout, run_out.stderr
+        run_out.stdout,
+        run_out.stderr
     );
     assert!(
-        run_out.stderr.contains("division by zero")
-            || run_out.stdout.contains("division by zero"),
+        run_out.stderr.contains("division by zero") || run_out.stdout.contains("division by zero"),
         "--run Par-branch panic: expected the 'division by zero' panic message to \
          surface on the joining thread (spec §12.4.3) — it MUST NOT be silently \
          discarded.\nstdout:\n{}\nstderr:\n{}",
-        run_out.stdout, run_out.stderr
+        run_out.stdout,
+        run_out.stderr
     );
 
     // --link: the produced binary MUST also not silently swallow the panic
@@ -1522,7 +1541,8 @@ fn auto_io_par_branch_panic_surfaces_on_join_neg() {
          a Par branch was silently swallowed in the linked binary (spec §12.4.3 \
          fork-join error propagation MUST NOT discard a branch panic).\n\
          stdout:\n{}\nstderr:\n{}",
-        link_out.stdout, link_out.stderr
+        link_out.stdout,
+        link_out.stderr
     );
 }
 

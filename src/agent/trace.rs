@@ -103,8 +103,10 @@ fn render_text(text: &str, grain: Grain) -> String {
     match grain {
         Grain::Full => text.to_string(),
         Grain::Compact => {
-            let one_line: String =
-                text.chars().map(|c| if c == '\n' { '⏎' } else { c }).collect();
+            let one_line: String = text
+                .chars()
+                .map(|c| if c == '\n' { '⏎' } else { c })
+                .collect();
             if one_line.chars().count() > TEXT_TRUNCATE {
                 let head: String = one_line.chars().take(TEXT_TRUNCATE).collect();
                 format!("{head}…")
@@ -210,7 +212,12 @@ mod tests {
     use crate::agent::types::{ToolCallResult, ToolDef};
 
     fn tc(id: &str, name: &str, arg: &str) -> ToolCallRequest {
-        ToolCallRequest { id: id.to_string(), name: name.to_string(), argument: arg.to_string(), question: None }
+        ToolCallRequest {
+            id: id.to_string(),
+            name: name.to_string(),
+            argument: arg.to_string(),
+            question: None,
+        }
     }
 
     // spec: repl/spec.md §17 — the request trace renders the full message
@@ -223,7 +230,10 @@ mod tests {
         let req = AgentRequest {
             primer: "PRIMER".to_string(),
             harvest: "HARV".to_string(),
-            tools: vec![ToolDef { name: "source".to_string(), description: "d".to_string() }],
+            tools: vec![ToolDef {
+                name: "source".to_string(),
+                description: "d".to_string(),
+            }],
             transcript: vec![
                 Turn::User("show me f".to_string()),
                 Turn::AssistantToolCalls(vec![tc("toolu_1", "source", "f")]),
@@ -239,9 +249,21 @@ mod tests {
         let lines = format_request_trace(&req, req.turn, Grain::Compact);
         // Header + 3 turn lines.
         assert_eq!(lines.len(), 4, "header + one line per turn: {lines:?}");
-        assert!(lines[0].contains("→request"), "header marks direction: {}", lines[0]);
-        assert!(lines[0].contains("turn=3"), "header carries the turn id: {}", lines[0]);
-        assert!(lines[0].contains("tools=[source]"), "header lists tools: {}", lines[0]);
+        assert!(
+            lines[0].contains("→request"),
+            "header marks direction: {}",
+            lines[0]
+        );
+        assert!(
+            lines[0].contains("turn=3"),
+            "header carries the turn id: {}",
+            lines[0]
+        );
+        assert!(
+            lines[0].contains("tools=[source]"),
+            "header lists tools: {}",
+            lines[0]
+        );
         assert!(lines[1].contains("user[text]: show me f"), "{}", lines[1]);
         assert!(
             lines[2].contains("tool_use{id=toolu_1,name=source}"),
@@ -254,18 +276,33 @@ mod tests {
             lines[3]
         );
         // The final turn is the prompt.
-        assert!(lines[3].contains("(prompt)"), "last turn marked prompt: {}", lines[3]);
+        assert!(
+            lines[3].contains("(prompt)"),
+            "last turn marked prompt: {}",
+            lines[3]
+        );
     }
 
     // spec: repl/spec.md §17 — the response trace renders a Done as a text line,
     // and ToolCalls as a header + one tool_call line per call (id + name + arg).
     #[test]
     fn response_trace_renders_done_and_tool_calls() {
-        let done =
-            format_response_trace(&ModelResponse::Done("hello world".to_string()), 1, Grain::Compact);
+        let done = format_response_trace(
+            &ModelResponse::Done("hello world".to_string()),
+            1,
+            Grain::Compact,
+        );
         assert_eq!(done.len(), 1);
-        assert!(done[0].contains("←response  Done[text]: hello world"), "{}", done[0]);
-        assert!(done[0].contains("turn=1"), "response carries the turn id: {}", done[0]);
+        assert!(
+            done[0].contains("←response  Done[text]: hello world"),
+            "{}",
+            done[0]
+        );
+        assert!(
+            done[0].contains("turn=1"),
+            "response carries the turn id: {}",
+            done[0]
+        );
 
         let calls = format_response_trace(
             &ModelResponse::ToolCalls(vec![tc("toolu_9", "submit", "(defn g [x] x)")]),
@@ -294,9 +331,18 @@ mod tests {
         };
         let lines = format_request_trace(&req, 0, Grain::Compact);
         let turn_line = &lines[1];
-        assert!(turn_line.contains('…'), "truncated with ellipsis: {turn_line}");
-        assert!(turn_line.contains('⏎'), "newline collapsed to glyph: {turn_line}");
-        assert!(!turn_line.contains('\n'), "the trace line stays single-line");
+        assert!(
+            turn_line.contains('…'),
+            "truncated with ellipsis: {turn_line}"
+        );
+        assert!(
+            turn_line.contains('⏎'),
+            "newline collapsed to glyph: {turn_line}"
+        );
+        assert!(
+            !turn_line.contains('\n'),
+            "the trace line stays single-line"
+        );
         // The body before the ` (prompt)` suffix is at most TEXT_TRUNCATE+1 chars
         // (the head + the ellipsis) — the full 200-char body did not pass through.
         assert!(
@@ -314,7 +360,10 @@ mod tests {
         // A >80-char multi-line form — exactly what the persisted trace must keep.
         let long_form = "(defn very-long-helper-fn [first-arg second-arg]\n  \
             (add-i64 (mul-i64 first-arg 1000000) second-arg))";
-        assert!(long_form.len() > TEXT_TRUNCATE, "fixture must exceed the compact cap");
+        assert!(
+            long_form.len() > TEXT_TRUNCATE,
+            "fixture must exceed the compact cap"
+        );
         let req = AgentRequest {
             transcript: vec![Turn::User(long_form.to_string())],
             ..Default::default()
@@ -326,9 +375,18 @@ mod tests {
             body.contains(long_form),
             "Full grain must carry the long form VERBATIM (no truncation): {body}"
         );
-        assert!(!body.contains('…'), "Full grain must NOT truncate with `…`: {body}");
-        assert!(!body.contains('⏎'), "Full grain must NOT collapse newlines to `⏎`: {body}");
-        assert!(body.contains("turn=7"), "the Full block carries the turn marker: {body}");
+        assert!(
+            !body.contains('…'),
+            "Full grain must NOT truncate with `…`: {body}"
+        );
+        assert!(
+            !body.contains('⏎'),
+            "Full grain must NOT collapse newlines to `⏎`: {body}"
+        );
+        assert!(
+            body.contains("turn=7"),
+            "the Full block carries the turn marker: {body}"
+        );
     }
 
     // spec: repl/spec.md §17 — an empty-id tool_use renders `<none>` so a missing
@@ -340,7 +398,10 @@ mod tests {
             ..Default::default()
         };
         let line = &format_request_trace(&req, 0, Grain::Compact)[1];
-        assert!(line.contains("id=<none>"), "empty id shown as <none>: {line}");
+        assert!(
+            line.contains("id=<none>"),
+            "empty id shown as <none>: {line}"
+        );
     }
 
     // spec: repl/spec.md §17.21.1 — the `=<empty>` / unset env value disables the

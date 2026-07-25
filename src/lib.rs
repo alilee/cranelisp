@@ -13,10 +13,10 @@
 // - `got_trace`       — `src/main.rs:14`
 // - `io_trace`        — `src/main.rs:14`
 // - `style`           — `src/main.rs:66` (`init_color`)
-pub mod observability;
-pub mod session_v4;
 pub mod got_trace;
 pub mod io_trace;
+pub mod observability;
+pub mod session_v4;
 pub mod style;
 pub(crate) mod styled;
 
@@ -46,13 +46,13 @@ pub(crate) mod bootstrap;
 // `ModuleEntry::Import` bindings + module-path aliases; replaces typecheck's
 // struck `register_imports`/`register_exports`. See `design/arch/fixmes/0242-*`
 // §S76-addendum (2) + bounded-contexts.md §2 invariants 2+8.
-pub(crate) mod imports;
 pub(crate) mod cache_writer;
 pub(crate) mod code;
 pub(crate) mod display;
 pub(crate) mod exe;
-pub(crate) mod link;
 pub(crate) mod expander;
+pub(crate) mod imports;
+pub(crate) mod link;
 pub(crate) mod marshal;
 // session_setup — session-construction helpers independent of `CompilerSession`
 // (CacheState, ProjectConfig, lib/platform-dir assembly, prelude resolution,
@@ -60,10 +60,10 @@ pub(crate) mod marshal;
 // `session.rs`; the v3 `CompilerSession`/`Session` god-type it once held was
 // deleted in a prior sprint (FIXME 0109 Wave A — verified no v3 type remains;
 // renamed to shed the misleading "v3 lingering" connotation).
-pub(crate) mod session_setup;
 pub(crate) mod pipeline;
 pub(crate) mod platform;
 pub(crate) mod pretty;
+pub(crate) mod session_setup;
 // process_form — the cluster / per-form gap-orchestration family extracted
 // from worker.rs (FIXME 0109 Wave C). `process_cluster_once` +
 // `process_regular_form` + their family-private helpers. The permanent home

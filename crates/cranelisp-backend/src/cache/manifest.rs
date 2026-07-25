@@ -22,7 +22,7 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use cranelisp_types::{ErrorLocation, CranelispError, ModuleFullPath, Span};
+use cranelisp_types::{CranelispError, ErrorLocation, ModuleFullPath, Span};
 
 // `cache_format_version` is the field name on `CacheManifest` (kept stable
 // for on-disk JSON compatibility). The constant value comes from
@@ -222,30 +222,51 @@ pub fn check_manifest(
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum CacheInvalidReason {
-    FormatVersion { cached: u32, current: u32 },
+    FormatVersion {
+        cached: u32,
+        current: u32,
+    },
     CompilerChanged,
-    TargetTriple { cached: String, current: String },
-    CraneliftVersion { cached: String, current: String },
+    TargetTriple {
+        cached: String,
+        current: String,
+    },
+    CraneliftVersion {
+        cached: String,
+        current: String,
+    },
     /// The `CRANELISP_NO_OWNERSHIP` master-toggle polarity flipped since the
     /// cache was written (§2.3 — wholesale invalidation; mixed-ownership-ABI
     /// caches unrepresentable).
-    OwnershipToggle { cached: bool, current: bool },
+    OwnershipToggle {
+        cached: bool,
+        current: bool,
+    },
 }
 
 impl std::fmt::Display for CacheInvalidReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CacheInvalidReason::FormatVersion { cached, current } => {
-                write!(f, "cache format version mismatch: cached={cached}, current={current}")
+                write!(
+                    f,
+                    "cache format version mismatch: cached={cached}, current={current}"
+                )
             }
             CacheInvalidReason::CompilerChanged => {
                 write!(f, "compiler binary changed since cache was written")
             }
             CacheInvalidReason::TargetTriple { cached, current } => {
-                write!(f, "target triple mismatch: cached={cached}, current={current}")
+                write!(
+                    f,
+                    "target triple mismatch: cached={cached}, current={current}"
+                )
             }
             CacheInvalidReason::CraneliftVersion { cached, current } => {
-                write!(f, "Cranelift version mismatch: cached={cached}, current={current}")
+                write!(
+                    f,
+                    "Cranelift version mismatch: cached={cached}, current={current}"
+                )
             }
             CacheInvalidReason::OwnershipToggle { cached, current } => {
                 write!(
@@ -361,21 +382,17 @@ pub fn read_manifest(cache_dir: &Path) -> Option<CacheManifest> {
 }
 
 /// Write the cache manifest to disk atomically.
-pub fn write_manifest(
-    cache_dir: &Path,
-    manifest: &CacheManifest,
-) -> Result<(), CranelispError> {
+pub fn write_manifest(cache_dir: &Path, manifest: &CacheManifest) -> Result<(), CranelispError> {
     std::fs::create_dir_all(cache_dir).map_err(|e| CranelispError::CodegenError {
         message: format!("failed to create cache dir: {e}"),
         location: ErrorLocation::from_span(Span::SYNTHETIC),
     })?;
     let path = cache_dir.join("manifest.json");
-    let json = serde_json::to_string_pretty(manifest).map_err(|e| {
-        CranelispError::CodegenError {
+    let json =
+        serde_json::to_string_pretty(manifest).map_err(|e| CranelispError::CodegenError {
             message: format!("failed to serialize manifest: {e}"),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
-        }
-    })?;
+        })?;
     super::atomic_write(&path, json.as_bytes()).map_err(|e| CranelispError::CodegenError {
         message: format!("failed to write manifest: {e}"),
         location: ErrorLocation::from_span(Span::SYNTHETIC),

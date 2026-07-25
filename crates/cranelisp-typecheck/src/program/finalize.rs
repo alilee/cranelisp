@@ -4,7 +4,6 @@ mod ambiguity;
 #[cfg(test)]
 pub(super) use ambiguity::AmbiguousForm;
 
-
 impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
     /// Merge a `FormCheckResult` into the module's accumulator.
     ///
@@ -24,7 +23,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         self.merge_form_result_inner(state, accumulator, result);
     }
 
-
     pub(super) fn merge_form_result_inner(
         &self,
         state: &mut CheckState,
@@ -37,7 +35,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             write_callees_to_module_entries(&mut *guard, &result.call_graph_edges);
         }
 
-        accumulator.method_resolutions.extend(result.method_resolutions);
+        accumulator
+            .method_resolutions
+            .extend(result.method_resolutions);
         accumulator.pattern_ctors.extend(result.pattern_ctors);
         accumulator.var_refs.extend(result.var_refs);
         accumulator.apply_refs.extend(result.apply_refs);
@@ -46,12 +46,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             accumulator.constrained_fn_names.insert(name);
         }
         accumulator.mono_defns.extend(result.mono_defns);
-        accumulator.default_method_defns.extend(result.default_method_defns);
+        accumulator
+            .default_method_defns
+            .extend(result.default_method_defns);
         accumulator.multi_sig_defns.extend(result.multi_sig_defns);
         accumulator.warnings.extend(result.warnings);
         accumulator.call_graph_edges.extend(result.call_graph_edges);
     }
-
 
     /// Finalize typecheck for a module: run post-passes and drain accumulator into `CheckResult`.
     ///
@@ -78,7 +79,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         self.finalize_check_result_inner(state, accumulator, working_program, strategy)
     }
 
-
     /// Re-generalize every defn's scheme from its `defn_type_vars` source vars
     /// resolved through the current global substitution, and clear any
     /// false-positive constrained-fn markers whose schemes ended up
@@ -99,7 +99,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ) -> Result<(), CranelispError> {
         for (name, (param_types, ret_ty)) in &accumulator.defn_type_vars {
             let fn_type = Type::Fn(
-                param_types.iter().map(|t| self.apply_subst(state, t)).collect(),
+                param_types
+                    .iter()
+                    .map(|t| self.apply_subst(state, t))
+                    .collect(),
                 Box::new(self.apply_subst(state, ret_ty)),
             );
             let scheme = self.generalize(state, &fn_type);
@@ -160,14 +163,21 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             } else {
                 None
             };
-            if let Some(ModuleEntry::Def { scheme: s, kind, ast, .. }) =
-                st.symbols.get_mut(name)
+            if let Some(ModuleEntry::Def {
+                scheme: s,
+                kind,
+                ast,
+                ..
+            }) = st.symbols.get_mut(name)
             {
                 *s = scheme.clone();
                 if is_reslot_candidate {
                     if let Some(got_slot) = demoted_slot {
                         **kind = DefKind::UserFn {
-                            fn_state: UserFnState::Concrete { got_slot, mode_summary: None },
+                            fn_state: UserFnState::Concrete {
+                                got_slot,
+                                mode_summary: None,
+                            },
                         };
                     } else if let Some(variant) = ast.clone() {
                         // Still non-concrete: slot-less `Polymorphic`, carrying
@@ -189,7 +199,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         Ok(())
     }
-
 
     /// Scoped re-generalize + reslot restricted to entries CURRENTLY in the
     /// `Polymorphic` state (S110 C-4). This is [`Self::regeneralize_defn_schemes`]
@@ -235,7 +244,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 continue;
             }
             let fn_type = Type::Fn(
-                param_types.iter().map(|t| self.apply_subst(state, t)).collect(),
+                param_types
+                    .iter()
+                    .map(|t| self.apply_subst(state, t))
+                    .collect(),
                 Box::new(self.apply_subst(state, ret_ty)),
             );
             let scheme = self.generalize(state, &fn_type);
@@ -261,13 +273,20 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             } else {
                 None
             };
-            if let Some(ModuleEntry::Def { scheme: s, kind, ast, .. }) =
-                st.symbols.get_mut(name)
+            if let Some(ModuleEntry::Def {
+                scheme: s,
+                kind,
+                ast,
+                ..
+            }) = st.symbols.get_mut(name)
             {
                 *s = scheme.clone();
                 if let Some(got_slot) = demoted_slot {
                     **kind = DefKind::UserFn {
-                        fn_state: UserFnState::Concrete { got_slot, mode_summary: None },
+                        fn_state: UserFnState::Concrete {
+                            got_slot,
+                            mode_summary: None,
+                        },
                     };
                 } else if let Some(variant) = ast.clone() {
                     // Still non-concrete: keep it slot-less `Polymorphic`, carrying
@@ -284,7 +303,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         Ok(())
     }
-
 
     /// Re-settle the stored schemes of already-determined **`Polymorphic`**
     /// cluster members from their `defn_type_vars` source vars through the
@@ -341,7 +359,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 continue;
             }
             let fn_type = Type::Fn(
-                param_types.iter().map(|t| self.apply_subst(state, t)).collect(),
+                param_types
+                    .iter()
+                    .map(|t| self.apply_subst(state, t))
+                    .collect(),
                 Box::new(self.apply_subst(state, ret_ty)),
             );
             let scheme = self.generalize(state, &fn_type);
@@ -357,7 +378,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             }
         }
     }
-
 
     /// Phase 3 (finalize): re-resolve deferred trait calls with the final
     /// substitution across every defn body (`program-decomposition.md` §2.1 P1).
@@ -388,7 +408,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                             span: variant.span,
                         };
                         self.resolve_deferred_trait_calls(state, internal_defn.body())?;
-                        self.resolve_value_position_trait_methods(state, internal_defn.body(), false)?;
+                        self.resolve_value_position_trait_methods(
+                            state,
+                            internal_defn.body(),
+                            false,
+                        )?;
                     }
                 } else {
                     self.resolve_deferred_trait_calls(state, defn.body())?;
@@ -398,7 +422,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         }
         Ok(())
     }
-
 
     /// Pass 3 (finalize): the complete set of constrained/parametric fn names to
     /// monomorphise (`program-decomposition.md` §2.1 P3) — the per-cluster
@@ -420,11 +443,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         if strategy == ModuleStrategy::Additive {
             let r = self.current_symbol_table(state);
             for (name, entry) in r.view().iter() {
-                if let ModuleEntry::Def { kind, scheme, ast, .. } = entry {
+                if let ModuleEntry::Def {
+                    kind, scheme, ast, ..
+                } = entry
+                {
                     match kind.as_ref() {
                         // Trait-constrained polymorphism: classic constrained
                         // fn marker.
-                        DefKind::UserFn { fn_state: UserFnState::Constrained(_) } => {
+                        DefKind::UserFn {
+                            fn_state: UserFnState::Constrained(_),
+                        } => {
                             constrained_fn_names.insert(name.clone());
                         }
                         // Pure parametric polymorphism registered by a previous
@@ -454,7 +482,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         constrained_fn_names
     }
 
-
     /// Surface deferred field-accessor / binding collisions as non-fatal
     /// warnings (FIXME 0351(a), spec §5.2.6 safe disposition): the accessor was
     /// suppressed (the existing binding wins) and the clash is reported so it is
@@ -472,7 +499,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             });
         }
     }
-
 
     /// Sweep post-pass outputs from `state` into the accumulator. Post-passes
     /// (resolve_deferred_trait_calls, pass4_monomorphise, resolve_pending_overloads,
@@ -501,14 +527,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // the next map-provenance starvation hides. Extend all three so the
         // accumulator is the total authoritative source (behaviour-invariant).
         accumulator.pattern_ctors.extend(taken.pattern_ctors);
-        accumulator.expr_types.extend(
-            std::mem::take(&mut state.expr_types),
-        );
-        accumulator.warnings.extend(
-            std::mem::take(&mut state.warnings),
-        );
+        accumulator
+            .expr_types
+            .extend(std::mem::take(&mut state.expr_types));
+        accumulator
+            .warnings
+            .extend(std::mem::take(&mut state.warnings));
     }
-
 
     pub(super) fn finalize_check_result_inner(
         &self,
@@ -645,11 +670,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // B2). It stays BEFORE `sweep_post_pass_outputs` (below), which drains
         // `state.expr_types` that both this scan and `collect_unresolved_dispatch`
         // read by span.
-        if let Some(amb) = self.find_ambiguous_top_level_form(
-            state,
-            accumulator,
-            working_program,
-        ) {
+        if let Some(amb) = self.find_ambiguous_top_level_form(state, accumulator, working_program) {
             return Err(CranelispError::TypeError {
                 message: amb.message(),
                 location: ErrorLocation::from_span(amb.span),
@@ -782,7 +803,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         Ok(result)
     }
 
-
     /// Phase 5 (finalize) tail — the AST re-annotation / re-key / publish pass
     /// extracted from `finalize_check_result_inner` (`program-decomposition.md`
     /// §2.1 P5). Reads the now-settled side maps + subst; the callee writeback
@@ -852,33 +872,54 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // flip): `build_concrete_codegen_view` propagates the located
             // `ViewBuildError::Unresolved` gate error rather than swallowing a
             // real-span resolution miss into the lenient fallback.
-            let reannotate_and_refresh_view =
-                |name: &Symbol,
-                 entry: &mut ModuleEntry<C>,
-                 resolved_expr_types: &HashMap<Span, Type>,
-                 method_resolutions: &HashMap<Span, ResolvedCall>,
-                 subst: &Subst|
-                 -> Result<(), CranelispError> {
-                    if let ModuleEntry::Def { ast: Some(existing), kind, codegen_view: cv, .. } =
-                        entry
-                    {
-                        annotate_variant_from_maps(existing, resolved_expr_types, method_resolutions);
-                        apply_subst_to_variant(subst, existing);
-                        if matches!(
-                            kind.as_ref(),
-                            DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
-                        ) {
-                            *cv = build_concrete_codegen_view(
-                                name,
-                                existing,
-                                &pattern_ctors_for_views,
-                                &var_refs_for_views,
-                                &apply_refs_for_views,
-                            )?;
+            let reannotate_and_refresh_view = |name: &Symbol,
+                                               entry: &mut ModuleEntry<C>,
+                                               resolved_expr_types: &HashMap<Span, Type>,
+                                               method_resolutions: &HashMap<Span, ResolvedCall>,
+                                               subst: &Subst|
+             -> Result<(), CranelispError> {
+                if let ModuleEntry::Def {
+                    ast: Some(existing),
+                    kind,
+                    codegen_view: cv,
+                    ..
+                } = entry
+                {
+                    annotate_variant_from_maps(existing, resolved_expr_types, method_resolutions);
+                    apply_subst_to_variant(subst, existing);
+                    if matches!(
+                        kind.as_ref(),
+                        DefKind::UserFn {
+                            fn_state: UserFnState::Concrete { .. }
                         }
+                    ) {
+                        *cv = build_concrete_codegen_view(
+                            name,
+                            existing,
+                            &pattern_ctors_for_views,
+                            &var_refs_for_views,
+                            &apply_refs_for_views,
+                        )?;
                     }
-                    Ok(())
-                };
+                }
+                Ok(())
+            };
+            // Impl registration has already resolved the trait and target and
+            // minted the exact method symbols. Re-annotation consumes those
+            // settled names directly; reconstructing them from `TraitImpl`
+            // syntax would discard canonical identity (Principles 24 and 26).
+            for defn in &accumulator.default_method_defns {
+                if let Some(entry) = sym_table.symbols.get_mut(&defn.name) {
+                    reannotate_and_refresh_view(
+                        &defn.name,
+                        entry,
+                        &resolved_expr_types,
+                        &accumulator.method_resolutions,
+                        &state.subst,
+                    )?;
+                }
+            }
+
             for top in working_program {
                 match top {
                     TopLevel::Defn(defn) if defn.is_multi_sig() => {
@@ -916,22 +957,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                             )?;
                         }
                     }
-                    TopLevel::TraitImpl(ti) => {
-                        for method in &ti.methods {
-                            let target_name = ti.target.head_ref().map(|r| r.name.as_ref()).unwrap_or("");
-                            let mangled = format!("{}.{}${}", ti.trait_name, method.name, target_name);
-                            let mangled_sym = Symbol::from(mangled.as_str());
-                            if let Some(entry) = sym_table.symbols.get_mut(&mangled_sym) {
-                                reannotate_and_refresh_view(
-                                    &mangled_sym,
-                                    entry,
-                                    &resolved_expr_types,
-                                    &accumulator.method_resolutions,
-                                    &state.subst,
-                                )?;
-                            }
-                        }
-                    }
                     _ => {}
                 }
             }
@@ -947,7 +972,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     // which discards the display-bearing `CheckResult`; this driver retains
     // it so in-crate tests can assert on inferred types / schemes.
     // =================================================================
-
 
     /// Collect the program's `Defn`s belonging to ONE monomorphisation family
     /// (§11.8.3). The SINGLE parameterized harvest-input selector (arch W2a pin
@@ -971,7 +995,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         program
             .iter()
             .filter_map(|top| {
-                let TopLevel::Defn(defn) = top else { return None };
+                let TopLevel::Defn(defn) = top else {
+                    return None;
+                };
                 let matches = match family {
                     MonoDefnFamily::SingleSig => !defn.is_multi_sig(),
                     MonoDefnFamily::MultiSig => defn.is_multi_sig(),
@@ -986,7 +1012,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     pub(super) fn collect_single_sig_defns(program: &[TopLevel]) -> Vec<&Defn> {
         Self::collect_defns_for_mono(program, MonoDefnFamily::SingleSig)
     }
-
 }
 
 /// The two complementary monomorphisation-harvest families (§11.8.3, arch W2a

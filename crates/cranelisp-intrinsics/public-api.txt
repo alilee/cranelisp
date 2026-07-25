@@ -256,6 +256,8 @@ pub const cranelisp_intrinsics::vec_runtime::LEN_OFFSET: usize
 #[export_name = "vec-push-copy"] pub c fn cranelisp_intrinsics::vec_runtime::vec_push_copy(i64, i64, i64) -> i64
 #[export_name = "vec-push-grow"] pub c fn cranelisp_intrinsics::vec_runtime::vec_push_grow(i64, i64) -> i64
 #[export_name = "vec-set-copy"] pub c fn cranelisp_intrinsics::vec_runtime::vec_set_copy(i64, i64, i64, i64) -> i64
+pub unsafe fn cranelisp_intrinsics::vec_runtime::vec_strings_from_owned(alloc::vec::Vec<i64>) -> i64
+pub unsafe fn cranelisp_intrinsics::vec_runtime::with_vec_strings<R>(i64, impl core::ops::function::FnOnce(&[i64]) -> R) -> R
 pub struct cranelisp_intrinsics::IntrinsicEntry
 pub cranelisp_intrinsics::IntrinsicEntry::has_return: bool
 pub cranelisp_intrinsics::IntrinsicEntry::is_runtime: bool

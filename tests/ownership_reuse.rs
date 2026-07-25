@@ -646,7 +646,11 @@ fn elided_proof_fresh_vec_push_value_correct() {
          stderr:\n{}",
         out.stderr
     );
-    assert_eq!(misses, 0, "proof-elided grow: no copy (reuse_miss==0); stderr:\n{}", out.stderr);
+    assert_eq!(
+        misses, 0,
+        "proof-elided grow: no copy (reuse_miss==0); stderr:\n{}",
+        out.stderr
+    );
     assert_exit_value(out, 99);
 }
 

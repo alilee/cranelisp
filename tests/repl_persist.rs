@@ -55,11 +55,7 @@ fn persist_defn_survives_restart_via_user_cl() {
         first.stderr
     );
 
-    let second = first
-        .run_again()
-        .repl()
-        .stdin("(foo)\n/quit\n")
-        .output();
+    let second = first.run_again().repl().stdin("(foo)\n/quit\n").output();
     assert!(
         second.stdout.contains("42"),
         "session 2 should find (foo) returning 42 from persisted user.cl: stdout={}",
@@ -298,8 +294,7 @@ fn persist_watcher_ignores_self_write_to_user_cl() {
 ";
     let out = Cranelisp::new().repl().stdin(stdin).output();
     assert!(
-        !out.stdout.contains("[updated: user.cl]")
-            && !out.stdout.contains("[errors: user.cl]"),
+        !out.stdout.contains("[updated: user.cl]") && !out.stdout.contains("[errors: user.cl]"),
         "self-write to user.cl should NOT trigger a watcher notification: stdout={}",
         out.stdout
     );
@@ -407,7 +402,10 @@ fn persist_bug1_constrained_polymorphic_fn_callable_after_restart() {
         "session 1: (add 10 20) should be 30: stdout={}",
         first.stdout
     );
-    assert!(first.tmp_exists("user.cl"), "user.cl should exist after session 1");
+    assert!(
+        first.tmp_exists("user.cl"),
+        "user.cl should exist after session 1"
+    );
     let user_cl = first.read_tmp("user.cl");
     assert!(
         user_cl.contains("defn add"),
@@ -454,7 +452,10 @@ fn persist_bug2_cache_files_materialise_after_session_restore() {
         "session 1: REPL should exit cleanly: stderr={}",
         first.stderr
     );
-    assert!(first.tmp_exists("user.cl"), "user.cl should exist after session 1");
+    assert!(
+        first.tmp_exists("user.cl"),
+        "user.cl should exist after session 1"
+    );
 
     let second = first.run_again().repl().stdin("/quit\n").output();
     assert!(
@@ -470,13 +471,11 @@ fn persist_bug2_cache_files_materialise_after_session_restore() {
     let cache_dir = second.tmpdir.join(".cranelisp-cache");
     let has_user_meta = std::fs::read_dir(&cache_dir)
         .map(|entries| {
-            entries
-                .filter_map(|e| e.ok())
-                .any(|e| {
-                    let n = e.file_name();
-                    let n = n.to_string_lossy();
-                    n.contains("user") && n.ends_with(".meta.json")
-                })
+            entries.filter_map(|e| e.ok()).any(|e| {
+                let n = e.file_name();
+                let n = n.to_string_lossy();
+                n.contains("user") && n.ends_with(".meta.json")
+            })
         })
         .unwrap_or(false);
     assert!(
@@ -485,13 +484,11 @@ fn persist_bug2_cache_files_materialise_after_session_restore() {
     );
     let has_user_o = std::fs::read_dir(&cache_dir)
         .map(|entries| {
-            entries
-                .filter_map(|e| e.ok())
-                .any(|e| {
-                    let n = e.file_name();
-                    let n = n.to_string_lossy();
-                    n.contains("user") && n.ends_with(".o")
-                })
+            entries.filter_map(|e| e.ok()).any(|e| {
+                let n = e.file_name();
+                let n = n.to_string_lossy();
+                n.contains("user") && n.ends_with(".o")
+            })
         })
         .unwrap_or(false);
     assert!(
@@ -519,7 +516,10 @@ fn persist_first_session_immediately_produces_user_object_files() {
         "REPL should exit cleanly: stderr={}",
         out.stderr
     );
-    assert!(out.tmp_exists("user.cl"), "user.cl should exist after defining a function");
+    assert!(
+        out.tmp_exists("user.cl"),
+        "user.cl should exist after defining a function"
+    );
     assert!(
         out.tmp_exists(".cranelisp-cache"),
         ".cranelisp-cache/ should exist after first session save"
@@ -527,13 +527,11 @@ fn persist_first_session_immediately_produces_user_object_files() {
     let cache_dir = out.tmpdir.join(".cranelisp-cache");
     let has_user_meta = std::fs::read_dir(&cache_dir)
         .map(|entries| {
-            entries
-                .filter_map(|e| e.ok())
-                .any(|e| {
-                    let n = e.file_name();
-                    let n = n.to_string_lossy();
-                    n.contains("user") && n.ends_with(".meta.json")
-                })
+            entries.filter_map(|e| e.ok()).any(|e| {
+                let n = e.file_name();
+                let n = n.to_string_lossy();
+                n.contains("user") && n.ends_with(".meta.json")
+            })
         })
         .unwrap_or(false);
     assert!(
@@ -542,13 +540,11 @@ fn persist_first_session_immediately_produces_user_object_files() {
     );
     let has_user_o = std::fs::read_dir(&cache_dir)
         .map(|entries| {
-            entries
-                .filter_map(|e| e.ok())
-                .any(|e| {
-                    let n = e.file_name();
-                    let n = n.to_string_lossy();
-                    n.contains("user") && n.ends_with(".o")
-                })
+            entries.filter_map(|e| e.ok()).any(|e| {
+                let n = e.file_name();
+                let n = n.to_string_lossy();
+                n.contains("user") && n.ends_with(".o")
+            })
         })
         .unwrap_or(false);
     assert!(
@@ -586,7 +582,11 @@ fn persist_bug3_accumulates_definitions_across_session_restarts() {
         .repl()
         .stdin("(defn bar [] 99)\n/quit\n")
         .output();
-    assert!(second.status.success(), "session 2 failed: {}", second.stderr);
+    assert!(
+        second.status.success(),
+        "session 2 failed: {}",
+        second.stderr
+    );
     let contents2 = second.read_tmp("user.cl");
     assert!(
         contents2.contains("defn foo"),
@@ -657,12 +657,14 @@ fn persist_bug_user_cl_preserves_original_str_not_expanded_str_concat() {
     assert!(
         out.status.success(),
         "REPL should exit cleanly. stdout={}\nstderr={}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
     assert!(
         out.tmp_exists("user.cl"),
         "user.cl should exist after defining a function. stdout={}\nstderr={}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
     let contents = out.read_tmp("user.cl");
     assert!(
@@ -692,7 +694,8 @@ fn persist_bug_macro_usage_in_defn_survives_session_restart() {
     assert!(
         first.status.success(),
         "session 1 should exit cleanly. stdout={}\nstderr={}",
-        first.stdout, first.stderr
+        first.stdout,
+        first.stderr
     );
     assert!(
         first.stdout.contains("hello, world"),
@@ -709,7 +712,8 @@ fn persist_bug_macro_usage_in_defn_survives_session_restart() {
     assert!(
         second.status.success(),
         "session 2 should exit cleanly (not fail on str macro). stdout={}\nstderr={}",
-        second.stdout, second.stderr
+        second.stdout,
+        second.stderr
     );
     assert!(
         second.stdout.contains("hello, cranelisp"),
@@ -757,7 +761,8 @@ fn persist_bug0220_cache_restored_userfns_survive_repl_edit_regen() {
     assert!(
         first.status.success(),
         "session 1 should exit cleanly: stdout={}\nstderr={}",
-        first.stdout, first.stderr
+        first.stdout,
+        first.stderr
     );
     assert!(
         first.tmpdir.join(".cranelisp-cache").exists(),
@@ -775,7 +780,8 @@ fn persist_bug0220_cache_restored_userfns_survive_repl_edit_regen() {
     assert!(
         second.status.success(),
         "session 2 should exit cleanly: stdout={}\nstderr={}",
-        second.stdout, second.stderr
+        second.stdout,
+        second.stderr
     );
 
     // The regenerated user.cl MUST still contain the cache-restored UserFns.
@@ -804,7 +810,8 @@ fn persist_bug0220_cache_restored_userfns_survive_repl_edit_regen() {
     assert!(
         third.status.success(),
         "session 3 should exit cleanly: stdout={}\nstderr={}",
-        third.stdout, third.stderr
+        third.stdout,
+        third.stderr
     );
     assert!(
         third.stdout.contains("1") && third.stdout.contains("2"),
@@ -1086,7 +1093,11 @@ fn persist_failed_export_not_written_to_backing_neg() {
         .user("(defn seed [] 1)\n")
         .stdin("(export [ghostmod [*]])\n(defn g [x] (mul-i64 x 2))\n/quit\n")
         .output();
-    assert!(out.status.success(), "session should exit cleanly: stderr={}", out.stderr);
+    assert!(
+        out.status.success(),
+        "session should exit cleanly: stderr={}",
+        out.stderr
+    );
     let regenerated = out.read_tmp("user.cl");
     assert!(
         !regenerated.contains("ghostmod"),
@@ -1112,7 +1123,11 @@ fn persist_bare_expr_not_written_to_backing_neg() {
         .user("(defn seed [] 1)\n")
         .stdin("(add-i64 1 2)\n(defn g [x] (mul-i64 x 2))\n/quit\n")
         .output();
-    assert!(out.status.success(), "session should exit cleanly: stderr={}", out.stderr);
+    assert!(
+        out.status.success(),
+        "session should exit cleanly: stderr={}",
+        out.stderr
+    );
     // Pos: the in-session evaluation still happened (the ephemeral result appeared).
     assert!(
         out.stdout.contains(":primitives/Int 3"),
@@ -1145,7 +1160,11 @@ fn persist_bare_expr_then_run_module_clean_e2e() {
         .user("(defn seed [] 1)\n")
         .stdin("(add-i64 1 2)\n(defn main [] (Pure 6))\n/quit\n")
         .output();
-    assert!(first.status.success(), "session 1 should exit cleanly: stderr={}", first.stderr);
+    assert!(
+        first.status.success(),
+        "session 1 should exit cleanly: stderr={}",
+        first.stderr
+    );
     let regenerated = first.read_tmp("user.cl");
     assert!(
         !regenerated.contains("(add-i64 1 2)"),
@@ -1186,7 +1205,11 @@ fn persist_trait_decl_regen_preserves_source() {
         // A trait with non-canonical spacing; then a defn triggers regen.
         .stdin("(deftrait Sizeable  (size [self]  Int))\n(defn g [x] (mul-i64 x 2))\n/quit\n")
         .output();
-    assert!(out.status.success(), "session should exit cleanly: stderr={}", out.stderr);
+    assert!(
+        out.status.success(),
+        "session should exit cleanly: stderr={}",
+        out.stderr
+    );
     let regenerated = out.read_tmp("user.cl");
     assert!(
         regenerated.contains("deftrait")
@@ -1232,7 +1255,11 @@ fn impl_regen_written_to_user_cl() {
              /quit\n",
         )
         .output();
-    assert!(out.status.success(), "session should exit cleanly: stderr={}", out.stderr);
+    assert!(
+        out.status.success(),
+        "session should exit cleanly: stderr={}",
+        out.stderr
+    );
     let regenerated = out.read_tmp("user.cl");
     // Control: the trait, type and defn DO survive — isolating the impl as the
     // dropped family (inconsistent resurrection).
@@ -1324,7 +1351,11 @@ fn hkt_new_form_source_reemits_echoed_head() {
              /source Functor\n/quit\n",
         )
         .output();
-    assert!(out.status.success(), "session should exit cleanly: stderr={}", out.stderr);
+    assert!(
+        out.status.success(),
+        "session should exit cleanly: stderr={}",
+        out.stderr
+    );
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
         c.contains("(deftrait (Functor f)"),
@@ -1360,7 +1391,11 @@ fn hkt_impl_new_form_persists_and_reloads() {
              (defn trigger [] 1)\n/quit\n",
         )
         .output();
-    assert!(first.status.success(), "session 1 should exit cleanly: stderr={}", first.stderr);
+    assert!(
+        first.status.success(),
+        "session 1 should exit cleanly: stderr={}",
+        first.stderr
+    );
 
     let second = first
         .run_again()
@@ -1372,7 +1407,8 @@ fn hkt_impl_new_form_persists_and_reloads() {
         second.stdout.contains(":primitives/Int 42"),
         "session 2: the persisted echoed-head HK impl MUST reload and `fmap` MUST \
          dispatch over Option → 42 (RT-2); stdout:\n{}\nstderr:\n{}",
-        second.stdout, second.stderr
+        second.stdout,
+        second.stderr
     );
 }
 
@@ -1389,7 +1425,11 @@ fn persist_type_decl_regen_preserves_source() {
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .stdin("(deftype Pt (MkPt [:Int x :Int y]))\n(defn g [x] (mul-i64 x 2))\n/quit\n")
         .output();
-    assert!(out.status.success(), "session should exit cleanly: stderr={}", out.stderr);
+    assert!(
+        out.status.success(),
+        "session should exit cleanly: stderr={}",
+        out.stderr
+    );
     let regenerated = out.read_tmp("user.cl");
     assert!(
         regenerated.contains("deftype")

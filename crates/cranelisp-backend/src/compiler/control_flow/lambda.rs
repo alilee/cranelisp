@@ -12,8 +12,8 @@ use cranelisp_types::{CranelispError, ErrorLocation, MonoExpr, Span, Symbol, Typ
 
 use crate::heap::{self, HeapClosure};
 
+use super::{CaptureRelease, FnCompiler, emit_capture_dec_into, find_free_vars};
 use crate::compiler::signature_heap_category;
-use super::{emit_capture_dec_into, find_free_vars, CaptureRelease, FnCompiler};
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
 where
@@ -37,13 +37,13 @@ where
         span: Span,
         lambda_type: Option<&Type>,
     ) -> Result<Value, CranelispError> {
-        let alloc_id =
-            self.ctx
-                .alloc_func_id
-                .ok_or_else(|| CranelispError::CodegenError {
-                    message: "runtime/alloc not declared (need declare_intrinsics)".into(),
-                    location: ErrorLocation::from_span(span),
-                })?;
+        let alloc_id = self
+            .ctx
+            .alloc_func_id
+            .ok_or_else(|| CranelispError::CodegenError {
+                message: "runtime/alloc not declared (need declare_intrinsics)".into(),
+                location: ErrorLocation::from_span(span),
+            })?;
 
         // Determine captured variables: free variables in the body that are
         // bound in the enclosing scope (not the lambda's own params).
@@ -98,12 +98,7 @@ where
 
         // At the lambda site: allocate closure [header | code_ptr | captures...]
         let payload_size = HeapClosure::payload_size(captures.len()) as i64;
-        let base_ptr = heap::emit_alloc(
-            &mut self.builder,
-            self.module,
-            alloc_id,
-            payload_size,
-        );
+        let base_ptr = heap::emit_alloc(&mut self.builder, self.module, alloc_id, payload_size);
 
         // Get the inner function address.
         let inner_func_ref = self
@@ -124,9 +119,7 @@ where
         // self.module which is borrowed mutably during function definition).
         let drop_glue = self.build_closure_drop_glue(&captures, span)?;
         let drop_glue_val = if let Some(glue_id) = drop_glue {
-            let glue_ref = self
-                .module
-                .declare_func_in_func(glue_id, self.builder.func);
+            let glue_ref = self.module.declare_func_in_func(glue_id, self.builder.func);
             self.builder.ins().func_addr(types::I64, glue_ref)
         } else {
             self.builder.ins().iconst(types::I64, 0)
@@ -213,8 +206,10 @@ where
             .filter_map(|(i, cap_name)| {
                 let ty = self.variable_types.get(cap_name)?;
                 let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
-                let release =
-                    CaptureRelease::classify(category, matches!(ty, cranelisp_types::Type::Fn(..)))?;
+                let release = CaptureRelease::classify(
+                    category,
+                    matches!(ty, cranelisp_types::Type::Fn(..)),
+                )?;
                 Some((i, release))
             })
             .collect();
@@ -396,9 +391,17 @@ where
         // Signature: (env_ptr, params...) -> i64
         let total_params = 1 + params.len();
         for _ in 0..total_params {
-            inner_ctx.func.signature.params.push(AbiParam::new(types::I64));
+            inner_ctx
+                .func
+                .signature
+                .params
+                .push(AbiParam::new(types::I64));
         }
-        inner_ctx.func.signature.returns.push(AbiParam::new(types::I64));
+        inner_ctx
+            .func
+            .signature
+            .returns
+            .push(AbiParam::new(types::I64));
 
         let mut builder = FunctionBuilder::new(&mut inner_ctx.func, &mut inner_func_ctx);
 
@@ -486,13 +489,12 @@ where
         // This is essential for unused parameters: derive_param_type scans
         // use sites, so unused params (e.g., `_s` in `(fn [_s] 42)`) would
         // have no type recorded and scope cleanup would skip their RC dec.
-        let lambda_param_types: Vec<Option<Type>> = if let Some(Type::Fn(param_types, _)) =
-            lambda_type
-        {
-            param_types.iter().map(|t| Some(t.clone())).collect()
-        } else {
-            vec![None; params.len()]
-        };
+        let lambda_param_types: Vec<Option<Type>> =
+            if let Some(Type::Fn(param_types, _)) = lambda_type {
+                param_types.iter().map(|t| Some(t.clone())).collect()
+            } else {
+                vec![None; params.len()]
+            };
 
         // Bind lambda parameters from function params (after env_ptr).
         // Add params to scope_stack and variable_types so that
@@ -516,7 +518,9 @@ where
             // Fall back to derive_param_type_from_body (use-site inference) if the
             // lambda type isn't available.
             if let Some(Some(ty)) = lambda_param_types.get(i) {
-                inner_compiler.variable_types.insert(param_name.clone(), ty.clone());
+                inner_compiler
+                    .variable_types
+                    .insert(param_name.clone(), ty.clone());
             } else if let Some(ty) = Self::derive_param_type_from_body(body, param_name) {
                 inner_compiler.variable_types.insert(param_name.clone(), ty);
             }
@@ -566,201 +570,198 @@ mod tests {
     // `crate::test_support`. Verbatim bodies from the former `src/tests.rs`.
     use crate::test_support::*;
 
+    // spec: 04-expressions §4.5 — lambda capture, closure allocation, and indirect call
+    #[test]
+    fn test_compile_lambda_closure() {
+        // (let [n 5] ((fn [x] (+ n x)) 10))
+        // This tests: lambda capture of 'n', closure allocation, closure call.
+        use cranelisp_types::ResolvedCall;
 
-// spec: 04-expressions §4.5 — lambda capture, closure allocation, and indirect call
-#[test]
-fn test_compile_lambda_closure() {
-    // (let [n 5] ((fn [x] (+ n x)) 10))
-    // This tests: lambda capture of 'n', closure allocation, closure call.
-    use cranelisp_types::ResolvedCall;
-
-    let add_span = Span::new(30, 37);
-    let mut method_resolutions = HashMap::new();
-    method_resolutions.insert(
-        add_span,
-        ResolvedCall::BuiltinFn {
-            name: Symbol::from("add-i64"),
-        },
-    );
-
-    let expr = Expr::Let {
-        bindings: vec![(
-            Symbol::from("n"),
-            Expr::IntLit {
-                value: 5,
-                span: Span::new(5, 6),
-                inferred_type: None,
+        let add_span = Span::new(30, 37);
+        let mut method_resolutions = HashMap::new();
+        method_resolutions.insert(
+            add_span,
+            ResolvedCall::BuiltinFn {
+                name: Symbol::from("add-i64"),
             },
-        )],
-        body: Box::new(Expr::Apply {
-            callee: Box::new(Expr::Lambda {
-                params: vec![(Symbol::from("x"), None)],
-                body: Box::new(Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("+"),
-                        span: Span::new(31, 32),
+        );
+
+        let expr = Expr::Let {
+            bindings: vec![(
+                Symbol::from("n"),
+                Expr::IntLit {
+                    value: 5,
+                    span: Span::new(5, 6),
+                    inferred_type: None,
+                },
+            )],
+            body: Box::new(Expr::Apply {
+                callee: Box::new(Expr::Lambda {
+                    params: vec![(Symbol::from("x"), None)],
+                    body: Box::new(Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("+"),
+                            span: Span::new(31, 32),
+                            resolved_call: None,
+                            inferred_type: None,
+                        }),
+                        args: vec![
+                            Expr::Var {
+                                name: Symbol::from("n"),
+                                span: Span::new(33, 34),
+                                resolved_call: None,
+                                inferred_type: None,
+                            },
+                            Expr::Var {
+                                name: Symbol::from("x"),
+                                span: Span::new(35, 36),
+                                resolved_call: None,
+                                inferred_type: None,
+                            },
+                        ],
+                        span: add_span,
                         resolved_call: None,
                         inferred_type: None,
                     }),
-                    args: vec![
-                        Expr::Var {
-                            name: Symbol::from("n"),
-                            span: Span::new(33, 34),
-                            resolved_call: None,
-                            inferred_type: None,
-                        },
-                        Expr::Var {
-                            name: Symbol::from("x"),
-                            span: Span::new(35, 36),
-                            resolved_call: None,
-                            inferred_type: None,
-                        },
-                    ],
-                    span: add_span,
-                    resolved_call: None,
+                    span: Span::new(10, 40),
                     inferred_type: None,
                 }),
-                span: Span::new(10, 40),
+                args: vec![Expr::IntLit {
+                    value: 10,
+                    span: Span::new(42, 44),
+                    inferred_type: None,
+                }],
+                span: Span::new(10, 45),
+                resolved_call: None,
                 inferred_type: None,
             }),
-            args: vec![Expr::IntLit {
-                value: 10,
-                span: Span::new(42, 44),
-                inferred_type: None,
-            }],
-            span: Span::new(10, 45),
-            resolved_call: None,
+            span: Span::new(0, 46),
             inferred_type: None,
-        }),
-        span: Span::new(0, 46),
-        inferred_type: None,
-    };
+        };
 
-    let check = TestCheckResult {
-        method_resolutions,
-        resolved_targets: HashMap::new(),
-        pattern_ctors: HashMap::new(),
-        constrained_fn_names: HashSet::new(),
-        mono_defns: Vec::new(),
-        expr_types: HashMap::new(),
-        default_method_defns: Vec::new(),
-        warnings: Vec::new(),
-    display: None,
-    };
+        let check = TestCheckResult {
+            method_resolutions,
+            resolved_targets: HashMap::new(),
+            pattern_ctors: HashMap::new(),
+            constrained_fn_names: HashSet::new(),
+            mono_defns: Vec::new(),
+            expr_types: HashMap::new(),
+            default_method_defns: Vec::new(),
+            warnings: Vec::new(),
+            display: None,
+        };
 
-    let result = test_compile_and_run(&expr, &check, &empty_tables());
-    assert!(result.is_ok(), "closure should compile: {result:?}");
-    assert_eq!(result.unwrap(), 15, "5 + 10 = 15");
-}
+        let result = test_compile_and_run(&expr, &check, &empty_tables());
+        assert!(result.is_ok(), "closure should compile: {result:?}");
+        assert_eq!(result.unwrap(), 15, "5 + 10 = 15");
+    }
 
-
-// spec: design/backend/ring2-rc.md "capture-return inc" (sibling of §5.5)
-// spec: design/backend/slice-4-21-hello-io-investigation.md §4d/§4e
-//
-// Regression guard for Slice 4 defect. A lambda body whose return
-// expression is a bare reference to a captured heap variable MUST
-// emit `rc_inc` on the return value before `return`, so the
-// closure's drop-glue dec (fired by one-shot consume_closure paths
-// like the IO trampoline) does not free the value out from under
-// the caller.
-//
-// Test shape: `(let [s "hello"] ((fn [_] s) 0))`. The inner
-// closure captures `s` (heap-typed String) and returns it when
-// called with a dummy Int arg. Without `emit_capture_return_inc`,
-// the closure's drop glue would dec `s` after the body returns,
-// the outer `let` scope cleanup would dec `s` again (via its own
-// scope-stack dec), and at least one of those decs lands on a
-// freed node — corrupting the returned pointer and/or
-// double-freeing.
-//
-// Post-fix: the returned pointer is still live and reads back as
-// "hello"; `test_compile_lambda_closure` above (non-capture-return
-// shape) is unaffected, confirming the fix is additive.
-//
-// NB: this test sits in `lib.rs #[cfg(test)] mod tests` rather
-// than a new module in `control_flow.rs` because the
-// `test_compile_and_run` helper + `TestCheckResult` scaffolding is
-// local to `lib.rs` and re-exporting it would duplicate the entire
-// compile pipeline bridge. Per /arch §4d the placement discipline
-// is "wherever existing control_flow tests live" — the three
-// existing closure/lambda backend tests
-// (`test_compile_lambda_closure`, others) all live here.
-#[test]
-fn lambda_return_captured_heap_var_emits_inc() {
-    // AST: (let [s "hello"] ((fn [_] s) 0))
+    // spec: design/backend/ring2-rc.md "capture-return inc" (sibling of §5.5)
+    // spec: design/backend/slice-4-21-hello-io-investigation.md §4d/§4e
     //
-    // Explicit `inferred_type` on the String literal so the let's
-    // `variable_types` picks up `s: String`; that's what
-    // `emit_capture_return_inc` reads from the enclosing scope when
-    // the lambda body is compiled.
-    let string_ty = Type::String;
-    let s_span = Span::new(5, 12);
-    let lam_body_span = Span::new(20, 21);
-    let expr = Expr::Let {
-        bindings: vec![(
-            Symbol::from("s"),
-            Expr::StringLit {
-                value: "hello".to_string(),
-                span: s_span,
-                inferred_type: Some(Box::new(string_ty.clone())),
-            },
-        )],
-        body: Box::new(Expr::Apply {
-            callee: Box::new(Expr::Lambda {
-                params: vec![(Symbol::from("_"), None)],
-                body: Box::new(Expr::Var {
-                    name: Symbol::from("s"),
-                    span: lam_body_span,
-                    resolved_call: None,
+    // Regression guard for Slice 4 defect. A lambda body whose return
+    // expression is a bare reference to a captured heap variable MUST
+    // emit `rc_inc` on the return value before `return`, so the
+    // closure's drop-glue dec (fired by one-shot consume_closure paths
+    // like the IO trampoline) does not free the value out from under
+    // the caller.
+    //
+    // Test shape: `(let [s "hello"] ((fn [_] s) 0))`. The inner
+    // closure captures `s` (heap-typed String) and returns it when
+    // called with a dummy Int arg. Without `emit_capture_return_inc`,
+    // the closure's drop glue would dec `s` after the body returns,
+    // the outer `let` scope cleanup would dec `s` again (via its own
+    // scope-stack dec), and at least one of those decs lands on a
+    // freed node — corrupting the returned pointer and/or
+    // double-freeing.
+    //
+    // Post-fix: the returned pointer is still live and reads back as
+    // "hello"; `test_compile_lambda_closure` above (non-capture-return
+    // shape) is unaffected, confirming the fix is additive.
+    //
+    // NB: this test sits in `lib.rs #[cfg(test)] mod tests` rather
+    // than a new module in `control_flow.rs` because the
+    // `test_compile_and_run` helper + `TestCheckResult` scaffolding is
+    // local to `lib.rs` and re-exporting it would duplicate the entire
+    // compile pipeline bridge. Per /arch §4d the placement discipline
+    // is "wherever existing control_flow tests live" — the three
+    // existing closure/lambda backend tests
+    // (`test_compile_lambda_closure`, others) all live here.
+    #[test]
+    fn lambda_return_captured_heap_var_emits_inc() {
+        // AST: (let [s "hello"] ((fn [_] s) 0))
+        //
+        // Explicit `inferred_type` on the String literal so the let's
+        // `variable_types` picks up `s: String`; that's what
+        // `emit_capture_return_inc` reads from the enclosing scope when
+        // the lambda body is compiled.
+        let string_ty = Type::String;
+        let s_span = Span::new(5, 12);
+        let lam_body_span = Span::new(20, 21);
+        let expr = Expr::Let {
+            bindings: vec![(
+                Symbol::from("s"),
+                Expr::StringLit {
+                    value: "hello".to_string(),
+                    span: s_span,
                     inferred_type: Some(Box::new(string_ty.clone())),
+                },
+            )],
+            body: Box::new(Expr::Apply {
+                callee: Box::new(Expr::Lambda {
+                    params: vec![(Symbol::from("_"), None)],
+                    body: Box::new(Expr::Var {
+                        name: Symbol::from("s"),
+                        span: lam_body_span,
+                        resolved_call: None,
+                        inferred_type: Some(Box::new(string_ty.clone())),
+                    }),
+                    span: Span::new(15, 22),
+                    inferred_type: None,
                 }),
-                span: Span::new(15, 22),
+                args: vec![Expr::IntLit {
+                    value: 0,
+                    span: Span::new(24, 25),
+                    inferred_type: None,
+                }],
+                span: Span::new(14, 26),
+                resolved_call: None,
                 inferred_type: None,
             }),
-            args: vec![Expr::IntLit {
-                value: 0,
-                span: Span::new(24, 25),
-                inferred_type: None,
-            }],
-            span: Span::new(14, 26),
-            resolved_call: None,
+            span: Span::new(0, 27),
             inferred_type: None,
-        }),
-        span: Span::new(0, 27),
-        inferred_type: None,
-    };
+        };
 
-    let check = empty_check();
-    let result = test_compile_and_run(&expr, &check, &empty_tables());
-    assert!(
-        result.is_ok(),
-        "captured-heap-return should compile and run: {result:?}"
-    );
-    let ptr = result.unwrap();
-    // Heap pointer (> NULLARY_TAG_THRESHOLD).
-    assert!(ptr > 1024, "expected heap pointer, got {ptr}");
+        let check = empty_check();
+        let result = test_compile_and_run(&expr, &check, &empty_tables());
+        assert!(
+            result.is_ok(),
+            "captured-heap-return should compile and run: {result:?}"
+        );
+        let ptr = result.unwrap();
+        // Heap pointer (> NULLARY_TAG_THRESHOLD).
+        assert!(ptr > 1024, "expected heap pointer, got {ptr}");
 
-    // Key post-fix assertion: the returned pointer is STILL LIVE
-    // after return — `emit_capture_return_inc` incremented its RC
-    // so the drop-glue dec did not free it. Pre-fix, `is_live`
-    // would be false here (or the read-back would show corruption).
-    #[cfg(debug_assertions)]
-    assert!(
-        cranelisp_intrinsics::alloc::is_live(ptr as usize),
-        "returned string pointer must still be live after lambda return; \
+        // Key post-fix assertion: the returned pointer is STILL LIVE
+        // after return — `emit_capture_return_inc` incremented its RC
+        // so the drop-glue dec did not free it. Pre-fix, `is_live`
+        // would be false here (or the read-back would show corruption).
+        #[cfg(debug_assertions)]
+        assert!(
+            cranelisp_intrinsics::alloc::is_live(ptr as usize),
+            "returned string pointer must still be live after lambda return; \
          this is the capture-return inc invariant"
-    );
+        );
 
-    // Readable round-trip — proves the contents survived the
-    // drop-glue dec that would otherwise have corrupted or freed
-    // the heap block.
-    let s = unsafe { cranelisp_intrinsics::heap_string::read_string_as_str(ptr) };
-    assert_eq!(s, "hello", "captured string must round-trip");
+        // Readable round-trip — proves the contents survived the
+        // drop-glue dec that would otherwise have corrupted or freed
+        // the heap block.
+        let s = unsafe { cranelisp_intrinsics::heap_string::read_string_as_str(ptr) };
+        assert_eq!(s, "hello", "captured string must round-trip");
 
-    // Balance the one remaining caller-side reference (we, the
-    // test, are the caller). Normal runtime would emit the dec at
-    // the caller's scope exit; here we dec manually.
-    cranelisp_intrinsics::alloc::heap_dealloc(ptr);
-}
-
+        // Balance the one remaining caller-side reference (we, the
+        // test, are the caller). Normal runtime would emit the dec at
+        // the caller's scope exit; here we dec manually.
+        cranelisp_intrinsics::alloc::heap_dealloc(ptr);
+    }
 }

@@ -173,7 +173,10 @@ mod tests {
         let cs = Cheatsheet::parse(src);
         let one = cs.topic_content("one").unwrap();
         assert!(one.contains("line1") && one.contains("line2"));
-        assert!(!one.contains("line3"), "content must not bleed past the next delimiter");
+        assert!(
+            !one.contains("line3"),
+            "content must not bleed past the next delimiter"
+        );
     }
 
     // Lines before the first delimiter (a preamble) are ignored, not crashed on.
@@ -207,8 +210,14 @@ mod tests {
         for name in cs.topic_names() {
             assert!(out.contains(name), "index must list {name:?}; out={out}");
         }
-        assert!(out.contains("/syntax") && out.contains("topic"), "out={out}");
-        assert!(!out.contains('\u{1b}'), "index must carry no ANSI escape; out={out}");
+        assert!(
+            out.contains("/syntax") && out.contains("topic"),
+            "out={out}"
+        );
+        assert!(
+            !out.contains('\u{1b}'),
+            "index must carry no ANSI escape; out={out}"
+        );
     }
 
     // Unknown topic re-lists the index with a "no such topic" note (never a
@@ -218,7 +227,13 @@ mod tests {
         let out = handle_syntax("no-such-topic-xyzzy");
         let cs = cheatsheet();
         assert!(out.contains(cs.topic_names()[0]), "must re-list; out={out}");
-        assert!(out.contains("no such syntax topic"), "must note the miss; out={out}");
-        assert!(!out.to_lowercase().contains("unknown command"), "not a dead end; out={out}");
+        assert!(
+            out.contains("no such syntax topic"),
+            "must note the miss; out={out}"
+        );
+        assert!(
+            !out.to_lowercase().contains("unknown command"),
+            "not a dead end; out={out}"
+        );
     }
 }

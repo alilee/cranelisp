@@ -19,7 +19,16 @@ fn s() -> Span {
     Span::SYNTHETIC
 }
 fn var(n: &str) -> MonoExpr {
-    MonoExpr::Var { name: Symbol::from(n), span: s(), resolved_call: None, ty: ConcreteType::String, resolution: cranelisp_types::VarRef::Local { binder: Symbol::from(n), binding_span: cranelisp_types::Span::SYNTHETIC } }
+    MonoExpr::Var {
+        name: Symbol::from(n),
+        span: s(),
+        resolved_call: None,
+        ty: ConcreteType::String,
+        resolution: cranelisp_types::VarRef::Local {
+            binder: Symbol::from(n),
+            binding_span: cranelisp_types::Span::SYNTHETIC,
+        },
+    }
 }
 fn call(name: &str, args: Vec<MonoExpr>) -> MonoExpr {
     MonoExpr::Apply {
@@ -44,7 +53,10 @@ fn boxed(fields: Vec<MonoExpr>) -> MonoExpr {
         tag: 0,
         fields,
         span: s(),
-        ty: ConcreteType::ADT(FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Box")), vec![]),
+        ty: ConcreteType::ADT(
+            FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Box")),
+            vec![],
+        ),
         escapes: None,
         confined: None,
         unique_static: None,
@@ -53,7 +65,10 @@ fn boxed(fields: Vec<MonoExpr>) -> MonoExpr {
 fn callable(key: &str, params: Vec<&str>, body: MonoExpr) -> Callable {
     Callable {
         key: Symbol::from(key),
-        params: params.into_iter().map(|n| (Symbol::from(n), ConcreteType::String)).collect(),
+        params: params
+            .into_iter()
+            .map(|n| (Symbol::from(n), ConcreteType::String))
+            .collect(),
         body,
     }
 }
@@ -130,8 +145,15 @@ fn tail_recursion_base_returns_param_is_alias_not_fresh() {
     // MayAliasOf, keeping protect; AliasOf is reserved for unconditional claims).
     // `grow` is a boundary leaf (⊤: Owned/Fresh), so the recursive arg is fresh —
     // exactly the vec-push COW shape.
-    let cond = MonoExpr::BoolLit { value: true, span: s(), ty: ConcreteType::Bool };
-    let recursive = call("build", vec![call("grow", vec![var("v")]), var("i"), var("n")]);
+    let cond = MonoExpr::BoolLit {
+        value: true,
+        span: s(),
+        ty: ConcreteType::Bool,
+    };
+    let recursive = call(
+        "build",
+        vec![call("grow", vec![var("v")]), var("i"), var("n")],
+    );
     let body = MonoExpr::If {
         cond: Box::new(cond),
         then_branch: Box::new(var("v")),
@@ -148,7 +170,11 @@ fn tail_recursion_base_returns_param_is_alias_not_fresh() {
         "build returns param v in the base case ⇒ MayAliasOf(0), never Fresh"
     );
     // v is returned (IntoResult) ⇒ Owned; the ABI param half was already correct.
-    assert_eq!(mode(&c, "build", 0), Mode::Owned, "the returned param v is Owned");
+    assert_eq!(
+        mode(&c, "build", 0),
+        Mode::Owned,
+        "the returned param v is Owned"
+    );
 }
 
 // =================== Reachability (the a3 leg, S111 §15.2) ===================
@@ -171,7 +197,9 @@ fn declared_facts_reachable_through_prelude_fallback() {
         ty: Type::Fn(vec![Type::String], Box::new(Type::String)),
     };
     let make = |vis| {
-        let mut e = ModuleEntry::<()>::def(scheme.clone(), DefKind::primitive(0)).visibility(vis).build();
+        let mut e = ModuleEntry::<()>::def(scheme.clone(), DefKind::primitive(0))
+            .visibility(vis)
+            .build();
         e.set_mode_summary(Some(ModeSummary {
             result: cranelisp_types::ResultMode::MayAliasOf(0),
             ..Default::default()
@@ -179,14 +207,22 @@ fn declared_facts_reachable_through_prelude_fallback() {
         e
     };
     let mut pt = cranelisp_types::SymbolTable::<()>::new(prelude.clone());
-    pt.insert(Symbol::from("cow-op"), make(cranelisp_types::Visibility::Public));
+    pt.insert(
+        Symbol::from("cow-op"),
+        make(cranelisp_types::Visibility::Public),
+    );
     // A PRIVATE prelude entry — the I-1 filter must NOT leak it.
-    pt.insert(Symbol::from("cow-op-private"), make(cranelisp_types::Visibility::Private));
+    pt.insert(
+        Symbol::from("cow-op-private"),
+        make(cranelisp_types::Visibility::Private),
+    );
     tf.modules.insert(prelude.clone(), pt);
     tf.prelude_fallback.insert(user.clone(), true);
 
     // Positive: the PUBLIC declared fact is reachable via the prelude hop.
-    let found = tf.env().resolve_terminal_entry_and_home_scoped(&user, "cow-op");
+    let found = tf
+        .env()
+        .resolve_terminal_entry_and_home_scoped(&user, "cow-op");
     let (entry, home) = found.expect("public prelude declared fact must be reachable via fallback");
     assert_eq!(home, prelude);
     assert_eq!(
@@ -196,7 +232,9 @@ fn declared_facts_reachable_through_prelude_fallback() {
     );
     // Negative: a PRIVATE prelude binding is NOT resolved (I-1 filter honoured).
     assert!(
-        tf.env().resolve_terminal_entry_and_home_scoped(&user, "cow-op-private").is_none(),
+        tf.env()
+            .resolve_terminal_entry_and_home_scoped(&user, "cow-op-private")
+            .is_none(),
         "a private prelude entry must not leak through the fallback (I-1)"
     );
 }
@@ -226,7 +264,11 @@ fn absent_boundary_callee_reads_top() {
     // spec: §13.3 gap 4 — a callee absent from the cluster and unresolvable is a
     // boundary condition read as ⊤ (Owned/Retained) — never enqueued.
     // caller(x) = (external x)  where `external` is not in the universe.
-    let uni = vec![callable("caller", vec!["x"], call("external", vec![var("x")]))];
+    let uni = vec![callable(
+        "caller",
+        vec!["x"],
+        call("external", vec![var("x")]),
+    )];
     let c = run(uni);
     assert_eq!(mode(&c, "caller", 0), Mode::Owned);
     // `external` is not a cluster member ⇒ no summary published for it.
@@ -323,8 +365,14 @@ fn confinement_no_spurious_cross_for_parent_only_chain() {
         callable("sink", vec!["y"], boxed(vec![var("y")])),
     ];
     let c = run(uni);
-    assert!(!c.summaries[&Symbol::from("sink")].spark_op(0), "sink parent-strand only");
-    assert!(!c.summaries[&Symbol::from("caller")].spark_op(0), "caller parent-strand only");
+    assert!(
+        !c.summaries[&Symbol::from("sink")].spark_op(0),
+        "sink parent-strand only"
+    );
+    assert!(
+        !c.summaries[&Symbol::from("caller")].spark_op(0),
+        "caller parent-strand only"
+    );
 }
 
 // =================== Cap-exhaustion reset (blocker 4) ===================
@@ -341,7 +389,11 @@ fn cap_exhaustion_publishes_conservative_top() {
     let uni = vec![callable("f", vec!["p"], call("f", vec![var("p")]))];
     let c = compute_cluster_with_cap(&tf.env(), &module, &uni, 0);
     let s = &c.summaries[&Symbol::from("f")];
-    assert_eq!(s.param_mode(0), Mode::Owned, "capped param must be ⊤ Owned, not the normal Borrowed");
+    assert_eq!(
+        s.param_mode(0),
+        Mode::Owned,
+        "capped param must be ⊤ Owned, not the normal Borrowed"
+    );
     assert_eq!(s.result, cranelisp_types::ResultMode::Fresh);
     assert_eq!(s.param_flow(0), cranelisp_types::ParamFlow::Retained);
     assert!(s.spark_op(0), "capped spark_ops must be ⊤ (Crossing)");
@@ -368,8 +420,14 @@ fn cap_exhaustion_forces_conservative_site_facts() {
     )];
     let c = compute_cluster_with_cap(&tf.env(), &module, &uni, 0);
     let f = &c.facts[&Symbol::from("f")];
-    assert!(!f.escapes.is_empty(), "conservative escape facts populated under cap");
-    assert!(f.escapes.values().all(|v| *v), "all escape facts forced ⊤ (true) under cap");
+    assert!(
+        !f.escapes.is_empty(),
+        "conservative escape facts populated under cap"
+    );
+    assert!(
+        f.escapes.values().all(|v| *v),
+        "all escape facts forced ⊤ (true) under cap"
+    );
     assert!(f.provenance.is_empty(), "provenance dropped under cap");
 }
 
@@ -405,7 +463,10 @@ fn result_unique_chains_across_two_call_cluster() {
     ];
     let c = run(uni);
     assert!(runique(&c, "a"));
-    assert!(runique(&c, "b"), "b chains a.result_unique through the call");
+    assert!(
+        runique(&c, "b"),
+        "b chains a.result_unique through the call"
+    );
 }
 
 #[test]
@@ -413,7 +474,11 @@ fn result_unique_greatest_fixpoint_cycle_stays_true() {
     // spec: §14.2 (greatest fixpoint) — a mutual cycle both returning fresh-or-
     // each-other converges to `true` co-inductively (init-optimistic-true holds).
     // ping() = (if c (Box) (pong)); pong() = (ping).
-    let cond = MonoExpr::BoolLit { value: true, span: s(), ty: ConcreteType::Bool };
+    let cond = MonoExpr::BoolLit {
+        value: true,
+        span: s(),
+        ty: ConcreteType::Bool,
+    };
     let ping_body = MonoExpr::If {
         cond: Box::new(cond),
         then_branch: Box::new(boxed(vec![])),

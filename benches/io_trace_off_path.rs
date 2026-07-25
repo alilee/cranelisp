@@ -56,7 +56,7 @@
 // itself is `#[cfg(feature = "bench")]`-conditional so a plain `cargo bench`
 // without the feature is a clean no-op rather than a link error.)
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
 #[cfg(feature = "bench")]
 fn bench_off_path(c: &mut Criterion) {
@@ -97,7 +97,9 @@ fn bench_off_path(c: &mut Criterion) {
         b.iter(|| {
             let mut acc: u64 = black_box(0x9E3779B97F4A7C15);
             for _ in 0..8u32 {
-                acc = acc.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                acc = acc
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 acc ^= acc >> 33;
             }
             black_box(acc)

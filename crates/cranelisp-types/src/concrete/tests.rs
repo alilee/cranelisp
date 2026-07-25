@@ -24,7 +24,10 @@ fn scalars_convert() {
 
 #[test]
 fn bare_var_is_not_concrete() {
-    assert_eq!(ConcreteType::from_type(&Type::Var(7)), Err(NotConcrete::Var(7)));
+    assert_eq!(
+        ConcreteType::from_type(&Type::Var(7)),
+        Err(NotConcrete::Var(7))
+    );
 }
 
 #[test]

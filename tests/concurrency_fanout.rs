@@ -52,7 +52,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, CrOutput};
+use helpers::e2e::{CrOutput, Cranelisp};
 
 // =============================================================================
 // Tuning — matches the poll-carrier calibration in `concurrency_poll_capacity.rs`
@@ -98,7 +98,10 @@ fn run_prog(prog: &str) -> CrOutput {
 
 /// `--run` the program with an extra env overlay (e.g. the degree config).
 fn run_prog_env(prog: &str, env: &[(&str, &str)]) -> CrOutput {
-    let mut cr = Cranelisp::new().use_workspace_platforms().run("user.cl").user(prog);
+    let mut cr = Cranelisp::new()
+        .use_workspace_platforms()
+        .run("user.cl")
+        .user(prog);
     for (k, v) in env {
         cr = cr.env(k, v);
     }
@@ -402,7 +405,10 @@ fn fresh_select_in_continuation_rc_balanced() {
         out.stderr
     );
     let (allocs, frees) = rc_alloc_free_counts(&out.stderr);
-    assert!(allocs > 0, "expected the RC trace to record allocations; got 0");
+    assert!(
+        allocs > 0,
+        "expected the RC trace to record allocations; got 0"
+    );
     assert_eq!(
         allocs, frees,
         "a FRESH continuation-produced select node must be alloc/free balanced — the \
@@ -451,7 +457,10 @@ fn fresh_par_in_continuation_rc_balanced() {
         out.stderr
     );
     let (allocs, frees) = rc_alloc_free_counts(&out.stderr);
-    assert!(allocs > 0, "expected the RC trace to record allocations; got 0");
+    assert!(
+        allocs > 0,
+        "expected the RC trace to record allocations; got 0"
+    );
     assert_eq!(
         allocs, frees,
         "a FRESH continuation-produced par node must be alloc/free balanced — the branch \

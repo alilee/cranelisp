@@ -109,7 +109,10 @@ fn kc_n2_call_seam_entry_miss_hard_errors() {
         let mut targets: HashMap<Span, FQSymbol> = HashMap::new();
         targets.insert(
             callee_span,
-            FQSymbol { module: user.clone(), symbol: Symbol::from("ghost") },
+            FQSymbol {
+                module: user.clone(),
+                symbol: Symbol::from("ghost"),
+            },
         );
         st.insert(
             caller.name.clone(),

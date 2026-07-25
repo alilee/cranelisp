@@ -9,7 +9,10 @@ fn fqtn(module: &str, name: &str) -> FQTypeName {
 }
 
 fn field(name: &str, ty: Type) -> FieldInfo {
-    FieldInfo { name: Symbol::from(name), ty }
+    FieldInfo {
+        name: Symbol::from(name),
+        ty,
+    }
 }
 
 /// A sum ADT yields, per ctor in tag order: the canonical `Type.Ctor` Def then
@@ -18,7 +21,13 @@ fn field(name: &str, ty: Type) -> FieldInfo {
 fn sum_adt_entries_canonical_keys_aliases_and_typedef() {
     let fq = fqtn("m", "Maybe");
     let ctors = vec![
-        AdtCtorSpec::new(Symbol::from("Just"), vec![field("v", Type::Var(7))], None, false, 3),
+        AdtCtorSpec::new(
+            Symbol::from("Just"),
+            vec![field("v", Type::Var(7))],
+            None,
+            false,
+            3,
+        ),
         AdtCtorSpec::new(Symbol::from("Nothing"), vec![], None, false, 4),
     ];
     let entries = build_adt_entries::<()>(
@@ -31,15 +40,31 @@ fn sum_adt_entries_canonical_keys_aliases_and_typedef() {
     );
 
     let keys: Vec<&str> = entries.iter().map(|(k, _)| k.as_ref()).collect();
-    assert_eq!(keys, vec!["Maybe.Just", "Just", "Maybe.Nothing", "Nothing", "Maybe"]);
+    assert_eq!(
+        keys,
+        vec!["Maybe.Just", "Just", "Maybe.Nothing", "Nothing", "Maybe"]
+    );
 
     // Canonical Just: data ctor Def — tag 0, slot 3, quantified Fn scheme.
     let (_, just) = &entries[0];
-    let ModuleEntry::Def { kind, scheme, param_names, ast, .. } = just else {
+    let ModuleEntry::Def {
+        kind,
+        scheme,
+        param_names,
+        ast,
+        ..
+    } = just
+    else {
         panic!("canonical ctor key must hold the Def");
     };
-    let DefKind::Constructor { got_slot, tag, field_count, internal, type_def, .. } =
-        kind.as_ref()
+    let DefKind::Constructor {
+        got_slot,
+        tag,
+        field_count,
+        internal,
+        type_def,
+        ..
+    } = kind.as_ref()
     else {
         panic!("ctor Def must be DefKind::Constructor");
     };
@@ -49,7 +74,10 @@ fn sum_adt_entries_canonical_keys_aliases_and_typedef() {
     assert!(matches!(&scheme.ty, Type::Fn(params, _) if params.len() == 1));
     assert_eq!(param_names.as_slice(), &[Symbol::from("v")]);
     // Synthesised ConstrADT body.
-    let body = &ast.as_ref().expect("ctor Def carries a synthesised ast").body;
+    let body = &ast
+        .as_ref()
+        .expect("ctor Def carries a synthesised ast")
+        .body;
     assert!(matches!(body, Expr::ConstrADT { tag: 0, fields, .. } if fields.len() == 1));
 
     // Bare alias points at the canonical key in the type's home module.
@@ -63,8 +91,13 @@ fn sum_adt_entries_canonical_keys_aliases_and_typedef() {
 
     // Nullary Nothing: bare-ADT scheme, still quantified, tag 1.
     let (_, nothing) = &entries[2];
-    let ModuleEntry::Def { kind, scheme, .. } = nothing else { panic!("Def expected") };
-    let DefKind::Constructor { tag, field_count, .. } = kind.as_ref() else {
+    let ModuleEntry::Def { kind, scheme, .. } = nothing else {
+        panic!("Def expected")
+    };
+    let DefKind::Constructor {
+        tag, field_count, ..
+    } = kind.as_ref()
+    else {
         panic!("Constructor expected")
     };
     assert_eq!((*tag, *field_count), (1, 0));
@@ -73,8 +106,16 @@ fn sum_adt_entries_canonical_keys_aliases_and_typedef() {
 
     // TypeDef last: full ctor list + the deftype docstring.
     let (_, td) = &entries[4];
-    let ModuleEntry::TypeDef { info, docstring, .. } = td else { panic!("TypeDef expected") };
-    assert_eq!(info.constructors, vec![Symbol::from("Just"), Symbol::from("Nothing")]);
+    let ModuleEntry::TypeDef {
+        info, docstring, ..
+    } = td
+    else {
+        panic!("TypeDef expected")
+    };
+    assert_eq!(
+        info.constructors,
+        vec![Symbol::from("Just"), Symbol::from("Nothing")]
+    );
     assert_eq!(info.type_params, vec![Symbol::from("a")]);
     assert_eq!(docstring.as_deref(), Some("maybe a value"));
 }
@@ -101,20 +142,42 @@ fn product_adt_single_dual_facet_entry_with_docstring_fallback() {
         Visibility::Public,
     );
 
-    assert_eq!(entries.len(), 1, "product: one dual-facet entry, no alias, no TypeDef");
+    assert_eq!(
+        entries.len(),
+        1,
+        "product: one dual-facet entry, no alias, no TypeDef"
+    );
     let (key, entry) = &entries[0];
     assert_eq!(key.as_ref(), "Pair");
-    let ModuleEntry::Def { kind, docstring, param_names, .. } = entry else {
+    let ModuleEntry::Def {
+        kind,
+        docstring,
+        param_names,
+        ..
+    } = entry
+    else {
         panic!("Def expected")
     };
-    let DefKind::Constructor { got_slot, type_def, .. } = kind.as_ref() else {
+    let DefKind::Constructor {
+        got_slot, type_def, ..
+    } = kind.as_ref()
+    else {
         panic!("Constructor expected")
     };
     assert_eq!(*got_slot, 9);
-    let facet = type_def.as_ref().expect("product ctor carries the type facet");
+    let facet = type_def
+        .as_ref()
+        .expect("product ctor carries the type facet");
     assert_eq!(facet.constructors, vec![Symbol::from("Pair")]);
-    assert_eq!(docstring.as_deref(), Some("a pair"), "deftype docstring falls back to ctor");
-    assert_eq!(param_names.as_slice(), &[Symbol::from("fst"), Symbol::from("snd")]);
+    assert_eq!(
+        docstring.as_deref(),
+        Some("a pair"),
+        "deftype docstring falls back to ctor"
+    );
+    assert_eq!(
+        param_names.as_slice(),
+        &[Symbol::from("fst"), Symbol::from("snd")]
+    );
 }
 
 /// The `internal` discriminator rides each ctor's `DefKind::Constructor`
@@ -123,11 +186,29 @@ fn product_adt_single_dual_facet_entry_with_docstring_fallback() {
 fn internal_flag_rides_the_ctor_kind() {
     let fq = fqtn("primitives", "IO");
     let ctors = vec![
-        AdtCtorSpec::new(Symbol::from("Pure"), vec![field("v", Type::Var(1))], None, true, 0),
-        AdtCtorSpec::new(Symbol::from("Effect"), vec![field("e", Type::Var(1))], None, true, 1),
+        AdtCtorSpec::new(
+            Symbol::from("Pure"),
+            vec![field("v", Type::Var(1))],
+            None,
+            true,
+            0,
+        ),
+        AdtCtorSpec::new(
+            Symbol::from("Effect"),
+            vec![field("e", Type::Var(1))],
+            None,
+            true,
+            1,
+        ),
     ];
-    let entries =
-        build_adt_entries::<()>(&fq, &[Symbol::from("t")], &[1], None, &ctors, Visibility::Public);
+    let entries = build_adt_entries::<()>(
+        &fq,
+        &[Symbol::from("t")],
+        &[1],
+        None,
+        &ctors,
+        Visibility::Public,
+    );
     for (key, entry) in &entries {
         if let ModuleEntry::Def { kind, .. } = entry {
             let DefKind::Constructor { internal, .. } = kind.as_ref() else {
@@ -149,7 +230,9 @@ fn monomorphic_sum_schemes_are_unquantified() {
     ];
     let entries = build_adt_entries::<()>(&fq, &[], &[], None, &ctors, Visibility::Public);
     let (_, red) = &entries[0];
-    let ModuleEntry::Def { scheme, .. } = red else { panic!("Def expected") };
+    let ModuleEntry::Def { scheme, .. } = red else {
+        panic!("Def expected")
+    };
     assert!(scheme.type_vars.is_empty());
     assert!(matches!(&scheme.ty, Type::ADT(_, args) if args.is_empty()));
 }

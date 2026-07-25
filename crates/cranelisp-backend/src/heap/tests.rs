@@ -40,7 +40,10 @@ fn test_compute_last_uses() {
 
     let x = Symbol::from("x");
     let var = |name: Symbol, span: Span| MonoExpr::Var {
-        resolution: cranelisp_types::VarRef::Local { binder: name.clone(), binding_span: cranelisp_types::Span::SYNTHETIC },
+        resolution: cranelisp_types::VarRef::Local {
+            binder: name.clone(),
+            binding_span: cranelisp_types::Span::SYNTHETIC,
+        },
         name,
         span,
         resolved_call: None,
@@ -85,7 +88,10 @@ fn last_use_direct_arg_outlives_nested_sibling_arg() {
 
     let v = Symbol::from("v");
     let var = |name: Symbol, span: Span, ty: ConcreteType| MonoExpr::Var {
-        resolution: cranelisp_types::VarRef::Local { binder: name.clone(), binding_span: cranelisp_types::Span::SYNTHETIC },
+        resolution: cranelisp_types::VarRef::Local {
+            binder: name.clone(),
+            binding_span: cranelisp_types::Span::SYNTHETIC,
+        },
         name,
         span,
         resolved_call: None,
@@ -100,7 +106,11 @@ fn last_use_direct_arg_outlives_nested_sibling_arg() {
     //   arg2   = (h (push v))           v nested deep, occurrence #2, span 10..11
     let inner_push = MonoExpr::Apply {
         dispatch: cranelisp_types::ApplyRef::ViaCallee,
-        callee: Box::new(var(Symbol::from("vec-push"), Span::new(8, 9), vec_ty.clone())),
+        callee: Box::new(var(
+            Symbol::from("vec-push"),
+            Span::new(8, 9),
+            vec_ty.clone(),
+        )),
         args: vec![var(v.clone(), Span::new(10, 11), vec_ty.clone())],
         span: Span::new(7, 12),
         resolved_call: None,
@@ -186,24 +196,32 @@ fn pure_ssa_alias_use_extends_root_live_range() {
         vec![ConcreteType::Int],
     );
     let var = |name: Symbol, span: Span, ty: ConcreteType| MonoExpr::Var {
-        resolution: cranelisp_types::VarRef::Local { binder: name.clone(), binding_span: cranelisp_types::Span::SYNTHETIC },
+        resolution: cranelisp_types::VarRef::Local {
+            binder: name.clone(),
+            binding_span: cranelisp_types::Span::SYNTHETIC,
+        },
         name,
         span,
         resolved_call: None,
         ty,
     };
-    let apply = |callee: Symbol, args: Vec<MonoExpr>, span: Span, ty: ConcreteType| MonoExpr::Apply {
-        dispatch: cranelisp_types::ApplyRef::ViaCallee,
-        callee: Box::new(var(callee, Span::new(span.start, span.start + 1), ty.clone())),
-        args,
-        span,
-        resolved_call: None,
-        ty,
-        confined: None,
-        escapes: None,
-        provenance: None,
-        unique_static: None,
-    };
+    let apply =
+        |callee: Symbol, args: Vec<MonoExpr>, span: Span, ty: ConcreteType| MonoExpr::Apply {
+            dispatch: cranelisp_types::ApplyRef::ViaCallee,
+            callee: Box::new(var(
+                callee,
+                Span::new(span.start, span.start + 1),
+                ty.clone(),
+            )),
+            args,
+            span,
+            resolved_call: None,
+            ty,
+            confined: None,
+            escapes: None,
+            provenance: None,
+            unique_static: None,
+        };
 
     // (let [v [10 20 30]                        ; VecLit
     //       w v                                 ; pure SSA alias, v use @ (30,31)
@@ -221,8 +239,16 @@ fn pure_ssa_alias_use_extends_root_live_range() {
         Symbol::from("vec-set"),
         vec![
             var(v.clone(), Span::new(40, 41), vec_ty.clone()),
-            MonoExpr::IntLit { value: 0, span: Span::new(42, 43), ty: ConcreteType::Int },
-            MonoExpr::IntLit { value: 99, span: Span::new(44, 45), ty: ConcreteType::Int },
+            MonoExpr::IntLit {
+                value: 0,
+                span: Span::new(42, 43),
+                ty: ConcreteType::Int,
+            },
+            MonoExpr::IntLit {
+                value: 99,
+                span: Span::new(44, 45),
+                ty: ConcreteType::Int,
+            },
         ],
         Span::new(39, 46),
         vec_ty.clone(),
@@ -234,7 +260,11 @@ fn pure_ssa_alias_use_extends_root_live_range() {
                 Symbol::from("vec-get"),
                 vec![
                     var(w.clone(), Span::new(60, 61), vec_ty.clone()),
-                    MonoExpr::IntLit { value: 0, span: Span::new(62, 63), ty: ConcreteType::Int },
+                    MonoExpr::IntLit {
+                        value: 0,
+                        span: Span::new(62, 63),
+                        ty: ConcreteType::Int,
+                    },
                 ],
                 Span::new(59, 64),
                 ConcreteType::Int,
@@ -243,7 +273,11 @@ fn pure_ssa_alias_use_extends_root_live_range() {
                 Symbol::from("vec-get"),
                 vec![
                     var(Symbol::from("v2"), Span::new(70, 71), vec_ty.clone()),
-                    MonoExpr::IntLit { value: 0, span: Span::new(72, 73), ty: ConcreteType::Int },
+                    MonoExpr::IntLit {
+                        value: 0,
+                        span: Span::new(72, 73),
+                        ty: ConcreteType::Int,
+                    },
                 ],
                 Span::new(69, 74),
                 ConcreteType::Int,
@@ -333,9 +367,9 @@ fn s99_emit_rc_inc_default_is_atomic_rmw_no_stat() {
 #[cfg(test)]
 mod rc_atomicity_b33_tests {
     use crate::heap::{
-        self, emit_rc_inc, emit_rc_inc_atomicity, emit_rc_inc_guarded,
-        emit_rc_inc_guarded_atomicity, emit_rc_dec, emit_rc_dec_guarded,
-        emit_rc_dec_guarded_atomicity, rc_emit_counts, RcAtomicity,
+        self, RcAtomicity, emit_rc_dec, emit_rc_dec_guarded, emit_rc_dec_guarded_atomicity,
+        emit_rc_inc, emit_rc_inc_atomicity, emit_rc_inc_guarded, emit_rc_inc_guarded_atomicity,
+        rc_emit_counts,
     };
     use crate::jit::Jit;
     use cranelift::prelude::*;
@@ -344,7 +378,9 @@ mod rc_atomicity_b33_tests {
     /// Build a one-arg function, run `emit` (given builder + module + the arg
     /// pointer), and return the CLIF text. The blessed harness mirror of
     /// `s99_emit_rc_inc_default_is_atomic_rmw_no_stat`.
-    fn clif_of(emit: impl FnOnce(&mut FunctionBuilder, &mut cranelift_jit::JITModule, Value)) -> String {
+    fn clif_of(
+        emit: impl FnOnce(&mut FunctionBuilder, &mut cranelift_jit::JITModule, Value),
+    ) -> String {
         let mut jit = Jit::new_with_symbols(&[]).expect("jit construction");
         let module = jit.jit_module();
         let mut ctx = module.make_context();
@@ -373,10 +409,16 @@ mod rc_atomicity_b33_tests {
             !clif.contains("atomic_rmw"),
             "non-atomic arm must not emit atomic_rmw:\n{clif}"
         );
-        assert!(clif.contains("load.i64"), "non-atomic arm must load the count:\n{clif}");
+        assert!(
+            clif.contains("load.i64"),
+            "non-atomic arm must load the count:\n{clif}"
+        );
         let op = if is_dec { "isub" } else { "iadd" };
         assert!(clif.contains(op), "non-atomic {op} arm missing:\n{clif}");
-        assert!(clif.contains("store"), "non-atomic arm must store the count:\n{clif}");
+        assert!(
+            clif.contains("store"),
+            "non-atomic arm must store the count:\n{clif}"
+        );
     }
 
     fn asserts_atomic(clif: &str) {
@@ -408,14 +450,18 @@ mod rc_atomicity_b33_tests {
         asserts_atomic(&atomic);
         // else-arm identity (§2.2): the plain helper == the Atomic-parameterised one.
         let plain = clif_of(|b, m, p| emit_rc_inc(b, m, p));
-        assert_eq!(plain, atomic, "emit_rc_inc must equal emit_rc_inc_atomicity(Atomic) — §2.2 else-arm identity");
+        assert_eq!(
+            plain, atomic,
+            "emit_rc_inc must equal emit_rc_inc_atomicity(Atomic) — §2.2 else-arm identity"
+        );
     }
 
     // --- emit_rc_inc_guarded ---
     #[test]
     fn inc_guarded_confined_true_emits_nonatomic() {
         // spec: design/backend/ownership-codegen.md §5.2 — guarded inc gated per-site
-        let clif = clif_of(|b, m, p| emit_rc_inc_guarded_atomicity(b, m, p, RcAtomicity::NonAtomic));
+        let clif =
+            clif_of(|b, m, p| emit_rc_inc_guarded_atomicity(b, m, p, RcAtomicity::NonAtomic));
         asserts_nonatomic(&clif, false);
     }
     #[test]
@@ -436,7 +482,10 @@ mod rc_atomicity_b33_tests {
             emit_rc_dec_guarded_atomicity(b, m, p, d, None, false, RcAtomicity::NonAtomic);
         });
         asserts_nonatomic(&clif, true);
-        assert!(clif.contains("fence"), "non-atomic dec must keep the free-path fence:\n{clif}");
+        assert!(
+            clif.contains("fence"),
+            "non-atomic dec must keep the free-path fence:\n{clif}"
+        );
     }
     #[test]
     fn dec_atomic_is_else_arm_identity() {
@@ -483,12 +532,20 @@ mod rc_atomicity_b33_tests {
         let _ = clif_of(|b, _m, _p| {
             let _ = emit_stack_alloc(b, crate::heap::HeapAdt::payload_size(2) as i64);
         });
-        assert_eq!(stack_slot_hits(), h0 + 1, "one stack alloc must advance the counter");
+        assert_eq!(
+            stack_slot_hits(),
+            h0 + 1,
+            "one stack alloc must advance the counter"
+        );
         let _ = clif_of(|b, _m, _p| {
             let _ = emit_stack_alloc(b, crate::heap::HeapAdt::payload_size(1) as i64);
             let _ = emit_stack_alloc(b, crate::heap::HeapAdt::payload_size(3) as i64);
         });
-        assert_eq!(stack_slot_hits(), h0 + 3, "two more stack allocs must advance by 2");
+        assert_eq!(
+            stack_slot_hits(),
+            h0 + 3,
+            "two more stack allocs must advance by 2"
+        );
     }
 
     // --- the codegen-time non-atomic-op-share counter (h2 backend half) ---
@@ -500,12 +557,19 @@ mod rc_atomicity_b33_tests {
         let _ = clif_of(|b, m, p| emit_rc_inc_atomicity(b, m, p, RcAtomicity::Atomic));
         let (na1, tot1) = rc_emit_counts();
         assert_eq!(tot1, tot0 + 1, "total RC-emit count must advance");
-        assert_eq!(na1, na0, "an Atomic emit must NOT advance the non-atomic tally");
+        assert_eq!(
+            na1, na0,
+            "an Atomic emit must NOT advance the non-atomic tally"
+        );
         // One non-atomic inc: both advance.
         let _ = clif_of(|b, m, p| emit_rc_inc_atomicity(b, m, p, RcAtomicity::NonAtomic));
         let (na2, tot2) = rc_emit_counts();
         assert_eq!(tot2, tot1 + 1);
-        assert_eq!(na2, na1 + 1, "a NonAtomic emit must advance the non-atomic tally");
+        assert_eq!(
+            na2,
+            na1 + 1,
+            "a NonAtomic emit must advance the non-atomic tally"
+        );
         let _ = heap::use_nonatomic_arm; // keep the shared decision point referenced
     }
 }
@@ -521,9 +585,9 @@ mod rc_atomicity_b33_tests {
 // ===========================================================================
 #[cfg(test)]
 mod stack_slot_b34_tests {
-    use crate::heap::{emit_stack_alloc, HeapAdt, IMMORTAL_RC};
-    use cranelisp_types::HeapHeader;
+    use crate::heap::{HeapAdt, IMMORTAL_RC, emit_stack_alloc};
     use cranelift::prelude::*;
+    use cranelisp_types::HeapHeader;
 
     /// Build a trivial function, run `emit_stack_alloc` in it, return the CLIF.
     fn clif_of(emit: impl FnOnce(&mut FunctionBuilder) -> Value) -> String {
@@ -545,9 +609,18 @@ mod stack_slot_b34_tests {
     #[test]
     fn emits_explicit_slot_and_stack_addr_not_a_call() {
         let clif = clif_of(|b| emit_stack_alloc(b, HeapAdt::payload_size(2) as i64));
-        assert!(clif.contains("explicit_slot"), "must declare an explicit stack slot:\n{clif}");
-        assert!(clif.contains("stack_addr"), "must take the slot's address:\n{clif}");
-        assert!(!clif.contains("call fn"), "stack alloc must NOT call runtime/alloc:\n{clif}");
+        assert!(
+            clif.contains("explicit_slot"),
+            "must declare an explicit stack slot:\n{clif}"
+        );
+        assert!(
+            clif.contains("stack_addr"),
+            "must take the slot's address:\n{clif}"
+        );
+        assert!(
+            !clif.contains("call fn"),
+            "stack alloc must NOT call runtime/alloc:\n{clif}"
+        );
     }
 
     // spec: design/backend/ownership-codegen.md §4.1 — slot size = header + payload
@@ -557,7 +630,10 @@ mod stack_slot_b34_tests {
         let total = HeapHeader::SIZE + HeapAdt::payload_size(2);
         assert_eq!(total, 40);
         let clif = clif_of(|b| emit_stack_alloc(b, HeapAdt::payload_size(2) as i64));
-        assert!(clif.contains("explicit_slot 40"), "slot must be header+payload bytes:\n{clif}");
+        assert!(
+            clif.contains("explicit_slot 40"),
+            "slot must be header+payload bytes:\n{clif}"
+        );
     }
 
     // spec: design/backend/ownership-codegen.md §4.2 — immortal-RC sentinel header
@@ -565,7 +641,10 @@ mod stack_slot_b34_tests {
     fn header_initialises_alloc_size_and_immortal_rc() {
         let clif = clif_of(|b| emit_stack_alloc(b, HeapAdt::payload_size(2) as i64));
         // alloc_size (total=40) stored at offset 0; IMMORTAL_RC stored at +8.
-        assert!(clif.contains("iconst.i64 40"), "must iconst the total size (40):\n{clif}");
+        assert!(
+            clif.contains("iconst.i64 40"),
+            "must iconst the total size (40):\n{clif}"
+        );
         // IMMORTAL_RC = 1<<62; Cranelift prints it as a hex immediate.
         assert_eq!(IMMORTAL_RC, 1i64 << 62);
         assert!(

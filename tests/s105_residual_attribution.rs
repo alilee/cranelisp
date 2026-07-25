@@ -52,17 +52,32 @@ use helpers::e2e::Cranelisp;
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 fn run_serial(src: &str) -> helpers::e2e::CrOutput {
-    Cranelisp::new().run("user.cl").user(src).env("CRANELISP_NO_LENIENT", "1").output()
+    Cranelisp::new()
+        .run("user.cl")
+        .user(src)
+        .env("CRANELISP_NO_LENIENT", "1")
+        .output()
 }
 
 fn run_parallel(src: &str) -> helpers::e2e::CrOutput {
-    Cranelisp::new().run("user.cl").user(src).env_remove("CRANELISP_NO_LENIENT").output()
+    Cranelisp::new()
+        .run("user.cl")
+        .user(src)
+        .env_remove("CRANELISP_NO_LENIENT")
+        .output()
 }
 
 /// Run with `CRANELISP_RC_STATS=1` at a chosen lenient polarity; return capture.
 fn run_rc_stats(src: &str, serial: bool) -> helpers::e2e::CrOutput {
-    let c = Cranelisp::new().run("user.cl").user(src).env("CRANELISP_RC_STATS", "1");
-    let c = if serial { c.env("CRANELISP_NO_LENIENT", "1") } else { c.env_remove("CRANELISP_NO_LENIENT") };
+    let c = Cranelisp::new()
+        .run("user.cl")
+        .user(src)
+        .env("CRANELISP_RC_STATS", "1");
+    let c = if serial {
+        c.env("CRANELISP_NO_LENIENT", "1")
+    } else {
+        c.env_remove("CRANELISP_NO_LENIENT")
+    };
     c.output()
 }
 
@@ -141,7 +156,10 @@ const F3_SHARED_READ: &str = "(import [primitives [*]])\n\
 fn f7_alloc_parallel_serial_exit_match() {
     let s = run_serial(F7_MINI).status.code();
     let p = run_parallel(F7_MINI).status.code();
-    assert_eq!(s, p, "F7 parallel must equal serial (lenient eval is transparent)");
+    assert_eq!(
+        s, p,
+        "F7 parallel must equal serial (lenient eval is transparent)"
+    );
     assert!(s.is_some(), "F7 must exit cleanly");
 }
 

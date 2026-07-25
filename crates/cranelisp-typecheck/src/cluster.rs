@@ -27,9 +27,7 @@ use std::cell::RefCell;
 
 use dashmap::DashMap;
 
-use cranelisp_types::{
-    CodeStore, LinkerStore, ModuleFullPath, SymbolTable, View,
-};
+use cranelisp_types::{CodeStore, LinkerStore, ModuleFullPath, SymbolTable, View};
 
 /// The cluster-vs-committed dispatch choke point. See module docs.
 #[non_exhaustive]
@@ -61,7 +59,10 @@ impl<'a, C: CodeStore, L: LinkerStore> SymbolTableAccess<'a, C, L> {
         modules: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>,
         current_module: ModuleFullPath,
     ) -> Self {
-        SymbolTableAccess::Live { modules, current_module }
+        SymbolTableAccess::Live {
+            modules,
+            current_module,
+        }
     }
 
     /// Construct a `Cluster` mode SymbolTableAccess. The orchestrator owns the
@@ -101,7 +102,10 @@ impl<'a, C: CodeStore, L: LinkerStore> SymbolTableAccess<'a, C, L> {
     ///   `View::single(live)`. Guard holds a DashMap per-shard read guard.
     pub fn current_symbol_table<'b>(&'b self) -> SymbolTableRead<'b, 'a, C, L> {
         match self {
-            SymbolTableAccess::Live { modules, current_module } => {
+            SymbolTableAccess::Live {
+                modules,
+                current_module,
+            } => {
                 let guard = modules
                     .get(current_module)
                     .unwrap_or_else(|| unreachable!(
@@ -110,14 +114,21 @@ impl<'a, C: CodeStore, L: LinkerStore> SymbolTableAccess<'a, C, L> {
                     ));
                 SymbolTableRead::Live(guard)
             }
-            SymbolTableAccess::Cluster { modules, staging, current_module } => {
+            SymbolTableAccess::Cluster {
+                modules,
+                staging,
+                current_module,
+            } => {
                 let guard = modules
                     .get(current_module)
                     .unwrap_or_else(|| unreachable!(
                         "SymbolTableAccess::current_symbol_table: current module '{}' not present in live modules (cluster precondition)",
                         current_module
                     ));
-                SymbolTableRead::Cluster { staging: staging.borrow(), live: guard }
+                SymbolTableRead::Cluster {
+                    staging: staging.borrow(),
+                    live: guard,
+                }
             }
         }
     }
@@ -132,7 +143,10 @@ impl<'a, C: CodeStore, L: LinkerStore> SymbolTableAccess<'a, C, L> {
     ///   per-module write guard for the per-module live table.
     pub fn current_symbol_table_mut<'b>(&'b mut self) -> SymbolTableMut<'b, 'a, C, L> {
         match self {
-            SymbolTableAccess::Live { modules, current_module } => {
+            SymbolTableAccess::Live {
+                modules,
+                current_module,
+            } => {
                 let guard = modules
                     .get_mut(current_module)
                     .unwrap_or_else(|| unreachable!(
@@ -146,7 +160,6 @@ impl<'a, C: CodeStore, L: LinkerStore> SymbolTableAccess<'a, C, L> {
             }
         }
     }
-
 }
 
 /// Read-side borrow guard returned by both `SymbolTableAccess::current_symbol_table()`

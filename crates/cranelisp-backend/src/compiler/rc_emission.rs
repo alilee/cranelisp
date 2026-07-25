@@ -104,7 +104,6 @@ where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
-
     /// Emit inline drop glue for an ADT: dec each AlwaysHeap field.
     ///
     /// This is a temporary measure until proper drop glue functions are
@@ -192,14 +191,11 @@ where
             .builder
             .ins()
             .iconst(types::I64, heap::NULLARY_THRESHOLD_I64);
-        let is_heap = self.builder.ins().icmp(
-            IntCC::UnsignedGreaterThanOrEqual,
-            adt_val,
-            threshold,
-        );
-        self.builder
-            .ins()
-            .brif(is_heap, glue_block, &[], cont, &[]);
+        let is_heap =
+            self.builder
+                .ins()
+                .icmp(IntCC::UnsignedGreaterThanOrEqual, adt_val, threshold);
+        self.builder.ins().brif(is_heap, glue_block, &[], cont, &[]);
 
         self.builder.switch_to_block(glue_block);
         self.builder.seal_block(glue_block);
@@ -226,11 +222,7 @@ where
         } else {
             // Multiple data constructors: load the tag and branch to the
             // correct field-dec block for each variant.
-            let heap_tag = heap::heap_load(
-                &mut self.builder,
-                adt_val,
-                HeapAdt::TAG_OFFSET,
-            );
+            let heap_tag = heap::heap_load(&mut self.builder, adt_val, HeapAdt::TAG_OFFSET);
 
             let done_block = self.builder.create_block();
 
@@ -245,7 +237,9 @@ where
 
                 let tag_val = self.builder.ins().iconst(types::I64, ctor.tag as i64);
                 let cmp = self.builder.ins().icmp(IntCC::Equal, heap_tag, tag_val);
-                self.builder.ins().brif(cmp, ctor_block, &[], next_block, &[]);
+                self.builder
+                    .ins()
+                    .brif(cmp, ctor_block, &[], next_block, &[]);
 
                 self.builder.switch_to_block(ctor_block);
                 self.builder.seal_block(ctor_block);
@@ -287,11 +281,8 @@ where
             let category = signature_heap_category(&resolved_ty, Some(self.ctx.symbol_tables));
             match category {
                 HeapCategory::AlwaysHeap | HeapCategory::Mixed => {
-                    let field_val = heap::heap_load(
-                        &mut self.builder,
-                        adt_val,
-                        HeapAdt::field_offset(i),
-                    );
+                    let field_val =
+                        heap::heap_load(&mut self.builder, adt_val, HeapAdt::field_offset(i));
                     self.emit_typed_rc_dec(
                         field_val,
                         &resolved_ty,
@@ -420,7 +411,9 @@ where
                 if self.is_borrowed(name) {
                     return false;
                 }
-                self.variable_types.get(name).is_some_and(|ty| self.is_heap_type(ty))
+                self.variable_types
+                    .get(name)
+                    .is_some_and(|ty| self.is_heap_type(ty))
             })
         });
         if !has_cleanup_targets {
@@ -439,7 +432,10 @@ where
             }
             HeapCategory::Mixed => {
                 heap::emit_rc_inc_guarded_atomicity(
-                    &mut self.builder, self.module, body_val, atomicity,
+                    &mut self.builder,
+                    self.module,
+                    body_val,
+                    atomicity,
                 );
             }
             HeapCategory::NeverHeap | HeapCategory::Value => {}
@@ -484,8 +480,8 @@ where
         dealloc: FuncId,
         needs_guard: bool,
     ) {
-        use cranelisp_types::HeapHeader;
         use cranelift_codegen::ir::AtomicRmwOp;
+        use cranelisp_types::HeapHeader;
 
         // TRANSITIONAL WAVE-4/R15 SAFETY BOUND. This guard belongs only to the
         // still-live legacy inline consumer. Wave 4 migrates that consumer to
@@ -496,9 +492,7 @@ where
         const MAX_DROP_GLUE_DEPTH: u32 = 4;
         if self.drop_glue_depth >= MAX_DROP_GLUE_DEPTH {
             if needs_guard {
-                heap::emit_rc_dec_guarded(
-                    &mut self.builder, self.module, val, dealloc, None, true,
-                );
+                heap::emit_rc_dec_guarded(&mut self.builder, self.module, val, dealloc, None, true);
             } else {
                 heap::emit_rc_dec(&mut self.builder, self.module, val, dealloc, None);
             }
@@ -514,11 +508,10 @@ where
                 .builder
                 .ins()
                 .iconst(types::I64, heap::NULLARY_THRESHOLD_I64);
-            let is_tag = self.builder.ins().icmp(
-                IntCC::UnsignedLessThan,
-                val,
-                threshold,
-            );
+            let is_tag = self
+                .builder
+                .ins()
+                .icmp(IntCC::UnsignedLessThan, val, threshold);
             let dec_block = self.builder.create_block();
             self.builder
                 .ins()
@@ -558,9 +551,7 @@ where
         self.emit_inline_drop_glue(val, ty, dealloc, false);
 
         // Call runtime/dealloc.
-        let dealloc_ref = self
-            .module
-            .declare_func_in_func(dealloc, self.builder.func);
+        let dealloc_ref = self.module.declare_func_in_func(dealloc, self.builder.func);
         self.builder.ins().call(dealloc_ref, &[val]);
         self.builder.ins().jump(cont_block, &[]);
 
@@ -569,7 +560,6 @@ where
         self.builder.seal_block(cont_block);
 
         self.drop_glue_depth -= 1;
-
     }
 }
 
@@ -638,10 +628,9 @@ pub(crate) fn build_adt_type_substitution(
 /// Collect all unique Var ids from a type, in order of first appearance.
 pub(crate) fn collect_var_ids_from_type(ty: &Type, ids: &mut Vec<cranelisp_types::TypeId>) {
     match ty {
-        Type::Var(id)
-            if !ids.contains(id) => {
-                ids.push(*id);
-            }
+        Type::Var(id) if !ids.contains(id) => {
+            ids.push(*id);
+        }
         Type::ADT(_, args) => {
             for a in args {
                 collect_var_ids_from_type(a, ids);
@@ -663,15 +652,19 @@ pub(crate) fn substitute_type_inline(
     subst: &std::collections::HashMap<cranelisp_types::TypeId, Type>,
 ) -> Type {
     match ty {
-        Type::Var(id) => {
-            subst.get(id).cloned().unwrap_or_else(|| ty.clone())
-        }
+        Type::Var(id) => subst.get(id).cloned().unwrap_or_else(|| ty.clone()),
         Type::ADT(name, args) => {
-            let new_args = args.iter().map(|a| substitute_type_inline(a, subst)).collect();
+            let new_args = args
+                .iter()
+                .map(|a| substitute_type_inline(a, subst))
+                .collect();
             Type::ADT(name.clone(), new_args)
         }
         Type::Fn(params, ret) => {
-            let new_params = params.iter().map(|p| substitute_type_inline(p, subst)).collect();
+            let new_params = params
+                .iter()
+                .map(|p| substitute_type_inline(p, subst))
+                .collect();
             let new_ret = Box::new(substitute_type_inline(ret, subst));
             Type::Fn(new_params, new_ret)
         }
@@ -686,9 +679,9 @@ pub(crate) fn substitute_type_inline(
 /// types from use sites when the defn-level type is not available.
 pub(crate) fn find_var_type_in_expr(expr: &MonoExpr, name: &Symbol) -> Option<Type> {
     match expr {
-        MonoExpr::Var { name: var_name, ty, .. } if var_name == name => {
-            Some(ty.to_type())
-        }
+        MonoExpr::Var {
+            name: var_name, ty, ..
+        } if var_name == name => Some(ty.to_type()),
         MonoExpr::Let { bindings, body, .. } => {
             for (_, val) in bindings {
                 if let Some(ty) = find_var_type_in_expr(val, name) {
@@ -697,20 +690,23 @@ pub(crate) fn find_var_type_in_expr(expr: &MonoExpr, name: &Symbol) -> Option<Ty
             }
             find_var_type_in_expr(body, name)
         }
-        MonoExpr::If { cond, then_branch, else_branch, .. } => {
-            find_var_type_in_expr(cond, name)
-                .or_else(|| find_var_type_in_expr(then_branch, name))
-                .or_else(|| find_var_type_in_expr(else_branch, name))
-        }
+        MonoExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => find_var_type_in_expr(cond, name)
+            .or_else(|| find_var_type_in_expr(then_branch, name))
+            .or_else(|| find_var_type_in_expr(else_branch, name)),
         MonoExpr::Lambda { body, .. } => find_var_type_in_expr(body, name),
-        MonoExpr::Apply { callee, args, .. } => {
-            find_var_type_in_expr(callee, name)
-                .or_else(|| args.iter().find_map(|a| find_var_type_in_expr(a, name)))
-        }
-        MonoExpr::Match { scrutinee, arms, .. } => {
-            find_var_type_in_expr(scrutinee, name)
-                .or_else(|| arms.iter().find_map(|arm| find_var_type_in_expr(&arm.body, name)))
-        }
+        MonoExpr::Apply { callee, args, .. } => find_var_type_in_expr(callee, name)
+            .or_else(|| args.iter().find_map(|a| find_var_type_in_expr(a, name))),
+        MonoExpr::Match {
+            scrutinee, arms, ..
+        } => find_var_type_in_expr(scrutinee, name).or_else(|| {
+            arms.iter()
+                .find_map(|arm| find_var_type_in_expr(&arm.body, name))
+        }),
         MonoExpr::VecLit { elements, .. } => {
             elements.iter().find_map(|e| find_var_type_in_expr(e, name))
         }
@@ -732,10 +728,12 @@ pub(crate) fn find_var_type_in_expr(expr: &MonoExpr, name: &Symbol) -> Option<Ty
         // it → double-free of a borrowed heap value owned by an enclosing scope
         // (FIXME 0494 bug #2, the size-32 `Connection` stale RC-dec). Descending
         // both branches restores the inc that balances the drop-glue dec.
-        MonoExpr::LaunchContinue { launched, continuation, .. } => {
-            find_var_type_in_expr(launched, name)
-                .or_else(|| find_var_type_in_expr(continuation, name))
-        }
+        MonoExpr::LaunchContinue {
+            launched,
+            continuation,
+            ..
+        } => find_var_type_in_expr(launched, name)
+            .or_else(|| find_var_type_in_expr(continuation, name)),
         MonoExpr::ConstrADT { fields, .. } => {
             fields.iter().find_map(|f| find_var_type_in_expr(f, name))
         }
@@ -850,7 +848,10 @@ mod find_var_type_tests {
     fn find_var_type_descends_into_launchcontinue_launched_subtree() {
         // `(launch (read-conn conn) <continuation>)` — `conn` (a heap ADT) is used
         // ONLY inside the launched (detached) branch, never in the continuation.
-        let launched = apply(var("read-conn", ConcreteType::Int), vec![var("conn", conn_ty())]);
+        let launched = apply(
+            var("read-conn", ConcreteType::Int),
+            vec![var("conn", conn_ty())],
+        );
         let continuation = var("_", ConcreteType::Int);
         let node = MonoExpr::LaunchContinue {
             launched: Box::new(launched),
@@ -873,7 +874,10 @@ mod find_var_type_tests {
     // owned-temporary side of the borrowed-vs-owned discipline (no inc owed).
     #[test]
     fn find_var_type_absent_for_unnamed_var() {
-        let launched = apply(var("read-conn", ConcreteType::Int), vec![var("conn", conn_ty())]);
+        let launched = apply(
+            var("read-conn", ConcreteType::Int),
+            vec![var("conn", conn_ty())],
+        );
         let node = MonoExpr::LaunchContinue {
             launched: Box::new(launched),
             continuation: Box::new(var("_", ConcreteType::Int)),
@@ -900,7 +904,7 @@ mod typed_release_tests {
     //! That asymmetry is what left the FIXME-0720 face with a constant residual
     //! of exactly 1 under one toggle only, at every N.
 
-    use super::{typed_release_kind, TypedRelease};
+    use super::{TypedRelease, typed_release_kind};
     use cranelisp_types::{FQTypeName, ModuleFullPath, Type, TypeName};
 
     fn adt(module: &str, name: &str, args: Vec<Type>) -> Type {
@@ -915,8 +919,14 @@ mod typed_release_tests {
     // reaches them, never a bare dec.
     #[test]
     fn owning_types_get_their_own_teardown() {
-        assert_eq!(typed_release_kind(&adt("primitives", "Vec", vec![Type::Int])), TypedRelease::Vec);
-        assert_eq!(typed_release_kind(&adt("user", "G2", vec![])), TypedRelease::Adt);
+        assert_eq!(
+            typed_release_kind(&adt("primitives", "Vec", vec![Type::Int])),
+            TypedRelease::Vec
+        );
+        assert_eq!(
+            typed_release_kind(&adt("user", "G2", vec![])),
+            TypedRelease::Adt
+        );
         assert_eq!(
             typed_release_kind(&Type::Fn(vec![Type::Int], Box::new(Type::Int))),
             TypedRelease::Closure

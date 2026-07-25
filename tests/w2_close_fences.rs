@@ -91,7 +91,8 @@ fn let_rebinds_multi_sig_base_in_mono_recheck_local_wins() {
 // reference to a multi-sig defn at TOP LEVEL resolves and dispatches.
 #[test]
 fn fix_a_qualified_multi_sig_call_top_level() {
-    repl_prims_with_mlib("(import [mlib [h]])\n(mlib/h 1)\n").assert_stdout_contains(":primitives/Int 2");
+    repl_prims_with_mlib("(import [mlib [h]])\n(mlib/h 1)\n")
+        .assert_stdout_contains(":primitives/Int 2");
 }
 
 // spec: spec/08-modules.md §8.5 + spec/05-definitions.md §5.1.2 — a qualified call
@@ -108,8 +109,10 @@ fn fix_a_qualified_multi_sig_call_in_defn() {
 #[test]
 fn fix_a_qualified_multi_sig_call_alias_only_import() {
     // Only `h` (bare) imported; the qualified `mlib/h` reference must still resolve.
-    repl_prims_with_mlib("(import [mlib [h]])\n(defn use2 [] (add-i64 (h 1) (mlib/h 1)))\n(use2)\n")
-        .assert_stdout_contains(":primitives/Int 4");
+    repl_prims_with_mlib(
+        "(import [mlib [h]])\n(defn use2 [] (add-i64 (h 1) (mlib/h 1)))\n(use2)\n",
+    )
+    .assert_stdout_contains(":primitives/Int 4");
 }
 
 fn repl_prims_with_mlib(lines: &str) -> helpers::e2e::CrOutput {

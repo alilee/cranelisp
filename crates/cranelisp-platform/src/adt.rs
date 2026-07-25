@@ -281,24 +281,36 @@ impl ExpectedFieldType {
 }
 
 impl CLTypeWitness for crate::CLInt {
-    fn expected_field_type() -> ExpectedFieldType { ExpectedFieldType::Int }
-    fn from_raw_i64(raw: i64) -> Self { crate::CLInt::from(raw) }
+    fn expected_field_type() -> ExpectedFieldType {
+        ExpectedFieldType::Int
+    }
+    fn from_raw_i64(raw: i64) -> Self {
+        crate::CLInt::from(raw)
+    }
 }
 
 impl CLTypeWitness for crate::CLBool {
-    fn expected_field_type() -> ExpectedFieldType { ExpectedFieldType::Bool }
-    fn from_raw_i64(raw: i64) -> Self { crate::CLBool::from(raw != 0) }
+    fn expected_field_type() -> ExpectedFieldType {
+        ExpectedFieldType::Bool
+    }
+    fn from_raw_i64(raw: i64) -> Self {
+        crate::CLBool::from(raw != 0)
+    }
 }
 
 impl CLTypeWitness for crate::CLFloat {
-    fn expected_field_type() -> ExpectedFieldType { ExpectedFieldType::Float }
+    fn expected_field_type() -> ExpectedFieldType {
+        ExpectedFieldType::Float
+    }
     fn from_raw_i64(raw: i64) -> Self {
         crate::CLFloat::from(f64::from_ne_bytes(raw.to_ne_bytes()))
     }
 }
 
 impl CLTypeWitness for crate::CLString {
-    fn expected_field_type() -> ExpectedFieldType { ExpectedFieldType::String }
+    fn expected_field_type() -> ExpectedFieldType {
+        ExpectedFieldType::String
+    }
     fn from_raw_i64(raw: i64) -> Self {
         // SAFETY: CLString is #[repr(transparent)] over i64; this is the
         // standard wrap used at FFI boundaries.
@@ -327,11 +339,10 @@ fn resolve_field<T: CLAdtType>(field_name: &str) -> (usize, &'static FieldType) 
 
     // Dot-qualified form — `"Some.val"` names a sum-type constructor; a
     // self-qualified `"Rectangle.w"` on a product strips to the bare field.
-    let (ctor_name, canonical_field): (Option<&str>, &str) =
-        match field_name.split_once('.') {
-            Some((before, after)) => (Some(before), after),
-            None => (None, field_name),
-        };
+    let (ctor_name, canonical_field): (Option<&str>, &str) = match field_name.split_once('.') {
+        Some((before, after)) => (Some(before), after),
+        None => (None, field_name),
+    };
 
     // For a product, a self-qualifier (`Rectangle.w`) names the type, not a
     // distinct constructor — treat it as unqualified.

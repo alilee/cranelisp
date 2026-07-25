@@ -28,7 +28,6 @@ pub(crate) struct AmbiguousForm {
     pub(super) param: Option<Symbol>,
 }
 
-
 impl AmbiguousForm {
     /// The user-facing ambiguity message. Names the offending arity CLAUSE and
     /// unpinned PARAM when known (0576) and falls back to the plain fn-level
@@ -148,9 +147,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         .map(|(param_types, ret_ty)| {
                             let mut vars = std::collections::HashSet::new();
                             for t in param_types {
-                                vars.extend(cranelisp_types::free_vars(&self.apply_subst(state, t)));
+                                vars.extend(cranelisp_types::free_vars(
+                                    &self.apply_subst(state, t),
+                                ));
                             }
-                            vars.extend(cranelisp_types::free_vars(&self.apply_subst(state, ret_ty)));
+                            vars.extend(cranelisp_types::free_vars(
+                                &self.apply_subst(state, ret_ty),
+                            ));
                             vars
                         })
                         .unwrap_or_default();
@@ -299,7 +302,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// - **Every other value** (a bare generic value ref `gcount`, a poly ctor
     ///   `None`, a `(Vec a)` let-binding) — the surface predicate `!is_concrete()`
     ///   is the verdict (§3.11.1, unchanged).
-    fn value_position_is_ambiguous(&self, state: &CheckState, child: &Expr, resolved: &Type) -> bool {
+    fn value_position_is_ambiguous(
+        &self,
+        state: &CheckState,
+        child: &Expr,
+        resolved: &Type,
+    ) -> bool {
         if let Expr::Apply { callee, span, .. } = child
             && let Expr::Var { name, .. } = callee.as_ref()
             && self.method_to_trait_with_state(state, name).is_some()
@@ -307,7 +315,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // Dispatch position — the OUTCOME is the discriminator, not the
             // (possibly stale) surface type.
             return self.method_self_in_return(state, name.as_ref())
-                && self.method_return_dispatch_type(state, name, *span).is_none();
+                && self
+                    .method_return_dispatch_type(state, name, *span)
+                    .is_none();
         }
         self.is_codegen_ambiguous_type(resolved)
     }
@@ -333,7 +343,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             let resolved_trait_dispatch = if let Expr::Var { name, .. } = callee.as_ref() {
                 self.method_to_trait_with_state(state, name).is_some()
                     && !(self.method_self_in_return(state, name.as_ref())
-                        && self.method_return_dispatch_type(state, name, *span).is_none())
+                        && self
+                            .method_return_dispatch_type(state, name, *span)
+                            .is_none())
             } else {
                 false
             };
@@ -487,7 +499,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         for top in working_program {
             if let TopLevel::Defn(defn) = top {
                 for variant in &defn.variants {
-                    self.collect_unresolved_dispatch_in_expr(state, &variant.body, false, &mut sites);
+                    self.collect_unresolved_dispatch_in_expr(
+                        state,
+                        &variant.body,
+                        false,
+                        &mut sites,
+                    );
                 }
             }
         }
@@ -507,11 +524,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         under_annotate: bool,
         sites: &mut Vec<UnresolvedDispatchSite>,
     ) {
-        if let Expr::Apply { callee, args, span, .. } = expr
+        if let Expr::Apply {
+            callee, args, span, ..
+        } = expr
             && args.is_empty()
             && let Expr::Var { name, .. } = callee.as_ref()
             && self.method_self_in_return(state, name.as_ref())
-            && self.method_return_dispatch_type(state, name, *span).is_none()
+            && self
+                .method_return_dispatch_type(state, name, *span)
+                .is_none()
         {
             sites.push(UnresolvedDispatchSite {
                 span: *span,

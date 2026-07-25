@@ -9,7 +9,7 @@
 //! mechanically and the strategy's scenario space is guarded independent of the
 //! spec-derived e2e lanes.
 
-use super::{moded_arg_rc, ModedArgRc};
+use super::{ModedArgRc, moded_arg_rc};
 use crate::heap::HeapCategory;
 use cranelisp_types::Mode;
 
@@ -35,11 +35,23 @@ fn never_heap_is_always_none() {
 #[test]
 fn owned_mode_reproduces_pre_s102_consuming() {
     // Owned-binding Var → consuming inc (guarded iff Mixed).
-    assert_eq!(moded_arg_rc(HeapCategory::AlwaysHeap, Mode::Owned, true), ModedArgRc::Inc);
-    assert_eq!(moded_arg_rc(HeapCategory::Mixed, Mode::Owned, true), ModedArgRc::IncGuarded);
+    assert_eq!(
+        moded_arg_rc(HeapCategory::AlwaysHeap, Mode::Owned, true),
+        ModedArgRc::Inc
+    );
+    assert_eq!(
+        moded_arg_rc(HeapCategory::Mixed, Mode::Owned, true),
+        ModedArgRc::IncGuarded
+    );
     // Temporary → transfer, no op.
-    assert_eq!(moded_arg_rc(HeapCategory::AlwaysHeap, Mode::Owned, false), ModedArgRc::None);
-    assert_eq!(moded_arg_rc(HeapCategory::Mixed, Mode::Owned, false), ModedArgRc::None);
+    assert_eq!(
+        moded_arg_rc(HeapCategory::AlwaysHeap, Mode::Owned, false),
+        ModedArgRc::None
+    );
+    assert_eq!(
+        moded_arg_rc(HeapCategory::Mixed, Mode::Owned, false),
+        ModedArgRc::None
+    );
 }
 
 // --- Elision class: a `Borrowed` param elides the consuming inc on an
@@ -47,8 +59,14 @@ fn owned_mode_reproduces_pre_s102_consuming() {
 //     the single accounting). ---
 #[test]
 fn borrowed_owned_binding_elides_inc() {
-    assert_eq!(moded_arg_rc(HeapCategory::AlwaysHeap, Mode::Borrowed, true), ModedArgRc::None);
-    assert_eq!(moded_arg_rc(HeapCategory::Mixed, Mode::Borrowed, true), ModedArgRc::None);
+    assert_eq!(
+        moded_arg_rc(HeapCategory::AlwaysHeap, Mode::Borrowed, true),
+        ModedArgRc::None
+    );
+    assert_eq!(
+        moded_arg_rc(HeapCategory::Mixed, Mode::Borrowed, true),
+        ModedArgRc::None
+    );
 }
 
 // --- Post-call-dec class: a TEMPORARY (fresh rc=1, no scope owner) handed to a
@@ -57,7 +75,10 @@ fn borrowed_owned_binding_elides_inc() {
 //     absence leaked the fn-as-value closure (repro_d). ---
 #[test]
 fn borrowed_temporary_owes_post_call_dec() {
-    assert_eq!(moded_arg_rc(HeapCategory::AlwaysHeap, Mode::Borrowed, false), ModedArgRc::PostDec);
+    assert_eq!(
+        moded_arg_rc(HeapCategory::AlwaysHeap, Mode::Borrowed, false),
+        ModedArgRc::PostDec
+    );
     assert_eq!(
         moded_arg_rc(HeapCategory::Mixed, Mode::Borrowed, false),
         ModedArgRc::PostDecGuarded
@@ -89,15 +110,24 @@ fn full_matrix_is_pinned() {
     use ModedArgRc::*;
     // (category, mode, owned_binding) => expected
     let cases = [
-        ((N, O, true), None), ((N, O, false), None),
-        ((N, B, true), None), ((N, B, false), None),
-        ((N, C, true), None), ((N, C, false), None),
-        ((A, O, true), Inc), ((A, O, false), None),
-        ((A, B, true), None), ((A, B, false), PostDec),
-        ((A, C, true), None), ((A, C, false), None),
-        ((M, O, true), IncGuarded), ((M, O, false), None),
-        ((M, B, true), None), ((M, B, false), PostDecGuarded),
-        ((M, C, true), None), ((M, C, false), None),
+        ((N, O, true), None),
+        ((N, O, false), None),
+        ((N, B, true), None),
+        ((N, B, false), None),
+        ((N, C, true), None),
+        ((N, C, false), None),
+        ((A, O, true), Inc),
+        ((A, O, false), None),
+        ((A, B, true), None),
+        ((A, B, false), PostDec),
+        ((A, C, true), None),
+        ((A, C, false), None),
+        ((M, O, true), IncGuarded),
+        ((M, O, false), None),
+        ((M, B, true), None),
+        ((M, B, false), PostDecGuarded),
+        ((M, C, true), None),
+        ((M, C, false), None),
     ];
     for ((cat, mode, owned), expected) in cases {
         assert_eq!(
@@ -121,7 +151,10 @@ mod projection_elision_predicate {
 
     fn cell_ty() -> ConcreteType {
         ConcreteType::ADT(
-            FQTypeName { module: "m".into(), name: "Cell".into() },
+            FQTypeName {
+                module: "m".into(),
+                name: "Cell".into(),
+            },
             vec![],
         )
     }
@@ -130,7 +163,10 @@ mod projection_elision_predicate {
         MonoExpr::Apply {
             dispatch: cranelisp_types::ApplyRef::ViaCallee,
             callee: Box::new(MonoExpr::Var {
-                resolution: cranelisp_types::VarRef::Local { binder: cranelisp_types::Symbol::from("_"), binding_span: cranelisp_types::Span::SYNTHETIC },
+                resolution: cranelisp_types::VarRef::Local {
+                    binder: cranelisp_types::Symbol::from("_"),
+                    binding_span: cranelisp_types::Span::SYNTHETIC,
+                },
                 name: Symbol::from("vec-get"),
                 span: Span::new(0, 7),
                 resolved_call: None,
@@ -138,7 +174,9 @@ mod projection_elision_predicate {
             }),
             args: vec![],
             span: Span::new(0, 12),
-            resolved_call: Some(Box::new(ResolvedCall::BuiltinFn { name: "vec-get".into() })),
+            resolved_call: Some(Box::new(ResolvedCall::BuiltinFn {
+                name: "vec-get".into(),
+            })),
             ty: cell_ty(),
             escapes: None,
             confined: None,
@@ -150,7 +188,9 @@ mod projection_elision_predicate {
     // POSITIVE: a provenance-marked vec-get read IS a borrowed projection.
     #[test]
     fn marked_vecget_is_projection() {
-        assert!(is_direct_vecget_projection(&vecget_apply(Some(Symbol::from("g")))));
+        assert!(is_direct_vecget_projection(&vecget_apply(Some(
+            Symbol::from("g")
+        ))));
     }
 
     // NEGATIVE (byte-identical-off): an UNMARKED vec-get (analysis off, or a read
@@ -169,7 +209,10 @@ mod projection_elision_predicate {
         let accessor = MonoExpr::Apply {
             dispatch: cranelisp_types::ApplyRef::ViaCallee,
             callee: Box::new(MonoExpr::Var {
-                resolution: cranelisp_types::VarRef::Local { binder: cranelisp_types::Symbol::from("_"), binding_span: cranelisp_types::Span::SYNTHETIC },
+                resolution: cranelisp_types::VarRef::Local {
+                    binder: cranelisp_types::Symbol::from("_"),
+                    binding_span: cranelisp_types::Span::SYNTHETIC,
+                },
                 name: Symbol::from("cell-at"),
                 span: Span::new(0, 7),
                 resolved_call: None,
@@ -191,7 +234,10 @@ mod projection_elision_predicate {
     #[test]
     fn non_apply_is_not_projection() {
         let v = MonoExpr::Var {
-            resolution: cranelisp_types::VarRef::Local { binder: Symbol::from("g"), binding_span: Span::SYNTHETIC },
+            resolution: cranelisp_types::VarRef::Local {
+                binder: Symbol::from("g"),
+                binding_span: Span::SYNTHETIC,
+            },
             name: Symbol::from("g"),
             span: Span::new(0, 1),
             resolved_call: None,

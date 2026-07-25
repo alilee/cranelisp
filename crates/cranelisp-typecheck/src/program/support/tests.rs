@@ -5,8 +5,6 @@
 
 use super::*;
 
-
-
 #[test]
 fn macro_clause_defn_name_is_recognised() {
     assert!(is_macro_clause_defn_name("__macro_m_clause_0"));

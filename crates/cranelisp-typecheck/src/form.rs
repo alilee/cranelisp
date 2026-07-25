@@ -45,8 +45,8 @@
 use std::cell::RefCell;
 
 use cranelisp_types::{
-    CodeStore, Defn, ErrorLocation, LinkerStore, ModuleAliases, ModuleStrategy, ParsedEntry,
-    Span, SymbolTable, SymbolTables, TopLevel,
+    CodeStore, Defn, ErrorLocation, LinkerStore, ModuleAliases, ModuleStrategy, ParsedEntry, Span,
+    SymbolTable, SymbolTables, TopLevel,
 };
 
 use crate::checker::{CheckState, PreludeFallback, TypeCheckEnv};
@@ -219,19 +219,29 @@ where
                     && let cranelisp_types::DefKind::Overloaded { variants } = kind.as_ref()
                     && !variants.is_empty()
                 {
-                    let resolved: Vec<(Vec<cranelisp_types::Type>, cranelisp_types::Type, cranelisp_types::Symbol)> =
-                        variants
-                            .iter()
-                            .map(|v| {
-                                (v.param_types.clone(), v.ret_type.clone(), v.mangled_name.clone())
-                            })
-                            .collect();
+                    let resolved: Vec<(
+                        Vec<cranelisp_types::Type>,
+                        cranelisp_types::Type,
+                        cranelisp_types::Symbol,
+                    )> = variants
+                        .iter()
+                        .map(|v| {
+                            (
+                                v.param_types.clone(),
+                                v.ret_type.clone(),
+                                v.mangled_name.clone(),
+                            )
+                        })
+                        .collect();
                     let overload_keys: Vec<(cranelisp_types::Symbol, usize)> = variants
                         .iter()
                         .map(|v| (v.mangled_name.clone(), v.param_types.len()))
                         .collect();
                     state.overloads.entry(name.clone()).or_insert(overload_keys);
-                    state.resolved_overloads.entry(name.clone()).or_insert(resolved);
+                    state
+                        .resolved_overloads
+                        .entry(name.clone())
+                        .or_insert(resolved);
                 }
             }
         }
@@ -242,16 +252,20 @@ where
     // yet map to a `TopLevel` form — they are dropped here and handled
     // outside the per-form dispatcher (pre-Wave-3a-β path; orchestrator
     // boundary). Filter them out to keep the working-program clean.
-    let working_program: Vec<TopLevel> = parsed
-        .into_iter()
-        .filter_map(parsed_to_top_level)
-        .collect();
+    let working_program: Vec<TopLevel> =
+        parsed.into_iter().filter_map(parsed_to_top_level).collect();
 
     // Pass 1: register all forms in source order. The accumulator captures
     // `defn_type_vars` and default-method-defn deferrals for Pass 2.
     for form in &working_program {
         let result = env
-            .check_form(&current_module, form, CheckPass::Register, &mut state, &mut accumulator)
+            .check_form(
+                &current_module,
+                form,
+                CheckPass::Register,
+                &mut state,
+                &mut accumulator,
+            )
             .map_err(|e| lift_error(e, &state))?;
         env.merge_form_result(&current_module, &mut state, &mut accumulator, result);
     }
@@ -262,7 +276,13 @@ where
     for defn in &defaults {
         let form = TopLevel::Defn(defn.clone());
         let result = env
-            .check_form(&current_module, &form, CheckPass::Register, &mut state, &mut accumulator)
+            .check_form(
+                &current_module,
+                &form,
+                CheckPass::Register,
+                &mut state,
+                &mut accumulator,
+            )
             .map_err(|e| lift_error(e, &state))?;
         env.merge_form_result(&current_module, &mut state, &mut accumulator, result);
     }
@@ -288,7 +308,13 @@ where
     for form in &working_program {
         state.active_constraints = pass1_constraints.clone();
         let result = env
-            .check_form(&current_module, form, CheckPass::CheckBody, &mut state, &mut accumulator)
+            .check_form(
+                &current_module,
+                form,
+                CheckPass::CheckBody,
+                &mut state,
+                &mut accumulator,
+            )
             .map_err(|e| lift_error(e, &state))?;
         env.merge_form_result(&current_module, &mut state, &mut accumulator, result);
     }
@@ -299,7 +325,13 @@ where
         state.active_constraints = pass1_constraints.clone();
         let form = TopLevel::Defn(defn.clone());
         let result = env
-            .check_form(&current_module, &form, CheckPass::CheckBody, &mut state, &mut accumulator)
+            .check_form(
+                &current_module,
+                &form,
+                CheckPass::CheckBody,
+                &mut state,
+                &mut accumulator,
+            )
             .map_err(|e| lift_error(e, &state))?;
         env.merge_form_result(&current_module, &mut state, &mut accumulator, result);
     }
@@ -468,16 +500,27 @@ fn lift_error(e: cranelisp_types::CranelispError, state: &CheckState) -> CheckEr
 /// dispatcher.
 fn parsed_to_top_level(parsed: ParsedEntry) -> Option<TopLevel> {
     match parsed {
-        ParsedEntry::Def { name, variants, visibility, docstring, span } => {
-            Some(TopLevel::Defn(Defn {
-                name,
-                docstring,
-                variants,
-                visibility,
-                span,
-            }))
-        }
-        ParsedEntry::TypeDef { name, type_params, constructors, visibility, docstring, span } => {
+        ParsedEntry::Def {
+            name,
+            variants,
+            visibility,
+            docstring,
+            span,
+        } => Some(TopLevel::Defn(Defn {
+            name,
+            docstring,
+            variants,
+            visibility,
+            span,
+        })),
+        ParsedEntry::TypeDef {
+            name,
+            type_params,
+            constructors,
+            visibility,
+            docstring,
+            span,
+        } => {
             // `ParsedEntry::TypeDef::type_params` now `Vec<Symbol>` (S70 step 2A
             // newtype-discipline narrowing); pass through unchanged. The prior
             // `TypeName → Symbol` conversion shim is retired.

@@ -11,7 +11,7 @@ use std::process::Command;
 
 use cranelisp_types::{CranelispError, ErrorLocation, Span};
 
-use super::{describe_args, run_linker, LinkRequest, Linker};
+use super::{LinkRequest, Linker, describe_args, run_linker};
 
 /// macOS arch token. Apple-ld syntax, internal to this driver (§12.2).
 const APPLE_ARCH: &str = "arm64";
@@ -32,10 +32,7 @@ impl AppleLdLinker {
     fn build_args(&self, req: &LinkRequest, sysroot: &str) -> Vec<String> {
         let (platform, min_version, sdk_version) = APPLE_PLATFORM_TRIPLET;
 
-        let mut ld_args: Vec<String> = vec![
-            "-arch".to_string(),
-            APPLE_ARCH.to_string(),
-        ];
+        let mut ld_args: Vec<String> = vec!["-arch".to_string(), APPLE_ARCH.to_string()];
 
         // `dead_strip` → `-dead_strip` (intent → Apple rendering).
         if req.dead_strip {
@@ -107,9 +104,7 @@ fn get_sdk_sysroot() -> Result<String, CranelispError> {
         .args(["--show-sdk-path"])
         .output()
         .map_err(|e| CranelispError::CodegenError {
-            message: format!(
-                "failed to run xcrun: {e} (is Xcode Command Line Tools installed?)"
-            ),
+            message: format!("failed to run xcrun: {e} (is Xcode Command Line Tools installed?)"),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
 

@@ -2,8 +2,8 @@
 //! the display-bearing `CheckResult` for in-crate test assertions; the
 //! production path routes through `check_forms` in `form.rs`.
 
-use cranelisp_types::{CompileContext, DisplayInfo};
 use super::*;
+use cranelisp_types::{CompileContext, DisplayInfo};
 
 impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
     /// Drive the cluster pipeline over a `TopLevel` slice and return the
@@ -76,16 +76,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         // Finalize: run post-passes (generalization, overload resolution, monomorphisation,
         // auto-curry) and build CheckResult.
-        let mut result = self.finalize_check_result_inner(
-            state, &mut accumulator, &working_program, strategy,
-        )?;
+        let mut result =
+            self.finalize_check_result_inner(state, &mut accumulator, &working_program, strategy)?;
 
         // Populate display info
         result.display = self.compute_display_info(state, program, &accumulator.defn_type_vars);
 
         Ok(result)
     }
-
 
     /// Wrap `Expr` variants as synthetic zero-arg `Defn` named `__expr`.
     /// Used only by the `check_via_forms` test driver.
@@ -96,10 +94,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             match top {
                 TopLevel::Expr(expr) => {
                     let span = expr.span();
-                    let wrapper_span = Span::new(
-                        span.start.saturating_sub(1),
-                        span.end.saturating_add(1),
-                    );
+                    let wrapper_span =
+                        Span::new(span.start.saturating_sub(1), span.end.saturating_add(1));
                     let synthetic_defn = Defn {
                         name: Symbol::from("__expr"),
                         docstring: None,
@@ -120,7 +116,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         }
         working_program
     }
-
 
     /// Compute DisplayInfo from the last form in the program.
     ///
@@ -165,19 +160,19 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 }
             }
             TopLevel::TypeDef { name, .. } => {
-                let fqtn = cranelisp_types::FQTypeName::new(
-                    state.current_module.clone(), name.clone(),
-                );
+                let fqtn =
+                    cranelisp_types::FQTypeName::new(state.current_module.clone(), name.clone());
                 let ty = Type::ADT(fqtn, vec![]);
                 Some(DisplayInfo { ty, scheme: None })
             }
-            TopLevel::TraitDecl(_) => {
-                Some(DisplayInfo { ty: Type::Bool, scheme: None })
-            }
-            TopLevel::TraitImpl(_) => {
-                Some(DisplayInfo { ty: Type::Bool, scheme: None })
-            }
+            TopLevel::TraitDecl(_) => Some(DisplayInfo {
+                ty: Type::Bool,
+                scheme: None,
+            }),
+            TopLevel::TraitImpl(_) => Some(DisplayInfo {
+                ty: Type::Bool,
+                scheme: None,
+            }),
         }
     }
-
 }

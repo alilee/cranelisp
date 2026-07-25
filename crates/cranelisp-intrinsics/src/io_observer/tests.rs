@@ -24,7 +24,10 @@ fn reset_counters() {
 fn anchor_is_stable_across_calls() {
     let a = trace_anchor();
     let b = trace_anchor();
-    assert!(std::ptr::eq(a, b), "trace_anchor must return the same Instant ref");
+    assert!(
+        std::ptr::eq(a, b),
+        "trace_anchor must return the same Instant ref"
+    );
 }
 
 #[test]
@@ -106,9 +109,23 @@ fn last_observer_wins() {
 
     register_io_observer(Some(first));
     register_io_observer(Some(second));
-    emit(IoEventTag::PureStep, &IoEvent::PureStep { value: 7, is_fresh: false });
+    emit(
+        IoEventTag::PureStep,
+        &IoEvent::PureStep {
+            value: 7,
+            is_fresh: false,
+        },
+    );
     register_io_observer(None);
 
-    assert_eq!(FIRST_CALLS.load(StdOrdering::Relaxed), 0, "old observer must not fire");
-    assert_eq!(SECOND_CALLS.load(StdOrdering::Relaxed), 1, "new observer must fire");
+    assert_eq!(
+        FIRST_CALLS.load(StdOrdering::Relaxed),
+        0,
+        "old observer must not fire"
+    );
+    assert_eq!(
+        SECOND_CALLS.load(StdOrdering::Relaxed),
+        1,
+        "new observer must fire"
+    );
 }

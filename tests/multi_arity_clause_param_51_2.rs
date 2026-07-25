@@ -30,7 +30,7 @@ mod helpers;
 
 use std::time::Duration;
 
-use helpers::e2e::{run_through_all_modes, Cranelisp, PreludeVariant};
+use helpers::e2e::{Cranelisp, PreludeVariant, run_through_all_modes};
 
 // A defn the REPL accepts and publishes ends its echo with `; defn`; a rejected
 // defn prints `Error:` instead and never publishes. `; defn` present therefore
@@ -101,7 +101,8 @@ fn rp4_unannotated_backflow_accepted_and_runs() {
          sibling); MUST NOT be an independence/ambiguity reject; got:\n{c}"
     );
     assert!(
-        out.stdout.contains("(Fn [primitives/Int primitives/Int] primitives/Int)"),
+        out.stdout
+            .contains("(Fn [primitives/Int primitives/Int] primitives/Int)"),
         "`/sig rp4` MUST show the 2-arg clause as `(Fn [Int Int] Int)` — the \
          back-flow pin, not a re-generalized free-var scheme; got:\n{}",
         out.stdout
@@ -145,9 +146,9 @@ fn poly_clause_nonoverlapping_arity_accepted_both_dispatch() {
          (f 5)\n(f \"s\")\n(f 2 3)\n",
     );
     out.assert_stdout_contains_all(&[
-        ":primitives/Int 5",      // poly clause at Int
+        ":primitives/Int 5",        // poly clause at Int
         ":primitives/String \"s\"", // poly clause at String — second instantiation
-        ":primitives/Int 5",      // concrete 2-arg clause: 2+3
+        ":primitives/Int 5",        // concrete 2-arg clause: 2+3
     ]);
 }
 

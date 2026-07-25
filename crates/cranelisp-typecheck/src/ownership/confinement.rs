@@ -26,8 +26,8 @@ use std::collections::HashMap;
 
 use cranelisp_types::{Mode, MonoExpr, Span, Symbol};
 
-use super::classify::{classify_call, CallClass};
-use super::transfer::{collect_pattern_bindings, TransferEnv};
+use super::classify::{CallClass, classify_call};
+use super::transfer::{TransferEnv, collect_pattern_bindings};
 
 /// A saved confinement scope frame (§13.6(i), F4 — the sibling walker gets the
 /// same lexical-scope discipline for precision + anti-recurrence). For every
@@ -129,28 +129,44 @@ impl<'e, E: TransferEnv> Confiner<'e, E> {
                 self.walk(body, strand);
                 self.restore_frame(frame);
             }
-            MonoExpr::If { cond, then_branch, else_branch, .. } => {
+            MonoExpr::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
                 self.walk(cond, strand);
                 self.walk(then_branch, strand);
                 self.walk(else_branch, strand);
             }
-            MonoExpr::Match { scrutinee, arms, .. } => {
+            MonoExpr::Match {
+                scrutinee, arms, ..
+            } => {
                 self.walk(scrutinee, strand);
                 for arm in arms {
                     // §13.6(i) (F4): each arm shadows its pattern bindings, restored
                     // before the sibling arm — no arm-binding leak.
                     let mut names = Vec::new();
                     collect_pattern_bindings(&arm.pattern, &mut names);
-                    let frame: ConfineFrame =
-                        names.iter().map(|n| (n.clone(), self.param_idx.remove(n))).collect();
+                    let frame: ConfineFrame = names
+                        .iter()
+                        .map(|n| (n.clone(), self.param_idx.remove(n)))
+                        .collect();
                     self.walk(&arm.body, strand);
                     self.restore_frame(frame);
                 }
             }
-            MonoExpr::Apply { callee, args, resolved_call, span, .. } => {
+            MonoExpr::Apply {
+                callee,
+                args,
+                resolved_call,
+                span,
+                ..
+            } => {
                 self.confined.insert(*span, !strand.off_parent());
-                let class =
-                    classify_call(resolved_call.as_deref(), callee, |n| self.env.terminal_kind(n));
+                let class = classify_call(resolved_call.as_deref(), callee, |n| {
+                    self.env.terminal_kind(n)
+                });
                 self.walk(callee, strand);
                 // The consuming op on a param arg runs on the CALL's enclosing
                 // strand; only sub-allocations *within* an arg expression are
@@ -208,7 +224,11 @@ impl<'e, E: TransferEnv> Confiner<'e, E> {
                 self.walk(body, strand);
                 self.restore_frame(frame);
             }
-            MonoExpr::LaunchContinue { launched, continuation, .. } => {
+            MonoExpr::LaunchContinue {
+                launched,
+                continuation,
+                ..
+            } => {
                 self.walk(launched, Strand::Deferred);
                 self.walk(continuation, strand);
             }
@@ -247,7 +267,10 @@ pub(crate) fn confine<E: TransferEnv>(
         confined: HashMap::new(),
     };
     c.walk(body, Strand::Parent);
-    ConfineResult { spark_ops: c.spark_ops, confined: c.confined }
+    ConfineResult {
+        spark_ops: c.spark_ops,
+        confined: c.confined,
+    }
 }
 
 #[cfg(test)]

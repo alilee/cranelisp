@@ -75,7 +75,11 @@ pub fn alloc_string(bytes: &[u8]) -> *mut u8 {
         *(base.add(HeapString::LEN_OFFSET as usize) as *mut i64) = bytes.len() as i64;
         // bytes at offset 24
         if !bytes.is_empty() {
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), base.add(HeapString::DATA_OFFSET), bytes.len());
+            std::ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                base.add(HeapString::DATA_OFFSET),
+                bytes.len(),
+            );
         }
     }
 

@@ -53,6 +53,24 @@ and `CRANELISP_NO_LENIENT=1` (serial) toggles; the sprint's language rulings had
 finding at S115 is the solve-path leak below, which is a compiler defect, not an
 exemplar one.
 
+**S117 Phase-6b verification.** The headline `--run` exits 0 from both cold and
+warm cache with byte-identical stdout. `tests.cl` remains 40/40 under both
+default parallel and `CRANELISP_NO_LENIENT=1` serial execution; this includes
+all eight form tests, so the real `form.cl` pipeline exercises R-3-backed
+`split` on both `=` and `&`. A proposed showcase adoption of
+`(impl text.display/Display Cell …)` was reverted: fresh compilation succeeds,
+but an explicit warm-cache `(show (Given 5))` probe loses the sibling-written
+impl with `no impl of trait text.display/Display for type grid/Cell`, exactly
+the open FIXME 0869 defect. The exemplar retains its established bare spelling
+and takes no cache workaround.
+
+Standalone Link parity could not be re-established in this environment:
+isolated cold-cache linking fails before producing an executable because the
+rebuilt stdio/web platform archives contain unresolved Rust/platform symbols.
+This is not the FIXME 0869 face and no exemplar source workaround was made.
+W3b REPL introspection, deferred W3c presentation, and design-only Byte-backed
+text have no exemplar impact.
+
 **Parallel search (no `spark`/`par` in the source).** The backtracking search
 in `solver.cl` is expressed as `collections.parallel/par-map-reduce` over the
 candidate digits at each guess node — **map** each candidate to its recursive

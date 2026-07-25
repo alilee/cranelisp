@@ -141,7 +141,9 @@ fn platform_adt_hash_gate_run_refuses() {
     assert!(
         !out.status.success(),
         "--run MUST refuse on layout-hash drift (non-zero exit); status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        out.status, out.stdout, out.stderr
+        out.status,
+        out.stdout,
+        out.stderr
     );
     assert_ne!(
         out.status.code(),
@@ -188,7 +190,8 @@ fn platform_adt_hash_gate_repl_warns_and_loads() {
         out.stderr.contains("shapes") || out.stdout.contains("shapes"),
         "REPL hash-gate warning MUST name the platform `shapes`; \
          got stdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
     assert!(
         out.stderr.contains("warn")
@@ -197,14 +200,16 @@ fn platform_adt_hash_gate_repl_warns_and_loads() {
             || out.stdout.contains("hash"),
         "REPL hash-gate MUST surface a warning (not a refusal); \
          got stdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
     // Warn-AND-LOAD: the session continues to a clean EOF exit (not an abort).
     assert!(
         out.status.success() || out.status.code().is_some(),
         "REPL MUST warn-and-load (continue), not abort on layout-hash drift; \
          status: {:?}\nstderr:\n{}",
-        out.status, out.stderr
+        out.status,
+        out.stderr
     );
 }
 
@@ -232,7 +237,9 @@ fn platform_adt_hash_gate_link_refuses() {
         !out.status.success(),
         "--link MUST refuse on layout-hash drift (link failure or startup abort); \
          status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        out.status, out.stdout, out.stderr
+        out.status,
+        out.stdout,
+        out.stderr
     );
     assert!(
         out.stderr.contains("shapes"),
@@ -296,12 +303,11 @@ fn platform_adt_roundtrip_cache_restore() {
     // run restores from (per crates/cranelisp-backend/src/cache/object.rs).
     let has_cache_artifacts = std::fs::read_dir(&cache_dir)
         .map(|rd| {
-            rd.filter_map(|e| e.ok())
-                .any(|e| {
-                    let n = e.file_name();
-                    let n = n.to_string_lossy();
-                    n.ends_with(".o") || n.ends_with(".meta.json")
-                })
+            rd.filter_map(|e| e.ok()).any(|e| {
+                let n = e.file_name();
+                let n = n.to_string_lossy();
+                n.ends_with(".o") || n.ends_with(".meta.json")
+            })
         })
         .unwrap_or(false);
     assert!(

@@ -215,7 +215,10 @@ impl ModeSummary {
     /// The flow of param `i` — ⊤-on-absence read (missing/short ⇒
     /// [`ParamFlow::Retained`]).
     pub fn param_flow(&self, i: usize) -> ParamFlow {
-        self.param_flow.get(i).copied().unwrap_or(ParamFlow::Retained)
+        self.param_flow
+            .get(i)
+            .copied()
+            .unwrap_or(ParamFlow::Retained)
     }
 
     /// Whether the callee may run RC ops on param `i` off the calling strand

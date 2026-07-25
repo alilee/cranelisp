@@ -103,9 +103,7 @@ pub fn flatten_begin(sexp: Sexp) -> Vec<Sexp> {
 ///
 /// The reader parses `&rest` or `& rest` as a single symbol `"&rest"` (ampersand prefix),
 /// so rest params appear as symbols starting with `&`.
-fn parse_param_items(
-    items: &[Sexp],
-) -> Result<(Vec<MacroParam>, Option<Symbol>), CranelispError> {
+fn parse_param_items(items: &[Sexp]) -> Result<(Vec<MacroParam>, Option<Symbol>), CranelispError> {
     let mut fixed_params = Vec::new();
     let mut rest_param = None;
     let mut i = 0;
@@ -151,9 +149,7 @@ fn parse_param_items(
 ///
 /// The reader parses `&rest` or `& rest` as `"&rest"`, so rest params appear as
 /// symbols starting with `&`.
-fn parse_bracket_pattern(
-    inner: &[Sexp],
-) -> Result<(Vec<Symbol>, Option<Symbol>), CranelispError> {
+fn parse_bracket_pattern(inner: &[Sexp]) -> Result<(Vec<Symbol>, Option<Symbol>), CranelispError> {
     let mut fixed = Vec::new();
     let mut rest = None;
     let mut j = 0;
@@ -286,11 +282,7 @@ pub fn parse_defmacro(sexp: &Sexp) -> Result<DefmacroInfo, CranelispError> {
     };
 
     Ok(DefmacroInfo::new(
-        name,
-        is_private,
-        docstring,
-        clauses,
-        span,
+        name, is_private, docstring, clauses, span,
     ))
 }
 
@@ -420,17 +412,19 @@ pub fn synthesize_macro_clause_defn(
     // known_types registry used to be flat, but is no longer.)
     let type_expr = synth::list(vec![synth::sym("macros/SList"), synth::sym("macros/Sexp")]);
 
-    let param_bracket = synth::bracket(vec![synth::annotated(
-        type_expr,
-        synth::sym(args_name),
-    )]);
+    let param_bracket = synth::bracket(vec![synth::annotated(type_expr, synth::sym(args_name))]);
 
     // Outer list span carries the user-source span of the originating
     // clause — the underscore in the parameter was a "not yet wired"
     // marker; the value now feeds the synthesised defn so downstream
     // errors trace back to the source clause.
     Sexp::List(
-        vec![synth::sym("defn-"), synth::sym(&fn_name), param_bracket, body],
+        vec![
+            synth::sym("defn-"),
+            synth::sym(&fn_name),
+            param_bracket,
+            body,
+        ],
         span,
     )
 }
@@ -452,11 +446,7 @@ fn build_macro_param_chain(
     if params.is_empty() {
         if let Some(rest_name) = rest_param {
             // Bind remaining list to rest_name via a var pattern.
-            return make_match_sexp(
-                scrutinee_name,
-                make_var_pattern(rest_name),
-                body,
-            );
+            return make_match_sexp(scrutinee_name, make_var_pattern(rest_name), body);
         }
         return body;
     }
@@ -484,7 +474,12 @@ fn build_macro_param_chain(
             };
             let bracket_inner =
                 build_bracket_destructure_sexp(&bracket_temp, fixed, rest, continuation);
-            make_scons_match(scrutinee_name, &bracket_temp.as_str().into(), &tail_binding, bracket_inner)
+            make_scons_match(
+                scrutinee_name,
+                &bracket_temp.as_str().into(),
+                &tail_binding,
+                bracket_inner,
+            )
         }
     }
 }
@@ -571,13 +566,14 @@ fn build_bracket_destructure_sexp(
     let inner_name = format!("{scrutinee_name}_items__");
 
     // Build the inner destructuring of the SList.
-    let inner_body =
-        build_inner_slist_chain(&inner_name, fixed, rest, continuation);
+    let inner_body = build_inner_slist_chain(&inner_name, fixed, rest, continuation);
 
     // Outer match: (match scrutinee [(macros/SexpBracket __inner__) <inner_body>] [_ ...])
     // Wildcard arm needed for exhaustiveness — Sexp has 7 constructors.
-    let bracket_pattern =
-        synth::list(vec![synth::sym("macros/SexpBracket"), synth::sym(&inner_name)]);
+    let bracket_pattern = synth::list(vec![
+        synth::sym("macros/SexpBracket"),
+        synth::sym(&inner_name),
+    ]);
 
     make_match_sexp_exhaustive(scrutinee_name, bracket_pattern, inner_body)
 }
@@ -594,11 +590,7 @@ fn build_inner_slist_chain(
 ) -> Sexp {
     if fixed.is_empty() {
         if let Some(rest_name) = rest {
-            return make_match_sexp(
-                scrutinee_name,
-                make_var_pattern(rest_name),
-                body,
-            );
+            return make_match_sexp(scrutinee_name, make_var_pattern(rest_name), body);
         }
         return body;
     }

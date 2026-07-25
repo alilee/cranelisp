@@ -209,6 +209,21 @@ no need to re-enter it. Either way, a recovered symbol is indistinguishable
 from one that was never broken: it calls normally and carries no provenance
 line. ([`repl/spec.md §18.6`](../../repl/spec.md).)
 
+### A failed turn is discarded as a whole
+
+The same safety boundary applies when failure happens later, during code
+generation rather than ordinary typechecking. The diagnostic names the actual
+definition that failed. None of that turn's definitions, compiled entries, or
+introspection rows become live, and the failure is not retried when you enter
+the next expression.
+
+That means you can evaluate an unrelated value immediately, or enter a clean
+definition with the failed name, without restarting the REPL or clearing
+hidden state. This is the atomic failed-turn guarantee in
+[`repl/spec.md §18.4`](../../repl/spec.md). There is intentionally no worked
+failure recipe here: the current production trigger is itself a known compiler
+defect, not a language technique users should learn.
+
 ## Which world does an old value see?
 
 The two redefinition classes give two deliberately different answers for
@@ -457,6 +472,42 @@ This is a scoped, documented limitation — the scope note in
 closing it is planned work. Until then: after redefining a macro or type,
 redefine (or reload) the callers you want to move to the new world, or restart
 the session — a restart rebuilds everything from source.
+
+### Cache restoration does not change macro expansion
+
+The recompilation limitation above is about editing a macro in a live session,
+not about the on-disk compile cache. An unchanged program using a user-defined
+macro has the same result with a cold cache and after restoration, in REPL,
+`--run`, and `--link`. You do not need a cache-specific macro definition or a
+`--no-cache` workaround for ordinary macro use.
+
+There are two narrower open cache defects to know about:
+
+- A cache-restored parent currently may not enrol a declared private child, so
+  `/run-tests parent.test` can find the test module on a fresh load but not a
+  warm one ([FIXME 0868](../../design/arch/fixmes/0868-cache-restored-parent-does-not-enrol-private-child.md)).
+- When one child module owns a trait and a sibling writes its impl, a fresh
+  `--run` can dispatch successfully while the unchanged warm run loses that
+  impl ([FIXME 0869](../../design/arch/fixmes/0869-cache-restoration-loses-sibling-written-trait-impls.md)).
+
+These are known fresh/cache divergences, not intended module or trait rules.
+For affected Run workflows, `--no-cache` forces recompilation; Link mode does
+not accept `--no-cache`. No fix schedule is promised here.
+
+### Known `def` presentation gap
+
+The standard library's `def` is a macro, not a core special form. Today the
+REPL can expose that implementation: its confirmation may name a generated
+`*-def` thunk, and `/info` or `/sig` may classify the public binding as a
+macro instead of describing its value. A function value bound with `def` also
+has a separate unresolved application question.
+
+This is known, unintended presentation behavior tracked by
+[FIXME 0800](../../design/arch/fixmes/0800-def-macro-expansion-leaks-internal-thunk-name-and-blocks-call.md).
+The rejected local correction did not ship; the proposed compiler transaction
+is recorded in
+[FIXME 0863](../../design/arch/fixmes/0863-cluster-wide-prepared-macro-presentation-transaction.md).
+Do not rely on the generated thunk name—it is not a user API.
 
 ## Restarting with a broken symbol in the file
 

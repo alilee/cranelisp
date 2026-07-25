@@ -3,10 +3,22 @@ use cranelisp_types::{ConcreteType, FQTypeName, ModuleFullPath, TypeName};
 
 #[test]
 fn accessor_names_map_to_intrinsics() {
-    assert_eq!(trace_accessor_abi_name("nanos"), Some("cranelisp_trace_nanos"));
-    assert_eq!(trace_accessor_abi_name("name"), Some("cranelisp_trace_name"));
-    assert_eq!(trace_accessor_abi_name("params"), Some("cranelisp_trace_params"));
-    assert_eq!(trace_accessor_abi_name("result"), Some("cranelisp_trace_result"));
+    assert_eq!(
+        trace_accessor_abi_name("nanos"),
+        Some("cranelisp_trace_nanos")
+    );
+    assert_eq!(
+        trace_accessor_abi_name("name"),
+        Some("cranelisp_trace_name")
+    );
+    assert_eq!(
+        trace_accessor_abi_name("params"),
+        Some("cranelisp_trace_params")
+    );
+    assert_eq!(
+        trace_accessor_abi_name("result"),
+        Some("cranelisp_trace_result")
+    );
     assert_eq!(
         trace_accessor_abi_name("children"),
         Some("cranelisp_trace_children")

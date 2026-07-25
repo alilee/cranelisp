@@ -45,7 +45,10 @@ fn a1_rc_inc_fires_on_stale_inc() {
     // SAFETY: base was returned by alloc_with_rc and its RC is 1 — this brings
     // it to 0 and frees it, so it is no longer live.
     unsafe { alloc::dealloc(base as *mut u8) };
-    assert!(!alloc::is_live(base as usize), "precondition: freed pointer is non-live");
+    assert!(
+        !alloc::is_live(base as usize),
+        "precondition: freed pointer is non-live"
+    );
     rc_inc(base); // stale inc of a freed pointer — A1 must panic here
 }
 
@@ -99,12 +102,17 @@ fn decision24_consume_shallow_preserves_shared_reference() {
     let base = alloc::alloc_with_rc(16) as i64;
     // Simulate a second reference (rc: 1 -> 2).
     unsafe {
-        let rc_ptr = &*((base as *const u8).add(HeapHeader::RC_OFFSET as usize) as *const AtomicI64);
+        let rc_ptr =
+            &*((base as *const u8).add(HeapHeader::RC_OFFSET as usize) as *const AtomicI64);
         rc_ptr.fetch_add(1, Ordering::Release);
     }
     consume_shallow(base); // rc: 2 -> 1, no free
     assert_eq!(alloc::alloc_count() - allocs_before, 1);
-    assert_eq!(alloc::dealloc_count() - deallocs_before, 0, "must not free when other refs exist");
+    assert_eq!(
+        alloc::dealloc_count() - deallocs_before,
+        0,
+        "must not free when other refs exist"
+    );
     // Clean up.
     unsafe { alloc::dealloc(base as *mut u8) };
 }
@@ -201,7 +209,10 @@ fn s99_rc_stat_helpers_tally_inc_and_dec() {
 // (the test process default) both measurement gates are inert.
 #[test]
 fn s99_measurement_gates_off_by_default() {
-    assert!(!nonatomic_rc_enabled(), "CRANELISP_NONATOMIC_RC must default off");
+    assert!(
+        !nonatomic_rc_enabled(),
+        "CRANELISP_NONATOMIC_RC must default off"
+    );
     assert!(!rc_stats_enabled(), "CRANELISP_RC_STATS must default off");
 }
 
@@ -221,10 +232,18 @@ fn s99_measurement_gates_off_by_default() {
 fn h2_tally_stack_slot_advances_the_counter() {
     let h0 = stack_slot_hits();
     tally_stack_slot();
-    assert_eq!(stack_slot_hits(), h0 + 1, "one stack-slot tally must advance by 1");
+    assert_eq!(
+        stack_slot_hits(),
+        h0 + 1,
+        "one stack-slot tally must advance by 1"
+    );
     tally_stack_slot();
     tally_stack_slot();
-    assert_eq!(stack_slot_hits(), h0 + 3, "two more tallies must advance by 2");
+    assert_eq!(
+        stack_slot_hits(),
+        h0 + 3,
+        "two more tallies must advance by 2"
+    );
 }
 
 // spec: design/backend/ownership-codegen.md §13.2 — NEGATIVE: no tally ⇒ no move
@@ -250,7 +269,10 @@ fn h2_tally_rc_emit_atomic_bumps_total_not_nonatomic() {
     tally_rc_emit(false); // atomic arm
     let (na1, tot1) = rc_emit_counts();
     assert_eq!(tot1, tot0 + 1, "an atomic emit must advance the total");
-    assert_eq!(na1, na0, "an atomic emit must NOT advance the non-atomic tally");
+    assert_eq!(
+        na1, na0,
+        "an atomic emit must NOT advance the non-atomic tally"
+    );
 }
 
 // spec: design/backend/ownership-codegen.md §13.2 — non-atomic arm bumps both
@@ -260,7 +282,11 @@ fn h2_tally_rc_emit_nonatomic_bumps_both() {
     tally_rc_emit(true); // non-atomic arm
     let (na1, tot1) = rc_emit_counts();
     assert_eq!(tot1, tot0 + 1, "a non-atomic emit must advance the total");
-    assert_eq!(na1, na0 + 1, "a non-atomic emit must advance the non-atomic tally");
+    assert_eq!(
+        na1,
+        na0 + 1,
+        "a non-atomic emit must advance the non-atomic tally"
+    );
 }
 
 // spec: design/backend/ownership-codegen.md §13.2 — the atomic share is derived
@@ -286,18 +312,34 @@ fn h2_stats_line_carries_the_per_mechanism_family() {
     let line = rc_stats_line();
     assert!(line.starts_with("[RC_STATS]"), "line tag preserved: {line}");
     for field in [
-        "rc_inc=", "rc_dec=", "allocs=", "deallocs=", // the pre-H2 fields, order kept
-        "stack_slot=", "reuse_hit=", "reuse_miss=", "rc_nonatomic=", "rc_atomic=",
+        "rc_inc=",
+        "rc_dec=",
+        "allocs=",
+        "deallocs=", // the pre-H2 fields, order kept
+        "stack_slot=",
+        "reuse_hit=",
+        "reuse_miss=",
+        "rc_nonatomic=",
+        "rc_atomic=",
     ] {
-        assert!(line.contains(field), "RC_STATS line missing `{field}`: {line}");
+        assert!(
+            line.contains(field),
+            "RC_STATS line missing `{field}`: {line}"
+        );
     }
     // The pre-H2 four fields keep their leading order/position so every existing
     // token/regex parser still matches.
     let head = "[RC_STATS] rc_inc=";
-    assert!(line.starts_with(head), "leading field order changed: {line}");
+    assert!(
+        line.starts_with(head),
+        "leading field order changed: {line}"
+    );
     let deallocs_at = line.find("deallocs=").unwrap();
     let stack_at = line.find("stack_slot=").unwrap();
-    assert!(stack_at > deallocs_at, "per-mechanism family must follow the original four");
+    assert!(
+        stack_at > deallocs_at,
+        "per-mechanism family must follow the original four"
+    );
 }
 
 // spec: design/backend/ownership-codegen.md §6.5 — reuse hit/miss are LIVE
@@ -313,8 +355,16 @@ fn reuse_counters_default_zero_and_advance_on_tally() {
     tally_reuse_hit();
     tally_reuse_miss();
     let (h1, m1) = reuse_counts();
-    assert_eq!(h1, h0 + 2, "two reuse-hit tallies advance the hit counter by 2");
-    assert_eq!(m1, m0 + 1, "one reuse-miss tally advances the miss counter by 1");
+    assert_eq!(
+        h1,
+        h0 + 2,
+        "two reuse-hit tallies advance the hit counter by 2"
+    );
+    assert_eq!(
+        m1,
+        m0 + 1,
+        "one reuse-miss tally advances the miss counter by 1"
+    );
 }
 
 // spec: design/backend/ownership-codegen.md §6.5 — NEGATIVE: a reuse-hit tally
@@ -355,17 +405,25 @@ fn reuse_family_reflects_live_counters_in_the_line() {
 #[test]
 fn n1_alloc_bytes_field_present_and_appended() {
     let line = rc_stats_line();
-    assert!(line.contains("alloc_bytes="), "line must carry the N1 field: {line}");
+    assert!(
+        line.contains("alloc_bytes="),
+        "line must carry the N1 field: {line}"
+    );
     // Appended after the prior tail field (`str-len_adapt=`) so the whole prefix
     // grammar is byte-stable for existing token/regex readers.
-    let str_len_at = line.find("str-len_adapt=").expect("str-len_adapt field present");
+    let str_len_at = line
+        .find("str-len_adapt=")
+        .expect("str-len_adapt field present");
     let alloc_bytes_at = line.find("alloc_bytes=").unwrap();
     assert!(
         alloc_bytes_at > str_len_at,
         "alloc_bytes must be appended at the tail, after str-len_adapt: {line}"
     );
     // The pre-N1 fields keep their leading order (regression guard for parsers).
-    assert!(line.starts_with("[RC_STATS] rc_inc="), "leading order preserved: {line}");
+    assert!(
+        line.starts_with("[RC_STATS] rc_inc="),
+        "leading order preserved: {line}"
+    );
 }
 
 // spec: design/backend/ownership-codegen.md §13.2.2 N1 — the reported value is the
@@ -401,8 +459,15 @@ fn n1_alloc_bytes_is_volume_not_count() {
     let dc = crate::alloc::alloc_count() - c0;
     let db = crate::alloc::bytes_allocated() - b0;
     assert_eq!(dc, 1, "one allocation advances the count by exactly 1");
-    assert_eq!(db, cranelisp_types::HeapHeader::SIZE + 64, "bytes advance by the full size, not 1");
-    assert_ne!(db, dc, "alloc_bytes must NOT track the same magnitude as allocs (count)");
+    assert_eq!(
+        db,
+        cranelisp_types::HeapHeader::SIZE + 64,
+        "bytes advance by the full size, not 1"
+    );
+    assert_ne!(
+        db, dc,
+        "alloc_bytes must NOT track the same magnitude as allocs (count)"
+    );
     unsafe {
         crate::alloc::dealloc(p);
     }

@@ -241,12 +241,6 @@ pub unsafe extern "C" fn test_capture_free_output(ptr: *mut u8, len: usize) {
 /// Clear captured output and input queue.
 #[unsafe(no_mangle)]
 pub extern "C" fn test_capture_reset() {
-    OUTPUT
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clear();
-    INPUT
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clear();
+    OUTPUT.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    INPUT.lock().unwrap_or_else(|e| e.into_inner()).clear();
 }

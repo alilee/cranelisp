@@ -99,18 +99,16 @@ pub(crate) fn run_test_by_name(
         };
         let slot = entry.callable_got_slot()?;
         let ptr = t.got.load_slot(slot);
-        if ptr.is_null() {
-            None
-        } else {
-            Some(ptr)
-        }
+        if ptr.is_null() { None } else { Some(ptr) }
     });
 
     let code_ptr = match code_ptr {
         Some(ptr) if !ptr.is_null() => ptr,
-        _ => return TestOutcome::Fail {
-            reason: "test function not found".to_string(),
-        },
+        _ => {
+            return TestOutcome::Fail {
+                reason: "test function not found".to_string(),
+            };
+        }
     };
 
     // Call the test function.
@@ -129,9 +127,8 @@ pub(crate) fn run_test_by_name(
     } else {
         let reason = unsafe {
             let base = value as *const u8;
-            let string_ptr = *(base.add(
-                cranelisp_backend::heap::HeapAdt::field_offset(0) as usize,
-            ) as *const i64);
+            let string_ptr = *(base.add(cranelisp_backend::heap::HeapAdt::field_offset(0) as usize)
+                as *const i64);
             cranelisp_intrinsics::heap_string::read_string_as_str(string_ptr).to_string()
         };
         TestOutcome::Fail { reason }
@@ -238,17 +235,19 @@ pub(crate) fn set_test_runner_state(state: &TestRunnerState) {
 ///
 /// Layout: [alloc_size(8) | rc=1(8) | tag(8) | field0(8) | field1(8) | ...]
 /// (mirrors `HeapAdt` in `cranelisp-backend::heap`). Returns the base pointer.
-unsafe fn alloc_heap_adt(tag: i64, fields: &[i64]) -> i64 { unsafe {
-    let payload_size = 8 + fields.len() * 8; // tag + fields
-    let base = cranelisp_intrinsics::alloc::alloc_with_rc(payload_size);
-    // Tag at offset 16 (HeapHeader::SIZE).
-    *(base.add(16) as *mut i64) = tag;
-    // Fields at offsets 24, 32, 40, ...
-    for (i, &field) in fields.iter().enumerate() {
-        *(base.add(24 + i * 8) as *mut i64) = field;
+unsafe fn alloc_heap_adt(tag: i64, fields: &[i64]) -> i64 {
+    unsafe {
+        let payload_size = 8 + fields.len() * 8; // tag + fields
+        let base = cranelisp_intrinsics::alloc::alloc_with_rc(payload_size);
+        // Tag at offset 16 (HeapHeader::SIZE).
+        *(base.add(16) as *mut i64) = tag;
+        // Fields at offsets 24, 32, 40, ...
+        for (i, &field) in fields.iter().enumerate() {
+            *(base.add(24 + i * 8) as *mut i64) = field;
+        }
+        base as i64
     }
-    base as i64
-}}
+}
 
 /// The late-bound test-wrapper closure body — `extern "C" fn(env_ptr) -> i64`.
 ///
@@ -288,14 +287,16 @@ extern "C" fn discovered_test_wrapper(env_ptr: i64) -> i64 {
 /// address of the test's GOT slot). Layout matches a zero-capture-shape
 /// `compile_lambda` closure with one capture, so the language sees it as an
 /// ordinary `(Fn [] (Option String))` value.
-unsafe fn alloc_test_wrapper_closure(slot_addr: i64) -> i64 { unsafe {
-    // payload = code_ptr(8) + drop_glue_ptr(8) + 1 capture(8) = 24 bytes.
-    let base = cranelisp_intrinsics::alloc::alloc_with_rc(24);
-    *(base.add(16) as *mut i64) = discovered_test_wrapper as *const u8 as i64; // code_ptr
-    *(base.add(24) as *mut i64) = 0; // drop_glue_ptr (no heap captures)
-    *(base.add(32) as *mut i64) = slot_addr; // capture[0] = GOT slot address
-    base as i64
-}}
+unsafe fn alloc_test_wrapper_closure(slot_addr: i64) -> i64 {
+    unsafe {
+        // payload = code_ptr(8) + drop_glue_ptr(8) + 1 capture(8) = 24 bytes.
+        let base = cranelisp_intrinsics::alloc::alloc_with_rc(24);
+        *(base.add(16) as *mut i64) = discovered_test_wrapper as *const u8 as i64; // code_ptr
+        *(base.add(24) as *mut i64) = 0; // drop_glue_ptr (no heap captures)
+        *(base.add(32) as *mut i64) = slot_addr; // capture[0] = GOT slot address
+        base as i64
+    }
+}
 
 /// An eligible test discovered for the fn-value return: the FQ name and the
 /// stable address of its GOT slot (for the late-bound wrapper capture).
@@ -347,7 +348,6 @@ fn discover_eligible_tests(
     out
 }
 
-
 /// True iff `scheme` is exactly `(Fn [] (Option String))` — zero-arg returning
 /// `(Option String)` (test-discovery.md q-eligibility). Quantified vars are
 /// permitted only if they do not appear (a monomorphic test); the structural
@@ -397,11 +397,13 @@ pub(crate) extern "C" fn discover_tests_extern(modules_vec: i64) -> i64 {
         // falls back to the current module.
         let module_paths = unsafe { read_module_paths(modules_vec) };
         let module_paths = if module_paths.is_empty() {
-            vec![state
-                .current_module
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone()]
+            vec![
+                state
+                    .current_module
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone(),
+            ]
         } else {
             module_paths
         };
@@ -429,28 +431,30 @@ pub(crate) extern "C" fn discover_tests_extern(modules_vec: i64) -> i64 {
 
 /// Read a heap `(Vec String)` into owned `ModuleFullPath`s. A null pointer or a
 /// zero-length vec yields an empty list.
-unsafe fn read_module_paths(vec_ptr: i64) -> Vec<ModuleFullPath> { unsafe {
-    if vec_ptr == 0 {
-        return Vec::new();
-    }
-    // HeapVec layout: [header(16) | len(8)@16 | cap(8)@24 | data_ptr(8)@32].
-    let base = vec_ptr as *const u8;
-    let len = *(base.add(16) as *const i64);
-    let data_ptr = *(base.add(32) as *const i64) as *const i64;
-    if len <= 0 || data_ptr.is_null() {
-        return Vec::new();
-    }
-    let mut out = Vec::with_capacity(len as usize);
-    for i in 0..len as usize {
-        let elem = *data_ptr.add(i); // heap String pointer
-        if elem == 0 {
-            continue;
+unsafe fn read_module_paths(vec_ptr: i64) -> Vec<ModuleFullPath> {
+    unsafe {
+        if vec_ptr == 0 {
+            return Vec::new();
         }
-        let s = cranelisp_intrinsics::heap_string::read_string_as_str(elem);
-        out.push(ModuleFullPath::from(s));
+        // HeapVec layout: [header(16) | len(8)@16 | cap(8)@24 | data_ptr(8)@32].
+        let base = vec_ptr as *const u8;
+        let len = *(base.add(16) as *const i64);
+        let data_ptr = *(base.add(32) as *const i64) as *const i64;
+        if len <= 0 || data_ptr.is_null() {
+            return Vec::new();
+        }
+        let mut out = Vec::with_capacity(len as usize);
+        for i in 0..len as usize {
+            let elem = *data_ptr.add(i); // heap String pointer
+            if elem == 0 {
+                continue;
+            }
+            let s = cranelisp_intrinsics::heap_string::read_string_as_str(elem);
+            out.push(ModuleFullPath::from(s));
+        }
+        out
     }
-    out
-}}
+}
 
 /// Allocate an empty heap `Vec` (len=0, cap=0, data_ptr=null) via the runtime
 /// `vec_new` so the layout + data-buffer allocation convention match exactly
@@ -463,17 +467,19 @@ unsafe fn alloc_empty_vec() -> i64 {
 /// runtime `vec_new(cap)` (which allocates the data buffer with the canonical
 /// convention — a raw buffer pointed at by `data_ptr`) and then writing the
 /// elements + len directly. This keeps the buffer reclaimable by `vec_drop`.
-unsafe fn alloc_vec_from(elems: &[i64]) -> i64 { unsafe {
-    let n = elems.len();
-    let base = cranelisp_intrinsics::vec_runtime::vec_new(n as i64) as *mut u8;
-    if n == 0 {
-        return base as i64;
+unsafe fn alloc_vec_from(elems: &[i64]) -> i64 {
+    unsafe {
+        let n = elems.len();
+        let base = cranelisp_intrinsics::vec_runtime::vec_new(n as i64) as *mut u8;
+        if n == 0 {
+            return base as i64;
+        }
+        // HeapVec: len@16, cap@24, data_ptr@32; data buffer holds `cap` i64 slots.
+        let data_ptr = *(base.add(32) as *const i64) as *mut i64;
+        for (i, &e) in elems.iter().enumerate() {
+            *data_ptr.add(i) = e;
+        }
+        *(base.add(16) as *mut i64) = n as i64; // len
+        base as i64
     }
-    // HeapVec: len@16, cap@24, data_ptr@32; data buffer holds `cap` i64 slots.
-    let data_ptr = *(base.add(32) as *const i64) as *mut i64;
-    for (i, &e) in elems.iter().enumerate() {
-        *data_ptr.add(i) = e;
-    }
-    *(base.add(16) as *mut i64) = n as i64; // len
-    base as i64
-}}
+}

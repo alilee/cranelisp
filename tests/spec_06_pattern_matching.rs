@@ -15,7 +15,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{run_through_all_modes, Cranelisp, PreludeVariant};
+use helpers::e2e::{Cranelisp, PreludeVariant, run_through_all_modes};
 
 fn repl_prims(lines: &str) -> helpers::e2e::CrOutput {
     Cranelisp::new()
@@ -32,10 +32,8 @@ fn repl_prims(lines: &str) -> helpers::e2e::CrOutput {
 // spec: spec/06-pattern-matching.md §6.1 — basic match on enum
 #[test]
 fn match_enum_basic() {
-    repl_prims(
-        "(deftype Color Red Green Blue)\n(match Green [Red 0 Green 1 Blue 2])\n",
-    )
-    .assert_stdout_contains(":primitives/Int 1");
+    repl_prims("(deftype Color Red Green Blue)\n(match Green [Red 0 Green 1 Blue 2])\n")
+        .assert_stdout_contains(":primitives/Int 1");
 }
 
 // =============================================================================
@@ -57,10 +55,8 @@ fn pattern_some_binds_value() {
     // Reuse the prelude-seeded `primitives/Option` (§8.6.4: a local Option
     // deftype under the Option-providing prelude is a define-over-prelude
     // collision). Some-binding behaviour is unchanged.
-    repl_prims(
-        "(match (Some 42) [(Some v) v None 0])\n",
-    )
-    .assert_stdout_contains(":primitives/Int 42");
+    repl_prims("(match (Some 42) [(Some v) v None 0])\n")
+        .assert_stdout_contains(":primitives/Int 42");
 }
 
 // =============================================================================
@@ -90,10 +86,8 @@ fn pattern_nullary_constructor() {
 // spec: spec/06-pattern-matching.md §6.2.3 — wildcard catch-all
 #[test]
 fn pattern_wildcard_catchall() {
-    repl_prims(
-        "(deftype Color Red Green Blue)\n(match Blue [Red 0 _ 99])\n",
-    )
-    .assert_stdout_contains(":primitives/Int 99");
+    repl_prims("(deftype Color Red Green Blue)\n(match Blue [Red 0 _ 99])\n")
+        .assert_stdout_contains(":primitives/Int 99");
 }
 
 // =============================================================================
@@ -116,10 +110,8 @@ fn pattern_variable_binds_value() {
 #[test]
 fn pattern_first_match_wins() {
     // Wildcard appears before specific case; spec says first match wins.
-    repl_prims(
-        "(deftype Color Red Green Blue)\n(match Green [_ 1 Green 2])\n",
-    )
-    .assert_stdout_contains(":primitives/Int 1");
+    repl_prims("(deftype Color Red Green Blue)\n(match Green [_ 1 Green 2])\n")
+        .assert_stdout_contains(":primitives/Int 1");
 }
 
 // =============================================================================
@@ -129,10 +121,8 @@ fn pattern_first_match_wins() {
 // spec: spec/06-pattern-matching.md §6.4 — arm bodies must agree on type
 #[test]
 fn pattern_arms_type_unify() {
-    repl_prims(
-        "(deftype Color Red Green Blue)\n(match Red [Red 1 Green 2 Blue 3])\n",
-    )
-    .assert_stdout_contains(":primitives/Int 1");
+    repl_prims("(deftype Color Red Green Blue)\n(match Red [Red 1 Green 2 Blue 3])\n")
+        .assert_stdout_contains(":primitives/Int 1");
 }
 
 // =============================================================================
@@ -430,7 +420,10 @@ fn pattern_match_arm_body_type_mismatch_names_both_types_strict_neg() {
          (match Red [Red 1 Green \"two\" Blue 3])\n",
     );
     let combined = format!("{}{}", out.stdout, out.stderr);
-    assert!(combined.contains("Int"), "diagnostic MUST name 'Int', got: {combined}");
+    assert!(
+        combined.contains("Int"),
+        "diagnostic MUST name 'Int', got: {combined}"
+    );
     assert!(
         combined.contains("String"),
         "diagnostic MUST name 'String', got: {combined}"

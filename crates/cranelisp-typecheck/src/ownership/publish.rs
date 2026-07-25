@@ -21,19 +21,28 @@ use crate::checker::{CheckState, TypeCheckEnv};
 use super::fixpoint::ClusterOwnership;
 
 /// Publish the cluster's ownership analysis onto the symbol table.
-pub(crate) fn publish<C, L>(env: &TypeCheckEnv<C, L>, state: &CheckState, cluster: &ClusterOwnership)
-where
+pub(crate) fn publish<C, L>(
+    env: &TypeCheckEnv<C, L>,
+    state: &CheckState,
+    cluster: &ClusterOwnership,
+) where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
     let mut guard = env.current_symbol_table_mut(state);
     for (key, summary) in &cluster.summaries {
-        let Some(entry) = guard.symbols.get_mut(key) else { continue };
+        let Some(entry) = guard.symbols.get_mut(key) else {
+            continue;
+        };
         // Persisted twin on the callable DefKind variant (⇒ `.meta.json`).
         entry.set_mode_summary(Some(summary.clone()));
         // Compile-in-hand carrier + the one-shot post-convergence site-fact
         // annotation walk (§13.6(b)) onto the stored codegen_view body.
-        if let ModuleEntry::Def { codegen_view: Some(cv), .. } = entry {
+        if let ModuleEntry::Def {
+            codegen_view: Some(cv),
+            ..
+        } = entry
+        {
             cv.mode_summary = Some(summary.clone());
             if let Some(facts) = cluster.facts.get(key) {
                 super::sites::annotate(&mut cv.body, facts);

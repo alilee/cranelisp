@@ -76,7 +76,10 @@ fn project_root() -> PathBuf {
 }
 
 fn binary_path() -> PathBuf {
-    project_root().join("target").join("debug").join("cranelisp")
+    project_root()
+        .join("target")
+        .join("debug")
+        .join("cranelisp")
 }
 
 fn stdout_str(o: &Output) -> String {
@@ -160,11 +163,7 @@ fn cache_repl_loads_heisenbug_parallel_stress() {
     for iteration in 0..STRESS_ITERATIONS {
         let dir = tempfile::tempdir().expect("failed to create temp dir");
 
-        std::fs::write(
-            dir.path().join("helper.cl"),
-            "(defn helper-val [] 99)",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("helper.cl"), "(defn helper-val [] 99)").unwrap();
 
         // Session 1: import the helper module and quit
         let input1 = "\
@@ -447,7 +446,8 @@ fn h5_replay_gate_deterministic_under_scheduler_stress() {
              OQ-3 is wrong and Step 3 must revert (design/int/\
              s77-int-restructure.md §3.5).\n\
              === stdout ===\n{}\n=== [SCH] stderr stream ===\n{}",
-            out.stdout, out.stderr
+            out.stdout,
+            out.stderr
         );
     }
 }
@@ -504,7 +504,8 @@ fn h5_normal_completion_liveness_yields_dep_value() {
          helper-val=42. The normal completion path must terminate AND produce \
          the dependency's value (design/int/s77-int-restructure.md §3.5).\n\
          === stdout ===\n{}\n=== stderr ===\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
 }
 

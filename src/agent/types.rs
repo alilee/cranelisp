@@ -369,11 +369,7 @@ impl AgentRequest {
         // character size (the model's wire payload is dominated by this).
         let char_total = self.primer.len()
             + self.harvest.len()
-            + self
-                .transcript
-                .iter()
-                .map(turn_debug_len)
-                .sum::<usize>()
+            + self.transcript.iter().map(turn_debug_len).sum::<usize>()
             + self.user.len();
         out.push_str(&format!(
             "=== BUDGET (approx) ===\n{char_total} chars (~{} tokens @4ch/tok)\n\n",
@@ -588,7 +584,11 @@ mod tests {
     #[test]
     fn dominant_error_class_picks_most_frequent() {
         let mut st = crate::agent::provider::build_agent_state(false);
-        assert_eq!(st.dominant_error_class(), None, "empty run-up ⇒ no dominant class");
+        assert_eq!(
+            st.dominant_error_class(),
+            None,
+            "empty run-up ⇒ no dominant class"
+        );
         st.error_class_runup = vec![
             "ParseError".into(),
             "TypeError".into(),
@@ -604,7 +604,12 @@ mod tests {
     }
 
     fn tc(id: &str) -> ToolCallRequest {
-        ToolCallRequest { id: id.to_string(), name: "submit".to_string(), argument: "x".to_string(), question: None }
+        ToolCallRequest {
+            id: id.to_string(),
+            name: "submit".to_string(),
+            argument: "x".to_string(),
+            question: None,
+        }
     }
     fn tr(id: &str) -> ToolCallResult {
         ToolCallResult {
@@ -630,7 +635,10 @@ mod tests {
     // spec: repl/spec.md §17 — a prose-only transcript (no tool blocks) is valid.
     #[test]
     fn prose_only_is_valid() {
-        let t = vec![Turn::User("hi".to_string()), Turn::Assistant("hello".to_string())];
+        let t = vec![
+            Turn::User("hi".to_string()),
+            Turn::Assistant("hello".to_string()),
+        ];
         assert!(assert_transcript_wire_valid(&t).is_ok());
     }
 
@@ -665,7 +673,10 @@ mod tests {
     // violation behind the give-up/decline 400.
     #[test]
     fn tool_result_after_prose_is_invalid() {
-        let t = vec![Turn::Assistant("here".to_string()), Turn::ToolResult(tr("x"))];
+        let t = vec![
+            Turn::Assistant("here".to_string()),
+            Turn::ToolResult(tr("x")),
+        ];
         let err = assert_transcript_wire_valid(&t).unwrap_err();
         assert!(err.contains("no preceding"), "got: {err}");
     }

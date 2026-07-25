@@ -7,9 +7,7 @@
 //! per `design/int/repl-decomposition.md` §1.6.1 (FIXME 0627); pure relocation,
 //! behaviour-invariant.
 
-
 use super::*;
-
 
 /// Format an overloaded (multi-sig) function as one line per variant, with
 /// fully-qualified `module/name` per spec §4.1.1. Used by bare-symbol display
@@ -26,7 +24,13 @@ pub(crate) fn format_overloaded_variants(
     docstring: Option<&str>,
     module_table: Option<&crate::code::SessionSymbolTable>,
 ) -> String {
-    render(&format_overloaded_variants_doc(name, module, variants, docstring, module_table))
+    render(&format_overloaded_variants_doc(
+        name,
+        module,
+        variants,
+        docstring,
+        module_table,
+    ))
 }
 
 pub(crate) fn format_overloaded_variants_doc(
@@ -151,7 +155,10 @@ pub(crate) fn format_macro_display_doc(
     let mut doc = StyledDoc::new();
     push_type_annotation(&mut doc, &format!("{module}/{name}"));
     doc.plain(" ");
-    push_metadata(&mut doc, append_docstring_comment("; defmacro".to_string(), docstring));
+    push_metadata(
+        &mut doc,
+        append_docstring_comment("; defmacro".to_string(), docstring),
+    );
     for clause in clauses {
         let params = format_macro_clause_params(clause);
         doc.plain("\n");
@@ -195,12 +202,22 @@ pub(crate) fn format_macro_clause_params(clause: &MacroClauseInfo) -> String {
 /// bodies are all R6 metadata (§10.3 R6); the `\n` line breaks stay Plain.
 pub(crate) fn format_related_section_doc(label: &str, names: &[&str]) -> StyledDoc {
     let owned: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+    format_related_section_groups_doc(label, &[owned])
+}
+
+/// Related-symbol drawer with caller-defined ordering partitions. Each
+/// partition uses the normative symbol layout independently, so a semantic
+/// group boundary (the type impl drawer's local-before-imported rule) is not
+/// erased by the layout formatter's defensive lexical sort.
+fn format_related_section_groups_doc(label: &str, groups: &[Vec<String>]) -> StyledDoc {
     let mut doc = StyledDoc::new();
     doc.plain("\n");
     push_metadata(&mut doc, format!("; {label}:"));
-    for row in format_symbol_layout(&owned) {
-        doc.plain("\n");
-        push_metadata(&mut doc, format!(";  {row}"));
+    for group in groups {
+        for row in format_symbol_layout(group) {
+            doc.plain("\n");
+            push_metadata(&mut doc, format!(";  {row}"));
+        }
     }
     doc
 }
@@ -210,7 +227,10 @@ pub(crate) fn format_trait_related_sections(
     method_names: &[&str],
     impl_type_names: &[&str],
 ) -> String {
-    render(&format_trait_related_sections_doc(method_names, impl_type_names))
+    render(&format_trait_related_sections_doc(
+        method_names,
+        impl_type_names,
+    ))
 }
 
 pub(crate) fn format_trait_related_sections_doc(
@@ -236,7 +256,7 @@ impl CompilerSession {
     /// Format a user-defined type for display (spec §4.1.3).
     ///
     /// Shows `:module/TypeName ; deftype` with `; match:` and `; impl:` sections.
-#[cfg(test)]
+    #[cfg(test)]
     pub(crate) fn format_type_display(&self, type_name: &str, module: &ModuleFullPath) -> String {
         render(&self.format_type_display_doc(type_name, module))
     }
@@ -245,7 +265,11 @@ impl CompilerSession {
     /// the whole `:module/Type` is one R4 span (no `module/` decomposition inside
     /// a type annotation, §10.3 R4); `; deftype` and the `; match:`/`; impl:`
     /// drawers are R6 metadata.
-    pub(crate) fn format_type_display_doc(&self, type_name: &str, module: &ModuleFullPath) -> StyledDoc {
+    pub(crate) fn format_type_display_doc(
+        &self,
+        type_name: &str,
+        module: &ModuleFullPath,
+    ) -> StyledDoc {
         let mut result = StyledDoc::new();
         push_type_annotation(&mut result, &format!("{module}/{type_name}"));
         result.plain(" ");
@@ -261,9 +285,10 @@ impl CompilerSession {
         // never arises — a seeded ADT (Option/Result/IO) reached via the
         // prelude glob keeps its `; match:` section (spec §4.1.3), same as a
         // user deftype (which worked only incidentally when scope == home).
-        if let Some(info) = cranelisp_types::lookup_type_def_chain(
-            &self.shared.symbol_tables, module, &tn,
-        ) && !info.constructors.is_empty() {
+        if let Some(info) =
+            cranelisp_types::lookup_type_def_chain(&self.shared.symbol_tables, module, &tn)
+            && !info.constructors.is_empty()
+        {
             // `TypeDefInfo.constructors` is now `Vec<Symbol>` (S70 — the
             // `ConstructorInfo` struct retired; ctor metadata lives on each
             // ctor's `DefKind::Constructor` entry).
@@ -277,10 +302,12 @@ impl CompilerSession {
         // `prelude_fallback` bit is ON, so the candidate SET is the UNION of the
         // inner-scope run and a prelude-hop run (the ONE `impls_for_type_in_view`
         // wrapper — never two hand-rolled hops, Principle 7).
-        let trait_names = self.impls_for_type_in_view(&tn);
+        let trait_names = self.impls_for_type_in_view(&FQTypeName::new(module.clone(), tn));
         if !trait_names.is_empty() {
-            let names: Vec<&str> = trait_names.iter().map(|t| t.as_ref()).collect();
-            result.extend(format_related_section_doc("impl", &names));
+            result.extend(format_related_section_groups_doc(
+                "impl",
+                &[trait_names.local, trait_names.imported],
+            ));
         }
         result
     }
@@ -326,24 +353,27 @@ impl CompilerSession {
         let mut result = StyledDoc::new();
         push_type_annotation(&mut result, &format!("{home}/{trait_name}"));
         result.plain(" ");
-        push_metadata(&mut result, append_docstring_comment("; deftrait".to_string(), docstring));
+        push_metadata(
+            &mut result,
+            append_docstring_comment("; deftrait".to_string(), docstring),
+        );
         // §4.1.4: the `; defn:` (method names) section always surfaces (a trait
         // always has methods). The `; impl:` (implementing types) section is
         // OMITTED when the trait has no implementations (FIXME 0647 — matching the
         // `deftype` `; match:` omit-when-empty precedent; the echo and the lookup
         // now agree). FIXME 0192 method 4: `get_trait_methods` deleted; inline the
         // 1-line wrapper over `lookup_trait_decl_chain` — rooted at the trait's HOME.
-        let method_names: Vec<String> = cranelisp_types::lookup_trait_decl_chain(
-            &self.shared.symbol_tables, home, &tn,
-        )
-        .map(|decl| decl.methods.iter().map(|m| m.name.to_string()).collect())
-        .unwrap_or_default();
-        let impl_type_names: Vec<String> = cranelisp_types::get_implementing_types_chain(
-            &self.shared.symbol_tables, home, &tn,
-        )
-        .iter()
-        .map(|t| t.to_string())
-        .collect();
+        let method_names: Vec<String> =
+            cranelisp_types::lookup_trait_decl_chain(&self.shared.symbol_tables, home, &tn)
+                .map(|decl| decl.methods.iter().map(|m| m.name.to_string()).collect())
+                .unwrap_or_default();
+        let fq_trait = FQTraitName::new(home.clone(), tn);
+        let impl_type_names: Vec<String> = self
+            .impl_pairs_in_trait_home(home)
+            .into_iter()
+            .filter(|pair| pair.trait_name == fq_trait)
+            .map(|pair| pair.impl_type.name.to_string())
+            .collect();
         let method_refs: Vec<&str> = method_names.iter().map(String::as_str).collect();
         let impl_refs: Vec<&str> = impl_type_names.iter().map(String::as_str).collect();
         result.extend(format_trait_related_sections_doc(&method_refs, &impl_refs));
@@ -368,10 +398,13 @@ impl CompilerSession {
         // surfaces its prelude-globbed trait impls (`; impl: Display Eq Num Ord`,
         // §4.1.3). Sharing the wrapper closes the two-formatter sibling gap that
         // recurs when one is fixed and the other is not (the Inc1 D1/D2 lesson).
-        let trait_names = self.impls_for_type_in_view(&tn);
+        let trait_names =
+            self.impls_for_type_in_view(&FQTypeName::new(ModuleFullPath::from("primitives"), tn));
         if !trait_names.is_empty() {
-            let names: Vec<&str> = trait_names.iter().map(|t| t.as_ref()).collect();
-            result.extend(format_related_section_doc("impl", &names));
+            result.extend(format_related_section_groups_doc(
+                "impl",
+                &[trait_names.local, trait_names.imported],
+            ));
         }
         result
     }
@@ -400,11 +433,9 @@ impl CompilerSession {
     /// per-trait answer complete by construction). This is the ONE session wrapper
     /// feeding BOTH `format_type_display` and `format_builtin_type_display`
     /// (Principle 7 — never two hand-rolled hops).
-    fn impls_for_type_in_view(&self, tn: &TypeName) -> Vec<TraitName> {
+    fn impls_for_type_in_view(&self, target: &FQTypeName) -> VisibleImplTraits {
         let scope = self.current_module_path();
-        let mut traits = cranelisp_types::get_impls_for_type_chain(
-            &self.shared.symbol_tables, &scope, tn,
-        );
+        let mut pairs = self.impl_pairs_for_type_from_root(&scope, target, false);
         let prelude_path = ModuleFullPath::from("prelude");
         if scope != prelude_path {
             let bit_on = self
@@ -414,34 +445,125 @@ impl CompilerSession {
                 .map(|b| *b)
                 .unwrap_or(false);
             if bit_on {
-                for t in cranelisp_types::get_impls_for_type_chain(
-                    &self.shared.symbol_tables, &prelude_path, tn,
-                ) {
-                    // I-1 public-head post-filter: drop a prelude-run trait whose
-                    // head entry in prelude's OWN table is not public.
-                    if self.prelude_trait_head_is_public(&t) {
-                        traits.push(t);
-                    }
-                }
+                pairs.extend(self.impl_pairs_for_type_from_root(&prelude_path, target, true));
             }
         }
-        traits.sort();
-        traits.dedup();
-        traits
+        pairs.sort_by(|left, right| {
+            let left_imported = left.trait_name.module != scope;
+            let right_imported = right.trait_name.module != scope;
+            left_imported
+                .cmp(&right_imported)
+                .then_with(|| left.trait_name.name.cmp(&right.trait_name.name))
+                .then_with(|| left.trait_name.module.cmp(&right.trait_name.module))
+        });
+        pairs.dedup();
+        let mut visible = VisibleImplTraits::default();
+        for pair in pairs {
+            if pair.trait_name.module == scope {
+                visible.local.push(pair.trait_name.name.to_string());
+            } else {
+                visible.imported.push(pair.trait_name.name.to_string());
+            }
+        }
+        visible
     }
 
-    /// I-1 public-head filter for the E8 prelude hop: `true` iff trait `t`'s head
-    /// entry in prelude's OWN table is public. A private prelude trait
-    /// (`deftrait-`) must not leak into a user's type-side `; impl:` view. Mirrors
-    /// `recognize_macro_head`'s prelude-retry post-filter + typecheck's
-    /// `prelude_terminal_visible`.
-    fn prelude_trait_head_is_public(&self, t: &TraitName) -> bool {
-        let prelude_path = ModuleFullPath::from("prelude");
-        self.shared
-            .symbol_tables
-            .get(&prelude_path)
-            .and_then(|tbl| tbl.get(t.as_ref()).map(|e| e.is_public()))
-            .unwrap_or(false)
+    /// Canonical impl pairs visible through one resolution root.
+    ///
+    /// `get_impls_for_type_chain` remains the candidate-set authority. This
+    /// wrapper retains each candidate's resolved `FQTraitName`, then filters the
+    /// canonical pair rows by the queried `FQTypeName`. No rendered/bare name is
+    /// used as semantic identity.
+    fn impl_pairs_for_type_from_root(
+        &self,
+        root: &ModuleFullPath,
+        target: &FQTypeName,
+        public_heads_only: bool,
+    ) -> Vec<ImplPair> {
+        let candidates = cranelisp_types::get_impls_for_type_chain(
+            &self.shared.symbol_tables,
+            root,
+            &target.name,
+        );
+        let mut pairs = Vec::new();
+        for candidate in candidates {
+            let Some((head, home)) = cranelisp_types::resolve_terminal_entry_and_home(
+                &self.shared.symbol_tables,
+                root,
+                candidate.as_ref(),
+            ) else {
+                continue;
+            };
+            if !matches!(head, ModuleEntry::TraitDecl { .. })
+                || public_heads_only && !head.is_public()
+            {
+                continue;
+            }
+            let fq_trait = FQTraitName::new(home.clone(), candidate);
+            pairs.extend(
+                self.impl_pairs_in_trait_home(&home)
+                    .into_iter()
+                    .filter(|pair| pair.trait_name == fq_trait && pair.impl_type == *target),
+            );
+        }
+        pairs.sort_by(|left, right| {
+            left.trait_name
+                .to_string()
+                .cmp(&right.trait_name.to_string())
+                .then_with(|| left.impl_type.to_string().cmp(&right.impl_type.to_string()))
+        });
+        pairs.dedup();
+        pairs
+    }
+
+    /// Enumerate the canonical `(trait, type)` relation stored at one trait
+    /// home. Both `/info <Trait>` and `/info <Type>` project this same reader.
+    fn impl_pairs_in_trait_home(&self, home: &ModuleFullPath) -> Vec<ImplPair> {
+        let mut pairs = Vec::new();
+        cranelisp_types::for_each_in_module(&self.shared.symbol_tables, home, |_name, entry| {
+            if let ModuleEntry::TraitImpl {
+                trait_name,
+                impl_type,
+                ..
+            } = entry
+            {
+                pairs.push(ImplPair {
+                    trait_name: trait_name.clone(),
+                    impl_type: impl_type.clone(),
+                });
+            }
+        });
+        pairs.sort_by(|left, right| {
+            left.trait_name
+                .to_string()
+                .cmp(&right.trait_name.to_string())
+                .then_with(|| left.impl_type.to_string().cmp(&right.impl_type.to_string()))
+        });
+        pairs.dedup();
+        pairs
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ImplPair {
+    trait_name: FQTraitName,
+    impl_type: FQTypeName,
+}
+
+#[derive(Debug, Default)]
+struct VisibleImplTraits {
+    local: Vec<String>,
+    imported: Vec<String>,
+}
+
+impl VisibleImplTraits {
+    fn is_empty(&self) -> bool {
+        self.local.is_empty() && self.imported.is_empty()
+    }
+
+    #[cfg(test)]
+    fn iter(&self) -> impl Iterator<Item = &str> {
+        self.local.iter().chain(&self.imported).map(String::as_str)
     }
 }
 
@@ -453,10 +575,6 @@ impl CompilerSession {
 #[cfg(test)]
 mod overloaded_display_tests {
     use super::*;
-    
-    
-
-    
 
     fn variant(params: Vec<Type>, ret: Type, mangled: &str) -> OverloadVariant {
         OverloadVariant {
@@ -523,7 +641,11 @@ mod overloaded_display_tests {
             variant(vec![Type::Int, Type::Int], Type::Int, "pick$Int+Int"),
         ];
         let out = format_overloaded_variants(
-            "pick", &module, &variants, Some("Pick one or sum two"), None,
+            "pick",
+            &module,
+            &variants,
+            Some("Pick one or sum two"),
+            None,
         );
         let lines: Vec<&str> = out.lines().collect();
         assert!(
@@ -581,7 +703,12 @@ mod overloaded_display_tests {
             "h$Var".into(),
             ModuleEntry::def(
                 scheme,
-                DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot: 0, mode_summary: None } },
+                DefKind::UserFn {
+                    fn_state: UserFnState::Concrete {
+                        got_slot: 0,
+                        mode_summary: None,
+                    },
+                },
             )
             .build(),
         );
@@ -592,7 +719,7 @@ mod overloaded_display_tests {
         )];
         let out = format_overloaded_variants("h", &module, &variants, None, Some(&st));
         assert!(
-            out.contains("(Fn [:Num a :Num a] a) user/h"),
+            out.contains("(Fn [:user/Num a :user/Num a] a) user/h"),
             "the constrained variant MUST render its inferred `Num` bound inline \
              (read from the template scheme), not the constraint-stripped \
              `(Fn [a a] a)`; got:\n{out}"
@@ -612,7 +739,6 @@ mod overloaded_display_tests {
         let variants = vec![variant(vec![Type::Int], Type::Int, "gone$Int")];
         let _ = format_overloaded_variants("g", &module, &variants, None, Some(&st));
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -623,10 +749,6 @@ mod overloaded_display_tests {
 #[cfg(test)]
 mod trait_related_section_tests {
     use super::*;
-    
-    
-
-    
 
     // spec: repl/spec.md §4.1.4 — FIXME 0647: an impl-less trait OMITS the empty
     // `; impl:` section on BOTH the bare lookup and the definition echo (the
@@ -674,15 +796,10 @@ mod trait_related_section_tests {
 #[cfg(test)]
 mod fq_arg_format_type_tests {
     use super::*;
-    
-    
+
     use crate::repl::test_support::*;
-    
-    use cranelisp_types::{
-        ModuleEntry, ModuleFullPath, Span,
-        Symbol, Visibility,
-    };
-    
+
+    use cranelisp_types::{ModuleEntry, ModuleFullPath, Span, Symbol, Visibility};
 
     // spec: repl/spec.md §4.1.2/§1.5 (0570-sibling display-envelope-mirror) — the
     // constructor display authority renders the ONE canonical `user/Color.Red`
@@ -783,7 +900,10 @@ mod fq_arg_format_type_tests {
             out.contains(":home/T ; deftrait"),
             "primary line MUST qualify the RESOLVED home, not the asking scope; got: {out}"
         );
-        assert!(!out.contains(":user/T"), "must NOT mis-home to the asking scope; got: {out}");
+        assert!(
+            !out.contains(":user/T"),
+            "must NOT mis-home to the asking scope; got: {out}"
+        );
         assert!(
             out.contains("; defn:") && out.contains("mm"),
             "the `; defn:` section MUST list method `mm` (home-rooted); got: {out}"
@@ -804,14 +924,20 @@ mod fq_arg_format_type_tests {
         let prelude = ModuleFullPath::from("prelude");
         let scope = s.current_module_path();
         let mut ptbl = SessionSymbolTable::new_with_params(prelude.clone());
-        ptbl.insert(Symbol::from("Disp"), trait_decl_entry("Disp", Visibility::Public));
-        ptbl.insert(Symbol::from("Disp.Int"), impl_entry(&prelude, "Disp", "Int"));
+        ptbl.insert(
+            Symbol::from("Disp"),
+            trait_decl_entry("Disp", Visibility::Public),
+        );
+        ptbl.insert(
+            Symbol::from("Disp.Int"),
+            impl_entry(&prelude, "Disp", "Int"),
+        );
         s.shared.symbol_tables.insert(prelude.clone(), ptbl);
         s.shared.prelude_fallback.insert(scope, true);
 
-        let traits = s.impls_for_type_in_view(&TypeName::from("Int"));
+        let traits = s.impls_for_type_in_view(&FQTypeName::new(prelude, TypeName::from("Int")));
         assert!(
-            traits.iter().any(|t| t.as_ref() == "Disp"),
+            traits.iter().any(|t| t == "Disp"),
             "the type-side `; impl:` view MUST include the prelude-globbed trait via \
              the prelude hop; got: {traits:?}"
         );
@@ -825,14 +951,20 @@ mod fq_arg_format_type_tests {
         let s = session();
         let prelude = ModuleFullPath::from("prelude");
         let mut ptbl = SessionSymbolTable::new_with_params(prelude.clone());
-        ptbl.insert(Symbol::from("Disp"), trait_decl_entry("Disp", Visibility::Public));
-        ptbl.insert(Symbol::from("Disp.Int"), impl_entry(&prelude, "Disp", "Int"));
+        ptbl.insert(
+            Symbol::from("Disp"),
+            trait_decl_entry("Disp", Visibility::Public),
+        );
+        ptbl.insert(
+            Symbol::from("Disp.Int"),
+            impl_entry(&prelude, "Disp", "Int"),
+        );
         s.shared.symbol_tables.insert(prelude.clone(), ptbl);
         // Bit deliberately NOT set (absence-is-OFF) — the suppressed-prelude case.
 
-        let traits = s.impls_for_type_in_view(&TypeName::from("Int"));
+        let traits = s.impls_for_type_in_view(&FQTypeName::new(prelude, TypeName::from("Int")));
         assert!(
-            !traits.iter().any(|t| t.as_ref() == "Disp"),
+            !traits.iter().any(|t| t == "Disp"),
             "with the prelude bit OFF, NO prelude-trait rows appear; got: {traits:?}"
         );
     }
@@ -846,14 +978,20 @@ mod fq_arg_format_type_tests {
         let prelude = ModuleFullPath::from("prelude");
         let scope = s.current_module_path();
         let mut ptbl = SessionSymbolTable::new_with_params(prelude.clone());
-        ptbl.insert(Symbol::from("Secret"), trait_decl_entry("Secret", Visibility::Private));
-        ptbl.insert(Symbol::from("Secret.Int"), impl_entry(&prelude, "Secret", "Int"));
+        ptbl.insert(
+            Symbol::from("Secret"),
+            trait_decl_entry("Secret", Visibility::Private),
+        );
+        ptbl.insert(
+            Symbol::from("Secret.Int"),
+            impl_entry(&prelude, "Secret", "Int"),
+        );
         s.shared.symbol_tables.insert(prelude.clone(), ptbl);
         s.shared.prelude_fallback.insert(scope, true);
 
-        let traits = s.impls_for_type_in_view(&TypeName::from("Int"));
+        let traits = s.impls_for_type_in_view(&FQTypeName::new(prelude, TypeName::from("Int")));
         assert!(
-            !traits.iter().any(|t| t.as_ref() == "Secret"),
+            !traits.iter().any(|t| t == "Secret"),
             "a PRIVATE prelude trait MUST NOT leak into a user's `; impl:` view; got: {traits:?}"
         );
     }
@@ -866,21 +1004,96 @@ mod fq_arg_format_type_tests {
         let s = session();
         let scope = s.current_module_path();
         if let Some(mut tbl) = s.shared.symbol_tables.get_mut(&scope) {
-            tbl.insert(Symbol::from("Loc"), trait_decl_entry("Loc", Visibility::Public));
-            tbl.insert(Symbol::from("Loc.Gadget"), impl_entry(&scope, "Loc", "Gadget"));
+            tbl.insert(
+                Symbol::from("Loc"),
+                trait_decl_entry("Loc", Visibility::Public),
+            );
+            tbl.insert(
+                Symbol::from("Loc.Gadget"),
+                impl_entry(&scope, "Loc", "Gadget"),
+            );
         } else {
             let mut tbl = SessionSymbolTable::new_with_params(scope.clone());
-            tbl.insert(Symbol::from("Loc"), trait_decl_entry("Loc", Visibility::Public));
-            tbl.insert(Symbol::from("Loc.Gadget"), impl_entry(&scope, "Loc", "Gadget"));
+            tbl.insert(
+                Symbol::from("Loc"),
+                trait_decl_entry("Loc", Visibility::Public),
+            );
+            tbl.insert(
+                Symbol::from("Loc.Gadget"),
+                impl_entry(&scope, "Loc", "Gadget"),
+            );
             s.shared.symbol_tables.insert(scope.clone(), tbl);
         }
 
-        let traits = s.impls_for_type_in_view(&TypeName::from("Gadget"));
+        let traits = s.impls_for_type_in_view(&FQTypeName::new(scope, TypeName::from("Gadget")));
         assert!(
-            traits.iter().any(|t| t.as_ref() == "Loc"),
+            traits.iter().any(|t| t == "Loc"),
             "a scope-local trait's impl MUST surface via the inner-scope run; got: {traits:?}"
         );
     }
+
+    // The inverse reader compares the complete FQ type identity, not only its
+    // bare `TypeName`. A foreign `Gadget` impl must not appear in the drawer for
+    // the distinct `user/Gadget`.
+    #[test]
+    fn impls_for_type_in_view_rejects_same_bare_type_from_other_module() {
+        let s = session();
+        let scope = s.current_module_path();
+        let foreign = ModuleFullPath::from("foreign");
+        let mut foreign_table = SessionSymbolTable::new_with_params(foreign.clone());
+        foreign_table.insert(
+            Symbol::from("ForeignTrait"),
+            trait_decl_entry("ForeignTrait", Visibility::Public),
+        );
+        foreign_table.insert(
+            Symbol::from("ForeignTrait.Gadget"),
+            impl_entry(&foreign, "ForeignTrait", "Gadget"),
+        );
+        s.shared
+            .symbol_tables
+            .insert(foreign.clone(), foreign_table);
+        s.shared
+            .symbol_tables
+            .get_mut(&scope)
+            .expect("session scope exists")
+            .insert(
+                Symbol::from("ForeignTrait"),
+                ModuleEntry::Import {
+                    source: FQSymbol {
+                        module: foreign,
+                        symbol: Symbol::from("ForeignTrait"),
+                    },
+                    visibility: Visibility::Private,
+                },
+            );
+
+        let traits = s.impls_for_type_in_view(&FQTypeName::new(scope, TypeName::from("Gadget")));
+        assert!(
+            traits.is_empty(),
+            "an impl for foreign/Gadget must not match user/Gadget; got: {traits:?}"
+        );
+    }
+
+    #[test]
+    fn related_impl_groups_keep_local_names_before_imported_names() {
+        let doc = format_related_section_groups_doc(
+            "impl",
+            &[
+                vec!["ZuluLocal".to_string()],
+                vec!["AlphaImported".to_string()],
+            ],
+        );
+        let rendered = render(&doc);
+        let local = rendered.find("ZuluLocal").expect("local row is present");
+        let imported = rendered
+            .find("AlphaImported")
+            .expect("imported row is present");
+        assert!(
+            local < imported,
+            "semantic local/imported partitions must survive lexical layout; got: {rendered}"
+        );
+    }
+
     // E8 negative (§4.1.3 empty-omitted unchanged): with no impls reachable, the
     // type display omits the `; impl:` section entirely (the type rule, unlike a
     // trait's unconditional sections). spec: repl/spec.md §4.1.3

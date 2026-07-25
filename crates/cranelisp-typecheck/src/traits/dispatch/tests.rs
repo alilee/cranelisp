@@ -4,8 +4,8 @@
 //! structural, per METHOD §2.2 / Principle 23).
 
 use cranelisp_types::{
-    CranelispError, Defn, DefnVariant, Expr, ResolvedCall, Span, Symbol, TraitImpl,
-    TraitName, Type, TypeExpr, TypeName, Visibility,
+    CranelispError, Defn, DefnVariant, Expr, ResolvedCall, Span, Symbol, TraitImpl, TraitName,
+    Type, TypeExpr, TypeName, Visibility,
 };
 
 use super::*;

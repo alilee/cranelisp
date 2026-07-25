@@ -2,7 +2,7 @@
 
 This section defines the compile-time macro system in Cranelisp. Macros are ordinary Cranelisp functions that transform S-expression values before type checking. They are compiled with the same code generation pipeline as user functions and called during expansion — no separate interpreter is required.
 
-## 9.1 Sexp Data Model [Tested crates/cranelisp-typecheck/src/builtins.rs::test_macros_module_exists]
+## 9.1 Sexp Data Model [Uncovered S115 — was crates/cranelisp-typecheck/src/builtins.rs::test_macros_module_exists]
 
 The macro system operates on S-expression values. Two algebraic data types are provided by the compiler in a synthetic `macros` module. These types are immutable and not user-modifiable.
 
@@ -65,7 +65,7 @@ At macro expansion time, the implementation MUST convert between its internal S-
 
 The heap layout of marshalled values follows the standard ADT representation defined in Section 12.1.4. The details of the marshalling functions are implementation-defined.
 
-## 9.2 Macro Definition [Tested tests/spec_09_macros::macro_body_calls_helper_function_in_run_mode]
+## 9.2 Macro Definition [Tested+Neg tests/spec_09_macros::macro_body_calls_helper_function_in_run_mode, tests/annotation_fold_macro_arg_0708.rs::annotation_folds_in_macro_argument_position, tests/annotation_fold_macro_arg_0708.rs::macro_two_arg_call_without_annotation_control_green]
 
 ### 9.2.1 Syntax
 
@@ -288,7 +288,7 @@ Macros MAY be invoked through qualified names (`module/macro-name`) without an e
 
 Qualified macro references are **not** constrained by source order within the referring module — they target a dependency module, which is always typechecked before the referring module (the dependency graph is acyclic, §9.3.4). This asymmetry is intentional: in-module macro availability follows the defmacro-before-use rule (§9.3.4), while cross-module macro references are available as soon as their defining module can be loaded and typechecked.
 
-## 9.4 Quasiquote [Tested tests/spec_09_macros::quasiquote_with_unquote]
+## 9.4 Quasiquote [Tested+Neg tests/spec_09_macros::quasiquote_with_unquote, crates/cranelisp-frontend/src/quasiquote.rs::quote_and_quasiquote_preserve_annotated_node_shape, crates/cranelisp-frontend/src/quasiquote.rs::annotation_half_splice_is_rejected_in_quasiquote, crates/cranelisp-frontend/src/quasiquote.rs::annotation_subject_splice_is_rejected_in_quasiquote, crates/cranelisp-frontend/src/quasiquote.rs::unquote_is_processed_in_both_annotated_halves]
 
 Quasiquote is reader syntax for template-based S-expression construction. It avoids the verbosity of manually calling `Sexp` constructors.
 

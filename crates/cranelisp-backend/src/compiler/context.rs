@@ -171,7 +171,8 @@ where
     /// inline-dispatched). Replaces the `resolve_is_callable_target` value-site
     /// reach (`is_known_function`).
     pub(crate) fn is_callable_target_at(&self, fq: &FQSymbol) -> bool {
-        self.entry_at(fq).is_some_and(|(_, e)| e.is_callable_target())
+        self.entry_at(fq)
+            .is_some_and(|(_, e)| e.is_callable_target())
     }
 
     /// S14 (closure-wrapper arity) kind arm: the callee's param count read off
@@ -189,7 +190,8 @@ where
     /// `resolve_callee_summary` value-site reach. `None` ⇒ the Decision-24
     /// conservative point (no summary carried).
     pub(crate) fn callee_summary_at(&self, fq: &FQSymbol) -> Option<ModeSummary> {
-        self.entry_at(fq).and_then(|(_, e)| e.mode_summary().cloned())
+        self.entry_at(fq)
+            .and_then(|(_, e)| e.mode_summary().cloned())
     }
 
     /// S17/S18 (vec-query wrapper discrimination) kind arm: `true` iff `fq`
@@ -260,7 +262,13 @@ where
     ) -> Option<(FQTypeName, CtorMeta)> {
         match entry {
             ModuleEntry::Def { kind, scheme, .. } => {
-                let DefKind::Constructor { type_name, tag, field_count, .. } = &**kind else {
+                let DefKind::Constructor {
+                    type_name,
+                    tag,
+                    field_count,
+                    ..
+                } = &**kind
+                else {
                     return None;
                 };
                 let field_types: &[Type] = match &scheme.ty {
@@ -333,7 +341,9 @@ where
         match table.get(fqtn.name.as_ref()) {
             Some(ModuleEntry::TypeDef { info, .. }) => Some(info.clone()),
             Some(ModuleEntry::Def { kind, .. }) => match &**kind {
-                DefKind::Constructor { type_def: Some(td), .. } => Some((**td).clone()),
+                DefKind::Constructor {
+                    type_def: Some(td), ..
+                } => Some((**td).clone()),
                 _ => None,
             },
             _ => None,

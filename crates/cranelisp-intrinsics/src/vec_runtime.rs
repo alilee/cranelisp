@@ -85,19 +85,25 @@ unsafe fn read_data_ptr(base: *const u8) -> *mut i64 {
 /// Write the `len` field.
 #[inline]
 unsafe fn write_len(base: *mut u8, len: i64) {
-    unsafe { *base.add(LEN_OFFSET).cast::<i64>() = len; }
+    unsafe {
+        *base.add(LEN_OFFSET).cast::<i64>() = len;
+    }
 }
 
 /// Write the `cap` field.
 #[inline]
 unsafe fn write_cap(base: *mut u8, cap: i64) {
-    unsafe { *base.add(CAP_OFFSET).cast::<i64>() = cap; }
+    unsafe {
+        *base.add(CAP_OFFSET).cast::<i64>() = cap;
+    }
 }
 
 /// Write the `data_ptr` field.
 #[inline]
 unsafe fn write_data_ptr(base: *mut u8, data_ptr: *mut i64) {
-    unsafe { *base.add(DATA_PTR_OFFSET).cast::<i64>() = data_ptr as i64; }
+    unsafe {
+        *base.add(DATA_PTR_OFFSET).cast::<i64>() = data_ptr as i64;
+    }
 }
 
 /// Allocate a data buffer of `cap` elements (each i64 = 8 bytes).
@@ -194,8 +200,17 @@ mod databuf_guard {
         LazyLock::new(|| Mutex::new(HashMap::new()));
 
     pub(super) fn on_alloc(ptr: usize, cap: i64) {
-        LIVE.lock().unwrap_or_else(|e| e.into_inner()).insert(ptr, cap);
+        LIVE.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(ptr, cap);
         FREED.lock().unwrap_or_else(|e| e.into_inner()).remove(&ptr);
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_live(ptr: usize) -> bool {
+        LIVE.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&ptr)
     }
 
     /// Validate that `ptr` (a vec's `data_ptr`) is a currently-live data buffer of
@@ -242,7 +257,10 @@ mod databuf_guard {
                     "vec data buffer {ptr:#x} freed with cap {cap} but was allocated \
                      with cap {live_cap} (free site: {site})"
                 );
-                FREED.lock().unwrap_or_else(|e| e.into_inner()).insert(ptr, site);
+                FREED
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(ptr, site);
             }
             None => {
                 let prev = FREED
@@ -271,6 +289,236 @@ fn call_elem_fn(fn_ptr: i64, val: i64) {
         let f: ElemFn = unsafe { std::mem::transmute(fn_ptr) };
         f(val);
     }
+}
+
+/// Unpublished storage for [`vec_strings_from_owned`].
+///
+/// The Rust `Vec` retains the complete transferred-owner list until
+/// publication. That makes cleanup independent of how many destination slots
+/// have been initialized: an unwind releases every transferred HeapString
+/// exactly once, then frees whichever Vec allocations exist.
+struct UnpublishedVecStrings {
+    elements: Vec<i64>,
+    base: *mut u8,
+    data: *mut i64,
+    initialized: usize,
+    armed: bool,
+}
+
+impl UnpublishedVecStrings {
+    fn new(elements: Vec<i64>) -> Self {
+        Self {
+            elements,
+            base: std::ptr::null_mut(),
+            data: std::ptr::null_mut(),
+            initialized: 0,
+            armed: true,
+        }
+    }
+
+    /// Allocate and initialize the unpublished Vec metadata with `len = 0`.
+    ///
+    /// # Safety
+    ///
+    /// Must be called at most once on this guard.
+    unsafe fn allocate(&mut self) {
+        assert!(self.base.is_null(), "unpublished Vec allocated twice");
+        let cap = i64::try_from(self.elements.len())
+            .expect("owned Vec String element count must fit in i64");
+
+        self.base = heap_alloc_mod::alloc_with_rc(VEC_PAYLOAD_SIZE);
+        // SAFETY: `base` is the fresh live allocation returned above with the
+        // exact 24-byte Vec payload required by these three field writes.
+        unsafe {
+            write_len(self.base, 0);
+            write_cap(self.base, cap);
+            write_data_ptr(self.base, std::ptr::null_mut());
+        }
+
+        self.data = alloc_data_buffer(cap);
+        // SAFETY: `base` remains live and owns its Vec metadata; `data` is
+        // either null for cap zero or the fresh `cap`-slot allocation.
+        unsafe {
+            write_data_ptr(self.base, self.data);
+        }
+    }
+
+    /// Copy the next slots into the unpublished data allocation.
+    ///
+    /// # Safety
+    ///
+    /// [`Self::allocate`] must have completed and `end` must not exceed the
+    /// transferred element count.
+    unsafe fn initialize_prefix(&mut self, end: usize) {
+        assert!(end <= self.elements.len(), "initialized prefix exceeds cap");
+        assert!(
+            end >= self.initialized,
+            "initialized prefix cannot move backwards"
+        );
+        for index in self.initialized..end {
+            // SAFETY: `allocate` established `data` as `elements.len()` slots;
+            // `index < end <= elements.len()` keeps this write in-bounds.
+            unsafe {
+                *self.data.add(index) = self.elements[index];
+            }
+        }
+        self.initialized = end;
+    }
+
+    /// Publish `len` last and disarm cleanup.
+    ///
+    /// # Safety
+    ///
+    /// All element slots must have been initialized.
+    unsafe fn publish(mut self) -> i64 {
+        assert_eq!(
+            self.initialized,
+            self.elements.len(),
+            "cannot publish a partially initialized Vec String"
+        );
+        let len = i64::try_from(self.initialized)
+            .expect("owned Vec String element count must fit in i64");
+        // SAFETY: the guard still owns the live Vec allocation and the
+        // equality above proves all `0..len` slots are initialized.
+        unsafe {
+            write_len(self.base, len);
+        }
+
+        let published = self.base as i64;
+        self.armed = false;
+        published
+    }
+}
+
+impl Drop for UnpublishedVecStrings {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+
+        for &element in &self.elements {
+            crate::rc::consume_shallow(element);
+        }
+
+        if !self.base.is_null() {
+            let cap = i64::try_from(self.elements.len())
+                .expect("owned Vec String element count must fit in i64");
+            // SAFETY: while armed, the guard uniquely owns `data` (null only
+            // at cap zero) and `base`; neither allocation has been published
+            // or freed, and both were allocated with these exact layouts.
+            unsafe {
+                free_data_buffer(self.data, cap, "vec_strings_from_owned(unpublished)");
+                heap_alloc_mod::dealloc(self.base);
+            }
+        }
+    }
+}
+
+/// Construct a runtime Vec that takes ownership of HeapString references.
+///
+/// This is a Rust-path helper only. It has no emitted-call symbol and is absent
+/// from [`crate::intrinsics_table`].
+///
+/// # Safety
+///
+/// Every word in `elements` must be the base pointer of one live HeapString
+/// allocation and carry one owned reference transferred to this function.
+/// Duplicate words are valid only when the caller owns that many references.
+/// From call entry the caller must not consume or separately release any
+/// transferred reference, including if this function unwinds. On success the
+/// returned live Vec owns exactly those references.
+///
+/// Before publication this function owns the input `Vec<i64>`, any allocated
+/// Vec object and data buffer, and all transferred HeapString references. It
+/// initializes every element slot before publishing `len` last. If it unwinds,
+/// its guard shallow-consumes every transferred reference exactly once and
+/// frees every unpublished allocation exactly once. Only `0..len` is live.
+pub unsafe fn vec_strings_from_owned(elements: Vec<i64>) -> i64 {
+    let mut unpublished = UnpublishedVecStrings::new(elements);
+    // SAFETY: the caller contract transfers every live HeapString owner into
+    // this armed guard; each method's precondition is established by the
+    // preceding method, ending with every slot initialized before publish.
+    unsafe {
+        unpublished.allocate();
+        unpublished.initialize_prefix(unpublished.elements.len());
+        unpublished.publish()
+    }
+}
+
+/// Borrow the live HeapString words in a runtime Vec for one callback.
+///
+/// This is a Rust-path helper only. It has no emitted-call symbol and is absent
+/// from [`crate::intrinsics_table`].
+///
+/// # Safety
+///
+/// `base` must be a non-null, correctly aligned base pointer to a live Vec
+/// whose live elements are HeapString base pointers. An owning Vec reference
+/// must remain alive and the Vec must not be mutated for the complete callback.
+/// The caller remains responsible for allocation provenance and liveness,
+/// which runtime field checks cannot establish.
+///
+/// Before forming the slice this function checks `0 <= len <= cap`, checked
+/// `cap * size_of::<i64>()` representability, and that `data_ptr` is non-null
+/// and correctly aligned when `cap > 0`. The callback may copy a word only as a
+/// non-owning observation; retaining or consuming an element requires an
+/// explicit RC operation outside this helper's contract. Normal return and
+/// unwind perform no increment, decrement, transfer, or consumption of the Vec
+/// or its elements. Safe Rust cannot return the borrowed slice from `read`.
+pub unsafe fn with_vec_strings<R>(base: i64, read: impl FnOnce(&[i64]) -> R) -> R {
+    let base_addr = usize::try_from(base).expect("Vec String base pointer must be positive");
+    assert_ne!(base_addr, 0, "Vec String base pointer must be non-null");
+    assert_eq!(
+        base_addr % std::mem::align_of::<i64>(),
+        0,
+        "Vec String base pointer must be aligned"
+    );
+    let base_ptr = base_addr as *const u8;
+
+    // SAFETY: the caller contract guarantees `base_ptr` is the aligned base of
+    // a live Vec allocation, so the fixed-offset len read is valid.
+    let len = unsafe { read_len(base_ptr) };
+    // SAFETY: the same live canonical Vec allocation contains the cap field at
+    // its fixed offset.
+    let cap = unsafe { read_cap(base_ptr) };
+    assert!(
+        0 <= len && len <= cap,
+        "Vec String metadata requires 0 <= len <= cap (len={len}, cap={cap})"
+    );
+
+    let cap = usize::try_from(cap).expect("non-negative Vec String cap must fit usize");
+    let byte_len = cap
+        .checked_mul(std::mem::size_of::<i64>())
+        .expect("Vec String capacity byte size overflow");
+    assert!(
+        byte_len <= isize::MAX as usize,
+        "Vec String capacity exceeds slice representability"
+    );
+
+    // SAFETY: the caller contract guarantees the live Vec allocation contains
+    // the data-pointer field at the canonical fixed offset.
+    let data = unsafe { read_data_ptr(base_ptr) };
+    if cap > 0 {
+        assert!(!data.is_null(), "positive-capacity Vec String needs data");
+        assert_eq!(
+            data.align_offset(std::mem::align_of::<i64>()),
+            0,
+            "Vec String data pointer must be aligned"
+        );
+    }
+
+    let len = usize::try_from(len).expect("non-negative Vec String len must fit usize");
+    let data = if len == 0 {
+        std::ptr::NonNull::<i64>::dangling().as_ptr()
+    } else {
+        data
+    };
+    // SAFETY: for zero length `data` is the aligned non-null dangling
+    // sentinel. Otherwise the checked metadata gives `len <= cap`, and the
+    // caller contract guarantees `data` points to that live initialized Vec
+    // buffer for the complete callback.
+    let elements = unsafe { std::slice::from_raw_parts(data, len) };
+    read(elements)
 }
 
 // ---------------------------------------------------------------------------

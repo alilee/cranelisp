@@ -8,8 +8,6 @@ use super::*;
 use crate::program::test_support::*;
 use cranelisp_types::ConcreteType;
 
-
-
 // spec: 05-definitions §5.1.2 — multi-sig defn with different arities
 #[test]
 fn test_multi_sig_different_arities() {
@@ -36,7 +34,11 @@ fn test_multi_sig_different_arities() {
                 span: span(5, 23),
             },
             DefnVariant {
-                params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None), (Symbol::from("z"), None)],
+                params: vec![
+                    (Symbol::from("x"), None),
+                    (Symbol::from("y"), None),
+                    (Symbol::from("z"), None),
+                ],
                 body: Expr::Apply {
                     callee: Box::new(Expr::var(Symbol::from("add-i64"), span(30, 37))),
                     args: vec![
@@ -62,7 +64,13 @@ fn test_multi_sig_different_arities() {
         span(0, 56),
     ))];
 
-    let _result = tc.check(&program, &test_ctx(), cranelisp_types::ModuleStrategy::Additive).unwrap();
+    let _result = tc
+        .check(
+            &program,
+            &test_ctx(),
+            cranelisp_types::ModuleStrategy::Additive,
+        )
+        .unwrap();
 
     // The base name "add" should be registered as Overloaded
     let table_guard = tc.symbol_table();
@@ -113,12 +121,22 @@ fn test_multi_sig_same_arity_different_types() {
         "process",
         vec![
             DefnVariant {
-                params: vec![(Symbol::from("x"), Some(TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int")))))],
+                params: vec![(
+                    Symbol::from("x"),
+                    Some(TypeExpr::Named(cranelisp_types::TypeRef::new(
+                        None,
+                        TypeName::from("Int"),
+                    ))),
+                )],
                 body: Expr::Apply {
                     callee: Box::new(Expr::var(Symbol::from("add-i64"), span(110, 117))),
                     args: vec![
                         Expr::var(Symbol::from("x"), span(118, 119)),
-                        Expr::IntLit { value: 1, span: span(120, 121), inferred_type: None, },
+                        Expr::IntLit {
+                            value: 1,
+                            span: span(120, 121),
+                            inferred_type: None,
+                        },
                     ],
                     span: span(109, 122),
                     resolved_call: None,
@@ -127,11 +145,25 @@ fn test_multi_sig_same_arity_different_types() {
                 span: span(105, 123),
             },
             DefnVariant {
-                params: vec![(Symbol::from("x"), Some(TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Bool")))))],
+                params: vec![(
+                    Symbol::from("x"),
+                    Some(TypeExpr::Named(cranelisp_types::TypeRef::new(
+                        None,
+                        TypeName::from("Bool"),
+                    ))),
+                )],
                 body: Expr::If {
                     cond: Box::new(Expr::var(Symbol::from("x"), span(130, 131))),
-                    then_branch: Box::new(Expr::IntLit { value: 1, span: span(132, 133), inferred_type: None, }),
-                    else_branch: Box::new(Expr::IntLit { value: 0, span: span(134, 135), inferred_type: None, }),
+                    then_branch: Box::new(Expr::IntLit {
+                        value: 1,
+                        span: span(132, 133),
+                        inferred_type: None,
+                    }),
+                    else_branch: Box::new(Expr::IntLit {
+                        value: 0,
+                        span: span(134, 135),
+                        inferred_type: None,
+                    }),
                     span: span(127, 136),
                     inferred_type: None,
                 },
@@ -141,7 +173,13 @@ fn test_multi_sig_same_arity_different_types() {
         span(100, 138),
     ))];
 
-    let _result = tc.check(&program, &test_ctx(), cranelisp_types::ModuleStrategy::Additive).unwrap();
+    let _result = tc
+        .check(
+            &program,
+            &test_ctx(),
+            cranelisp_types::ModuleStrategy::Additive,
+        )
+        .unwrap();
 
     // Mangled names should be different: process$Int vs process$Bool
     assert!(
@@ -175,12 +213,22 @@ fn test_multi_sig_duplicate_signatures_error() {
         "dup",
         vec![
             DefnVariant {
-                params: vec![(Symbol::from("x"), Some(TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int")))))],
+                params: vec![(
+                    Symbol::from("x"),
+                    Some(TypeExpr::Named(cranelisp_types::TypeRef::new(
+                        None,
+                        TypeName::from("Int"),
+                    ))),
+                )],
                 body: Expr::Apply {
                     callee: Box::new(Expr::var(Symbol::from("add-i64"), span(210, 217))),
                     args: vec![
                         Expr::var(Symbol::from("x"), span(218, 219)),
-                        Expr::IntLit { value: 1, span: span(220, 221), inferred_type: None, },
+                        Expr::IntLit {
+                            value: 1,
+                            span: span(220, 221),
+                            inferred_type: None,
+                        },
                     ],
                     span: span(209, 222),
                     resolved_call: None,
@@ -189,12 +237,22 @@ fn test_multi_sig_duplicate_signatures_error() {
                 span: span(205, 223),
             },
             DefnVariant {
-                params: vec![(Symbol::from("y"), Some(TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int")))))],
+                params: vec![(
+                    Symbol::from("y"),
+                    Some(TypeExpr::Named(cranelisp_types::TypeRef::new(
+                        None,
+                        TypeName::from("Int"),
+                    ))),
+                )],
                 body: Expr::Apply {
                     callee: Box::new(Expr::var(Symbol::from("add-i64"), span(230, 237))),
                     args: vec![
                         Expr::var(Symbol::from("y"), span(238, 239)),
-                        Expr::IntLit { value: 2, span: span(240, 241), inferred_type: None, },
+                        Expr::IntLit {
+                            value: 2,
+                            span: span(240, 241),
+                            inferred_type: None,
+                        },
                     ],
                     span: span(229, 242),
                     resolved_call: None,
@@ -206,7 +264,11 @@ fn test_multi_sig_duplicate_signatures_error() {
         span(200, 244),
     ))];
 
-    let err = tc.check(&program, &test_ctx(), cranelisp_types::ModuleStrategy::Additive);
+    let err = tc.check(
+        &program,
+        &test_ctx(),
+        cranelisp_types::ModuleStrategy::Additive,
+    );
     assert!(err.is_err(), "duplicate signatures should produce an error");
     let msg = format!("{}", err.unwrap_err());
     assert!(
@@ -246,7 +308,11 @@ fn test_multi_sig_call_site_resolution() {
                 span: span(305, 323),
             },
             DefnVariant {
-                params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None), (Symbol::from("z"), None)],
+                params: vec![
+                    (Symbol::from("x"), None),
+                    (Symbol::from("y"), None),
+                    (Symbol::from("z"), None),
+                ],
                 body: Expr::Apply {
                     callee: Box::new(Expr::var(Symbol::from("add-i64"), span(330, 337))),
                     args: vec![
@@ -277,8 +343,16 @@ fn test_multi_sig_call_site_resolution() {
     let call_expr = TopLevel::Expr(Expr::Apply {
         callee: Box::new(Expr::var(Symbol::from("add"), span(401, 404))),
         args: vec![
-            Expr::IntLit { value: 1, span: span(405, 406), inferred_type: None, },
-            Expr::IntLit { value: 2, span: span(407, 408), inferred_type: None, },
+            Expr::IntLit {
+                value: 1,
+                span: span(405, 406),
+                inferred_type: None,
+            },
+            Expr::IntLit {
+                value: 2,
+                span: span(407, 408),
+                inferred_type: None,
+            },
         ],
         span: call_span,
         resolved_call: None,
@@ -286,20 +360,24 @@ fn test_multi_sig_call_site_resolution() {
     });
 
     let program = vec![multi_defn, call_expr];
-    let _result = tc.check(&program, &test_ctx(), cranelisp_types::ModuleStrategy::Additive).unwrap();
+    let _result = tc
+        .check(
+            &program,
+            &test_ctx(),
+            cranelisp_types::ModuleStrategy::Additive,
+        )
+        .unwrap();
 
     // The call site should have a SigDispatch resolution to "add$Int+Int".
     // Post-slim (Wave 2 step 4): resolutions live on annotated AST nodes.
     let resolutions = tc.annotated_resolutions();
     let resolution = resolutions.get(&call_span);
-    assert!(
-        resolution.is_some(),
-        "call site should have a resolution"
-    );
+    assert!(resolution.is_some(), "call site should have a resolution");
     match resolution.unwrap() {
         ResolvedCall::SigDispatch { mangled_name } => {
             assert_eq!(
-                mangled_name.as_ref(), "add$Int+Int",
+                mangled_name.as_ref(),
+                "add$Int+Int",
                 "should dispatch to add$Int+Int"
             );
         }
@@ -340,7 +418,11 @@ fn test_check_form_defn_multi_register() {
                     callee: Box::new(Expr::var(Symbol::from("add-i64"), span(1010, 1017))),
                     args: vec![
                         Expr::var(Symbol::from("x"), span(1018, 1019)),
-                        Expr::IntLit { value: 1, span: span(1020, 1021), inferred_type: None, },
+                        Expr::IntLit {
+                            value: 1,
+                            span: span(1020, 1021),
+                            inferred_type: None,
+                        },
                     ],
                     span: span(1009, 1022),
                     resolved_call: None,
@@ -367,16 +449,22 @@ fn test_check_form_defn_multi_register() {
         span: span(990, 1054),
     });
 
-    let result = tc.check_form(&module, &multi, CheckPass::Register, &mut accumulator).unwrap();
+    let result = tc
+        .check_form(&module, &multi, CheckPass::Register, &mut accumulator)
+        .unwrap();
     tc.merge_form_result(&module, &mut accumulator, result);
 
     // Internal variant defns should be in defn_type_vars
     assert!(
-        accumulator.defn_type_vars.contains_key(&Symbol::from("add__v0")),
+        accumulator
+            .defn_type_vars
+            .contains_key(&Symbol::from("add__v0")),
         "add__v0 should be in defn_type_vars"
     );
     assert!(
-        accumulator.defn_type_vars.contains_key(&Symbol::from("add__v1")),
+        accumulator
+            .defn_type_vars
+            .contains_key(&Symbol::from("add__v1")),
         "add__v1 should be in defn_type_vars"
     );
 
@@ -396,7 +484,8 @@ fn test_check_form_defn_multi_register() {
 fn wave0_mangled_variant_carries_ast() {
     let mut tc = tc_with_prims();
     let program = vec![TopLevel::Defn(make_add_multi_sig_int_float())];
-    tc.check(&program, &test_ctx(), ModuleStrategy::Additive).unwrap();
+    tc.check(&program, &test_ctx(), ModuleStrategy::Additive)
+        .unwrap();
 
     let st = tc.symbol_table();
 
@@ -405,28 +494,46 @@ fn wave0_mangled_variant_carries_ast() {
     // name lives on the symbol-table key and "single variant" is enforced by the
     // type itself — no `.variants` to assert against.
     match st.get("add$Int+Int") {
-        Some(ModuleEntry::Def { ast: Some(_defn), kind, .. }) => {
+        Some(ModuleEntry::Def {
+            ast: Some(_defn),
+            kind,
+            ..
+        }) => {
             assert!(
                 matches!(
                     kind.as_ref(),
-                    DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
+                    DefKind::UserFn {
+                        fn_state: UserFnState::Concrete { .. }
+                    }
                 ),
                 "mangled variant kind should be UserFn(Concrete), got {:?}",
                 kind
             );
         }
-        other => panic!("add$Int+Int should be Def {{ ast: Some(..), .. }}, got {:?}", other),
+        other => panic!(
+            "add$Int+Int should be Def {{ ast: Some(..), .. }}, got {:?}",
+            other
+        ),
     }
 
     // add$Float+Float: same shape.
     match st.get("add$Float+Float") {
-        Some(ModuleEntry::Def { ast: Some(_defn), kind, .. }) => {
+        Some(ModuleEntry::Def {
+            ast: Some(_defn),
+            kind,
+            ..
+        }) => {
             assert!(matches!(
                 kind.as_ref(),
-                DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
+                DefKind::UserFn {
+                    fn_state: UserFnState::Concrete { .. }
+                }
             ));
         }
-        other => panic!("add$Float+Float should be Def {{ ast: Some(..), .. }}, got {:?}", other),
+        other => panic!(
+            "add$Float+Float should be Def {{ ast: Some(..), .. }}, got {:?}",
+            other
+        ),
     }
 }
 
@@ -435,10 +542,13 @@ fn wave0_mangled_variant_carries_ast() {
 fn wave0_mangled_variant_ast_is_annotated() {
     let mut tc = tc_with_prims();
     let program = vec![TopLevel::Defn(make_add_multi_sig_int_float())];
-    tc.check(&program, &test_ctx(), ModuleStrategy::Additive).unwrap();
+    tc.check(&program, &test_ctx(), ModuleStrategy::Additive)
+        .unwrap();
 
     let st = tc.symbol_table();
-    let entry = st.get("add$Int+Int").expect("add$Int+Int must be registered");
+    let entry = st
+        .get("add$Int+Int")
+        .expect("add$Int+Int must be registered");
     let defn = match entry {
         ModuleEntry::Def { ast: Some(d), .. } => d,
         other => panic!("expected ast: Some(..), got {:?}", other),
@@ -475,7 +585,8 @@ fn wave0_mangled_variant_ast_is_annotated() {
 fn wave0_overloaded_base_has_no_ast() {
     let mut tc = tc_with_prims();
     let program = vec![TopLevel::Defn(make_add_multi_sig_int_float())];
-    tc.check(&program, &test_ctx(), ModuleStrategy::Additive).unwrap();
+    tc.check(&program, &test_ctx(), ModuleStrategy::Additive)
+        .unwrap();
 
     let st = tc.symbol_table();
     match st.get("add") {
@@ -490,7 +601,10 @@ fn wave0_overloaded_base_has_no_ast() {
                 kind
             );
         }
-        other => panic!("'add' base should be Def {{ Overloaded, ast: None }}, got {:?}", other),
+        other => panic!(
+            "'add' base should be Def {{ Overloaded, ast: None }}, got {:?}",
+            other
+        ),
     }
 }
 
@@ -510,7 +624,10 @@ fn multi_sig_same_arity_unifiable_clauses_rejected_at_definition() {
         .check_program_self(&p)
         .expect_err("same-arity-unifiable clauses are a §5.1.1 definition-site ambiguity");
     let m = format!("{err}").to_lowercase();
-    assert!(m.contains("ambiguous") && m.contains("clause"), "got: {err}");
+    assert!(
+        m.contains("ambiguous") && m.contains("clause"),
+        "got: {err}"
+    );
 
     // Distinct concrete types at the same arity are NOT an overlap.
     let mut tc2 = tc_with_prims();
@@ -629,7 +746,12 @@ fn collect_callee_types_named(e: &MonoExpr, name: &str, out: &mut Vec<ConcreteTy
                 collect_callee_types_named(a, name, out);
             }
         }
-        MonoExpr::If { cond, then_branch, else_branch, .. } => {
+        MonoExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
             collect_callee_types_named(cond, name, out);
             collect_callee_types_named(then_branch, name, out);
             collect_callee_types_named(else_branch, name, out);
@@ -640,7 +762,9 @@ fn collect_callee_types_named(e: &MonoExpr, name: &str, out: &mut Vec<ConcreteTy
             }
             collect_callee_types_named(body, name, out);
         }
-        MonoExpr::Match { scrutinee, arms, .. } => {
+        MonoExpr::Match {
+            scrutinee, arms, ..
+        } => {
             collect_callee_types_named(scrutinee, name, out);
             for arm in arms {
                 collect_callee_types_named(&arm.body, name, out);

@@ -4,8 +4,8 @@
 //! of the code it exercises, per METHOD §2.2 / Principle 23.
 
 use cranelisp_types::{
-    Defn, DefnVariant, Expr, ModuleEntry, ModuleFullPath, Span, Symbol, TraitDecl,
-    TraitImpl, TraitName, Type, TypeExpr, TypeName, Visibility,
+    Defn, DefnVariant, Expr, ModuleEntry, ModuleFullPath, Span, Symbol, TraitDecl, TraitImpl,
+    TraitName, Type, TypeExpr, TypeName, Visibility,
 };
 
 use crate::traits::test_helpers::*;
@@ -51,6 +51,167 @@ fn int_op_impl(trait_name: &str, method: &str) -> TraitImpl {
     }
 }
 
+// spec: 07-traits §7.3 / §8.5 — an impl head is a reference, so a qualified
+// spelling resolves to the declaration's canonical identity. The qualifier
+// participates in lookup but never enters the method-symbol grammar.
+#[test]
+fn qualified_conventional_impl_uses_canonical_trait_identity_and_mangle() {
+    let mut tc = tf_prims();
+    let fmt = ModuleFullPath::from("fmt");
+    let user = ModuleFullPath::from("user");
+
+    tc.set_current_module(fmt.clone());
+    tc.register_trait_decl_self(&disp_decl("Display")).unwrap();
+    tc.set_current_module(user.clone());
+    seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
+
+    let mut impl_ = disp_impl(
+        "Display",
+        TypeExpr::Named(cranelisp_types::TypeRef::new(
+            Some(ModuleFullPath::from("primitives")),
+            TypeName::from("Int"),
+        )),
+    );
+    impl_.trait_name =
+        cranelisp_types::TraitRef::new(Some(fmt.clone()), TraitName::from("Display"));
+
+    tc.register_trait_impl_self(&impl_)
+        .expect("qualified trait reference must resolve to fmt/Display");
+
+    let writer = tc.modules.get(&user).unwrap();
+    assert!(
+        writer.get("Display.shw$primitives/Int").is_some(),
+        "method uses the canonical bare trait component"
+    );
+    assert!(
+        writer.get("fmt/Display.shw$primitives/Int").is_none(),
+        "written qualifier must never become a mangle input"
+    );
+    drop(writer);
+
+    let home = tc.modules.get(&fmt).unwrap();
+    let home_keys: Vec<String> = home.symbols.keys().map(ToString::to_string).collect();
+    assert!(
+        home.get("impl$primitives/Int$fmt/Display").is_some(),
+        "impl shell is keyed and placed by canonical FQ trait identity; keys={home_keys:?}"
+    );
+}
+
+// spec: 07-traits §7.1.5 / §8.5 — synthesized defaults use the same
+// canonical trait identity as explicit methods.
+#[test]
+fn qualified_impl_synthesized_default_uses_canonical_mangle() {
+    let mut tc = tf_prims();
+    let fmt = ModuleFullPath::from("fmt");
+    let user = ModuleFullPath::from("user");
+
+    tc.set_current_module(fmt.clone());
+    tc.register_trait_decl_self(&parse_trait_decl(
+        "(deftrait DisplayDefault (shw [self] 7))",
+    ))
+    .unwrap();
+    tc.set_current_module(user.clone());
+    seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
+
+    let impl_ = TraitImpl {
+        head_con_var: None,
+        trait_name: cranelisp_types::TraitRef::new(Some(fmt), TraitName::from("DisplayDefault")),
+        target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
+        type_constraints: vec![],
+        methods: vec![],
+        span: Span::SYNTHETIC,
+    };
+    let settled = tc.register_trait_impl_self(&impl_).unwrap();
+
+    assert_eq!(settled.len(), 1);
+    assert_eq!(
+        settled[0].name.as_ref(),
+        "DisplayDefault.shw$primitives/Int"
+    );
+    let writer = tc.modules.get(&user).unwrap();
+    assert!(writer.get("DisplayDefault.shw$primitives/Int").is_some());
+    assert!(
+        writer
+            .get("fmt/DisplayDefault.shw$primitives/Int")
+            .is_none()
+    );
+}
+
+// spec: 07-traits §7.3 — a failed qualified re-impl restores the complete
+// canonical method grain and never leaves source-qualified residue.
+#[test]
+fn qualified_failed_reimpl_restores_canonical_entries_without_residue() {
+    let mut tc = tf_prims();
+    let fmt = ModuleFullPath::from("fmt");
+    let user = ModuleFullPath::from("user");
+
+    tc.set_current_module(fmt.clone());
+    tc.register_trait_decl_self(&parse_trait_decl(
+        "(deftrait PairOps (first [a b] self) (second [a b] self))",
+    ))
+    .unwrap();
+    tc.set_current_module(user.clone());
+    seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
+
+    let mut initial = int_op_impl("PairOps", "first");
+    initial.trait_name =
+        cranelisp_types::TraitRef::new(Some(fmt.clone()), TraitName::from("PairOps"));
+    let mut second = initial.methods[0].clone();
+    second.name = Symbol::from("second");
+    initial.methods.push(second);
+    tc.register_trait_impl_self(&initial).unwrap();
+
+    let mut replacement = initial.clone();
+    replacement.methods[0].variants[0].body = Expr::IntLit {
+        value: 99,
+        span: Span::SYNTHETIC,
+        inferred_type: None,
+    };
+    replacement.methods[1].variants[0].params.pop();
+    tc.register_trait_impl_self(&replacement).unwrap_err();
+
+    let writer = tc.modules.get(&user).unwrap();
+    let Some(ModuleEntry::Def {
+        ast: Some(first), ..
+    }) = writer.get("PairOps.first$primitives/Int")
+    else {
+        panic!("prior canonical method must remain enrolled");
+    };
+    assert!(
+        matches!(first.body, Expr::Apply { .. }),
+        "failed replacement must restore the prior body"
+    );
+    assert!(writer.get("PairOps.second$primitives/Int").is_some());
+    assert!(writer.get("fmt/PairOps.first$primitives/Int").is_none());
+    assert!(writer.get("fmt/PairOps.second$primitives/Int").is_none());
+}
+
+// spec: 07-traits §7.3 / §8.5 — a failed qualified lookup never retries the
+// same bare spelling in the writer's scope.
+#[test]
+fn invalid_qualified_impl_trait_does_not_fall_back_to_same_bare_trait() {
+    let mut tc = tf_prims();
+    seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
+    tc.register_trait_decl_self(&disp_decl("Display")).unwrap();
+    let mut impl_ = disp_impl(
+        "Display",
+        TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
+    );
+    impl_.trait_name = cranelisp_types::TraitRef::new(
+        Some(ModuleFullPath::from("nosuch")),
+        TraitName::from("Display"),
+    );
+
+    let err = tc.register_trait_impl_self(&impl_).unwrap_err();
+    assert!(err.message().contains("nosuch/Display"), "{err:?}");
+    assert!(!tc.has_impl(&TraitName::from("Display"), &TypeName::from("Int")));
+    assert!(
+        tc.symbol_table()
+            .get("Display.shw$primitives/Int")
+            .is_none()
+    );
+}
+
 // spec: 07-traits §7.3 — impl methods must match the declaration's arity.
 #[test]
 fn impl_method_too_few_parameters_rejected_before_enrollment() {
@@ -88,9 +249,7 @@ fn impl_method_too_many_parameters_rejected_before_enrollment() {
 #[test]
 fn multi_method_failure_rolls_back_earlier_method_write() {
     let mut tc = tf_prims();
-    let decl = parse_trait_decl(
-        "(deftrait AtomicPair (first [a b] self) (second [a b] self))",
-    );
+    let decl = parse_trait_decl("(deftrait AtomicPair (first [a b] self) (second [a b] self))");
     tc.register_trait_decl_self(&decl).unwrap();
 
     let mut impl_ = int_op_impl("AtomicPair", "first");
@@ -114,9 +273,7 @@ fn multi_method_failure_rolls_back_earlier_method_write() {
 fn failed_reimpl_restores_prior_method_definition() {
     let mut tc = tf_prims();
     seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
-    let decl = parse_trait_decl(
-        "(deftrait AtomicReplace (first [a b] self) (second [a b] self))",
-    );
+    let decl = parse_trait_decl("(deftrait AtomicReplace (first [a b] self) (second [a b] self))");
     tc.register_trait_decl_self(&decl).unwrap();
 
     let mut initial = int_op_impl("AtomicReplace", "first");
@@ -138,7 +295,10 @@ fn failed_reimpl_restores_prior_method_definition() {
     let entry = table
         .get("AtomicReplace.first$primitives/Int")
         .expect("the prior method remains enrolled");
-    let cranelisp_types::ModuleEntry::Def { ast: Some(defn), .. } = entry else {
+    let cranelisp_types::ModuleEntry::Def {
+        ast: Some(defn), ..
+    } = entry
+    else {
         panic!("expected prior checked method definition, got {entry:?}");
     };
     assert!(
@@ -158,10 +318,7 @@ fn omitted_inferred_default_is_checked_for_concrete_self() {
     .unwrap();
     let impl_ = TraitImpl {
         head_con_var: None,
-        trait_name: cranelisp_types::TraitRef::new(
-            None,
-            TraitName::from("IdentityDefault"),
-        ),
+        trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("IdentityDefault")),
         target: TypeExpr::Named(cranelisp_types::TypeRef::new(
             Some(ModuleFullPath::from("primitives")),
             TypeName::from("Int"),
@@ -172,10 +329,7 @@ fn omitted_inferred_default_is_checked_for_concrete_self() {
     };
 
     tc.register_trait_impl_self(&impl_).unwrap();
-    assert!(tc.has_impl(
-        &TraitName::from("IdentityDefault"),
-        &TypeName::from("Int")
-    ));
+    assert!(tc.has_impl(&TraitName::from("IdentityDefault"), &TypeName::from("Int")));
 }
 
 // spec: 07-traits §7.1.5 — an omitted default may dispatch through a required
@@ -254,10 +408,7 @@ fn annotated_default_result_mismatch_rejects_without_enrollment() {
     .unwrap();
     let impl_ = TraitImpl {
         head_con_var: None,
-        trait_name: cranelisp_types::TraitRef::new(
-            None,
-            TraitName::from("ConstrainedDefault"),
-        ),
+        trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("ConstrainedDefault")),
         target: TypeExpr::Named(cranelisp_types::TypeRef::new(
             Some(ModuleFullPath::from("primitives")),
             TypeName::from("Int"),
@@ -517,9 +668,7 @@ fn test_generate_default_methods_produces_real_bodies() {
     let mut tc = tf_prims();
 
     // Register Eq trait inline (as prelude would)
-    let eq_decl = parse_trait_decl(
-        "(deftrait Eq (= [x y] Bool) (!= [x y] (not (= x y))))",
-    );
+    let eq_decl = parse_trait_decl("(deftrait Eq (= [x y] Bool) (!= [x y] (not (= x y))))");
     tc.register_trait_decl_self(&eq_decl).unwrap();
 
     let impl_ = TraitImpl {

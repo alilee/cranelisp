@@ -48,7 +48,10 @@ static HOST: cranelisp_platform::HostContext = cranelisp_platform::HostContext::
 /// deadline). The platform computes it itself (it cannot depend on the reactor
 /// crate); both sides reading `CLOCK_MONOTONIC` keeps the deadline skew-free.
 fn monotonic_nanos() -> u64 {
-    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     // SAFETY: `ts` is a valid out-param for `clock_gettime`.
     unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
     (ts.tv_sec as u64) * 1_000_000_000 + (ts.tv_nsec as u64)

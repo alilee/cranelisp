@@ -13,7 +13,7 @@
 //! `base_ptr()` is therefore structurally stable under any number of
 //! `allocate_got_slot` / `store_slot` events.
 
-use cranelisp_types::{ModuleFullPath, SymbolTable, GOT_TABLE_SIZE};
+use cranelisp_types::{GOT_TABLE_SIZE, ModuleFullPath, SymbolTable};
 
 // spec: design/backend/ownership-codegen.md §8.2 — the slab base address
 // is stable while `next_got_slot` grows through the ENTIRE slot range:
