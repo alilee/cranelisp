@@ -80,6 +80,30 @@
 // Stdlib-free (`PrimitivesOnly`; root CLAUDE.md §Design Principles).
 // `CRANELISP_NO_LENIENT=1` on every run: the loops have no sparks, and it keeps
 // the RC counts deterministic (tests/CLAUDE.md §"RC tests run serially").
+//
+// S118 W1 BASELINE-RECONCILIATION REPAIR (`/testing`, 2026-07-25). Five of this
+// file's cells — A4, B1, B1-link, B2, B2-link — were failing on a SOURCE-ROT
+// COMPILE ERROR, not on their named defect: their programs spelled the nullary
+// constructor `(deftype O (Non) (Jus [g]))`, and the S116 user ruling made a
+// parenthesized content-free constructor arm a hard reject
+// (`parse error: parenthesized nullary constructor is invalid; write the bare
+// constructor name` — pinned by
+// `deftype_constructor_form_rulings_s116::deftype_content_free_paren_constructor_rejected_neg`).
+// Every one of the five was reading `exit Some(1)` off that parse error while
+// its assertion message blamed the over-release. A RED for the wrong reason is
+// not a defect guard: it flips green the moment someone repairs the syntax and
+// says nothing about 0810.
+//
+// The spelling is repaired to the spec-conforming `(deftype O Non (Jus [g]))`
+// (the patterns already used the bare form). Re-measured at HEAD `e15ff20f`
+// after the repair, the documented S115 signatures reproduce EXACTLY:
+//
+//   A4 N=100  exit 7,   allocs=103 deallocs=3    (slope 1 — as documented)
+//   B1 N=100  exit 135  (SIGBUS — as documented)
+//   B2 N=100  exit 1 `match failed`, 102/102     (as documented)
+//
+// so all five remain RED, now for the mechanism they name. No cell was renamed,
+// removed or weakened; only the non-spec syntax in the generated programs moved.
 
 #[path = "helpers/mod.rs"]
 mod helpers;
@@ -253,7 +277,7 @@ fn inline_call_wrapper_heap_payload(n: i64) -> String {
 fn wrapper_from_call_supersedes_loop_param(n: i64) -> String {
     format!(
         "(deftype G (Gr [cells]))\n\
-         (deftype O (Non) (Jus [g]))\n\
+         (deftype O Non (Jus [g]))\n\
          (defn step [g i] (Jus g))\n\
          (defn go [g i n]\n\
          \x20 (if (eq-i64 i n) g\n\
@@ -269,7 +293,7 @@ fn wrapper_from_call_supersedes_loop_param(n: i64) -> String {
 fn let_bound_scrutinee_supersedes_loop_param(n: i64) -> String {
     format!(
         "(deftype G (Gr [cells]))\n\
-         (deftype O (Non) (Jus [g]))\n\
+         (deftype O Non (Jus [g]))\n\
          (defn step [g i] (Jus g))\n\
          (defn go [g i n]\n\
          \x20 (if (eq-i64 i n) g\n\
@@ -287,7 +311,7 @@ fn let_bound_scrutinee_supersedes_loop_param(n: i64) -> String {
 fn let_bound_scrutinee_result_outer_matched(n: i64) -> String {
     format!(
         "(deftype G (Gr [cells]))\n\
-         (deftype O (Non) (Jus [g]))\n\
+         (deftype O Non (Jus [g]))\n\
          (defn step [g i] (Jus g))\n\
          (defn go [g i n]\n\
          \x20 (if (eq-i64 i n) g\n\

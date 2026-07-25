@@ -1,5 +1,40 @@
 // Sprint 116 M3 production compiler-child wiring. The private plant protocol is
 // closed and exact; tests never call allocator internals or counter setters.
+//
+// ===========================================================================
+// S118 W1 BASELINE RECONCILIATION (`/testing`, 2026-07-25, HEAD `e15ff20f`;
+// `tests/plan/s118-test-plan.md` §2.2 obligation 2 — "is the clean control's RED
+// 0848-only (flips at W2) or leak-coupled (flips only after W4)?").
+// MEASUREMENT ONLY; the attribution is `/qa`'s.
+//
+// ANSWER: NEITHER, and specifically NOT 0848-only. `m3_parity_clean_child_exits_
+// normally_control` fails because the child ABORTS on a genuine exit imbalance —
+// the detector is present and WORKING, and prints:
+//
+//   [ALLOC_PARITY] IMBALANCE — LEAK (allocs > deallocs — blocks never freed)
+//   [ALLOC_PARITY]   ALLOC_COUNT=1199 DEALLOC_COUNT=56 delta=1143
+//
+// So no amount of 0848 detection-proof work at W2 can flip this cell: the plant
+// is absent and the report is already correct. The imbalance is the coupling.
+//
+// WHAT THE 1143 IS. Direct subprocess probes at this HEAD isolate it as
+// PROGRAM-INDEPENDENT prelude-load residue, not this child's result value:
+//
+//   child program                                CRANELISP_LIB   delta
+//   (Pure (sub-i64 (str-len s) 11))  [this file] stdlib/         1143
+//   (Pure (sub-i64 3 3))             [trivial]   stdlib/         1143
+//   (Pure (sub-i64 3 3))             [trivial]   empty prelude      0  exit 0
+//   ms_p8_conj_leak's INT_LOOP / CONJ_LOOP       stdlib/         1143
+//
+// The identical 1143 for a trivial `Int`-returning program and for an empty
+// prelude's 0 says the residue is what compiling `stdlib/prelude.cl` and its
+// module closure allocates and never releases. That is NOT 0745's mechanism —
+// 0745 owns the program RESULT VALUE's single reference (this child's result is
+// an `Int`, and the plan's own §2.2 note anticipated "compiler-side allocation
+// only") — so a W4 result-owner fix is not established to flip this cell either.
+// Recorded for `/qa`: this control's flip needs the ambient prelude-load residue
+// owned, and that owner is not named by 0848, 0745 or Track-B backend glue.
+// ===========================================================================
 
 use std::process::{Command, Output};
 
