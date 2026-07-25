@@ -181,7 +181,10 @@ fn assert_run_contract(label: &str, program: &str, expect_exit: i32) {
         m.stderr
     );
     let (allocs, deallocs) = m.rc.unwrap_or_else(|| {
-        panic!("[{label}] emitted no [RC_STATS] line:\nstderr:\n{}", m.stderr)
+        panic!(
+            "[{label}] emitted no [RC_STATS] line:\nstderr:\n{}",
+            m.stderr
+        )
     });
     assert_eq!(
         allocs,
@@ -370,8 +373,7 @@ fn repro_a_top_level_six_cell_slist_teardown_does_not_abort() {
 // longer reachable, and MUST NOT be freed while it is.
 #[test]
 fn control_slist_built_without_sconcat_balances_green() {
-    let program =
-        format!("{SLIST_PLUMBING}(defn main [] (Pure (slen (two))))\n");
+    let program = format!("{SLIST_PLUMBING}(defn main [] (Pure (slen (two))))\n");
     assert_run_contract("C1 no sconcat", &program, 2);
 }
 

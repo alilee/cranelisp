@@ -158,11 +158,7 @@ fn cache_load_imports_macros_traits_installed() {
 #[test]
 fn cache_restores_sibling_written_trait_impls_for_dispatch() {
     fn program(qualified: bool) -> Cranelisp {
-        let impl_head = if qualified {
-            "main.lib/Show"
-        } else {
-            "Show"
-        };
+        let impl_head = if qualified { "main.lib/Show" } else { "Show" };
         let impl_import = if qualified {
             ""
         } else {
@@ -193,32 +189,23 @@ fn cache_restores_sibling_written_trait_impls_for_dispatch() {
     }
 
     let qualified_fresh = program(true).run("main.cl").output().assert_exit(7);
-    let qualified_warm = qualified_fresh
-        .run_again()
-        .run("main.cl")
-        .output();
+    let qualified_warm = qualified_fresh.run_again().run("main.cl").output();
 
     let bare_fresh = program(false).run("main.cl").output().assert_exit(7);
-    let bare_warm = bare_fresh
-        .run_again()
-        .run("main.cl")
-        .output();
+    let bare_warm = bare_fresh.run_again().run("main.cl").output();
 
-    let failures = [
-        ("qualified", qualified_warm),
-        ("bare/imported", bare_warm),
-    ]
-    .into_iter()
-    .filter(|(_, out)| out.status.code() != Some(7))
-    .map(|(label, out)| {
-        format!(
-            "[{label}] exit={:?}\nstdout:\n{}\nstderr:\n{}",
-            out.status.code(),
-            out.stdout,
-            out.stderr
-        )
-    })
-    .collect::<Vec<_>>();
+    let failures = [("qualified", qualified_warm), ("bare/imported", bare_warm)]
+        .into_iter()
+        .filter(|(_, out)| out.status.code() != Some(7))
+        .map(|(label, out)| {
+            format!(
+                "[{label}] exit={:?}\nstdout:\n{}\nstderr:\n{}",
+                out.status.code(),
+                out.stdout,
+                out.stderr
+            )
+        })
+        .collect::<Vec<_>>();
     assert!(
         failures.is_empty(),
         "cache-restored sibling impls MUST remain dispatchable for both trait-reference spellings:\n{}",

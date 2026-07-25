@@ -44,10 +44,7 @@ const ALLOW_ORIGINS: &[(&str, &str)] = &[
     ("src/process_form.rs", "strategy == ModuleStrategy::Replace"),
     // lifecycle policy gate — allocate the introspection map under REPL only
     // (batch never populates it); allocate-or-not, not program-meaning.
-    (
-        "src/session_v4/lifecycle.rs",
-        ".populates_introspection()",
-    ),
+    ("src/session_v4/lifecycle.rs", ".populates_introspection()"),
     // lifecycle policy gate — the shutdown-settle burn-down runs REPL-only;
     // allocate/settle-or-not, not program-meaning.
     ("src/session_v4/lifecycle.rs", "run_mode.is_repl() &&"),
