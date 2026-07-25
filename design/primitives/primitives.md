@@ -219,6 +219,20 @@ arithmetic.
     and tests; it does not require another production registry.
 12. No allocator/RC tracing, fault injection, detector mode, or diagnostic
     hook is part of this design.
+13. **Structural embedding takes exactly one reference.** A primitive that
+    embeds an existing heap structure into a new one *by pointer* (structural
+    sharing, not copying) takes exactly one `rc_inc` — on the node it stores.
+    Interior nodes are owned by their parent; elements by the node that holds
+    them; those owners are unchanged by the embedding and are not re-counted.
+    The auditable corollary: the inc count for one embed is **1, independent
+    of the size and depth of the embedded structure**. Copied content instead
+    takes one inc per copied reference, and deep-copied content takes incs
+    only on the leaves it re-uses. The dual — every `cranelisp-intrinsics`
+    `consume_*` is tree-ownership drop glue and therefore cannot discharge a
+    reference no owner holds — is why this is an invariant and not a
+    preference. Ruled S118 W2b (FIXME 0835);
+    `design/runtime/s118-structural-embedding-ownership.md` §2 is the full
+    statement.
 
 ## 5. Test strategy
 
@@ -334,6 +348,8 @@ an additional element clone.
 - `crates/cranelisp-primitives/public-api.txt`
 - `crates/cranelisp-primitives/CLAUDE.md`
 - `design/runtime/s117-primitives-integrity.md`
+- `design/runtime/s118-structural-embedding-ownership.md` (invariant 13 — the
+  FIXME-0835 consume-owner contract; `marshal.rs` producer seams S1–S4)
 - `design/primitives/implementation-slice-s66.md` (historical)
 - `design/arch/fixmes/0859-*.md` (deferred R-2 evidence boundary)
 - `design/arch/fixmes/0850-*.md` (excluded intrinsics raw-read convergence)

@@ -265,11 +265,15 @@ internal and both prerequisites for the A-row detection proofs:
 2. **A2 gains the release face it lacked.** "dec target is live" has no
    release-lane expression (`is_live` needs the debug side table), so the
    shared `seam_precheck` adds a **header-plausibility** predicate: the alleged
-   base's `alloc_size` word must be `>= HeapHeader::SIZE` and 8-aligned. This
-   catches an interior/non-base address (word@0 is a tag or field) and a
-   poisoned/quarantined base (word@0 is `0xDEAD2FEE…`, not 8-aligned). It is a
-   plausibility check, not a proof of basehood — grade it there (§7.5).
-   `alloc::dealloc`'s A4 predicate widens the same way.
+   base's `alloc_size` word must convert to `usize`, be `>= HeapHeader::SIZE`,
+   and form a valid `Layout::from_size_align(size, 8)`. This catches an
+   interior/non-base address (word@0 is a tag or field, far below the header
+   size) and a poisoned/quarantined base (word@0 is `0xDEAD2FEE…`, negative as
+   `i64`, so the `usize` conversion fails). It is a plausibility check, not a
+   proof of basehood — grade it there (§7.5). `alloc::dealloc`'s A4 predicate
+   widens the same way. *(Amended S118 W2b per FIXME 0879 — the original
+   wording said "8-aligned", which false-positives on every `HeapString`;
+   §7.5's ruling box carries the disposition.)*
 
 ---
 
@@ -364,11 +368,42 @@ The private closed enum is `FaultPlant::{M1StaleReuse, M2StaleRead, M3Leak,
 M3OverFree, A1ZeroRc, A2InteriorPointer, A3FreedPointer,
 A4MalformedHeader}` — the eight spellings `tests/plan/s118-test-plan.md` §3.1
 names, unchanged. Parsing happens once per process. Unknown, empty, or
-multiple spellings are a hard test-configuration error before allocation; they
-never become a partial plant. With the arm value absent there is no state
+multiple spellings are a hard test-configuration error **before any plant state
+exists and before any action is applied**; they never become a partial plant.
+(The parse is forced at the first `test_fault_event` call — the `PostAlloc` of
+the process's first allocation — so at most one allocation exists when the
+child aborts; see the ruling box below.) With the arm value absent there is no state
 construction, mutation, allocation, counter adjustment, or new failure. The
 ordinary M1/M2/M3/A-gate variables remain detector controls; test variables
 plant faults only and never silently enable the detector under test.
+
+> **Config-error timing — the contract is state-and-action, not wall-order
+> (S118 W2b ruling, FIXME 0881 accepted-and-amended).** The earlier wording
+> "a hard test-configuration error **before allocation**" over-claimed. As
+> implemented the parse lives in the `PLANT` `LazyLock`, forced at the first
+> `test_fault_event` call, which is the `PostAlloc` hook of the process's first
+> allocation: a mis-armed child aborts with one allocation already in
+> existence (header initialized, counters bumped) — but provably **before any
+> `PlantState` is constructed and before any action is applied**.
+>
+> **That is the guarantee that carries the weight**, and it is the one
+> `unknown_empty_or_multiple_spellings_are_configuration_errors` pins. Never-a-
+> partial-plant is structural: one parse, one closed enum, hard failure ahead
+> of any state construction — nothing about it improves if the same failure
+> happens one allocation earlier. Literal pre-allocation timing would require a
+> startup seam the crate does not have (no `main`, no ctor) or a forced check
+> on the allocation hot path, buying a strictly weaker version of a guarantee
+> already held — Principle 6 (complexity has a budget) and Principle 8 (no
+> interim implementations: a pre-main seam invented to move one message's
+> timing). **Requiring the pre-allocation seam is REJECTED**; the observable
+> delta is bounded at one allocation in a fresh subprocess whose only purpose
+> is the plant, and the child aborts either way.
+>
+> `/qa`'s 0857 regrade grades the config-error negative at this tier:
+> *state-and-action precedence*, not wall-clock pre-allocation. The `/dev`
+> comment at the static and `crates/cranelisp-intrinsics/CLAUDE.md`'s protocol
+> paragraph should name the first-hook-call timing so the code, the local
+> conventions and this design agree on the letter.
 
 #### Arming is lane-scoped by construction (arch ruling 3; test plan §1)
 
@@ -569,14 +604,47 @@ seam, before the debug twins and before any mutation.** One shared owner in
 
 - `seam_precheck(ptr, site) -> ()` — no-op unless `rc_check_release_enabled()`.
   When armed: (a) read the alleged base's `alloc_size` word at offset 0 and
-  reject unless it is `>= HeapHeader::SIZE` **and** 8-aligned; (b) read the RC
-  word at offset 8 (relaxed) and reject unless `> 0`. Rejection is
-  `seam_hard_fail` naming `site`, the pointer, and which predicate failed.
-  Called first in `rc_inc`, `consume_shallow`, and `atomic_dec_rc`.
+  reject unless it **converts to `usize`, is `>= HeapHeader::SIZE`, and forms a
+  valid `Layout::from_size_align(size, 8)`** (the shared predicate
+  `diagnostics::header_size_plausible`); (b) read the RC word at offset 8
+  (relaxed) and reject unless `> 0`. Rejection is `seam_hard_fail` naming
+  `site`, the pointer, and which predicate failed. Called first in `rc_inc`,
+  `consume_shallow`, and `atomic_dec_rc`.
 - `alloc::dealloc` hoists its existing gated header check above the debug
-  block, and widens the predicate from `total_size < HeapHeader::SIZE` to
-  "`< HeapHeader::SIZE` or not 8-aligned", so a poisoned (M2-scrubbed) header
+  block, and widens the predicate from `total_size < HeapHeader::SIZE` to the
+  same `header_size_plausible` negation, so a poisoned (M2-scrubbed) header
   produces a located seam message instead of a `Layout` panic.
+
+> **Predicate (a) — the alignment clause is RETRACTED (S118 W2b ruling, FIXME
+> 0879 accepted-and-amended).** The clause as first written ("`>=
+> HeapHeader::SIZE` **and** 8-aligned") false-positives on legitimate live
+> allocations: `HeapString`'s payload is `size_of::<i64>() + byte_len` **raw**
+> bytes (`heap_string.rs::payload_size`), so a 3-byte string's `alloc_size` is
+> `16 + 8 + 3 = 27` — a correct, deliberately ragged size the design's own
+> `scrub` already handles (`scrub_poisons_nonmultiple_of_8_tail`). Armed, the
+> literal clause would hard-fail at the first string `consume_shallow`/
+> `dealloc` in any real program, taking down the armed acceptance legs Track B
+> and 0859 depend on. **A detector that rejects correct programs is worse than
+> no detector**, and padding `HeapString` to buy the clause is a heap-layout
+> version bump, not a guard (`crates/cranelisp-intrinsics/CLAUDE.md` §"Heap
+> layout"; Principle 6) — rejected.
+>
+> The Layout-validity form keeps **both faces the clause was motivated by**:
+> a poisoned base's word@0 is negative as `i64` so the `usize` conversion
+> rejects it, and an interior/non-base address's word@0 is a tag or field far
+> below `HeapHeader::SIZE`. It also delivers the clause's *stated* goal — "a
+> located seam message instead of a `Layout` panic" — which alignment alone
+> did not, since `Layout` validity, not alignment, is what the panic turns on.
+>
+> **Residual weaker coverage, recorded honestly:** a wild or poisoned header
+> word that happens to be positive, `>= 16`, and Layout-valid is ACCEPTED by
+> (a) and must be caught by (b) (`rc > 0`) or not at all. Specifically, an
+> interior address whose word@0 is a plausible small positive value passes (a).
+> The alignment clause would have narrowed that band slightly and nothing
+> more; the grading language is unchanged — **plausibility, not proof of
+> basehood** — and `/qa`'s 0857 regrade grades against this form.
+
+
 
 Properties:
 
@@ -586,8 +654,9 @@ Properties:
   base".** The `is_live` half needs `LIVE_ALLOCS` (debug-only), so the release
   lane has never had one. The header-plausibility predicate is its honest
   approximation: it catches an interior/non-base address whose word@0 is a tag
-  or field value (A2), and it catches a poisoned/quarantined base whose word@0
-  is `0xDEAD2FEE…` (not 8-aligned) (A3). It is a **plausibility** check, not a
+  or field value far below the header size (A2), and it catches a
+  poisoned/quarantined base whose word@0 is `0xDEAD2FEE…` — negative as `i64`,
+  so it is not a size at all (A3). It is a **plausibility** check, not a
   proof of basehood — `/qa`'s 0857 regrade must grade it at that tier and not
   as "base-pointer validity proven".
 - **The existing post-RMW gates stay.** The precheck covers the planted,
@@ -852,8 +921,8 @@ externalized-`tests.rs` convention). The subprocess/e2e row is `/testing`'s.
 
 | Submodule | Normal / positive | Complexity / edge | Negative / detector |
 |---|---|---|---|
-| `diagnostics` (protocol) | arm absent ⇒ `NoAction`, zero state construction, zero counter adjustment, zero allocation (acceptance item 4) | exact arm string + exactly one spelling parses and fires **once**; marker-size selection picks the intended allocation | unknown / empty / multiple spellings are a hard config error **before** any allocation, never a partial plant; wrong arm string is fully off |
-| `diagnostics` (precheck) | armed gate passes a well-formed live base | `alloc_size` exactly `HeapHeader::SIZE`; smallest and largest legal sizes | non-8-aligned header rejected; `alloc_size < HeapHeader::SIZE` rejected; `rc == 0` and `rc < 0` rejected; **rejection precedes mutation** (the RC word is unchanged after a rejected call) |
+| `diagnostics` (protocol) | arm absent ⇒ `NoAction`, zero state construction, zero counter adjustment, zero allocation (acceptance item 4) | exact arm string + exactly one spelling parses and fires **once**; marker-size selection picks the intended allocation | unknown / empty / multiple spellings are a hard config error **before any plant state exists and before any action is applied** (first-hook-call timing — §7.1 ruling box, FIXME 0881), never a partial plant; wrong arm string is fully off |
+| `diagnostics` (precheck) | armed gate passes a well-formed live base, **including a ragged `HeapString` size** (the FIXME-0879 false-positive fence) | `alloc_size` exactly `HeapHeader::SIZE`; smallest and largest legal sizes; a non-multiple-of-8 legal size is ACCEPTED | poisoned header word (negative as `i64`) rejected; `alloc_size < HeapHeader::SIZE` rejected; Layout-invalid magnitude rejected; `rc == 0` and `rc < 0` rejected; **rejection precedes mutation** (the RC word is unchanged after a rejected call) |
 | `diagnostics` (modes) | clean M1/M2/M3 children exit normally | odd-byte scrub tail; quarantine cap 0 / exact / over, FIFO release order | both M3 report polarities (`allocs > deallocs`, `deallocs > allocs`); plant-identity line present when armed, **absent** when clean |
 | `alloc` | normal alloc/dealloc; counters monotonic across the process | header-integrity and double-free twins still fire in debug | M1 `M1StaleReuse`, M2 `M2StaleRead`, both M3 faces, A4 rejection **before** `Layout` construction |
 | `rc` | nullary tag no-ops; live inc/dec unchanged | RC 1→0 free transition; non-atomic-RC diagnostic composition | A1 `A1ZeroRc`, A2 `A2InteriorPointer`; no mutation before rejection |
@@ -891,6 +960,12 @@ begin before they exist.
 
 - `design/arch/safety-invariants.md` §2 (ladder tiers 3/5), §4 R8 — the owning
   register row (arch-owned; FIXME `target: /arch` to change it).
+- `design/runtime/s118-structural-embedding-ownership.md` §4.1 — the FIXME-0835
+  detector-pointing plan. It is the first consumer of this design's kit as an
+  *investigative* instrument rather than a self-proof: D1 (`RC_DEC_CHECK` +
+  §7.5 precheck), D2 (M1), D3 (M2 + precheck, discriminating by **seam name**),
+  D4 (M3). Its §6.5 obligation is that the 0835 fix leaves the armed lane
+  unperturbed.
 - `tests/plan/memory-safety-coverage.md` §1 (oracle lane the modes feed), §5
   (the blindness quantification), §6 (increment sequencing).
 - `tests/plan/s113-test-plan.md` MS-P4/MS-P6/MS-P7 — the lane rows the modes

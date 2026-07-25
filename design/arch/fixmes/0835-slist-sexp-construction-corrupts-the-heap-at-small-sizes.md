@@ -1,6 +1,7 @@
 ---
 number: 0835
-target: /design (intrinsics)
+target: /dev (runtime pair — /design(intrinsics) ruled the contract S118 W2b;
+  see design/runtime/s118-structural-embedding-ownership.md)
 filed_by: /stdlib
 filed_at: 2026-07-21
 sprint_filed: 115
@@ -11,9 +12,48 @@ refers_to: crates/cranelisp-primitives/src/marshal.rs:160-217
   `macros` module — SList/Sexp ADTs + `sconcat`); stdlib/derive/helpers.cl
   (the surface that fails); design/arch/safety-invariants.md (memory-safety
   invariant register); tests/plan/s118-test-plan.md §4.5 (the attribution
-  ruling of record)
+  ruling of record); design/runtime/s118-structural-embedding-ownership.md
+  (the W2b contract ruling — seams, invariant, unit matrix, acceptance);
+  design/primitives/primitives.md §4 #13 (the invariant row)
 status: open
 ---
+
+> **S118 W2b /design(intrinsics) CONTRACT RULING (2026-07-26). Ruled:
+> structural tail-embedding takes a HEAD-ONLY inc — candidate (a).**
+> `consume_slist` is CORRECT tree-ownership drop glue and does **not** change;
+> deep-consume is rejected on three independent grounds (it would ratify the
+> over-inc, it would tear down genuinely shared tails — the committed control
+> `control_slist_built_without_sconcat_balances_green` is the fence — and it is
+> non-local). The full ruling, with the declarative invariant (RE-1/RE-2/RE-3),
+> the four exact seams (all in `crates/cranelisp-primitives/src/marshal.rs`;
+> `deep_rc_inc_slist` is DELETED), the unit matrix, the acceptance set, the
+> abort-face detector-pointing plan and the Branch-F contingency, is
+> **`design/runtime/s118-structural-embedding-ownership.md`**. Invariant row
+> landed at `design/primitives/primitives.md` §4 #13.
+>
+> Two ruling notes worth carrying at the FIXME:
+>
+> 1. **Why the existing unit row missed it.** `marshal/tests.rs::
+>    decision24_sconcat_rc_balanced` uses a ONE-cell `ys` with BARE-TAG
+>    elements, and `over-incs = (n−1) interior nodes + h heap elements` = 0 at
+>    exactly that point. The seam's only unit row sits on the blind point.
+> 2. **The abort face is NOT explained by the over-inc, by reading.** Surplus
+>    references are monotone in the safe direction — they can only delay a
+>    free, never advance one — so RE-1 violations produce leaks, and glibc
+>    smallbin/double-linked-list aborts require a write into a freed chunk or a
+>    double free. A second ingredient is needed; two candidates survive reading
+>    with OPPOSITE predictions (a co-present premature-free defect the leak is
+>    currently *masking* — the FIXME-0810-FaceB/0782 match-owned-scrutinee seam
+>    that every repro-A cell runs through `sfold` — versus the deep walk itself
+>    being the wild write, which the fix removes). `/dev` takes the §4.1 D0–D3
+>    detector measurements BEFORE the fix; the pre-fix state is unrecoverable
+>    afterwards. A repro-A cell that stays RED after the fix is an EXPECTED
+>    possible outcome and a new `/qa` attribution — never a backend re-open,
+>    and never a reason to roll back a fix that is correct against RE-1 and
+>    pinned by repro B.
+>
+> **Status stays `open`:** the ruling is design only; implementation
+> (`/dev`, runtime pair) + the `/testing` prelude-face cell remain.
 
 > **S118 /qa ATTRIBUTION RULING (2026-07-25; supersedes the request-2 open
 > question below; FIXME 0877 disposed into this).** The mechanism is
