@@ -189,6 +189,193 @@ fn bare_alias_ambiguous_canonical_both_work() {
 }
 
 // ===========================================================================
+// §5.2.6 — THE CONSTRUCTOR-ARM AXIS (FIXME 0867, S118 W1 repro)
+//
+// FIXME 0867 (`/repl`, S117 Phase 6b) found that
+// `(deftype (Pair a b) (MkPair [:a fst :b snd]))` mints NEITHER the canonical
+// `Pair.fst` nor the unique bare `fst`, and attributed the gap to the
+// TYPE-PARAMETER axis: "a concrete product mints both, a polymorphic product
+// mints neither".
+//
+// REDUCED AT HEAD `e15ff20f` (`/testing`, S118 W1). The type parameter is NOT
+// causal. The axis is WHERE THE FIELD LIST LIVES:
+//
+//   deftype form                                        `T.f`   bare `f`
+//   (deftype Box [:Int v])                     product    yes      yes
+//   (deftype (Bx a) [:a val])            poly product     yes      yes   ← poly, GREEN
+//   (deftype Bz (Bz [:Int v]))          same-name arm     yes      yes
+//   (deftype (Pz a) (Pz [:a v]))   poly same-name arm     yes      yes   ← poly, GREEN
+//   (deftype Bxx (MkBxx [:Int v]))     distinct-name arm   NO       NO   ← concrete, RED
+//   (deftype (Duo a b) (MkDuo [:a fst :b snd]))          NO       NO   ← 0867's case
+//   (deftype Sh Circ (Sq [:Int side]))         sum         NO       NO
+//   (deftype (Opt a) Nul (Jus [:a unwrap]))  poly sum      NO       NO
+//
+// Two polymorphic forms mint BOTH accessors, and a CONCRETE distinct-name
+// constructor arm mints NEITHER. So the defect is: **field accessors are
+// synthesised only from the deftype-LEVEL field list (and the same-name
+// single-constructor spelling that reduces to it); a field list living in a
+// named constructor arm whose name differs from the type's contributes no
+// accessor at all.** That is every sum type and every product spelled with a
+// distinct constructor — far wider than 0867's polymorphic-product framing, and
+// it makes spec §5.2.6's OWN sum-type example (`Option.unwrap` /
+// bare `unwrap` over `(deftype (Option a) None (Some [:a unwrap]))`)
+// non-conforming.
+//
+// WHY THE WHOLE AXIS WAS INVISIBLE (tests/CLAUDE.md §"Coverage by definition
+// variants"): every pre-existing accessor guard — the four cells below, plus
+// `spec_05_definitions::{generated_field_accessor_resolves_as_free_callable,
+// accessor_is_first_class_value_passable, accessor_cross_type_duplicate_field_name}`
+// — spells its type `(deftype Box [:primitives/Int v])`. One variant of the
+// definition form was exercised; the missing cell is exactly where the sibling
+// variant diverged. The matrix below is the variant × polarity grid that lens
+// asks for, with the GREEN rows kept so the divergence NAMES its site instead of
+// just failing.
+//
+// The duplicate-field ambiguity family above is retained unchanged as the
+// negative boundary: a fix must mint the bare alias for these forms WITHOUT
+// weakening the contested-name rejection (§8.6.5).
+//
+// `/qa` finalizes the narrow `/dev` attribution from these REDs (FIXME 0867
+// §"Proposed resolution"); the `class=` below is `/testing`'s reading of the
+// controlled vocabulary and is `/qa`'s to re-label.
+// ===========================================================================
+
+// 0867's own case, verbatim modulo the type name (`Pair` is a primitives-seeded
+// name, so a `deftype Pair` under any prelude that provides it is a §8.6.4
+// definition-over-import conflict, not an accessor question — the rename keeps
+// the cell about accessors).
+// spec: spec/05-definitions.md §5.2.6 — Generated Accessors: "For each named
+// field in a type definition, an accessor function is automatically generated",
+// canonical `Type.field` plus the unique bare alias. Nothing in §5.2.6 excludes
+// a type parameter or a named constructor arm.
+// defect: class=enumeration-miss locus=field-accessor synthesis walks the deftype-LEVEL field list only and omits named-constructor-arm field lists — no canonical `Type.field` Def and no bare-alias Import edge minted found=S117 owner=/dev
+#[test]
+fn polymorphic_product_mints_canonical_and_unique_bare_accessors() {
+    let out = repl_prims(
+        "(deftype (Duo a b) (MkDuo [:a fst :b snd]))\n\
+         (Duo.fst (MkDuo 42 false))\n\
+         (fst (MkDuo 42 false))\n",
+    );
+    let both = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !both.contains("undefined variable: Duo.fst"),
+        "the CANONICAL accessor `Duo.fst` MUST be minted for a field declared in \
+         a named constructor arm (§5.2.6); it is undefined. stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(
+        !both.contains("undefined variable: fst"),
+        "the unique bare alias `fst` MUST resolve — no second `fst` field exists, \
+         so this is not the §8.6.5 ambiguity case (§5.2.6); it is undefined. \
+         stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+    out.assert_stdout_contains_all(&[":primitives/Int 42"]);
+}
+
+// THE DISCRIMINATING RED — the same shape with NO type parameter. This is the
+// cell that removes polymorphism from the causal chain: `Bxx` is concrete, a
+// single-constructor product, one field, no contest — and it mints neither
+// accessor. Pair it with `control_polymorphic_deftype_level_product_*` below
+// (polymorphic, GREEN) and the axis is pinned to the constructor arm.
+// spec: spec/05-definitions.md §5.2.6 — Generated Accessors; a product's
+// accessors are total and are generated for each named field.
+// defect: class=enumeration-miss locus=field-accessor synthesis walks the deftype-LEVEL field list only and omits named-constructor-arm field lists — concrete face, no type parameter involved found=S117 owner=/dev
+#[test]
+fn concrete_constructor_arm_product_mints_canonical_and_unique_bare_accessors() {
+    let out = repl_prims(
+        "(deftype Bxx (MkBxx [:primitives/Int v]))\n\
+         (Bxx.v (MkBxx 5))\n\
+         (v (MkBxx 5))\n",
+    );
+    let both = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !both.contains("undefined variable: Bxx.v") && !both.contains("undefined variable: v"),
+        "a CONCRETE single-constructor product whose constructor name differs \
+         from its type name MUST still mint `Bxx.v` and the unique bare `v` \
+         (§5.2.6) — the type parameter is not the variable. stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+    out.assert_stdout_contains(":primitives/Int 5");
+}
+
+// THE SPEC'S OWN EXAMPLE — §5.2.6 "Sum type accessors are partial" shows
+// `(deftype (Option a) None (Some [:a unwrap]))` with `(Option.unwrap (Some 42))`
+// and `(unwrap (Some 42))` both yielding 42. Renamed to `Opt`/`Jus` only because
+// `Option`/`Some` are primitives-seeded (§8.6.4). Neither accessor exists.
+//
+// This is the widest statement of the defect and the reason it outranks 0867's
+// framing: the partial sum-type accessor is a documented, exampled §5.2.6
+// feature with no implementation for any type, of any arity, at any polymorphism.
+// spec: spec/05-definitions.md §5.2.6 — Generated Accessors: "Sum type
+// accessors are partial — they succeed on the matching variant and panic on
+// mismatched variants", with `Option.unwrap` / bare `unwrap` as the example.
+// defect: class=enumeration-miss locus=field-accessor synthesis walks the deftype-LEVEL field list only and omits named-constructor-arm field lists — sum-type face, the spec's own §5.2.6 example found=S117 owner=/dev
+#[test]
+fn sum_type_variant_field_mints_canonical_and_unique_bare_accessors() {
+    let out = repl_prims(
+        "(deftype (Opt a) Nul (Jus [:a unwrap]))\n\
+         (Opt.unwrap (Jus 42))\n\
+         (unwrap (Jus 42))\n",
+    );
+    let both = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !both.contains("undefined variable: Opt.unwrap")
+            && !both.contains("undefined variable: unwrap"),
+        "§5.2.6's own sum-type example MUST work: `Opt.unwrap` and the unique \
+         bare `unwrap` over `(deftype (Opt a) Nul (Jus [:a unwrap]))`. Both are \
+         undefined. stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+    out.assert_stdout_contains(":primitives/Int 42");
+}
+
+// CONTROL (GREEN) — a POLYMORPHIC product spelled with the deftype-LEVEL field
+// list mints BOTH accessors. This is the cell that falsifies 0867's stated
+// attribution: the type parameter is present and everything works. Read against
+// `polymorphic_product_mints_canonical_and_unique_bare_accessors` above, the
+// only difference is where the field list is written.
+// spec: spec/05-definitions.md §5.2.6 — Generated Accessors; a type parameter
+// does not change accessor generation.
+#[test]
+fn control_polymorphic_deftype_level_product_mints_both_accessors_green() {
+    repl_prims(
+        "(deftype (Bx a) [:a val])\n\
+         (Bx.val (Bx 7))\n\
+         (val (Bx 7))\n",
+    )
+    .assert_stdout_contains(":primitives/Int 7");
+}
+
+// CONTROL (GREEN) — a constructor arm whose name EQUALS the type name mints both
+// accessors, concrete and polymorphic alike. `(deftype Bz (Bz [:Int v]))` is
+// §5.2.1's "product constructor sharing the type name is the normal case", and
+// it reduces to the deftype-level form. Its GREEN is what narrows the defect
+// from "constructor arms" to "constructor arms whose name differs from the
+// type's" — the sharpest available statement of the surviving synthesis path.
+// spec: spec/05-definitions.md §5.2.6 — Generated Accessors; §5.2.7, a product
+// constructor sharing the type name is the normal case.
+#[test]
+fn control_same_name_constructor_arm_mints_both_accessors_green() {
+    repl_prims(
+        "(deftype Bz (Bz [:primitives/Int v]))\n\
+         (Bz.v (Bz 5))\n\
+         (v (Bz 5))\n",
+    )
+    .assert_stdout_contains(":primitives/Int 5");
+    repl_prims(
+        "(deftype (Pz a) (Pz [:a v]))\n\
+         (Pz.v (Pz 6))\n\
+         (v (Pz 6))\n",
+    )
+    .assert_stdout_contains(":primitives/Int 6");
+}
+
+// ===========================================================================
 // §1.6.5 — `/list` shows the canonical qualified accessor
 // ===========================================================================
 

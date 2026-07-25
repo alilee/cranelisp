@@ -47,9 +47,10 @@
 //! those would only produce noise; the mode-gating tripwire
 //! (`tests/mode_gating_guard.rs`) draws the same line for the same reason.
 //
-// spec: (CI guard — no single spec §) — the normative statements are
-//       `sprints/SPRINT.md` §Architecture review ruling 10 and
-//       `design/backend/transitive-drop-glue.md` §8 (the deletion enumeration).
+// spec: design/backend/transitive-drop-glue.md §8 — "The atomic deletion
+//       condition (S118 arch ruling 10)": the deletion enumeration this fence
+//       greps for, and the ruling it implements (arch ruling 10, recorded in the
+//       active sprint plan's architecture review).
 
 use std::process::Command;
 
