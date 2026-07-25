@@ -898,7 +898,9 @@ impl CrOutput {
 // Internal helpers
 // =============================================================================
 
-fn workspace_root() -> PathBuf {
+/// The checked-out workspace root. `pub` so sibling harness modules
+/// (`helpers::marginal`) resolve fixtures and `CRANELISP_LIB` the same way.
+pub fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
@@ -915,7 +917,10 @@ fn workspace_root() -> PathBuf {
 /// binary root from it makes each lane exec its own binary; with the var unset
 /// (the default suite) the path is `target/debug/cranelisp`, byte-identical to
 /// the pre-fix behaviour.
-fn binary_path() -> PathBuf {
+///
+/// `pub` so sibling harness modules (`helpers::marginal`) spawn the SAME lane's
+/// binary rather than re-deriving the path and re-opening the 0615 race.
+pub fn binary_path() -> PathBuf {
     let target_dir = match std::env::var_os("CARGO_TARGET_DIR") {
         Some(dir) if !dir.is_empty() => {
             let p = PathBuf::from(dir);
