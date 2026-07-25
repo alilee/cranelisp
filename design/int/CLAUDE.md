@@ -104,6 +104,16 @@ background half; S115 corrects the predicate to declared-export closure + routes
 re-impl hot-reloads via the existing `commit_staging_to_live`→`commit_slotted_def`
 GOT-patch path; the silent-ignore locus is the `derive_codegen_batch` TraitImpl
 arm; no impl-specific parallel path, P11),
+`result-owner.md` (S116, refreshed S118 — FIXME 0745 / arch ruling 9: the ONE
+program-result owner across REPL / `--run` / cache-hit / linked startup —
+observe-then-release, exact-once, type-directed via backend's canonical per-concrete
+glue; three resolution adapters, no second heap-type predicate; §8 is the serial
+implementation order, §9 the flip set + armed acceptance leg),
+`s117-conformance-recovery.md` (S117 — the W3a prepared-turn transaction
+[prepare → whole-batch codegen → infallible publish, one cadence for eval and
+worker], W3b presentation readers, and the W7 cached-macro executable-clause
+repair [§2.1.1]; §6 + §1.1.2 are the deferred FIXME-0863 handoff, §6.5 the S118
+precondition re-verification and 0745-ordering note),
 `multi-sig-introspection.md` (S113 — extended with the D1 constraint-display
 read-follow, §2.4), `private-submodule-import.md`, `symbol-table-generics.md`,
 `bare-primitive-value-path.md`.

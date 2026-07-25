@@ -184,6 +184,19 @@ Plan of record: `design/backend/transitive-drop-glue.md` (264→884 lines; §§1
 
 **Next skills:** `/qa` (0877 attribution before S2; 0878 fence extension; confirm the 0796 exclusion-removal cell) → `/dev`(backend) per §7 with §8 deletion in S5's change-set → `/review`(backend) against §8/§11 reject criteria. W3 sequences after Track A's W2 (armed legs depend on 0848).
 
+### `/design` (Binary/int + exe-bundle) — COMPLETE (2026-07-25)
+
+Plan of record: `design/int/result-owner.md` (264→609 lines; §§1–5 semantics retained, seams re-cut onto HEAD); `s117-conformance-recovery.md` gains §6.5 (0863 delta note); `int.md` master reconciled; `CLAUDE.md` index rows added.
+
+- **The 0745 wave shrinks: S117 already landed the fresh-JIT glue routing.** `SharedState.fresh_jit_drop_glues` is written by both publish paths as `{artifact, owner}` pairs; 0745 consumes, it does not build. The owner attaches at the two *execution* seams, not inside the turn transaction — so 0745 cannot destabilize W3a and leaves 0863's foundation untouched.
+- Stale-assumption corrections: the S116 design named a seam with no production caller (`inline_jit_codegen_for_names` — test-only at HEAD, and it silently discards `drop_glues`; recorded as a `/dev` trap + `/review` reject); the "no global address map" claim is falsified by S117 and restated as three invariants; the shutdown hazard is de-rated to match HEAD (`/review` must not grade reordering as a safety Blocker; the real as-built fix is `main.rs:323-337` where shutdown precedes exit-code computation).
+- **Absence-is-ambiguous ruling**: the glue projection emits no row for non-owning categories, so int classifies with the same public `HeapCategory::classify` predicate *before* any keyed lookup — a keyed miss is then a hard error; an int-side heap-type list fork is the resolver-mirror class, rejected.
+- **Zero interface deltas confirmed** (§10): everything needed is already public; no types/`public-api.txt`/cache-schema change — the 23→24 window stays 0869's alone. Backend D1 reshape confirmed neutral here.
+- **0863 §6.5 delta note**: preconditions re-verified still-holding-and-unmet (W3c removal was clean); two W7-introduced deltas recorded — seed classification must treat reserved-but-unpublished same-cluster cells as executable under absorption, and absorbed turns' compiled glues must move into the parent publish gate as `{artifact, owner}` pairs. Handoff order: 0745 lands *and reviews* first; the transaction functions themselves are untouched by 0745.
+- FIXME 0747 verified backend-owned (left for a backend `/design` deployment). One rider owed to `/testing` with the flip: cell #15's `// defect:` locus line cites a falsified mechanism.
+
+**Next skills:** `/dev`(int + exe-bundle) per §8 I0–I5 after backend W3; `/review` against §5/§7/§11; `/testing` re-locus rider; 0863 wave after 0745 per ruling 11.
+
 ## Waves (Phase 4)
 
 _Pending Phase 3. Indicative shape, serialized as always: W1 `/testing` (baseline reconciliation + missing detection-proof/0867 cells) → W2 intrinsics D/D/R (Track A) → W3 backend D/D/R (Track B consumers) → W4 int/exe-bundle D/D/R (0745) → W5 `/qa` certification + Track C → W6 src/ (Track D) → Phase 6._
@@ -196,6 +209,7 @@ _Pending Phase 3. Indicative shape, serialized as always: W1 `/testing` (baselin
 | P3 | /qa | sprint-wide test plan (`tests/plan/s118-test-plan.md`) | fable (shim) | xhigh | — |
 | P3 | /design | cranelisp-intrinsics: diagnostic-modes refresh (0848/0850/0859 + rulings 2/3/6/7) | opus[1m] (shim) | high | — |
 | P3 | /design | cranelisp-backend: transitive-drop-glue consumer-migration refresh (Track B + ruling 10) | opus[1m] (shim) | high | — |
+| P3 | /design | Binary/int: result-owner refresh (0745) + 0863 sequencing check | opus[1m] (shim) | high | — |
 
 ## Notes
 

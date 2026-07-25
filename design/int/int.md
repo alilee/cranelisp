@@ -18,14 +18,28 @@ Pre-codegen clause descriptors are distinct from executable clauses, whose
 non-null entry pointer is inseparable from a required `Code` owner and ABI
 witness. `def` remains a stdlib macro and DF-3 is not included.
 
-**Sprint 116 result-owner refinement.** `result-owner.md` is the active
-subordinate design for R15/FIXME 0745. A clean generated result remains owned as
-`(i64, Type)` through its last observation and is then released exactly once
-through backend's module-qualified per-concrete drop glue. Fresh JIT consumes
-`CompilationArtifacts.drop_glues`; cache-hit resolves the same canonical symbol
-through `Linker::get_symbol`; linked startup relocates and calls it after exit-code
-conversion. The JIT/linker code owner remains live through the call. No JIT-only,
-IO-only, display-owned, shallow, or type-erased releaser is part of int.
+**Sprint 116 result-owner refinement, refreshed Sprint 118.** `result-owner.md`
+is the active subordinate design for R15/FIXME 0745. A clean generated result
+remains owned as `(i64, Type)` through its last observation and is then released
+exactly once through backend's module-qualified per-concrete drop glue. Fresh JIT
+consumes `CompilationArtifacts.drop_glues`; cache-hit resolves the same canonical
+symbol through `Linker::get_symbol`; linked startup relocates and calls it after
+exit-code conversion. The JIT/linker code owner remains live through the call. No
+JIT-only, IO-only, display-owned, shallow, or type-erased releaser is part of int.
+
+The S118 refresh reconciles that design against the S117 as-built: the
+fresh-JIT artifact routing **already landed** as
+`SharedState.fresh_jit_drop_glues`, a `(module, ConcreteType) → {artifact, owner}`
+map written pair-atomically by the two publish gates (`worker::
+publish_prepared_turn` and the macro-clause turn's `publish`), so 0745 consumes
+routing rather than building it, and attaches at the two *execution* seams —
+never inside the prepared-turn transaction. The former `worker::
+inline_jit_codegen_for_names` seam the S116 text named is production-dead.
+Disposition of a result is decided once, by backend's own
+`HeapCategory::classify`, before any keyed lookup — int grows no second
+heap-type predicate. `result-owner.md` §8 is the serial implementation order;
+§9 the four-cell flip set plus QA's armed-detector acceptance leg; §11 the
+ordering constraint against FIXME 0863 (arch ruling 11: 0745 first).
 
 This document elaborates *within* the bounded context fixed by `design/arch/bounded-contexts.md` §6 and the public surface fixed by `design/arch/facades/int.md`. Where this document and either of those drift, the bounded-context statement and facade win — file FIXME `target: /arch` or update this doc accordingly.
 
@@ -844,11 +858,23 @@ The destination shape is the working reference for design. The as-built reality 
 > Principle-23 scenario-space matrices (A–E) that FIXME 0496 derives its unit briefs
 > from. Cited from §8.6.
 
-> **S116 — `result-owner.md` is a current, load-bearing subordinate doc (KEEP).**
+> **S116/S118 — `result-owner.md` is a current, load-bearing subordinate doc (KEEP).**
 > It defines the program-result owner's observe-then-release state machine and
 > the fresh-JIT/cache-hit/linked-startup adapters for backend's one canonical
 > per-concrete drop-glue contract. It is the int design of record for R15/FIXME
-> 0745 and is cited from §§7.4 and 8.
+> 0745 and is cited from §§7.4 and 8. **Refreshed S118 Phase 3** against HEAD:
+> §0 records what moved (the S117 as-built routing, the production-dead
+> `inline_jit_codegen_for_names` seam, two corrected S116 claims), §3.0 is the
+> as-built turn-lifecycle seam census, §8 the serial slice order, §9 the
+> acceptance mapping.
+
+> **S117 — `s117-conformance-recovery.md` is a current, load-bearing subordinate
+> doc (KEEP).** Tracks A/B of S117: the W3a prepared-turn transaction (§1.1 —
+> one owned prepare → whole-batch codegen → infallible publish, shared by the
+> eval and worker cadences), the W3b presentation readers (§4/§5), and the W7
+> cached-macro executable-clause repair (§2.1.1). Its §1.1.2 + §6 are the
+> deferred FIXME-0863 implementation handoff; §6.5 records the S118
+> precondition re-verification and the binding 0745-before-0863 order.
 
 The 32 docs in `design/int/` plus the `concurrency/` subdirectory were authored over 12+ sprints and reflect the historical evolution of int. Sprint 64 triage applies the methodology rule: *delete files, rely on git for history if work is fully embodied; preserve if still load-bearing*. Below is the per-doc disposition.
 

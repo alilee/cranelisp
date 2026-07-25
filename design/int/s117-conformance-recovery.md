@@ -925,6 +925,64 @@ invocation, codegen enrollment, or symbol-table classification.
   consulting REPL introspection, and no test executes the projected runtime
   value merely to learn its scheme.
 
+### 6.5 S118 delta note — preconditions re-verified at HEAD (`d1c34699`)
+
+FIXME 0863 carries this §6 (with §1.1.2) into Sprint 118 as the deferred `/dev`
+handoff. `/arch` confirmed it **READY** (S118 ruling 11) and serialized it as a
+late wave **after** FIXME 0745, because both touch the `src/` publication /
+result-owner seams and must not interleave. This design predates the W7
+cached-macro clause repair (§2.1.1), so its preconditions were re-read at HEAD.
+**No redesign follows; this is a reconciliation record.**
+
+**Unchanged — the §6/§1.1.2 premises all still hold, unmet, at HEAD:**
+
+- `TurnCheckWorld` is still constructed *inside* `prepare_macro_clause_turn`
+  (`src/process_form/macro_clause.rs:479`), not at `process_cluster_once`. §1.1.2
+  step 1 (move the ownership boundary before Pass 1) is untouched work.
+- `prepare_macro_clause_turn` still **self-publishes**: `compile_macro_clause_core`
+  calls `turn.publish(env)` directly (`macro_clause.rs:105`, `:175`). §1.1.2 step 3
+  (return an owned prepared result the parent absorbs) is untouched work.
+- `register_macro_in_module` is still an additional pre-commit writer — it writes
+  `env.introspection` (`src/process_form/form_dispatch.rs:348-368`) and the live
+  `env.symbol_tables` (`:369+`) immediately. §1.1.2's diagnosis is exact.
+- No `EnteredMacroProvenance`, `PreparedPresentation`, or `presentation_scheme`
+  exists anywhere in `src/` or `crates/`, and `worker::PreparedCommit`
+  (`src/worker.rs:21-34`) has no `presentation` field. The W3c removal was clean;
+  nothing half-landed.
+- `Introspection` is int-private (`src/session_v4/types.rs:311`), so §6.1's
+  "one crate-private `presentation_scheme`" remains a zero-public-API,
+  zero-cache-schema change — consistent with S118's single-schema-window fence.
+
+**Two deltas the implementing wave must absorb:**
+
+1. **The W7 seed classification must follow the ownership boundary.** §2.1.1
+   landed `enroll_non_executable_seed` + the shared `baseline_entry_is_executable`
+   predicate (`macro_clause.rs:376-443`), which classify the clause seed against
+   `TurnCheckWorld.baseline` — a snapshot of the **live** tables. Once §1.1.2
+   makes the clause turn absorbable, the parent's candidate world becomes the
+   relevant prior state, and both the seed classification and the shared
+   executable predicate must read it. In particular, a clause already compiled
+   into a **reserved-but-unpublished** cell by an earlier absorbed clause turn in
+   the same cluster must classify as *executable*, or a second expansion in that
+   cluster re-enrolls and recompiles it — contradicting §6.4's "later-form
+   invocation uses one absorbed clause compilation … no compile-again publication
+   path". The §2.1.1 five-row matrix keeps its rows; its "baseline" column is
+   re-read as "the world the parent turn owns".
+2. **Absorbed drop-glue rows move as pairs.** `PreparedMacroTurn` accumulates
+   `compiled_drop_glues` (`macro_clause.rs:117-122`, `:158-163`) and its `publish`
+   installs them into `SharedState.fresh_jit_drop_glues` as `{artifact, owner}`
+   values (`:182-187`). When absorption folds that publish into the parent gate,
+   those rows must move **as pairs**, preserving the invariant
+   `design/int/result-owner.md` §3.1.1 pins: a row is replaced atomically with its
+   retention owner, and no third writer of that map exists. This is a coupling
+   0745 introduces on the consumption side and 0863 must not break.
+
+**Handoff order (binding, arch ruling 11).** 0745 lands *and reviews* first. The
+0863 wave then rebases its reading of the turn transaction on the post-0745
+state — which, for the transaction itself, is unchanged: 0745 modifies neither
+`prepare_cluster_commit`, `compile_prepared_turn`, nor `publish_prepared_turn`
+(`result-owner.md` §3.0/§11); it only consumes the map those seams populate.
+
 ## 7. Quality attributes and interface assessment
 
 - **Simplicity / maintainability:** one prepared-turn boundary, one existing
