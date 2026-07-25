@@ -39,8 +39,10 @@
 // clean program (so the fence also proves the stderr parse -> verdict wiring),
 // perturbs it arithmetically, and asserts `verdict` names the right fault class.
 //
-// COST. 45 cells x 4 `--run` subprocesses = 180 runs, ~1.5s wall, split across
-// five nextest test fns (one per owning type) so they parallelize. Stdlib-free
+// COST. 60 cells x 4 `--run` subprocesses = 240 runs, ~1.4s wall, split across
+// five nextest test fns (one per owning type) so they parallelize. (45 cells in
+// v1; the three ELIMINATOR positions added in S118 W1 per FIXME 0830 take the
+// position axis from 9 to 12 — see `positions()`.) Stdlib-free
 // (`PrimitivesOnly`); every subprocess gets its own tmpdir and its own env, so the
 // lane is safe under nextest process isolation.
 //
@@ -57,7 +59,9 @@
 //     §2.2 target is depth-2; the product is written as two independent
 //     enumerations precisely so composing them is a loop, not a rewrite.
 //   - `vec-set`/`vec-push` COW operators as flow steps (the `MayAliasOf` family),
-//     match/projection steps, spark & macro-expansion flows (strategy §2.2 "v2").
+//     spark & macro-expansion flows (strategy §2.2 "v2"). The MATCH eliminator
+//     steps are no longer on this list: S118 W1 added them as three positions
+//     (FIXME 0830), with their own residual scope named at the row.
 //   - the program-RESULT-heap face — see `single_program` below (FIXME 0745).
 //
 // spec: spec/12-runtime.md §12.3.1 — Requirements (a heap value MUST be freed when
@@ -91,6 +95,17 @@ struct OwningType {
     /// What `read` returns for `mk`.
     expect: i32,
     nesting: u8,
+    /// The `match` arm the ELIMINATOR positions (S118, FIXME 0830) use for this
+    /// type, written as `"<pattern> <body>"`.
+    ///
+    /// `None` means "use the generic var-pattern arm `v (<read> v)`" — the only
+    /// arm available for a type with no user constructor (`String`, `(Vec …)`).
+    /// `Some(arm)` gives a CONSTRUCTOR-pattern arm, which is what makes the
+    /// eliminator rows able to see FIXME 0810 at all: 0810 Face A is a
+    /// constructor-pattern leak, and a var-pattern arm cannot express it. Every
+    /// arm must still evaluate to `expect`, so the two eliminator rows stay
+    /// value-comparable with the reader-based positions.
+    ctor_arm: Option<&'static str>,
 }
 
 const ADT_DEFS: &str = "(deftype Bx (MkBx [:String s]))\n\
@@ -106,6 +121,7 @@ fn owning_types() -> Vec<OwningType> {
             read: "str-len",
             expect: 3,
             nesting: 1,
+            ctor_arm: None,
         },
         OwningType {
             name: "vec_of_scalars",
@@ -115,6 +131,7 @@ fn owning_types() -> Vec<OwningType> {
             read: "vec-len",
             expect: 3,
             nesting: 1,
+            ctor_arm: None,
         },
         OwningType {
             name: "vec_of_heap",
@@ -124,6 +141,7 @@ fn owning_types() -> Vec<OwningType> {
             read: "vec-len",
             expect: 3,
             nesting: 2,
+            ctor_arm: None,
         },
         OwningType {
             name: "adt_with_heap_field",
@@ -133,6 +151,7 @@ fn owning_types() -> Vec<OwningType> {
             read: "bxlen",
             expect: 4,
             nesting: 2,
+            ctor_arm: Some("(MkBx s) (str-len s)"),
         },
         OwningType {
             name: "vec_of_adt_with_heap_field",
@@ -142,6 +161,7 @@ fn owning_types() -> Vec<OwningType> {
             read: "vec-len",
             expect: 2,
             nesting: 3,
+            ctor_arm: None,
         },
     ]
 }
@@ -230,7 +250,148 @@ fn positions() -> Vec<Position> {
                 )
             },
         },
+        // ===================================================================
+        // THE ELIMINATOR AXIS (S118 W1, FIXME 0830 / `tests/plan/s118-test-plan.md`
+        // §4.2). The two rows below are the MINIMUM change that would have
+        // caught 0810 and 0782 — 0830's own "one row short" finding.
+        //
+        // WHY v1 COULD NOT SEE THEM. Every position above reads its owned value
+        // through a fixed per-type reader (`str-len`, `vec-len`, `bxlen`), and a
+        // reader is always a CALLEE taking the value as a parameter — so the
+        // value is `Borrowed` at every elimination site v1 ever generated.
+        // `bxlen` is itself a `match`, which makes this concrete: it is
+        // `match_owned_temporary_scrutinee_0810.rs`'s GREEN control C2 ("match
+        // inside a callee on a borrowed parameter"), reproduced verbatim in all
+        // 45 cells. The harness generated the one match shape that works and no
+        // other, and ran green while a 1-object-per-iteration leak and a SIGBUS
+        // over-release sat in `match` over an OWNED TEMPORARY.
+        //
+        // So the missing axis is not an owning type and not quite a position: it
+        // is HOW THE OWNED VALUE IS CONSUMED at its use site. `position` varies
+        // where the value comes FROM; until now nothing varied what eliminates
+        // it. These two rows put the value in match-SCRUTINEE position, where
+        // the matching frame owns it.
+        //
+        // BOTH USE A VAR PATTERN so they generate over every owning type in the
+        // product, not just the ADT ones — the same generality the reader-based
+        // positions have. A ctor-pattern row would be ADT-only and is the v2
+        // widening 0830 sketches (`eliminator` as a full third dimension).
+        //
+        // INSTRUMENT CAVEAT — BINDING, and honoured here (0830 §"Instrument
+        // caveat"; plan §4.2). These rows cover the **0810 leak polarity only**.
+        // The 0782 double-free polarity is `--link`-VISIBLE ONLY: a var-pattern
+        // arm double-releasing an owned temporary exits 8 with `allocs=2
+        // deallocs=2` under `--run` in BOTH toggles, and is a deterministic
+        // signal only under `--link` (exit 134). This harness is `--run` ×
+        // toggle by v1 scope, so a var-pattern row added here CANNOT see 0782 —
+        // it is pinned cell-by-cell in
+        // `match_owned_temporary_scrutinee_0810.rs::var_pattern_arm_consuming_owned_temporary_releases_it_once_linked`
+        // instead. Routing these rows through `assert_safety_matrix` is the v2
+        // upgrade; this note is the explicit alternative the caveat permits, and
+        // it must NOT be deleted without the `--link` face actually landing.
+        //
+        // The rows assert EXACT balance like every other cell — never a
+        // differential. The 0810 class is toggle-independent (identical exits
+        // and counts ON vs OFF), so the standing differential face is
+        // structurally blind to it; that is the FIXME-0761 blindness this
+        // harness already exists to avoid re-introducing.
+        // ===================================================================
+        Position {
+            // 0810 Face A — the scrutinee spelled INLINE. The matching frame
+            // owns the temporary and must release it once the arm has taken
+            // over.
+            name: "matched_in_place",
+            emit: |t| format!("(defn cell [] (match {} [{}]))\n", t.mk, elim_arm(t)),
+        },
+        Position {
+            // 0810 Face B / control C1 — the SAME elimination with the
+            // scrutinee LET-BOUND first. The spelling is the only difference,
+            // and in the 0810 batch the two spellings have OPPOSITE faults
+            // (inline leaks it, let-bound frees it too early), which is why
+            // both are generated rather than one standing in for the other.
+            name: "let_bound_then_matched",
+            emit: |t| {
+                format!(
+                    "(defn cell [] (let [b {}] (match b [{}])))\n",
+                    t.mk,
+                    elim_arm(t)
+                )
+            },
+        },
+        Position {
+            // THE ROW THAT ACTUALLY CATCHES 0810 (S118 W1, `/testing`).
+            //
+            // 0830 proposed the two rows above as "the minimum that would have
+            // caught 0810". MEASURED at HEAD `e15ff20f`, they would NOT have:
+            // both balance exactly for every owning type, including the ADT
+            // constructor-pattern arm.
+            //
+            //   shape                                          allocs/deallocs
+            //   (defn cell [] (match (MkBx "abcd") [(MkBx s) …]))      3 / 3
+            //   x25 through the repeater                             51 / 51
+            //   0810 A2's shape — the SAME match INSIDE a tail loop  11 / 1
+            //
+            // The discriminating ingredient is not "a match over an owned
+            // temporary": it is a match over an owned temporary IN A
+            // TAIL-RECURSIVE LOOP BODY, where the missing release is at the tail
+            // jump. The two rows above put `cell` in its own frame and the
+            // repeater calls it, so the loop and the match never share a frame
+            // and the seam under test is never reached — the same shape of miss
+            // 0830 diagnosed in v1 (a reader that borrows), one level in.
+            //
+            // This row closes it: the match IS the loop body, which is 0810
+            // A1/A2 generalized over the whole product. Measured RED for
+            // `adt_with_heap_field` (7/3) and GREEN for the var-pattern types,
+            // which is the expected split — a var-pattern arm cannot express
+            // 0810 Face A, and 0782's double-release is `--run`-invisible
+            // (below).
+            //
+            // STILL NOT COVERED, named rather than implied: 0810 Face B (the
+            // over-release, where the arm's extracted payload becomes the tail
+            // loop's parameter and outlives the match) needs the loop to carry
+            // the PAYLOAD rather than re-make the scrutinee, which needs a
+            // wrapper ADT the generator does not have. It is pinned cell-by-cell
+            // in `match_owned_temporary_scrutinee_0810.rs` and is the v2
+            // widening here.
+            name: "matched_in_tail_loop",
+            emit: |t| {
+                let (pat, body) = elim_arm_parts(t);
+                format!(
+                    "(defn go [:Int n] (match {} [{} (if (le-i64 n 0) {} (go (sub-i64 n 1)))]))\n\
+                     (defn cell [] (go 2))\n",
+                    t.mk, pat, body
+                )
+            },
+        },
     ]
+}
+
+/// The single `match` arm the two eliminator positions destructure with: the
+/// type's CONSTRUCTOR arm when it has one (the only arm shape that can express
+/// FIXME 0810's Face A), otherwise the generic var-pattern arm (the only arm a
+/// `String`/`(Vec …)` scrutinee admits, and the shape FIXME 0782 lives in).
+fn elim_arm(t: &OwningType) -> String {
+    let (pat, body) = elim_arm_parts(t);
+    format!("{pat} {body}")
+}
+
+/// The same arm split into `(pattern, body)` — `matched_in_tail_loop` has to
+/// wrap the BODY in the loop's `if`, so it needs the two halves separately.
+/// `ctor_arm` is written as `"<pattern> <body>"` with the pattern being one
+/// parenthesised form, so the split is at the close of that form.
+fn elim_arm_parts(t: &OwningType) -> (String, String) {
+    match t.ctor_arm {
+        Some(arm) => {
+            let close = arm
+                .find(')')
+                .expect("a ctor_arm's pattern must be a parenthesised form");
+            (
+                arm[..=close].to_string(),
+                arm[close + 1..].trim().to_string(),
+            )
+        }
+        None => ("v".to_string(), format!("({} v)", t.read)),
+    }
 }
 
 /// How many times the scaled variant runs the flow. Any per-iteration leak is
