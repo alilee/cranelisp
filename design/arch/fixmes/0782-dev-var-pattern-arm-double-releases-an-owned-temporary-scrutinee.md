@@ -84,6 +84,21 @@ now do for ownership, not acquire a third condition each.
 Needs `/testing` for the e2e cell (requested in-wave, not deferred — METHOD
 §2.2 / FIXME 0765): the repro above plus the two controls, `--run`/`--link`/REPL.
 
+## /qa S118 W1+ re-measurement (2026-07-25) — mechanism LIVE at HEAD; the e2e green is layout-latent, NOT a fix
+
+The committed guard
+(`match_owned_temporary_scrutinee_0810::var_pattern_arm_consuming_owned_temporary_releases_it_once_linked`)
+went GREEN at HEAD `e15ff20f` with no fix landed. Per the S98 rule `/qa`
+re-ran this FIXME's own falsifiability check at HEAD (`/clif f` over the
+exact repro, empty prelude): **both `atomic_rmw.i64 sub` are still emitted
+on the SAME scrutinee** (`v24 = iadd_imm v4, 8` in the arm-exit block,
+`v33 = iadd_imm v4, 8` in the merge block, each followed by a conditional
+free of `v4`). The double release is deterministic in the IR; only the
+`--link` allocator abort is layout-latent. The receiving `/dev` should
+treat the repro's current exit-0 as meaningless: acceptance is ONE release
+in this CLIF shape + the guard staying green, with the unit pin counting
+releases at the seam. Record: `tests/plan/s118-test-plan.md` §2.6.
+
 ## Context
 
 - FIXME 0781 (this seam, W4c) — the ownership-gate half, fixed; its unit pin

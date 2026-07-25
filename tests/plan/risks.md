@@ -427,6 +427,15 @@ grows.
   capture, container, loop-carry) misses the eliminator — the 0810/0782
   Blocker lineage is the evidence. The harness eliminator rows
   (`gen_ownership_flows`) are the mechanical fence.
+  **S118 W1 amendment (the tail-loop lesson, from the 0830 close-out):** an
+  eliminator row is only evidence for the tail-jump release seam when the
+  eliminator SHARES THE LOOP FRAME — a match wrapped in its own function
+  and driven by a repeater never reaches the seam (both of 0830's proposed
+  minimum rows measured GREEN at HEAD `e15ff20f` while 0810 was live; only
+  `matched_in_tail_loop`, match-as-loop-body, goes RED). For loop-coupled
+  seams the matrix carries a fourth factor:
+  `{eliminator in own frame | eliminator IS the loop body}` — a green
+  eliminator row in the wrong frame is vacuous, not coverage.
 - **Arm-order / operand-order twins for join-shaped seams (from FIXME 0778,
   actioned S118).** Any join/merge/fold operation (`If` arms, `Match` arm
   sequence, element-fold accumulation, lattice joins) takes order-swapped
@@ -451,3 +460,5 @@ grows.
 | Load-dependent closure claimed from symptom absence under armed perturbation | Blocker for Track C | §5 protocol: D1 gates D2/D3; closure needs demonstrated mechanism + fail-on-revert + ≥3 captured green runs; "flaky"/absence dispositions banned. |
 | 0859 witness graduates from an unproven oracle | Important | Ruling 2 sequencing: experiments begin only after the eight triplets land; emission-inert outcome returns to the user as disposition 2, never overridden with test-only facts. |
 | Track E fixture consolidation silently weakens integration assertions | Important | Plan §7 preservation checklist: before/after assertion inventory, zero weakenings, schema isolation retained. |
+| Ambient prelude-load residue (1143/session, macro-expansion executions — plan §2.5) is re-attributed by symptom instead of by the probe evidence, or its cells (#10/#19/#20/#21/#23) are counted as flippable from Tracks A/B/W4 | Blocker for the exit arithmetic | Ruled 2026-07-25 (plan §2.5): the 0835 runtime-pair seam via discriminating probes (macro-free stdlib subset = 0; first residual with the first expansion; linear in count and sexp size). Both flip branches recorded; W2b acceptance MUST re-run the P4 probe; surviving residual = NEW attribution + user scope decision, never a silent carry. |
+| Intended-RED guards silently pass under interleaved multi-binary runs, corrupting the intended-RED arithmetic (0694 family, INVERSE polarity — first named cell: `cache::cache_restores_sibling_written_trait_impls_for_dispatch`, W1 2026-07-25, passed once in a 4-binary run, reproducibly RED alone and in re-runs) | Important, Track C input | The 0694 counting convention now covers both polarities: certification reports stable-exact counts + a named flap set for should-be-GREEN failures AND should-be-RED passes. W5 characterization (D1→D3) owns the mechanism; wave gates verify intended REDs per-binary (focused runs), never only from an interleaved full-run scalar. |

@@ -46,6 +46,40 @@ status: open
 > runtime fix, that is a NEW `/qa` attribution question, not a re-opening of
 > the migrated backend seams.
 
+> **S118 /qa SCOPE NOTE — the AMBIENT PRELUDE-LOAD FACE (2026-07-25; probe
+> evidence, plan of record `tests/plan/s118-test-plan.md` §2.5).** This
+> defect has a THIRD face beyond leak + abort: the program-independent
+> **1143-allocation residual** every stdlib-prelude `--run` child carries
+> (baseline cells `ms_p8_conj_leak` ×3, `intrinsics_m3_detection_s116`
+> clean control, and a term of the exemplar residue cell). The user's
+> directed lead — only macro expansion *executes* during prelude load — is
+> confirmed by discriminating probes (fresh tempdir, controlled env,
+> `--run --no-cache`, `CRANELISP_RC_STATS=1`, trivial `Int` child, HEAD
+> debug binary):
+>
+> | prelude contents | residual |
+> |---|---:|
+> | empty | 0 |
+> | macro-free subset (8 real stdlib modules + 7 test children: traits, impls, deftypes, defns) | 0 |
+> | + one `defmacro` DEFINED, never invoked | 0 |
+> | + ONE macro invocation in a loaded module body | +2 |
+> | two invocations | +4 |
+> | one invocation, larger argument sexp | +23 |
+> | full stdlib | 1143 |
+>
+> Compiling the entire macro-free surface leaks nothing; macro DEFINITION
+> leaks nothing; the residual appears with the first macro EXPANSION and is
+> linear in expansion count and in marshalled-sexp size — this FIXME's own
+> signature (per-call, per-|structure|, constant type depth) on the same
+> Sexp↔SList marshal path. No new FIXME is filed: the prelude face is THIS
+> defect's face until falsified. **Binding prediction on the W2b fix:** the
+> consume-owner-contract fix collapses the ambient residual to 0; W2b
+> acceptance re-runs the full-stdlib probe shape, and `/testing` lands one
+> prelude-face exact-balance cell in the W2b change-set. A residual
+> surviving W2b is a NEW `/qa` attribution question (and unblocks nothing:
+> baseline cells #10/#19/#20/#21/#23 then have no scoped flip track —
+> user scope decision required; plan §2.5 branch F).
+
 # Building a ~6-cell `SList` of `Sexp` corrupts the heap — in ORDINARY code, no macro involved
 
 ## Issue

@@ -268,6 +268,33 @@ re-run.
    only. Classes I and III each owe their own characterisation before closing.
 3. "Flaky" remains banned for all five.
 
+## /qa S118 W1+ roster update (2026-07-25) — first INVERSE-polarity member, a NAMED cell
+
+**`cache::cache_restores_sibling_written_trait_impls_for_dispatch`** (S118
+baseline cell #28, the 0869 intended-RED guard) **silently PASSED once under
+a 4-binary interleaved focused run** during W1's baseline reconciliation
+(the run counted 5 failures where 6 were expected); it is reproducibly RED
+alone and in re-runs. This is the family's first member of the OPPOSITE
+polarity — a should-be-RED guard passing under interleaving, where every
+prior member was a should-be-GREEN test failing under load — and it is a
+named-cell instance, stronger evidence than the count-level arithmetic this
+FIXME was filed on.
+
+Consequences (recorded in `tests/plan/risks.md` §S118 risk read):
+
+- the counting convention widens: certification reports stable-exact counts
+  PLUS a named flap set covering BOTH polarities (should-be-GREEN failures
+  AND should-be-RED passes). An intended-RED count taken only from an
+  interleaved multi-binary run is not evidence; wave gates verify intended
+  REDs per-binary.
+- candidate-mechanism note, to be demonstrated not presumed: the cell is a
+  CACHE-restoration guard — cross-subprocess shared state (cache dir /
+  tmpdir / `CRANELISP_LIB`) is exactly the D1-falsifiable premise class, so
+  the W5 D1 experiment discriminates for this member too. It carries the
+  same evidentiary obligation as every member (isolation-vs-load
+  characterization, in-suite output capture, attribution); "flaky" remains
+  banned.
+
 ## Context
 
 Found by /review W4 while verifying dispatch priority 8 (suite-state

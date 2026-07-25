@@ -66,7 +66,7 @@ The **flips** column names the wave whose change-set must turn the cell GREEN.
 | 7 | `match_owned_temporary_scrutinee_0810::let_bound_scrutinee_payload_outlives_the_match_linked` | 0810 | B (backend) |
 | 8 | `match_owned_temporary_scrutinee_0810::let_bound_scrutinee_loop_result_still_matches_its_own_tag` | 0810 | B (backend) |
 | 9 | `match_owned_temporary_scrutinee_0810::let_bound_scrutinee_loop_result_still_matches_its_own_tag_linked` | 0810 | B (backend) |
-| 10 | `match_owned_temporary_scrutinee_0810::var_pattern_arm_consuming_owned_temporary_releases_it_once_linked` | 0782 | B (backend) |
+| 10 | `ms_p8_conj_leak::int_loop_control_balances_green` | ambient prelude-load residue (§2.5) | W2b, branch H only (§2.5) |
 | 11 | `capture_drop_glue_strands_nested_heap_0760::closure_capturing_vec_of_strings_does_not_leak` | 0760 | B (backend) |
 | 12 | `capture_drop_glue_strands_nested_heap_0760::closure_capturing_adt_with_string_field_does_not_leak` | 0760/0796 | B (backend) |
 | 13 | `capture_drop_glue_strands_nested_heap_0760::nested_adt_chain_past_glue_depth_limit_does_not_leak` | 0760 depth cliff | B (backend) |
@@ -75,38 +75,45 @@ The **flips** column names the wave whose change-set must turn the cell GREEN.
 | 16 | `program_result_owner_s116::run_nested_pure_payload_observed_then_released_both_toggles` | 0745 | B (int/exe-bundle) |
 | 17 | `program_result_owner_s116::linked_nested_pure_payload_converts_then_releases` | 0745 | B (int/exe-bundle) |
 | 18 | `program_result_owner_s116::repl_nested_heap_value_displays_before_exact_release` | 0745 | B (int/exe-bundle) |
-| 19 | `ms_p8_conj_leak::conj_loop_does_not_leak` | 0688 TCO supersede | B (backend), verified consequent |
-| 20 | `ms_p8_conj_leak::conj_loop_parity_no_abort` | 0688 TCO supersede | B (backend), verified consequent |
-| 21 | `exemplar_ownership_residue_s116::sudoku_warm_serial_solve_residue_at_most_1400` | 0840 composite | B, verified consequent (§4.4) |
+| 19 | `ms_p8_conj_leak::conj_loop_does_not_leak` | ambient prelude-load residue (§2.5); 0688 signature ABSENT at HEAD (§2.2.1) | W2b, branch H only (§2.5) |
+| 20 | `ms_p8_conj_leak::conj_loop_parity_no_abort` | ambient prelude-load residue (§2.5); 0688 signature ABSENT at HEAD (§2.2.1) | W2b, branch H only (§2.5) |
+| 21 | `exemplar_ownership_residue_s116::sudoku_warm_serial_solve_residue_at_most_1400` | 0840 composite + ambient term (§2.5) | W2b + B, verified consequent (§4.4, §2.5) |
 | 22 | `intrinsics_m3_detection_s116::m3_parity_catches_injected_imbalance` | 0848 | A (intrinsics) |
-| 23 | `intrinsics_m3_detection_s116::m3_parity_clean_child_exits_normally_control` | 0848 (+ possible 0745 coupling, §2.2) | A, possibly A+B |
+| 23 | `intrinsics_m3_detection_s116::m3_parity_clean_child_exits_normally_control` | ambient prelude-load residue (§2.5) — NOT 0848, NOT 0745 (§2.2.2) | W2b, branch H only (§2.5) |
 | 24 | `launch_grid_corrupt::launched_strand_grid_get_assoc_does_not_corrupt_heap_neg` | 0694 family (load-dependent) | C (separate certification, §5) |
 | 25 | `spec_11_stdlib::def_definition_echo_names_user_binding_not_internal_thunk` | 0863 DF-1 | D (src) |
 | 26 | `spec_11_stdlib::def_info_and_sig_describe_bound_value_not_macro` | 0863 DF-2 | D (src) |
 | 27 | `cache::cache_restored_parent_enrols_private_test_child` | 0868 | D (src) |
 | 28 | `cache::cache_restores_sibling_written_trait_impls_for_dispatch` | 0869 | D conditional (ruling 1) |
 
-### 2.2 W1 reconciliation obligations (two low-confidence cells)
+### 2.2 W1 reconciliation obligations — RESOLVED (W1 measurement 2026-07-25; `/qa` promotion 2026-07-25)
 
-Static inspection cannot fully color two cells; `/testing`'s W1 baseline
-reconciliation resolves both **from the captured 2026-07-25 run log** (or, if
-the log is not retained, one targeted per-binary run — never a full-suite
-rerun for this purpose):
+Both low-confidence cells are colored; the §2.1 table above is corrected
+name-for-name and the arithmetic lands exactly on the verified 28
+(150 run / 122 passed / 28 failed across the eleven baseline binaries).
 
-1. **`ms_p8_conj_leak` third member.** The file holds three tests; the S117
-   contaminated gate counted 3 failures there, the family gloss says the two
-   `conj_*` guards. Confirm whether `int_loop_control_balances_green` (whose
-   second leg runs the child under `CRANELISP_ALLOC_PARITY=1`) is in the 28.
-   If it is, the enumeration above trades one cell (most plausibly by the M3
-   clean control at #23 being GREEN) and the table is corrected name-for-name
-   in this file — arithmetic must land exactly on the verified 28.
-2. **The M3 clean control (#23) coupling.** With parity armed, the clean
-   child aborts on ANY exit imbalance — including the ambient 0745
-   program-result leak if its child program's result were heap-typed (it is
-   `Int`, so the expected coupling is via compiler-side allocation only).
-   Determine from the failure output whether #23's RED is 0848-only (flips at
-   W2) or leak-coupled (flips only after W4). Record the answer here; the
-   exit reconciliation depends on it.
+1. **`ms_p8_conj_leak` is THREE members, not two** — all three cells RED,
+   including the control twin `int_loop_control_balances_green`. The trade is
+   NOT against #23 (also RED): it is against
+   `match_owned_temporary_scrutinee_0810::var_pattern_arm_consuming_owned_temporary_releases_it_once_linked`
+   (the former #10, defect 0782), **GREEN at HEAD with no fix landed** —
+   dispositioned under the S98 rule in §2.6 below. Additionally the 0688
+   TCO-supersede signature the `conj` cells were enumerated under is **absent
+   at HEAD**: the conj loop's marginal residue over the int control is ZERO
+   (1219−1198 = 21 allocs vs 76−55 = 21 deallocs over 20 iterations — no
+   per-iteration term). All three REDs measure only the program-independent
+   ambient prelude-load residue (§2.5). Whether 0688 was cured by an
+   S116/S117 change-set or its cell shape stopped reaching the seam is an
+   open suspicious-green question of the same S98 kind as §2.6; it is owed a
+   trace-to-mechanism before the family is called closed (recorded as a §2.4
+   exit-reconciliation obligation — the flip of #19/#20 does NOT retire
+   0688's attribution question).
+2. **The M3 clean control (#23) is NEITHER 0848-only nor 0745-coupled.** The
+   detector is present and WORKING: the child aborts on a genuine exit
+   imbalance of exactly 1143 (`ALLOC_COUNT=1199 DEALLOC_COUNT=56`), which is
+   the ambient prelude-load residue (§2.5), not this child's `Int` result
+   (0745's mechanism) and not a detection gap (0848's). No W2a
+   detection-proof work and no W4 result-owner work can flip it.
 
 ### 2.3 Intended-RED additions this sprint
 
@@ -138,6 +145,110 @@ is treated with suspicion, not celebration — S98 rule: perturbation reshapes
 layout; the flip must trace to the mechanism change-set, and the Track-B
 fixes must be demonstrated with detectors armed in their acceptance legs
 (§4.1), not by symptom absence.
+
+### 2.5 Ambient prelude-load residue — ATTRIBUTION RULING (`/qa`, 2026-07-25)
+
+**Ruling: the program-independent 1143-allocation residual that every
+stdlib-prelude `--run` child carries is macro-expansion-execution residue on
+the SList/Sexp marshal path — the same runtime-pair seam FIXME 0835 owns.
+It is NOT compiler-side allocation in general, NOT definition/trait/impl
+compilation, NOT `defmacro` compilation, and NOT 0745/0848/Track-B glue.**
+
+The user's directed lead (2026-07-25: the only code that *executes* during
+prelude load is macro expansion) is **confirmed** by discriminating probes
+(fresh tempdir + `env_clear`-equivalent env per session, `--run --no-cache`,
+`CRANELISP_RC_STATS=1`, trivial `Int`-returning child, debug binary at HEAD):
+
+| probe | prelude contents | residual (`allocs − deallocs`) |
+|---|---|---:|
+| P0 | empty prelude | 0 |
+| P1 | macro-free subset: 8 real stdlib modules verbatim (compare.eq/ord, num.num, text.display, fn.option/result, testing.assertions + 7 test children) — traits, impls, deftypes, defns, ADT re-exports | 0 |
+| P2 | P1 + a module DEFINING one `defmacro`, never invoked | 0 |
+| P3 | P2 + ONE macro invocation in a loaded module body | **+2** |
+| P3b | two invocations of the same macro | **+4** |
+| P3c | one invocation with a larger argument sexp | **+23** |
+| P4 | full stdlib (`CRANELISP_LIB=stdlib/`) | **1143** |
+
+The discrimination is total: compiling the entire macro-free surface leaks
+nothing; compiling a macro definition leaks nothing; the first residual
+appears with the first macro *expansion*, is **linear in expansion count**
+(+2 per invocation) and **linear in the size of the marshalled sexp** (+2 →
++23 at constant invocation count). That is exactly 0835's confirmed
+signature — per-call and per-|structure| growth at constant type depth — on
+the same data path (`marshal` Sexp↔SList construction with undischargeable
+interior +1s vs `consume_slist` tree-ownership teardown). The full-stdlib
+1143 is the sum over the prelude closure's macro invocations
+(`control`/`defs`/`str`/`vec`/`list`/threading/io.monad expansions).
+
+**Disposition: no new FIXME.** The prelude-load face is appended to FIXME
+0835 as a scope note (the probes indicate the 0835 mechanism; a second
+number for the same seam would split the record). Probe harness retained at
+the session scratchpad `probe/` tree; the P3 shape (two tiny modules, one
+invocation, +2) is the minimal deterministic repro if a committed cell is
+ever needed for a divergent attribution.
+
+**Testable prediction (binding on W2b acceptance):** the W2b runtime-pair
+fix for 0835's consume-owner contract collapses the ambient residual to 0.
+W2b's acceptance MUST re-run the P4 probe shape (trivial `Int` child, full
+stdlib, RC_STATS): residual 0 confirms; a surviving residual is a NEW
+attribution routed to `/qa` (never a silent re-scope). `/testing` is
+directed (W2b change-set rider, not W1) to land ONE prelude-face cell —
+trivial program + macro-invoking mini-prelude fixture, exact balance — as
+the standing fence for this face.
+
+**Flip-accounting amendment (cells #10/#19/#20/#21/#23), both branches:**
+
+- **Branch H — the 0835-collapse prediction HOLDS.** #10 (int control), #19,
+  #20, #23 flip at **W2b** (their REDs are entirely the ambient term). #21
+  (exemplar ≤1400) loses the 1143 ambient term at W2b and its remaining 0840
+  composite residue is verified as a consequent of W3 per §4.4 — flip
+  expected only after **W2b + W3**, and a residual RED after both is a NEW
+  attribution. None of these five flips at W2a, W3-alone (for
+  #10/#19/#20/#23), or W4 — a flip in any other change-set is the S98
+  perturbation flag, and re-opens attribution.
+- **Branch F — the prediction FAILS (residual survives W2b).** The prelude
+  face is a distinct defect no current track owns: #10/#19/#20/#21/#23
+  **cannot flip from any currently-scoped track** and the sprint owes the
+  user a scope decision (new fix window vs explicit user-approved carries —
+  they are NOT in the §1 pre-authorized carry list). The surviving-residual
+  measurement itself becomes the new FIXME's evidence base, and the P3 probe
+  shape is the reduction `/testing` commits with it.
+
+### 2.6 Cell trade-out — the 0782 linked cell's suspicious green (S98 rule, executed 2026-07-25)
+
+`match_owned_temporary_scrutinee_0810::var_pattern_arm_consuming_owned_temporary_releases_it_once_linked`
+left the 28 (GREEN at HEAD) with **no fix landed**. Per §2.4 that is
+suspicion, not closure. The S98 step is executed: the original defect
+signature is **reproduced another way, at the IR level** — `/clif f` over
+0782's exact repro (`(defn f [] (match [7 8 9] [xs (vec-get xs 1)]))`,
+empty prelude, HEAD debug binary) shows the double release verbatim:
+
+```
+block5:  v24 = iadd_imm.i64 v4, 8
+         v26 = atomic_rmw.i64 sub v24, v25   ; arm-exit scope cleanup
+         brif v27, block8, …                 ; → fn2(v4) conditional free
+block2:  v33 = iadd_imm.i64 v4, 8
+         v35 = atomic_rmw.i64 sub v33, v34   ; merge-block consume dec
+         brif v36, block10, …                ; → fn4(v4) conditional free
+```
+
+Both subs target the SAME scrutinee `v4` (RC field +8) — exactly 0782's
+mechanism (`compile_var_pattern_arm` scope registration +
+`dec_temporary_scrutinee` both firing), unfalsified by the FIXME's own
+falsifiability clause. **Disposition: the defect is LIVE and deterministic
+in the emitted IR; only the e2e symptom (the `--link` allocator abort) is
+layout-latent at HEAD.** The cell:
+
+- does NOT join the 0694 load/interleaving family — nothing here is
+  interleaving-dependent; the mechanism is byte-visible in every compile;
+- stays attributed to 0782, stays in the suite as the regression guard, and
+  is OUT of the 28 as measured (baseline honesty);
+- exit reconciliation (§2.4) must NOT count its green as 0782 closure: 0782
+  closes only when its fix change-set lands (Track B match_codegen seam) and
+  the acceptance evidence shows ONE release in this CLIF shape (the `/clif`
+  probe above is the check; `/dev`'s unit tier pins the count at the seam).
+  A tightened e2e cell (CLIF-trace-asserting sibling) is `/testing`'s option
+  in the fixing change-set, not a W1 obligation.
 
 ## 3. Track A — detection proofs (the sprint's foundation)
 
@@ -310,6 +421,26 @@ committed-cell family (the committed cells stay unarmed/deterministic;
   (never differential — the 0761 blindness) and either route through the
   `--link` face or carry an explicit note that they cover the 0810 leak
   polarity only (the 0782 double-free is `--link`-visible only).
+
+  **W1 OUTCOME (2026-07-25) — the two planned rows are INSUFFICIENT; the
+  landed third row is the operative one.** Measured at HEAD `e15ff20f`, both
+  proposed rows balance exactly for every owning type including the ADT
+  ctor-pattern arm — 0830's "minimum that would have caught 0810" claim is
+  falsified. The discriminating ingredient is not "a match over an owned
+  temporary": it is the match **as a tail-recursive loop body**, where the
+  missing release is at the tail jump and the loop and the match must share
+  a frame. The two proposed rows put `cell` in its own frame under the
+  repeater, so the seam is never reached — the same shape of miss 0830 itself
+  diagnosed in v1 (a borrowing reader), one level in. `/testing` landed all
+  THREE rows (`matched_in_tail_loop` added; position axis 9 → 12);
+  `matched_in_tail_loop` is RED for `adt_with_heap_field` (7/3), GREEN for
+  var-pattern types — the expected 0810-Face-A split. Named residual: 0810
+  Face B (payload outlives the match as the loop parameter) needs a wrapper
+  ADT the generator lacks; pinned cell-by-cell in
+  `match_owned_temporary_scrutinee_0810.rs`, v2 widening here. FIXME 0830 is
+  actioned and deleted with this record (the tail-loop lesson also lands in
+  the `risks.md` standing eliminator-axis entry: an eliminator row that does
+  not share the loop frame does not test the tail-jump seam).
 
 ### 4.3 Ruling-10 structural fence (atomic legacy-emitter deletion)
 
@@ -486,15 +617,42 @@ result-owner seams; must not interleave). Cells:
   canonical introspection — `/review` checks against the rejected S117
   shape).
 
-### 6.2 0867 — repro lands in W1
+### 6.2 0867 — repro landed W1; ATTRIBUTION FINALIZED (`/qa`, 2026-07-25)
 
-`polymorphic_product_mints_canonical_and_unique_bare_accessors`: the
-polymorphic `(deftype (Pair a b) (MkPair [:a fst :b snd]))` case paired with
-the existing concrete control
-(`spec_field_accessor::bare_alias_resolves_when_field_unique`), asserting
-both `Pair.fst` and bare `fst`; duplicate-field ambiguity family retained as
-the negative boundary. After the RED lands, `/qa` finalizes the narrow `/dev`
-attribution (registration/publication seam) — fix is capacity-dependent.
+The W1 reduction (`tests/spec_field_accessor.rs` §"THE CONSTRUCTOR-ARM
+AXIS") falsified 0867's polymorphism framing: two polymorphic forms mint
+both accessors, and a CONCRETE distinct-name constructor arm mints neither.
+**The axis is where the field list lives**: accessors are synthesised only
+from the deftype-LEVEL field list (and the same-name single-constructor
+spelling that reduces to it); a field list in a named constructor arm whose
+name differs from the type's contributes NO accessor — every sum type,
+every distinct-name product.
+
+**Finalized attribution — `/dev`(typecheck), single-crate.** The seam is
+`crates/cranelisp-typecheck/src/adt.rs`: `synthesise_field_accessors` is
+called only under `if is_product` and only over `ctor_infos[0]`, with an
+explicit (wrong) comment "Sum/enum fields have no total accessor". Spec
+§5.2.6 is already normative against it — it REQUIRES sum-type accessors and
+specifies their semantics ("**Sum type accessors** are partial — they
+succeed on the matching variant and panic on mismatched variants", with
+`Option.unwrap` worked). No `/spec` question is open: the fix synthesises
+accessors over EVERY constructor arm's field list (partial semantics for
+multi-arm types per §5.2.6), preserving the §8.6.5 bare-alias contest
+classification unchanged — the retained duplicate-field negative family is
+the boundary fence. The panic face of a partial accessor needs its own
+positive + negative cells when the fix lands (`(Option.unwrap None)` →
+runtime panic — currently untestable, nothing mints).
+
+**`class=` re-label ruling: `class=enumeration-miss` STANDS.** The
+controlled-vocabulary definition ("a reachable-set enumeration omits …a
+symbol source") fits exactly: the accessor-source enumeration omits the
+constructor-arm field lists. No vocabulary addition; no test edit needed.
+Invisibility cause confirmed as the coverage-by-definition-variants lens
+(every prior guard spelled the ONE variant that works); the landed matrix is
+the variant × polarity grid that lens requires. Fix remains
+capacity-dependent (not in the pre-authorized carry list — an unfixed 0867
+at close needs an explicit user-approved carry). FIXME 0867 is retargeted
+`/testing` → `/dev` (typecheck) with this attribution appended.
 
 ### 6.3 0868 — cache-hit lifecycle parity
 
