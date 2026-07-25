@@ -231,6 +231,15 @@ pub fn alloc_with_rc(payload_size: usize) -> *mut u8 {
     // no registration when both gates are unset.
     crate::diagnostics::ensure_parity_registered();
 
+    // §7.2 `PostAlloc` — the ONE alloc-side fault-plant event, after header init
+    // + counters + tracking and before `rc_trace`/return. Unarmed ⇒ one cached
+    // `Option` read and `NoAction`; the only armed action is `CapturePlant`,
+    // which records `(base, total_size)` and touches no memory.
+    let _ = crate::diagnostics::test_fault_event(crate::diagnostics::FaultEvent::PostAlloc {
+        base: base as i64,
+        total_size,
+    });
+
     rc::rc_trace("alloc", base as i64, 1);
 
     base
@@ -267,6 +276,19 @@ pub unsafe fn dealloc(base: *mut u8) {
              or no valid Layout)",
             base as usize
         ));
+    }
+
+    // §7.2 `PreFree` — the ONE free-side pre-disposal fault-plant event, before
+    // the debug tracking block. `SuppressFree` returns immediately: no
+    // `LIVE_ALLOCS` removal, no scrub/quarantine, no `DEALLOC_COUNT` bump, so the
+    // block is GENUINELY leaked and M3's ledger stays truthful (the count delta
+    // AND the surviving live address are both real). Fires at most once.
+    if crate::diagnostics::test_fault_event(crate::diagnostics::FaultEvent::PreFree {
+        base: base as i64,
+        total_size,
+    }) == crate::diagnostics::FaultAction::SuppressFree
+    {
+        return;
     }
 
     #[cfg(debug_assertions)]
@@ -330,6 +352,21 @@ pub unsafe fn dealloc(base: *mut u8) {
 
     DEALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
     BYTES_CURRENT.fetch_sub(total_size, Ordering::Relaxed);
+
+    // §7.2 `PostFree` — the ONE post-discharge fault-plant event.
+    // `ExtraDischarge` bumps the ledger once more WITHOUT touching memory: the
+    // only UB-free route to the `deallocs > allocs` polarity. It proves the
+    // report polarity + atexit wiring, not a real double-free (whose face stays
+    // the debug `LIVE_ALLOCS.remove` assert above). The counter stays private to
+    // this module — the hook never gets a setter.
+    if crate::diagnostics::test_fault_event(crate::diagnostics::FaultEvent::PostFree {
+        base: base as i64,
+        total_size,
+        withheld,
+    }) == crate::diagnostics::FaultAction::ExtraDischarge
+    {
+        DEALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 // ---------------------------------------------------------------------------

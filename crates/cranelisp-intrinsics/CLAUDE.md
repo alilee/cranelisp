@@ -120,6 +120,7 @@ the consuming dec sequences (those stay per-module by design).
 | `CRANELISP_SCRUB_FREED` | M2 — poison header+payload with `0xDEAD2FEE_DEAD2FEE` at the free seam (a stale read is wild-negative / non-canonical ptr / underflow-tripping rc) | S113 W5a / diagnostic-modes.md §3 |
 | `CRANELISP_ALLOC_PARITY` (+ `_DUMP`) | M3 — atexit hard-check `ALLOC_COUNT==DEALLOC_COUNT` (+ empty live-set in debug); dump then non-zero abort on imbalance. `_DUMP` = print-and-continue ledger, no abort | S113 W5a / diagnostic-modes.md §3 |
 | `CRANELISP_RC_DEC_CHECK` | ALSO release-gates the intrinsic-body RC/alloc seam checks (A1 inc `rc>0` / A2 `consume_shallow` / A3 drop-glue `atomic_dec_rc` underflow / A4 dealloc size-sanity) — a located hard-fail, not just the codegen dec-check hook | S113 W5a / diagnostic-modes.md §5 |
+| `CRANELISP_TEST_FAULTS=s116-detection-proof-v1` + `CRANELISP_TEST_FAULT=<one spelling>` | arms the crate-private fault-plant protocol (the eight `FaultPlant` spellings). BOTH values are required and exact; unknown/empty/multiple spellings abort with `[CRANELISP TEST-FAULT CONFIG ERROR]`. Test-only in purpose, compiled in so an e2e child proves the real wiring | S118 W2a / diagnostic-modes.md §7 |
 
 The three memory-safety diagnostic modes (M1/M2/M3) + the seam asserts (A1–A4)
 live in `src/diagnostics.rs`. **Byte-identical-off**: all-off = today's code (one
@@ -132,6 +133,37 @@ A1 debug `is_live` assert is the always-on inc-half of the FIXME-0494 dec-half
 check; A2–A4's release variants read only the RC field / size (the `is_live` /
 double-free / header-integrity halves stay debug-only — they need `LIVE_ALLOCS`;
 M2 poison + M3 parity are their release faces).
+
+**The gated seam checks are PREchecks (S118, `diagnostic-modes.md` §7.5) — do not
+move them.** `diagnostics::seam_precheck(ptr, site)` is the single owner and runs
+at the TOP of `rc_inc` / `consume_shallow` / `atomic_dec_rc` (and `dealloc`'s
+header check above the debug tracking block): above the RMW it guards AND above
+the always-on `debug_assert!` twin. Both orderings are load-bearing —
+validation-before-mutation (Principle 25), and in the debug profile the twin
+would otherwise abort first so the release face is never reached. The A1/A2/A3/A4
+detection triplets fail on a revert of the ORDER alone, not just of the check
+(evidence: `diagnostics/tests.rs` row comments). The post-RMW gates deliberately
+stay — the precheck covers the planted single-threaded case, they keep the
+concurrent-race window. Its header-plausibility predicate deliberately does NOT
+require an 8-aligned `alloc_size`: a `HeapString`'s total is `16 + 8 + byte_len`
+raw bytes (27 for `"abc"`), and an alignment clause would hard-fail every string
+dec in the armed lane (FIXME 0879).
+
+**The fault-plant protocol (§7.1/§7.2) is closed and crate-private**: three
+events (`PostAlloc`/`PreFree`/`PostFree`), three actions
+(`CapturePlant`/`SuppressFree`/`ExtraDischarge`), one `pub(crate)`
+`fault_observation()`. The hook only observes or applies a ledger action —
+**every corruption is a fixture write** through `heap_access::write_i64` against
+the identity the hook captured, which is what keeps it from becoming an
+arbitrary-pointer-write API. Do not add counter setters, callbacks, or a
+replacement allocator here. Plants select deterministically by the exact
+`PLANT_MARKER_PAYLOAD` size (rows needing a specific allocation) or fire on the
+first matching event (the two ledger rows). Arming is **child-`Command` +
+`env_clear` only** — never suite-global, never `set_var` (a `LazyLock` already
+forced makes `set_var` a no-op that merely LOOKS armed; `tests/detector_arming_
+discipline_guard.rs` is the standing gate). The plant children in
+`diagnostics/tests.rs` are ordinary non-ignored tests that no-op unarmed, so
+unarmed byte-inertness is executed on every suite run.
 
 The **fork-join error-slot ferry** (`ivar.rs`, `panic.rs`, `test-discovery.md`
 §6): a spark thunk's runtime panic lands in the *worker's* `RUNTIME_ERROR`
