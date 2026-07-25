@@ -316,6 +316,7 @@ The load-dependent guards (`launch_grid`, 0694 family, 0604/0818) remain failing
 | W2b | /review | runtime pair: RE-1 change-set (delegated) | codex (delegated) + fable adjudicator | high | — |
 | W2b | /dev | runtime pair: 0884 + 0885 resolution (`3b4acc01`; falsification run + reverted) | opus[1m] (shim) | high | Blocker/Important resolution |
 | W2b | /review | runtime pair: re-review after 0884/0885 (delegated) | codex (delegated) + fable adjudicator | high | gate re-review |
+| W2b+ | /qa | Branch-F quote-path falsification probe (user-directed, evidence only) | fable (shim) | xhigh | — |
 
 ## Notes
 
