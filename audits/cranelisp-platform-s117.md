@@ -256,9 +256,16 @@ introduced.
 
 ## 4. Disposition trail
 
-To be appended by `/sprint` with the user during the next sprint's Phase 1.
-Recommendations in this assessment are proposals and have not been filed as
-FIXMEs.
+**Disposed with the user 2026-07-25 (S118 Phase 1). All five recommendations
+accepted.**
+
+| Rec | Disposition | FIXME | Owner | Scheduled |
+|---|---|---|---|---|
+| R1 | accepted | 0870 | `/dev`(platform) | S118 platform slice |
+| R2 | accepted | 0871 | `/design`(platform) | S119 (capacity: S118 belongs to the safety frontier) |
+| R3 | accepted | 0872 | `/arch` | S118 window or S119 at `/arch`'s discretion |
+| R4 | accepted — **user pulled into S118** | 0873 | `/design`(platform) + `/arch` on public-API contact | S118 platform slice (design only) |
+| R5 | accepted | 0874 | `/dev`(platform) | S118 platform slice |
 
 ## Next skills
 
