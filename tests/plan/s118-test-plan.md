@@ -214,6 +214,38 @@ the standing fence for this face.
   measurement itself becomes the new FIXME's evidence base, and the P3 probe
   shape is the reduction `/testing` commits with it.
 
+**Branch F EXECUTED — attribution complete (`/qa` probe, 2026-07-26, HEAD
+`34aac8ff` post-W2b; user-directed "probe only, then decide").** The W2b
+P-ladder was byte-identical pre/post (P3 +2, P3b +4, P3c +23, P4 1143 —
+reproduced), so Branch F fired. Discriminating probes WITHIN the
+macro-expansion turn attribute the whole residual to the **int-side
+macro-turn marshal boundary** — `src/marshal.rs` (args leaked by design +
+FIXME-0638 deep protection) and `src/expander.rs::invoke_clause` (the
+expansion-result tree never consumed after `runtime_to_sexp`) — NOT the
+`quote_sexp`/`quote_slist` path and NOT the 0835/RE runtime-pair class:
+
+| discriminator | shape | predicted (leak-boundary model) | measured |
+|---|---|---:|---:|
+| (d) no quote forms, nullary | body `(SexpInt 2)` | +1 (result cell) | **+1** |
+| (d)+(b) no quote forms, list result | ctor-built 8-cell tree | +8 | **+8** |
+| (a) quote-built IDENTICAL result | `` `(add-i64 1 2) `` | +8 (quote path balanced) | **+8** |
+| (c) two invocations | P3b | +4 | **+4** |
+| arg-size axis | P3c | +23 (22 arg cells + 1 spine; result aliases arg) | **+23** |
+
+Armed `CRANELISP_ALLOC_PARITY=1` fingerprints: P3 survivors are exactly the
+args-spine `SCons` (size=40 tag 0x1) + marshalled `SexpInt` (size=32 tag
+0x0); the nullary shape's lone survivor is the JIT-built result cell;
+full-stdlib `delta=1143` with all 64 dumped samples Sexp-family cells (26
+SCons / 11 SexpList / 7 SexpSym / 5 SexpInt / 3 SexpStr / 2 SexpBool / 2
+SexpBracket / 1 SexpAnnotated / 7 HeapStrings). Record + fix-shape
+estimates (instrument-truthfulness = hours vs macro-turn ownership protocol
+= a wave, `/design`(int) first): **FIXME 0888** (`target: /sprint` — the
+fix-vs-carry decision is the user's). Cells #10/#19/#20/#23 measure ONLY
+this leak; #21 carries it as its ambient term. The residue is a documented
+compile-time leak (bounded per session), not a runtime RC violation —
+P1/P2 = 0 stands; its cost is instrument poisoning of every
+stdlib-prelude exact-balance cell.
+
 ### 2.6 Cell trade-out — the 0782 linked cell's suspicious green (S98 rule, executed 2026-07-25)
 
 `match_owned_temporary_scrutinee_0810::var_pattern_arm_consuming_owned_temporary_releases_it_once_linked`

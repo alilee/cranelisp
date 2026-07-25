@@ -224,6 +224,24 @@ status: open
 > baseline cells #10/#19/#20/#21/#23 then have no scoped flip track —
 > user scope decision required; plan §2.5 branch F).
 
+> **S118 /qa BRANCH-F PROBE RESULT (2026-07-26, HEAD `34aac8ff`): the
+> prelude-load face is NOT this defect. The scope note's "THIS defect's face
+> until falsified" clause is now FALSIFIED both ways** — W2b's byte-identical
+> P-ladder showed the residue does not come through `sconcat`, and the
+> follow-on discriminating probes show it does not come through
+> `quote_sexp`/`quote_slist` either (a macro with NO quote forms still leaks;
+> a quote-built and a constructor-built IDENTICAL expansion result leak
+> identically, +8 = +8). The true seam is the **int-side macro-expansion
+> marshal boundary** (`src/marshal.rs` leak-by-design + `invoke_clause`
+> never consuming the expansion-result tree), with the closed-form model
+> `residual = |marshalled arg cells| + |non-aliased result-tree cells|`
+> exact on all measured points (+1/+2/+4/+8/+8/+23; full-stdlib 1143, armed
+> survivor sample 100% Sexp-family cells). Evidence, probe table, armed
+> fingerprints, and fix-shape estimates: **FIXME 0888** (the Branch-F record;
+> `target: /sprint` for the user's fix-vs-carry decision). 0835 stays open
+> only on its own residual faces (B3 residual-2; the abort face's located
+> `(JIT inline)` stale-dec attribution).
+
 # Building a ~6-cell `SList` of `Sexp` corrupts the heap — in ORDINARY code, no macro involved
 
 ## Issue
