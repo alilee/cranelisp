@@ -53,7 +53,12 @@
       "Bash(git stash:*)",
       "Bash(git checkout:*)",
       "Bash(/home/alilee/cranelisp/target/debug/cranelisp)",
-      "Read(//home/alilee/mmdc-run/**)"
+      "Read(//home/alilee/mmdc-run/**)",
+      "Bash(git *)",
+      "Bash(codex --version)",
+      "Read(//home/alilee/.codex/**)",
+      "Bash(codex exec *)",
+      "Bash(scripts/codex-review.sh:*)"
     ]
   }
 }

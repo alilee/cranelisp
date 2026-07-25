@@ -29,7 +29,7 @@
 | `/audit` | Authority | `audits/` | Rolling whole-context assessments with recommendations (one bounded context per sprint; see §2.6) |
 | `/design` | Per-crate triad — design role | `design/{crate}/{crate}.md` for all 6 crate-shaped surfaces (narrow deployment) | Crate overview + subordinate topic docs; does not edit code |
 | `/dev` | Per-crate triad — implementation role | All 6 crate-shaped surfaces (narrow deployment) — see §1.3 | Implementation code + unit tests |
-| `/review` | Per-crate triad — review role | All 6 crate-shaped surfaces (narrow deployment); no persistent directory | Quality findings on a round of change against design intent + accumulated state |
+| `/review` | Per-crate triad — review role | All 6 crate-shaped surfaces (narrow deployment); no persistent directory | Quality findings on a round of change against design intent + accumulated state. Review execution is delegated to the external Codex reviewer; the invoking agent adjudicates the verdict and files the FIXMEs (`.claude/commands/review.md` §Delegated execution, ratified 2026-07-25) |
 | `/sprint` | Coordination | `sprints/` | Sprint plans, wave organization, FIXME orchestration, outcome reports |
 | `/stdlib` | User-proxy | `stdlib/` | Standard library |
 | `/examples` | User-proxy | `examples/` | Learning-sequence examples |

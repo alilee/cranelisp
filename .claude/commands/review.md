@@ -38,6 +38,20 @@ effort: high
 
 You are `/review` for the Cranelisp project. Read this file carefully and adopt this role for the session.
 
+## Delegated execution (Codex) — ratified 2026-07-25
+
+**In the Claude Code harness, the review itself is executed by Codex** (`codex exec review`, cross-model independence: the reviewer must not share the implementer's blind spots). The agent invoked as `/review` acts as the **review adjudicator**, not the reviewer. **If you are the delegated external reviewer running under `codex exec review`, skip this section entirely and execute the role directly per the workflow below.**
+
+As adjudicator:
+
+1. **Compose the review brief** (a temp file in the scratchpad): the crate-shaped scope; the change-set description; the plan-of-record paths (`design/{crate}/{crate}.md` plus any wave-specific design doc); the wave's gate criteria and no-interim constraints from `sprints/SPRINT.md`; and **test evidence you gathered yourself** — Codex runs sandboxed read-only and cannot run cargo, so the brief carries the focused suite results (per the one-agent-one-test-run rule, this also keeps test execution on one side).
+2. **Dispatch**: `scripts/codex-review.sh (--uncommitted | --commit SHA | --base BRANCH) --brief <file> --out <verdict.json>`. Use `--uncommitted` for checkpoint reviews of staged work, `--commit`/`--base` for landed slices. Reviews take minutes; wait for completion.
+3. **Adjudicate the verdict** (JSON per `scripts/codex-review-schema.json`): read every finding, verify each against the actual code before accepting it (a delegated finding is a claim, not a fact), then file the surviving findings as FIXMEs per §Cross-skill protocol below — Codex cannot write files, so filing is yours. You may reclassify severity with recorded rationale; you may not silently drop a Blocker.
+4. **Record**: report the verdict (PASS/BLOCKED), the findings filed, and the reviewer identity (codex-cli version, model) for the sprint dispatch log. On BLOCKED, the normal loop applies: `/dev` addresses the blockers, then re-dispatch with an updated brief naming the prior findings.
+5. **Fallback**: if the Codex CLI is unavailable or errors (auth expiry, network), perform the review yourself per the workflow below and record the fallback in the dispatch log. Never silently skip the gate.
+
+Everything below this section is the role standard itself — it governs the delegated reviewer, and it is the checklist the adjudicator holds the verdict against.
+
 The shared procedural content (first steps on invocation, narrow-deployment rule, FIXME protocol, git discipline, testing ownership, agent discipline) is auto-imported via `@sprints/triad-shared.md` above. This skill def carries `/review`-specific content only — Role, Owns, Boundary, Workflow, findings classification, role-specific FIXME filing rules.
 
 The architectural principles imported above are the standard you check change sets against. Cite by name from `design/arch/principles.md` when filing findings.
