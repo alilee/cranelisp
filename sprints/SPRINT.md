@@ -153,6 +153,21 @@ Plan of record: `tests/plan/s118-test-plan.md`; durable rows in `tests/plan/PLAN
 - **Re-eligible FIXME triage**: 0726 + 0830 ride Tracks A/B now; 0831 + 0778 actioned and deleted (register/PLAN rows landed); 0761 + 0779 deferred with rationale recorded in their files as S119 triggers.
 - **Exit verdict**: `/testing` has enough to draft W1 (baseline reconciliation, four intended-RED additions, arming-discipline static gate).
 
+### `/design` (intrinsics) — COMPLETE (2026-07-25)
+
+Plan of record: `design/intrinsics/diagnostic-modes.md` (+575/−120; §7.1–§7.4 numbering preserved for existing citations; new §7.5–§7.7); index updated.
+
+- **§7.5 (load-bearing discovery): env-gated seam checks must become PREchecks.** As built, all four gated checks run after their mutation and after always-on `debug_assert!` twins — in the debug profile a plant trips the twin before reaching the gate, so positive proofs would fail against *working* detectors. One shared `diagnostics::seam_precheck` hoists to the top of the RC/dealloc funnels; byte-identical-off preserved. This gates the plant implementation: /dev implements the hoist first (§10 step 1) or four rows misread as detector failure.
+- A2 gains its missing release face via a header-plausibility predicate (explicitly graded plausibility-not-proof for the 0857 regrade). §7.2 closes the plant-hook shape (three events, three actions, deterministic selection, one `pub(crate)` observation). Report identity pinned to what the committed e2e asserts. §7.3 lays the eight triplets out as a seven-column table with containment and debug-twin discrimination rules. §7.6: children are ordinary non-ignored tests that no-op unarmed, so byte-inertness is continuously executed.
+- **Lane-scoped arming structural** (§7.1): never suite-global, never `set_var` (LazyLock ledger makes it a silent no-op that looks armed); child `Command` + `env_clear` + allow-list only. This is the invariant QA's W1 grep gate enforces.
+- **0850 exact spec** (§9.1–§9.3): delete the private `read_i64` (13 call sites) and copied Vec offsets; delegate to `heap_access`/`vec_runtime`; derive tag/field offsets from `HeapHeader::SIZE`; adjacent `CLOSURE_DROP_GLUE_OFFSET` duplication folds only if zero-delta, else files. QA's byte-identical-RED invariance pin carried verbatim (§9.6).
+- **Ruling 7** (§9.4): the rustdoc cleanup is the substantive half — four surviving accessors reference `reset_counts` and links would dangle. Rides the 0850 change-set.
+- **0859** (§9a): short cross-reference only — existing detector surface as oracle, plant protocol explicitly not the instrument, begins after proofs land, protocol `/qa`-owned.
+- Refreshed 9-row submodule matrix + 6-step serial order (step 1 precheck hoist gates steps 3–4).
+- **Filed FIXME 0876** (`/arch`): BC §4b invariant 8 prescribes `reset_counts` at session start; ruling 7's removal makes the prescription actively wrong; doc fix rides the same window.
+
+**Next skills:** `/dev`(intrinsics) per §10 order; `/arch` for 0876 + subtractive baseline approval; `/qa` 0857 regrade after step-6 records exist; `/review`(intrinsics) with §7.4 + §9.6 as reject criteria.
+
 ## Waves (Phase 4)
 
 _Pending Phase 3. Indicative shape, serialized as always: W1 `/testing` (baseline reconciliation + missing detection-proof/0867 cells) → W2 intrinsics D/D/R (Track A) → W3 backend D/D/R (Track B consumers) → W4 int/exe-bundle D/D/R (0745) → W5 `/qa` certification + Track C → W6 src/ (Track D) → Phase 6._
@@ -163,6 +178,7 @@ _Pending Phase 3. Indicative shape, serialized as always: W1 `/testing` (baselin
 |---|---|---|---|---|---|
 | P2 | /arch | sprint-wide scope review + standing questions a–f | fable (shim) | xhigh | — |
 | P3 | /qa | sprint-wide test plan (`tests/plan/s118-test-plan.md`) | fable (shim) | xhigh | — |
+| P3 | /design | cranelisp-intrinsics: diagnostic-modes refresh (0848/0850/0859 + rulings 2/3/6/7) | opus[1m] (shim) | high | — |
 
 ## Notes
 

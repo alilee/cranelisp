@@ -35,7 +35,7 @@ this crate's `intrinsics_table()` catalog is not.
 | `reactor.md` | The slice-2 effect reactor + async-trampoline interior — reactor loop, `HostCtx`/waker C-ABI, `EffectPoll`, the two-pool `Par` join, the token-capacity permit pool, launch/supervisor/admission, the combinator runtime + cancellation drop-paths. **§0 demarcates the thin `/int` host-client seam**; everything else is runtime-library interior. Relocated from `design/int/` at S97 (FIXME 0486). |
 | `intrinsics-table.md` | The published `intrinsics_table()` Import-catalog design (BC §4b invariant 11). |
 | `rc-inc-entry-point.md` | The `rc_inc` blessed inc entry point (BC §4b invariant 3, the atomic-RC discipline). |
-| `diagnostic-modes.md` | Implemented M1/M2/M3 and RC/alloc seam diagnostics, plus the S116 production-funnel proof protocol and convergence riders. |
+| `diagnostic-modes.md` | Implemented M1/M2/M3 and RC/alloc seam diagnostics; the closed test-only fault-plant protocol (§7, implementation-ready S118) including the lane-scoped arming invariant and the precheck-ordering prerequisite; the 0850 + ruling-7 convergence batch (§9); the 0859 oracle cross-reference (§9a). |
 | `implementation-slice-s66.md` | Historical implementation-slice notes. |
 
 ## Cross-references
