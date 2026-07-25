@@ -4072,3 +4072,51 @@ directed**; named tests below do not exist until `/testing` authors them.
 
 Byte-backed text remains a non-normative architecture exploration. It creates
 no Sprint-117 spec row or implementation-test obligation.
+
+## Sprint 118 — instrumented ownership closure
+
+Plan of record: `tests/plan/s118-test-plan.md` (the 28-RED baseline contract,
+Track A–E acceptance matrices, certification split, and the 0726/0761/0778/
+0779/0830/0831 triage). Durable rows below; per-cell detail in the plan.
+
+### Owned-temporary match eliminator — the 0810/0782 pin batch (FIXME 0830 rows)
+
+`tests/match_owned_temporary_scrutinee_0810.rs`; all cells exact-balance
+(`allocs == deallocs` absolute, never differential) and toggle-independent.
+
+| Requirement / invariant | Test | Status |
+|---|---|---|
+| spec §12.3.1, owned temporary ctor-pattern scrutinee freed exactly once (inline call wrapper) | `inline_call_wrapper_scrutinee_does_not_leak` (+ `_linked`) | `[S118]` RED, failing-not-ignored; flips at Track B backend wave |
+| spec §12.3.1 + §6.2.1, inline-constructor and heap-payload faces | `inline_constructor_scrutinee_does_not_leak`, `inline_scrutinee_with_heap_payload_does_not_leak_box_or_field` | `[S118]` RED |
+| spec §12.3.1, match + TCO displacement composition | `wrapper_from_call_superseding_loop_param_does_not_leak` | `[S118]` RED |
+| spec §12.3.1 + §6.2, let-bound scrutinee payload outlives the match (no premature free / wrong-tag read) | `let_bound_scrutinee_payload_outlives_the_match` (+ `_linked`), `let_bound_scrutinee_loop_result_still_matches_its_own_tag` (+ `_linked`) | `[S118]` RED |
+| spec §12.3.1 + §6.2.4, var-pattern arm consuming an owned temporary releases exactly once (0782) | `var_pattern_arm_consuming_owned_temporary_releases_it_once_linked` | `[S118]` RED |
+| controls: borrowed-param match, int-payload scrutinee, let-bound var-pattern | `control_var_pattern_arm_over_let_bound_scrutinee_linked`, `control_let_bound_int_payload_scrutinee_balances` (+ `_linked`), `control_match_in_callee_on_borrowed_param_balances` | `[Tested tests/match_owned_temporary_scrutinee_0810.rs]` GREEN fences |
+
+### If-join COW arm-order family — the 0772 lane cells (FIXME 0778 rows)
+
+`tests/safety_oracle_lane.rs`; the arm-order twin discipline (same contract,
+orders swapped, SAME assertion) is a standing obligation for join-shaped
+seams — see `risks.md` §S118.
+
+| Requirement / invariant | Test | Status |
+|---|---|---|
+| spec §12.1, `If`-joined COW `vec-set` result protected regardless of arm order | `safety_lane_if_joined_cow_arm_second_returns_set_value_abort_free_red` + `safety_lane_if_joined_cow_arm_first_order_symmetry_twin_green` | `[Tested+Neg tests/safety_oracle_lane.rs]` order-swapped twins; GREEN since the S115 `join_origin` fix |
+| spec §12.1, let-bound variants of both orders | `safety_lane_let_bound_if_joined_cow_arm_second_returns_set_value_abort_free_red`, `safety_lane_let_bound_if_joined_cow_arm_first_returns_set_value_abort_free_red` | `[Tested tests/safety_oracle_lane.rs]` GREEN |
+| spec §12.1, whole-value transfer not over-forced; chained-COW generalization holds | `safety_lane_if_joined_whole_value_transfer_clean_green`, `safety_lane_chained_cow_generalization_shapes_clean_green` | `[Tested tests/safety_oracle_lane.rs]` GREEN fences |
+
+### Sprint-118 track rows (compact; detail in `s118-test-plan.md`)
+
+| Requirement / invariant | Planned test family | Status |
+|---|---|---|
+| diagnostic-modes §7.3, all eight detector rows detect their planted faults (positive / clean / fail-on-revert) | `/dev`(intrinsics) unit triplets + committed `intrinsics_m3_detection_s116` e2e pair | `[S118]` the two M3 e2e cells are baseline REDs #22/#23; flips at Track A |
+| transitive-drop-glue design §1/§3, no fixed-depth fallback; canonical glue only (arch ruling 10) | structural fence: grep-zero `MAX_DROP_GLUE_DEPTH` + inline recursive emitter | `[S118]` `/testing` W1 intended RED; flips atomically with the Track B migration |
+| transitive-drop-glue design §5, mixed ctor+var match, per-arm release (FIXME 0726 tripwire) | mixed-arm × {ctor-path, var-path} × {toggle} exact-balance cells + `--link` face | `[S118]` `/testing` W1; ctor-path cells intended RED |
+| memory-safety-coverage §2.1, eliminator axis in the generative harness (FIXME 0830) | `gen_ownership_flows` positions `matched_in_place`, `let_bound_then_matched` | `[S118]` `/testing` W1; exact-balance, `--link`-face caveat binding |
+| result-owner design §1, observe-then-release at every typed exit (0745) | baseline cells #15–#18 | `[S118]` RED; flips at Track B int wave |
+| spec §9.10 + repl spec §1.3/§4.1, prepared macro-presentation transaction (0863) | DF-1/DF-2 flips + no-partial-publication negatives | `[S118]` late wave, serialized after 0745 |
+| spec §5.2.6 + §8.5.2, polymorphic product accessors (0867) | `polymorphic_product_mints_canonical_and_unique_bare_accessors` | `[S118]` `/testing` W1 authors the RED |
+| spec §8.2.3/§8.2.5, cache-restored parent enrols declared private child (0868) | `tests/cache.rs::cache_restored_parent_enrols_private_test_child` | `[S118]` RED; schema-free |
+| spec §7.3 + §8.5, cache restoration preserves sibling-written impls (0869) | `tests/cache.rs::cache_restores_sibling_written_trait_impls_for_dispatch` + schema 23→24 stale-cache rejection | `[S118]` conditional on arch ruling 1 implementation; else user-approved carry to S119 |
+| spec §10.12.7, launched-strand grid path does not corrupt the heap (0694 family) | `launch_grid_corrupt::launched_strand_grid_get_assoc_does_not_corrupt_heap_neg` | `[S118]` load-dependent member; separate certification per plan §5 |
+| primitives audit R-2, ProjectionOf production witness (0859) | detector-surface oracle over isolated declaration mutations | `[S118]` conditional; graduates only after Track A proofs; disposition 2 returns to the user |

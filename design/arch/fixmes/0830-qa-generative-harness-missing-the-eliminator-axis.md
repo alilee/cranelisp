@@ -101,6 +101,16 @@ blind to this whole class — the same FIXME-0761 blindness that already drove t
 harness to assert exact balance rather than a differential. Exact balance is what
 catches it; keep that property in any new rows.
 
+## /qa S118 Phase-3 disposition (2026-07-25) — action 1 DONE; action 2 RIDES Track B
+
+Action 1 (PLAN rows for the 0810/0782 pin batch): landed in
+`tests/plan/PLAN.md` §"Sprint 118" (the pin-batch table, 10 RED + 4 GREEN
+controls). Action 2 (the eliminator axis): planned in
+`tests/plan/s118-test-plan.md` §4.2 — `/testing` W1 adds the two minimum
+`Position` rows (`matched_in_place`, `let_bound_then_matched`) with the
+instrument caveat binding (absolute exact balance, `--link` face or explicit
+0810-polarity-only note). This FIXME closes when the harness rows land.
+
 ## Context
 
 - `tests/match_owned_temporary_scrutinee_0810.rs` — the committed pins.

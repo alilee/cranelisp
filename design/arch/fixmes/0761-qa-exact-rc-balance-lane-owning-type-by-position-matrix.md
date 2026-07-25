@@ -73,6 +73,22 @@ Suggested seed shapes (all measured at W3b HEAD, all EXACT there, so they
 land GREEN and are regression guards, not defect repros) are in the FIXME 0749
 and 0760 bodies and in the `/dev` W3b report.
 
+## /qa S118 Phase-3 disposition (2026-07-25) — requirement rides now; the standing LANE defers to S119
+
+The exact-balance REQUIREMENT is already the operative instrument for the
+whole S118 Track-B family: every committed baseline RED in the
+0810/0760/transitive/program-result/conj set asserts absolute
+`allocs == deallocs` (not the differential), and the new S118 W1 rows (0726
+tripwire, 0830 eliminator positions) are exact-balance by specification
+(`tests/plan/s118-test-plan.md` §4.2). What defers is the standing
+owning-type × position exact-balance LANE as a harness feature: building it
+while ~21 cells of the same matrix are RED adds no discrimination and
+competes with W1's detection-proof capacity. S119 is the right window — the
+flipped Track-B cells then seed the lane GREEN as regression fences, and the
+`s115-carrier-and-rc-sweep.md` §2.3 claim becomes true of a standing
+instrument rather than hand-applied. Deferral is `/qa`'s, recorded here per
+protocol; this FIXME stays open as the S119 trigger.
+
 ## Context
 
 Filed by `/dev`(backend) at S115 W3b under the METHOD §2.2 instrumentation

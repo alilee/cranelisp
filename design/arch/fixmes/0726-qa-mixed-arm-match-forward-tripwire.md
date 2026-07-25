@@ -33,6 +33,16 @@ whose ctor-path residue turns observable trips the fence and un-parks the
 follow-on. No fix is owed now (the residue is O(depth), leak-safe); this is a
 coverage fence only.
 
+## /qa S118 Phase-3 disposition (2026-07-25) — RIDES Track B
+
+Planned: `tests/plan/s118-test-plan.md` §4.2. The tripwire cells (mixed
+ctor+var × {ctor-path, var-path} × {toggle} exact-balance + one `--link`
+face) are authored by `/testing` in W1 as intended REDs (the ctor-path
+residue is live today) and flip with the Track-B per-arm release migration
+(`design/backend/transitive-drop-glue.md` §5 removes the whole-match
+approximation this fence guards). This FIXME closes when the cells land and
+the migration flips them.
+
 ## Context
 
 Filed to discharge FIXME 0697's second ask ("coordinate a /qa row for the

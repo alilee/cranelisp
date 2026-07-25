@@ -140,7 +140,18 @@ Remaining open FIXMEs (49 total) are carried without sprint action unless a trac
 
 ## Skill plans (Phase 3)
 
-_Pending Phase 2._
+### `/qa` — COMPLETE (2026-07-25)
+
+Plan of record: `tests/plan/s118-test-plan.md`; durable rows in `tests/plan/PLAN.md` §S118 and `tests/plan/risks.md` (10-row S118 read + two permanent register lenses).
+
+- **Certification split structural**: detector arming is child-env only; W1 adds a static grep gate against suite-scope arming; exactly one schema window (23→24, 0869-only) — any other schema delta is a close blocker.
+- **28-name baseline enumerated from live sources** with per-cell flip attribution. Two low-confidence cells flagged for W1 reconciliation from the captured baseline log (the `conj` armed-parity leg; whether the M3 clean control is 0848-only or 0745-coupled); family arithmetic reconciles at 28 either way.
+- **Track A**: eight detector triplets with per-row fail-on-revert as hard input to the 0857 regrade (sequenced after `/arch`'s 0768 vocabulary amendment). 0850 behavior-invariance pinned by "every baseline RED stays byte-identically RED in the 0850 change-set". Ruling-7 subtractive baseline cells specified. 0859 conditional per arch ruling 2; emission-inert outcome returns to the user as disposition 2.
+- **Track B**: S116 matrix carried with an exists-vs-authors reconciliation; ruling-10 structural fence (grep-zero legacy emitter) planned; each fix wave re-demonstrates its flips under subprocess-armed detectors; `conj`/exemplar cells are verified consequents — residual RED is a new attribution, never a re-threshold.
+- **Track C**: two identical captured deterministic runs vs. ≥3 captured loaded runs + mechanism + fail-on-revert; 0694 D1→D2→D3 with D1 gating; 0818 contamination experiment cheap-first.
+- **Tracks D/E**: 0863 cells serialized after 0745; 0868 schema-free; 0869 conditional with stale-cache-rejection cell if shipped; 0874 preservation checklist (assertion inventory, zero weakenings).
+- **Re-eligible FIXME triage**: 0726 + 0830 ride Tracks A/B now; 0831 + 0778 actioned and deleted (register/PLAN rows landed); 0761 + 0779 deferred with rationale recorded in their files as S119 triggers.
+- **Exit verdict**: `/testing` has enough to draft W1 (baseline reconciliation, four intended-RED additions, arming-discipline static gate).
 
 ## Waves (Phase 4)
 
@@ -151,6 +162,7 @@ _Pending Phase 3. Indicative shape, serialized as always: W1 `/testing` (baselin
 | Wave | Agent | Surface | Model | Effort | Non-default reason |
 |---|---|---|---|---|---|
 | P2 | /arch | sprint-wide scope review + standing questions a–f | fable (shim) | xhigh | — |
+| P3 | /qa | sprint-wide test plan (`tests/plan/s118-test-plan.md`) | fable (shim) | xhigh | — |
 
 ## Notes
 

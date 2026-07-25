@@ -68,6 +68,21 @@ If (2) is judged not worth its cost for the recheck seams, the honest dispositio
 is to record that in `tests/plan/` — "these four seams are `Final` by
 construction, not by test" — rather than leave a silent gap.
 
+## /qa S118 Phase-3 decision (2026-07-25) — candidate (1) adopted; residual cell is S119
+
+`/qa` decides the shape: **candidate (1)** — a seam-level polarity cell
+driving `resolve_auto_curry` directly over a seeded `pending_auto_curry`
+(the `join_lattice_*` property-cell template), testing both disciplines
+exhaustively at the function. Candidate (2)'s per-seam behavioural cells are
+judged not worth their cost for the four recheck-scoped seams; the honest
+disposition is recorded here and in the S118 plan's triage table
+(`tests/plan/s118-test-plan.md` §9): **those four seams are `Final` by
+construction (a recheck derives from settled state), not by test** — a
+documented boundary, not a silent gap. The candidate-(1) cell is
+`/dev`(typecheck)-owned and S118 has no typecheck wave, so it lands S119;
+this FIXME stays open as that trigger, re-pointable to `/dev` at S119
+Phase 3.
+
 ## Context
 
 - FIXME 0775 (`target: /dev`, resolved S115 W4b) — the P18 structural half.

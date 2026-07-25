@@ -412,3 +412,42 @@ grows.
 | Primitive ownership tests restate declarations and remain green when declarations lie | Blocker for R-2 acceptance | Production CLIF plus public behavior for all four nontrivial classes; mandatory false-table-only mutation demonstration. Stop at stable CLIF exposure if absent—do not add blocked instrumentation. |
 | Historical `[Tested]` survives a changed requirement | Important, process integrity | S115 backfill in `s117-test-plan.md` §6; restore only after narrow runtime evidence and two-sided reconciliation. |
 | Non-normative byte-backed text design accidentally creates present-tense coverage obligations | Low but scope-sensitive | No Sprint-117 spec annotation or implementation test; future matrix is advisory only. |
+
+## Standing register entries added S118 (permanent lenses, not sprint-scoped)
+
+- **Eliminator/consumer axis (from FIXME 0831, actioned S118).** For every
+  construct that CONSUMES a value it owns while handing a projection onward —
+  `match` (ctor and var patterns), field accessors, `vec-get` on a temporary
+  container, destructuring `let` if it lands — the coverage question is a
+  `{provenance: fresh | let-bound | borrowed param} × {projection escapes:
+  yes | no} × {payload: scalar | heap}` matrix, both polarities, asserting
+  **absolute** `allocs == deallocs` (the differential face is structurally
+  blind to this toggle-independent class) with a `--link` face (double-free
+  polarity is `--link`-visible only). Risk framing by origin alone (return,
+  capture, container, loop-carry) misses the eliminator — the 0810/0782
+  Blocker lineage is the evidence. The harness eliminator rows
+  (`gen_ownership_flows`) are the mechanical fence.
+- **Arm-order / operand-order twins for join-shaped seams (from FIXME 0778,
+  actioned S118).** Any join/merge/fold operation (`If` arms, `Match` arm
+  sequence, element-fold accumulation, lattice joins) takes order-swapped
+  twin cells — same contract, orders swapped, SAME assertion — plus, at the
+  seam itself, algebraic property cells over the operand lattice
+  (commutativity; union preservation) rather than example cells over one
+  syntax tree. A shape cell fixes the order and cannot fail on an order
+  asymmetry (the 0772 lesson). New join-shaped seams are instrumented at
+  birth; `/qa` checks this at every Phase-3 plan for in-scope joins.
+
+## S118 risk read — instrumented ownership closure (2026-07-25, /qa; shapes `s118-test-plan.md`)
+
+| Risk | Grade | Detection / mitigation |
+|---|---|---|
+| A detector env var leaks to suite scope; a globally-armed M3 aborts every still-red leak guard | Blocker for the baseline contract | Arch ruling 3 made structural: arming only via child `.env`/`env_clear`; W1 static grep gate; `/review` reject (plan §1). |
+| Detector "proofs" that bypass the production funnel or obtain polarity by executing UB | Blocker for Track A acceptance | §7.1/§7.3 triplet contract: production-funnel plants only, validation-before-mutation, recorded fail-on-revert per row; a test instantiating internal state directly does not count. |
+| A baseline RED flips without its owning fix (layout perturbation posing as a cure) | Blocker, S98 class | Name-for-name exit reconciliation traces every flip to its mechanism change-set; 0850's behavior-invariant change-set explicitly requires REDs stay byte-identically RED; armed acceptance legs on each fix wave. |
+| Partial consumer migration leaves canonical glue + legacy inline emitter coexisting | Blocker, arch ruling 10 | Structural fence cell (grep-zero depth constant + emitter) must flip in the SAME wave as the behavior cells; `/review` REJECT otherwise. |
+| Expected consequents (`conj`, exemplar residue) are patched or re-thresholded instead of verified | Important | Plan §4.4: residual RED after the migration is a NEW attribution routed to `/qa`; the ≤1400 bound is immutable this sprint. |
+| A second schema delta rides a non-0869 change-set | Blocker, arch ruling 1 | Close-gate check: exactly one 23→24 window, only with the 0869 implementation; otherwise zero deltas. |
+| The M3 clean-control cell's coupling (0848-only vs 0745-coupled) mis-reconciles the exit arithmetic | Important | Plan §2.2 obligates W1 to color the two low-confidence cells from the captured baseline log before any flip accounting. |
+| Load-dependent closure claimed from symptom absence under armed perturbation | Blocker for Track C | §5 protocol: D1 gates D2/D3; closure needs demonstrated mechanism + fail-on-revert + ≥3 captured green runs; "flaky"/absence dispositions banned. |
+| 0859 witness graduates from an unproven oracle | Important | Ruling 2 sequencing: experiments begin only after the eight triplets land; emission-inert outcome returns to the user as disposition 2, never overridden with test-only facts. |
+| Track E fixture consolidation silently weakens integration assertions | Important | Plan §7 preservation checklist: before/after assertion inventory, zero weakenings, schema isolation retained. |
