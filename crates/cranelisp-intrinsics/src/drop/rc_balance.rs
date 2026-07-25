@@ -182,7 +182,11 @@ fn fill_int_vec(v: i64, elems: &[i64]) {
         for (i, e) in elems.iter().enumerate() {
             *data.add(i) = *e;
         }
-        crate::heap_access::write_i64(v, crate::vec_runtime::LEN_OFFSET as isize, elems.len() as i64);
+        crate::heap_access::write_i64(
+            v,
+            crate::vec_runtime::LEN_OFFSET as isize,
+            elems.len() as i64,
+        );
     }
 }
 

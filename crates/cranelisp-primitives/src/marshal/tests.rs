@@ -247,7 +247,8 @@ fn re1_sconcat_heap_typed_two_cell_tail_balances_exactly() {
     let allocs = alloc_count() - a0;
     let deallocs = dealloc_count() - d0;
     assert_eq!(
-        allocs, deallocs,
+        allocs,
+        deallocs,
         "RE-1: embedding a 2-cell heap-typed tail must leave nothing behind; \
          allocs={allocs} deallocs={deallocs} residual={}. A deep inc mints \
          (n−1) interior-node + h element references no structural owner holds.",
@@ -322,7 +323,8 @@ fn re1_embed_takes_exactly_one_reference_whatever_the_tail_size() {
         let deltas: Vec<i64> = before.iter().zip(&after).map(|(b, a)| a - b).collect();
         let summed: i64 = deltas.iter().sum();
         assert_eq!(
-            summed, 0,
+            summed,
+            0,
             "RE-1 inc-count fence at |ys|={n}: one embed = exactly one inc on \
              the stored node, paired with the Decision-24 consume, so the net \
              RC delta over the whole tail is 0. Got per-holder deltas {deltas:?} \

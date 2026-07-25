@@ -54,7 +54,11 @@ fn make_vec_struct(cap: i64) -> (i64, *mut i64) {
     // "NOT live" tripwire in `consume_vec_with` would fire on a never-registered
     // buffer. `consume_vec_with` frees via `free_data_buffer`, closing the pair.
     let data: *mut i64 = crate::vec_runtime::alloc_data_buffer(cap);
-    write_field(base, crate::vec_runtime::DATA_PTR_OFFSET as isize, data as i64);
+    write_field(
+        base,
+        crate::vec_runtime::DATA_PTR_OFFSET as isize,
+        data as i64,
+    );
     (base, data)
 }
 

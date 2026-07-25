@@ -163,8 +163,14 @@ fn precheck_accepts_a_well_formed_live_production_base() {
 // spec: 12-runtime §12.3 — R8 (diagnostic-modes §7.5 header plausibility)
 #[test]
 fn precheck_accepts_smallest_and_largest_legal_sizes() {
-    assert!(header_size_plausible(HeapHeader::SIZE as i64), "exactly SIZE");
-    assert!(header_size_plausible(1 << 40), "a large constructible layout");
+    assert!(
+        header_size_plausible(HeapHeader::SIZE as i64),
+        "exactly SIZE"
+    );
+    assert!(
+        header_size_plausible(1 << 40),
+        "a large constructible layout"
+    );
     assert_eq!(seam_precheck_verdict(HeapHeader::SIZE as i64, 1), None);
 }
 
@@ -223,7 +229,10 @@ fn precheck_rejects_a_poisoned_header_word() {
 fn precheck_rejects_nonpositive_rc() {
     for rc in [0, -1, i64::MIN] {
         let why = seam_precheck_verdict(40, rc).expect("rc {rc} must be rejected");
-        assert!(why.contains("rc is <= 0"), "verdict names the rc predicate: {why}");
+        assert!(
+            why.contains("rc is <= 0"),
+            "verdict names the rc predicate: {why}"
+        );
     }
     assert_eq!(seam_precheck_verdict(40, 1), None, "rc = 1 is accepted");
 }
@@ -244,7 +253,10 @@ fn precheck_verdict_does_not_mutate_the_header() {
             crate::heap_access::read_i64(base, 8),
         )
     };
-    assert!(seam_precheck_verdict(size, rc).is_some(), "rc = 0 is rejected");
+    assert!(
+        seam_precheck_verdict(size, rc).is_some(),
+        "rc = 0 is rejected"
+    );
     // SAFETY: same live allocation.
     let rc_after = unsafe { crate::heap_access::read_i64(base, 8) };
     assert_eq!(rc_after, 0, "the rejected call left the rc word untouched");
@@ -464,7 +476,10 @@ fn ledger_plants_act_only_at_their_own_event_and_once() {
         "a leak plant does not capture allocations"
     );
     assert_eq!(fault_event_armed(&leak, ev_post()), FaultAction::NoAction);
-    assert_eq!(fault_event_armed(&leak, ev_pre()), FaultAction::SuppressFree);
+    assert_eq!(
+        fault_event_armed(&leak, ev_pre()),
+        FaultAction::SuppressFree
+    );
     assert_eq!(
         fault_event_armed(&leak, ev_pre()),
         FaultAction::NoAction,
@@ -674,7 +689,12 @@ fn child_path(name: &str) -> String {
 /// exactly one plant spelling (or none), the exact arm string, and the named
 /// detectors. `CRANELISP_QUARANTINE_MAX_BYTES` is never set — a FIFO release
 /// would reopen the reuse window the M1/A3/A4 rows depend on (§7.3 A4 note).
-fn spawn_child(label: &str, child: &str, plant: Option<FaultPlant>, detectors: &[&str]) -> ChildRun {
+fn spawn_child(
+    label: &str,
+    child: &str,
+    plant: Option<FaultPlant>,
+    detectors: &[&str],
+) -> ChildRun {
     let exe = std::env::current_exe().expect("current_exe for the plant child");
     let mut cmd = Command::new(&exe);
     cmd.env_clear();
@@ -865,10 +885,7 @@ fn plant_child_m3_leak() {
     // The production discharge is SUPPRESSED at `PreFree`: the block is
     // genuinely leaked, so the ledger stays truthful.
     crate::rc::consume_shallow(base);
-    let (allocs, deallocs) = (
-        crate::alloc::alloc_count(),
-        crate::alloc::dealloc_count(),
-    );
+    let (allocs, deallocs) = (crate::alloc::alloc_count(), crate::alloc::dealloc_count());
     eprintln!("M3-LEDGER allocs={allocs} deallocs={deallocs}");
     assert!(
         allocs > deallocs,
@@ -887,10 +904,7 @@ fn plant_child_m3_over_free() {
     let base = crate::alloc::alloc_with_rc(PLANT_MARKER_PAYLOAD) as i64;
     // One EXTRA ledger discharge at `PostFree` — no memory is freed twice.
     crate::rc::consume_shallow(base);
-    let (allocs, deallocs) = (
-        crate::alloc::alloc_count(),
-        crate::alloc::dealloc_count(),
-    );
+    let (allocs, deallocs) = (crate::alloc::alloc_count(), crate::alloc::dealloc_count());
     eprintln!("M3-LEDGER allocs={allocs} deallocs={deallocs}");
     assert!(
         deallocs > allocs,

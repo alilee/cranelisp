@@ -227,10 +227,9 @@ fn seam_precheck_armed(ptr: i64, site: &'static str) {
     // (past the nullary-tag guard). Reading the two header words is exactly
     // what the seam is about to do to the RC field; see the fault-risk note.
     let alloc_size = unsafe { crate::heap_access::read_i64(ptr, 0) };
-    let rc = unsafe {
-        &*((ptr as *const u8).add(HeapHeader::RC_OFFSET as usize) as *const AtomicI64)
-    }
-    .load(Ordering::Relaxed);
+    let rc =
+        unsafe { &*((ptr as *const u8).add(HeapHeader::RC_OFFSET as usize) as *const AtomicI64) }
+            .load(Ordering::Relaxed);
     if let Some(why) = seam_precheck_verdict(alloc_size, rc) {
         seam_hard_fail(&format!(
             "{site}: PRECHECK rejected ptr {ptr:#x} BEFORE mutation — {why} \
@@ -552,7 +551,12 @@ fn fault_event_armed(state: &PlantState, event: FaultEvent) -> FaultAction {
                 FaultAction::NoAction
             }
         }
-        (P::M3OverFree, FaultEvent::PostFree { base, total_size, .. }) => {
+        (
+            P::M3OverFree,
+            FaultEvent::PostFree {
+                base, total_size, ..
+            },
+        ) => {
             if state.claim(base, total_size) {
                 FaultAction::ExtraDischarge
             } else {
@@ -596,7 +600,10 @@ pub(crate) fn fault_observation() -> FaultObservation {
         ),
     };
     let quarantine_retained_bytes = if quarantine_enabled() {
-        QUARANTINE.lock().unwrap_or_else(|e| e.into_inner()).retained_bytes
+        QUARANTINE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retained_bytes
     } else {
         0
     };
