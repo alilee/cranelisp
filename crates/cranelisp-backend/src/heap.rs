@@ -285,6 +285,44 @@ pub(crate) fn emit_rc_inc_guarded<M: Module>(
     emit_rc_inc_guarded_atomicity(builder, module, ptr, RcAtomicity::Atomic);
 }
 
+/// The nullary-tag skip guard shared by BOTH guarded RC halves. Emits the
+/// predicate, branches on it, and switches the builder into the guarded block.
+///
+/// ONE predicate, one home (the crate's ONE-predicate pattern, `CLAUDE.md`
+/// §"RC-emission gates that are ONE predicate"; Principle 18). The emitted shape
+/// is
+///
+/// ```text
+///   is_tag = icmp ult ptr, NULLARY_TAG_THRESHOLD
+///   brif is_tag, cont_block, guarded_block
+/// ```
+///
+/// so the RC op in `guarded_block` executes **iff `ptr >= NULLARY_TAG_THRESHOLD`**
+/// — a real heap pointer, which is the only thing carrying an RC header — while a
+/// bare nullary ADT tag branches straight to `cont_block`.
+///
+/// Deriving that decision here rather than at each half is what makes a polarity
+/// GAP between the inc and the dec unrepresentable: an edit to this body moves
+/// both halves together, and a divergence between "what the inc treats as a
+/// pointer" and "what the dec does" has no way to be spelled (invariant I-CT,
+/// `design/backend/transitive-drop-glue.md` §4.1). The remaining risk this cannot
+/// close is the ABSOLUTE polarity — inverting the comparison here inverts both
+/// halves consistently — which is pinned structurally, as control flow, by
+/// `compiler/fn_compiler/ctor_template_admission_tests.rs::assert_threshold_guarded_rmws`
+/// (FIXME 0905).
+///
+/// The caller creates `cont_block` FIRST: block creation order is CLIF block
+/// numbering, and both call sites' emission is byte-identical to the hand-rolled
+/// prologues this replaced.
+fn emit_nullary_skip_guard(builder: &mut FunctionBuilder, ptr: Value, cont_block: Block) {
+    let guarded_block = builder.create_block();
+    let threshold = builder.ins().iconst(types::I64, NULLARY_THRESHOLD_I64);
+    let is_tag = builder.ins().icmp(IntCC::UnsignedLessThan, ptr, threshold);
+    builder.ins().brif(is_tag, cont_block, &[], guarded_block, &[]);
+    builder.switch_to_block(guarded_block);
+    builder.seal_block(guarded_block);
+}
+
 /// Guarded inline RC increment with per-site [`RcAtomicity`] (B3.3, §5.1).
 pub(crate) fn emit_rc_inc_guarded_atomicity<M: Module>(
     builder: &mut FunctionBuilder,
@@ -293,14 +331,7 @@ pub(crate) fn emit_rc_inc_guarded_atomicity<M: Module>(
     atomicity: RcAtomicity,
 ) {
     let cont_block = builder.create_block();
-    let inc_block = builder.create_block();
-
-    let threshold = builder.ins().iconst(types::I64, NULLARY_THRESHOLD_I64);
-    let is_tag = builder.ins().icmp(IntCC::UnsignedLessThan, ptr, threshold);
-    builder.ins().brif(is_tag, cont_block, &[], inc_block, &[]);
-
-    builder.switch_to_block(inc_block);
-    builder.seal_block(inc_block);
+    emit_nullary_skip_guard(builder, ptr, cont_block);
 
     // S99 stats: count only a real inc (bare nullary tags took the skip branch).
     emit_rc_stat_call_gated(builder, module, "runtime/rc_stat_inc");
@@ -500,14 +531,10 @@ pub(crate) fn emit_rc_dec_guarded_atomicity<M: Module>(
 ) {
     let cont_block = builder.create_block();
 
-    // Guard: if value is a bare nullary tag, skip the dec entirely.
+    // Guard: if value is a bare nullary tag, skip the dec entirely. Same
+    // predicate, same polarity as the inc half — see `emit_nullary_skip_guard`.
     if guard_nullary {
-        let threshold = builder.ins().iconst(types::I64, NULLARY_THRESHOLD_I64);
-        let is_tag = builder.ins().icmp(IntCC::UnsignedLessThan, ptr, threshold);
-        let dec_block = builder.create_block();
-        builder.ins().brif(is_tag, cont_block, &[], dec_block, &[]);
-        builder.switch_to_block(dec_block);
-        builder.seal_block(dec_block);
+        emit_nullary_skip_guard(builder, ptr, cont_block);
     }
 
     // FIXME 0494 localization (§15 row 6 — via the shared `emit_rc_dec_check_gated`

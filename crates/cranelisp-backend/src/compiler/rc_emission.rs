@@ -427,28 +427,54 @@ pub(crate) fn find_var_type_in_expr(expr: &MonoExpr, name: &Symbol) -> Option<Ty
 /// off each `MonoExpr` node directly — no `Var` by construction. But the
 /// `Type`-typed RC machinery (`variable_types`, `CtorField`, `resolve_field_types`)
 /// reads field/binding types from the **signature** (the `scheme`, `Type::Fn`
-/// params), and a `Var` legitimately survives there in ONE case: a **constructor
-/// `Def`'s own template codegen**. A ctor `Def` is compiled ONCE per declaration,
-/// so both `(deftype (Option a) … (Some [:a val]))` (a declared type parameter)
-/// and `(deftype B (Mk [v]))` (an undeclared field typecheck left free) give the
-/// template a `Type::Var` field param — its runtime representation is uniform
-/// (i64 tag-or-pointer), the `Mixed` heap category. (§3.1.1's "ctor field types
-/// are always concrete at codegen" holds for ctor USE sites — a `(Some 1)`
-/// instance pins `a := Int` — but NOT for the ctor `Def`'s own template body.
-/// §4.1 rules that class sanctioned and states its soundness invariant I-CT;
-/// the ruling supersedes the stale FIXME-0394 citation this rustdoc used to
-/// carry — 0394 closed at S84 on the unrelated `codegen_view` axis.)
+/// params), where a `Var` does survive.
+///
+/// **THREE measured families reach this classification; exactly ONE is
+/// sanctioned.** The census's authoritative home is the
+/// `fn_compiler::emit_heap_binding_decs` rustdoc + the crate `CLAUDE.md`
+/// (Principle 7) — including the do-not-re-run-the-experiment warning. In brief:
+///
+/// 1. **Sanctioned — a constructor `Def`'s own template codegen.** A ctor `Def`
+///    is compiled ONCE per declaration, so both
+///    `(deftype (Option a) … (Some [:a val]))` (a declared type parameter) and
+///    `(deftype B (Mk [v]))` (an undeclared field typecheck left free) give the
+///    template a `Type::Var` field param. §4.1 rules that class sanctioned and
+///    states its soundness invariant **I-CT** (the shallow dec balances the
+///    guarded consuming inc on a word the returned box also holds, so it can
+///    never observe the last reference). §3.1.1's "ctor field types are always
+///    concrete at codegen" holds for ctor USE sites — a `(Some 1)` instance pins
+///    `a := Int` — but NOT for the ctor `Def`'s own template body.
+/// 2. Synthetic **field accessors** of a generic or undeclared-field product
+///    (`Box.v`'s `self: ADT(user/Box, [Var(0)])`). §3.1.1 pairs the ctor *and
+///    accessor* signature paths; §4.1 named only the ctor half.
+/// 3. Generic **trait-method instances** (`Functor.fmap$primitives/Option`'s
+///    `Fn([Var(9)], Var(8))` parameter).
+///
+/// Families 2 and 3 arrive in ordinary `defn`-shaped frames that I-CT does not
+/// cover, and they leak today. So §4.1's premise that the migration measured
+/// exactly one class is **FALSIFIED** (S118, commit `ee324bc4`'s own census); the
+/// whole measured class needs ONE ruling — **FIXME 0903 → `/design`(backend)**.
+/// Do not read the sanctioned family as the only one that gets here. (The stale
+/// FIXME-0394 citation this rustdoc used to carry is superseded — 0394 closed at
+/// S84 on the unrelated `codegen_view` axis.)
 ///
 /// So this helper classifies a concrete field type via the total
 /// `HeapCategory::classify(&ConcreteType, …)`, and maps a residual `Var`/`TyConApp`
-/// (a ctor-template field param) to `Mixed` — the uniform-representation
-/// category, restoring the pre-Phase-3 ctor-`Def` behaviour. This does NOT
-/// widen the `ConcreteType` `classify` (which stays total, no `Var` arm) and does
-/// NOT affect the body-AST path (still 100% `Var`-free by construction).
+/// to `Mixed` — the uniform-representation category, since the runtime
+/// representation of any of the three is a uniform i64 tag-or-pointer. This
+/// restores the pre-Phase-3 ctor-`Def` behaviour; it does NOT widen the
+/// `ConcreteType` `classify` (which stays total, no `Var` arm) and does NOT
+/// affect the body-AST path (still 100% `Var`-free by construction).
 ///
 /// Classifying such a binding heap-typed is what routes it to a release seam at
-/// all; whether the release is then legal is a separate, FRAME-keyed question
-/// answered once at `fn_compiler::emit_heap_binding_decs` (§4.1).
+/// all; whether the release is then legal is a separate question, answered once
+/// at `fn_compiler::emit_heap_binding_decs`. **As shipped, that gate is keyed on
+/// the TYPE, not the frame** — knowingly (FIXME 0903; 0891 deferred on it). §4.1
+/// rules the key must be the frame and §11 makes a type-keyed gate a `/review`
+/// REJECT, but implementing exactly that frame key was measured at **+16 hard
+/// codegen refusals** over the `spec_*` corpus — which is how families 2 and 3
+/// above were found. Read "answered once at `emit_heap_binding_decs`" as a
+/// single-seam claim only; the frame gate has NOT landed.
 pub(crate) fn signature_heap_category<C, L>(
     ty: &Type,
     symbol_tables: Option<&dashmap::DashMap<ModuleFullPath, SymbolTable<C, L>>>,
@@ -459,9 +485,11 @@ where
 {
     match ConcreteType::from_type(ty) {
         Ok(ct) => HeapCategory::classify(&ct, symbol_tables),
-        // A ctor-template field param (`Type::Var`) / unresolved HKT head:
-        // uniform i64 representation → `Mixed` (the guarded RC path).
-        // `design/backend/transitive-drop-glue.md` §4.1.
+        // A residual signature `Var` — any of the THREE measured families above
+        // (ctor-template field param, synthetic field accessor's `self`, generic
+        // trait-method instance) — or an unresolved HKT head: uniform i64
+        // representation → `Mixed` (the guarded RC path).
+        // `design/backend/transitive-drop-glue.md` §4.1 + FIXME 0903.
         Err(_) => HeapCategory::Mixed,
     }
 }
