@@ -1,6 +1,7 @@
 # Sprint 119: The Non-Concrete Release Contract, and the Typed Consume Funnel
 
-**Status**: PHASE 3 DESIGN (ACTIVE)
+**Status**: PHASE 5 LANGUAGE (ACTIVE) — Phase 3 closed with `/arch` **PASS WITH CONDITIONS**
+(§Phase-3 exit gate); waves organized below. Phase 5 stage 1 (`/testing`) not yet dispatched.
 
 **Goal**: State and enforce the contract for releasing a value whose static type codegen
 cannot fully see — the question the stratum has never answered and whose five faces produce
@@ -350,9 +351,13 @@ Phase 2**. The table lists those in scope or requiring disposition. Full invento
 | 0889 | /dev (int) | ruled P3 | Spine 2 tranche B-int — protocol landed, retargeted to `/dev` |
 | 0920 | /arch | **RESOLVED** `3232a061` | Tranche B re-scoped onto the int marshal boundary |
 | 0921 | /design (runtime pair) | open, filed P3 | Host↔JIT transfer form; **plus a confirmed defect** — `consume_sexp` has no `TAG_SEXP_ANNOTATED` arm, leaking both heap fields of every annotated cell |
-| 0922 | /arch | open, filed P3 | Rule-0 enforcement seam (macro-clause ABI ownership declaration) — gates implementation, not Phase 3 |
-| 0923 | /arch | open, filed P3 | IO tri-context seam: the `free_io_node` split, `public-api.txt` delta, and two new `safety-invariants.md` rows (R-1, R-2) |
-| 0924 | /design (typecheck) | open, filed P3 | The monomorphisation obligation — **gates 0916 and rider 0867** |
+| 0922 | /arch | **RESOLVED** at the gate | Rule-0 pin ruled at int's clause-preparation seam; absorbed by 0927 |
+| 0923 | /arch | **RESOLVED** at the gate | IO tri-context seam approved; R17/R18 register rows added |
+| 0925 | /arch | **RESOLVED** at the gate | Two schema windows granted, two owners |
+| 0924 | /design (typecheck) | ruled P3, open | The monomorphisation obligation — W4; **gates 0916 and rider 0867** |
+| 0926 | /qa | open, filed P3 | Slot-gate cell, the sum-arm corpus extension repro, `/stdlib`'s bare-alias contest cell |
+| 0927 | /design (int) | open, filed at the gate | Absorb the Rule-0 enforcement ruling + D4's fence |
+| 0928 | /design (runtime pair) | open, filed at the gate | Gate outcomes: `free_io_node` classification, the three tranche-A rulings, 0921's disposition |
 | 0867 | /dev (typecheck) | open | Rider 1 — gated on the accessor disposition |
 | 0869, 0868 | /dev (src) + types | open | Rider 2 — schema 23→24 |
 | 0898, 0748 | /arch | deferred → S119 / open | Ride rider 2's schema window |
@@ -587,9 +592,218 @@ same binary; thresholds banned. Exactly one threshold cell exists at baseline
   the exact hazard closed inside the pair at S85, still live on the int side. Deleted by the
   0889 protocol.
 
+## Phase-3 exit gate — `/arch`, 2026-07-26
+
+**VERDICT: PASS WITH CONDITIONS.** Phase 3 is complete — the five-face contract survived its
+corpus measurement, the producer half is ruled against it, tranche A and the 0889 protocol are
+ruled with their instruments specified, and `/qa`'s plan maps every gate to a named instrument.
+None of the conditions re-opens design. FIXMEs **0922, 0923, 0925 resolved and deleted**;
+**0927** (`/design` int) and **0928** (`/design` runtime pair) filed.
+
+### The schema window — option (b) granted: **TWO windows, two owners**
+
+The Phase-2 "exactly one schema window" rule is **amended**. `/design`(typecheck) showed both
+producer fixes are serde-visible *meaning* changes where a stale sidecar re-introduces the
+defect — 0924 restores an accessor as `Concrete{got_slot}` and the **memory-unsafety returns on
+warm cache**; 0913 restores the fabricated root and the **leak returns**. So:
+
+- **Window 1 — typecheck producer, 23→24**, taken by 0924's CS-1, **shared** by CS-2 and 0913's
+  CS-3 under the S111-0621 one-bump precedent. **Binding condition**: all three producer
+  change-sets land in-sprint; if CS-3 slips to S120 the shared licence expires at close and CS-3
+  takes its own window then. A schema-24 sidecar carrying fabricated `ConcreteType::Int` roots
+  across a sprint boundary is precisely the defect-reintroduction the ruling prevents.
+- **Window 2 — 0869's cache carrier, 24→25**, with 0898 and 0748/R3 riding as authorized.
+
+If waves reorder, the integers swap; **the invariant is two increments, two owners, and no other
+change-set touches the constant.** Option (a) was rejected for coupling a memory-safety fix to a
+cache fix and forcing typecheck work into a `/dev`(src) change-set; option (c) for carrying the
+SIGSEGV class plus four REDs into S120 against the sprint's chartered outcome.
+
+### The IO tri-context seam (0923) — approved on all three asks
+
+`cranelisp-intrinsics` gains `pub fn free_io_node` plus one `#[export_name]` C-ABI shim (the
+pair's **84th** extern; must resolve under `--link` as well as JIT). It is a **split of
+`consume_io_tree`'s existing body at the dec** — no new mechanism, behaviour byte-identical.
+Backend owns what only the type knows (`Pure`'s payload via ordinary `drop<T>`; no IO-specific
+payload releaser — reject criterion 5); the runtime owns what only the value knows.
+`ctor_shapes` stays untouched and unreached for `primitives/IO` — `drop_glue.rs:497-505` is a
+*correct* check on a precondition IO structurally cannot meet, and weakening it would weaken it
+for every user type. Int's `Bind` seed stays, with the R-4 introspectability obligation
+(`/info Bind`) binding on whatever `/dev` does to it.
+
+**The named residual is acceptable-with-a-guard**: a `Pure` payload nested inside an *unrun*
+`Bind` sub-tree is not discharged. R-2 forbids fabricating the existential, and both
+alternatives are worse — today's hard refusal, or admission-exclusion's unbounded silent leak,
+which `/examples` measured at **82.7 MB per 800k iterations**. `/qa`'s failing-not-ignored guard
+is mandatory and may not be `#[ignore]`d.
+
+**`free_io_node` lands raw `i64`, permanently**, in the Spine-1 window *before* tranche A: its
+precondition is a count already at zero, and an `Owned` models a live counted reference, so it
+sits beneath the handle abstraction alongside `atomic_dec_rc`. Tranche A's CS-5 count record
+enumerates it as a named exclusion — expected **N_heap = 103 + 1 − 42 = 62** — so G3's semantic
+count does not silently drift by one.
+
+### Two register rows, and a regrade
+
+`design/arch/safety-invariants.md` §4 gains **R17 — heap category before RC operation** (the
+contract's R-1; `unasserted`; seam `rc_emission.rs:486-495`; the permanent §5.1 census is the
+mechanism, each family flipping to a located error only on measured zero — the arm is the gate
+on its own removal) and **R18 — no fabricated concreteness** (R-2; three measured instances).
+The register runs unhyphenated, so the contract's R-1/R-2 land as R17/R18 with the mapping
+recorded.
+
+**`/arch` also regraded R11 ("Concreteness at codegen") from `unconstructable` to
+`example-tested`** — a consequence the dispatch did not ask for. The S119 census **falsified**
+it: two hand-mint sites bypass the S84 slot gate. P-1 restores it; 0926's gate cell is the proof.
+
+### Rule-0 enforcement (0922) — ruled now, no S120 needed
+
+"Satisfied by construction" was **not available**: clause defns run the full `check_forms` path
+and the ownership fixpoint publishes summaries onto callable entries, so a fresh-result clause
+can legally classify `Borrowed` and backend elides its release. The per-clause divergence hazard
+is real. Ruled: the ABI witnesses ownership as well as calling convention, and **the pin lives
+at int's clause-preparation seam** — after `check_forms`, before publication, int **clears the
+synthesized clause entry's `mode_summary`**. Summary-absent yields the all-Owned compilation,
+which *is* the declared convention; widening toward Owned is always sound, at a few redundant
+compile-time RC ops. Structural under Principle 19 — int knows clause-ness by construction, and
+no name-prefix privileging enters typecheck or backend. No types, schema, or public-API delta.
+
+### Tranche A — public-API approved as enumerated; three rulings
+
+Approved: additive `pub mod handle` (`Owned`, `Borrowed<'a>`, the 8 operations as a **closed
+set** — adding one is an `/arch`-visible change) plus **10 changed signatures** (9 public
+`consume_*`/`dec_shallow_io`/`consume_trace_call`, plus private `free_io_branches` →
+`Borrowed<'_>`). `cranelisp-primitives` **zero delta**. All 83 extern shims keep
+`extern "C" fn(i64,…) -> i64`. No `cranelisp-types` delta. The trusted-base count (4 definitions
++ 1 generator + 6 shim sites) with its grep gate is **ratified as the auditable contract**.
+
+Rulings: `ElemConsumeFn` spelled **inline**, no `pub` alias; the **debug-profile-conditional
+`Drop` is acceptable** in the baseline, with conditionality named in the rustdoc (the
+`cfg(not(debug_assertions))` empty-`Drop` alternative rejected as code written for a
+documentation property); and the **`launch.rs:452` dispensation is GRANTED** to
+`/dev`(runtime pair) — exactly that one call expression, the one-line
+`unsafe { Owned::from_abi(cont_ptr) }` wrap, in CS-2's change-set. Any wider backend edit in the
+tranche-A wave is a `/review` REJECT.
+
+### Gates confirmed, G3 amended
+
+**G3 is amended as the designer ruled**: the 136 was unfalsifiable as written (30 `ring0.rs`
+scalars never flip; 3 flip return-only). Record both numbers; **semantic `N_heap` = 103 is the
+acceptance quantity**, tranche-A slice **42**, net **62** at CS-5 with the `free_io_node`
+exclusion; consume sites 29 production plus the test tier. G1 ratified with its three layers and
+a **required** (not optional) 0867 extension clause. G2 ratified with the census cell — 0917's
+`NoReference` lattice point is a classification correction, not a licence arm, and the census
+cell is its first client. G4/G5/G6 ratified; the `ParamFlow`-never-`Mode` derivation axis is
+confirmed load-bearing (`Mode` is the analysis fact, `ParamFlow` the ABI fact). The close gate's
+schema check becomes **"exactly two windows, as assigned"**.
+
+### Principle 8 — no interim architecture; two confirmations
+
+**I-CT → I-CT′ ratified.** The census falsified the premise under which `/arch` ratified I-CT:
+the pair's inc half is a wild write on scalar payloads at n ≥ 1024, and I-CT proves count
+balance while being silent on reference-hood. I-CT′ is strictly simpler and is target-state, not
+a bridge — under Decision-24 the template frame owes nothing, so the pair *deletes*. The
+census-gated staged flip is the anti-interim pattern: a permanent instrument that is its own
+removal criterion, not scaffolding.
+
+**R-3 changes nothing in `ownership-inference.md`'s staging, and sharpens the option-2
+deferral.** The analysis already runs post-monomorphisation, and faces 2/3 landing *expands* the
+ABI-bearing mode-vector class — a precision gain. Option 2's standing is unchanged and
+sharpened: **uniform emission cannot legally count a residual word either**, so the wild-write
+class is orthogonal to uniform-vs-elided emission. That confirms both the Phase-2 finding (option
+2 dissolves at most 0917×3) and the measurement's sequencing after Spine 1.
+
+### Conditions attached to the PASS
+
+1. Window 1's sharing condition — all three producer change-sets in-sprint, or CS-3 takes its own
+   window in S120.
+2. `free_io_node` lands raw, in the Spine-1 window, enumerated in tranche A's CS-5 count record.
+3. The 0922 pin and its fence join `/dev`(int)'s obligations **before** tranche B-int's Rules 1–3
+   land; D0 remains the binding measurement gate.
+4. The `launch.rs` dispensation is scoped to the single call expression.
+5. The face-4 residual guard and the four-line accessor repro are **stage-1 `/testing` work,
+   before the implementing waves**.
+
+---
+
 ## Waves (Phase 4)
 
-{Pending.}
+Organized 2026-07-26 from the four Phase-3 plans and the exit gate. Source-touching waves run
+**serially** (worktree isolation is broken on this project). Each wave carries its own
+instrument re-run so drift stays attributable.
+
+### Wave 1 — QA-first, sprint-wide (Phase 5 stage 1)
+
+| Skill | Surface | Task | Status |
+|---|---|---|---|
+| /testing | `tests/` | The four-line accessor repro (1023 GREEN / 1024 SIGSEGV) — **currently unguarded and the cheapest memory-safety cell in the class**; the family-1 accessor marginal guard; the IO-`Bind` balancing marginal guard (the fence against 0907 being "fixed" by admission-exclusion); the face-4 residual guard, failing-not-ignored; 0926's slot-gate cell | pending |
+
+Gate before W2: every gate G1–G6 has a live instrument, per `/qa`'s §11.2 — a gate asserted in
+prose with no instrument is itself a close-gate failure.
+
+### Wave 2 — Spine 1, backend (10 of the 11 REDs)
+
+| Skill | Crate | Task | Status |
+|---|---|---|---|
+| /dev | cranelisp-backend | Piece 1 — **0917**: `ValueProvenance` gains the `NoReference` bottom point; the probe-independence pin is replaced by the strictly stronger monotonicity pin. The emission-licence census instrument lands here with its detection proof. **3 REDs** | pending |
+| /dev | cranelisp-intrinsics | The `free_io_node` split (raw `i64`, permanent) — lands before tranche A per gate condition 2 | pending |
+| /dev | cranelisp-backend | Piece 2 — **face 4**, the IO glue arm + `free_io_node` call. `core.io` and `core` flip together; `21-hello-io` at 243 and `23-io-sequence` at 178 in all four cells. **7 REDs** | pending |
+| /dev | cranelisp-backend | Piece 3 — **face 1**, retire the ctor-template pair under I-CT′. 0 REDs; census A −2,216, census B −3,108; zero emission change on any concrete param | pending |
+| /dev | cranelisp-backend | Rider **0906** with its scoped golden re-baseline | pending |
+| /review | cranelisp-backend | Change-set review — seven reject criteria from the contract §8, plus the per-change-set focused corpus-manifest run (absence = REJECT) | pending |
+
+### Wave 3 — Spine 2 tranche A, runtime pair
+
+Never shares a wave with W2's backend churn — each needs its own byte-identical instrument re-run.
+
+| Skill | Crate | Task | Status |
+|---|---|---|---|
+| /dev | intrinsics + primitives | CS-1 vocabulary + the detection triplet + grep gate (ships in the **same** change-set as CS-2 — it must not land with zero consumers) → CS-2 A1 funnel, incl. the `launch.rs:452` one-line dispensation → CS-3 A3-then-A2 → CS-4 the derivation + `string-identity` → CS-5 counts, three-class churn check, `public-api.txt` | pending |
+| /review | intrinsics + primitives | Class-1/2/3 churn verdict; the enumerated public-API diff against `/arch`'s approval | pending |
+
+### Wave 4 — typecheck producer (schema Window 1)
+
+| Skill | Crate | Task | Status |
+|---|---|---|---|
+| /dev | cranelisp-typecheck | **MEASURE-1b first** (cheap A/B: pin `get`'s parameter and see whether the SIGSEGV disappears — decides whether CS-2's F1 half is a successor-discovery widening only) → CS-1 P-1 + the F2 scheme-truth fix, **landing together with rider 0867** per `/design`(typecheck)'s recommendation (same function, one review surface) → CS-2 A-MINT + the F2 collection trigger → CS-3 `default_residual_parameters` + census. **0916 + 0867×3 + 0913** | pending |
+| /review | cranelisp-typecheck | Five fence items — notably that a **concrete** accessor and a **concrete** impl method stay byte-identical; a golden-CLIF diff outside F1/F2 is a finding, not a re-baseline | pending |
+
+**Window 1's bump (23→24) is taken by CS-1 and shared by CS-2 and CS-3.** If CS-3 slips, the
+licence expires at close.
+
+### Wave 5 — Spine 2 tranche B-int (best-effort)
+
+| Skill | Crate | Task | Status |
+|---|---|---|---|
+| /design | int | Absorb **0927** — the Rule-0 pin at the clause-preparation seam, plus D4's fence | pending |
+| /dev | src/ | **D0 first** (read the convention out of two clause shapes' CLIF *before* Rules 1–3 land) → Rules 1–3 → Rule 4. **D1 is a hard gate**: all five interior-alias double-free pins must re-clear under plain *and* armed lanes. Riders 0914, 0915 item 4 | pending |
+| /review | src/ | — | pending |
+
+### Wave 6 — cache carrier (schema Window 2)
+
+| Skill | Crate | Task | Status |
+|---|---|---|---|
+| /dev | src/ + cranelisp-types | **0869** (carrier, 24→25) + **0868**, with **0898** and **0748/R3** riding. Re-point the two hand-rolled `impl$` mint sites | pending |
+| /arch | design/arch + types | **0918** / **0919** — types-audit R1 and the R2+R4+R5 facade-truth pass (R4 compaction drops first if capacity binds) | pending |
+
+### Wave 7 — riders and the deferred conditional
+
+| Skill | Surface | Task | Status |
+|---|---|---|---|
+| /dev | platform | 0870, 0874, 0873, 0871 | pending |
+| /qa + /testing | tests/ | Track-C **D1 discriminating experiment** (~200× isolated under equal host load, tee'd) + the recorded re-measurement of the opening flap datum; the option-2 measurement, **report-only, after Spine 1** | pending |
+| /dev | src/ | **0863** — conditional third deferral signed off; runs only if the int surface clears with capacity remaining. **Never interleaves with W5** | pending |
+
+### Must-not-interleave (binding; each is a `/review` reject or a dispatch constraint)
+
+- W2 backend implementation and W3 tranche-A signature churn never share a wave.
+- 0867 lands only after P-1 is implemented — `/arch` and `/design`(typecheck) both confirm it
+  unblocks on **CS-1 alone**, not the whole obligation; hence the W4 pairing.
+- W7's 0863 never interleaves with W5. The `src/expander.rs` overlap is textual, not semantic —
+  B-int first, 0863 rebases.
+- **Exactly two schema windows, as assigned.** No other change-set touches the constant.
+- Option-2 adoption happens under no capacity outcome this sprint; the measurement is the
+  deliverable, and it never shares a wave with tranche churn.
 
 ## Dispatch log
 

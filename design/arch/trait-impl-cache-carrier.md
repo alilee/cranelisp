@@ -144,8 +144,16 @@ constraint of the Phase-2 ruling):
 
 ## 6. Schema window
 
-`CACHE_SCHEMA_VERSION` 23→24 in the implementing change-set — **the sole S118
-bump** (Phase-2 ruling 1; QA plan §1 blocks any other schema delta at close).
+`CACHE_SCHEMA_VERSION` bumps by **one increment in the implementing change-set**
+— written S118 as "23→24, the sole S118 bump" (Phase-2 ruling 1; QA plan §1
+blocks any other schema delta at close). **S119 Phase-3 gate amendment (FIXME
+0925 ruling):** S119 authorizes exactly TWO windows — the typecheck-producer
+window (shared by 0924 + 0913 under the S111-0621 one-bump precedent) and this
+carrier's window — each a single +1 taken in its owning change-set. In the
+sprint's implementation order the producer window lands first, so this
+carrier's window is expected to be **24→25**; if `/sprint` reorders the waves
+the integers swap. The invariant is two increments, two owners, and no other
+change-set touches the constant.
 Old sidecars lacking the carrier are invalidated wholesale by the version
 gate; no migration shim, no `#[serde(default)]` back-compat (Principle 8 — a
 default-empty read of a pre-24 sidecar would silently reproduce the defect
