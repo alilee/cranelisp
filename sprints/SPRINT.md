@@ -349,7 +349,10 @@ The load-dependent guards (`launch_grid`, 0694 family, 0604/0818) remain failing
 | W4+ | /dev | cranelisp-backend: 0891 narrowing (`ee324bc4`) — **ruling falsified by measurement**: +16 refusals from two uncensused escapee families (both leak today); safe parts shipped, 0903 filed, 0891 deferred S119 | opus[1m] (shim) | high | STOP rule honored |
 | W4+ | /review | cranelisp-backend: ee324bc4 (delegated, short) — PASS; 0904/0905 Importants filed | codex (delegated) + fable adjudicator | high | — |
 | W4+ | /dev | cranelisp-backend: 0904 + 0905 resolution (`5a906eca`; both cures, double-axis falsification, byte-identical emission verified; 0906 nit filed; golden-lane W3 drift surfaced) | opus[1m] (shim) | high | Important resolution |
-| gate | /qa | pre-gate pass: Bind-family + leak-family + golden-lane attribution, #21/0890, exit reconciliation | fable (shim) | xhigh | — |
+| gate | /qa | pre-gate pass (`33098d33`): Bind→0907 (W3-consequent loud refusals, 7 cells, co-rules with 0903); #21 premise inverted (warm ambient = 0; 12,431 is runtime retention, 0903-family lead); golden drift→0908; W8 expectation = 18 named | fable (shim) | xhigh | — |
+| gate | /testing | 0908 golden re-capture + #21 riders (`1a887705`+`d20ce68e`; mechanical frame classification; Grid.cells 0903-family finding recorded loudly; 0909 filed) | opus[1m] (shim) | high | — |
+| W8 | /qa | Phase-5 gate (`9370f868`): **PASS** — 5,653/5,634/19/1 ×2 byte-identical (first deterministic cert since S115); 16 named + 0910/0911 test-debt; 0909 resolved | fable (shim) | xhigh | — |
+| W8 | /arch | public-API re-gate + Phase-7 window (0872, 0898, 0902) | fable (shim) | xhigh | — |
 
 ## Notes
 
