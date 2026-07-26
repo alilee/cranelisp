@@ -6,12 +6,35 @@
 > macro-alias double-free ×5 — MUST ship") and the `/arch` Phase-2 F-nothing
 > constraint (root-cause design, not symptom patch).
 >
-> **Status: LANDED (S114).** The deep-protection mechanism below is in source —
-> `src/marshal.rs::protect_marshalled_cell` (`:186`) applied per marshalled cell
-> (`:202`/`:219`/`:232`; module rustdoc `:7`), curing the interior-alias
+> **Status: LANDED (S114); §2's MECHANISM SUPERSEDED (S119) — history retained.**
+>
+> As landed, the deep-protection mechanism is in source —
+> `src/marshal.rs::protect_marshalled_cell` (`:204`) applied per marshalled cell
+> (`:220`/`:234`/`:251`/`:264`; module rustdoc `:7`), curing the interior-alias
 > double-free at the marshal boundary. §4's discriminating step was run before
 > landing. Five pins in `tests/macro_expansion_interior_alias_double_free.rs` are
 > the trigger + regression record. (Banner refreshed S115, FIXME 0699 item 4.)
+>
+> **S119 supersession (`design/int/macro-turn-ownership.md`, FIXME 0889).** The +1
+> per cell accounts a retention the marshaller does not actually hold: after
+> `invoke_clause` returns, no Rust frame, structure, or session store holds any
+> marshalled word. That untrue count IS the 1,143-allocation compile-time leak
+> (the argument term of 0889's closed form). The successor ruling **deletes**
+> `protect_marshalled_cell` and its four call sites (Rule 2) and makes the count
+> true by removing the retention instead of counting it: the marshaller produces
+> a **single-owner** tree and **transfers** it by crossing the C ABI (Rules 1/3).
+>
+> Read §2 as the record of why top-only protection was wrong and of what a
+> well-formed input to the clause looks like — **not** as current mechanism. Two
+> parts of this document remain load-bearing and are cited by the successor:
+> §0/§1's actor analysis, and §2's negative-control-twin argument (a tree at
+> RC = 1 per cell, transferred consuming, runs clean — which is precisely the
+> state Rule 2 restores; it is the twin, not the +1, that the successor rests on).
+> §3's third bullet ("stop leaking / free the marshalled tree after expansion") is
+> **retracted**: it rejected a *retain-and-release* shape, and the successor does
+> not release — it never retains. §5's three `RC == 2` unit rows retire with the
+> mechanism; their replacements assert `RC == 1` under the same completeness
+> obligation.
 
 ## 0. The actors and the function between them (Principle 21)
 

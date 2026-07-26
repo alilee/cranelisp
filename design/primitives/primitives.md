@@ -150,6 +150,17 @@ Absence is the conservative default only outside the classified
 heap-primitive set; user-callable heap declarations are required to carry a
 summary.
 
+**The declaration row is also the ABI ownership fact (S119 tranche A).** The
+generated extern shim wraps each parameter in a typed handle
+(`cranelisp_intrinsics::handle::{Owned, Borrowed}`) derived from the row's own
+declared type and `ParamFlow` — one derivation, no second hand-written
+assertion — and a unit row checks the derived kinds against the row's facts.
+The derivation axis is **`ParamFlow`, never `Mode`**: the S102 CS-B split is
+deliberate, so an only-read heap parameter stays `Mode::Borrowed` (the analysis
+fact) while its ABI kind remains consuming. The full statement, the one named
+exemption (`sconcat`, whose type is seeded outside the pair), and the counted
+trusted base are in `design/runtime/s119-typed-consume-funnel.md` §4.
+
 The production flow is:
 
 ```text
@@ -207,7 +218,12 @@ arithmetic.
 6. Every primitive entry has `kind: DefKind::Primitive` and `code: None`;
    callable addresses live only in the GOT.
 7. The extern language-call boundary consumes heap arguments it does not
-   return.
+   return. **After S119 tranche A this is a type, not a convention**: the
+   implementation function behind each shim takes `Owned` for a consumed heap
+   parameter and `Borrowed<'_>` for a retained one, so a missing dec is a
+   `#[must_use]` warning plus a debug drop bomb and a double dec does not
+   compile. `string-identity` is the one extern row whose parameter is retained
+   (`ParamFlow::IntoResult`) and therefore the one spelled `Borrowed`.
 8. Backend substitution is optional and trait-ignorant; the named primitive
    remains the semantic authority.
 9. Intrinsics is the sole Vec representation owner. Primitive String code
@@ -232,7 +248,18 @@ arithmetic.
     reference no owner holds — is why this is an invariant and not a
     preference. Ruled S118 W2b (FIXME 0835);
     `design/runtime/s118-structural-embedding-ownership.md` §2 is the full
-    statement.
+    statement. **S119 tranche A spells invariant 13 in types**: `read_slist`
+    returns `Vec<Borrowed<'_>>` (elements are owned by the chain), copied items
+    each take one `.to_owned()`, and the structural embed takes exactly one —
+    so a walk minting references no owner holds produces one drop bomb per
+    surplus reference at the frame that minted it.
+14. **The pair has exactly one raw entry and one raw exit for heap handles.**
+    `Owned::from_abi` (the shim's ownership assertion) and `Owned::into_raw`
+    (the ABI return, and the only `mem::forget` in the pair's non-test code).
+    `Owned` is never `Copy` or `Clone`; `Borrowed` has no discharge operation.
+    Widening this set is an `/arch`-visible change to the trusted base, guarded
+    by a structural grep gate — `design/runtime/s119-typed-consume-funnel.md`
+    §2.1 and §3.
 
 ## 5. Test strategy
 
@@ -350,6 +377,9 @@ an additional element clone.
 - `design/runtime/s117-primitives-integrity.md`
 - `design/runtime/s118-structural-embedding-ownership.md` (invariant 13 — the
   FIXME-0835 consume-owner contract; `marshal.rs` producer seams S1–S4)
+- `design/runtime/s119-typed-consume-funnel.md` (invariant 14 — the typed
+  handle vocabulary, the shim-fact derivation, the drop-bomb detection proof,
+  and the churn-safety classes)
 - `design/primitives/implementation-slice-s66.md` (historical)
 - `design/arch/fixmes/0859-*.md` (deferred R-2 evidence boundary)
 - `design/arch/fixmes/0850-*.md` (excluded intrinsics raw-read convergence)

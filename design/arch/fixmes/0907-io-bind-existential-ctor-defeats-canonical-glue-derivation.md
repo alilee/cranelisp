@@ -10,9 +10,58 @@ refers_to: crates/cranelisp-backend/src/drop_glue.rs:497-505 (ctor_shapes identi
   design/backend/transitive-drop-glue.md §4.1; design/arch/fixmes/0903-*.md (sibling class);
   tests/plan/s118-test-plan.md §11 (attribution record)
 status: open
+retargeted_by: /design (backend)
+retargeted_at: 2026-07-26
+ruled_at: design/backend/non-concrete-release-contract.md §4 face 4, §4.4, §4.5, §5.3
+blocked_on: 0923
 ---
 
 # `IO`'s existential `Bind` ctor defeats canonical per-concrete glue derivation — every release of a concrete `IO T` value hard-refuses
+
+> **RULED S119 Phase 3, `/design`(backend) —
+> `design/backend/non-concrete-release-contract.md` §4 face 4.**
+> **Disposition: runtime-directed teardown** (direction 1 of the three offered).
+>
+> IO is the one face of the class where the disposition is available, and the
+> ruling says why: the unknown is discoverable *dynamically without a header
+> type-word*, because an IO node carries a tag that
+> `cranelisp-intrinsics::consume_io_tree` already walks, and `Bind`'s
+> continuation is a closure carrying its own `DROP_GLUE_PTR` — the standing M5
+> runtime dispatch. For the class's other faces the unknown word may be a raw
+> scalar with no runtime self-description at all, which is why they get a
+> different disposition.
+>
+> **Split of duty:** backend owns what only the *type* knows — `Pure`'s payload,
+> discharged by the ordinary `drop<T>`, minting no IO-specific releaser — and the
+> runtime owns what only the *value* knows. `drop_glue.rs::ctor_shapes` is not
+> reached for `primitives/IO`, so its identity check at :497-505 stays exactly as
+> it is; it is a correct check on a precondition IO structurally cannot meet.
+>
+> **Direction 3 (admission exclusion) is REJECTED**, weighed as `/stdlib` and
+> `/examples` demanded rather than as a cheap out: it restores the silent leak,
+> and `/examples` already measured what that costs on this exact type (the
+> `(impl (Functor IO))` spelling compiles, returns the right answer, and retains
+> ~68 bytes/call — linear to 82.7 MB at 800k iterations). It also violates the
+> ruling's R-2 directly: refusing to own a type in order to pass the release gate
+> fabricates the false fact "this type owns nothing". Ruling §4.5.
+>
+> **Named residual, recorded not hidden:** a `Pure` node nested inside an *unrun*
+> `Bind` sub-tree has payload type `b` — the existential — which neither side can
+> name, so it is not discharged. Bounded leak on unrun IO trees; strictly better
+> than today's hard refusal; `/qa` owes it a failing-not-ignored guard
+> (ruling §7.1). Papering over it with a fabricated `b` is forbidden by R-2.
+>
+> **Blocked on FIXME 0923** (`/arch`) — the one `cranelisp-intrinsics` public
+> entry point this needs is a *split* of `consume_io_tree` at the dec, not a new
+> mechanism. All 7 REDs here close with that plus a backend-only glue arm; this
+> is piece 2 of the ruling's §7 staging, the largest backend-only payload in
+> Spine 1.
+>
+> Two riders carried into the fixing window: `Bind`'s manual seed must leave the
+> ctor **introspectable** (`/repl` item 5 — one cause, two symptoms), and the
+> `/examples` §5 trait-instance leak cell sits at the intersection of this face
+> and face 3, so it is an acceptance cell for the *class*, not for this piece
+> alone.
 
 ## Severity
 

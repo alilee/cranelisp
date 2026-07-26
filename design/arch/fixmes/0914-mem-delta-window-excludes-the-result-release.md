@@ -1,10 +1,11 @@
 ---
 number: 0914
-target: /design (int)
+target: /dev (int)
 filed_by: /repl
 filed_at: 2026-07-26
 sprint_filed: 118
-refers_to: src/repl/commands.rs::handle_mem:1146-1170 (the counter window);
+refers_to: design/int/result-owner.md §4.2.1 (the S119 /design(int) seam ruling — READ FIRST);
+  src/repl/commands.rs::handle_mem:1146-1170 (the counter window);
   repl/spec.md §3.7 (the requirement, tightened this sprint);
   design/int/result-owner.md §2 / src/CLAUDE.md §"Program-result ownership"
   (the observe-then-release order the window sits inside)
@@ -109,3 +110,49 @@ numbers.
   has just proven flat — labelled, not hidden.
 
 No filtering, special-casing, or demo-only spelling was introduced.
+
+## `/design`(int) ruling — S119 Phase 3. Target moves to `/dev`(int)
+
+Recorded normatively at **`design/int/result-owner.md` §4.2.1**. Verdict: the
+spec's **shape (a)** — the command drives the release, through the SAME
+finalization chokepoint, inside its own turn. Order:
+
+```
+open window -> eval -> OBSERVE (render the result text)
+            -> RELEASE (EvalResult::release_program_result())
+            -> close window -> compose the delta line -> return ONE document
+```
+
+Three corrections to this FIXME's mechanism read, which do not change its verdict:
+
+1. **`handle_mem` already drives the chokepoint — implicitly, late, invisibly.**
+   Its `EvalResult` is owned locally and consumed by the `match` at
+   `commands.rs:1161-1165`, so the release fires from `OwnedProgramResult`'s
+   `Drop` backstop at the end of that arm — *after* the counters are read at
+   `:1152-1154`. It is not `main.rs`'s turn release (a slash command returns a
+   `String`; no `EvalResult` reaches the driver). So this is **not** a request to
+   add a second release site: an explicit `release_program_result()` call
+   *replaces* a backstop release that already happens, moving it earlier by two
+   statements. `result-owner.md`'s "exactly one finalization chokepoint" is
+   preserved literally — the chokepoint is exactly-once and the backstop stays.
+2. **No mode-divergence risk.** Slash commands are REPL-only; `--run` and linked
+   startup have no measurement command and no second release. The observe-then-
+   release ordering of §1 is preserved exactly — the delta line is not an
+   observation of the value, so composing it after the release is legal.
+3. **The `/repl` knock-on you asked to have flagged back does not arise.** Shape
+   (a) keeps the delta line in the same rendered document as the result line, so
+   nothing the user sees changes except the numbers, and the §10.3
+   single-styling-authority seam is untouched. Shape (b) was rejected for exactly
+   that reason.
+
+**`/time` is deliberately NOT changed** (§4.2.1's generalisation): it measures
+`eval` and excludes the release, which is consistent with "time to evaluate". If
+`/repl` wants it to mean "time for the whole turn" that is a `repl/spec.md`
+question — the same seam serves it, but do not change one instrument's window to
+match the other's on symmetry grounds alone.
+
+**Acceptance**: this FIXME's own evidence run — five `/mem (Box "boxed")` turns
+must report `deallocs +2  live +0`, matching the bracketing snapshots that
+already show session `live` flat. Unit tier: extend the exactly-once rows at
+`src/session_v4/types.rs:280-346` (which already include a double-release cell at
+`:301-302`); do not duplicate them.

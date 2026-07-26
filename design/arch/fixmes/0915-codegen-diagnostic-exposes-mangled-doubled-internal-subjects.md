@@ -9,9 +9,34 @@ refers_to: crates/cranelisp-backend/src/error.rs:121-132 (CompilationError::Code
   repl/spec.md §5.1 (location MUST) and §5.5 (new — compiler-stage subject naming);
   design/arch/fixmes/0907-*.md (the live specimen, a different defect)
 status: open
+retargeted_by: /design (backend)
+retargeted_at: 2026-07-26
+ruled_at: design/backend/non-concrete-release-contract.md §3.4 (R-4), §5.5
 ---
 
 # A codegen-stage failure is presented with a `0..0` span, a doubled category prefix, and a doubled/mangled internal subject
+
+> **RULED S119 Phase 3, `/design`(backend) —
+> `design/backend/non-concrete-release-contract.md` §3.4 / §5.5.** Promoted from
+> an adjacent experience rider into **rule R-4 of the release contract itself**.
+>
+> The reason is structural, not courtesy: "a **located refusal the user can act
+> on**" is one of the four dispositions the contract assigns, and this FIXME is
+> the measurement that today's refusals do not meet that bar. A refusal reported
+> at span `0..0` against a `$`-mangled internal instance name
+> (`user/user/then$primitives/IO$Int+primitives/IO$Int`) is not a located
+> refusal; it is a leak of the compiler's call structure, and it does **not
+> discharge the contract**.
+>
+> Backend-side obligations named at ruling §5.5 (`error.rs:121-132`): one
+> category prefix per diagnostic; a real span — `drop_glue.rs:539-544`'s
+> `ErrorLocation::from_span(Span::SYNTHETIC)` is the direct cause of `0..0` and
+> every registry error should carry the requesting frame's span; and a subject
+> the user can look up, with the instantiation rendered as types rather than a
+> `$`-mangle. `repl/spec.md` §5.5 remains `/repl`'s normative surface.
+>
+> Added to the contract's `/review` reject list (§8 item 7): once §5.5 lands, a
+> refusal at span `0..0` against a mangled subject is a reject.
 
 ## Severity
 
@@ -146,6 +171,42 @@ Full record: `tests/plan/s118-test-plan.md` §11.8.4. Source read:
   frame guard is DEFERRED to S119, authored in the 0907/0903 fix window
   against whatever codegen-refusal trigger remains (or one `/testing`
   constructs). `[S119]` PLAN row landed.
+
+## `/design`(int) ruling on the INT RIDER (item 4 + subject presentation) — S119 Phase 3
+
+Recorded normatively at **`design/int/int.md` §9.1**. This section closes the
+rider's design question only; the FIXME stays `target: /design (backend)` for
+items 1–3 and is backend's to resolve and delete.
+
+**Ruled: int rewrites the SUBJECT at the display boundary; the carrier is never
+touched.** Decision 39 applied unchanged. The `Symbol` backend puts in
+`CompilationError::CodegenFailed` is *correct data* — it is the compilation unit
+that failed, what `/clif`/`/disasm` take, and what a cache or attribution reader
+keys on. Only its rendering to a human is wrong. So the fix is not "stop naming
+the instance"; it is one presentation projection.
+
+1. **One subject-presentation function, in `format_error`'s neighbourhood, and
+   nowhere else**: `__expr` → the entered form (or a neutral phrase when no form
+   text is available); `f$T1+T2` → its base `f`; an already-qualified symbol →
+   itself, never re-composed. It is a **projection, not a resolver** — it must
+   never look a name up, and must never become a second home for the `$`-mangling
+   scheme (the `bare_member_name` precedent, `dotted-ctor-canonical-keys.md`
+   §10.4: int reads the projection inverse only).
+2. **Applied at `Sess::format_error`, once, for every variant carrying a
+   compilation subject** — not at `CompilationError`'s `Display` (backend's, and
+   that is items 1–3), not per-command. `int.md` §9 already makes `format_error`
+   the single mode-conditional formatter for REPL and batch; a per-site rewrite
+   would be the `display-envelope-mirror` class.
+3. **Presentation must not erase the investigative handle.** Where the internal
+   subject is the only route to the failing artifact, the projection may keep the
+   internal spelling in the same diagnostic as a *labelled secondary* — never as
+   the headline noun. The self-documenting-REPL requirement is that the central
+   noun be actionable at the prompt: `then` is, `user/then$…` is not.
+
+**Guard sequencing accepted as `/qa` set it**: int's rider rides the deferred
+§5.5 frame guard authored in the 0907/0903 fix window against whatever
+codegen-refusal trigger remains. Int does **not** get a private guard keyed on
+0907's message text. The `Bind`/`IO` undiscoverability half stays 0907's.
 
 ## Note on the S117 fix this does not contradict
 

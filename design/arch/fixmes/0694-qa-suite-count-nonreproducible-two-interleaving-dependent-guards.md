@@ -295,6 +295,32 @@ Consequences (recorded in `tests/plan/risks.md` §S118 risk read):
   characterization, in-suite output capture, attribution); "flaky" remains
   banned.
 
+## /qa S119 Phase-3 roster update (2026-07-26) — the nullary member reappeared unprompted at the S119 opening run
+
+**`nullary_return_dispatch_method_only_import::…_no_codegen_leak` was RED in
+the S119 baseline run** (2026-07-26, HEAD `5520186d`, clean tree; 5,660 run /
+21 failed — `sprints/SPRINT.md` §Baseline). It was NOT in S118's certified 20
+(GREEN in both S118 W8 certification runs, §11.7); its reappearance on the
+first S119 full run, with no intervening compiler change, is fresh evidence
+that the Class-II member is live and load-conditional exactly as adjudicated
+— not cured by any S116–S118 wave.
+
+Consequences and scope (plan of record: `tests/plan/s119-test-plan.md` §8):
+
+- S119 owes exactly the bounded Track-C obligation: **D1** (the S116-designed
+  discriminating experiment, §"The discriminating experiment" above), run on
+  THIS member, ~200× isolated under equal non-cranelisp host load, tee'd;
+  plus the recorded re-measurement — isolation color at current HEAD (a
+  deterministic isolation RED would be a NEW attribution, not a flap datum)
+  and per-run in-suite color across every tee'd full-suite run this sprint,
+  appended here.
+- D1's falsification branch now has a named corroboration candidate: the S118
+  inverse-polarity member is a CACHE-restoration guard, and the S119 rider-2
+  window (0868/0869) reworks exactly the suspected shared substrate — its
+  dispatch brief carries the hazard note.
+- No D2/D3, no 0604/0818 root-cause work this sprint (SPRINT §Track C).
+  "Flaky" remains banned.
+
 ## Context
 
 Found by /review W4 while verifying dispatch priority 8 (suite-state

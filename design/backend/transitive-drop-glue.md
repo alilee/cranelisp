@@ -378,6 +378,29 @@ mechanism):
 
 ### 4.1 The ONE sanctioned non-concrete release site — the ctor template's own parameter
 
+> **SUPERSEDED S119 Phase 3 — `/design`(backend), `non-concrete-release-contract.md`.**
+> This section is retained as the **record** of face 1's history and of the
+> rejected alternatives; it is no longer the authority and no longer states the
+> live ruling. Two of its premises were falsified by measurement:
+>
+> 1. *"The migration measured exactly one class."* Measured twice, one sprint
+>    apart: the frame-keyed gate this section rules costs **+16 hard codegen
+>    refusals** over the `spec_*` corpus (S118 FIXME 0903; re-run at S119 HEAD,
+>    893 run / 8 → 24 failed). The class is three families, not one.
+> 2. *"the retained pair … is behaviour-identical to pre-migration HEAD."* It is
+>    not. On a residual-typed parameter whose runtime word is a **raw scalar**
+>    ≥ `NULLARY_TAG_THRESHOLD`, both halves of the pair are **wild atomic
+>    writes** and the last-ref branch is a wild `dealloc`. The
+>    `NULLARY_TAG_THRESHOLD` guard discriminates tags from pointers; it cannot
+>    discriminate scalars from pointers. I-CT proves the *count* balances and is
+>    silent on whether the word is a reference at all.
+>
+> The live disposition for this face — **the pair deletes; a ctor template frame
+> emits no RC operation on a residual parameter**, under invariant I-CT′ — is
+> `non-concrete-release-contract.md` §4 face 1 and §4.1. I-CT, its standing
+> `Borrowed`-mode obligation, and this section's `/review` reject criterion all
+> retire with it. §11's no-interim list is amended accordingly.
+
 **Ruling (S118, post-W3; resolves FIXME 0891 — option (a) of its three).** D2's
 entry check predicted no release site could fail to supply a `ConcreteType`. The
 migration measured exactly one class, and it is legitimate. This section is the
@@ -950,7 +973,7 @@ S116 Wave 3 (`drop_glue.rs::tests`); rows 3–6 are the migration's new tier.
 | `drop_glue` identity | primitive-owning types; FQ ADT; two generic instantiations | repeated request is idempotent; same bare type name in two modules differs | non-concrete key rejected; collision witness; span/caller cannot alter identity |
 | `drop_glue` registry/body builder | scalar leaf; ADT→String; ADT→Vec→ADT; depths 1/2/4/5/>5 | self-recursive list nullary/data arms; mutually recursive declarations; repeated field type emits one body; **request order permuted ⇒ same bodies, same keys (D5)** | no depth constant; no shallow fallback; duplicate definition and missing typedef fail loudly; **`finish()` rejects a `Defining` entry** |
 | `rc_emission` glue-call emitter | owned heap pointer ⇒ exactly one `call` to the canonical symbol; final-ref body calls fields then dealloc; non-final ref touches no fields | Mixed ADT bare nullary tag guarded **inside** the body, not at the site; closure field; empty Vec | no field call on `old_rc > 1`; **no `needs_guard` parameter survives**; non-concrete type at a release site is a located error, never a plain dec; no deep owner routed to a bare dec |
-| `fn_compiler` §4.1 ctor-template admission | a generic-ctor template (`(deftype (Option a) (Some [:a v]))`) and an undeclared-field template (`(deftype B (Mk [v]))`) each emit the guarded inc and its balancing guarded dec on the same parameter, same nullary-threshold predicate | the multi-field template incs and decs every field parameter; a concrete-field template (`(deftype B (Mk [:Int v]))`) takes the ordinary `drop<T>` path, no exception | **a non-concrete binding in a NON-ctor-template frame is a located error, not a shallow dec** (the gate is the frame, not the type); the exception is unreachable from either tail-jump flush; no `drop_glue_id: None` dec survives at any other seam |
+| ~~`fn_compiler` §4.1 ctor-template admission~~ **SUPERSEDED S119** → `non-concrete-release-contract.md` §9 row 2 | a generic-ctor template and an undeclared-field template each emit **zero** RC ops on their residual parameters (I-CT′); a concrete-field template still takes the ordinary `drop<T>` path | the multi-field template: zero ops on every residual field, ordinary path on every concrete one | no guarded inc and no guarded dec survives on a residual parameter at any seam. *(The landed S118 positive/edge cells in `ctor_template_admission_tests.rs` pin the OLD balance and must be re-pointed, not deleted — `assert_threshold_guarded_rmws` is reused for the new negative.)* |
 | capture / environment glue | explicit closure over Vec/ADT; auto-curry equivalent; nested closure; poll-state capture | zero captures; repeated same-typed captures; a capture whose type is the enclosing closure's own | borrowed/non-owning capture not dropped; **every owning capture descriptor has a glue call** (the assertion 0760 says no instrument ever made); no second glue skeleton per mirror |
 | `match_codegen` | inline and let-bound owned temporary; constructor and var patterns; the plan recorded once before arms | heap field forwarded into a tail call; whole-wrapper forward (`[r r]`); borrowed callee scrutinee; **mixed ctor+var match, ctor path selected** | no whole-match `any` suppression; no release-before-protect; no borrowed-scrutinee release; **exactly one release per consuming arm** (count, not existence — the 0782 face); var arm binder never registered for scope cleanup |
 | `fn_compiler` / TCO predicate | unrelated fresh replacement releases; bare-Vec and ADT replacement use the same path | same-slot and cross-slot move; control-flow forward; analysis-on in-place COW (positional-blind); toggle-off copied COW | borrowed alias cannot license transfer (`BorrowedInvalid` is loud); fresh/unknown cannot suppress release; no TCO-private glue; **row 2 does not become a blanket skip** (the F1 regression fence) |
@@ -1002,10 +1025,16 @@ E2e acceptance remains `/qa`/`/testing`'s carried S116 matrix (§9).
   value owned — 0760 recorded that no such mechanism existed.
 
 **No-interim constraints** (binding; `/review` reject criteria): no raised depth
-constant; **no shallow fallback other than §4.1's single frame-checked ctor-template
+constant;
+**~~no shallow fallback other than §4.1's single frame-checked ctor-template
 admission — and that one is a REJECT if its gate is keyed on the type being
-non-concrete rather than on the frame being a ctor template** (a type-keyed gate is
-a fallback arm wearing one case's name); no borrowed-builder clone of recursive emission;
+non-concrete rather than on the frame being a ctor template~~ — AMENDED S119
+Phase 3: there is no sanctioned shallow fallback at all. Every non-concrete
+release is dispositioned by `non-concrete-release-contract.md` §4, and its §8
+carries the replacement reject list — including that a frame-keyed narrowing
+landed without its producer obligation is itself a reject (measured twice at +16
+corpus refusals).**
+no borrowed-builder clone of recursive emission;
 no 0835-, 0810-, capture-, or TCO-specific deep releaser; **no second named-glue
 identity home**; no JIT-only helper; no third heap-header word; no global glue
 registry; no generic type-erased release; no cache sidecar carrying process-local

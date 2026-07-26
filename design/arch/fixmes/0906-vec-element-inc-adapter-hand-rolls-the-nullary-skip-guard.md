@@ -6,9 +6,25 @@ filed_at: 2026-07-26
 sprint_filed: 118
 refers_to: crates/cranelisp-backend/src/compiler/vec_codegen.rs — the `guarded` arm of the Vec element inc-adapter body (≈:986)
 status: open
+ruled_at: design/backend/non-concrete-release-contract.md §7.2
 ---
 
 # A third hand-rolled nullary-skip guard survives in the Vec element inc adapter
+
+> **CARRIED S119 Phase 3, `/design`(backend) —
+> `design/backend/non-concrete-release-contract.md` §7.2.** The proposed
+> resolution is accepted verbatim and gains a reason beyond Principle 7: rule
+> **R-1** of the release contract is precisely that the tag-vs-pointer decision
+> has ONE home, because the whole class's memory-unsafety is that decision being
+> mistaken for a scalar-vs-pointer test. A third hand-rolled copy is a third
+> place that mistake can be re-made silently.
+>
+> Scope confirmed as filed: fold onto `heap::emit_nullary_skip_guard`; **not
+> byte-identical** (block creation order swaps the two labels); lands with a
+> **scoped** golden re-baseline for the covered bodies only (extension ≠
+> re-baseline, `ownership-inference.md` §6.2); reuse
+> `ctor_template_admission_tests::assert_threshold_guarded_rmws` for the
+> absolute-polarity pin — it walks arbitrary CLIF text, so no new machinery.
 
 ## Severity
 Nit

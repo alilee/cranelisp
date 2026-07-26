@@ -15,6 +15,20 @@ deferred_to: S119
 blocked_on: 0903
 ---
 
+> **SUPERSEDED S119 Phase 3 (`/design`(backend)) — the re-land is NOT a paste.**
+> `design/backend/non-concrete-release-contract.md` re-rules this face. §4.1's
+> ruling (option (a), the sanctioned shallow dec under invariant I-CT) is
+> retired: I-CT proves the reference *count* balances and is silent on whether
+> the word is a reference at all, and on a residual-typed parameter holding a
+> raw scalar ≥ `NULLARY_TAG_THRESHOLD` **both halves of the pair are wild atomic
+> writes** and the last-ref branch is a wild `dealloc` (ruling §2.5, measured).
+> The live disposition is **I-CT′**: the pair deletes, and a ctor-template frame
+> emits no RC operation on a residual parameter — which is item 1 of this
+> FIXME's "what /dev owes" replaced, not narrowed. Items 2 and 3 shipped and
+> stand; item 2's negative cell is re-pointed by ruling §9 row 2. The standing
+> `Borrowed`-mode obligation retires with I-CT (there is no pair left to
+> unbalance).
+>
 > **DEFERRAL (/dev(backend), 2026-07-26) — items 2 (partial) and 3 SHIPPED;
 > item 1 is blocked on a falsified premise.**
 >

@@ -9,9 +9,42 @@ refers_to: tests/trait_method_tail_s116.rs (adjacent, different subject — tail
   design/arch/fixmes/0907-*.md §3 (found while building a non-IO control);
   spec/05-functions.md (TCO guarantee)
 status: open
+retargeted_by: /design (backend)
+retargeted_at: 2026-07-26
+ruled_at: design/backend/non-concrete-release-contract.md §4 face 3, §5.2
+blocked_on: 0924
 ---
 
-# A self tail call in a `match` arm SIGSEGVs at ~1,000 depth when the scrutinee is a trait-method call
+# A generic trait-method instance performs a wild guarded RC write on a scalar payload — SIGSEGV at the `NULLARY_TAG_THRESHOLD` boundary
+
+> **TITLE CORRECTED (S119 Phase 3, `/design`(backend)).** The filing's title —
+> "a self tail call in a `match` arm SIGSEGVs at ~1,000 depth … loses TCO", which
+> the file *slug* still carries — is **falsified** by `/qa`'s own attribution
+> below and by this window's re-measurement. TCO is intact (`jump block1` in both
+> variants); the depth table straddled 1024 by coincidence; the discriminator is
+> the payload **value**, not the recursion depth. The stale slug is retained to
+> avoid breaking in-flight citations; the H1 above is the correct statement.
+>
+> **RULED S119 Phase 3** — `design/backend/non-concrete-release-contract.md`
+> §4 face 3. The mechanism is R-1: the generic instance is a
+> compiled-once-per-declaration frame whose payload's static type is a residual
+> `Var`, so it has **no heap category**, and
+> `signature_heap_category`'s `Err ⇒ HeapCategory::Mixed` arm fabricates one.
+> The `NULLARY_TAG_THRESHOLD` guard discriminates tags from pointers, never
+> scalars from pointers.
+>
+> **The disposition is canonical glue after the frame is monomorphised**, and
+> §4.3 of the ruling *proves* no in-frame fix exists: withdrawing the retain
+> licence converts this SIGSEGV into a UAF on a duplicating arm, and refusing
+> instead costs the 16 corpus programs measured twice. **This cell is therefore
+> producer-gated on FIXME 0924** (`/design`(typecheck)) and does **not** close in
+> a backend-only wave — the ruling's §7 staging table says so explicitly so
+> `/sprint` does not schedule it as though it rides with 0907/0917.
+>
+> **Sibling severity correction owed on 0903:** family 1 (synthetic accessors)
+> is memory-unsafe by the identical mechanism at the identical 1023/1024
+> boundary — a four-line repro with no trait and no HKT in it. 0903 files that
+> family as a *silent leak*; it is not. See the ruling §2.4.
 
 ## Severity
 

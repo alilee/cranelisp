@@ -6,6 +6,18 @@
 
 **Reads.** `sprints/SPRINT.md` §Scope + §"Architecture review (Phase 2)" (b); `design/arch/fixmes/0397-arch-intrinsics-rc-inc-entry-point.md`; `spec/appendix-c-nfr.md` §C.4.1; `design/arch/bounded-contexts.md` §4b; `crates/cranelisp-intrinsics/src/rc.rs` (`consume_shallow` — the dec mirror; there is NO existing `rc_inc`); `crates/cranelisp-primitives/src/marshal.rs` (`shallow_rc_inc`); `crates/cranelisp-primitives/src/string.rs` (`string_identity`); `crates/cranelisp-intrinsics/public-api.txt`; `design/arch/CLAUDE.md` §"Baseline-diff discipline".
 
+> **S119 amendment (`/design`, tranche A).** `rc_inc(ptr: i64)` **stays** the
+> blessed public mechanism and its shape is unchanged by the typed consume
+> funnel. What changes is that it acquires a single typed caller:
+> `cranelisp_intrinsics::handle::Borrowed::to_owned(self) -> Owned` is the one
+> place in the pair's Rust bodies where a new reference is minted, and it
+> delegates here. The two primitives re-route sites this doc pinned
+> (`marshal.rs::shallow_rc_inc`, `string.rs::string_identity`) become
+> `.to_owned()` call sites in tranche A. The end-state intent — `rc_inc`'s only
+> caller being `to_owned` — is a **tranche-C** outcome, not tranche A's:
+> `io.rs` and `trace.rs` still call it raw and are out of tranche A's slice.
+> `design/runtime/s119-typed-consume-funnel.md` §2.2 and §6.3.
+
 > **Scope note.** This is a subordinate topic doc, not the intrinsics master. The crate has no `design/intrinsics/intrinsics.md` master today — the canonical surface is the crate-root `//!` rustdoc + per-item `///` (facade retired S74 W3 per BC §4b §"Per-surface documentation"). This doc elaborates the **one** S85 addition to that surface: `pub fn rc_inc(ptr: i64)`. It does not restate the whole crate; it pins the fn's shape, ordering rationale, safety contract, the two primitives re-route sites, the unit-test obligations, and the baseline bump so /dev can implement against acceptance criteria. It is the structural sibling of `design/intrinsics/intrinsics-table.md` (which pinned the `INTRINSICS_TABLE` addition the same way).
 
 ---

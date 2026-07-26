@@ -7,9 +7,50 @@ sprint_filed: 118
 refers_to: design/backend/transitive-drop-glue.md §4.1 (the ruling) + §10 row 4 +
   §11 no-interim list; crates/cranelisp-backend/src/compiler/fn_compiler.rs::emit_heap_binding_decs
 status: open
+ruled_at: design/backend/non-concrete-release-contract.md (S119 Phase 3)
+blocked_on: 0924
 ---
 
 # §4.1's "exactly one class" is falsified — the frame key costs 16 corpus programs
+
+> **RULED S119 Phase 3, `/design`(backend) —
+> `design/backend/non-concrete-release-contract.md`.** This FIXME asked for a
+> ruling over the WHOLE measured class. It has one, and the class was
+> re-measured exhaustively rather than re-argued (ruling §2: 2,497 release
+> admissions and 5,499 category licences censused across the full suite; the
+> frame-key experiment re-run at S119 HEAD, 893 run / 8 → **24** failed,
+> reproducing the +16 exactly).
+>
+> **Three findings this FIXME did not have:**
+>
+> 1. **Family 1 is memory-unsafe, not a silent leak.** Same 1023/1024 boundary
+>    as family 2, on a four-line repro with no trait and no HKT
+>    (`(deftype (Bx a) [:a v])` + `(defn get [b] (v b))` + `(Bx 1024)` →
+>    SIGSEGV; `1023` → exit 255). The two families are one severity. Ruling §2.4.
+> 2. **The ctor template's own licence carries the same shape.** I-CT proves the
+>    *count* balances; it is silent on whether the word is a reference at all.
+>    3,108 bare-`Var` licences sit inside ctor-template frames. Ruling §2.5.
+> 3. **Neither tail-jump flush ever admits** — 100% of the 2,497 admissions are
+>    `pop_scope_with_cleanup` at the parameter frame. The held-back negative cell
+>    `the_admission_is_unreachable_from_the_tail_jump_flush_neg` pins a property
+>    that already holds at HEAD.
+>
+> **Disposition of the three candidate directions this FIXME offered:**
+> *make the signature path concrete* — **TAKEN**, for both families, as FIXME
+> 0924 (`/design`(typecheck)); *mark them `Borrowed`* and *sanction a wider frame
+> set* — **REJECTED**, by the §4.3 impossibility proof (not counting the word
+> UAFs on a duplicating arm; sanctioning the frame set keeps the wild write).
+>
+> **What re-lands, and when.** The paste-ready gate below is superseded: the
+> end state is that `emit_heap_binding_decs`'s arm has **no traffic** and
+> deletes, rather than being re-keyed. The three negative cells survive
+> re-pointed. The flip is **census-gated** — backend instruments the arm and
+> converts it to a located error only when the measured licence count reads zero
+> (ruling §5.1). Blocked on 0924 for families 1 and 2; the ctor-template half
+> (ruling §4.1, invariant I-CT′) is backend-only and unblocked.
+>
+> The `f4_sudoku.clif::user::Grid.cells` static re-baseline obligation in the
+> §Acceptance addendum **stands as written** and is carried at ruling §7.1.
 
 ## Issue
 

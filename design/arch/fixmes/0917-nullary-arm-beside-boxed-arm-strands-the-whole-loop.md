@@ -9,9 +9,58 @@ refers_to: exemplar/CLAUDE.md §"Solve-path never-freed leak — CURRENT STATE";
   tests/plan/s118-test-plan.md §11.3 (the lead this replaces);
   design/arch/fixmes/0903-s4-1-frame-key-excludes-two-measured-escapee-families.md
 status: open
+retargeted_by: /design (backend)
+retargeted_at: 2026-07-26
+ruled_at: design/backend/non-concrete-release-contract.md §6
 ---
 
 # A match arm returning a NULLARY constructor beside a boxed arm strands the whole loop — the real owner of cell #21
+
+> **RULED S119 Phase 3, `/design`(backend) —
+> `design/backend/non-concrete-release-contract.md` §6.** Deliberately kept
+> OUT of the five-face release-contract table: every type here is concrete,
+> there is no residual anything, and folding it into the class would be the
+> framing error `/arch`'s restructuring corrected. It shares the window and
+> nothing else.
+>
+> **Locus correction owed and made:** `protect_return_value` lives at
+> `crates/cranelisp-backend/src/compiler/rc_emission.rs:156`, in
+> `impl FnCompiler` — **not** `fn_compiler.rs`, where `/qa`'s attribution and
+> this file's §refers_to place it; `git log -S` confirms it was never there. Call
+> sites: `match_codegen.rs:322,574`, `control_flow/lambda.rs:554`,
+> `control_flow/launch.rs:261`.
+>
+> **Mechanism, read at source.** `Expr::ConstrADT` is synthesised only for
+> constructor `Def` bodies, so a user-written bare `None` in an arm is a
+> `MonoExpr::Var { resolution: VarRef::Global(None) }`, and `value_provenance`'s
+> `Var` arm (`fn_compiler.rs:2508-2511`) returns `NotOwnedHere` unconditionally
+> without consulting the ctor probe. `NotOwnedHere` is ⊤ and `join` is `max`, so
+> **one nullary arm poisons the whole match's provenance** and the protect fires
+> on a fresh boxed arm with nothing to balance it.
+>
+> **Ruling — one lattice point, no new licence arm** (G2): the conflation is in ⊤
+> itself, whose own rustdoc describes two different facts ("a scope binding" and
+> "a non-heap scalar — no reference at all"). *Carries no reference* is the
+> join's **identity**, not its absorbing element. `ValueProvenance` gains a
+> **bottom** point `NoReference` below `Fresh`; a bare nullary constructor
+> reference and scalar literals classify there; `is_fresh_construction` becomes
+> `<= Fresh` and `yields_owned_temporary` becomes `matches!(p, Fresh |
+> OwnedTemporary)`. No emission site gains a branch.
+>
+> **The pin that must be amended:** `provenance_owned_threshold_is_probe_independent`
+> cannot survive as an equality (a nullary-ctor `Var` is only distinguishable
+> *with* the probe). It is replaced by the strictly stronger **monotonicity**
+> pin — the probe may only move a node **down** the lattice, so the probeless
+> gates never over-claim and where they differ they take the leak-safe verdict.
+> Equality was a proxy for that property; monotonicity states it directly.
+>
+> **Byte-identity obligation:** moving scalar literals to `NoReference` must be
+> proven emission-neutral against `tests/fixtures/clif_baseline/golden/`; a
+> non-identity is a finding, not a re-baseline.
+>
+> Backend-only, no producer dependency, no cross-crate delta. **Piece 1 of the
+> ruling's §7 staging** — the narrow independent one, ordered first per `/arch`'s
+> severable-fallback order. Acceptance: this file's repro pair ×2 plus cell #21.
 
 ## Issue
 

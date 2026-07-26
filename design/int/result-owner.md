@@ -546,6 +546,74 @@ the impl-drawer/definition-display leaves (`s117-conformance-recovery.md`
 `result_value_doc` value path is untouched, so §4.2 needs no reconciliation
 beyond the line citations above.
 
+#### 4.2.1 A command that MEASURES its own turn drives the release itself — RULING (S119, FIXME 0914)
+
+`repl/spec.md` §3.7 requires `/mem <expr>`'s delta window to **include** the
+program-result release, and deliberately declines to pick the seam: either the
+command takes responsibility for its own turn's release, or the delta line is
+emitted after the release rather than composed with the result line. `/repl`
+filed the seam choice here because either shape touches §1's binding
+observe-then-release ordering and one of them looks like a second release site.
+
+**Ruled: shape (a) — the command drives the release, through the SAME
+chokepoint, inside its own turn.** The normative order for any REPL command that
+measures its turn's memory effect is:
+
+```
+open the counter window
+  -> eval
+  -> OBSERVE: render the result text (format_eval_result)
+  -> RELEASE: EvalResult::release_program_result()      <-- the one chokepoint
+close the counter window
+  -> compose the measurement line from the closing counters
+  -> return result text + measurement line as ONE document
+```
+
+Four things make this the right seam rather than a second owner:
+
+1. **§1's ordering is preserved exactly, not merely respected in spirit.** The
+   value's observation completes before the release; the *measurement* line is
+   not an observation of the value and may be composed after it. Nothing reads
+   the released word.
+2. **It is not a second release site.** `release_program_result` →
+   `release_in_place` is the one finalization chokepoint, and it is exactly-once
+   with a `Drop` backstop (§5). The explicit call **replaces** a release that
+   already happens today — via that backstop, when `handle_mem`'s locally-owned
+   `EvalResult` drops at the end of the match arm
+   (`src/repl/commands.rs:1161-1165`), i.e. *after* the counters are read at
+   `:1152-1154`. `/mem` already drives the chokepoint; it drives it implicitly,
+   late, and invisibly. This ruling makes the drive explicit and early enough to
+   be measured. **No counter is wrong and no new release path is created — the
+   window moves.**
+3. **The mode-uniformity claim is untouched.** Slash commands exist only in the
+   REPL; `--run` and linked startup have no measurement command and no second
+   release. This is not a per-mode divergence, it is a REPL-only instrument
+   placing its window correctly around the one shared protocol.
+4. **The §10.3 single-styling-authority knock-on `/repl` asked to have flagged
+   back does not arise.** Shape (a) keeps the delta line in the same returned
+   document as the result line, so nothing about what the user sees changes
+   except the numbers. Shape (b) — emitting the delta after the release as a
+   separate write — was rejected for exactly that reason.
+
+**Generalisation (binding on future commands).** A command that reports a
+*memory* property of its own turn closes its window after the release. A command
+that reports a *time* property closes its window where its stated meaning says
+it does: `/time` (`commands.rs:1113-1130`) measures `eval` and today excludes
+the release, which is consistent with "time to evaluate" and is **not** changed
+by this ruling. If `/repl` ever wants `/time` to mean "time for the whole turn",
+that is a `repl/spec.md` question and the same seam serves it — do not change
+one instrument's window to match the other's on grounds of symmetry alone.
+
+**Implementation obligation (`/dev`(int)).** Restructure `handle_mem` so the
+`Ok(Some(result))` arm renders, then calls `release_program_result()`, before the
+closing `alloc_count`/`dealloc_count`/`bytes_current` reads; leave the `Ok(None)`
+and `Err` arms alone (neither carries an owning result — §5). The e2e acceptance
+is the FIXME's own evidence run: `/mem (Box "boxed")` repeated on a
+`(deftype Box [:String contents])` must report `deallocs +2 live +0`, matching
+the bracketing snapshots that already show `live` flat. Unit tier: the exactly-once
+guard already has rows at `src/session_v4/types.rs:280-346` (including the
+double-`release_program_result` cell at `:301-302`) — extend, do not duplicate.
+
 ### 4.3 Run lifetime
 
 `CompilerSession::trampoline` (`src/session_v4/lifecycle.rs:1535`) returns

@@ -86,3 +86,34 @@ two evidence-backed dispositions to the user:
 
 Any proposed cross-crate carrier or new observation surface requires `/arch`
 review and explicit user approval before implementation.
+
+## /qa S119 Phase-3 disposition (2026-07-26) — DISPOSITION 2 RETURNED TO THE USER, with a recommendation
+
+The S118 close-gate obligation ("dispositioned … or returned as disposition 2
+— never silently carried") went undischarged at S118; discharged now. Record:
+`tests/plan/s119-test-plan.md` §8.3.
+
+**Disposition 2 is returned.** The S117 survey was bounded-complete and its
+structural finding stands: materialisation erases every production RC
+distinction for projected provenance at the current language boundary — an
+escaping heap element is an owned reference under either declaration. No
+S118/S119 surface changes that; the S119 Spine-1 contract rules the *release*
+of non-concrete values, not projection-provenance emission. No production
+consumer of the distinction exists, so no declaration-sensitive witness can
+exist without manufacturing an observation surface, which this FIXME itself
+rules out.
+
+**Recommendation to the user:** accept R-2 on the existing evidence (typecheck
+transfer units distinguishing Projection provenance + direct inline-body
+guards + the nine S117 production witnesses), **with a named revival
+trigger**: the moment projection provenance becomes emission-live —
+ownership-inference increment II (uniqueness/reuse tokens), or option-2
+adoption re-staging elision into `--release` under the differential lane —
+the declaration-sensitive witness obligation revives automatically as a plan
+row of that sprint. Second-order support: option-1 typed handles
+independently narrow the declaration-table risk class representationally.
+
+**On the user's answer:** accept ⇒ this FIXME deletes, the revival trigger
+records in `tests/plan/PLAN.md`; a designed observable requirement wanted ⇒
+re-target `/arch` for the seam design. Routed to the user via `/sprint` at the
+Phase-3 exit gate.

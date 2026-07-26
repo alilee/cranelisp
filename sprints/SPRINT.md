@@ -1,7 +1,6 @@
 # Sprint 119: The Non-Concrete Release Contract, and the Typed Consume Funnel
 
-**Status**: PHASE 2 ARCH REVIEW — `/arch` sign-off granted for Phase 3 on the restructured
-scope; **two user dispositions owed** before dispatch (§Open items).
+**Status**: PHASE 3 DESIGN (ACTIVE)
 
 **Goal**: State and enforce the contract for releasing a value whose static type codegen
 cannot fully see — the question the stratum has never answered and whose five faces produce
@@ -188,30 +187,36 @@ intrinsics `public-api.txt` diff and the tranche-A shim-fact design.
 
 ---
 
-## Open items — two user dispositions owed before Phase 3 dispatch
+## Open items — DISPOSED (user, 2026-07-26)
 
 `/arch` collapsed the Phase-1 draft's three open items plus the paper's five queued decisions
-to these two. Both are real choices with consequences.
+to two. The user took `/arch`'s recommendation on both.
 
-**① 0863's third deferral (METHOD §2.4).** Its second deferral is spent (S117→S118,
-user-approved). Under the restructured sequencing 0863 is last — it cannot interleave with
-tranche B-int, which reworks the same `src/` macro-turn seams. Either **sign off a conditional
-third deferral** (0863 executes late-sprint only if the int surface clears with capacity
-remaining, else it is S120's first item), or **promote it above tranche B-int**, accepting that
-0889 then likely carries instead. `/arch` recommends signing the conditional: 0863's design is
-READY and does not decay, while B-int is this sprint's structural commitment. Two REDs either
-way.
+**① 0863 — CONDITIONAL THIRD DEFERRAL SIGNED OFF (METHOD §2.4).** Its second deferral was
+spent (S117→S118). Under the restructured sequencing 0863 is last and cannot interleave with
+tranche B-int, which reworks the same `src/` macro-turn seams. **It executes late-sprint only
+if the int surface clears with capacity remaining; otherwise it is S120's first item and needs
+no further sign-off.** Rationale on the record: 0863's design is READY and does not decay,
+while tranche B-int is this sprint's structural commitment. Two REDs either way.
 
-**② Ratify the tranche-B re-scope consequence.** B is materially larger than the paper priced
-— 732 lines plus the expander protocol plus a `/design`(int) ruling, against 339 lines inside
-the pair — and it is now **the first structural item to drop if capacity binds**. That makes
-the Phase-1 commitment "0889 lands this sprint" **best-effort rather than guaranteed**. If you
-want 0889 guaranteed, tranche B must explicitly displace Track-2 riders 2–5 (the cache schema
-window, 0913's implementation, 0914). `/arch` recommends accepting best-effort: the leak is
-compile-time-bounded, exactly pinned, and does not grow with runtime.
+**② Tranche-B re-scope consequence — RATIFIED.** Tranche B is materially larger than the paper
+priced (732 lines plus the expander protocol plus a `/design`(int) ruling, against 339 lines
+inside the pair) and is **the first structural item to drop if capacity binds**. The Phase-1
+commitment "0889 lands this sprint" is therefore **best-effort, not guaranteed** — accepted on
+the record, on the grounds that the leak is compile-time-bounded, exactly pinned, and does not
+grow with runtime. Tranche B does **not** displace riders 2–5.
 
-Lower-priority escalations, disposable at any point and gating nothing: **0859** (`/qa`,
-target_sprint 118 undischarged); **0463** (`/examples`, deferred 3×, trigger still unmet);
+**③ FIXME 0859 — `/qa` discharged it as disposition 2 and returned it to you (Phase 3).** Its
+finding: materialisation erases the production RC distinction at the current boundary, so **no
+witness can exist** without manufacturing exactly the surface the FIXME itself forbids.
+`/qa` recommends accepting R-2 on transfer units plus body guards plus the nine S117 witnesses,
+**with a named revival trigger** — increment II reuse tokens, or option-2 adoption. Tranche A's
+derivation narrows 0859's surface by one class but does not discharge it: its residual is a
+production-artifact witness for `ProjectionOf(0)` on the *inline* `vec-get` row, and inline rows
+have no shim for the derivation to touch. No action needed before Phase 5; disposition at your
+convenience.
+
+Lower-priority escalations, disposable at any point and gating nothing: **0463** (`/examples`, deferred 3×, trigger still unmet);
 **0050** (`/int`, ~50-sprint carry whose stated blocker expired at S106); **0553**
 (`/typecheck`, deferred to S114); **0821** fork (c) (`/arch` + user); **0708** (spec cascade
 owed; user ruled Reading A-structural 2026-07-21). **0912** is a live normative question for
@@ -342,9 +347,12 @@ Phase 2**. The table lists those in scope or requiring disposition. Full invento
 | 0891 | /dev (backend) | deferred, blocked_on 0903 | Spine 1 — paste after the ruling |
 | 0915 | /design (backend) + /design (int) | open | Spine 1 |
 | 0906 | /dev (backend) | open | Spine 1 rider — scoped golden re-baseline |
-| 0889 | /design (int) | open | Spine 2 tranche B-int — the recovery target |
-| 0890 | /qa | open | Spine 2 option-3 — cold/warm axis |
+| 0889 | /dev (int) | ruled P3 | Spine 2 tranche B-int — protocol landed, retargeted to `/dev` |
 | 0920 | /arch | **RESOLVED** `3232a061` | Tranche B re-scoped onto the int marshal boundary |
+| 0921 | /design (runtime pair) | open, filed P3 | Host↔JIT transfer form; **plus a confirmed defect** — `consume_sexp` has no `TAG_SEXP_ANNOTATED` arm, leaking both heap fields of every annotated cell |
+| 0922 | /arch | open, filed P3 | Rule-0 enforcement seam (macro-clause ABI ownership declaration) — gates implementation, not Phase 3 |
+| 0923 | /arch | open, filed P3 | IO tri-context seam: the `free_io_node` split, `public-api.txt` delta, and two new `safety-invariants.md` rows (R-1, R-2) |
+| 0924 | /design (typecheck) | open, filed P3 | The monomorphisation obligation — **gates 0916 and rider 0867** |
 | 0867 | /dev (typecheck) | open | Rider 1 — gated on the accessor disposition |
 | 0869, 0868 | /dev (src) + types | open | Rider 2 — schema 23→24 |
 | 0898, 0748 | /arch | deferred → S119 / open | Ride rider 2's schema window |
@@ -364,14 +372,220 @@ Phase 2**. The table lists those in scope or requiring disposition. Full invento
 
 ## Skill plans (Phase 3)
 
-{Pending — dispatch blocked on §Open items ① and ②.}
+Dispatched 2026-07-26 in three rounds. `/dev` is not invoked in Phase 3.
 
-Planned Phase-3 dispatches once unblocked: `/design`(backend) + `/design`(typecheck) on the
-Spine-1 co-ruling (measure-before-binding: the corpus run executes inside the window);
-`/design`(runtime pair) on the tranche-A contract including shim-fact single-sourcing;
-`/design`(int) on the tranche B-int ownership protocol; `/qa` on the test plan, the option-3
-normative-form proposal (paper decision 5) and 0890; `/arch` on the IO tri-context seam and the
-Phase-3 exit gate (intrinsics `public-api.txt` diff + the tranche-A shim-fact design).
+**Round 1 (concurrent — distinct directories, no commits, cargo reserved to `/design`(backend)
+per the one-agent-one-test-run rule):**
+
+### /design (cranelisp-backend) — Spine 1, the non-concrete release contract
+
+- **Task**: author the five-face disposition table as a normative contract section, and
+  execute the measure-before-binding corpus run inside the window.
+- **Design refs**: `design/backend/transitive-drop-glue.md` §4.1/§10/§11; FIXMEs 0903, 0907,
+  0916, 0917, 0891, 0915, 0906; `drop_glue.rs:497-505`; `bootstrap.rs:767-783`;
+  `rc_emission.rs:156`.
+- **Acceptance**: G1 + G2. The ruling does not bind until it survives the 16-program corpus.
+  Severable-fallback order stated if the unified contract does not converge.
+
+### /design (cranelisp-primitives + cranelisp-intrinsics) — Spine 2, tranche A
+
+- **Task**: the `Owned`/`Borrowed` contract over the drop/consume funnel, with shim-fact
+  single-sourcing from the declaration table as part of the design, not a follow-on.
+- **Design refs**: `design/arch/ownership-stratum-options.md` §2.1–§2.4 (as amended
+  `3232a061`); the S117 Vec-of-String boundary; platform's `CLOwned<T>`.
+- **Acceptance**: G3 + G4, including the per-tranche drop-bomb detection proof.
+
+### /design (int / `src/`) — Spine 2, tranche B-int and the 0889 protocol
+
+- **Task**: rule the macro-turn ownership protocol before any `/dev` dispatch, per 0889's own
+  precondition; carry 0914 and the 0915 int presentation rider.
+- **Design refs**: FIXMEs 0889, 0914, 0915; `src/marshal.rs`; `src/expander.rs::invoke_clause`;
+  the 0638 interior-alias history; `design/int/result-owner.md`.
+- **Acceptance**: G6; protocol stated before implementation; no `cranelisp-types` delta.
+
+### /qa — test plan
+
+- **Task**: `tests/plan/s119-test-plan.md`; the option-3 normative-form proposal (paper
+  decision 5); 0890 re-derivation; the Track-C D1 discriminating experiment; the corpus gate's
+  assertion form.
+- **Acceptance**: G5; every gate G1–G6 has a named cell or a named measurement.
+
+**Round 1 delivered 2026-07-26.** Four artefacts:
+`design/backend/non-concrete-release-contract.md` (the ruling),
+`design/runtime/s119-typed-consume-funnel.md` (tranche A),
+`design/int/macro-turn-ownership.md` (the 0889 protocol),
+`tests/plan/s119-test-plan.md`. Outcomes below.
+
+**Round 2 (dispatched)**: `/design`(typecheck) on the producer face — 0913's lenient view and
+the new **0924** monomorphisation obligation — against the landed contract.
+
+**Round 3**: `/arch` Phase-3 exit gate — FIXMEs **0922** and **0923**, the intrinsics
+`public-api.txt` diff, the tranche-A shim-fact design, the two new `safety-invariants.md`
+register rows (R-1, R-2), and the `launch.rs:452` dispensation.
+
+---
+
+### Round-1 outcome — the finding that reshapes the sprint
+
+**FIXME 0903 family 1 is memory-unsafe, not a silent leak.** `/design`(backend) reduced it to
+four lines with no trait and no higher-kinded type:
+
+```lisp
+(deftype (Bx a) [:a v])
+(defn get [b] (v b))
+(defn main [] (Pure (get (Bx 1024))))
+```
+
+`1023` exits 255 correctly; **`1024` and `5000` SIGSEGV** — the same `NULLARY_TAG_THRESHOLD`
+boundary `/qa` measured for 0916, on a different family. CLIF shows one frame carrying both
+faces: an `atomic_rmw add [field+8]` on a raw scalar, and a field-discharge-free `dealloc` of
+`self`. **The repro is currently unguarded** — `/testing` authors it as the cheapest
+memory-safety cell in the class.
+
+Worse, **the ctor template's own I-CT licence carries the identical shape** (3,108 licences on
+residual params). I-CT proves the *count* balances; it is silent on whether the word is a
+reference at all. §4.1's rejection of "delete the pair" rested on behaviour-identity with
+pre-migration HEAD — **falsified**.
+
+**The frame-key falsification reproduced exactly at S119 HEAD**: `spec_*` 893 run, 8 → 24
+failed, **+16 hard refusals**, one sprint later on a moved tree. The ruled narrowing is
+confirmed unlandable alone. Measure-before-binding earned its place.
+
+### The contract as ruled
+
+Four rules, then a total five-face table. **R-1**: a residual type variable has no heap
+category; the threshold guard discriminates tags from pointers, **never scalars from
+pointers**. **R-2**: no fabricated concreteness — binding on producers in both crates, with
+three measured instances (backend's `Err ⇒ Mixed`, backend's type-keyed shallow-dec arm,
+typecheck's `lenient_from_expr → ConcreteType::Int`). **R-3**: a non-concrete frame is not a
+legal codegen target — *proved, not preferred*: counting the residual word SIGSEGVs on scalars,
+not counting it use-after-frees on a duplicating arm (`(Pair x x)`), and runtime discovery is
+impossible without R15. **Monomorphisation is the only sound disposition.** **R-4**: the
+refusal must be actionable, folding 0915 in as the quality bar.
+
+| Face | Disposition | Closes |
+|---|---|---|
+| Ctor template param | **Canonical glue at the caller** — the pair *deletes* under new invariant I-CT′ | 0891 |
+| Synthetic accessor (F1) | Canonical glue after monomorphisation | 0903 fam 1 |
+| Generic trait-method instance (F2) | Canonical glue after monomorphisation | 0903 fam 2, **0916** |
+| IO existential `Bind` | **Runtime-directed teardown** — intrinsics tag-walker; backend owns only `Pure`'s payload | **0907 ×7** |
+| Lenient-view result root | Canonical glue after the producer stops fabricating | **0913** |
+
+0917 sits deliberately **outside** the table — concrete types throughout; folding it in was the
+framing error `/arch` corrected.
+
+**G2 holds.** Retired: §4.1's exception, I-CT and its standing obligation, the `Err ⇒ Mixed`
+fabrication, the type-keyed release arm, two monomorphisation exemptions. Added: one intrinsics
+entry point (a split of an existing body) and one lattice point. **No new emission licence
+arm.** Seven `/review` reject criteria recorded.
+
+### The scheduling consequence
+
+**Ten of the eleven Spine-1 REDs — 0917×3 + 0907×7 — close with backend-only changes.** 0916
+is producer-gated on FIXME 0924 (monomorphisation) and does **not** ride the backend wave. The
+narrow in-frame alternative was rejected because R-3 proves it converts a SIGSEGV into a
+use-after-free.
+
+The backend flip is **census-gated, not review-gated**: the fabricating arm stays, instrumented
+in production form per the 0768 rule, until measured traffic reads zero. The arm is the gate on
+its own removal.
+
+Implementation order: 0917 (backend only, 3 REDs) → face 4 IO glue (backend, 7 REDs) → face 1
+ctor-template retirement (backend, 0 REDs, −2,216 census A and −3,108 census B) → faces 2+3
+monomorphisation (typecheck producer + backend, 0916) → face 5 lenient view (typecheck, 0913).
+
+### Tranche A as designed
+
+New `pub mod handle` in `cranelisp-intrinsics`: `Owned` (`repr(transparent)`, `#[must_use]`, no
+`Copy`/`Clone`, debug drop bomb with a `!thread::panicking()` clause) and `Borrowed<'a>`
+(`Copy`, **lifetime-branded**, no discharge operation at all). Eight operations, closed set.
+The **trusted base is counted, not asserted**: 4 definitions + 1 macro generator + 6
+hand-written shim sites, with a structural grep gate.
+
+**The load-bearing finding: the shim-fact derivation axis is `ParamFlow`, never `Mode`.** The
+S102 CS-B split declares only-read heap params (`str-eq`, `str-len`, the `?`-predicates,
+`vec-len`) as `Mode::Borrowed` while the Decision-24 ABI still consumes. A `Mode`-driven
+derivation would flip five rows and **silently delete five decs** — exactly the
+plausible-but-wrong single-sourcing a hand-written second assertion would have hidden.
+
+The detection proof is a **triplet**, not a row: positive (leaked handle panics), no-false-positive
+(discharged fixture stays silent), and survivable-under-unrelated-unwind (proves the
+`thread::panicking()` clause and fails on deleting the clause alone).
+
+**G3's count was corrected as unfalsifiable-as-written**: the 136 is syntactic; 30 are
+`ring0.rs` scalar arithmetic that never flips, and 3 flip their *return* while still grepping
+as `i64`-taking. Ruled: record both. Semantic baseline **N_heap = 103**; tranche A's exact
+slice is **42 declarations**, giving N_heap 103 → 61 and syntactic 136 → ~100. The 36
+`consume_*` sites decompose to **29 production** call sites plus doc/`use` mentions.
+
+Public-API delta: `cranelisp-intrinsics` additive (`handle` module, both types, 8 methods) plus
+**10 changed `consume_*`/`dec_shallow_io` signatures**. `cranelisp-primitives`: **zero delta**
+— both generated shims are `pub(crate)`. ABI byte-identical. No `cranelisp-types` delta.
+
+### The 0889 protocol
+
+Verified first: `invoke_clause` (`src/expander.rs:512-549`) is the **only** production caller of
+`src/marshal.rs`. Blast radius is one function and one `pub(crate)` module.
+
+Ruled: the macro-clause ABI **declares** its ownership (Rule 0); argument trees are
+single-owner and **transferred** — crossing the ABI *is* the discharge, so
+`protect_marshalled_cell`, its four call sites, and `marshal::rc_inc` are **deleted**; the
+result tree is observed through a `Borrowed` then discharged once via `consume_sexp`.
+
+On the 0638 trap: the cure is **not** "release the args at turn exit with better counting" —
+that keeps two owners across the call. It is "do not retain the args at all." And Rule 2 is
+**not** a revert to pre-0638 top-only protection: that state was *asymmetric* (top at RC 2,
+interiors at RC 1), and the asymmetry is what 0638 pinned. Rule 2 produces the uniform
+single-owner state the S114 negative-control twin proved correct — which neither the old nor
+the current code has ever had.
+
+Arena/epoch **rejected** on five grounds, the sharpest being that escape is not "no": `trace`
+cells land in an int ring buffer and lenient-eval sparks allocate off-thread, so wholesale
+reclaim would trade a leak class for a use-after-free class — in the sprint chartered to make
+instruments truthful. Retained as fallback only under a stated entry condition.
+
+**0863 orthogonality is now proved, not hoped**: 0863 reworks clause *preparation/publication*,
+B-int reworks clause *invocation*, and **Rule 7** (no marshal handle outlives its invocation
+frame) is what keeps them disjoint. Had the protocol released "at turn exit", *turn* would have
+acquired two meanings mid-sprint exactly where 0863 moves the boundary.
+
+### `/qa`'s plan and its two returns
+
+`tests/plan/s119-test-plan.md` §2 is a gate→instrument map; §11.2 makes "gate asserted in
+prose, instrument missing" itself a close-gate failure. The G1 corpus gate is three-layered —
+the 16 programs enumerated by name, a per-program result table that the ruling does not bind
+without, and a standing assertion that every Spine-1 change-set records a focused manifest run
+(missing record = `/review` REJECT), plus a corpus **extension clause** after rider 1 because
+0867 widens family 1. G2 gets a mechanical **emission-licence census cell**. An **IO-Bind
+balancing marginal guard** fences 0907 against being "fixed" by admission-exclusion.
+
+**Decision 5 proposed and it does NOT change the certification split's meaning — no user
+arbitration required.** Every e2e balance cell becomes either a marginal pair or a degenerate
+absolute whose ambient-zero premise is continuously executed by a named GREEN control in the
+same binary; thresholds banned. Exactly one threshold cell exists at baseline
+(`…residue_at_most_1400`), retired after 0917's fix.
+
+**FIXME 0859 discharged as disposition 2 and returned to the user** (see §Open items ③).
+
+### Corrections to this plan from Round 1
+
+- **The 0890 row in §FIXME debt was stale** — the FIXME was actioned and deleted at S118
+  pre-gate, whose §11.3 *inverted* its premise (warm cache-hit children carry zero ambient).
+  Corrected below; G5's residue is planned as a warmed-pair harness mode with its own 0768
+  capability cells.
+- **Baseline convention restated**: **20 stable REDs + 1 named-flap member**, which never folds
+  into the exact scalar. `/design`(backend)'s own run measured 20 with the flap member green —
+  consistent with its class, and now a second datum for Track C.
+- **0916's title corrected in-file**; the stale slug was deliberately retained to avoid a
+  rename race with the concurrent agents, and is flagged as stale.
+- **One out-of-pair compile break**: `crates/cranelisp-backend/src/compiler/control_flow/launch.rs:452`
+  (inside that file's `#[cfg(test)] mod tests`) calls `consume_closure` with a raw `i64` and
+  **will not compile after tranche A CS-2**. Needs a one-line fix from `/dev`(backend) or an
+  explicit dispensation — narrow deployment forbids the runtime-pair designer ruling it.
+  `/arch` takes this at the exit gate.
+- **`src/marshal.rs:316` carries its own `pub fn rc_inc` doing a non-atomic `*rc_ptr += 1`** —
+  the exact hazard closed inside the pair at S85, still live on the int side. Deleted by the
+  0889 protocol.
 
 ## Waves (Phase 4)
 

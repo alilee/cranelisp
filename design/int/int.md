@@ -423,6 +423,8 @@ process_form(shared: &SharedState, form: Sexp, scope: &ModuleFullPath) -> Result
 }
 ```
 
+**Macro-turn heap ownership** — the marshal/invoke boundary inside that `expand` step (`src/expander.rs::invoke_clause` + `src/marshal.rs`) has its own ownership protocol, ruled S119: `design/int/macro-turn-ownership.md`. In one line: the marshaller produces **single-owner** argument trees and **transfers** them by crossing the C ABI (nothing is protected, nothing is retained, nothing is released by int), and the expansion result is an **owned** word int observes via `runtime_to_sexp` and then discharges exactly once through `cranelisp_intrinsics::consume_sexp`. No marshal handle outlives its invocation frame — which is what keeps the protocol orthogonal to FIXME 0863's cluster-wide prepared transaction.
+
 **Frontend and typecheck stay pure.** They surface dependencies as `Err(ExpansionError::Gap)` / `Err(CheckError::Gap)`. `int::process_form` is the *sole* crate-crossing where gap values become scheduler calls. Workers park inside `wait_for_*` calls — never inside frontend or typecheck library code (per Principle 3 — typecheck/frontend depend on `cranelisp-types` only). Per Principle 7 (single source of truth), `handle_gap` is the sole site that translates a `ResolutionGap` into a scheduler/dependency-service action.
 
 ### 6.3 Gap-handling protocol
@@ -724,6 +726,64 @@ REPL display path AND production batch CLI display path call this — one format
 
 `Warning` carries the same `ErrorLocation` shape; `Sess::format_warning` (or the same formatter, type-dispatched) handles the warning case uniformly. Cited principles: P5 (testability — error structure is permissive data, formatter is policy layer; both independently testable), P7 (single formatter).
 
+### 9.1 The compiler-stage SUBJECT is presented, never carried — RULING (S119, FIXME 0915 item 4)
+
+`/qa` split FIXME 0915 (S118 P6 close): items 1–3 (the doubled located prefix,
+`user/user/…`, and the `0..0` span) are backend frame-composition defects; item 4
+— **the subject presentation** — is int's, and this is its ruling.
+
+Two spellings reach the user that never should
+(`repl/spec.md` §5.5, new this sprint):
+
+| Seen | What the user wrote |
+|---|---|
+| `codegen failed for user/__expr: …` | the expression they just typed |
+| `codegen failed for user/user/then$primitives/IO$Int+primitives/IO$Int: …` | `then` |
+
+**Ruled: int rewrites the SUBJECT at the display boundary; the carrier is never
+touched.** This is Decision 39 applied unchanged — coordinates and identities
+travel as data, formatting happens downstream in int — and it is why the fix is
+not "stop naming the instance in the error". The `Symbol` backend put in
+`CompilationError::CodegenFailed` is **correct data**: it is the compilation unit
+that failed, it is what a `/clif`/`/disasm` probe takes, and it is what a future
+cache or attribution reader keys on. Only its *rendering to a human* is wrong.
+
+Three normative statements:
+
+1. **One subject-presentation function, in `format_error`'s neighbourhood, and
+   nowhere else.** It maps a compilation subject to the name the user would
+   write: `__expr` → the entered form (or the neutral phrase "this expression"
+   when no form text is available); a monomorphised instance
+   `f$T1+T2` → its base `f`; an already-qualified symbol → itself, not
+   re-composed. **It is a presentation projection, not a resolver** — it must
+   never look a name up, and it must never become a second home for the
+   `$`-mangling scheme. The mangle's canonical home is backend/types; int reads
+   the projection inverse only (the `bare_member_name` precedent,
+   `dotted-ctor-canonical-keys.md` §10.4).
+2. **It applies at `Sess::format_error`, once, for every error variant that
+   carries a compilation subject** — not at the `CompilationError` `Display`
+   (that is backend's and is items 1–3), and not per-command. §9's table already
+   makes `format_error` the single mode-conditional formatter for REPL and batch
+   alike; a per-site rewrite would be the `display-envelope-mirror` class.
+3. **Presentation must not erase the investigative handle.** Where the internal
+   subject is the only way to reach the failing artifact (`/clif`, `/disasm`),
+   the projection may render the user-facing name and keep the internal spelling
+   available in the same diagnostic — but as a *labelled* secondary, never as the
+   headline noun. The self-documenting-REPL principle is that the diagnostic's
+   central noun must be actionable at the prompt; `then` is, `user/then$…` is not.
+
+**Sequencing.** Items 1–3 change the string int receives; item 4 changes how int
+renders the subject inside it. They are independent in mechanism but **the guard
+is shared**: every currently-reachable e2e trigger for this frame is FIXME 0907's
+refusal, so a guard authored against it dies when 0907 lands. `/qa` has deferred
+the §5.5 frame guard to be authored in the 0907/0903 fix window against whatever
+codegen-refusal trigger remains. Int's rider rides that guard; it does **not** get
+a private one keyed on 0907's message text.
+
+**Non-goal.** The `Bind`/`IO` undiscoverability the FIXME calls "the sharpest
+part" is 0907's (they are seeded by `src/bootstrap.rs`, which is why `Pure`
+introspects and `Bind` does not). It is recorded there and is not this rider.
+
 ---
 
 ## 10. Concurrency model
@@ -912,6 +972,8 @@ The 32 docs in `design/int/` plus the `concurrency/` subdirectory were authored 
 | Doc | LOC | Disposition | Rationale |
 |---|---:|---|---|
 | `macro-resolver-impl.md` | 596 | **refresh** | Frontend FIXME 6 may flag dead `MacroEnv` here — int's `expander.rs` glue. Refresh post-FIXME 0098 Phase 4 (the migration of `expand_sexp_recursive` to frontend). |
+| `macro-marshal-rc-protection.md` | 254 | **keep** (superseded mechanism, live history) | S114/FIXME 0638. §2's deep `protect_marshalled_cell` +1 is **superseded by `macro-turn-ownership.md` Rule 2** (S119); §0/§1's actor analysis and the negative-control-twin argument remain load-bearing and are cited by the successor. Banner carries the supersession. |
+| `macro-turn-ownership.md` | — | **keep** (active, ruled S119) | FIXME 0889 — the macro-turn ownership protocol: single-owner marshalling, transfer-by-ABI-crossing, exactly-once result discharge, the `MacroClauseAbi` ownership declaration, and the §9 FIXME-0863 interaction surface. Ruled pre-implementation; §8 is the `/dev` gate set. |
 
 ### Repro / debug
 

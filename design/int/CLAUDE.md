@@ -90,9 +90,16 @@ macro expansion; the int leg of the quasiquote-legal-everywhere wave),
 synthetic-span diagnostics over macro-expansion output relocate to the origin form;
 paired with `design/frontend/binder-head-reject.md`; §2.1 S114 extends the same
 transform to the def/const finalize/typecheck-error path),
+`macro-turn-ownership.md` (S119, FIXME 0889 — **the** macro-turn ownership
+protocol, ruled pre-implementation: single-owner marshalling, transfer-by-ABI-
+crossing, exactly-once result discharge through `consume_sexp`, the
+`MacroClauseAbi` ownership declaration [Rule 0], the arena/epoch rejection, and
+the §9 FIXME-0863 interaction surface; §8 is the `/dev` gate set, D0/D1 binding),
 `macro-marshal-rc-protection.md` (S114, FIXME 0638 — the marshal-boundary RC
 contract: deep protection of the whole marshalled arg tree, curing the macro-clause
-interior-alias double-free),
+interior-alias double-free. **§2's mechanism is SUPERSEDED by
+`macro-turn-ownership.md` Rule 2 (S119)**; read it for the 0638 diagnosis and the
+negative-control-twin argument, not as current mechanism),
 `expansion-qualification-scope.md` (S114, FIXME 0670 — `qualify_expanded_sexp`
 becomes scope-aware, skipping value-level binder slots; wave-1 of the F8 chain,
 paired with frontend `binder-head-reject.md` re-landing),

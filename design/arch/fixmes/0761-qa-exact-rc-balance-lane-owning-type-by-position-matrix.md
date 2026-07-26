@@ -89,7 +89,23 @@ flipped Track-B cells then seed the lane GREEN as regression fences, and the
 instrument rather than hand-applied. Deferral is `/qa`'s, recorded here per
 protocol; this FIXME stays open as the S119 trigger.
 
-## Context
+## /qa S119 Phase-3 disposition (2026-07-26) — the trigger has fired; the lane lands this sprint in normative form
+
+The S118 deferral's condition is met: the Track-B cells flipped GREEN at S118
+W3 and can seed the lane. Plan of record: `tests/plan/s119-test-plan.md` §4.5,
+under the §5.1 normative-form proposal (paper §7 decision 5):
+
+- **Vehicle:** `tests/gen_ownership_flows.rs` (already the owning-type ×
+  position harness, 12 positions incl. the S118 eliminator rows). `/testing`
+  reconciles its matrix against this FIXME's axes (borrowed argument
+  temporary; returned through N ∈ {0,1,2} lets; TCO loop-carried; closure-env
+  capture; matched positions) and fills gaps; both toggles; a `--link` face.
+- **Form:** absolute exact balance (this FIXME's ask) is the legal degenerate
+  form for these macro-free free-standing children, PROVIDED the binary
+  carries one executed ambient-zero control; remaining `balance_exclusion`
+  entries each cite an open defect or are removed.
+- The lane row folds into `PLAN.md` at Phase 6/7 and this FIXME **deletes when
+  the lane lands** (the S119 stage-1 `/testing` authoring window).
 
 Filed by `/dev`(backend) at S115 W3b under the METHOD §2.2 instrumentation
 clause: answer (b) — the instrument exists but is blind, and the correction is
