@@ -57,7 +57,10 @@
 //!
 //! `Child::link_then_run()` measures the produced executable of a `--link`
 //! instead of the JIT `--run` child (`--no-cache` is rejected by `--link`, so
-//! the fresh per-child temp directory is what isolates the cache there). Both
+//! the fresh per-child temp directory is what isolates the cache there), and
+//! `Child::repl(turns)` measures a bare REPL session fed one turn per line —
+//! the mode where per-TURN ownership lives, since a REPL result is owned by the
+//! session rather than by a `main`. Both
 //! halves of a pair MUST use the same drive — a control and subject that differ
 //! in mode subtract two unrelated numbers. A cell wanting both faces measures
 //! two pairs and asserts each, which is also what makes a mode divergence
@@ -206,6 +209,11 @@ enum Drive {
     /// per-child fresh temp directory instead (there is nothing for a cache to
     /// hit — the tree is created empty for this measurement).
     LinkThenRun,
+    /// A bare REPL with the child's text piped to stdin, one turn per line;
+    /// counters come from the session's exit report. The mode where per-TURN
+    /// ownership lives — a REPL result is owned by the session, not by a
+    /// `main`, and the two release through different seams.
+    Repl,
 }
 
 /// One measured compiler child: a single-file program, a library tree, the
@@ -225,6 +233,22 @@ impl Child {
             program: program.to_string(),
             lib: Lib::None,
             drive: Drive::Run,
+            extra_env: Vec::new(),
+        }
+    }
+
+    /// A child driven as a bare REPL, with `turns` piped to its stdin (one
+    /// turn per line, trailing newline required — the session evaluates on
+    /// newline and exits on EOF).
+    ///
+    /// No `user.cl` is written and no prelude file is dropped: a REPL pair's
+    /// common setup belongs in the piped text itself, where it is visible at
+    /// the callsite and identical in both children by construction.
+    pub fn repl(turns: &str) -> Self {
+        Child {
+            program: turns.to_string(),
+            lib: Lib::None,
+            drive: Drive::Repl,
             extra_env: Vec::new(),
         }
     }
@@ -451,7 +475,9 @@ fn run_child(spec: &Child, instrument: Instrument, timeout: Duration, role: &str
     let mut tmps: Vec<tempfile::TempDir> = Vec::new();
 
     let work = tempfile::tempdir().expect("tempdir");
-    std::fs::write(work.path().join("user.cl"), &spec.program).expect("write user.cl");
+    if spec.drive != Drive::Repl {
+        std::fs::write(work.path().join("user.cl"), &spec.program).expect("write user.cl");
+    }
 
     // Resolve CRANELISP_LIB.
     let lib: Option<PathBuf> = match &spec.lib {
@@ -488,18 +514,24 @@ fn run_child(spec: &Child, instrument: Instrument, timeout: Duration, role: &str
     let mut cmd = Command::new(&binary);
     cmd.env_clear()
         .current_dir(work.path())
-        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     match spec.drive {
         Drive::Run => {
             cmd.args(["--run", "user.cl", "--no-cache"]);
+            cmd.stdin(Stdio::null());
         }
         Drive::LinkThenRun => {
             cmd.args(["--link", "user.cl"]);
+            cmd.stdin(Stdio::null());
             // `--link` shells out to `cc`, which `env_clear()` would otherwise
             // make unfindable. The one allow-list entry the link drive adds.
             cmd.env("PATH", link_path());
+        }
+        Drive::Repl => {
+            // No mode flag: a bare invocation IS the REPL. The turns arrive on
+            // stdin and EOF ends the session.
+            cmd.stdin(Stdio::piped());
         }
     }
     if let Some(lib) = &lib {
@@ -509,7 +541,7 @@ fn run_child(spec: &Child, instrument: Instrument, timeout: Duration, role: &str
     // The instrument is armed on whichever process the counters are READ from.
     // For the link drive that is the produced binary, not the linking compiler
     // child — arming the linker too would publish a second, irrelevant ledger.
-    if spec.drive == Drive::Run {
+    if spec.drive != Drive::LinkThenRun {
         for (k, v) in instrument.env() {
             cmd.env(k, v);
         }
@@ -520,6 +552,15 @@ fn run_child(spec: &Child, instrument: Instrument, timeout: Duration, role: &str
 
     let started = Instant::now();
     let mut child = cmd.spawn().expect("spawn compiler child");
+    if spec.drive == Drive::Repl {
+        use std::io::Write as _;
+        let mut stdin = child.stdin.take().expect("piped stdin");
+        stdin
+            .write_all(spec.program.as_bytes())
+            .expect("write REPL turns to child stdin");
+        // Close the pipe so the session EOFs out instead of waiting forever.
+        drop(stdin);
+    }
     let deadline = started + timeout;
     loop {
         match child.try_wait() {
