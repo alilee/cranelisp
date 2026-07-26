@@ -778,6 +778,197 @@ otherwise S119 with the repro as the durable handoff.
 7. Track E preservation check clean (§7); 0875 repro produced before any fix
    dispatch (§8).
 
+## 11. Pre-gate pass (`/qa`, 2026-07-26, HEAD `49a20269`) — attribution + exit reconciliation
+
+Evidence: one focused run over all eleven baseline binaries + every §2.3
+intended-RED binary + the Bind-family binaries + both golden lanes
+(1,059 tests: 1,042 passed / 17 failed; log tee'd to the session scratchpad),
+plus `cargo nextest run -p cranelisp-backend` (**527/527**) and the
+`spec_*`-corpus count (**8 failed** = Bind ×3 + 0863 ×2 + 0867 ×3), which
+together discharge the waived standalone review's evidence claim for
+`5a906eca` (0904/0905 resolution).
+
+### 11.1 The Bind family — ATTRIBUTED (FIXME 0907, `/design` backend)
+
+`constructor 'Bind' disagrees on declared parameter identity for
+'primitives/IO'` is **7 cells, not ~9**: `spec_10_io` ×3
+(`io_internal_ctors_stay_excluded_from_exhaustiveness_neg`,
+`match_arms_all_io_pure`, `pure_pattern_accepted`), `ctor_as_value` ×2,
+`examples` ×1 (programs 21-hello-io + 23-io-sequence), `stdlib_conformance`
+×1 (`core.io/when-io`, taking `core` + `core.io` down). The W4-review guess
+that `spec_11_stdlib` ×2 belong to this family is **falsified by signature**:
+both fail on their own 0863 DF-1/DF-2 mechanisms (the `n-def` thunk leak is
+verbatim in their output), not on Bind.
+
+Minimal repro (one line, PrimitivesOnly):
+`(match (Pure 5) [(Pure x) x (Effect e) 0])`. Mechanism: every release of a
+concrete `IO T` routes through `DropGlueRegistry::ctor_shapes`, whose
+shared-substitution identity precondition is structurally unsatisfiable for
+IO — the seeded `Bind` ctor (`src/bootstrap.rs:767`) deliberately mints fresh
+existential vars; and even per-ctor substitution leaves `Var(b)` free in
+Bind's field types, so per-concrete IO glue cannot be derived from ctor
+shapes at all. **W3-surfaced** (registry had zero consumers before W3;
+proven not-W4's by stash/pop), so these 7 are NOT in the sprint-open 28 —
+they are W3's newly-visible face of a pre-existing modelling gap (the legacy
+emitter silently shallow-released the same values). **Connection to the 0903
+census confirmed**: third face of the same class (signature/existential
+types not determined by the release key), loud where 0903's two families are
+silent; the S119 0903 ruling should co-rule it. Runtime already owns dynamic
+IO teardown (`free_io_branches`) — the natural ruling direction is recorded
+in 0907.
+
+### 11.2 The two 0903 leak families — DECISION: plan rows now, guards at S119 W1
+
+The censused families (synthetic accessors of generic/undeclared-field
+products; generic trait-method instances — both shallow-release and leak
+today, pre-existing) get **PLAN rows now** (landed, `PLAN.md` §S118 track
+rows) and **failing-not-ignored marginal-balance guards authored by
+`/testing` at S119 W1**, QA-first, BEFORE the 0903 ruling's implementing
+wave. Not now, because: (1) the W8 gate's name-for-name accounting is
+already fixed — injecting new intended REDs mid-gate churns the exact
+arithmetic the gate exists to verify, for zero added detection (no fix can
+land before the S119 ruling); (2) FIXME 0765's no-fix-without-repro
+precondition is satisfied so long as the repros precede the fix dispatch —
+S119 W1 does; (3) the leak polarity needs the marginal harness (subject vs
+control differing in exactly the accessor call / trait-instance invocation),
+which is the S119-W1-shaped authoring the harness was built for. Interim
+visibility is not zero: cell #21 already carries the class at application
+scale (§11.3), and the 0903 file + `emit_heap_binding_decs` rustdoc census
+are the durable record.
+
+### 11.3 Cell #21 / FIXME 0890 — marginal re-derivation EXECUTED; 0890 disposed
+
+Probe (HEAD `49a20269`, exemplar tree copied per the cell, same env, cold
+then warm; controls: trivial `(Pure 0)` main, same prelude/env, warmed the
+same way; second control adds `(import [solver [solve]])` so the exemplar
+modules' own compilation is present):
+
+| child | cold residual | warm residual |
+|---|---:|---:|
+| control (trivial main) | 1143 | **0** (allocs=1/deallocs=1) |
+| control (same-imports) | 1143 | **0** |
+| subject (warm serial solve) | 13,574 | **12,431** |
+
+Findings, and they invert 0890's premise:
+
+1. **A successful warm cache-hit run carries NO ambient 0889 term** — the
+   macro-turn leak is compile-time only and cache-hit skips expansion; two
+   independent warm controls measure exactly 0. (The Branch-F 1143 appears
+   in COLD/`--no-cache` children only; 0890's "~87% ambient" read the cold
+   arithmetic into the warm cell.)
+2. So the warm cell's 12,431 is **pure runtime retention** — the absolute
+   and marginal measurements coincide for this cell; the threshold's meaning
+   is NOT corrupted by 0889, and fixing 0889 will not move this cell.
+3. The §4.4 verified-consequent prediction failed honestly: ~12.4k blocks of
+   genuine solve-work retention survive W2b+W3. **New attribution lead
+   (recorded, not ruled): the 0903 families are live on the solve path** —
+   `grid/Grid.cells` is a synthetic accessor of a GENERIC product
+   (`Grid$(Vec Cell)` instantiations visible in RC_SITE_STATS), and the
+   backtracking solver calls accessors per cell per pass; generic instances
+   over `SolveResult$Grid$…` are likewise live. The cell's residue is
+   plausibly 0903-dominated and is expected to move only when the S119 0903
+   ruling lands.
+
+**Dispositions:** FIXME 0890 actioned and deleted (this section is the
+record). Cell #21 keeps its threshold FORM and its ≤1400 bound unchanged (a
+composite application guard measuring a real class; loosening it would
+absorb the leak, converting it to exact-balance is unreal until 0903
+closes). `/testing` owes two riders in an ordinary change-set (no urgency,
+may ride the golden rebaseline): (a) re-point the cell's `// defect:` line
+from the completed 0810/0840 attribution to the 0903 families + this
+section; (b) add a warm-control guard leg (same-env trivial main, warmed
+identically, asserting residual exactly 0) so the "warm ⇒ ambient-free"
+premise that makes the absolute bound meaningful is continuously executed —
+the marginal-harness principle adapted to the cold/warm axis 0890 flagged.
+
+### 11.4 Golden CLIF lanes — pure expected drift; rebaseline ROUTED (FIXME 0908)
+
+Two RED cells: `clif_golden_lane::clif_golden_lane_no_drift` (**11 frames**:
+01,02,03,04,05,07,08,f1,f2,f3,f4) and
+`golden_clif_w0b::golden_clif_w0b_synth_accessor`. Verified drift shape in
+every inspected hunk: inline guarded-dec sequences (rmw/icmp/brif/fence +
+dealloc or embedded-ptr call, inline 1024 nullary guards) replaced by ONE
+colocated canonical-glue call with void signature — the W3 §8 reshape and
+nothing else; renumbering deltas are consequences. Behaviour corroboration:
+backend 527/527, consumer guards green, armed legs balanced, three-round W3
+review PASS. `/testing` re-captures BOTH lanes scoped + attributed citing
+`2df95c41..966d298e` (never blind), **before the W8 full-suite run**.
+
+### 11.5 Result-owner error-path negatives — COVERAGE CONFIRMED
+
+The §5/§6 rows the design owes are landed and discriminating
+(`src/result_owner.rs` unit tier + `src/pipeline.rs` + `src/exe.rs`):
+
+- **All four fresh-JIT polarities**: `fresh_jit_absent_key_is_a_hard_error_naming_the_expected_symbol`,
+  `fresh_jit_missing_address_is_a_hard_error`,
+  `fresh_jit_zero_address_is_a_hard_error` (the new null-address row — and it
+  discriminates the adapter's located error, not the `debug_assert`, per the
+  §6 requirement; verified again by the W4 closing review),
+  `fresh_jit_symbol_key_mismatch_names_both_spellings`; plus
+  `armed_owner_survives_a_pair_atomic_row_replacement`.
+- **Error outcomes release nothing**:
+  `resolver_failure_propagates_and_releases_nothing`;
+  `drop_backstop_releases_once_and_never_doubles` +
+  `observation_completes_before_the_single_glue_call` (exact-once);
+  `io_type_is_rejected_and_never_selects_io_glue`;
+  `non_concrete_type_is_a_hard_error_naming_module_and_type`;
+  `startup_non_concrete_inner_type_is_a_located_link_error` +
+  `scalar_result_startup_stub_omits_the_release_call_entirely` +
+  `exit_conversion_and_release_are_independent_axes` (link arm). The
+  trap/dispatch-fault row is tier-1 unconstructable (an owner exists only on
+  the clean arms; `program_outcome_to_result_runtime_error_*` +
+  `…_dispatch_fault_is_err` pin the arms' classification) — accepted.
+- **Honest residuals** (recorded, not gaps in the owed set): the cache-hit
+  adapter's miss/null rejections are code-present with located diagnostics
+  but have no constructed-`Linker` unit row, and the adapter itself is
+  production-unreached (W4 as-built note; `/design`(int) call recorded W4+).
+
+### 11.6 Exit reconciliation — name-for-name (input to W8/Phase 7)
+
+**The 28-name baseline: 22 GREEN / 6 RED, verified in this pass, exactly as
+committed.** Flip attribution: #22 → W2a; #10/#19/#20/#23 → W2b+ (marginal
+instrument, real measurements); #1–#9, #11–#14 → W3 (S3/S4 slices; S0/S1
+invariance held); #15–#18 → W4 (I3/I4/I5). The 6 remaining, all explicit
+carries: **#21** (re-attributed §11.3, S119/0903), **#24** (0694, Track C →
+S119), **#25/#26** (0863, Track D → S119; still failing on their OWN
+mechanisms — §11.1), **#27** (0868, S119), **#28** (0869 implementation
+deferred, carrier ruling in force). §2.2.1's 0688 trace-to-mechanism
+question stays open (absence proven, cure-vs-unreached unruled) and carries
+with the 0688 attribution question to S119; §2.6's 0782 stays "mechanism
+live in CLIF, cell green-by-latency" — closes only with fix + one-release
+IR evidence.
+
+**Intended-RED additions (§2.3), disposition:** arming gate, ruling-10 fence
+(extended), 0726 tripwires, 0830 rows (incl. `matched_in_tail_loop`), 0835
+repros A+B, 0889 exact-value pins, marginal-harness capability fence — **all
+GREEN** (flipped by their named waves; fence flipped atomically with W3's
+twelve-symbol deletion). Still RED: **0867 repro ×3**
+(`spec_field_accessor`) — not in the pre-authorized carry list; needs an
+explicit user-approved carry at close (fix retargeted `/dev`(typecheck),
+S119).
+
+**REDs at HEAD outside both sets** (all attributed this pass): Bind family
+×7 (§11.1, FIXME 0907, W3-surfaced) and golden lanes ×2 (§11.4, FIXME 0908,
+rebaseline owed). **Expected W8 full-suite failure set: 18 named cells** = 6
+carries + 3 (0867) + 7 (Bind) + 2 (golden; 0 if the rebaseline lands
+first). Any other RED in W8's run is a genuine regression. (This pass's
+universe covered the eleven baseline binaries + §2.3 binaries + Bind/golden
+binaries; the W2/W3 fence binaries and the wider corpus ride W8's full run.)
+
+**S118 FIXME ledger at the gate.** Filed-and-resolved this sprint: 0876,
+0877, 0878, 0879, 0880, 0881, 0882, 0883, 0884, 0885, 0886, 0887, 0888,
+0892, 0893, 0894, 0895, 0896, 0897, 0899, 0901, 0904, 0905, plus 0890 +
+0726 actioned/deleted in this pass. **Open S118-filed set going into close:**
+0889 (S119, user-required recovery), 0891 (deferred S119 on 0903), 0898
+(`/arch`), 0900 (`/testing`, locus-form suggestion), 0902 (`/arch`), 0903
+(`/design` backend, S119 ruling), 0906 (backend nit), 0907 + 0908 (this
+pass). Pre-S118 carries with recorded S118 dispositions: 0761/0779 (S119
+triggers), 0694/0604/0818 (Track C → S119), 0863/0867/0868/0869 (Track D →
+S119), 0870/0871/0872/0874/0875 (Track E / S119). **0835 is a candidate
+close for its owner**: all committed repros (A, B1–B3) are GREEN after
+W2b+W3 and the prelude face is carved off as 0889 — `/design`(intrinsics)
+confirms and deletes.
+
 ## Next skills
 
 - `/testing` — W1: baseline reconciliation (§2.2), the §2.3 intended-RED
