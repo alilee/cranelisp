@@ -1,7 +1,9 @@
 # Transitive drop glue and owned-value displacement
 
 **Status:** DESIGN — authored S116 Phase 3; **refreshed S118 Phase 3** to
-implementation-ready state for the Track B consumer migration.
+implementation-ready state for the Track B consumer migration; **§4.1 added
+post-W3 (S118)** as the ruling on the entry check's single measured escapee
+(FIXME 0891).
 **Subordinate to:** `backend.md`.
 **Architecture inputs:** `design/arch/safety-invariants.md` R15;
 `design/arch/bounded-contexts.md` §4b invariant 16; S116 arch rulings 1, 2, 7,
@@ -267,11 +269,16 @@ result-root discovery including the inner `a` of `IO a` (`lib.rs:672–684`).
   `CodegenError` naming the type and the requesting function (§3.2's
   non-concrete-key rule), never a shallow dec. **Entry check for slice S1:**
   `/dev` enumerates every release call site that cannot supply a concrete type
-  *before* migrating. The expected answer is none — the residual-`Var` path is a
-  *classification* path used by the generic ctor template, which constructs and
-  never releases. If a release site is genuinely reached with a non-concrete
-  type, **STOP**: that is a typecheck producer gap routed by FIXME, not a licence
-  for a fallback arm. Re-typing `variable_types` to `ConcreteType` is a
+  *before* migrating.
+  **Measured answer (S118 W3 slice S5, FIXME 0891): ONE, not none.** The
+  prediction's second clause — "the generic ctor template constructs and never
+  releases" — was false: the template body both constructs and releases, and the
+  release is its own parameter. §4.1 rules the case, states the invariant that
+  makes it sound, and fixes the check the exception must carry. Everything
+  outside §4.1's frame keeps this rule verbatim: a non-concrete type at a
+  release site is a located `CodegenError`, and if one appears in any other
+  frame, **STOP** — that is a typecheck producer gap routed by FIXME, not a
+  licence for a fallback arm. Re-typing `variable_types` to `ConcreteType` is a
   *candidate follow-on*, explicitly out of this wave's scope.
 
 - **D3 — a second named-glue identity home survives in `vec_codegen`.** See
@@ -359,7 +366,7 @@ mechanism):
 
 | Seam | Home at HEAD | After |
 |---|---|---|
-| scope-exit cleanup | `fn_compiler::pop_scope_with_cleanup` → `emit_heap_binding_decs` | one `drop<T>` call per binding |
+| scope-exit cleanup | `fn_compiler::pop_scope_with_cleanup` → `emit_heap_binding_decs` | one `drop<T>` call per binding — plus §4.1's single frame-checked exception, reachable at this seam only |
 | let-scope tail flush | `flush_let_scopes_before_tail_jump` → `emit_heap_binding_decs` | same, shared body |
 | superseded param flush | `flush_superseded_heap_params_before_tail_jump` → `emit_heap_binding_decs` | same, gated by §6's ONE predicate |
 | match wrapper release | `match_codegen::dec_temporary_scrutinee` | per-arm `drop<S>` (§5) |
@@ -368,6 +375,123 @@ mechanism):
 | Vec element dec | `vec_codegen::build_elem_dec_fn` + `build_adt_drop_glue_fn` | M1's `define_vec_elem_adapter` |
 | capture slot release | `capture_rc::emit_capture_dec_into` (`Plain` arm) | one `drop<T>` call per owning slot |
 | closure box release | `emit_closure_dec_into` | retained (§1.1 M5) |
+
+### 4.1 The ONE sanctioned non-concrete release site — the ctor template's own parameter
+
+**Ruling (S118, post-W3; resolves FIXME 0891 — option (a) of its three).** D2's
+entry check predicted no release site could fail to supply a `ConcreteType`. The
+migration measured exactly one class, and it is legitimate. This section is the
+authority for it; D2 defers here, and §11's no-interim list names it as the sole
+admitted exception so `/review` can tell it from the shallow fallback the
+migration exists to delete.
+
+**The class — and why it is not about generics OR about undeclared fields.** A
+constructor `Def` is compiled **once per declaration**, never once per
+instantiation. `design/arch/concrete-boundary-type.md` §3.1.1 partitions it as a
+*signature-driven* codegen target: its parameter types come from the entry's
+`scheme`, not from body nodes. Two declaration shapes hand that scheme a
+non-concrete parameter:
+
+- a **generic** product/sum — `(deftype (Option a) (Some [:a v]))`: the field
+  parameter is the declared type parameter;
+- an **undeclared field** — `(deftype B (Mk [v]))`: typecheck leaves the field a
+  free type variable, and `B` is monomorphic, so no instantiation ever pins it.
+
+Both are legal source and both arrive through the same door, so the class is
+intrinsic to compile-once-per-declaration rather than an artifact of either
+shape. It cannot be closed upstream without monomorphising constructor `Def`s
+per instantiation — a pipeline change with no sponsor, outside this migration,
+and unnecessary for soundness (below). **This is why the FIXME's option (c) is
+rejected:** FIXME 0394, the number the as-built comments still cite, was
+**closed at S84** (`09d91719`) on a different axis (`codegen_view` population),
+and even a future ruling that made undeclared fields concrete would leave the
+generic half exactly where it is.
+
+**Why the release is sound — stated as an invariant, not as a site anecdote.**
+In a ctor template frame the parameter's scope-exit release is not a teardown at
+all. It is the second half of a matched counted-borrow pair emitted inside that
+one frame:
+
+1. `compile_constr_adt` compiles the template's fields through
+   `compile_consuming_arg_list`, which emits a **guarded `rc_inc`** on each
+   heap-classified parameter (`signature_heap_category`'s `Err` arm classifies
+   the residual type `Mixed`, the uniform-i64 category);
+2. `emit_adt_construct` stores those same words into the box the template
+   returns;
+3. `pop_scope_with_cleanup` emits the **guarded `rc_dec`** that balances the inc.
+
+> **I-CT.** Every value released by this branch was, earlier in the same frame,
+> (i) incremented by the paired guarded inc and (ii) published into a heap cell
+> that the frame returns to its caller. The dec therefore can never observe the
+> last reference, so no field is ever stranded by the absence of type-directed
+> glue.
+
+Two facts make I-CT exact rather than approximately true, and both are
+`/review`-checkable at the seam:
+
+- the halves share **ONE runtime predicate** — `emit_rc_inc_guarded_atomicity`
+  and `emit_rc_dec_guarded(…, guard_nullary = true)` both skip a word below
+  `NULLARY_TAG_THRESHOLD` — so exactly the values that took the inc take the dec;
+  there is no polarity gap between what the inc treated as a pointer and what
+  the dec does;
+- the template body is a single straight-line construction with **no branch
+  between** the inc and the dec, so no path reaches the dec without the store.
+
+This is the retention-owner reading of **Published pointers have retention
+owners**: the box is the retention owner of the reference the inc minted, and it
+outlives the discharge.
+
+**The check the exception carries (Narrowing carries its check).** The admission
+is a property of the **frame**, never of the type. A gate that reads only "this
+binding's type is not concrete" admits *every* future non-concrete binding at
+*every* scope exit — a silent shallow release wherever a producer ever leaks a
+residual var — which is exactly the shallow fallback §11 forbids and D2 exists to
+delete. The gate is therefore:
+
+> Admit the guarded shallow dec **iff** the enclosing frame is a constructor
+> template — its compiled body is the synthetic `MonoExpr::ConstrADT` node — and
+> the binding is one of that frame's own parameters. In every other frame, and at
+> every other seam, `ConcreteType::from_type` failure at a release site stays a
+> located `CodegenError`.
+
+The frame fact needs no probe and no new carrier: `compile_body` holds the body
+node before the `FnCompiler` is constructed (the `fn_has_self_call` precedent),
+so it is one frame-level boolean computed once, disjoint from the type question.
+A ctor template has no `let` scopes and no tail self-call, so the exception is
+reachable only via `pop_scope_with_cleanup`; the two tail-jump flushes that share
+`emit_heap_binding_decs` must never admit it.
+
+**Standing obligation.** The pair balances because the template's fields are
+compiled by the **unmoded** consuming path and its parameters are never marked
+`Borrowed`. If a constructor `Def` ever acquires a `ModeSummary` with a
+`Borrowed` parameter, `collect_frame_heap_decs` drops the dec while
+`compile_consuming_arg_list` still emits the inc, and I-CT breaks in the leak
+direction. A mode summary reaching a ctor template is a change that must revisit
+this section; `/review` treats it as a blocker.
+
+**Why not (b) — delete the pair.** Considered in both readings, rejected in both:
+
+- *delete unconditionally* — the inc comes from the general consuming-arg
+  mechanism and the dec from general scope cleanup, so suppressing them for ctor
+  templates means a template-shaped special case at **two** independent seams.
+  That is the site-disagrees-with-type shape §4 exists to eliminate (the same
+  argument that takes `needs_guard` off the release seams), and it trades one
+  named exception for two.
+- *delete under §4.1's frame check* (use the check to elide rather than to
+  admit) — sound only while every caller transfers an owned reference, which the
+  backend cannot verify from inside the template frame: it depends on the ctor's
+  own param modes and on every call site. The retained pair's licence is local
+  and checkable (both halves in one frame, publication in between); the
+  elision's licence is not. It would also convert a branch that is
+  behaviour-identical to pre-migration HEAD into an emission change buying two
+  guarded branches in one synthetic body per constructor — **Complexity has a
+  budget** cuts against it.
+
+**What is NOT sanctioned here.** The exception admits a *shallow* dec only
+because I-CT proves the value has another live owner. It is not a licence to
+release a non-concrete value anywhere else, not a licence for a `drop_glue_id:
+None` dec at any other seam, and not a second release mechanism: `emit_typed_rc_dec`
+remains the only release emitter with no fallback arm (§4).
 
 ---
 
@@ -554,6 +678,12 @@ its guard).
 It does change emission for `Borrowed`-param temporaries (D4) — the acceptance
 must show the 0753 controls (`moded_arg_rc_tests`) stay green.
 
+**Entry-check outcome (recorded S118, post-W3).** The check ran and returned
+ONE class, not none: the ctor template's own parameter, first seen at slice S5
+when `emit_heap_binding_decs` became type-directed. It is ruled in §4.1 and is
+the only admitted case; `emit_typed_rc_dec` itself kept its no-fallback rule at
+every seam it serves.
+
 ### 7.2 Slice S2 — 0835 SList construction (arch-ruled first; **attribution-gated**)
 
 Arch ruling 1(d) orders 0835 first; ruling 1(a) requires "controlled reduction
@@ -676,6 +806,19 @@ BorrowedInvalid` predicate; both flushes consult it; `emit_heap_binding_decs`
 emits one `drop<T>` per replaced slot through canonical glue (its three
 special-case arms — closure / Vec / ADT — collapse into the one call, since the
 type decides teardown inside the glue body).
+
+**S5's one measured escapee, and what is still owed.** Making
+`emit_heap_binding_decs` type-directed is what surfaced D2's single
+non-concrete release class (§4.1). As landed, W3 carries the exception as ONE
+explicit named branch gated on `ConcreteType::from_type(ty).is_err()` — correct
+for the case, and behaviour-identical to pre-migration HEAD (the legacy
+`emit_rc_dec_with_inline_drop_glue` early-returned on a non-ADT type into the
+same guarded dec). §4.1's ruling **narrows the gate to the frame**: the type
+being non-concrete is a symptom, not the licence, and the type-keyed gate would
+silently admit any future non-concrete binding at any scope exit. The narrowing
+is `/dev`'s residual (FIXME 0891, retargeted), scoped to this seam, with the
+§10 row-3 cells below as its acceptance. It changes no emission for any program
+in the corpus.
 
 **Flips:** cells #19/#20 (`ms_p8_conj_leak::conj_loop_does_not_leak`,
 `conj_loop_parity_no_abort`) and #21
@@ -807,6 +950,7 @@ S116 Wave 3 (`drop_glue.rs::tests`); rows 3–6 are the migration's new tier.
 | `drop_glue` identity | primitive-owning types; FQ ADT; two generic instantiations | repeated request is idempotent; same bare type name in two modules differs | non-concrete key rejected; collision witness; span/caller cannot alter identity |
 | `drop_glue` registry/body builder | scalar leaf; ADT→String; ADT→Vec→ADT; depths 1/2/4/5/>5 | self-recursive list nullary/data arms; mutually recursive declarations; repeated field type emits one body; **request order permuted ⇒ same bodies, same keys (D5)** | no depth constant; no shallow fallback; duplicate definition and missing typedef fail loudly; **`finish()` rejects a `Defining` entry** |
 | `rc_emission` glue-call emitter | owned heap pointer ⇒ exactly one `call` to the canonical symbol; final-ref body calls fields then dealloc; non-final ref touches no fields | Mixed ADT bare nullary tag guarded **inside** the body, not at the site; closure field; empty Vec | no field call on `old_rc > 1`; **no `needs_guard` parameter survives**; non-concrete type at a release site is a located error, never a plain dec; no deep owner routed to a bare dec |
+| `fn_compiler` §4.1 ctor-template admission | a generic-ctor template (`(deftype (Option a) (Some [:a v]))`) and an undeclared-field template (`(deftype B (Mk [v]))`) each emit the guarded inc and its balancing guarded dec on the same parameter, same nullary-threshold predicate | the multi-field template incs and decs every field parameter; a concrete-field template (`(deftype B (Mk [:Int v]))`) takes the ordinary `drop<T>` path, no exception | **a non-concrete binding in a NON-ctor-template frame is a located error, not a shallow dec** (the gate is the frame, not the type); the exception is unreachable from either tail-jump flush; no `drop_glue_id: None` dec survives at any other seam |
 | capture / environment glue | explicit closure over Vec/ADT; auto-curry equivalent; nested closure; poll-state capture | zero captures; repeated same-typed captures; a capture whose type is the enclosing closure's own | borrowed/non-owning capture not dropped; **every owning capture descriptor has a glue call** (the assertion 0760 says no instrument ever made); no second glue skeleton per mirror |
 | `match_codegen` | inline and let-bound owned temporary; constructor and var patterns; the plan recorded once before arms | heap field forwarded into a tail call; whole-wrapper forward (`[r r]`); borrowed callee scrutinee; **mixed ctor+var match, ctor path selected** | no whole-match `any` suppression; no release-before-protect; no borrowed-scrutinee release; **exactly one release per consuming arm** (count, not existence — the 0782 face); var arm binder never registered for scope cleanup |
 | `fn_compiler` / TCO predicate | unrelated fresh replacement releases; bare-Vec and ADT replacement use the same path | same-slot and cross-slot move; control-flow forward; analysis-on in-place COW (positional-blind); toggle-off copied COW | borrowed alias cannot license transfer (`BorrowedInvalid` is loud); fresh/unknown cannot suppress release; no TCO-private glue; **row 2 does not become a blanket skip** (the F1 regression fence) |
@@ -834,7 +978,10 @@ E2e acceptance remains `/qa`/`/testing`'s carried S116 matrix (§9).
   the number of release seams. Five mechanisms (§1.1) become one plus two
   explicitly-scoped runtime dispatches.
 - **Observability:** construction failures name the concrete type, requesting
-  function and missing definition/substitution. No silent fallback exists — the
+  function and missing definition/substitution. No silent fallback exists — §4.1's
+  admission is the one non-glue release path and it is not silent: it is
+  frame-checked, named at the seam, and everything outside its frame raises a
+  located error rather than degrading. The
   depth cutoff's shallow dec was precisely a silent, site-dependent change of
   release semantics for one runtime type, and it is the observability defect as
   much as the correctness one. Post-migration, `/clif <name>` shows a `call` to
@@ -855,7 +1002,10 @@ E2e acceptance remains `/qa`/`/testing`'s carried S116 matrix (§9).
   value owned — 0760 recorded that no such mechanism existed.
 
 **No-interim constraints** (binding; `/review` reject criteria): no raised depth
-constant; no shallow fallback; no borrowed-builder clone of recursive emission;
+constant; **no shallow fallback other than §4.1's single frame-checked ctor-template
+admission — and that one is a REJECT if its gate is keyed on the type being
+non-concrete rather than on the frame being a ctor template** (a type-keyed gate is
+a fallback arm wearing one case's name); no borrowed-builder clone of recursive emission;
 no 0835-, 0810-, capture-, or TCO-specific deep releaser; **no second named-glue
 identity home**; no JIT-only helper; no third heap-header word; no global glue
 registry; no generic type-erased release; no cache sidecar carrying process-local
@@ -878,7 +1028,16 @@ captures while leaving compiler-synthesised environments behind.
   releasing mechanism; a second named-glue identity home; a wave split between
   S5 and the deletion; a `needs_guard` parameter surviving on a release seam; a
   detector armed outside a child `env_clear` construction; a per-spelling
-  release rule at the match seam.
+  release rule at the match seam; **a §4.1 admission gated on the type rather
+  than the frame, or a `ModeSummary` reaching a ctor template without §4.1's
+  standing obligation being revisited.**
 - `/arch` — no new cross-crate interface is required by this migration
-  (ruling 9's carrier is landed and unchanged); consult only if the D2 entry
-  check finds a release site that cannot supply a `ConcreteType`.
+  (ruling 9's carrier is landed and unchanged) and §4.1's ruling needs none:
+  it is frame-local backend emission, no types edit, no schema delta.
+  **One correction is owed upstream and is filed as FIXME 0902:**
+  `concrete-boundary-type.md` §3.1.1 point 2 (restated in BC §3 invariant 9)
+  says the ctor/accessor signature path's `ConcreteType::from_type` "must
+  succeed" and that a failure is a compiler-bug `expect`. §4.1 shows the ctor
+  *template* — which is not an instance and is never monomorphised — legitimately
+  fails it, and the as-built has diverged from that prescription since S84
+  (`signature_heap_category` maps the `Err` to `Mixed`).
