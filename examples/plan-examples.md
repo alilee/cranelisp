@@ -74,9 +74,9 @@ documented `main` return (sum of sub-test passes); it is the value
 | 18 | `18-macros.cl` | `defmacro`, quasiquote/unquote, multi-clause macros | 89 |
 | 19 | `19-threading.cl` | Data pipelines with `->`, `->>` and friends | 130 |
 | 20 | `20-adt-traits.cl` | Implementing traits (`Eq`, `Display`) for user ADTs | 39 |
-| 21 | `21-hello-io.cl` | The IO model: `Pure`, `bind`, combinators, platform IO | 243 |
+| 21 | `21-hello-io.cl` | The IO model: `Pure`, `bind`, combinators, platform IO | 243 — **RED at HEAD, FIXME 0907** (§2f) |
 | 22 | `22-io-hello.cl` | Testable IO via the `test-capture` platform | 99 |
-| 23 | `23-io-sequence.cl` | IO sequencing patterns with explicit `bind` chains | 178 |
+| 23 | `23-io-sequence.cl` | IO sequencing patterns with explicit `bind` chains | 178 — **RED at HEAD, FIXME 0907** (§2f) |
 | 24 | `24-io-echo.cl` | Input with `read-line`; read-then-process | 20 |
 | 25 | `25-curry.cl` | Auto-currying and partial application — of a named `defn`, of a local **closure value**, and of a **trait operator** (S115 6b). First example to import the examples-local library (`operators`) | 139 |
 | 26 | `26-functor.cl` | The `Functor` trait (higher-kinded `fmap`) | 91 |
@@ -302,6 +302,135 @@ documented `main` return (sum of sub-test passes); it is the value
   `primitives` only (`Pure`/`add-i64`/`eq-i64`/`mul-i64`/`Int`). Builds on 15
   (traits) + 16 (multi-file modules). Multi-file, so `tests/examples.rs` drives
   `37-method-import/main.cl` (like `16-modules/main.cl`), not a bare top-level file.
+
+## 2f. S118 Phase-6 assessment record (2026-07-26) — two examples dark, attributed
+
+> **Standing exception to Design Principle 5** ("every example is runnable at
+> all times"). Two examples are red at HEAD and are shipped red on purpose.
+> This section is the record; it stands until FIXME 0907 is ruled.
+
+### 2f.1 The matrix — 35 of 37, all four cells agreeing
+
+Full replay at HEAD `a1f5b2b7`: 35 top-level `.cl` files + `16-modules/` +
+`37-method-import/`, each in four cells — cold `--run`, warm `--run`, cold
+`--link`+execute, warm `--link`+execute. Cold = `examples/.cranelisp-cache`
+removed (`--link` rejects `--no-cache`, so the cache directory is the cold
+axis for the link cells; the run cells used `--no-cache` and were confirmed
+identical against a removed-cache run).
+
+**Result: 35 green at their documented exit codes in every cell.**
+`21-hello-io.cl` and `23-io-sequence.cl` red in every cell. No third example
+affected, no `--run`/`--link` divergence, no cold/warm divergence. This
+reconciles name-for-name with the `/qa` attribution on FIXME 0907
+(`examples ×1` cell = two programs).
+
+Two harness facts worth writing down, because both cost time this pass and
+neither is a defect:
+
+- **`34-async-io-leaf.cl` requires `CRANELISP_PLATFORM_PATH=target/debug`.**
+  `examples/lib/platforms/` carries committed symlinks for `stdio` and
+  `test-capture` only; there is no `async-demo` symlink, so a bare
+  `--run examples/34-async-io-leaf.cl` fails with `platform 'async-demo' not
+  found`. `tests/examples.rs` sets the variable, so the suite is green and the
+  §5 recipe below now sets it too.
+- **The `--link` cells need `bash tests/scripts/build-link-prereqs.sh` first**
+  (it builds the platform rlibs the `--link` path resolves by scanning
+  `target/debug/`). Without it the three platform-linking examples fail inside
+  `cc` with undefined Rust `std` symbols — a missing-prerequisite failure, not
+  a compiler failure.
+
+### 2f.2 What is actually dark — three sub-tests, one beat
+
+Measured by deleting only the refusing definitions in scratch copies (never
+committed):
+
+| File | Refusing definitions | Rest of the file |
+|---|---|---|
+| `21-hello-io.cl` | `then`, `map-io` (Part 4) | 13 of 15 sub-tests run; exit 167; all five stdout side effects appear |
+| `23-io-sequence.cl` | `map-io` (Part 4) | 7 of 8 sub-tests run; exit 136 |
+
+Three sub-tests out of 23 carry the whole refusal, and all three are the same
+beat: **a user-written combinator that takes an `(IO a)` as a parameter.**
+Everything else in both files works today.
+
+### 2f.3 Does the learning sequence survive?
+
+**Degraded, not holed — but the damage is at the worst address in the arc.**
+`21` is the *opening* file of the IO chapter and `22`, `23`, `24` all name it
+in their headers. A reader walking the sequence in order meets their first
+broken program exactly where effects are introduced.
+
+Concepts with **no surviving carrier** anywhere in the sequence while 21/23
+are dark:
+
+| Lost | Why nothing else carries it |
+|---|---|
+| `if` selecting between two IO branches | 21 Part 3 / 23 Part 3 only; 30's `(if … (Pure a) (Pure b))` is a `main` tail, not a taught beat |
+| Recursive IO construction (`sum-io`, `print-countdown`) | 32/34 bind but never recurse |
+| User-written IO combinators (`then`, `map-io`) | the refused capability itself — unteachable until ruled |
+| **Real console output** | `21` is the ONLY example that loads `(platform stdio)`; 22/23/24 use `test-capture`, 34 uses `async-demo`. With 21 dark, nothing in the corpus prints to a terminal |
+
+Concepts that **survive elsewhere**: `Pure`/`bind` basics and
+effect-then-pure-result (`22`), `read-line` and read-then-process (`24`),
+IO-returning `defn` plus nested dependent binds (`34`), IO values passed to
+the `race`/`select` primitives (`32`).
+
+**No bridging example is being added.** The two files flip green as whole
+units the day 0907 is ruled; a stand-in teaching the survivable subset would
+be a second IO chapter to delete, and the lost `stdio` beat cannot be restored
+without re-spelling the very combinators that refuse.
+
+### 2f.4 Latent use of the refused shape elsewhere — none, with one caveat
+
+Surveyed every `.cl` in `examples/` and `examples/lib/`. No other file defines
+a function taking an `(IO a)` parameter, so no other example is compiling only
+because it never instantiates the shape. `examples/lib/prelude.cl` re-exports
+`Pure` and nothing else IO-related; the non-IO examples' `(Pure …)` wrap in
+`main` is a freshly constructed value returned, which transfers rather than
+releasing, and all 35 are green in all four cells.
+
+The caveat is a **blocked next lesson, not a latent break**: `26-functor.cl`
+teaches the higher-kinded `Functor` trait over `Option`, and "IO is a Functor"
+is the standard follow-on. That instance is reachable — it compiles and runs
+— but it **leaks** (measured ~68 bytes per call, linear over 800k iterations,
+against a flat inline-`bind` control; recorded on FIXME 0907 §3). So the
+natural extension of 26 must not be written until 0907 is ruled, and the
+trait-method spelling must not be offered to readers as a way around the
+refusal.
+
+### 2f.5 What Sprint 118's result-owner work changed at this surface
+
+The unified program-result owner (FIXME 0745) fixed a `--run`/`--link`
+divergence where the linked stub `ireduce`d every result unconditionally, so a
+non-Int program result exited with the low bits of a heap pointer. **No example
+exercised that divergence** — Design Principle 6 requires every `main` to
+return `(Pure <Int>)`, so the corpus has only Int results, and this is why the
+link column matched the run column both before and after. Verified out of tree
+that `(defn main [] (Pure "hi"))` now exits `0` under both `--run` and
+`--link`. That is a real improvement and a candidate future beat ("a program
+result that is not an Int is legal and exits 0"), but it is deliberately not
+added: Principle 6's exit-code verification depends on an Int result, so such
+an example could not verify itself.
+
+### 2f.6 What was actioned at 6b
+
+1. Attribution headers on `21-hello-io.cl` and `23-io-sequence.cl` naming
+   FIXME 0907, the measured dark region, why no re-spelling is shipped, and
+   what each file teaches again when ruled — plus an inline marker on the
+   refusing Part 4 in each. Neither file's code was changed.
+2. This section, and the RED annotations on rows 21 and 23 of §2.
+3. §5 updated with the four-cell matrix recipe and both harness prerequisites.
+4. Evidence appended to FIXME 0907 (matrix, dark-region measurement, the
+   trait-instance compile-and-leak finding, learner impact, acceptance rider).
+5. **FIXME 0916 filed** (`target: /qa`) — a self tail call in a `match` arm
+   SIGSEGVs at ~1,000 depth when the scrutinee is a trait-method call; the
+   plain-function control survives 400,000. Found while building a non-IO
+   control for 0907; unrelated to IO.
+
+`tests/examples.rs` needs **no** change: the expected exits for 21 and 23 stay
+243 and 178, and they are correct again the moment 0907 is ruled. Its rows
+carry no `// defect:` attribution line for 0907 today; adding one is
+`/testing`'s call, recommended below.
 
 ## 2d. The examples-local library (USER RULING, 2026-07-21 — answers 0821)
 
@@ -1198,23 +1327,67 @@ outside-in sweep; kept here so absence is as visible as presence.
 
 ## 5. Verification
 
-At the start and end of every sprint, run every example and confirm the
-documented exit code:
+At the start and end of every sprint, run every example in **four cells** —
+cold/warm × run/link — and confirm the documented exit code in each.
+
+Two prerequisites, both easy to forget and both producing failures that look
+like compiler defects (see §2f.1):
 
 ```bash
-for f in examples/[0-9]*.cl; do
-  ./target/debug/cranelisp --run "$f" >/dev/null 2>&1; echo "$f => $?"
-done
-./target/debug/cranelisp --run examples/16-modules/main.cl
+cargo build                                  # the compiler itself
+bash tests/scripts/build-link-prereqs.sh     # platform rlibs the --link path scans
+export CRANELISP_PLATFORM_PATH=$PWD/target/debug   # 34-async-io-leaf has no committed symlink
+```
+
+Then, with `EX="examples/[0-9]*.cl examples/16-modules/main.cl examples/37-method-import/main.cl"`:
+
+```bash
+# warm run                     (cold run: add --no-cache)
+for f in $EX; do ./target/debug/cranelisp --run "$f" >/dev/null 2>&1; echo "$f => $?"; done
+
+# warm link                    (cold link: rm -rf examples/.cranelisp-cache first —
+#                               --link REJECTS --no-cache, so the cache dir is the cold axis)
+for f in $EX; do o=target/ex-$(echo $f | tr / _); \
+  ./target/debug/cranelisp --link "$f" -o "$o" >/dev/null 2>&1 && "$o" >/dev/null 2>&1; \
+  echo "$f => $?"; done
 ```
 
 A zero exit (or a value below the documented total) means a sub-test failed
-— investigate before shipping. The e2e guard `tests/examples.rs` (owned by
-`/qa`) enforces the on-disk file set against an expected-exit table; any
-file add/remove/rename, or any deliberate exit-code change, requires `/qa`
-to reconcile that table.
+— investigate before shipping. **Known exception:** `21-hello-io.cl` and
+`23-io-sequence.cl` exit 1 in all four cells at HEAD, attributed to FIXME
+0907 (§2f). Any other red is a regression.
+
+The e2e guard `tests/examples.rs` (owned by `/qa`) enforces the on-disk file
+set against an expected-exit table; any file add/remove/rename, or any
+deliberate exit-code change, requires `/qa` to reconcile that table.
 
 ## Next skills
+
+**S118 Phase 6 (2026-07-26) — added at the top; older entries below stand.**
+
+- `/design`(backend) + `/arch` (S119) — rule **FIXME 0907**, co-ruled with
+  0903. The examples-side evidence is appended to 0907: the two red programs,
+  the three-sub-test dark region, and the finding that changes the class —
+  the trait-method spelling of the same combinator **compiles and leaks**
+  (~68 bytes/call, measured). A ruling that clears the refusal without
+  discharging the trait-instance release would convert seven loud REDs into
+  silent leaks. Acceptance for this surface: 21 exits 243 and 23 exits 178 in
+  all four cells.
+- `/qa` (S119) — attribute **FIXME 0916**: a self tail call in a `match` arm
+  SIGSEGVs at ~1,000 depth when the scrutinee is a trait-method call; the
+  plain-function control survives 400,000. Nine-line A/B repro in the FIXME.
+  Two candidate loci (backend tail-call transform / typecheck trait
+  resolution) with no evidence separating them.
+- `/testing` (S119, optional but recommended) — add a `// defect:` line naming
+  0907 to the `21-hello-io.cl` and `23-io-sequence.cl` rows of
+  `tests/examples.rs`. The expected exits (243, 178) are correct and must NOT
+  change; only the attribution comment is missing. `/examples` does not edit
+  `tests/`.
+- `/examples` (after 0907 is ruled) — delete the two attribution header blocks
+  and the two Part-4 markers, replay the four-cell matrix, and only then
+  consider the queued beats: `26-functor.cl`'s "IO is a Functor" extension
+  (blocked today by the trait-instance leak) and §2e's `37-method-import/`
+  extension (still blocked on 0869).
 
 - `/dev` — resolve FIXME 0869, covered by
   `tests/cache.rs::cache_restores_sibling_written_trait_impls_for_dispatch`.

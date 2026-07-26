@@ -25,6 +25,40 @@
 ;;   so the stdio DLL resolves with no environment variable. If you build
 ;;   for a host without a checked-in symlink, set the search path instead:
 ;;     CRANELISP_PLATFORM_PATH=target/debug ./target/debug/cranelisp --run …
+;;
+;; ── KNOWN RED since Sprint 118: this example does not compile (FIXME 0907) ──
+;;
+;; Attributed in place, deliberately NOT repaired. Running it reports:
+;;
+;;   codegen failed for 21-hello-io/21-hello-io/map-io$Fn(Int;Int)+primitives/IO$Int:
+;;   constructor 'Bind' disagrees on declared parameter identity for 'primitives/IO'
+;;
+;; The cause is not in this file. `primitives/IO`'s `Bind` constructor is
+;; seeded with an existential encoding, so per-concrete drop glue cannot be
+;; derived for any concrete `IO T`; Sprint 118's canonical-glue migration
+;; turned a former silent shallow teardown into a loud refusal. The ruling is
+;; owed by `/design`(backend), co-ruled with FIXME 0903.
+;;
+;; WHAT IS ACTUALLY DARK — two definitions, Part 4 only. Measured at HEAD:
+;; delete `then` and `map-io` (and their two sub-tests) and the remaining 13
+;; of 15 sub-tests compile and run, exit 167, with all five stdout side
+;; effects. Parts 1, 2, 3, 5, 6 and 7 — Pure, bind chains, `if` between two
+;; IO branches, IO-returning helpers, recursive IO, and real `(platform
+;; stdio)` console output — are unaffected by the defect.
+;;
+;; WHY IT IS NOT RE-SPELLED. `/stdlib` falsified every re-spelling on this
+;; FIXME: a polymorphic combinator compiles at its definition and refuses at
+;; every concrete call, so a re-spelling moves the failure without removing
+;; it. A trait-method spelling (`impl (Functor IO)`) does compile — and leaks
+;; ~68 bytes per call (measured, FIXME 0907 §3). Every available dodge would
+;; teach the reader something untrue about the language.
+;;
+;; WHAT THIS EXAMPLE TEACHES AGAIN WHEN 0907 IS RULED: Part 4's lesson —
+;; that `Pure` and `bind` are the only IO primitives you need, and every
+;; combinator (`then`, `map-io`, and the standard library's `>>`, `when-io`,
+;; `sequence-io`) is an ordinary user-written function over them. Nothing in
+;; the file changes at that point except deleting this block and the Part 4
+;; marker; the documented exit code stays 243.
 
 ;; Platform declaration: load the stdio DLL for print/read-line.
 ;; This must appear before any platform function imports.
@@ -110,6 +144,12 @@
 
 
 ;; === Part 4: Building combinators from Pure and bind ===
+;;
+;; >>> THIS PART IS THE ONE THE COMPILER REFUSES (FIXME 0907). <<<
+;; `then` and `map-io` take an `(IO a)` as a PARAMETER; releasing a concrete
+;; `IO T` is what the backend cannot yet derive glue for. The definitions
+;; below are correct Cranelisp and are kept verbatim so the lesson is intact
+;; the day the ruling lands. See the header block for the full attribution.
 
 ;; The standard library provides combinators like >>, map-io,
 ;; when-io, etc. Here we build them from scratch to show that

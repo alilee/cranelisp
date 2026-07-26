@@ -286,3 +286,127 @@ withheld cases (`>>`, `map-io`, `when-io`, `unless-io`, `sequence-io` over
 are enumerated in the module header as a restore list; `/stdlib` lands
 `stdlib/core/io/test.cl` in the same window the ruling's fix lands, and the
 `stdlib_conformance` red flips from 2 modules to 0.
+
+## Examples evidence (appended by `/examples`, S118 Phase 6a)
+
+Appended per `/sprint`'s dispatch rather than filed as a duplicate. The
+learner-facing half, plus **one new measurement that changes the shape of the
+class**: a trait-method instance over `IO` does NOT refuse — it compiles, runs,
+returns the right answer, and leaks.
+
+### 1. Examples matrix reconciled name-for-name — 35 of 37, four cells
+
+Full replay at HEAD `a1f5b2b7`, 37 programs (35 top-level `.cl` + `16-modules/`
++ `37-method-import/`) × four cells (cold `--run`, warm `--run`, cold `--link`,
+warm `--link`; cold = `examples/.cranelisp-cache` removed, `--no-cache` for the
+run cells since `--link` rejects that flag). **Every cell agrees**: 35 green at
+their documented exit codes, `21-hello-io.cl` and `23-io-sequence.cl` red in all
+four. No third example affected; no run/link divergence; no cold/warm
+divergence. This matches the severity block's `examples ×1 [two programs]`
+exactly.
+
+### 2. The dark region inside each file is TWO definitions, not the IO chapter
+
+Measured by deleting only the refusing definitions in a scratch copy (never
+committed):
+
+| File | Refusing definitions | Rest of the file |
+|---|---|---|
+| `21-hello-io.cl` | `then` (`(bind a (fn [_] b))`), `map-io` | remaining 13 of 15 sub-tests run, exit 167 (was 243 for 15) |
+| `23-io-sequence.cl` | `map-io` | remaining 7 of 8 sub-tests run, exit 136 (was 178) |
+
+So 3 sub-tests out of 23 across the two files carry the whole refusal, and all
+three are the same beat: **"build your own combinator out of `Pure` and
+`bind`."** Everything else in both files — `Pure` round-trips, nested `bind`
+chains, `if` selecting between two freshly built IO branches, recursive IO
+construction, IO-returning helper functions, and real `(platform stdio)` console
+output — compiles and runs today. This is the batch-mode confirmation of
+`/repl`'s item 1 and `/stdlib`'s item 1, measured on the sequence rather than at
+the prompt.
+
+### 3. NEW — the trait-method spelling COMPILES, and LEAKS (the silent face)
+
+Neither `/repl` nor `/stdlib` probed the trait-instance axis. It behaves
+differently from every shape in `/stdlib`'s tables, in **one file, one session,
+one concrete instantiation**:
+
+```
+(import [primitives [IO Pure bind mul-i64]])
+(deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))
+(impl (Functor f) (Functor IO)
+  (defn fmap [g io] (bind io (fn [x] (Pure (g x))))))     ; compiles AND RUNS
+(defn map-io [g io] (bind io (fn [x] (Pure (g x)))))      ; byte-identical body
+(defn dbl [n] (mul-i64 n 2))
+(defn main [] (bind (fmap dbl (Pure 21)) (fn [a] (map-io dbl (Pure a)))))
+→ codegen failed for u/u/map-io$Fn(Int;Int)+primitives/IO$Int:
+  constructor 'Bind' disagrees on declared parameter identity for 'primitives/IO'
+```
+
+Delete the `map-io` leg and the same program exits **42** — the trait-dispatched
+`fmap` over `(IO Int)` produced the correct value. Same body, same concrete
+type, same release obligation; the monomorphised free function refuses and the
+trait-method instance does not.
+
+**It is not a workaround — it is the leak.** Driver loop, 400k and 800k
+iterations, `--run --no-cache`, maxRSS of the child process:
+
+| Driver | 1k | 400k | 800k |
+|---|---|---|---|
+| `(bind (fmap (fn [z] z) (Pure n)) (fn [v] (recurse)))` — trait `fmap` over IO | 28.1 MB | 55.4 MB | 82.7 MB |
+| same loop with the fmap body written INLINE (`(bind (Pure n) (fn [x] (Pure x)))`) | 28.0 MB | 27.9 MB | — |
+
+Linear, ~68 bytes retained per call; the inline control over the identical IO
+tree is flat. So the trait instance reaches the release machinery and does not
+discharge the `IO T` it was handed. That is precisely 0903's censused family 2
+(**generic trait-method instances → residual signature vars → silent leak**)
+arriving on the *same type* whose free-function face loudly refuses here.
+
+Two consequences for the ruling:
+
+- **The "no legal re-spelling" finding of `/stdlib` §3 is stronger than it
+  reads.** There IS a spelling that compiles — and it is worse, because it
+  removes the diagnostic while keeping the defect. Anyone reading this FIXME and
+  reaching for `impl (Functor IO)` as a way to unblock a program should be told
+  not to.
+- **The co-ruling with 0903 is now evidenced, not just argued.** The loud face
+  and the silent face are demonstrable on one type, in one file, differing only
+  by whether the combinator is a free function or a trait method. A ruling that
+  fixes the refusal without discharging the trait-instance release would turn
+  the 7 loud REDs into silent leaks.
+
+Not claimed: whether the leak is IO-specific or is the general trait-instance
+behaviour. The natural non-IO control (a `(Functor Option)` instance in a
+deep-recursion driver) is unavailable — it SIGSEGVs, which is a **separate**
+defect filed as FIXME 0916, not this one.
+
+### 4. What the learner loses, and where
+
+`21-hello-io.cl` is the **opening file of the IO chapter**, and `22`, `23`, `24`
+all name it in their headers ("Example 21 introduced Pure, bind, and print").
+Two of the chapter's four files are dark, including the entry point, so a reader
+walking the sequence in order meets their first broken program exactly where
+effects are introduced. Concepts with no surviving carrier anywhere in the
+sequence: `if` selecting between IO branches; recursive IO construction; user-
+defined IO combinators (the refused capability itself); and **real console
+output** — `21` is the only example that loads `(platform stdio)`, so with it
+dark nothing in the corpus prints to a terminal. Surviving elsewhere: `Pure`/
+`bind` basics and effect-then-pure-result (`22`), read-then-process (`24`),
+IO-returning `defn` and nested dependent binds (`34`), IO values as arguments to
+the `race`/`select` primitives (`32`).
+
+Both files are attributed in place (header block naming this FIXME, plus an
+inline marker on the refusing Part) and left unmodified otherwise, per the
+attribute-don't-repair rule `/repl` applies to `repl/demos/archive` and
+`/stdlib` applies to `core.io`. They flip green as whole units when this is
+ruled; no `tests/examples.rs` exit-code change is owed then or now.
+
+### 5. Acceptance rider for the fixing change-set
+
+- `examples/21-hello-io.cl` exits **243** and `examples/23-io-sequence.cl` exits
+  **178** in all four cells (cold/warm × run/link). Their attribution headers and
+  Part markers delete in the same change-set.
+- Add a **trait-instance leak cell** to whatever guard the ruling lands: the
+  `(impl (Functor IO) (defn fmap [g io] (bind io (fn [x] (Pure (g x))))))`
+  instance must balance. `/stdlib`'s rider already asks for a stdlib-shaped leak
+  cell if option 3 is taken; this one is needed under **every** option, because
+  the trait face leaks at HEAD today regardless of what happens to the refusal.

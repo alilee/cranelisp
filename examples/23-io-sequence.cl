@@ -20,6 +20,34 @@
 ;;   ./target/debug/cranelisp --run examples/23-io-sequence.cl
 ;;   (examples/lib/platforms/ ships host-correct symlinks for the
 ;;    test-capture DLL, so no environment variable is required.)
+;;
+;; ── KNOWN RED since Sprint 118: this example does not compile (FIXME 0907) ──
+;;
+;; Attributed in place, deliberately NOT repaired. Running it reports:
+;;
+;;   codegen failed for 23-io-sequence/23-io-sequence/map-io$Fn(Int;Int)+primitives/IO$Int:
+;;   constructor 'Bind' disagrees on declared parameter identity for 'primitives/IO'
+;;
+;; Same cause as example 21: `primitives/IO`'s `Bind` constructor uses an
+;; existential encoding, so per-concrete drop glue cannot be derived for any
+;; concrete `IO T`, and every release of one now refuses. Ruling owed by
+;; `/design`(backend), co-ruled with FIXME 0903. Not a defect in this file.
+;;
+;; WHAT IS ACTUALLY DARK — one definition, Part 4 only. Measured at HEAD:
+;; delete `map-io` and its sub-test and the remaining 7 of 8 sub-tests compile
+;; and run, exit 136. Parts 1, 2, 3, 5 and 6 — discard sequencing, nested
+;; accumulation, conditional IO, recursive IO sequences, and IO-returning
+;; helpers — are unaffected.
+;;
+;; NO WORKAROUND IS SHIPPED ON PURPOSE. A polymorphic re-spelling compiles the
+;; definition and refuses at the call; a trait-method spelling compiles and
+;; silently leaks (both measured — FIXME 0907 §3 and the `/stdlib` evidence
+;; section). Any of them would teach the reader a false thing about IO.
+;;
+;; WHAT THIS EXAMPLE TEACHES AGAIN WHEN 0907 IS RULED: Part 4 — that the
+;; "run an IO action, then transform its result with a pure function" pattern
+;; is a two-line user-written function, not a builtin. Deleting this block and
+;; the Part 4 marker restores the file; documented exit code stays 178.
 
 (platform test-capture)
 (import [primitives [Pure bind]])
@@ -84,6 +112,11 @@
 
 
 ;; === Part 4: map-io -- applying a pure function to IO ===
+;;
+;; >>> THIS PART IS THE ONE THE COMPILER REFUSES (FIXME 0907). <<<
+;; `map-io` takes an `(IO a)` as a PARAMETER; releasing a concrete `IO T` is
+;; what the backend cannot yet derive glue for. Kept verbatim so the lesson is
+;; intact the day the ruling lands. See the header block for the attribution.
 
 ;; A common pattern: run an IO action, then transform the result
 ;; with a pure function. We define map-io for this.
