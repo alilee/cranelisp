@@ -1,6 +1,6 @@
 ---
 number: 0916
-target: /qa
+target: /design (backend)
 filed_by: /examples
 filed_at: 2026-07-26
 sprint_filed: 118
@@ -89,3 +89,40 @@ and contested attribution routes to `/qa`.
 
 The trait-instance **leak** over `IO` measured in the same session belongs to
 FIXME 0907 §3 (appended there). This file is only the SIGSEGV.
+
+## `/qa` attribution (S118 P6 close, probe-verified at HEAD `8f955d54`) — the TCO framing is FALSIFIED; this is a wild guarded RC write on a scalar
+
+Full record: `tests/plan/s118-test-plan.md` §11.8.5. The title's mechanism is
+wrong; the SIGSEGV is real and is WORSE than lost TCO:
+
+- **TCO is intact.** CLIF of `go` in BOTH variants compiles the self call as
+  `jump block1(…)` — no lost tail call, no frame growth. Neither of the
+  filing's two candidate loci (backend declining the transform; mono not
+  resolving a direct callee) is in play.
+- **The threshold is the payload VALUE, not the depth.** Measured: subject
+  exits clean at n=1023 and SIGSEGVs on the FIRST iteration at n=1024 —
+  `NULLARY_TAG_THRESHOLD` exactly. The depth table straddled 1024 by
+  coincidence (n counts down from the start value).
+- **Mechanism (CLIF-verified):** the generic instance
+  `Functor.fmap$user/Option` — compiled once per type-ctor, `Some` payload
+  typed as a residual `Var` — emits a threshold-guarded RC inc on the payload
+  (`icmp ult v15, 1024; … atomic_rmw.i64 add v15+8`). The payload is a raw
+  `Int`; when its value ≥ 1024 the guard misreads it as a heap pointer and
+  performs a **wild atomic write at address payload+8** → SIGSEGV. The
+  monomorphised control `fmapo$Fn(Int;Int)+user/Option$Int` emits zero RC ops
+  on the same payload. (The instance also shallow-`dealloc`s both params and
+  carries the 0917-shape unbalanced protect inc on its result — leak faces,
+  not the crash.)
+- **Attribution: `cranelisp-backend`, FIXME 0903 family 2** (generic
+  trait-method instances, residual signature vars) — with family 2's
+  consequence UPGRADED from "silent leak" to **memory-unsafe wild write**:
+  the nullary-tag guard discriminates tags from pointers, not scalars from
+  pointers, so it cannot license RC ops on unknown-category slots. Co-ruled
+  with 0903 at `/design`(backend), S119; 0903's acceptance addendum records
+  the upgrade.
+
+Guards (`/testing`, P6 close batch, `s118-test-plan.md` §11.8.6 item 5): the
+committed A/B pair with exit-STATUS asserts, plus the sharpened boundary —
+subject n=1023 GREEN / n=1024 (or 2000) RED, plain-`defn` control n=400000
+GREEN. The 1023/1024 boundary pins the real mechanism; a lone deep-recursion
+RED would pin the falsified one. `// defect:` class: `scalar-as-pointer`.

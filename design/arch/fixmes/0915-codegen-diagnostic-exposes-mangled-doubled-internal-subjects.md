@@ -1,6 +1,6 @@
 ---
 number: 0915
-target: /qa
+target: /design (backend)
 filed_by: /repl
 filed_at: 2026-07-26
 sprint_filed: 118
@@ -113,6 +113,39 @@ above and is one line (`(match (Pure 5) [(Pure x) x (Effect e) 0])`) — but not
 it currently rides 0907's refusal, so a guard written against it flips when 0907
 lands. `/qa` will want a codegen refusal with an **independent** trigger for the
 durable frame guard, or to sequence this behind 0907.
+
+## `/qa` attribution (S118 P6 close, read at source) — SPLIT: backend frame composition + an int presentation rider; S119
+
+Full record: `tests/plan/s118-test-plan.md` §11.8.4. Source read:
+`crates/cranelisp-backend/src/error.rs:60-146`,
+`crates/cranelisp-types/src/error.rs:192`.
+
+- **Backend (items 1–3, the load-bearing half; this FIXME's new target):**
+  - *Doubled prefix* — `CompilationError::CodegenFailed` carries a structured
+    `ErrorLocation` but its `cause` is a pre-rendered `String` that already
+    embeds the inner types-level located prefix
+    (`types/error.rs:192` → `"codegen error at {span}: {message}"`). The
+    doubling is baked at the wrapping construction; the fix is structure (or
+    stripping) at that seam, never downstream re-parsing.
+  - *`user/user/…`* — `error.rs:126-132` composes `"{module}/{symbol}"` over
+    an instance `Symbol` that already carries its qualified spelling (plain
+    `user/f` composes correctly, so this fires for every monomorphised
+    instance independent of 0907).
+  - *`0..0`* — the raise sites do not thread the failing form's span into the
+    `ErrorLocation`; the spans exist on the `MonoExpr` nodes (the span-keyed
+    carrier architecture), so population is a backend raise-site obligation —
+    with int required not to discard what arrives.
+- **Int rider (item 4 + subject presentation), named for `/design`(int) in
+  the same S119 window:** `user/__expr` and the `$`-mangled instance spelling
+  are display-boundary subject-presentation defects (D39: coordinates as
+  data, formatting downstream in int); the subject must render as the user
+  would write it per `repl/spec.md` §5.5. The data (instance symbol) is
+  correct — int rewrites the presentation, never the carrier.
+- **Guard sequencing:** every currently-reachable e2e trigger for this frame
+  is 0907's refusal, so a guard authored now dies with 0907's fix. The §5.5
+  frame guard is DEFERRED to S119, authored in the 0907/0903 fix window
+  against whatever codegen-refusal trigger remains (or one `/testing`
+  constructs). `[S119]` PLAN row landed.
 
 ## Note on the S117 fix this does not contradict
 

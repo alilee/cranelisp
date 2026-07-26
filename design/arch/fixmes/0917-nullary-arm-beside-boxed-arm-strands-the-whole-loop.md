@@ -1,6 +1,6 @@
 ---
 number: 0917
-target: /qa
+target: /design (backend)
 filed_by: /port
 filed_at: 2026-07-26
 sprint_filed: 118
@@ -126,3 +126,42 @@ Nothing surfaces to the user until the process dies. Full tables in
 `/port` makes **no exemplar source change**: `(Some g)`/`None`-returning
 `eliminate` is the idiomatic and correct spelling of a fallible step, and
 rewriting the showcase around the defect would destroy the measurement.
+
+## `/qa` attribution (S118 P6 close, probe-verified at HEAD `8f955d54`)
+
+**ACCEPTED and attributed: `cranelisp-backend` — an unbalanced
+threshold-guarded protect inc at the match-result return seam.** Full record:
+`tests/plan/s118-test-plan.md` §11.8.1. The discriminating probe (CLIF dump of
+both variants, numbers reproduced exactly: 4406/4 vs 4406/4406):
+
+- The byte-identical caller (`subject-loop`) compiles differently per callee
+  and BOTH compilations are correct for their callee's truthful summary
+  (control: pre-call inc of `bx` + exit glue release, `MayAliasOf`; subject:
+  neither, `Fresh` result + `Borrowed` param). Both release the returned tree
+  exactly once. **Typecheck's summaries are exonerated.**
+- Subject's `step` ends with `icmp ult v10, 1024; brif …;
+  atomic_rmw.i64 add v10+8` — a `NULLARY_TAG_THRESHOLD`-guarded **protect inc
+  on the match result** that nothing balances; the returned `(Some …)` tree
+  leaves at rc=2, the caller releases one count, the 4-object tree strands at
+  rc=1 per iteration. Control's `step` emits no protect inc at that seam.
+- Seam: `fn_compiler.rs::protect_return_value`, licensed by the
+  `value_provenance`/`is_fresh_construction` join ("fresh iff EVERY arm is
+  fresh"). A **nullary `ConstrADT` arm classifies non-Fresh**, flipping the
+  whole match result to protect-eligible; the protect is only balanced when
+  the result aliases a scope binding whose scope-exit dec lands on it — never
+  true for a fresh boxed arm. The guard's runtime SKIP direction is correct;
+  the licensed INC is the leak. Refines the filing's observation: not the
+  guarded path "for the whole value" — the guarded inc, unbalanced.
+- NOT a 0903 family (all types concrete; no residual signature vars). A
+  distinct backend axis; do not fold into the 0903 ruling's shape, though the
+  same S119 `/design`(backend) window may carry both.
+
+Ruling asked of `/design`(backend), S119 (narrow): the provenance
+classification of a nullary `ConstrADT` (a bare tag mints no box and can
+alias nothing — Fresh is the sound point), or equivalently the protect
+licence (require a genuinely aliasable arm). `/dev` follows with the fix;
+cell #21 and the P6-batch repro pair are the acceptance witnesses.
+
+`/testing` (P6 close batch): land the repro pair (marginal, `--run
+--no-cache` + `--link` faces, intended RED) and re-point cell #21's
+`// defect:` line here — spec in `s118-test-plan.md` §11.8.6.

@@ -1,6 +1,6 @@
 ---
 number: 0913
-target: /qa
+target: /design (typecheck)
 filed_by: /repl
 filed_at: 2026-07-26
 sprint_filed: 118
@@ -117,6 +117,37 @@ the residual-parameter *displays* themselves are spec-required
 (`repl/spec.md` §1.5/§4.1) and were deliberately protected by the W4
 release-key ratification — the displays are correct; the release behind them
 is not.
+
+## `/qa` triage (S118 P6 close) — axis confirmed; scheduled S119; marginal cell lands in the P6 batch
+
+Full record: `tests/plan/s118-test-plan.md` §11.8.3.
+
+- **Axis confirmed as filed:** the discriminator is a residual type parameter
+  in the result's displayed type — the `(Err x)`/`(Ok x)` family plus
+  `(vec)`, not the recorded `[]`-corner; `None` cannot leak (nullary). The
+  one-variable annotation-pin pair is accepted as the reduced repro; the
+  `result-owner.md` §1.1.1 attribution (lenient view,
+  `MonoExpr::lenient_from_expr`, typecheck) is accepted as ruled — not
+  re-opened.
+- **Risk rank: Important, leak polarity, REPL-dominant.** Every unannotated
+  fallible-result turn — the most common result shape in the language —
+  leaks its full result tree (2–6 blocks/turn measured), linear in session
+  length; no memory unsafety; batch modes largely unaffected (`main`'s result
+  is concrete at the result-owner seam). Not S118-blocking; MUST be
+  scheduled: the previously recorded `[]`-scope would never have driven
+  scheduling, which is this filing's real weight.
+- **Routing:** retargeted `/design`(typecheck), **S119** — this IS the
+  lenient-view row owed per the S118 W4+ drain. The `result-owner.md` §1.1.1
+  scope correction (the `Result`-family scope; strike the impossible `None`
+  example) is `/design`(int)'s side of the same window, per the section
+  above. The no-annotation-pinning constraint above is binding on the fix's
+  acceptance.
+- **Durable record now:** `/testing` lands the marginal cell in the P6 close
+  batch (`s118-test-plan.md` §11.8.6 item 4) — REPL-children pair, N
+  identical `(Err "boom")` turns, control differing ONLY in the
+  `:(Result String String)` annotation, instrument = child exit counters via
+  `CRANELISP_ALLOC_PARITY_DUMP` (**not** `/mem` deltas — the `/mem` window
+  itself is FIXME 0914), exact marginal 0, intended RED.
 
 ## REPL-surface status
 

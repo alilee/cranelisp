@@ -868,6 +868,11 @@ Findings, and they invert 0890's premise:
    over `SolveResult$Grid$…` are likewise live. The cell's residue is
    plausibly 0903-dominated and is expected to move only when the S119 0903
    ruling lands.
+   **[SUPERSEDED at P6 close — §11.8.1. `/port` falsified the call-site half
+   (the exemplar never calls `Grid.cells`; a typed-field respelling moves
+   emission and zero runtime blocks) and reduced the residue to FIXME 0917
+   (nullary-arm-beside-boxed-arm protect leak). Cell #21 is 0917's, not
+   0903's.]**
 
 **Dispositions:** FIXME 0890 actioned and deleted (this section is the
 record). Cell #21 keeps its threshold FORM and its ≤1400 bound unchanged (a
@@ -984,7 +989,7 @@ reconciled RED; zero expected-but-green; zero unexplained.**
 
 | # | Cell (both runs RED) | Attribution |
 |---|---|---|
-| 1 | `exemplar_ownership_residue_s116::sudoku_warm_serial_solve_residue_at_most_1400` | carry #21 — 0903 families, S119 (§11.3) |
+| 1 | `exemplar_ownership_residue_s116::sudoku_warm_serial_solve_residue_at_most_1400` | carry #21 — 0903 families, S119 (§11.3) **[re-attributed at P6 close to FIXME 0917 — §11.8.1]** |
 | 2 | `launch_grid_corrupt::launched_strand_grid_get_assoc_does_not_corrupt_heap_neg` | carry #24 — 0694, Track C → S119 |
 | 3 | `spec_11_stdlib::def_definition_echo_names_user_binding_not_internal_thunk` | carry #25 — 0863 DF-1, Track D → S119 |
 | 4 | `spec_11_stdlib::def_info_and_sig_describe_bound_value_not_macro` | carry #26 — 0863 DF-2, Track D → S119 |
@@ -1036,6 +1041,192 @@ GREEN in both runs); 0903 gained the acceptance addendum naming the
 `f4_sudoku::user::Grid.cells` re-baseline as the S119 fix's own witness.
 0909 deleted. The stray uncommitted 0726/0890 deletions from the pre-gate
 pass (`33098d33` missed them) are committed with this record.
+
+### 11.8 Phase-6 close dispositions (`/qa`, 2026-07-26) — 0917/0875/0913/0915/0916 + the `/testing` close batch
+
+The bounded P6 disposition pass. Every attribution below is probe-backed at
+HEAD `8f955d54` (probes in the session scratchpad; CLIF method:
+`CRANELISP_CODEGEN_DUMP='*'` over the FIXMEs' committed repros, allocator
+counts via `CRANELISP_ALLOC_PARITY_DUMP`).
+
+#### 11.8.1 FIXME 0917 — ACCEPTED and ATTRIBUTED: backend, unbalanced guarded protect inc at the match-result return seam
+
+`/port`'s repro reproduces exactly at HEAD (subject 4406/4, control
+4406/4406). The discriminating CLIF probe settles the
+backend-vs-typecheck-summary question **in favour of backend**, and localizes
+the mechanism to one instruction:
+
+- **The caller is exonerated, and so is typecheck.** `subject-loop` (source
+  byte-identical in both variants) compiles DIFFERENTLY per callee — control's
+  caller incs `bx` pre-call and glue-releases it at exit (the `MayAliasOf`
+  accounting), subject's caller does neither (`Fresh` result, `Borrowed`
+  param) — and **both callers are correct for their callee's truthful
+  summary**. Both release the returned tree exactly once (`call fn0`).
+- **The strand is emitted inside `step`.** Subject's `step` ends with a
+  `NULLARY_TAG_THRESHOLD`-guarded **protect inc on the match result**
+  (`icmp ult v10, 1024; brif …; atomic_rmw add v10+8`) that NOTHING balances:
+  the returned `(Some …)` tree leaves the frame at rc=2, the caller releases
+  its one count, and the whole 4-object tree strands at rc=1 — slope exactly
+  4/iteration, deallocs constant. Control's `step` (every arm a boxed
+  construction) emits NO protect inc at the same seam.
+- **Mechanism:** `fn_compiler.rs::protect_return_value` is licensed by the
+  `value_provenance`/`is_fresh_construction` join ("fresh iff EVERY arm is
+  fresh"). A **nullary `ConstrADT` arm classifies non-Fresh**, so one `None`
+  arm — never taken at runtime — flips the whole match result to
+  protect-eligible; the protect inc is only balanced when the result actually
+  aliases a scope binding whose scope-exit dec lands on it, which a
+  fresh-boxed-arm result never does. The nullary guard itself works (a `None`
+  tag correctly skips at runtime); the defect is the unbalanced inc being
+  licensed at all. `/port`'s "guarded path for the whole value" observation is
+  hereby refined: the guard's SKIP direction is fine; the guarded INC is the
+  leak.
+- **Attribution:** `cranelisp-backend`,
+  `fn_compiler.rs::{value_provenance, is_fresh_construction,
+  protect_return_value}` — the nullary-`ConstrADT` classification in the
+  provenance lattice (a bare tag mints no box and can alias nothing; it should
+  join as Fresh, or protect licensing must require a genuinely aliasable arm).
+  Class `rc-miscount`, leak polarity, concrete types throughout — this is NOT
+  a 0903 family (no residual signature vars); it is a distinct axis and must
+  not wait on the 0903 ruling's shape. FIXME retargeted `/design`(backend),
+  S119 (narrow ruling: the lattice classification + protect licence; `/dev`
+  follows).
+
+**Cell #21 re-pointed.** §11.3's finding 3 ("the 0903 families are live on the
+solve path… plausibly 0903-dominated") is FALSIFIED by `/port`'s direct
+experiment (the exemplar never calls `Grid.cells`; the typed-field respelling
+moves emission but zero runtime blocks) and by the 0917 reduction (100% of the
+12,431 in constraint propagation, the 0917 shape). Cell #21
+(`exemplar_ownership_residue_s116::sudoku_warm_serial_solve_residue_at_most_1400`)
+is re-attributed to **FIXME 0917**; it is expected to flip when 0917's fix
+lands and is **NOT** 0903's acceptance cell (0903's addendum amended
+accordingly). `/testing` re-points the cell's `// defect:` line
+(locus → `fn_compiler.rs::protect_return_value`, FIXME 0917, this section) in
+the close batch. The `f4_sudoku::user::Grid.cells` golden re-baseline stays
+0903's own (static) witness, exactly as the 0903 addendum now records.
+
+#### 11.8.2 FIXME 0875 — CLOSED, not reproducible at HEAD; standing parity cell replaces it
+
+`/port`'s bounded HEAD check is accepted: fresh scratch tree, no cache,
+documented prereq build first, `--link` exits 0, produced binary's stdout
+byte-identical (659 bytes) to `--run`, cold and warm. There is no symptom to
+attribute; attributing one anyway is the shape METHOD §3.3's
+verify-against-source rule prohibits. Likeliest reading stands as recorded
+(S117 platform-archive build skew; the S118 W4 link-path work also touched
+this path). **FIXME 0875 deleted with this record.** Replacement: `/testing`
+lands a standing exemplar `--link`-then-run parity cell (§11.8.6 item 3) so a
+recurrence is caught by the suite instead of by a Phase-6 replay.
+
+#### 11.8.3 FIXME 0913 — triage CONFIRMED; retargeted `/design`(typecheck), S119; marginal cell lands now
+
+- **Axis confirmed (accepted analytically):** the discriminator is a residual
+  type parameter in the result's displayed type — the `(Err x)`/`(Ok x)`
+  family and `(vec)`, NOT the recorded `[]`-corner; `None` cannot leak
+  (nullary). `/repl`'s one-variable annotation-pin pair is the reduced repro.
+- **Risk rank: Important, leak-polarity, REPL-dominant.** Every unannotated
+  fallible-result turn — the single most common result shape — leaks its
+  full result tree (2–6 blocks/turn measured), linear in session length, no
+  unsafety, invisible until process growth. Batch modes largely unaffected
+  (`main`'s result is concrete at the result-owner seam). Not
+  S118-blocking; MUST be scheduled, not parked: the recorded scope would
+  never have caused scheduling, which is the finding's real weight.
+- **Routing:** the fix is the lenient-view row already owed per the W4+ drain
+  (`result-owner.md` §1.1.1 rules the owner is `MonoExpr::lenient_from_expr`,
+  typecheck). FIXME retargeted `/design`(typecheck), S119; the
+  `result-owner.md` §1.1.1 scope sentence is corrected in the same window
+  (the `/design`(int) side of that correction is named in the FIXME).
+- **Durable record now:** the marginal cell (§11.8.6 item 4). Per FIXME 0914,
+  the instrument is the child's exit allocator counters
+  (`CRANELISP_ALLOC_PARITY_DUMP`), never `/mem` deltas — `/mem`'s window
+  closes before the result release and is itself the subject of 0914.
+
+#### 11.8.4 FIXME 0915 — attribution SPLIT recorded; retargeted `/design`(backend) with a named int rider; guard deferred S119
+
+Read at source (`crates/cranelisp-backend/src/error.rs:60-146`,
+`crates/cranelisp-types/src/error.rs:192`):
+
+- **Backend half (items 1–3):** `CompilationError::CodegenFailed` carries a
+  structured `ErrorLocation` but its `cause` is a pre-rendered `String` that
+  already embeds the inner types-level located prefix — the doubled
+  `codegen error at 0..0:` is baked at construction (structure lost at the
+  wrapping seam). The `user/user/…` doubling is `error.rs:126-132` composing
+  `"{module}/{symbol}"` over an instance `Symbol` that already carries its
+  qualified spelling (plain `user/f` composes correctly — instance-specific).
+  The `0..0` is the raise sites not threading the failing form's span into
+  `ErrorLocation` — the spans exist on the `MonoExpr` nodes (the span-keyed
+  carrier architecture), so population is a backend raise-site obligation,
+  with int required not to discard it.
+- **Int rider (item 4 + presentation):** `user/__expr` and the `$`-mangled
+  instance spelling are subject-presentation defects at the display boundary
+  (D39: coordinates as data, formatting downstream in int) — the subject must
+  render as the user would write it per `repl/spec.md` §5.5. Named for
+  `/design`(int) in the same S119 window.
+- **Guard sequencing:** every currently-reachable e2e trigger for this frame
+  is 0907's refusal, so a guard authored now dies with 0907's fix. The §5.5
+  frame guard is deferred to S119, authored in the 0907/0903 fix window
+  against whatever codegen-refusal trigger remains (or a constructed one).
+  Recorded as a `[S119]` PLAN row, not a close-batch cell.
+
+#### 11.8.5 FIXME 0916 — "loses TCO" FALSIFIED; the SIGSEGV is a wild guarded RC write on a scalar payload; 0903 family 2's memory-unsafety face
+
+The probe rewrites this finding's mechanism entirely:
+
+- **TCO is intact.** Both variants compile the self call as `jump block1(…)`
+  — there is no lost tail call and no frame growth. The depth table's ~1,000
+  "threshold" was the payload VALUE crossing 1024: measured at HEAD, subject
+  n=1023 exits clean, **n=1024 SIGSEGVs on the first iteration** —
+  `NULLARY_TAG_THRESHOLD` exactly.
+- **Mechanism (CLIF-verified):** the generic trait-method instance
+  `Functor.fmap$user/Option` — compiled once per type-ctor, payload type a
+  residual `Var` — emits a threshold-guarded RC inc on the `Some` payload
+  (`icmp ult v15, 1024; … atomic_rmw add v15+8`). The payload is a raw `Int`:
+  when its VALUE ≥ 1024 the guard misreads it as a heap pointer and performs
+  a **wild atomic write at address payload+8** → SIGSEGV. The monomorphised
+  control `fmapo$Fn(Int;Int)+user/Option$Int` emits zero RC ops on the same
+  payload. (The instance also releases both params via shallow `dealloc` and
+  carries the 0917-shape unbalanced protect inc on its result — the leak
+  faces; separate from the crash.)
+- **Attribution:** `cranelisp-backend` — 0903 **family 2** (generic
+  trait-method instances with residual signature vars), whose censused
+  consequence must be UPGRADED from "silent leak" to **memory-unsafe wild
+  write**: any residual-`Var`-typed field/param slot holding a scalar whose
+  value ≥ `NULLARY_TAG_THRESHOLD` is RC-manipulated as a pointer. The
+  nullary-tag guard discriminates tags from pointers, not scalars from
+  pointers — it is categorically unable to license RC ops on
+  unknown-category slots. FIXME retargeted `/design`(backend), S119,
+  **co-ruled with 0903** (the ruling can no longer treat family 2 as
+  leak-only; recorded in 0903's addendum). New `// defect:` class
+  `scalar-as-pointer` added to the vocabulary for this mechanism.
+- **Guard spec sharpened** (§11.8.6 item 5): the committed A/B pair plus the
+  1023/1024 boundary — subject clean at n=1023, SIGSEGV at n=1024 — which
+  pins the mechanism (value threshold), not the false depth reading. Exit
+  STATUS asserted, per the FIXME's ask.
+
+#### 11.8.6 The `/testing` close batch — exact contents and expected colors
+
+Post-gate additions are attributed intended REDs per the S117 precedent.
+Baseline: the W8-certified 19 RED (16 named §11.7 + 0910 ×2 + 0911).
+
+| # | Item | Cells | Color |
+|---|---|---|---|
+| 1 | **0917 pair** — new repro file; marginal subject/control pair (control differs only in the arms' returned ctors), PrimitivesOnly, exact marginal balance; `--run --no-cache` face + `--link` face (the two verified toggles); `// spec: spec/12-runtime.md §12.3.1`; `// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/fn_compiler.rs::protect_return_value found=S118 owner=/dev` | 2 | **RED ×2** (control exactness embedded in the pair; a separate control cell, if `/testing` prefers one, is GREEN) |
+| 2 | **Cell #21 re-point** — `exemplar_ownership_residue_s116.rs` comment/`// defect:` edit onto 0917 + §11.8.1 (locus `protect_return_value`; the 0903-family prose removed) | 0 | no change (stays RED, carry #21, now 0917-attributed) |
+| 3 | **0875 replacement** — standing exemplar `--link`-then-run parity cell: fresh scratch copy of `exemplar/*.cl`, no cache, `--link` the entry, run the produced executable, assert exit 0 + stdout byte-identical to `--run` of the same tree; ordinary coverage cell (no `// defect:` — nothing attributed was ever reproduced) | 1 | **GREEN** |
+| 4 | **0913 marginal cell** — REPL-children pair, N identical `(Err "boom")` turns, control differs ONLY in the `:(Result String String)` annotation; instrument = exit counters via `CRANELISP_ALLOC_PARITY_DUMP` (NOT `/mem`, per 0914); assert exact marginal 0; `// spec: spec/12-runtime.md §12.3.1` (+ result-owner design cite); `// defect: class=rc-miscount locus=cranelisp-typecheck::MonoExpr::lenient_from_expr found=S118 owner=/dev` | 1 | **RED** (today: subject +2N allocs/+0 deallocs vs control balanced, exact) |
+| 5 | **0916 pair** — new repro file from the FIXME's nine-liner: trait-scrutinee subject asserting clean exit (status, not value) at n=2000 → RED; boundary control n=1023 → GREEN; plain-`defn` control n=400000 → GREEN; `// spec: spec/05-functions.md` (TCO cite retained for the pair's legibility) + `// defect: class=scalar-as-pointer locus=crates/cranelisp-backend generic trait-method instance, residual-var slot RC guard found=S118 owner=/dev` | 3 | **RED ×1 + GREEN ×2** |
+| 6 | **0910** — re-express the two `s117_ownership_witnesses` release-side oracles over the canonical glue-call shape, polarity preserved (precise arm asserts ABSENCE); delete FIXME 0910 | 2 flips | **GREEN ×2** (were RED) |
+| 7 | **0911** — make `yes_flag_errors_on_non_agent_build` race-independent (drop the stdin write or explicit EPIPE-tolerant opt-in); sweep the `-y` sibling; delete FIXME 0911 | 1 flip | **GREEN** (was RED under load) |
+| 8 | **0907 `// defect:` lines** — `tests/examples.rs` (and the `stdlib_conformance`/`spec_10_io`/`ctor_as_value` carriers if not already annotated): `class=wrong-reject locus=crates/cranelisp-backend/src/drop_glue.rs::ctor_shapes found=S118 owner=/dev` (a spec-conforming program hard-refused; the mechanism record is FIXME 0907) | 0 | no change (stay RED, 0907-attributed) |
+
+**Post-batch arithmetic (the close record's exact expectation):**
+19 − 3 (items 6–7) + 4 (items 1, 4, 5) = **20 RED**, every one traced:
+the 16 gate-named (§11.7) + 0917 ×2 + 0913 ×1 + 0916 ×1. New GREENs: the
+0875-replacement parity cell, 0916's two controls, plus items 6–7's three
+flips. Any RED outside this set after the batch is a genuine regression.
+
+**Explicitly NOT in this batch:** the 0915 frame guard (S119, §11.8.4); the
+0903 family marginal guards (S119 W1, §11.2 — family 2's spec now MUST
+include a wild-write subject per §11.8.5); the S119 W1 golden re-baseline
+obligations (0903 addendum).
 
 ## Next skills
 

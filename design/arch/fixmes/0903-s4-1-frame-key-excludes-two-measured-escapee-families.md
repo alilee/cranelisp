@@ -234,17 +234,36 @@ drifted into a SHALLOWER release (the golden's transitive step gone, no glue
 call taking it over; the only frame in either lane where a teardown level was
 lost). The blessed golden is a leak record, not certification.
 
-**Binding on this FIXME's S119 acceptance:** the implementing fix MUST name the
-`f4_sudoku.clif` `user::Grid.cells` frame's re-baseline as its own witness —
-that frame is EXPECTED to drift back to a transitive (or glue-routed) release
-when the ruling lands, and the scoped, attributed re-capture of that drift is
-part of the fix's evidence, planned in the fix's change-set rather than
-discovered at the next wave gate. Cell #21
-(`exemplar_ownership_residue_s116::sudoku_warm_serial_solve_residue_at_most_1400`,
-12,431 at S118 HEAD, re-attributed to the 0903 families per
-`tests/plan/s118-test-plan.md` §11.3) is the companion runtime witness expected
-to move with the same fix. **See the `/port` evidence below: the second half of
-that expectation is falsified — cell #21 will NOT move with this fix.**
+**Binding on this FIXME's S119 acceptance (AMENDED at P6 close, `/qa`):** the
+implementing fix MUST name the `f4_sudoku.clif` `user::Grid.cells` frame's
+re-baseline as its own witness — that frame is EXPECTED to drift back to a
+transitive (or glue-routed) release when the ruling lands, and the scoped,
+attributed re-capture of that drift is part of the fix's evidence, planned in
+the fix's change-set rather than discovered at the next wave gate. That
+re-baseline is a **static** witness (the frame is compiled-but-uncalled in the
+corpus entry — `/port` evidence below) and it STANDS.
+
+The original companion clause naming cell #21
+(`exemplar_ownership_residue_s116::sudoku_warm_serial_solve_residue_at_most_1400`)
+as this FIXME's runtime witness is **STRUCK — falsified by `/port`'s direct
+experiment**: the exemplar never calls `Grid.cells`, and the cell's residue
+reduces cleanly to FIXME 0917 (a distinct backend axis). Cell #21 is
+re-attributed to 0917 and is NOT this FIXME's acceptance cell
+(`tests/plan/s118-test-plan.md` §11.8.1). This ruling's runtime witnesses are
+instead: the S119 W1 family marginal guards (`s118-test-plan.md` §11.2,
+`PLAN.md` S118-track rows) and — for family 2 — the P6-batch 0916 pair.
+
+**Family-2 severity UPGRADE (P6 close, FIXME 0916, probe-verified):** family 2
+is not leak-only. The generic instance RC-manipulates a residual-`Var`-typed
+slot behind the nullary-tag guard, and a SCALAR payload whose value ≥
+`NULLARY_TAG_THRESHOLD` is treated as a heap pointer — a **wild atomic write
+at payload+8** (measured boundary exactly 1023/1024; SIGSEGV on the first
+iteration). The nullary-tag guard discriminates tags from pointers, not
+scalars from pointers; it cannot license RC ops on unknown-category slots.
+The ruling must close the memory-unsafety face, not only the leak — a
+resolution that keeps family-2 emission while fixing only the discharge depth
+is insufficient. 0916 (retargeted here-adjacent, `/design` backend, S119)
+carries the reduced nine-line repro + CLIF evidence.
 
 ## `/port` application-scale evidence (S118 Phase 6a, HEAD `501e701f`)
 
