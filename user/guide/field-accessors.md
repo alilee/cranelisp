@@ -75,13 +75,28 @@ introduced the same field, qualify it.
 (The field also stays reachable through `match` pattern destructuring, which is never
 affected by bare-name contention.)
 
-> **Known limitation — polymorphic products.** A product such as
-> `(deftype (Pair a b) (MkPair [:a fst :b snd]))` currently fails to mint both
-> `Pair.fst` and the unique bare `fst` alias. Pattern matching still extracts
-> the fields. This is compiler defect
-> [FIXME 0867](../../design/arch/fixmes/0867-polymorphic-product-bare-field-alias-missing.md),
-> not a different accessor rule; the examples above describe the intended
-> language behavior.
+> **Known limitation — field lists written on a named constructor arm.**
+> Accessors are currently minted only from the **`deftype`-level** field list —
+> the spelling used by every example above, `(deftype Point [:Int x :Int y])`,
+> including the polymorphic form `(deftype (Pair a b) [:a fst :b snd])`, which
+> does mint `Pair.fst` and bare `fst`. A field list written inside a **named
+> constructor arm** mints nothing:
+>
+> ```
+> user> (deftype Trio (MkTrio [:primitives/Int t1 :primitives/Int t2]))
+> user> (t1 (MkTrio 1 2))
+> Error: type error at 1..3: undefined variable: t1
+> user> (Trio.t1 (MkTrio 1 2))
+> Error: type error at 1..8: undefined variable: Trio.t1
+> ```
+>
+> This covers every sum type and every product whose constructor name differs
+> from the type name. Pattern matching still extracts the fields, and is the
+> workaround. This is compiler defect
+> [FIXME 0867](../../design/arch/fixmes/0867-polymorphic-product-bare-field-alias-missing.md)
+> (the type parameter is not the cause — that framing was measured false in
+> Sprint 118), not a different accessor rule; the examples above describe the
+> intended language behavior.
 
 ## See also
 

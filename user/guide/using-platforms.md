@@ -90,7 +90,10 @@ hello world
 `main` must return an `IO` action; `print` does, so this is a well-formed IO program.
 For the wider IO model (why effects have type `(IO a)`, how `main` is forced), see
 [getting-started § Platforms and IO](../getting-started.md#platforms-and-io) and the
-worked [`examples/21-hello-io.cl`](../../examples/21-hello-io.cl).
+worked [`examples/21-hello-io.cl`](../../examples/21-hello-io.cl) — noting that the
+latter does not compile in the current build (it defines its own IO combinator; see
+the known-limitation note in
+[getting-started § A program that does IO](../getting-started.md#a-program-that-does-io)).
 
 ## Finding the DLL — the platform search path
 

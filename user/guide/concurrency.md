@@ -232,6 +232,20 @@ CRANELISP_LIB=stdlib cranelisp --run timeout.cl   # exit code 0 — the timer fi
 
 If the work wins instead — `(timeout 1000 (Pure 42))` — the result is `(Some 42)`.
 
+> **Known limitation (current build) — `core.io` does not compile.** The snippet
+> above is the intended behaviour, but it does **not** run today: the `core.io`
+> module (home of `timeout`, `>>`, `map-io`, `when-io`, `unless-io`,
+> `sequence-io`) fails to compile, so importing it fails the whole program with
+> `codegen failed for core.io/when-io: constructor 'Bind' disagrees on declared
+> parameter identity for 'primitives/IO'`. The cause is one compiler defect —
+> [FIXME 0907](../../design/arch/fixmes/0907-io-bind-existential-ctor-defeats-canonical-glue-derivation.md),
+> under active ruling — which refuses **any** user-written combinator over
+> `(IO a)` values, whether it lives in the standard library or in your own code.
+> There is no workaround: re-spelling the combinator polymorphically, or as a
+> trait method, does not restore it. Until the ruling lands, use the
+> **inline pattern** below, which uses only the `primitives` builtins and is
+> verified working.
+
 #### Free-standing code writes the pattern inline
 
 `timeout` requires the standard library. **Free-standing code** (anything not using
@@ -273,28 +287,31 @@ consequence of three situations:
 A cancelled computation's effects **do not complete**: its future is dropped, its
 remaining side effects never run, and its resources are released. This is
 observable. The following stdio program races a slow `print "LATE"` against a 10ms
-deadline; only `EARLY` is printed — `LATE` never happens because the slow branch is
-cancelled:
+deadline branch; only `EARLY` is printed — `LATE` never happens because the slow
+branch is cancelled:
 
 ```clojure
 (platform stdio)
-(import [core.io [timeout >>]])
-(import [primitives [Pure bind sleep Some None]])
+(import [primitives [Pure bind sleep race]])
 (import [platform.stdio [print]])
 
 (defn slow-print []
-  (>> (sleep 1000) (print "LATE")))     ;; would print after 1s
+  (bind (sleep 1000) (fn [_] (bind (print "LATE") (fn [_] (Pure 0))))))
+(defn deadline []
+  (bind (sleep 10) (fn [_] (Pure 0))))
 
 (defn main []
-  (>> (print "EARLY")
-      (bind (timeout 10 (slow-print))   ;; cancelled after 10ms
-        (fn [_] (Pure 0)))))
+  (bind (print "EARLY")
+    (fn [_] (bind (race (slow-print) (deadline)) (fn [_] (Pure 0))))))
 ```
 
 ```
-CRANELISP_LIB=stdlib CRANELISP_PLATFORM_PATH=target/debug cranelisp --run cancel.cl
+CRANELISP_PLATFORM_PATH=target/debug cranelisp --run cancel.cl
 EARLY
 ```
+
+(This spelling uses only `primitives` — no standard library — because `core.io`'s
+`timeout`/`>>` do not compile today; see the known-limitation note above.)
 
 `LATE` is absent — the cancelled loser's side effect genuinely did not run. The
 normative cancellation semantics are
@@ -322,9 +339,10 @@ The reference patterns are specified in
 Cranelisp's concurrency works as described above, but there are real edges. The docs
 state them plainly rather than imply production-unattended readiness.
 
-- **`timeout` is stdlib, not a primitive.** It is available to programs run with
-  `CRANELISP_LIB=stdlib` (the exemplar and production binaries). Free-standing code
-  writes the `race`/`sleep` pattern inline (above).
+- **`timeout` is stdlib, not a primitive** — and its home module `core.io` does not
+  compile in the current build (FIXME 0907, above), so `timeout` is unavailable to
+  *every* program right now, stdlib or not. Write the `race`/`sleep` pattern inline
+  (above); `sleep`, `race`, and `select` are `primitives` builtins and unaffected.
 - **An idle server stays up but does not self-exit.** A long-running `accept` loop
   with no traffic now stays alive indefinitely (the earlier ~30-second no-progress
   watchdog was retired). The flip side: a foreground `cranelisp --run` of a server

@@ -410,3 +410,25 @@ ruled; no `tests/examples.rs` exit-code change is owed then or now.
   instance must balance. `/stdlib`'s rider already asks for a stdlib-shaped leak
   cell if option 3 is taken; this one is needed under **every** option, because
   the trait face leaks at HEAD today regardless of what happens to the refusal.
+
+## Docs-side rider (appended by `/docs`, S118 Phase 6b)
+
+Three user-doc surfaces carry a known-limitation note that **deletes in the fixing
+change-set** (they are the user-visible face of this defect, not new evidence):
+
+- `user/getting-started.md` §"A program that does IO" — the note; the section's
+  worked program was re-spelled to an inline `hello.cl` because
+  `examples/21-hello-io` is dark. When the ruling lands, restore the
+  `examples/21-hello-io --run` transcript (`Hello, world! / Hello, / world! /
+  Computing... / Cranelisp`, exit 243).
+- `user/guide/concurrency.md` §`timeout` — the note, and the §"Honest scope"
+  bullet re-worded to say `timeout` is unavailable to *every* program (not only
+  free-standing ones) while `core.io` is dark. Both revert.
+- `user/guide/concurrency.md` §"Structured cancellation" — the `(import [core.io
+  [timeout >>]])` stdio example was replaced with a `primitives`-only
+  `race`/`sleep` spelling (verified running at HEAD `1c79b227`). The `core.io`
+  spelling may return, but the `primitives`-only one is worth keeping as the
+  free-standing variant.
+
+Plus `user/guide/using-platforms.md`'s pointer at `examples/21-hello-io.cl`, which
+carries a one-line caveat.

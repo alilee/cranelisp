@@ -95,7 +95,8 @@ output comes from IO effects inside your program.
   `main` is rejected before execution.
 - **Exit code:** if `main`'s result (after unwrapping `IO`) is an `Int`, that value
   becomes the process exit code; any other result yields exit code `0`. A
-  compilation error prints to stderr and exits non-zero.
+  compilation error prints to stderr and exits non-zero. The **linked executable
+  applies the identical rule** — see [Link](#link---link).
 
 **Artifact:** none — the program runs and the process exits with the program's code.
 
@@ -160,6 +161,14 @@ floor are normatively specified in
 
 **Artifact:** a linked standalone executable, named after the entry module's source
 stem and written beside that source (or at the `-o` path).
+
+#### Exit code of the linked executable
+
+Running the produced executable applies exactly the same rule as `--run`: an `Int`
+result becomes the process exit code, **any other result exits `0`**. The two modes
+agree by construction — a program whose `main` yields, say, a `String` exits `0`
+under both. (Before Sprint 118 the linked stub truncated a heap result to the low 32
+bits of its pointer, so `--run` and the linked binary could disagree; that is fixed.)
 
 ## Options
 
@@ -344,9 +353,10 @@ retain memory, so leave them off for normal use.
 | `CRANELISP_SCRUB_FREED=1` | **Poison freed memory.** Overwrites each freed block with a sentinel pattern, so a use-after-free reads obvious garbage (or faults immediately) instead of stale-but-plausible data. Strongest combined with quarantine. |
 | `CRANELISP_ALLOC_PARITY=1` | **Balance check.** At process exit, asserts the number of allocations equals the number of frees, reporting any imbalance — a double-free (more frees) or a leak (more allocations) that produces otherwise-correct output. |
 | `CRANELISP_ALLOC_PARITY_DUMP=1` | Prints the current allocation/free ledger mid-run (print-and-continue) rather than only at exit. |
+| `CRANELISP_RC_DEC_CHECK=1` | **Check at the seam.** Arms the reference-count/allocator seam checks — a decrement of an already-freed pointer, an underflowing release, an implausible block header — so the run stops at the offending operation with a located message instead of continuing on corrupt state. Some of these checks are always active in a debug build; this variable arms the full set, including in release and `--link` builds. |
 
-The three modes compose freely; quarantine + scrub + parity together is the strongest
-configuration. These are debugging aids, not a language feature — their design home is
+The modes compose freely; quarantine + scrub + parity together is the strongest
+configuration, and `CRANELISP_RC_DEC_CHECK=1` adds the point-of-fault report. These are debugging aids, not a language feature — their design home is
 `design/intrinsics/diagnostic-modes.md`.
 
 ## Cross-links

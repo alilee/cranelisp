@@ -95,30 +95,49 @@ environment — so it is the safest place to confirm your build works on any hos
 
 ### A program that does IO
 
-To actually print, a program performs IO. Start with
-[`examples/21-hello-io.cl`](../examples/21-hello-io.cl), which walks through the IO
-model step by step:
+To actually print, a program performs IO. The smallest complete IO program is the
+platform two-step plus a `main` that prints:
+
+```clojure
+;; hello.cl
+(platform stdio)
+(import [platform.stdio [*]])
+
+(defn main [] (print "hello world"))
+```
 
 ```
-$ cranelisp examples/21-hello-io --run
-Hello, world!
-Hello,
-world!
-Computing...
-Cranelisp
+$ CRANELISP_PLATFORM_PATH=target/debug cranelisp hello.cl --run
+hello world
 ```
+
+> **Known limitation (current build).** The worked IO chapter of the learning
+> sequence — [`examples/21-hello-io.cl`](../examples/21-hello-io.cl) and
+> `examples/23-io-sequence.cl` — does **not** compile today. Each defines its own
+> IO combinator (`then`, `map-io`) over `(IO a)`, and any user-written combinator
+> over IO values is currently refused by the compiler with
+> `constructor 'Bind' disagrees on declared parameter identity for 'primitives/IO'`.
+> Everything else about IO works: `Pure`, `bind`, `do`, `bind!`, `if` between two
+> freshly built IO branches, IO-returning functions, and real console output as
+> above. This is compiler defect
+> [FIXME 0907](../design/arch/fixmes/0907-io-bind-existential-ctor-defeats-canonical-glue-derivation.md),
+> under active ruling; there is no workaround — re-spelling the combinator
+> polymorphically or as a trait method does not restore it. Until it is fixed,
+> write effect sequences with `bind`/`do` directly rather than factoring your own
+> combinator out of them. `examples/22-*` and `examples/24-*` remain runnable.
 
 IO requires a **platform** — a small native library that provides the host's
 side-effecting operations (here, `print`). The `examples/` directory ships a
 checked-in platform symlink for the common hosts (`stdio.so` on Linux, `stdio.dylib`
-on macOS) pointing at the `libcranelisp_stdio` library Cargo builds, so the example
-runs with **no environment variable** on those hosts.
+on macOS) pointing at the `libcranelisp_stdio` library Cargo builds, so an entry
+module **inside `examples/`** — whose project root is that directory — finds the DLL
+with **no environment variable** on those hosts.
 
-On a host with no checked-in symlink, point the binary at the built library with
-`CRANELISP_PLATFORM_PATH`:
+Anywhere else — including the `hello.cl` above, written in a directory of your own —
+point the binary at the built library with `CRANELISP_PLATFORM_PATH`:
 
 ```
-CRANELISP_PLATFORM_PATH=target/debug cranelisp examples/21-hello-io --run
+CRANELISP_PLATFORM_PATH=target/debug cranelisp hello.cl --run
 ```
 
 If the platform cannot be found you will see `platform 'stdio' not found` — that
