@@ -115,3 +115,7 @@ it back to §4.1.
   same guarded dec), so this was a ruling gap, not a behaviour change.
 - Upstream correction owed by `/arch`: FIXME 0902 — `concrete-boundary-type.md`
   §3.1.1 point 2 (and BC §3 invariant 9) assert this `from_type` "must succeed".
+  **RESOLVED S118 W8 (`/arch`): both texts amended — the template path's `Err`
+  arm classifies `Mixed` (ratified as-built), the template/use-site distinction
+  is canonical at §3.1.1 point 2, and the declaration-time question is routed
+  to `/spec` as FIXME 0912.**

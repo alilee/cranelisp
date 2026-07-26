@@ -78,10 +78,16 @@ answer is recorded in the register (§4). Each tier has an S111-proven exemplar.
    not a data shape) — but it IS often available for the *producer seam* (see §3, the
    conditional/unconditional origin split).
 2. **By-construction witness.** The narrowing ships a checkable artifact whose validity
-   *implies* the property — proof, not sampling. Exemplar: CS-1.2's `escape_symbol`
-   (prefix-free escaping + total decoder + round-trip-decode test = injectivity for **all**
-   inputs, where the 0633-R3 alphanumeric battery was blind to the class). Rule: **every
-   mangle from semantic identity to symbol either ships a decoder witness or is
+   *implies* the property — proof, not sampling. Live exemplar:
+   `cranelisp_types::drop_glue_symbol_name` (`module.rs` — every variable-length
+   component length-prefixed + hex-encoded, so the encoding is prefix-free and trivially
+   decodable: injectivity for **all** inputs by construction, pinned by the
+   `module/tests.rs` injectivity/structure battery). The model's S111 origin, CS-1.2's
+   backend-local `escape_symbol` (prefix-free escaping + total decoder + round-trip-decode
+   test, where the 0633-R3 alphanumeric battery was blind to the class), was DELETED at
+   S118 W3 §8 with the second glue-identity home — the discipline it carried now lives in
+   the types-owned mint. Rule: **every mangle from semantic identity to symbol either
+   ships a decoder witness (or is injective-by-construction with a structure pin) or is
    additionally keyed by a disambiguator** (span/disc, as the mono inner-fn names are).
 3. **Seam assertion.** The invariant is checked exactly where it could break, so a
    violation *names its seam at the moment it happens*. Two sub-forms, per the CS-2

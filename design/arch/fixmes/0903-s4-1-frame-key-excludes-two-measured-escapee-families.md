@@ -216,7 +216,11 @@ they cannot substitute for the negatives.
 - Related upstream: FIXME 0902 (`/arch`) — `concrete-boundary-type.md` §3.1.1
   point 2 / BC §3 invariant 9 assert the ctor/accessor signature path's
   `ConcreteType::from_type` "must succeed". The accessor family here is that
-  assertion's second half, and it fails the same way.
+  assertion's second half, and it fails the same way. **RESOLVED S118 W8
+  (`/arch`): §3.1.1 point 2 + BC §3 invariant 9 amended — template-path `Err`
+  classifies `Mixed` (ratified as-built), the *classification* rule is settled
+  upstream of this FIXME's release-side ruling, and the undeclared-field
+  declaration-time question is FIXME 0912 (`/spec`).**
 - Related: `design/arch/safety-invariants.md` §4 — a silent shallow release that
   deallocs without discharging fields is an unasserted-narrowing instance
   (Principle 25); the accessor/trait families are currently in it.

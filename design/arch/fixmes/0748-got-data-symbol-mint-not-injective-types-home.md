@@ -73,11 +73,17 @@ injectivity fix itself is NOT landed — it is yours.
 
 ## Proposed resolution
 
-An injective, prefix-free mint at the types home. The scheme is already proven
-in-tree: `cranelisp-backend/src/compiler/resolution.rs::escape_symbol` (the
-CS-1.2 model — `_` is the escape char, `_`→`__`, `.`→`_d`, `-`→`_h`, …, with a
-`_u{cp:06x}` catch-all, and a total decoder in `resolution/tests.rs` whose
-existence IS the injectivity proof). Two shapes:
+An injective, prefix-free mint at the types home. The live in-tree injectivity
+model is now `cranelisp_types::drop_glue_symbol_name` (`module.rs:2654` —
+length-prefixed hex components, prefix-free/injective by construction, pinned
+by the `module/tests.rs` battery). *(Stale-citation repair, /arch S118 W8: this
+section originally named `cranelisp-backend`'s `escape_symbol` as the proven
+scheme; that fn was DELETED at S118 W3 §8 with the backend-local glue-naming
+home — its escape scheme (`_`→`__`, `.`→`_d`, `-`→`_h`, `_u{cp:06x}` catch-all,
+total decoder) is recoverable from git history. NOTE for the implementer:
+length-prefixed hex does NOT keep alphanumeric paths as fixed points, so it
+cannot be reused verbatim here — constraint 1 below still binds; recover the
+escape scheme or design a fixed-point-preserving variant.)* Two shapes:
 
 - **(a)** move/duplicate that escape into `cranelisp-types` beside
   `got_data_symbol_name` and apply it to the path (a types edit + a
@@ -90,7 +96,8 @@ existence IS the injectivity proof). Two shapes:
 1. **Purely-alphanumeric paths MUST stay fixed points.**
    `__cranelisp_got_primitives` is an `export_name` LITERAL in
    `cranelisp-primitives/src/lib.rs:143` and is linked against by every `--link`
-   binary; `escape_symbol` satisfies this by construction. Pinned by
+   binary; the deleted `escape_symbol` scheme satisfied this by construction
+   (a property the landed mint must preserve). Pinned by
    `resolution::tests::got_data_symbol_name_matches_the_pinned_link_time_abi_literals`.
 2. **One change-set, one scheme.** Definers and consumer all route through the
    types fn today, so a single edit moves them together — but the cached `.o`

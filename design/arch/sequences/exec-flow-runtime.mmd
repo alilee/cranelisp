@@ -82,12 +82,12 @@ sequenceDiagram
 
                     create participant ST_fq as ST[fq.module]<br/>SymbolTable [generic C=Code, L=()]<br/>(reached via Sess.shared.symbol_tables.get(&fq.module))
                     IORuntime ->> ST_fq: SymbolTable::get(&fq.symbol) -> Option[Ref[ModuleEntry[Code]]]
-                    ST_fq -->> IORuntime: Some(Ref[ModuleEntry::Def { got_slot: Some(slot), kind: DefKind::PlatformEffect { scheduling_class }, .. }])
+                    ST_fq -->> IORuntime: Some(Ref[ModuleEntry::Def { kind: DefKind::PlatformEffect { scheduling_class, got_slot, .. }, .. }]) — slot read via callable_got_slot() (S83 slot-onto-kind reshape)
                     IORuntime ->> ST_fq: SymbolTable::got.load_slot(slot)
                     ST_fq -->> IORuntime: ptr (the platform DLL fn address, Acquire ordering)
                     Note over IORuntime: marshal args via CLType::from_repr (CLInt / CLString / CLBool / CLFloat / CLIO _)
                     create participant PlatformDLL as Platform DLL<br/>(loaded via cranelisp_platform::load_manifest from {project_root}/platforms/{name}.dylib — example: stdio.<br/>Per Decision 26 (S66 amendment plus rollback) the per-symbol GOT slot — read via SymbolTable.got.load_slot(slot) — is the runtime call target.)
-                    IORuntime ->> PlatformDLL: indirect call via ptr from the GOT (declared by the platform's declare_platform! macro, exported with derive_jit_name)
+                    IORuntime ->> PlatformDLL: indirect call via ptr from the GOT (the DLL's exported __cranelisp_got_platform_name slab, emitted by declare_platform! and wrapped in place via GotTable::with_static_backing — slot = manifest index; no exported fn names, jit_name retired at ABI v3)
                     Note over PlatformDLL: platform fn body runs — may call back into runtime via HostCallbacks for alloc / alloc_with_tag ONLY (the two-pointer allocator surface, no closure-callback capability — S98 poll-in/wake-out boundary ruling, effect-concurrency.md 12.1). Callbacks installed once per session by HostContext::init at CompilerSession::new.
                     opt platform fn needs to allocate (e.g. produce a CLString result)
                         PlatformDLL ->> Allocator: HostCallbacks.alloc(size: usize) -> *mut u8
