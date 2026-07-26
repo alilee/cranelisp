@@ -155,8 +155,17 @@ compile harness.
 **The CLIF-probe / execution test seam is the PRODUCTION per-body function**
 (`test_support::probe_defn_clif` for a single defn's CLIF text;
 `compile_defns_in_module` for the multi-defn / execution-tier no-finalize
-variant). Both ride `compile_defn_in_module` — the EXACT Step-3 call
-`compile_to_module_impl` makes. **The `Jit::compile_defn`/`compile_defn_with_targets`/
+variant; `try_compile_defns_in_module` — the fallible core both delegate to —
+when the probe must READ a codegen refusal rather than panic on it, or must
+thread a per-defn `ModeSummary`, which is the only way to put a parameter in
+`Borrowed` mode since `bind_defn_params` marks params borrowed from the summary
+and from nothing else). All ride `compile_defn_in_module` — the EXACT Step-3 call
+`compile_to_module_impl` makes. Note that a probe whose behaviour depends on a
+heap-typed parameter must spell that type in the symbol-table entry's
+`Scheme.ty` (`insert_user_fn_stub_typed`, not the all-`Int`
+`insert_user_fn_stub`) — `defn_param_types` reads it from there, and an
+`Int`-stamped `String` param is never heap-classified, so every RC gate silently
+sits out. **The `Jit::compile_defn`/`compile_defn_with_targets`/
 `build_compile_context`/`CompileArtifacts` test front door was DELETED (S111 R4
 §1.3)** — do NOT re-introduce a parallel context-assembly; a new probe seeds its
 aux entries into the `symbol_tables` it also builds and calls the helper. The

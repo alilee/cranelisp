@@ -4657,3 +4657,9 @@ mod cow_retain_reconciliation_tests {
 /// S118 slice S5 — the ONE TCO replacement/transfer predicate (§6).
 #[cfg(test)]
 mod tco_slot_predicate_tests;
+
+/// S118 W3 (FIXME 0893) — the §6 row-4 narrowing at its FACT-GATHERING seam
+/// ([`FnCompiler::tail_slot_facts`] + the scope-stack shadowing resolution),
+/// exercised through compiled bodies rather than a constructed facts struct.
+#[cfg(test)]
+mod tco_shadowing_borrow_tests;

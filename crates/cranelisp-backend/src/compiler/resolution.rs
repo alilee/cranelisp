@@ -58,9 +58,16 @@ use cranelisp_types::{ModuleFullPath, Span, Symbol};
 ///
 /// The fix is a `cranelisp-types` edit (the scheme's canonical home) and is
 /// filed as FIXME 0748 `target: /arch` with the pinned diff — an injective,
-/// prefix-free escape with a round-trip decoder, exactly the CS-1.2 model
-/// `escape_symbol` already provides for drop-glue keying. Fixing it HERE alone
-/// is the divergence above (verified: the whole stdlib fails to load).
+/// prefix-free mint, the CS-1.2 model that
+/// [`cranelisp_types::drop_glue_symbol_name`] already applies to type-glue
+/// keying: every variable-length component is written length-prefixed and
+/// hex-encoded, so no component's encoding is a prefix of another's and the
+/// whole name decodes back to its inputs. (The backend-local `escape_symbol`
+/// this paragraph used to name was the pre-S118 second identity home for that
+/// model; it was DELETED with the rest of the backend-local glue-naming scheme
+/// at S118 W3 §8 — type-glue identity is now `drop_glue_symbol_name` and
+/// nothing else.) Fixing it HERE alone is the divergence above (verified: the
+/// whole stdlib fails to load).
 ///
 /// # Linker-symbol ABI (preserved here before the S75 W3 `pub(crate)` narrow)
 ///

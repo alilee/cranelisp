@@ -149,6 +149,46 @@ where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
+    try_compile_defns_in_module(
+        compile,
+        &[],
+        declare_only,
+        resolved_targets,
+        symbol_tables,
+        module_path,
+        module,
+    )
+    .expect("probe: compile_defn_in_module")
+}
+
+/// The fallible core behind [`compile_defns_in_module`] — same production seam,
+/// two additions a probe sometimes needs (S118 W3, FIXME 0893):
+///
+/// * it RETURNS the `CranelispError` instead of panicking, so a cell can pin a
+///   codegen path whose correct outcome is a located refusal (the §6 row-4
+///   `BorrowedInvalid` report is one);
+/// * `mode_summaries` is positionally aligned with `compile` (shorter/absent ⇒
+///   `None`), threading the per-defn [`cranelisp_types::ModeSummary`] that
+///   `compile_to_module_impl` reads off each entry's `codegen_view` — the only
+///   way a probe can put a parameter in `Borrowed` mode, since
+///   `FnCompiler::bind_defn_params` marks params borrowed from the summary and
+///   from nothing else.
+///
+/// There is exactly ONE context assembly (this body); do NOT grow a second.
+pub(crate) fn try_compile_defns_in_module<M, C, L>(
+    compile: &[&Defn],
+    mode_summaries: &[Option<cranelisp_types::ModeSummary>],
+    declare_only: &[&Defn],
+    resolved_targets: &HashMap<Span, cranelisp_types::FQSymbol>,
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    module_path: ModuleFullPath,
+    module: &mut M,
+) -> Result<Vec<String>, CranelispError>
+where
+    M: cranelift_module::Module,
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     use cranelift::prelude::{AbiParam, FunctionBuilderContext, types};
     use cranelift_module::{Linkage, Module};
 
@@ -185,7 +225,7 @@ where
     let empty_ctors = HashMap::new();
     let mut func_ctx = FunctionBuilderContext::new();
     let mut clifs = Vec::with_capacity(compile.len());
-    for d in compile {
+    for (i, d) in compile.iter().enumerate() {
         // Lenient body with the dispatch carriers — mirrors the `codegen_view`
         // `compile_to_module` builds for a hand-constructed fixture (KC-W0-6):
         // strict `from_expr` first, `lenient_from_expr` fallback. S114 carrier
@@ -220,18 +260,17 @@ where
         let art = crate::compile_defn_in_module(
             d,
             &body,
-            None,
+            mode_summaries.get(i).cloned().flatten(),
             module,
             &mut func_ctx,
             &func_ids,
             compile_ctx,
             true,
             &mut glue,
-        )
-        .expect("probe: compile_defn_in_module");
+        )?;
         clifs.push(art.clif_ir);
     }
-    clifs
+    Ok(clifs)
 }
 
 /// S114 carrier flip (`typed-resolution-carrier.md` §4): build the TOTAL typed
@@ -900,11 +939,28 @@ fn collect_vec_query_value_carriers(e: &Expr, out: &mut HashMap<Span, cranelisp_
 /// (the pre-W1 batch/test direct-call shape) — byte-identical CLIF, the entry
 /// exists only so the keyed read resolves instead of hard-missing.
 pub(crate) fn insert_user_fn_stub(table: &mut SymbolTable, name: &str, arity: usize) {
+    let params: Vec<Type> = (0..arity).map(|_| Type::Int).collect();
+    insert_user_fn_stub_typed(table, name, &params, Type::Int);
+}
+
+/// [`insert_user_fn_stub`] with EXPLICIT parameter types. The all-`Int` stamp is
+/// the right default for scalar dispatch probes, but the entry's `Scheme.ty` is
+/// also the authoritative source `FnCompiler::bind_defn_params` reads parameter
+/// types from (`defn_param_types`), so a probe whose behaviour depends on a
+/// param being heap-typed MUST spell the type here — a `String` param stamped
+/// `Int` is never heap-classified and every RC gate silently sits out.
+pub(crate) fn insert_user_fn_stub_typed(
+    table: &mut SymbolTable,
+    name: &str,
+    param_types: &[Type],
+    return_type: Type,
+) {
     use cranelisp_types::{DefKind, Scheme, UserFnState};
+    let arity = param_types.len();
     let scheme = Scheme {
         type_vars: vec![],
         constraints: HashMap::new(),
-        ty: Type::Fn((0..arity).map(|_| Type::Int).collect(), Box::new(Type::Int)),
+        ty: Type::Fn(param_types.to_vec(), Box::new(return_type)),
     };
     table.insert(
         Symbol::from(name),

@@ -607,6 +607,11 @@ fn substitute(
     }
 }
 
+/// S118 W3 (FIXME 0892) — the `GlueShape::Vec` arm's rc gate, pinned by running
+/// the generated body. Sibling file per the crate `CLAUDE.md` convention.
+#[cfg(test)]
+mod vec_arm_rc_gate_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
