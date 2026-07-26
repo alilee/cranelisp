@@ -130,6 +130,12 @@ pub struct Cranelisp {
     /// the L-B2(i) suite-polarity lane runs the whole suite under
     /// `CRANELISP_NO_OWNERSHIP=1`, and polarity-META tests must not inherit it.
     env_remove: Vec<String>,
+    /// Opt-in: tolerate `EPIPE` on the piped-stdin write because the child is
+    /// EXPECTED to exit before reading it. See
+    /// [`Cranelisp::expects_exit_without_reading_stdin`]. Default `false` — a
+    /// broken pipe against a child that should have read its input is a real
+    /// failure and stays a hard error.
+    stdin_unread_ok: bool,
     cli_flags: Vec<String>,
     /// Directories under TempDir to add to CRANELISP_LIB.
     lib_dirs: Vec<PathBuf>,
@@ -151,6 +157,7 @@ impl Cranelisp {
             stdin: String::new(),
             env: Vec::new(),
             env_remove: Vec::new(),
+            stdin_unread_ok: false,
             cli_flags: Vec::new(),
             lib_dirs: Vec::new(),
             use_workspace_stdlib: false,
@@ -340,6 +347,29 @@ impl Cranelisp {
             .env_remove("CRANELISP_AGENT_MODEL")
     }
 
+    /// Declare that this child is EXPECTED to exit before reading its piped
+    /// stdin, so an `EPIPE` on the harness's stdin write is an outcome of the
+    /// guarded behaviour rather than a harness failure.
+    ///
+    /// Use for children whose contract is "reject the invocation and exit
+    /// immediately" — e.g. `--yes` / `-y` on a non-agent build (`repl/spec.md`
+    /// §0.6.2), which exits 1 with a usage hint BEFORE the REPL reads a line.
+    /// Whether the write lands first is pure scheduling: focused the write
+    /// wins, under full-suite load the child's exit wins and the pipe is
+    /// already closed. That is a real ordering race in the harness usage, and
+    /// this opt-in removes it by making BOTH interleavings the same observation
+    /// — the assertions then run against the child's real exit status and
+    /// stderr either way (FIXME 0911).
+    ///
+    /// Deliberately NOT a blanket swallow: without this opt-in an `EPIPE`
+    /// against a child that SHOULD have consumed its input stays
+    /// `CrError::StdinWriteFailed`, because there it means the child died and
+    /// the test's premise is void.
+    pub fn expects_exit_without_reading_stdin(mut self) -> Self {
+        self.stdin_unread_ok = true;
+        self
+    }
+
     /// Append a raw CLI flag passed to the cranelisp binary. Escape hatch.
     pub fn cli_flag(mut self, flag: &str) -> Self {
         self.cli_flags.push(flag.to_string());
@@ -455,6 +485,7 @@ impl Cranelisp {
             env,
             env_remove: self.env_remove,
             stdin: self.stdin,
+            stdin_unread_ok: self.stdin_unread_ok,
             timeout: self.timeout,
             tmpdir: self.tmpdir,
             link_then_run: mode_post,
@@ -499,6 +530,8 @@ struct CrInvocationOwned {
     env: Vec<(String, String)>,
     env_remove: Vec<String>,
     stdin: String,
+    /// See [`Cranelisp::expects_exit_without_reading_stdin`].
+    stdin_unread_ok: bool,
     timeout: Duration,
     tmpdir: tempfile::TempDir,
     /// If Some, after the child completes successfully, exec the produced binary.
@@ -529,9 +562,14 @@ impl CrInvocationOwned {
 
         if !self.stdin.is_empty() {
             let mut stdin = child.stdin.take().expect("piped stdin");
-            stdin
-                .write_all(self.stdin.as_bytes())
-                .map_err(CrError::StdinWriteFailed)?;
+            match stdin.write_all(self.stdin.as_bytes()) {
+                Ok(()) => {}
+                // The child closed the pipe before reading. Only a caller that
+                // declared this outcome expected gets to continue; for everyone
+                // else the child died and the test's premise is void.
+                Err(e) if e.kind() == io::ErrorKind::BrokenPipe && self.stdin_unread_ok => {}
+                Err(e) => return Err(CrError::StdinWriteFailed(e)),
+            }
             // Drop stdin to close the pipe so the child can EOF-out of REPL.
             drop(stdin);
         } else {
@@ -885,6 +923,7 @@ impl CrOutput {
             stdin: String::new(),
             env: Vec::new(),
             env_remove: Vec::new(),
+            stdin_unread_ok: false,
             cli_flags: Vec::new(),
             lib_dirs: Vec::new(),
             use_workspace_stdlib: false,

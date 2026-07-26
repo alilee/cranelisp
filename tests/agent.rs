@@ -150,6 +150,10 @@ fn agent_flag_errors_on_non_agent_build() {
         .repl()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .cli_flag("--agent")
+        // Same immediate-exit race as the `--yes`/`-y` siblings (FIXME 0911) —
+        // this guard has not lost the race yet, and the opt-in is what keeps
+        // that from being luck.
+        .expects_exit_without_reading_stdin()
         .stdin("(add-i64 1 2)\n")
         .output();
     assert_eq!(
@@ -213,6 +217,12 @@ fn yes_flag_errors_on_non_agent_build() {
         .repl()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .cli_flag("--yes")
+        // The rejection exits BEFORE the REPL reads a line, so whether the
+        // harness's stdin write lands is scheduling, not behaviour: focused it
+        // wins, under full-suite load the child's exit closes the pipe first
+        // (FIXME 0911). The opt-in makes both interleavings the same
+        // observation; the assertions below are what the cell is about.
+        .expects_exit_without_reading_stdin()
         .stdin("(add-i64 1 2)\n")
         .output();
     assert_eq!(
@@ -246,6 +256,8 @@ fn y_short_flag_errors_on_non_agent_build() {
         .repl()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .cli_flag("-y")
+        // Same immediate-exit race as the `--yes` sibling above (FIXME 0911).
+        .expects_exit_without_reading_stdin()
         .stdin("(add-i64 1 2)\n")
         .output();
     assert_eq!(

@@ -97,7 +97,10 @@ mode**, **capture + assert**.
 - Fixture composition: `.file(rel, contents)`, `.user(contents)`,
   `.prelude(contents)`, `.with_prelude(variant)`, `.fixture(src, dst)`,
   `.fixture_tree(src_dir, dst_dir)` (copies from `tests/fixtures/`).
-- Input/env: `.stdin(lines)`, `.stdin_lines(&[…])`, `.env(k, v)`, `.timeout(d)`.
+- Input/env: `.stdin(lines)`, `.stdin_lines(&[…])`, `.env(k, v)`, `.timeout(d)`,
+  `.expects_exit_without_reading_stdin()` (opt-in EPIPE tolerance for a child
+  whose contract is to reject the invocation and exit before reading — FIXME
+  0911; never a blanket swallow, see the method's rustdoc).
 - Terminal: `.output()` → `CrOutput` (panics on spawn/timeout error);
   `.try_output()` returns the error instead.
 - `CrOutput` carries fluent assertions: `.assert_ok()`, `.assert_exit(code)`,
