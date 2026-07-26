@@ -114,6 +114,42 @@ Every skill plan ends with a **"Next skills"** section recommending what to invo
 - **Optional prelude**: Nothing in the prelude is required for the language to work. An empty prelude is a valid starting point for the REPL or batch programs. The prelude provides convenience (traits, operators, types, macros) but the core language — primitives, special forms, type inference — works without it.
 - **Stdlib separation**: Tests (`tests/`) and examples (`examples/`) MUST be free-standing — zero dependency on `stdlib/`. They define any needed helpers inline using compiler primitives and special forms. Only the exemplar (`exemplar/`) and production binary (`src/main.rs`) may depend on the standard library. This ensures the language itself is validated independently of any particular library code.
 
+## Assurance — how we know something holds
+
+**Every invariant is either structurally unconstructable or continuously measured. "Graded by inspection" is the failure state.**
+
+An invariant asserted because someone read one site and found it satisfied is not an invariant — it is one function's property, and nothing stops another site from violating it tomorrow. This is not a theoretical concern here:
+
+- Safety-register row **R11 ("Concreteness at codegen") was graded `unconstructable` from S84 to S119 — thirty-five sprints — while two hand-mint sites quietly violated it.** The grade was true of the one function that had been inspected. The S119 census falsified it. The corrective (`P-1`) was not a better inspection; it was converging four decision points onto one gate, so the violating construction stops compiling.
+- Invariant **I-CT** was ratified on the premise that its emission pair was behaviour-identical to pre-migration HEAD. It proved the *count* balanced while being silent on whether the counted word was a reference at all — a wild atomic write on scalar payloads at the nullary threshold.
+- The `DropGlueRegistry` **passed review and static checks across two sprints and could never have run**, because nothing executed it.
+
+The three admissible grades, in preference order:
+
+1. **Structural** — the violation does not compile, does not link, or does not typecheck. Converging N decision points onto one, making an illegal state unrepresentable, and single-sourcing a fact from its determinant all buy this. Prefer it whenever the cost is bounded.
+2. **Measured** — an executing check observes the property continuously, and the check has itself been **proven to detect** (see the arming discipline below). A permanent census whose measured traffic gates its own removal counts; a one-off measurement does not.
+3. **Asserted-with-a-named-falsifier** — a claim that is neither, carrying an explicit statement of what observation would refute it and where that observation would come from. Legitimate but temporary; it is a debt, and it is recorded as one.
+
+Anything else — "reviewed and correct", "obviously holds", "checked when written" — is **not a grade**. If that is genuinely the best available, say so in those words rather than borrowing the language of a grade.
+
+Three corollaries the record has already paid for:
+
+- **An instrument is unverified until it is proven to detect.** A check that has never fired against a deliberately planted fault is indistinguishable from a check that cannot fire. Detection proofs are part of the change-set that introduces the instrument, not a follow-up — and the negative leg (the check stays silent when the fault is absent) is as load-bearing as the positive one. Instruments have been observed running *after* the mutation they were meant to catch, and guards have been observed failing for the wrong reason (parse errors masking the real signature), which is indistinguishable from working until someone reads the stderr.
+- **Landed with zero consumers under static-only review is not landed.** Crediting foundation work requires a consumer or an executing test in the same change-set.
+- **A ruling that has not survived measurement does not bind.** Where a design decision is falsifiable by running something — a corpus, a benchmark, a census — the measurement happens *inside* the design window. This has caught the same wrong ruling twice, one sprint apart, both times before it landed damage.
+
+### Records are claims too
+
+A document, FIXME, plan row, or comment that asserts something about source is a claim, and it decays. Stale records have repeatedly cost whole sprints of misrouting: a locus naming a file the symbol was never in, a scope that suppressed its own scheduling, a cited API that exists nowhere, a tranche scoped at a file in a crate that has none.
+
+Verifying a claim against its `refers_to` source is the binding first act of any FIXME disposition (`sprints/METHOD.md` §3.3) — but a discipline that depends on remembering is not a mechanism. The mechanism is:
+
+```
+scripts/verify-citations.py --corpus live --baseline scripts/citation-drift-baseline.txt
+```
+
+It checks what can be checked without judgement: cited paths resolve, cited line numbers are in range, and `file::symbol` citations name an identifier that actually occurs in that file. It does **not** check that the cited line still *means* what the document claims — that stays human. The baseline is a **ratchet**: it records the known-stale backlog so the check can gate a repo that already has one. Entries may be deleted when a citation is repaired; **entries are never added by hand**, because a new finding is a new stale record and stopping those is the point.
+
 ## Testing
 
 - **Always use `cargo nextest run --no-fail-fast`** instead of `cargo test`. Nextest runs each test in its own process, parallelizes across binaries, and completes the full suite in **~60s** (post-build; a rebuild adds ~30–60s). `--no-fail-fast` is required for full-picture runs — the intentional defect guards (below) otherwise stop the run early. The suite includes every crate's lib tier via `[workspace] default-members` (S101). The alias `cargo nt` is also available via `.cargo/config.toml`.

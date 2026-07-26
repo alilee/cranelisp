@@ -1,0 +1,616 @@
+# Citation-drift ratchet baseline — scripts/verify-citations.py
+# Every line is a KNOWN-STALE citation, tolerated so the check can gate a
+# repo with an existing backlog. Entries may be DELETED (when the citation
+# is repaired) but must never be ADDED by hand: a new finding is a new
+# stale record, and the check exists to stop those landing.
+# 610 entries.
+audits/intrinsics-2026-06-14.md	PATH	cited path does not exist: src/alloc.rs
+audits/intrinsics-2026-06-14.md	PATH	cited path does not exist: src/catalog.rs
+audits/intrinsics-2026-06-14.md	PATH	cited path does not exist: src/drop.rs
+audits/intrinsics-2026-06-14.md	PATH	cited path does not exist: src/heap_string.rs
+audits/intrinsics-2026-06-14.md	PATH	cited path does not exist: src/io.rs
+audits/intrinsics-2026-06-14.md	PATH	cited path does not exist: src/io_guard.rs
+audits/intrinsics-2026-06-14.md	PATH	cited path does not exist: src/io_observer.rs
+audits/intrinsics-2026-06-14.md	PATH	cited path does not exist: src/ivar.rs
+audits/intrinsics-2026-06-14.md	PATH	cited path does not exist: src/layout.rs
+audits/intrinsics-2026-06-14.md	PATH	cited path does not exist: src/panic.rs
+audits/intrinsics-2026-06-14.md	PATH	cited path does not exist: src/rc.rs
+audits/intrinsics-2026-06-14.md	PATH	cited path does not exist: src/trace.rs
+audits/intrinsics-2026-06-14.md	PATH	cited path does not exist: src/vec_runtime.rs
+audits/platform-2026-06-14.md	PATH	cited path does not exist: src/adt.rs
+audits/platform-2026-06-14.md	PATH	cited path does not exist: src/declare.rs
+audits/platform-2026-06-14.md	PATH	cited path does not exist: src/macros.rs
+audits/platform-2026-06-14.md	PATH	cited path does not exist: src/schema.rs
+audits/primitives-2026-06-14.md	LINE	line 247-336 is past end of crates/cranelisp-primitives/src/lib.rs (219 lines)
+audits/primitives-2026-06-14.md	LINE	line 342-405 is past end of crates/cranelisp-primitives/src/lib.rs (219 lines)
+audits/primitives-2026-06-14.md	PATH	cited path does not exist: src/bool.rs
+audits/primitives-2026-06-14.md	PATH	cited path does not exist: src/float.rs
+audits/primitives-2026-06-14.md	PATH	cited path does not exist: src/int.rs
+audits/primitives-2026-06-14.md	PATH	cited path does not exist: src/operator.rs
+audits/primitives-2026-06-14.md	PATH	cited path does not exist: src/ring0.rs
+audits/primitives-2026-06-14.md	PATH	cited path does not exist: src/string.rs
+audits/primitives-2026-06-14.md	PATH	cited path does not exist: src/vec.rs
+audits/s87-clear-all-fixmes.md	LINE	line 932 is past end of src/platform.rs (796 lines)
+audits/s87-clear-all-fixmes.md	SYMBOL	`link_module_referencing_discover_tests_extern_resolves_at_aot_link` does not occur in tests/link.rs — found nowhere in the tree
+audits/s87-maintainability.md	LINE	line 1318 is past end of src/process_form.rs (1201 lines)
+audits/s87-maintainability.md	LINE	line 1829 is past end of src/process_form.rs (1201 lines)
+audits/s87-maintainability.md	PATH	cited path does not exist: repl/command.rs
+audits/s87-maintainability.md	PATH	cited path does not exist: repl/display.rs
+audits/s87-maintainability.md	PATH	cited path does not exist: repl/handlers.rs
+audits/s87-maintainability.md	PATH	cited path does not exist: repl/introspect.rs
+audits/s87-maintainability.md	PATH	cited path does not exist: src/repl.rs
+crates/cranelisp-intrinsics/CLAUDE.md	PATH	cited path does not exist: src/diagnostics.rs
+crates/cranelisp-platform/CLAUDE.md	PATH	cited path does not exist: src/adt/tests.rs
+crates/cranelisp-platform/CLAUDE.md	PATH	cited path does not exist: src/schema/tests.rs
+crates/cranelisp-platform/CLAUDE.md	PATH	cited path does not exist: src/tests.rs
+crates/cranelisp-primitives/CLAUDE.md	PATH	cited path does not exist: src/tests.rs
+crates/cranelisp-typecheck/CLAUDE.md	PATH	cited path does not exist: Design/rustdoc/CLAUDE.md
+crates/cranelisp-typecheck/CLAUDE.md	PATH	cited path does not exist: tests/annotation.rs
+crates/cranelisp-typecheck/CLAUDE.md	PATH	cited path does not exist: tests/batch.rs
+crates/cranelisp-typecheck/CLAUDE.md	PATH	cited path does not exist: tests/carriers.rs
+crates/cranelisp-typecheck/CLAUDE.md	PATH	cited path does not exist: tests/check_form_arms.rs
+crates/cranelisp-typecheck/CLAUDE.md	PATH	cited path does not exist: tests/multi_sig.rs
+design/arch/backend-keyed-consumer.md	PATH	cited path does not exist: cranelisp-backend/CLAUDE.md
+design/arch/backend-keyed-consumer.md	PATH	cited path does not exist: src/repl.rs
+design/arch/backend-keyed-consumer.md	SYMBOL	`compile_defn` does not occur in jit.rs — actually in crates/cranelisp-backend/src/module_assembly_tests.rs, crates/cranelisp-backend/src/test_support.rs, crates/cranelisp-backend/src/lib.rs
+design/arch/bounded-contexts.md	LINE	line 2533 is past end of src/session_v4.rs (623 lines)
+design/arch/bounded-contexts.md	LINE	line 2777 is past end of src/session_v4.rs (623 lines)
+design/arch/bounded-contexts.md	LINE	line 2816 is past end of src/session_v4.rs (623 lines)
+design/arch/bounded-contexts.md	PATH	cited path does not exist: crates/cranelisp-typecheck/src/program.rs
+design/arch/bounded-contexts.md	SYMBOL	`trampoline` does not occur in src/session_v4.rs — actually in src/observability.rs, src/io_trace.rs, src/bootstrap.rs
+design/arch/concrete-boundary-type.md	PATH	cited path does not exist: crates/cranelisp-typecheck/src/program.rs
+design/arch/concrete-boundary-type.md	PATH	cited path does not exist: crates/cranelisp-typecheck/src/traits.rs
+design/arch/d1-introspection-repl-only.md	LINE	line 1201 is past end of src/session_v4.rs (623 lines)
+design/arch/d1-introspection-repl-only.md	LINE	line 1524 is past end of src/session_v4.rs (623 lines)
+design/arch/d1-introspection-repl-only.md	LINE	line 1627 is past end of src/session_v4.rs (623 lines)
+design/arch/d1-introspection-repl-only.md	LINE	line 1916 is past end of src/session_v4.rs (623 lines)
+design/arch/d1-introspection-repl-only.md	LINE	line 2336 is past end of src/session_v4.rs (623 lines)
+design/arch/d1-introspection-repl-only.md	LINE	line 2524 is past end of src/session_v4.rs (623 lines)
+design/arch/d1-introspection-repl-only.md	LINE	line 2851 is past end of src/worker.rs (2704 lines)
+design/arch/d1-introspection-repl-only.md	LINE	line 2912 is past end of src/session_v4.rs (623 lines)
+design/arch/d1-introspection-repl-only.md	LINE	line 4312 is past end of src/worker.rs (2704 lines)
+design/arch/d1-introspection-repl-only.md	LINE	line 4524 is past end of src/worker.rs (2704 lines)
+design/arch/d1-introspection-repl-only.md	LINE	line 627 is past end of src/session_v4.rs (623 lines)
+design/arch/d1-introspection-repl-only.md	LINE	line 885 is past end of src/session_v4.rs (623 lines)
+design/arch/decisions/0040-runtime-trace-io-trace-relocate-to-int.md	PATH	cited path does not exist: crates/cranelisp-intrinsics/src/io_trace.rs
+design/arch/decisions/0040-runtime-trace-io-trace-relocate-to-int.md	PATH	cited path does not exist: src/trace.rs
+design/arch/decisions/0041-compile-to-module-per-symbol-jit-direct-writes.md	PATH	cited path does not exist: tests/v4_jit_reclaim.rs
+design/arch/decisions/0044-cluster-atomic-typecheck-orchestrator-staging.md	PATH	cited path does not exist: crates/cranelisp-typecheck/src/program.rs
+design/arch/dotted-ctor-canonical-keys.md	PATH	cited path does not exist: src/repl.rs
+design/arch/dotted-ctor-canonical-keys.md	SYMBOL	`register_constructors` does not occur in adt.rs — actually in src/worker.rs, src/worker/tests.rs, crates/cranelisp-types/src/adt_build.rs
+design/arch/effect-concurrency.md	PATH	cited path does not exist: crates/cranelisp-runtime/src/ivar.rs
+design/arch/effect-concurrency.md	PATH	cited path does not exist: src/concurrency.rs
+design/arch/fixmes/0052-docs-learn-system-repl-feature.md	PATH	cited path does not exist: tests/plan/ring0.md
+design/arch/fixmes/0463-examples-network-poll-shape-example.md	PATH	cited path does not exist: examples/33-network-poll-leaf.cl
+design/arch/fixmes/0708-annotation-not-folded-in-macro-argument-position.md	SYMBOL	`try_consume_annotation` does not occur in ast_builder.rs — actually in tests/ra_annotation_qualifier_0682.rs
+design/arch/fixmes/0782-dev-var-pattern-arm-double-releases-an-owned-temporary-scrutinee.md	SYMBOL	`fresh_vec_literal_scrutinee_still_releases` does not occur in scrutinee_ownership_tests.rs — found nowhere in the tree
+design/arch/fixmes/0874-platform-shared-heap-adt-fixture.md	PATH	cited path does not exist: tests/cl_adt_products.rs
+design/arch/fixmes/0874-platform-shared-heap-adt-fixture.md	PATH	cited path does not exist: tests/cl_adt_sums.rs
+design/arch/fixmes/0874-platform-shared-heap-adt-fixture.md	PATH	cited path does not exist: tests/worked_examples.rs
+design/arch/fixmes/0907-io-bind-existential-ctor-defeats-canonical-glue-derivation.md	PATH	cited path does not exist: stdlib/core/io/test.cl
+design/arch/legacy/decisions/0025-compiled-code-on-moduleentry-def-code.md	PATH	cited path does not exist: tests/v4_jit_reclaim.rs
+design/arch/legacy/decisions/0029-io-trampoline-shallow-dec-runtime-primitive.md	PATH	cited path does not exist: crates/cranelisp-runtime/src/io.rs
+design/arch/legacy/decisions/0029-io-trampoline-shallow-dec-runtime-primitive.md	PATH	cited path does not exist: crates/cranelisp-runtime/src/rc.rs
+design/arch/legacy/decisions/0032-codestore-and-linkerstore-empty-marker.md	PATH	cited path does not exist: crates/cranelisp-typecheck/src/program.rs
+design/arch/legacy/substance-scoping.md	PATH	cited path does not exist: crates/cranelisp-runtime/CLAUDE.md
+design/arch/legacy/substance-scoping.md	PATH	cited path does not exist: crates/cranelisp-runtime/src/io.rs
+design/arch/legacy/substance-scoping.md	PATH	cited path does not exist: crates/cranelisp-runtime/src/io_observer.rs
+design/arch/legacy/substance-scoping.md	PATH	cited path does not exist: crates/cranelisp-runtime/src/io_trace.rs
+design/arch/legacy/substance-scoping.md	PATH	cited path does not exist: crates/cranelisp-runtime/src/lib.rs
+design/arch/legacy/substance-scoping.md	PATH	cited path does not exist: crates/cranelisp-runtime/src/trace.rs
+design/arch/legacy/substance-scoping.md	PATH	cited path does not exist: tests/v4_jit_reclaim.rs
+design/arch/macro-expansion-ownership.md	PATH	cited path does not exist: crates/cranelisp-frontend/src/expand.rs
+design/arch/macro-expansion-ownership.md	SYMBOL	`process_regular_form` does not occur in src/worker.rs — actually in src/process_form.rs, src/lib.rs, src/process_form/form_dispatch.rs
+design/arch/ownership-inference.md	PATH	cited path does not exist: cranelisp-primitives/CLAUDE.md
+design/arch/ownership-inference.md	PATH	cited path does not exist: src/heap.rs
+design/arch/ownership-inference.md	PATH	cited path does not exist: src/module.rs
+design/arch/ownership-inference.md	PATH	cited path does not exist: src/mono_expr.rs
+design/arch/platform-interface.md	LINE	line 2218-2219 is past end of src/session_v4.rs (623 lines)
+design/arch/platform-interface.md	PATH	cited path does not exist: src/concurrency.rs
+design/arch/platform-interface.md	PATH	cited path does not exist: src/declare.rs
+design/arch/platform-interface.md	PATH	cited path does not exist: src/session.rs
+design/arch/platform-interface.md	PATH	cited path does not exist: src/shapes.platform
+design/arch/platform-interface.md	SYMBOL	`concurrent_platform_fn_repr_c_field_order_v7` does not occur in crates/cranelisp-platform/src/tests.rs — found nowhere in the tree
+design/arch/prelude-import-convergence.md	PATH	cited path does not exist: src/repl.rs
+design/arch/repl-embedded-agent.md	PATH	cited path does not exist: src/repl.rs
+design/arch/repl-styling-seam.md	PATH	cited path does not exist: src/repl.rs
+design/arch/resolve-home-enumeration.md	PATH	cited path does not exist: src/repl.rs
+design/arch/safety-invariants.md	PATH	cited path does not exist: principles/CLAUDE.md
+design/arch/test-discovery.md	SYMBOL	`link_module_referencing_discover_tests_extern_resolves_at_aot_link` does not occur in tests/link.rs — found nowhere in the tree
+design/arch/tracing.md	LINE	line 2727 is past end of src/session_v4.rs (623 lines)
+design/arch/tracing.md	PATH	cited path does not exist: src/trace.rs
+design/arch/tracing.md	SYMBOL	`build_traced_fns` does not occur in src/session_v4.rs — actually in src/eval.rs
+design/arch/tracing.md	SYMBOL	`int_intrinsics` does not occur in src/session_v4.rs — actually in src/session_v4/test_runner.rs, crates/cranelisp-backend/src/compiler/apply.rs
+design/backend/backend.md	PATH	cited path does not exist: crates/cranelisp-backend/src/display.rs
+design/backend/compile-to-module.md	PATH	cited path does not exist: crates/cranelisp-types/src/code.rs
+design/backend/executable-generation.md	PATH	cited path does not exist: examples/hello.cl
+design/backend/executable-generation.md	SYMBOL	`extract_rlib_objects` does not occur in src/exe.rs — actually in src/link/gnu.rs
+design/backend/hkt-codegen.md	PATH	cited path does not exist: crates/cranelisp-backend/src/operators.rs
+design/backend/hkt-codegen.md	PATH	cited path does not exist: tests/sprint23.rs
+design/backend/io-scheduling.md	PATH	cited path does not exist: src/schedule.rs
+design/backend/jit-object-convergence.md	LINE	line 2800 is past end of src/worker.rs (2704 lines)
+design/backend/jit-object-convergence.md	LINE	line 2800-2937 is past end of src/worker.rs (2704 lines)
+design/backend/jit-object-convergence.md	LINE	line 2886-2915 is past end of src/worker.rs (2704 lines)
+design/backend/jit-object-convergence.md	LINE	line 3082-3101 is past end of src/worker.rs (2704 lines)
+design/backend/jit-object-convergence.md	LINE	line 574-588 is past end of crates/cranelisp-backend/src/compiler/control_flow.rs (73 lines)
+design/backend/jit-object-convergence.md	LINE	line 879-959 is past end of crates/cranelisp-backend/src/compiler/mod.rs (96 lines)
+design/backend/jit-object-convergence.md	PATH	cited path does not exist: tests/plan/ring4.md
+design/backend/jit-object-convergence.md	PATH	cited path does not exist: tests/v4_convergence.rs
+design/backend/jit-object-convergence.md	SYMBOL	`restore_cached_module` does not occur in src/worker.rs — actually in src/process_form/cache_restore.rs, src/session_v4/lifecycle.rs, crates/cranelisp-types/src/module.rs
+design/backend/jit-object-convergence.md	SYMBOL	`try_cache_hit_load` does not occur in src/worker.rs — actually in src/scheduler.rs, src/cache.rs, src/process_form/macro_resolution.rs
+design/backend/jit-setup-boundary.md	PATH	cited path does not exist: src/jit.rs
+design/backend/ownership-codegen.md	PATH	cited path does not exist: cranelisp-primitives/CLAUDE.md
+design/backend/ownership-codegen.md	PATH	cited path does not exist: src/compiler/apply.rs
+design/backend/ownership-codegen.md	PATH	cited path does not exist: src/compiler/control_flow/fn_as_value.rs
+design/backend/ownership-codegen.md	PATH	cited path does not exist: src/compiler/literals.rs
+design/backend/ownership-codegen.md	PATH	cited path does not exist: src/heap.rs
+design/backend/ring1-codegen.md	PATH	cited path does not exist: crates/cranelisp-primitives/src/operator.rs
+design/backend/ring1-codegen.md	PATH	cited path does not exist: src/repl.rs
+design/backend/ring2-rc.md	LINE	line 1204 is past end of crates/cranelisp-backend/src/compiler/mod.rs (96 lines)
+design/backend/ring2-rc.md	PATH	cited path does not exist: crates/cranelisp-runtime/src/drop.rs
+design/backend/ring2-rc.md	PATH	cited path does not exist: crates/cranelisp-runtime/src/io.rs
+design/backend/ring2-rc.md	PATH	cited path does not exist: exemplar/repro-slice2.cl
+design/backend/ring2-rc.md	PATH	cited path does not exist: tests/io.rs
+design/frontend/ast-builder.md	SYMBOL	`read_dotted_symbol` does not occur in reader.rs — found nowhere in the tree
+design/frontend/binder-head-reject.md	PATH	cited path does not exist: frontend/CLAUDE.md
+design/frontend/macro-plan.md	PATH	cited path does not exist: crates/cranelisp-runtime/src/lib.rs
+design/frontend/macro-plan.md	PATH	cited path does not exist: crates/cranelisp-runtime/src/marshal.rs
+design/frontend/macro-plan.md	PATH	cited path does not exist: src/repl.rs
+design/frontend/modules.md	PATH	cited path does not exist: src/repl.rs
+design/frontend/wave-3a-build-form.md	PATH	cited path does not exist: crates/cranelisp-frontend/src/expand.rs
+design/int/agent.md	PATH	cited path does not exist: src/repl.rs
+design/int/bare-primitive-value-path.md	LINE	line 2179 is past end of src/session_v4.rs (623 lines)
+design/int/bare-primitive-value-path.md	LINE	line 2202 is past end of src/session_v4.rs (623 lines)
+design/int/bare-primitive-value-path.md	LINE	line 2268 is past end of src/session_v4.rs (623 lines)
+design/int/bare-primitive-value-path.md	SYMBOL	`eval_v4` does not occur in src/session_v4.rs — found nowhere in the tree
+design/int/bind-chain-analysis.md	PATH	cited path does not exist: src/schedule.rs
+design/int/cache-prelude-restoration-repro.md	PATH	cited path does not exist: tests/sprint23.rs
+design/int/cache-prelude-restoration-repro.md	PATH	cited path does not exist: tests/sprint59_cache_repro.rs
+design/int/concurrency-architecture.md	PATH	cited path does not exist: crates/cranelisp-runtime/src/io_trace.rs
+design/int/concurrency-architecture.md	PATH	cited path does not exist: crates/cranelisp-runtime/src/ivar.rs
+design/int/concurrency-architecture.md	PATH	cited path does not exist: crates/cranelisp-runtime/src/rc.rs
+design/int/concurrency-audit.md	PATH	cited path does not exist: crates/cranelisp-backend/src/display.rs
+design/int/concurrency-audit.md	PATH	cited path does not exist: crates/cranelisp-runtime/src/io_trace.rs
+design/int/concurrency-audit.md	PATH	cited path does not exist: crates/cranelisp-runtime/src/panic.rs
+design/int/concurrency-audit.md	PATH	cited path does not exist: crates/cranelisp-runtime/src/trace.rs
+design/int/concurrency-audit.md	PATH	cited path does not exist: src/jit.rs
+design/int/concurrency-audit.md	SYMBOL	`clone_atomic_rc` does not occur in trace.rs — found nowhere in the tree
+design/int/concurrency-risks.md	PATH	cited path does not exist: tests/sprint23.rs
+design/int/concurrent-workers.md	PATH	cited path does not exist: src/session.rs
+design/int/cranelisp-toml.md	PATH	cited path does not exist: src/session.rs
+design/int/cranelisp-toml.md	PATH	cited path does not exist: tests/e2e.rs
+design/int/dual-path-persistence-collapse.md	LINE	line 1224 is past end of src/session_v4.rs (623 lines)
+design/int/dual-path-persistence-collapse.md	LINE	line 1240 is past end of src/session_v4.rs (623 lines)
+design/int/dual-path-persistence-collapse.md	LINE	line 1311 is past end of src/session_v4.rs (623 lines)
+design/int/dual-path-persistence-collapse.md	LINE	line 1938 is past end of src/session_v4.rs (623 lines)
+design/int/dual-path-persistence-collapse.md	LINE	line 2985 is past end of src/session_v4.rs (623 lines)
+design/int/dual-path-persistence-collapse.md	PATH	cited path does not exist: crates/cranelisp-typecheck/src/program.rs
+design/int/dual-path-persistence-collapse.md	PATH	cited path does not exist: tests/e2e.rs
+design/int/dual-path-persistence-collapse.md	PATH	cited path does not exist: tests/plan/ring4.md
+design/int/dual-path-persistence-collapse.md	PATH	cited path does not exist: tests/sprint23.rs
+design/int/dual-path-persistence-collapse.md	PATH	cited path does not exist: tests/v4_jit_reclaim.rs
+design/int/dual-path-persistence-collapse.md	PATH	cited path does not exist: tests/v4_pipeline.rs
+design/int/dual-path-persistence-collapse.md	SYMBOL	`format_entry_sig_tests` does not occur in src/session_v4.rs — found nowhere in the tree
+design/int/dual-path-persistence-collapse.md	SYMBOL	`format_entry_sig` does not occur in src/session_v4.rs — actually in src/repl/commands.rs, tests/agent.rs
+design/int/dual-path-persistence-collapse.md	SYMBOL	`register_transitive_cached_imports` does not occur in src/worker.rs — actually in src/process_form/cache_restore.rs, src/worker/tests.rs
+design/int/heisenbug-race-closure.md	LINE	line 1371 is past end of src/session_v4.rs (623 lines)
+design/int/heisenbug-race-closure.md	LINE	line 1371-1477 is past end of src/session_v4.rs (623 lines)
+design/int/heisenbug-race-closure.md	LINE	line 1381-1453 is past end of src/session_v4.rs (623 lines)
+design/int/heisenbug-race-closure.md	LINE	line 1473 is past end of src/session_v4.rs (623 lines)
+design/int/heisenbug-race-closure.md	LINE	line 1520 is past end of src/session_v4.rs (623 lines)
+design/int/heisenbug-race-closure.md	LINE	line 1594 is past end of src/session_v4.rs (623 lines)
+design/int/heisenbug-race-closure.md	LINE	line 2581 is past end of crates/cranelisp-typecheck/src/infer.rs (1894 lines)
+design/int/heisenbug-race-closure.md	LINE	line 3415-3418 is past end of src/worker.rs (2704 lines)
+design/int/heisenbug-race-closure.md	LINE	line 3417 is past end of src/worker.rs (2704 lines)
+design/int/heisenbug-race-closure.md	LINE	line 3431-3449 is past end of src/worker.rs (2704 lines)
+design/int/heisenbug-race-closure.md	LINE	line 4587 is past end of src/session_v4.rs (623 lines)
+design/int/heisenbug-race-closure.md	LINE	line 954 is past end of src/session_v4.rs (623 lines)
+design/int/heisenbug-race-closure.md	PATH	cited path does not exist: crates/cranelisp-backend/compiler/mod.rs
+design/int/heisenbug-race-closure.md	PATH	cited path does not exist: crates/cranelisp-typecheck/src/program.rs
+design/int/heisenbug-race-closure.md	PATH	cited path does not exist: tests/plan/baseline.md
+design/int/heisenbug-race-closure.md	PATH	cited path does not exist: tests/sprint23.rs
+design/int/heisenbug-race-closure.md	SYMBOL	`current_module_path` does not occur in session_v4.rs — actually in src/redefine.rs, src/eval.rs, src/agent/provider.rs
+design/int/heisenbug-race-closure.md	SYMBOL	`eval_in_flight_guard_tests` does not occur in src/session_v4.rs — found nowhere in the tree
+design/int/heisenbug-race-closure.md	SYMBOL	`handle_import` does not occur in src/worker.rs — actually in src/session_v4.rs, src/scheduler.rs, src/process_form.rs
+design/int/heisenbug-race-closure.md	SYMBOL	`republish_module_sexps_from_symbol_table` does not occur in src/session_v4.rs — actually in src/observability.rs
+design/int/heisenbug-race-closure.md	SYMBOL	`set_current_module` does not occur in checker.rs — actually in src/process_form.rs, src/worker.rs, src/repl/commands.rs
+design/int/heisenbug-race-closure.md	SYMBOL	`wait_module_inmem_complete_blocking` does not occur in src/session_v4.rs — actually in src/scheduler.rs, src/process_form.rs, src/worker.rs
+design/int/impl-redefinition-hot-reload.md	SYMBOL	`reimpl_either_dispatches_new_or_notices_not_replaced` does not occur in tests/impl_redefinition_dispatch.rs — found nowhere in the tree
+design/int/int.md	PATH	cited path does not exist: crates/cranelisp-typecheck/src/program.rs
+design/int/int.md	PATH	cited path does not exist: repl/commands.rs
+design/int/int.md	PATH	cited path does not exist: repl/format.rs
+design/int/int.md	PATH	cited path does not exist: repl/format_type.rs
+design/int/int.md	PATH	cited path does not exist: repl/mod.rs
+design/int/int.md	PATH	cited path does not exist: repl/search.rs
+design/int/int.md	PATH	cited path does not exist: src/repl.rs
+design/int/int.md	PATH	cited path does not exist: tests/v4_jit_reclaim.rs
+design/int/io-integration.md	PATH	cited path does not exist: repl/input.rs
+design/int/io-integration.md	PATH	cited path does not exist: src/repl.rs
+design/int/macro-resolver-impl.md	PATH	cited path does not exist: src/session.rs
+design/int/multi-sig-introspection.md	PATH	cited path does not exist: tests/repl_experience.rs
+design/int/observability.md	PATH	cited path does not exist: crates/cranelisp-frontend/src/expander.rs
+design/int/persistent-workers.md	LINE	line 1013 is past end of src/session_v4.rs (623 lines)
+design/int/persistent-workers.md	LINE	line 1059 is past end of src/session_v4.rs (623 lines)
+design/int/persistent-workers.md	LINE	line 1114 is past end of src/session_v4.rs (623 lines)
+design/int/persistent-workers.md	LINE	line 1450 is past end of src/session_v4.rs (623 lines)
+design/int/persistent-workers.md	LINE	line 2852 is past end of src/worker.rs (2704 lines)
+design/int/persistent-workers.md	LINE	line 2873 is past end of src/worker.rs (2704 lines)
+design/int/persistent-workers.md	LINE	line 3266 is past end of src/session_v4.rs (623 lines)
+design/int/persistent-workers.md	LINE	line 665 is past end of src/session_v4.rs (623 lines)
+design/int/persistent-workers.md	LINE	line 964 is past end of src/session_v4.rs (623 lines)
+design/int/persistent-workers.md	LINE	line 986 is past end of src/session_v4.rs (623 lines)
+design/int/persistent-workers.md	LINE	line 993 is past end of src/session_v4.rs (623 lines)
+design/int/persistent-workers.md	PATH	cited path does not exist: tests/v4_persistent_workers/concurrent_modules.rs
+design/int/persistent-workers.md	PATH	cited path does not exist: tests/v4_persistent_workers/reload_during_compile.rs
+design/int/persistent-workers.md	PATH	cited path does not exist: tests/v4_persistent_workers/repl_eval_latency.rs
+design/int/phase2-codegen-convergence.md	LINE	line 1418 is past end of src/session_v4.rs (623 lines)
+design/int/phase2-codegen-convergence.md	LINE	line 1444 is past end of src/session_v4.rs (623 lines)
+design/int/phase2-codegen-convergence.md	LINE	line 1457 is past end of src/session_v4.rs (623 lines)
+design/int/phase2-codegen-convergence.md	LINE	line 1476 is past end of src/session_v4.rs (623 lines)
+design/int/phase2-codegen-convergence.md	LINE	line 1490 is past end of src/session_v4.rs (623 lines)
+design/int/phase2-codegen-convergence.md	LINE	line 1505 is past end of src/session_v4.rs (623 lines)
+design/int/phase2-codegen-convergence.md	LINE	line 2666 is past end of src/session_v4.rs (623 lines)
+design/int/phase2-codegen-convergence.md	LINE	line 2878 is past end of src/worker.rs (2704 lines)
+design/int/phase2-codegen-convergence.md	LINE	line 2919 is past end of src/worker.rs (2704 lines)
+design/int/phase2-codegen-convergence.md	LINE	line 3037 is past end of src/worker.rs (2704 lines)
+design/int/phase2-codegen-convergence.md	LINE	line 3135 is past end of src/worker.rs (2704 lines)
+design/int/phase2-codegen-convergence.md	LINE	line 3346 is past end of src/session_v4.rs (623 lines)
+design/int/phase2-codegen-convergence.md	LINE	line 3536 is past end of src/session_v4.rs (623 lines)
+design/int/phase2-codegen-convergence.md	LINE	line 3573 is past end of src/session_v4.rs (623 lines)
+design/int/phase2-codegen-convergence.md	LINE	line 660 is past end of src/session_v4.rs (623 lines)
+design/int/phase2-codegen-convergence.md	LINE	line 982 is past end of src/session_v4.rs (623 lines)
+design/int/phase2-codegen-convergence.md	PATH	cited path does not exist: tests/sketch_port/multi_sig.rs
+design/int/phase2-codegen-convergence.md	PATH	cited path does not exist: tests/sketch_port/repl_multi_sig.rs
+design/int/phase2-codegen-convergence.md	PATH	cited path does not exist: tests/v4_codegen/introspection_preserved.rs
+design/int/phase2-codegen-convergence.md	PATH	cited path does not exist: tests/v4_codegen/single_entry_point.rs
+design/int/phase2-codegen-convergence.md	PATH	cited path does not exist: tests/v4_repl_eval/repl_expr_via_symbol_table.rs
+design/int/phase2-codegen-convergence.md	SYMBOL	`sketch_multi_sig_different_arities` does not occur in multi_sig.rs — found nowhere in the tree
+design/int/phase2-codegen-convergence.md	SYMBOL	`sketch_multi_sig_type_based_dispatch` does not occur in multi_sig.rs — actually in tests/spec_05_definitions.rs
+design/int/pipeline-convergence.md	PATH	cited path does not exist: repl/mod.rs
+design/int/pipeline-convergence.md	PATH	cited path does not exist: src/repl/io_format.rs
+design/int/pipeline-convergence.md	PATH	cited path does not exist: src/repl/run_tests.rs
+design/int/pipeline-convergence.md	PATH	cited path does not exist: src/repl/trace.rs
+design/int/platform-registry-removal.md	LINE	line 1088 is past end of src/session_v4.rs (623 lines)
+design/int/platform-registry-removal.md	LINE	line 2853 is past end of src/worker.rs (2704 lines)
+design/int/platform-registry-removal.md	LINE	line 993 is past end of src/session_v4.rs (623 lines)
+design/int/platform-registry-removal.md	PATH	cited path does not exist: crates/cranelisp-runtime/src/io.rs
+design/int/platform-registry-removal.md	PATH	cited path does not exist: repl/demos/ring4a.demo
+design/int/platform-registry-removal.md	PATH	cited path does not exist: src/platform_registry.rs
+design/int/platform-registry-removal.md	PATH	cited path does not exist: tests/v4_platform/cross_module_platform_resolution.rs
+design/int/platform-registry-removal.md	PATH	cited path does not exist: tests/v4_platform/platform_fn_on_entry.rs
+design/int/prelude-table-write-isolation.md	LINE	line 412 is past end of crates/cranelisp-primitives/src/lib.rs (219 lines)
+design/int/private-submodule-import.md	PATH	cited path does not exist: tests/ring2.rs
+design/int/private-submodule-import.md	SYMBOL	`handle_import` does not occur in src/worker.rs — actually in src/session_v4.rs, src/scheduler.rs, src/process_form.rs
+design/int/repl-decomposition.md	PATH	cited path does not exist: repl/commands.rs
+design/int/repl-decomposition.md	PATH	cited path does not exist: repl/format.rs
+design/int/repl-decomposition.md	PATH	cited path does not exist: repl/format_type.rs
+design/int/repl-decomposition.md	PATH	cited path does not exist: repl/mod.rs
+design/int/repl-decomposition.md	PATH	cited path does not exist: repl/search.rs
+design/int/repl-decomposition.md	PATH	cited path does not exist: src/repl.rs
+design/int/repl-lifecycle.md	PATH	cited path does not exist: examples/hello.cl
+design/int/repl-lifecycle.md	PATH	cited path does not exist: src/repl/watch.rs
+design/int/result-owner.md	PATH	cited path does not exist: repl/format.rs
+design/int/result-owner.md	PATH	cited path does not exist: repl/format_type.rs
+design/int/s76-implementation-plan.md	SYMBOL	`SymbolTableMacroResolver` does not occur in src/worker.rs — actually in src/process_form.rs, src/expander.rs, src/process_form/tests.rs
+design/int/s76-implementation-plan.md	SYMBOL	`block_for_macro_codegen` does not occur in src/worker.rs — actually in src/process_form/macro_resolution.rs, src/scheduler/tests.rs
+design/int/s76-implementation-plan.md	SYMBOL	`separate_macros` does not occur in worker.rs — actually in src/process_form.rs, src/process_form/form_dispatch.rs
+design/int/s78-entry-module.md	LINE	line 2301 is past end of src/session_v4.rs (623 lines)
+design/int/s78-entry-module.md	LINE	line 3055 is past end of src/worker.rs (2704 lines)
+design/int/s78-entry-module.md	LINE	line 750 is past end of src/session_v4.rs (623 lines)
+design/int/session-persistence.md	PATH	cited path does not exist: repl/save.rs
+design/int/step4-macro-blocking.md	PATH	cited path does not exist: src/call_graph_util.rs
+design/int/step5-lazy-discovery.md	PATH	cited path does not exist: crates/cranelisp-frontend/src/ast.rs
+design/int/step5-lazy-discovery.md	PATH	cited path does not exist: src/session.rs
+design/int/step7-repl-eval.md	PATH	cited path does not exist: src/repl/save.rs
+design/int/step7-repl-eval.md	PATH	cited path does not exist: src/repl/trace.rs
+design/int/step7-repl-eval.md	SYMBOL	`build_traced_fns` does not occur in src/repl/mod.rs — actually in src/eval.rs
+design/int/step7-repl-eval.md	SYMBOL	`eval_annotation_expr` does not occur in src/repl/mod.rs — found nowhere in the tree
+design/int/step7-repl-eval.md	SYMBOL	`eval_via_compile_unit` does not occur in src/repl/mod.rs — found nowhere in the tree
+design/int/step7-repl-eval.md	SYMBOL	`expr_contains_trace` does not occur in trace.rs — found nowhere in the tree
+design/int/step8-platform-registry.md	PATH	cited path does not exist: src/platform_registry.rs
+design/int/step8-platform-registry.md	PATH	cited path does not exist: src/session.rs
+design/int/step9-error-cascade.md	PATH	cited path does not exist: repl/mod.rs
+design/int/symbol-table-cache.md	PATH	cited path does not exist: tests/sprint23.rs
+design/int/symbol-table-cache.md	SYMBOL	`link_by_name` does not occur in src/session_v4.rs — actually in src/cache.rs, src/main.rs, src/session_v4/lifecycle.rs
+design/int/symbol-table-cache.md	SYMBOL	`record_imports_on_symbol_table` does not occur in src/worker.rs — actually in src/process_form.rs, src/process_form/form_dispatch.rs, src/worker/tests.rs
+design/int/terminal-styling.md	PATH	cited path does not exist: src/repl.rs
+design/int/wave-3a-process-form.md	PATH	cited path does not exist: crates/cranelisp-backend/src/display.rs
+design/int/wave-3a-process-form.md	PATH	cited path does not exist: crates/cranelisp-runtime/src/io_trace.rs
+design/int/wave-3a-process-form.md	PATH	cited path does not exist: crates/cranelisp-runtime/src/trace.rs
+design/int/wave-3a-process-form.md	PATH	cited path does not exist: src/Cargo.toml
+design/int/wave-3a-process-form.md	PATH	cited path does not exist: src/jit_names.rs
+design/int/wave-3a-process-form.md	PATH	cited path does not exist: src/session/shared.rs
+design/intrinsics/diagnostic-modes.md	SYMBOL	`safety_lane_cow_set_read_link_corruption_red` does not occur in safety_oracle_lane.rs — found nowhere in the tree
+design/intrinsics/intrinsics-table.md	LINE	line 3545 is past end of src/worker.rs (2704 lines)
+design/intrinsics/intrinsics-table.md	SYMBOL	`int_intrinsics` does not occur in session_v4.rs — actually in src/session_v4/test_runner.rs, crates/cranelisp-backend/src/compiler/apply.rs
+design/intrinsics/intrinsics-table.md	SYMBOL	`int_intrinsics` does not occur in src/session_v4.rs — actually in src/session_v4/test_runner.rs, crates/cranelisp-backend/src/compiler/apply.rs
+design/intrinsics/rc-inc-entry-point.md	SYMBOL	`shallow_rc_inc_targets_canonical_rc_field` does not occur in marshal.rs — actually in crates/cranelisp-primitives/src/marshal/tests.rs
+design/platform/adt-marker-binding.md	PATH	cited path does not exist: src/adt/tests.rs
+design/platform/platform.md	LINE	line 1761 is past end of crates/cranelisp-platform/src/lib.rs (1647 lines)
+design/platform/platform.md	PATH	cited path does not exist: src/adt.rs
+design/platform/platform.md	PATH	cited path does not exist: src/declare.rs
+design/platform/platform.md	PATH	cited path does not exist: src/macros.rs
+design/platform/platform.md	PATH	cited path does not exist: src/schema.rs
+design/platform/platform.md	PATH	cited path does not exist: tests/v4_pipeline.rs
+design/platform/poll-support.md	PATH	cited path does not exist: src/concurrency.rs
+design/platform/poll-support.md	PATH	cited path does not exist: tests/macro_expansion.rs
+design/platform/poll-support.md	SYMBOL	`concurrency_descriptor_absent_from_default_public_api_neg` does not occur in tests/facade_pif_rows.rs — found nowhere in the tree
+design/primitives/primitives.md	PATH	cited path does not exist: src/declarations.rs
+design/runtime/s117-primitives-integrity.md	PATH	cited path does not exist: src/declarations.rs
+design/runtime/s119-typed-consume-funnel.md	PATH	cited path does not exist: crates/cranelisp-intrinsics/src/handle.rs
+design/runtime/s119-typed-consume-funnel.md	PATH	cited path does not exist: crates/cranelisp-intrinsics/src/handle/tests.rs
+design/runtime/s119-typed-consume-funnel.md	PATH	cited path does not exist: crates/cranelisp-primitives/src/abi_facts.rs
+design/stdlib/examples-run-path.md	LINE	line 508 is past end of tests/helpers/mod.rs (5 lines)
+design/stdlib/examples-run-path.md	PATH	cited path does not exist: examples/prelude.cl
+design/stdlib/examples-run-path.md	PATH	cited path does not exist: tests/examples_run_path.rs
+design/typecheck/ast-annotation.md	LINE	line 1324 is past end of src/session_v4.rs (623 lines)
+design/typecheck/ast-annotation.md	LINE	line 2482 is past end of crates/cranelisp-backend/src/lib.rs (1804 lines)
+design/typecheck/ast-annotation.md	LINE	line 885 is past end of src/session_v4.rs (623 lines)
+design/typecheck/ast-annotation.md	PATH	cited path does not exist: crates/cranelisp-backend/src/got.rs
+design/typecheck/ast-annotation.md	PATH	cited path does not exist: crates/cranelisp-typecheck/src/imports.rs
+design/typecheck/ast-annotation.md	PATH	cited path does not exist: crates/cranelisp-typecheck/src/program.rs
+design/typecheck/ast-annotation.md	PATH	cited path does not exist: crates/cranelisp-types/src/code.rs
+design/typecheck/auto-curry.md	PATH	cited path does not exist: tests/io.rs
+design/typecheck/check-form-api.md	PATH	cited path does not exist: crates/cranelisp-typecheck/src/program.rs
+design/typecheck/dotted-ctor-registration.md	SYMBOL	`register_constructors` does not occur in adt.rs — actually in src/worker.rs, src/worker/tests.rs, crates/cranelisp-types/src/adt_build.rs
+design/typecheck/dotted-ctor-registration.md	SYMBOL	`resolve_dotted_field_accessor` does not occur in checker.rs — actually in tests/spec_08_modules.rs, tests/spec_06_pattern_matching.rs, tests/cache.rs
+design/typecheck/fixme-0365-field-accessor-dotted.md	PATH	cited path does not exist: crates/cranelisp-typecheck/src/traits/tests.rs
+design/typecheck/hkt.md	PATH	cited path does not exist: crates/cranelisp-typecheck/src/traits.rs
+design/typecheck/hkt.md	PATH	cited path does not exist: tests/ring2.rs
+design/typecheck/monomorphisation.md	PATH	cited path does not exist: crates/cranelisp-typecheck/src/program.rs
+design/typecheck/non-concrete-producer-obligations.md	PATH	cited path does not exist: cranelisp-types/CLAUDE.md
+design/typecheck/ownership-inference.md	PATH	cited path does not exist: cranelisp-typecheck/CLAUDE.md
+design/typecheck/program-decomposition.md	PATH	cited path does not exist: crates/cranelisp-typecheck/src/program.rs
+design/typecheck/s76-resolution-and-enablement.md	SYMBOL	`is_in_subtree` does not occur in checker.rs — actually in src/imports.rs, src/session_v4/index_worker.rs, crates/cranelisp-typecheck/src/checker/tests.rs
+design/typecheck/s76-resolution-and-enablement.md	SYMBOL	`resolve_module_alias` does not occur in checker.rs — actually in crates/cranelisp-types/src/resolve.rs
+design/typecheck/s87-fq-walk-consolidation.md	PATH	cited path does not exist: src/repl.rs
+design/typecheck/s87-traits-decomposition.md	PATH	cited path does not exist: crates/cranelisp-typecheck/src/traits.rs
+design/typecheck/s87-traits-decomposition.md	PATH	cited path does not exist: src/repl.rs
+design/typecheck/s87-traits-decomposition.md	SYMBOL	`resolve_terminal_entry_or_prelude` does not occur in checker.rs — actually in tests/repl_introspection.rs
+repl/spec.md	PATH	cited path does not exist: examples/hello.cl
+repl/spec.md	PATH	cited path does not exist: examples/hello.exe
+repl/spec.md	PATH	cited path does not exist: src/repl.rs
+spec/01-lexical.md	SYMBOL	`annotation_fold_handles_compound_spaced_quoted_and_full_span_forms` does not occur in crates/cranelisp-frontend/src/reader.rs — actually in crates/cranelisp-frontend/src/reader/tests.rs
+spec/01-lexical.md	SYMBOL	`annotation_fold_is_recursive_and_stacks` does not occur in crates/cranelisp-frontend/src/reader.rs — actually in crates/cranelisp-frontend/src/reader/tests.rs
+spec/01-lexical.md	SYMBOL	`annotation_fold_rejects_dangling_delimiters_at_introducer` does not occur in crates/cranelisp-frontend/src/reader.rs — actually in crates/cranelisp-frontend/src/reader/tests.rs
+spec/01-lexical.md	SYMBOL	`test_commas_are_whitespace` does not occur in crates/cranelisp-frontend/src/reader.rs — actually in crates/cranelisp-frontend/src/reader/tests.rs
+spec/01-lexical.md	SYMBOL	`test_negative_three_standalone` does not occur in crates/cranelisp-frontend/src/reader.rs — actually in crates/cranelisp-frontend/src/reader/tests.rs
+spec/01-lexical.md	SYMBOL	`test_parse_ampersand` does not occur in crates/cranelisp-frontend/src/reader.rs — actually in crates/cranelisp-frontend/src/reader/tests.rs
+spec/01-lexical.md	SYMBOL	`test_parse_anon_fn` does not occur in crates/cranelisp-frontend/src/reader.rs — actually in crates/cranelisp-frontend/src/reader/tests.rs
+spec/01-lexical.md	SYMBOL	`test_parse_bare_colon` does not occur in crates/cranelisp-frontend/src/reader.rs — actually in crates/cranelisp-frontend/src/reader/tests.rs
+spec/01-lexical.md	SYMBOL	`test_parse_bracket` does not occur in crates/cranelisp-frontend/src/reader.rs — actually in crates/cranelisp-frontend/src/reader/tests.rs
+spec/01-lexical.md	SYMBOL	`test_parse_colon_prefix` does not occur in crates/cranelisp-frontend/src/reader.rs — actually in crates/cranelisp-frontend/src/reader/tests.rs
+spec/01-lexical.md	SYMBOL	`test_parse_dotted_symbol` does not occur in crates/cranelisp-frontend/src/reader.rs — actually in crates/cranelisp-frontend/src/reader/tests.rs
+spec/01-lexical.md	SYMBOL	`test_parse_float_literal` does not occur in crates/cranelisp-frontend/src/reader.rs — actually in crates/cranelisp-frontend/src/reader/tests.rs
+spec/01-lexical.md	SYMBOL	`test_parse_gensym_shorthand` does not occur in crates/cranelisp-frontend/src/reader.rs — actually in crates/cranelisp-frontend/src/reader/tests.rs
+spec/01-lexical.md	SYMBOL	`test_parse_integer_literal` does not occur in crates/cranelisp-frontend/src/reader.rs — actually in crates/cranelisp-frontend/src/reader/tests.rs
+spec/01-lexical.md	SYMBOL	`test_parse_multiple_forms` does not occur in crates/cranelisp-frontend/src/reader.rs — actually in crates/cranelisp-frontend/src/reader/tests.rs
+spec/01-lexical.md	SYMBOL	`test_parse_operator_plus` does not occur in crates/cranelisp-frontend/src/reader.rs — actually in crates/cranelisp-frontend/src/reader/tests.rs
+spec/01-lexical.md	SYMBOL	`test_parse_percent_param_bare` does not occur in crates/cranelisp-frontend/src/reader.rs — actually in crates/cranelisp-frontend/src/reader/tests.rs
+spec/01-lexical.md	SYMBOL	`test_parse_qualified_symbol` does not occur in crates/cranelisp-frontend/src/reader.rs — actually in crates/cranelisp-frontend/src/reader/tests.rs
+spec/01-lexical.md	SYMBOL	`test_parse_quasiquote` does not occur in crates/cranelisp-frontend/src/reader.rs — actually in crates/cranelisp-frontend/src/reader/tests.rs
+spec/01-lexical.md	SYMBOL	`test_parse_quote` does not occur in crates/cranelisp-frontend/src/reader.rs — actually in crates/cranelisp-frontend/src/reader/tests.rs
+spec/01-lexical.md	SYMBOL	`test_parse_simple_symbol` does not occur in crates/cranelisp-frontend/src/reader.rs — actually in crates/cranelisp-frontend/src/reader/tests.rs
+spec/01-lexical.md	SYMBOL	`test_parse_string_escaped_quote` does not occur in crates/cranelisp-frontend/src/reader.rs — actually in crates/cranelisp-frontend/src/reader/tests.rs
+spec/01-lexical.md	SYMBOL	`test_parse_string_escapes` does not occur in crates/cranelisp-frontend/src/reader.rs — actually in crates/cranelisp-frontend/src/reader/tests.rs
+spec/01-lexical.md	SYMBOL	`test_parse_string` does not occur in crates/cranelisp-frontend/src/reader.rs — actually in crates/cranelisp-frontend/src/reader/tests.rs
+spec/01-lexical.md	SYMBOL	`test_parse_true` does not occur in crates/cranelisp-frontend/src/reader.rs — actually in crates/cranelisp-frontend/src/reader/tests.rs
+spec/01-lexical.md	SYMBOL	`test_parse_unquote_splicing` does not occur in crates/cranelisp-frontend/src/reader.rs — actually in crates/cranelisp-frontend/src/reader/tests.rs
+spec/01-lexical.md	SYMBOL	`test_parse_unquote` does not occur in crates/cranelisp-frontend/src/reader.rs — actually in crates/cranelisp-frontend/src/reader/tests.rs
+spec/01-lexical.md	SYMBOL	`test_parse_with_comment` does not occur in crates/cranelisp-frontend/src/reader.rs — actually in crates/cranelisp-frontend/src/reader/tests.rs
+spec/01-lexical.md	SYMBOL	`test_true_prefix_is_symbol` does not occur in crates/cranelisp-frontend/src/reader.rs — actually in crates/cranelisp-frontend/src/reader/tests.rs
+spec/02-grammar.md	SYMBOL	`annotation_fold_is_recursive_and_stacks` does not occur in crates/cranelisp-frontend/src/reader.rs — actually in crates/cranelisp-frontend/src/reader/tests.rs
+spec/02-grammar.md	SYMBOL	`annotation_fold_rejects_dangling_delimiters_at_introducer` does not occur in crates/cranelisp-frontend/src/reader.rs — actually in crates/cranelisp-frontend/src/reader/tests.rs
+spec/02-grammar.md	SYMBOL	`test_build_apply` does not occur in crates/cranelisp-frontend/src/ast_builder.rs — actually in crates/cranelisp-frontend/src/ast_builder/tests.rs
+spec/02-grammar.md	SYMBOL	`test_build_defn_private` does not occur in crates/cranelisp-frontend/src/ast_builder.rs — actually in crates/cranelisp-frontend/src/ast_builder/tests.rs
+spec/02-grammar.md	SYMBOL	`test_build_defn_with_docstring` does not occur in crates/cranelisp-frontend/src/ast_builder.rs — actually in crates/cranelisp-frontend/src/ast_builder/tests.rs
+spec/02-grammar.md	SYMBOL	`test_build_defn` does not occur in crates/cranelisp-frontend/src/ast_builder.rs — actually in crates/cranelisp-frontend/src/ast_builder/tests.rs
+spec/02-grammar.md	SYMBOL	`test_build_if` does not occur in crates/cranelisp-frontend/src/ast_builder.rs — actually in crates/cranelisp-frontend/src/ast_builder/tests.rs
+spec/02-grammar.md	SYMBOL	`test_build_integer_literal` does not occur in crates/cranelisp-frontend/src/ast_builder.rs — actually in crates/cranelisp-frontend/src/ast_builder/tests.rs
+spec/02-grammar.md	SYMBOL	`test_build_lambda` does not occur in crates/cranelisp-frontend/src/ast_builder.rs — actually in crates/cranelisp-frontend/src/ast_builder/tests.rs
+spec/02-grammar.md	SYMBOL	`test_build_let` does not occur in crates/cranelisp-frontend/src/ast_builder.rs — actually in crates/cranelisp-frontend/src/ast_builder/tests.rs
+spec/02-grammar.md	SYMBOL	`test_build_match` does not occur in crates/cranelisp-frontend/src/ast_builder.rs — actually in crates/cranelisp-frontend/src/ast_builder/tests.rs
+spec/02-grammar.md	SYMBOL	`test_build_variable` does not occur in crates/cranelisp-frontend/src/ast_builder.rs — actually in crates/cranelisp-frontend/src/ast_builder/tests.rs
+spec/02-grammar.md	SYMBOL	`test_export_specific` does not occur in crates/cranelisp-frontend/src/module_extract.rs — actually in crates/cranelisp-frontend/src/module_extract/tests.rs
+spec/02-grammar.md	SYMBOL	`test_reject_trace_defn_name` does not occur in crates/cranelisp-frontend/src/ast_builder.rs — actually in crates/cranelisp-frontend/src/ast_builder/tests.rs
+spec/02-grammar.md	SYMBOL	`test_repl_expression` does not occur in crates/cranelisp-frontend/src/ast_builder.rs — actually in crates/cranelisp-frontend/src/ast_builder/tests.rs
+spec/02-grammar.md	SYMBOL	`test_vec_parses_as_call` does not occur in crates/cranelisp-frontend/src/ast_builder.rs — actually in crates/cranelisp-frontend/src/ast_builder/tests.rs
+spec/03-types.md	SYMBOL	`annotation_fold_is_recursive_and_stacks` does not occur in crates/cranelisp-frontend/src/reader.rs — actually in crates/cranelisp-frontend/src/reader/tests.rs
+spec/03-types.md	SYMBOL	`annotation_fold_rejects_dangling_delimiters_at_introducer` does not occur in crates/cranelisp-frontend/src/reader.rs — actually in crates/cranelisp-frontend/src/reader/tests.rs
+spec/03-types.md	SYMBOL	`test_resolution_validates_registered_arity` does not occur in crates/cranelisp-typecheck/src/adt.rs — actually in crates/cranelisp-typecheck/src/adt/tests.rs
+spec/03-types.md	SYMBOL	`test_resolve_applied_builtin_vec_wrong_arity` does not occur in crates/cranelisp-typecheck/src/resolve.rs — actually in crates/cranelisp-typecheck/src/resolve/tests.rs
+spec/03-types.md	SYMBOL	`test_resolve_fn_type` does not occur in crates/cranelisp-typecheck/src/resolve.rs — actually in crates/cranelisp-typecheck/src/resolve/tests.rs
+spec/04-expressions.md	SYMBOL	`descriptor_int` does not occur in crates/cranelisp-intrinsics/src/trace_format.rs — actually in crates/cranelisp-intrinsics/src/trace_format/tests.rs
+spec/04-expressions.md	SYMBOL	`test_compile_match_with_fields` does not occur in crates/cranelisp-backend/src/lib.rs — actually in crates/cranelisp-backend/src/compiler/match_codegen.rs
+spec/05-definitions.md	SYMBOL	`test_mixed_forms` does not occur in crates/cranelisp-frontend/src/module_extract.rs — actually in crates/cranelisp-frontend/src/module_extract/tests.rs
+spec/05-definitions.md	SYMBOL	`test_register_enum_type` does not occur in crates/cranelisp-typecheck/src/adt.rs — actually in crates/cranelisp-typecheck/src/adt/tests.rs
+spec/07-traits.md	PATH	cited path does not exist: crates/cranelisp-typecheck/src/traits/tests.rs
+spec/08-modules.md	PATH	cited path does not exist: stdlib/core/collections.cl
+spec/08-modules.md	PATH	cited path does not exist: stdlib/core/formats.cl
+spec/08-modules.md	PATH	cited path does not exist: stdlib/core/numerics.cl
+spec/08-modules.md	PATH	cited path does not exist: stdlib/core/option.cl
+spec/08-modules.md	PATH	cited path does not exist: stdlib/core/sequences.cl
+spec/08-modules.md	PATH	cited path does not exist: stdlib/platforms/stdio.dylib
+spec/08-modules.md	PATH	cited path does not exist: tests/wave3_g8.rs
+spec/08-modules.md	SYMBOL	`platform_fn_non_io_return_is_rejected` does not occur in src/platform.rs — actually in src/platform/tests.rs
+spec/08-modules.md	SYMBOL	`test_export_glob` does not occur in crates/cranelisp-frontend/src/module_extract.rs — actually in crates/cranelisp-frontend/src/module_extract/tests.rs
+spec/08-modules.md	SYMBOL	`test_export_specific` does not occur in crates/cranelisp-frontend/src/module_extract.rs — actually in crates/cranelisp-frontend/src/module_extract/tests.rs
+spec/08-modules.md	SYMBOL	`test_import_specific_names` does not occur in crates/cranelisp-frontend/src/module_extract.rs — actually in crates/cranelisp-frontend/src/module_extract/tests.rs
+spec/08-modules.md	SYMBOL	`test_mixed_forms` does not occur in crates/cranelisp-frontend/src/module_extract.rs — actually in crates/cranelisp-frontend/src/module_extract/tests.rs
+spec/08-modules.md	SYMBOL	`test_module_path_preserved` does not occur in crates/cranelisp-frontend/src/module_extract.rs — actually in crates/cranelisp-frontend/src/module_extract/tests.rs
+spec/08-modules.md	SYMBOL	`test_passthrough` does not occur in crates/cranelisp-frontend/src/module_extract.rs — actually in crates/cranelisp-frontend/src/module_extract/tests.rs
+spec/09-macros.md	SYMBOL	`annotation_half_splice_is_rejected_in_quasiquote` does not occur in crates/cranelisp-frontend/src/quasiquote.rs — actually in crates/cranelisp-frontend/src/quasiquote/tests.rs
+spec/09-macros.md	SYMBOL	`annotation_subject_splice_is_rejected_in_quasiquote` does not occur in crates/cranelisp-frontend/src/quasiquote.rs — actually in crates/cranelisp-frontend/src/quasiquote/tests.rs
+spec/09-macros.md	SYMBOL	`quote_and_quasiquote_preserve_annotated_node_shape` does not occur in crates/cranelisp-frontend/src/quasiquote.rs — actually in crates/cranelisp-frontend/src/quasiquote/tests.rs
+spec/09-macros.md	SYMBOL	`unquote_is_processed_in_both_annotated_halves` does not occur in crates/cranelisp-frontend/src/quasiquote.rs — actually in crates/cranelisp-frontend/src/quasiquote/tests.rs
+spec/10-io.md	SYMBOL	`sequential_let_emits_no_par_node` does not occur in crates/cranelisp-backend/src/compiler/control_flow.rs — actually in crates/cranelisp-backend/src/compiler/control_flow/par_codegen_tests.rs
+spec/10-io.md	SYMBOL	`test_platform_extracted` does not occur in crates/cranelisp-frontend/src/module_extract.rs — actually in crates/cranelisp-frontend/src/module_extract/tests.rs
+spec/10-io.md	SYMBOL	`test_run_io_pure` does not occur in crates/cranelisp-intrinsics/src/io.rs — actually in crates/cranelisp-intrinsics/src/io/tests.rs
+spec/12-runtime.md	SYMBOL	`test_alloc_string_empty` does not occur in crates/cranelisp-intrinsics/src/heap_string.rs — actually in crates/cranelisp-intrinsics/src/heap_string/tests.rs
+spec/12-runtime.md	SYMBOL	`test_import_ambiguity` does not occur in crates/cranelisp-typecheck/src/checker.rs — actually in crates/cranelisp-typecheck/src/checker/tests.rs
+spec/12-runtime.md	SYMBOL	`test_live_allocs_tracking` does not occur in crates/cranelisp-intrinsics/src/alloc.rs — actually in crates/cranelisp-intrinsics/src/alloc/tests.rs
+spec/appendix-a-builtins.md	SYMBOL	`test_export_specific` does not occur in crates/cranelisp-frontend/src/module_extract.rs — actually in crates/cranelisp-frontend/src/module_extract/tests.rs
+src/CLAUDE.md	PATH	cited path does not exist: repl/commands.rs
+src/CLAUDE.md	PATH	cited path does not exist: repl/format.rs
+src/CLAUDE.md	PATH	cited path does not exist: repl/format_type.rs
+src/CLAUDE.md	PATH	cited path does not exist: repl/mod.rs
+src/CLAUDE.md	PATH	cited path does not exist: repl/search.rs
+src/CLAUDE.md	SYMBOL	`register_submodule_alias` does not occur in worker.rs — actually in src/imports.rs, src/imports/tests.rs, src/process_form/dependency.rs
+tests/CLAUDE.md	PATH	cited path does not exist: src/repl.rs
+tests/plan/0488-isolation.md	PATH	cited path does not exist: crates/cranelisp-typecheck/src/program.rs
+tests/plan/0488-isolation.md	PATH	cited path does not exist: crates/cranelisp-typecheck/src/program/tests.rs
+tests/plan/PLAN.md	LINE	line 1572 is past end of src/session_v4.rs (623 lines)
+tests/plan/PLAN.md	PATH	cited path does not exist: cranelisp-primitives/CLAUDE.md
+tests/plan/PLAN.md	PATH	cited path does not exist: crates/cranelisp-typecheck/src/program.rs
+tests/plan/PLAN.md	PATH	cited path does not exist: src/repl.rs
+tests/plan/PLAN.md	PATH	cited path does not exist: tests/legacy/cache.rs
+tests/plan/PLAN.md	PATH	cited path does not exist: tests/legacy/sprint23.rs
+tests/plan/PLAN.md	PATH	cited path does not exist: tests/sprint23.rs
+tests/plan/PLAN.md	SYMBOL	`ReplSession` does not occur in tests/helpers/mod.rs — actually in crates/cranelisp-backend/src/jit/tests.rs, tests/spec_12_runtime.rs, tests/spec_11_stdlib.rs
+tests/plan/PLAN.md	SYMBOL	`build_elem_dec_fn` does not occur in vec_codegen.rs — actually in crates/cranelisp-backend/src/drop_glue.rs, crates/cranelisp-backend/src/compiler/resolution.rs, tests/safety_oracle_lane.rs
+tests/plan/PLAN.md	SYMBOL	`public_api_check_runs_against_all_eight_crates` does not occur in tests/public_api_relocations.rs — found nowhere in the tree
+tests/plan/PLAN.md	SYMBOL	`read_dotted_symbol` does not occur in crates/cranelisp-frontend/src/reader.rs — found nowhere in the tree
+tests/plan/PLAN.md	SYMBOL	`register_trait_method` does not occur in crates/cranelisp-typecheck/src/traits/registry.rs — actually in tests/spec_08_name_shadowing.rs
+tests/plan/PLAN.md	SYMBOL	`resolve_current_or_prelude` does not occur in checker.rs — actually in tests/spec_08_prelude_outer_scope.rs
+tests/plan/PLAN.md	SYMBOL	`resolve_dotted_field_accessor` does not occur in crates/cranelisp-typecheck/src/checker.rs — actually in tests/spec_08_modules.rs, tests/spec_06_pattern_matching.rs, tests/cache.rs
+tests/plan/PLAN.md	SYMBOL	`rp2_body_ascription_self_call_multi_arity_param_not_pinned_rejected` does not occur in tests/multi_arity_clause_param_51_2.rs — found nowhere in the tree
+tests/plan/PLAN.md	SYMBOL	`rp4_delegating_let_body_multi_arity_param_not_pinned_rejected` does not occur in tests/multi_arity_clause_param_51_2.rs — found nowhere in the tree
+tests/plan/PLAN.md	SYMBOL	`s68_code_enum_has_primitive_marker_variant` does not occur in tests/s68_primitives_uniform.rs — found nowhere in the tree
+tests/plan/PLAN.md	SYMBOL	`s68_primitives_entries_carry_code_primitive_marker` does not occur in tests/s68_primitives_uniform.rs — found nowhere in the tree
+tests/plan/PLAN.md	SYMBOL	`s68_primitives_table_is_arc_symboltable_code_unit` does not occur in tests/s68_primitives_uniform.rs — found nowhere in the tree
+tests/plan/coverage-gaps.md	PATH	cited path does not exist: crates/cranelisp-runtime/src/marshal.rs
+tests/plan/coverage-gaps.md	PATH	cited path does not exist: crates/cranelisp-runtime/src/string.rs
+tests/plan/coverage-gaps.md	PATH	cited path does not exist: src/repl.rs
+tests/plan/coverage-gaps.md	PATH	cited path does not exist: tests/e2e.rs
+tests/plan/coverage-gaps.md	PATH	cited path does not exist: tests/io.rs
+tests/plan/coverage-gaps.md	PATH	cited path does not exist: tests/ring2.rs
+tests/plan/coverage-gaps.md	PATH	cited path does not exist: tests/stdlib.rs
+tests/plan/e2e-architecture.md	SYMBOL	`link_smoke_runs_from_clean_tree` does not occur in build_confidence.rs — found nowhere in the tree
+tests/plan/helpers-api.md	PATH	cited path does not exist: tests/stdlib.rs
+tests/plan/helpers.md	PATH	cited path does not exist: tests/cache_isolation.rs
+tests/plan/helpers.md	PATH	cited path does not exist: tests/stdlib.rs
+tests/plan/helpers.md	SYMBOL	`NUM_TRAIT_PRELUDE` does not occur in e2e.rs — found nowhere in the tree
+tests/plan/helpers.md	SYMBOL	`ReplSession` does not occur in tests/helpers/mod.rs — actually in crates/cranelisp-backend/src/jit/tests.rs, tests/spec_12_runtime.rs, tests/spec_11_stdlib.rs
+tests/plan/negative-coverage.md	PATH	cited path does not exist: tests/macros.rs
+tests/plan/negative-coverage.md	PATH	cited path does not exist: tests/ring1.rs
+tests/plan/negative-coverage.md	PATH	cited path does not exist: tests/ring2.rs
+tests/plan/s101-coverage-postmortem.md	PATH	cited path does not exist: crates/cranelisp-typecheck/src/program.rs
+tests/plan/s102-test-plan.md	PATH	cited path does not exist: tests/ownership_projection.rs
+tests/plan/s106-test-plan.md	PATH	cited path does not exist: src/repl.rs
+tests/plan/s111-0633-adt-drop-glue-underkey.md	SYMBOL	`adt_drop_glue_naming_identity_is_fqtn_keyed` does not occur in tests.rs — found nowhere in the tree
+tests/plan/s111-0633-adt-drop-glue-underkey.md	SYMBOL	`emit_inline_drop_glue` does not occur in rc_emission.rs — actually in tests/drop_glue_legacy_emitter_fence.rs
+tests/plan/s112-0628-ic-wave.md	SYMBOL	`defn_multi_arity_unpinned_clause_ambiguous_error_names_clause_neg` does not occur in spec_05_definitions.rs — found nowhere in the tree
+tests/plan/s112-0628-ic-wave.md	SYMBOL	`rp4_delegating_let_body` does not occur in multi_arity_clause_param_51_2.rs — found nowhere in the tree
+tests/plan/s113-risk-assessment.md	SYMBOL	`safety_lane_cow_set_read_link_corruption_red` does not occur in safety_oracle_lane.rs — found nowhere in the tree
+tests/plan/s113-test-plan.md	SYMBOL	`safety_lane_cow_set_read_link_corruption_red` does not occur in tests/safety_oracle_lane.rs — found nowhere in the tree
+tests/plan/s114-test-plan.md	SYMBOL	`try_consume_annotation` does not occur in ast_builder.rs — actually in tests/ra_annotation_qualifier_0682.rs
+tests/plan/s119-test-plan.md	PATH	cited path does not exist: tests/plan/s119-option2-measurement.md
+tests/plan/s82-harvest-io.md	PATH	cited path does not exist: tests/legacy/io.rs
+tests/plan/s82-harvest-io.md	PATH	cited path does not exist: tests/legacy/io_minimal.rs
+tests/plan/s82-harvest-repl_experience.md	PATH	cited path does not exist: tests/legacy/repl_experience.rs
+tests/plan/s82-harvest-repl_negative_old.md	PATH	cited path does not exist: tests/legacy/repl_negative_old.rs
+tests/plan/s82-harvest-ring3_repl.md	PATH	cited path does not exist: tests/legacy/ring3_repl.rs
+tests/plan/s87-test-plan.md	PATH	cited path does not exist: src/repl.rs
+tests/plan/s87-test-plan.md	PATH	cited path does not exist: tests/stdlib_selftest.rs
+tests/plan/s87-test-plan.md	PATH	cited path does not exist: tests/stdlib_verbs.rs
+tests/plan/s89-test-plan.md	PATH	cited path does not exist: src/repl.rs
+tests/plan/wave-3.5-audit.md	PATH	cited path does not exist: tests/helpers/repl.rs
+tests/plan/wave-5.5-dedupe-audit.md	PATH	cited path does not exist: tests/legacy/e2e.rs
+tests/plan/wave-5.5-dedupe-audit.md	PATH	cited path does not exist: tests/legacy/lenient.rs
+tests/plan/wave-5.5-dedupe-audit.md	PATH	cited path does not exist: tests/legacy/macros.rs
+tests/plan/wave-5.5-dedupe-audit.md	PATH	cited path does not exist: tests/legacy/modules.rs
+tests/plan/wave-5.5-dedupe-audit.md	PATH	cited path does not exist: tests/legacy/ring0.rs
+tests/plan/wave-5.5-dedupe-audit.md	PATH	cited path does not exist: tests/legacy/ring1.rs
+tests/plan/wave-5.5-dedupe-audit.md	PATH	cited path does not exist: tests/legacy/ring2.rs
+tests/plan/wave-5.5-dedupe-audit.md	PATH	cited path does not exist: tests/legacy/sketch_port.rs
+tests/plan/wave-5.5-dedupe-audit.md	PATH	cited path does not exist: tests/legacy/sprint59_neg.rs
+tests/plan/wave-5.5-dedupe-audit.md	SYMBOL	`checked_division_by_zero_panics` does not occur in ring0.rs — actually in tests/spec_12_runtime.rs
+tests/plan/wave-5.5-dedupe-audit.md	SYMBOL	`e2e_s3_1_ast_neg_nonexistent` does not occur in e2e.rs — actually in tests/repl_negative.rs
+tests/plan/wave-5.5-dedupe-audit.md	SYMBOL	`e2e_s3_1_clif_neg_nonexistent` does not occur in e2e.rs — actually in tests/repl_negative.rs
+tests/plan/wave-5.5-dedupe-audit.md	SYMBOL	`e2e_s3_1_disasm_neg_nonexistent` does not occur in e2e.rs — actually in tests/repl_negative.rs
+tests/plan/wave-5.5-dedupe-audit.md	SYMBOL	`e2e_s3_1_sexp_neg_nonexistent` does not occur in e2e.rs — actually in tests/repl_negative.rs
+tests/plan/wave-5.5-dedupe-audit.md	SYMBOL	`e2e_s3_1_source_neg_nonexistent` does not occur in e2e.rs — actually in tests/repl_negative.rs
+tests/plan/wave-5.5-dedupe-audit.md	SYMBOL	`e2e_s3_3_list_neg_empty_categories_omitted` does not occur in e2e.rs — actually in tests/repl_introspection.rs
+tests/plan/wave-5.5-dedupe-audit.md	SYMBOL	`e2e_s3_3_list_neg_no_imports` does not occur in e2e.rs — actually in tests/repl_introspection.rs
+tests/plan/wave-5.5-dedupe-audit.md	SYMBOL	`e2e_s3_3_list_neg_no_special_forms` does not occur in e2e.rs — actually in tests/repl_introspection.rs
+tests/plan/wave-5.5-dedupe-audit.md	SYMBOL	`e2e_s3_4_imports_empty_neg_no_primitives_leak` does not occur in e2e.rs — actually in tests/repl_introspection.rs
+tests/plan/wave-5.5-dedupe-audit.md	SYMBOL	`integer_overflow_wraps` does not occur in ring0.rs — actually in tests/spec_12_runtime.rs
+tests/plan/wave-5.5-dedupe-audit.md	SYMBOL	`integer_underflow_wraps` does not occur in ring0.rs — actually in tests/spec_12_runtime.rs
+tests/plan/wave-5.5-dedupe-audit.md	SYMBOL	`program_needs_trace` does not occur in src/session_v4.rs — found nowhere in the tree
+tests/plan/wave-5.5-dedupe-audit.md	SYMBOL	`source_encoding_utf8` does not occur in ring0.rs — actually in tests/spec_12_runtime.rs
+tests/plan/wave-5.6-dedupe-audit.md	PATH	cited path does not exist: tests/legacy/e2e.rs
+tests/plan/wave-5.6-dedupe-audit.md	PATH	cited path does not exist: tests/legacy/lenient.rs
+tests/plan/wave-5.6-dedupe-audit.md	PATH	cited path does not exist: tests/legacy/macros.rs
+tests/plan/wave-5.6-dedupe-audit.md	PATH	cited path does not exist: tests/legacy/modules.rs
+tests/plan/wave-5.6-dedupe-audit.md	PATH	cited path does not exist: tests/legacy/ring0.rs
+tests/plan/wave-5.6-dedupe-audit.md	PATH	cited path does not exist: tests/legacy/ring1.rs
+tests/plan/wave-5.6-dedupe-audit.md	PATH	cited path does not exist: tests/legacy/ring2.rs
+tests/plan/wave-5.6-dedupe-audit.md	PATH	cited path does not exist: tests/legacy/sketch_port.rs
+tests/plan/wave-5.6-dedupe-audit.md	SYMBOL	`tempdir_project_from_fixture` does not occur in tests/helpers/mod.rs — found nowhere in the tree
+tests/plan/wave-5.6-e2e-reaudit.md	PATH	cited path does not exist: src/session.rs
+tests/plan/wave-5.6-e2e-reaudit.md	PATH	cited path does not exist: tests/cranelisp_toml.rs
+tests/plan/wave-5.6-e2e-reaudit.md	PATH	cited path does not exist: tests/legacy/e2e.rs
+tests/plan/wave-5.6-e2e-reaudit.md	SYMBOL	`defn_persists_across_evals` does not occur in repl_lifecycle.rs — actually in tests/repl_introspection.rs
+tests/plan/wave-5.6-e2e-reaudit.md	SYMBOL	`factorial` does not occur in ring0.rs — actually in src/pretty.rs, tests/spec_12_runtime.rs, tests/spec_07_traits.rs
+tests/plan/wave-5.6-e2e-reaudit.md	SYMBOL	`failed_defn_does_not_pollute` does not occur in repl_negative.rs — actually in tests/repl_lifecycle.rs
+tests/plan/wave-5.6-e2e-reaudit.md	SYMBOL	`perf_startup_latency_under_500ms` does not occur in tests/build_confidence.rs — actually in benches/startup_latency.rs
+tests/plan/wave-5.6-e2e-reaudit.md	SYMBOL	`quit_slash_command_exits_cleanly` does not occur in tests/repl_lifecycle.rs — found nowhere in the tree
+tests/plan/wave-5.6-e2e-reaudit.md	SYMBOL	`sig_displays_docstring_after_dash_separator` does not occur in tests/repl_introspection.rs — found nowhere in the tree
+tests/plan/wave-5.6-e2e-reaudit.md	SYMBOL	`single_clause_defmacro_classified` does not occur in repl_introspection.rs — found nowhere in the tree
+tests/plan/wave-5.6-e2e-reaudit.md	SYMBOL	`special_forms_bare_lookup_self_documenting` does not occur in tests/repl_introspection.rs — found nowhere in the tree
+tests/plan/wave-5.6-ring0-reaudit.md	PATH	cited path does not exist: tests/legacy/ring0.rs
+tests/plan/wave-5.6-ring1-reaudit.md	PATH	cited path does not exist: tests/legacy/ring1.rs
+tests/plan/wave-5.6-ring1-reaudit.md	PATH	cited path does not exist: tests/ring1.rs
+tests/plan/wave-5.6-ring2-reaudit.md	PATH	cited path does not exist: tests/legacy/ring2.rs
+tests/plan/wave-5.6-ring2-reaudit.md	SYMBOL	`defn_with_annotated_params` does not occur in spec_05_definitions.rs — found nowhere in the tree
+tests/plan/wave-5.6-ring2-reaudit.md	SYMBOL	`primitive_eq_bool` does not occur in spec_appendix_a_builtins.rs — found nowhere in the tree
+tests/plan/wave-5.6-ring2-reaudit.md	SYMBOL	`primitive_eq_f64` does not occur in spec_appendix_a_builtins.rs — found nowhere in the tree
+tests/plan/wave-5.6-ring2-reaudit.md	SYMBOL	`primitive_sub_f64` does not occur in spec_appendix_a_builtins.rs — found nowhere in the tree
+tests/plan/wave-5.6-sketch-port-reaudit.md	PATH	cited path does not exist: tests/legacy/sketch_port.rs
+tests/plan/wave-5.6-sketch-port-reaudit.md	PATH	cited path does not exist: tests/spec_11_platforms.rs
+tests/plan/wave-5.6-sketch-port-reaudit.md	PATH	cited path does not exist: tests/v4_pipeline.rs
+tests/plan/wave-5.6-sketch-port-reaudit.md	SYMBOL	`discover_tests_and_run_test_user_composition` does not occur in tests/spec_12_runtime.rs — found nowhere in the tree
+tests/plan/wave-5.6-sketch-port-reaudit.md	SYMBOL	`non_exhaustive_match_omits_third_constructor` does not occur in tests/spec_06_pattern_matching.rs — found nowhere in the tree
+tests/plan/wave-5.6-sketch-port-reaudit.md	SYMBOL	`platform_print_via_test_capture` does not occur in tests/spec_10_io.rs — actually in tests/spec_platforms.rs
+tests/plan/wave-5.6-sketch-port-reaudit.md	SYMBOL	`platform_read_line_via_test_capture` does not occur in tests/spec_10_io.rs — actually in tests/spec_platforms.rs
+tests/plan/wave-5.6-sketch-port-reaudit.md	SYMBOL	`primitive_not_bool` does not occur in tests/spec_appendix_a_builtins.rs — found nowhere in the tree
+tests/plan/wave-5.6-sketch-port-reaudit.md	SYMBOL	`trait_method_no_impl_then_recovery` does not occur in tests/repl_negative.rs — actually in tests/spec_07_traits.rs
+tests/plan/wave-6-batch-1-audit.md	PATH	cited path does not exist: tests/examples_run.rs
+tests/plan/wave-6-batch-1-audit.md	PATH	cited path does not exist: tests/exemplar_solver_correctness.rs
+tests/plan/wave-6-batch-1-audit.md	PATH	cited path does not exist: tests/legacy/examples.rs
+tests/plan/wave-6-batch-1-audit.md	PATH	cited path does not exist: tests/plan/ring4.md
+tests/plan/wave-6-batch-1-audit.md	SYMBOL	`example_01_integers` does not occur in examples.rs — found nowhere in the tree
+tests/plan/wave-6-batch-1-audit.md	SYMBOL	`example_02_booleans` does not occur in examples.rs — found nowhere in the tree
+tests/plan/wave-6-batch-1-audit.md	SYMBOL	`example_03_let_bindings` does not occur in examples.rs — found nowhere in the tree
+tests/plan/wave-6-batch-1-audit.md	SYMBOL	`example_04_functions` does not occur in examples.rs — found nowhere in the tree
+tests/plan/wave-6-batch-1-audit.md	SYMBOL	`example_05_recursion` does not occur in examples.rs — found nowhere in the tree
+tests/plan/wave-6-batch-1-audit.md	SYMBOL	`example_06_enums` does not occur in examples.rs — found nowhere in the tree
+tests/plan/wave-6-batch-1-audit.md	SYMBOL	`example_07_polymorphism` does not occur in examples.rs — found nowhere in the tree
+tests/plan/wave-6-batch-1-audit.md	SYMBOL	`example_08_floats` does not occur in examples.rs — found nowhere in the tree
+tests/plan/wave-6-batch-1-audit.md	SYMBOL	`example_09_strings` does not occur in examples.rs — found nowhere in the tree
+tests/plan/wave-6-batch-1-audit.md	SYMBOL	`example_10_adts` does not occur in examples.rs — found nowhere in the tree
+tests/plan/wave-6-batch-1-audit.md	SYMBOL	`example_11_destructuring` does not occur in examples.rs — found nowhere in the tree
+tests/plan/wave-6-batch-1-audit.md	SYMBOL	`example_12_closures` does not occur in examples.rs — found nowhere in the tree
+tests/plan/wave-6-batch-1-audit.md	SYMBOL	`example_13_higher_order` does not occur in examples.rs — found nowhere in the tree
+tests/plan/wave-6-batch-1-audit.md	SYMBOL	`example_14_vecs` does not occur in examples.rs — found nowhere in the tree
+tests/plan/wave-6-batch-1-audit.md	SYMBOL	`example_15_traits` does not occur in examples.rs — found nowhere in the tree
+tests/plan/wave-6-batch-2-audit.md	PATH	cited path does not exist: crates/cranelisp-backend/src/cache.rs
+tests/plan/wave-6-batch-2-audit.md	PATH	cited path does not exist: examples/hello.cl
+tests/plan/wave-6-batch-2-audit.md	PATH	cited path does not exist: tests/legacy/sprint23.rs
+tests/plan/wave-6-batch-2-audit.md	PATH	cited path does not exist: tests/plan/wave-6-batch-2-harvest.md
+tests/plan/wave-6-batch-2-audit.md	PATH	cited path does not exist: tests/sprint23.rs
+tests/plan/wave-6-batch-2-audit.md	SYMBOL	`defn_persists_across_evals` does not occur in repl_lifecycle.rs — actually in tests/repl_introspection.rs
+tests/plan/wave-6-batch-3-audit.md	PATH	cited path does not exist: tests/legacy/sprint59_defects456_repro.rs
+tests/plan/wave-6-batch-3-audit.md	PATH	cited path does not exist: tests/sprint59_cache_repro.rs
+tests/plan/wave-6-batch-3-audit.md	PATH	cited path does not exist: tests/sprint59_defects456_repro.rs
+tests/plan/wave-6-batch-4-audit.md	PATH	cited path does not exist: tests/sprint60_cache_build_marker.rs
+tests/plan/wave-6-batch-4-audit.md	PATH	cited path does not exist: tests/sprint60_reduction.rs
+tests/plan/wave-6-batch-4-audit.md	PATH	cited path does not exist: tests/sprint60_run_tests_reduction.rs
+tests/plan/wave-6-batch-5-audit.md	PATH	cited path does not exist: tests/legacy/sprint61_bare_primitive.rs
+tests/plan/wave-6-batch-5-audit.md	PATH	cited path does not exist: tests/legacy/wave6_demo_repros.rs
+tests/plan/wave-6-batch-5-audit.md	PATH	cited path does not exist: tests/sprint61_bare_primitive.rs
+tests/plan/wave-6-batch-5-audit.md	PATH	cited path does not exist: tests/wave6_demo_repros.rs
+tests/plan/wave-6-batch-6-audit.md	PATH	cited path does not exist: crates/cranelisp-frontend/src/expander.rs
+tests/plan/wave-6-batch-6-audit.md	PATH	cited path does not exist: crates/cranelisp-int/src/worker.rs
+tests/plan/wave-6-batch-6-audit.md	PATH	cited path does not exist: tests/v4_pipeline.rs
+tests/plan/wave-6-batch-6-audit.md	SYMBOL	`v4_cache_hit_dependency_same_exit_code` does not occur in tests/cache.rs — found nowhere in the tree
