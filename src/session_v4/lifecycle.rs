@@ -32,6 +32,20 @@ use super::{
     nice_worker_loop, resolve_priority_worker_count,
 };
 
+/// One read of the entry module's `main` entry (`read_main_entry`): the
+/// callable address, the declared result type, and the code lifetime owner.
+///
+/// These three travel together deliberately — the result owner's release
+/// target must be paired with the retention owner of the code that produced
+/// the result (`design/int/result-owner.md` §3.2 step 3), and the result type
+/// must come from the same read that produced the pointer (§4.3), not from a
+/// second lookup that could fall back.
+struct MainEntryRead {
+    code_ptr: *const u8,
+    result_type: Type,
+    code_owner: Option<Code>,
+}
+
 /// Pillar-3 (S91): bounded grace period at shutdown for the in-flight
 /// importable-symbol burn-down to drain (best-effort, never a correctness
 /// gate). Keeps shutdown prompt for a large reachable set.
@@ -1532,7 +1546,15 @@ impl CompilerSession {
     ///
     /// Looks up `main` in the GOT, calls it, and runs the IO trampoline
     /// if the return type is IO.
-    pub fn trampoline(&mut self, module_name: &str) -> Result<(i64, Type), CranelispError> {
+    ///
+    /// Returns the [`OwnedProgramResult`](crate::result_owner::OwnedProgramResult)
+    /// — NOT a free-standing `(i64, Type)` tuple. The caller observes it (exit
+    /// conversion) and finalizes it BEFORE any teardown
+    /// (`design/int/result-owner.md` §4.3).
+    pub fn trampoline(
+        &mut self,
+        module_name: &str,
+    ) -> Result<crate::result_owner::OwnedProgramResult, CranelispError> {
         // Enforce the batch-mode signature `(Fn [] (IO _))` before running
         // (spec §10.6 / §12.6). `--run` reaches `main` through this seam (NOT
         // `link_by_name`), so the same `validate_main` gate the `--link` path
@@ -1555,10 +1577,14 @@ impl CompilerSession {
         // (If the entry table is absent, the code-ptr lookup below produces the
         // "no `main`" diagnostic — no separate handling needed here.)
 
-        // Look up main's compiled code on its symbol-table entry (G6).
-        let main_sym = cranelisp_types::Symbol::from("main");
-        let code_ptr = self.lookup_main_code_ptr(module_name, &main_sym)?;
-        let result_type = self.lookup_main_return_type(module_name);
+        // Look up main's compiled code on its symbol-table entry (G6). ONE read
+        // yields the callable address, the declared result type, AND the code
+        // lifetime owner — `design/int/result-owner.md` §4.3: the owner
+        // constructor takes its type from the same read that produced the code
+        // pointer, never from a second lookup that could fall back.
+        let main = self.read_main_entry(module_name)?;
+        let code_ptr = main.code_ptr;
+        let result_type = main.result_type.clone();
 
         // Run the program via the unified C-ABI driver (FIXME 0366). The driver
         // owns the WHOLE clear→call→pre-IO-peek→trampoline→post-IO-peek sequence
@@ -1611,63 +1637,87 @@ impl CompilerSession {
                 ))
             }
             // 0 = clean: `outcome.exit_code` is the inner IO value (or main's own
-            // result for a non-IO main). The host applies its own type-driven
-            // exit-code reduction in `main.rs::run`.
+            // result for a non-IO main). Ownership of that word crosses HERE,
+            // into the ONE program-result owner (FIXME 0745). `IO a` is
+            // unwrapped exactly once — at this driver boundary — so the owner
+            // selects glue for the inner `a`, never for `IO a` (§4.4). The host
+            // (`main.rs::run`) then observes the exit code and releases, in
+            // that order, before any teardown.
             _ => {
-                if result_type.is_io() {
-                    let inner_type = result_type.unwrap_io().clone();
-                    Ok((outcome.exit_code, inner_type))
+                let result_type = if result_type.is_io() {
+                    result_type.unwrap_io().clone()
                 } else {
-                    Ok((outcome.exit_code, result_type))
-                }
+                    result_type
+                };
+                let resolver = crate::result_owner::SessionGlueResolver::for_result_code(
+                    main.code_owner.as_ref(),
+                    &self.shared.fresh_jit_drop_glues,
+                );
+                crate::result_owner::OwnedProgramResult::new(
+                    outcome.exit_code,
+                    result_type,
+                    &ModuleFullPath::from(module_name),
+                    &self.shared.symbol_tables,
+                    &resolver,
+                )
             }
         }
     }
 
-    /// Look up the code pointer for `main` on its `ModuleEntry::Def.code`
-    /// (Sprint 57 Wave 2 G6 — replaces the deleted `codegen_products` lookup).
-    pub(crate) fn lookup_main_code_ptr(
-        &self,
-        module_name: &str,
-        main_sym: &cranelisp_types::Symbol,
-    ) -> Result<*const u8, CranelispError> {
+    /// One read of the entry module's `main` entry, yielding everything the
+    /// run path needs: the callable address, the declared result type, and the
+    /// code lifetime owner that the result owner's release target must be
+    /// paired with (`design/int/result-owner.md` §3.2 step 3 / §4.3).
+    ///
+    /// Replaces the former `lookup_main_code_ptr` + `lookup_main_return_type`
+    /// pair. That pair took two independent reads and the type half fell back
+    /// to `Type::Int` when the entry was absent — a fallback that must never
+    /// reach the owner constructor as an authoritative classification. With
+    /// one read there is no second lookup and therefore no fallback: an absent
+    /// or non-`Fn`-schemed `main` produces the same "no `main`" diagnostic the
+    /// pointer half always produced.
+    fn read_main_entry(&self, module_name: &str) -> Result<MainEntryRead, CranelispError> {
         let module_path = ModuleFullPath::from(module_name);
+        let no_main = || CranelispError::ModuleError {
+            message: "entry module has no `main` function — batch mode requires (defn main [] ...)"
+                .into(),
+            location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+        };
 
         // GOT is the single source of callable addresses (D41/D35); read
         // `main`'s pointer from its GOT slot rather than a `Code::ptr`.
         // The callable slot now rides on the `DefKind` variant (S83 reshape,
         // FIXME 0356/0357) — read it via the `callable_got_slot()` chokepoint.
-        if let Some(table) = self.shared.symbol_tables.get(&module_path)
-            && let Some(entry @ ModuleEntry::Def { code: Some(_), .. }) =
-                table.get(main_sym.as_ref())
-            && let Some(slot) = entry.callable_got_slot()
-        {
-            let ptr = table.got.load_slot(slot);
-            if !ptr.is_null() {
-                return Ok(ptr);
-            }
+        let table = self
+            .shared
+            .symbol_tables
+            .get(&module_path)
+            .ok_or_else(no_main)?;
+        let entry = table.get("main").ok_or_else(no_main)?;
+        let ModuleEntry::Def {
+            code: Some(code_owner),
+            scheme,
+            ..
+        } = entry
+        else {
+            return Err(no_main());
+        };
+        let slot = entry.callable_got_slot().ok_or_else(no_main)?;
+        let code_ptr = table.got.load_slot(slot);
+        if code_ptr.is_null() {
+            return Err(no_main());
         }
-
-        Err(CranelispError::ModuleError {
-            message: "entry module has no `main` function — batch mode requires (defn main [] ...)"
-                .into(),
-            location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+        // `validate_main` (run before this read) guarantees `(Fn [] (IO _))`,
+        // so a non-`Fn` scheme here is unreachable; it takes the same
+        // diagnostic rather than defaulting to a type nobody derived.
+        let Type::Fn(_, ret) = &scheme.ty else {
+            return Err(no_main());
+        };
+        Ok(MainEntryRead {
+            code_ptr,
+            result_type: *ret.clone(),
+            code_owner: Some(code_owner.clone()),
         })
-    }
-
-    /// Look up the return type of `main` from the typechecker.
-    pub(crate) fn lookup_main_return_type(&self, module_name: &str) -> Type {
-        let module_path = ModuleFullPath::from(module_name);
-        let main_sym = Symbol::from("main");
-
-        if let Some(table) = self.module_table(&module_path)
-            && let Some(cranelisp_types::ModuleEntry::Def { scheme, .. }) =
-                table.get(main_sym.as_ref())
-            && let Type::Fn(_, ret) = &scheme.ty
-        {
-            return *ret.clone();
-        }
-        Type::Int
     }
 
     /// Wait until all registered modules have object codegen complete.

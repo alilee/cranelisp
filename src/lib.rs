@@ -62,7 +62,13 @@ pub(crate) mod marshal;
 // renamed to shed the misleading "v3 lingering" connotation).
 pub(crate) mod pipeline;
 pub(crate) mod platform;
+// result_owner — the ONE program-result owner (FIXME 0745 / arch ruling 9,
+// `design/int/result-owner.md`). `pub` because `OwnedProgramResult` rides the
+// binary-facing `EvalResult::Val` / `CompilerSession::trampoline` surfaces that
+// `src/main.rs` consumes; the int bounded context has no `public-api.txt`
+// boundary, so this widens nothing outside the binary.
 pub(crate) mod pretty;
+pub mod result_owner;
 pub(crate) mod session_setup;
 // process_form — the cluster / per-form gap-orchestration family extracted
 // from worker.rs (FIXME 0109 Wave C). `process_cluster_once` +

@@ -323,14 +323,19 @@ fn run(spec: LaunchSpec) -> Result<(), CranelispError> {
         Action::Run => {
             startup?;
             s.wait_inmem_complete()?;
-            let (value, ty) = s.trampoline(entry_module_name)?;
+            // FIXME 0745 / `design/int/result-owner.md` §4.3 — the binding
+            // order is **observe → release → object-wait/shutdown → trace
+            // flush → exit**. `trampoline` hands back the ONE program-result
+            // owner; the exit-code conversion is the observation, and the
+            // type-directed release happens while the word is still live and
+            // BEFORE any teardown. (Pre-0745 this arm shut the session down
+            // first and computed the exit code afterwards, with no release at
+            // all — the entry result simply leaked.)
+            let result = s.trampoline(entry_module_name)?;
+            let exit_code = result.exit_code();
+            result.release();
             s.wait_object_complete()?;
             s.shutdown();
-            let exit_code = if ty == cranelisp_types::Type::Int {
-                value as i32
-            } else {
-                0
-            };
             // Observability: drain traces before `process::exit` bypasses
             // the RAII guards held in `main()` (design/int/observability.md §7.1).
             flush_traces();
