@@ -127,9 +127,12 @@ pub-to-boundary item under `compiler::`; everything else is `pub(crate)`.
   DELETED; `resolution.rs` now holds ONLY fixed name-composition schemes (no
   scan/precedence walk): the two symbol-naming primitives (`got_data_symbol_name`
   / `inner_fn_discriminator_for`) plus the three drop-glue naming fns
-  (`closure_drop_glue_name` / `curry_drop_glue_name` / `adt_drop_glue_name` — the
-  S111 R6 §4.1 ONE naming-identity home, called by the production glue builders +
-  the consolidated `resolution::tests` identity battery, never re-composed inline).
+  (`closure_drop_glue_name` / `curry_drop_glue_name` — the S111 R6 §4.1 ONE
+  naming-identity home, never re-composed inline). These name capture
+  ENVELOPES, not type glue: **type-glue identity is `cranelisp_types::
+  drop_glue_symbol_name` and nothing else** (S118 W3 §8 deleted
+  `adt_drop_glue_name` / `adt_instantiation_mangle` / `escape_symbol`, the
+  backend-local second identity scheme).
   Grep gate: zero `resolve_driven`/`resolve_*_target` in `compiler/`.
 - `compiler/control_flow/` — `let_if`, `par_bind`, `lambda`, `fn_as_value`,
   `free_vars`, `sparkability`, `capture_rc`, `select`, `launch`, `utilization`.
@@ -166,6 +169,51 @@ the two span-keyed mirrors (closure + auto-curry) shares ONE envelope
 the ADT builder keeps its own multi-ctor-body envelope but shares the naming fn
 (S111 R6 §4.3 fallback).
 
+## Canonical drop glue — ONE named body per concrete owning type (S118 W3)
+
+`drop_glue.rs::DropGlueRegistry` is the sole construction authority for release
+code. It is **module-borrow-free state** (`module_path`, `dealloc_id`,
+`vec_drop_id`, `entries`): `module` and `symbol_tables` are call arguments, and
+that is not a style choice — `FnCompiler` already holds `module: &'a mut M`, so
+a registry that held one could never be reached from body compilation. It is
+that borrow conflict, not scope, that left the S116 foundation with zero
+consumers. The access pattern is a **disjoint three-field borrow**:
+
+```rust
+self.glue.request_if_owning(self.module, self.ctx.symbol_tables, concrete)?
+```
+
+`FnCompiler::glue` is threaded into every inner compiler (lambda, par-bind and
+launch continuations, dependent spark) so a nested body mints the SAME body as
+the outer one. Construction is declaration-first — the entry goes in
+`Defining` before the fields are walked — so recursive and mutually recursive
+type graphs close through already-declared `FuncId`s and the compiler walks a
+finite graph of type nodes while the generated code recurses over the runtime
+value graph. **There is no depth bound anywhere in the release path**, and
+`finish()` fences that every entry reached `Defined` (it runs after
+`compile_module_bodies` and before `finalize_for_code_read`, so
+`project_drop_glues` still sees finalized addresses).
+
+Gotchas the next reader will hit:
+
+- **A glue body is built mid-body**, in a fresh `make_context()` while the
+  enclosing `FunctionBuilder` is live. That is safe and long-precedented
+  (`lambda.rs::emit_capture_dec_glue`), but it means request order — and so
+  emission order — varies with compilation input. Identity is the type and
+  nothing else; anything order-dependent is a defect.
+- **Two shapes never reach `emit_outer_drop`.** `Vec` goes through
+  `vec_codegen::emit_vec_rc_dec_with_drop` (the rc gate; `runtime/vec_drop` is
+  an unconditional teardown and calling it directly frees a shared Vec), and
+  `Closure` delegates to `rc_emission::emit_closure_dec_into`. Both are
+  `unreachable!()` in that match arm on purpose.
+- **Field discharge happens ONLY in the `old_rc == 1` branch.** Every shape.
+- Capture-env bodies build in their own context and cannot reach the registry,
+  so the enclosing compiler requests their glue FIRST
+  (`request_capture_glue`) and the body emits the resolved call.
+- The ONE admitted non-concrete release site is the generic ctor template's own
+  parameter (FIXME 0394/0891) — see the `emit_heap_binding_decs` comment. Every
+  other site hard-errors.
+
 ## RC-emission gates that are ONE predicate, not per-site syntax (S115 W3/W4c)
 
 Three RC decisions used to be re-derived at each consuming site from local node
@@ -178,8 +226,9 @@ is what the unit tier pins (constructing a live `FnCompiler` is not needed).
 | `fn_compiler::is_fresh_construction` | `fn_compiler.rs` | `protect_return_value` (fn-return AND match-arm protect sites) | the return-protect's only license is that the returned box cannot alias a scope binding. Keying it on the fn NAME (`== "main"`) was the 0632/P19 class; freshness is the real license, and it forwards through `let` and through control-flow joins (fresh iff EVERY arm is fresh). **W3b (0749)**: the predicate now covers EVERY box-minting kind (`ConstrADT`, ctor-`Apply`, **`Lambda`, `StringLit`, `VecLit`, auto-curry `Apply`**) and `protect_return_value` no longer carries its own `matches!` list — two lists of "what is fresh", of which the local one did not forward through `let`. The match is **exhaustive (no `_ =>`)**: that is the standing instrument, since a minting kind swept into a catch-all emits a protect inc nothing can balance. |
 | `fn_compiler::value_provenance` → `yields_owned_temporary` | `fn_compiler.rs` | **five** ownership gates across two seams: `vec_codegen::{emit_vec_drop_if_temporary, is_vec_last_use, cow_source_has_separate_owner}` and `match_codegen::{compile_var_pattern_arm::is_alias, dec_temporary_scrutinee::is_temp}` | **W4c (0781)**: all five asked "is this container/scrutinee mine to release?" with `matches!(e, MonoExpr::Var { .. })` — the NODE KIND standing in for the value's provenance. An `If`/`Match`/`Let` that merely YIELDS a borrowed param is not a `Var`, so every one of them claimed a box the enclosing scope still owns: `(defn f [v b] (vec-get (if b v v) 0))` → `--link` exit 134, no `let`, no COW, both arms identical. The derived answer is a three-point lattice `Fresh ⊑ OwnedTemporary ⊑ NotOwnedHere` (join = weakest arm, forwards through `Let`/`If`/`Match`, capped at `OwnedTemporary` through `Trace`/`ParBind`/`LaunchContinue`), read at TWO thresholds by TWO consumers: `is_fresh_construction` = `== Fresh` (protect elision needs the strong unaliased claim), `yields_owned_temporary` = `!= NotOwnedHere` (release needs only "nothing else will release it"). `is_fresh_construction` is now literally the `== Fresh` face — one classification, two heights. The threshold is ctor-probe-INDEPENDENT, which is why the five gates need no symbol-table access. The match is **exhaustive (no `_ =>`)**: the standing instrument, and now doubly load-bearing — a minting kind swept into a catch-all leaks (0749), a borrowing kind swept in is a UAF (0781). |
 | `apply::classify_auto_curry_target` | `apply.rs` | `compile_auto_curry_call` | the auto-curry seam's totality over the CLOSED carrier sums. The enum IS the totality claim — a new carrier state is a non-exhaustive-match compile error, never a `_ =>` fallthrough. |
-| `rc_emission::typed_release_kind` → `FnCompiler::emit_typed_rc_dec` | `rc_emission.rs` | the ADT drop-glue field walk (`emit_field_decs`) + the moded-arg post-call dec (`apply::emit_post_call_decs`) | **releasing a heap value is a function of its TYPE, not of the site** (W3b, 0753). Vec → `vec_drop` + per-element dec; ADT → recursive inline glue; `Fn` → the box's EMBEDDED `DROP_GLUE_PTR`; anything else → plain dec. A bare `heap::emit_rc_dec(.., None)` frees the box and STRANDS what it owns — that is the recurring leak shape, and `emit_post_call_decs` was doing exactly that for `Borrowed`-param temporaries. Vec is classified BEFORE ADT (a Vec is spelled `Type::ADT(Vec, [t])` but its elements live behind `DATA_PTR`). |
-| `control_flow::capture_rc::CaptureRelease` | `capture_rc.rs` | both capture drop-glue mirrors via `emit_capture_dec_glue` | the same "release by what it owns" rule for closure-env capture slots, which build in a SEPARATE Cranelift context and so cannot call the `&mut self` helpers above. Covers the closure-box case (0749 mechanism (b)); the nested-heap cases (a Vec-of-heap / ADT-with-heap-field capture) are still stranded — **FIXME 0760**. |
+| `FnCompiler::emit_typed_rc_dec` | `rc_emission.rs` | **every** release seam (scope exit, both tail-jump flushes, the match wrapper release, the moded-arg post-call dec, Vec element adapters, capture slots) | **releasing a heap value is a function of its TYPE, not of the site** (0753, completed S118 W3). It converts to a `ConcreteType`, asks the registry for that type's glue, and emits ONE `call`. It has no `needs_guard` parameter — the nullary guard is `GlueShape::guard_nullary`, derived from the type's own ctor set, inside the body — and **no fallback arm**: a non-concrete type is a located `CodegenError`. The per-site classification it replaced (`typed_release_kind`/`TypedRelease`) is deleted; the load-bearing half of that rule, Vec-before-ADT, lives in `drop_glue::shape()`. |
+| `control_flow::capture_rc::CaptureReleaseKind` → `CaptureRelease` | `capture_rc.rs` | both capture drop-glue mirrors via `emit_capture_dec_glue` | the same "release by what it owns" rule for closure-env capture slots, which build in a SEPARATE Cranelift context and so cannot call the `&mut self` helpers above — the enclosing compiler requests the glue (`request_capture_glue`) BEFORE that builder exists and the body emits the call. Two arms, **both glue**: the slot type's canonical body, or the closure box's embedded `DROP_GLUE_PTR`. There is no bare-dec disposition left, which is what made 0760's stranding shape unrepresentable rather than merely fixed. |
+| `fn_compiler::tco_slot_disposition` | `fn_compiler.rs` | `flush_let_scopes_before_tail_jump` + `flush_superseded_heap_params_before_tail_jump` | the ONE TCO owner-continuity verdict (`TransferOldOwner \| Replace \| BorrowedInvalid`), folding four fragments that used to be combined ad hoc inside two filter closures. Two traps: **row 2 (a control-flow tail argument) must stay `Replace`** — the per-branch protective inc plus uniform flush is the emission strategy, and a blanket skip re-introduces the F1 UAF; and **`BorrowedInvalid` means a SHADOWING borrow**, not "the slot is borrowed" (a `Borrowed` param carried forward as its own tail argument is ordinary and owes nothing). |
 
 **The R3 gate additionally DERIVES rather than re-derives**: `cow_source_ownership`
 records its emitted retain decision span-keyed into `FnCompiler::cow_retain_decisions`,
