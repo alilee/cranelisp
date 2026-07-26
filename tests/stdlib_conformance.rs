@@ -114,6 +114,14 @@ fn is_private_module(components: &[&str], stdlib: &Path) -> bool {
 // NOTE (per PLAN §S110 SG-1): this should be GREEN once 0604 lands; if any
 // module is RED on HEAD today, that is SIGNAL (a real stdlib-compile break), not
 // noise — the aggregated report names the module(s), for triage.
+// defect: class=wrong-reject locus=crates/cranelisp-backend/src/drop_glue.rs::ctor_shapes found=S118 owner=/dev
+//   — RED at S118 close on `core.io/when-io` (taking `core` and `core.io` down
+//   with it): FIXME 0907 hard-refuses the concrete-`IO T` release with
+//   `constructor 'Bind' disagrees on declared parameter identity for
+//   'primitives/IO'`. A spec-conforming module, rejected. The aggregated
+//   report names every failing module, so any module OUTSIDE that trio is a
+//   new finding, not this defect. Census: tests/plan/s118-test-plan.md §11.1;
+//   minimal repro: spec_10_io::pure_pattern_accepted.
 #[test]
 fn stdlib_all_public_modules_compile_and_run() {
     let stdlib = stdlib_dir();

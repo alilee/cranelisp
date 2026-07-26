@@ -228,6 +228,14 @@ fn collect_example_files() -> Vec<PathBuf> {
 //       process exit code per spec/10-io.md §10.
 //
 // (carry: legacy/examples.rs::example_NN_* x15 + legacy/examples_run.rs::every_example_file_runs_under_examples_prelude)
+// defect: class=wrong-reject locus=crates/cranelisp-backend/src/drop_glue.rs::ctor_shapes found=S118 owner=/dev
+//   — RED at S118 close on exactly TWO rows, `21-hello-io.cl` and
+//   `23-io-sequence.cl`: FIXME 0907 hard-refuses their concrete-`IO T`
+//   releases with `constructor 'Bind' disagrees on declared parameter identity
+//   for 'primitives/IO'`. Spec-conforming programs, rejected — the umbrella
+//   names the offending rows in its own report, so a THIRD failing row here is
+//   a new finding and not this defect. Census: tests/plan/s118-test-plan.md
+//   §11.1; minimal repro: spec_10_io::pure_pattern_accepted.
 #[test]
 fn every_example_runs_with_documented_exit() {
     let files = collect_example_files();

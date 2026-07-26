@@ -71,6 +71,13 @@ fn bare_ctors_as_first_class_values_run_and_link() {
 // spec: spec/05-definitions.md §5.2.7 — a constructor passed as the mapping fn of
 // a first-class map-over-IO composition.
 // defect: class=null-got-slot locus=crates/cranelisp-backend carrier/GOT-slot population for a bare constructor threaded through an IO-bind map (io.cl timeout simplification gate; fixed S114) found=S102 owner=/dev
+// defect: class=wrong-reject locus=crates/cranelisp-backend/src/drop_glue.rs::ctor_shapes found=S118 owner=/dev
+//   — the cell's CURRENT red is NOT the S102 slot defect above (fixed S114);
+//   it is FIXME 0907's hard refusal, `constructor 'Bind' disagrees on declared
+//   parameter identity for 'primitives/IO'`, which every concrete-`IO T`
+//   release trips in `DropGlueRegistry::ctor_shapes`. Two defects, one cell,
+//   both lines kept: the locus records where each bug LIVED
+//   (tests/plan/s118-test-plan.md §11.1).
 #[test]
 fn bare_ctor_as_map_io_function_run_and_link() {
     assert_run_and_link(
@@ -88,6 +95,10 @@ fn bare_ctor_as_map_io_function_run_and_link() {
 // concurrency.md rough-edge retirement is gated on this.)
 // spec: spec/05-definitions.md §5.2.7 — a constructor composed through race + map-io.
 // defect: class=null-got-slot locus=crates/cranelisp-backend carrier/GOT-slot population for a bare constructor composed through race + map-io (concurrency.md rough-edge gate; fixed S114) found=S102 owner=/dev
+// defect: class=wrong-reject locus=crates/cranelisp-backend/src/drop_glue.rs::ctor_shapes found=S118 owner=/dev
+//   — as with the sibling above: the S102 slot defect is fixed (S114) and the
+//   current red is FIXME 0907's `Bind` refusal on the concrete-`IO T` release
+//   path (tests/plan/s118-test-plan.md §11.1).
 #[test]
 fn bare_ctor_through_race_map_io_run_and_link() {
     assert_run_and_link(

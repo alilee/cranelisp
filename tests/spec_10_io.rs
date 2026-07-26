@@ -142,6 +142,19 @@ fn bind_pattern_rejected() {
 }
 
 // spec: spec/10-io.md §10.2 (positive) — Pure CAN be matched (it's a public ctor)
+// defect: class=wrong-reject locus=crates/cranelisp-backend/src/drop_glue.rs::ctor_shapes found=S118 owner=/dev
+//   — FIXME 0907: a spec-conforming program is HARD-REFUSED with `constructor
+//   'Bind' disagrees on declared parameter identity for 'primitives/IO'`. Every
+//   release of a concrete `IO T` routes through `DropGlueRegistry::ctor_shapes`,
+//   whose shared-substitution identity precondition is structurally
+//   unsatisfiable for IO: the seeded `Bind` ctor (`src/bootstrap.rs`) mints fresh
+//   existential vars, and even per-ctor substitution leaves `Var(b)` free in
+//   Bind's field types, so per-concrete-IO glue cannot be derived from ctor
+//   shapes at all. Pre-existing modelling gap, surfaced (not caused) by the W3
+//   consumer migration — the legacy emitter shallow-released the same values
+//   silently. Census + attribution: tests/plan/s118-test-plan.md §11.1;
+//   co-ruled with 0903 at /design(backend), S119.
+//   This cell's one-line body IS the family's minimal repro.
 #[test]
 fn pure_pattern_accepted() {
     // Match on IO type must cover both Pure and Effect (Bind is private).
@@ -457,6 +470,9 @@ fn if_branch_consistency_neg_mixed() {
 // =============================================================================
 
 // spec: spec/10-io.md §10.7.2 — match arms all IO (branch consistency)
+// defect: class=wrong-reject locus=crates/cranelisp-backend/src/drop_glue.rs::ctor_shapes found=S118 owner=/dev
+//   — FIXME 0907, same refusal as `pure_pattern_accepted`: see that cell's
+//   note and tests/plan/s118-test-plan.md §11.1.
 #[test]
 fn match_arms_all_io_pure() {
     repl("(match (Pure 1) [(Pure x) (Pure (add-i64 x 100)) (Effect e) (Pure 0)])\n")
@@ -1600,6 +1616,18 @@ fn auto_io_par_branch_panic_no_slot_pollution_neg() {
 
 // spec: spec/06-pattern-matching.md §6.5 × spec/10-io.md §10.1 — internal-ctor
 // exclusion: a Pure+Effect match compiles without demanding the internal `Bind`.
+// defect: class=wrong-reject locus=crates/cranelisp-backend/src/drop_glue.rs::ctor_shapes found=S118 owner=/dev
+//   — FIXME 0907: a spec-conforming program is HARD-REFUSED with `constructor
+//   'Bind' disagrees on declared parameter identity for 'primitives/IO'`. Every
+//   release of a concrete `IO T` routes through `DropGlueRegistry::ctor_shapes`,
+//   whose shared-substitution identity precondition is structurally
+//   unsatisfiable for IO: the seeded `Bind` ctor (`src/bootstrap.rs`) mints fresh
+//   existential vars, and even per-ctor substitution leaves `Var(b)` free in
+//   Bind's field types, so per-concrete-IO glue cannot be derived from ctor
+//   shapes at all. Pre-existing modelling gap, surfaced (not caused) by the W3
+//   consumer migration — the legacy emitter shallow-released the same values
+//   silently. Census + attribution: tests/plan/s118-test-plan.md §11.1;
+//   co-ruled with 0903 at /design(backend), S119.
 #[test]
 fn io_internal_ctors_stay_excluded_from_exhaustiveness_neg() {
     let out = repl("(match (Pure 5) [(Pure x) x (Effect e) 0])\n");
