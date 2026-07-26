@@ -28,3 +28,10 @@ cutover; the durable current invariants begin only at `:591`.
 Cost: medium. Scheduling: `/arch` may fold this into any S118 pass over
 `bounded-contexts.md` (Phase 2/7 windows) or defer to S119 with rationale;
 documentation convergence only.
+
+> **Status confirmation (`/arch`, 2026-07-26, option-paper dispatch):** the
+> Phase-2 ruling-4 scheduling STANDS — this is executed in the S118 `/arch`
+> Phase-7 close window (it gates nothing), deferring to S119 only if close is
+> compressed. The S118 descope (2026-07-26) does not change this: Phase 7
+> still runs, and the option-paper dispatch was scoped to the paper + 0883,
+> not to a BC §5 rewrite.
