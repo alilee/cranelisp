@@ -40,6 +40,13 @@ use cranelisp_types::{
 ///   macOS `"start"` (linked `-e _start`); Linux `"main"` (crt calls it, so the
 ///   stub IS C `main` — glibc/TLS/malloc are initialised before it runs, design
 ///   §11.3). Read from `host_entry_symbols()` at the call site.
+/// * `result_exit` — how the stub must dispose of `main`'s result
+///   (`design/int/result-owner.md` §3.3): whether the result word IS the
+///   process exit code (`Int`) or the process exits 0, and the canonical
+///   per-concrete drop-glue symbol to import, relocate, and call exactly once
+///   between the conversion and `exit`. `release_symbol: None` ⇒ a
+///   scalar/value-layout result ⇒ the emitted stub is byte-identical to the
+///   pre-0745 one.
 /// * `platform_layout_checks` — per-platform layout-hash checks to bake into the
 ///   `start` stub (platform-interface.md §5.5.4 `--link` gate). For each check
 ///   the stub declares the rlib's `__cranelisp_layout_hash_<name>` as imported
@@ -53,6 +60,7 @@ pub fn generate_startup_object(
     entry_fn_name: &str,
     stub_entry_symbol: &str,
     platform_layout_checks: &[cranelisp_backend::exe::PlatformLayoutCheck],
+    result_exit: &crate::result_owner::StartupResultExit,
 ) -> Result<Vec<u8>, CranelispError> {
     use cranelisp_backend::cranelift_module::{Module, default_libcall_names};
     use cranelisp_backend::cranelift_object::{ObjectBuilder, ObjectModule};
@@ -68,7 +76,11 @@ pub fn generate_startup_object(
 
     // Declare all imported symbols (phases separated by concern), then emit the
     // entry-stub body from the collected ids.
-    let rt = declare_runtime_imports(&mut obj_module, entry_fn_name)?;
+    let rt = declare_runtime_imports(
+        &mut obj_module,
+        entry_fn_name,
+        result_exit.release_symbol.as_ref(),
+    )?;
     let layout_check_ids = declare_layout_checks(&mut obj_module, platform_layout_checks)?;
     let platform_inits = declare_platform_inits(&mut obj_module, platform_manifest_names)?;
     let start_func_id = declare_start_export(&mut obj_module, stub_entry_symbol)?;
@@ -80,6 +92,7 @@ pub fn generate_startup_object(
         &platform_inits,
         start_func_id,
         main_returns_io,
+        result_exit,
     )?;
 
     let mut ctx = cranelift::codegen::Context::for_function(func);
@@ -133,6 +146,14 @@ struct RuntimeImports {
     check_runtime_error: cranelisp_backend::cranelift_module::FuncId,
     exit: cranelisp_backend::cranelift_module::FuncId,
     init_primitives: cranelisp_backend::cranelift_module::FuncId,
+    /// The canonical per-concrete drop glue for `main`'s inner result type
+    /// (`design/int/result-owner.md` §3.3). `None` for a scalar/value-layout
+    /// result — the sixth import exists only when there is something to
+    /// release. The defining module's own `.o` carries the exported body (the
+    /// object path runs the same result-root pre-request the JIT path does), so
+    /// the system linker resolves the relocation; a missing one is a LINK
+    /// failure, never a silent skip.
+    release: Option<cranelisp_backend::cranelift_module::FuncId>,
 }
 
 /// The per-platform layout-hash check symbols baked into the `start` stub
@@ -159,6 +180,7 @@ struct PlatformInits {
 fn declare_runtime_imports(
     obj_module: &mut cranelisp_backend::cranelift_object::ObjectModule,
     entry_fn_name: &str,
+    release_symbol: Option<&cranelisp_types::LinkerSymbol>,
 ) -> Result<RuntimeImports, CranelispError> {
     use cranelift::prelude::*;
     use cranelisp_backend::cranelift_module::{Linkage, Module};
@@ -248,12 +270,32 @@ fn declare_runtime_imports(
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
 
+    // Declare the result-release glue as imported, `extern "C" fn(i64)`, only
+    // when `main`'s inner result type owns heap. Same canonical spelling the
+    // JIT and cache-hit adapters use (`drop_glue_symbol_name`) — one grammar.
+    let release = match release_symbol {
+        None => None,
+        Some(symbol) => {
+            let mut release_sig = obj_module.make_signature();
+            release_sig.params.push(AbiParam::new(types::I64));
+            Some(
+                obj_module
+                    .declare_function(symbol.as_ref(), Linkage::Import, &release_sig)
+                    .map_err(|e| CranelispError::CodegenError {
+                        message: format!("failed to declare result drop glue {symbol}: {e}"),
+                        location: ErrorLocation::from_span(Span::SYNTHETIC),
+                    })?,
+            )
+        }
+    };
+
     Ok(RuntimeImports {
         main,
         run_program,
         check_runtime_error,
         exit,
         init_primitives,
+        release,
     })
 }
 
@@ -377,6 +419,7 @@ fn build_startup_func(
     platform_inits: &PlatformInits,
     start_func_id: cranelisp_backend::cranelift_module::FuncId,
     main_returns_io: bool,
+    result_exit: &crate::result_owner::StartupResultExit,
 ) -> Result<cranelift::codegen::ir::Function, CranelispError> {
     use cranelift::prelude::*;
     use cranelisp_backend::cranelift_module::Module;
@@ -470,10 +513,35 @@ fn build_startup_func(
         // if control returns (it won't on a genuine error_kind != 0).
         builder.ins().trap(TrapCode::user(1).unwrap());
 
-        // Clean path: exit(exit_code).
+        // Clean path — the typed-context exit (`design/int/result-owner.md`
+        // §3.3). The order is binding and is the SAME order `--run` and the
+        // REPL obey:
+        //
+        //   1. retain the driver's result word (`exit_code_i64`);
+        //   2. OBSERVE it — compute the process `i32` exit code while it is
+        //      still live. `Int` narrows (`ireduce`); every other inner type
+        //      exits 0. Pre-0745 this arm `ireduce`d unconditionally, so a
+        //      non-`Int` `main` exited with the low 32 bits of a heap POINTER
+        //      (a `--run`/`--link` divergence: the `--run` host has always
+        //      applied the type-driven rule);
+        //   3. RELEASE it — one call to the relocated `extern "C" fn(i64)`
+        //      glue, when the inner type owns heap;
+        //   4. `exit(computed_code)`.
+        //
+        // The error block above deliberately does none of this: a non-zero
+        // `error_kind` means `ProgramOutcome` carries no successful result, so
+        // there is no result owner and no glue call.
         builder.switch_to_block(clean_block);
         builder.seal_block(clean_block);
-        let exit_code = builder.ins().ireduce(types::I32, exit_code_i64);
+        let exit_code = if result_exit.result_is_exit_code {
+            builder.ins().ireduce(types::I32, exit_code_i64)
+        } else {
+            builder.ins().iconst(types::I32, 0)
+        };
+        if let Some(release_fid) = rt.release {
+            let release_ref = obj_module.declare_func_in_func(release_fid, builder.func);
+            builder.ins().call(release_ref, &[exit_code_i64]);
+        }
         let exit_ref = obj_module.declare_func_in_func(rt.exit, builder.func);
         builder.ins().call(exit_ref, &[exit_code]);
         builder.ins().trap(TrapCode::user(1).unwrap());
@@ -1223,6 +1291,110 @@ mod tests {
         )
         .visibility(Visibility::Public)
         .build()
+    }
+
+    // -----------------------------------------------------------------------
+    // §6 row 6 — startup CLIF (`design/int/result-owner.md` §3.3)
+    // -----------------------------------------------------------------------
+
+    fn startup_bytes_for(
+        result_exit: &crate::result_owner::StartupResultExit,
+    ) -> Result<Vec<u8>, CranelispError> {
+        generate_startup_object(&[], true, "main", "start", &[], result_exit)
+    }
+
+    fn scalar_exit() -> crate::result_owner::StartupResultExit {
+        crate::result_owner::StartupResultExit {
+            result_is_exit_code: true,
+            release_symbol: None,
+        }
+    }
+
+    // spec: design/int/result-owner.md §3.3 step 2 — a scalar/value-layout
+    // inner result omits the release call ENTIRELY: the emitted stub is
+    // byte-identical to one generated with no release symbol at all, and the
+    // object names no drop-glue symbol.
+    #[test]
+    fn scalar_result_startup_stub_omits_the_release_call_entirely() {
+        let a = startup_bytes_for(&scalar_exit()).expect("emit scalar stub");
+        let b = startup_bytes_for(&scalar_exit()).expect("emit scalar stub again");
+        assert_eq!(a, b, "emission is deterministic");
+        let text = String::from_utf8_lossy(&a).into_owned();
+        assert!(
+            !text.contains("__cranelisp_drop_"),
+            "a scalar result must import no drop glue"
+        );
+    }
+
+    // spec: design/int/result-owner.md §3.3 step 3 — an owning inner result
+    // makes the stub import the canonical MODULE-QUALIFIED glue symbol, and
+    // the object differs from the scalar stub (the call is really emitted).
+    #[test]
+    fn owning_result_startup_stub_imports_the_module_qualified_glue_symbol() {
+        let user = ModuleFullPath::from("user");
+        let other = ModuleFullPath::from("lib.util");
+        let nested = cranelisp_types::ConcreteType::ADT(
+            cranelisp_types::FQTypeName::new(user.clone(), TypeName::from("Branch")),
+            vec![cranelisp_types::ConcreteType::ADT(
+                cranelisp_types::FQTypeName::new(
+                    ModuleFullPath::from("primitives"),
+                    TypeName::from("Vec"),
+                ),
+                vec![cranelisp_types::ConcreteType::String],
+            )],
+        );
+        let symbol = cranelisp_types::drop_glue_symbol_name(&user, &nested);
+        let other_symbol = cranelisp_types::drop_glue_symbol_name(&other, &nested);
+        assert_ne!(
+            symbol, other_symbol,
+            "the same concrete type in two modules must not collide"
+        );
+        let owning = crate::result_owner::StartupResultExit {
+            result_is_exit_code: false,
+            release_symbol: Some(symbol.clone()),
+        };
+        let bytes = startup_bytes_for(&owning).expect("emit owning stub");
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        assert!(
+            text.contains(symbol.as_ref()),
+            "the stub must import the canonical glue symbol"
+        );
+        assert!(
+            !text.contains(other_symbol.as_ref()),
+            "and no other module's spelling"
+        );
+        assert_ne!(
+            bytes,
+            startup_bytes_for(&scalar_exit()).expect("scalar"),
+            "the release call must actually change the emitted stub"
+        );
+    }
+
+    // spec: design/int/result-owner.md §3.3 — an `Int` inner result that OWNS
+    // (an owning wrapper) still narrows the word to the exit code, while a
+    // non-`Int` owning result exits 0. The two dispositions are independent
+    // axes, so all four combinations must emit.
+    #[test]
+    fn exit_conversion_and_release_are_independent_axes() {
+        let user = ModuleFullPath::from("user");
+        let symbol =
+            cranelisp_types::drop_glue_symbol_name(&user, &cranelisp_types::ConcreteType::String);
+        let mut seen = Vec::new();
+        for result_is_exit_code in [true, false] {
+            for release_symbol in [None, Some(symbol.clone())] {
+                let bytes = startup_bytes_for(&crate::result_owner::StartupResultExit {
+                    result_is_exit_code,
+                    release_symbol,
+                })
+                .expect("every combination must emit");
+                seen.push(bytes);
+            }
+        }
+        for (i, a) in seen.iter().enumerate() {
+            for b in seen.iter().skip(i + 1) {
+                assert_ne!(a, b, "the four dispositions must emit four distinct stubs");
+            }
+        }
     }
 
     // spec: spec/10-io.md §10.6 / spec/12-runtime.md §12.6 — a bare-`Int` batch

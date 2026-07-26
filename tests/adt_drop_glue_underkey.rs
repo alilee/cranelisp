@@ -255,7 +255,7 @@ fn entry_main_heap_let_teardown_balances_r2() {
 // rationale). Seam attribution (`protect_return_value`) is provisional per §11 item 4
 // until the fix confirms it.
 // spec: spec/12-runtime.md §12.3.1 — heap value freed when no longer reachable
-// defect: class=rc-miscount locus=crates/cranelisp-backend compiler/rc_emission.rs::protect_return_value — entry-main IO-return heap payload, toggle-off arm (F-R1 sibling, §11 item 4; seam provisional) found=S114 owner=/dev
+// defect: class=rc-miscount locus=src program-result typed-context exit — entry-main IO-return heap payload, toggle-off arm; RE-LOCUSED S118 W4 off the provisional `crates/cranelisp-backend compiler/rc_emission.rs::protect_return_value` attribution, which §9.1 falsified (both mechanisms at that seam were disproved). The defect lived at the int result-value lifetime seam: the entry result was observed and never released. Read `design/int/result-owner.md` §4.3 + `src/result_owner.rs` today. found=S114 owner=/dev fixed=S118/fc3375f9
 #[test]
 fn entry_main_ioresult_heap_payload_toggle_off_leak_r2() {
     let out = Cranelisp::new()

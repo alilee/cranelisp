@@ -2167,6 +2167,33 @@ impl CompilerSession {
         // `.o` (emitted below) routes the system linker's `_main` import
         // through this slot via `__cranelisp_got_{entry_module}`.
         let main_got_slot = crate::exe::entry_main_got_slot(&entry_table)?;
+
+        // FIXME 0745 / `design/int/result-owner.md` §3.3 — the linked startup
+        // stub's typed-context exit. `validate_main` has already guaranteed
+        // `main : (Fn [] (IO a))`, so the SAME scheme read that produced the
+        // GOT slot yields the inner `a`. Classify it (§1.1, the shared
+        // predicate — no int-side heap-type list) to decide whether the stub
+        // (a) narrows the result word to the exit code or exits 0, and (b)
+        // imports and calls a canonical release symbol. A non-concrete inner
+        // type is a located link-time error naming the module and the type,
+        // never a silent skip.
+        let main_entry = entry_table
+            .get("main")
+            .unwrap_or_else(|| unreachable!("invariant: validate_main accepted this entry"));
+        let codegen_result_ty = main_entry.codegen_view().map(|view| view.body.ty().clone());
+        let inner_result_ty = match main_entry {
+            ModuleEntry::Def { scheme, .. } => match &scheme.ty {
+                Type::Fn(_, ret) if ret.is_io() => ret.unwrap_io().clone(),
+                other => other.clone(),
+            },
+            _ => unreachable!("invariant: validate_main accepted this entry"),
+        };
+        let result_exit = crate::result_owner::startup_result_exit(
+            &inner_result_ty,
+            codegen_result_ty,
+            &module,
+            &self.shared.symbol_tables,
+        )?;
         drop(entry_table);
 
         // Every main accepted by `validate_main` returns `IO _`, so the startup
@@ -2220,6 +2247,7 @@ impl CompilerSession {
             entry_fn_name,
             stub_entry_symbol,
             &platform_layout_checks,
+            &result_exit,
         )?;
 
         // Sprint 67 Cluster B sub-fire 3: cache dir via ObjectCache facade.

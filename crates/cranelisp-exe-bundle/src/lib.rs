@@ -130,3 +130,33 @@ pub extern "C" fn cranelisp_init_platform(manifest_fn_ptr: i64) {
     let callbacks = cranelisp_intrinsics::host_callbacks();
     manifest_fn(&callbacks);
 }
+
+// ── Tests ───────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    /// The generated per-concrete drop glue that `--link` relocates (S118 W4,
+    /// FIXME 0745 / `design/int/result-owner.md` §3.3 + §6 row 7) calls exactly
+    /// two runtime symbols from its body: `runtime/dealloc` (every shape's
+    /// outer free) and `runtime/vec_drop` (the `Vec` shape's rc-gated
+    /// teardown). Both must stay in `libcranelisp_exe_bundle.a`, or a linked
+    /// program whose `main` returns an owning result fails at `ld` time with an
+    /// undefined reference from a symbol nothing in Rust names.
+    ///
+    /// This pins the force-link contract at the seam that depends on it: the
+    /// bundle defines NO wrapper releaser and interprets NO result type — the
+    /// startup stub imports backend's own exported glue and the linker resolves
+    /// it — so the ONLY thing the bundle owes is that the glue's callees are
+    /// present.
+    ///
+    /// spec: design/int/result-owner.md §3.3 (final paragraph) + §6 row 7
+    #[test]
+    fn generated_result_glue_dependencies_stay_force_linked() {
+        // Naming the functions IS the force-link reference; taking their
+        // addresses proves the re-exported paths still resolve.
+        let dealloc: extern "C" fn(i64) -> i64 = cranelisp_intrinsics::alloc::heap_dealloc;
+        let vec_drop: extern "C" fn(i64, i64) = crate::intrinsics_vec::vec_drop;
+        assert_ne!(dealloc as usize, 0, "runtime/dealloc must be linked");
+        assert_ne!(vec_drop as usize, 0, "runtime/vec_drop must be linked");
+    }
+}

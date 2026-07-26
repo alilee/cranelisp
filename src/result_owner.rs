@@ -216,7 +216,7 @@ impl OwnedProgramResult {
     /// startup stub apply the identical rule — a divergence here is a
     /// `mode-divergence` defect.
     pub fn exit_code(&self) -> i32 {
-        if self.ty == Type::Int {
+        if result_is_exit_code(&self.ty) {
             self.value as i32
         } else {
             0
@@ -328,6 +328,66 @@ fn release_key(
              `{module}` ({why:?}), and the result-producing entry published no codegen \
              view to key on; the result cannot be released type-directedly"
         ))
+    })
+}
+
+/// Whether the result word IS the process exit code (§1 step 3): an `Int`
+/// result narrows to `i32`; **every other type yields 0**. The single
+/// statement of that rule — `--run` reads it through
+/// [`OwnedProgramResult::exit_code`], the linked startup stub bakes it through
+/// [`startup_result_exit`]. A divergence between the two is a
+/// `mode-divergence` defect, so there is one predicate.
+pub(crate) fn result_is_exit_code(ty: &Type) -> bool {
+    *ty == Type::Int
+}
+
+/// What the linked startup stub must do with `main`'s result (§3.3).
+///
+/// The stub resolves its release target at LINK time, through an ordinary
+/// relocation, so it needs no `Code` guard: executable text lifetime keeps both
+/// caller and relocated glue live until `exit`. Everything else — the
+/// classification, the canonical symbol spelling, and the exit-code rule — is
+/// shared with the two runtime adapters.
+#[derive(Debug)]
+pub(crate) struct StartupResultExit {
+    /// `true` ⇒ the stub narrows the result word to the process exit code;
+    /// `false` ⇒ it exits 0 (see [`result_is_exit_code`]).
+    pub(crate) result_is_exit_code: bool,
+    /// The canonical glue symbol to import, relocate, and call exactly once —
+    /// after the exit-code conversion, before `exit`. `None` for a
+    /// scalar/value-layout result, in which case the stub is byte-identical to
+    /// the pre-0745 one.
+    pub(crate) release_symbol: Option<LinkerSymbol>,
+}
+
+/// Classify `main`'s **inner** result type for the linked startup stub.
+///
+/// `inner_ty` is the `a` of `main : (Fn [] (IO a))` — `validate_main` has
+/// already guaranteed that shape. `codegen_result_ty` is `main`'s
+/// `codegen_view` body type when the entry published one (see
+/// [`release_key`]); a non-concrete inner type with no codegen view is a
+/// **located link-time error naming the module and the type**, never a silent
+/// skip (§3.3 step 4).
+pub(crate) fn startup_result_exit<C, L>(
+    inner_ty: &Type,
+    codegen_result_ty: Option<ConcreteType>,
+    module: &ModuleFullPath,
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+) -> Result<StartupResultExit, CranelispError>
+where
+    C: CodeStore,
+    L: LinkerStore,
+{
+    let key = release_key(codegen_result_ty, inner_ty, module)?;
+    let release_symbol = match HeapCategory::classify(&key, Some(symbol_tables)) {
+        HeapCategory::NeverHeap | HeapCategory::Value => None,
+        HeapCategory::AlwaysHeap | HeapCategory::Mixed => {
+            Some(cranelisp_types::drop_glue_symbol_name(module, &key))
+        }
+    };
+    Ok(StartupResultExit {
+        result_is_exit_code: result_is_exit_code(inner_ty),
+        release_symbol,
     })
 }
 
@@ -1223,6 +1283,64 @@ mod tests {
                 .to_string()
                 .contains("no code lifetime owner")
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // §6 row 6 (classification half) — linked startup disposition
+    // -----------------------------------------------------------------------
+
+    // spec: design/int/result-owner.md §3.3 steps 1–3 — the linked stub's
+    // disposition comes from the SAME classification the runtime arms use: a
+    // scalar `Int` inner result narrows to the exit code and imports nothing;
+    // an owning inner result exits 0 and imports the canonical
+    // module-qualified glue symbol.
+    #[test]
+    fn startup_disposition_matches_the_shared_classification() {
+        let scalar =
+            startup_result_exit(&Type::Int, None, &user(), &empty_tables()).expect("Int narrows");
+        assert!(scalar.result_is_exit_code, "an Int result IS the exit code");
+        assert!(
+            scalar.release_symbol.is_none(),
+            "a scalar inner result imports no glue — the stub stays byte-identical"
+        );
+
+        let owning = startup_result_exit(&Type::String, None, &user(), &empty_tables())
+            .expect("String narrows");
+        assert!(
+            !owning.result_is_exit_code,
+            "every non-Int result exits 0, exactly as `--run` does"
+        );
+        assert_eq!(
+            owning.release_symbol.as_ref(),
+            Some(&cranelisp_types::drop_glue_symbol_name(
+                &user(),
+                &ConcreteType::String
+            )),
+            "the canonical module-qualified spelling, from the ONE grammar"
+        );
+    }
+
+    // spec: design/int/result-owner.md §3.3 — an all-nullary ADT inner result
+    // is `NeverHeap`: no import, and (being non-Int) exit code 0.
+    #[test]
+    fn startup_nullary_adt_inner_result_imports_nothing() {
+        let tables = tables_with_adt(&user(), "Flag", &[("On", 0), ("Off", 0)]);
+        let ty = Type::ADT(FQTypeName::new(user(), TypeName::from("Flag")), Vec::new());
+        let exit = startup_result_exit(&ty, None, &user(), &tables).expect("nullary ADT narrows");
+        assert!(!exit.result_is_exit_code);
+        assert!(exit.release_symbol.is_none());
+    }
+
+    // spec: design/int/result-owner.md §3.3 step 4 — a non-concrete inner
+    // result type with no codegen view to key on is a LOCATED link-time error
+    // naming the module and the type, never a silent skip.
+    #[test]
+    fn startup_non_concrete_inner_type_is_a_located_link_error() {
+        let err = startup_result_exit(&Type::Var(4), None, &user(), &empty_tables())
+            .expect_err("a residual var cannot be released type-directedly");
+        let text = err.to_string();
+        assert!(text.contains("user"), "must name the module: {text}");
+        assert!(text.contains("not concrete"), "must name the fault: {text}");
     }
 
     // -----------------------------------------------------------------------
