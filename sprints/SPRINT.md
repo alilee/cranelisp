@@ -343,7 +343,9 @@ The load-dependent guards (`launch_grid`, 0694 family, 0604/0818) remain failing
 | W4 | /dev | int + exe-bundle: result owner I0–I5 (0745) — four flips + link/run exit divergence closed | opus[1m] (shim) | high | — |
 | W4 | /review | int + exe-bundle: result-owner change-set (delegated) — BLOCKED: 0897 (zero-address gap), 0898 (/arch strip-rule twins), 0899 (pub), 0900 (Suggestion, Codex claim disproven by adjudicator) | codex (delegated) + fable adjudicator | high | — |
 | W4 | /dev | int: 0897 + 0899 resolution (`16a26408`; RED-first falsification; 0901 filed) | opus[1m] (shim) | high | Blocker resolution |
-| W4 | /review | int: closing gate round on 16a26408 (delegated) | codex (delegated) + fable adjudicator | high | gate close |
+| W4 | /review | int: closing gate round on 16a26408 (delegated) — GATE PASS, 0745 closed | codex (delegated) + fable adjudicator | high | gate close |
+| W4+ | /design | int: 0896 renumber+ratification, 0901, 0886, as-built notes (`05215ec0`+`9f81ede2`; RATIFIED — "int keys on what the producer keyed on"; lenient-view gap recorded → /design(typecheck) row owed) | opus[1m] (shim) | high | — |
+| W4+ | /design | cranelisp-backend: 0891 ruling | opus[1m] (shim) | high | — |
 
 ## Notes
 
