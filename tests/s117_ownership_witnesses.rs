@@ -29,6 +29,25 @@ fn clif(forms: &str, name: &str, ownership_off: bool) -> String {
     out.stdout
 }
 
+/// How many **canonical glue releases** the emitted CLIF performs.
+///
+/// A release is a direct call to the colocated void drop-glue symbol
+/// (`fnN = colocated u0:NN sig(i64)` + `call fnN(ptr)`). Before the S118 W3
+/// consumer migration (`2df95c41..966d298e`) the same release was emitted
+/// INLINE as `atomic_rmw.i64 sub` + a conditional free, and these oracles
+/// grepped for that text; the migration collapsed every release site onto the
+/// glue call, so the text disappeared while the ownership behaviour was
+/// unchanged (FIXME 0910, `tests/fixtures/clif_baseline/MANIFEST.md`
+/// §Re-baselines S118 drift class 1). Counting the glue call is the spelling
+/// of "a release happens here" that survives that collapse.
+///
+/// `call_indirect` (the GOT-indirect primitive/user call shape) is deliberately
+/// NOT matched: the substring is `call fn`, and an indirect call reads
+/// `call_indirect sigN, vN(...)`.
+fn glue_releases(ir: &str) -> usize {
+    ir.matches("call fn").count()
+}
+
 // spec: design/typecheck/ownership-inference.md §9.1 — Borrowed scalar-result
 // facts affect normal lowering: the live String owner remains with its scope,
 // whereas conservative all-Owned lowering emits the final owner release.
@@ -41,10 +60,18 @@ fn r2_borrowed_scalar_result_has_production_clif_polarity() {
         precise.matches("atomic_rmw.i64 add").count() >= 2,
         "live owner must be retained across both consuming primitive calls:\n{precise}"
     );
-    assert!(
-        !precise.contains("atomic_rmw.i64 sub") && conservative.contains("atomic_rmw.i64 sub"),
-        "Borrowed precision MUST differ from conservative all-Owned lowering at \
-         the wrapper's final owner release\nprecise:\n{precise}\nconservative:\n{conservative}"
+    assert_eq!(
+        glue_releases(&precise),
+        0,
+        "Borrowed precision MUST elide the wrapper's final owner release \
+         entirely — no glue call on the return path:\n{precise}"
+    );
+    assert_eq!(
+        glue_releases(&conservative),
+        1,
+        "conservative all-Owned lowering MUST still release the owner exactly \
+         once (one canonical glue call), so the precision difference this cell \
+         exists to pin stays visible:\n{conservative}"
     );
 }
 
@@ -67,9 +94,14 @@ fn r2_borrowed_scalar_result_live_and_temporary_all_modes() {
 fn r2_alias_of_string_identity_has_production_clif_transfer() {
     let ir = clif("(defn alias [s] (string-identity s))", "alias", false);
     assert!(
-        ir.contains("store notrap aligned") && ir.contains("atomic_rmw.i64 sub"),
-        "AliasOf(0) wrapper MUST protect the returned alias then release the \
-         transferred argument exactly once:\n{ir}"
+        ir.contains("store notrap aligned"),
+        "AliasOf(0) wrapper MUST protect the returned alias:\n{ir}"
+    );
+    assert_eq!(
+        glue_releases(&ir),
+        1,
+        "AliasOf(0) wrapper MUST release the transferred argument exactly once \
+         (one canonical glue call):\n{ir}"
     );
 }
 
