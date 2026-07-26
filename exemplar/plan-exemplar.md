@@ -1274,16 +1274,90 @@ case, artificial `join` dependency, or memory diagnostic work.
 
 ---
 
+## Sprint 118 Phase-6 assessment (HEAD `501e701f`)
+
+### Shipped-impact
+
+Sprint 118 shipped three things that reach the Sudoku exemplar's hottest seams,
+and the honest summary is that **none of them is observable from the
+application side**:
+
+- **The drop-glue mechanism collapse (W3)** migrated match/capture/TCO releases
+  onto one canonical glue path. The solver is the heaviest user of exactly those
+  seams — every `eliminate` is a match over an owned temporary inside a tail
+  loop. Result: identical output, identical exit codes, and an *identical*
+  allocation ledger (`solver.cl` warm 26457/14026 before-and-after the
+  `Grid`-field-spelling experiment below; per-solve residue unchanged from the
+  §11.3 pre-gate measurement). The collapse is a correct and valuable
+  simplification; it did not move this application's memory behaviour.
+- **The program-result owner (W4)** and the linked-stub `ireduce` divergence
+  fix: the exemplar's `main`s return `(Pure n)`/bind chains, and both `--run`
+  and the linked executable exit 0 with byte-identical stdout, so the fixed
+  divergence never had a face here — but the exemplar is now a live witness that
+  the two modes agree.
+- **The RE-1 marshal fix** is on the string path (`form.cl` `split`, the HTML
+  builders). All eight form tests and the headline form-to-solution pipeline are
+  green; no regression, no adoption required.
+
+### Verification results
+
+- `tests.cl` — **40/40 under both** default parallel and
+  `CRANELISP_NO_LENIENT=1` serial.
+- Headline `--run user.cl` — exit 0 **cold and warm**, stdout byte-identical
+  (659 bytes), stderr empty; in-tree and scratch-copy runs byte-identical.
+- **Standalone Link parity RE-ESTABLISHED** — cold-cache `--link user.cl` in an
+  isolated copy now succeeds (exit 0, one line of stderr) and the produced
+  binary's stdout is byte-identical to `--run`. The S117 platform-archive
+  unresolved-symbol failure (FIXME 0875) **does not reproduce at HEAD**; the
+  FIXME carries the reproduction record and a recommended disposition.
+
+### The retention finding (the substantive one)
+
+Cell #21's 12,431 warm residue is **per-solve linear with intercept exactly
+zero** — 12,376 blocks / ~1.13 MB RSS per solve, over N = 1…128, in both lanes —
+and it is observable at the marquee: the web server grows ~1.17 MB per served
+`POST /solve`, monotonically, while answering every request correctly. Solve
+correctness and throughput are unaffected; the *lifetime of a long-running
+program* is what this costs.
+
+100% of it is in constraint propagation. It reduces to a 30-line free-standing
+subject/control pair — **a nullary-constructor arm (`None`) beside a boxed arm
+(`(Some …)`) over a let-bound owned heap ADT temporary makes the calling loop
+free nothing at all** — filed as **FIXME 0917**. The `/qa` §11.3 lead that
+attributed it to FIXME 0903's family 1 via `grid/Grid.cells` is falsified: the
+exemplar never calls that accessor (all Grid reads destructure), and forcing the
+accessor onto the canonical-glue path by spelling the field type moves zero
+runtime blocks. Evidence appended to 0903; numbers in `exemplar/CLAUDE.md`.
+
+### Field-spelling observation (for the 0903 / 0867 / 0912 rulings, NOT a change)
+
+`(deftype Grid [cells])` **is already on the accessor-minting spelling** — per
+FIXME 0867's finding, deftype-level field lists mint both `Grid.cells` and the
+bare alias regardless of type parameters; what the untyped field costs is not
+the accessor's existence but its *concreteness*. Writing `[:(Vec Cell) cells]`
+is legal (it needs `Vec` in scope — `grid.cl` imports primitives by name, so the
+import line grows), it compiles, it solves, and it changes the emitted
+`Grid.cells` release from the shallow non-glue form to the canonical colocated
+glue call. It changes no runtime number. So: if FIXME 0912 is ruled "reject
+undeclared fields", the exemplar can comply with a one-token edit and would lose
+nothing — but the compliance would buy no memory behaviour, and the exemplar
+deliberately keeps the bare spelling meanwhile, because it is the shape a real
+author writes and its sentinel value is in staying that shape.
+
+---
+
 ## Next Skills
 
-- `/sprint` — Record the Phase-6b result, including qualified-impl adoption
-  deferred under FIXME 0869 and the unverified Link cell.
-- `/testing` and `/qa` — FIXME 0869 already owns the permanent warm-cache
-  sibling-impl discriminator and planning handoff; no duplicate exemplar
-  finding is needed. Attribute the platform-archive Link failure if it also
-  reproduces in the controlled gate environment.
+- `/qa` — Own FIXME 0917: re-point cell #21 off the 0903 families, route
+  `/testing` the subject/control pair, then attribute (backend release emission
+  vs typecheck ownership summary). Dispose FIXME 0875 (symptom not reproducible
+  at HEAD; a standing `--link`-then-run exemplar parity cell is the better
+  guard). Weigh the 0903 append before the S119 ruling — the exemplar no longer
+  supports "0903 costs the application".
+- `/testing` — The 0917 repro is drop-in: PrimitivesOnly prelude, zero stdlib,
+  absolute balance assertable (control is exact), same numbers under `--link`.
+- `/sprint` — Record: 40/40 both toggles, cold/warm and Run/Link parity green,
+  0875 not reproducible, 0917 filed, cell #21 re-attributed.
 - `/port` — Re-attempt the qualified `Display Cell` adoption only after FIXME
-  0869 is resolved, then restore the cold/warm Run and Link parity claim.
-- `/docs` — Consume the verified exemplar state if Sprint 117 user
-  documentation mentions qualified `impl` syntax or the showcase's form
-  pipeline.
+  0869 is resolved. Re-measure the driver loop and the marquee growth when 0917
+  lands; the acceptance is a residue **flat in N**, not merely smaller.

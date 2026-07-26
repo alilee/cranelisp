@@ -243,4 +243,85 @@ discovered at the next wave gate. Cell #21
 (`exemplar_ownership_residue_s116::sudoku_warm_serial_solve_residue_at_most_1400`,
 12,431 at S118 HEAD, re-attributed to the 0903 families per
 `tests/plan/s118-test-plan.md` §11.3) is the companion runtime witness expected
-to move with the same fix.
+to move with the same fix. **See the `/port` evidence below: the second half of
+that expectation is falsified — cell #21 will NOT move with this fix.**
+
+## `/port` application-scale evidence (S118 Phase 6a, HEAD `501e701f`)
+
+Two things this ruling should weigh, both measured on the Sudoku exemplar with
+`CRANELISP_NO_LENIENT=1 CRANELISP_RC_STATS=1`, warm cache. Detail and the raw
+tables live in `exemplar/CLAUDE.md` §"Solve-path never-freed leak — CURRENT
+STATE".
+
+### 1. The retention is PER-SOLVE LINEAR, not per-session — and it is
+### observable at the application surface
+
+A driver loop solving the same puzzle N times in one process:
+
+| N | residue | residue / N |
+|---:|---:|---:|
+| 0 | 0 | — |
+| 1 | 12,376 | 12,376 |
+| 4 | 49,504 | 12,376 |
+| 8 | 99,008 | 12,376 |
+| 64 | 792,064 | 12,376 |
+| 128 | 1,584,128 | 12,376 |
+
+Exactly linear, **intercept exactly 0**, identical in the parallel lane. RSS
+grows ~1.13 MB per solve and is never reclaimed. At the web marquee, real
+`POST /solve` requests grow the server **~1.17 MB/request** monotonically
+(55.3 MB after 1 → 125.2 MB after 61 requests), every response correct.
+Extrapolated, +1 GB at ~900 requests. **Priority consequence: this class does
+not merely leave garbage at exit — it bounds the lifetime of a long-running
+Cranelisp program.** Throughput is essentially flat (marginal 32.5 ms/solve at
+N≤32, 39 ms at N=128), so nothing else surfaces the problem to a user until the
+process dies.
+
+### 2. Family 1's named witness on this path — `Grid.cells` — is NOT the cause
+
+The §11.3 lead ("`grid/Grid.cells` is a synthetic accessor of a generic product
+and the backtracking solver calls accessors per cell per pass") is **falsified
+on the call-site half**: the exemplar never calls that accessor. Every Grid
+field read is `(match g [(Grid cells) …])` — `cell-at` and `set-cell` both
+destructure (`exemplar/grid.cl:179,183`). The same is true of the golden
+fixture `tests/fixtures/s99/f4_sudoku.cl:49-50`, so the blessed
+`f4_sudoku.clif::user::Grid.cells` frame is compiled-but-uncalled in that
+corpus entry too — its re-baseline is a *static* witness with no runtime
+traffic behind it.
+
+Confirmed by direct experiment rather than inference. Rewriting the declaration
+as `(deftype Grid [:(Vec Cell) cells])` (legal today, and the answer to the
+"could it use the accessor-minting spelling" question — `Grid` is *already* on
+the deftype-level minting spelling per FIXME 0867's finding; what the
+annotation changes is only whether the field type is concrete):
+
+- **emission changes exactly as this ruling would want.** Bare spelling emits
+  `sig1 = (i64) -> i64`, `fn1 = u0:1`, the inline nullary-guarded atomic dec +
+  `fence` + shallow call — the family-1 shape. Typed spelling emits
+  `sig1 = (i64)` (void), `fn1 = colocated u0:81`, a single `call fn1(v1)` — the
+  canonical glue. The field inc also loses its nullary-tag guard.
+- **runtime moves zero blocks.** `solver.cl` warm: 26457/14026 under BOTH
+  spellings (residue 12,431, byte-identical); driver loop 25517/13141 at N=1 and
+  102065/52561 at N=4 under both.
+
+That is a clean falsification of the "cell #21 is 0903-dominated" lead, and
+also a useful soundness note for the ruling: for a **single-field** product
+accessor that incs the field before returning it, the shallow and the transitive
+release of `self` differ by an inc/dec pair that cancels — the shallow arm is
+leak-neutral *there*. Whatever justifies the ruling for family 1, it should not
+be "the exemplar measures its cost", because the exemplar measures it at zero.
+
+### 3. Where cell #21's 12,431 actually lives (FIXME 0917)
+
+100% in constraint propagation; `make-grid` alone is exactly balanced.
+Reduced to a free-standing 30-line PrimitivesOnly repro with a control: **a
+match arm returning a NULLARY constructor (`None`) beside an arm returning a
+boxed `(Some …)`, over a let-bound owned heap ADT temporary** — the loop then
+frees *nothing at all* (4406 allocs / 4 deallocs at N=1100; the control, which
+differs only in that no arm returns the nullary ctor, is exactly balanced).
+Mode-uniform (`--run` and `--link`). Filed as FIXME 0917 with the program.
+
+**Consequence for S119 planning:** cell #21 should be re-pointed at 0917 and
+should NOT be used as this FIXME's acceptance witness. The `f4_sudoku.clif`
+`user::Grid.cells` re-baseline (the addendum's first obligation) stands as
+written — it is a static-emission witness and this evidence does not touch it.

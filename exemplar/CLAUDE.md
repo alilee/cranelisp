@@ -70,6 +70,23 @@ rebuilt stdio/web platform archives contain unresolved Rust/platform symbols.
 This is not the FIXME 0869 face and no exemplar source workaround was made.
 W3b REPL introspection, deferred W3c presentation, and design-only Byte-backed
 text have no exemplar impact.
+(**S118 Phase 6: that Link symptom no longer reproduces** — see below.)
+
+**S118 Phase-6 verification (HEAD `501e701f`).** `tests.cl` is **40/40 under
+both** toggles (default parallel and `CRANELISP_NO_LENIENT=1`). The headline
+`--run exemplar/user.cl` exits 0 from both cold and warm cache with
+byte-identical stdout (659 bytes, empty stderr), and the in-tree run is
+byte-identical to a scratch-copy run. The sprint's drop-glue mechanism
+collapse, the program-result owner and the RE-1 marshal fix changed **no line
+of exemplar source** and moved no observable output.
+
+**Standalone Link parity RE-ESTABLISHED (FIXME 0875 symptom gone).** After the
+documented coherent build (`cargo build` + `tests/scripts/build-link-prereqs.sh`),
+an isolated **cold-cache** `--link user.cl` in a scratch copy of the sources
+produces the executable (exit 0, the only stderr line being the `cc` command
+echo), and running it gives stdout **byte-identical to `--run`**, exit 0. No
+unresolved Rust/platform symbols. 0875 is updated with this reproduction; its
+attribution was never dispatched and the symptom is no longer observable here.
 
 **Parallel search (no `spark`/`par` in the source).** The backtracking search
 in `solver.cl` is expressed as `collections.parallel/par-map-reduce` over the
@@ -115,11 +132,80 @@ representation (persistent/structural-share Vec or in-place masks) plus a
 Phase-H release backend is the fix. `test-hard-puzzle` stays excluded from the
 runner until then.
 
-**Solve-path never-freed leak (FIXME 0810 + 0782; distinct from 0408).**
-A full serial solve leaks ~11.8k objects. All numbers below are `--run
-exemplar/solver.cl` with `CRANELISP_NO_LENIENT=1 CRANELISP_RC_STATS=1`, warm
-cache (a cold cache adds a constant ~1,042 compile-session objects — always
-compare warm to warm):
+**Solve-path never-freed leak — CURRENT STATE (S118 Phase 6, FIXME 0917).**
+The leak survived S118's 0810/0782/0726 fixes. It is now measured, reduced to a
+free-standing 30-line repro, and re-attributed; **the S115 attribution below is
+retained as history and is discharged** — read this block first.
+
+*Per-solve, not per-session.* A driver loop that solves the SAME easy puzzle N
+times in one process (`CRANELISP_NO_LENIENT=1`, warm cache, `CRANELISP_RC_STATS=1`):
+
+| N solves | allocs / deallocs | residue | residue / N |
+|---:|---|---:|---:|
+| 0 | 1 / 1 | 0 | — |
+| 1 | 25517 / 13141 | 12,376 | 12,376 |
+| 2 | 51033 / 26281 | 24,752 | 12,376 |
+| 4 | 102065 / 52561 | 49,504 | 12,376 |
+| 8 | 204129 / 105121 | 99,008 | 12,376 |
+| 64 | — | 792,064 | 12,376 |
+| 128 | — | 1,584,128 | 12,376 |
+
+**Exactly linear, intercept exactly 0**, over two orders of magnitude, and
+identical in the default parallel lane. There is no per-session component: the
+retention is 12,376 blocks (~1.13 MB RSS) **per solve, permanently**. RSS grows
+1.13 MB/solve (59.1 MB at N=8 → 195.3 MB at N=128, marginal constant to three
+digits). Correctness is unaffected (every solve is right) and throughput is
+near-flat (marginal 32.5 ms/solve at N≤32, 39 ms at N=128 — a mild second-order
+allocator-pressure cost, not degradation).
+
+*It is observable at the marquee.* The web server (`main.cl`) serving real
+`POST /solve` requests grows **~1.17 MB per request**, monotonically, never
+reclaimed: 55.3 MB after 1 request → 125.2 MB after 61. Every response is
+correct (HTTP 200, identical 2,886-byte solution page). Extrapolated, the
+server crosses +1 GB at roughly 900 requests. **This is the finding that
+matters for scheduling: the leak is not a hygiene number on a batch program,
+it bounds the lifetime of the long-running showcase.**
+
+*Where it is.* 100% of it is in constraint propagation, none in parsing or
+search: `make-grid` alone is exactly balanced (978/978, residue 0);
+`make-grid` + `propagate` alone reproduces the whole 12,376. (The easy puzzle
+is solved by propagation, so the backtracking search never runs.)
+
+*The discriminator, reduced.* `eliminate` retains **4 objects per call and the
+loop frees nothing at all** (deallocs frozen at 898 across N=100 and N=1100),
+while every neighbouring operation is exact in isolation — `cell-at`,
+`set-cell`, `(Some g)` over a parameter, `(Some (set-cell …))`, mixed
+alias/fresh arms, and the same shape called cross-module are all balanced at
+both N. Stripping `eliminate` arm by arm isolates one ingredient: **a match
+arm returning the NULLARY constructor `None` beside an arm returning a boxed
+`(Some …)`, over a let-bound owned heap ADT temporary.** Remove the nullary
+arm and the identical program balances exactly; the nullary arm is never taken
+at runtime. Free-standing repro (PrimitivesOnly prelude, zero stdlib,
+`--no-cache`, subject/control differing only in the arms' return values):
+subject 4406 allocs / **4** deallocs, control 4406 / 4406 at N=1100; slope 4
+objects/iteration; same in `--link`. Filed as **FIXME 0917** with the program.
+
+This face survives every landed guard: `match_owned_temporary_scrutinee_0810`
+(14/14), `mixed_arm_match_forward_0726` (4/4) and the `gen_ownership_flows`
+eliminator axis are all GREEN at this HEAD.
+
+*What it is NOT.* The `Grid.cells` synthetic accessor — the FIXME 0903 family-1
+witness the S118 golden re-baseline blessed and `tests/plan/s118-test-plan.md`
+§11.3 named as the lead for cell #21 — **is never called by the exemplar**.
+Every Grid field read is `(match g [(Grid cells) …])`; `cell-at` and `set-cell`
+both destructure. Spelling the field type (`(deftype Grid [:(Vec Cell) cells])`,
+which is legal and which the exemplar could adopt) flips that accessor's
+emitted CLIF from the shallow non-glue release to the canonical colocated glue
+call — and moves **zero** runtime blocks (26457/14026 either way, byte-identical
+at N=1 and N=4). Evidence appended to FIXME 0903.
+
+---
+
+*History (S115, retained; the attribution below is discharged).* A full serial
+solve leaked ~11.8k objects. All numbers `--run exemplar/solver.cl` with
+`CRANELISP_NO_LENIENT=1 CRANELISP_RC_STATS=1`, warm cache (a cold cache adds a
+constant compile-session term — always compare warm to warm; at S118 HEAD warm
+is ambient-free and cold adds 1,143):
 
 | Measurement | allocs / deallocs | residue |
 |---|---|---|
@@ -162,9 +248,15 @@ directly; the easy puzzle still solves, exit 0) drops the residue from 11,820 to
 calls** per solve (556 `eliminate-from-peers` × 20 peers), each returning one
 `(Some g)` box that is never released.
 
-**Acceptance criterion for the fix: the warm-cache serial-solve residue must
-drop from 11,820 to ≈1,300 — not to zero.** Landing materially above ~2,000
-means the fix is partial.
+**Acceptance criterion (S118-current):** the warm-cache serial-solve residue —
+12,431 for `solver.cl`, 12,376 per solve for the driver loop — must go to **0**
+per solve, and the driver loop's residue must be **flat in N**, not merely
+smaller. The ≤1400 bound of cell #21
+(`tests/exemplar_ownership_residue_s116.rs`) is the committed guard; a value
+materially above zero after FIXME 0917 lands means the fix is partial.
+(The S115-era "drop to ≈1,300" criterion assumed the 0810 wrapper mechanism was
+the whole story; it is superseded — the residual it reserved slack for is the
+same 0917 shape.)
 
 **The remaining ~1,300 is a SEPARATE, smaller, work-scaling leak** (FIXME
 0840), not the wrapper mechanism and not a constant: 81 `eliminate-from-peers`
@@ -187,7 +279,12 @@ This is a **correctness leak** and is **distinct from 0408** — 0408's copy-chu
 A solve is *correct*, just leaky, so **no exemplar source change is warranted**:
 `(Some g)`-returning `eliminate` is idiomatic and correct, the defect is the
 compiler's, and rewriting the exemplar around it would destroy the sentinel
-value of the measurement.
+value of the measurement. (That judgement is re-affirmed at S118: the same
+argument applies to spelling `Grid`'s field type or dropping the `None`
+contradiction arm — both would hide the defect and neither is what an
+application author should have to know.)
+
+*End of history block.*
 
 ## Headline entry
 
