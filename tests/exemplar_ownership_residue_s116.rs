@@ -79,7 +79,10 @@ fn warm_residue_of(dir: &Path, entry: &str) -> (i64, String) {
     );
     let warm = run();
     let stderr = String::from_utf8_lossy(&warm.stderr).into_owned();
-    assert!(warm.status.success(), "warm run of {entry} failed:\n{stderr}");
+    assert!(
+        warm.status.success(),
+        "warm run of {entry} failed:\n{stderr}"
+    );
     (residue(&stderr), stderr)
 }
 
@@ -89,15 +92,22 @@ fn warm_residue_of(dir: &Path, entry: &str) -> (i64, String) {
 // and the header), and no partial fix can pass.
 // spec: spec/12-runtime.md §12.3.1 — unreachable heap ownership is released;
 // application-scale quantitative acceptance for the transitive-discharge class.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/fn_compiler.rs::emit_heap_binding_decs found=S115 owner=/dev
-//   — the shallow non-concrete release arm: FIXME 0903's two censused leak
-//   families (synthetic accessors of generic/undeclared-field products;
-//   generic trait-method instances) are LIVE on this solve path —
-//   `grid/Grid.cells` is an accessor of a generic product and the
-//   backtracking solver calls it per cell per pass
-//   (`tests/plan/s118-test-plan.md` §11.3, the marginal re-derivation). The
-//   0810/0840 attribution this cell was born under is discharged: S118 W2b+W3
-//   landed those fixes and the residue survived them.
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/fn_compiler.rs::protect_return_value found=S115 owner=/dev
+//   — FIXME 0917: an unbalanced `NULLARY_TAG_THRESHOLD`-guarded protect inc at
+//   the match-result return seam. A nullary `ConstrADT` arm classifies non-Fresh
+//   in the `value_provenance`/`is_fresh_construction` join, so ONE `None` arm —
+//   never taken at runtime — flips the whole match result to protect-eligible,
+//   and nothing balances the inc: the returned tree strands at rc=1 per
+//   iteration. That is the `eliminate` shape the backtracking solver runs per
+//   cell per pass, and it accounts for 100% of the 12,431
+//   (`tests/plan/s118-test-plan.md` §11.8.1; probe-backed subject/control
+//   4406/4 vs 4406/4406, repro pair `tests/nullary_arm_beside_boxed_arm_0917.rs`).
+//   Two superseded attributions, kept so neither is re-tried: the 0810/0840 pair
+//   this cell was born under (S118 W2b+W3 landed those fixes and the residue
+//   survived them), and the §11.3 lead pointing at 0903's two censused families
+//   via `grid/Grid.cells` — FALSIFIED by `/port`'s direct experiment (the
+//   exemplar never calls that accessor) and by the 0917 reduction. This cell is
+//   NOT 0903's acceptance witness; it flips when 0917's fix lands.
 #[test]
 fn sudoku_warm_serial_solve_residue_at_most_1400() {
     let td = exemplar_scratch();

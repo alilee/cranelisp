@@ -53,16 +53,28 @@
 //! enumerated allow-list, and with the same instrument armed. There is no
 //! inherited environment to differ, and no shared state to carry over.
 //!
+//! ## The drive is a THIRD axis, and it is per-pair, never within one
+//!
+//! `Child::link_then_run()` measures the produced executable of a `--link`
+//! instead of the JIT `--run` child (`--no-cache` is rejected by `--link`, so
+//! the fresh per-child temp directory is what isolates the cache there). Both
+//! halves of a pair MUST use the same drive — a control and subject that differ
+//! in mode subtract two unrelated numbers. A cell wanting both faces measures
+//! two pairs and asserts each, which is also what makes a mode divergence
+//! visible as a divergence (root `CLAUDE.md`: a REPL/`--run`/`--link`
+//! difference is always a defect).
+//!
 //! ## Environment allow-list (`env_clear` + exactly these)
 //!
 //! | Variable | Why |
 //! |---|---|
 //! | `CRANELISP_LIB` | the library tree under measurement |
 //! | `CRANELISP_PLATFORM_PATH` | platform DLL resolution for the lane's target dir |
+//! | `PATH` | **link drive only** — `--link` shells out to `cc` |
 //! | instrument vars | see [`Instrument`] — armed per child, never at suite scope |
 //! | `Child::env` extras | caller-declared, applied to that child only |
 //!
-//! Nothing else is passed — no `PATH`, no `HOME`, no ambient `CRANELISP_*`.
+//! Nothing else is passed — no `HOME`, no ambient `CRANELISP_*`.
 //! This is the `intrinsics_m3_detection_s116` child pattern, and it is what
 //! keeps the arming per-subprocess: see `tests/detector_arming_discipline_guard.rs`
 //! and `design/intrinsics/diagnostic-modes.md` §7.1 (a `std::env::set_var`
@@ -177,12 +189,32 @@ enum Lib {
     Files(Vec<(String, String)>),
 }
 
-/// One measured compiler child: a single-file `--run` program, a library tree,
-/// and any caller-declared extra environment.
+/// How a child is driven — the mode face the pair is measured through.
+///
+/// A pair measures ONE drive; a cell that wants both faces measures two pairs,
+/// because a REPL/`--run`/`--link` divergence is itself a defect and the two
+/// numbers are separate evidence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Drive {
+    /// `--run user.cl --no-cache`; counters come from the compiler child's own
+    /// exit report (the JIT ran the program in-process).
+    Run,
+    /// `--link user.cl`, then exec the produced executable; counters come from
+    /// the PRODUCED binary's exit report, never the linking child's.
+    ///
+    /// `--no-cache` is rejected by `--link`, so cache isolation rests on the
+    /// per-child fresh temp directory instead (there is nothing for a cache to
+    /// hit — the tree is created empty for this measurement).
+    LinkThenRun,
+}
+
+/// One measured compiler child: a single-file program, a library tree, the
+/// drive, and any caller-declared extra environment.
 #[derive(Clone, Debug)]
 pub struct Child {
     program: String,
     lib: Lib,
+    drive: Drive,
     extra_env: Vec<(String, String)>,
 }
 
@@ -192,8 +224,18 @@ impl Child {
         Child {
             program: program.to_string(),
             lib: Lib::None,
+            drive: Drive::Run,
             extra_env: Vec::new(),
         }
+    }
+
+    /// Drive this child through `--link` and then exec the produced binary,
+    /// measuring the PRODUCED binary. Use for the `--link` face of an ownership
+    /// pair: the two modes emit through different lowering paths, so a leak
+    /// present in one and absent in the other is a finding, not a duplicate.
+    pub fn link_then_run(mut self) -> Self {
+        self.drive = Drive::LinkThenRun;
+        self
     }
 
     /// Point `CRANELISP_LIB` at the workspace `stdlib/` tree.
@@ -397,6 +439,14 @@ impl MarginalPair {
 // Spawning
 // =============================================================================
 
+/// `PATH` for the link drive: `--link` invokes `cc`, and the harness's
+/// `env_clear()` removes the runner's `PATH`. Inherited when present so the
+/// lane's toolchain is the one used, with a POSIX fallback for a runner that
+/// has none.
+fn link_path() -> String {
+    std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_string())
+}
+
 fn run_child(spec: &Child, instrument: Instrument, timeout: Duration, role: &str) -> ChildOutcome {
     let mut tmps: Vec<tempfile::TempDir> = Vec::new();
 
@@ -438,16 +488,31 @@ fn run_child(spec: &Child, instrument: Instrument, timeout: Duration, role: &str
     let mut cmd = Command::new(&binary);
     cmd.env_clear()
         .current_dir(work.path())
-        .args(["--run", "user.cl", "--no-cache"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    match spec.drive {
+        Drive::Run => {
+            cmd.args(["--run", "user.cl", "--no-cache"]);
+        }
+        Drive::LinkThenRun => {
+            cmd.args(["--link", "user.cl"]);
+            // `--link` shells out to `cc`, which `env_clear()` would otherwise
+            // make unfindable. The one allow-list entry the link drive adds.
+            cmd.env("PATH", link_path());
+        }
+    }
     if let Some(lib) = &lib {
         cmd.env("CRANELISP_LIB", lib);
     }
     cmd.env("CRANELISP_PLATFORM_PATH", &platform_path);
-    for (k, v) in instrument.env() {
-        cmd.env(k, v);
+    // The instrument is armed on whichever process the counters are READ from.
+    // For the link drive that is the produced binary, not the linking compiler
+    // child — arming the linker too would publish a second, irrelevant ledger.
+    if spec.drive == Drive::Run {
+        for (k, v) in instrument.env() {
+            cmd.env(k, v);
+        }
     }
     for (k, v) in &spec.extra_env {
         cmd.env(k, v);
@@ -471,9 +536,43 @@ fn run_child(spec: &Child, instrument: Instrument, timeout: Duration, role: &str
         }
     }
     let out = child.wait_with_output().expect("collect child output");
-    let elapsed = started.elapsed();
-    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let mut elapsed = started.elapsed();
+    let mut stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let mut stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let mut status = out.status;
+
+    if spec.drive == Drive::LinkThenRun {
+        assert!(
+            status.success(),
+            "marginal {role} child failed to LINK — a pair cannot be subtracted \
+             if one side never produced a binary.\nexit={:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            status.code()
+        );
+        let produced = work.path().join("user");
+        assert!(
+            produced.exists(),
+            "marginal {role} child linked but produced no `user` executable in {}",
+            work.path().display()
+        );
+        let mut run = Command::new(&produced);
+        run.env_clear()
+            .current_dir(work.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .env("PATH", link_path());
+        for (k, v) in instrument.env() {
+            run.env(k, v);
+        }
+        for (k, v) in &spec.extra_env {
+            run.env(k, v);
+        }
+        let produced_out = run.output().expect("run produced executable");
+        elapsed = started.elapsed();
+        stdout = String::from_utf8_lossy(&produced_out.stdout).into_owned();
+        stderr = String::from_utf8_lossy(&produced_out.stderr).into_owned();
+        status = produced_out.status;
+    }
 
     let (allocs, deallocs) = instrument.parse(&stderr).unwrap_or_else(|e| {
         panic!(
@@ -481,13 +580,13 @@ fn run_child(spec: &Child, instrument: Instrument, timeout: Duration, role: &str
              A pair cannot be subtracted if one side did not report — this is a harness \
              or a child-startup failure, never a balance verdict.\n\
              exit={:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
-            out.status.code()
+            status.code()
         )
     });
 
     tmps.push(work);
     ChildOutcome {
-        status: out.status,
+        status,
         stdout,
         stderr,
         allocs,
