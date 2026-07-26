@@ -627,8 +627,18 @@ mod tests {
         let mut func = Function::with_name_signature(UserFuncName::user(0, 0), sig);
         let mut fctx = FunctionBuilderContext::new();
         let builder = FunctionBuilder::new(&mut func, &mut fctx);
-        let mut compiler =
-            crate::compiler::FnCompiler::inner(builder, jit.jit_module(), ctx, 1, HashMap::new());
+        let mut glue = crate::test_support::probe_glue_registry(
+            cranelisp_types::ModuleFullPath::from("user"),
+            &intrinsic_ids,
+        );
+        let mut compiler = crate::compiler::FnCompiler::inner(
+            builder,
+            jit.jit_module(),
+            ctx,
+            &mut glue,
+            1,
+            HashMap::new(),
+        );
 
         let empty: HashSet<FQSymbol> = HashSet::new();
 

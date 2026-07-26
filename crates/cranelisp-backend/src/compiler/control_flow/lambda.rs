@@ -418,6 +418,7 @@ where
             builder,
             self.module,
             self.ctx.clone(),
+            self.glue,
             params.len(),
             last_uses,
         );

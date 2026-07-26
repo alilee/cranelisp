@@ -66,6 +66,18 @@ where
     pub(crate) scope_stack: Vec<Vec<Symbol>>,
     /// Shared immutable compilation context.
     pub(crate) ctx: CompileContext<'a, C, L>,
+    /// The compilation-local canonical drop-glue registry (S118 slice S0,
+    /// `design/backend/transitive-drop-glue.md` §3.4 D1).
+    ///
+    /// A **disjoint** field from [`Self::module`] and [`Self::ctx`] on purpose:
+    /// the registry is module-borrow-free, so
+    /// `self.glue.request_if_owning(self.module, self.ctx.symbol_tables, ty)` is
+    /// a legal three-way disjoint borrow. One registry per
+    /// `compile_to_module`/module construction, threaded into every inner
+    /// compiler (lambda / continuation / spark-thunk bodies) so a nested body's
+    /// release site mints the SAME per-concrete-type body as the outer one
+    /// (§3.1: the registry is the sole construction authority).
+    pub(crate) glue: &'a mut crate::drop_glue::DropGlueRegistry,
 
     /// Next Cranelift Variable index (per-function counter).
     pub(crate) next_var: u32,
@@ -401,6 +413,7 @@ where
         builder: FunctionBuilder<'a>,
         module: &'a mut M,
         ctx: CompileContext<'a, C, L>,
+        glue: &'a mut crate::drop_glue::DropGlueRegistry,
         fn_param_count: usize,
         last_uses: HashMap<(Symbol, Span), bool>,
     ) -> Self {
@@ -410,6 +423,7 @@ where
             variables: HashMap::new(),
             scope_stack: vec![vec![]],
             ctx,
+            glue,
             next_var: 0,
             current_fn_name: None,
             tail_loop_block: None,
@@ -514,6 +528,8 @@ where
     /// This is the main entry point called by Jit::compile_defn.
     /// Creates the entry block, loop header (for TCO), binds parameters,
     /// compiles the body, and finalizes.
+    // codegen threading: +glue (S118 S0 — the canonical drop-glue registry).
+    #[allow(clippy::too_many_arguments)]
     pub fn compile_body(
         defn: &Defn,
         body: &MonoExpr,
@@ -522,6 +538,7 @@ where
         func_ctx: &mut FunctionBuilderContext,
         module: &'a mut M,
         ctx: CompileContext<'a, C, L>,
+        glue: &'a mut crate::drop_glue::DropGlueRegistry,
     ) -> Result<(), CranelispError> {
         let mut builder = FunctionBuilder::new(func, func_ctx);
 
@@ -578,6 +595,7 @@ where
             variables: HashMap::new(),
             scope_stack: vec![vec![]],
             ctx,
+            glue,
             next_var: 0,
             current_fn_name: Some(defn.name.clone()),
             tail_loop_block: Some(loop_header),
@@ -2694,8 +2712,16 @@ mod b34_stack_eligibility_tests {
         let mut func = Function::with_name_signature(UserFuncName::user(0, 0), sig);
         let mut fctx = FunctionBuilderContext::new();
         let builder = FunctionBuilder::new(&mut func, &mut fctx);
-        let mut compiler =
-            crate::compiler::FnCompiler::inner(builder, jit.jit_module(), ctx, 0, Map::new());
+        let mut glue =
+            crate::test_support::probe_glue_registry(ModuleFullPath::from("user"), &intrinsic_ids);
+        let mut compiler = crate::compiler::FnCompiler::inner(
+            builder,
+            jit.jit_module(),
+            ctx,
+            &mut glue,
+            0,
+            Map::new(),
+        );
 
         // An otherwise-eligible NoEscape scalar-payload constructor call.
         let app = apply("Some", vec![var("x")], Some(false), None);

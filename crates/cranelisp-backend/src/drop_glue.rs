@@ -29,65 +29,81 @@ struct RegistryEntry {
     state: DefinitionState,
 }
 
-pub(crate) struct DropGlueRegistry<'a, M, C, L>
-where
-    M: Module,
-    C: CodeStore,
-    L: LinkerStore,
-{
-    module: &'a mut M,
+/// The compilation-local canonical registry — **module-borrow-free state**
+/// (S118 slice S0, design §3.4 D1).
+///
+/// The registry holds no `&mut Module` and no `&DashMap`: both are supplied per
+/// call. That is what lets a live [`crate::compiler::FnCompiler`] — which itself
+/// holds `module: &'a mut M` — reach the registry through a *disjoint* field
+/// borrow (`self.glue.request_if_owning(self.module, self.ctx.symbol_tables,
+/// ty)`). Holding the module inside the registry made every consumer
+/// unreachable, which is why the S116 foundation had zero of them.
+///
+/// Mid-body definition is safe: `define` builds each body in a fresh
+/// `make_context()`, exactly as `lambda.rs::emit_capture_dec_glue` already does
+/// while an enclosing `FunctionBuilder` is live.
+pub(crate) struct DropGlueRegistry {
     module_path: ModuleFullPath,
-    symbol_tables: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>,
     dealloc_id: FuncId,
     vec_drop_id: Option<FuncId>,
     entries: HashMap<ConcreteType, RegistryEntry>,
 }
 
-impl<'a, M, C, L> DropGlueRegistry<'a, M, C, L>
-where
-    M: Module,
-    C: CodeStore,
-    L: LinkerStore,
-{
+impl DropGlueRegistry {
     pub(crate) fn new(
-        module: &'a mut M,
         module_path: ModuleFullPath,
-        symbol_tables: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>,
         dealloc_id: FuncId,
         vec_drop_id: Option<FuncId>,
     ) -> Self {
         Self {
-            module,
             module_path,
-            symbol_tables,
             dealloc_id,
             vec_drop_id,
             entries: HashMap::new(),
         }
     }
 
-    pub(crate) fn request_if_owning(
+    /// Request canonical glue for `ty`, or `None` when the type owns nothing
+    /// heap (`NeverHeap`/`Value`). The single entry point for every release
+    /// seam.
+    pub(crate) fn request_if_owning<M, C, L>(
         &mut self,
+        module: &mut M,
+        symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
         ty: ConcreteType,
-    ) -> Result<Option<FuncId>, CranelispError> {
+    ) -> Result<Option<FuncId>, CranelispError>
+    where
+        M: Module,
+        C: CodeStore,
+        L: LinkerStore,
+    {
         if matches!(
-            HeapCategory::classify(&ty, Some(self.symbol_tables)),
+            HeapCategory::classify(&ty, Some(symbol_tables)),
             HeapCategory::NeverHeap | HeapCategory::Value
         ) {
             return Ok(None);
         }
-        self.request(ty).map(Some)
+        self.request(module, symbol_tables, ty).map(Some)
     }
 
-    fn request(&mut self, ty: ConcreteType) -> Result<FuncId, CranelispError> {
+    fn request<M, C, L>(
+        &mut self,
+        module: &mut M,
+        symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+        ty: ConcreteType,
+    ) -> Result<FuncId, CranelispError>
+    where
+        M: Module,
+        C: CodeStore,
+        L: LinkerStore,
+    {
         if let Some(entry) = self.entries.get(&ty) {
             return Ok(entry.func_id);
         }
         let symbol = drop_glue_symbol_name(&self.module_path, &ty);
-        let mut sig = self.module.make_signature();
+        let mut sig = module.make_signature();
         sig.params.push(AbiParam::new(types::I64));
-        let func_id = self
-            .module
+        let func_id = module
             .declare_function(symbol.as_ref(), Linkage::Export, &sig)
             .map_err(|e| self.error(format!("failed to declare drop glue '{symbol}': {e}")))?;
         self.entries.insert(
@@ -98,11 +114,21 @@ where
                 state: DefinitionState::Declared,
             },
         );
-        self.define(ty)?;
+        self.define(module, symbol_tables, ty)?;
         Ok(func_id)
     }
 
-    fn define(&mut self, ty: ConcreteType) -> Result<(), CranelispError> {
+    fn define<M, C, L>(
+        &mut self,
+        module: &mut M,
+        symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+        ty: ConcreteType,
+    ) -> Result<(), CranelispError>
+    where
+        M: Module,
+        C: CodeStore,
+        L: LinkerStore,
+    {
         let state = self.entries.get(&ty).expect("declared entry").state;
         if matches!(state, DefinitionState::Defining | DefinitionState::Defined) {
             return Ok(());
@@ -111,10 +137,10 @@ where
 
         // Resolve every child before borrowing a FunctionBuilder. Re-entry for
         // self/mutual recursion observes `Defining` and returns its declaration.
-        let shape = self.shape(&ty)?;
+        let shape = self.shape(symbol_tables, &ty)?;
         let mut child_ids = HashMap::new();
         for child in shape.children() {
-            if let Some(id) = self.request_if_owning(child.clone())? {
+            if let Some(id) = self.request_if_owning(module, symbol_tables, child.clone())? {
                 child_ids.insert(child, id);
             }
         }
@@ -122,13 +148,13 @@ where
             GlueShape::Vec(elem) => child_ids
                 .get(elem)
                 .copied()
-                .map(|id| self.define_vec_elem_adapter(elem, id))
+                .map(|id| self.define_vec_elem_adapter(module, elem, id))
                 .transpose()?,
             _ => None,
         };
 
         let func_id = self.entries[&ty].func_id;
-        let mut ctx = self.module.make_context();
+        let mut ctx = module.make_context();
         ctx.func.signature.params.push(AbiParam::new(types::I64));
         let mut fb_ctx = FunctionBuilderContext::new();
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fb_ctx);
@@ -144,20 +170,20 @@ where
                     self.error("runtime/vec_drop is required for Vec drop glue".into())
                 })?;
                 let child_ptr = if let Some(id) = vec_elem_callback {
-                    let rf = self.module.declare_func_in_func(id, builder.func);
+                    let rf = module.declare_func_in_func(id, builder.func);
                     builder.ins().func_addr(types::I64, rf)
                 } else {
                     builder.ins().iconst(types::I64, 0)
                 };
-                let rf = self.module.declare_func_in_func(vec_drop, builder.func);
+                let rf = module.declare_func_in_func(vec_drop, builder.func);
                 builder.ins().call(rf, &[value, child_ptr]);
             }
-            other => self.emit_outer_drop(&mut builder, value, &other, &child_ids)?,
+            other => self.emit_outer_drop(module, &mut builder, value, &other, &child_ids)?,
         }
         builder.ins().return_(&[]);
         builder.seal_all_blocks();
         builder.finalize();
-        self.module
+        module
             .define_function(func_id, &mut ctx)
             .map_err(|e| self.error(format!("failed to define drop glue for '{ty:?}': {e}")))?;
         self.entries.get_mut(&ty).expect("declared entry").state = DefinitionState::Defined;
@@ -167,24 +193,24 @@ where
     /// Adapt canonical `(i64) -> ()` glue to the established Vec runtime
     /// callback ABI `(i64) -> i64`. The returned word is ignored by Vec; this
     /// adapter contains no release policy and delegates to the canonical body.
-    fn define_vec_elem_adapter(
+    fn define_vec_elem_adapter<M: Module>(
         &mut self,
+        module: &mut M,
         elem: &ConcreteType,
         glue_id: FuncId,
     ) -> Result<FuncId, CranelispError> {
         let glue_symbol = drop_glue_symbol_name(&self.module_path, elem);
         let name = format!("{}__vec_elem_adapter", glue_symbol.as_ref());
-        if let Some(cranelift_module::FuncOrDataId::Func(id)) = self.module.get_name(&name) {
+        if let Some(cranelift_module::FuncOrDataId::Func(id)) = module.get_name(&name) {
             return Ok(id);
         }
-        let mut sig = self.module.make_signature();
+        let mut sig = module.make_signature();
         sig.params.push(AbiParam::new(types::I64));
         sig.returns.push(AbiParam::new(types::I64));
-        let id = self
-            .module
+        let id = module
             .declare_function(&name, Linkage::Local, &sig)
             .map_err(|e| self.error(format!("failed to declare Vec glue adapter: {e}")))?;
-        let mut ctx = self.module.make_context();
+        let mut ctx = module.make_context();
         ctx.func.signature = sig;
         let mut fb_ctx = FunctionBuilderContext::new();
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fb_ctx);
@@ -193,18 +219,19 @@ where
         builder.switch_to_block(entry);
         builder.seal_block(entry);
         let value = builder.block_params(entry)[0];
-        let glue_ref = self.module.declare_func_in_func(glue_id, builder.func);
+        let glue_ref = module.declare_func_in_func(glue_id, builder.func);
         builder.ins().call(glue_ref, &[value]);
         builder.ins().return_(&[value]);
         builder.finalize();
-        self.module
+        module
             .define_function(id, &mut ctx)
             .map_err(|e| self.error(format!("failed to define Vec glue adapter: {e}")))?;
         Ok(id)
     }
 
-    fn emit_outer_drop(
+    fn emit_outer_drop<M: Module>(
         &mut self,
+        module: &mut M,
         builder: &mut FunctionBuilder,
         value: Value,
         shape: &GlueShape,
@@ -223,8 +250,8 @@ where
             builder.switch_to_block(dec);
             builder.seal_block(dec);
         }
-        heap::emit_rc_dec_check_gated(builder, self.module, value);
-        heap::emit_rc_stat_call_gated(builder, self.module, "runtime/rc_stat_dec");
+        heap::emit_rc_dec_check_gated(builder, module, value);
+        heap::emit_rc_stat_call_gated(builder, module, "runtime/rc_stat_dec");
         let rc_addr = builder
             .ins()
             .iadd_imm(value, i64::from(cranelisp_types::HeapHeader::RC_OFFSET));
@@ -254,7 +281,7 @@ where
                 builder.ins().brif(has, call, &[], after, &[]);
                 builder.switch_to_block(call);
                 builder.seal_block(call);
-                let mut sig = Signature::new(self.module.isa().default_call_conv());
+                let mut sig = Signature::new(module.isa().default_call_conv());
                 sig.params.push(AbiParam::new(types::I64));
                 let sr = builder.import_signature(sig);
                 builder.ins().call_indirect(sr, ptr, &[value]);
@@ -262,12 +289,12 @@ where
                 builder.switch_to_block(after);
                 builder.seal_block(after);
             }
-            GlueShape::Adt(ctors) => self.emit_adt_fields(builder, value, ctors, child_ids)?,
+            GlueShape::Adt(ctors) => {
+                self.emit_adt_fields(module, builder, value, ctors, child_ids)?
+            }
             GlueShape::Vec(_) => unreachable!(),
         }
-        let dealloc = self
-            .module
-            .declare_func_in_func(self.dealloc_id, builder.func);
+        let dealloc = module.declare_func_in_func(self.dealloc_id, builder.func);
         builder.ins().call(dealloc, &[value]);
         builder.ins().jump(done, &[]);
         builder.switch_to_block(done);
@@ -275,8 +302,9 @@ where
         Ok(())
     }
 
-    fn emit_adt_fields(
+    fn emit_adt_fields<M: Module>(
         &mut self,
+        module: &mut M,
         builder: &mut FunctionBuilder,
         value: Value,
         ctors: &[CtorShape],
@@ -303,7 +331,7 @@ where
             for (field_index, field_ty) in ctor.fields.iter().enumerate() {
                 if let Some(id) = child_ids.get(field_ty) {
                     let field = heap::heap_load(builder, value, HeapAdt::field_offset(field_index));
-                    let rf = self.module.declare_func_in_func(*id, builder.func);
+                    let rf = module.declare_func_in_func(*id, builder.func);
                     builder.ins().call(rf, &[field]);
                 }
             }
@@ -318,27 +346,43 @@ where
         Ok(())
     }
 
-    fn shape(&self, ty: &ConcreteType) -> Result<GlueShape, CranelispError> {
+    fn shape<C, L>(
+        &self,
+        symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+        ty: &ConcreteType,
+    ) -> Result<GlueShape, CranelispError>
+    where
+        C: CodeStore,
+        L: LinkerStore,
+    {
         match ty {
             ConcreteType::String => Ok(GlueShape::String),
             ConcreteType::Fn(..) => Ok(GlueShape::Closure),
             ConcreteType::ADT(name, args) if is_vec(name) => Ok(GlueShape::Vec(
                 args.first().cloned().unwrap_or(ConcreteType::Int),
             )),
-            ConcreteType::ADT(name, args) => Ok(GlueShape::Adt(self.ctor_shapes(name, args)?)),
+            ConcreteType::ADT(name, args) => Ok(GlueShape::Adt(self.ctor_shapes(
+                symbol_tables,
+                name,
+                args,
+            )?)),
             ConcreteType::Int | ConcreteType::Bool | ConcreteType::Float => Err(self.error(
                 format!("non-owning type requested from drop-glue registry: {ty:?}"),
             )),
         }
     }
 
-    fn ctor_shapes(
+    fn ctor_shapes<C, L>(
         &self,
+        symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
         name: &FQTypeName,
         args: &[ConcreteType],
-    ) -> Result<Vec<CtorShape>, CranelispError> {
-        let table = self
-            .symbol_tables
+    ) -> Result<Vec<CtorShape>, CranelispError>
+    where
+        C: CodeStore,
+        L: LinkerStore,
+    {
+        let table = symbol_tables
             .get(&name.module)
             .ok_or_else(|| self.error(format!("missing module '{}' for drop glue", name.module)))?;
         let info = match table.get(name.name.as_ref()) {
@@ -684,14 +728,15 @@ mod tests {
 
         let mut module = object_module();
         let dealloc = declare_dealloc(&mut module);
-        let mut registry =
-            DropGlueRegistry::new(&mut module, module_path.clone(), &tables, dealloc, None);
+        let mut registry = DropGlueRegistry::new(module_path.clone(), dealloc, None);
         for root in [
             ConcreteType::ADT(list_name, vec![]),
             ConcreteType::ADT(a_name, vec![]),
             prior.clone(),
         ] {
-            registry.request_if_owning(root).unwrap();
+            registry
+                .request_if_owning(&mut module, &tables, root)
+                .unwrap();
         }
         let ids = registry.finish().unwrap();
         assert!(ids.contains_key(&prior), "depth >5 root must be defined");
@@ -747,9 +792,9 @@ mod tests {
         tables.insert(module_path.clone(), table);
         let mut module = object_module();
         let dealloc = declare_dealloc(&mut module);
-        let registry = DropGlueRegistry::new(&mut module, module_path, &tables, dealloc, None);
+        let registry = DropGlueRegistry::new(module_path, dealloc, None);
         let shapes = registry
-            .ctor_shapes(&fq, &[ConcreteType::Int, ConcreteType::String])
+            .ctor_shapes(&tables, &fq, &[ConcreteType::Int, ConcreteType::String])
             .unwrap();
         assert_eq!(shapes[0].fields, vec![ConcreteType::String]);
     }
@@ -768,9 +813,10 @@ mod tests {
         let dealloc = module
             .declare_function("runtime/dealloc", Linkage::Import, &dealloc_sig)
             .unwrap();
-        let mut registry =
-            DropGlueRegistry::new(module, module_path.clone(), &tables, dealloc, None);
-        registry.request_if_owning(ConcreteType::String).unwrap();
+        let mut registry = DropGlueRegistry::new(module_path.clone(), dealloc, None);
+        registry
+            .request_if_owning(module, &tables, ConcreteType::String)
+            .unwrap();
         let ids = registry.finish().unwrap();
         module.finalize_for_code_read().unwrap();
         let artifacts = crate::project_drop_glues(module, ids);
@@ -823,6 +869,159 @@ mod tests {
     fn substitution_rejects_an_unbound_recursive_parameter() {
         let err = substitute(&Type::Var(7), &HashMap::new()).unwrap_err();
         assert!(err.to_string().contains("unresolved field substitution t7"));
+    }
+
+    // spec: appendix-c-nfr §C.1.4 — one named drop function per concrete owning
+    // type: a repeated request returns the SAME declaration, and two distinct
+    // callers requesting the same type share one body (design §3.4 D5 — request
+    // eagerness makes emission ORDER input-dependent, so identity must be the
+    // type and nothing else).
+    #[test]
+    fn repeated_request_is_idempotent_and_two_callers_share_one_body() {
+        let module_path = ModuleFullPath::from("user");
+        let tables = DashMap::new();
+        let mut table = SymbolTable::new(module_path.clone());
+        let boxed = insert_type(
+            &mut table,
+            &module_path,
+            "Boxed",
+            &[],
+            vec![("MkBoxed", 0, vec![Type::String], vec![])],
+        );
+        tables.insert(module_path.clone(), table);
+
+        let mut module = object_module();
+        let dealloc = declare_dealloc(&mut module);
+        let mut registry = DropGlueRegistry::new(module_path.clone(), dealloc, None);
+        let ty = ConcreteType::ADT(boxed, vec![]);
+
+        let first = registry
+            .request_if_owning(&mut module, &tables, ty.clone())
+            .unwrap()
+            .expect("owning type must get glue");
+        // A second, independent request — the "second caller" — must NOT declare
+        // or define a second body.
+        let second = registry
+            .request_if_owning(&mut module, &tables, ty.clone())
+            .unwrap()
+            .expect("owning type must get glue");
+        assert_eq!(first, second, "one concrete type ⇒ one glue FuncId");
+        // The child (`String`) was requested transitively exactly once too.
+        let third = registry
+            .request_if_owning(&mut module, &tables, ConcreteType::String)
+            .unwrap()
+            .expect("String is owning");
+        let ids = registry.finish().unwrap();
+        assert_eq!(
+            ids.len(),
+            2,
+            "exactly Boxed + String, no duplicates: {ids:?}"
+        );
+        assert_eq!(ids[&ConcreteType::String].1, third);
+        assert_eq!(ids[&ty].1, first);
+    }
+
+    // spec: appendix-c-nfr §C.1.4 — glue behaviour is ORDER-INDEPENDENT (design
+    // §3.4 D5). After migration the first request for a type happens mid-body of
+    // whichever function reaches it first, so permuting the request order must
+    // produce the same key set and the same symbols.
+    #[test]
+    fn permuted_request_order_yields_the_same_keys_and_symbols() {
+        fn run(order: &[usize]) -> Vec<(ConcreteType, LinkerSymbol)> {
+            let module_path = ModuleFullPath::from("user");
+            let tables = DashMap::new();
+            let mut table = SymbolTable::new(module_path.clone());
+            let boxed = insert_type(
+                &mut table,
+                &module_path,
+                "Boxed",
+                &[],
+                vec![("MkBoxed", 0, vec![Type::String], vec![])],
+            );
+            let pairish = insert_type(
+                &mut table,
+                &module_path,
+                "Wrap",
+                &[],
+                vec![("MkWrap", 0, vec![Type::ADT(boxed.clone(), vec![])], vec![])],
+            );
+            tables.insert(module_path.clone(), table);
+            let roots = [
+                ConcreteType::String,
+                ConcreteType::ADT(boxed, vec![]),
+                ConcreteType::ADT(pairish, vec![]),
+            ];
+            let mut module = object_module();
+            let dealloc = declare_dealloc(&mut module);
+            let mut registry = DropGlueRegistry::new(module_path, dealloc, None);
+            for i in order {
+                registry
+                    .request_if_owning(&mut module, &tables, roots[*i].clone())
+                    .unwrap();
+            }
+            let mut out: Vec<(ConcreteType, LinkerSymbol)> = registry
+                .finish()
+                .unwrap()
+                .into_iter()
+                .map(|(ty, (sym, _))| (ty, sym))
+                .collect();
+            out.sort_by(|a, b| a.1.as_ref().cmp(b.1.as_ref()));
+            out
+        }
+        assert_eq!(run(&[0, 1, 2]), run(&[2, 1, 0]));
+        assert_eq!(run(&[0, 1, 2]), run(&[2, 0, 1]));
+    }
+
+    // spec: appendix-c-nfr §C.1.4 (NEGATIVE) — the completeness fence. An entry
+    // left `Defining` at `finish()` means a body was never emitted for a type a
+    // release site can call; that is a hard compilation error, never a silently
+    // missing symbol. S0 moved WHERE `finish()` runs (after body compilation);
+    // this pins that WHAT it checks is unchanged.
+    #[test]
+    fn finish_rejects_an_entry_that_never_reached_defined_neg() {
+        let module_path = ModuleFullPath::from("user");
+        let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+        tables.insert(module_path.clone(), SymbolTable::new(module_path.clone()));
+        let mut module = object_module();
+        let dealloc = declare_dealloc(&mut module);
+        let mut registry = DropGlueRegistry::new(module_path.clone(), dealloc, None);
+        registry
+            .request_if_owning(&mut module, &tables, ConcreteType::String)
+            .unwrap();
+        // Force the state back to `Defining`, the shape a re-entrant definition
+        // failure would leave behind.
+        registry
+            .entries
+            .get_mut(&ConcreteType::String)
+            .unwrap()
+            .state = DefinitionState::Defining;
+        let err = registry.finish().unwrap_err();
+        assert!(
+            err.to_string().contains("did not reach Defined state"),
+            "{err}"
+        );
+    }
+
+    // spec: appendix-c-nfr §C.1.4 (NEGATIVE) — a non-concrete/non-owning key is
+    // rejected at the registry boundary, never served a shallow release (D2).
+    #[test]
+    fn a_non_owning_scalar_key_is_rejected_by_shape_neg() {
+        let module_path = ModuleFullPath::from("user");
+        let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+        tables.insert(module_path.clone(), SymbolTable::new(module_path.clone()));
+        let registry = DropGlueRegistry::new(
+            module_path,
+            {
+                let mut module = object_module();
+                declare_dealloc(&mut module)
+            },
+            None,
+        );
+        let err = registry.shape(&tables, &ConcreteType::Int).unwrap_err();
+        assert!(
+            err.to_string().contains("non-owning type requested"),
+            "{err}"
+        );
     }
 
     // spec: appendix-c-nfr §C.1.4 — recursive decrementing is required for

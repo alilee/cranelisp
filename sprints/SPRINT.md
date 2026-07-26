@@ -325,6 +325,7 @@ The load-dependent guards (`launch_grid`, 0694 family, 0604/0818) remain failing
 | W2b+ | /qa | Branch-F quote-path falsification probe (user-directed, evidence only) | fable (shim) | xhigh | — |
 | W2b+ | /testing | marginal-accounting harness, four-cell retrofit, 0889 leak pins, 0887 fmt | opus[1m] (shim) | high | — |
 | paper | /arch | user-commissioned ownership-stratum option paper (S119 Phase-1 input) + 0883 disposal | fable (shim) | xhigh | first dispatch stalled at startup (harness watchdog, second occurrence, no work done, tree clean); re-dispatched |
+| W3 | /dev | cranelisp-backend: consumer migration S0→S1→S3→S4→S5+S6 (atomic deletion) | opus[1m] (shim) | high | — |
 
 ## Notes
 

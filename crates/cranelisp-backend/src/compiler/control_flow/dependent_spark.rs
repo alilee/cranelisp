@@ -208,7 +208,14 @@ where
         let env_ptr = builder.block_params(entry_block)[0];
 
         let last_uses = heap::compute_last_uses(val_expr);
-        let mut inner = FnCompiler::inner(builder, self.module, self.ctx.clone(), 0, last_uses);
+        let mut inner = FnCompiler::inner(
+            builder,
+            self.module,
+            self.ctx.clone(),
+            self.glue,
+            0,
+            last_uses,
+        );
         // Seed the discriminator so any inner functions emitted within the RHS
         // (nested lambdas, etc.) get uniquely-prefixed names (as `lambda.rs`).
         inner.current_fn_name = Some(Symbol::from(inner_name));

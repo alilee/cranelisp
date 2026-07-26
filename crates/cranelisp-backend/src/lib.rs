@@ -683,9 +683,7 @@ where
         })
         .collect();
     let mut glue_registry = drop_glue::DropGlueRegistry::new(
-        module,
         module_path.clone(),
-        symbol_tables,
         intrinsic_ids
             .dealloc
             .ok_or_else(|| CranelispError::CodegenError {
@@ -694,10 +692,13 @@ where
             })?,
         intrinsic_ids.vec_drop,
     );
+    // D6: the result-root pre-request stays a proactive superset of consumer
+    // demand (ruling 9 / FIXME 0745). Only `finish()` moved — it now runs after
+    // body compilation, because body compilation is where the ordinary release
+    // seams request their glue (S0).
     for ty in result_roots {
-        glue_registry.request_if_owning(ty)?;
+        glue_registry.request_if_owning(module, symbol_tables, ty)?;
     }
-    let glue_ids = glue_registry.finish()?;
 
     // No cross-module function declarations: under all-GOT calling
     // (Decision 31) cross-module calls are GOT-indirect against
@@ -723,7 +724,13 @@ where
         &func_arities,
         &intrinsic_ids,
         capture_clif,
+        &mut glue_registry,
     )?;
+
+    // S0: the completeness fence runs after body compilation and BEFORE
+    // `finalize_for_code_read()`, so `project_drop_glues` still observes
+    // finalized addresses (the ruling-9 artifact contract is unchanged).
+    let glue_ids = glue_registry.finish()?;
 
     // Step 4a (§3.1): emit the per-module `__cranelisp_got_{M}` data symbol.
     emit_module_got_data::<M, C, L>(module, &module_path, symbol_tables, &defns, &func_ids)?;
@@ -978,6 +985,7 @@ fn compile_module_bodies<M, C, L>(
     func_arities: &HashMap<Symbol, usize>,
     intrinsic_ids: &crate::jit::IntrinsicFuncIds,
     capture_clif: bool,
+    glue: &mut drop_glue::DropGlueRegistry,
 ) -> Result<(String, usize), CompilationError>
 where
     M: Module,
@@ -1041,6 +1049,7 @@ where
             func_ids,
             compile_ctx,
             render_clif,
+            glue,
         )
         .map_err(|error| attribute_body_codegen_error(module_path, defn, error))?;
         if dump_this {
@@ -1655,6 +1664,7 @@ fn compile_defn_in_module<M, C, L>(
     func_ids: &HashMap<Symbol, FuncId>,
     compile_ctx: CompileContext<'_, C, L>,
     capture_clif: bool,
+    glue: &mut drop_glue::DropGlueRegistry,
 ) -> Result<FunctionArtifacts, CranelispError>
 where
     M: Module,
@@ -1687,6 +1697,7 @@ where
         func_ctx,
         module,
         compile_ctx,
+        glue,
     )?;
 
     // Capture CLIF IR text before define_function consumes the context — but

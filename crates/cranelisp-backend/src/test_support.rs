@@ -171,6 +171,17 @@ where
         func_arities.insert(d.name.clone(), d.params().len());
     }
 
+    // S0: the probe seam owns a registry for the duration of the probe, exactly
+    // as `compile_to_module_impl` owns one across Step 3. Its `finish()` fence is
+    // not run here — the probe does not project artifacts.
+    let mut glue = crate::drop_glue::DropGlueRegistry::new(
+        module_path.clone(),
+        intrinsic_ids
+            .dealloc
+            .expect("probe: runtime/dealloc declared"),
+        intrinsic_ids.vec_drop,
+    );
+
     let empty_ctors = HashMap::new();
     let mut func_ctx = FunctionBuilderContext::new();
     let mut clifs = Vec::with_capacity(compile.len());
@@ -215,6 +226,7 @@ where
             &func_ids,
             compile_ctx,
             true,
+            &mut glue,
         )
         .expect("probe: compile_defn_in_module");
         clifs.push(art.clif_ir);
@@ -1546,4 +1558,21 @@ pub(crate) fn vec_query_value_consumer(
         visibility: Visibility::Public,
         span: Span::new(0, 62),
     }
+}
+
+/// A standalone canonical drop-glue registry for unit fixtures that build an
+/// inner [`crate::compiler::FnCompiler`] directly (S118 slice S0). Production
+/// owns exactly one registry per `compile_to_module`; a fixture that constructs
+/// a compiler by hand owns one for the fixture's duration.
+pub(crate) fn probe_glue_registry(
+    module_path: ModuleFullPath,
+    intrinsic_ids: &crate::jit::IntrinsicFuncIds,
+) -> crate::drop_glue::DropGlueRegistry {
+    crate::drop_glue::DropGlueRegistry::new(
+        module_path,
+        intrinsic_ids
+            .dealloc
+            .expect("probe: runtime/dealloc declared"),
+        intrinsic_ids.vec_drop,
+    )
 }

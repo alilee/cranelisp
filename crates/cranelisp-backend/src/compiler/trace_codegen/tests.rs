@@ -583,10 +583,15 @@ fn bake_recursive_intlist_blob_size() -> (usize, usize) {
     let mut fctx = FunctionBuilderContext::new();
     let builder = FunctionBuilder::new(&mut func, &mut fctx);
 
+    let mut glue = crate::test_support::probe_glue_registry(
+        cranelisp_types::ModuleFullPath::from("user"),
+        &intrinsic_ids,
+    );
     let mut compiler = crate::compiler::FnCompiler::inner(
         builder,
         jit.jit_module(),
         ctx,
+        &mut glue,
         1,
         std::collections::HashMap::new(),
     );

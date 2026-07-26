@@ -218,6 +218,7 @@ where
             builder,
             self.module,
             self.ctx.clone(),
+            self.glue,
             0, // fn_param_count=0: no binding names enter from the discarded result
             last_uses,
         );

@@ -58,7 +58,9 @@
       "Bash(codex --version)",
       "Read(//home/alilee/.codex/**)",
       "Bash(codex exec *)",
-      "Bash(scripts/codex-review.sh:*)"
+      "Bash(scripts/codex-review.sh:*)",
+      "Bash(env -i CRANELISP_PLATFORM_PATH=/home/alilee/cranelisp/target/debug HOME=/tmp /home/alilee/cranelisp/target/debug/cranelisp)",
+      "Bash(printf '\\(import [primitives [*]]\\)\\\\n\\(import [macros [*]]\\)\\\\n\\(deftype \\(Option a\\) None \\(Some [:a val]\\)\\)\\\\n\\(defn slen [xs] \\(match xs [\\(SCons h t\\) \\(add-i64 1 \\(slen t\\)\\) SNil 0]\\)\\)\\\\n\\(defn test-two-cell [] \\(if \\(eq-i64 2 \\(slen \\(SCons \\(SexpSym \"a\"\\) \\(SCons \\(SexpSym \"b\"\\) SNil\\)\\)\\)\\) None \\(Some \"wrong\"\\)\\)\\)\\\\n/run-tests\\\\n')"
     ]
   }
 }
