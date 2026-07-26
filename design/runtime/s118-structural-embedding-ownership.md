@@ -1,6 +1,9 @@
 # Sprint 118 — the structural-embedding ownership contract (FIXME 0835)
 
-**Status:** W2b design of record — RULING, pre-implementation.
+**Status:** W2b design of record — RULING. Implementation landed W2b
+(`959833ea`); **§5's shared-tail negative cell amended post-landing** to the
+unit-tier detector the profile can actually arm, with the general rule stated at
+§5.1 (FIXME 0886, `/review`-filed, ruled by `/design`).
 **Scope:** the runtime pair — producer `cranelisp-primitives::marshal`,
 consumer/authority `cranelisp-intrinsics::drop`.
 **Authority:** elaborates `design/arch/bounded-contexts.md` §4a (primitives) /
@@ -251,10 +254,49 @@ convention. Rows marked **(RED first)** must be written and observed failing
 | Submodule | Normal / positive | Complexity / edge | Negative / fence |
 |---|---|---|---|
 | `marshal::sconcat` — the embed rule | **(RED first)** `xs` non-empty, `ys` = 2-cell with **heap-typed** elements: exact alloc/dealloc balance after the caller releases the result. This is `decision24_sconcat_rc_balanced` widened off its blind point (§2.2) | **(RED first)** `\|ys\|` ∈ {4, 8} with heap elements: residual 0 and **independent of `\|ys\|`** — the *rate* property, the unit-tier twin of repro B4; plus a `ys` whose element is a nested `SexpList` (a `Sexp` holding an `SList`) — inc count must not move with depth either | **(RED first)** **inc-count fence**: the embed performs exactly **one** inc for any `\|ys\|`, asserted against the RC counters, not by inspection. A deep-inc regression fails this row even if some future accounting change re-balances the totals |
-| `marshal::sconcat` — shared tail | `ys` still live at the caller after the call: the tail is not torn down by the result's release; the two releases together balance exactly | **`ys` aliases a suffix of `xs`** (`sconcat xs <tail-of-xs>`): exact balance, and the result reads correctly after both consumes. This is the case the head inc is load-bearing for | releasing the result MUST NOT free a tail the caller still holds — read the tail's elements after the result is consumed, under **M1 quarantine**, so a premature free is a detector hit rather than a silent correct-looking read |
+| `marshal::sconcat` — shared tail | `ys` still live at the caller after the call: the tail is not torn down by the result's release; the two releases together balance exactly | **`ys` aliases a suffix of `xs`** (`sconcat xs <tail-of-xs>`): exact balance, and the result reads correctly after both consumes. This is the case the head inc is load-bearing for | releasing the result MUST NOT free a tail the caller still holds — after the result is consumed, assert `rc_of(ys) == 1` and read the tail's elements back, then `consume_slist(ys)` and assert the pair balances. The **unit-tier** detector for a premature free is the double-free assert in `alloc::dealloc`, which that second consume trips; **M1 quarantine belongs to the e2e/child tier** (§5.1) |
 | `marshal::sconcat` — empty / nullary | `xs = SNil` (the `items.is_empty()` branch: result **is** `ys`) balances | `ys = SNil`; `xs` non-empty with `ys = SNil`; both `SNil` | `xs = SNil, ys = SNil` touches the heap **zero** times (alloc-counter delta 0) |
 | `marshal::quote_sexp` — the sibling producer | existing deep-copy rows unchanged | `SexpSym` / `SexpStr` string re-use takes exactly one inc (RE-3); nested `SexpList` recursion | **grep-zero**: no producer in `marshal.rs` performs an inc whose count scales with the size of a structure it embeds. `deep_rc_inc_slist` is deleted and has no successor |
 | `intrinsics::drop::consume_slist` | **behaviour unchanged** — the fix must not touch it; the existing rows are the invariance pin | multi-referenced interior node: the walk stops at the first node that is not on its last reference | **RE-2 fence**: build `a = [x, y]`, `b = SCons(z, a)`, release `b`, assert `a` still reads. A change that makes `consume_slist` descend past a live reference fails here |
+
+### 5.1 A unit row cannot be "under M1 quarantine" — the substitute is the design (FIXME 0886)
+
+The shared-tail negative cell as first written asked for the read-back to run
+**under M1 quarantine**, so that a premature free would be a detector hit rather
+than a silent correct-looking read. That is **not available to an in-crate unit
+row**, and the constraint is structural, not incidental:
+
+- M1 is armed per-child through the environment
+  (`design/intrinsics/diagnostic-modes.md` §7.1), and the suite's own
+  arming-discipline gate
+  (`tests/detector_arming_discipline_guard.rs::no_test_sets_a_cranelisp_variable_in_its_own_process`)
+  forbids a test arming a detector in its own process. `set_var` against an
+  already-forced `LazyLock` is a silent no-op that reads green forever — the
+  failure mode the gate exists to prevent (`crates/cranelisp-primitives/CLAUDE.md`
+  §"Counting RC ops in a unit test").
+
+**Ruled (`/design`, S118 post-W2b): the committed row's substitute IS the design
+of record.** `crates/cranelisp-primitives/src/marshal/tests.rs::
+re1_shared_tail_survives_the_results_release` reaches the same *question* with
+the mechanism the unit profile actually has — the `rc_of(ys) == 1` read and the
+element read-back establish the tail is intact, and the caller's own
+`consume_slist(ys)` afterwards makes a premature free trip the double-free
+assert in `alloc::dealloc`. The detector is loud and in-process; what changes is
+which detector, not what is asserted.
+
+**A child-harness variant of this row is NOT wanted.** It would be new
+`/testing` scope for no additional discrimination: the M1 leg would prove the
+same proposition the double-free assert already proves at this seam, and the
+e2e/child tier already carries the armed coverage for this defect
+(`tests/slist_sconcat_ownership_0835.rs` plus the §9.2-style armed acceptance
+legs). The general rule this instance settles, for every future row in these
+runtime-pair matrices:
+
+> **Name the tier's own detector.** A unit-tier negative cell specifies an
+> in-process mechanism (double-free assert, RC read, alloc/dealloc balance); an
+> armed-detector (M1/M2/M3) expectation may only be written into an e2e or
+> child-process row. A matrix cell that names a detector its tier cannot arm is
+> a defect in the matrix.
 
 **e2e need — assessed before the fix, and already satisfied.** The five REDs in
 `tests/slist_sconcat_ownership_0835.rs` are the e2e tier for both faces, plus

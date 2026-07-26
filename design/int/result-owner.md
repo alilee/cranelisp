@@ -1,7 +1,13 @@
 # Program-result ownership and typed-context exit
 
-**Status:** DESIGN — authored S116 Phase 3, **refreshed to implementation-ready
-S118 Phase 3 against HEAD `d1c34699`**. **Subordinate to:** `int.md`.
+**Status:** DESIGN — authored S116 Phase 3, refreshed to implementation-ready
+S118 Phase 3 against HEAD `d1c34699`, **and RATIFIED as-built at S118 W4+**
+(implementation `fc3375f9..16a26408`; W4 gate PASS; **FIXME 0745 CLOSED**). The
+one design deviation the implementation forced — the release key — is ruled in
+**§1.1.1** (FIXME 0896); the doc-truthfulness re-count of the fresh-JIT
+polarities is in §6/§8 (FIXME 0901); the two as-built notes W4 flagged are
+§3.2.1 (cache-hit adapter production-unreached) and §4.2 (the second IO owner is
+now unconstructable). **Subordinate to:** `int.md`.
 **Scope:** the Binary/int surface (`src/` + `crates/cranelisp-exe-bundle/`) only.
 **Architecture inputs:** `design/arch/safety-invariants.md` R15,
 `design/arch/bounded-contexts.md` §4b invariant 16 and §6,
@@ -55,6 +61,23 @@ repair in `src/` after this design was written. The corrections:
    order (§8), the refreshed unit matrix (§6), and the acceptance mapping
    including QA's armed-detector re-demonstration leg (§9).
 
+**What the S118 W4+ ratification pass changed on top of that** (this pass; the
+sprint's post-implementation design drain):
+
+7. **§1.1 step 1 / §5's non-concrete row are superseded by §1.1.1.** The
+   observed-type narrowing was falsified in implementation by spec-required
+   displays carrying residual type vars; the release key is the producer's
+   `codegen_view` key, with `from_type` as the fallback that keeps the hard
+   error. §4.3 gains the same-read statement and the FIXME-0898 pointer.
+8. **§6 row 2 and §8's I1 exit re-count the fresh-JIT polarities three → four**
+   (the null-address polarity, FIXME 0897), and §5 gains its row; the
+   `GlueTarget::new` `debug_assert` is recorded as a debug-tier detector, not a
+   gate.
+9. **Two as-built notes recorded:** §3.2.1 (the cache-hit adapter is
+   design-mandated but production-unreached — *kept as specified*, with the
+   obligation it creates) and §4.2 (the second IO owner is deleted and
+   unconstructable, not merely unreachable).
+
 Nothing here needs a public-API, `cranelisp-types`, cache-schema, or backend
 entry-point change; §10 records the verification.
 
@@ -73,9 +96,11 @@ The semantic protocol is:
    the source return type is `IO a`, the driver consumes the IO protocol tree and
    transfers the `Pure` payload; the owned result type is the inner `a`, not
    `IO a`.
-2. Int classifies the result once. A scalar/value-layout result needs no release.
-   An owning result is narrowed once with `ConcreteType::from_type`; failure is a
-   typed-context invariant error, never permission to shallow-dec or leak.
+2. Int determines the result's **release key** once — from the producer's own
+   codegen view, never by re-deriving it from the observed display type
+   (§1.1.1) — and classifies that key once. A scalar/value-layout result needs
+   no release. Failure to obtain a key is a typed-context invariant error, never
+   permission to shallow-dec or leak.
 3. The owner observes the live value: REPL formats it, while run/link converts it
    to the process exit code (`Int` narrows to `i32`; every other type yields 0).
 4. Only after that observation completes, the owner invokes the canonical
@@ -112,8 +137,9 @@ infer disposition from a keyed miss. `cranelisp_backend::heap::HeapCategory`
 and its `classify` are already public (`crates/cranelisp-backend/public-api.txt:
 397-403`), and int already depends on backend. The owner constructor:
 
-1. narrows `Type → ConcreteType` (`ConcreteType::from_type`, types-owned);
-2. classifies that `ConcreteType` with `HeapCategory::classify(&ty,
+1. obtains the **release key** — the `ConcreteType` the producer keyed on
+   (§1.1.1), not a re-narrowing of the observed `Type`;
+2. classifies **that key** with `HeapCategory::classify(&key,
    Some(symbol_tables))`;
 3. `NeverHeap | Value` ⇒ the scalar/value arm; **no keyed lookup is attempted**;
 4. `AlwaysHeap | Mixed` ⇒ the owning arm; a keyed miss is now unambiguously a
@@ -127,6 +153,89 @@ Duplicating the predicate — an int-side "is this a heap type" list — is the
 resolver-mirror class and is rejected (**Single source of truth**). If the
 predicate's home ever moves to `cranelisp-types` (FIXME 0468's candidate), int
 follows it; it does not fork it.
+
+### 1.1.1 The release key is the producer's key — RATIFIED as-built (FIXME 0896)
+
+**This subsection supersedes the S116 text's step-1 narrowing.** As authored,
+§1.1 step 1 and §5's "missing/non-concrete type at typed exit" row required int
+to narrow the **observed** static `Type` with `ConcreteType::from_type` and to
+treat a narrowing failure as a hard invariant error. W4 implemented that
+literally, and it was **falsified in implementation**. `/design` has verified
+the as-built shape (`src/result_owner.rs::release_key` + `strip_io_head`) and
+**ratifies it**; the rule below is the design of record.
+
+> **The rule.** The release key is the **result-producing entry's `codegen_view`
+> body `ConcreteType`** — the same value backend computed its `result_roots`
+> from — with the `IO` head stripped by the same rule backend applies. Narrowing
+> the observed `Type` with `ConcreteType::from_type` is the **fallback**, used
+> only when the entry published no codegen view; a narrowing failure *there*
+> keeps §5's hard located/invariant error, and its diagnostic names both the
+> type and the absent codegen view.
+>
+> The invariant that carries the weight is **"int keys on what the producer
+> keyed on"** — *not* "the observed display type is concrete".
+
+**Why the literal rule was wrong — two independent grounds.**
+
+1. **Its premise is falsified by spec-required displays, not by corner cases.**
+   Not every clean typed-exit result type is concrete:
+
+   | REPL input | observed `Type` | required display |
+   |---|---|---|
+   | `[]` | `(primitives/Vec t1)` | `:(Vec a) []` (`repl/spec.md` §1.5) |
+   | `None` (prelude `Option`) | `(primitives/Option t2)` | `Option.None` (§4.1) |
+
+   Under the literal rule both turned into `program result type ... is not
+   concrete at the typed exit of module `user``, redding
+   `repl_introspection::display_empty_vec_value` and
+   `repl_introspection::prelude_option_none_value_display_neg_definition_metadata`.
+   A rule that makes two spec-required displays into internal errors is not a
+   safety rule; it is a wrong premise.
+
+2. **It is a second derivation of a question backend already answered.** Backend
+   keys the result-root pre-request off the compiled body's `MonoExpr` type
+   (`compile_to_module`'s `result_roots`); for a body that is not strictly
+   concrete that type comes from `MonoExpr::lenient_from_expr`, whose walk fills
+   a non-concrete node with the `ConcreteType::Int` placeholder. So for `[]`
+   backend's result root is `Int`, backend emits **no glue**, and an int-side
+   re-narrowing of the observed type would either hard-error or demand a key
+   backend never published. Either outcome is int reaching a **different verdict
+   from the producer** — which is §4.1's "never re-derive backend's type
+   encoding" rule applied to the *type* rather than only to the symbol spelling
+   (**Resolve once**, **Single source of truth**).
+
+Taking the key from the same read that produced the code pointer (§4.3) makes
+int's classification agree with backend's `request_if_owning` **by
+construction** instead of by agreement between two derivations.
+
+**Recorded limitation — the lenient-view placeholder gap.** Under this rule an
+unpinned `[]` (or a bare polymorphic `None`) at the REPL still **leaks its
+allocation**: backend keyed that result root through the `lenient_from_expr`
+`ConcreteType::Int` placeholder and therefore emitted no glue, and the owner
+cannot release what was never emitted. Its status:
+
+- it is **pre-existing** — exactly the pre-0745 behaviour for those inputs — so
+  W4 introduces no regression, and it is not a result-owner defect;
+- the owner is the **lenient view** (`MonoExpr::lenient_from_expr`, typecheck),
+  not this design. Closing it is a separate row against the lenient view and
+  wants `/qa` cover of its own; it is **out of int's bounded context** and
+  outside this sprint's zero-delta fence (§10);
+- the alternative — hard-erroring when the observed type is non-concrete, and
+  making the producer emit glue for such roots — is **not adopted here** because
+  it is a typecheck + backend change wearing an int-side error as its trigger.
+  Int must not force a producer change by refusing to release what the producer
+  published.
+
+**Cross-reference — the strip rule's home is an open `/arch` question.** The
+`IO a ⇒ a` strip this rule applies (`strip_io_head`) currently has **two literal
+encodings**: int's and backend's inline map in `compile_to_module`. They agree
+by text, not by shared derivation. **FIXME 0898 (`target: /arch`)** owns where
+the single statement lives — the candidate home is `cranelisp-types` beside
+`drop_glue_symbol_name`, which is a cross-crate/public-surface question this
+design does not settle and must not pre-empt. Until 0898 rules, int's
+`strip_io_head` is the int-side statement of a rule whose authority is
+backend's; if 0898 lands a shared helper, int **calls** it and deletes its copy
+— it does not keep a fork.
 
 ---
 
@@ -279,6 +388,43 @@ that predates the glue registry can never be read by one that expects the symbol
 "Missing glue symbol on cache hit" is therefore a genuine defect signal, not a
 version-skew nuisance to be softened.
 
+#### 3.2.1 As-built: design-mandated, production-unreached — KEEP AS SPECIFIED
+
+W4 built this adapter as designed and then established that **no production path
+reaches it at HEAD**: `try_cache_hit_load` only ever restores **dependency**
+modules (every call site is in `src/process_form/dependency.rs`), never the CLI
+target, so the result-producing entry — `main` or `__expr` — always carries
+`Code::Jit`. The unit matrix's row-3 cells are currently the only tier that
+exercises it.
+
+**`/design`'s call (S118 W4+): keep it as specified, guarded by the §6 row-3
+unit tier. It is not marked future-facing and it is not deleted.** Grounds:
+
+1. **It is not speculative generality — it is the other half of a rule this
+   design already states.** §3.2 step 3's unifying rule ("the release target's
+   retention owner is the same `Code` that owns the code which produced the
+   result") is what makes the fresh-JIT adapter's row read *safe*. With the
+   `Code::Linker` arm removed, that rule would have exactly one implemented arm
+   and the selector would need a no-release or wrong-row fallback for the other
+   — the two failure shapes §5 forbids. **Enforce invariants structurally**: the
+   selector is exhaustive over `Code` *because* every housing has an adapter.
+2. **The reach is a scheduling fact, not a design fact, and it is expected to
+   move.** Widening cache restoration to the CLI target is a live trajectory
+   (`cache-hit-loading.md`); the day it lands, the adapter's absence would be a
+   silent no-release on the entry module's result — a leak with no diagnostic.
+   Building it later, under a defect, is the **No interim implementations**
+   anti-pattern this project has paid for before.
+3. **The cost is bounded and the tier is honest.** It is one keyed symbol
+   resolution plus a null check, fully unit-covered. What the design owes is not
+   deletion but *truthfulness*: it is recorded here as production-unreached so
+   `/review` does not read the unreached path as drift, and so nobody mistakes
+   the unit rows for e2e evidence — **no e2e exercises this adapter today**.
+
+The obligation this creates: when cache restoration does widen to the CLI
+target, the widening change-set owes an e2e that observes a cache-hit result
+released exactly once (`/qa` row), because that is the moment the unit tier stops
+being the whole story.
+
 ### 3.3 Linked startup
 
 The generated startup stub knows `main`'s concrete result type at object
@@ -377,11 +523,22 @@ travel together and `format_eval_result*` cannot silently copy the owned word.
 Formatting reads the value first. The release occurs after the complete
 `StyledDoc` has been built, before control returns to the prompt. Bare
 symbol/definition displays and display-only values that did not come from a
-clean executed result do not fabricate ownership. The defensive `ty.is_io()`
-branch at `repl/format.rs:601-620` must **not** become a second IO/result owner:
-execution unwraps IO at the driver boundary (`program_outcome_to_result`'s clean
-arm), and that branch is documented-unreachable for current callers. Any future
-direct caller enters the same owner constructor.
+clean executed result do not fabricate ownership.
+
+**As-built (S118 W4) — the second IO owner is gone, not merely unreached
+(P20).** The S116 text asked that `repl/format.rs`'s defensive `ty.is_io()`
+branch "must not *become* a second IO/result owner" and rested on it being
+documented-unreachable. That branch **already was one**: it re-drove
+`cranelisp_run_io` on the displayed word and rendered the inner value. W4
+**deleted** it, and the shape that replaces the prose guarantee is structural —
+`OwnedProgramResult::new` **refuses** an `IO a` type outright, so the single
+unwrap at the driver boundary (`pipeline::program_outcome_to_result`'s clean
+arm) is the only one there can be. A second IO owner is now *unconstructable*
+rather than unreachable-by-convention (**Model invariants by representation**),
+and the formatter's replacement comment (`src/repl/format.rs`, the
+`EvalResult::Val` arm) carries that statement at the site. Do not reintroduce an
+`is_io` branch in any formatter; a future direct caller enters the same owner
+constructor, which will reject an un-unwrapped `IO a` for it.
 
 **S117 W3b does not touch this path.** W3b's changes are the scheme renderer and
 the impl-drawer/definition-display leaves (`s117-conformance-recovery.md`
@@ -421,6 +578,22 @@ an authoritative classification: `lookup_main_code_ptr` errors first on an absen
 `main`, so the path is unreachable — but the owner constructor takes the type
 from the same read that produced the code pointer, not from a second lookup.
 
+**The same-read rule extends to the release key (§1.1.1, ratified).** The key is
+read off the result-producing entry's `codegen_view` in the *same* pass that
+produces the code pointer — as built, `entry.codegen_view().map(|view|
+view.body.ty().clone())` at each of the three seams that construct an owner or a
+startup exit (`src/pipeline.rs:105` for REPL/expression execution,
+`src/session_v4/lifecycle.rs:1724` for `--run`, `:2183` for `link_by_name`). The
+observed static `Type` still travels with the owner — it is what observation
+formats and what `result_is_exit_code` reads — but it is **not** the release
+key's authority, only its fallback. A future seam that acquires a result owner
+acquires the key the same way; a second lookup keyed on anything else is the
+drift this rule exists to prevent.
+
+The `IO a ⇒ a` strip applied to that key is the same rule backend applies to its
+result roots. **Where that rule's single statement should live is FIXME 0898's
+open `/arch` question**, not this design's (§1.1.1, last paragraph).
+
 ### 4.4 `Pure` and non-IO results
 
 `cranelisp_run_program` owns known IO protocol nodes. For `Pure payload`,
@@ -444,9 +617,10 @@ and entry-main execution obey one typed-context rule.
 | clean owning result | observe completely; invoke target once; disarm |
 | display/exit conversion returns an error | finalize through the same target before propagating, or unwind through the armed backstop |
 | driver runtime trap (`error_kind == 1`) / dispatch fault (`== 2`) | no successful result owner; no result glue call |
-| missing/non-concrete type at typed exit | hard located/invariant error while the owner remains armed; never shallow release or silent leak |
+| no release key obtainable at typed exit — the entry published no `codegen_view` **and** the observed `Type` does not narrow (§1.1.1) | hard located/invariant error naming the type *and* the absent codegen view, while the owner remains armed; never shallow release or silent leak. A non-concrete **observed** type is by itself NOT this row: the key comes from the producer, and `(Vec t1)`/`(Option t2)` displays are spec-required |
 | owning type absent from `fresh_jit_drop_glues` | hard integration error; no ambient scan, no late compilation |
 | `jit_address: None` on a fresh-JIT owning result | hard integration error (object-mode polarity leaking into a JIT path) |
+| `jit_address: Some(0)` on a fresh-JIT owning result, or a null `Linker::get_symbol` resolution on a cache-hit one | hard integration error at **each adapter's own safe boundary**, before a `GlueTarget` exists (FIXME 0897) — never a `None`/skip. This is what lets the sole `unsafe` block assert non-null |
 | `artifact.symbol` disagrees with `drop_glue_symbol_name(module, key)` | hard integration error naming both spellings |
 | cache-hit `Linker::get_symbol` miss | hard cache-load error; never private glue synthesis |
 | link-time non-concrete inner result type | located link error naming module + type |
@@ -466,8 +640,8 @@ invocation; exe-bundle/link correctness remains e2e where relocation is the fact
 
 | Submodule (home) | Complexity / positive | Edge | Negative |
 |---|---|---|---|
-| owner constructor + classification (`src/pipeline.rs` or a new `src/result_owner.rs`) | `Int` no-op; `String` release; `IO String` selects `String`; nested ADT/Vec key | non-IO expression; `Pure` inner typing; value `0` as a valid owned word; `HeapCategory::Mixed` nullary tag | non-concrete `Type`; owning type with no keyed target; **never** select `IO a` glue; scalar arm performs zero map reads |
-| fresh-JIT target resolution (`src/worker.rs` `FreshJitDropGlue` consumers) | keyed `String` and nested-type rows pair with `Code::Jit`; owner clone outlives the call | two types in one batch; repeat key; recompilation replaces address **and** owner together | absent key; `jit_address: None`; symbol/key mismatch; raw address stored without its guard |
+| owner constructor + classification (`src/pipeline.rs` or a new `src/result_owner.rs`) | `Int` no-op; `String` release; `IO String` selects `String`; nested ADT/Vec key; **the `codegen_view` key wins over the observed type** and its `IO` head is stripped (§1.1.1) | non-IO expression; `Pure` inner typing; value `0` as a valid owned word; `HeapCategory::Mixed` nullary tag | non-concrete `Type` **with no codegen view** (the fallback's hard error); owning type with no keyed target; **never** select `IO a` glue; scalar arm performs zero map reads |
+| fresh-JIT target resolution (`src/worker.rs` `FreshJitDropGlue` consumers) | keyed `String` and nested-type rows pair with `Code::Jit`; owner clone outlives the call | two types in one batch; repeat key; recompilation replaces address **and** owner together | the **four** hard-error polarities — absent key; `jit_address: None`; **null (`Some(0)`) address**; symbol/key mismatch — plus: raw address stored without its guard |
 | cache-hit resolution (`src/worker.rs:2274` neighbourhood) | canonical symbol resolves via the result-entry's `Code::Linker(Arc<Linker>)` | warm cache; two module-qualified copies of the same concrete type | missing symbol fails hard; no scan; no serialized/process-local address fallback; no `Code::Jit` row consulted on a Linker result |
 | REPL display (`src/eval.rs:539` → `src/repl/format.rs:600` → `src/display.rs:78`) | scalar, `String`, nested payload displayed before one release | formatter returns error / unwinds; warning envelope; result value `0` | no release before the final display read; no double release after formatting; display-only `Def`/bare-symbol path releases nothing; the `is_io` defensive branch constructs no second owner |
 | run arm + lifecycle (`src/main.rs:323` / `lifecycle.rs:1535`) | `IO Int` converts then releases; `IO String` converts `0` then releases | nested payload; both JIT and cache-hit retention; shutdown after release | shutdown-before-release rejected; trap/fault invokes no result glue; glue never retried; `lookup_main_return_type`'s `Int` fallback never authoritative |
@@ -479,6 +653,21 @@ Ordering tests use a recorded event sequence such as
 tests assert glue is called exactly once. Type tests assert the exact
 `ConcreteType` key and module-qualified `LinkerSymbol`, not merely that some
 function pointer was called.
+
+**Non-null is an adapter obligation; the constructor's assert is a detector, not
+a gate.** Both runtime adapters reject a null address at their own **safe**
+boundary with a located diagnostic — `fresh_jit_target`'s `Some(0)` polarity and
+`resolve_cached`'s `is_null` check (FIXME 0897) — because the address is the
+sole input to the module's one `transmute`, and a narrowing carries its check
+(**Narrowing carries its check**; **Enforce invariants structurally**). The
+`debug_assert_ne!` in `GlueTarget::new` is the **tier-3 backstop**: a debug-tier
+detector for a future third adapter that forgets, matching the convention
+already stated for `force_enroll` (`src/CLAUDE.md` §redefine invariants). It is
+**not** a gate — in a `debug_assertions`-off build it is not evaluated, there is
+no release fallback, and so it has no polarity to invert. A new adapter must
+reject at its own boundary and must not lean on it; the negative unit row for a
+null address must discriminate the *adapter's* located error, not the
+`debug_assert`.
 
 ---
 
@@ -531,8 +720,8 @@ provides this.
 | # | Slice | Content | Exit |
 |---|---|---|---|
 | **I0** | Classification + owner skeleton | The int-private `OwnedProgramResult` with construction, observation-borrow, consuming finalize, disarm-on-success, and the `Drop` backstop. `HeapCategory`-based classification (§1.1). Scalar arm complete; owning arm's target resolution stubbed behind one private trait/enum. | Unit rows 1 of §6; zero behaviour change (every result is currently scalar-armed or unarmed) |
-| **I1** | Fresh-JIT adapter | `fresh_jit_drop_glues` keyed read; pair clone; the three hard-error polarities. | Unit rows 2; still no call site wired |
-| **I2** | Cache-hit adapter | `drop_glue_symbol_name` + `Linker::get_symbol` off the result entry's `Code::Linker`. | Unit rows 3 |
+| **I1** | Fresh-JIT adapter | `fresh_jit_drop_glues` keyed read; pair clone; the **four** hard-error polarities (absent row; `jit_address: None`; null `Some(0)` address; symbol/key mismatch). | Unit rows 2; still no call site wired |
+| **I2** | Cache-hit adapter | `drop_glue_symbol_name` + `Linker::get_symbol` off the result entry's `Code::Linker`, plus its null-resolution rejection. **Production-unreached at HEAD and kept as specified — §3.2.1.** | Unit rows 3 (the only tier that reaches it) |
 | **I3** | Run arm | `trampoline` returns the owner; `main.rs` observes → releases → waits/shuts down → flushes → exits. | REDs #15, #16 flip (`--run`, both toggles) |
 | **I4** | REPL arm | Owner armed across `EvalResult::Val`; release after the `StyledDoc` is built. | RED #18 flips |
 | **I5** | Linked startup | `link_by_name` derives the inner concrete type + symbol; `generate_startup_object` gains the optional release symbol; `build_startup_func` emits convert → glue → exit. | RED #17 flips |
@@ -565,8 +754,9 @@ Green control that must stay green:
 `program_result_owner_s116::scalar_pure_result_exit_conversion_control_green`
 (the scalar arm must remain call-free — §1.1 step 3).
 
-**`/testing` rider (carried from FIXME 0745's `/qa` disposition, still
-outstanding at HEAD).** Cell #15's `// defect:` line still reads
+**`/testing` rider — DISCHARGED at W4** (cell #15 was re-locused in the flipping
+change-set, with the falsification below named). Retained as the record of why.
+As authored, cell #15's `// defect:` line read
 `locus=crates/cranelisp-backend compiler/rc_emission.rs::protect_return_value`
 (`tests/adt_drop_glue_underkey.rs:258`). Both mechanisms at that locus are
 falsified; the locus is the int result-value lifetime seam. Re-locusing is
@@ -652,16 +842,28 @@ a **later wave**, after 0745. The constraint, from this side:
 
 ## Next skills
 
-- `/dev` (int/exe-bundle) — implement §8's I0–I5 with the §6 unit matrix; the
-  §9.2 armed acceptance leg per slice; STOP-and-FIXME on any public-API need.
-- `/testing` — re-locus cell #15's `// defect:` line onto the int result-value
-  lifetime seam, in the flipping change-set (§9.1 rider).
-- `/qa` — verify the §5 error-path negatives and the §9.2 armed legs; confirm no
-  new e2e is owed beyond the four committed cells.
-- `/review` (int/exe-bundle) — reject: raw unguarded addresses; a second
-  heap-type predicate; display-before/after ordering inversions; IO-only or
-  JIT-only release; any private deep releaser; a third `fresh_jit_drop_glues`
-  writer or a non-pair row update; any wiring into the production-dead
-  `inline_jit_codegen_for_names`.
-- `/sprint` — sequence 0863's wave after this one per arch ruling 11; schedule
-  0875's attribution after I5 per QA §8.
+**Implementation is complete** (§8's I0–I5 landed `fc3375f9..16a26408`; the four
+§9.1 cells flipped; W4 gate PASS; FIXME 0745 CLOSED). What remains:
+
+- `/arch` — FIXME 0898: rule where the `IO a ⇒ a` result-root strip rule's
+  single statement lives (§1.1.1's last paragraph). Int calls the shared helper
+  and deletes its copy the moment one exists; it does not keep a fork.
+- `/dev` (int/exe-bundle) — stale-citation sweep: `src/result_owner.rs`'s
+  `release_key` rustdoc and `src/CLAUDE.md` §"Program-result ownership" both
+  cite the retired number **0892**; the ruling is **0896** and now lives in
+  §1.1.1. `/design` does not edit source.
+- `/design` (typecheck) — the recorded limitation in §1.1.1: the lenient view's
+  `ConcreteType::Int` placeholder is why an unpinned `[]` / bare `None` result
+  still leaks. It is a lenient-view row, not a result-owner row.
+- `/qa` — cover for that lenient-view row when it is scheduled; and the §3.2.1
+  obligation: an e2e for the cache-hit adapter is owed **by the change-set that
+  widens cache restoration to the CLI target**, not before.
+- `/review` (int/exe-bundle) — standing rejects for any future change here: raw
+  unguarded addresses; a null address reaching `GlueTarget::new` from a new
+  adapter; a second heap-type predicate; a re-narrowing of the observed type as
+  the release key (§1.1.1); display-before/after ordering inversions; IO-only or
+  JIT-only release; a reintroduced formatter `is_io` branch; any private deep
+  releaser; a third `fresh_jit_drop_glues` writer or a non-pair row update; any
+  wiring into the production-dead `inline_jit_codegen_for_names`.
+- `/sprint` — 0863's wave stays sequenced after this one per arch ruling 11;
+  0875's attribution is unblocked (I5 has landed).
