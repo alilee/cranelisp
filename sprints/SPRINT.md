@@ -347,7 +347,9 @@ The load-dependent guards (`launch_grid`, 0694 family, 0604/0818) remain failing
 | W4+ | /design | int: 0896 renumber+ratification, 0901, 0886, as-built notes (`05215ec0`+`9f81ede2`; RATIFIED — "int keys on what the producer keyed on"; lenient-view gap recorded → /design(typecheck) row owed) | opus[1m] (shim) | high | — |
 | W4+ | /design | cranelisp-backend: 0891 ruling (`dd0b1c5e`; ruled (a)+P25 tightening — frame-keyed gate; 0902 filed /arch; 0394 found closed-since-S84 with stale citations) | opus[1m] (shim) | high | — |
 | W4+ | /dev | cranelisp-backend: 0891 narrowing (`ee324bc4`) — **ruling falsified by measurement**: +16 refusals from two uncensused escapee families (both leak today); safe parts shipped, 0903 filed, 0891 deferred S119 | opus[1m] (shim) | high | STOP rule honored |
-| W4+ | /review | cranelisp-backend: ee324bc4 (delegated, short) | codex (delegated) + fable adjudicator | high | — |
+| W4+ | /review | cranelisp-backend: ee324bc4 (delegated, short) — PASS; 0904/0905 Importants filed | codex (delegated) + fable adjudicator | high | — |
+| W4+ | /dev | cranelisp-backend: 0904 + 0905 resolution (`5a906eca`; both cures, double-axis falsification, byte-identical emission verified; 0906 nit filed; golden-lane W3 drift surfaced) | opus[1m] (shim) | high | Important resolution |
+| gate | /qa | pre-gate pass: Bind-family + leak-family + golden-lane attribution, #21/0890, exit reconciliation | fable (shim) | xhigh | — |
 
 ## Notes
 
