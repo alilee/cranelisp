@@ -352,7 +352,9 @@ The load-dependent guards (`launch_grid`, 0694 family, 0604/0818) remain failing
 | gate | /qa | pre-gate pass (`33098d33`): Bind→0907 (W3-consequent loud refusals, 7 cells, co-rules with 0903); #21 premise inverted (warm ambient = 0; 12,431 is runtime retention, 0903-family lead); golden drift→0908; W8 expectation = 18 named | fable (shim) | xhigh | — |
 | gate | /testing | 0908 golden re-capture + #21 riders (`1a887705`+`d20ce68e`; mechanical frame classification; Grid.cells 0903-family finding recorded loudly; 0909 filed) | opus[1m] (shim) | high | — |
 | W8 | /qa | Phase-5 gate (`9370f868`): **PASS** — 5,653/5,634/19/1 ×2 byte-identical (first deterministic cert since S115); 16 named + 0910/0911 test-debt; 0909 resolved | fable (shim) | xhigh | — |
-| W8 | /arch | public-API re-gate + Phase-7 window (0872, 0898, 0902) | fable (shim) | xhigh | — |
+| W8 | /arch | public-API re-gate + Phase-7 window (`4ed43430`): CLEAN 8/8; 0872/0902 resolved, 0898 ruled-deferred, 0912 filed for /spec framing | fable (shim) | xhigh | — |
+| P6 | /audit | cranelisp-types assessment (`c2247025`): design Strong (acid-test exemplar), realisation Adequate (falsified facade narratives); R1–R5 → S119 Phase 1; 0748 given scheduling weight | fable (shim) | xhigh | — |
+| P6 | /repl | 6a+6b combined (bounded per descope): replay, result-owner probes, Bind UX | opus[1m] (shim) | high | 6a/6b combined — recorded adaptation |
 
 ## Notes
 
