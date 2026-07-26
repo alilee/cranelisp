@@ -44,6 +44,11 @@ is subordinate.
 for `program/tests.rs`), `ast-annotation.md` (the AST-co-located annotation model).
 
 **Active subordinate feature docs** (scoped elaborations of a subsystem doc, live):
+`non-concrete-producer-obligations.md` (S119 — typecheck's half of the
+non-concrete release contract: the universal slot gate P-1, accessor/trait-method
+monomorphisation (FIXME 0924), the lenient view's defaulting step (FIXME 0913),
+and the rider-0867 gating answer → subordinate to `monomorphisation.md` + `adt.md`,
+governed by `design/backend/non-concrete-release-contract.md`),
 `fixme-0365-field-accessor-dotted.md` (dotted field accessors → subordinate to
 `adt.md`), `dotted-ctor-registration.md` (dotted `Type.Ctor` capability, S109 →
 subordinate to `adt.md`), `s87-traits-decomposition.md` (the `traits/` module cut +

@@ -28,6 +28,23 @@ register_type_def(name, type_params, constructors, ...)
 > below); its dotted form is degenerate. Full design:
 > **`design/typecheck/dotted-ctor-registration.md`**.
 
+> **Field-accessor synthesis is slot-gated (S119, FIXME 0924).**
+> `synthesise_one_accessor` (`adt.rs:618-637`) mints the canonical `Type.field`
+> `Def` as `UserFnState::Concrete { got_slot }` **unconditionally** — including for
+> a polymorphic product, whose scheme `∀a. (Fn [(Bx a)] a)` is not
+> `Type::is_concrete()`. That is the pairing `monomorphisation.md` §2.1 declares
+> unconstructable, and the compiled frame is memory-unsafe at the
+> `NULLARY_TAG_THRESHOLD` boundary (`design/backend/non-concrete-release-contract.md`
+> §2.4). Ruled: the mint takes the universal gate (**P-1**), a non-concrete accessor
+> becomes slot-less `Polymorphic`, and its instances are produced by **re-running
+> this synthesiser at concrete type arguments** (**A-MINT**) rather than by a body
+> re-check — the body is `Span::SYNTHETIC` and outside span-keyed carrier transport.
+> The bare-alias `Import` edge, the §8.6.5 `Ambiguous` contest and the impl-time
+> collision pre-flight are **untouched**: they key on the canonical entry, not its
+> `fn_state`. **Rider 0867** (accessor synthesis over every constructor arm)
+> unblocks on P-1 alone. Full statement:
+> **`non-concrete-producer-obligations.md`**.
+
 ### Type Parameter Allocation
 
 Each type parameter (e.g., `a` in `(deftype (Option a) ...)`) gets a fresh type variable via `fresh_var_id`. The `var_map` (HashMap<Symbol, TypeId>) maps parameter names to their allocated IDs, used by `resolve_type_expr` when processing field type annotations.

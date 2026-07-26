@@ -95,6 +95,23 @@ primacy**, and a leak was pinpointed:
 > `Type::Var`, no `TyConApp`-head var). A non-concrete-def-with-slot is
 > unconstructable.**
 
+> **S119 amendment — the invariant is site-independent (FIXME 0924).** §2 below
+> states the gate as a property of `finalize_check_form`'s determination points.
+> Two *other* sites construct `UserFnState::Concrete { got_slot }` and were never
+> brought under it: `adt.rs::synthesise_one_accessor` (`:618-637`) for a polymorphic
+> product's field accessor, and `traits/impl_check.rs` (`:1043,1078-1090`) for a
+> trait-impl method, the latter via `scheme::mono` over a `fn_type` that still
+> carries `Type::Var`. Both therefore hand backend the exact
+> `Concrete{slot} ∧ non-concrete-type` pairing §2.1 declares unconstructable, and
+> `design/backend/non-concrete-release-contract.md` §2.4 measures the result as
+> **memory-unsafe** (a wild `atomic_rmw` on a scalar payload ≥ `NULLARY_TAG_THRESHOLD`),
+> not merely leaky. The ruling is **P-1**: no site may construct
+> `Concrete { got_slot }` for a scheme whose type is not `is_concrete()`, enforced
+> by converging all three decision points onto ONE helper. Full statement, the
+> A-MINT accessor-instantiation rule, and the F2 mangle ruling (which **rejects** a
+> widened `mangle_trait_method` key in favour of this doc's §3.5
+> `build_mangled_name`): **`non-concrete-producer-obligations.md`**.
+
 This is the S84 generalisation of Principle 20 (BC §7). It subsumes two species of
 slot-less def under one predicate:
 

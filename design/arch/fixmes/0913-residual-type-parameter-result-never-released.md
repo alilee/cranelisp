@@ -10,9 +10,55 @@ refers_to: design/int/result-owner.md §1.1.1 "Recorded limitation — the lenie
   src/repl/commands.rs::handle_mem — the instrument used;
   repl/demos/memory-lifecycle.demo — the committed REPL-surface demonstration
 status: open
+ruled_at: design/typecheck/non-concrete-producer-obligations.md §3 (L-1, L-2, L-3)
+ruled_by: /design (typecheck)
+ruled_sprint: 119
 ---
 
 # A program result whose displayed type keeps a residual parameter is never released — and the recorded scope for this is `[]`/`None`, not the `Result` family
+
+> **RULED S119 Phase 3 round 2, `/design`(typecheck)** —
+> `design/typecheck/non-concrete-producer-obligations.md` §3, against
+> `design/backend/non-concrete-release-contract.md` §5.4 (contract face 5). **Left
+> open**: the design half is discharged; the implementation is `/dev`(typecheck)'s
+> (§6 CS-3), and the `result-owner.md` §1.1.1 scope correction is
+> `/design`(int)'s side of the same window. Delete when CS-3 lands and
+> `tests/residual_type_param_result_leak_0913.rs` reads an exact marginal 0.
+>
+> **The obligation is defaulting, not substitution.** `(Result a String)` ⇒
+> `(Result Int String)` — type constructor and every concrete argument preserved,
+> only the position nothing inhabits filled. `(Result a String)` ⇒ `Int` is the
+> fabrication (R-2): it discards the constructor, backend sees a scalar, and no
+> glue is emitted. Three rules:
+> - **L-1 (licence).** A residual parameter is defaultable iff its variable does
+>   **not** occur in any of the frame's declared parameter types. The fence is real:
+>   a multi-sig `f$Var` variant's residual IS inhabited — the caller supplies it —
+>   and defaulting there would convert this leak into a silent under-discharge. The
+>   guaranteed-covered subset, and the whole of the measured population, is a
+>   **nullary** frame (`__expr`, `main`).
+> - **L-2 (shape).** Constructor-rooted types only. A type whose *root* is residual
+>   has no constructor, therefore no category, therefore no glue (R-1) — it keeps a
+>   **counted** placeholder whose census gates the arm's removal, exactly as
+>   backend's §5.1 gates its own.
+> - **L-3 (the check, Principle 25).** Defaulting a variable that appears in the
+>   enclosing scheme's `constraints` is choosing a trait instance — a **located
+>   error**.
+>
+> **The seam is `program/support.rs::build_concrete_codegen_view`'s `NotConcrete`
+> arm**, not `lenient_from_expr` itself: L-1 and L-3 need the frame's declared
+> parameter types and its `Scheme`, which the `cranelisp-types` walk does not have.
+> Deciding it there would be the second derivation that produced this defect.
+> Defaulting rewrites a **clone** of the annotated variant, so the spec-required
+> residual-parameter displays are byte-identical — the displays are right, only the
+> release behind them changes. **Self-checking:** the strict builder is then re-run,
+> so a defaulting that left a residual does not silently pass.
+>
+> **Zero delta in `cranelisp-types`, `cranelisp-backend`, `src/` and the public
+> API.** Int's `release_key` authority order (`result_owner.rs:337`) is already
+> right; only the value it reads changes.
+>
+> The no-annotation-pinning constraint is honoured by construction — nothing in the
+> fix touches an annotation, a test fixture or a doc example.
 
 ## Severity
 

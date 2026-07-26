@@ -11,9 +11,56 @@ refers_to: design/backend/non-concrete-release-contract.md §4 faces 2+3, §4.3 
   the trait-method instance mangle (`Functor.fmap$primitives/Option`);
   design/arch/fixmes/0903-*.md families 1+2, 0916, 0867
 status: open
+ruled_at: design/typecheck/non-concrete-producer-obligations.md §2 (P-1, P-2, A-MINT)
+ruled_by: /design (typecheck)
+ruled_sprint: 119
 ---
 
 # Synthetic accessors and generic trait-method instances must be monomorphised per instantiation — backend cannot release them, by any disposition
+
+> **RULED S119 Phase 3 round 2, `/design`(typecheck)** —
+> `design/typecheck/non-concrete-producer-obligations.md` §2. **Left open**: the
+> design half is discharged; the implementation is `/dev`(typecheck)'s (§6 CS-1 +
+> CS-2 of the ruling) and this file is the gate marker `/sprint` uses for 0916 and
+> rider 0867. Delete when CS-2 lands and its census reads zero.
+>
+> **The reduction.** Both families are *hand-mint sites that bypass the S84 slot
+> gate* (`monomorphisation.md` §1: a def has a slot ⟺ its type is
+> `Type::is_concrete()`), not a capability the compiler lacks. `adt.rs:618-637`
+> mints `Concrete { got_slot }` over `∀a. (Fn [(Bx a)] a)`;
+> `impl_check.rs:1043,1078-1090` calls `scheme::mono` on a `fn_type` that still
+> carries `Type::Var` (so `entry_is_monomorphisable_polymorphic` answers **false**
+> for the wrong reason) and mints the same pairing. The obligation is **P-1**: no
+> site may construct `Concrete { got_slot }` for a non-concrete scheme, enforced by
+> converging all three decision points onto ONE helper.
+>
+> **Item 2 of §Proposed resolution is REJECTED as spelled, and its disposition is
+> adopted.** Widening `mangle_trait_method` to `…$primitives/Option$Int` is **lossy
+> on the axis that matters**: `Functor.fmap`'s `b` comes from the *function
+> argument's* return type, not the receiver, so `(fmap show (Some 1))` and
+> `(fmap inc (Some 1))` would collapse to one name — the 0483/0508/0519 collision
+> class re-minted at a new site. Ruled **P-2**: `mangle_trait_method` is unchanged
+> and remains the *template* / discovery key; the instance is named by the ONE
+> canonical `build_mangled_name(home, bare, param_types)`, which already recurses
+> the whole signature and carries the `is_concrete()` tripwire. No second grammar.
+>
+> **Item 1 is adopted with a named mechanism, `A-MINT`.** An accessor instance is
+> produced by **re-running the synthesiser at concrete type arguments**, never by
+> `monomorphise_call`'s body re-check: the body is `Span::SYNTHETIC` throughout, so
+> it is outside span-keyed carrier transport, and its ctor identity is supplied
+> directly at synthesis rather than resolved. F2 (a real user-written body) does
+> take the ordinary re-check path.
+>
+> **Sequencing correction for `/sprint`.** Rider **0867 unblocks on P-1 alone**,
+> not on the whole obligation: once the accessor mint is gated, a missed
+> instantiation is a located missing-slot failure, not a SIGSEGV. The ruling §4.2
+> recommends landing P-1-for-accessors and 0867 in the **same** change-set (same
+> function, one review surface).
+>
+> **One item stands for `/arch`** (filed as 0925): both this obligation and 0913
+> are serde-visible *meaning* changes to cached entries, and a stale sidecar
+> re-introduces the memory-unsafety on a warm cache. The sprint authorizes exactly
+> one schema window and it is 0869's.
 
 ## Issue
 
