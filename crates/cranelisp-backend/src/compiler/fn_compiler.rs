@@ -36,6 +36,33 @@ pub(crate) struct MatchContext {
     pub merge_block: Block,
     /// The saved tail-position flag from before the match.
     pub saved_tail: bool,
+    /// S118 slice S3 — where this match's pattern bindings' values live, so an
+    /// extracted field escaping into a tail call can be upgraded exactly when
+    /// its owner dies at that jump (§2). `None` ⇒ neither this frame nor a live
+    /// binding owns the scrutinee (a `Borrowed` param), so nothing here can
+    /// release it.
+    pub scrut_root: Option<BorrowRoot>,
+    /// S118 slice S3 — does THIS arm owe the one wrapper release
+    /// (`ScrutineeLifetime::OwnedConsumed` over a heap scrutinee)? Resolved per
+    /// arm from the plan recorded once before arms are emitted (§5).
+    pub owes_release: bool,
+}
+
+/// Where a BORROWED pattern binding's value actually lives (S118 slice S3,
+/// `design/backend/transitive-drop-glue.md` §2).
+///
+/// A pattern binding is a view into the scrutinee. Whether that view has to be
+/// upgraded to an owned reference before it escapes depends on whether the
+/// thing that owns it is about to be released — so the seam records WHOSE
+/// reference the borrow rides on, rather than guessing from the binding alone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum BorrowRoot {
+    /// The match frame owns the scrutinee temporary and releases it at the
+    /// consuming arm's lifetime end.
+    OwnedTemporary,
+    /// A live scope binding owns it; whether that binding dies at a given tail
+    /// jump is answered by [`FnCompiler::tail_jump_releases_binding`].
+    Binding(Symbol),
 }
 
 /// Per-function compilation context.
@@ -387,6 +414,32 @@ where
     /// in-place COW mutation must stay refused for these params (they may still
     /// alias the caller's value on the first iteration).
     pub(crate) tco_owned_params: std::collections::HashSet<Symbol>,
+
+    /// S118 slice S3 (`design/backend/transitive-drop-glue.md` §5) — the
+    /// wrapper releases owed by the match arms currently being compiled, from
+    /// outermost to innermost.
+    ///
+    /// A match whose scrutinee this frame OWNS releases that wrapper once per
+    /// consuming arm, at the arm's lifetime end. When the arm's body is a TAIL
+    /// SELF-CALL the jump terminates the block, so an end-of-arm release would
+    /// land in the dead block after it and never execute — that is Face A of
+    /// FIXME 0810 (`(match (mk i) [(Mk v) (go …)])` leaks exactly one wrapper
+    /// per iteration). `compile_tail_self_call` therefore flushes this stack
+    /// before the jump, the identical shape as
+    /// [`FnCompiler::flush_let_scopes_before_tail_jump`]; the end-of-arm
+    /// release still emits into the (now dead) continuation, so a non-tail arm
+    /// keeps its release and a tail arm never gets two.
+    ///
+    /// A stack, not a single slot: an arm may itself contain a match over
+    /// another owned temporary, and a tail jump out of the inner arm must
+    /// discharge both wrappers.
+    pending_scrutinee_releases: Vec<(Value, Type)>,
+
+    /// S118 slice S3 — the [`BorrowRoot`] of each live BORROWED pattern
+    /// binding. Read at the tail-jump seam to decide whether an escaping
+    /// borrowed view must be upgraded to an owned reference; entries are
+    /// dropped with their scope frame.
+    field_borrow_root: HashMap<Symbol, BorrowRoot>,
 }
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
@@ -449,6 +502,8 @@ where
             pending_cow_escapes: None,
             cow_retain_decisions: HashMap::new(),
             tco_owned_params: std::collections::HashSet::new(),
+            pending_scrutinee_releases: Vec::new(),
+            field_borrow_root: HashMap::new(),
         }
     }
 
@@ -615,6 +670,8 @@ where
             pending_cow_escapes: None,
             cow_retain_decisions: HashMap::new(),
             tco_owned_params: std::collections::HashSet::new(),
+            pending_scrutinee_releases: Vec::new(),
+            field_borrow_root: HashMap::new(),
         };
 
         // Seed the function's parameters into scope + variable_types.
@@ -1088,6 +1145,7 @@ where
             for name in frame {
                 self.variables.remove(&name);
                 self.variable_types.remove(&name);
+                self.field_borrow_root.remove(&name);
             }
         }
     }
@@ -1307,6 +1365,156 @@ where
             param_flush_exempts_inplace_cow(args, name, analysis_off)
         });
         self.emit_heap_binding_decs(&to_dec)
+    }
+
+    /// S118 slice S3 — record that the borrowed pattern binding `name` is a view
+    /// into `root`.
+    pub(crate) fn record_borrow_root(&mut self, name: &Symbol, root: BorrowRoot) {
+        self.field_borrow_root.insert(name.clone(), root);
+    }
+
+    /// Will one of the tail-jump flushes release the binding `name`? Mirrors the
+    /// two flush filters exactly — `flush_let_scopes_before_tail_jump` for the
+    /// `let`/match/lambda frames and
+    /// `flush_superseded_heap_params_before_tail_jump` for the param frame — so
+    /// a protective inc gated on it balances one-for-one and is emitted in no
+    /// other case.
+    fn tail_jump_releases_binding(
+        &self,
+        name: &Symbol,
+        args: &[MonoExpr],
+        transfer_skip: &std::collections::HashSet<Symbol>,
+    ) -> bool {
+        if transfer_skip.contains(name) {
+            return false;
+        }
+        if !self
+            .variable_types
+            .get(name)
+            .is_some_and(|ty| self.is_heap_type(ty))
+        {
+            return false;
+        }
+        if self.scope_stack.iter().skip(1).any(|f| f.contains(name)) {
+            return !self.is_borrowed(name);
+        }
+        if self.scope_stack.first().is_some_and(|f| f.contains(name)) {
+            if self.is_borrowed(name) && !self.tco_owned_params.contains(name) {
+                return false;
+            }
+            return !param_flush_exempts_inplace_cow(
+                args,
+                name,
+                cranelisp_types::ownership_analysis_off(),
+            );
+        }
+        false
+    }
+
+    /// S118 slice S3 (§2 — protect, then tear down; FIXME 0810 Face B). Upgrade
+    /// every BORROWED bare-`Var` tail argument whose owner is about to be
+    /// released at this jump.
+    ///
+    /// A borrowed binding has no reference to move: the owner holds the one that
+    /// exists. The next iteration's parameter slot is frame-OWNED (the flush
+    /// decs it on the way round, the function exit decs it at the end), so a
+    /// borrow handed into it must first become an owned reference — the same
+    /// adaptation `compile_consuming_arg_list_moded` performs for a
+    /// caller-borrowed `Var` handed to an `Owned` position. The loop parameter
+    /// slots were the one set of `Owned` positions that never adapted:
+    /// `(let [r (step g i)] (match r [(Jus g2) (go g2 …)]))` carried `g2`
+    /// forward with zero owning references while `r`'s glue and the old slot
+    /// each discharged one.
+    ///
+    /// **Gated on the owner actually dying here**, which is what keeps it from
+    /// being a blanket inc: `(defn sfold [f acc xs] (match xs [(SCons h t)
+    /// (sfold f (f acc h) t) …]))` forwards a borrowed field of a scrutinee
+    /// NOBODY releases at the jump, and an unconditional upgrade leaks exactly
+    /// one reference per call there.
+    pub(crate) fn protect_escaping_borrows_before_tail_jump(
+        &mut self,
+        args: &[MonoExpr],
+        transfer_skip: &std::collections::HashSet<Symbol>,
+    ) {
+        let owed: Vec<Symbol> = args
+            .iter()
+            .filter_map(|arg| match arg {
+                MonoExpr::Var { name, .. } if self.is_borrowed(name) => {
+                    let dies = match self.field_borrow_root.get(name) {
+                        // The consuming arm's own release fires at this jump.
+                        Some(BorrowRoot::OwnedTemporary) => true,
+                        Some(BorrowRoot::Binding(root)) => {
+                            self.tail_jump_releases_binding(root, args, transfer_skip)
+                        }
+                        // Not a tracked pattern view (a `Borrowed` param, a
+                        // capture): its owner is outside this frame entirely.
+                        None => false,
+                    };
+                    dies.then(|| name.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        for name in owed {
+            let Some(ty) = self.variable_types.get(&name).cloned() else {
+                continue;
+            };
+            let Some(&var) = self.variables.get(&name) else {
+                continue;
+            };
+            let val = self.builder.use_var(var);
+            match signature_heap_category(&ty, Some(self.ctx.symbol_tables)) {
+                HeapCategory::AlwaysHeap => {
+                    heap::emit_rc_inc(&mut self.builder, self.module, val);
+                }
+                HeapCategory::Mixed => {
+                    heap::emit_rc_inc_guarded(&mut self.builder, self.module, val);
+                }
+                HeapCategory::NeverHeap | HeapCategory::Value => {}
+            }
+        }
+    }
+
+    /// S118 slice S3 — push the wrapper release owed by the consuming match arm
+    /// about to be compiled (see [`Self::pending_scrutinee_releases`]).
+    pub(crate) fn push_pending_scrutinee_release(&mut self, val: Value, ty: Type) {
+        self.pending_scrutinee_releases.push((val, ty));
+    }
+
+    /// Pop the release pushed by [`Self::push_pending_scrutinee_release`]. The
+    /// arm emits it at its own lifetime end; a tail jump inside the arm has
+    /// already emitted it on the live path.
+    pub(crate) fn pop_pending_scrutinee_release(&mut self) -> Option<(Value, Type)> {
+        self.pending_scrutinee_releases.pop()
+    }
+
+    /// Discharge every owed match-wrapper release BEFORE a tail self-call jump
+    /// (§5 / FIXME 0810 Face A). Innermost first, mirroring
+    /// [`Self::flush_let_scopes_before_tail_jump`]. The stack is NOT popped —
+    /// each arm still pops its own entry, and its end-of-arm release lands in
+    /// the dead block the jump created.
+    ///
+    /// Ordering is load-bearing: this runs AFTER the arguments have been
+    /// compiled and protected, so an extracted field escaping into the next
+    /// iteration already owns a reference when the wrapper's glue discharges
+    /// the wrapper's own (§2 — protect, then tear down).
+    pub(crate) fn flush_pending_scrutinee_releases_before_tail_jump(
+        &mut self,
+    ) -> Result<(), CranelispError> {
+        let owed: Vec<(Value, Type)> = self
+            .pending_scrutinee_releases
+            .iter()
+            .rev()
+            .cloned()
+            .collect();
+        for (val, ty) in owed {
+            // One emitter, no site policy: the canonical glue for the
+            // scrutinee's own concrete type discharges the wrapper and
+            // everything the wrapper owns (Vec elements + buffer, ADT fields,
+            // closure captures), with the nullary guard derived from the type.
+            self.emit_typed_rc_dec(val, &ty)?;
+        }
+        Ok(())
     }
 
     /// True iff `flush_let_scopes_before_tail_jump` would emit an `rc_dec` for
@@ -1691,9 +1899,16 @@ pub(crate) fn body_forwards_binding(body: &MonoExpr, name: &Symbol) -> bool {
 }
 
 /// Structural: does this match FORWARD its scrutinee's provenance to the result?
-/// True iff some arm is a var-pattern `[r <body forwarding r>]` (0668 §2). A
-/// var-pattern is irrefutable, so in the tested family it is the sole/last arm and
-/// this is exact; a mixed constructor+var match is out of the acceptance set.
+/// True iff some arm is a var-pattern `[r <body forwarding r>]` (0668 §2).
+///
+/// **This is a PROVENANCE trace, not a release decision** (S118 slice S3). Its
+/// one consumer is [`operand_live_binding_root`], which asks "could the value
+/// this match yields be rooted at a live binding" — an `any`-arm question, and
+/// the conservative direction there. Its former SECOND consumer, the
+/// match-seam release gate, is deleted: an `any`-arm approximation cannot
+/// decide a per-arm lifetime, and using it as one suppressed the release on
+/// every path of a mixed constructor+var match (FIXME 0726). The per-arm
+/// answer lives in `match_codegen::scrutinee_lifetime_for_arm`.
 pub(crate) fn match_forwards_scrutinee(arms: &[cranelisp_types::MonoMatchArm]) -> bool {
     arms.iter().any(|arm| match &arm.pattern {
         cranelisp_types::Pattern::Var { name, .. } => body_forwards_binding(&arm.body, name),

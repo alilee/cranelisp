@@ -20,6 +20,65 @@ use super::{
     substitute_type_inline,
 };
 
+/// The scrutinee lifetime plan for ONE arm (S118 slice S3,
+/// `design/backend/transitive-drop-glue.md` §5).
+///
+/// The *ownership* half is recorded ONCE, before any arm is emitted, from
+/// `yields_owned_temporary` — the three-point provenance lattice that is the
+/// ownership authority everywhere else in this crate. It is never re-derived
+/// per pattern kind: constructor and var patterns consume the same answer, and
+/// no spelling test is ownership authority.
+///
+/// The *forward* half is per arm, which is the whole correction. HEAD asked
+/// `arms.iter().any(|a| a forwards)` and suppressed the release for EVERY path,
+/// so a constructor arm that genuinely consumed the temporary leaked it
+/// whenever some sibling var arm forwarded (FIXME 0726's mixed-arm leak).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ScrutineeLifetime {
+    /// The enclosing scope or the callee owns the scrutinee: no wrapper
+    /// release here, and pattern bindings remain borrowed.
+    Borrowed,
+    /// This arm transfers the whole scrutinee out (`[r r]`): the single owner
+    /// travels to the outer consume position, so this path emits no release.
+    OwnedForwarded,
+    /// This match frame owns a temporary and this arm consumes it: exactly one
+    /// release, at the arm's lifetime end, after the arm has protected any
+    /// extracted field that outlives the wrapper.
+    OwnedConsumed,
+}
+
+/// Does `arm` forward the WHOLE scrutinee out as its value? Only a var-pattern
+/// arm can: a constructor arm binds fields, and a wildcard arm binds nothing,
+/// so neither can name the scrutinee at all.
+fn arm_forwards_scrutinee(arm: &MonoMatchArm) -> bool {
+    match &arm.pattern {
+        Pattern::Var { name, .. } => {
+            crate::compiler::fn_compiler::body_forwards_binding(&arm.body, name)
+        }
+        _ => false,
+    }
+}
+
+/// Resolve the per-arm plan from the once-recorded ownership answer.
+///
+/// `cow_retains_reused` is the dec side of the §13.7 COW escape gate: when the
+/// producer emitted the retention inc on the returned pointer, THIS release is
+/// its balancing dec and must fire even on a forwarding arm. It travels with
+/// the release per arm and keeps its polarity — never an independent exemption.
+pub(crate) fn scrutinee_lifetime_for_arm(
+    owned: bool,
+    cow_retains_reused: bool,
+    arm: &MonoMatchArm,
+) -> ScrutineeLifetime {
+    if !owned {
+        return ScrutineeLifetime::Borrowed;
+    }
+    if arm_forwards_scrutinee(arm) && !cow_retains_reused {
+        return ScrutineeLifetime::OwnedForwarded;
+    }
+    ScrutineeLifetime::OwnedConsumed
+}
+
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
 where
     C: cranelisp_types::CodeStore,
@@ -44,6 +103,31 @@ where
         self.tail_arg_protect = false;
         let scrut_val = self.compile_expr(scrutinee)?;
         self.tail_arg_protect = saved_protect;
+
+        // §5 — record the lifetime plan ONCE, before any arm is emitted, so a
+        // reader sees the arms consume one answer instead of two complementary
+        // tests. `yields_owned_temporary` is the ownership authority (the
+        // `Fresh ⊑ OwnedTemporary ⊑ NotOwnedHere` lattice); the COW-retain
+        // question is the dec side of the §13.7 escape gate and is asked here
+        // rather than at each arm.
+        let scrutinee_owned = crate::compiler::fn_compiler::yields_owned_temporary(scrutinee);
+        let cow_retains_reused = self.scrutinee_cow_retains_reused(scrutinee);
+        let scrut_ty = scrutinee.ty().to_type();
+        // §2 — whose reference do this match's pattern bindings ride on? The
+        // frame's own temporary when it owns one, otherwise the live binding
+        // the scrutinee is rooted at (a `let`-bound wrapper), otherwise nobody
+        // reachable from here (a `Borrowed` param). Recorded once, alongside
+        // the lifetime plan, and read only at the tail-jump seam.
+        let scrut_root = if scrutinee_owned {
+            Some(crate::compiler::fn_compiler::BorrowRoot::OwnedTemporary)
+        } else {
+            self.operand_live_binding_root(scrutinee)
+                .map(crate::compiler::fn_compiler::BorrowRoot::Binding)
+        };
+        let scrut_is_heap = matches!(
+            HeapCategory::classify(scrutinee.ty(), Some(self.ctx.symbol_tables)),
+            HeapCategory::AlwaysHeap | HeapCategory::Mixed
+        );
 
         let merge_block = self.builder.create_block();
         self.builder.append_block_param(merge_block, types::I64);
@@ -74,6 +158,16 @@ where
             self.builder.switch_to_block(arm_blocks[i]);
             self.builder.seal_block(arm_blocks[i]);
 
+            // The wrapper release this arm owes, if any. Pushed BEFORE the arm
+            // body is compiled so a tail self-call inside the body discharges
+            // it on the live path (§5 / 0810 Face A); popped and emitted at the
+            // arm's own lifetime end below.
+            let plan = scrutinee_lifetime_for_arm(scrutinee_owned, cow_retains_reused, arm);
+            let owes_release = plan == ScrutineeLifetime::OwnedConsumed && scrut_is_heap;
+            if owes_release {
+                self.push_pending_scrutinee_release(scrut_val, scrut_ty.clone());
+            }
+
             match &arm.pattern {
                 Pattern::Wildcard { .. } => {
                     // Always matches -- compile body and jump to merge. A
@@ -83,6 +177,7 @@ where
                     self.in_tail_position = saved_tail;
                     let body_val = self.compile_expr(&arm.body)?;
                     let body_val = self.maybe_protect_tail_arg_alias(&arm.body, body_val);
+                    self.emit_arm_scrutinee_release(owes_release)?;
                     self.builder.ins().jump(merge_block, &[body_val]);
                 }
                 Pattern::Var { name, .. } => {
@@ -93,15 +188,19 @@ where
                         &arm.body,
                         saved_tail,
                         merge_block,
+                        owes_release,
+                        scrut_root.clone(),
                     )?;
                 }
                 Pattern::Constructor { name, bindings, .. } => {
                     let match_ctx = MatchContext {
                         scrut_val,
-                        scrut_type: Some(scrutinee.ty().to_type()),
+                        scrut_type: Some(scrut_ty.clone()),
                         next_block,
                         merge_block,
                         saved_tail,
+                        scrut_root: scrut_root.clone(),
+                        owes_release,
                     };
                     // `Pattern::Constructor.name` is a syntactic-stage
                     // `SymbolRef` (S70). Its `Display` yields `module/name`
@@ -127,35 +226,42 @@ where
         self.emit_match_panic()?;
 
         // Merge block.
+        //
+        // §5 — there is NO whole-match release here any more. HEAD ran ONE dec
+        // after the merge, gated by the `any arm forwards` approximation, and
+        // that single site could not be right for both a forwarding var arm and
+        // a consuming constructor arm in the same match (0726), could not run
+        // before a tail jump out of an arm (0810 Face A), and double-counted
+        // against the var-arm alias registration (0782). Each consuming arm now
+        // releases the wrapper once, at its own lifetime end.
         self.builder.switch_to_block(merge_block);
         self.builder.seal_block(merge_block);
-
-        // R3 — forwarding-suppresses-dec (0668 §3, W-B4). When this match FORWARDS
-        // its scrutinee OUT (a var-pattern arm `[r r]` returns the bound
-        // scrutinee), the scrutinee temporary is NOT consumed here — its value
-        // passes through to the OUTER consume position / the fn-return protect
-        // (R2). The syntactic temp-dec would free a value that transfers out (cell
-        // H: a fresh `[7 8 9]`; cell F: an alias of a live binding forwarded
-        // through the inner match; cell B-cow: a COW result; cell C-off: the
-        // toggle-off COW copy) — so suppress it. The SOLE exception is a direct
-        // COW scrutinee whose §13.7 escape-inc fired (`scrutinee_cow_retains_reused`
-        // — analysis-ON, live-`Var` source, `escapes != Some(false)`): that inc's
-        // BALANCING dec is exactly this one, so it MUST fire (the direct B-2
-        // analysis-ON twin stays GREEN). A non-forwarding scrutinee (constructor
-        // arms, a var-arm whose body is NOT the scrutinee) is genuinely consumed
-        // and always decs. Structural forwarding predicate ⇒ correct in BOTH
-        // ownership toggles by construction (§2); the escape exception is the dec
-        // side of the SAME escape gate, never a wrong-`Some(false)` workaround (F4).
-        let forwards = crate::compiler::match_forwards_scrutinee(arms);
-        if !(forwards && !self.scrutinee_cow_retains_reused(scrutinee)) {
-            self.dec_temporary_scrutinee(scrutinee, scrut_val)?;
-        }
 
         Ok(self.builder.block_params(merge_block)[0])
     }
 
+    /// Emit (and retire) the wrapper release this arm owes. Called at the arm's
+    /// lifetime end — after the body, after any protective inc on an extracted
+    /// field that escapes, and before the jump to the merge block.
+    ///
+    /// When the arm body ended in a tail self-call this emission lands in the
+    /// dead block after the jump; the live release was already emitted by
+    /// `flush_pending_scrutinee_releases_before_tail_jump`. Either way the arm
+    /// releases the wrapper exactly once on every executed path.
+    fn emit_arm_scrutinee_release(&mut self, owes_release: bool) -> Result<(), CranelispError> {
+        if !owes_release {
+            return Ok(());
+        }
+        let Some((val, ty)) = self.pop_pending_scrutinee_release() else {
+            return Ok(());
+        };
+        self.emit_typed_rc_dec(val, &ty)
+    }
+
     /// Compile a variable-binding pattern arm: bind the scrutinee to a
     /// name, compile the body in a new scope, then jump to the merge block.
+    // codegen threading: +owes_release, +scrut_root (S118 S3 §5/§2).
+    #[allow(clippy::too_many_arguments)]
     fn compile_var_pattern_arm(
         &mut self,
         name: &Symbol,
@@ -164,6 +270,8 @@ where
         body: &MonoExpr,
         saved_tail: bool,
         merge_block: Block,
+        owes_release: bool,
+        scrut_root: Option<crate::compiler::fn_compiler::BorrowRoot>,
     ) -> Result<(), CranelispError> {
         // Bind scrutinee to variable, always matches.
         self.push_scope();
@@ -175,24 +283,29 @@ where
         self.variable_types
             .insert(name.clone(), scrutinee.ty().to_type());
 
-        // P7 fix: Only register the alias in scope_stack for RC cleanup when
-        // this frame OWNS the scrutinee's value. When the scrutinee is a scope
-        // binding — or a join / `let` that merely YIELDS one — its owning scope
-        // decs it, and registering the alias would double-dec: once for the
-        // alias's scope exit, once for the owner's.
+        // **FIXME 0782, resolution (a) — the var-pattern binder BORROWS.**
         //
-        // FIXME 0781: this was `matches!(scrutinee, MonoExpr::Var { .. })` — the
-        // same syntactic shape test as the vec seams, with the same consequence.
-        // `(defn f [v b] (match (if b v v) [xs (vec-get xs 0)]))` aborted 134
-        // under `--link`. Kept an EXACT complement of `dec_temporary_scrutinee`'s
-        // test (registering for cleanup and dec'ing as a temporary are the same
-        // reference released twice).
-        let is_alias = !crate::compiler::fn_compiler::yields_owned_temporary(scrutinee);
-        if !is_alias {
-            self.scope_stack
-                .last_mut()
-                .unwrap_or_else(|| unreachable!("invariant: scope_stack non-empty"))
-                .push(name.clone());
+        // It is a borrow of a value the match frame owns for the arm's
+        // duration, exactly as a constructor pattern's field bindings are, and
+        // it is registered as such: on the frame (so shadowing and last-use
+        // refuse it) and MARKED BORROWED (so scope cleanup never decs it, and
+        // an in-place COW can never mutate a value the wrapper still owns).
+        //
+        // The release owner is the arm's lifetime plan (`owes_release`), for
+        // BOTH pattern kinds. HEAD registered the binder for scope cleanup
+        // whenever the frame owned the scrutinee, while the merge-block dec
+        // fired for the same pointer — two `atomic_rmw sub` on one value,
+        // `--link` exit 134. Resolution (b) (register the alias and suppress
+        // the arm's release) was rejected: it makes the release owner depend on
+        // the PATTERN KIND, which is the per-spelling rule §5 exists to
+        // eliminate.
+        self.scope_stack
+            .last_mut()
+            .unwrap_or_else(|| unreachable!("invariant: scope_stack non-empty"))
+            .push(name.clone());
+        self.mark_borrowed(name);
+        if let Some(root) = scrut_root {
+            self.record_borrow_root(name, root);
         }
 
         self.in_tail_position = saved_tail;
@@ -209,53 +322,9 @@ where
             self.protect_return_value(&skip_var, body_val, body);
         }
         self.pop_scope_with_cleanup(skip_var.as_ref())?;
+        self.emit_arm_scrutinee_release(owes_release)?;
         self.builder.ins().jump(merge_block, &[body_val]);
 
-        Ok(())
-    }
-
-    /// Emit rc_dec for the scrutinee if it is a heap-typed temporary.
-    ///
-    /// A value with an owner elsewhere — a scope binding, or a join / `let`
-    /// that merely YIELDS one — is dec'd by that owner; only a value THIS frame
-    /// owns is released here (`fn_compiler::yields_owned_temporary`, the exact
-    /// complement of `compile_var_pattern_arm`'s `is_alias`).
-    ///
-    /// FIXME 0781: this was `!matches!(scrutinee, MonoExpr::Var { .. })` — the
-    /// node kind standing in for the derived answer, so an `If`/`Match`/`Let`
-    /// yielding a borrowed param was released here as well as by its owner
-    /// (`--link` exit 134).
-    ///
-    /// ADT field cleanup is done inside the dealloc path (RC=0) via
-    /// `emit_rc_dec_with_inline_drop_glue`, not unconditionally.
-    /// This prevents double-free when fields are borrowed by pattern bindings.
-    fn dec_temporary_scrutinee(
-        &mut self,
-        scrutinee: &MonoExpr,
-        scrut_val: Value,
-    ) -> Result<(), CranelispError> {
-        let is_temp = crate::compiler::fn_compiler::yields_owned_temporary(scrutinee);
-        if is_temp {
-            let scrut_ty = scrutinee.ty().to_type();
-            let category = HeapCategory::classify(scrutinee.ty(), Some(self.ctx.symbol_tables));
-            if matches!(category, HeapCategory::AlwaysHeap | HeapCategory::Mixed) {
-                // Vec-typed scrutinee: route through vec_drop so element
-                // RCs and the data buffer are released on rc=0.
-                if let Some(elem_ty) = crate::compiler::vec_codegen::vec_element_type(&scrut_ty) {
-                    let elem_ty = elem_ty.clone();
-                    let span = cranelisp_types::Span::new(0, 0);
-                    self.emit_vec_aware_rc_dec(scrut_val, &elem_ty, span, RcAtomicity::Atomic)?;
-                    return Ok(());
-                }
-                let needs_guard = matches!(category, HeapCategory::Mixed);
-                self.emit_rc_dec_with_inline_drop_glue(
-                    scrut_val,
-                    &scrut_ty,
-                    self.ctx.dealloc_func_id,
-                    needs_guard,
-                )?;
-            }
-        }
         Ok(())
     }
 
@@ -406,6 +475,7 @@ where
         self.builder.seal_block(body_block);
         self.in_tail_position = match_ctx.saved_tail;
         let body_val = self.compile_expr(body)?;
+        self.emit_arm_scrutinee_release(match_ctx.owes_release)?;
         self.builder.ins().jump(match_ctx.merge_block, &[body_val]);
 
         Ok(())
@@ -446,7 +516,13 @@ where
         let field_types = self.concrete_field_types(resolved_ctor, match_ctx);
 
         self.push_scope();
-        self.bind_data_pattern_fields(is_value, bindings, &field_types, match_ctx.scrut_val);
+        self.bind_data_pattern_fields(
+            is_value,
+            bindings,
+            &field_types,
+            match_ctx.scrut_val,
+            match_ctx.scrut_root.clone(),
+        );
 
         self.in_tail_position = match_ctx.saved_tail;
         let skip_var = Self::return_var_in_scope(body, self.scope_stack.last());
@@ -499,6 +575,12 @@ where
         }
 
         self.pop_scope_with_cleanup(skip_var.as_ref())?;
+        // §2 — protect, THEN tear down. Every protective inc on an extracted
+        // field that outlives the wrapper (the borrowed-return auto-upgrade
+        // above, the tail-arg alias protect, `protect_return_value`) has been
+        // emitted by this point, so the wrapper's glue can discharge its own
+        // field reference safely.
+        self.emit_arm_scrutinee_release(match_ctx.owes_release)?;
         self.builder.ins().jump(match_ctx.merge_block, &[body_val]);
 
         Ok(())
@@ -571,6 +653,7 @@ where
         bindings: &[Symbol],
         field_types: &[cranelisp_types::Type],
         scrut_val: Value,
+        scrut_root: Option<crate::compiler::fn_compiler::BorrowRoot>,
     ) {
         for (i, binding_name) in bindings.iter().enumerate() {
             // R5 (§7.1): a value-flattened scrutinee IS its single payload word,
@@ -599,6 +682,12 @@ where
                     self.variable_types.insert(binding_name.clone(), ft.clone());
                     // Mark as borrowed: skip scope-exit dec (owner handles cleanup).
                     self.mark_borrowed(binding_name);
+                    // S118 slice S3 (§2): remember WHOSE reference this view
+                    // rides on, so an escape into a tail call can be upgraded
+                    // exactly when that owner is released at the jump.
+                    if let Some(root) = scrut_root.clone() {
+                        self.record_borrow_root(binding_name, root);
+                    }
                 }
             }
 
@@ -746,6 +835,10 @@ where
 /// kind) and its discriminating control.
 #[cfg(test)]
 mod scrutinee_ownership_tests;
+
+/// S118 slice S3 — the pure per-arm scrutinee lifetime plan (§5).
+#[cfg(test)]
+mod arm_lifetime_plan_tests;
 
 #[cfg(test)]
 mod tests {

@@ -60,6 +60,42 @@ fn clif_of(body: Expr, params: Vec<(Symbol, Option<cranelisp_types::TypeExpr>)>)
     )
 }
 
+/// Count the canonical drop-glue calls in a rendered CLIF body.
+///
+/// Canonical glue has the release ABI `(i64) -> ()` — one heap word in, nothing
+/// out — so its signature is unmistakable in the CLIF preamble
+/// (`sigN = (i64) system_v`), and every `fnM` declared against such a sig is a
+/// release. This counts calls to those, which is the "exactly one release per
+/// consuming arm" instrument §7.3 asks for. (`runtime/dealloc` shares the ABI
+/// but is only reached from INSIDE a glue body — never emitted into a user body
+/// once the migration is complete.)
+fn release_abi_calls(clif: &str) -> usize {
+    let release_sigs: Vec<&str> = clif
+        .lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            let (name, rest) = l.split_once(" = ")?;
+            (name.starts_with("sig") && rest == "(i64) system_v").then_some(name)
+        })
+        .collect();
+    let release_fns: Vec<&str> = clif
+        .lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            let (name, rest) = l.split_once(" = ")?;
+            let sig = rest.rsplit(' ').next()?;
+            (name.starts_with("fn") && release_sigs.contains(&sig)).then_some(name)
+        })
+        .collect();
+    clif.lines()
+        .filter(|l| {
+            release_fns
+                .iter()
+                .any(|f| l.contains(&format!("call {f}(")))
+        })
+        .count()
+}
+
 fn vec_ty() -> Type {
     Type::ADT(
         cranelisp_types::FQTypeName::new(
@@ -132,6 +168,24 @@ fn match_reading_scrutinee(scrutinee: Expr) -> Expr {
     }
 }
 
+/// `(match <scrutinee> [xs xs])` — a var arm that FORWARDS the whole scrutinee.
+fn match_forwarding_scrutinee(scrutinee: Expr) -> Expr {
+    Expr::Match {
+        scrutinee: Box::new(scrutinee),
+        arms: vec![MatchArm {
+            pattern: Pattern::Var {
+                name: Symbol::from("xs"),
+                span: Span::SYNTHETIC,
+            },
+            body: var("xs", vec_ty()),
+            span: Span::SYNTHETIC,
+        }],
+        span: Span::SYNTHETIC,
+        inferred_type: Some(Box::new(vec_ty())),
+        compiler_generated: false,
+    }
+}
+
 /// `(if b v v)` over a borrowed `(Vec Int)` param.
 fn if_joined_param() -> Expr {
     Expr::If {
@@ -165,24 +219,48 @@ fn if_joined_borrowed_param_scrutinee_is_not_released_neg() {
     );
 }
 
-// spec: spec/12-runtime.md §12.1 / FIXME 0781 — the DISCRIMINATING CONTROL
-// (METHOD §2.2 "only a control confirms a mechanism"): the same match over a
-// FRESH vec literal IS this frame's temporary, and its release must survive the
-// narrowing. Without this cell the negative above would also pass if the
-// release had simply been deleted.
+// spec: spec/12-runtime.md §12.1 / FIXME 0781 + 0782 — the DISCRIMINATING
+// CONTROL (METHOD §2.2 "only a control confirms a mechanism"): the same match
+// over a FRESH vec literal IS this frame's temporary, and its release must
+// survive the narrowing. Without this cell the negative above would also pass
+// if the release had simply been deleted.
 //
-// (This shape has a separate, PRE-EXISTING over-release — the var-pattern arm
-// registers the alias for scope cleanup while the merge-block consume also
-// decs — measured at HEAD and unchanged by this change-set; see FIXME 0782.
-// The assertion here is deliberately "at least one release", so it pins the
-// narrowing without freezing that unrelated count.)
+// S118 slice S3 supersedes the deliberately loose S115 "at least one release"
+// pin with a COUNT (`transitive-drop-glue.md` §7.3): the release-exactly-once
+// face is precisely what 0782 got wrong — HEAD emitted the merge-block dec AND
+// registered the var binder for scope cleanup, two `atomic_rmw sub` on one
+// value. An exact-balance instrument is blind to a double release of a value
+// that was going to be freed anyway, so the count lives here in the unit tier.
+//
+// The release is now a `call` to the scrutinee type's canonical drop glue, so
+// the count is of release-ABI calls rather than of inline atomics.
 #[test]
-fn fresh_vec_literal_scrutinee_still_releases() {
+fn consuming_arm_releases_the_owned_scrutinee_exactly_once() {
     let clif = clif_of(match_reading_scrutinee(vec_lit()), vec![]);
-    assert!(
-        clif.contains("atomic_rmw.i64 sub"),
-        "a FRESH vec-literal scrutinee is an owned temporary — its release must \
-         still be emitted, or the 0781 narrowing has become a leak. CLIF:\n{clif}"
+    let releases = release_abi_calls(&clif);
+    assert_eq!(
+        releases, 1,
+        "a FRESH vec-literal scrutinee is an owned temporary consumed by its \
+         arm: EXACTLY one release, at the arm's lifetime end. Found {releases}. \
+         0 = the 0781 narrowing became a leak; 2 = the 0782 double-release is \
+         back. CLIF:\n{clif}"
+    );
+}
+
+// spec: spec/12-runtime.md §12.1 / FIXME 0782 — the FORWARDING polarity of the
+// same seam, and the reason the count above is a count. A var arm that forwards
+// the whole scrutinee out (`[xs xs]`) carries the one owner to the outer
+// consume position, so this path emits NO release. The pair discriminates
+// "released once at the right place" from "released whenever".
+#[test]
+fn forwarding_var_arm_over_an_owned_temporary_emits_no_release_neg() {
+    let clif = clif_of(match_forwarding_scrutinee(vec_lit()), vec![]);
+    let releases = release_abi_calls(&clif);
+    assert_eq!(
+        releases, 0,
+        "a var arm that forwards the whole scrutinee transfers the single \
+         owner out; releasing it here frees a value that travels. Found \
+         {releases}. CLIF:\n{clif}"
     );
 }
 

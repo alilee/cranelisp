@@ -2131,6 +2131,10 @@ where
         // (design/backend/ownership-codegen.md §13.3 — the TCO-flush skip-
         // predicate correctness contract; the F1 UAF cure.)
         let transfer_skip = tail_transfer_skip(args);
+        // S118 slice S3 — protect BEFORE any teardown below: a borrowed pattern
+        // view escaping into the next iteration must own a reference by the
+        // time its owner is released (§2).
+        self.protect_escaping_borrows_before_tail_jump(args, &transfer_skip);
         self.flush_let_scopes_before_tail_jump(&transfer_skip)?;
         // MS-P8 (FIXME 0688 verdict a) — release the superseded heap LOOP-PARAM
         // slots too (the sibling seam the let flush does not cover): the jump
@@ -2138,6 +2142,11 @@ where
         // reference (the conj/assoc persistent-op leak). Same `transfer_skip`
         // move-contract; in-place COW params are excluded inside.
         self.flush_superseded_heap_params_before_tail_jump(args, &transfer_skip)?;
+        // S118 slice S3 — the third flushed seam: any match wrapper this frame
+        // owns for an arm still being compiled. The end-of-arm release would
+        // land in the dead block after this jump (FIXME 0810 Face A, one leaked
+        // wrapper per iteration). Runs last, after every protective inc above.
+        self.flush_pending_scrutinee_releases_before_tail_jump()?;
 
         // Jump to loop header with new argument values.
         let loop_block = self.tail_loop_block.unwrap_or_else(|| {
