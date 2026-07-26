@@ -17,7 +17,7 @@ use cranelisp_types::{
 use crate::heap::{self, HeapCategory, HeapClosure};
 use crate::primitives_inline;
 
-use super::{CaptureRelease, FnCompiler, emit_capture_inc_into};
+use super::{CaptureRelease, CaptureReleaseKind, FnCompiler, emit_capture_inc_into};
 
 /// If `fn_type` is a `Fn` whose first parameter is `(Vec t)`, return `t`.
 ///
@@ -1084,14 +1084,29 @@ where
         span: Span,
     ) -> Result<Option<cranelift_module::FuncId>, CranelispError> {
         // Collect indices of heap-typed captures — the capture layout specific.
-        let mut heap_indices: Vec<(usize, CaptureRelease)> = arg_categories
-            .iter()
-            .enumerate()
-            .filter_map(|(i, cat)| {
-                let is_fn = matches!(arg_types.get(i), Some(ConcreteType::Fn(..)));
-                CaptureRelease::classify(*cat, is_fn).map(|release| (i, release))
-            })
-            .collect();
+        // S118 slice S4 (§7.4 / FIXME 0796): the auto-curry env is a
+        // compiler-SYNTHESISED capture set reaching the identical seam, so it
+        // requests the same canonical glue the explicit-`fn` mirror does. The
+        // two differ only in who supplies the capture list — which is why
+        // "fix the `fn` path" was never a scoping option.
+        let mut heap_indices: Vec<(usize, CaptureRelease)> = Vec::new();
+        for (i, cat) in arg_categories.iter().enumerate() {
+            let is_fn = matches!(arg_types.get(i), Some(ConcreteType::Fn(..)));
+            let Some(kind) = CaptureReleaseKind::classify(*cat, is_fn) else {
+                continue;
+            };
+            match kind {
+                CaptureReleaseKind::ClosureBox => {
+                    heap_indices.push((i, CaptureRelease::ClosureBox));
+                }
+                CaptureReleaseKind::Glue => {
+                    let Some(ty) = arg_types.get(i) else { continue };
+                    if let Some(id) = self.request_capture_glue(&ty.to_type())? {
+                        heap_indices.push((i, CaptureRelease::Glue(id)));
+                    }
+                }
+            }
+        }
         if let Some(slot) = target_closure_slot {
             // A closure BY CONSTRUCTION — released through its embedded drop
             // glue, or its own captures are stranded when the curry env is the

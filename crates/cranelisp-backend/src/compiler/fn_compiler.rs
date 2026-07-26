@@ -1367,6 +1367,24 @@ where
         self.emit_heap_binding_decs(&to_dec)
     }
 
+    /// S118 slice S4 (§7.4) — request the canonical drop glue for a capture
+    /// slot's type, from the ENCLOSING compiler, before the environment glue
+    /// body's `FunctionBuilder` is created. The body builds in its own
+    /// Cranelift context and so cannot reach the registry itself; it emits the
+    /// resolved call.
+    ///
+    /// `Ok(None)` ⇒ the slot owns nothing heap and is not in the dec set.
+    pub(crate) fn request_capture_glue(
+        &mut self,
+        ty: &Type,
+    ) -> Result<Option<cranelift_module::FuncId>, CranelispError> {
+        let concrete = cranelisp_types::ConcreteType::from_type(ty).map_err(|_| {
+            crate::compiler::rc_emission::release_site_type_error(self.current_fn_name.as_ref(), ty)
+        })?;
+        self.glue
+            .request_if_owning(self.module, self.ctx.symbol_tables, concrete)
+    }
+
     /// S118 slice S3 — record that the borrowed pattern binding `name` is a view
     /// into `root`.
     pub(crate) fn record_borrow_root(&mut self, name: &Symbol, root: BorrowRoot) {

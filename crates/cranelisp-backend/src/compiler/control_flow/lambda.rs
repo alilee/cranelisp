@@ -12,7 +12,9 @@ use cranelisp_types::{CranelispError, ErrorLocation, MonoExpr, Span, Symbol, Typ
 
 use crate::heap::{self, HeapClosure};
 
-use super::{CaptureRelease, FnCompiler, emit_capture_dec_into, find_free_vars};
+use super::{
+    CaptureRelease, CaptureReleaseKind, FnCompiler, emit_capture_dec_into, find_free_vars,
+};
 use crate::compiler::signature_heap_category;
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
@@ -200,19 +202,31 @@ where
         // decides both membership and mechanism (`CaptureRelease::classify`):
         // a `Fn`-typed capture is a closure box that owns its own captures and
         // must be released through its embedded drop glue (FIXME 0749).
-        let heap_captures: Vec<(usize, CaptureRelease)> = captures
-            .iter()
-            .enumerate()
-            .filter_map(|(i, cap_name)| {
-                let ty = self.variable_types.get(cap_name)?;
-                let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
-                let release = CaptureRelease::classify(
-                    category,
-                    matches!(ty, cranelisp_types::Type::Fn(..)),
-                )?;
-                Some((i, release))
-            })
-            .collect();
+        // S118 slice S4 (§7.4): the glue BODY builds in a separate Cranelift
+        // context, so every owning slot's canonical glue is requested HERE,
+        // before that builder exists, and the body emits only the call.
+        let mut heap_captures: Vec<(usize, CaptureRelease)> = Vec::new();
+        for (i, cap_name) in captures.iter().enumerate() {
+            let Some(ty) = self.variable_types.get(cap_name).cloned() else {
+                continue;
+            };
+            let category = signature_heap_category(&ty, Some(self.ctx.symbol_tables));
+            let Some(kind) =
+                CaptureReleaseKind::classify(category, matches!(ty, cranelisp_types::Type::Fn(..)))
+            else {
+                continue;
+            };
+            match kind {
+                CaptureReleaseKind::ClosureBox => {
+                    heap_captures.push((i, CaptureRelease::ClosureBox));
+                }
+                CaptureReleaseKind::Glue => {
+                    if let Some(id) = self.request_capture_glue(&ty)? {
+                        heap_captures.push((i, CaptureRelease::Glue(id)));
+                    }
+                }
+            }
+        }
 
         // Naming identity (FIXME 0350): span-derived AND mono-discriminated via
         // the SAME `inner_fn_discriminator()` scheme as the lambda body name, so

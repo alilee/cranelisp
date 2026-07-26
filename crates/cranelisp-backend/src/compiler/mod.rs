@@ -38,7 +38,7 @@ pub(crate) mod vec_codegen;
 mod context;
 mod extern_call;
 mod fn_compiler;
-mod rc_emission;
+pub(crate) mod rc_emission;
 mod resolution;
 
 use cranelisp_types::Type;

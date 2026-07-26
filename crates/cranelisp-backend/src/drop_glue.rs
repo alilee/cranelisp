@@ -13,7 +13,7 @@ use cranelisp_types::{
     drop_glue_symbol_name, member_key,
 };
 
-use crate::heap::{self, HeapAdt, HeapCategory, HeapClosure};
+use crate::heap::{self, HeapAdt, HeapCategory};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DefinitionState {
@@ -190,6 +190,19 @@ impl DropGlueRegistry {
                     child_ptr,
                 );
             }
+            // D8 (S118 slice S4) — a closure's free path already has exactly
+            // one owner: `rc_emission::emit_closure_dec_into`. The registry's
+            // own arm duplicated it (dec, rc→0 fence, load `DROP_GLUE_PTR`,
+            // call it when non-zero, dealloc), so it delegates instead. Zero
+            // behaviour delta; **Single source of truth**.
+            GlueShape::Closure => {
+                crate::compiler::rc_emission::emit_closure_dec_into(
+                    &mut builder,
+                    module,
+                    value,
+                    self.dealloc_id,
+                );
+            }
             other => self.emit_outer_drop(module, &mut builder, value, &other, &child_ids)?,
         }
         builder.ins().return_(&[]);
@@ -284,27 +297,12 @@ impl DropGlueRegistry {
 
         match shape {
             GlueShape::String => {}
-            GlueShape::Closure => {
-                let ptr = heap::heap_load(builder, value, HeapClosure::DROP_GLUE_PTR_OFFSET);
-                let zero = builder.ins().iconst(types::I64, 0);
-                let has = builder.ins().icmp(IntCC::NotEqual, ptr, zero);
-                let call = builder.create_block();
-                let after = builder.create_block();
-                builder.ins().brif(has, call, &[], after, &[]);
-                builder.switch_to_block(call);
-                builder.seal_block(call);
-                let mut sig = Signature::new(module.isa().default_call_conv());
-                sig.params.push(AbiParam::new(types::I64));
-                let sr = builder.import_signature(sig);
-                builder.ins().call_indirect(sr, ptr, &[value]);
-                builder.ins().jump(after, &[]);
-                builder.switch_to_block(after);
-                builder.seal_block(after);
-            }
             GlueShape::Adt(ctors) => {
                 self.emit_adt_fields(module, builder, value, ctors, child_ids)?
             }
-            GlueShape::Vec(_) => unreachable!(),
+            // Both handled before `emit_outer_drop`: `Vec` by the rc-gated
+            // `vec_drop` seam, `Closure` by `emit_closure_dec_into` (D8).
+            GlueShape::Closure | GlueShape::Vec(_) => unreachable!(),
         }
         let dealloc = module.declare_func_in_func(self.dealloc_id, builder.func);
         builder.ins().call(dealloc, &[value]);
