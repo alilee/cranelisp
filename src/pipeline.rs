@@ -69,11 +69,16 @@ pub fn resolve_module_file(
 /// `Drop` when the entry is later replaced — `int.md` §5.3.)
 pub fn execute_compiled_expr(
     display: Option<&cranelisp_types::DisplayInfo>,
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    shared: &crate::session_v4::SharedState,
     current_module: &ModuleFullPath,
 ) -> Result<ExprOutcome, CranelispError> {
-    // Read the GOT address + inferred type for the compiled `__expr` entry.
-    let (got_addr, expr_ty) = {
+    let symbol_tables = &shared.symbol_tables;
+    // Read the GOT address + inferred type + code lifetime owner for the
+    // compiled `__expr` entry, in ONE read (`design/int/result-owner.md` §4.3
+    // — the result owner's release target must pair with the retention owner
+    // of the code that produced the result, and the type must come from the
+    // same read that produced the pointer).
+    let (got_addr, expr_ty, code_owner, codegen_result_ty) = {
         let table =
             symbol_tables
                 .get(current_module)
@@ -95,7 +100,10 @@ pub fn execute_compiled_expr(
                 location: ErrorLocation::from_span(Span::SYNTHETIC),
             });
         };
-        let cranelisp_types::ModuleEntry::Def { ast, .. } = entry else {
+        // The release key backend itself keyed on, read in the SAME pass
+        // (`design/int/result-owner.md` §4.3).
+        let codegen_result_ty = entry.codegen_view().map(|view| view.body.ty().clone());
+        let cranelisp_types::ModuleEntry::Def { ast, code, .. } = entry else {
             return Err(CranelispError::CodegenError {
                 message: "`__expr` entry is not a Def".into(),
                 location: ErrorLocation::from_span(Span::SYNTHETIC),
@@ -103,7 +111,12 @@ pub fn execute_compiled_expr(
         };
         // `ast` is now `DefnVariant` (S69 Submission 35); `body` is a field.
         let inferred = ast.as_ref().and_then(|d| d.body.inferred_type().cloned());
-        (table.got.load_slot(slot), inferred)
+        (
+            table.got.load_slot(slot),
+            inferred,
+            code.clone(),
+            codegen_result_ty,
+        )
     };
 
     if got_addr.is_null() {
@@ -145,7 +158,29 @@ pub fn execute_compiled_expr(
     // the IO drive the program driver performs internally.
     let outcome = cranelisp_intrinsics::panic::cranelisp_run_program(got_addr, ty.is_io());
 
-    program_outcome_to_result(outcome, ty)
+    // The driver boundary: `IO a` is unwrapped exactly once here, and the clean
+    // arm's word crosses into the ONE program-result owner (FIXME 0745). The
+    // owner stays armed across the `EvalResult::Val` boundary and is released
+    // by the REPL driver AFTER the turn's `StyledDoc` is complete (§4.2).
+    match program_outcome_to_result(outcome, ty)? {
+        DriverOutcome::Trap { message } => Ok(ExprOutcome::Trap { message }),
+        DriverOutcome::Value { value, ty } => {
+            let resolver = crate::result_owner::SessionGlueResolver::for_result_code(
+                code_owner.as_ref(),
+                &shared.fresh_jit_drop_glues,
+            );
+            Ok(ExprOutcome::Value(
+                crate::result_owner::OwnedProgramResult::new(
+                    value,
+                    ty,
+                    codegen_result_ty,
+                    current_module,
+                    symbol_tables,
+                    &resolver,
+                )?,
+            ))
+        }
+    }
 }
 
 /// The outcome of running a compiled `__expr`: a computed value or a
@@ -161,10 +196,14 @@ pub fn execute_compiled_expr(
 /// (s102-defect-wave.md §7.2 — the recommended int-side cut, no
 /// `cranelisp-types` change). Genuine compiler/platform faults (the dispatch
 /// funnel) stay `Err(CranelispError)`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub enum ExprOutcome {
-    /// A computed value with its (IO-unwrapped) type.
-    Value { value: i64, ty: Type },
+    /// A computed value, owned end-to-end
+    /// (`design/int/result-owner.md` §1) — observed by the REPL formatter,
+    /// then released exactly once. NOT a copyable `(value, ty)` tuple: the
+    /// owned word travels with its release target and that target's retention
+    /// guard, so no downstream carrier can hold a second copy.
+    Value(crate::result_owner::OwnedProgramResult),
     /// A runtime trap. `message` is the §18.5 payload — the trap body with the
     /// intrinsics-internal `runtime panic: ` slot prefix already normalized
     /// away — WITHOUT the `runtime error: ` category prefix (the printer adds
@@ -172,8 +211,26 @@ pub enum ExprOutcome {
     Trap { message: String },
 }
 
+/// The **driver boundary** outcome: what `cranelisp_run_program`'s
+/// `ProgramOutcome` means once the error slots are drained and `IO a` has been
+/// unwrapped to `a`.
+///
+/// Split from [`ExprOutcome`] (`design/int/result-owner.md` §2's state
+/// machine) so the translation stays a pure, unit-testable function while
+/// ownership of the clean word crosses into the result owner exactly once,
+/// immediately above it. The single `IO a` → `a` unwrap lives here — the owner
+/// constructor REFUSES an `IO a` type, so there is no second place it can
+/// happen.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum DriverOutcome {
+    /// A computed value with its (IO-unwrapped) type.
+    Value { value: i64, ty: Type },
+    /// A runtime trap; see [`ExprOutcome::Trap`].
+    Trap { message: String },
+}
+
 /// Translate a [`cranelisp_intrinsics::panic::ProgramOutcome`] into
-/// `execute_compiled_expr`'s [`ExprOutcome`] / `Result` contract. Split out
+/// `execute_compiled_expr`'s [`DriverOutcome`] / `Result` contract. Split out
 /// so this translation is unit-testable without a live JIT/symbol table —
 /// this is the exact seam where the pre-fix REPL path (FIXME 0499) silently
 /// dropped a runtime error raised DURING the IO drive: the former code never
@@ -181,7 +238,7 @@ pub enum ExprOutcome {
 fn program_outcome_to_result(
     outcome: cranelisp_intrinsics::panic::ProgramOutcome,
     ty: Type,
-) -> Result<ExprOutcome, CranelispError> {
+) -> Result<DriverOutcome, CranelispError> {
     match outcome.error_kind {
         // 1 = runtime error: the runtime-error slot is SET (drain for text).
         // Reached whether the panic occurred pre-IO (during the bare
@@ -202,7 +259,7 @@ fn program_outcome_to_result(
                 .strip_prefix("runtime panic: ")
                 .map(str::to_string)
                 .unwrap_or(raw);
-            Ok(ExprOutcome::Trap { message })
+            Ok(DriverOutcome::Trap { message })
         }
         // 2 = platform-dispatch fault (FIXME 0327, the dispatch funnel). This
         // IS a genuine compiler/platform fault (a structured `PlatformError`),
@@ -225,7 +282,7 @@ fn program_outcome_to_result(
             } else {
                 ty
             };
-            Ok(ExprOutcome::Value {
+            Ok(DriverOutcome::Value {
                 value: outcome.exit_code,
                 ty: result_ty,
             })
@@ -331,7 +388,7 @@ mod tests {
         let got = program_outcome_to_result(outcome, Type::Int).unwrap();
         assert_eq!(
             got,
-            ExprOutcome::Value {
+            DriverOutcome::Value {
                 value: 42,
                 ty: Type::Int
             }
@@ -351,7 +408,7 @@ mod tests {
         let got = program_outcome_to_result(outcome, io_int_type()).unwrap();
         assert_eq!(
             got,
-            ExprOutcome::Value {
+            DriverOutcome::Value {
                 value: 7,
                 ty: Type::Int
             },
@@ -379,7 +436,7 @@ mod tests {
             program_outcome_to_result(outcome, io_int_type()).expect("a trap is Ok(Trap), not Err");
         assert_eq!(
             got,
-            ExprOutcome::Trap {
+            DriverOutcome::Trap {
                 // the `runtime panic: ` prefix is stripped — the printer adds
                 // the §18.5 `runtime error: ` category prefix.
                 message: "select over empty collection".to_string(),
@@ -402,7 +459,7 @@ mod tests {
         let got = program_outcome_to_result(outcome, Type::Int).unwrap();
         assert_eq!(
             got,
-            ExprOutcome::Trap {
+            DriverOutcome::Trap {
                 message: "runtime panic".to_string()
             }
         );

@@ -44,6 +44,9 @@ struct MainEntryRead {
     code_ptr: *const u8,
     result_type: Type,
     code_owner: Option<Code>,
+    /// `main`'s `codegen_view` body type — the release key backend itself
+    /// computed its result root from (`design/int/result-owner.md` §4.3).
+    codegen_result_ty: Option<cranelisp_types::ConcreteType>,
 }
 
 /// Pillar-3 (S91): bounded grace period at shutdown for the in-flight
@@ -1656,6 +1659,7 @@ impl CompilerSession {
                 crate::result_owner::OwnedProgramResult::new(
                     outcome.exit_code,
                     result_type,
+                    main.codegen_result_ty,
                     &ModuleFullPath::from(module_name),
                     &self.shared.symbol_tables,
                     &resolver,
@@ -1717,6 +1721,7 @@ impl CompilerSession {
             code_ptr,
             result_type: *ret.clone(),
             code_owner: Some(code_owner.clone()),
+            codegen_result_ty: entry.codegen_view().map(|view| view.body.ty().clone()),
         })
     }
 

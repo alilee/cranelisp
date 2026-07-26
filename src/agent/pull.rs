@@ -469,8 +469,12 @@ impl CompilerSession {
     ) -> ToolCallResult {
         match self.process_commands(clean, stdout) {
             CommandResult::Compile(src) => match self.eval(&src) {
-                Ok(Some(result)) => {
+                Ok(Some(mut result)) => {
                     let text = self.format_eval_result(&result);
+                    // Display complete — release the owning result exactly
+                    // once (`design/int/result-owner.md` §4.2). The agent's
+                    // submit path is a display boundary like the prompt's.
+                    result.release_program_result();
                     let _ = writeln!(stdout, "{text}");
                     // Genuine definitions only (F6) — the P8 mirror of the
                     // main.rs regen gate: a display-only bare-lookup Def must

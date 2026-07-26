@@ -422,12 +422,15 @@ fn run_repl(
             // The parser should reject an unbalanced form; if it
             // somehow parses, surface any result for symmetry with the
             // in-loop path.
-            Ok(Some(result)) => {
+            Ok(Some(mut result)) => {
                 let mut text = s.format_eval_result(&result);
                 if let Some(report) = s.take_cascade_report() {
                     text.push('\n');
                     text.push_str(&report);
                 }
+                // The turn's display is complete — release the owning result
+                // exactly once (`design/int/result-owner.md` §4.2).
+                result.release_program_result();
                 s.pretty_print(&text, &mut stdout);
             }
             Ok(None) => {}
@@ -723,7 +726,7 @@ fn handle_compile_result(
 
     let t0 = Instant::now();
     match s.eval(src) {
-        Ok(Some(result)) => {
+        Ok(Some(mut result)) => {
             let t1 = Instant::now();
             let mut text = s.format_eval_result(&result);
             // S101 (repl/spec.md §18.3): the cascade
@@ -732,6 +735,12 @@ fn handle_compile_result(
                 text.push('\n');
                 text.push_str(&report);
             }
+            // The turn's value feedback is complete (the §1.3 confirmation
+            // plus any §18.3 cascade report). Release the owning result
+            // exactly once, before control returns to the prompt
+            // (`design/int/result-owner.md` §4.2). Inert for scalar results
+            // and for definition turns.
+            result.release_program_result();
             let t2 = Instant::now();
             *compile_ms = (t1 - t0).as_millis() as u64;
             *eval_ms = (t2 - t1).as_millis() as u64;

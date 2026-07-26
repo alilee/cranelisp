@@ -139,6 +139,7 @@ impl OwnedProgramResult {
     pub(crate) fn new<C, L>(
         value: i64,
         ty: Type,
+        codegen_result_ty: Option<ConcreteType>,
         module: &ModuleFullPath,
         symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
         resolver: &dyn ResultGlueResolver,
@@ -154,14 +155,8 @@ impl OwnedProgramResult {
                  result glue is selected for the INNER type, never for `IO a`"
             )));
         }
-        // (1) narrow once. A non-concrete type at a typed exit is an invariant
-        // failure — never permission to shallow-dec or silently leak.
-        let concrete = ConcreteType::from_type(&ty).map_err(|why| {
-            Self::invariant(format!(
-                "program result type `{ty}` is not concrete at the typed exit of module \
-                 `{module}` ({why:?}); the result cannot be released type-directedly"
-            ))
-        })?;
+        // (1) the release key.
+        let concrete = release_key(codegen_result_ty, &ty, module)?;
         // (2) classify with the SAME predicate backend's `request_if_owning`
         // uses (§1.1). Absence from the artifact projection is ambiguous on its
         // face, so int must ask this question BEFORE it demands a key.
@@ -176,6 +171,18 @@ impl OwnedProgramResult {
             }
         };
         Ok(Self { value, ty, target })
+    }
+
+    /// An INERT owner over a plain word — no release target, so finalization
+    /// is a typed no-op. Test-only: production owners are always built through
+    /// [`Self::new`], which classifies before it decides.
+    #[cfg(test)]
+    pub(crate) fn inert(value: i64, ty: Type) -> Self {
+        Self {
+            value,
+            ty,
+            target: None,
+        }
     }
 
     /// Borrow the owned word for observation.
@@ -279,6 +286,65 @@ impl std::fmt::Debug for OwnedProgramResult {
             .field("ty", &self.ty)
             .field("target", &self.target)
             .finish()
+    }
+}
+
+/// The **release key** for a program result — the `ConcreteType` int demands
+/// glue under.
+///
+/// It comes, in order of authority:
+///
+/// 1. from the result-producing entry's own `codegen_view` body type — the
+///    SAME `ConcreteType` backend computed its result roots from
+///    (`compile_to_module`'s `result_roots`, which strips the `IO` head of an
+///    `IO a` body exactly as this does). Taking the key from the same read
+///    that produced the code pointer is the §4.3 rule, and it makes int's
+///    classification agree with backend's `request_if_owning` **by
+///    construction** instead of by a second derivation (§4.1 — never re-derive
+///    backend's type encoding);
+/// 2. failing that, by narrowing the observed static `Type`. A narrowing
+///    failure here is the §5 hard invariant error: never a shallow release,
+///    never a silent leak.
+///
+/// **Why (1) is not merely an optimisation** (S118 W4, `/dev`): the design's
+/// §1.1/§5 assumed every clean typed-exit result type is concrete. It is not —
+/// `repl/spec.md` §1.5's empty-`Vec` display (`[]` ⇒ `(Vec t1)`) and a bare
+/// polymorphic nullary constructor (`None` ⇒ `(Option t2)`) are spec-required
+/// REPL displays whose observed `Type` carries a residual var. Backend already
+/// resolves those through `MonoExpr::lenient_from_expr`, and int must reach the
+/// same verdict backend reached, not a second one. FIXME 0892 carries this
+/// back to `/design`.
+fn release_key(
+    codegen_result_ty: Option<ConcreteType>,
+    ty: &Type,
+    module: &ModuleFullPath,
+) -> Result<ConcreteType, CranelispError> {
+    if let Some(codegen_ty) = codegen_result_ty {
+        return Ok(strip_io_head(codegen_ty));
+    }
+    ConcreteType::from_type(ty).map_err(|why| {
+        OwnedProgramResult::invariant(format!(
+            "program result type `{ty}` is not concrete at the typed exit of module \
+             `{module}` ({why:?}), and the result-producing entry published no codegen \
+             view to key on; the result cannot be released type-directedly"
+        ))
+    })
+}
+
+/// `IO a` ⇒ `a`; anything else unchanged. The single int-side statement of the
+/// result-root rule backend applies at `compile_to_module` when it pre-requests
+/// glue for every concrete owning result root "including the inner `a` of
+/// `IO a`" (§3.1). Run, REPL and the linked stub all key through here.
+fn strip_io_head(ty: ConcreteType) -> ConcreteType {
+    match ty {
+        ConcreteType::ADT(ref name, ref args)
+            if name.module.as_ref() == "primitives"
+                && name.name.as_ref() == "IO"
+                && !args.is_empty() =>
+        {
+            args[0].clone()
+        }
+        other => other,
     }
 }
 
@@ -628,9 +694,15 @@ mod tests {
     // lookup is attempted).
     #[test]
     fn scalar_int_result_is_inert_and_reads_no_map() {
-        let owner =
-            OwnedProgramResult::new(7, Type::Int, &user(), &empty_tables(), &PoisonResolver)
-                .expect("Int narrows and classifies NeverHeap");
+        let owner = OwnedProgramResult::new(
+            7,
+            Type::Int,
+            None,
+            &user(),
+            &empty_tables(),
+            &PoisonResolver,
+        )
+        .expect("Int narrows and classifies NeverHeap");
         assert!(!owner.is_armed(), "Int needs no release target");
         assert_eq!(owner.exit_code(), 7, "Int narrows to the process exit code");
         let _ = take_events();
@@ -646,15 +718,22 @@ mod tests {
     #[test]
     fn non_int_results_convert_to_exit_code_zero() {
         for ty in [Type::Bool, Type::Float] {
-            let owner =
-                OwnedProgramResult::new(1, ty.clone(), &user(), &empty_tables(), &PoisonResolver)
-                    .expect("scalar narrows");
+            let owner = OwnedProgramResult::new(
+                1,
+                ty.clone(),
+                None,
+                &user(),
+                &empty_tables(),
+                &PoisonResolver,
+            )
+            .expect("scalar narrows");
             assert_eq!(owner.exit_code(), 0, "{ty} must convert to exit code 0");
         }
         let _ = take_events();
         let resolver = RecordingResolver::new();
-        let owner = OwnedProgramResult::new(99, Type::String, &user(), &empty_tables(), &resolver)
-            .expect("String narrows");
+        let owner =
+            OwnedProgramResult::new(99, Type::String, None, &user(), &empty_tables(), &resolver)
+                .expect("String narrows");
         assert_eq!(owner.exit_code(), 0, "a String result exits 0");
         owner.release();
         assert_eq!(take_events(), vec!["glue(99)".to_string()]);
@@ -667,9 +746,15 @@ mod tests {
     fn string_result_releases_once_through_the_keyed_target() {
         let _ = take_events();
         let resolver = RecordingResolver::new();
-        let owner =
-            OwnedProgramResult::new(0xbeef, Type::String, &user(), &empty_tables(), &resolver)
-                .expect("String narrows and classifies AlwaysHeap");
+        let owner = OwnedProgramResult::new(
+            0xbeef,
+            Type::String,
+            None,
+            &user(),
+            &empty_tables(),
+            &resolver,
+        )
+        .expect("String narrows and classifies AlwaysHeap");
         assert!(owner.is_armed());
         assert_eq!(
             owner.target().expect("armed").symbol().as_ref(),
@@ -697,7 +782,7 @@ mod tests {
         let _ = take_events();
         let resolver = RecordingResolver::new();
         let mut owner =
-            OwnedProgramResult::new(5, Type::String, &user(), &empty_tables(), &resolver)
+            OwnedProgramResult::new(5, Type::String, None, &user(), &empty_tables(), &resolver)
                 .expect("String narrows");
         record("observe-start");
         record(format!("observe-read({})", owner.observed_value()));
@@ -727,9 +812,15 @@ mod tests {
         let _ = take_events();
         let resolver = RecordingResolver::new();
         {
-            let _owner =
-                OwnedProgramResult::new(11, Type::String, &user(), &empty_tables(), &resolver)
-                    .expect("String narrows");
+            let _owner = OwnedProgramResult::new(
+                11,
+                Type::String,
+                None,
+                &user(),
+                &empty_tables(),
+                &resolver,
+            )
+            .expect("String narrows");
         }
         assert_eq!(
             take_events(),
@@ -737,9 +828,15 @@ mod tests {
             "the backstop releases an un-finalized owner"
         );
         {
-            let owner =
-                OwnedProgramResult::new(12, Type::String, &user(), &empty_tables(), &resolver)
-                    .expect("String narrows");
+            let owner = OwnedProgramResult::new(
+                12,
+                Type::String,
+                None,
+                &user(),
+                &empty_tables(),
+                &resolver,
+            )
+            .expect("String narrows");
             owner.release();
         }
         assert_eq!(
@@ -756,8 +853,9 @@ mod tests {
     fn value_zero_is_a_valid_owned_word() {
         let _ = take_events();
         let resolver = RecordingResolver::new();
-        let owner = OwnedProgramResult::new(0, Type::String, &user(), &empty_tables(), &resolver)
-            .expect("String narrows");
+        let owner =
+            OwnedProgramResult::new(0, Type::String, None, &user(), &empty_tables(), &resolver)
+                .expect("String narrows");
         owner.release();
         assert_eq!(take_events(), vec!["glue(0)".to_string()]);
     }
@@ -779,7 +877,7 @@ mod tests {
         );
         let resolver = RecordingResolver::new();
         let owner =
-            OwnedProgramResult::new(3, ty, &user(), &tables, &resolver).expect("ADT narrows");
+            OwnedProgramResult::new(3, ty, None, &user(), &tables, &resolver).expect("ADT narrows");
         assert!(owner.is_armed(), "Mixed is an owning result");
         owner.release();
         assert_eq!(take_events(), vec!["glue(3)".to_string()]);
@@ -791,7 +889,7 @@ mod tests {
     fn all_nullary_adt_is_inert() {
         let tables = tables_with_adt(&user(), "Flag", &[("On", 0), ("Off", 0)]);
         let ty = Type::ADT(FQTypeName::new(user(), TypeName::from("Flag")), Vec::new());
-        let owner = OwnedProgramResult::new(1, ty, &user(), &tables, &PoisonResolver)
+        let owner = OwnedProgramResult::new(1, ty, None, &user(), &tables, &PoisonResolver)
             .expect("nullary ADT narrows");
         assert!(!owner.is_armed());
     }
@@ -802,9 +900,15 @@ mod tests {
     #[test]
     fn io_type_is_rejected_and_never_selects_io_glue() {
         let resolver = RecordingResolver::new();
-        let err =
-            OwnedProgramResult::new(1, io_of(Type::String), &user(), &empty_tables(), &resolver)
-                .expect_err("an un-transferred IO result is an invariant failure");
+        let err = OwnedProgramResult::new(
+            1,
+            io_of(Type::String),
+            None,
+            &user(),
+            &empty_tables(),
+            &resolver,
+        )
+        .expect_err("an un-transferred IO result is an invariant failure");
         assert!(
             err.to_string().contains("never for `IO a`"),
             "the diagnostic must name the rule: {err}"
@@ -815,14 +919,71 @@ mod tests {
         );
     }
 
+    // spec: design/int/result-owner.md §4.3 — when the result-producing entry
+    // published a codegen view, THAT `ConcreteType` is the release key. It is
+    // the same key backend computed its result root from, so int's
+    // classification agrees with `request_if_owning` by construction rather
+    // than by a second derivation of backend's type encoding.
+    #[test]
+    fn codegen_view_type_is_the_release_key_not_the_observed_type() {
+        let _ = take_events();
+        let resolver = RecordingResolver::new();
+        // The observed type is non-concrete (`repl/spec.md` §1.5's empty-Vec
+        // display), but the entry's codegen view keyed on `Int` — backend
+        // therefore emitted NO glue for it, and int must reach that same
+        // verdict instead of hard-erroring on the display type.
+        let owner = OwnedProgramResult::new(
+            0,
+            Type::TyConApp(1, vec![Type::Var(2)]),
+            Some(ConcreteType::Int),
+            &user(),
+            &empty_tables(),
+            &PoisonResolver,
+        )
+        .expect("the codegen key decides; the display type does not");
+        assert!(!owner.is_armed(), "backend emitted no glue for this root");
+        assert!(resolver.keys.lock().unwrap().is_empty());
+        assert!(take_events().is_empty());
+    }
+
+    // spec: design/int/result-owner.md §3.1 — the release key strips the `IO`
+    // head exactly as backend's `result_roots` pre-pass does, so `IO String`
+    // selects `String` glue and never `IO String` glue.
+    #[test]
+    fn codegen_view_io_head_is_stripped_to_the_inner_type() {
+        let _ = take_events();
+        let resolver = RecordingResolver::new();
+        let io_string = ConcreteType::ADT(
+            FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("IO")),
+            vec![ConcreteType::String],
+        );
+        let owner = OwnedProgramResult::new(
+            3,
+            Type::String,
+            Some(io_string),
+            &user(),
+            &empty_tables(),
+            &resolver,
+        )
+        .expect("IO String keys on String");
+        assert_eq!(
+            &*resolver.keys.lock().unwrap(),
+            &[(user(), ConcreteType::String)],
+            "the INNER type is the key — never `IO a`"
+        );
+        owner.release();
+        assert_eq!(take_events(), vec!["glue(3)".to_string()]);
+    }
+
     // spec: design/int/result-owner.md §5 — a non-concrete type at the typed
     // exit is a hard invariant error naming the module and the type; it is
     // never a shallow release and never a silent leak.
     #[test]
     fn non_concrete_type_is_a_hard_error_naming_module_and_type() {
         let resolver = RecordingResolver::new();
-        let err = OwnedProgramResult::new(1, Type::Var(7), &user(), &empty_tables(), &resolver)
-            .expect_err("a residual type var cannot be released type-directedly");
+        let err =
+            OwnedProgramResult::new(1, Type::Var(7), None, &user(), &empty_tables(), &resolver)
+                .expect_err("a residual type var cannot be released type-directedly");
         let text = err.to_string();
         assert!(text.contains("user"), "must name the module: {text}");
         assert!(text.contains("not concrete"), "must name the fault: {text}");
@@ -847,8 +1008,9 @@ mod tests {
             }
         }
         let _ = take_events();
-        let err = OwnedProgramResult::new(1, Type::String, &user(), &empty_tables(), &Failing)
-            .expect_err("an unresolvable owning result is a hard error");
+        let err =
+            OwnedProgramResult::new(1, Type::String, None, &user(), &empty_tables(), &Failing)
+                .expect_err("an unresolvable owning result is a hard error");
         assert!(err.to_string().contains("no glue row"));
         assert!(take_events().is_empty(), "nothing may be released");
     }
@@ -860,7 +1022,7 @@ mod tests {
         let _ = take_events();
         let resolver = RecordingResolver::new();
         let ty = Type::Fn(vec![Type::Int], Box::new(Type::Int));
-        let owner = OwnedProgramResult::new(0x1234, ty, &user(), &empty_tables(), &resolver)
+        let owner = OwnedProgramResult::new(0x1234, ty, None, &user(), &empty_tables(), &resolver)
             .expect("Fn narrows");
         assert!(owner.is_armed(), "closures are heap-allocated");
         owner.release();
@@ -1003,6 +1165,7 @@ mod tests {
         let owner = OwnedProgramResult::new(
             21,
             Type::String,
+            None,
             &user(),
             &empty_tables(),
             &Fixed(std::cell::RefCell::new(Some(target))),

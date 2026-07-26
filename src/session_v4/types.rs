@@ -116,9 +116,14 @@ pub enum EvalResult {
         defined: bool,
     },
     /// An expression was evaluated to a value.
+    ///
+    /// The value is NOT a loose `(i64, Type)` pair: it rides the ONE
+    /// program-result owner (`design/int/result-owner.md` §4.2), armed across
+    /// this boundary so the REPL driver can format it first and release it
+    /// exactly once afterwards. `value()` / `ty()` read THROUGH the owner —
+    /// there is no second copy of the owned word to leak or double-release.
     Val {
-        value: i64,
-        ty: Type,
+        result: crate::result_owner::OwnedProgramResult,
         warnings: Vec<Warning>,
     },
     /// An expression TRAPPED at runtime — a `(runtime_panic …)`-raised error
@@ -152,12 +157,25 @@ impl EvalResult {
         }
     }
 
-    /// The raw i64 value. Returns 0 for `Def` and `RuntimeError` (a trapped
-    /// expression produced no value).
+    /// The raw i64 value, borrowed from the result owner for observation.
+    /// Returns 0 for `Def` and `RuntimeError` (a trapped expression produced
+    /// no value). Reading this is a READ, never a transfer — only
+    /// [`Self::release_program_result`] finalizes the word.
     pub fn value(&self) -> i64 {
         match self {
-            EvalResult::Val { value, .. } => *value,
+            EvalResult::Val { result, .. } => result.observed_value(),
             EvalResult::Def { .. } | EvalResult::RuntimeError { .. } => 0,
+        }
+    }
+
+    /// Release the turn's owning result exactly once, AFTER the turn's
+    /// display has been fully built (`design/int/result-owner.md` §4.2 — the
+    /// value feedback must be complete before the release). A no-op for every
+    /// other variant and for an inert (scalar/value-layout) result. The
+    /// owner's `Drop` backstop covers any path that never reaches here.
+    pub fn release_program_result(&mut self) {
+        if let EvalResult::Val { result, .. } = self {
+            result.release_in_place();
         }
     }
 
@@ -166,7 +184,7 @@ impl EvalResult {
     pub fn ty(&self) -> &Type {
         static TRAP_TY: Type = Type::Int;
         match self {
-            EvalResult::Val { ty, .. } => ty,
+            EvalResult::Val { result, .. } => result.ty(),
             EvalResult::Def { ty, .. } => ty,
             EvalResult::RuntimeError { .. } => &TRAP_TY,
         }
@@ -213,8 +231,7 @@ mod eval_result_tests {
             defined: false,
         };
         let val = EvalResult::Val {
-            value: 1,
-            ty: Type::Int,
+            result: crate::result_owner::OwnedProgramResult::inert(1, Type::Int),
             warnings: Vec::new(),
         };
         assert!(genuine.is_defining());
@@ -223,6 +240,111 @@ mod eval_result_tests {
             "bare lookup must not trigger regen"
         );
         assert!(!val.is_defining());
+    }
+
+    // -----------------------------------------------------------------------
+    // §6 row 4 — REPL display: the result owner rides `EvalResult::Val` armed
+    // across the execution/formatting boundary, and the turn releases it after
+    // the display read (`design/int/result-owner.md` §4.2).
+    // -----------------------------------------------------------------------
+
+    use crate::result_owner::OwnedProgramResult;
+    use crate::result_owner::test_support::{RecordingResolver, record, take_events};
+
+    fn armed_val(value: i64) -> EvalResult {
+        let tables: cranelisp_types::SymbolTables<crate::code::Code, ()> = dashmap::DashMap::new();
+        let result = OwnedProgramResult::new(
+            value,
+            Type::String,
+            None,
+            &ModuleFullPath::from("user"),
+            &tables,
+            &RecordingResolver::new(),
+        )
+        .expect("String is an owning result");
+        EvalResult::Val {
+            result,
+            warnings: Vec::new(),
+        }
+    }
+
+    // spec: design/int/result-owner.md §4.2 — the formatter READS the word
+    // through the armed owner; the release happens after the display is
+    // complete, and exactly once.
+    #[test]
+    fn val_display_read_precedes_the_single_release() {
+        let _ = take_events();
+        let mut val = armed_val(77);
+        record(format!("display-read({})", val.value()));
+        assert_eq!(val.ty(), &Type::String, "type reads through the owner too");
+        val.release_program_result();
+        record("prompt-returns");
+        drop(val);
+        assert_eq!(
+            take_events(),
+            vec![
+                "display-read(77)".to_string(),
+                "glue(77)".to_string(),
+                "prompt-returns".to_string(),
+            ],
+            "the display must be read before the release, and the release must \
+             happen exactly once even though the carrier is dropped afterwards"
+        );
+    }
+
+    // spec: design/int/result-owner.md §5 — a second release is a no-op: the
+    // owner disarmed at the first, and there is one chokepoint.
+    #[test]
+    fn val_double_release_is_a_no_op() {
+        let _ = take_events();
+        let mut val = armed_val(5);
+        val.release_program_result();
+        val.release_program_result();
+        drop(val);
+        assert_eq!(take_events(), vec!["glue(5)".to_string()]);
+    }
+
+    // spec: design/int/result-owner.md §6 (REPL row negatives) — a
+    // display-only `Def` (bare-symbol lookup) and a runtime trap fabricate no
+    // ownership and release nothing.
+    #[test]
+    fn def_and_trap_turns_release_nothing() {
+        let _ = take_events();
+        let mut display_only = EvalResult::Def {
+            symbol: FQSymbol {
+                module: ModuleFullPath::from("user"),
+                symbol: cranelisp_types::Symbol::from("f"),
+            },
+            ty: Type::Int,
+            warnings: Vec::new(),
+            defined: false,
+        };
+        display_only.release_program_result();
+        let mut trap = EvalResult::RuntimeError {
+            message: "boom".to_string(),
+            warnings: Vec::new(),
+        };
+        trap.release_program_result();
+        assert_eq!(display_only.value(), 0, "a Def turn carries no value");
+        assert_eq!(trap.value(), 0, "a trapped turn produced no value");
+        assert!(
+            take_events().is_empty(),
+            "neither a display-only Def nor a trap may invoke result glue"
+        );
+    }
+
+    // spec: design/int/result-owner.md §4.2 — a scalar REPL result stays
+    // call-free: nothing is armed, so the turn's release is a typed no-op.
+    #[test]
+    fn scalar_val_turn_is_release_free() {
+        let _ = take_events();
+        let mut val = EvalResult::Val {
+            result: OwnedProgramResult::inert(9, Type::Int),
+            warnings: Vec::new(),
+        };
+        assert_eq!(val.value(), 9);
+        val.release_program_result();
+        assert!(take_events().is_empty());
     }
 }
 

@@ -597,31 +597,24 @@ impl CompilerSession {
                 }
                 body
             }
-            EvalResult::Val { value, ty, .. } => {
-                if ty.is_io() {
-                    // Defensive path. In normal REPL flow `compile_and_execute_expr`
-                    // has already run the trampoline and stripped the IO type via
-                    // `unwrap_io_inline`, so this branch is unreachable for current
-                    // callers. If a future caller ever constructs `EvalResult::Val`
-                    // with an un-trampolined IO value, we must still honour
-                    // Decision 24's consuming convention: `run_io_trampoline` is
-                    // non-consuming, so `consume_io_tree` must release the outer
-                    // tree afterwards. See `pipeline::unwrap_io_inline`.
-                    // Drive through `cranelisp_run_io` (the reactor-driving entry
-                    // under `concurrency-runtime`, byte-identical otherwise; it
-                    // also consumes the tree internally) — same entry as
-                    // `unwrap_io_inline` (FIXME 0457).
-                    let inner_value = cranelisp_intrinsics::io::cranelisp_run_io(*value);
-                    let inner_type = ty.unwrap_io().clone();
-                    crate::display::result_value_doc(
-                        inner_value,
-                        &inner_type,
-                        &self.shared.symbol_tables,
-                    )
-                } else {
-                    crate::display::result_value_doc(*value, ty, &self.shared.symbol_tables)
-                }
-            }
+            // The value is READ here, while the turn's result owner is still
+            // armed; the release happens after this whole `StyledDoc` is built
+            // (`design/int/result-owner.md` §4.2). This formatter must never
+            // finalize the word itself, and it holds no copy of it.
+            //
+            // The former defensive `ty.is_io()` branch is GONE (0745). It
+            // drove `cranelisp_run_io` on the displayed word and rendered the
+            // inner value — a SECOND IO/result owner, which §4.2 forbids. It
+            // is now unconstructable rather than merely unreachable:
+            // `OwnedProgramResult::new` refuses an `IO a` type outright, so the
+            // single unwrap at the driver boundary
+            // (`pipeline::program_outcome_to_result`) is the only one there
+            // can be (Principle 20 — model invariants by representation).
+            EvalResult::Val { result, .. } => crate::display::result_value_doc(
+                result.observed_value(),
+                result.ty(),
+                &self.shared.symbol_tables,
+            ),
             // A runtime TRAP renders as the bare §18.5 line: the `runtime error: `
             // category prefix (§5.1) directly followed by the trap payload — no
             // `Error: ` prefix, no `codegen error at 0..0:` wrapper, no

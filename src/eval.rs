@@ -533,12 +533,11 @@ impl CompilerSession {
             // no wrapper chain). Genuine compiler/platform faults still `?`.
             match crate::pipeline::execute_compiled_expr(
                 check.display.as_ref(),
-                &self.shared.symbol_tables,
+                &self.shared,
                 module,
             )? {
-                crate::pipeline::ExprOutcome::Value { value, ty } => Ok(EvalResult::Val {
-                    value,
-                    ty,
+                crate::pipeline::ExprOutcome::Value(result) => Ok(EvalResult::Val {
+                    result,
                     warnings: check.warnings.clone(),
                 }),
                 crate::pipeline::ExprOutcome::Trap { message } => Ok(EvalResult::RuntimeError {
@@ -897,8 +896,7 @@ mod tests {
         record_defining_turn_source(
             Some(&m),
             &EvalResult::Val {
-                value: 1,
-                ty: Type::Int,
+                result: crate::result_owner::OwnedProgramResult::inert(1, Type::Int),
                 warnings: Vec::new(),
             },
             "(solo 2)",
