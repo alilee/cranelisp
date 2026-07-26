@@ -107,6 +107,11 @@ fn shared_element_vec() -> (i64, i64) {
     let vec = cranelisp_intrinsics::vec_runtime::vec_push_grow(vec, element);
     // The push TRANSFERS the caller's reference into the vector; the second
     // reference is the simulated outside owner whose survival the cells read.
+    // SAFETY: `element` is the `heap_alloc_string` allocation minted three lines
+    // above — a live `HeapHeader`-carrying heap value. `vec_push_grow` stored it
+    // into the vector without releasing it (the transfer noted above), so nothing
+    // between the allocation and here can have freed it. `set_rc`'s contract
+    // ("a live heap allocation carrying a `HeapHeader`") is discharged.
     unsafe { set_rc(element, 2) };
     (vec, element)
 }
@@ -133,11 +138,27 @@ fn a_shared_vec_release_frees_nothing_neg() {
     let (_jit, glue) = jit_vec_string_glue();
     let (vec, element) = shared_element_vec();
     // A second owner of the VECTOR — the shape whose teardown must not happen.
+    // SAFETY: `vec` is the `vec_new`/`vec_push_grow` allocation `shared_element_vec`
+    // just returned — a live `HeapHeader`-carrying heap value, not yet released by
+    // anything in this frame.
     unsafe { set_rc(vec, 2) };
 
+    // SAFETY: `glue` is the `jit_address` of the finalized `(Vec String)` glue body
+    // projected on the line above's `jit_vec_string_glue`, and `_jit` — the `Jit`
+    // that owns those code pages — is bound for the whole test body, so the address
+    // stays mapped across this call. `vec` is the live `(Vec String)` allocation
+    // that body's concrete type names, and generated glue bodies are `(i64) -> ()`,
+    // matching the `extern "C" fn(i64)` the transmute produces.
     unsafe { call_glue(glue, vec) };
 
     assert_eq!(
+        // SAFETY: `element` is kept live across the release by the simulated outside
+        // owner's reference (rc raised to 2 in `shared_element_vec`); the release
+        // just made took the SHARED path, which by the contract under test touches
+        // neither the elements nor the buffer. Reading that rc is the observation
+        // this cell exists to make — against the broken unconditional-`vec_drop`
+        // arm it is precisely the freed-out-from-under-the-owner read the module
+        // header's falsification run reports.
         unsafe { rc_of(element) },
         2,
         "element rc after releasing a SHARED vector: the `old_rc > 1` path must \
@@ -146,6 +167,10 @@ fn a_shared_vec_release_frees_nothing_neg() {
          the owner still holding the other reference."
     );
     assert_eq!(
+        // SAFETY: `vec` was allocated with rc 1, raised to 2 above, and the release
+        // just made was a decrement — so the struct is still a live
+        // `HeapHeader`-carrying allocation held by the remaining reference. That it
+        // holds exactly 1 is what the assertion checks.
         unsafe { rc_of(vec) },
         1,
         "a shared release is a DECREMENT: the vector must survive with one \
@@ -155,6 +180,11 @@ fn a_shared_vec_release_frees_nothing_neg() {
     assert_eq!(crate::test_support::vec_len_for_test(vec), 1);
 
     // Clean up the fixture through the same (now sole-owner) path.
+    // SAFETY: same discharge as the first `call_glue` — `_jit` still owns the
+    // finalized code at `glue` (it is bound until the end of this fn), and `vec` is
+    // still the live `(Vec String)` allocation, its rc asserted to be 1 immediately
+    // above. This is therefore the sole-owner teardown, and no later statement in
+    // this fn reads `vec` or `element`.
     unsafe { call_glue(glue, vec) };
 }
 
@@ -170,11 +200,24 @@ fn the_last_reference_release_discharges_the_element() {
     let (vec, element) = shared_element_vec();
     // Sole owner of the vector; the element still has an outside reference, so
     // reading its rc after the teardown is defined.
+    // SAFETY: `vec` is the live `HeapHeader`-carrying allocation `shared_element_vec`
+    // returned on the line above; nothing has released it yet.
     assert_eq!(unsafe { rc_of(vec) }, 1);
 
+    // SAFETY: `glue` is the `jit_address` of the finalized `(Vec String)` glue body,
+    // and `_jit` — owner of those code pages — is bound for the whole test body, so
+    // the address stays mapped across the call. `vec` is the live `(Vec String)`
+    // allocation that body's concrete type names, and the body is `(i64) -> ()`,
+    // matching the `extern "C" fn(i64)` the transmute produces. Its rc is 1
+    // (asserted above), so this is the sole-owner teardown and `vec` is dead after.
     unsafe { call_glue(glue, vec) };
 
     assert_eq!(
+        // SAFETY: `element` survives the teardown just made because
+        // `shared_element_vec` gave it a second, outside-owner reference; the
+        // teardown discharges only the vector's own. So the allocation is still
+        // live and `HeapHeader`-carrying, and reading its rc — the point of the
+        // cell — is defined. `vec` is NOT read again after its release.
         unsafe { rc_of(element) },
         1,
         "element rc after the FINAL release: the `old_rc == 1` branch must run \

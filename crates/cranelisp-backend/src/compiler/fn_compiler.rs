@@ -1631,7 +1631,7 @@ where
         self.emit_heap_binding_decs(&to_dec)
     }
 
-    /// True iff `flush_let_scopes_before_tail_jump` would emit an `rc_dec` for    /// True iff `flush_let_scopes_before_tail_jump` would emit an `rc_dec` for
+    /// True iff `flush_let_scopes_before_tail_jump` would emit an `rc_dec` for
     /// `name`: it lives in a `let`/match/lambda frame (`scope_stack[1..]` — NOT
     /// the param frame `[0]`, which the loop header reuses and the flush leaves
     /// untouched), is heap-typed, and is not borrowed. This is the exact
