@@ -354,7 +354,9 @@ The load-dependent guards (`launch_grid`, 0694 family, 0604/0818) remain failing
 | W8 | /qa | Phase-5 gate (`9370f868`): **PASS** — 5,653/5,634/19/1 ×2 byte-identical (first deterministic cert since S115); 16 named + 0910/0911 test-debt; 0909 resolved | fable (shim) | xhigh | — |
 | W8 | /arch | public-API re-gate + Phase-7 window (`4ed43430`): CLEAN 8/8; 0872/0902 resolved, 0898 ruled-deferred, 0912 filed for /spec framing | fable (shim) | xhigh | — |
 | P6 | /audit | cranelisp-types assessment (`c2247025`): design Strong (acid-test exemplar), realisation Adequate (falsified facade narratives); R1–R5 → S119 Phase 1; 0748 given scheduling weight | fable (shim) | xhigh | — |
-| P6 | /repl | 6a+6b combined (bounded per descope): replay, result-owner probes, Bind UX | opus[1m] (shim) | high | 6a/6b combined — recorded adaptation |
+| P6 | /repl | 6a+6b (`4c1f76f0`): 37/38 replay; result-owner verified live-flat; **0913 filed** (residual-param leak — `(Err x)` class, design scope was wrong); 0914 `/mem` untruthful; 0915 frame defects; 0907 UX evidence | opus[1m] (shim) | high | 6a/6b combined — recorded adaptation |
+| P6 | /stdlib | 6a+6b (`a1f5b2b7`): 36/38 conformance (one cause, two modules); 0907 trigger narrowed to mixed borrowed/fresh IO arm, workaround falsified; 0867 widening hazard (26 symbols, cross-module head/rest contest) | opus[1m] (shim) | high | 6a/6b combined |
+| P6 | /examples | 6a+6b: run all, Bind-refusal examples attributed, learning-sequence assessment | opus[1m] (shim) | high | 6a/6b combined |
 
 ## Notes
 
