@@ -338,7 +338,9 @@ The load-dependent guards (`launch_grid`, 0694 family, 0604/0818) remain failing
 | W3 | /dev | cranelisp-backend: 0895 + doc-dedup rider (`966d298e`; comment-only proven) | opus[1m] (shim) | high | Blocker resolution |
 | W3 | /review | cranelisp-backend: closing gate round on 0895 (delegated) — GATE PASS | codex (delegated) + fable adjudicator | high | gate close |
 | W3+ | /testing | 0796 exclusion retirement + defect-locus refresh (`55aba0d9`; 240-subprocess full-product clean) | opus[1m] (shim) | high | — |
-| W4 | /dev | int + exe-bundle: result owner I0–I5 (0745) | opus[1m] (shim) | high | — |
+| W4 | /dev | int + exe-bundle: result owner I0–I5 (0745) — four flips + link/run exit divergence closed | opus[1m] (shim) | high | — |
+| W4 | /review | int + exe-bundle: result-owner change-set (delegated) — BLOCKED: 0897 (zero-address gap), 0898 (/arch strip-rule twins), 0899 (pub), 0900 (Suggestion, Codex claim disproven by adjudicator) | codex (delegated) + fable adjudicator | high | — |
+| W4 | /dev | int: 0897 + 0899 resolution | opus[1m] (shim) | high | Blocker resolution |
 
 ## Notes
 
