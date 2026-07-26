@@ -38,14 +38,12 @@ function %build(i64, i64, i64) -> i64 system_v {
     sig1 = (i64) -> i64 system_v
     sig2 = (i64, i64) -> i64 system_v
     sig3 = (i64, i64, i64) -> i64 system_v
-    sig4 = (i64) -> i64 system_v
-    sig5 = (i64, i64) system_v
+    sig4 = (i64) system_v
     fn0 = u0:0 sig0
     fn1 = colocated u0:46 sig1
     fn2 = u0:24 sig2
     fn3 = u0:23 sig3
-    fn4 = colocated u0:47 sig4
-    fn5 = u0:14 sig5
+    fn4 = colocated u0:43 sig4
 
 block0(v0: i64, v1: i64, v2: i64):
     jump block1(v0, v1, v2)
@@ -113,19 +111,7 @@ block4(v8: i64, v37: i64):
     v34 = iadd_imm v8, 8
     v35 = iconst.i64 1
     v36 = atomic_rmw.i64 add v34, v35  ; v35 = 1
-    v40 = func_addr.i64 fn4
-    v41 = iadd_imm v37, 8
-    v42 = iconst.i64 1
-    v43 = atomic_rmw.i64 sub v41, v42  ; v42 = 1
-    v44 = icmp eq v43, v42  ; v42 = 1
-    brif v44, block12, block11
-
-block12:
-    fence 
-    call fn5(v37, v40)
-    jump block11
-
-block11:
+    call fn4(v37)
     return v8
 }
 ; === end CLIF user::build ===
@@ -186,12 +172,10 @@ function %main() -> i64 system_v {
     sig1 = (i64, i64, i64) -> i64 system_v
     sig2 = (i64, i64, i64, i64) -> i64 system_v
     sig3 = (i64) -> i64 system_v
-    sig4 = (i64) -> i64 system_v
-    sig5 = (i64, i64) system_v
+    sig4 = (i64) system_v
     fn0 = u0:13 sig0
     fn1 = u0:0 sig3
-    fn2 = colocated u0:47 sig4
-    fn3 = u0:14 sig5
+    fn2 = colocated u0:43 sig4
 
 block0:
     jump block1
@@ -220,19 +204,7 @@ block1:
     v19 = iconst.i64 0
     store notrap aligned v19, v18+16  ; v19 = 0
     store notrap aligned v16, v18+24
-    v20 = func_addr.i64 fn2
-    v21 = iadd_imm v9, 8
-    v22 = iconst.i64 1
-    v23 = atomic_rmw.i64 sub v21, v22  ; v22 = 1
-    v24 = icmp eq v23, v22  ; v22 = 1
-    brif v24, block3, block2
-
-block3:
-    fence 
-    call fn3(v9, v20)
-    jump block2
-
-block2:
+    call fn2(v9)
     return v18
 }
 ; === end CLIF user::main ===

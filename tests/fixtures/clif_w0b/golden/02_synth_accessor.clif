@@ -20,9 +20,9 @@ block1(v2: i64, v3: i64):
 function %Point.x(i64) -> i64 system_v {
     gv0 = symbol colocated userextname0
     sig0 = (i64, i64) -> i64 system_v
-    sig1 = (i64) -> i64 system_v
+    sig1 = (i64) system_v
     fn0 = u0:2 sig0
-    fn1 = u0:1 sig1
+    fn1 = colocated u0:41 sig1
 
 block0(v0: i64):
     jump block1(v0)
@@ -52,18 +52,7 @@ block3:
     return v11  ; v11 = 0
 
 block2(v2: i64):
-    v12 = iadd_imm.i64 v1, 8
-    v13 = iconst.i64 1
-    v14 = atomic_rmw.i64 sub v12, v13  ; v13 = 1
-    v15 = icmp eq v14, v13  ; v13 = 1
-    brif v15, block8, block7
-
-block8:
-    fence 
-    v16 = call fn1(v1)
-    jump block7
-
-block7:
+    call fn1(v1)
     return v2
 }
 ; === end CLIF user::Point.x ===
@@ -71,9 +60,9 @@ block7:
 function %Point.y(i64) -> i64 system_v {
     gv0 = symbol colocated userextname0
     sig0 = (i64, i64) -> i64 system_v
-    sig1 = (i64) -> i64 system_v
+    sig1 = (i64) system_v
     fn0 = u0:2 sig0
-    fn1 = u0:1 sig1
+    fn1 = colocated u0:41 sig1
 
 block0(v0: i64):
     jump block1(v0)
@@ -103,18 +92,7 @@ block3:
     return v11  ; v11 = 0
 
 block2(v2: i64):
-    v12 = iadd_imm.i64 v1, 8
-    v13 = iconst.i64 1
-    v14 = atomic_rmw.i64 sub v12, v13  ; v13 = 1
-    v15 = icmp eq v14, v13  ; v13 = 1
-    brif v15, block8, block7
-
-block8:
-    fence 
-    v16 = call fn1(v1)
-    jump block7
-
-block7:
+    call fn1(v1)
     return v2
 }
 ; === end CLIF user::Point.y ===

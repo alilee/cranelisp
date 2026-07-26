@@ -95,13 +95,13 @@ function %main() -> i64 system_v {
     gv3 = symbol userextname0
     sig0 = (i64) -> i64 system_v
     sig1 = (i64) -> i64 system_v
-    sig2 = (i64) -> i64 system_v
+    sig2 = (i64) system_v
     sig3 = (i64) -> i64 system_v
     sig4 = (i64) -> i64 system_v
-    sig5 = (i64) -> i64 system_v
+    sig5 = (i64) system_v
     sig6 = (i64) -> i64 system_v
-    fn0 = u0:1 sig2
-    fn1 = u0:1 sig5
+    fn0 = colocated u0:42 sig2
+    fn1 = colocated u0:42 sig5
     fn2 = u0:0 sig6
 
 block0:
@@ -117,46 +117,24 @@ block1:
     v6 = iadd_imm v5, 16
     v7 = load.i64 notrap aligned v6
     v8 = call_indirect sig1, v7(v4)
-    v9 = iadd_imm v4, 8
-    v10 = iconst.i64 1
-    v11 = atomic_rmw.i64 sub v9, v10  ; v10 = 1
-    v12 = icmp eq v11, v10  ; v10 = 1
-    brif v12, block3, block2
-
-block3:
-    fence 
-    v13 = call fn0(v4)
-    jump block2
-
-block2:
-    v14 = iconst.i64 1
-    v15 = global_value.i64 gv2
-    v16 = iadd_imm v15, 24
-    v17 = load.i64 notrap aligned v16
-    v18 = call_indirect sig3, v17(v14)  ; v14 = 1
-    v19 = global_value.i64 gv3
-    v20 = iadd_imm v19, 16
-    v21 = load.i64 notrap aligned v20
-    v22 = call_indirect sig4, v21(v18)
-    v23 = iadd_imm v18, 8
-    v24 = iconst.i64 1
-    v25 = atomic_rmw.i64 sub v23, v24  ; v24 = 1
-    v26 = icmp eq v25, v24  ; v24 = 1
-    brif v26, block5, block4
-
-block5:
-    fence 
-    v27 = call fn1(v18)
-    jump block4
-
-block4:
-    v28 = iadd.i64 v8, v22
-    v29 = iconst.i64 16
-    v30 = call fn2(v29)  ; v29 = 16
-    v31 = iconst.i64 0
-    store notrap aligned v31, v30+16  ; v31 = 0
-    store notrap aligned v28, v30+24
-    return v30
+    call fn0(v4)
+    v9 = iconst.i64 1
+    v10 = global_value.i64 gv2
+    v11 = iadd_imm v10, 24
+    v12 = load.i64 notrap aligned v11
+    v13 = call_indirect sig3, v12(v9)  ; v9 = 1
+    v14 = global_value.i64 gv3
+    v15 = iadd_imm v14, 16
+    v16 = load.i64 notrap aligned v15
+    v17 = call_indirect sig4, v16(v13)
+    call fn1(v13)
+    v18 = iadd v8, v17
+    v19 = iconst.i64 16
+    v20 = call fn2(v19)  ; v19 = 16
+    v21 = iconst.i64 0
+    store notrap aligned v21, v20+16  ; v21 = 0
+    store notrap aligned v18, v20+24
+    return v20
 }
 ; === end CLIF user::main ===
 ; === CLIF user::pick ===

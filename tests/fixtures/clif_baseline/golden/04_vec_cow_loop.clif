@@ -2,10 +2,10 @@
 function %build(i64, i64, i64) -> i64 system_v {
     sig0 = (i64, i64) -> i64 system_v
     sig1 = (i64, i64, i64) -> i64 system_v
-    sig2 = (i64, i64) system_v
+    sig2 = (i64) system_v
     fn0 = u0:24 sig0
     fn1 = u0:23 sig1
-    fn2 = u0:14 sig2
+    fn2 = colocated u0:40 sig2
 
 block0(v0: i64, v1: i64, v2: i64):
     jump block1(v0, v1, v2)
@@ -66,19 +66,7 @@ block4(v8: i64, v32: i64):
     v29 = iadd_imm v8, 8
     v30 = iconst.i64 1
     v31 = atomic_rmw.i64 add v29, v30  ; v30 = 1
-    v35 = iconst.i64 0
-    v36 = iadd_imm v32, 8
-    v37 = iconst.i64 1
-    v38 = atomic_rmw.i64 sub v36, v37  ; v37 = 1
-    v39 = icmp eq v38, v37  ; v37 = 1
-    brif v39, block12, block11
-
-block12:
-    fence 
-    call fn2(v32, v35)  ; v35 = 0
-    jump block11
-
-block11:
+    call fn2(v32)
     return v8
 }
 ; === end CLIF user::build ===
@@ -93,14 +81,14 @@ function %main() -> i64 system_v {
     sig3 = (i64, i64, i64, i64) -> i64 system_v
     sig4 = (i64, i64) -> i64 system_v
     sig5 = (i64) -> i64 system_v
-    sig6 = (i64, i64) system_v
-    sig7 = (i64, i64) system_v
+    sig6 = (i64) system_v
+    sig7 = (i64) system_v
     fn0 = u0:13 sig0
     fn1 = u0:22 sig2
     fn2 = u0:2 sig4
     fn3 = u0:0 sig5
-    fn4 = u0:14 sig6
-    fn5 = u0:14 sig7
+    fn4 = colocated u0:40 sig6
+    fn5 = colocated u0:40 sig7
 
 block0:
     jump block1
@@ -121,7 +109,6 @@ block1:
     v11 = iconst.i64 100
     v12 = iconst.i64 0
     v13 = call fn1(v9, v10, v11, v12)  ; v10 = 0, v11 = 100, v12 = 0
-    v45 -> v13
     v14 = iconst.i64 0
     v15 = load.i64 notrap aligned v9+16
     v16 = iconst.i64 0
@@ -156,32 +143,8 @@ block2:
     v39 = iconst.i64 0
     store notrap aligned v39, v38+16  ; v39 = 0
     store notrap aligned v36, v38+24
-    v40 = iconst.i64 0
-    v41 = iadd_imm.i64 v9, 8
-    v42 = iconst.i64 1
-    v43 = atomic_rmw.i64 sub v41, v42  ; v42 = 1
-    v44 = icmp eq v43, v42  ; v42 = 1
-    brif v44, block5, block4
-
-block5:
-    fence 
-    call fn4(v9, v40)  ; v40 = 0
-    jump block4
-
-block4:
-    v46 = iconst.i64 0
-    v47 = iadd_imm.i64 v13, 8
-    v48 = iconst.i64 1
-    v49 = atomic_rmw.i64 sub v47, v48  ; v48 = 1
-    v50 = icmp eq v49, v48  ; v48 = 1
-    brif v50, block7, block6
-
-block7:
-    fence 
-    call fn5(v13, v46)  ; v46 = 0
-    jump block6
-
-block6:
+    call fn4(v9)
+    call fn5(v13)
     return v38
 }
 ; === end CLIF user::main ===

@@ -97,9 +97,30 @@ those unit tests are the class-06 golden.
 | Entry | Frames | Lines |
 |---|---|---|
 | 01_ctor_def | 2 | 54 |
-| 02_synth_accessor | 4 | 170 |
+| 02_synth_accessor | 4 | 170 → **148** (S118 W3 re-baseline, below) |
 | 03_multisig_variant | 3 | 52 |
 | 04_expr_disposition3 | 1 | 20 |
 | 05_macro_clause | 2 | 121 |
 
 Determinism self-test passes 5/5 (double-capture byte-identical).
+
+## Re-baselines (scoped, attributed — §"Extension ≠ re-baseline")
+
+- **02_synth_accessor** — re-captured S118 (FIXME 0908) for the **W3 consumer
+  migration onto canonical drop glue**, change-set `2df95c41..966d298e`
+  (`c6234398` S1 `emit_typed_rc_dec` becomes the canonical glue-call emitter is
+  the emitting seam). **Release-family reshape only, in the two accessor frames
+  and nowhere else.** In `user::Point.x` and `user::Point.y` the self-param
+  release site changes from the inline sequence `iadd_imm self,8; iconst 1;
+  atomic_rmw sub; icmp eq; brif; fence; call dealloc(self)` (two blocks) to ONE
+  `call fn1(self)` where `fn1 = colocated u0:41` carries the **VOID `(i64)`
+  signature** of the canonical per-concrete drop glue — the guard, the fence and
+  the teardown now live inside the generated glue body
+  (`design/backend/transitive-drop-glue.md`). The signature-table and
+  value-renumbering deltas are consequences of the removed instructions; the
+  other two frames of this entry (`user::Point`, `user::main`) and all four other
+  entries are **byte-identical** (verified: an independent capture of 01/03/04/05
+  reproduced their committed goldens exactly). No RC op is dropped without a glue
+  call taking it over, no retain count changes, and no arithmetic, allocation,
+  dispatch or control-flow hunk appears outside the release family. Determinism
+  self-test 5/5; both golden binaries green post-capture.
