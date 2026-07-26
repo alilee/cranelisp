@@ -29,6 +29,16 @@
 // `!= NotOwnedHere`. See `crates/cranelisp-backend/CLAUDE.md` §"RC-emission
 // gates that are ONE predicate, not per-site syntax".
 //
+// SEAM NOTE (S118 W3, `/testing`). Two of the three named gates no longer exist:
+// `dec_temporary_scrutinee` was deleted at slice S3 (`22072a0c`) in favour of a
+// per-ARM scrutinee lifetime plan, and `emit_vec_drop_if_temporary`'s teardown
+// now routes through the canonical drop-glue registry. The `// defect:` loci
+// below deliberately still name the S115 seams — that is where the defect LIVED
+// — but a reader chasing them should read `match_codegen.rs::
+// scrutinee_lifetime_for_arm` and `drop_glue.rs` instead. `value_provenance`
+// itself, the fix these cells guard, is untouched by W3 and remains the one
+// derived answer.
+//
 // INSTRUMENT. Each cell runs the MS-P1 safety matrix (`SafetyMatrix`): modes ×
 // ownership toggle {ON, OFF = `CRANELISP_NO_OWNERSHIP=1`, the conservative
 // all-Owned reference semantics} × {differential equivalence, `--link` face,

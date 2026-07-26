@@ -6,7 +6,31 @@
 // discharges FIXME 0765's no-fix-without-a-repro precondition for the runtime
 // fix.
 //
-// THE MECHANISM (ruled runtime-library-owned, NOT backend glue). Embedding a
+// FIXED — in TWO places, because the file turned out to pin TWO defects, not
+// one, and the second was hiding behind the first:
+//
+//   REPRO B (the leak face) — S118 W2b RE-1, `959833ea`. The deep walk is
+//   DELETED; `sconcat`'s tail embed incs the head only, which is what the
+//   tree-ownership `consume_slist` glue was always written against. B1 +3→0,
+//   B2 +7→0, B4 +6→0 on that commit; B3's surviving +2 was a BACKEND stranded
+//   interior of a deeper-than-4 Sexp graph and went at W3 S1 (`c6234398`) with
+//   the inline-glue depth cutoff.
+//
+//   REPRO A (the abort face) — RE-ATTRIBUTED, then fixed at W3 S3 (`22072a0c`).
+//   It was never the marshal walk: pre-fix, M1 quarantine made the abort
+//   DISAPPEAR (a write into a reused freed chunk), falsifying the deep walk as
+//   the wild write. Post-fix, with the leak's surplus references gone, the armed
+//   lane LOCATED it — `STALE RC DEC (JIT inline)` double-releasing a one-byte
+//   HeapString extracted under a constructor pattern, i.e. the 0810-FaceB/0782
+//   match-owned-temporary-scrutinee family. The leak had been MASKING a
+//   premature free. That is the durable lesson of this file and the reason both
+//   faces were pinned separately: a single "0835 is fixed" verdict on the
+//   balance half alone would have shipped the use-after-free.
+//
+// Read the rest of this header as the S115/S118-W1 record it is.
+//
+// THE MECHANISM (ruled runtime-library-owned, NOT backend glue) — the ruling was
+// correct for the LEAK face and wrong for the ABORT face; see above. Embedding a
 // list as `sconcat`'s tail runs `marshal::deep_rc_inc_slist`
 // (`crates/cranelisp-primitives/src/marshal.rs`, called by `sconcat`), which
 // adds +1 to EVERY interior `SCons` node and every element — references no
@@ -53,8 +77,8 @@
 // signature OF memory corruption, and it is why no cell here asserts a
 // particular abort message or a particular exit code for the failure: the
 // contract (right answer, clean exit, exact balance) is what is asserted, and it
-// is violated deterministically today by at least one of its two halves in every
-// cell — the leak half is exact and reproducible at every size.
+// was violated deterministically by at least one of its two halves in every
+// cell — the leak half was exact and reproducible at every size.
 //
 // Free-standing: `PreludeVariant::PrimitivesOnly`, ZERO stdlib. The `macros`
 // module (`SList`/`Sexp`/`sconcat`) is a synthetic bootstrap module
@@ -199,7 +223,7 @@ fn assert_run_contract(label: &str, program: &str, expect_exit: i32) {
 }
 
 // ===========================================================================
-// REPRO B — the LEAK face (RED)
+// REPRO B — the LEAK face (FIXED S118/959833ea, and S118/c6234398 for B3)
 // ===========================================================================
 
 // REPRO B, the FIXME's six-line no-macro no-runner shape reduced to compiler-only
@@ -222,7 +246,7 @@ fn assert_run_contract(label: &str, program: &str, expect_exit: i32) {
 // spec: spec/12-runtime.md §12.3.1 — a heap value MUST be freed when it is no
 // longer reachable. Every interior `SCons` node of a consumed argument is
 // unreachable once `sconcat` has taken over its cells.
-// defect: class=rc-miscount locus=crates/cranelisp-primitives/src/marshal.rs::deep_rc_inc_slist vs crates/cranelisp-intrinsics/src/drop.rs::consume_slist — tail-embed incs every interior node/element while tree-ownership consume glue discharges only the head found=S115 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-primitives/src/marshal.rs::deep_rc_inc_slist — the tail-embed deep walk vs the tree-ownership consume glue (`crates/cranelisp-intrinsics/src/drop.rs::consume_slist`, which was already correct); the walk is DELETED, read `marshal.rs`'s head-only inc today — tail-embed incced every interior node/element while the consume glue discharged only the head found=S115 fixed=S118/959833ea owner=/dev
 #[test]
 fn repro_b_single_sconcat_tail_embed_balances() {
     let program = format!(
@@ -239,7 +263,7 @@ fn repro_b_single_sconcat_tail_embed_balances() {
 // SNil))))` = 4).
 // spec: spec/12-runtime.md §12.3.1 — a heap value MUST be freed when it is no
 // longer reachable; the requirement does not weaken with list length.
-// defect: class=rc-miscount locus=crates/cranelisp-primitives/src/marshal.rs::deep_rc_inc_slist vs crates/cranelisp-intrinsics/src/drop.rs::consume_slist — per-call residual proportional to |ys| at constant type-nesting depth found=S115 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-primitives/src/marshal.rs::deep_rc_inc_slist — the tail-embed deep walk vs the tree-ownership consume glue (`crates/cranelisp-intrinsics/src/drop.rs::consume_slist`, which was already correct); the walk is DELETED, read `marshal.rs`'s head-only inc today — per-call residual proportional to |ys| at constant type-nesting depth; RE-1 (`959833ea`) took B3 from +11 to +2 and the surviving +2 was a BACKEND stranded interior of a deeper-than-4 Sexp graph, which went with the depth cutoff found=S115 fixed=S118/c6234398 owner=/dev
 #[test]
 fn repro_b_chained_sconcat_residual_does_not_grow_per_call() {
     let two = format!(
@@ -261,7 +285,7 @@ fn repro_b_chained_sconcat_residual_does_not_grow_per_call() {
 // defect's residual would track type depth, which does not move here.
 // spec: spec/12-runtime.md §12.3.1 — a heap value MUST be freed when it is no
 // longer reachable.
-// defect: class=rc-miscount locus=crates/cranelisp-primitives/src/marshal.rs::deep_rc_inc_slist vs crates/cranelisp-intrinsics/src/drop.rs::consume_slist — residual scales with |ys| at constant type depth (the /qa falsification arm) found=S115 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-primitives/src/marshal.rs::deep_rc_inc_slist — the tail-embed deep walk vs the tree-ownership consume glue (`crates/cranelisp-intrinsics/src/drop.rs::consume_slist`, which was already correct); the walk is DELETED, read `marshal.rs`'s head-only inc today — residual scaled with |ys| at constant type depth (the /qa falsification arm) found=S115 fixed=S118/959833ea owner=/dev
 #[test]
 fn repro_b_longer_embedded_tail_balances() {
     let program = format!(
@@ -276,7 +300,7 @@ fn repro_b_longer_embedded_tail_balances() {
 }
 
 // ===========================================================================
-// REPRO A — the ABORT face on the test-runner path (RED)
+// REPRO A — the ABORT face on the test-runner path (FIXED S118/22072a0c)
 // ===========================================================================
 
 // REPRO A — the FIXME's higher-value repro: the `SList` is built and dropped
@@ -296,7 +320,7 @@ fn repro_b_longer_embedded_tail_balances() {
 // spec: spec/12-runtime.md §12.3.1 — a heap value MUST NOT be freed while it is
 // still reachable; a teardown that releases a reference no owner holds corrupts
 // the allocator's own bookkeeping.
-// defect: class=rc-miscount locus=crates/cranelisp-primitives/src/marshal.rs::deep_rc_inc_slist vs crates/cranelisp-intrinsics/src/drop.rs::consume_slist — abort face: undischargeable interior refs corrupt glibc heap metadata past ~6 cells found=S115 owner=/dev
+// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/match_codegen.rs::dec_temporary_scrutinee — RE-ATTRIBUTED at W2b: the abort face was NOT the marshal walk (M1 quarantine made it disappear pre-fix, falsifying candidate (ii)); armed post-fix it located as a `STALE RC DEC (JIT inline)` double-releasing a ctor-pattern-extracted HeapString — the 0810-FaceB/0782 family, which the leak's surplus refs had been masking found=S115 fixed=S118/22072a0c owner=/dev
 #[test]
 fn repro_a_slist_teardown_on_the_test_runner_path_does_not_abort() {
     let session = format!(
@@ -336,7 +360,7 @@ fn repro_a_slist_teardown_on_the_test_runner_path_does_not_abort() {
 // cell falsifies that: the runner is an amplifier, not the mechanism.
 // spec: spec/12-runtime.md §12.3.1 — a heap value MUST NOT be freed while it is
 // still reachable.
-// defect: class=rc-miscount locus=crates/cranelisp-primitives/src/marshal.rs::deep_rc_inc_slist vs crates/cranelisp-intrinsics/src/drop.rs::consume_slist — abort face reachable from ordinary top-level code, no runner involved found=S115 owner=/dev
+// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/match_codegen.rs::dec_temporary_scrutinee — RE-ATTRIBUTED at W2b (see the sibling cell): the same backend double-release, reachable from ordinary top-level code with no runner involved found=S115 fixed=S118/22072a0c owner=/dev
 #[test]
 fn repro_a_top_level_six_cell_slist_teardown_does_not_abort() {
     let session = format!("{SLIST_PLUMBING}(slen {})\n", steps(3));

@@ -1,10 +1,21 @@
 // mixed_arm_match_forward_0726.rs — the tripwire for FIXME 0726
 // (`design/arch/fixmes/0726-qa-mixed-arm-match-forward-tripwire.md`, filed by
 // `/design`(backend) in S115 Phase 3 to discharge 0697's second ask). Authored
-// by `/testing` in S118 W1 per `tests/plan/s118-test-plan.md` §4.2 / §2.3; the
-// cells are INTENDED REDs that flip with the Track-B W3 per-arm release
-// migration (`design/backend/transitive-drop-glue.md` §5 removes exactly the
-// approximation this file fences).
+// by `/testing` in S118 W1 per `tests/plan/s118-test-plan.md` §4.2 / §2.3 as
+// INTENDED REDs that would flip with the Track-B W3 per-arm release migration
+// (`design/backend/transitive-drop-glue.md` §5 removes exactly the approximation
+// this file fences).
+//
+// FIXED — S118 W3 slice S3, `22072a0c`. Both tripwire cells are GREEN and are
+// now regression guards; read what follows in the PAST tense. The `// defect:`
+// locus still names `fn_compiler.rs::match_forwards_scrutinee`, which is where
+// the defect lived. That function SURVIVES the fix — but only as
+// `operand_live_binding_root`'s provenance trace, which is genuinely an
+// any-arm question. Its RELEASE-GATE use, and the merge-block dec it gated, are
+// gone: `match_codegen.rs::scrutinee_lifetime_for_arm` now resolves a per-ARM
+// lifetime, so the ctor path releases what it consumed regardless of what a
+// sibling var arm does. A regression here would most likely be a new whole-match
+// approximation, not this one returning.
 //
 // THE APPROXIMATION UNDER TEST. The R3 forwarding-suppresses-dec accounting uses
 // a STATIC WHOLE-MATCH predicate — `fn_compiler.rs::match_forwards_scrutinee`
@@ -186,30 +197,30 @@ fn assert_both_toggles(label: &str, program: &str) {
 }
 
 // ===========================================================================
-// THE TRIPWIRE — ctor path selected (RED)
+// THE TRIPWIRE — ctor path selected (FIXED S118/22072a0c)
 // ===========================================================================
 
-// The RED half of the pair. `(match (norm true) [(Jus g) (Non g) x x])` selects
-// the CONSTRUCTOR arm; the arm takes the payload over into a fresh `Non`, so the
-// consumed `Jus` box is unreachable the moment the arm body has it — and the
-// whole-match suppression, armed by the sibling var arm, means nobody decs it.
-// Residue 2 at HEAD, identical in both toggles.
+// The formerly-RED half of the pair. `(match (norm true) [(Jus g) (Non g) x x])`
+// selects the CONSTRUCTOR arm; the arm takes the payload over into a fresh `Non`,
+// so the consumed `Jus` box is unreachable the moment the arm body has it — and
+// the whole-match suppression, armed by the sibling var arm, meant nobody decced
+// it. Residue 2 at the S118 W1 HEAD, identical in both toggles.
 // spec: spec/12-runtime.md §12.3.1 — a heap value MUST be freed when it is no
 // longer reachable. The consumed scrutinee of a constructor arm is unreachable
 // once the arm has taken over its payload.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/fn_compiler.rs::match_forwards_scrutinee — whole-match forwarding predicate suppresses the scrutinee dec on ALL paths of a mixed ctor+var match found=S115 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/fn_compiler.rs::match_forwards_scrutinee — whole-match forwarding predicate suppresses the scrutinee dec on ALL paths of a mixed ctor+var match found=S115 fixed=S118/22072a0c owner=/dev
 #[test]
 fn mixed_arm_match_ctor_path_releases_the_consumed_scrutinee() {
     assert_both_toggles("0726 ctor-path", &mixed_arm_program(true));
 }
 
-// The `--link` face of the RED half. Pinned separately because `--link` is the
+// The `--link` face of the formerly-RED half. Pinned separately because `--link` is the
 // release gate and because this family's sibling defects (0782/0810 Face B)
 // showed the two modes can disagree in SYMPTOM while sharing a cause — a fix
 // that lands only on the JIT path is a `mode-divergence` defect in its own right.
 // spec: spec/12-runtime.md §12.3.1 — the requirement is on the language, not on
 // a mode; `--run` and `--link` MUST agree.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/fn_compiler.rs::match_forwards_scrutinee — whole-match forwarding suppression, `--link` face found=S115 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/fn_compiler.rs::match_forwards_scrutinee — whole-match forwarding suppression, `--link` face found=S115 fixed=S118/22072a0c owner=/dev
 #[test]
 fn mixed_arm_match_ctor_path_releases_the_consumed_scrutinee_linked() {
     assert_contract("0726 ctor-path link", &mixed_arm_program(true), false, true);

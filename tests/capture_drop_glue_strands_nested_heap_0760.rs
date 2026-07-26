@@ -1,6 +1,9 @@
 // capture_drop_glue_strands_nested_heap_0760.rs — S115 W3c, FIXME 0760 repros.
 //
-// THREE FAILING-NOT-IGNORED REPROS (open defects) plus their GREEN controls.
+// THREE REPROS plus their GREEN controls. ALL THREE ARE NOW FIXED and are
+// regression guards — face 1 (the two capture cells) at S118 W3 slice S4,
+// `232250da`; face 2 (the depth truncation) at slice S1, `c6234398`. Read what
+// follows in the PAST tense; the per-cell notes below say which seam went where.
 //
 // The S115 W3/W3b sweep closed three faces of one class — "a release that frees
 // the box and strands what the box owns" — by routing every release site onto ONE
@@ -10,25 +13,34 @@
 // HEAD and, until this file, recorded ONLY as prose in FIXME 0760:
 //
 //   1. THE CAPTURE GLUE'S NON-CLOSURE CASES. `lambda.rs::emit_capture_dec_glue`
-//      builds its body in a SEPARATE Cranelift context, so it cannot call the
-//      `&mut self` type-directed release; a capture that is a Vec-of-heap or an
-//      ADT-with-heap-fields still takes a bare `heap::emit_rc_dec(.., None)` and
-//      strands the nested heap. Measured: K (closure capturing a Vec of Strings)
-//      leaks 2/iteration, L (closure capturing an ADT with a String field) leaks
+//      builds its body in a SEPARATE Cranelift context, so it could not call the
+//      `&mut self` type-directed release; a capture that was a Vec-of-heap or an
+//      ADT-with-heap-fields took a bare `heap::emit_rc_dec(.., None)` and stranded
+//      the nested heap. Measured: K (closure capturing a Vec of Strings) leaked
+//      2/iteration, L (closure capturing an ADT with a String field) leaked
 //      1/iteration — both toggle-INDEPENDENT.
+//      FIXED at S4 (`232250da`) by resolution (b): `CaptureRelease::Plain(
+//      HeapCategory)` — the arm the bare dec lived in — is deleted, and the
+//      enclosing `FnCompiler` requests each slot's canonical glue BEFORE the
+//      separate builder exists (`request_capture_glue`), so the body emits only a
+//      call. Both mirrors ride it, which is 0796 folded by construction.
 //
 //   2. THE INLINE-GLUE DEPTH TRUNCATION. `rc_emission.rs:496`
-//      `MAX_DROP_GLUE_DEPTH = 4` falls back to a plain dec past the limit, and its
-//      own comment already admits "fields leak" there. Measured here for the first
-//      time: the cliff is EXACTLY at nesting depth 5 — depth ≤ 4 balances, depth 5
-//      leaks 1/iteration (the leaf String), depth 6 leaks 2/iteration (the depth-5
-//      box AND the String). Also toggle-independent. This is the SECOND,
-//      independent instance of the class named in 0760's proposed resolution (b).
+//      `MAX_DROP_GLUE_DEPTH = 4` fell back to a plain dec past the limit, and its
+//      own comment already admitted "fields leak" there. Measured here for the
+//      first time: the cliff was EXACTLY at nesting depth 5 — depth ≤ 4 balanced,
+//      depth 5 leaked 1/iteration (the leaf String), depth 6 leaked 2/iteration
+//      (the depth-5 box AND the String). Also toggle-independent. This was the
+//      SECOND, independent instance of the class named in 0760's resolution (b).
+//      FIXED at S1 (`c6234398`), earlier than the design predicted: once
+//      `emit_typed_rc_dec` became the canonical glue-CALL emitter the field walk
+//      carried no depth at all, so the constant and `FnCompiler::drop_glue_depth`
+//      were dead and were deleted rather than carried. Both names are grep-zero
+//      in the backend today, fenced by `drop_glue_legacy_emitter_fence.rs`.
 //
-// Both faces flip when `/design`(backend) rules FIXME 0760 — (a) borrowed-builder
-// parameterisation of the type-directed release, or (b) per-type named drop-glue
-// FUNCTIONS called from every release site, which collapses the depth truncation
-// too — and `/dev`(backend) implements it. These tests are the acceptance pins.
+// Both faces flipped on `/design`(backend)'s FIXME 0760 ruling — resolution (b),
+// per-type named drop-glue FUNCTIONS called from every release site, which
+// collapsed the depth truncation too. These tests were the acceptance pins.
 //
 // Provenance: /sprint W3c addendum (the user asked whether the exemplar-uncovered
 // leak was reproduced free-standing). It was not: the surviving faces existed only
@@ -110,15 +122,15 @@ fn nested_chain(depth: usize) -> String {
 }
 
 // =============================================================================
-// Face 1 — the capture glue's non-closure cases (FIXME 0760, RED)
+// Face 1 — the capture glue's non-closure cases (FIXME 0760, FIXED S118/232250da)
 // =============================================================================
 
-// K (RED) — a closure capturing a Vec of Strings. The capture drop glue bare-decs
-// the vec: the vec's own box is freed but its two element Strings are stranded, so
-// the program leaks 2 objects per closure created. Measured at W3b HEAD:
+// K — a closure capturing a Vec of Strings. The capture drop glue bare-decced the
+// vec: the vec's own box was freed but its two element Strings were stranded, so
+// the program leaked 2 objects per closure created. Measured at S115 W3b HEAD:
 // allocs=401 deallocs=201, identical under both ownership toggles.
 // spec: spec/12-runtime.md §12.3.1 — heap values are freed when no longer reachable.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/control_flow/lambda.rs::emit_capture_dec_glue — non-closure capture takes a bare dec, stranding a Vec's elements (FIXME 0760; blocked on the /design(backend) borrowed-builder-vs-named-glue ruling) found=S115 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/control_flow/capture_rc.rs::emit_capture_dec_into — the `CaptureRelease::Plain(HeapCategory)` arm bare-decced a non-closure capture, stranding a Vec's elements (FIXME 0760; `lambda.rs::emit_capture_dec_glue` is the envelope and SURVIVES — the deleted seam is the Plain arm) found=S115 fixed=S118/232250da owner=/dev
 #[test]
 fn closure_capturing_vec_of_strings_does_not_leak() {
     let src = format!(
@@ -129,11 +141,11 @@ fn closure_capturing_vec_of_strings_does_not_leak() {
     assert_balanced("K (closure capturing a Vec of Strings)", &src);
 }
 
-// L (RED) — a closure capturing an ADT with a String field. Same seam, the ADT arm:
-// the `Wr` box is freed, its String field is stranded — 1 leaked object per closure.
-// Measured at W3b HEAD: allocs=301 deallocs=201, both toggles.
+// L — a closure capturing an ADT with a String field. Same seam, the ADT arm: the
+// `Wr` box was freed, its String field stranded — 1 leaked object per closure.
+// Measured at S115 W3b HEAD: allocs=301 deallocs=201, both toggles.
 // spec: spec/12-runtime.md §12.3.1 — heap values are freed when no longer reachable.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/control_flow/lambda.rs::emit_capture_dec_glue — non-closure capture takes a bare dec, stranding an ADT's heap field (FIXME 0760) found=S115 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/control_flow/capture_rc.rs::emit_capture_dec_into — the `CaptureRelease::Plain(HeapCategory)` arm bare-decced a non-closure capture, stranding an ADT's heap field (FIXME 0760) found=S115 fixed=S118/232250da owner=/dev
 #[test]
 fn closure_capturing_adt_with_string_field_does_not_leak() {
     let src = format!(
@@ -226,7 +238,7 @@ fn adt_wrapping_vec_of_adts_balances_green() {
 }
 
 // =============================================================================
-// Face 2 — the MAX_DROP_GLUE_DEPTH truncation (RED)
+// Face 2 — the MAX_DROP_GLUE_DEPTH truncation (FIXED S118/c6234398)
 // =============================================================================
 
 // CONTROL (GREEN) — nesting depth 1..4 is exact: `(W1 (W2 (W3 (W4 "hello"))))`
@@ -241,17 +253,17 @@ fn nested_adt_chain_up_to_glue_depth_limit_balances_green() {
     }
 }
 
-// RED — past `MAX_DROP_GLUE_DEPTH = 4` the inline drop glue falls back to a plain
-// dec and the remaining fields leak, exactly as the constant's own comment admits.
-// The cliff is at depth 5: depth 5 leaks 1/iteration (601/501 — the leaf String),
-// depth 6 leaks 2/iteration (701/501 — the depth-5 box AND the String), i.e. the
-// leak grows with every level past the limit. Toggle-independent.
+// Past `MAX_DROP_GLUE_DEPTH = 4` the inline drop glue fell back to a plain dec and
+// the remaining fields leaked, exactly as the constant's own comment admitted.
+// The cliff was at depth 5: depth 5 leaked 1/iteration (601/501 — the leaf String),
+// depth 6 leaked 2/iteration (701/501 — the depth-5 box AND the String), i.e. the
+// leak grew with every level past the limit. Toggle-independent.
 //
 // Both depths are asserted in ONE test (one defect, one record) and BOTH residues
 // are reported before failing, so the fix can be verified against the shape of the
 // leak, not just its presence.
 // spec: spec/12-runtime.md §12.3.1 — heap values are freed when no longer reachable.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs:496 MAX_DROP_GLUE_DEPTH=4 inline-glue truncation falls back to a plain dec and strands every field past the limit (FIXME 0760 resolution (b) collapses this face) found=S115 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::MAX_DROP_GLUE_DEPTH — the depth-4 inline-glue truncation fell back to a plain dec and stranded every field past the limit (FIXME 0760 resolution (b) collapsed this face; the constant and its guard block are DELETED — read `drop_glue.rs`'s registry, which carries no cutoff) found=S115 fixed=S118/c6234398 owner=/dev
 #[test]
 fn nested_adt_chain_past_glue_depth_limit_does_not_leak() {
     let mut residues: Vec<(usize, bool, i64, i64)> = Vec::new();

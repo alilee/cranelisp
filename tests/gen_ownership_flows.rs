@@ -31,6 +31,30 @@
 //                   a per-iteration leak is reported with its rate, separately
 //                   from a constant one.
 //
+// THE EXCLUSION MECHANISM IS RETIRED (S118 W3 rider, `/testing`). From v1 until
+// this change the harness carried a `balance_exclusion(type, position)` opt-out
+// and a `balance: bool` parameter on `verdict`, so six cells — {vec_of_heap,
+// adt_with_heap_field, vec_of_adt_with_heap_field} x {curried_partial_
+// application, captured_in_escaping_closure} — asserted only the value and
+// differential faces. It named FIXME 0760 (the capture drop glue's bare dec) and
+// FIXME 0796 (auto-curry's synthesised env reaching the identical seam).
+//
+// W3's S4 slice routed both capture mirrors through canonical drop glue, and S6
+// deleted the inline emitter and its depth cliff. `design/backend/transitive-
+// drop-glue.md` §7.4 made THIS REMOVAL the acceptance for 0796 — "a fix that
+// flips #11–#13 while the exclusion stays is incomplete" — so the list is gone
+// in its maximal form: not the `curried_partial_application` entry alone, but
+// the whole predicate, the `excluded` bookkeeping, and the `balance` opt-out
+// parameter. Nothing else consumed them, so the scaffolding went with them.
+// MEASURED at HEAD `7f9ea7fd`: all 60 cells x 2 iteration counts x 2 toggles
+// clean, with every face asserted on every cell.
+//
+// If a future defect ever needs a cell to opt out again, do NOT resurrect this
+// mechanism from git: an opt-out is a suppressed assertion, and the two named
+// alternatives are a cell-by-cell pin in a repro file (which is what 0745 has)
+// or a STRUCTURAL exclusion — a shape the generator cannot emit at all, which is
+// what `single_program` documents below.
+//
 // CAPABILITY FENCES (METHOD §2.2 — "an instrument is unverified until it is
 // proven to detect"; `memory-safety-coverage.md` §4.1). The four `_capability_`
 // tests at the bottom plant SYNTHETIC faults — never a live defect, per the
@@ -500,15 +524,15 @@ enum Fault {
     NoMeasurement,
 }
 
-/// Faces 1–4 over one cell's four measurements. `balance` selects whether the
-/// RC faces (3 and 4) are asserted; see `balance_exclusion`.
+/// Faces 1–4 over one cell's four measurements. Every face is asserted on every
+/// cell: there is no opt-out parameter and no exclusion list (see the file
+/// header, "THE EXCLUSION MECHANISM IS RETIRED").
 fn verdict(
     expect: i32,
     single_on: Measure,
     single_off: Measure,
     scaled_on: Measure,
     scaled_off: Measure,
-    balance: bool,
 ) -> Vec<Fault> {
     let mut faults = Vec::new();
     let all = [single_on, single_off, scaled_on, scaled_off];
@@ -520,9 +544,6 @@ fn verdict(
     // Face 2 — differential (ON vs the conservative oracle).
     if single_on.exit != single_off.exit || scaled_on.exit != scaled_off.exit {
         faults.push(Fault::Divergence);
-    }
-    if !balance {
-        return faults;
     }
     // Faces 3/4 need measurements to exist.
     if all.iter().any(|m| m.rc.is_none()) {
@@ -551,45 +572,6 @@ fn verdict(
     faults
 }
 
-/// The one place a `(type, position)` cell may opt out of the RC faces, with a
-/// named open defect that already carries a pin, an owner and a CI trigger.
-/// Adding a second RED for one unfixed defect buys nothing and costs a triage
-/// cycle every certification run (FIXME 0745's own rider says so).
-///
-/// The value and differential faces still run on every excluded cell.
-///
-/// The exclusion is EXACTLY the measured fault set — verified by disabling it and
-/// re-running the sweep (S115 W7, HEAD `99bd23a8`): the six excluded cells fail
-/// and NOTHING else does. Per-iteration rates at that HEAD, identical under both
-/// toggles (so the standing DIFFERENTIAL RC face passes all six — FIXME 0761):
-///
-///   vec_of_heap              x {curried, captured}  3/iteration
-///   adt_with_heap_field      x {curried, captured}  1/iteration
-///   vec_of_adt_with_heap_fld x {curried, captured}  4/iteration
-///
-/// `curried_partial_application` is a reaching context FIXME 0760 does not name —
-/// its evidence and its repro file cover only explicit `fn` captures. Auto-curry's
-/// implicit closure env strands identically, at the identical rate. Routed to
-/// `/design`(backend) as FIXME 0796; it does not change the a-vs-b ruling, it
-/// widens what option (b) has to collapse.
-fn balance_exclusion(t: &OwningType, p: &Position) -> Option<&'static str> {
-    let captured = matches!(
-        p.name,
-        "captured_in_escaping_closure" | "curried_partial_application"
-    );
-    if captured && t.nesting >= 2 {
-        return Some(
-            "FIXME 0760 — the capture drop glue releases a Vec-of-heap / \
-             ADT-with-heap-field capture with a bare dec, stranding what the \
-             capture owns (leak-only, toggle-independent, per-iteration). Pinned \
-             failing-not-ignored by tests/capture_drop_glue_strands_nested_heap_0760.rs; \
-             open on a /design(backend) a-vs-b ruling. Remove this exclusion when \
-             those pins flip.",
-        );
-    }
-    None
-}
-
 // ===========================================================================
 // The sweep
 // ===========================================================================
@@ -602,22 +584,17 @@ fn sweep(type_name: &str) {
         .expect("unknown owning type");
     let mut failures: Vec<String> = Vec::new();
     let mut run = 0usize;
-    let mut excluded = 0usize;
 
     for p in positions() {
         let single = single_program(t, &p);
         let scaled = scaled_program(t, &p);
-        let excl = balance_exclusion(t, &p);
         let m = (
             measure(&single, Toggle::OwnershipOn),
             measure(&single, Toggle::OwnershipOff),
             measure(&scaled, Toggle::OwnershipOn),
             measure(&scaled, Toggle::OwnershipOff),
         );
-        let faults = verdict(t.expect, m.0, m.1, m.2, m.3, excl.is_none());
-        if excl.is_some() {
-            excluded += 1;
-        }
+        let faults = verdict(t.expect, m.0, m.1, m.2, m.3);
         run += 1;
         if !faults.is_empty() {
             failures.push(format!(
@@ -632,7 +609,7 @@ fn sweep(type_name: &str) {
     assert!(
         failures.is_empty(),
         "[gen-ownership-flows] {} of {run} cells FAILED for owning type `{}` \
-         ({excluded} cell(s) opted out of the RC faces by named exclusion).\n\n{}",
+         (every cell asserts every face — there is no exclusion list).\n\n{}",
         failures.len(),
         t.name,
         failures.join("\n\n")
@@ -713,7 +690,7 @@ fn gen_flows_capability_measures_a_real_clean_cell_as_clean() {
          zero-allocation baseline would make every balance assertion vacuous"
     );
     assert_eq!(
-        verdict(3, single, single, scaled, scaled, true),
+        verdict(3, single, single, scaled, scaled),
         vec![],
         "a real clean cell MUST verdict clean — otherwise the fault fences below \
          prove nothing"
@@ -739,7 +716,6 @@ fn gen_flows_capability_detects_planted_constant_leak() {
         single,
         bump_allocs(scaled, 1),
         scaled,
-        true,
     );
     assert!(
         faults.contains(&Fault::Leak { count: 1 }),
@@ -771,7 +747,6 @@ fn gen_flows_capability_detects_planted_over_release() {
         single,
         bump_deallocs(scaled, 1),
         scaled,
-        true,
     );
     assert!(
         faults.contains(&Fault::OverRelease { count: 1 }),
@@ -797,7 +772,7 @@ fn gen_flows_capability_detects_planted_per_iteration_scaling_leak() {
         rc: scaled.rc.map(|(a, d)| (a + (ITERS - 1), d)),
         ..scaled
     };
-    let faults = verdict(3, single, single, leaky_scaled, scaled, true);
+    let faults = verdict(3, single, single, leaky_scaled, scaled);
     assert!(
         faults.contains(&Fault::Scaling { per_iteration: 1 }),
         "the harness MUST detect a planted PER-ITERATION leak of 1/iteration and \
@@ -820,7 +795,7 @@ fn gen_flows_capability_detects_planted_per_iteration_scaling_leak() {
 fn gen_flows_capability_detects_unmeasured_run() {
     let (single, scaled) = fence_baseline();
     let blind = Measure { rc: None, ..single };
-    let faults = verdict(3, blind, single, scaled, scaled, true);
+    let faults = verdict(3, blind, single, scaled, scaled);
     assert!(
         faults.contains(&Fault::NoMeasurement),
         "a run with no [RC_STATS] line MUST be reported as unmeasured, never \

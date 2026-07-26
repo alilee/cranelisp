@@ -1,5 +1,13 @@
 // Sprint 116 transitive-discharge cells not represented by the fixed-depth
 // 0760 repro: a recursive type must compile finitely and release finite values.
+//
+// FIXED — S118 W3 slice S1, `c6234398`. The cell is GREEN and is now a
+// regression guard. The fixed-depth fallback it names is gone entirely
+// (`MAX_DROP_GLUE_DEPTH` and `FnCompiler::drop_glue_depth` deleted, grep-zero
+// fenced by `drop_glue_legacy_emitter_fence.rs`); the canonical registry in
+// `crates/cranelisp-backend/src/drop_glue.rs` carries no cutoff and satisfies
+// the declare-before-compiling-body requirement by construction, which is what
+// makes the recursive definition terminate.
 
 #[path = "helpers/mod.rs"]
 mod helpers;
@@ -39,11 +47,11 @@ const RECURSIVE: &str = "(deftype List Nil (Cons [:String head :List tail]))\n\
      (defn build [n xs] (if (eq-i64 n 0) xs (build (sub-i64 n 1) (Cons \"x\" xs))))\n\
      (defn main [] (let [empty (build 0 Nil) one (build 1 Nil) many (build 9 Nil)] (Pure 0)))\n";
 
-// RED — named/per-concrete glue generation must terminate on the recursive
-// definition, while runtime recursion follows and releases each finite chain.
+// Named/per-concrete glue generation must terminate on the recursive definition,
+// while runtime recursion follows and releases each finite chain.
 // spec: spec/12-runtime.md §12.3.1 — all unreachable transitive heap ownership
 // is released, including finite values of recursive types.
-// defect: class=rc-miscount locus=backend recursive type-directed drop-glue generation — fixed-depth fallback strands recursive payloads; replacement must declare before compiling body found=S116 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::MAX_DROP_GLUE_DEPTH — the fixed-depth fallback in the backend's recursive type-directed glue generation stranded recursive payloads; the replacement had to declare before compiling the body (read `drop_glue.rs`'s registry today) found=S116 fixed=S118/c6234398 owner=/dev
 #[test]
 fn finite_recursive_values_zero_one_many_terminate_and_balance() {
     let (allocs, deallocs, stderr) = balance(RECURSIVE);

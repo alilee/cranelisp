@@ -2,8 +2,12 @@
 //! inline drop-glue emitter (`sprints/SPRINT.md` §Architecture review ruling 10;
 //! `tests/plan/s118-test-plan.md` §4.3, extended by the 0878 disposition;
 //! `design/backend/transitive-drop-glue.md` §8). Authored by `/testing` in S118
-//! W1 as an INTENDED RED; it flips exactly at the Track-B W3 migration
-//! change-set (backend slice S5's final commit).
+//! W1 as an INTENDED RED; it flipped exactly where it was aimed — the Track-B W3
+//! migration change-set, backend slice S5+S6's final commit `2ec5736d` — and is
+//! GREEN from there on. It is now the standing guard that the legacy mechanism
+//! does not come back: a re-introduction of any grep-zero symbol turns it RED
+//! again, which is the whole point of asserting on the ABSENCE rather than on
+//! the behaviour.
 //!
 //! WHAT RULING 10 SAYS. The canonical `DropGlueRegistry` coexisting with the
 //! legacy inline emitter was an APPROVED TRANSITIONAL state, and its closure

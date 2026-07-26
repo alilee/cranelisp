@@ -1,14 +1,24 @@
 // match_owned_temporary_scrutinee_0810.rs — the pin batch for FIXME 0810
 // (`design/arch/fixmes/0810-match-over-owned-adt-temporary-leaks-or-over-releases.md`),
 // filed by `/port` in S115 Phase 6a with a complete measured repro. Authored by
-// `/testing` in the S115 Phase-6b pin batch; the FIXME stays OPEN as the record
-// until the fix lands — these cells are its trigger.
+// `/testing` in the S115 Phase-6b pin batch as the FIXME's trigger.
+//
+// FIXED — S118 W3 slice S3, `22072a0c`. All nine cells below are GREEN and are
+// now regression guards; read everything past this block in the PAST tense. The
+// `// defect:` loci keep naming `match_codegen.rs::dec_temporary_scrutinee`,
+// which is where the defect LIVED and which the fix DELETED — the current seams
+// are `match_codegen.rs::scrutinee_lifetime_for_arm` (the per-arm
+// `Borrowed | OwnedForwarded | OwnedConsumed` plan, recorded once before any arm
+// emits) and `::emit_arm_scrutinee_release`, plus `fn_compiler`'s
+// `pending_scrutinee_releases` flush for the tail-jump case. The merge-block
+// release and its whole-match `match_forwards_scrutinee` gate are gone; 0782's
+// resolution (a) — the var-pattern binder BORROWS — landed in the same commit.
 //
 // THE DEFECT — two polarities of ONE seam: the release of an OWNED TEMPORARY
 // scrutinee under a CONSTRUCTOR pattern
-// (`crates/cranelisp-backend/src/compiler/match_codegen.rs`). FIXME 0782 is the
+// (`crates/cranelisp-backend/src/compiler/match_codegen.rs`). FIXME 0782 was the
 // VAR-pattern sibling of the same seam; the two cross-reference each other and a
-// fix that closes only one is a partial fix.
+// fix that closed only one would have been a partial fix.
 //
 //   FACE A — the scrutinee spelled INLINE leaks the wrapper.
 //     `(match (mk i) [(Mk v) …])` in a tail loop: the `Mk` box is allocated every
@@ -22,8 +32,8 @@
 //     — balance alone cannot see this polarity, which is why the Face-B cells
 //     assert the computed VALUE, not just a number.
 //
-//   There is therefore NO correct spelling for this shape today: inline leaks it,
-//   let-bound frees it too early.
+//   There was therefore NO correct spelling for this shape: inline leaked it,
+//   let-bound freed it too early.
 //
 // MEASURED AT HEAD (`/testing`, 2026-07-21, `CRANELISP_NO_LENIENT=1`
 // `CRANELISP_RC_STATS=1`, reproducing `/port`'s Phase-6a numbers exactly):
@@ -343,7 +353,7 @@ const SUM_100: i32 = 86; // 4950 mod 256
 const SUM_1100: i32 = 34; // 604450 mod 256
 
 // ===========================================================================
-// FACE A — the inline scrutinee leaks the wrapper (RED)
+// FACE A — the inline scrutinee leaked the wrapper (FIXED S118/22072a0c)
 // ===========================================================================
 
 // A1 — the base face. `(match (mk i) [(Mk v) …])` in a tail loop allocates one
@@ -353,7 +363,7 @@ const SUM_1100: i32 = 34; // 604450 mod 256
 // spec: spec/12-runtime.md §12.3.1 — a heap value MUST be freed when it is no
 // longer reachable. The `Mk` wrapper is unreachable the moment its arm has taken
 // the payload.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/match_codegen.rs — owned temporary scrutinee under constructor patterns (0782 is the var-pattern sibling) found=S115 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/match_codegen.rs::dec_temporary_scrutinee — owned temporary scrutinee under constructor patterns (0782 is the var-pattern sibling) found=S115 fixed=S118/22072a0c owner=/dev
 #[test]
 fn inline_call_wrapper_scrutinee_does_not_leak() {
     assert_both_toggles("A1 N=100", &inline_call_wrapper(100), SUM_100);
@@ -365,7 +375,7 @@ fn inline_call_wrapper_scrutinee_does_not_leak() {
 // lands only on the JIT path is a `mode-divergence` defect in its own right.
 // spec: spec/12-runtime.md §12.3.1 — the requirement is on the language, not on
 // a mode; `--run` and `--link` MUST agree.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/match_codegen.rs — owned temporary scrutinee under constructor patterns, `--link` face found=S115 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/match_codegen.rs::dec_temporary_scrutinee — owned temporary scrutinee under constructor patterns, `--link` face found=S115 fixed=S118/22072a0c owner=/dev
 #[test]
 fn inline_call_wrapper_scrutinee_does_not_leak_linked() {
     assert_contract(
@@ -383,7 +393,7 @@ fn inline_call_wrapper_scrutinee_does_not_leak_linked() {
 // post-call seam or a returned value's ownership summary.
 // spec: spec/06-pattern-matching.md §6.2.1 — a constructor pattern destructures
 // the scrutinee; the scrutinee object itself is the matching frame's to release.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/match_codegen.rs — owned temporary scrutinee under constructor patterns (inline-ctor face, no call) found=S115 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/match_codegen.rs::dec_temporary_scrutinee — owned temporary scrutinee under constructor patterns (inline-ctor face, no call) found=S115 fixed=S118/22072a0c owner=/dev
 #[test]
 fn inline_constructor_scrutinee_does_not_leak() {
     assert_both_toggles("A2 N=100", &inline_constructor_no_call(100), SUM_100);
@@ -397,7 +407,7 @@ fn inline_constructor_scrutinee_does_not_leak() {
 // it — which is the point of pinning the heap-payload face separately.
 // spec: spec/12-runtime.md §12.3.1 — freeing a value frees the heap values it
 // solely owns.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/match_codegen.rs — owned temporary scrutinee under constructor patterns, heap-payload face (box + field strand together) found=S115 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/match_codegen.rs::dec_temporary_scrutinee — owned temporary scrutinee under constructor patterns, heap-payload face (box + field strand together) found=S115 fixed=S118/22072a0c owner=/dev
 #[test]
 fn inline_scrutinee_with_heap_payload_does_not_leak_box_or_field() {
     assert_both_toggles("A3 N=100", &inline_call_wrapper_heap_payload(100), 7);
@@ -409,7 +419,7 @@ fn inline_scrutinee_with_heap_payload_does_not_leak_box_or_field() {
 // cell that carries the ~11.8k/solve exemplar residue; A1–A3 are its reductions.
 // spec: spec/12-runtime.md §12.3.1 — the superseded wrapper is unreachable at the
 // tail jump and MUST be freed there.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/match_codegen.rs — owned temporary scrutinee under constructor patterns, wrapper-from-call superseding a tail-loop param (the exemplar shape) found=S115 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/match_codegen.rs::dec_temporary_scrutinee — owned temporary scrutinee under constructor patterns, wrapper-from-call superseding a tail-loop param (the exemplar shape) found=S115 fixed=S118/22072a0c owner=/dev
 #[test]
 fn wrapper_from_call_superseding_loop_param_does_not_leak() {
     assert_both_toggles("A4 N=100", &wrapper_from_call_supersedes_loop_param(100), 7);
@@ -421,7 +431,7 @@ fn wrapper_from_call_superseding_loop_param_does_not_leak() {
 }
 
 // ===========================================================================
-// FACE B — the let-bound scrutinee is over-released (RED, memory corruption)
+// FACE B — the let-bound scrutinee was over-released (FIXED S118/22072a0c)
 // ===========================================================================
 
 // B1 — the SAME program as A4 with the scrutinee spelled as a `let` binding.
@@ -436,7 +446,7 @@ fn wrapper_from_call_superseding_loop_param_does_not_leak() {
 // spec: spec/06-pattern-matching.md §6.3.2 — a pattern binding is in scope for
 // its arm body, and the value it names outlives the match when the body returns
 // it. Freeing the scrutinee must not free what the arm bound out of it.
-// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/match_codegen.rs — let-bound owned scrutinee released while its extracted payload is still live (0782 is the var-pattern sibling) found=S115 owner=/dev
+// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/match_codegen.rs::dec_temporary_scrutinee — let-bound owned scrutinee released while its extracted payload is still live (0782 is the var-pattern sibling) found=S115 fixed=S118/22072a0c owner=/dev
 #[test]
 fn let_bound_scrutinee_payload_outlives_the_match() {
     assert_both_toggles("B1 N=1", &let_bound_scrutinee_supersedes_loop_param(1), 7);
@@ -452,7 +462,7 @@ fn let_bound_scrutinee_payload_outlives_the_match() {
 // separately because `--link` is the release gate and because heap corruption is
 // mode-sensitive in its SYMPTOM while identical in its cause.
 // spec: spec/06-pattern-matching.md §6.3.2 — same requirement, `--link` mode.
-// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/match_codegen.rs — let-bound owned scrutinee over-release, `--link` face (exit 134) found=S115 owner=/dev
+// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/match_codegen.rs::dec_temporary_scrutinee — let-bound owned scrutinee over-release, `--link` face (exit 134) found=S115 fixed=S118/22072a0c owner=/dev
 #[test]
 fn let_bound_scrutinee_payload_outlives_the_match_linked() {
     assert_contract(
@@ -471,7 +481,7 @@ fn let_bound_scrutinee_payload_outlives_the_match_linked() {
 // value is the worse half of this defect, and only a VALUE assertion sees it.
 // spec: spec/06-pattern-matching.md §6.2.1 — a constructor pattern matches on the
 // scrutinee's live tag; a `(Gr c)` match on a live `Gr` MUST succeed.
-// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/match_codegen.rs — let-bound owned scrutinee over-release surfacing as a wrong-tag read (`match failed`) rather than a fault found=S115 owner=/dev
+// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/match_codegen.rs::dec_temporary_scrutinee — let-bound owned scrutinee over-release surfacing as a wrong-tag read (`match failed`) rather than a fault found=S115 fixed=S118/22072a0c owner=/dev
 #[test]
 fn let_bound_scrutinee_loop_result_still_matches_its_own_tag() {
     assert_both_toggles(
@@ -484,7 +494,7 @@ fn let_bound_scrutinee_loop_result_still_matches_its_own_tag() {
 // B2-link — the `--link` face of B2: exit 134 rather than the `--run` exit 1,
 // because the linked allocator notices the corruption the JIT run tolerates.
 // spec: spec/06-pattern-matching.md §6.2.1 — same requirement, `--link` mode.
-// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/match_codegen.rs — let-bound owned scrutinee over-release, outer-match `--link` face (exit 134) found=S115 owner=/dev
+// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/match_codegen.rs::dec_temporary_scrutinee — let-bound owned scrutinee over-release, outer-match `--link` face (exit 134) found=S115 fixed=S118/22072a0c owner=/dev
 #[test]
 fn let_bound_scrutinee_loop_result_still_matches_its_own_tag_linked() {
     assert_contract(
@@ -497,11 +507,11 @@ fn let_bound_scrutinee_loop_result_still_matches_its_own_tag_linked() {
 }
 
 // ===========================================================================
-// THE VAR-PATTERN SIBLING — FIXME 0782, pinned here on purpose (RED)
+// THE VAR-PATTERN SIBLING — FIXME 0782, pinned here on purpose (FIXED S118/22072a0c)
 // ===========================================================================
 
-// 0782 is the SAME seam under a VAR pattern instead of a constructor pattern:
-// an owned temporary scrutinee whose arm CONSUMES it is released twice
+// 0782 was the SAME seam under a VAR pattern instead of a constructor pattern:
+// an owned temporary scrutinee whose arm CONSUMED it was released twice
 // (`compile_var_pattern_arm`'s `is_alias` scope cleanup AND `compile_match`'s
 // `dec_temporary_scrutinee`). It was filed by `/dev` in W4c explicitly WITHOUT a
 // fix because "choosing which of the two releases is correct is a seam decision
@@ -522,7 +532,7 @@ fn let_bound_scrutinee_loop_result_still_matches_its_own_tag_linked() {
 // blind to a double-release of a value that was going to be freed anyway.
 // spec: spec/06-pattern-matching.md §6.2.4 — a variable pattern binds the whole
 // scrutinee for the arm; the scrutinee object is released once, by one owner.
-// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/match_codegen.rs::compile_var_pattern_arm — var-pattern arm consuming an owned temporary scrutinee releases it twice (0810 is the constructor-pattern sibling) found=S115 owner=/dev
+// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/match_codegen.rs::compile_var_pattern_arm — var-pattern arm consuming an owned temporary scrutinee releases it twice (0810 is the constructor-pattern sibling) found=S115 fixed=S118/22072a0c owner=/dev
 #[test]
 fn var_pattern_arm_consuming_owned_temporary_releases_it_once_linked() {
     let program = "(defn f [] (match [7 8 9] [xs (vec-get xs 1)]))\n\

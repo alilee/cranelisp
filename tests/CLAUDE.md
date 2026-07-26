@@ -364,7 +364,7 @@ the notation rides the permanent corpus, so analysis works over **GREEN
 repros too**: a fixed defect keeps contributing to the class-frequency and
 hotspot signals forever.
 
-**Fields** (all four required; single line; no free text):
+**Fields** (the four below required; single line; no free text):
 
 - `class=<class>` — the defect class, from the controlled vocabulary below.
   Free-text fragments defeat `uniq -c`; if no class fits, request a vocabulary
@@ -374,6 +374,20 @@ hotspot signals forever.
   `host<->platform marshal boundary`). Prefer the seam form — line numbers rot.
 - `found=S<NN>` — the sprint the defect was found in.
 - `owner=/<skill>` — the skill that owned the **fix** (not the discoverer).
+
+**Optional fifth field — `fixed=S<NN>/<sha>`** (added S118 W3, `/testing`).
+Names the sprint and commit that closed the defect. Present ⇒ the repro is a
+GREEN regression guard; absent ⇒ still open, so `grep -L` over the corpus
+separates the two without running anything.
+
+The locus **never moves when a fix lands**. It records where the bug LIVED,
+which is what the hotspot recipe below counts; rewriting it to the post-fix
+seam would erase the history the notation exists to keep. When the seam was
+DELETED by its fix — the S118 W3 case, where a twelve-symbol atomic deletion
+took several loci out of the tree — keep the historical seam as the `locus=`
+token and say so in the prose after it, naming what a reader should read
+today. `grep -o "locus=[^ ]*"` stops at the first space, so prose after the
+token never pollutes the frequency counts.
 
 **Controlled `class=` vocabulary** (owned by `/qa`; seeded S108 from
 evidenced classes):
