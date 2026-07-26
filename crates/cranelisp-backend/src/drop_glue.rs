@@ -86,6 +86,32 @@ impl DropGlueRegistry {
         self.request(module, symbol_tables, ty).map(Some)
     }
 
+    /// The `(i64) -> i64` adapter over canonical glue for `elem`, for the
+    /// established `runtime/vec_drop` per-element callback ABI. `None` when the
+    /// element type owns nothing heap (the ABI's null callback).
+    ///
+    /// This is the ONE per-element release identity (S118 slice S6): it
+    /// replaces `vec_codegen::build_elem_dec_fn`, which minted a second
+    /// per-instantiation named artifact under a backend-local mangle — the same
+    /// `drop-glue-underkey` class with a second key scheme.
+    pub(crate) fn request_vec_elem_adapter<M, C, L>(
+        &mut self,
+        module: &mut M,
+        symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+        elem: &ConcreteType,
+    ) -> Result<Option<FuncId>, CranelispError>
+    where
+        M: Module,
+        C: CodeStore,
+        L: LinkerStore,
+    {
+        let Some(glue_id) = self.request_if_owning(module, symbol_tables, elem.clone())? else {
+            return Ok(None);
+        };
+        self.define_vec_elem_adapter(module, elem, glue_id)
+            .map(Some)
+    }
+
     fn request<M, C, L>(
         &mut self,
         module: &mut M,
@@ -807,6 +833,58 @@ mod tests {
             .ctor_shapes(&tables, &fq, &[ConcreteType::Int, ConcreteType::String])
             .unwrap();
         assert_eq!(shapes[0].fields, vec![ConcreteType::String]);
+    }
+
+    // spec: appendix-c-nfr §C.1.4 / FIXME 0633+0640 — glue identity keys on the
+    // FULL concrete instantiation and never collides. Rehomed from the deleted
+    // `resolution::tests` ADT-mangle battery (S118 slice S6): the claim survives
+    // its second identity scheme, and now belongs to the types-owned symbol
+    // authority the registry actually uses.
+    //
+    // The defect the battery guarded: a per-INSTANTIATION compiled body cached
+    // under a key that under-determined it, so `(Vec (Duo Int Str))` and
+    // `(Vec (Duo Str Int))` shared one glue — `atomic_rmw Sub` against a raw
+    // `Int` field (SIGBUS) and a leaked `Str`.
+    // defect: class=drop-glue-underkey locus=cranelisp_types::drop_glue_symbol_name found=S111 owner=/dev
+    #[test]
+    fn glue_identity_discriminates_module_name_and_concrete_args() {
+        let m = ModuleFullPath::from("user");
+        let name = |t: &ConcreteType| drop_glue_symbol_name(&m, t).as_ref().to_string();
+
+        let duo_is = adt("user", "Duo", vec![ConcreteType::Int, ConcreteType::String]);
+        let duo_si = adt("user", "Duo", vec![ConcreteType::String, ConcreteType::Int]);
+        let other_module = adt(
+            "other",
+            "Duo",
+            vec![ConcreteType::Int, ConcreteType::String],
+        );
+        let other_name = adt("user", "Duz", vec![ConcreteType::Int, ConcreteType::String]);
+
+        // Concrete-argument ORDER is part of the identity.
+        assert_ne!(name(&duo_is), name(&duo_si));
+        // So is the defining module, and the type name.
+        assert_ne!(name(&duo_is), name(&other_module));
+        assert_ne!(name(&duo_is), name(&other_name));
+        // The same instantiation is STABLE, which is what makes the registry's
+        // dedup sound.
+        assert_eq!(
+            name(&duo_is),
+            name(&adt(
+                "user",
+                "Duo",
+                vec![ConcreteType::Int, ConcreteType::String]
+            ))
+        );
+        // Sanitize-equivalent spellings (`-` vs `_` vs `.`) stay distinct — the
+        // FIXME 0640 collision class the deleted backend-local mangle existed to
+        // avoid, now a property of the types-owned home.
+        let hyphen = adt("user", "A-B", vec![]);
+        let under = adt("user", "A_B", vec![]);
+        let dotted = adt("a.b", "T", vec![]);
+        let hyph_mod = adt("a-b", "T", vec![]);
+        let names = [name(&hyphen), name(&under), name(&dotted), name(&hyph_mod)];
+        let unique: std::collections::HashSet<_> = names.iter().collect();
+        assert_eq!(unique.len(), names.len(), "collision in {names:?}");
     }
 
     // spec: appendix-c-nfr §C.1.4 — the Vec-before-ADT classification ORDER,

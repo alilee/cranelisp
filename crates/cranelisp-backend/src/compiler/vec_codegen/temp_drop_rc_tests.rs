@@ -225,7 +225,7 @@ fn if_joined_borrowed_param_emits_no_temporary_release_neg() {
     // `If` join. Exactly ONE is correct; TWO is the double-dec that aborts.
     // MEASURED: 2 with the `matches!(.., MonoExpr::Var { .. })` gate restored,
     // 1 with the provenance gate.
-    let decs = clif.matches("atomic_rmw.i64 sub").count();
+    let decs = crate::test_support::count_release_ops(&clif);
     assert_eq!(
         decs, 1,
         "an `If` joining two BORROWED arms yields the caller's vector, not a \

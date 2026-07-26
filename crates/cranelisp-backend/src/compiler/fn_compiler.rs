@@ -1160,9 +1160,9 @@ where
     /// Borrowed vars (e.g., pattern match field bindings) are skipped entirely —
     /// they share the owner's (scrutinee's) reference and the owner handles cleanup.
     ///
-    /// ADT field cleanup happens inside the RC=0 dealloc path (via
-    /// `emit_rc_dec_with_inline_drop_glue`), NOT as a separate step before dec.
-    /// This prevents double-free when fields are independently referenced.
+    /// Field cleanup happens inside the RC=0 branch of the canonical glue body,
+    /// NOT as a separate step before the dec. This prevents double-free when
+    /// fields are independently referenced (e.g. extracted by a pattern match).
     pub(crate) fn pop_scope_with_cleanup(
         &mut self,
         skip_var: Option<&Symbol>,
@@ -1197,7 +1197,7 @@ where
         &self,
         frame: &[Symbol],
         skip: impl Fn(&Self, &Symbol) -> bool,
-    ) -> Vec<(Symbol, Type, bool)> {
+    ) -> Vec<(Symbol, Type)> {
         frame
             .iter()
             .filter(|name| {
@@ -1212,58 +1212,52 @@ where
             })
             .map(|name| {
                 let ty = self.variable_types.get(name).cloned().unwrap_or(Type::Int);
-                let needs_guard = matches!(
-                    signature_heap_category(&ty, Some(self.ctx.symbol_tables)),
-                    HeapCategory::Mixed
-                );
-                (name.clone(), ty, needs_guard)
+                (name.clone(), ty)
             })
             .collect()
     }
 
-    /// Emit the `rc_dec` for each collected heap binding (closures → embedded
-    /// drop glue; Vec → `vec_drop`; ADT → inline drop glue in the dealloc path).
-    /// Shared by scope-pop cleanup and the tail-call flush.
-    fn emit_heap_binding_decs(
-        &mut self,
-        to_dec: &[(Symbol, Type, bool)],
-    ) -> Result<(), CranelispError> {
+    /// Emit the release for each collected heap binding — ONE canonical
+    /// `drop<T>` call apiece (S118 slice S5).
+    ///
+    /// The three special-case arms this used to carry (closure via the embedded
+    /// glue pointer, Vec via `vec_drop`, ADT via the recursive inline glue) are
+    /// gone: the TYPE decides the teardown, inside the generated body, so the
+    /// site emits one call and no site-supplied nullary guard. Shared by
+    /// scope-pop cleanup and both tail-call flushes.
+    fn emit_heap_binding_decs(&mut self, to_dec: &[(Symbol, Type)]) -> Result<(), CranelispError> {
         let dealloc = self.ctx.dealloc_func_id;
-        for (name, ty, needs_guard) in to_dec {
+        for (name, ty) in to_dec {
             if let Some(var) = self.variables.get(name) {
                 let val = self.builder.use_var(*var);
-
-                // For closures (Type::Fn), use runtime-embedded drop glue.
-                // This handles both locally-created closures AND closures
-                // received as function parameters (where the static
-                // closure_drop_glue map has no entry).
-                if matches!(ty, Type::Fn(_, _)) {
-                    self.emit_closure_dec_inline(val, dealloc);
+                // **The ONE non-concrete binding class** (FIXME 0394; the D2
+                // entry check's escaped case — see the `is_heap_type` rustdoc).
+                //
+                // A generic constructor `Def`'s own template body is compiled
+                // ONCE, so its parameter's signature type is a residual
+                // `Type::Var` and its runtime representation is the uniform
+                // i64. This dec is NOT a type-directed teardown and must not
+                // become one: it is the balancing half of the guarded
+                // consuming inc `compile_consuming_arg_list` emitted on the
+                // same value one line earlier, on a value the freshly-built
+                // box now also holds a reference to. It can never be the last
+                // reference, so nothing is ever stranded here — which is why
+                // the shallow form is correct rather than merely tolerated.
+                //
+                // Every OTHER release site keeps D2's no-fallback rule:
+                // `emit_typed_rc_dec` still hard-errors on a non-concrete type.
+                if cranelisp_types::ConcreteType::from_type(ty).is_err() {
+                    heap::emit_rc_dec_guarded(
+                        &mut self.builder,
+                        self.module,
+                        val,
+                        dealloc,
+                        None,
+                        true,
+                    );
                     continue;
                 }
-
-                // For Vec-typed bindings: must route through vec_drop to
-                // dec each element and free the data buffer; the generic
-                // rc_dec → dealloc path leaks both.
-                if let Some(elem_ty) = crate::compiler::vec_codegen::vec_element_type(ty) {
-                    let elem_ty = elem_ty.clone();
-                    let span = cranelisp_types::Span::new(0, 0);
-                    // B3.3-R (§5.2): the scope-cleanup Vec dec is always atomic.
-                    // The through-binding half (per-binding Confined carrier) was
-                    // dropped as dead + latent-race code (/review B3.3); the
-                    // analysis produces no confined let-bindings today, so this
-                    // dec was provably always atomic. The `_atomicity` mechanism
-                    // is retained (probe-reachable); it is fed `Atomic` here.
-                    self.emit_vec_aware_rc_dec(val, &elem_ty, span, heap::RcAtomicity::Atomic)?;
-                    continue;
-                }
-
-                // For ADTs: emit RC dec with inline drop glue in the
-                // dealloc path. Field cleanup ONLY happens when RC
-                // reaches 0 (inside the free branch), not unconditionally.
-                // This prevents double-free when fields are independently
-                // referenced (e.g., extracted via pattern match).
-                self.emit_rc_dec_with_inline_drop_glue(val, ty, dealloc, *needs_guard)?;
+                self.emit_typed_rc_dec(val, ty)?;
             }
         }
         Ok(())
@@ -1287,86 +1281,6 @@ where
     /// new iteration now owns. Consumed / borrowed bindings are skipped as in
     /// `pop_scope_with_cleanup`. The frames are NOT popped — the enclosing
     /// `compile_let_sequential` still pops them (into the now-dead block).
-    pub(crate) fn flush_let_scopes_before_tail_jump(
-        &mut self,
-        transfer_skip: &std::collections::HashSet<Symbol>,
-    ) -> Result<(), CranelispError> {
-        if self.scope_stack.len() <= 1 {
-            return Ok(());
-        }
-        // Innermost-first: collect all eligible bindings across the let frames.
-        let mut to_dec: Vec<(Symbol, Type, bool)> = Vec::new();
-        for frame in self.scope_stack[1..].iter().rev() {
-            let frame = frame.clone();
-            let mut frame_decs = self.collect_frame_heap_decs(&frame, |this, name| {
-                if transfer_skip.contains(name) {
-                    return true;
-                }
-                this.is_borrowed(name)
-            });
-            to_dec.append(&mut frame_decs);
-        }
-        self.emit_heap_binding_decs(&to_dec)
-    }
-
-    /// MS-P8 (FIXME 0688 verdict a; `s114-test-plan.md` §2.1) — the PARAM sibling
-    /// of [`FnCompiler::flush_let_scopes_before_tail_jump`]. On a tail self-call
-    /// the loop header OVERWRITES each param slot (scope frame `[0]`) with the new
-    /// argument value; a heap-typed param whose slot is superseded by a FRESH,
-    /// independently-owned value leaks its slot reference — the `conj`/`assoc`
-    /// persistent-op loop's 1-Vec-per-iteration leak (each `conj` COPIES because
-    /// the go-side arg-pass inc makes rc≥2, so the old `v` is always superseded;
-    /// the copy path is the EXPOSURE, the missing slot-dec is the SEAM). Dec each
-    /// superseded heap param before the jump, EXCEPT:
-    ///  - a param whose reference TRANSFERS into a tail argument as a bare `Var`
-    ///    (a MOVE — `transfer_skip`, self- or cross-slot): the box carries forward,
-    ///    so dec'ing it would double-free the value the next iteration owns (the
-    ///    exact contract the let flush honors);
-    ///  - a borrowed param (the caller owns it);
-    ///  - **analysis-ON only** — a param that SOME tail arg is an in-place COW
-    ///    rooted at (`(vec-set p …)` / `(vec-push p …)` anywhere in the arg list,
-    ///    not only at `p`'s own position — FIXME 0691): the mutate branch returns
-    ///    `p`'s OWN box and forwards it into that slot, so the slot is NOT
-    ///    superseded — dec'ing it would free the carried box; SKIP = leak-safe,
-    ///    the both-polarity fence's safe direction: never an under-count / UAF.
-    ///    Under `CRANELISP_NO_OWNERSHIP` the COW always copies (rc≥2 force-count),
-    ///    so nothing is carried forward and the dec is always owed — the exemption
-    ///    does NOT apply toggle-off (FIXME 0695). `conj`/`assoc` are USER-fn
-    ///    calls, not these primitives, so the persistent-op leak is still fixed.
-    ///
-    /// The frames are NOT popped (the loop header reuses the param slots) — this
-    /// only releases the superseded slot references.
-    pub(crate) fn flush_superseded_heap_params_before_tail_jump(
-        &mut self,
-        args: &[MonoExpr],
-        transfer_skip: &std::collections::HashSet<Symbol>,
-    ) -> Result<(), CranelispError> {
-        let param_frame = match self.scope_stack.first() {
-            Some(f) => f.clone(),
-            None => return Ok(()),
-        };
-        let analysis_off = cranelisp_types::ownership_analysis_off();
-        let to_dec = self.collect_frame_heap_decs(&param_frame, |this, name| {
-            // A borrowed param is the caller's to release — EXCEPT one this frame
-            // PROMOTED because the back-edge supersedes its slot with a value the
-            // caller does not own (FIXME 0720; the entry inc keeps the caller's
-            // own reference out of reach of this dec).
-            if transfer_skip.contains(name)
-                || (this.is_borrowed(name) && !this.tco_owned_params.contains(name))
-            {
-                return true;
-            }
-            // In-place COW hazard (analysis-ON only): if SOME tail arg is an
-            // in-place COW rooted at this param, the mutate branch may forward
-            // the param's OWN box into that slot — dec'ing it would free the
-            // carried box (skip, leak-safe). Positional-blind: the COW can feed
-            // a DIFFERENT slot than the param's own (FIXME 0691). Toggle-off
-            // always copies, so the dec is always owed (FIXME 0695).
-            param_flush_exempts_inplace_cow(args, name, analysis_off)
-        });
-        self.emit_heap_binding_decs(&to_dec)
-    }
-
     /// S118 slice S4 (§7.4) — request the canonical drop glue for a capture
     /// slot's type, from the ENCLOSING compiler, before the environment glue
     /// body's `FunctionBuilder` is created. The body builds in its own
@@ -1535,7 +1449,189 @@ where
         Ok(())
     }
 
-    /// True iff `flush_let_scopes_before_tail_jump` would emit an `rc_dec` for
+    pub(crate) fn flush_let_scopes_before_tail_jump(
+        &mut self,
+        args: &[MonoExpr],
+        transfer_skip: &std::collections::HashSet<Symbol>,
+    ) -> Result<(), CranelispError> {
+        if self.scope_stack.len() <= 1 {
+            return Ok(());
+        }
+        // Innermost-first: collect all eligible bindings across the let frames.
+        let mut to_dec: Vec<(Symbol, Type)> = Vec::new();
+        for (offset, frame) in self.scope_stack[1..].iter().enumerate().rev() {
+            let frame_index = offset + 1;
+            let frame = frame.clone();
+            let mut frame_decs = self.collect_frame_heap_decs(&frame, |this, name| {
+                if this.is_borrowed(name) {
+                    // The owner is outside this frame: nothing here to release.
+                    return true;
+                }
+                // §6, rows 1/4/5. A `let` frame has no in-place-COW exemption
+                // (that is a parameter-slot rule), so row 3 is not offered.
+                this.slot_is_transferred(name, frame_index, args, transfer_skip, false)
+            });
+            to_dec.append(&mut frame_decs);
+        }
+        self.emit_heap_binding_decs(&to_dec)
+    }
+
+    /// The §6 predicate at a release site: gather this slot's facts and ask the
+    /// ONE verdict. Returns `true` when the old owner transfers (no release
+    /// owed).
+    fn slot_is_transferred(
+        &self,
+        name: &Symbol,
+        frame_index: usize,
+        args: &[MonoExpr],
+        transfer_skip: &std::collections::HashSet<Symbol>,
+        offer_inplace_cow: bool,
+    ) -> bool {
+        let analysis_off = cranelisp_types::ownership_analysis_off();
+        let facts = self.tail_slot_facts(name, frame_index, args, transfer_skip, offer_inplace_cow);
+        match tco_slot_disposition(facts, analysis_off) {
+            SlotDisposition::TransferOldOwner => true,
+            SlotDisposition::Replace => false,
+            // Never silently released and never silently skipped — the flush
+            // callers report it before emitting anything.
+            SlotDisposition::BorrowedInvalid => false,
+        }
+    }
+
+    /// Gather the §6 facts for the slot `name` living in scope frame
+    /// `frame_index`.
+    ///
+    /// The row-4 fact is deliberately narrow: it is NOT "this slot is
+    /// borrowed" — a `Borrowed` parameter carried forward as its own tail
+    /// argument (`(defn go [:Int n :String x] … (go (sub-i64 n 1) x))`) is the
+    /// ordinary, correct shape, and the frame owes nothing there because it
+    /// owns nothing. Row 4 is the SHADOWING case: the argument spells the
+    /// slot's name but resolves to a DIFFERENT, borrowed binding — an inner
+    /// pattern-field binder, typically — so `tail_transfer_skip`'s
+    /// spelling-based move claims a transfer of a reference that binding does
+    /// not hold.
+    fn tail_slot_facts(
+        &self,
+        name: &Symbol,
+        frame_index: usize,
+        args: &[MonoExpr],
+        transfer_skip: &std::collections::HashSet<Symbol>,
+        offer_inplace_cow: bool,
+    ) -> TailSlotFacts {
+        let named = transfer_skip.contains(name);
+        let innermost = self
+            .scope_stack
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, f)| f.contains(name))
+            .map(|(i, _)| i);
+        let shadowing_borrow = matches!(innermost, Some(i) if i != frame_index);
+        TailSlotFacts {
+            named_by_bare_var_arg: named,
+            bare_var_arg_is_borrowed: named && shadowing_borrow && self.is_borrowed(name),
+            inplace_cow_rooted_here: offer_inplace_cow
+                && param_flush_exempts_inplace_cow(
+                    args,
+                    name,
+                    cranelisp_types::ownership_analysis_off(),
+                ),
+        }
+    }
+
+    /// The `BorrowedInvalid` report, separated from the verdict so the release
+    /// path stays total. `Err` iff some slot in `frame` was offered a borrowed
+    /// alias as evidence for a transfer.
+    fn check_no_borrowed_transfer(
+        &self,
+        frame: &[Symbol],
+        frame_index: usize,
+        args: &[MonoExpr],
+        transfer_skip: &std::collections::HashSet<Symbol>,
+    ) -> Result<(), CranelispError> {
+        for name in frame {
+            let facts = self.tail_slot_facts(name, frame_index, args, transfer_skip, false);
+            if tco_slot_disposition(facts, cranelisp_types::ownership_analysis_off())
+                == SlotDisposition::BorrowedInvalid
+                && self
+                    .variable_types
+                    .get(name)
+                    .is_some_and(|ty| self.is_heap_type(ty))
+            {
+                return Err(CranelispError::CodegenError {
+                    message: format!(
+                        "tail self-call in '{}' offers the BORROWED alias '{name}' as the \
+                         replacement for its own frame-owned slot; a borrowed alias carries \
+                         no independently owned reference and cannot license an ownership \
+                         transfer (design/backend/transitive-drop-glue.md §6, row 4)",
+                        self.current_fn_name
+                            .as_ref()
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| "<anonymous body>".into()),
+                    ),
+                    location: cranelisp_types::ErrorLocation::from_span(Span::SYNTHETIC),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// MS-P8 (FIXME 0688 verdict a; `s114-test-plan.md` §2.1) — the PARAM sibling
+    /// of [`FnCompiler::flush_let_scopes_before_tail_jump`]. On a tail self-call
+    /// the loop header OVERWRITES each param slot (scope frame `[0]`) with the new
+    /// argument value; a heap-typed param whose slot is superseded by a FRESH,
+    /// independently-owned value leaks its slot reference — the `conj`/`assoc`
+    /// persistent-op loop's 1-Vec-per-iteration leak (each `conj` COPIES because
+    /// the go-side arg-pass inc makes rc≥2, so the old `v` is always superseded;
+    /// the copy path is the EXPOSURE, the missing slot-dec is the SEAM). Dec each
+    /// superseded heap param before the jump, EXCEPT:
+    ///  - a param whose reference TRANSFERS into a tail argument as a bare `Var`
+    ///    (a MOVE — `transfer_skip`, self- or cross-slot): the box carries forward,
+    ///    so dec'ing it would double-free the value the next iteration owns (the
+    ///    exact contract the let flush honors);
+    ///  - a borrowed param (the caller owns it);
+    ///  - **analysis-ON only** — a param that SOME tail arg is an in-place COW
+    ///    rooted at (`(vec-set p …)` / `(vec-push p …)` anywhere in the arg list,
+    ///    not only at `p`'s own position — FIXME 0691): the mutate branch returns
+    ///    `p`'s OWN box and forwards it into that slot, so the slot is NOT
+    ///    superseded — dec'ing it would free the carried box; SKIP = leak-safe,
+    ///    the both-polarity fence's safe direction: never an under-count / UAF.
+    ///    Under `CRANELISP_NO_OWNERSHIP` the COW always copies (rc≥2 force-count),
+    ///    so nothing is carried forward and the dec is always owed — the exemption
+    ///    does NOT apply toggle-off (FIXME 0695). `conj`/`assoc` are USER-fn
+    ///    calls, not these primitives, so the persistent-op leak is still fixed.
+    ///
+    /// The frames are NOT popped (the loop header reuses the param slots) — this
+    /// only releases the superseded slot references.
+    pub(crate) fn flush_superseded_heap_params_before_tail_jump(
+        &mut self,
+        args: &[MonoExpr],
+        transfer_skip: &std::collections::HashSet<Symbol>,
+    ) -> Result<(), CranelispError> {
+        let param_frame = match self.scope_stack.first() {
+            Some(f) => f.clone(),
+            None => return Ok(()),
+        };
+        // §6 row 4, loud: a borrowed alias may not license a transfer of a
+        // frame-owned slot. Checked before any release is emitted.
+        self.check_no_borrowed_transfer(&param_frame, 0, args, transfer_skip)?;
+        let to_dec = self.collect_frame_heap_decs(&param_frame, |this, name| {
+            // A borrowed param is the caller's to release — EXCEPT one this frame
+            // PROMOTED because the back-edge supersedes its slot with a value the
+            // caller does not own (FIXME 0720; the entry inc keeps the caller's
+            // own reference out of reach of this dec).
+            if this.is_borrowed(name) && !this.tco_owned_params.contains(name) {
+                return true;
+            }
+            // §6, all five rows — the ONE verdict, including the analysis-ON
+            // in-place-COW exemption (row 3, positional-blind per FIXME 0691,
+            // toggle-asymmetric per FIXME 0695).
+            this.slot_is_transferred(name, 0, args, transfer_skip, true)
+        });
+        self.emit_heap_binding_decs(&to_dec)
+    }
+
+    /// True iff `flush_let_scopes_before_tail_jump` would emit an `rc_dec` for    /// True iff `flush_let_scopes_before_tail_jump` would emit an `rc_dec` for
     /// `name`: it lives in a `let`/match/lambda frame (`scope_stack[1..]` — NOT
     /// the param frame `[0]`, which the loop header reuses and the flush leaves
     /// untouched), is heap-typed, and is not borrowed. This is the exact
@@ -1847,6 +1943,77 @@ fn resolve_borrowed(
         .rev()
         .find(|(frame, _)| frame.contains(name))
         .is_some_and(|(_, borrowed)| borrowed.contains(name))
+}
+
+/// **The ONE TCO replacement/transfer verdict** (S118 slice S5,
+/// `design/backend/transitive-drop-glue.md` §6).
+///
+/// One pure answer to "does the exact old owner of this slot travel into the
+/// next iteration?", replacing four separately-evaluated conditions that were
+/// combined ad hoc inside two `collect_frame_heap_decs` filters. Classification
+/// and release stay separate: this decides owner continuity; canonical glue
+/// performs the discharge.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum SlotDisposition {
+    /// The exact old owner is carried forward — no release, and move
+    /// bookkeeping prevents a second owner.
+    TransferOldOwner,
+    /// The slot is superseded: call the type's glue before the overwrite.
+    /// Unknown provenance lands here, because conservative replacement is the
+    /// leak-safe direction and a guessed transfer is the UAF one.
+    Replace,
+    /// A BORROWED alias was offered as the evidence for a transfer. It carries
+    /// no independently owned reference, so it cannot license one — a located
+    /// compiler error rather than a guessed release or a silent skip. This is
+    /// the backend instance of **Narrowing carries its check**.
+    BorrowedInvalid,
+}
+
+/// The per-slot facts [`tco_slot_disposition`] reads, gathered by the caller so
+/// the rule itself is pure and unit-testable without a live `FnCompiler` (the
+/// `is_fresh_construction` / `cow_site_source` precedent).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct TailSlotFacts {
+    /// A bare top-level `Var` tail argument NAMES this slot (§6.1 fragment
+    /// `tail_transfer_skip`) — row 1, the move.
+    pub named_by_bare_var_arg: bool,
+    /// ...and the binding it names is a BORROWED alias. `tail_transfer_skip` is
+    /// spelling-based and never asked this; a borrowed binding shadowing a
+    /// frame-owned parameter therefore suppressed a release on the strength of
+    /// an alias that owns nothing. Row 4.
+    pub bare_var_arg_is_borrowed: bool,
+    /// Some tail argument is an in-place COW rooted at this slot (§6.1 fragment
+    /// `param_flush_exempts_inplace_cow`) — row 3.
+    pub inplace_cow_rooted_here: bool,
+}
+
+/// The §6 verdict table, in order.
+///
+/// **Row 2 (a control-flow expression that forwards the root) deliberately
+/// answers `Replace`.** That is a load-bearing constraint, not an omission: at
+/// a control-flow tail argument the branches carry DISTINCT bindings
+/// (`(recur (if c lo hi))`), so a static skip would retain the dead branch's
+/// binding. The established strategy is a per-branch protective inc
+/// (`maybe_protect_tail_arg_alias`) followed by a uniform flush, and the
+/// predicate reports the classification while that emission strategy is
+/// preserved. Turning row 2 into a blanket skip re-introduces the F1
+/// use-after-free (`ownership-codegen.md` §13.3).
+///
+/// **Row 3 keeps its toggle asymmetry.** Under `CRANELISP_NO_OWNERSHIP` the COW
+/// source is force-counted so the op always COPIES: nothing is carried forward
+/// and the dec is always owed (FIXME 0695). The toggle is an explicit input
+/// here rather than read at two sites.
+pub(crate) fn tco_slot_disposition(facts: TailSlotFacts, analysis_off: bool) -> SlotDisposition {
+    if facts.named_by_bare_var_arg {
+        if facts.bare_var_arg_is_borrowed {
+            return SlotDisposition::BorrowedInvalid;
+        }
+        return SlotDisposition::TransferOldOwner;
+    }
+    if !analysis_off && facts.inplace_cow_rooted_here {
+        return SlotDisposition::TransferOldOwner;
+    }
+    SlotDisposition::Replace
 }
 
 /// The MS-P8 param-flush in-place-COW exemption decision (pure — FIXMEs 0691,
@@ -4486,3 +4653,7 @@ mod cow_retain_reconciliation_tests {
         ));
     }
 }
+
+/// S118 slice S5 — the ONE TCO replacement/transfer predicate (§6).
+#[cfg(test)]
+mod tco_slot_predicate_tests;

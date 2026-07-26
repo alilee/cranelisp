@@ -60,42 +60,6 @@ fn clif_of(body: Expr, params: Vec<(Symbol, Option<cranelisp_types::TypeExpr>)>)
     )
 }
 
-/// Count the canonical drop-glue calls in a rendered CLIF body.
-///
-/// Canonical glue has the release ABI `(i64) -> ()` — one heap word in, nothing
-/// out — so its signature is unmistakable in the CLIF preamble
-/// (`sigN = (i64) system_v`), and every `fnM` declared against such a sig is a
-/// release. This counts calls to those, which is the "exactly one release per
-/// consuming arm" instrument §7.3 asks for. (`runtime/dealloc` shares the ABI
-/// but is only reached from INSIDE a glue body — never emitted into a user body
-/// once the migration is complete.)
-fn release_abi_calls(clif: &str) -> usize {
-    let release_sigs: Vec<&str> = clif
-        .lines()
-        .filter_map(|l| {
-            let l = l.trim();
-            let (name, rest) = l.split_once(" = ")?;
-            (name.starts_with("sig") && rest == "(i64) system_v").then_some(name)
-        })
-        .collect();
-    let release_fns: Vec<&str> = clif
-        .lines()
-        .filter_map(|l| {
-            let l = l.trim();
-            let (name, rest) = l.split_once(" = ")?;
-            let sig = rest.rsplit(' ').next()?;
-            (name.starts_with("fn") && release_sigs.contains(&sig)).then_some(name)
-        })
-        .collect();
-    clif.lines()
-        .filter(|l| {
-            release_fns
-                .iter()
-                .any(|f| l.contains(&format!("call {f}(")))
-        })
-        .count()
-}
-
 fn vec_ty() -> Type {
     Type::ADT(
         cranelisp_types::FQTypeName::new(
@@ -209,7 +173,7 @@ fn if_joined_borrowed_param_scrutinee_is_not_released_neg() {
         match_reading_scrutinee(if_joined_param()),
         vec![(Symbol::from("v"), None), (Symbol::from("b"), None)],
     );
-    let decs = clif.matches("atomic_rmw.i64 sub").count();
+    let decs = crate::test_support::count_release_ops(&clif);
     assert_eq!(
         decs, 1,
         "an `If` joining two BORROWED arms yields the caller's vector: neither \
@@ -237,7 +201,7 @@ fn if_joined_borrowed_param_scrutinee_is_not_released_neg() {
 #[test]
 fn consuming_arm_releases_the_owned_scrutinee_exactly_once() {
     let clif = clif_of(match_reading_scrutinee(vec_lit()), vec![]);
-    let releases = release_abi_calls(&clif);
+    let releases = crate::test_support::count_release_ops(&clif);
     assert_eq!(
         releases, 1,
         "a FRESH vec-literal scrutinee is an owned temporary consumed by its \
@@ -255,7 +219,7 @@ fn consuming_arm_releases_the_owned_scrutinee_exactly_once() {
 #[test]
 fn forwarding_var_arm_over_an_owned_temporary_emits_no_release_neg() {
     let clif = clif_of(match_forwarding_scrutinee(vec_lit()), vec![]);
-    let releases = release_abi_calls(&clif);
+    let releases = crate::test_support::count_release_ops(&clif);
     assert_eq!(
         releases, 0,
         "a var arm that forwards the whole scrutinee transfers the single \
@@ -274,7 +238,7 @@ fn bare_var_scrutinee_is_unchanged_by_the_narrowing() {
         match_reading_scrutinee(var("v", vec_ty())),
         vec![(Symbol::from("v"), None)],
     );
-    let decs = clif.matches("atomic_rmw.i64 sub").count();
+    let decs = crate::test_support::count_release_ops(&clif);
     assert_eq!(
         decs, 1,
         "a bare `Var` scrutinee is dec'd by its owning scope exactly once — the \

@@ -2135,7 +2135,7 @@ where
         // view escaping into the next iteration must own a reference by the
         // time its owner is released (§2).
         self.protect_escaping_borrows_before_tail_jump(args, &transfer_skip);
-        self.flush_let_scopes_before_tail_jump(&transfer_skip)?;
+        self.flush_let_scopes_before_tail_jump(args, &transfer_skip)?;
         // MS-P8 (FIXME 0688 verdict a) — release the superseded heap LOOP-PARAM
         // slots too (the sibling seam the let flush does not cover): the jump
         // below overwrites each param slot, orphaning the old heap value's

@@ -49,7 +49,6 @@ use cranelisp_types::Type;
 // item under `compiler::` (verified against `public-api.txt`); it MUST re-export
 // `pub` so the public API path is preserved. Everything else is `pub(crate)`.
 pub use context::CompileContext;
-pub(crate) use context::CtorMeta;
 pub(crate) use fn_compiler::{FnCompiler, MatchContext, is_self_call};
 pub(crate) use rc_emission::{
     collect_var_ids_from_type, find_var_type_in_expr, signature_heap_category,
@@ -63,8 +62,7 @@ pub(crate) use rc_emission::{
 // two symbol-naming primitives (NOT resolvers — a fixed compile-time naming
 // scheme, no scan / no precedence walk).
 pub(crate) use resolution::{
-    adt_drop_glue_name, adt_instantiation_mangle, closure_drop_glue_name, curry_drop_glue_name,
-    got_data_symbol_name, inner_fn_discriminator_for,
+    closure_drop_glue_name, curry_drop_glue_name, got_data_symbol_name, inner_fn_discriminator_for,
 };
 
 /// Information about a single function to be traced by `(trace ...)`.

@@ -19,9 +19,7 @@
 //! scan, no precedence walk, no import-chain follow — each is a fixed
 //! compile-time string-composition scheme.
 
-use cranelisp_types::{
-    ModuleFullPath, PrimitiveNaming, Span, Symbol, Type, VarNaming, render_type,
-};
+use cranelisp_types::{ModuleFullPath, Span, Symbol};
 
 /// GOT data symbol name for a module. Single source of truth.
 /// Used as the Cranelift data symbol name for the module's GOT table in both
@@ -151,118 +149,19 @@ pub(crate) fn curry_drop_glue_name(disc: &str, span: Span) -> String {
     )
 }
 
-/// Symbol-safe identity mangle of a fully concrete ADT **instantiation**
-/// (`Type::ADT(fqtn, concrete_args)`): module + type name + concrete type args.
-///
-/// This is the drop-glue keying identity (FIXME 0633). An ADT drop glue's BODY
-/// is per-INSTANTIATION — `build_adt_drop_glue_fn` substitutes `concrete_args`
-/// into each ctor field and classifies per-field heap-ness *before* emitting the
-/// field decs — so the glue **key** must carry that same instantiation identity.
-/// Keying on the bare `fqtn.name` alone (dropping module + concrete args) let the
-/// first-build-wins `get_name` skip serve one instantiation's glue to a
-/// heap-category-divergent sibling in the same `compile_to_module` batch:
-/// `(Vec (Duo Int Str))` then `(Vec (Duo Str Int))` reused the first glue, so
-/// `atomic_rmw Sub` ran against the second's raw `Int` field (SIGBUS) and its
-/// `Str` field leaked. Distinct instantiations MUST get distinct mangles;
-/// identical instantiations MUST get a stable mangle (so the `get_name` reuse is
-/// sound). This is the Principle-24 "resolve once" keyed-identity discipline: the
-/// key fully determines the artifact.
-///
-/// Built from the canonical single-source `render_type` walk (Principle 7 — the
-/// ONE `Type`→string renderer in the workspace) with `PrimitiveNaming::Qualified`
-/// so the module qualifier of every referenced type is present, then INJECTIVELY
-/// escaped into a Cranelift symbol name by `escape_symbol`.
-///
-/// # Injectivity is load-bearing (FIXME 0640)
-///
-/// The CS-1.1 predecessor "sanitized" the render by mapping every
-/// non-`[A-Za-z0-9_]` char to `_` — the same scheme `inner_fn_discriminator_for`
-/// uses. That map is **not injective**: `-`, `?`, `!`, `.`, `/`, space all
-/// collapse to `_`, and `_` maps to itself, so `render_type` outputs that differ
-/// only in those chars produce the SAME symbol. Distinct instantiations
-/// (idiomatic hyphenated names `A-B` vs `A_B`; dotted vs hyphenated module paths
-/// `a.b/T` vs `a-b/T`) then shared one drop glue → the FIXME 0633 mis-drop
-/// reproduced as a reachable SIGBUS. The `inner_fn_discriminator_for` sanitize is
-/// safe ONLY because every name it feeds is additionally span+disc-keyed (the
-/// span breaks sanitize ties); `adt_instantiation_mangle` is a pure CONTENT key
-/// with no disambiguator, so its injectivity must be exact. `escape_symbol`
-/// provides it by construction (a decoder exists), keeping the output a legal
-/// Cranelift symbol (`[A-Za-z0-9_]`).
-///
-/// The reaching `Type::ADT` is post-monomorphisation concrete; a non-concrete
-/// type would embed a `render_type` `t{id}` var whose numbering is
-/// session-dependent, making the identity key unstable across builds — asserted
-/// in debug (S-2).
-pub(crate) fn adt_instantiation_mangle(ty: &Type) -> String {
-    debug_assert!(
-        ty.is_concrete(),
-        "adt_instantiation_mangle requires a concrete Type::ADT (post-mono) — a \
-         non-concrete type embeds a session-dependent `t{{id}}` var, making the \
-         drop-glue identity key unstable across builds; got: {}",
-        render_type(ty, PrimitiveNaming::Qualified, VarNaming::Numbered)
-    );
-    escape_symbol(&render_type(
-        ty,
-        PrimitiveNaming::Qualified,
-        VarNaming::Numbered,
-    ))
-}
-
-/// Injective, prefix-free escaping of an arbitrary string into a legal Cranelift
-/// symbol (`[A-Za-z0-9_]`).
-///
-/// `_` is reserved as the escape char: an alphanumeric passes through verbatim, a
-/// literal `_` doubles to `__`, and every other char maps to `_` followed by a
-/// UNIQUE marker letter (`/`→`_s`, `-`→`_h`, `.`→`_d`, ` `→`_w`, `(`→`_l`,
-/// `)`→`_r`, `[`→`_k`, `]`→`_j`, `?`→`_q`, `!`→`_e`, `,`→`_c`), with any char
-/// outside that fixed map escaping to the catch-all `_u{codepoint:06x}` (six hex
-/// digits, so it is fixed-width and self-delimiting). Every escape sequence
-/// decodes unambiguously — on `_`, the next char selects: `_`⇒literal `_`, `u`⇒a
-/// six-hex catch-all, any other marker⇒its char — so a total deterministic
-/// decoder exists and the map is **injective**: distinct inputs yield distinct
-/// outputs. That is the property the drop-glue identity key requires
-/// (Principle 24 "Resolve once"; FIXME 0640). `u` is reserved for the catch-all
-/// and is deliberately absent from the single-char marker set.
-fn escape_symbol(s: &str) -> String {
-    use std::fmt::Write;
-    let mut out = String::with_capacity(s.len() + 8);
-    for c in s.chars() {
-        match c {
-            'A'..='Z' | 'a'..='z' | '0'..='9' => out.push(c),
-            '_' => out.push_str("__"),
-            '/' => out.push_str("_s"),
-            '-' => out.push_str("_h"),
-            '.' => out.push_str("_d"),
-            ' ' => out.push_str("_w"),
-            '(' => out.push_str("_l"),
-            ')' => out.push_str("_r"),
-            '[' => out.push_str("_k"),
-            ']' => out.push_str("_j"),
-            '?' => out.push_str("_q"),
-            '!' => out.push_str("_e"),
-            ',' => out.push_str("_c"),
-            other => {
-                // Catch-all for any char the fixed map misses: fixed-width six-hex
-                // codepoint escape, self-delimiting so it stays decodable.
-                let _ = write!(out, "_u{:06x}", other as u32);
-            }
-        }
-    }
-    out
-}
-
-/// Linker name for an **ADT** field drop glue (S111 R6; re-keyed S111 CS-1.1,
-/// FIXME 0633). Keyed by the full concrete instantiation
-/// (`adt_instantiation_mangle` — module + type name + concrete type args), NOT
-/// the bare type name: the glue body is per-instantiation, so distinct
-/// instantiations (different module, different name, or different concrete args)
-/// get distinct glue and the `get_name` idempotency skip dedups ONLY the
-/// per-module re-emit of the *same* instantiation. The vec elem-dec layer
-/// (`build_elem_dec_fn`) keys on the same mangle, so the two under-keyed layers
-/// discriminate instantiations identically.
-pub(crate) fn adt_drop_glue_name(ty: &Type) -> String {
-    format!("runtime/drop_glue_{}", adt_instantiation_mangle(ty))
-}
+// S118 slice S6 (§8) — `adt_instantiation_mangle`, `escape_symbol` and
+// `adt_drop_glue_name` are DELETED. They were the naming half of the SECOND
+// named-glue identity home (`vec_codegen::build_adt_drop_glue_fn` /
+// `build_elem_dec_fn`): a per-INSTANTIATION compiled artifact keyed by a
+// backend-local mangle rather than the types-owned
+// `cranelisp_types::drop_glue_symbol_name`. Two type-directed glue mechanisms
+// under two identity schemes is the exact state arch ruling 10 exists to
+// prevent, so they go with the inline emitter, in the same change-set. The
+// injectivity discipline they carried (FIXME 0633/0640) now lives in the
+// types-owned symbol authority, which is injective over the complete concrete
+// type by construction. `closure_drop_glue_name` / `curry_drop_glue_name`
+// survive: they name capture ENVELOPES (span + mono discriminator), not type
+// glue.
 
 #[cfg(test)]
 mod tests;

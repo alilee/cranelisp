@@ -1,11 +1,11 @@
 //! RC / drop-glue emission and the heap classification it keys on.
 //!
 //! This is the single home for the heap-class match (`signature_heap_category`)
-//! that the drop-glue field-dec sites and `pop_scope_with_cleanup`'s guard read
-//! (audit Part 2 §2.7). The pure type-substitution helpers
-//! (`build_adt_type_substitution`, `collect_var_ids_from_type`,
-//! `substitute_type_inline`, `find_var_type_in_expr`) feed the drop-glue
-//! field-dec path and live here too.
+//! that `pop_scope_with_cleanup`'s guard and the match seam's field-type
+//! resolution read (audit Part 2 §2.7), and — since S118 slice S1 — of
+//! [`FnCompiler::emit_typed_rc_dec`], the ONE canonical glue-call emitter every
+//! release site goes through. The pure type helpers (`collect_var_ids_from_type`,
+//! `substitute_type_inline`, `find_var_type_in_expr`) live here too.
 
 use cranelift::prelude::*;
 use cranelift_module::{FuncId, Module};
@@ -16,7 +16,7 @@ use cranelisp_types::{
 
 use crate::heap::{self, HeapCategory};
 
-use super::{CtorMeta, FnCompiler};
+use super::FnCompiler;
 
 /// Release a CLOSURE box through its **embedded** `DROP_GLUE_PTR` — the
 /// borrowed-builder body of [`FnCompiler::emit_closure_dec_inline`].
@@ -106,193 +106,6 @@ where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
-    /// Emit inline drop glue for an ADT: dec each AlwaysHeap field.
-    ///
-    /// This is a temporary measure until proper drop glue functions are
-    /// generated. It handles the common case of ADTs with String or other
-    /// heap-typed fields.
-    ///
-    /// For Mixed ADTs (with both nullary and data constructors), the field
-    /// dec is guarded by a heap-pointer check: if the value is a bare
-    /// nullary tag, no fields exist to dec.
-    fn emit_inline_drop_glue(
-        &mut self,
-        adt_val: Value,
-        ty: &Type,
-        is_mixed: bool,
-    ) -> Result<(), CranelispError> {
-        let fqtn = match ty {
-            Type::ADT(fqtn, _) => fqtn,
-            _ => return Ok(()), // Not an ADT; nothing to do.
-        };
-
-        let type_def = match self.ctx.lookup_type_def(fqtn) {
-            Some(td) => td,
-            None => return Ok(()),
-        };
-
-        // Constructor metadata is reconstructed from each ctor's
-        // DefKind::Constructor Def post-S70.
-        let all_ctors = self.ctx.constructor_metas(&type_def);
-        let subst = build_adt_type_substitution(ty, &all_ctors);
-
-        // Collect data constructors (those with fields).
-        let data_ctors: Vec<CtorMeta> = all_ctors
-            .into_iter()
-            .filter(|c| !c.fields.is_empty())
-            .collect();
-
-        if data_ctors.is_empty() {
-            return Ok(()); // No data constructors, nothing to drop.
-        }
-
-        // Check if any data constructor has heap-typed fields.
-        let has_heap_fields = data_ctors.iter().any(|ctor| {
-            ctor.fields.iter().any(|f| {
-                let resolved = substitute_type_inline(&f.ty, &subst);
-                matches!(
-                    signature_heap_category(&resolved, Some(self.ctx.symbol_tables)),
-                    HeapCategory::AlwaysHeap | HeapCategory::Mixed
-                )
-            })
-        });
-
-        if !has_heap_fields {
-            return Ok(()); // No heap fields to drop.
-        }
-
-        // For Mixed ADTs, guard the field dec with a heap-pointer check.
-        let cont_block = if is_mixed {
-            Some(self.emit_mixed_adt_heap_guard(adt_val))
-        } else {
-            None
-        };
-
-        // Emit field decs for each data constructor.
-        self.emit_drop_glue_field_decs(adt_val, &data_ctors, &subst)?;
-
-        // Jump to continuation for Mixed guard.
-        if let Some(cont) = cont_block {
-            self.builder.ins().jump(cont, &[]);
-            self.builder.switch_to_block(cont);
-            self.builder.seal_block(cont);
-        }
-        Ok(())
-    }
-
-    /// Emit a heap-pointer guard for Mixed ADTs in drop glue.
-    ///
-    /// Creates a branch that skips field dec if the value is a bare nullary
-    /// tag (below the heap threshold). Returns the continuation block that
-    /// the caller must jump to when field dec is done.
-    fn emit_mixed_adt_heap_guard(&mut self, adt_val: Value) -> Block {
-        let cont = self.builder.create_block();
-        let glue_block = self.builder.create_block();
-
-        let threshold = self
-            .builder
-            .ins()
-            .iconst(types::I64, heap::NULLARY_THRESHOLD_I64);
-        let is_heap =
-            self.builder
-                .ins()
-                .icmp(IntCC::UnsignedGreaterThanOrEqual, adt_val, threshold);
-        self.builder.ins().brif(is_heap, glue_block, &[], cont, &[]);
-
-        self.builder.switch_to_block(glue_block);
-        self.builder.seal_block(glue_block);
-        cont
-    }
-
-    /// Emit field decs for data constructors in drop glue.
-    ///
-    /// For a single data constructor, dec fields directly.
-    /// For multiple data constructors, emit tag-based dispatch
-    /// (branch chain like match codegen).
-    fn emit_drop_glue_field_decs(
-        &mut self,
-        adt_val: Value,
-        data_ctors: &[CtorMeta],
-        subst: &std::collections::HashMap<cranelisp_types::TypeId, Type>,
-    ) -> Result<(), CranelispError> {
-        use crate::heap::HeapAdt;
-
-        if data_ctors.len() == 1 {
-            let ctor = &data_ctors[0];
-            self.emit_field_decs(adt_val, ctor, subst)?;
-        } else {
-            // Multiple data constructors: load the tag and branch to the
-            // correct field-dec block for each variant.
-            let heap_tag = heap::heap_load(&mut self.builder, adt_val, HeapAdt::TAG_OFFSET);
-
-            let done_block = self.builder.create_block();
-
-            for (idx, ctor) in data_ctors.iter().enumerate() {
-                let ctor_block = self.builder.create_block();
-                let next_block = if idx + 1 < data_ctors.len() {
-                    self.builder.create_block()
-                } else {
-                    // Last data constructor: fallthrough to done.
-                    done_block
-                };
-
-                let tag_val = self.builder.ins().iconst(types::I64, ctor.tag as i64);
-                let cmp = self.builder.ins().icmp(IntCC::Equal, heap_tag, tag_val);
-                self.builder
-                    .ins()
-                    .brif(cmp, ctor_block, &[], next_block, &[]);
-
-                self.builder.switch_to_block(ctor_block);
-                self.builder.seal_block(ctor_block);
-
-                self.emit_field_decs(adt_val, ctor, subst)?;
-                self.builder.ins().jump(done_block, &[]);
-
-                if idx + 1 < data_ctors.len() {
-                    self.builder.switch_to_block(next_block);
-                    self.builder.seal_block(next_block);
-                }
-            }
-
-            self.builder.switch_to_block(done_block);
-            self.builder.seal_block(done_block);
-        }
-        Ok(())
-    }
-
-    /// Emit rc_dec for each heap-typed field of a single constructor.
-    ///
-    /// Used by `emit_inline_drop_glue` for both the single-constructor case
-    /// and within each branch of the multi-constructor tag dispatch.
-    ///
-    /// Every heap-typed field is released through [`Self::emit_typed_rc_dec`],
-    /// i.e. through the canonical per-concrete-type glue (S118 slice S1). The
-    /// former per-arm dispatch (recursive inline glue for ADTs, `vec_drop` for
-    /// Vecs, embedded glue for closures, plain dec otherwise) lives inside the
-    /// generated body now, so this walk carries no depth and no cutoff.
-    fn emit_field_decs(
-        &mut self,
-        adt_val: Value,
-        ctor: &CtorMeta,
-        subst: &std::collections::HashMap<cranelisp_types::TypeId, Type>,
-    ) -> Result<(), CranelispError> {
-        use crate::heap::HeapAdt;
-
-        for (i, field) in ctor.fields.iter().enumerate() {
-            let resolved_ty = substitute_type_inline(&field.ty, subst);
-            let category = signature_heap_category(&resolved_ty, Some(self.ctx.symbol_tables));
-            match category {
-                HeapCategory::AlwaysHeap | HeapCategory::Mixed => {
-                    let field_val =
-                        heap::heap_load(&mut self.builder, adt_val, HeapAdt::field_offset(i));
-                    self.emit_typed_rc_dec(field_val, &resolved_ty)?;
-                }
-                HeapCategory::NeverHeap | HeapCategory::Value => {}
-            }
-        }
-        Ok(())
-    }
-
     /// **The ONE release emitter** (S118 slice S1,
     /// `design/backend/transitive-drop-glue.md` §4): classify `ty`, and for an
     /// owned heap value emit exactly ONE `call` to the canonical
@@ -440,94 +253,6 @@ where
     pub(crate) fn emit_closure_dec_inline(&mut self, closure_val: Value, dealloc_id: FuncId) {
         emit_closure_dec_into(&mut self.builder, self.module, closure_val, dealloc_id);
     }
-
-    /// Emit RC dec for an ADT value with inline drop glue in the dealloc path.
-    ///
-    /// Unlike the old `emit_inline_drop_glue` + `emit_rc_dec` pattern (which
-    /// dec'd fields unconditionally before dec'ing the ADT), this method
-    /// only dec's fields inside the "RC reached 0" branch. This prevents
-    /// double-free when fields have independent references (e.g., extracted
-    /// via pattern match binding).
-    ///
-    /// Flow:
-    /// ```text
-    /// if needs_guard && val < NULLARY_THRESHOLD: skip (bare tag)
-    /// old_rc = atomic_sub(val.rc, 1)
-    /// if old_rc == 1:
-    ///     fence()
-    ///     emit_inline_drop_glue(val)   // dec heap-typed fields
-    ///     dealloc(val)
-    /// ```
-    pub(crate) fn emit_rc_dec_with_inline_drop_glue(
-        &mut self,
-        val: Value,
-        ty: &Type,
-        dealloc: FuncId,
-        needs_guard: bool,
-    ) -> Result<(), CranelispError> {
-        use cranelift_codegen::ir::AtomicRmwOp;
-        use cranelisp_types::HeapHeader;
-
-        let cont_block = self.builder.create_block();
-
-        // Guard: if value is a bare nullary tag, skip the dec entirely.
-        if needs_guard {
-            let threshold = self
-                .builder
-                .ins()
-                .iconst(types::I64, heap::NULLARY_THRESHOLD_I64);
-            let is_tag = self
-                .builder
-                .ins()
-                .icmp(IntCC::UnsignedLessThan, val, threshold);
-            let dec_block = self.builder.create_block();
-            self.builder
-                .ins()
-                .brif(is_tag, cont_block, &[], dec_block, &[]);
-            self.builder.switch_to_block(dec_block);
-            self.builder.seal_block(dec_block);
-        }
-
-        // Atomic dec RC.
-        let rc_addr = self
-            .builder
-            .ins()
-            .iadd_imm(val, i64::from(HeapHeader::RC_OFFSET));
-        let one = self.builder.ins().iconst(types::I64, 1);
-        let old_rc = self.builder.ins().atomic_rmw(
-            types::I64,
-            MemFlags::trusted(),
-            AtomicRmwOp::Sub,
-            rc_addr,
-            one,
-        );
-
-        // Branch: if old_rc == 1 (last reference), free the object.
-        let cmp = self.builder.ins().icmp(IntCC::Equal, old_rc, one);
-        let free_block = self.builder.create_block();
-        self.builder
-            .ins()
-            .brif(cmp, free_block, &[], cont_block, &[]);
-
-        // Free path: Acquire fence, drop glue for fields, then dealloc.
-        self.builder.switch_to_block(free_block);
-        self.builder.seal_block(free_block);
-        self.builder.ins().fence();
-
-        // Emit inline drop glue for ADT fields (only in the dealloc path).
-        // This is safe because RC==0 means we are the sole owner.
-        self.emit_inline_drop_glue(val, ty, false)?;
-
-        // Call runtime/dealloc.
-        let dealloc_ref = self.module.declare_func_in_func(dealloc, self.builder.func);
-        self.builder.ins().call(dealloc_ref, &[val]);
-        self.builder.ins().jump(cont_block, &[]);
-
-        // Continue path.
-        self.builder.switch_to_block(cont_block);
-        self.builder.seal_block(cont_block);
-        Ok(())
-    }
 }
 
 /// The D2 located error: a release site reached with a type that is not
@@ -559,33 +284,6 @@ pub(crate) fn release_site_type_error(fn_name: Option<&Symbol>, ty: &Type) -> Cr
 // `drop_glue::tests::a_vec_shape_is_not_classified_as_a_plain_adt`.
 
 // --- Free helper functions for type variable resolution ---
-
-/// Build a substitution map from type variable IDs to concrete types
-/// for an ADT value. Extracts the concrete type args from the ADT type
-/// and maps them positionally to the Var IDs found in the type definition.
-pub(crate) fn build_adt_type_substitution(
-    ty: &Type,
-    ctors: &[CtorMeta],
-) -> std::collections::HashMap<cranelisp_types::TypeId, Type> {
-    // Get concrete type args from the variable's type.
-    let concrete_args = match ty {
-        Type::ADT(_, args) => args.clone(),
-        _ => return std::collections::HashMap::new(),
-    };
-
-    // Build substitution from Var ids to concrete types.
-    let mut unique_var_ids: Vec<cranelisp_types::TypeId> = Vec::new();
-    for c in ctors {
-        for field in &c.fields {
-            collect_var_ids_from_type(&field.ty, &mut unique_var_ids);
-        }
-    }
-    unique_var_ids
-        .iter()
-        .zip(concrete_args.iter())
-        .map(|(&id, arg)| (id, arg.clone()))
-        .collect()
-}
 
 /// Collect all unique Var ids from a type, in order of first appearance.
 pub(crate) fn collect_var_ids_from_type(ty: &Type, ids: &mut Vec<cranelisp_types::TypeId>) {

@@ -15,13 +15,10 @@ use cranelisp_types::{
     ConcreteType, CranelispError, ErrorLocation, HeapHeader, MonoExpr, Span, Symbol, Type,
 };
 
-use crate::heap::{self, HeapAdt, HeapCategory, HeapVec, NULLARY_THRESHOLD_I64, RcAtomicity};
+use crate::heap::{self, HeapCategory, HeapVec, NULLARY_THRESHOLD_I64, RcAtomicity};
 
 use super::control_flow::emit_extern_call_in_wrapper;
-use super::{
-    CtorMeta, FnCompiler, collect_var_ids_from_type, signature_heap_category,
-    substitute_type_inline,
-};
+use super::{FnCompiler, signature_heap_category};
 
 /// Bundled operands for [`emit_vec_set_cow_core`] (argument-count budget — the
 /// successor of the former `VecSetElem` bundle after the COW core was
@@ -895,75 +892,50 @@ where
             && cow_source_has_separate_owner(vec_expr, self.return_cow_source.as_ref())
     }
 
+    /// Resolve the per-element dec callback for `runtime/vec_drop`'s
+    /// `(i64) -> i64` ABI — the canonical glue adapter (S118 slice S6).
+    ///
+    /// This used to build `runtime/vec_elem_dec_{heap,mixed}_{mangle}`, a
+    /// SECOND per-instantiation named artifact keyed by a backend-local mangle
+    /// rather than the types-owned identity. That was the same
+    /// `drop-glue-underkey` class as the glue it wrapped, with a second key
+    /// scheme; the registry's adapter over `drop_glue_symbol_name` is the one
+    /// identity now. `iconst 0` is the ABI's null callback for a non-owning
+    /// element type.
     fn resolve_elem_dec_fn_ptr(
         &mut self,
         elem_type: &Option<Type>,
         span: Span,
     ) -> Result<Value, CranelispError> {
-        let Some(ty) = &elem_type else {
+        let Some(id) = self.request_elem_dec_adapter(elem_type, span)? else {
             return Ok(self.builder.ins().iconst(types::I64, 0));
         };
-
-        let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
-        match category {
-            HeapCategory::NeverHeap | HeapCategory::Value => {
-                Ok(self.builder.ins().iconst(types::I64, 0))
-            }
-            HeapCategory::AlwaysHeap => {
-                let func_id = self.build_elem_dec_fn(false, ty, span)?;
-                let func_ref = self.module.declare_func_in_func(func_id, self.builder.func);
-                Ok(self.builder.ins().func_addr(types::I64, func_ref))
-            }
-            HeapCategory::Mixed => {
-                let func_id = self.build_elem_dec_fn(true, ty, span)?;
-                let func_ref = self.module.declare_func_in_func(func_id, self.builder.func);
-                Ok(self.builder.ins().func_addr(types::I64, func_ref))
-            }
-        }
+        let func_ref = self.module.declare_func_in_func(id, self.builder.func);
+        Ok(self.builder.ins().func_addr(types::I64, func_ref))
     }
 
-    /// Emit an RC dec on a Vec value using the proper vec_drop teardown path.
-    ///
-    /// When the Vec reaches rc=0, calls `runtime/vec_drop(vec, elem_dec_fn)`
-    /// instead of `runtime/dealloc(vec)`. This ensures:
-    ///   - each element has its RC dec'd (via `elem_dec_fn`)
-    ///   - the data buffer is freed
-    ///   - the Vec struct itself is freed
-    ///
-    /// Without this path, dec'ing a Vec field inside an ADT's drop glue or
-    /// at scope exit leaks the elements (their RCs are never dropped) and the
-    /// data buffer, causing the allocator to eventually reuse slots that are
-    /// still tracked as live by other code — the "alloc-slot reuse + stale
-    /// pointer dec" pattern documented in the Sprint 59/60 RC traces.
-    pub(crate) fn emit_vec_aware_rc_dec(
+    /// The registry request behind both `resolve_elem_dec_fn_ptr` forms — the
+    /// only part that needs `&mut self` before a borrowed builder exists.
+    fn request_elem_dec_adapter(
         &mut self,
-        vec_val: Value,
-        elem_type: &Type,
+        elem_type: &Option<Type>,
         span: Span,
-        atomicity: RcAtomicity,
-    ) -> Result<(), CranelispError> {
-        let vec_drop_id =
-            self.ctx
-                .vec_drop_func_id
-                .ok_or_else(|| CranelispError::CodegenError {
-                    message: "runtime/vec_drop not declared (need declare_intrinsics)".into(),
-                    location: ErrorLocation::from_span(span),
-                })?;
-
-        // Build per-element dec fn (or null for NeverHeap elements).
-        let elem_dec_fn_ptr = self.resolve_elem_dec_fn_ptr(&Some(elem_type.clone()), span)?;
-
-        // B3.3 (§5.2): the Vec-header dec goes non-atomic on a Confined vec
-        // cell (the one shared vec-inventory item that IS per-site-emitted).
-        emit_vec_rc_dec_with_drop_atomicity(
-            &mut self.builder,
-            self.module,
-            vec_val,
-            vec_drop_id,
-            elem_dec_fn_ptr,
-            atomicity,
-        );
-        Ok(())
+    ) -> Result<Option<cranelift_module::FuncId>, CranelispError> {
+        let Some(ty) = elem_type else {
+            return Ok(None);
+        };
+        let concrete = cranelisp_types::ConcreteType::from_type(ty).map_err(|_| {
+            CranelispError::CodegenError {
+                message: format!(
+                    "Vec element release reached a non-concrete element type {ty:?}; \
+                     canonical drop glue is keyed on the concrete type and there is no \
+                     shallow fallback (design/backend/transitive-drop-glue.md §3.4 D2)"
+                ),
+                location: ErrorLocation::from_span(span),
+            }
+        })?;
+        self.glue
+            .request_vec_elem_adapter(self.module, self.ctx.symbol_tables, &concrete)
     }
 
     /// Build a standalone inc function: `(val: i64) -> i64`.
@@ -1044,369 +1016,6 @@ where
         Ok(func_id)
     }
 
-    /// Build a standalone dec function: `(val: i64) -> i64`.
-    ///
-    /// If `guarded` is true, guards against bare nullary tags.
-    /// If `elem_type` is an ADT with heap-typed fields, a drop glue function
-    /// is built and passed to `emit_rc_dec_guarded` so that fields are dec'd
-    /// before the ADT itself is freed.
-    /// Returns a cached FuncId if this function was already built.
-    fn build_elem_dec_fn(
-        &mut self,
-        guarded: bool,
-        elem_type: &Type,
-        span: Span,
-    ) -> Result<cranelift_module::FuncId, CranelispError> {
-        let suffix = if guarded { "mixed" } else { "heap" };
-        // Key on the FULL concrete instantiation (module + name + concrete args),
-        // not the bare `fqtn.name` — the dec fn bakes in the per-instantiation
-        // drop glue, so a bare-name key let the first-built dec fn serve a
-        // heap-category-divergent sibling (FIXME 0633). Same mangle the glue
-        // layer (`adt_drop_glue_name`) keys on, so both layers discriminate
-        // instantiations identically.
-        let type_suffix = match elem_type {
-            Type::ADT(..) => {
-                format!("_{}", crate::compiler::adt_instantiation_mangle(elem_type))
-            }
-            _ => String::new(),
-        };
-        let name = format!("runtime/vec_elem_dec_{suffix}{type_suffix}");
-
-        // Check if this function was already built (e.g., by a previous module).
-        if let Some(cranelift_module::FuncOrDataId::Func(existing_id)) = self.module.get_name(&name)
-        {
-            return Ok(existing_id);
-        }
-
-        let dealloc_id = self.ctx.dealloc_func_id;
-
-        // Build drop glue for ADT element types with heap fields.
-        let drop_glue_id = self.build_adt_drop_glue_fn(elem_type, dealloc_id, span)?;
-
-        let mut sig = self.module.make_signature();
-        sig.params.push(AbiParam::new(types::I64));
-        sig.returns.push(AbiParam::new(types::I64));
-
-        let func_id = self
-            .module
-            .declare_function(&name, Linkage::Local, &sig)
-            .map_err(|e| CranelispError::CodegenError {
-                message: format!("failed to declare elem dec fn: {e}"),
-                location: ErrorLocation::from_span(span),
-            })?;
-
-        let mut ctx = self.module.make_context();
-        let mut func_ctx = FunctionBuilderContext::new();
-        ctx.func.signature = sig;
-
-        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut func_ctx);
-        let entry = builder.create_block();
-        builder.append_block_params_for_function_params(entry);
-        builder.switch_to_block(entry);
-        builder.seal_block(entry);
-
-        let val = builder.block_params(entry)[0];
-
-        heap::emit_rc_dec_guarded(
-            &mut builder,
-            self.module,
-            val,
-            dealloc_id,
-            drop_glue_id,
-            guarded,
-        );
-
-        builder.ins().return_(&[val]);
-        builder.seal_all_blocks();
-        builder.finalize();
-
-        self.module
-            .define_function(func_id, &mut ctx)
-            .map_err(|e| CranelispError::CodegenError {
-                message: format!("failed to define elem dec fn: {e}"),
-                location: ErrorLocation::from_span(span),
-            })?;
-
-        Ok(func_id)
-    }
-
-    /// Build a standalone ADT drop glue function: `(ptr: i64) -> ()`.
-    ///
-    /// For each data constructor, loads each heap-typed field and dec's it.
-    /// Returns None if the type is not an ADT or has no heap-typed fields.
-    fn build_adt_drop_glue_fn(
-        &mut self,
-        ty: &Type,
-        dealloc_id: cranelift_module::FuncId,
-        span: Span,
-    ) -> Result<Option<cranelift_module::FuncId>, CranelispError> {
-        let fqtn = match ty {
-            Type::ADT(fqtn, _) => fqtn.clone(),
-            _ => return Ok(None),
-        };
-
-        let type_def = match self.ctx.lookup_type_def(&fqtn) {
-            Some(td) => td,
-            None => return Ok(None),
-        };
-
-        let concrete_args = match ty {
-            Type::ADT(_, args) => args.clone(),
-            _ => return Ok(None),
-        };
-
-        // Reconstruct constructor metadata (S70 ctor-as-Def).
-        let all_ctors = self.ctx.constructor_metas(&type_def);
-
-        // Build substitution from Var ids to concrete types.
-        let mut unique_var_ids: Vec<cranelisp_types::TypeId> = Vec::new();
-        for c in &all_ctors {
-            for field in &c.fields {
-                collect_var_ids_from_type(&field.ty, &mut unique_var_ids);
-            }
-        }
-        let subst: std::collections::HashMap<cranelisp_types::TypeId, Type> = unique_var_ids
-            .iter()
-            .zip(concrete_args.iter())
-            .map(|(&id, arg)| (id, arg.clone()))
-            .collect();
-
-        // Collect data constructors with fields.
-        let data_ctors: Vec<CtorMeta> = all_ctors
-            .into_iter()
-            .filter(|c| !c.fields.is_empty())
-            .collect();
-
-        if data_ctors.is_empty() {
-            return Ok(None);
-        }
-
-        // Check if any data constructor has heap-typed fields.
-        let has_heap_fields = data_ctors.iter().any(|ctor| {
-            ctor.fields.iter().any(|f| {
-                let resolved = substitute_type_inline(&f.ty, &subst);
-                matches!(
-                    signature_heap_category(&resolved, Some(self.ctx.symbol_tables)),
-                    HeapCategory::AlwaysHeap | HeapCategory::Mixed
-                )
-            })
-        });
-
-        if !has_heap_fields {
-            return Ok(None);
-        }
-
-        // Build the drop glue function. Naming is composed by the ONE naming fn
-        // (S111 R6 §4.1, `resolution::adt_drop_glue_name`) — never an inline
-        // `format!` (the A.4 caveat: the identity test calls the production fn).
-        // Keyed on the FULL instantiation `ty` (module + name + concrete args),
-        // not the bare `fqtn` — the glue body substitutes `concrete_args` before
-        // heap-classifying each field, so the key must carry that identity or the
-        // `get_name` skip below serves this glue to a divergent sibling (FIXME
-        // 0633, re-keyed CS-1.1). The ADT builder keeps its own envelope (a
-        // multi-ctor tag-branch body, structurally richer than the closure/curry
-        // flat capture-dec loop — §4.3 fallback: only the naming home is shared).
-        let glue_name = crate::compiler::adt_drop_glue_name(ty);
-
-        // Check if this drop glue was already built (e.g., by a previous module).
-        if let Some(cranelift_module::FuncOrDataId::Func(existing_id)) =
-            self.module.get_name(&glue_name)
-        {
-            return Ok(Some(existing_id));
-        }
-
-        let mut sig = self.module.make_signature();
-        sig.params.push(AbiParam::new(types::I64)); // ptr
-
-        let glue_func_id = self
-            .module
-            .declare_function(&glue_name, Linkage::Local, &sig)
-            .map_err(|e| CranelispError::CodegenError {
-                message: format!("failed to declare drop glue fn: {e}"),
-                location: ErrorLocation::from_span(span),
-            })?;
-
-        let mut ctx = self.module.make_context();
-        let mut func_ctx = FunctionBuilderContext::new();
-        ctx.func.signature = sig;
-
-        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut func_ctx);
-        let entry = builder.create_block();
-        builder.append_block_params_for_function_params(entry);
-        builder.switch_to_block(entry);
-        builder.seal_block(entry);
-
-        let adt_val = builder.block_params(entry)[0];
-
-        // Drop glue is only called from the free path of emit_rc_dec_guarded,
-        // so the value is guaranteed to be a heap pointer (not a bare tag).
-        // No mixed guard needed here.
-
-        if data_ctors.len() == 1 {
-            let ctor = &data_ctors[0];
-            self.emit_standalone_field_decs(&mut builder, adt_val, ctor, &subst, dealloc_id, span)?;
-        } else {
-            // Multiple data constructors: load tag, branch to correct handler.
-            let heap_tag = heap::heap_load(&mut builder, adt_val, HeapAdt::TAG_OFFSET);
-            let done_block = builder.create_block();
-
-            // `data_ctors` is already owned (Vec<CtorMeta>); clone for the loop
-            // so `self` isn't borrowed across the body (we need `&mut self`
-            // inside the loop to call `emit_standalone_field_decs`).
-            let data_ctors_owned: Vec<CtorMeta> = data_ctors.clone();
-
-            for (idx, ctor) in data_ctors_owned.iter().enumerate() {
-                let ctor_block = builder.create_block();
-                let next_block = if idx + 1 < data_ctors_owned.len() {
-                    builder.create_block()
-                } else {
-                    done_block
-                };
-
-                let tag_val = builder.ins().iconst(types::I64, ctor.tag as i64);
-                let cmp = builder.ins().icmp(IntCC::Equal, heap_tag, tag_val);
-                builder.ins().brif(cmp, ctor_block, &[], next_block, &[]);
-
-                builder.switch_to_block(ctor_block);
-                builder.seal_block(ctor_block);
-
-                self.emit_standalone_field_decs(
-                    &mut builder,
-                    adt_val,
-                    ctor,
-                    &subst,
-                    dealloc_id,
-                    span,
-                )?;
-                builder.ins().jump(done_block, &[]);
-
-                if idx + 1 < data_ctors_owned.len() {
-                    builder.switch_to_block(next_block);
-                    builder.seal_block(next_block);
-                }
-            }
-
-            builder.switch_to_block(done_block);
-            builder.seal_block(done_block);
-        }
-
-        builder.ins().return_(&[]);
-        builder.seal_all_blocks();
-        builder.finalize();
-
-        self.module
-            .define_function(glue_func_id, &mut ctx)
-            .map_err(|e| CranelispError::CodegenError {
-                message: format!("failed to define drop glue fn: {e}"),
-                location: ErrorLocation::from_span(span),
-            })?;
-
-        Ok(Some(glue_func_id))
-    }
-
-    /// Emit rc_dec for each heap-typed field of a constructor (standalone).
-    ///
-    /// Unlike `emit_field_decs` on FnCompiler, this operates on a bare
-    /// FunctionBuilder without the FnCompiler's scope state. Takes `&mut self`
-    /// so it can build per-element dec functions when a field is a Vec —
-    /// Vec fields cannot use the generic `emit_rc_dec → dealloc` path because
-    /// that leaks the elements and the data buffer.
-    ///
-    /// For nested ADT fields (non-Vec) we build the nested ADT's drop glue
-    /// and pass it to `emit_rc_dec_guarded` so heap sub-fields release at
-    /// rc=0. This mirrors `emit_field_decs`'s recursive handling in
-    /// `compiler/mod.rs`.
-    fn emit_standalone_field_decs(
-        &mut self,
-        builder: &mut FunctionBuilder,
-        adt_val: Value,
-        ctor: &CtorMeta,
-        subst: &std::collections::HashMap<cranelisp_types::TypeId, Type>,
-        dealloc_id: cranelift_module::FuncId,
-        span: Span,
-    ) -> Result<(), CranelispError> {
-        let vec_drop_id = self.ctx.vec_drop_func_id;
-        for (i, field) in ctor.fields.iter().enumerate() {
-            let resolved_ty = substitute_type_inline(&field.ty, subst);
-            let category = signature_heap_category(&resolved_ty, Some(self.ctx.symbol_tables));
-            match category {
-                HeapCategory::AlwaysHeap => {
-                    let field_val = heap::heap_load(builder, adt_val, HeapAdt::field_offset(i));
-
-                    // Vec-typed fields must route through vec_drop, not dealloc,
-                    // so element RCs and the data buffer are released.
-                    if let Some(elem_ty) = vec_element_type(&resolved_ty) {
-                        let vdrop = vec_drop_id.ok_or_else(|| CranelispError::CodegenError {
-                            message: "runtime/vec_drop not declared for drop-glue Vec field".into(),
-                            location: ErrorLocation::from_span(span),
-                        })?;
-                        // Build per-element dec fn (needs &mut self; outer
-                        // `builder` is a separate FunctionBuilder owned by
-                        // the drop-glue function ctx — safe to nest).
-                        let elem_dec_fn_ptr = self.resolve_elem_dec_fn_ptr_into(
-                            &Some(elem_ty.clone()),
-                            builder,
-                            span,
-                        )?;
-                        emit_vec_rc_dec_with_drop(
-                            builder,
-                            self.module,
-                            field_val,
-                            vdrop,
-                            elem_dec_fn_ptr,
-                        );
-                    } else if matches!(resolved_ty, Type::ADT(_, _)) {
-                        // Nested ADT fields (non-Vec) need their own drop glue
-                        // so that the nested ADT's heap sub-fields are released
-                        // when the nested ADT reaches rc=0. Without this, a
-                        // Grid-of-Wrapper-of-String would only run Wrapper's
-                        // dealloc and leak the inner String's RC.
-                        let nested_glue_id =
-                            self.build_adt_drop_glue_fn(&resolved_ty, dealloc_id, span)?;
-                        heap::emit_rc_dec_guarded(
-                            builder,
-                            self.module,
-                            field_val,
-                            dealloc_id,
-                            nested_glue_id,
-                            false,
-                        );
-                    } else {
-                        heap::emit_rc_dec(builder, self.module, field_val, dealloc_id, None);
-                    }
-                }
-                HeapCategory::Mixed => {
-                    let field_val = heap::heap_load(builder, adt_val, HeapAdt::field_offset(i));
-                    // Mixed ADT fields (nullary + data constructors) need drop
-                    // glue when the data variants carry heap sub-fields. The
-                    // guard in emit_rc_dec_guarded skips bare nullary tags;
-                    // the drop glue runs only on heap values at rc=0.
-                    let nested_glue_id = if matches!(resolved_ty, Type::ADT(_, _)) {
-                        self.build_adt_drop_glue_fn(&resolved_ty, dealloc_id, span)?
-                    } else {
-                        None
-                    };
-                    heap::emit_rc_dec_guarded(
-                        builder,
-                        self.module,
-                        field_val,
-                        dealloc_id,
-                        nested_glue_id,
-                        true,
-                    );
-                }
-                HeapCategory::NeverHeap | HeapCategory::Value => {}
-            }
-        }
-        Ok(())
-    }
-
-    /// Resolve or generate a per-element-type dec function pointer into a
-    /// specific builder (for use inside nested drop-glue function codegen).
-    ///
-    /// Unlike `resolve_elem_dec_fn_ptr` which emits into `self.builder`,
-    /// this takes an explicit `&mut FunctionBuilder` so it can be used from
-    /// `emit_standalone_field_decs` (which is building a different function).
     /// Build the `SourceOwnership::Owned` release descriptor for a COW core
     /// emitted into a wrapper/curry body (§13.3 Ruling 2): the source Vec's
     /// teardown func id + its per-element dec fn ptr. The op consumes an owned
@@ -1438,26 +1047,11 @@ where
         builder: &mut FunctionBuilder,
         span: Span,
     ) -> Result<Value, CranelispError> {
-        let Some(ty) = &elem_type else {
+        let Some(id) = self.request_elem_dec_adapter(elem_type, span)? else {
             return Ok(builder.ins().iconst(types::I64, 0));
         };
-
-        let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
-        match category {
-            HeapCategory::NeverHeap | HeapCategory::Value => {
-                Ok(builder.ins().iconst(types::I64, 0))
-            }
-            HeapCategory::AlwaysHeap => {
-                let func_id = self.build_elem_dec_fn(false, ty, span)?;
-                let func_ref = self.module.declare_func_in_func(func_id, builder.func);
-                Ok(builder.ins().func_addr(types::I64, func_ref))
-            }
-            HeapCategory::Mixed => {
-                let func_id = self.build_elem_dec_fn(true, ty, span)?;
-                let func_ref = self.module.declare_func_in_func(func_id, builder.func);
-                Ok(builder.ins().func_addr(types::I64, func_ref))
-            }
-        }
+        let func_ref = self.module.declare_func_in_func(id, builder.func);
+        Ok(builder.ins().func_addr(types::I64, func_ref))
     }
 
     /// Resolve or generate a per-element-type inc function pointer into a
@@ -1622,23 +1216,6 @@ where
 // ---------------------------------------------------------------------------
 // Free functions
 // ---------------------------------------------------------------------------
-
-/// If `ty` is a `Vec T`, return the element type `T`.
-///
-/// Vec is a built-in heap type with its own struct layout (len/cap/data_ptr)
-/// and a dedicated `runtime/vec_drop` teardown path. When a Vec value reaches
-/// rc=0, it cannot be freed via the generic `dealloc(ptr)` — that would leak
-/// the elements and the data buffer. Callers must detect Vec-typed values and
-/// route through `emit_vec_aware_rc_dec` instead.
-pub(crate) fn vec_element_type(ty: &Type) -> Option<&Type> {
-    if let Type::ADT(fqtn, args) = ty
-        && fqtn.name.as_ref() == "Vec"
-        && args.len() == 1
-    {
-        return Some(&args[0]);
-    }
-    None
-}
 
 /// Shared emission core for `vec-get`: bounds check (trap via `runtime/panic`)
 /// + element load + element RC inc per `elem_category`.

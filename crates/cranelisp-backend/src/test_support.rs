@@ -1576,3 +1576,49 @@ pub(crate) fn probe_glue_registry(
         intrinsic_ids.vec_drop,
     )
 }
+
+/// Count the RELEASE operations a rendered CLIF body performs on its own heap
+/// values (S118 slice S6 — the shared counting instrument for the RC fence
+/// cells).
+///
+/// After the consumer migration a release takes one of two forms, and a cell
+/// that watches only one of them silently stops measuring:
+///
+/// - a `call` to a **canonical drop glue** — the release ABI `(i64) -> ()`, one
+///   heap word in and nothing out, so its signature is unmistakable in the CLIF
+///   preamble (`sigN = (i64) system_v`); this is now every scope-exit, match and
+///   capture release;
+/// - an **inline** `atomic_rmw.i64 sub` — the remaining per-site RC decs
+///   (`heap::emit_rc_dec*`, the Vec-op temporary release) that are not type
+///   glue.
+///
+/// The sum is "how many times does this body release something", which is the
+/// question every 0781/0782-class fence actually asks.
+pub(crate) fn count_release_ops(clif: &str) -> usize {
+    let release_sigs: Vec<&str> = clif
+        .lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            let (name, rest) = l.split_once(" = ")?;
+            (name.starts_with("sig") && rest == "(i64) system_v").then_some(name)
+        })
+        .collect();
+    let release_fns: Vec<&str> = clif
+        .lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            let (name, rest) = l.split_once(" = ")?;
+            let sig = rest.rsplit(' ').next()?;
+            (name.starts_with("fn") && release_sigs.contains(&sig)).then_some(name)
+        })
+        .collect();
+    let glue_calls = clif
+        .lines()
+        .filter(|l| {
+            release_fns
+                .iter()
+                .any(|f| l.contains(&format!("call {f}(")))
+        })
+        .count();
+    glue_calls + clif.matches("atomic_rmw.i64 sub").count()
+}
