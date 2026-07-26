@@ -61,6 +61,23 @@ narration is verified line-by-line against emitted CLIF in
 It uses bare `primitives` (like the perf fixtures) rather than the curated surface,
 so each function's IR isolates one optimization.
 
+`memory-lifecycle.demo` (un-numbered, sorts after the numbered arc) is a
+runtime-behaviour demo, not a language-capability one: its subject is the
+allocation ledger read through `/mem`, and the invariant it puts on display is
+the S118 program-result owner — a heap value is formatted IN FULL and then
+released EXACTLY ONCE, in the same observe-then-release order in REPL, `--run`,
+and linked startup (`src/CLAUDE.md` §"Program-result ownership"). It works by
+`/mem` **snapshot** arithmetic: produce the same heap value several times and
+`allocs`/`deallocs` advance together while `live` does not move. Concrete
+shapes (a user product, a recursive tree, `(Some heap)`) are shown flat; the
+residual-type-parameter exception is then shown *growing*, side by side with
+the same value under a pinning annotation, and labelled as the filed defect it
+is rather than hidden. Every number the narration cites is exact against the
+live output, so a drift in either direction shows up as narration that no
+longer matches. It is deliberately outside the "demonstrate the language, not
+the changelog" arc — its subject is the runtime ledger, not a language feature.
+Replay: `DEMO_FAST=1 ./repl/showcase memory-lifecycle`.
+
 `code-formatting.demo` (un-numbered, sorts after the numbered arc) is a
 REPL-tooling regression guard, not a language-capability one: it exercises the
 pair-aware `/sexp` / `/source` pretty-printer — the aligned `let`-binding and
@@ -84,6 +101,17 @@ a regression sweep; the active set is the portfolio.
 
 Do not add new demos to `archive/`. Do not delete archived demos to "clean up" —
 they are the durable regression net.
+
+**When an archived guard goes red, it has done its job — attribute it, do not
+repair it.** A stale *expectation* (superseded syntax, a renamed command, an
+output format the spec has since changed) is a demo fix. A guard that reproduces
+a real compiler refusal or a wrong value is a **defect**, and the demo keeps
+reproducing it: the failing segment stays, uncommented, with a brief `;` comment
+naming the FIXME that owns it, so the next replay reader can tell an attributed
+red from a fresh regression. Never comment out, rewrite, or re-spell the segment
+to make the sweep green — that destroys the guard and hides the defect.
+Currently attributed: `ring4s.demo`'s `then`/`bind` combinator segment (FIXME
+0907, IO's existential `Bind` ctor defeats canonical per-concrete glue).
 
 ## Curated surface
 

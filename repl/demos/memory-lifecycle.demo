@@ -1,0 +1,90 @@
+; Cranelisp under the hood — the allocation ledger, and who releases your result
+
+; This demo's subject is the runtime, not a language feature. It uses /mem to
+; watch heap values being reclaimed. The invariant on display: a value you type
+; at the prompt is displayed IN FULL and then released EXACTLY ONCE, so a
+; session that keeps producing heap values does not keep growing.
+
+; /mem with no argument is a snapshot of the runtime's counters. `live` is the
+; part that matters: allocations that have been made and not yet freed.
+/mem
+
+; A prelude-loading session starts with a nonzero `live` — loading the stdlib
+; expands macros, and the macro-expansion boundary retains its marshalled
+; arguments by design. That baseline is a constant, not a growth rate: it is
+; the subject of its own known defect, and this demo reads it as the FLOOR
+; that every measurement below sits on.
+
+; A type with one heap field, so each value is exactly two allocations:
+; the string, and the box that holds it.
+(deftype Box [:String contents])
+
+; Now the experiment. Note `live` here, then produce the same heap value
+; several times, then read `live` again.
+/mem
+
+(Box "boxed")
+
+(Box "boxed")
+
+(Box "boxed")
+
+; `allocs` and `deallocs` each advanced by six — two per value, three values.
+; `live` did not move at all. Each result was formatted first, then released.
+/mem
+
+; The same holds for a value with structure. A three-node tree is five
+; allocations; produce two of them and `live` still does not move.
+(deftype Tree (Leaf [:Int v]) (Node [:Tree l :Tree r]))
+
+(Node (Leaf 1) (Node (Leaf 2) (Leaf 3)))
+
+(Node (Leaf 1) (Node (Leaf 2) (Leaf 3)))
+
+; Ten more allocations, ten more deallocations, `live` unchanged — the release
+; walks the whole value, not just its outermost box.
+/mem
+
+; And for a library type over a heap payload:
+(Some "heap payload")
+
+(Some "heap payload")
+
+/mem
+
+; Order matters, and it is the same order in every mode. The REPL renders the
+; whole `:Type value` line before releasing; --run computes its exit code
+; before releasing; a linked binary converts before releasing. You never see a
+; half-formatted value, and nothing is released twice.
+
+; One honest exception, visible right here. When the result's displayed type
+; still carries a residual type parameter, no release happens and `live` grows.
+; Compare the two lines below: the same value, differing only in whether an
+; annotation pins the residual parameter.
+/mem
+
+(Err "boom")
+
+(Err "boom")
+
+; `deallocs` did not move, and `live` grew — that is a known defect, filed
+; against the type-level view that leaves the parameter unpinned. It is shown
+; rather than hidden, and this demo is where it will visibly stop happening.
+/mem
+
+; Pin the parameter and the same value is released exactly as above:
+:(Result String String) (Err "boom")
+
+:(Result String String) (Err "boom")
+
+; `deallocs` moved with `allocs`; `live` is back to flat.
+/mem
+
+; A closing note on the tool itself. `/mem <expr>` reports a per-expression
+; delta, and its measurement window closes before the result is released — so
+; it reports `live +N` for every heap value, including the ones proven flat
+; above. That gap is filed too. Until it closes, the snapshot form used
+; throughout this demo is the truthful instrument.
+/mem (Box "boxed")
+
+; [end]

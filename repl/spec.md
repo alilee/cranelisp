@@ -882,6 +882,15 @@ user> /mem (list 1 2 3)
 
 Evaluation errors MUST still emit the delta line — observation is the point, and a failed allocation is itself interesting data. The header line in the error case uses the standard §5 error format.
 
+**The delta window MUST include the program-result release.** [S119 — FIXME 0914] The purpose of `/mem <expr>` is to let a user at the prompt answer "did my expression's memory get reclaimed?", so the window the delta measures MUST be closed *after* the turn's result has been released, not after evaluation. A window that closes earlier reports `live +N` for every heap-valued expression — including expressions whose result the runtime provably reclaims — which tells the user they have a leak when they do not. This is a **truthfulness** requirement on the instrument, not a precision one: a diagnostic that systematically over-reports growth is worse than no diagnostic, because a user debugging their own ownership will act on it.
+
+Because the REPL renders a turn's whole `StyledDoc` before releasing that turn's result (`src/CLAUDE.md` §"Program-result ownership" — observe, then release), the delta line is *part of the text emitted before the release*, so satisfying this requirement is an ordering question, not a counter question. Two shapes satisfy it; the choice is the implementation's:
+
+- the command takes responsibility for its own turn's release, releasing before it computes the closing counters; or
+- the delta line is emitted after the release rather than composed with the result line.
+
+Until this holds, the **snapshot** form is the truthful instrument and the delta form's exclusion MUST be treated as a known non-conformance rather than as the specified behaviour.
+
 `/mem` MUST NOT start the runtime; the counters are valid from process start. An empty runtime reports `; live: 0 bytes (0 allocations)` and `; allocs: 0  deallocs: 0`.
 
 | Requirement | Test |
@@ -1406,6 +1415,50 @@ promises it does not matter. That case is tracked with the rest of the `:`-fold
 seam (FIXME 0708); the requirement above is on the **located +
 self-documenting + no-silent-degradation** contract, which holds for every case,
 not on any single message's exact prose. [S115]
+
+### 5.5 Compiler-Stage Diagnostics Name User-Facing Subjects [S119 — FIXME 0915]
+
+§5.4 carried the self-documenting contract *down* to the reader. This section
+carries it *up* to the stages a user never names: monomorphisation, code
+generation, linking. A failure there is rare, but it is exactly the moment a
+user has least to go on, so the diagnostic MUST stay inside the vocabulary the
+prompt itself can explain. Three requirements, each independent of any
+particular failure's cause:
+
+- **Located at the user's form.** A compiler-stage error MUST carry the span of
+  the form the user typed, per §5.1's location MUST. A degenerate `0..0` span
+  satisfies the letter of "a character span" and none of its purpose: it points
+  at nothing, and on a multi-form line the user cannot tell which form failed.
+  Where the failing artifact is a synthesised body with no source of its own,
+  the span MUST be the *triggering* user form, not the artifact's.
+
+- **The subject is named as the user would write it.** The compilation subject
+  in the message MUST be a name the user can type back at the prompt. Internal
+  synthetic names (`__expr` and the `__macro_*` family), monomorphisation
+  instance mangles (`name$Param+Param`), and doubled module prefixes
+  (`user/user/name`, arising when a module path is prepended to a symbol that
+  already carries one) MUST NOT appear. A REPL expression's subject is the
+  expression; a monomorphised instance's subject is the generic definition the
+  user defined, and the instantiating types belong in the prose if they are
+  load-bearing.
+
+- **Every noun in the message is discoverable, or is rephrased.** The
+  self-documenting principle (root `CLAUDE.md` §Design Principles) makes this
+  binary: if the message's central noun is a type or constructor, then typing
+  that name — or `/info` on it — MUST describe it. A message whose subject the
+  REPL itself answers with `undefined variable` / `unknown symbol` is not
+  actionable at any level of user skill, because the one investigative move
+  available at the prompt fails. Where a name is genuinely internal and cannot
+  be made discoverable, the message MUST be rephrased around what the user
+  *wrote* instead of what the compiler *built*.
+
+Nested stage wrappers MUST NOT repeat a category-and-span prefix that an outer
+wrapper already emitted (`codegen error at 0..0: codegen failed for X: codegen
+error at 0..0: …`); one located category prefix per diagnostic.
+
+These are requirements on the diagnostic *frame*, not on any stage's ability to
+succeed — a refusal a stage genuinely cannot avoid is still a conforming
+refusal once it is located, subject-named, and phrased in discoverable nouns.
 
 ## 6. Discoverability [Tested]
 

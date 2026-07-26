@@ -39,6 +39,16 @@ str-concat
 ; SIGABRT — one root cause. The backend-side `emit_capture_return_inc`
 ; in control_flow.rs now balances the drop. The 7-line repro runs clean.
 
+; ATTRIBUTED RED (S118): the two `then` lines below no longer compile. Routing
+; every typed release through the canonical drop glue (S118 W3) turned an
+; IO-typed release from a silent shallow teardown into a loud refusal —
+; `constructor 'Bind' disagrees on declared parameter identity`. IO's `Bind`
+; ctor is seeded with its own existential type vars, so per-concrete glue
+; cannot be derived for `IO T`. FIXME 0907 owns the ruling. The segment is
+; retained failing ON PURPOSE: it is the guard that flips when 0907 lands.
+; Do not comment it out or re-spell it. The prompt-level surface that still
+; works is `bind`/`bind!`/`do`/`Pure` applied directly — see 07-io-and-effects.
+
 (import [primitives [Pure bind]])
 
 (defn then [a b] (bind a (fn [_] b)))

@@ -111,3 +111,92 @@ with `/arch` adjacency: IO is seeded by int's bootstrap, torn down by
 intrinsics, refused by backend — three contexts meet here). Until then the 7
 cells are attributed carries; `tests/plan/s118-test-plan.md` §11 carries the
 name-for-name list.
+
+## REPL-experience evidence (appended by `/repl`, S118 Phase 6a)
+
+Added at `/sprint`'s request rather than filed as a duplicate. Three things the
+attribution above does not record, all measured at the prompt at HEAD `4ed43430`.
+
+### 1. The blast radius at the prompt is narrower than "IO refuses"
+
+This matters for the ruling's urgency and for what a user can be told meanwhile.
+`07-io-and-effects.demo` — the guided arc's whole IO chapter — **replays green**.
+Everything a user meets first still works: `(platform stdio)`, `print`,
+`(do …)`, `(bind! [x …] …)`, `(Pure 42)`, `(bind (Pure 10) (fn [x] …))`, an
+effect-returning `defn` with inferred `(IO Int)`, and `if` selecting between two
+effects. The refusal needs an IO value to reach a **release site**: a `match` on
+IO constructors, an IO-typed `let` binding, or a user-defined combinator over
+`(IO a)`. So the reachable-by-a-beginner surface is intact, and the shapes that
+refuse are the ones a user reaches when they start *abstracting* over effects —
+writing their own `then`/`when-io`/`map-io`. That is a bad place to hit a wall
+(it is the first genuinely creative thing a user does with effects) but it is not
+the first ten minutes.
+
+### 2. It takes an archived regression guard down
+
+`repl/demos/archive/ring4s.demo` is RED, at exactly its `(defn then [a b] (bind a
+(fn [_] b)))` + `(then …)` segment — a demo written in S61 to guard the *previous*
+IO-combinator double-free. The segment is retained failing on purpose with an
+attribution comment naming this FIXME (`repl/demos/CLAUDE.md` §archive records
+the attribute-don't-repair rule). It is the archive's only red and it flips when
+this is ruled. Note the shape it guards: `(fn [_] b)` returning a captured IO
+value is the *same* idiom whose double-free S61 fixed, so this segment is
+load-bearing history, not incidental.
+
+### 3. The definition/call asymmetry is itself confusing
+
+```
+> (defn then [a b] (bind a (fn [_] b)))
+:(Fn [(primitives/IO a) (primitives/IO b)] (primitives/IO b)) user/then ; defn
+> /sig then
+:(Fn [(primitives/IO a) (primitives/IO b)] (primitives/IO b)) user/then ; defn
+> (then (Pure 1) (Pure 2))
+Error: codegen error at 0..0: codegen failed for user/user/then$primitives/IO$Int+primitives/IO$Int: ...
+```
+
+The definition is accepted, echoes a correct polymorphic signature, and
+introspects cleanly through `/sig`. Only instantiation refuses. From the prompt
+this reads as "the function exists and is well-typed, but calling it is
+impossible" — the user has no way to tell that the obstruction is per-concrete
+release-code derivation, and nothing in the surface suggests the shape is
+unsupported *before* they write it. If the ruling ends up at the "special-case
+exclusion at admission" option, consider whether the refusal should move to the
+**definition** so the feedback arrives where the user can still change course.
+
+### 4. Recovery is clean (the one unambiguous good news)
+
+`repl/spec.md` §5.2 holds. After each refusal the session is intact: `(+ 1 2)` →
+`:primitives/Int 3`, a following `defn` compiles and runs. No poisoning, no
+cascade. The S117 failed-codegen transaction work is doing its job here.
+
+### 5. The diagnostic's nouns are undiscoverable — and inconsistently so
+
+```
+> Bind
+Error: type error at 0..4: undefined variable: Bind
+> /info Bind
+error: unknown symbol 'Bind'
+> /info IO
+error: unknown symbol 'IO'
+> Pure
+:(Fn [a] (primitives/IO a)) primitives/IO.Pure ; deftype
+```
+
+The message names a constructor `Bind` and a type `primitives/IO`; the REPL then
+denies both exist — while `Pure`, the *sibling constructor of the same type*,
+introspects correctly. This traces straight to the mechanism above: `Pure` and
+`Effect` go through `register_synth_adt` and land as ordinary entries, `Bind` is
+seeded manually at `src/bootstrap.rs:767-783` and evidently not enrolled the same
+way. So the introspection asymmetry and the glue refusal have **one cause**, and
+whatever the ruling does about `Bind`'s scheme should make it introspectable —
+a user told to reason about `Bind` must be able to look it up.
+
+`/info IO` failing is a separate small gap worth catching in the same window: the
+type is nameable in a signature (`(primitives/IO a)` prints in every `defn` echo
+above) but not introspectable.
+
+The *frame* the message is rendered in — degenerate `0..0` span, doubled
+`codegen error at 0..0:` prefix, `user/user/` doubling, and the `$`-mangled
+instance name — is **not** specific to this defect and is filed separately as
+FIXME 0915 with `repl/spec.md` §5.5 as the new normative contract. Items 1–5
+here are the IO-specific half.
