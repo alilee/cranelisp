@@ -200,3 +200,89 @@ The *frame* the message is rendered in — degenerate `0..0` span, doubled
 instance name — is **not** specific to this defect and is filed separately as
 FIXME 0915 with `repl/spec.md` §5.5 as the new normative contract. Items 1–5
 here are the IO-specific half.
+
+## Stdlib evidence (appended by `/stdlib`, S118 Phase 6a)
+
+Appended per `/sprint`'s dispatch rather than filed as a duplicate. The
+library-author half: what the refusal costs, and the falsification of the
+"just re-spell it" option that a reader of this FIXME would otherwise try.
+
+### 1. Conformance gate reconciled name-for-name — 36 of 38
+
+`stdlib_conformance::stdlib_all_public_modules_compile_and_run` (78 s, cold
+per-module subprocess loop) reports **two** modules, one cause: `core.io`
+(`codegen failed for core.io/when-io`) and its parent shell `core`
+(transitive — `core.cl` declares `(mod io)`). The other 36 are green; the
+three `def`/`const` binder rows in the same binary are green. So the
+severity block's "×1 [core.io/when-io]" is one *cause* but **two named
+modules** in the aggregated report — worth knowing at the ruling's
+acceptance, since both flip together.
+
+Blast radius *inside* `stdlib/` is exactly those two: the prelude does not
+re-export `core.io`, and `derive`/`derive.helpers` reach `core.syntax`
+directly rather than through the `core` shell. `io.monad` — the prelude's
+`pure`/`do`/`bind!` — is **green**, which is the mechanism behind `/repl`'s
+item 1: a beginner's first effects work; what breaks is the first attempt to
+*abstract* over effects, which is what all six `core.io` combinators are.
+
+### 2. The trigger inside `when-io` is the MIXED `if` arm (narrowed)
+
+`when-io` contains no `bind` at all — `(if cond io-action (Pure 0))`. Probes
+at HEAD `e67857ce` (one file, PrimitivesOnly, `--no-cache`):
+
+| Shape | Result |
+|---|---|
+| `(defn f [] (Pure 0))` | compiles — returned concrete IO transfers, no release |
+| `(defn g [c] (if c (Pure 1) (Pure 0)))` | **compiles** — both arms fresh |
+| `(defn i [io] (if true io (Pure 0)))` | refuses |
+| `(defn j [c io] (if c io (Pure 0)))` | refuses — this is `when-io` |
+| `(defn h [] (let [x (Pure 5)] 1))` | refuses (the §"Minimal repro" scope-exit face) |
+| `(defn pick [c b] (if c b (MkBx 0)))` over an ordinary user ADT | **compiles** |
+
+So the `if`-join is not itself the trigger: two freshly-constructed arms
+returned are fine. The refusing shape is **one borrowed-parameter arm joined
+with one freshly-built concrete arm** — and the identical shape over a
+non-IO heap ADT compiles, which independently confirms the attribution is
+IO/`Bind`-specific and not a general mixed-arm release defect (i.e. it is
+not 0726's axis).
+
+### 3. There is NO legal re-spelling — the workaround option is falsified
+
+This is the load-bearing finding for the ruling's urgency.
+
+| Shape | Definition | Concrete call |
+|---|---|---|
+| `(defn >> [a b] (bind a (fn [_] b)))` | compiles | **refuses** (`>>$primitives/IO$Int+primitives/IO$Int`) |
+| `(defn map-io [f io] (bind io (fn [x] (Pure (f x)))))` | compiles | refuses |
+| `(defn wi3 [c a alt] (if c a alt))` — polymorphic `when-io` | **compiles** | **refuses** (`wi3$Bool+primitives/IO$Int+primitives/IO$Int`) |
+
+The four combinators that are *polymorphic* (`>>`, `map-io`, `timeout`,
+`sequence-io`) already compile in `core.io` — they refuse only when a user
+instantiates them. `when-io`/`unless-io` refuse earlier only because they
+name a concrete `(Pure 0)` in their own bodies. Re-spelling `when-io`
+polymorphically therefore **compiles the module and leaves the capability
+exactly as broken**, while removing the only signal the conformance gate
+has. `/stdlib` has consequently declined to land any workaround: `core.io`
+stays red as the honest record, with the measured detail and the six
+withheld self-tests enumerated in `stdlib/core/io.cl`'s header (per
+`stdlib/CLAUDE.md`'s ceilinged-coverage convention), and the assessment in
+`stdlib/plan-stdlib.md` §28.2.
+
+**Implication for the ruling's option 3** ("special-case exclusion at
+admission", which restores compilation and the silent leak): from the
+library-author side that option is the *only* one that makes the six
+combinators reachable again, and it would restore a leak on every IO value
+a user's own combinator releases. If it is taken, the failing-not-ignored
+leak guard the option already requires should include a **stdlib-shaped**
+cell (a user-defined `then`/`when-io` over `(IO a)`, not just a bare
+`(Pure 5)` release), because that is the shape the leak actually reaches in
+production.
+
+### 4. Acceptance rider for the fixing change-set
+
+`core.io` has no `(mod- test)` today — untestable while refused. The six
+withheld cases (`>>`, `map-io`, `when-io`, `unless-io`, `sequence-io` over
+`Nil` and a 3-element list, `timeout` both arms incl. loser cancellation)
+are enumerated in the module header as a restore list; `/stdlib` lands
+`stdlib/core/io/test.cl` in the same window the ruling's fix lands, and the
+`stdlib_conformance` red flips from 2 modules to 0.

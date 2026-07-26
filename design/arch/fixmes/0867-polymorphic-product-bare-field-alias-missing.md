@@ -85,3 +85,51 @@ including this FIXME's `(deftype (Duo a b) (MkDuo …))` case and spec
 - Fix is capacity-dependent in S118 (not pre-authorized as a carry; an
   unfixed repro at close needs an explicit user-approved carry). Plan of
   record: `tests/plan/s118-test-plan.md` §6.2.
+
+## Stdlib blast radius (appended by `/stdlib`, S118 Phase 6a)
+
+Not a duplicate filing — the fix's *forward* effect on `stdlib/`, which the
+attribution above does not cover. **No stdlib module is broken by the defect
+today**: every affected type destructures with `match` and hand-writes its
+field verbs (`collections.list/first`, `collections.pair/first`/`second`),
+which is precisely why this axis stayed invisible from the library side.
+Verified at HEAD `e67857ce`: `(deftype Tally [:Int passed :Int failed])`
+mints `Tally.passed` **and** bare `passed`; `(deftype (Lst a) Nil2 (Cons2
+[:a head :(Lst a) tail]))` mints neither `Lst.head` nor bare `head`.
+
+The five types that would START minting when the fix lands:
+
+| Type | Constructor-arm fields | New canonical | New bare alias |
+|---|---|---|---|
+| `collections.list/List` | `Cons [head tail]` | `List.head`, `List.tail` | `head`, `tail` |
+| `seq.lazy/Seq` | `SeqCons [head rest]` | `Seq.head`, `Seq.rest` | `head`, `rest` |
+| `collections.either/Either` | `Left [left-val]`, `Right [right-val]` | both | `left-val`, `right-val` |
+| `testing.runner/Outcome` | `Passed [passed-name]`, `Failed [failed-name why]`, `Panicked [panicked-name msg]` | all five | all five |
+| — (`testing.runner/Tally` is already on the minting spelling) | | | |
+
+Two consequences the fixing change-set should decide deliberately:
+
+1. **Silent public-surface widening.** Five stdlib types gain 13 canonical
+   accessors and 13 bare aliases with no author action. `collections.list`
+   and `seq.lazy` are prelude-adjacent (the prelude re-exports `List Nil
+   Cons empty? list` from the former), so the widening lands on modules a
+   user is likely to `[*]`-import.
+2. **A cross-module bare-alias contest that the in-module rule does not
+   catch.** `head` would be minted bare by BOTH `collections.list` and
+   `seq.lazy`; `rest` would be minted bare by `seq.lazy` while
+   `collections.list` already exports a *function* named `rest` (list.cl:53 —
+   deliberately Clojure-aligned, and its header already records the bare
+   names as reserved pending FIXME 0402). Neither is an ambiguity *within*
+   one module, so the §8.6.5 duplicate-field classification does not fire and
+   `stdlib_conformance` (which imports each module's `[*]` individually) would
+   not see it either; it surfaces only in a consumer importing both with
+   `[*]`. This is an argument for minting the canonical `Type.field` and
+   gating the bare alias — or at minimum for a `/qa` cell that `[*]`-imports
+   `collections.list` and `seq.lazy` into one module.
+
+There is no within-module collision in any current stdlib module (checked
+`testing/runner.cl`, `collections/either.cl`, `collections/list.cl`,
+`seq/lazy.cl`: no `defn` shares a name with a would-be new accessor), so the
+fix should not regress the conformance gate. Authoring guidance recorded in
+`stdlib/CLAUDE.md` §"Known compiler constraints"; assessment in
+`stdlib/plan-stdlib.md` §28.3.

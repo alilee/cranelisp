@@ -1945,6 +1945,128 @@ remains independent of FIXME 0863's compiler-side presentation transaction.
 
 ---
 
+## 28. Sprint 118 stdlib assessment (Phase 6a/6b)
+
+Sprint 118 was descoped to the ownership-mechanism collapse: one drop-glue
+mechanism, the program-result owner, and the RE-1 marshal ruling. It shipped no
+stdlib-facing function, type, or primitive. Its effects on this library are one
+regression, one confirmed constraint, and three forward notes for §27.
+
+### 28.1 Conformance gate — 36 of 38 green
+
+`stdlib_conformance::stdlib_all_public_modules_compile_and_run` reconciles
+name-for-name to the W8 gate's certified carry:
+
+| Module | Result |
+|---|---|
+| `core.io` | RED — `codegen failed for core.io/when-io: constructor 'Bind' disagrees on declared parameter identity for 'primitives/IO'` |
+| `core` | RED — transitive; the shell declares `(mod io)` |
+| the other 36 | GREEN |
+
+Two named reds, one cause (FIXME 0907). No other module regressed under the
+W3 canonical-glue migration or the W4 result owner, and the three `def`/`const`
+binder rows in the same binary stay green. Runtime ~78 s for the enumerating
+test (per-module `--run` subprocess loop, cold cache per module) — the known
+cumulative cold cost, not a hang.
+
+### 28.2 The `when-io` refusal — cost and why no workaround ships
+
+Measured at HEAD with one-file `--run` probes (PrimitivesOnly, `--no-cache`):
+
+| Shape | Result |
+|---|---|
+| `(defn f [] (Pure 0))` | compiles — a returned concrete IO transfers, no release |
+| `(if c (Pure 1) (Pure 0))` returned | compiles — both arms fresh |
+| `(if c io (Pure 0))` — borrowed param arm + fresh arm | **refuses** (this is `when-io`) |
+| `(let [x (Pure 5)] 1)` — scope exit | **refuses** |
+| `(defn >> [a b] (bind a (fn [_] b)))` — definition only | compiles |
+| `(>> (Pure 1) (Pure 2))` — concrete instantiation | **refuses** |
+| 3-arg polymorphic `when-io` — definition | compiles |
+| 3-arg polymorphic `when-io` — concrete call | **refuses** |
+| same mixed-arm shape over an ordinary user ADT | compiles — the refusal is IO-specific |
+
+Cost to stdlib users: the whole `core.io` surface (`>>`, `map-io`, `when-io`,
+`unless-io`, `sequence-io`, `timeout`) is unreachable, and the `core` shell's
+re-exports of `core.syntax`/`core.trace` go down with it. Direct `bind`/`Pure`/
+`do`/`bind!` use is unaffected — `io.monad` (the prelude's `pure`/`do`/`bind!`)
+is green, which is why a beginner's first effects still work. What is lost is
+exactly the point at which a user starts *abstracting* over effects.
+
+**No workaround ships.** Every re-spelling either changes the published API or
+merely relocates the refusal from module compile to call site, which would hide
+a live defect from the conformance gate while leaving the capability broken.
+The red module is the durable record; the ruling is S119's (`/design`(backend),
+co-ruled with FIXME 0903). Evidence appended to FIXME 0907 §"Stdlib evidence".
+
+### 28.3 FIXME 0867 — accessor spelling across this library
+
+Confirmed at HEAD: accessors mint only from a deftype-level field list.
+`(deftype Tally [:Int passed :Int failed :Int panicked])` mints `Tally.passed`
+and bare `passed`; `(deftype (Lst a) Nil2 (Cons2 [:a head :(Lst a) tail]))`
+mints neither `Lst.head` nor `head`.
+
+| Type | Spelling | Accessors today |
+|---|---|---|
+| `testing.runner/Tally` | deftype-level field list | mint (unused — `match` is used) |
+| `collections.list/List` | `Nil` + `(Cons [:a head :(List a) tail])` | none |
+| `seq.lazy/Seq` | `SeqNil` + `(SeqCons [:a head … rest])` | none |
+| `collections.either/Either` | `(Left …)` / `(Right …)` | none |
+| `testing.runner/Outcome` | three named arms | none |
+
+Every one of these is destructured with `match`, and the field verbs are
+hand-written (`collections.list/first`, `collections.pair/first`/`second`), so
+**no stdlib module is broken by 0867** — and that convention is precisely why
+the defect stayed invisible from this side. The constraint on future authoring
+is recorded in `stdlib/CLAUDE.md` §"Known compiler constraints": do not publish
+an API that depends on a synthesised accessor for a constructor-arm field.
+
+### 28.4 §27 text track after Sprint 118 — three deltas, no gate moved
+
+The byte-backed text track (§27) remains UNIMPLEMENTED and its five delivery
+gates (§27.3) are untouched; S118 explicitly excluded it. Three S118 outcomes
+change the *engineering* premises a future `text.bytes`/`text.utf8` must build
+on, and are recorded here so the eventual implementation inherits them:
+
+1. **RE-1 governs the embed.** The runtime ruling (`design/runtime/s118-structural-embedding-ownership.md`)
+   is: a helper embedding an existing heap structure by pointer takes exactly
+   one `rc_inc` on the node it stores, independent of size or depth. A
+   representation-transparent `Utf8Literal` wrapping a `(Vec Byte)`, and every
+   `(Vec Byte)` stored into a larger structure, is exactly that shape — the
+   inc count is now specified rather than ad hoc.
+2. **Deep field walks no longer truncate.** W3 deleted the legacy inline drop
+   emitter and its `MAX_DROP_GLUE_DEPTH = 4`; canonical per-concrete glue walks
+   the full field graph. Nested text shapes (a `(Vec Byte)` inside a wrapper
+   inside a `List`) would previously have leaked below depth 4. This removes a
+   silent hazard the §27 design did not know it had.
+3. **Type shape must stay derivable from its concrete parameters.** FIXME 0907
+   is the lesson: a type whose field types are not determined by the concrete
+   type it is keyed on cannot get static glue and is *refused*. A transparent
+   one-field product over a concrete `(Vec Byte)` is fully determined and safe
+   by this rule; an existential or otherwise under-determined text carrier is
+   not. §27's candidate `Utf8Literal` shape passes; anything fancier must be
+   checked against this constraint before it is proposed.
+
+`int-to-string` (§27.2) is unchanged: still a native primitive, the
+negative-accumulator algorithm and its five-case matrix (zero, positive,
+negative, `INT_MAX`, `INT_MIN`) stand as the future self-test contract. FIXME
+0889 (the macro-turn marshal leak, deliberately carried to S119) is a
+compile-time leak on the expansion path, so a macro-heavy future `text.format`
+inherits it — noted, not blocking.
+
+### 28.5 Self-test coverage at S118 close
+
+24 of the 38 public modules carry backing `(mod- test)` self-tests. Nine of the
+remaining fourteen are declaration-only shell modules (`collections.cl`,
+`compare.cl`, `core.cl`, `fn.cl`, `io.cl`, `num.cl`, `seq.cl`, `testing.cl`,
+`text.cl`) and need none. That leaves five definition-bearing modules without
+self-tests: `core.io` (ceilinged by 0907; its six withheld cases are
+enumerated in the file header), `core.trace`, `derive.helpers`, `io.monad`, and
+`seq.lazy`. The last four are pre-existing gaps with no compiler blocker — the
+highest-value target is `io.monad`, whose `pure`/`do`/`bind!` are prelude
+surface. Not actioned in this bounded pass.
+
+---
+
 ## Next Skills
 
 - `/arch` — Confirm the builtin-to-trait transition strategy. Validate that cross-module trait impls work (trait in module A, type in module B, impl in module B). Review Map/Set implementation strategy.

@@ -10,6 +10,48 @@
 ;;
 ;; Spec: 10-io.md §10.2-10.5
 ;; Plan: plan-stdlib.md §3.3 io/, §5.5
+;;
+;; ── KNOWN RED: this module does not compile at HEAD (FIXME 0907) ─────────
+;;
+;; `stdlib_conformance` reports this module and its parent `core` as the only
+;; two of 38 that fail. The failing symbol is `core.io/when-io`:
+;;
+;;   codegen failed for core.io/when-io: constructor 'Bind' disagrees on
+;;   declared parameter identity for 'primitives/IO'
+;;
+;; Cause is NOT in this file. `primitives/IO`'s `Bind` constructor is seeded
+;; with an existential encoding (`src/bootstrap.rs`), so per-concrete drop
+;; glue cannot be derived for any concrete `IO T`; W3's canonical-glue
+;; migration turned the former silent shallow teardown into a loud refusal.
+;; Ruling is owed by `/design`(backend), co-ruled with FIXME 0903 (S119).
+;;
+;; DO NOT WORK AROUND IT. Measured at HEAD (assessment recorded on 0907):
+;;   - `when-io`/`unless-io` refuse at DEFINITION because one `if` arm is the
+;;     borrowed `io-action` parameter and the other is a freshly built
+;;     concrete `(Pure 0)` :: `(IO Int)`. Two fresh arms (`(if c (Pure 1)
+;;     (Pure 0))`) compile; the mixed arm is the trigger, and the same mixed
+;;     shape over an ordinary user ADT compiles — the refusal is IO-specific.
+;;   - `>>`/`map-io`/`timeout`/`sequence-io` compile here (uninstantiated
+;;     polymorphs) but refuse at EVERY concrete call site.
+;;   - Re-spelling `when-io` polymorphically (a third `alt` parameter, no
+;;     concrete `Pure`) compiles the definition and STILL refuses at every
+;;     concrete call.
+;; So no spelling makes the capability reachable; a re-spelling would only
+;; move a loud module-level failure to a loud call-site failure and hide the
+;; defect from the conformance gate. The red module is the honest record.
+;;
+;; WITHHELD SELF-TESTS (per stdlib/CLAUDE.md — a ceilinged module enumerates
+;; its restore list rather than shipping silence). There is no `(mod- test)`
+;; here because every case below needs a concrete `IO T` and therefore cannot
+;; run until 0907 is ruled. Restore all six with a backing `core/io/test.cl`
+;; in the fixing change-set:
+;;   1. `>>`  sequences two effects, discarding the first result
+;;   2. `map-io` applies a pure fn to an IO result
+;;   3. `when-io` true → runs the action; false → `(Pure 0)`
+;;   4. `unless-io` false → runs the action; true → `(Pure 0)`
+;;   5. `sequence-io` over Nil and over a 3-element Cons list, order preserved
+;;   6. `timeout` — winner arm `(Some v)`; timer arm `None` with the loser
+;;      cancelled (see spec §10.12.8/§10.12.9)
 
 ;; Pure and Effect constructors are in `primitives` but stored as Import
 ;; entries in `user` (not seeded into new modules). Explicit import needed.

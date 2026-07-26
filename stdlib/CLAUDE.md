@@ -125,6 +125,35 @@ not write code for `tests/` (owned by `/qa`+`/testing`) or `examples/` (owned by
 - Modules outside the prelude graph (e.g. `derive.cl`) use primitives directly, not
   trait operators.
 
+## Known compiler constraints on module authoring
+
+Two open compiler defects constrain what a stdlib module may be written to do.
+Both are assessed, not worked around — the plan (§28) carries the evidence.
+
+- **`core.io` does not compile (FIXME 0907).** `stdlib_conformance` is 36/38
+  green; `core.io` and its parent shell `core` are the two reds, one cause:
+  `core.io/when-io` → *"constructor 'Bind' disagrees on declared parameter
+  identity for 'primitives/IO'"*. Every concrete `IO T` release site refuses,
+  so **no re-spelling recovers the capability** — a polymorphic `when-io`
+  compiles its definition and still refuses at every concrete call. Do not
+  paper over it: a workaround would move a loud module failure to a loud
+  call-site failure and hide it from the gate. `core/io.cl`'s header carries
+  the measured detail and the six withheld self-tests. Nothing else in
+  `stdlib/` imports `core.io` (the prelude does not re-export it; `derive`
+  reaches `core.syntax` directly, not via the `core` shell), so the blast
+  radius inside the library is those two modules.
+- **Accessors are minted only from a deftype-LEVEL field list (FIXME 0867).**
+  A field list in a *named constructor arm whose name differs from the type*
+  mints **no** accessor — neither `Type.field` nor the bare alias. Verified at
+  HEAD: `(deftype Tally [:Int passed …])` gives both `Tally.passed` and bare
+  `passed`; `(deftype (Lst a) Nil2 (Cons2 [:a head …]))` gives neither
+  `Lst.head` nor `head`. Every sum type in `stdlib/` is on the non-minting
+  spelling (`List`/`Cons`, `Seq`/`SeqCons`, `Either`/`Left`/`Right`,
+  `Outcome`), so **destructure with `match` and hand-write the field verbs**
+  (`collections.list/first`, `collections.pair/first`) — this is why the
+  defect was invisible here. Do not publish an API that depends on a
+  synthesised accessor for a constructor-arm field until 0867 is fixed.
+
 ## Gotchas
 
 - **Stale cache masks stdlib edits.** REPL/`--run` runs persist a `.cranelisp-cache`
