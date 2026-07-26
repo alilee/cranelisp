@@ -44,7 +44,11 @@ use cranelisp_types::{
 ///
 /// The `owner` field is never read — holding it *is* its job (Principle 22).
 /// Constructing one of these without the guard is the shape `/review` rejects.
-pub struct GlueTarget {
+///
+/// Crate-internal: it appears in no public signature — `OwnedProgramResult`
+/// holds it in a private field, and the trait that returns it
+/// ([`ResultGlueResolver`]) is `pub(crate)` too (FIXME 0899).
+pub(crate) struct GlueTarget {
     /// The module-qualified canonical glue symbol
     /// (`cranelisp_types::drop_glue_symbol_name`). Kept so diagnostics and
     /// unit tests can assert the exact spelling, not merely "some pointer".
@@ -62,7 +66,20 @@ pub struct GlueTarget {
 impl GlueTarget {
     /// Pair a resolved address with the retention owner of the code that
     /// produced the result. The ONLY constructor.
+    ///
+    /// Both production adapters reject a null address before they get here
+    /// (`fresh_jit_target`'s zero polarity, `resolve_cached`'s `is_null`
+    /// check), each as a located hard error. The `debug_assert!` is a
+    /// debug-tier **detector** for a future third adapter that forgets —
+    /// never a gate: in a `debug_assertions`-off build it is not evaluated,
+    /// and there is no release fallback to invert. A caller must not rely on
+    /// it to reject; it must reject at its own boundary with a diagnostic.
     pub(crate) fn new(symbol: LinkerSymbol, address: usize, owner: crate::code::Code) -> Self {
+        debug_assert_ne!(
+            address, 0,
+            "a release target for `{symbol}` must be non-null: every adapter validates the \
+             address at its own safe boundary before constructing a GlueTarget"
+        );
         Self {
             symbol,
             address,
@@ -233,7 +250,13 @@ impl OwnedProgramResult {
         // SAFETY: `target.address` is a finalized `extern "C" fn(i64)` — either
         // the `jit_address` backend projected for this exact concrete type in
         // this exact module, or the symbol the entry's own `Linker` resolved
-        // under the same canonical spelling. `target.owner` is the retention
+        // under the same canonical spelling. It is **non-null**: `GlueTarget`
+        // has ONE constructor, and both adapters that reach it validate the
+        // address at their safe boundary first — `fresh_jit_target` rejects a
+        // zero `jit_address` and `resolve_cached` rejects a null resolution,
+        // each as a located hard error (FIXME 0897), with `GlueTarget::new`'s
+        // `debug_assert!` as the debug-tier detector for a future third
+        // adapter. `target.owner` is the retention
         // guard for the code housing it and is alive for the whole call (it is
         // dropped at the end of this scope, after the call returns). The word
         // is the program result, whose ownership transferred to this owner at
@@ -503,10 +526,19 @@ fn resolve_fresh_jit(
     fresh_jit_target(row, module, ty)
 }
 
-/// The fresh-JIT adapter's decision core: the four polarities of a published
-/// `{artifact, owner}` pair. Split from the keyed read so every polarity is
-/// unit-testable without a live JIT batch (`DropGlueArtifact` is
-/// `#[non_exhaustive]` and cannot be synthesised outside backend).
+/// The fresh-JIT adapter's decision core: the polarities of a published
+/// `{artifact, owner}` pair — four hard errors (absent row, symbol/key
+/// mismatch, no finalized address, **null address**) and the resolved target.
+/// Split from the keyed read so every polarity is unit-testable without a live
+/// JIT batch (`DropGlueArtifact` is `#[non_exhaustive]` and cannot be
+/// synthesised outside backend).
+///
+/// The null-address polarity is the fresh-JIT twin of `resolve_cached`'s
+/// `is_null` check (FIXME 0897): a resolved address is the sole input to
+/// [`OwnedProgramResult::finalize`]'s transmute, so the non-null judgement
+/// belongs at the safe construction boundary that feeds it, not in the unsafe
+/// block's prose (Principle 18 — enforce invariants structurally; Principle 25
+/// — narrowing carries its check).
 fn fresh_jit_target(
     row: Option<(LinkerSymbol, Option<usize>, crate::code::Code)>,
     module: &ModuleFullPath,
@@ -533,6 +565,13 @@ fn fresh_jit_target(
              address (object-mode polarity leaking into a JIT result path)"
         )));
     };
+    if address == 0 {
+        return Err(OwnedProgramResult::invariant(format!(
+            "fresh-JIT drop glue `{expected}` for module `{module}` resolved to a null address; \
+             a finalized artifact row can never hold one, so this is an integration failure, \
+             not a result to release through it"
+        )));
+    }
     Ok(GlueTarget::new(symbol, address, owner))
 }
 
@@ -1162,6 +1201,31 @@ mod tests {
             "{}",
             err.to_string()
         );
+    }
+
+    // spec: design/int/result-owner.md §5 — a fresh-JIT row carrying a
+    // finalized address of ZERO must not resolve. A null function pointer is
+    // the same class of integration failure as an absent row or a missing
+    // cache symbol (`resolve_cached`'s null check) — never a skip: the
+    // resolved address is the sole input to the owner's transmute, so the
+    // non-null judgement has to live at this safe construction boundary
+    // (Principle 18 — enforce invariants structurally; Principle 25 —
+    // narrowing carries its check).
+    #[test]
+    fn fresh_jit_zero_address_is_a_hard_error() {
+        let symbol = cranelisp_types::drop_glue_symbol_name(&user(), &ConcreteType::String);
+        let err = fresh_jit_target(
+            Some((symbol.clone(), Some(0), test_code())),
+            &user(),
+            &ConcreteType::String,
+        )
+        .expect_err("a null glue address must never become a callable target");
+        let text = err.to_string();
+        assert!(
+            text.contains(symbol.as_ref()),
+            "must name the expected symbol: {text}"
+        );
+        assert!(text.contains("null address"), "must name the fault: {text}");
     }
 
     // spec: design/int/result-owner.md §5 — a symbol/key disagreement names

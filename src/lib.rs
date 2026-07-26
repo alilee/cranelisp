@@ -66,7 +66,10 @@ pub(crate) mod platform;
 // `design/int/result-owner.md`). `pub` because `OwnedProgramResult` rides the
 // binary-facing `EvalResult::Val` / `CompilerSession::trampoline` surfaces that
 // `src/main.rs` consumes; the int bounded context has no `public-api.txt`
-// boundary, so this widens nothing outside the binary.
+// boundary, so this widens nothing outside the binary. That justification is
+// per-ITEM, not per-module: `OwnedProgramResult` (+ its observation/release
+// methods) is the whole `pub` surface — every other item in the module is
+// `pub(crate)`, `GlueTarget` included (FIXME 0899).
 pub(crate) mod pretty;
 pub mod result_owner;
 pub(crate) mod session_setup;
