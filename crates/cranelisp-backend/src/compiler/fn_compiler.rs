@@ -1225,24 +1225,62 @@ where
     /// gone: the TYPE decides the teardown, inside the generated body, so the
     /// site emits one call and no site-supplied nullary guard. Shared by
     /// scope-pop cleanup and both tail-call flushes.
+    ///
+    /// # The non-concrete escape arm — TYPE-keyed, and known to be the wrong key
+    ///
+    /// `design/backend/transitive-drop-glue.md` §4.1 rules the ONE *sanctioned*
+    /// non-concrete release — a **ctor template's own parameter** — and rules
+    /// that its gate must be the FRAME (the body is the synthetic
+    /// `MonoExpr::ConstrADT` node), never the type, because a type-keyed gate is
+    /// a shallow fallback wearing one case's name (§11 `/review` reject).
+    ///
+    /// **The arm below is still type-keyed, deliberately and temporarily**
+    /// (FIXME 0903 → `/design`(backend); FIXME 0891 deferred on it). §4.1's
+    /// premise — "the migration measured exactly one class" — was falsified when
+    /// the frame key was implemented and measured: the ruled gate turns **16
+    /// green corpus tests into hard codegen refusals**, because at least two
+    /// further families reach this arm in ordinary `defn`-shaped frames that
+    /// I-CT does not cover:
+    ///
+    /// * **synthetic field accessors** of a generic or undeclared-field product
+    ///   — `Box.v`'s `self: ADT(user/Box, [Var(0)])`, also compiled once per
+    ///   declaration (`concrete-boundary-type.md` §3.1.1 pairs the *ctor and
+    ///   accessor* signature paths; §4.1 named only the ctor half);
+    /// * **generic trait-method instances** —
+    ///   `Functor.fmap$primitives/Option`'s closure parameter
+    ///   `Fn([Var(9)], Var(8))`, whose residual vars survive HKT dispatch.
+    ///
+    /// Neither is a balanced counted-borrow pair, so admitting them is not
+    /// I-CT-licensed and refusing them is not landable either: both leak in the
+    /// same direction they always have, and hard-refusing them would reject
+    /// legal generic/HKT/rank-2 programs the corpus currently runs. Closing this
+    /// needs a ruling over the whole measured class (make the signature path
+    /// concrete, mark these params `Borrowed`, or sanction a wider frame set) —
+    /// not a gate rename. **Do not "fix" this by narrowing the key alone**; the
+    /// experiment has been run and the census is above.
     fn emit_heap_binding_decs(&mut self, to_dec: &[(Symbol, Type)]) -> Result<(), CranelispError> {
         let dealloc = self.ctx.dealloc_func_id;
         for (name, ty) in to_dec {
             if let Some(var) = self.variables.get(name) {
                 let val = self.builder.use_var(*var);
-                // **The ONE non-concrete binding class** (FIXME 0394; the D2
-                // entry check's escaped case — see the `is_heap_type` rustdoc).
+                // The D2 entry check's escaped cases — see the `is_heap_type`
+                // rustdoc, and the census in this function's rustdoc above.
                 //
-                // A generic constructor `Def`'s own template body is compiled
-                // ONCE, so its parameter's signature type is a residual
-                // `Type::Var` and its runtime representation is the uniform
-                // i64. This dec is NOT a type-directed teardown and must not
-                // become one: it is the balancing half of the guarded
-                // consuming inc `compile_consuming_arg_list` emitted on the
-                // same value one line earlier, on a value the freshly-built
-                // box now also holds a reference to. It can never be the last
-                // reference, so nothing is ever stranded here — which is why
-                // the shallow form is correct rather than merely tolerated.
+                // For the ONE case §4.1 sanctions (a ctor template's own field
+                // parameter) the shallow form is *correct*, not merely tolerated:
+                // a constructor `Def` is compiled ONCE per declaration, so its
+                // parameter's signature type can be a residual `Type::Var` (a
+                // declared type parameter, or an undeclared field typecheck left
+                // free) whose runtime representation is the uniform i64, and this
+                // dec is the balancing half of the guarded consuming inc
+                // `compile_consuming_arg_list` emitted on the same value one line
+                // earlier — on a value `emit_adt_construct` then published into
+                // the box the frame returns (invariant I-CT). It can never be the
+                // last reference, so nothing is stranded. The balance is pinned
+                // by `ctor_template_admission_tests`.
+                //
+                // The OTHER measured families reaching this arm carry no such
+                // licence and are tracked by FIXME 0903.
                 //
                 // Every OTHER release site keeps D2's no-fallback rule:
                 // `emit_typed_rc_dec` still hard-errors on a non-concrete type.
@@ -4663,3 +4701,10 @@ mod tco_slot_predicate_tests;
 /// exercised through compiled bodies rather than a constructed facts struct.
 #[cfg(test)]
 mod tco_shadowing_borrow_tests;
+
+/// S118 — `design/backend/transitive-drop-glue.md` §4.1 / §10 row 4: the ONE
+/// sanctioned non-concrete release site (the ctor template's own parameter),
+/// pinned at its balance (I-CT). The row's negative half is blocked on FIXME
+/// 0903 — see this module's rustdoc.
+#[cfg(test)]
+mod ctor_template_admission_tests;

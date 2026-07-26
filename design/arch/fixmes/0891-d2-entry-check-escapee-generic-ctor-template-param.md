@@ -8,8 +8,35 @@ retargeted_at: 2026-07-26
 sprint_filed: 118
 refers_to: design/backend/transitive-drop-glue.md §4.1 (the ruling) + §3.4 D2 + §7.5;
   crates/cranelisp-backend/src/compiler/fn_compiler.rs::emit_heap_binding_decs
-status: open
+status: deferred
+deferred_by: /dev (backend)
+deferred_at: 2026-07-26
+deferred_to: S119
+blocked_on: 0903
 ---
+
+> **DEFERRAL (/dev(backend), 2026-07-26) — items 2 (partial) and 3 SHIPPED;
+> item 1 is blocked on a falsified premise.**
+>
+> The gate re-key was implemented exactly as ruled and measured against the
+> corpus: it turns **16 green `spec_*` tests into hard codegen refusals** (893
+> run, 8 → 24 failures). §4.1's premise "the migration measured exactly one
+> class" is false — at least two further families reach the arm in ordinary
+> `defn`-shaped frames that I-CT does not cover: synthetic **field accessors** of
+> a generic/undeclared-field product (`Box.v`'s `self: ADT(user/Box, [Var(0)])`)
+> and **generic trait-method instances** (`Functor.fmap$primitives/Option`'s
+> `Fn([Var(9)], Var(8))` parameter). Both leak today; neither is a balanced
+> counted-borrow pair, so neither admitting nor refusing them is a `/dev` call.
+>
+> **FIXME 0903 (`target: /design`(backend))** carries the full measurement, the
+> validated gate implementation and the three negative cells verbatim, so the
+> re-land after the ruling is a paste.
+>
+> SHIPPED in the same commit: item 3 (all stale-0394 re-points) and item 2's
+> positive/edge cells (`compiler/fn_compiler/ctor_template_admission_tests.rs` —
+> I-CT's balance for both template shapes, the multi-field edge, and the
+> concrete-field ordinary-`drop<T>` boundary). Item 2's NEGATIVE cell is held in
+> 0903 with the gate it fences.
 
 # D2's entry check has exactly one escapee: the ctor template's own parameter — RULED (a), gate narrowing owed
 

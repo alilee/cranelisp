@@ -219,9 +219,31 @@ Gotchas the next reader will hit:
 - Capture-env bodies build in their own context and cannot reach the registry,
   so the enclosing compiler requests their glue FIRST
   (`request_capture_glue`) and the body emits the resolved call.
-- The ONE admitted non-concrete release site is the generic ctor template's own
-  parameter (FIXME 0394/0891) — see the `emit_heap_binding_decs` comment. Every
-  other site hard-errors.
+- The only *sanctioned* non-concrete release site is the **ctor template's own
+  parameter** (`design/backend/transitive-drop-glue.md` §4.1 — the authority; it
+  covers BOTH a declared type parameter and an undeclared field, because a ctor
+  `Def` is compiled once per declaration, not per instantiation). Its licence is
+  invariant **I-CT** — the dec balances the guarded consuming inc on a word
+  `emit_adt_construct` published into the box the frame returns, so it can never
+  be the last reference. Balance pinned by
+  `compiler/fn_compiler/ctor_template_admission_tests.rs`. Standing obligation:
+  a `ModeSummary` with a `Borrowed` parameter reaching a ctor template drops the
+  dec while the inc still fires — that breaks I-CT in the leak direction and
+  must revisit §4.1.
+- **But the live gate in `emit_heap_binding_decs` is keyed on the TYPE, not the
+  frame — knowingly, and it is NOT the whole story** (FIXME 0903; 0891 deferred
+  on it). §4.1 rules the gate must be the frame and §11 makes a type-keyed gate
+  a `/review` REJECT; implementing exactly that (an `is_ctor_template` boolean
+  from `compile_body`, a two-state verdict threaded to the shared body, both
+  tail-jump flushes rejecting) was measured at **+16 hard codegen refusals over
+  the `spec_*` corpus**. Two further families reach the arm in ordinary
+  `defn`-shaped frames I-CT does not cover: synthetic **field accessors** of a
+  generic/undeclared-field product (`Box.v`'s `self: ADT(user/Box, [Var(0)])` —
+  `concrete-boundary-type.md` §3.1.1 pairs the ctor *and accessor* signature
+  paths; §4.1 named only the ctor half) and **generic trait-method instances**
+  (`Functor.fmap$primitives/Option`'s `Fn([Var(9)], Var(8))` parameter). Those
+  leak today. Do not re-run the narrowing on its own — the experiment is done and
+  the census is in the function's rustdoc; the class needs one ruling.
 
 ## RC-emission gates that are ONE predicate, not per-site syntax (S115 W3/W4c)
 

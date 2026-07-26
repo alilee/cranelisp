@@ -1749,12 +1749,13 @@ mod concrete_boundary_phase3_tests {
     //   pinned the "signature-driven kinds legitimately carry codegen_view: None"
     //   asymmetry were deleted with the predicate.
 
-    // spec: concrete-boundary-type.md §3.1.1 (FIXME 0391 sites 1-3, 0394) — the
-    //   signature-path heap classification. A concrete field/binding `Type`
-    //   classifies via the total `ConcreteType` `classify`; a residual `Var` (a
-    //   GENERIC CTOR `Def`'s own template field param — `(Some [:a val])`'s `a`)
-    //   maps to `Mixed` (uniform i64 representation), restoring the pre-Phase-3
-    //   generic-ctor-`Def` behaviour WITHOUT widening the `ConcreteType` classify.
+    // spec: concrete-boundary-type.md §3.1.1 (FIXME 0391 sites 1-3);
+    //   design/backend/transitive-drop-glue.md §4.1 — the signature-path heap
+    //   classification. A concrete field/binding `Type` classifies via the total
+    //   `ConcreteType` `classify`; a residual `Var` (a CTOR TEMPLATE's own field
+    //   param — `(Some [:a val])`'s `a`) maps to `Mixed` (uniform i64
+    //   representation), restoring the pre-Phase-3 ctor-`Def` behaviour WITHOUT
+    //   widening the `ConcreteType` classify.
     #[test]
     fn signature_path_classifies_concrete_and_var() {
         let no_tables: Option<&dashmap::DashMap<ModuleFullPath, SymbolTable>> = None;
@@ -1767,8 +1768,8 @@ mod concrete_boundary_phase3_tests {
             signature_heap_category(&Type::String, no_tables),
             HeapCategory::AlwaysHeap
         );
-        // A generic-ctor-template field `Var` → `Mixed` (uniform representation),
-        // NOT a panic and NOT a widened `classify` (FIXME 0394).
+        // A ctor-template field `Var` → `Mixed` (uniform representation),
+        // NOT a panic and NOT a widened `classify` (transitive-drop-glue.md §4.1).
         assert_eq!(
             signature_heap_category(&Type::Var(0), no_tables),
             HeapCategory::Mixed

@@ -421,24 +421,34 @@ pub(crate) fn find_var_type_in_expr(expr: &MonoExpr, name: &Symbol) -> Option<Ty
 }
 
 /// Heap-classify a SIGNATURE-PATH field/binding `Type` (concrete-boundary-type.md
-/// §3.1.1, FIXME 0391/0394). The body-AST codegen walk classifies a `ConcreteType`
+/// §3.1.1, FIXME 0391; the residual-`Var` arm's authority is
+/// `design/backend/transitive-drop-glue.md` §4.1). The body-AST codegen walk
+/// classifies a `ConcreteType`
 /// off each `MonoExpr` node directly — no `Var` by construction. But the
 /// `Type`-typed RC machinery (`variable_types`, `CtorField`, `resolve_field_types`)
 /// reads field/binding types from the **signature** (the `scheme`, `Type::Fn`
-/// params), and a `Var` legitimately survives there in ONE case: the **generic
-/// constructor `Def`'s own codegen**. A `(deftype (Option a) … (Some [:a val]))`
-/// ctor `Def` is codegen'd ONCE as a generic template whose field param is
-/// `Type::Var a` — its runtime representation is uniform (i64 tag-or-pointer), the
-/// `Mixed` heap category. (§3.1.1's "ctor field types are always concrete at
-/// codegen" holds for ctor USE sites — a `(Some 1)` instance pins `a := Int` — but
-/// NOT for the generic ctor `Def`'s own template body; that gap is FIXME 0394.)
+/// params), and a `Var` legitimately survives there in ONE case: a **constructor
+/// `Def`'s own template codegen**. A ctor `Def` is compiled ONCE per declaration,
+/// so both `(deftype (Option a) … (Some [:a val]))` (a declared type parameter)
+/// and `(deftype B (Mk [v]))` (an undeclared field typecheck left free) give the
+/// template a `Type::Var` field param — its runtime representation is uniform
+/// (i64 tag-or-pointer), the `Mixed` heap category. (§3.1.1's "ctor field types
+/// are always concrete at codegen" holds for ctor USE sites — a `(Some 1)`
+/// instance pins `a := Int` — but NOT for the ctor `Def`'s own template body.
+/// §4.1 rules that class sanctioned and states its soundness invariant I-CT;
+/// the ruling supersedes the stale FIXME-0394 citation this rustdoc used to
+/// carry — 0394 closed at S84 on the unrelated `codegen_view` axis.)
 ///
 /// So this helper classifies a concrete field type via the total
 /// `HeapCategory::classify(&ConcreteType, …)`, and maps a residual `Var`/`TyConApp`
-/// (a generic-ctor-template field param) to `Mixed` — the uniform-representation
-/// category, restoring the pre-Phase-3 generic-ctor-`Def` behaviour. This does NOT
+/// (a ctor-template field param) to `Mixed` — the uniform-representation
+/// category, restoring the pre-Phase-3 ctor-`Def` behaviour. This does NOT
 /// widen the `ConcreteType` `classify` (which stays total, no `Var` arm) and does
 /// NOT affect the body-AST path (still 100% `Var`-free by construction).
+///
+/// Classifying such a binding heap-typed is what routes it to a release seam at
+/// all; whether the release is then legal is a separate, FRAME-keyed question
+/// answered once at `fn_compiler::emit_heap_binding_decs` (§4.1).
 pub(crate) fn signature_heap_category<C, L>(
     ty: &Type,
     symbol_tables: Option<&dashmap::DashMap<ModuleFullPath, SymbolTable<C, L>>>,
@@ -449,8 +459,9 @@ where
 {
     match ConcreteType::from_type(ty) {
         Ok(ct) => HeapCategory::classify(&ct, symbol_tables),
-        // A generic-ctor-template field param (`Type::Var`) / unresolved HKT head:
-        // uniform i64 representation → `Mixed` (the guarded RC path). FIXME 0394.
+        // A ctor-template field param (`Type::Var`) / unresolved HKT head:
+        // uniform i64 representation → `Mixed` (the guarded RC path).
+        // `design/backend/transitive-drop-glue.md` §4.1.
         Err(_) => HeapCategory::Mixed,
     }
 }
