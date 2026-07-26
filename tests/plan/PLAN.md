@@ -4026,6 +4026,7 @@ its runtime result has been certified.
 | repl §5.1 + §12.3.1 display then release | `program_result_owner_s116::repl_nested_heap_value_displays_before_exact_release` | live defect; `[S116]` authored RED |
 | §10.1 scalar exit conversion fence | `program_result_owner_s116::scalar_pure_result_exit_conversion_control_green` | positive control; `[S116]` authored |
 | §12.3.1 composed application residual | `exemplar_ownership_residue_s116::sudoku_warm_serial_solve_residue_at_most_1400` | live defect threshold; `[S116]` authored RED |
+| §12.3.1 warm cache-hit child carries no ambient compile-time residual (the premise of the absolute bound beside it) | `exemplar_ownership_residue_s116::warm_cache_hit_control_carries_no_ambient_residual` | positive control; `[S118]` authored GREEN (exact 0) |
 
 ## S116-B — trait tails, constructors, and structural annotations
 

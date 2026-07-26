@@ -220,3 +220,23 @@ they cannot substitute for the negatives.
 - Related: `design/arch/safety-invariants.md` §4 — a silent shallow release that
   deallocs without discharging fields is an unasserted-narrowing instance
   (Principle 25); the accessor/trait families are currently in it.
+
+## Acceptance addendum (`/qa`, S118 W8 gate — folded from FIXME 0909 item 3)
+
+The S118 golden re-baseline (FIXME 0908; MANIFEST §Re-baselines, S118 entry)
+**blessed a defect sighting of family 1**: `f4_sudoku::user::Grid.cells` — the
+synthetic accessor of the undeclared-field product `(deftype Grid [cells])` —
+drifted into a SHALLOWER release (the golden's transitive step gone, no glue
+call taking it over; the only frame in either lane where a teardown level was
+lost). The blessed golden is a leak record, not certification.
+
+**Binding on this FIXME's S119 acceptance:** the implementing fix MUST name the
+`f4_sudoku.clif` `user::Grid.cells` frame's re-baseline as its own witness —
+that frame is EXPECTED to drift back to a transitive (or glue-routed) release
+when the ruling lands, and the scoped, attributed re-capture of that drift is
+part of the fix's evidence, planned in the fix's change-set rather than
+discovered at the next wave gate. Cell #21
+(`exemplar_ownership_residue_s116::sudoku_warm_serial_solve_residue_at_most_1400`,
+12,431 at S118 HEAD, re-attributed to the 0903 families per
+`tests/plan/s118-test-plan.md` §11.3) is the companion runtime witness expected
+to move with the same fix.

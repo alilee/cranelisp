@@ -85,6 +85,51 @@ RED until B0-be lands the capture; the full-corpus diff runs via
 
 ## Re-baselines (scoped, attributed — MANIFEST §"Extension ≠ re-baseline")
 
+- **11 of 13 entries (01, 02, 03, 04, 05, 07, 08, f1, f2, f3, f4)** —
+  re-captured S118 (FIXME 0908) for the **W3 consumer migration onto canonical
+  drop glue**, change-set `2df95c41..966d298e` (emitting seam: `c6234398` S1,
+  `emit_typed_rc_dec` becomes the canonical glue-call emitter; `22072a0c` S3
+  per-arm match scrutinee lifetimes; `2ec5736d` S5+S6 the legacy-emitter
+  deletion). **06_tco_loop and 09_parbind_launch are byte-identical** and were
+  not rewritten. Three drift classes, all in the ownership family, certified
+  frame-by-frame (per-frame program-opcode multisets compared modulo SSA/block/
+  sig/fn renumbering — identical in 42 of 43 f4 frames and in every frame of
+  the other ten entries):
+  1. **release-site collapse** (the dominant class, all 11 entries): the inline
+     guarded-dec sequence — `iadd_imm ptr,8; iconst 1; atomic_rmw sub; icmp eq;
+     brif; fence` plus the inline `iconst 1024` nullary guard, the
+     `DROP_GLUE_PTR` load at +24 / `func_addr` + embedded-glue call, and the
+     terminal `dealloc` — becomes ONE `call fnN(ptr)` with `fnN = colocated
+     u0:NN` at a **VOID `(i64)` signature**: the canonical per-concrete drop
+     glue, whose body now owns the guard, the fence and the transitive
+     teardown. Every collapsed chain is replaced by ≥1 glue call (verified
+     mechanically per frame: fences lost ⇒ glue calls gained), so no release
+     is silently dropped.
+  2. **new release sites** where W3 plugged leaks — glue calls EXCEED the
+     removed legacy releases in `f3::main` (+3 vs 2), `f4::is-solved-helper`
+     (+5 vs 1) and others. Additive release work.
+  3. **per-arm match scrutinee lifetimes** (`22072a0c`): four ADDED retains in
+     f4 (`propagate` +1, `eliminate-from-peers-helper` +1,
+     `propagate-pass-helper` +2), each a retain of the arm-bound payload paired
+     with a per-arm release of the scrutinee box on the same path — where the
+     golden leaked the box and let the payload live inside it. Retain counts are
+     otherwise preserved in all 43 f4 frames and all other 12 entries.
+  Determinism self-test 13/13 before write; an independent second capture
+  reproduced all 13 files byte-identically; `clif_golden_lane_no_drift` green.
+  **One hunk is a defect sighting, not a neutral reshape —
+  `f4_sudoku::user::Grid.cells` drifted into a SHALLOWER release** (FIXME 0903,
+  first censused family: synthetic accessor of a generic/undeclared-field
+  product). Its self-param release did NOT migrate to canonical glue: the
+  golden's transitive step (`load self+24`, 1024 guard, inner dec,
+  `dealloc(inner)`) is GONE at HEAD with no glue call taking it over — the
+  ONLY frame in either lane where a teardown level was lost (mechanically
+  checked across all 48 drifted frames). Known, attributed, pre-existing-
+  direction leak (0903's census: "both leak today"; plausibly a contributor to
+  the 12,431 that cell #21 measures). **The blessed golden is NOT certification
+  that the shallow release is correct.** When the S119 0903 ruling lands this
+  frame is expected to drift again — that re-baseline is the fix's own witness
+  (named in 0903's acceptance).
+
 - **02_closures_fn_as_value, 08_adt_in_vec_projection, f1_machinery,
   f2_contention, f3_inverted_search, f4_sudoku** — re-captured S116 Wave 3
   after `6318fe87` added the canonical recursive drop-glue registry.

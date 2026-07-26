@@ -969,6 +969,74 @@ close for its owner**: all committed repros (A, B1–B3) are GREEN after
 W2b+W3 and the prelude face is carved off as 0889 — `/design`(intrinsics)
 confirms and deletes.
 
+### 11.7 W8 Phase-5 gate — certified full-suite reconciliation (`/qa`, 2026-07-26)
+
+**Verdict: PASS.** Two full `cargo nextest run --no-fail-fast` runs over the
+whole workspace: **5,653 run / 5,634 passed / 19 failed / 1 skipped — both
+runs, and the two failure sets are IDENTICAL name-for-name** (the first
+two-run deterministic evidence since S115; run 2 teed to the session
+scratchpad). The 1 skip is the sanctioned on-demand contention benchmark
+(`tests/concurrency_spark.rs:823`, explicit `#[ignore = "perf/contention
+benchmark…"]`) — not a hidden defect guard. Expectation: §11.6's 18 named,
+amended to **16** by the landed golden re-baseline (`d20ce68e`, FIXME 0908
+resolved — both golden-lane cells GREEN in both runs, confirmed). **All 16
+reconciled RED; zero expected-but-green; zero unexplained.**
+
+| # | Cell (both runs RED) | Attribution |
+|---|---|---|
+| 1 | `exemplar_ownership_residue_s116::sudoku_warm_serial_solve_residue_at_most_1400` | carry #21 — 0903 families, S119 (§11.3) |
+| 2 | `launch_grid_corrupt::launched_strand_grid_get_assoc_does_not_corrupt_heap_neg` | carry #24 — 0694, Track C → S119 |
+| 3 | `spec_11_stdlib::def_definition_echo_names_user_binding_not_internal_thunk` | carry #25 — 0863 DF-1, Track D → S119 |
+| 4 | `spec_11_stdlib::def_info_and_sig_describe_bound_value_not_macro` | carry #26 — 0863 DF-2, Track D → S119 |
+| 5 | `cache::cache_restored_parent_enrols_private_test_child` | carry #27 — 0868, S119 |
+| 6 | `cache::cache_restores_sibling_written_trait_impls_for_dispatch` | carry #28 — 0869 implementation, S119 (carrier ruling in force) |
+| 7–9 | `spec_field_accessor::{concrete_constructor_arm_product…, polymorphic_product…, sum_type_variant_field…}_mints_canonical_and_unique_bare_accessors` | 0867 ×3 — `/dev`(typecheck), S119; needs the explicit user-approved carry at close (§11.6) |
+| 10–12 | `spec_10_io::{io_internal_ctors_stay_excluded_from_exhaustiveness_neg, match_arms_all_io_pure, pure_pattern_accepted}` | Bind family — 0907 (§11.1) |
+| 13–14 | `ctor_as_value::{bare_ctor_as_map_io_function_run_and_link, bare_ctor_through_race_map_io_run_and_link}` | Bind family — 0907 |
+| 15 | `examples::every_example_runs_with_documented_exit` (21-hello-io, 23-io-sequence) | Bind family — 0907 |
+| 16 | `stdlib_conformance::stdlib_all_public_modules_compile_and_run` (`core.io/when-io`; Bind signature verbatim in both runs' output) | Bind family — 0907 |
+
+**Deviations: 3 additional REDs, all present in BOTH runs, all attributed at
+the gate, none a compiler regression** (each now traces to an open FIXME per
+the RED-traceability rule):
+
+- `s117_ownership_witnesses::r2_borrowed_scalar_result_has_production_clif_polarity`
+  and `…::r2_alias_of_string_identity_has_production_clif_transfer` — **stale
+  textual oracles vs. W3's release-site collapse** (also fail focused; outside
+  every focused set since W3, per §11.6's stated universe). Both grep for the
+  legacy inline `atomic_rmw.i64 sub` release; W3 collapsed it into ONE
+  canonical glue call. **Invariants verified intact at the gate**: Borrowed
+  precise arm emits NO release (`return v16` directly) while the conservative
+  arm emits exactly one `call fn0(v1)` glue release — the polarity difference
+  lives; the AliasOf wrapper keeps its protect and releases the transferred
+  argument exactly once via glue. Behavioral siblings (`r2_*_all_modes`)
+  GREEN. **FIXME 0910** (`/testing`): re-express the release-side oracles
+  over the glue-call shape without weakening polarity.
+- `agent::yes_flag_errors_on_non_agent_build` — **harness stdin-write race
+  against an immediate-exit child**: EPIPE panic at `tests/helpers/e2e.rs:365`
+  in both loaded runs (0.003s/0.007s), PASSES focused with the guarded
+  behaviour verified correct (exit 1 + usage hint). Deterministic in cause (a
+  real ordering race in the test's harness usage — not "flaky"); latent since
+  the 0539 fix, first surfaced by these first-since-S115 full runs. **FIXME
+  0911** (`/testing`): make the guard race-independent; sweep the
+  structurally-identical `-y` sibling.
+
+**Flap-family check (category c): clean.** Failure sets byte-identical across
+the two runs — zero run-to-run flappers. The 0694 sibling-cache interleaving
+member did not flap (both cache guards RED in both runs, expected polarity);
+no sandbox-only class appeared. Load-dependent guards across both runs:
+`launch_grid` RED both (5.0s → 2.8s), exemplar #21 RED both (9.3s → 4.6s),
+consistent signatures.
+
+**0909 resolved at this gate**: MANIFEST §Re-baselines S118 entry landed
+(with the `Grid.cells` defect-sighting record — the blessed golden is a leak
+record, not certification); PLAN.md §S116-A warm-control row added
+(`exemplar_ownership_residue_s116::warm_cache_hit_control_carries_no_ambient_residual`,
+GREEN in both runs); 0903 gained the acceptance addendum naming the
+`f4_sudoku::user::Grid.cells` re-baseline as the S119 fix's own witness.
+0909 deleted. The stray uncommitted 0726/0890 deletions from the pre-gate
+pass (`33098d33` missed them) are committed with this record.
+
 ## Next skills
 
 - `/testing` — W1: baseline reconciliation (§2.2), the §2.3 intended-RED
