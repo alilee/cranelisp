@@ -345,7 +345,9 @@ The load-dependent guards (`launch_grid`, 0694 family, 0604/0818) remain failing
 | W4 | /dev | int: 0897 + 0899 resolution (`16a26408`; RED-first falsification; 0901 filed) | opus[1m] (shim) | high | Blocker resolution |
 | W4 | /review | int: closing gate round on 16a26408 (delegated) — GATE PASS, 0745 closed | codex (delegated) + fable adjudicator | high | gate close |
 | W4+ | /design | int: 0896 renumber+ratification, 0901, 0886, as-built notes (`05215ec0`+`9f81ede2`; RATIFIED — "int keys on what the producer keyed on"; lenient-view gap recorded → /design(typecheck) row owed) | opus[1m] (shim) | high | — |
-| W4+ | /design | cranelisp-backend: 0891 ruling | opus[1m] (shim) | high | — |
+| W4+ | /design | cranelisp-backend: 0891 ruling (`dd0b1c5e`; ruled (a)+P25 tightening — frame-keyed gate; 0902 filed /arch; 0394 found closed-since-S84 with stale citations) | opus[1m] (shim) | high | — |
+| W4+ | /dev | cranelisp-backend: 0891 narrowing (`ee324bc4`) — **ruling falsified by measurement**: +16 refusals from two uncensused escapee families (both leak today); safe parts shipped, 0903 filed, 0891 deferred S119 | opus[1m] (shim) | high | STOP rule honored |
+| W4+ | /review | cranelisp-backend: ee324bc4 (delegated, short) | codex (delegated) + fable adjudicator | high | — |
 
 ## Notes
 
