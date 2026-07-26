@@ -148,7 +148,7 @@ where
         // side of the SAME escape gate, never a wrong-`Some(false)` workaround (F4).
         let forwards = crate::compiler::match_forwards_scrutinee(arms);
         if !(forwards && !self.scrutinee_cow_retains_reused(scrutinee)) {
-            self.dec_temporary_scrutinee(scrutinee, scrut_val);
+            self.dec_temporary_scrutinee(scrutinee, scrut_val)?;
         }
 
         Ok(self.builder.block_params(merge_block)[0])
@@ -208,7 +208,7 @@ where
         } else {
             self.protect_return_value(&skip_var, body_val, body);
         }
-        self.pop_scope_with_cleanup(skip_var.as_ref());
+        self.pop_scope_with_cleanup(skip_var.as_ref())?;
         self.builder.ins().jump(merge_block, &[body_val]);
 
         Ok(())
@@ -229,7 +229,11 @@ where
     /// ADT field cleanup is done inside the dealloc path (RC=0) via
     /// `emit_rc_dec_with_inline_drop_glue`, not unconditionally.
     /// This prevents double-free when fields are borrowed by pattern bindings.
-    fn dec_temporary_scrutinee(&mut self, scrutinee: &MonoExpr, scrut_val: Value) {
+    fn dec_temporary_scrutinee(
+        &mut self,
+        scrutinee: &MonoExpr,
+        scrut_val: Value,
+    ) -> Result<(), CranelispError> {
         let is_temp = crate::compiler::fn_compiler::yields_owned_temporary(scrutinee);
         if is_temp {
             let scrut_ty = scrutinee.ty().to_type();
@@ -240,9 +244,8 @@ where
                 if let Some(elem_ty) = crate::compiler::vec_codegen::vec_element_type(&scrut_ty) {
                     let elem_ty = elem_ty.clone();
                     let span = cranelisp_types::Span::new(0, 0);
-                    let _ =
-                        self.emit_vec_aware_rc_dec(scrut_val, &elem_ty, span, RcAtomicity::Atomic);
-                    return;
+                    self.emit_vec_aware_rc_dec(scrut_val, &elem_ty, span, RcAtomicity::Atomic)?;
+                    return Ok(());
                 }
                 let needs_guard = matches!(category, HeapCategory::Mixed);
                 self.emit_rc_dec_with_inline_drop_glue(
@@ -250,9 +253,10 @@ where
                     &scrut_ty,
                     self.ctx.dealloc_func_id,
                     needs_guard,
-                );
+                )?;
             }
         }
+        Ok(())
     }
 
     /// Compile a constructor pattern arm.
@@ -494,7 +498,7 @@ where
             self.protect_return_value(&skip_var, body_val, body);
         }
 
-        self.pop_scope_with_cleanup(skip_var.as_ref());
+        self.pop_scope_with_cleanup(skip_var.as_ref())?;
         self.builder.ins().jump(match_ctx.merge_block, &[body_val]);
 
         Ok(())

@@ -174,15 +174,6 @@ where
     /// the drop glue function is stored here so that `pop_scope_with_cleanup`
     /// can pass it to `emit_rc_dec` when freeing the closure.
     pub(crate) closure_drop_glue: HashMap<Symbol, FuncId>,
-    /// Transitional safety bound state for the still-live inline release
-    /// consumer. Wave 4 migrates that consumer to canonical named glue and
-    /// deletes this field atomically (R15); canonical glue never reads it.
-    pub(crate) drop_glue_depth: u32,
-
-    /// Depth counter for inline drop glue generation.
-    /// Prevents infinite IR for recursive types (e.g., List).
-    /// Allows limited nesting for non-recursive parametric types (e.g., Option(Option(String))).
-
     /// Pending closure drop glue from the last `compile_lambda` call.
     /// Set by `compile_lambda`, consumed by `compile_let` or `compile_body`
     /// when binding the closure value to a variable name.
@@ -436,7 +427,6 @@ where
             current_mode_summary: None,
             tail_arg_protect: false,
             closure_drop_glue: HashMap::new(),
-            drop_glue_depth: 0,
             pending_closure_drop_glue: None,
             in_trace_body: false,
             sparked_args: None,
@@ -608,7 +598,6 @@ where
             current_mode_summary: mode_summary,
             tail_arg_protect: false,
             closure_drop_glue: HashMap::new(),
-            drop_glue_depth: 0,
             pending_closure_drop_glue: None,
             in_trace_body: false,
             sparked_args: None,
@@ -669,7 +658,7 @@ where
         if !compiler.return_is_fresh_by_summary(body) {
             compiler.protect_return_value(&skip_var, result, body);
         }
-        compiler.pop_scope_with_cleanup(skip_var.as_ref());
+        compiler.pop_scope_with_cleanup(skip_var.as_ref())?;
 
         // Return the result.
         compiler.builder.ins().return_(&[result]);
@@ -1116,7 +1105,10 @@ where
     /// ADT field cleanup happens inside the RC=0 dealloc path (via
     /// `emit_rc_dec_with_inline_drop_glue`), NOT as a separate step before dec.
     /// This prevents double-free when fields are independently referenced.
-    pub(crate) fn pop_scope_with_cleanup(&mut self, skip_var: Option<&Symbol>) {
+    pub(crate) fn pop_scope_with_cleanup(
+        &mut self,
+        skip_var: Option<&Symbol>,
+    ) -> Result<(), CranelispError> {
         if let Some(frame) = self.scope_stack.last() {
             let frame = frame.clone();
             let to_dec = self.collect_frame_heap_decs(&frame, |this, name| {
@@ -1131,11 +1123,12 @@ where
                 // this exit dec discharges (FIXME 0720).
                 this.is_borrowed(name) && !this.tco_owned_params.contains(name)
             });
-            self.emit_heap_binding_decs(&to_dec);
+            self.emit_heap_binding_decs(&to_dec)?;
         }
 
         // Now actually pop the scope (remove variables from maps).
         self.pop_scope();
+        Ok(())
     }
 
     /// Collect the heap-typed bindings in `frame` that need an `rc_dec`, minus
@@ -1173,7 +1166,10 @@ where
     /// Emit the `rc_dec` for each collected heap binding (closures → embedded
     /// drop glue; Vec → `vec_drop`; ADT → inline drop glue in the dealloc path).
     /// Shared by scope-pop cleanup and the tail-call flush.
-    fn emit_heap_binding_decs(&mut self, to_dec: &[(Symbol, Type, bool)]) {
+    fn emit_heap_binding_decs(
+        &mut self,
+        to_dec: &[(Symbol, Type, bool)],
+    ) -> Result<(), CranelispError> {
         let dealloc = self.ctx.dealloc_func_id;
         for (name, ty, needs_guard) in to_dec {
             if let Some(var) = self.variables.get(name) {
@@ -1200,8 +1196,7 @@ where
                     // analysis produces no confined let-bindings today, so this
                     // dec was provably always atomic. The `_atomicity` mechanism
                     // is retained (probe-reachable); it is fed `Atomic` here.
-                    let _ =
-                        self.emit_vec_aware_rc_dec(val, &elem_ty, span, heap::RcAtomicity::Atomic);
+                    self.emit_vec_aware_rc_dec(val, &elem_ty, span, heap::RcAtomicity::Atomic)?;
                     continue;
                 }
 
@@ -1210,9 +1205,10 @@ where
                 // reaches 0 (inside the free branch), not unconditionally.
                 // This prevents double-free when fields are independently
                 // referenced (e.g., extracted via pattern match).
-                self.emit_rc_dec_with_inline_drop_glue(val, ty, dealloc, *needs_guard);
+                self.emit_rc_dec_with_inline_drop_glue(val, ty, dealloc, *needs_guard)?;
             }
         }
+        Ok(())
     }
 
     /// Flush `rc_dec` for the live LET-scope bindings BEFORE a tail self-call
@@ -1236,9 +1232,9 @@ where
     pub(crate) fn flush_let_scopes_before_tail_jump(
         &mut self,
         transfer_skip: &std::collections::HashSet<Symbol>,
-    ) {
+    ) -> Result<(), CranelispError> {
         if self.scope_stack.len() <= 1 {
-            return;
+            return Ok(());
         }
         // Innermost-first: collect all eligible bindings across the let frames.
         let mut to_dec: Vec<(Symbol, Type, bool)> = Vec::new();
@@ -1252,7 +1248,7 @@ where
             });
             to_dec.append(&mut frame_decs);
         }
-        self.emit_heap_binding_decs(&to_dec);
+        self.emit_heap_binding_decs(&to_dec)
     }
 
     /// MS-P8 (FIXME 0688 verdict a; `s114-test-plan.md` §2.1) — the PARAM sibling
@@ -1286,10 +1282,10 @@ where
         &mut self,
         args: &[MonoExpr],
         transfer_skip: &std::collections::HashSet<Symbol>,
-    ) {
+    ) -> Result<(), CranelispError> {
         let param_frame = match self.scope_stack.first() {
             Some(f) => f.clone(),
-            None => return,
+            None => return Ok(()),
         };
         let analysis_off = cranelisp_types::ownership_analysis_off();
         let to_dec = self.collect_frame_heap_decs(&param_frame, |this, name| {
@@ -1310,7 +1306,7 @@ where
             // always copies, so the dec is always owed (FIXME 0695).
             param_flush_exempts_inplace_cow(args, name, analysis_off)
         });
-        self.emit_heap_binding_decs(&to_dec);
+        self.emit_heap_binding_decs(&to_dec)
     }
 
     /// True iff `flush_let_scopes_before_tail_jump` would emit an `rc_dec` for

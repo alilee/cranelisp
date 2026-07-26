@@ -175,8 +175,20 @@ impl DropGlueRegistry {
                 } else {
                     builder.ins().iconst(types::I64, 0)
                 };
-                let rf = module.declare_func_in_func(vec_drop, builder.func);
-                builder.ins().call(rf, &[value, child_ptr]);
+                // §1/§4: element discharge happens ONLY in the `old_rc == 1`
+                // branch, exactly as `emit_outer_drop` does for the other
+                // shapes. `runtime/vec_drop` is an unconditional teardown
+                // (element decs + data-buffer free + dealloc), so it MUST sit
+                // behind the rc gate — calling it directly would free a shared
+                // Vec on every release. One body for that gate, shared with the
+                // pre-existing Vec release seams (Principle 7).
+                crate::compiler::vec_codegen::emit_vec_rc_dec_with_drop(
+                    &mut builder,
+                    module,
+                    value,
+                    vec_drop,
+                    child_ptr,
+                );
             }
             other => self.emit_outer_drop(module, &mut builder, value, &other, &child_ids)?,
         }
@@ -797,6 +809,75 @@ mod tests {
             .ctor_shapes(&tables, &fq, &[ConcreteType::Int, ConcreteType::String])
             .unwrap();
         assert_eq!(shapes[0].fields, vec![ConcreteType::String]);
+    }
+
+    // spec: appendix-c-nfr §C.1.4 — the Vec-before-ADT classification ORDER,
+    // rehomed here from the deleted `rc_emission::typed_release_kind` (S118
+    // slice S1). It is still load-bearing: a Vec IS spelled
+    // `ConcreteType::ADT(primitives/Vec, [t])`, but its elements live behind
+    // `DATA_PTR`, not in ADT field slots — classified as a plain ADT its
+    // elements and data buffer would leak, and the tag load would read a
+    // length word as a constructor tag.
+    #[test]
+    fn a_vec_shape_is_not_classified_as_a_plain_adt() {
+        let module_path = ModuleFullPath::from("user");
+        let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+        tables.insert(module_path.clone(), SymbolTable::new(module_path.clone()));
+        let mut module = object_module();
+        let dealloc = declare_dealloc(&mut module);
+        let registry = DropGlueRegistry::new(module_path, dealloc, None);
+
+        let vec_of_string = adt("primitives", "Vec", vec![ConcreteType::String]);
+        assert!(matches!(
+            registry.shape(&tables, &vec_of_string).unwrap(),
+            GlueShape::Vec(ConcreteType::String)
+        ));
+        // The other two owning representations keep their own shapes, so the
+        // ordering claim is a discrimination and not a blanket answer.
+        assert!(matches!(
+            registry.shape(&tables, &ConcreteType::String).unwrap(),
+            GlueShape::String
+        ));
+        assert!(matches!(
+            registry
+                .shape(
+                    &tables,
+                    &ConcreteType::Fn(vec![ConcreteType::Int], Box::new(ConcreteType::Int))
+                )
+                .unwrap(),
+            GlueShape::Closure
+        ));
+    }
+
+    // spec: appendix-c-nfr §C.1.4 — the nullary-tag guard is a property of the
+    // TYPE, derived from its own constructor set, and lives inside the glue
+    // body. This is what replaced the per-site `needs_guard` parameter, so the
+    // both-polarity discrimination is the load-bearing cell.
+    #[test]
+    fn the_nullary_guard_is_derived_from_the_types_own_ctor_set() {
+        let mixed = GlueShape::Adt(vec![
+            CtorShape {
+                tag: 0,
+                fields: vec![],
+            },
+            CtorShape {
+                tag: 1,
+                fields: vec![ConcreteType::String],
+            },
+        ]);
+        assert!(mixed.guard_nullary(), "a bare nullary tag must be guarded");
+
+        let all_data = GlueShape::Adt(vec![CtorShape {
+            tag: 0,
+            fields: vec![ConcreteType::String],
+        }]);
+        assert!(
+            !all_data.guard_nullary(),
+            "an all-data ADT is always a heap pointer — a guard would be dead code"
+        );
+        assert!(!GlueShape::String.guard_nullary());
+        assert!(!GlueShape::Closure.guard_nullary());
+        assert!(!GlueShape::Vec(ConcreteType::Int).guard_nullary());
     }
 
     // spec: appendix-c-nfr §C.1.4 — generated per-type drop glue is callable

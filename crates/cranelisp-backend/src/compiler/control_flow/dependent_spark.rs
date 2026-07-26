@@ -274,7 +274,7 @@ where
         let skip_var = FnCompiler::<M>::return_var_in_scope(val_expr, inner.scope_stack.last());
         let result = inner.compile_expr(val_expr)?;
         inner.protect_return_value(&skip_var, result, val_expr);
-        inner.pop_scope_with_cleanup(skip_var.as_ref());
+        inner.pop_scope_with_cleanup(skip_var.as_ref())?;
 
         inner.builder.ins().return_(&[result]);
         inner.builder.seal_all_blocks();

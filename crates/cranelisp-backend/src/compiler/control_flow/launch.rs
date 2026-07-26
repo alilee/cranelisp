@@ -259,7 +259,7 @@ where
         let skip_var = FnCompiler::<M>::return_var_in_scope(continuation, inner.scope_stack.last());
         let result = inner.compile_expr(continuation)?;
         inner.protect_return_value(&skip_var, result, continuation);
-        inner.pop_scope_with_cleanup(skip_var.as_ref());
+        inner.pop_scope_with_cleanup(skip_var.as_ref())?;
 
         inner.builder.ins().return_(&[result]);
         inner.builder.seal_all_blocks();

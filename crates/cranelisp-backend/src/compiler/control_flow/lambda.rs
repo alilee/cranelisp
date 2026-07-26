@@ -547,7 +547,7 @@ where
         // receives a live reference. `protect_return_value` does NOT
         // cover this case because captures are not on `scope_stack`.
         inner_compiler.emit_capture_return_inc(body, result);
-        inner_compiler.pop_scope_with_cleanup(skip_var.as_ref());
+        inner_compiler.pop_scope_with_cleanup(skip_var.as_ref())?;
 
         inner_compiler.builder.ins().return_(&[result]);
         inner_compiler.builder.seal_all_blocks();

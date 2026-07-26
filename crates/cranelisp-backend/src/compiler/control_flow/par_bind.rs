@@ -299,7 +299,7 @@ where
             let skip_var = FnCompiler::<M>::return_var_in_scope(body, inner.scope_stack.last());
             let result = inner.compile_expr(body)?;
             inner.protect_return_value(&skip_var, result, body);
-            inner.pop_scope_with_cleanup(skip_var.as_ref());
+            inner.pop_scope_with_cleanup(skip_var.as_ref())?;
 
             // Dec the results buffer. It's an alloc_with_rc allocation —
             // emit_rc_dec with no drop glue (results are plain i64 values,

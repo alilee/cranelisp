@@ -185,7 +185,7 @@ where
 
         // Pop the scope frame, emitting rc_dec for heap-typed bindings
         // except the return value.
-        self.pop_scope_with_cleanup(skip_var.as_ref());
+        self.pop_scope_with_cleanup(skip_var.as_ref())?;
 
         Ok(result)
     }
@@ -333,7 +333,7 @@ where
         let skip_var = Self::return_var_in_scope(body, self.scope_stack.last());
         let result = self.compile_expr(body)?;
         self.protect_return_value(&skip_var, result, body);
-        self.pop_scope_with_cleanup(skip_var.as_ref());
+        self.pop_scope_with_cleanup(skip_var.as_ref())?;
 
         Ok(result)
     }
