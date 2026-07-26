@@ -1,6 +1,6 @@
 # Sprint 118: Instrumented Ownership Closure
 
-**Status**: PHASE 5 LANGUAGE (ACTIVE)
+**Status**: COMPLETE — USER-APPROVED CLOSE 2026-07-26
 
 **Goal**: Land the memory-diagnostic instrumentation as the sprint's foundation, then drive the attributed RED baseline down by migrating the ownership consumers onto the canonical drop glue — every fix proven by a detector that has itself been proven to detect.
 
@@ -375,7 +375,7 @@ The load-dependent guards (`launch_grid`, 0694 family, 0604/0818) remain failing
 
 ## Outcome (Phase 7)
 
-**Status: presented to the user 2026-07-26; awaiting close approval.**
+**Close decision: USER approved 2026-07-26** with the certified 20-RED carry set (6 pre-approved carries + 0867 ×3 + Bind/0907 ×7 + the four attributed Phase-6 additions).
 
 ### Delivered
 

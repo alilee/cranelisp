@@ -354,6 +354,42 @@ trait-impl cache restoration). Cyber-blocked memory/instrumentation work and
 0850 remain explicitly deferred. Full record:
 `sprints/archive/sprint-117.md`.
 
+### Instrumented Ownership Closure — S118 ✅ CLOSED 2026-07-26 (descoped by user to the mechanism collapse)
+
+The memory-safety frontier resumed and its core shipped: detection proven
+first (eight detector rows with fail-on-revert evidence, the precheck-hoist
+discovery, the closed fault-plant protocol), then the ownership-mechanism
+collapse — one canonical drop glue, the legacy inline emitter and second
+identity scheme deleted atomically, all consumer families (match, capture,
+TCO, program-result) migrated with armed re-demonstration. FIXMEs 0745 and
+0835 closed; 0850 closed after its S87-era origin; the linked-executable
+exit-code divergence closed. The ambient 1143-alloc prelude residue was
+attributed (user-led) to the macro-turn marshal boundary — the truthful
+marginal-balance harness landed (with exact-value pins fencing the leak's
+closed form; recovery is user-required FIXME 0889, S119). The
+user-commissioned structural option paper (`design/arch/
+ownership-stratum-options.md`) queues five S119 decisions on the manual-RC
+stratum's cost structure. First production cycle of the Codex-delegated
+`/review` (ratified pre-sprint): ten rounds, three-round convergence per wave,
+real findings each substantive round. `cranelisp-types` audit: design Strong,
+R1–R5 queued.
+
+**Suite at close: 5,673-scale / 20 attributed REDs, byte-identical across two
+full runs — the first deterministic certification since S115.** From 28
+attributed REDs at open on a suite 139 tests smaller. The 20: launch_grid
+(0694), DF1/DF2 (0863), cache ×2 (0868/0869), exemplar #21 (0917), 0867 ×3,
+Bind/0907 ×7 (loud refusals that replaced silent IO heap corruption —
+W3-consequent, workaround falsified), 0917 ×2, 0913, 0916. **S119 carries:**
+the backend design window (0903+0907+0916 co-ruling — the non-concrete-release
+class, three-faced: refusal / silent leak / **wild write**, with the
+trait-instance-leak proof binding; 0917; 0915's backend half; 0891 paste-ready
+behind 0903); 0913 (typecheck lenient-view row); 0914 (`/mem` truthfulness);
+0889 (macro-turn leak recovery via option-paper tranche B); 0898 (ruled types
+delta); 0912 (undeclared-field spec question, user arbitration); Tracks C/D/E
+with groundwork banked (0863 READY, 0869 carrier ruling in force, 0873
+approved design); the option paper's five decisions; both audits'
+recommendations. Full record: `sprints/archive/sprint-118.md`.
+
 ### Pipeline v3 migration — COMPLETE (Sprints 29-38)
 
 Steps 1-10 + 14 delivered. Single-pipeline invariant established. ~2,100 lines of v1 code deleted. Steps 11-13 (concurrency) deferred indefinitely. Step 15 (new main.rs) retired — substantially delivered by Step 6. See `design/arch/archive/pipeline-v3-roadmap.md` §Post-Migration for full assessment.
