@@ -228,19 +228,44 @@ against the declaration-table facts, not hand-written twice (Principle 7).
 
 ### 2.3 Staging — boundary-by-boundary, each tranche independently shippable
 
+> **S119 Phase-2 amendment (`/arch`, 2026-07-26; resolves FIXME 0920).** The
+> original tranche-B row conflated two files: "339 lines" measured
+> `crates/cranelisp-primitives/src/marshal.rs` (runtime `quote_sexp`/`sconcat`
+> helpers — inside the pair, but NOT where the 0889 leak lives), while "the
+> macro-expansion data path" and the §6.3 recovery claim describe
+> `src/marshal.rs` (732 lines) + `src/expander.rs::invoke_clause` — the **int
+> binary**, which §1.1 excludes from the pair. The rows below are the corrected
+> scope. The typed vocabulary needs no third home: tranche A already forces
+> `Owned`/`Borrowed` to be `pub` from `cranelisp-intrinsics` (the `consume_*`
+> fns are `pub` and the types appear in their signatures — the Principle-15
+> home, since the discharge behaviour lives there), and both primitives (an
+> existing dependant) and the int binary consume that one vocabulary. Sizing
+> figures re-pinned against measurement 2026-07-26: **83** `extern "C" fn`
+> (intrinsics 81 + primitives 2), **136** non-extern `i64`-taking fn
+> declarations, **36** `consume_*` call sites in primitives (`string.rs` 27,
+> `marshal.rs` 8, `int.rs` 1).
+
 1. **Tranche A — the drop/consume funnel** (`cranelisp-intrinsics::drop` +
-   its ~31 primitives call sites). Smallest, highest-leverage: every
-   `consume_*` signature becomes `fn consume_slist(l: Owned)`, and every
-   caller's obligation becomes visible at once.
-2. **Tranche B — `marshal.rs`** (339 lines, the macro-expansion data path).
-   This tranche **is** the FIXME 0889 recovery vehicle (§6.3): typed handles
+   its 36 primitives call sites, which include
+   `crates/cranelisp-primitives/src/marshal.rs`'s 8). Smallest,
+   highest-leverage: every `consume_*` signature becomes
+   `fn consume_slist(l: Owned)`, and every caller's obligation becomes
+   visible at once.
+2. **Tranche B — the int-side macro-turn marshal boundary**
+   (`src/marshal.rs`, 732 lines, + `src/expander.rs::invoke_clause`). This
+   tranche **is** the FIXME 0889 recovery vehicle (§6.3): typed handles
    force the argument-tree and result-tree counts to be right, after which
    the turn's release is plain `consume` — `consume_slist` already stops at
    live shared references, so correctly-counted trees release correctly
-   without aliasing analysis.
-3. **Tranche C — string/Vec adapters** (the remaining ~65 i64-taking
-   internal fns), aligning with the already-typed S117 Vec-of-String
-   boundary.
+   without aliasing analysis. It is a **third typed surface** outside the
+   pair: `/design`(int) rules the marshal/expander ownership protocol before
+   any `/dev` dispatch (0889's own precondition), consuming the intrinsics
+   vocabulary; `/arch` holds the boundary question. Sequenced strictly after
+   tranche A — the vocabulary must exist and be consumer-proven first.
+3. **Tranche C — string/Vec adapters** (the remaining i64-taking internal
+   fns of the 136, including the primitives-side `marshal.rs` helpers not
+   already covered by A's consume-site flips), aligning with the
+   already-typed S117 Vec-of-String boundary.
 4. **Tranche D (optional, later)** — align the internal newtypes with the
    platform `CLOwned` family naming so the two typed layers read as one
    discipline. Doc-level only; no ABI change.
@@ -254,10 +279,12 @@ generated-code impact. Public-API delta confined to the pair's
 
 ### 2.4 Cost and risks
 
-- **Cost estimate:** ~83 extern shims + ~131 internal signatures across two
-  crates, mechanical per-site with the compiler enumerating the worklist.
-  Tranche A is a focused `/dev`(runtime pair) wave; B and C similar. Order
-  two-to-three dev waves total, review per tranche. No user-visible change.
+- **Cost estimate:** 83 extern shims + 136 internal signatures (re-pinned;
+  see §2.3 amendment), mechanical per-site with the compiler enumerating the
+  worklist. Tranche A is a focused `/dev`(runtime pair) wave; tranche B is an
+  int-surface wave with its own `/design`(int) protocol ruling (larger than
+  originally priced — 732 lines plus the expander seam); C similar to A.
+  Order three dev waves total, review per tranche. No user-visible change.
 - **Risk: churn masking a behavior change.** Mitigated by the S118 instrument
   set: every tranche re-runs the marginal cells, the RE-1 fences, and the
   armed-lane rows byte-identically — the same invariance discipline 0850's
@@ -521,7 +548,9 @@ sharpening (the 0889 routing) and one sequencing caution:
 
 ### 6.3 FIXME 0889 routing (the user-required leak recovery)
 
-Route the recovery **through option 1 tranche B** (the marshal boundary):
+Route the recovery **through option 1 tranche B** (the int-side macro-turn
+marshal boundary, `src/marshal.rs` + `src/expander.rs::invoke_clause` — per
+the §2.3 S119 Phase-2 amendment):
 typed handles force the argument-tree and result-tree counts to be truthful
 at marshal time, after which the macro-turn exit is plain
 `consume`-per-tree — `consume_slist` is already alias-correct (it stops at
