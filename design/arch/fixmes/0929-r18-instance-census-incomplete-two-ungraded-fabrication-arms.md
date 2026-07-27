@@ -47,6 +47,44 @@ R18's row:
    "graded by inspection" — the §Assurance failure state; the disposition
    should be a located refusal (the `:497-505` pattern) or a proof.
 
+## Extension (2026-07-27, coordinator follow-up, verified at source): the Type-side laundering family and the declaration channel
+
+The `from_type` census pattern is structurally blind to fabrications that
+happen BEFORE the boundary and then *pass* `from_type` — laundered
+concreteness. Verified instances:
+
+3. **`crates/cranelisp-backend/src/compiler/context.rs:280`** —
+   `field_types.get(i).cloned().unwrap_or(Type::Int)` in
+   `extract_constructor`: a ctor whose `field_count` exceeds its scheme's
+   params fabricates `Type::Int` field types. Same expression exposes the
+   **declaration channel**: `CtorMeta`/`CtorField` is materialised from the
+   ctor *declaration's* scheme, so a polymorphic product's field type is
+   `Type::Var(a)` permanently — nothing substitutes concrete args at use
+   sites — and `signature_heap_category`'s `Err ⇒ Mixed` arm (R17's seam)
+   licences the guarded-RC path off it. Two consequences for standing
+   instruments: the NC-1 slot-gate sweep is structurally blind to this
+   channel (it quantifies over slotted entries' schemes), and **R17's
+   arm-flip criterion (census reads zero) is unreachable while this channel
+   stands** — every polymorphic-ctor field categorisation is permanent
+   census traffic. Plan cell NC-5 (`s119-test-plan.md` §3.7) asserts the
+   seam invariant design-neutrally; the **representation question** —
+   `CtorField { ty: ConcreteType }` making the state unconstructable, with
+   materialisation instantiation-keyed — is `/design`(backend)'s to rule
+   inside the release-contract window. Ask 4 routes it.
+4. **`crates/cranelisp-backend/src/compiler/fn_compiler.rs:1214`** —
+   `variable_types.get(name).cloned().unwrap_or(Type::Int)`: a **defensive
+   dead arm** (the preceding filter guarantees `Some`); unreachable by
+   local construction, but the wrong spelling — `expect`/`filter_map` says
+   what is true. Low severity; grade accordingly.
+5. **Int-layer result/display defaults** — `src/eval.rs:586`,
+   `src/repl/commands.rs:632`, `src/pipeline.rs:133`: absent display/expr
+   type defaults to `Type::Int`, and the fabricated type flows toward the
+   result-release protocol (R15's `(i64, Type)` narrow-once seam). Whether
+   a heap-typed result can ever reach these arms with `display` absent is
+   exactly the ungraded-inspection question; needs grading, not assumption.
+
+All five are pinned in NC-2's family-B allow-list citing this FIXME.
+
 ## The model sites — worth naming ON the R18 row
 
 Two sites handle `NotConcrete` correctly and should be cited by the register
@@ -78,11 +116,17 @@ by the next census sweep). Yours to accept or overrule.
 
 ## Ask
 
-1. Extend R18's instance list with sites 1 and 2 (or rule either legitimate,
-   with the proof cited on the row).
+1. Extend R18's instance list with sites 1–5 (or rule any legitimate, with
+   the proof cited on the row). Site 3's declaration channel also belongs on
+   the R17 row: its arm-flip end state is unreachable while the channel
+   stands.
 2. Name the two model sites on the row.
 3. Answer the structural-closure question; if census-as-enforcement is
    accepted, record the residual grade on the row.
-4. Route the two arms' dispositions to their owners (`/design`/`/dev`
-   typecheck for fixpoint.rs; `/design`/`/dev` backend for drop_glue.rs) —
-   the NC-2 allow-list entries cite this FIXME until then.
+4. Route dispositions to owners: `/design`/`/dev` typecheck for
+   fixpoint.rs; `/design`/`/dev` backend for drop_glue.rs, and for the
+   `CtorMeta` representation question (site 3 — `CtorField.ty:
+   ConcreteType` vs instantiation-keyed materialisation, ruled inside the
+   release-contract window); `/design`(int) or `/dev`(src) for the
+   int-layer trio (site 5). The NC-2 allow-list entries cite this FIXME
+   until then.

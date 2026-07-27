@@ -79,7 +79,7 @@ evidence). A RED that flips during a byte-identical-by-design wave
 
 | Gate | Named cells / named measurements | Where specified |
 |---|---|---|
-| **G1 — release-contract totality** | (a) the **16-program corpus manifest** asserted per §3.2 (enumerated names, per-wave focused-run record, `/review` reject); (b) baseline flips #1–7 (0907), #8–10 (0917), #11 (0916); (c) the **family-1 accessor marginal guard** + the **IO-Bind balancing marginal guard** (§3.3, stage-1 authored, RED); (d) the `f4_sudoku.clif::user::Grid.cells` scoped attributed re-baseline **in the implementing change-set** (0903 addendum); (e) the 0891 three negatives re-land RED→GREEN (§3.5); (f) producer face: the fabricated-`ConcreteType::Int` prohibition pinned per §3.4; (g) **the R11 negative set (§3.7, the user's negative-coverage finding)**: the universal slot-gate sweep NC-1 + the 0926 P-1 unit gate cell, the fabrication census NC-2, and the accessor 1023/1024 boundary repro NC-4 (stage-1, RED) | §3, §3.7 |
+| **G1 — release-contract totality** | (a) the **16-program corpus manifest** asserted per §3.2 (enumerated names, per-wave focused-run record, `/review` reject); (b) baseline flips #1–7 (0907), #8–10 (0917), #11 (0916); (c) the **family-1 accessor marginal guard** + the **IO-Bind balancing marginal guard** (§3.3, stage-1 authored, RED); (d) the `f4_sudoku.clif::user::Grid.cells` scoped attributed re-baseline **in the implementing change-set** (0903 addendum); (e) the 0891 three negatives re-land RED→GREEN (§3.5); (f) producer face: the fabricated-`ConcreteType::Int` prohibition pinned per §3.4; (g) **the R11 negative set (§3.7, the user's negative-coverage finding)**: the universal slot-gate sweep NC-1 + the 0926 P-1 unit gate cell, the fabrication census NC-2 (families A + B), the accessor 1023/1024 boundary repro NC-4 (stage-1, RED), and the declaration-channel sweep NC-5 (the CtorMeta channel NC-1 cannot see; precondition for R17's arm flip) | §3, §3.7 |
 | **G2 — mechanism count stays one** | (a) `drop_glue_legacy_emitter_fence` stays GREEN through every wave; (b) the new **emission-licence census cell** (§3.6): admission-variant set, `Rejected` call-site count, and `protect_return_value` call-site count pinned to the ruling's numbers — a new licence arm cannot land without touching the census in the same change-set; (c) `/review` reject criterion (arch ruling) | §3.6 |
 | **G3 — raw-handle representability** | (a) before/after counts recorded in the tranche-A change-set: `consume_*` raw-`i64` signatures 36→0; non-extern `i64`-heap-handle declarations 136 → 136 − (exact tranche-A slice, enumerated); (b) structural census cell: zero `consume_*` fn taking raw `i64` (§4.2); (c) 83 extern shims byte-identical: `public-api.txt` diff (extern lines unchanged) + `facade_compliance` + `public_api_relocations` GREEN | §4.2 |
 | **G4 — prose-contract elimination** | (a) shim-fact single-sourcing **unit row**: every shim's `Owned`/`Borrowed` signature derived from (and conflict-checked against) the declaration table — one derivation (§4.3); (b) per-tranche **drop-bomb detection proof**: positive plant (undischarged `Owned` → debug bomb fires, located) + clean control + recorded fail-on-revert (0768 rule) — one triplet per tranche (A, B-int) (§4.3) | §4.3 |
@@ -246,6 +246,36 @@ refuses the whole ctor via `Option` collect). `fixpoint.rs:221` and
 `drop_glue.rs:398` appear in NEITHER design census nor R18's instance list —
 register completeness routed to `/arch` as FIXME 0929.
 
+**Second finding (coordinator follow-up, verified at source): the
+declaration channel, and Type-side laundering.** The backend has two type
+sources. The body-AST path is `Var`-free by construction (`MonoExpr`, every
+node `ConcreteType`); the OTHER channel is `signature_heap_category(ty:
+&Type)` (`rc_emission.rs:478`, ~25 live call sites across `vec_codegen`,
+`apply`, `match_codegen`, `lambda`, `par_bind`, `dependent_spark`,
+`fn_compiler`), whose `Err(_) ⇒ Mixed` arm is R17's registered violating
+seam. One of its feeders is structural, not incidental:
+`context.rs:265-284` (`extract_constructor`) materialises
+`CtorMeta`/`CtorField` from the ctor **declaration's** scheme, so a
+polymorphic product's field type is `Type::Var(a)` **permanently** — a
+declaration is polymorphic by nature; monomorphisation substitutes at uses,
+and nothing substitutes here. Consequences: (a) **NC-1 is structurally blind
+to this channel** — it asserts over slotted entries' schemes, and even after
+P-1 lands, `CtorMeta` is still built from the declaration, so NC-1 would be
+GREEN while the wild-write channel stayed live — hence NC-5; (b) **R17's
+end state depends on this seam**: the arm flip is gated on the census
+reading zero, and the declaration channel generates permanent traffic for
+every polymorphic-ctor field categorisation until it is closed. There is
+also a **Type-side fabrication family** the NC-2 `from_type` pattern is
+structurally blind to, because the fabrication happens BEFORE the boundary
+and then *passes* `from_type` — laundered concreteness:
+`context.rs:280` (`unwrap_or(Type::Int)` when `field_count` exceeds the
+scheme's params), `fn_compiler.rs:1214` (defensive dead arm — the preceding
+filter guarantees `Some`; unreachable by local construction, still the
+wrong spelling), and the int-layer result/display defaults
+`src/eval.rs:586`, `src/repl/commands.rs:632`, `src/pipeline.rs:133` (the
+fabricated `Int` flows toward the result-release protocol — severity
+ungraded). All routed into NC-2 family B + FIXME 0929's extension.
+
 - **NC-1 — the universal slot-gate sweep** (`/dev`(typecheck) unit row,
   authored WITH CS-1, RED-first). After full typecheck of a fixture set that
   includes a polymorphic product with synthetic accessor, a generic
@@ -260,7 +290,10 @@ register completeness routed to `/arch` as FIXME 0929.
   sweep catches the family member nobody predicted, the 0926 cell names the
   seam when it fires. Both are G1(g) instruments. (E2e cannot express this —
   the no-middle-tier rule — so unit tier is the correct home; NC-4 is the
-  e2e consequence face.)
+  e2e consequence face.) **Known blind spot, by construction:** NC-1
+  quantifies over slotted entries' schemes and cannot see the backend's
+  declaration-materialised `CtorMeta` channel — that is NC-5's job; the two
+  are a pair, not alternatives.
 - **NC-2 — the fabrication census** (`/testing` structural cell, Spine-1
   implementing wave, §3.6 mechanics; precedent
   `drop_glue_legacy_emitter_fence`). Grep-shaped over non-test source: every
@@ -273,7 +306,18 @@ register completeness routed to `/arch` as FIXME 0929.
   spelling. A NEW discard site REDs the cell in its own change-set; each fix
   shrinks the pin in the fixing change-set. Detection proof per 0768 in the
   authoring change-set: a temporarily planted discard site REDs the cell,
-  recorded, reverted.
+  recorded, reverted. **Family B (Type-side laundering, same cell, second
+  pattern):** `unwrap_or(Type::…)` / `unwrap_or_else(|| Type::…)` in
+  non-test source — fabrications that never meet `from_type` as an `Err`
+  because they fabricate BEFORE the boundary and pass it after. Pinned
+  allow-list at author time, every entry citing 0929:
+  `crates/cranelisp-backend/src/compiler/context.rs:280`,
+  `crates/cranelisp-backend/src/compiler/fn_compiler.rs:1214` (dead arm —
+  filter-guaranteed `Some`; correct spelling is `expect`/`filter_map`),
+  `src/eval.rs:586`, `src/repl/commands.rs:632`, `src/pipeline.rs:133`
+  (int-layer result/display defaults; severity ungraded — 0929).
+  `infer.rs:1290`'s `Type::Var(0)` fallback is out of this family's scope
+  (it fabricates a *variable*, not concreteness) and is not pinned.
 - **NC-3 — per-site fail-on-revert unit rows** (one per fabrication, riding
   each fix — the enumerated-deferral discipline, so unit-test-per-fix has
   named targets): (a) `fn_compiler.rs:1287` — covered by R17's census + arm
@@ -303,6 +347,25 @@ register completeness routed to `/arch` as FIXME 0929.
   `(deftype (Mb a) Nn (Jj [:a v]))`, payload A/B at the same boundary — is
   the 0926 §1 shape: authored RED-then-GREEN **inside 0867's change-set**
   (rider 1), because 0867 is what makes that surface reachable.
+- **NC-5 — the declaration-channel sweep** (`/dev`(backend) unit row,
+  RED-first, Spine-1 window). The invariant at the seam, stated
+  design-neutrally: **no heap-category decision is made off a residual
+  field type materialised from a declaration.** Cell: build a symbol table
+  containing a polymorphic product `(Bx a)` (and a concrete control); call
+  `ctor_meta_at`; assert every materialised `CtorField.ty` satisfies
+  `ConcreteType::from_type(..).is_ok()` OR the materialisation refuses /
+  demands an instantiation (however the ruling spells the legal path) —
+  RED today (`field_types[0]` is `Type::Var(a)`, permanently). Second
+  polarity, the fabrication arm: a ctor whose `field_count` exceeds its
+  scheme's params must refuse with a located error, never mint
+  `Type::Int` (`context.rs:280`). The end-state *representation* —
+  `CtorField { ty: ConcreteType }` making the state unconstructable, with
+  consumers substituting concrete args from `ConcreteType::ADT(..)` at the
+  use site — is `/design`(backend)'s to rule inside the release-contract
+  window (routed via 0929 ask 4); this cell asserts the invariant whichever
+  representation is chosen. NC-5 is a stated **precondition for R17's arm
+  flip**: without it the R17 census cannot read zero on the
+  polymorphic-ctor families.
 
 **Structural-closure note (for the record).** `ConcreteType`'s variants are
 `pub`, so `from_type`'s "ONLY way" rustdoc claim is true of conversion but
@@ -688,8 +751,10 @@ Phase-3 exit gate.
    newly covered spec rows.
 8. **Negative-coverage accounting (the S119 user finding):** the §3.7 set
    reconciled name-for-name — NC-1 + the 0926 gate cell GREEN with P-1's
-   change-set named, NC-2 standing GREEN with its detection proof recorded,
-   NC-4 flipped by the Spine-1 wave (or an explicit user-approved carry);
+   change-set named, NC-2 (both families) standing GREEN with its detection
+   proof recorded, NC-4 flipped by the Spine-1 wave, NC-5 flipped by the
+   ctor-materialisation ruling's change-set (or an explicit user-approved
+   carry);
    the close report states the annotation-band ratio
    (`[Tested]`-only vs `[Tested+Neg]`, `negative-coverage.md` §S119) beside
    the suite scalar. A close that certifies the release contract with NC-4
@@ -709,8 +774,9 @@ Phase-3 exit gate.
   measurement window opens.
 - `/design`(typecheck) — Round 2 producer face (§3.4) against the landed
   contract.
-- `/dev` (per crate, Phase 5) — unit tiers named in §3.4, §4.2, §4.3, §5.2,
-  §9; the census-pinned numbers come from the landed ruling.
+- `/dev` (per crate, Phase 5) — unit tiers named in §3.4, §3.7 (NC-1
+  typecheck, NC-5 backend, NC-3 per site), §4.2, §4.3, §5.2, §9; the
+  census-pinned numbers come from the landed ruling.
 - `/arch` — Phase-3 exit gate (intrinsics `public-api.txt` diff, tranche-A
   shim-fact design); the R8 register-linkage request (§5.1) in the rider-5
   window.
