@@ -79,7 +79,7 @@ evidence). A RED that flips during a byte-identical-by-design wave
 
 | Gate | Named cells / named measurements | Where specified |
 |---|---|---|
-| **G1 — release-contract totality** | (a) the **16-program corpus manifest** asserted per §3.2 (enumerated names, per-wave focused-run record, `/review` reject); (b) baseline flips #1–7 (0907), #8–10 (0917), #11 (0916); (c) the **family-1 accessor marginal guard** + the **IO-Bind balancing marginal guard** (§3.3, stage-1 authored, RED); (d) the `f4_sudoku.clif::user::Grid.cells` scoped attributed re-baseline **in the implementing change-set** (0903 addendum); (e) the 0891 three negatives re-land RED→GREEN (§3.5); (f) producer face: the fabricated-`ConcreteType::Int` prohibition pinned per §3.4; (g) **the R11 negative set (§3.7, the user's negative-coverage finding)**: the universal slot-gate sweep NC-1 + the 0926 P-1 unit gate cell, the fabrication census NC-2 (families A + B), the accessor 1023/1024 boundary repro NC-4 (stage-1, RED), and the declaration-channel sweep NC-5 (the CtorMeta channel NC-1 cannot see; precondition for R17's arm flip) | §3, §3.7 |
+| **G1 — release-contract totality** | (a) the **16-program corpus manifest** asserted per §3.2 (enumerated names, per-wave focused-run record, `/review` reject); (b) baseline flips #1–7 (0907), #8–10 (0917), #11 (0916); (c) the **family-1 accessor marginal guard** + the **IO-Bind balancing marginal guard** (§3.3, stage-1 authored, RED); (d) the `f4_sudoku.clif::user::Grid.cells` scoped attributed re-baseline **in the implementing change-set** (0903 addendum); (e) the 0891 three negatives re-land RED→GREEN (§3.5); (f) producer face: the fabricated-`ConcreteType::Int` prohibition pinned per §3.4; (g) **the R11 negative set (§3.7, the user's negative-coverage finding)**: the kind-partitioned slot-gate sweep NC-1 (`UserFn` licence; universal form falsified by `f5d30808`) + the 0926 P-1 unit gate cell, the fabrication census NC-2 (families A + B), the accessor 1023/1024 boundary repro NC-4 (stage-1, RED), and the declaration-channel sweep NC-5 (the CtorMeta channel NC-1 cannot see; precondition for R17's arm flip) | §3, §3.7 |
 | **G2 — mechanism count stays one** | (a) `drop_glue_legacy_emitter_fence` stays GREEN through every wave; (b) the new **emission-licence census cell** (§3.6): admission-variant set, `Rejected` call-site count, and `protect_return_value` call-site count pinned to the ruling's numbers — a new licence arm cannot land without touching the census in the same change-set; (c) `/review` reject criterion (arch ruling) | §3.6 |
 | **G3 — raw-handle representability** | (a) before/after counts recorded in the tranche-A change-set: `consume_*` raw-`i64` signatures 36→0; non-extern `i64`-heap-handle declarations 136 → 136 − (exact tranche-A slice, enumerated); (b) structural census cell: zero `consume_*` fn taking raw `i64` (§4.2); (c) 83 extern shims byte-identical: `public-api.txt` diff (extern lines unchanged) + `facade_compliance` + `public_api_relocations` GREEN | §4.2 |
 | **G4 — prose-contract elimination** | (a) shim-fact single-sourcing **unit row**: every shim's `Owned`/`Borrowed` signature derived from (and conflict-checked against) the declaration table — one derivation (§4.3); (b) per-tranche **drop-bomb detection proof**: positive plant (undischarged `Owned` → debug bomb fires, located) + clean control + recorded fail-on-revert (0768 rule) — one triplet per tranche (A, B-int) (§4.3) | §4.3 |
@@ -244,7 +244,11 @@ arg). Two sites are the CORRECT refusal pattern and are the models:
 `types/heap.rs:310-334` (`ctor_field_concrete_types` — one `NotConcrete`
 refuses the whole ctor via `Option` collect). `fixpoint.rs:221` and
 `drop_glue.rs:398` appear in NEITHER design census nor R18's instance list —
-register completeness routed to `/arch` as FIXME 0929.
+register completeness routed to `/arch` as FIXME 0929. (Disposition
+`f5d30808`: asks 1–3 discharged — R18 row extended to all five sites with
+grades and owners, model sites named, census-as-enforcement accepted with
+the residual graded asserted-with-a-named-falsifier once NC-2 lands; 0929
+re-targeted `/design`(backend) as the CtorMeta carrier-ruling anchor.)
 
 **Second finding (coordinator follow-up, verified at source): the
 declaration channel, and Type-side laundering.** The backend has two type
@@ -276,22 +280,43 @@ wrong spelling), and the int-layer result/display defaults
 fabricated `Int` flows toward the result-release protocol — severity
 ungraded). All routed into NC-2 family B + FIXME 0929's extension.
 
-- **NC-1 — the universal slot-gate sweep** (`/dev`(typecheck) unit row,
-  authored WITH CS-1, RED-first). After full typecheck of a fixture set that
-  includes a polymorphic product with synthetic accessor, a generic
-  trait-impl method, and concrete controls: walk EVERY symbol-table entry;
-  for each entry where `callable_got_slot()` is `Some`, assert
-  `scheme.ty.is_concrete()`. One assertion, whole-table quantifier — the
-  direct executable form of register row R11; it would have been RED from S84
-  to S119, is RED at today's HEAD (both hand-mint sites violate it), and
-  flips with P-1. The FIXME-0926 gate cell (polymorphic accessor ⇒
-  `Polymorphic`, slot-less; concrete sibling ⇒ `Concrete` unchanged; likewise
-  residual vs concrete trait-impl method) is its site-naming sibling — the
-  sweep catches the family member nobody predicted, the 0926 cell names the
-  seam when it fires. Both are G1(g) instruments. (E2e cannot express this —
-  the no-middle-tier rule — so unit tier is the correct home; NC-4 is the
-  e2e consequence face.) **Known blind spot, by construction:** NC-1
-  quantifies over slotted entries' schemes and cannot see the backend's
+- **NC-1 — the kind-partitioned slot-gate sweep** (`/dev`(typecheck) unit
+  row, authored WITH CS-1, RED-first; predicate corrected per the `/arch`
+  step-back ruling, `f5d30808`). **The universal quantifier is FALSE and
+  must not come back**: `bind : ∀a b.…` and `catch-runtime-error : ∀a.…`
+  are polymorphic slotted primitives *and always were* — a sweep asserting
+  `slot ⇒ is_concrete()` over the whole table REDs against bootstrap
+  primitives, i.e. RED for the wrong reason, the exact failure mode §3.6's
+  census discipline exists to prevent. Anyone "simplifying" this row back
+  to a universal quantifier is reintroducing the S84 defect: an invariant
+  stated universally with an unstated sanctioned exception is unassertable,
+  and the two unsanctioned mints lived in that exception's shadow for
+  thirty-five sprints. The ruled invariant — one licence per producer
+  class — and its per-partition instruments:
+
+  | Kind partition | Slot licence | Instrument |
+  |---|---|---|
+  | `UserFn` | concreteness is the ONLY licence (release contract §4.3 impossibility proof) | **NC-1's assertion**: walk every entry; `callable_got_slot().is_some() ∧ kind = UserFn ⇒ scheme.ty.is_concrete()` |
+  | `Constructor` | representation-parametricity under I-CT′ (zero RC obligations on residual words) — NEVER a scheme predicate | the ctor-template zero-RC-on-residual negatives (§3.1 face-1 rows, 0891 re-land §3.5) + the **R17 census's ctor partition reading zero at face-1's landing**. Pre-face-1 the licence is granted-but-unhonoured (the wild inc/dec IS a type-directed op on a residual word) — this is a *known open defect already carried* by the §3.1 face rows and contract §2.5, not a new cell; the census partition is the named instrument that proves the gap closed |
+  | `Primitive`/`Extern`/`PlatformEffect` | declared contract | R3 truthfulness rows, R16 fences, layout-hash/`CLOwned` — existing instruments, not NC-1's |
+
+  The fixture set (polymorphic product with synthetic accessor, generic
+  trait-impl method, concrete controls, and a table containing the
+  polymorphic primitives so the partition boundary is *exercised*, not
+  assumed) makes both hand-mint violations visible: accessor and trait-impl
+  mints are `UserFn`-partition entries, so the corrected predicate is still
+  RED at today's HEAD and would still have been RED from S84 — the
+  falsified-universal correction costs the sweep nothing. The reverse
+  direction (concrete determined `UserFn` ⇒ slot) stays behaviourally
+  enforced by the missing-slot hard failure and is NOT asserted here. The
+  FIXME-0926 gate cell (polymorphic accessor ⇒ `Polymorphic`, slot-less;
+  concrete sibling ⇒ `Concrete` unchanged; likewise residual vs concrete
+  trait-impl method) is its site-naming sibling — the sweep catches the
+  family member nobody predicted, the 0926 cell names the seam when it
+  fires. Both are G1(g) instruments. (E2e cannot express this — the
+  no-middle-tier rule — so unit tier is the correct home; NC-4 is the e2e
+  consequence face.) **Known blind spot, by construction:** NC-1 quantifies
+  over slotted entries' schemes and cannot see the backend's
   declaration-materialised `CtorMeta` channel — that is NC-5's job; the two
   are a pair, not alternatives.
 - **NC-2 — the fabrication census** (`/testing` structural cell, Spine-1
@@ -358,13 +383,21 @@ ungraded). All routed into NC-2 family B + FIXME 0929's extension.
   RED today (`field_types[0]` is `Type::Var(a)`, permanently). Second
   polarity, the fabrication arm: a ctor whose `field_count` exceeds its
   scheme's params must refuse with a located error, never mint
-  `Type::Int` (`context.rs:280`). The end-state *representation* —
-  `CtorField { ty: ConcreteType }` making the state unconstructable, with
-  consumers substituting concrete args from `ConcreteType::ADT(..)` at the
-  use site — is `/design`(backend)'s to rule inside the release-contract
-  window (routed via 0929 ask 4); this cell asserts the invariant whichever
-  representation is chosen. NC-5 is a stated **precondition for R17's arm
-  flip**: without it the R17 census cannot read zero on the
+  `Type::Int` (`context.rs:280`). Routing under the `f5d30808` split: the
+  **derivation seam is RULED** — ctor field-type materialisation for
+  category/glue purposes delegates to the types-owned refusing projection
+  (`heap.rs::ctor_field_concrete_types`) or an instantiation-substituting
+  sibling landed beside it in `heap.rs`, never `context.rs`'s hand-rolled
+  `scheme.ty` walk — so NC-5's flip criterion gains a structural leg: the
+  fixing change-set retires the hand-rolled walk (grep-shaped pin: zero
+  field-type derivation from `scheme.ty` in `context.rs`), and the
+  behavioural leg (concrete-or-refuse at `ctor_meta_at`) goes GREEN through
+  the delegation. The **carrier shape** (`CtorField { ty: ConcreteType }`
+  vs instantiation-keyed materialisation — backend-interior, `pub(crate)`)
+  remains `/design`(backend)'s to rule inside the release-contract window
+  (FIXME 0929, re-targeted `/design` as the anchor); this cell asserts the
+  invariant whichever carrier is chosen. NC-5 is a stated **precondition
+  for R17's arm flip**: without it the R17 census cannot read zero on the
   polymorphic-ctor families.
 
 **Structural-closure note (for the record).** `ConcreteType`'s variants are
