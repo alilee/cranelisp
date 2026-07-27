@@ -490,6 +490,23 @@ type; the view carries no slot.
 
 ### 3.11 The representation-realignment counters (user, ruled 2026-07-27)
 
+> **RE-OPENED IN PART (2026-07-27, user commission — see
+> `design/arch/symbol-table-lifecycle.md`).** Two corrections to this
+> section's reasoning are absorbed there: (1) ruling 5's infill-by-scan
+> refutation argued against scanning the SLAB; the user's proposal scans the
+> ENTRIES, under which the null-ambiguity ground dissolves — the surviving
+> residual is published-but-unclaimed slots (concrete→template flips,
+> AbiChanging freezes), answered by a table-side tombstone record
+> (`symbol-table-lifecycle.md` §1.1/§4.3). (2) ruling 3's entry-split decline
+> leaned in part on churn, which the user has discounted for the primary data
+> structure; re-weighed on the resolution-vocabulary leg alone, the coherent
+> shape is a SMALLER three-arm outer layer with facets nested below
+> (`symbol-table-lifecycle.md` §1.2/§3). Rulings 1, 2, and 4 stand in
+> substance (the register rejection's determinant argument, D11, one index
+> space) and are re-derived rather than cited in the clean-sheet document.
+> The S120 flip is HELD pending the user's disposition of that document's §9;
+> the `module.rs` rustdoc boxes citing §3.10/§3.11 re-point if it is adopted.
+
 The user came back on §3.10 with four counters and a wider commission: *what
 is the best representation for slot identity, given the freedom to move
 `ModuleEntry` itself?* Every counter was re-verified at HEAD; the standings
