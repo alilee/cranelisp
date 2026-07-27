@@ -79,7 +79,7 @@ evidence). A RED that flips during a byte-identical-by-design wave
 
 | Gate | Named cells / named measurements | Where specified |
 |---|---|---|
-| **G1 — release-contract totality** | (a) the **16-program corpus manifest** asserted per §3.2 (enumerated names, per-wave focused-run record, `/review` reject); (b) baseline flips #1–7 (0907), #8–10 (0917), #11 (0916); (c) the **family-1 accessor marginal guard** + the **IO-Bind balancing marginal guard** (§3.3, stage-1 authored, RED); (d) the `f4_sudoku.clif::user::Grid.cells` scoped attributed re-baseline **in the implementing change-set** (0903 addendum); (e) the 0891 three negatives re-land RED→GREEN (§3.5); (f) producer face: the fabricated-`ConcreteType::Int` prohibition pinned per §3.4; (g) **the R11 negative set (§3.7, the user's negative-coverage finding)**: the kind-partitioned slot-gate sweep NC-1 (`UserFn` licence; universal form falsified by `f5d30808`) + the 0926 P-1 unit gate cell, the fabrication census NC-2 (families A + B), the accessor 1023/1024 boundary repro NC-4 (stage-1, RED), and the declaration-channel sweep NC-5 (the CtorMeta channel NC-1 cannot see; precondition for R17's arm flip) | §3, §3.7 |
+| **G1 — release-contract totality** | (a) the **16-program corpus manifest** asserted per §3.2 (enumerated names, per-wave focused-run record, `/review` reject); (b) baseline flips #1–7 (0907), #8–10 (0917), #11 (0916); (c) the **family-1 accessor marginal guard** + the **IO-Bind balancing marginal guard** (§3.3, stage-1 authored, RED); (d) the `f4_sudoku.clif::user::Grid.cells` scoped attributed re-baseline **in the implementing change-set** (0903 addendum); (e) the 0891 three negatives re-land RED→GREEN (§3.5); (f) producer face: the fabricated-`ConcreteType::Int` prohibition pinned per §3.4; (g) **the R11 negative set (§3.7, the user's negative-coverage finding)**: the universal slot-gate sweep NC-1 (I-CONC, four-fn form per FIXME 0930; groups 2–3 pre-declared S120 carries) + the I-ABI roster pin NC-R + the 0926 P-1 unit gate cell, the fabrication census NC-2 (families A + B), the accessor 1023/1024 boundary repro NC-4 (stage-1, RED), and the declaration-channel sweep NC-5 (the CtorMeta channel NC-1 cannot see) | §3, §3.7 |
 | **G2 — mechanism count stays one** | (a) `drop_glue_legacy_emitter_fence` stays GREEN through every wave; (b) the new **emission-licence census cell** (§3.6): admission-variant set, `Rejected` call-site count, and `protect_return_value` call-site count pinned to the ruling's numbers — a new licence arm cannot land without touching the census in the same change-set; (c) `/review` reject criterion (arch ruling) | §3.6 |
 | **G3 — raw-handle representability** | (a) before/after counts recorded in the tranche-A change-set: `consume_*` raw-`i64` signatures 36→0; non-extern `i64`-heap-handle declarations 136 → 136 − (exact tranche-A slice, enumerated); (b) structural census cell: zero `consume_*` fn taking raw `i64` (§4.2); (c) 83 extern shims byte-identical: `public-api.txt` diff (extern lines unchanged) + `facade_compliance` + `public_api_relocations` GREEN | §4.2 |
 | **G4 — prose-contract elimination** | (a) shim-fact single-sourcing **unit row**: every shim's `Owned`/`Borrowed` signature derived from (and conflict-checked against) the declaration table — one derivation (§4.3); (b) per-tranche **drop-bomb detection proof**: positive plant (undischarged `Owned` → debug bomb fires, located) + clean control + recorded fail-on-revert (0768 rule) — one triplet per tranche (A, B-int) (§4.3) | §4.3 |
@@ -280,45 +280,68 @@ wrong spelling), and the int-layer result/display defaults
 fabricated `Int` flows toward the result-release protocol — severity
 ungraded). All routed into NC-2 family B + FIXME 0929's extension.
 
-- **NC-1 — the kind-partitioned slot-gate sweep** (`/dev`(typecheck) unit
-  row, authored WITH CS-1, RED-first; predicate corrected per the `/arch`
-  step-back ruling, `f5d30808`). **The universal quantifier is FALSE and
-  must not come back**: `bind : ∀a b.…` and `catch-runtime-error : ∀a.…`
-  are polymorphic slotted primitives *and always were* — a sweep asserting
-  `slot ⇒ is_concrete()` over the whole table REDs against bootstrap
-  primitives, i.e. RED for the wrong reason, the exact failure mode §3.6's
-  census discipline exists to prevent. Anyone "simplifying" this row back
-  to a universal quantifier is reintroducing the S84 defect: an invariant
-  stated universally with an unstated sanctioned exception is unassertable,
-  and the two unsanctioned mints lived in that exception's shadow for
-  thirty-five sprints. The ruled invariant — one licence per producer
-  class — and its per-partition instruments:
+- **NC-1 — the universal slot-gate sweep** (`/dev`(typecheck) unit row,
+  authored with CS-1; predicate re-ruled **target-universal** per
+  `design/arch/total-concreteness.md` §2, invariant **I-CONC**; FIXME 0930).
+  For EVERY symbol-table entry: `callable_got_slot().is_some() ⇒
+  scheme.ty.is_concrete()` — whole-table, kind-free. Authored as ONE walk
+  asserted through FOUR test fns, so each violating population flips with
+  its own fix (the failing-not-ignored convention, per-defect signal):
+  1. `…_hand_mints` — the two `UserFn` hand-mints (synthetic accessors,
+     residual trait-impl methods) — **RED, flips with CS-1/P-1 this
+     sprint**; still the population that would have been RED from S84.
+  2. `…_ctor_templates` — every generic-ADT ctor template: user `deftype`
+     generics + the bootstrap seeds (`Option.Some`, `Result.Ok/Err`,
+     `Pair.MkPair`, `SList.SNil/SCons`, `IO.Pure/Effect`) + `IO.Bind` —
+     **RED against FIXME 0931** (S120 ctor-monomorphisation tranche;
+     pre-declared close carry, see §11.8). The S119 face-1/I-CT′ work
+     proceeds unchanged and does NOT flip this group — `Constructor` slots
+     are mandatory fields today, ungated by P-1.
+  3. `…_vec_len` — the ONE slotted polymorphic primitive in the system —
+     **RED against FIXME 0932** (S120 de-slot; pre-declared close carry).
+  4. `…_no_unattributed_violations` — **GREEN**: any violation OUTSIDE the
+     three named populations fails here, immediately. This fn is the
+     durable universal sweep — as groups 1–3 flip, it alone carries
+     I-CONC.
 
-  | Kind partition | Slot licence | Instrument |
-  |---|---|---|
-  | `UserFn` | concreteness is the ONLY licence (release contract §4.3 impossibility proof) | **NC-1's assertion**: walk every entry; `callable_got_slot().is_some() ∧ kind = UserFn ⇒ scheme.ty.is_concrete()` |
-  | `Constructor` | representation-parametricity under I-CT′ (zero RC obligations on residual words) — NEVER a scheme predicate | the ctor-template zero-RC-on-residual negatives (§3.1 face-1 rows, 0891 re-land §3.5) + the **R17 census's ctor partition reading zero at face-1's landing**. Pre-face-1 the licence is granted-but-unhonoured (the wild inc/dec IS a type-directed op on a residual word) — this is a *known open defect already carried* by the §3.1 face rows and contract §2.5, not a new cell; the census partition is the named instrument that proves the gap closed |
-  | `Primitive`/`Extern`/`PlatformEffect` | declared contract | R3 truthfulness rows, R16 fences, layout-hash/`CLOwned` — existing instruments, not NC-1's |
-
-  The fixture set (polymorphic product with synthetic accessor, generic
-  trait-impl method, concrete controls, and a table containing the
-  polymorphic primitives so the partition boundary is *exercised*, not
-  assumed) makes both hand-mint violations visible: accessor and trait-impl
-  mints are `UserFn`-partition entries, so the corrected predicate is still
-  RED at today's HEAD and would still have been RED from S84 — the
-  falsified-universal correction costs the sweep nothing. The reverse
+  Fixture: the full bootstrap table + a user polymorphic product with
+  synthetic accessor + a generic trait impl + concrete controls. In-fixture
+  negative controls proving the sweep does NOT fire on slot-less
+  polymorphism: `vec-get`/`vec-set`/`vec-push` (`PrimitiveBody::Inline`,
+  slot-less by construction) and the four NC-R roster externs. The reverse
   direction (concrete determined `UserFn` ⇒ slot) stays behaviourally
   enforced by the missing-slot hard failure and is NOT asserted here. The
-  FIXME-0926 gate cell (polymorphic accessor ⇒ `Polymorphic`, slot-less;
-  concrete sibling ⇒ `Concrete` unchanged; likewise residual vs concrete
-  trait-impl method) is its site-naming sibling — the sweep catches the
-  family member nobody predicted, the 0926 cell names the seam when it
-  fires. Both are G1(g) instruments. (E2e cannot express this — the
-  no-middle-tier rule — so unit tier is the correct home; NC-4 is the e2e
-  consequence face.) **Known blind spot, by construction:** NC-1 quantifies
+  FIXME-0926 gate cell is the site-naming sibling for group 1. **Row
+  history, kept deliberately:** between 2026-07-27 and 2026-07-28 this row
+  carried a kind-partitioned licence table (`f5d30808`) built on the claim
+  that `bind` and `catch-runtime-error` are polymorphic slotted primitives.
+  The claim was **false at source** — both are slot-less
+  `DefKind::PrimitiveExtern`, `callable_got_slot() → None` structurally
+  (`src/bootstrap.rs:884-905`, `:1129-1160`;
+  `crates/cranelisp-types/src/module.rs:1446-1471`) — and it propagated
+  unverified through three hands before `total-concreteness.md` verified
+  it. The lesson is root `CLAUDE.md` §Assurance applied to our own
+  artefacts: a slot-status claim is a claim about source, checked at source
+  before any row is amended over it. The partition table is superseded; do
+  not resurrect it. **Known blind spot, by construction:** NC-1 quantifies
   over slotted entries' schemes and cannot see the backend's
   declaration-materialised `CtorMeta` channel — that is NC-5's job; the two
   are a pair, not alternatives.
+- **NC-R — the I-ABI roster pin** (NC-1's partner cell; unit row,
+  `/dev`(src) beside `src/bootstrap.rs`, stage-1, GREEN at author time).
+  The slot-less polymorphic by-name callable roster is a **closed set**
+  (invariant I-ABI, `total-concreteness.md` §3.3): the primitives-table
+  entries with `DefKind::PrimitiveExtern` and a non-concrete scheme are
+  exactly {`bind`, `race`, `select`, `catch-runtime-error`}. A fifth member
+  REDs the cell until declared — in the cell AND the roster doc, with its
+  representation dependencies recorded. That roster is the re-visit list
+  when `--release` layouts specialise, which is why it is a cell and not a
+  comment: a silent fifth member is precisely the class of quiet exception
+  that kept R11 false for thirty-five sprints. Authored NOW, not with 0932
+  — the silent-addition hazard exists today; if 0932 chooses spelling (b),
+  `vec-len` joins the pin in that change-set (the §3.6 census mechanics).
+  Detection proof per 0768: a planted fifth member REDs, recorded,
+  reverted.
 - **NC-2 — the fabrication census** (`/testing` structural cell, Spine-1
   implementing wave, §3.6 mechanics; precedent
   `drop_glue_legacy_emitter_fence`). Grep-shaped over non-test source: every
@@ -396,9 +419,12 @@ ungraded). All routed into NC-2 family B + FIXME 0929's extension.
   vs instantiation-keyed materialisation — backend-interior, `pub(crate)`)
   remains `/design`(backend)'s to rule inside the release-contract window
   (FIXME 0929, re-targeted `/design` as the anchor); this cell asserts the
-  invariant whichever carrier is chosen. NC-5 is a stated **precondition
-  for R17's arm flip**: without it the R17 census cannot read zero on the
-  polymorphic-ctor families.
+  invariant whichever carrier is chosen. R17 sequencing under the
+  `total-concreteness.md` re-ruling: **the arm flip becomes reachable at
+  the S120 ctor tranche** (FIXME 0931 — non-concrete templates stop
+  compiling, so the census can finally read zero on the polymorphic-ctor
+  families); NC-5 is the seam guard that holds the derivation honest until
+  and through that tranche.
 
 **Structural-closure note (for the record).** `ConcreteType`'s variants are
 `pub`, so `from_type`'s "ONLY way" rustdoc claim is true of conversion but
@@ -783,11 +809,15 @@ Phase-3 exit gate.
    `PLAN.md`; 0761 deleted with the lane; the annotation band updated for
    newly covered spec rows.
 8. **Negative-coverage accounting (the S119 user finding):** the §3.7 set
-   reconciled name-for-name — NC-1 + the 0926 gate cell GREEN with P-1's
-   change-set named, NC-2 (both families) standing GREEN with its detection
-   proof recorded, NC-4 flipped by the Spine-1 wave, NC-5 flipped by the
-   ctor-materialisation ruling's change-set (or an explicit user-approved
-   carry);
+   reconciled name-for-name — NC-1 group 1 + the 0926 gate cell GREEN with
+   P-1's change-set named; **NC-1 groups 2–3 are pre-declared S120
+   carries**, attributed at authoring time (group 2 → FIXME 0931, group 3
+   → FIXME 0932) and entering close as named carry candidates under §1.1's
+   user-approval contract — planned instruments, never surprises; NC-1
+   group 4 + NC-R stay GREEN throughout; NC-2 (both families) standing
+   GREEN with its detection proof recorded; NC-4 flipped by the Spine-1
+   wave; NC-5 flipped by the ctor-materialisation ruling's change-set (or
+   an explicit user-approved carry);
    the close report states the annotation-band ratio
    (`[Tested]`-only vs `[Tested+Neg]`, `negative-coverage.md` §S119) beside
    the suite scalar. A close that certifies the release contract with NC-4
@@ -808,8 +838,8 @@ Phase-3 exit gate.
 - `/design`(typecheck) — Round 2 producer face (§3.4) against the landed
   contract.
 - `/dev` (per crate, Phase 5) — unit tiers named in §3.4, §3.7 (NC-1
-  typecheck, NC-5 backend, NC-3 per site), §4.2, §4.3, §5.2, §9; the
-  census-pinned numbers come from the landed ruling.
+  typecheck, NC-R src, NC-5 backend, NC-3 per site), §4.2, §4.3, §5.2, §9;
+  the census-pinned numbers come from the landed ruling.
 - `/arch` — Phase-3 exit gate (intrinsics `public-api.txt` diff, tranche-A
   shim-fact design); the R8 register-linkage request (§5.1) in the rider-5
   window.
