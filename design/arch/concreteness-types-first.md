@@ -488,6 +488,245 @@ the whole slotted population, and the wash proceeds as §3–§4 specify with no
 retarget. `CallableSlot` stays the mint's return and the kind-variant field
 type; the view carries no slot.
 
+### 3.11 The representation-realignment counters (user, ruled 2026-07-27)
+
+The user came back on §3.10 with four counters and a wider commission: *what
+is the best representation for slot identity, given the freedom to move
+`ModuleEntry` itself?* Every counter was re-verified at HEAD; the standings
+first, then five rulings. One amendment is adopted (D11); the register, the
+entry-level split, and the two-index-types proposals are declined with
+grounds; the slot-reuse policy is pinned.
+
+**Where each counter stands, verified:**
+
+1. **"`GotTable` is only the slab" — CONFIRMED as observation, REFUTED as
+   inference.** `got.rs:41-54` is an `AtomicPtr<u8>` array over `Heap`/`Static`
+   backing with no symbol→index map — true. But the binding does not live on
+   the entry *for want of anywhere else*: it was placed there by ruling,
+   twice. The S66 unification briefly gave the entry a sibling `fn_ptr`; the
+   same-day rollback (`1dc57ae`, D35) pinned the split deliberately — *GOT
+   owns addresses; the entry owns the slot index* — and the S83 reshape
+   (FIXME 0356/0357, Principle 20) then moved the index onto the kind variant
+   *because that is where its determinant lives*. The slab's poverty is
+   likewise designed: pure data, `#[serde(skip)]`, Clone-as-fresh,
+   constructable over foreign `'static` slabs (`with_static_backing`).
+2. **"`redef_slots` already exists as a second mechanism" — CONFIRMED as
+   fact, and ACTIONED (D11 below), but it is not a second *home*.**
+   `ModuleCheckAccumulator.redef_slots` (`program/mod.rs:182`; written
+   `register.rs:110`/`:154`, read `body.rs:288-292`/`:576-579`) is
+   cluster-scoped Pass-1→Pass-2 working state carrying a reuse *candidate*
+   across the determination window — it exists precisely because the
+   representation refuses to let `NotDetermined` hold a callable slot. It is
+   the price of the unrepresentability, not evidence against it. That said,
+   the side-table is the P20 timing-wall resolved the *weaker* way (an
+   external stash instead of a named interstage), and D11 folds it into the
+   representation.
+3. **"The extern/platform objection is contingent on `Def` being a union" —
+   REFUTED for §3.10, CONCEDED in direction for the union itself.** See
+   rulings 3 and 5: §3.10 survives an entry split unchanged, but the union's
+   kind×field dead pairings are a real P20 debt with a named successor.
+4. **"Two index kinds wearing one `usize`" — REFUTED.** See ruling 4: one
+   index space, two *allocation authorities*, and the authority difference is
+   already being unified by the D2 mint re-route this document ruled.
+
+**Ruling 1 — the slot register (`symbol → slot` owned by/beside `GotTable`,
+subsuming `redef_slots`): REJECTED.** Costed on the commissioned axes:
+
+- **Enforcement points.** The mint gate exists identically in both designs
+  (D2 is already "a single insertion gate"). The register *adds* obligations
+  the kind-variant shape does not have: a **scrub** at every kind transition
+  and entry removal (redefinition, template flip, BROKEN, displacement — the
+  user's own "symbols may need to be scrubbed" names the new obligation),
+  plus **membership agreement** between `SymbolTable.symbols` and the slot
+  map. Today a kind rewrite is total: the slot moves or dies *atomically
+  inside the one entry write*, and exhaustive matching forces every writer to
+  decide its fate. A side map lets a writer forget — silently, in the
+  dangerous polarity (stale binding kept).
+- **Drift surface.** The scheme-swap residual (§3.2's honest tier ladder) is
+  neither strengthened nor cheapened by relocation — the same conclusion as
+  §3.10 ground 3, for the same reason (serde and Clone bypass any gate). But
+  the register adds a **new** drift class: entry↔row membership
+  (`Concrete`-without-row, row-after-template-flip). It makes the S83-closed
+  illegal pairing *representable again* (a `Constrained` entry beside a live
+  row), guarded only by scrub discipline — which is the **S82 accessor
+  stopgap generalised to table granularity**, the exact fallback Principle 20
+  records as tried, insufficient (FIXME 0354 stayed latent under it), and
+  superseded *by* the representation move. P20 ranks the two shapes; the
+  register is a downgrade by that ranking. And P7's parallel-store clause
+  applies verbatim: two maps in one table keyed by the same symbols,
+  agreement enforced by convention, "re-introduce divergence by
+  construction".
+- **Serde/cache shape.** The binding must persist (cached `.o` relocations
+  embed indices; restored entries must agree), but `GotTable` is
+  `#[serde(skip)]` and **Clone-as-fresh** — deliberately, because two tables
+  sharing "the same" GOT would break the one-GOT-per-module invariant
+  (`got.rs:169-179`). A register inside `GotTable` is destroyed by exactly
+  the operations the pipeline performs: **staging tables hold a fresh GOT
+  Arc** (`worker.rs:816-818`), so every binding would vanish at staging
+  construction; cache load rebuilds the wrapper. Hosting the map *beside*
+  `got` on `SymbolTable` instead concedes the point — that is the same
+  structure the entries already are, minus the kind correlation. Either way:
+  a new serde-visible map plus a load-boundary membership sweep, against
+  D1's byte-identical `#[serde(transparent)]` retype.
+- **Emission-path indirection.** Emitted code is identical either way. The
+  producer/consumer side is not: ~50 `callable_got_slot()` read sites across
+  three crates take `&ModuleEntry` today; under a register the question
+  becomes table-plus-key, every chain-follow consumer must carry
+  `(home, storage_key)` to the slot question, and every site gains a
+  missing-row arm.
+- **P7 — second home or correct single home?** For the *binding* alone the
+  map would be a single home. But the capability is not the binding: the
+  programme's core invariant is **slotted ⟺ concrete**, and the concreteness
+  determinant is the kind discriminator. P20's S84 text is literal on this —
+  *"'Is this def concrete?' becomes 'does it have a slot?' — a structural
+  property of the data model."* Moving the slot out of the kind splits the
+  capability from its determinant and dissolves the correlation the entire
+  S82→S83→S84→S119 arc exists to make structural.
+
+What the register genuinely buys — `redef_slots` subsumption — is bought
+cheaper *inside* the representation:
+
+**Ruling 2 — D11, ADOPTED into the flip: name the redefinition interstage on
+the variant; `redef_slots` retires.** `UserFnState::NotDetermined` becomes
+
+```rust
+NotDetermined {
+    /// Redefinition carry-forward candidate: the prior concrete entry's
+    /// slot, moved here by the Pass-1 signature overwrite. Not a callable
+    /// capability — `callable_got_slot()` still answers `None` for the
+    /// interim (nothing may call an undetermined fn); it is the reuse
+    /// candidate the determination point `rebind`s against the NEW scheme
+    /// (concrete redefinition ⇒ same slot, Decision-31 stability) or drops
+    /// (template flip ⇒ the live slot's fate belongs to the commit gate).
+    prior_slot: Option<CallableSlot>,
+}
+```
+
+This is P20's timing-wall shape 2 (name the interstage) replacing the
+external stash. The Pass-1 capture sites (`register.rs:105-111`, `:145-155`)
+move the prior slot into the interim variant they already write; the
+determination points (`body.rs:288-298`, `:570-585`) read it off the entry
+they already `get_mut` and `CallableSlot::rebind` it against the new scheme;
+`accumulator.redef_slots` (`program/mod.rs:182`) and the defensive
+`existing_callable_slot` `or_else` (`program/support.rs:436-444`) both
+delete. The commit-gate authority is unchanged (`worker.rs:820-827` remains
+the single live-slot policy authority overriding the pin on `AbiChanging`).
+Serde: a unit→struct variant change riding the already-open S120 window.
+The user's counter 2 is thereby actioned in the direction the representation
+prefers — the second mechanism dies by moving the carry INTO the entry, not
+the binding out of it. Wash step 2 (§4) gains this item.
+
+**Ruling 3 — splitting `ModuleEntry`: DECLINED at entry level; the P20 debt
+it names is real and gets a successor commission at `DefKind` level.**
+Conceded first, because it is correct: `ModuleEntry::Def`'s shared field set
+flunks P20's constructable-but-meaningless test for several kind×field
+pairs — `Primitive` × `codegen_view`/`callees`/`trait_origin`,
+`PlatformEffect` × `ast`/`code`, `PrimitiveExtern` × `code`, `Macro`-parent ×
+`codegen_view` (`module.rs:1184-1341` fields × `module.rs:2131+` kinds). The
+user's instinct is right in direction. The cure is wrong in level:
+
+- `ModuleEntry`'s variant set is the **resolution vocabulary**. The
+  visibility filter is uniform across variants (`module.rs:1699-1714`);
+  §8.6.4/§8.6.5 classification matches `Def | TypeDef | TraitDecl` as "a
+  local definition" in one arm (`src/imports.rs:881-883`); chain-follow's
+  terminal test is "non-`Import`". To every one of those consumers the six
+  `DefKind` members are **indistinguishable** — same visibility rules, same
+  terminal semantics, same callable-target question. Promoting them
+  multiplies every resolution-surface match ~7× for zero resolution-semantic
+  gain, and forfeits the Def-uniform machinery that is load-bearing
+  (`DefBuilder`, the commit carry-forward reading `Def { code, .. }`
+  uniformly at `worker.rs:847-854`, `seq` preservation).
+- The existing precedent sets the bar correctly: `SpecialForm` WAS promoted
+  out of `DefKind` (S69 Sub 36) because it is *resolution-distinct* — never
+  callable, never JIT-registered, root-module-resident. `Primitive`,
+  `PlatformEffect`, `PrimitiveExtern`, `Constructor`, `Overloaded`, `Macro`
+  do not meet that bar; they differ in *dispatch/body* semantics, which is
+  exactly the axis `DefKind` models.
+- The unrepresentability the split would buy is achievable one level down at
+  a fraction of the churn: relocate `ast`/`codegen_view`/`code` onto the
+  kind/state variants that use them, `callees`/`trait_origin` onto `UserFn`.
+  That is a **successor design commission, NOT S120 scope** (P6/P8): the
+  wash is already the programme's largest window, and the flip's own
+  exhaustive-match churn will produce the site census for free. Whether
+  `UserFnState::Concrete` then gets to *require* its view (rather than
+  `Option`) is a real question for that commission — it must first unify the
+  two producer orders §3.10 ground 4 verified (single-sig slot-then-view
+  `body.rs:293→366`; mono view-then-slot `monomorphise.rs:655-694`) and
+  decide the finalize-rebuild and BROKEN-entry paths. Named, not ruled.
+- **§3.10 survives the split unchanged — no reversal.** Grounds 2 (lifetime:
+  the slot outlives the view — the trap freeze retains the slot of an entry
+  with no valid body, `redefine.rs:375-432`), 3 (Clone/serde residual
+  unmoved), and 4 (producer-order coupling) are union-independent. Ground
+  1's population fact — slotted entries exist whose bodies are below the
+  type system — is invariant under any entry-level re-taxonomy: a split
+  gives externs/platform slot *fields on their own variants*, which is
+  kind-level placement, i.e. the landed design, not slot-in-view. "Externs
+  can never carry a `MonoExpr`" is a fact about where their bodies live
+  (Rust/DLL code), not about which enum wraps them.
+
+**Ruling 4 — distinct types for host-GOT vs platform-manifest indices:
+REFUSED; it is one index space with two allocation authorities, and the
+authority difference is already being unified.** Both values mean "index
+into THIS module's GOT slab", and the read side is uniform by design
+(`got_base + slot*8` in every mode — Principle 11; `load_slot` for both).
+The two genuine differences are module-level facts, not per-slot facts:
+(i) **backing ownership** — already typed at `GotBacking::Heap`/`Static`
+(`got.rs:46-54`); the platform module's `GotTable` *wraps the DLL slab in
+place* (`src/platform.rs:334-353`), after which a platform slot is an
+ordinary index into that module's (differently-backed) GOT; (ii)
+**allocation authority** — host cursor vs manifest order, today a raw cursor
+write (`platform.rs:351`, the fifth writer, §7 item 3), unified by the
+already-ruled D2 manifest-order mint: post-re-route every slot in every
+module is mint-issued against a concrete scheme, and "slot i == descriptor
+i" becomes a mint-order invariant assertable at load. A `PlatformSlot`
+newtype would fork `callable_got_slot()`'s return across ~50 consumers in
+three crates and be joined straight back to a bare `usize` at the only real
+consumer operation. It would also encode a false invariant: "the host never
+writes a platform GOT" is untrue — the trace GOT copy-swap `memcpy`s into
+static-backed slabs (`got.rs:106-111`; the `platform.rs:340-342` SAFETY
+contract requires the writable section *for* it). The honest per-slot
+distinction is who allocates, and the mint models exactly that.
+
+**Ruling 5 — zeroing, scrubbing, and infill.**
+
+- **Confirmed: no free-slot record is needed** — uniqueness is carried by
+  the `next_got_slot` cursor (`module.rs:1042-1051`), exactly as the user
+  says. But the reason is stronger than infill-viability: within a session,
+  a slot that any emitted code has embedded is **never reusable for a
+  different symbol** (Principle 22 — an embedded index has no un-publish
+  event; the ABI-epoch freeze deliberately writes a NON-null trap pointer
+  into retained slots, `redefine.rs:399-418`).
+- **Infill-by-scan REFUTED**, two grounds. (1) Null is ambiguous:
+  allocation and population are deliberately separated — workers write
+  pre-assigned disjoint slots *after* allocation (`got.rs:10-14`, `:20-25`)
+  — so a null-scan re-issues allocated-awaiting-population slots: a live
+  race. (2) Distinguishing "never published" from "published, currently
+  null" requires a publication census — exactly the record the proposal set
+  out to avoid. Zeroing therefore buys nothing. The ruled policy:
+  **cursor-only allocation; same-symbol carry-forward only (rebind / D11);
+  freeze-on-retire (commit gate + `mark_broken`); leak-and-accept for
+  de-slotting transitions** — bounded per module by `GOT_TABLE_SIZE`, with
+  the `__expr`/`__macro_*` carve-out covering the churn case.
+- **Scrub-on-ambiguity is a non-issue by construction, verified.**
+  `ModuleEntry::Ambiguous` only ever lands over an absent entry or an
+  `Import`-vs-`Import` collision (`src/imports.rs:834-856`, `:911-920`,
+  `:958-969`); a local slotted `Def` is protected by the import-over-def
+  §8.6.4 reject (`imports.rs:881-909`); and the poison lands in the
+  *importing* module while the slot lives on the *defining* module's `Def`.
+  No slot is ever orphaned by a name going ambiguous. The one real
+  de-binding transition is the concrete→template redefinition, whose live
+  slot's fate is the commit gate's (already ruled; FIXME 0479 lineage).
+
+**Cost and sequencing.** The landed `CallableSlot` work is fully reusable
+under every ruling above — it is the witness in all of them, and D11 builds
+directly on `rebind`. The flip retypes to exactly what §3 specifies, plus
+D11; the wash order is unchanged. The full realignment, had it been adopted
+(register + entry split), would have cost roughly a sprint of churn across
+three crates, broken the staging-GOT construction, and reopened the
+S82-class drift — negative invariant yield. Holding the flip for this ruling
+cost one cycle and bought one representation improvement (D11) plus one
+named successor commission (the `DefKind` field-relocation study).
+
 ---
 
 ## 4. The wash plan
@@ -500,7 +739,7 @@ typecheck 52, backend 46, src 111, types 26, primitives 2, platform 5).
 | # | Crate | What breaks / what is built | Size |
 |---|---|---|---|
 | 1 | **cranelisp-types** | §3 in one change-set + rustdoc + `public-api.txt` + unit rows (mint refusal both polarities; rebind; `CtorState` serde; `ctor_field_types_at` incl. the refusal leg). Schema bump rides. | 1 change-set, ~large |
-| 2 | **cranelisp-typecheck** | Every fresh-slot site must mint with the scheme in hand — 10 non-test `allocate_got_slot` callers (`adt.rs` ×2, `builtins.rs` ×3, `program/body.rs` ×2, `finalize.rs` ×2, `register/multi_sig.rs` ×2, `register.rs`, `result.rs` ×2, `impl_check.rs`, `monomorphise.rs`) become `mint_callable_slot` calls; **P-1 stops being a discipline and becomes the vocabulary**. The two hand-mints (F1 `adt.rs:617-628`, F2 `impl_check.rs:1039-1043`) cannot compile over non-concrete schemes — forced into A-MINT / `Template` / `Polymorphic` routes (the S119 CS-1/CS-2 designs apply unchanged). `register_type_def_with_ctor_infos` derives `CtorState` per ctor. Collection redesign: identity from `resolved.storage_key` / the recorded carrier, never `fq.symbol` (FIXME 0935; fixes §2's silent no-mint incl. the renamed-import sibling); F2 trigger over `ApplyRef::Dispatch` per producer-obligations §2.4. Fixture churn (`builtins.rs`, `test_support`). | ~2 change-sets, largest crate share |
+| 2 | **cranelisp-typecheck** | Every fresh-slot site must mint with the scheme in hand — 10 non-test `allocate_got_slot` callers (`adt.rs` ×2, `builtins.rs` ×3, `program/body.rs` ×2, `finalize.rs` ×2, `register/multi_sig.rs` ×2, `register.rs`, `result.rs` ×2, `impl_check.rs`, `monomorphise.rs`) become `mint_callable_slot` calls; **P-1 stops being a discipline and becomes the vocabulary**. The two hand-mints (F1 `adt.rs:617-628`, F2 `impl_check.rs:1039-1043`) cannot compile over non-concrete schemes — forced into A-MINT / `Template` / `Polymorphic` routes (the S119 CS-1/CS-2 designs apply unchanged). `register_type_def_with_ctor_infos` derives `CtorState` per ctor. **D11 (§3.11 ruling 2): `NotDetermined { prior_slot: Option<CallableSlot> }` interstage carry — `accumulator.redef_slots` + the `existing_callable_slot` `or_else` delete; determination points `rebind` off the entry.** Collection redesign: identity from `resolved.storage_key` / the recorded carrier, never `fq.symbol` (FIXME 0935; fixes §2's silent no-mint incl. the renamed-import sibling); F2 trigger over `ApplyRef::Dispatch` per producer-obligations §2.4. Fixture churn (`builtins.rs`, `test_support`). | ~2 change-sets, largest crate share |
 | 3 | **cranelisp-backend** | Cache: schema-bump consts + the `CacheStale::NonConcreteSlot` arm + `CtorState` deserialisation arm. `context.rs::extract_constructor` (:260-287) rewrites onto `ctor_field_types_at` — deletes the `unwrap_or(Type::Int)` launder (R-13) and the declaration-channel feed (NC-5 structural leg). `drop_glue.rs:398` → located refusal (R-12); `fn_compiler.rs:1287` → located error, census-gated arm flip (R-9/R17); `fn_compiler.rs:1214` respelled `expect` (R-14). Ctor-template compile arm has no traffic (D6) — face 1's site vanishes. `Constructor { .. }` destructure sites (~15 non-test) re-pattern on `state`. Golden-CLIF re-baselines expected and accepted (REDs unconstrained). | ~2 change-sets |
 | 4 | **cranelisp-primitives + intrinsics** | Static table mints (2 sites); **`vec-len` de-slot** per 0932 — preference recorded for spelling (a) `Inline` (element-independent length-word load; keeps the realization roster minimal); `__inlwrap` already covers value position. Intrinsics: no slot surface; `catch-runtime-error` realization contract recorded (§1.2). | small |
 | 5 | **src/ (int)** | The large facade change the user accepted: 111 `got_slot` mentions. `bootstrap.rs` — generic ctor seeds (`Option`/`Result`/`Pair`/`SList`/`IO` incl. `Bind`) become `CtorState::Template`; `bind`/`race`/`select` re-kind (§1.2). `platform.rs` — manifest-order mint replaces the `:351` direct cursor write; 0933's located refusal. `save.rs` (7 `Concrete` constructions), `exe.rs`, `redefine.rs` (slot reuse → `rebind`), `worker.rs` (snapshot/cursor logic reads survive; entry construction mints), `macro_clause.rs`, `expander.rs`, `agent/*`, `code.rs`. REPL `__expr` path unchanged (concrete by construction). | ~2–3 change-sets |

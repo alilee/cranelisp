@@ -730,6 +730,23 @@ impl std::error::Error for GotExhausted {}
 /// freeze retains the slot of an entry with NO body), while the view's
 /// lifetime is one definition. The slot's home is the kind variant beside the
 /// scheme; the view carries no slot.
+///
+/// **Rejected relocation — a `symbol → slot` register owned by/beside
+/// `GotTable`, ruled 2026-07-27** (`concreteness-types-first.md` §3.11
+/// ruling 1). A side map would single-home the *binding* while splitting the
+/// *capability* from its determinant: the programme's invariant is
+/// slotted ⟺ concrete, and the concreteness determinant is the kind
+/// discriminator the slot sits beside (Principle 20, S84 — "is it concrete"
+/// IS "does it have a slot"). The map re-opens the S83-closed illegal
+/// pairing (a `Constrained` entry beside a live row), guarded only by
+/// scrub-and-membership discipline — the S82 accessor stopgap generalised,
+/// the fallback P20 records as superseded. Structurally it also cannot live
+/// in `GotTable`: the slab is `#[serde(skip)]` + Clone-as-fresh, and staging
+/// tables hold a fresh GOT `Arc`, so a register there loses every binding at
+/// staging construction. The one thing the register would buy —
+/// `redef_slots` subsumption — is bought inside the representation instead:
+/// the S120 D11 amendment carries the redefinition-reuse candidate on
+/// `UserFnState::NotDetermined { prior_slot }` (§3.11 ruling 2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct CallableSlot(usize);
@@ -2671,6 +2688,16 @@ pub enum PrimitiveBody {
 pub enum UserFnState {
     /// Pass-1 interim — signature registered, callability not yet determined.
     /// Slot-less by construction (nothing may call an as-yet-undetermined fn).
+    ///
+    /// **S120 flip amendment D11 (ruled 2026-07-27, DORMANT at HEAD —
+    /// `concreteness-types-first.md` §3.11 ruling 2):** at the wash flip this
+    /// variant gains `{ prior_slot: Option<CallableSlot> }` — the
+    /// redefinition carry-forward candidate, moved here by the Pass-1
+    /// signature overwrite and `rebind`-checked at the determination point.
+    /// It names the Pass-1→Pass-2 interstage in the representation (Principle
+    /// 20 timing-wall shape 2), retiring typecheck's external
+    /// `accumulator.redef_slots` stash. It is NOT a callable capability:
+    /// `callable_got_slot()` continues to answer `None` for the interim.
     NotDetermined,
     /// Determined unconstrained concrete callable. Carries the mandatory
     /// module-local GOT slot through which it is invoked.
