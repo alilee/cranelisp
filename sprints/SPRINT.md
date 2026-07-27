@@ -828,6 +828,39 @@ sprint from a ledger into one outcome with two spines, pulled 0913 up from rider
 face, gated 0867 behind the accessor disposition, resolved 0920 by re-scoping tranche B onto
 the int marshal boundary, deferred the option-4 spike by ruling, and decoupled 0912.
 
+**2026-07-27 — USER RULING ON DIRECTION: total concreteness at end of typecheck.**
+The user overruled `/arch`'s kind-partitioned slot invariant (`f5d30808`):
+
+> "I disagree with arch — we need concrete types at the end of typecheck. we need to
+> eliminate edge cases that seem to need polymorphism. In the future when we have more
+> sophisticated storage layouts, there will be no chances for generic functions."
+
+`/sprint`'s reading, put to `/arch` for re-ruling: the `Constructor` licence
+(representation-parametricity) and the `Primitive{Extern}` licence for `bind` /
+`catch-runtime-error` both rest on **every value being a uniform i64 tag-or-pointer** —
+a property of today's representation, not of constructors or primitives. Unboxed scalar
+fields, a flat `(Vec Int)` versus a pointer-array `(Vec String)`, or any packed layout
+retires them, and `design/arch/release-llvm-backend.md` puts exactly that on the roadmap.
+So the licence is scheduled for demolition by work already planned, and it would break
+**silently** — the failure mode is a wrong body, not a type error.
+
+`/arch`'s own recorded lesson cuts the same way: *an invariant stated universally with an
+unstated exception is unassertable*. The `f5d30808` ruling fixed the *unstated* half and
+kept three exceptions; an invariant with three licences is still harder to check and
+easier to hide in than one with none, and two unsanctioned mints have already shown what
+hiding in a licence's shadow costs.
+
+Under total concreteness the five-face table's faces 1–3 and 5 become **unreachable
+states** rather than dispositions, R-1 becomes vacuous, the `Err ⇒ Mixed` arm has no
+traffic by construction rather than by census, and NC-1 returns to a single universal
+predicate with today's polymorphic primitives as **intentional REDs against open
+defects** — a more honest instrument than a partition table.
+
+Re-ruling dispatched to `/arch` with an honest-dissent clause. **Sequencing bias recorded:
+S119 ships as planned unless a landed ruling is actively wrong under the new target** —
+Phase 5 has not dispatched, and the contract and producer obligations are reviewed.
+Pending that ruling, `/qa`'s NC-1 partition table (`fdea7e29`) may be superseded.
+
 **Process rules carried from the S118 Phase-7 findings, in force this sprint:**
 
 - `git add -A` in a shared tree is banned; path-scoped staging is the rule.
