@@ -79,7 +79,7 @@ evidence). A RED that flips during a byte-identical-by-design wave
 
 | Gate | Named cells / named measurements | Where specified |
 |---|---|---|
-| **G1 — release-contract totality** | (a) the **16-program corpus manifest** asserted per §3.2 (enumerated names, per-wave focused-run record, `/review` reject); (b) baseline flips #1–7 (0907), #8–10 (0917), #11 (0916); (c) the **family-1 accessor marginal guard** + the **IO-Bind balancing marginal guard** (§3.3, stage-1 authored, RED); (d) the `f4_sudoku.clif::user::Grid.cells` scoped attributed re-baseline **in the implementing change-set** (0903 addendum); (e) the 0891 three negatives re-land RED→GREEN (§3.5); (f) producer face: the fabricated-`ConcreteType::Int` prohibition pinned per §3.4 | §3 |
+| **G1 — release-contract totality** | (a) the **16-program corpus manifest** asserted per §3.2 (enumerated names, per-wave focused-run record, `/review` reject); (b) baseline flips #1–7 (0907), #8–10 (0917), #11 (0916); (c) the **family-1 accessor marginal guard** + the **IO-Bind balancing marginal guard** (§3.3, stage-1 authored, RED); (d) the `f4_sudoku.clif::user::Grid.cells` scoped attributed re-baseline **in the implementing change-set** (0903 addendum); (e) the 0891 three negatives re-land RED→GREEN (§3.5); (f) producer face: the fabricated-`ConcreteType::Int` prohibition pinned per §3.4; (g) **the R11 negative set (§3.7, the user's negative-coverage finding)**: the universal slot-gate sweep NC-1 + the 0926 P-1 unit gate cell, the fabrication census NC-2, and the accessor 1023/1024 boundary repro NC-4 (stage-1, RED) | §3, §3.7 |
 | **G2 — mechanism count stays one** | (a) `drop_glue_legacy_emitter_fence` stays GREEN through every wave; (b) the new **emission-licence census cell** (§3.6): admission-variant set, `Rejected` call-site count, and `protect_return_value` call-site count pinned to the ruling's numbers — a new licence arm cannot land without touching the census in the same change-set; (c) `/review` reject criterion (arch ruling) | §3.6 |
 | **G3 — raw-handle representability** | (a) before/after counts recorded in the tranche-A change-set: `consume_*` raw-`i64` signatures 36→0; non-extern `i64`-heap-handle declarations 136 → 136 − (exact tranche-A slice, enumerated); (b) structural census cell: zero `consume_*` fn taking raw `i64` (§4.2); (c) 83 extern shims byte-identical: `public-api.txt` diff (extern lines unchanged) + `facade_compliance` + `public_api_relocations` GREEN | §4.2 |
 | **G4 — prose-contract elimination** | (a) shim-fact single-sourcing **unit row**: every shim's `Owned`/`Borrowed` signature derived from (and conflict-checked against) the declaration table — one derivation (§4.3); (b) per-tranche **drop-bomb detection proof**: positive plant (undischarged `Owned` → debug bomb fires, located) + clean control + recorded fail-on-revert (0768 rule) — one triplet per tranche (A, B-int) (§4.3) | §4.3 |
@@ -174,6 +174,10 @@ All marginal-pair form (§5.1), failing-not-ignored, `// spec:` +
   whatever codegen-refusal trigger remains after 0907 (or a constructed one) —
   `[S119]` row, not a stage-1 cell, because every current trigger dies with
   0907's fix.
+- **The accessor boundary repro NC-4** (§3.7) — stage-1, RED today
+  (SIGSEGV 139 on the subject). The cheapest memory-safety cell in the
+  non-concrete class; it was reproducible from S84 and is unguarded at
+  baseline.
 
 ### 3.4 The producer face (0913 contract half)
 
@@ -221,6 +225,93 @@ negative #3), pinned to the landed ruling's numbers:
 Any new emission licence arm must touch this cell in its own change-set —
 which is the visibility G2 demands. The 0917 fix is the first client: a
 provenance *classification* correction leaves every census count unchanged.
+
+### 3.7 The R11/R17/R18 negative set (user finding, Phase-5 amendment)
+
+**Provenance.** User finding 2026-07-27: R11 sat graded `unconstructable` from
+S84 to S119 with zero negative coverage, and the whole suite is green on all
+four live fabrication sites because every cell asserts what should happen and
+none asserts what must not. This section is the executable answer. Source
+verification for this amendment (mine, at HEAD): the fabrication set is
+**four** sites, not five — `fn_compiler.rs:1287` (`.is_err()` →
+threshold-guessing branch), `ownership/fixpoint.rs:221`
+(`unwrap_or(ConcreteType::String)` — carries an inline "never mis-classified
+as Copy" soundness claim, unproven), `mono_expr.rs:836-841`
+(`unwrap_or(ConcreteType::Int)`, the 0913 lenient view),
+`drop_glue.rs:398` (`unwrap_or(ConcreteType::Int)` for a missing Vec elem
+arg). Two sites are the CORRECT refusal pattern and are the models:
+`program/support.rs:321` (explicit `NotConcrete` match) and
+`types/heap.rs:310-334` (`ctor_field_concrete_types` — one `NotConcrete`
+refuses the whole ctor via `Option` collect). `fixpoint.rs:221` and
+`drop_glue.rs:398` appear in NEITHER design census nor R18's instance list —
+register completeness routed to `/arch` as FIXME 0929.
+
+- **NC-1 — the universal slot-gate sweep** (`/dev`(typecheck) unit row,
+  authored WITH CS-1, RED-first). After full typecheck of a fixture set that
+  includes a polymorphic product with synthetic accessor, a generic
+  trait-impl method, and concrete controls: walk EVERY symbol-table entry;
+  for each entry where `callable_got_slot()` is `Some`, assert
+  `scheme.ty.is_concrete()`. One assertion, whole-table quantifier — the
+  direct executable form of register row R11; it would have been RED from S84
+  to S119, is RED at today's HEAD (both hand-mint sites violate it), and
+  flips with P-1. The FIXME-0926 gate cell (polymorphic accessor ⇒
+  `Polymorphic`, slot-less; concrete sibling ⇒ `Concrete` unchanged; likewise
+  residual vs concrete trait-impl method) is its site-naming sibling — the
+  sweep catches the family member nobody predicted, the 0926 cell names the
+  seam when it fires. Both are G1(g) instruments. (E2e cannot express this —
+  the no-middle-tier rule — so unit tier is the correct home; NC-4 is the
+  e2e consequence face.)
+- **NC-2 — the fabrication census** (`/testing` structural cell, Spine-1
+  implementing wave, §3.6 mechanics; precedent
+  `drop_glue_legacy_emitter_fence`). Grep-shaped over non-test source: every
+  discard-and-substitute of `ConcreteType::from_type` (`unwrap_or…` /
+  `.ok()`-then-default / `.is_err()`-branch-to-guess) must be on the pinned
+  allow-list, each entry carrying its open-defect citation:
+  `fn_compiler.rs:1287` (R18), `fixpoint.rs:221` (0929),
+  `mono_expr.rs:836-841` (0913/R18), `drop_glue.rs:398` (0929). The two
+  refusal-pattern model sites are named in the cell's rustdoc as the correct
+  spelling. A NEW discard site REDs the cell in its own change-set; each fix
+  shrinks the pin in the fixing change-set. Detection proof per 0768 in the
+  authoring change-set: a temporarily planted discard site REDs the cell,
+  recorded, reverted.
+- **NC-3 — per-site fail-on-revert unit rows** (one per fabrication, riding
+  each fix — the enumerated-deferral discipline, so unit-test-per-fix has
+  named targets): (a) `fn_compiler.rs:1287` — covered by R17's census + arm
+  flip (release contract §5.1); its unit row asserts the located error, never
+  the guess branch; (b) `fixpoint.rs:221` — pending the 0929 grading: either
+  the arm gains its Principle-25 check (unit row: a residual-typed param
+  never seeds below the graded conservative point) or is registered
+  legitimate-with-proof and moves to NC-2's model list; (c) `mono_expr.rs` —
+  already §3.4's row, unchanged; (d) `drop_glue.rs:398` — unit row: a Vec
+  glue request with missing/residual elem arg refuses with a located error,
+  never mints Int-elem glue.
+- **NC-4 — the accessor boundary repro** (`/testing` e2e, stage-1, RED
+  today). The release contract's §2.4 four-line program, `PrimitivesOnly`,
+  `--run` + `--link` faces:
+  `(deftype (Bx a) [:a v])` / `(defn get [b] (v b))` /
+  `(defn main [] (Pure (get (Bx 1024))))`. Subject: payload **1024** exits 0
+  with NO signal — RED today (SIGSEGV 139, the `NULLARY_TAG_THRESHOLD`
+  boundary). Controls, both GREEN today and staying GREEN: payload **1023**
+  exits 255; payload `"hi"` exits 0 — the String control documents WHY the
+  suite stayed green for 35 sprints (every heap-typed instantiation passes;
+  only scalar payloads ≥ 1024 take the wild write). `// spec:` +
+  `// defect: class=scalar-as-pointer
+  locus=crates/cranelisp-typecheck/src/adt.rs::synthetic-accessor-mint
+  found=S119 owner=/dev(typecheck)`; traces to FIXME 0924 / R11. Joins the
+  §1.2 accounting as a stage-1 authored guard; flips at the Spine-1
+  implementing wave. Its sum-arm sibling —
+  `(deftype (Mb a) Nn (Jj [:a v]))`, payload A/B at the same boundary — is
+  the 0926 §1 shape: authored RED-then-GREEN **inside 0867's change-set**
+  (rider 1), because 0867 is what makes that surface reachable.
+
+**Structural-closure note (for the record).** `ConcreteType`'s variants are
+`pub`, so `from_type`'s "ONLY way" rustdoc claim is true of conversion but
+unenforced against direct literal construction — and every live fabrication
+IS a direct literal in `unwrap_or` position, which NC-2's pattern covers.
+Full structural closure (sealed variants) would break legitimate exhaustive
+matching across the backend; the recommendation to `/arch` in FIXME 0929 is
+census-as-enforcement with the residual graded
+asserted-with-a-named-falsifier, not a sealing change.
 
 ## 4. Spine 2 rows — the typed consume funnel
 
@@ -545,7 +636,7 @@ Phase-3 exit gate.
 
 | Rider | Rows / checks |
 |---|---|
-| **1 — 0867** (`/dev` typecheck; **gated on the accessor disposition** — landing first manufactures unruled family-1 members) | flips #13–15; new positive+negative cells for the partial-accessor panic face (`(Option.unwrap None)` → runtime panic — untestable until minted); the duplicate-field negative family stays the §8.6.5 boundary fence; the `/stdlib` blast-radius rider: a cross-module `head`/`rest` contest cell over the 26-symbol surface; corpus-manifest extension per §3.2(4) |
+| **1 — 0867** (`/dev` typecheck; **gated on the accessor disposition** — landing first manufactures unruled family-1 members) | flips #13–15; new positive+negative cells for the partial-accessor panic face (`(Option.unwrap None)` → runtime panic — untestable until minted); the duplicate-field negative family stays the §8.6.5 boundary fence; the `/stdlib` blast-radius rider: a cross-module `head`/`rest` contest cell over the 26-symbol surface — per FIXME 0926 §3 the cell's shape is ONE consumer module `[*]`-importing BOTH `collections.list` and `seq.lazy` (neither contest is intra-module, so §8.6.5 cannot fire and per-module `stdlib_conformance` structurally cannot see it); corpus-manifest extension per §3.2(4) **with the 0926 §1 sum-arm boundary sibling** (`(Mb a) Nn (Jj [:a v])` at 1023/1024, §3.7 NC-4) authored RED-then-GREEN inside this change-set |
 | **2 — 0869 + 0868** (`/dev` src + types; the ONE schema window 23→24) | flips #18–19 (qualified + imported-bare variants for 0869); stale-cache rejection cell (pre-24 sidecar invalidates wholesale, no half-restore); idempotent re-enrollment (multiple restore paths, one shell); malformed/conflicting cached record → loud rejection; owner units (writer projection, restore enrollment, replay idempotence, rejection polarity); **0898/0748 riding**: the two hand-rolled `impl$` mint sites (`traits/dispatch.rs:143`, `traits/impl_check.rs:421`) re-pointed onto `trait_impl_key` — grep-zero hand-rolled `impl$` format strings; warmed-pair mode (§6) is this window's instrument |
 | **3 — 0913 implementation** (after its contract face is ruled) | flips #12 under the §3.4 no-annotation-pinning discipline; the `/dev`(typecheck) unit row §3.4 |
 | **4 — 0914** (`/design` int) | `/mem`'s counter window moves past `release_program_result()`; check: a REPL cell where `/mem`'s delta reflects the result release (row `[S119]`, cell shape settled by the design; the 0913 cell's instrument choice — exit counters, never `/mem` — stays until this lands) |
@@ -595,11 +686,20 @@ Phase-3 exit gate.
 7. Durable fold-back: §5.1's normative form and the R8 lane row land in
    `PLAN.md`; 0761 deleted with the lane; the annotation band updated for
    newly covered spec rows.
+8. **Negative-coverage accounting (the S119 user finding):** the §3.7 set
+   reconciled name-for-name — NC-1 + the 0926 gate cell GREEN with P-1's
+   change-set named, NC-2 standing GREEN with its detection proof recorded,
+   NC-4 flipped by the Spine-1 wave (or an explicit user-approved carry);
+   the close report states the annotation-band ratio
+   (`[Tested]`-only vs `[Tested+Neg]`, `negative-coverage.md` §S119) beside
+   the suite scalar. A close that certifies the release contract with NC-4
+   still unguarded-and-unlanded repeats the R11 failure and is blocked.
 
 ## Next skills
 
 - `/testing` — Phase 5 stage 1: the §3.3 guards (family-1 pair, IO-Bind
-  balancing guard), the §3.6 census cell (in the implementing wave), the §4.5
+  balancing guard, the §3.7 NC-4 accessor boundary repro), the §3.6 census
+  cell and the §3.7 NC-2 fabrication census (in the implementing wave), the §4.5
   lane reconciliation, the §6 warmed-pair mode + capability cells, riders'
   cells per §9; later, riding fixes: cell #21 re-derivation (§5.3), 0889 pin
   re-derivation (§4.4), the 0915 frame guard in the fix window; Track C D1

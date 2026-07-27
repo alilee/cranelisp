@@ -296,3 +296,58 @@ Upgrade candidates (route to `/testing` when scheduled):
 |---|---|---|
 | §1.5 Vec | `display_exact::display_exact_vec_value_lines`, `repl_introspection::vec_value_display_shows_element_content` | empty-Vec `[]` + no raw-pointer/no-truncation negative (exact-line tests partially subsume — full-line equality asserts absence on that line) |
 | §1.5 List | `repl_introspection::display_user_list_value_shows_elements_and_nil`, `display_exact::display_exact_user_list_recursive_form_whole_line` | explicit no-raw-pointer / no-forced-tail negative sibling |
+
+## S119 — the negative-coverage process finding (user, 2026-07-27)
+
+**The finding, accepted as a QA failing:** safety-register row R11
+("Concreteness at codegen") sat graded `unconstructable` from S84 to S119 —
+thirty-five sprints — with zero executable negative coverage, while four live
+fabrication sites manufactured the supposedly-unconstructable state and the
+entire suite stayed green, because every cell asserted what should happen and
+none asserted what must not. The executable answer is
+`s119-test-plan.md` §3.7 (NC-1..NC-4). This section records the systemic
+census and the standing process corrections.
+
+### Band census at S119 (2026-07-27, grep over `spec/*.md` + `repl/spec.md`)
+
+| Quantity | Count |
+|---|---:|
+| `[Tested …]` positive-only annotations | **564** |
+| `[Tested+Neg …]` annotations | **136** |
+| Share of covered rows with a negative | **19.4%** |
+
+Root `CLAUDE.md` §Traceability has said since it was written that `[Tested]`
+without `+Neg` is a coverage gap. **This register — the named upgrade
+tracker — recorded nothing between Sprint 16 and S108, and the S108 entry
+was a downgrade.** The band's *citations* are honest (mechanically verified
+by `spec_coverage_reconcile.py`; S108 proved the discipline downgrades when
+wrong), but the `+Neg` upgrade process was dormant: negative coverage grew
+only where a defect forced it.
+
+### The tier the band could never see
+
+The R11 class was structurally invisible to the spec-side band: no spec row
+says "no polymorphic entry receives a GOT slot" — it is a design invariant,
+registered in `design/arch/safety-invariants.md` §4, and that register had no
+executable-negative discipline at all until root `CLAUDE.md` §Assurance
+landed (S119). Register census at S119: of 18 rows, **six carry grades
+admitting no proven executing negative check** (R5, R6 `asserted-but-unproven`;
+R7 `asserted`-but-BLIND; R11 `example-tested`; R17, R18 `unasserted`) — R11
+was the exhibit, not the exception. Spec-MUST negatives and invariant-tier
+negatives are two different failure surfaces; this register now tracks both.
+
+### Standing rules (process corrections, `/qa`-owned, effective S119)
+
+1. **The band ratio is a reported quantity.** Every sprint's Phase-7 suite
+   report states the `[Tested]`-only vs `[Tested+Neg]` counts and the delta,
+   beside the RED/GREEN scalar. A ratio that only ever moves on defects is
+   the dormancy signal this section exists to catch.
+2. **In-scope register rows get named negative instruments.** When a sprint's
+   scope touches a safety-register row, the sprint test plan names an
+   executable negative instrument for it (planted-fault, fail-on-revert,
+   census, or sweep — the §Assurance grades) or records the debt here
+   explicitly. A row asserted in prose with its instrument missing fails the
+   plan's own gate (`s119-test-plan.md` §11.2 rule, generalized).
+3. **New `[Tested]` annotations on MUST/MUST-NOT prose name their missing
+   negative.** At annotation time, not later: the upgrade-candidate table
+   above gains the row, or the annotation goes straight to `[Tested+Neg]`.
