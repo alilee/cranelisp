@@ -720,6 +720,16 @@ impl std::error::Error for GotExhausted {}
 /// `DefKind::PlatformEffect`, and `DefKind::Constructor` → [`CtorState`]) is
 /// the S120 wash flip (FIXME 0931), which also demotes
 /// [`SymbolTable::allocate_got_slot`] to `pub(crate)` as the mint's interior.
+///
+/// **Rejected relocation — slot inside `MonoDefnVariant` (`codegen_view`),
+/// ruled 2026-07-27** (`design/arch/concreteness-types-first.md` §3.10). The
+/// slot witnesses *scheme* concreteness for the whole slotted population —
+/// including `PrimitiveBody::Extern` primitives and `PlatformEffect` entries
+/// whose bodies are Rust/DLL code that can never carry a view — and its
+/// lifetime is the published ABI epoch (rebind carry-forward; the trap-stub
+/// freeze retains the slot of an entry with NO body), while the view's
+/// lifetime is one definition. The slot's home is the kind variant beside the
+/// scheme; the view carries no slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct CallableSlot(usize);

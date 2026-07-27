@@ -416,6 +416,78 @@ REMOVE: `SymbolTable::allocate_got_slot` from the public surface
 Unchanged (deliberately): `callable_got_slot()`, `is_callable_target()`,
 `defined_symbols()` signatures; `Resolved`; the whole resolution surface.
 
+### 3.10 Rejected: slot-in-`MonoDefnVariant` (the "even tighter" alternative, ruled 2026-07-27)
+
+The user asked, before the kind-field flip, whether the design should be
+tighter still: put the GOT slot **inside `MonoDefnVariant`** (the
+`codegen_view` carrier, `module.rs:1312`/`mono_expr.rs:1341`), so "has a slot
+⟺ has a compiled concrete body" holds by construction and the mint-then-carry
+step disappears. Ruled **NO** — the kind-variant placement (D1–D5) stands.
+Four grounds, each verified at source:
+
+1. **The slot witnesses scheme-concreteness, not body-presence — they are
+   different axes with different populations.** I-CONC is `slot ⇒
+   scheme.is_concrete()`, and the slotted population is permanently wider than
+   the viewed one: the ~50 concrete `PrimitiveBody::Extern` primitives
+   (hand-written Rust bodies, minted at
+   `crates/cranelisp-primitives/src/declarations.rs:737-747`) and every
+   `DefKind::PlatformEffect` (C-ABI DLL bodies; the slot is a **manifest
+   index into a DLL-owned static slab** the host never allocates —
+   `src/platform.rs:344-352`) are slotted, concrete, and can never carry a
+   `MonoDefnVariant` (its `body: MonoExpr` is mandatory; theirs are below the
+   type system). I-EMIT does NOT dissolve this: it re-kinds the *polymorphic*
+   by-name callables (`bind`/`race`/`select` → Inline, slot-less;
+   `catch-runtime-error` → slot-less by-name facades); the concrete
+   extern/platform populations are untouched and permanent. Slot-in-view
+   therefore forces either synthetic fabricated views (the R-13 anti-
+   fabrication class, worse than a raw `usize`) or a second slot home for the
+   viewless kinds — which reinstates the very split the proposal removes.
+2. **Slot and view have different lifetimes and different owners.** The slot
+   is **published ABI identity** (Principle 22): compiled callers embed the
+   index; it survives redefinition (Pass-1 `redef_slots` carry-forward,
+   `program/body.rs:288-292`; `register_mono_entry` slot preservation,
+   `monomorphise.rs:350`; `CallableSlot::rebind`), survives brokenness (the
+   trap-stub freeze writes a trap pointer into the *retained* slot of an
+   entry with **no valid body** — `src/redefine.rs:404`,
+   `design/int/session-transaction.md` §6–§7), and survives cache restore.
+   The view is a **per-definition rebuildable derivation**. Housing the
+   stable published identity inside the volatile rebuildable carrier is the
+   authority-split-by-lifetime defect (`trait-impl-cache-carrier.md` §7's
+   lesson inverted), and the BROKEN state — slot alive, view gone — becomes
+   unrepresentable exactly where the session-transaction design requires it.
+3. **It does not close the residual it targets.** The unverified pairing is
+   entry `scheme` × slot. `MonoDefnVariant` is `Clone` + serde-visible and is
+   set by ordinary writebacks (`DefBuilder::codegen_view`, the `*cv = …`
+   writeback at `program/body.rs:381-395`): a view built beside one scheme can
+   be placed beside another, carrying its slot with it — the identical
+   scheme-swap residual one field over, plus a new one (`Clone` on the view
+   duplicates a slot claim with no mint). The honest tier ladder (§3.2:
+   checked mint, checked rebind, cache-load re-check, NC-1 sweep) is neither
+   strengthened nor cheapened by the relocation.
+4. **It couples a pure derivation to table state, and the producers disagree
+   on order.** View construction is a pure function of the annotated body
+   (`build_concrete_codegen_view` / `from_expr` — Principle 5); slot-in-view
+   threads `&mut SymbolTable` (or a pre-minted witness — the same carry step)
+   into it. And the two producer seams run in **opposite orders** today:
+   single-sig allocates/reuses the slot at the determination point, then
+   builds the view (`program/body.rs:293-298` → `:366-379`); mono instances
+   build the view first, then allocate inside `register_mono_entry`
+   (`monomorphise.rs:222/:571` → `:686` → `:713`). Both are correct because
+   the fields are independent; unifying them under slot-in-view forces one
+   canonical order plus a homeless-slot window on the redefinition-reuse
+   path.
+
+The instinct's kernel is honoured — at the right level. "The structure that
+exists only for the concrete state carries the concreteness capability" is
+exactly the landed design: that structure is `UserFnState::Concrete` /
+`CtorState::Concrete` (the kind variant, sibling to `scheme` under one
+exhaustive discriminator), not the body view. Ctor/accessor entries do carry
+synthetic views at HEAD (`adt.rs:197-214`, `:607-633`), so the user-fn
+1:1:1 observation is true as far as it goes — but the invariant must hold for
+the whole slotted population, and the wash proceeds as §3–§4 specify with no
+retarget. `CallableSlot` stays the mint's return and the kind-variant field
+type; the view carries no slot.
+
 ---
 
 ## 4. The wash plan
