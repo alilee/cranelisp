@@ -1,6 +1,6 @@
 ---
 number: 0929
-target: /arch
+target: /design
 filed_by: /qa
 filed_at: 2026-07-27
 sprint_filed: 119
@@ -16,6 +16,36 @@ status: open
 ---
 
 # R18's instance census is incomplete: two fabrication arms live outside both design censuses, and one carries an unproven soundness claim in its rustdoc
+
+> **`/arch` disposition (2026-07-27, S119 step-back ruling) — asks 1–3
+> DISCHARGED; ask 4 RULED; residue re-targeted to `/design`(backend).**
+>
+> - **Asks 1+2 discharged**: `safety-invariants.md` §4 R18 now carries sites
+>   1–5 with per-site grades and owners (fixpoint.rs:221 = ungraded narrowing
+>   owing its P25 check, `/dev`(typecheck) NC-3(b); drop_glue.rs:398 =
+>   located-refusal disposition, `/dev`(backend); context.rs:280 = Type-side
+>   laundering, rides R17's declaration-channel cure; fn_compiler.rs:1214 =
+>   dead-arm spelling, low; the int trio = grading owed by `/design`(int)),
+>   and names the two model sites as the required spelling. R17 now records
+>   the declaration channel as a structural feeder and NC-5 as the arm-flip
+>   precondition.
+> - **Ask 3 answered**: `/qa`'s recommendation ACCEPTED — no sealing;
+>   census-as-enforcement (NC-2 families A+B); residual grade
+>   `asserted-with-a-named-falsifier` once NC-2 lands with its detection
+>   proof. Recorded on the R18 row.
+> - **Ask 4 ruled — the split**: the *derivation seam* is a `cranelisp-types`
+>   decision and is ruled — ctor field-type materialisation for category/glue
+>   purposes delegates to the types-owned refusing projection
+>   (`heap.rs::ctor_field_concrete_types`) or an instantiation-substituting
+>   sibling landed beside it in `heap.rs` (an addition there is pre-approved
+>   in shape; exact signature via the ordinary FIXME `target: /arch` if
+>   needed). The *carrier shape* (`CtorField { ty: ConcreteType }` vs
+>   instantiation-keyed materialisation, keying, caching) is backend-interior
+>   (`CtorMeta` is `pub(crate)`) and is `/design`(backend)'s to rule inside
+>   the release-contract window — hence this FIXME's re-target.
+> - **This file stays open as the NC-2 allow-list citation anchor** until the
+>   per-site dispositions land; the remaining design decision is the
+>   `/design`(backend) CtorMeta ruling above.
 
 ## Issue
 

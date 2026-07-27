@@ -1994,9 +1994,25 @@ pub enum DefKind {
         /// (the operator-as-value path `(map Some xs)` indirects through it).
         ///
         /// **Carries its `got_slot` (S83, FIXME 0356/0357, Principle 20).** A
-        /// constructor is an addressable callable, born concrete at synthesis
-        /// (it is never constrained), so the slot is **mandatory** — it moved
-        /// here off the retired flat `ModuleEntry::Def.got_slot` field.
+        /// constructor is an addressable callable, so the slot is
+        /// **mandatory** — it moved here off the retired flat
+        /// `ModuleEntry::Def.got_slot` field.
+        ///
+        /// **The slot's licence is NOT concreteness (S119 correction).** A
+        /// generic ADT's ctor scheme is `∀a…. Fn(fields…, ADT)` — non-concrete
+        /// — yet the mandatory slot is legal because the ctor body is
+        /// **representation-parametric** under invariant I-CT′
+        /// (`design/backend/non-concrete-release-contract.md` §4.1): it moves
+        /// each parameter word opaquely into the box it returns and owes no RC
+        /// operation on any residual-typed word, so ONE compiled body is sound
+        /// for every instantiation. This is a *different* licence from
+        /// [`UserFnState::Concrete`]'s `is_concrete()` gate: an
+        /// inference-derived body's emitted RC is type-directed, so
+        /// concreteness is its only licence. The prior wording here — "born
+        /// concrete at synthesis (it is never constrained)" — conflated
+        /// unconstrained with concrete, the exact predicate confusion the S84
+        /// generalisation names. Kind-partitioned invariant: BC §7 "S119
+        /// step-back ruling"; register row R11.
         got_slot: usize,
         type_name: FQTypeName,
         tag: usize,
@@ -2241,6 +2257,22 @@ pub enum PrimitiveBody {
 /// `constraints.is_empty()`; the determined-but-non-concrete unconstrained def
 /// gets its own slot-less [`UserFnState::Polymorphic`] arm so that
 /// `Concrete { got_slot } ∧ non-concrete-type` stays unconstructable.
+///
+/// **Scope of the ⟺ (S119 restatement).** The biconditional is a statement
+/// about `DefKind::UserFn` — inference-derived bodies whose emitted RC is
+/// type-directed, for which concreteness is the ONLY soundness licence for a
+/// single compiled body. The other slot carriers hold slots over non-concrete
+/// schemes under different licences ([`DefKind::Constructor`]:
+/// representation-parametric body, I-CT′; `Primitive`/`PlatformEffect`:
+/// hand-written body under a declared contract). Checkable whole-table form
+/// (the NC-1 sweep, register row R11): every entry with
+/// `callable_got_slot() == Some(_)` whose kind is `UserFn` MUST satisfy
+/// `scheme.ty.is_concrete()`. Note this enum makes the illegal pairing
+/// unrepresentable only *given* that constructors of `Concrete` honour the
+/// gate — the variant does not itself carry a concreteness witness, which is
+/// how two hand-mint sites violated it S84→S119 (the S119 census); the
+/// mint-side gate (typecheck's one helper, then a types-owned fallible mint)
+/// is the enforcement. See BC §7 "S119 step-back ruling".
 ///
 /// **The four legal states**, and where each is constructed:
 ///
