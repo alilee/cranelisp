@@ -114,9 +114,11 @@ fn test_got_data_symbol_name() {
         got_data_symbol_name(&ModuleFullPath::from("user")),
         "__cranelisp_got_user"
     );
+    // S119 (FIXME 0748): the dotted separator escapes injectively (`.` → `_d`)
+    // so `core.numerics` can never collide with a `core_numerics` module.
     assert_eq!(
         got_data_symbol_name(&ModuleFullPath::from("core.numerics")),
-        "__cranelisp_got_core_numerics"
+        "__cranelisp_got_core_dnumerics"
     );
     assert_eq!(
         got_data_symbol_name(&ModuleFullPath::from("")),

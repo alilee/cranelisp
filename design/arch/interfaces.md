@@ -212,16 +212,12 @@ pub struct ModuleDecls {
     pub remaining: Vec<Sexp>,
 }
 
-/// Stored impl S-expression for deferred processing.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ImplSexp {
-    pub trait_name: TraitName,
-    pub target: TypeName,
-    pub sexp: Sexp,
-}
+// `ImplSexp` DELETED at S119 (FIXME 0918) — zero-consumer dead surface;
+// impl forms are processed directly and the persisted trait-impl record is
+// `WrittenTraitImpl` (see §"Written-impl cache carrier").
 ```
 
-No changes from v1.
+No changes from v1 (except the S119 `ImplSexp` deletion noted above).
 
 ---
 
@@ -753,7 +749,7 @@ The codegen payload the backend used to consume from `CheckResult` has been redi
 | `default_method_defns: Vec<Defn>` | Registered by `register_mangled_method` as mangled `ModuleEntry::Def` entries with `ast: Some(_)`. |
 | `constrained_fn_names: HashSet<Symbol>` | Derivable by scanning `SymbolTable` for `ModuleEntry::Def { kind: UserFn { constrained_fn: Some(_) }, .. }` — negation of `defined_symbols()` within `UserFn`. |
 | `type_defs`, `constructor_to_type` | Already on `SymbolTable` as `ModuleEntry::TypeDef` / `ModuleEntry::Constructor`. |
-| `call_graph: CallGraph` | Transient within-module graph still produced during typecheck for TCO / analysis (see §"Call Graph"); persistent per-symbol `callees: Vec<FQSymbol>` lives on `ModuleEntry::Def` / `ModuleEntry::Macro` per Decision 21. |
+| `call_graph` | The public `CallGraph` type was DELETED at S119 (FIXME 0918 — zero consumers); any within-module TCO/analysis bookkeeping is typecheck-internal. Persistent per-symbol `callees: Vec<FQSymbol>` lives on `ModuleEntry::Def` per Decision 21. |
 
 **Callability is structural — GOT slot on the callable `DefKind` variants (FIXME 0356/0357, Principle 20; amends Decision 35; S83 target).** The row above notes a constrained template is the *negation of `defined_symbols()` within `UserFn`* — i.e. it is **not** codegen-compilable. The dual fact at the call-resolution seam is that it is **not directly callable**, and the S83 target makes this a property of the *shape* rather than an accessor convention. The S82 stopgap (`callable_got_slot()` reading around an illegal `got_slot`+template pairing, `mark_constrained_template()` flip-and-clear sole-writer, `assert_well_formed()` debug guard) is superseded: the `got_slot` migrates **off the flat `ModuleEntry::Def` field and onto the callable `DefKind` variants** (`UserFn`'s concrete-callable form, `Primitive`, `Constructor`, `PlatformEffect` — the four GOT-indirect-dispatched callable kinds; `PlatformEffect` ratified into this set S83 per FIXME 0358, correcting the Phase-2 gating-decision-2 omission); non-callable / non-GOT-dispatched kinds (the constrained-template form of `UserFn`, `Macro` parent, `PrimitiveExtern` — which dispatches by-name via `Linkage::Import`, FIXME 0360 — and the `Overloaded` base) carry no slot field, so `Def{slot}+template` is **unconstructable**. The timing wall (Pass-1 slot allocation preceded Pass-2 constraint detection) resolves by **deferring slot allocation past Pass-2 detection** — the entry has no slot until its callability is determined, which is correct because nothing may call it before then; no `Pending` interstage variant is needed. `callable_got_slot()` survives as the single read-through point (so callers do not re-pattern the kind set) but becomes a trivial present-or-absent read on the matched variant; `mark_constrained_template()` and the phantom-slot assertion retire. Backend call-target resolution (`resolve_got_target`) reads through `callable_got_slot()` exactly as before — its body changes, its contract does not. Mono variants (`cmp$Int+Int`) are ordinary concrete `UserFn` entries owning their own slot — the home for the S83 cross-module-mono feature (FIXME 0355). See BC §7 "Callability is structural" + Principle 20.
 
@@ -774,6 +770,10 @@ The codegen payload the backend used to consume from `CheckResult` has been redi
 **`MonoExpr` — the post-monomorphisation codegen AST (S84 concrete-boundary arc Phase 2a, landed; `design/arch/concrete-boundary-type.md` §2.4; FIXME 0383).** A parallel codegen view of `Expr` (`crates/cranelisp-types/src/mono_expr.rs`) whose every node carries `ty: ConcreteType` **non-optionally** in place of `Expr`'s `inferred_type: Option<Box<Type>>` — a generic / `Type::Var` is *structurally unrepresentable* on a codegen node (there is no `Type` field on `MonoExpr` at all; the fullest expression of the user ruling — generics "shouldn't even be REPRESENTABLE there"). `MonoExpr` mirrors `Expr`'s 14 non-`Annotate` variants; the `Annotate` node is **erased** (collapsed to its inner node at build); `Lambda` param `TypeExpr` annotations are erased (the concrete param types ride in the lambda's `ConcreteType::Fn`); match arms are carried by a sibling `MonoMatchArm { pattern: Pattern, body: MonoExpr, span }` (pattern reused verbatim — it carries no type annotation; S109 §10 later adds `resolved_ctor: Option<FQSymbol>`); `Apply`/`Var` carry `resolved_call: Option<Box<ResolvedCall>>` and every node carries `span: Span` (S110 0583 moved the resolved STORAGE identity onto the nodes as `resolved_target: Option<FQSymbol>`; the S114 carrier flip retyped it as the non-optional `Var.resolution: VarRef` / `Apply.dispatch: ApplyRef` — see §Method Resolutions). The mono-defn wrapper is `MonoDefnVariant { name: Symbol, params: Vec<Symbol>, body: MonoExpr, span }` (the typecheck mono pass builds it at the Phase-2b seam — `monomorphise_call`, immediately after `apply_subst_to_defn`). The **fallible builder** `MonoExpr::from_expr(&Expr, ..) -> Result<MonoExpr, ViewBuildError>` (the signature carries three REQUIRED span-keyed sidecar parameters — `pattern_ctors` + the typed `var_refs`/`apply_refs` since S114; the lenient counterpart `lenient_from_expr` and the all-local `synthetic_local_from_expr` live beside it — §Method Resolutions) walks an `inferred_type`-annotated `Expr`, converting each node via `ConcreteType::from_type`, and **fails at the first non-concrete node** (`ViewBuildError::NotConcrete` wrapping `NotConcrete::Var`/`HktHead`; an un-annotated node is the `NotConcrete::Var(0)` sentinel) **or resolution-verdict miss** (`ViewBuildError::Unresolved{span,name}` — the located phase-boundary gate) — the `NotConcrete` failure is the unified ambiguity/could-not-monomorphise error. Derives `Debug, Clone, Serialize, Deserialize` (no `PartialEq`/`Eq` — `Expr` cannot, carrying `f64`); accessors `span()`/`ty()`. **Phase 2a (landed):** the representation + builder + 10 unit tests, additive `public-api.txt`, **`CACHE_SCHEMA_VERSION` bumped 6 → 7** (the mono serde shape participates in the cached `.meta.json` surface). Produces-but-unused for codegen — the backend still reads `Expr.inferred_type` until Phase 3; the typecheck mono pass wires `from_expr` in Phase 2b (/dev(typecheck)).
 
 **`ModuleEntry::Def.codegen_view` — the concrete-boundary threading field (S84 concrete-boundary arc Phase 3, threading shape LANDED; `design/arch/concrete-boundary-type.md` §3.0/§4 Phase 3).** The threading decision — how `MonoExpr` reaches the backend per codegen-bound entry — is ruled **option (a), additive field**: `ModuleEntry::Def` gains `codegen_view: Option<MonoDefnVariant>` (`crates/cranelisp-types/src/module.rs`) **alongside** the existing `ast: Option<DefnVariant>`. The backend's Phase-3 read path consumes `codegen_view`'s `MonoDefnVariant.body: MonoExpr` — `ty: ConcreteType` on every node, so **no `Type`/`Var` on the read path by construction** (Principle 18/20). Read through `ModuleEntry::codegen_view(&self) -> Option<&MonoDefnVariant>` (`None` for non-`Def` and non-codegen entries); populated via `DefBuilder::codegen_view(self, MonoDefnVariant) -> Self`. **NOT a type-swap of `ast`** (`Option<DefnVariant>` → `Option<MonoDefnVariant>` would break ~26 literal-construction sites + the `Defn`-reconstruction path at once — a non-green cascade); the additive field defaults `None`, keeping the build green and letting /dev migrate the read path incrementally. **NOT a separate structure `compile_to_module` takes** (rejected — that re-introduces the transitional parallel-`Vec` shape at the crate boundary; the view belongs ON the entry, the symbol table being the per-symbol codegen-input carrier, Principle 7). **Populated for BOTH codegen-bound cases:** monomorphised instances (the mono-population seam moves the already-built `MonoDefnVariant` off the transitional `CheckState.mono_variants` parallel `Vec` onto the entry — `register_mono_entry`), AND ordinary concrete (`UserFnState::Concrete`) defns (the same `MonoExpr::from_expr` over the annotated body at the body-check `.ast(...)` sites). Template kinds / primitives / special forms get `None` — correctly not codegen targets. **Landed:** the field + accessor + setter (+3 additive `public-api.txt` lines), `CACHE_SCHEMA_VERSION` **7 → 8** (the serialized `ModuleEntry::Def` shape changed; `#[serde(default)]` field, no pointer/`C` state). The backend's consumption (classify-becomes-total, the ~13 `inferred_type` read sites → `MonoExpr.ty()`, `compile_to_module` reads `codegen_view`, the single relocated `expect` backstop) is /dev(backend) — FIXME 0391; the typecheck population move is /dev(typecheck) — FIXME 0392.
+
+**The callable-slot witness — `CallableSlot` + `SymbolTable::mint_callable_slot` (S119 types-first slice, landed; `design/arch/concreteness-types-first.md` §3).** The slot⟺concrete invariant's mint side becomes vocabulary: `CallableSlot` is an opaque `#[serde(transparent)]` newtype whose field is private — outside `cranelisp-types` a value is obtainable ONLY from the fallible `SymbolTable::mint_callable_slot(scheme)` (checks `scheme.ty.is_concrete()` via the witness-producing `ConcreteType::from_type` AND allocates from `next_got_slot` in one act; refusals are cursor-stable), from `CallableSlot::rebind(scheme)` (the Decision-31 REPL slot-reuse path, re-checked), or from deserialization (which is why the cache load boundary re-checks restored slot-carrying entries — the backend-wash `CacheStale::NonConcreteSlot` arm). `SlotMintError { NotConcrete, Exhausted }` carries the located refusal. The kind-field retypes onto `CallableSlot` — and `DefKind::Constructor`'s flip onto the landed-DORMANT `CtorState { Template, Concrete { got_slot: CallableSlot } }` sum (wire shape pinned by `module/tests.rs::ctor_state_serde_shape_pin`) — are the S120 wash (FIXME 0931); `allocate_got_slot` stays transitionally public until those callers re-route, then demotes. Companion projections landed with it: `heap::ctor_field_types_at(table, ctor_key, args)` (the instantiation-substituting ctor-field derivation — concrete-or-refuse via `CtorFieldsAtError`, never fabricating; the backend's `unwrap_or(Type::Int)` walk retires onto it, R-13) and `ConcreteType::result_root()` (the ONE single-hop IO-head-strip rule, FIXME 0898 — backend `result_roots` and int `release_key` re-express over it in the wash).
+
+**Written-impl cache carrier — `WrittenTraitImpl` + `enrol_written_trait_impl` + `trait_impl_key` (S119, FIXME 0869; canonical: `design/arch/trait-impl-cache-carrier.md`).** The writer-side persistence projection of the Decision-45 discovery shell: `SymbolTable.written_trait_impls: Vec<WrittenTraitImpl>` (serde-visible, **no `#[serde(default)]`** — a pre-carrier sidecar is a hard parse error, wholesale invalidation), appended by typecheck at the `check_trait_impl` success point, consumed at restore through the ONE idempotent enrolment primitive `enrol_written_trait_impl` (Enrolled / AlreadyEnrolled / hard-error-on-divergence — never a silent pick) over the trait home's table. `trait_impl_key(&FQTypeName, &FQTraitName)` is the hoisted ONE mint of the `impl$` storage key (the `member_key` pattern; the two hand-rolled typecheck format sites re-point in the wash), discharging the R4 census for that family. The `CACHE_SCHEMA_VERSION` 23→24 window rides the introducing change-set — the ONE S119 bump, which the injective `got_data_symbol_name` escape (FIXME 0748 — cached `.o` relocation names change) and the in-sprint downstream waves share.
 
 **Ownership-inference carriers — `Mode`/`ModeSummary` + the `PrimitiveBody` reshape (S102 CS-A, landed; `design/arch/ownership-inference.md` §3.3; typecheck needs-list `design/typecheck/ownership-inference.md` §13.1; FIXME 0476).** The single increment-I `cranelisp-types` change-set (one `CACHE_SCHEMA_VERSION` bump, 11 → 12). New module `crates/cranelisp-types/src/ownership.rs`: the mode lattice **`Mode { Copy, Borrowed, Owned }`** (Owned = default = the Decision-24 ⊤ point), **`ResultMode { Fresh, ProjectionOf(i), AliasOf(i) }`**, **`ParamFlow { Consumed, IntoResult, Retained }`**, and the per-callable **`ModeSummary`** — ABI-bearing half (`param_modes`, `result`; compared by `abi_eq`/`abi_eq_opt`, the ONE definition serving the R3 summary-diff gate) + advisory half (`param_flow`, `spark_ops`, `result_unique`; sound to ignore). Full `Eq` (fixpoint change detection); every field `#[serde(default)]`; **⊤-on-absence lives in ONE home** — the conservative-read accessors `param_mode(i)`→`Owned`, `param_flow(i)`→`Retained`, `spark_op(i)`→`true`; no consumer indexes the vectors directly. The summary rides the **callable `DefKind` variants** (the S83 slot precedent: `UserFnState::Concrete`, `Primitive`, `Constructor`, `PlatformEffect` — non-callable kinds carry no summary field by construction) read/written via `ModuleEntry::mode_summary()` / `set_mode_summary()` (did-write bool), plus `MonoDefnVariant.mode_summary` as the compile-in-hand carrier; `DefKind::Primitive`'s slot doubles as the **hand-declared fact table** (spine §3.1(a), Principle 19 — same carrier, no separate type). Advisory **site facts** ride `MonoExpr` alloc/capture nodes (`escapes`/`confined`/`unique_static` on `StringLit`/`Lambda`/`Apply`/`VecLit`/`ConstrADT`, `provenance: Option<Symbol>` on `Apply` + `MonoMatchArm`; all `#[serde(default)]` = `None` = conservative); the per-entry **`value_use: bool` mark** rides `ModuleEntry::Def` (accessors `value_use()`/`set_value_use()`). The **FIXME-0476 representation cure rides the same bump**: `DefKind::Primitive { got_slot }` reshapes to `Primitive { body: PrimitiveBody, mode_summary }` with `PrimitiveBody::Extern { got_slot, borrowed_sibling_slot: Option<usize> }` (the §3.1(b) borrowed-convention sibling carrier — Extern-arm-only, so inline-with-sibling is unrepresentable) vs `PrimitiveBody::Inline` (slot-less **by construction** — `callable_got_slot()` answers `None` structurally; the allocated-but-NULL phantom-slot class is unrepresentable one level down from S83); the new **`ModuleEntry::is_callable_target()`** (slot-dispatched ∪ inline-dispatched) is the resolution stop condition replacing `callable_got_slot().is_some()`, with `DefKind::primitive(slot)` as the common-shape convenience ctor. The read-once **`CRANELISP_NO_OWNERSHIP`** gate relocated here as `ownership_analysis_off()` (needs-list item 12: typecheck's pass entry and backend's manifest key + emission gates read ONE polarity through ONE function — Principle 7; `cranelisp-backend::cache::manifest::no_ownership_enabled` now delegates). CS-A is **carrier-only**: as of the landing, `PrimitiveBody::Inline` has zero constructors and `mode_summary`/site facts are written by nothing — the S102 B1-be change-set (backend+primitives) flips the vec trio to `Inline` and retires the S101 name-list resolver; typecheck CS-1..4 produce summaries. `public-api.txt` regenerated (cranelisp-types only; the six consumer baselines verified unchanged).
 
@@ -918,71 +918,19 @@ single source of truth (Principle 7): resolved-stage data lives on the AST.
 
 ---
 
-## Call Graph (NEW)
+## Call Graph — DELETED types; the live mechanism is `ModuleEntry::Def.callees`
 
-Cross-cutting data structure populated during typecheck, consumed by analysis passes, codegen, and the binary crate.
-
-```rust
-/// An edge in the call graph.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CallEdge {
-    /// The callee being called.
-    pub callee: Symbol,
-    /// Whether this call is in tail position.
-    pub tail_position: bool,
-    /// Source location of the call.
-    pub span: Span,
-}
-
-/// Per-function call information.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct CallInfo {
-    /// Functions this function calls.
-    pub callees: Vec<CallEdge>,
-}
-
-/// Transient within-module call graph. Adjacency list representation.
-/// Rich edges with tail-position and span for codegen/analysis.
-///
-/// Populated during typecheck (Stage 5). Held as typecheck-internal
-/// state during checking; not a cross-crate boundary value.
-/// Consumed by:
-/// - Analysis passes (SCC detection, recursion warnings — typecheck-internal)
-/// - Codegen (tail call optimization decisions — read indirectly via
-///   `ModuleEntry.callees` and AST annotations, not via `CheckResult`)
-///
-/// For cross-module / persistent call graph queries, use the per-symbol
-/// `callees: Vec<FQSymbol>` on `ModuleEntry::Def` and `ModuleEntry::Macro`.
-/// That representation is populated by `finalize_check_result()` and
-/// queryable via `tc.symbol_table(module).get(name)`. See Decision 21.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct CallGraph {
-    /// Forward edges: caller -> list of callees.
-    pub edges: HashMap<Symbol, CallInfo>,
-}
-
-impl CallGraph {
-    /// Record a call from caller to callee.
-    pub fn add_edge(
-        &mut self,
-        caller: &Symbol,
-        callee: Symbol,
-        tail_position: bool,
-        span: Span,
-    ) { ... }
-
-    /// Build reverse index: callee -> set of callers.
-    pub fn reverse_index(&self) -> HashMap<Symbol, HashSet<Symbol>> { ... }
-
-    /// Find strongly connected components (Tarjan's algorithm).
-    pub fn sccs(&self) -> Vec<Vec<Symbol>> {
-        todo!("implemented when mutual recursion support arrives")
-    }
-
-    /// Find self-recursive calls not in tail position.
-    pub fn non_tail_self_recursion(&self) -> Vec<(Symbol, Span)> { ... }
-}
-```
+The `CallEdge` / `CallInfo` / `CallGraph` cluster this section once specified
+was **deleted at S119 (FIXME 0918)** — it was zero-consumer dead surface (the
+S87 Finding-2 class): nothing in the workspace constructed or read it, and its
+`sccs()` was a `todo!()` that never arrived. The **live** call-graph mechanism
+is the one Decision 21 actually landed: the per-symbol
+`callees: Vec<FQSymbol>` field on `ModuleEntry::Def`, populated by typecheck's
+`finalize_check_result()`, persisted with the entry, and queryable via
+`tc.symbol_table(module).get(name).callees()` — the same edges the S101
+session-transaction reverse index and the ownership fixpoint walk. A future
+rich-edge need (tail-position spans etc.) starts from the spec in git history,
+not from a dormant type.
 
 ### `ParsedEntry` — the parse-time-only transient (Sprint 66, FIXME 0156)
 
@@ -1335,7 +1283,13 @@ impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
     pub fn get(&self, name: &str) -> Option<&ModuleEntry<C>> { ... }
     pub fn insert(&mut self, name: Symbol, entry: ModuleEntry<C>) { ... }
     pub fn public_symbols(&self) -> impl Iterator<Item = (&Symbol, &ModuleEntry<C>)> { ... }
-    pub fn allocate_got_slot(&mut self) -> usize { ... }
+    // Fallible since S111 (GotExhausted); TRANSITIONAL since S119 — the
+    // checked mint below is the sanctioned fresh-slot path, and this raw
+    // allocator demotes to pub(crate) at the S120 wash (FIXME 0931).
+    pub fn allocate_got_slot(&mut self) -> Result<usize, GotExhausted> { ... }
+    // S119: the ONE way to obtain a fresh CallableSlot (checks is_concrete()
+    // + allocates in one act). See §"The callable-slot witness".
+    pub fn mint_callable_slot(&mut self, scheme: &Scheme) -> Result<CallableSlot, SlotMintError> { ... }
     pub fn defined_symbols(&self) -> impl Iterator<Item = (&Symbol, &ModuleEntry<C>)> { ... }
 }
 ```
@@ -2557,7 +2511,7 @@ The filter is deliberately strict: any `ModuleEntry::Def` with `ast: None` is ex
 ### Types added
 - `TopLevel::Expr(Expr)` variant
 - `DisplayInfo` — REPL display payload
-- `CallGraph`, `CallEdge`, `CallInfo` — transient within-module call graph (rich, with tail-position/span)
+- `CallGraph`, `CallEdge`, `CallInfo` — transient within-module call graph (rich, with tail-position/span) *(DELETED S119, FIXME 0918 — never consumed)*
 - `FormCheckResult` — per-form typecheck output with `call_graph_edges: Vec<(Symbol, FQSymbol)>` (typecheck-internal)
 - `ModuleEntry::Def.callees`, `ModuleEntry::Macro.callees` — persistent per-symbol `Vec<FQSymbol>` for cross-module call graph queries (Decision 21)
 - `ModuleEntry::Def.ast: Option<Defn>` — annotated AST body deposited by typecheck; consumed by `compile_to_module` (Sprint 55 Phase 1). Authoritative table in `design/typecheck/ast-annotation.md` §6.
@@ -2573,7 +2527,7 @@ The filter is deliberately strict: any `ModuleEntry::Def` with `ast: None` is ex
 - `SymbolTable.linker: Option<L>` (Sprint 58 Step 5c) — per-module linker store for cache-hit `.o` mapping. `#[serde(skip)]`.
 - `SymbolTable.schema_version: u32` (Sprint 58 Step 5b, Decision 34) — explicit cache schema version; mismatch invalidates the cache as if dependencies changed.
 - `Code` enum (Sprint 58 Phase 3a, Decision 35; Sprint 64 location move per Decision 41; **Sprint 66 variant slimming preserved through the same-day fn_ptr-unification rollback**) — concrete `C` for `SymbolTable<Code, ()>`. Variants `Code::Jit(Arc<Jit>)` + `Code::Linker(Arc<Linker>)` — lifecycle owner ONLY post-S66; the per-entry call address lives in `SymbolTable.got()` (the post-rollback single source of truth — see `crates/cranelisp-types/src/got.rs`), indexed by `ModuleEntry::Def.got_slot`. Lives in `cranelisp-backend/src/code.rs` (moved from `src/code.rs` per Decision 41), NOT in `cranelisp-types` (Principle 3). The CP1 Layer-2-Option-B return-tuple pattern retracts: `compile_to_module` writes the resulting fn pointer to the entry's GOT slot via `symbol_table.got().store_slot(slot, ptr)` (D41 #2) and returns `Result<CompilationArtifacts, CompilationError>` (S70 Phase B). The **caller** composes `Code::Jit(Arc<Jit>)` / `Code::Linker(Arc<Linker>)` and installs it via Decision 38's `write_code` (D41 #1 — the caller's, not backend's, per S75 W2 Finding-A; backend only borrows `&mut M`). Documented at this boundary so every consumer of `SymbolTable<Code, ()>` references the same shape.
-- `ModuleEntry::Def.got_slot: Option<usize>` — single source of truth for "where to call to invoke this entry" (Sprint 56 G7; reaffirmed Sprint 66 post-rollback per `1dc57ae`). Indexes into `SymbolTable.got()`; the runtime address is `got().load_slot(slot)`. The S66 unification briefly placed the address on a sibling `ModuleEntry::Def.fn_ptr` field (commit `b09ec76`); the same-day rollback `1dc57ae` removed that field as redundant with the GOT. No per-entry pointer field exists post-rollback. Origin encoded by `kind: DefKind` (UserFn → JIT/linker; Primitive { Inline | Extern } → primitive; Primitive { PlatformEffect } → platform DLL). See `crates/cranelisp-types/src/module.rs` `ModuleEntry::Def.got_slot` rustdoc + Decision 41 S66 amendment + rollback.
+- `ModuleEntry` callable slot (HISTORICAL flat-field framing — since S83 the slot rides the callable `DefKind` variants, read via `callable_got_slot()`; this row records the pre-S83 shape) — single source of truth for "where to call to invoke this entry" (Sprint 56 G7; reaffirmed Sprint 66 post-rollback per `1dc57ae`). Indexes into `SymbolTable.got()`; the runtime address is `got().load_slot(slot)`. The S66 unification briefly placed the address on a sibling `ModuleEntry::Def.fn_ptr` field (commit `b09ec76`); the same-day rollback `1dc57ae` removed that field as redundant with the GOT. No per-entry pointer field exists post-rollback. Origin encoded by `kind: DefKind` (UserFn → JIT/linker; Primitive { Inline | Extern } → primitive; Primitive { PlatformEffect } → platform DLL). See `crates/cranelisp-types/src/module.rs` `ModuleEntry::Def.got_slot` rustdoc + Decision 41 S66 amendment + rollback.
 - `ParsedEntry` enum (Sprint 66, FIXME 0156) — parse-time-only transient produced by `cranelisp_frontend::build_form` and consumed (as `Vec<ParsedEntry>`) by `cranelisp_typecheck::check_forms`'s single-call cluster surface (per Decision 44's 2026-05-13 third amendment; internal two-pass discipline). NEVER lands in `SymbolTable`. Orchestrator accumulates the vector across the cluster's forms and hands it to one `check_forms` call. `#[non_exhaustive]`; not `Serialize/Deserialize`; derives `Clone` so the orchestrator can rebuild the vector for Gap-retry. See `crates/cranelisp-types/src/parsed.rs` rustdoc + `crates/cranelisp-frontend/src/lib.rs` //! preamble (post-S70 B3-C frontend canonical) + `crates/cranelisp-typecheck/src/lib.rs` rustdoc (post-S72 W5 typecheck canonical; `facades/typecheck.md` retired).
 - `DefmacroInfo` struct (Sprint 66, FIXME 0156) — moved from `cranelisp-frontend/src/defmacro.rs` to `cranelisp-types` so `int`'s post-`build_form` consumption path can name the type uniformly. Frontend's `parse_defmacro` becomes `pub(crate)` inside the `build_form` dispatcher.
 - `View<'a, C, L>` newtype (Sprint 66, Decision 44 amended FIXME 0167) — composite read surface `(staging, live)` that wraps two `&SymbolTable` refs and routes lookups staging-first then live. Constructed inside `SymbolTableAccess::current_symbol_table()` (in `cranelisp-typecheck`); in `Cluster` mode returns `View::union(staging, live)`, in `Live` mode returns a single-source view. Typecheck reads through `ctx.current_symbol_table()` whenever it would have read `&SymbolTable` directly. No allocation per lookup; lifetime-bounded; read-only. See `crates/cranelisp-types/src/view.rs` rustdoc.
@@ -2597,7 +2551,7 @@ The filter is deliberately strict: any `ModuleEntry::Def` with `ast: None` is ex
 - `cranelisp_typecheck::check_form` collapses to a **single `check_forms` free function** (Sprint 66, FIXME 0160 + Decision 44 amended FIXME 0167 + 2026-05-13 third amendment): `check_forms(parsed: Vec<ParsedEntry>, ctx: &mut SymbolTableAccess<'_, C, L>, symbol_tables: &SymbolTables<C, L>) -> Result<(), CheckError>`. Pre-S66 the legacy `check_form` mutated the table in-place via a typecheck-internal `merge_form_result()`; FIXME 0160 first purified it to a single-call pure function; Decision 44 then split that single call into a two-function Pass 1 (signatures) + Pass 2 (bodies) shape so spec §5.13.1's two-pass mandate (forward references / mutual recursion) survives the orchestrator-side cluster. The two-function shape exposed implementation phasing across the facade and created a state-threading hole; the third amendment collapses it back into a single `check_forms` call that runs both passes internally. Pass-1-to-Pass-2 working state lives inside `check_forms`'s frame and never crosses the facade. FIXME 0167's Approach B + SymbolTableAccess discipline is preserved: staging is empty at cluster start; reads via `View::union(staging, live)`; writes go to staging via the same `current_symbol_table_mut` accessor used in committed-mode. `check_forms` is pure with respect to live state; it does not mutate the live `SymbolTable`. The 91 register-call sites in `program.rs` do not change individually — staging-vs-live is absorbed inside `SymbolTableAccess::current_symbol_table{,_mut}` accessors. The caller (`int::process_cluster`) constructs `SymbolTableAccess::Cluster` with a transient orchestrator-local staging table and commits staging into the live table atomically via `int::insert_cluster` only on whole-cluster success; on `Err(Gap)`, the orchestrator drops the staging frame and retries the whole `check_forms` call against a fresh staging frame; on `Err(TypeError)`, staging dissolves with the function frame (live table byte-identical). See `crates/cranelisp-typecheck/src/lib.rs` rustdoc (post-S72 W5 canonical; `facades/typecheck.md` retired — cross-surface narrative in `bounded-contexts.md` §2), `bounded-contexts.md` §6 (int) + `src/cluster.rs` rustdoc for the `process_cluster` orchestrator side (`facades/int.md` retired S81 W-Retire → BC §6 + `design/int/` + source rustdoc), and the `check_forms` section above.
 
 ### Functions added
-- `CallGraph::add_edge()`, `reverse_index()`, `sccs()`, `non_tail_self_recursion()`
+- `CallGraph::add_edge()`, `reverse_index()`, `sccs()`, `non_tail_self_recursion()` *(DELETED S119 with the type, FIXME 0918)*
 - `SymbolTable::defined_symbols() -> impl Iterator<Item = (&Symbol, &ModuleEntry)>` — shared codegen-compilable predicate (Decision 22, Sprint 56).
 - ~~`declare_all_got_slots()`~~ — removed. GOT slots are assigned incrementally by `ModuleCodegenState::ensure_slot_for()` during function registration, not in a separate phase. See `pipeline-v2.md` §12.5.
 

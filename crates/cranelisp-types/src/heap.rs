@@ -7,8 +7,8 @@ use std::collections::HashSet;
 use std::mem::{self, offset_of};
 
 use crate::{
-    CodeStore, ConcreteType, DefKind, FQTypeName, LinkerStore, ModuleEntry, Symbol, SymbolTable,
-    SymbolTables, Type,
+    CodeStore, ConcreteType, DefKind, FQTypeName, LinkerStore, ModuleEntry, NotConcrete, Symbol,
+    SymbolTable, SymbolTables, Type,
 };
 
 /// Universal header for all heap-allocated values.
@@ -330,6 +330,137 @@ where
     field_tys
         .iter()
         .map(|t| ConcreteType::from_type(t).ok())
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// The substituting ctor-field projection (S119 types-first slice; register
+// rows R-6/R-16; `design/arch/concreteness-types-first.md` §3.5).
+// ---------------------------------------------------------------------------
+
+/// Why [`ctor_field_types_at`] could not produce the instantiated field types.
+///
+/// A dedicated error sum rather than `NotConcrete` alone, so a caller bug
+/// (wrong key, wrong arity, wrong instantiation) is not conflated with the
+/// honest refusal (a residual field type) — never fabricate, never launder
+/// (register rows R-13/R-16).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CtorFieldsAtError {
+    /// The entry at `ctor_key` is absent or not a `DefKind::Constructor` —
+    /// a caller-side keying bug, not a property of the type.
+    NotACtor,
+    /// `args.len()` does not match the ctor's result-ADT parameter count.
+    ParamArity { expected: usize, got: usize },
+    /// A result-ADT parameter of the ctor's scheme is already concrete and
+    /// differs from the supplied instantiation argument at that position.
+    InstantiationMismatch { position: usize },
+    /// A field type remains non-concrete after substitution — the whole ctor
+    /// is refused (the [`value_layout`] model-site spelling: ONE residual
+    /// field refuses everything; nothing is fabricated).
+    NotConcrete(NotConcrete),
+}
+
+impl std::fmt::Display for CtorFieldsAtError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CtorFieldsAtError::NotACtor => write!(f, "entry is not a constructor"),
+            CtorFieldsAtError::ParamArity { expected, got } => write!(
+                f,
+                "constructor instantiation arity mismatch: expected {expected} type argument(s), got {got}"
+            ),
+            CtorFieldsAtError::InstantiationMismatch { position } => write!(
+                f,
+                "constructor instantiation mismatch at type-argument position {position}"
+            ),
+            CtorFieldsAtError::NotConcrete(nc) => write!(
+                f,
+                "constructor field type remains non-concrete after instantiation ({nc:?})"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CtorFieldsAtError {}
+
+/// Field types of the constructor stored at `ctor_key`, **at the concrete
+/// instantiation `args`**, or a refusal — the instantiation-substituting
+/// sibling of the declaration-side [`value_layout`] projection (which reads
+/// only already-concrete declarations and stays preserved verbatim, R-16).
+///
+/// Unifies the ctor scheme's result-ADT parameters against `args`
+/// positionally, applies the substitution to the declared field types, and
+/// converts each via [`ConcreteType::from_type`] — ONE residual field refuses
+/// the whole ctor ([`CtorFieldsAtError::NotConcrete`]). **Never fabricates**:
+/// there is no default arm, no `unwrap_or(Int)` — this is the only legal
+/// derivation of instantiated ctor-field types for category/glue purposes
+/// (`concreteness-types-first.md` §3.5; the backend's hand-rolled `scheme.ty`
+/// walk with its `unwrap_or(Type::Int)` launder retires onto this in the S120
+/// backend wash, closing register row R-13).
+///
+/// `ctor_key` is the **storage key** of the ctor `Def` (canonical
+/// `member_key(Type, Ctor)` for sum ctors, the bare type name for a product) —
+/// callers resolve the key first; a miss or a non-ctor entry is
+/// [`CtorFieldsAtError::NotACtor`], a caller bug distinct from a refusal.
+///
+/// A nullary ctor (scheme type is the bare ADT) has zero fields — `Ok(vec![])`
+/// at any well-formed instantiation.
+pub fn ctor_field_types_at<C, L>(
+    table: &SymbolTable<C, L>,
+    ctor_key: &Symbol,
+    args: &[ConcreteType],
+) -> Result<Vec<ConcreteType>, CtorFieldsAtError>
+where
+    C: CodeStore,
+    L: LinkerStore,
+{
+    let Some(ModuleEntry::Def { scheme, kind, .. }) = table.get(ctor_key.as_ref()) else {
+        return Err(CtorFieldsAtError::NotACtor);
+    };
+    if !matches!(&**kind, DefKind::Constructor { .. }) {
+        return Err(CtorFieldsAtError::NotACtor);
+    }
+
+    // Ctor scheme shape (adt_build::build_adt_entries, the ONE derivation):
+    // data ctor → `Fn(field-tys, ADT(fqtn, params))`; nullary → bare ADT.
+    let (field_tys, result_ty): (&[Type], &Type) = match &scheme.ty {
+        Type::Fn(params, ret) => (params.as_slice(), ret.as_ref()),
+        other => (&[], other),
+    };
+    let Type::ADT(_, result_params) = result_ty else {
+        // A ctor whose scheme result is not an ADT is malformed — treat as a
+        // keying/shape bug, never a refusal.
+        return Err(CtorFieldsAtError::NotACtor);
+    };
+
+    if result_params.len() != args.len() {
+        return Err(CtorFieldsAtError::ParamArity {
+            expected: result_params.len(),
+            got: args.len(),
+        });
+    }
+
+    // Positional unification of result-ADT params against the instantiation:
+    // a `Var` param binds; an already-concrete param must agree.
+    let mut subst = crate::Subst::new();
+    for (position, (param, arg)) in result_params.iter().zip(args.iter()).enumerate() {
+        match param {
+            Type::Var(id) => {
+                subst.insert(*id, arg.to_type());
+            }
+            concrete => match ConcreteType::from_type(concrete) {
+                Ok(ct) if ct == *arg => {}
+                _ => return Err(CtorFieldsAtError::InstantiationMismatch { position }),
+            },
+        }
+    }
+
+    field_tys
+        .iter()
+        .map(|t| {
+            ConcreteType::from_type(&crate::apply(&subst, t))
+                .map_err(CtorFieldsAtError::NotConcrete)
+        })
         .collect()
 }
 

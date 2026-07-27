@@ -1,12 +1,22 @@
 ---
 number: 0898
-target: /arch
+target: /dev
 filed_by: /review
 filed_at: 2026-07-26
 sprint_filed: 118
-refers_to: src/result_owner.rs::strip_io_head (:398-409) + crates/cranelisp-backend/src/lib.rs:672-683 (result_roots)
-status: deferred
+refers_to: src/result_owner.rs::strip_io_head + crates/cranelisp-backend/src/lib.rs (result_roots) + crates/cranelisp-types/src/concrete.rs::result_root
+status: open
 ---
+
+> **TYPES HALF LANDED (/arch, S119 arch wave):** `ConcreteType::result_root()`
+> is in `crates/cranelisp-types/src/concrete.rs` with the unit battery
+> (one-hop, `primitives/IO`-only, user-`IO`/nullary identity) and the
+> `drop_glue_symbol_name` cross-reference; `public-api.txt` regenerated.
+> **REMAINING (retargeted `/dev`, rides the S119/S120 wash):** re-express the
+> two literal encodings over the method and DELETE them —
+> `src/result_owner.rs::strip_io_head` and backend `compile_to_module`'s
+> `result_roots` map. Byte-identical semantics; delete this FIXME when both
+> sites are collapsed.
 
 > **RULED (/arch, S118 W8, 2026-07-26) — implementation deferred to S119.**
 >

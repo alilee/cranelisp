@@ -1150,59 +1150,51 @@ fn symbol_table_serde_round_trip_with_structural_decls() {
     );
 }
 
-// spec: design/arch/CLAUDE.md Decision 34 — `schema_version` defaults to 0
-//       when deserialising from a Sprint-57-era cache (which lacks the field).
-//       The cache loader compares the deserialised value to the current
-//       `CACHE_SCHEMA_VERSION` constant (owned by /backend) and rejects
-//       mismatches as cache-stale.
+// spec: design/arch/CLAUDE.md Decision 34 + trait-impl-cache-carrier.md §6 —
+//       `schema_version` defaults to 0 when the field is absent (the loader
+//       compares to `CACHE_SCHEMA_VERSION` and rejects mismatches as stale),
+//       but a PRE-CARRIER sidecar (no `written_trait_impls`, S119 schema < 24)
+//       now fails AT PARSE: the carrier field has deliberately NO
+//       #[serde(default)], so wholesale invalidation happens at the serde
+//       boundary — a default-empty read would silently reproduce the 0869
+//       defect.
 #[test]
 fn symbol_table_schema_version_defaults_to_zero_for_legacy_cache() {
-    // Synthesise a JSON shape that matches a Sprint-57-era serialised
-    // SymbolTable: lacks `schema_version`. The four structural-decl fields
-    // also lack values (Sprint 57 had no `imports`/`exports`/`platforms`/
-    // `submodules` on SymbolTable), and they too carry `#[serde(default)]`
-    // so the legacy cache deserialises cleanly to empty Vecs and the
-    // schema_version mismatch is surfaced to the loader.
-    //
-    // This is the exact shape Decision 34 promises will trigger
-    // version-mismatch handling: deserialise succeeds with `schema_version
-    // = 0`, the loader compares to `CACHE_SCHEMA_VERSION = 1` (owned by
-    // /backend), and the cache entry is rejected as stale (same path as
-    // dep-hash mismatch).
+    // The Sprint-57-era shape (no schema_version, no structural-decl Vecs,
+    // no carrier field) is a HARD serde error post-S119 — rejected before any
+    // version comparison can even run.
     let legacy_json = r#"{
         "path": "user",
         "symbols": {},
         "next_got_slot": 0
     }"#;
+    assert!(
+        serde_json::from_str::<SymbolTable>(legacy_json).is_err(),
+        "a pre-carrier sidecar must fail at parse (wholesale invalidation)"
+    );
 
-    let rt: SymbolTable = serde_json::from_str(legacy_json)
-        .expect("legacy Sprint-57-era SymbolTable JSON must deserialize cleanly");
-
+    // With the required carrier field present, the #[serde(default)] fields
+    // (schema_version + the four structural-decl Vecs) still default — the
+    // Decision-34 version-mismatch path for sidecars that ARE parseable.
+    let carrier_json = r#"{
+        "path": "user",
+        "symbols": {},
+        "next_got_slot": 0,
+        "written_trait_impls": []
+    }"#;
+    let rt: SymbolTable = serde_json::from_str(carrier_json)
+        .expect("carrier-bearing SymbolTable JSON must deserialize cleanly");
     assert_eq!(
         rt.schema_version, 0,
-        "schema_version MUST default to 0 for legacy caches lacking the field — \
-         cache loader uses this to detect Sprint-57-era caches and reject as stale"
+        "schema_version MUST default to 0 when absent — the loader detects \
+         the mismatch against CACHE_SCHEMA_VERSION and rejects as stale"
     );
-
-    // The four structural-decl fields default to empty when absent — also
-    // load-bearing for legacy-cache compatibility (the cache loader
-    // version-checks BEFORE attempting to use these fields, but the
-    // deserialise step must succeed first).
-    assert!(
-        rt.imports.is_empty(),
-        "missing `imports` field defaults to empty Vec"
-    );
-    assert!(
-        rt.exports.is_empty(),
-        "missing `exports` field defaults to empty Vec"
-    );
-    assert!(
-        rt.platforms.is_empty(),
-        "missing `platforms` field defaults to empty Vec"
-    );
+    assert!(rt.imports.is_empty(), "missing `imports` defaults to empty");
+    assert!(rt.exports.is_empty(), "missing `exports` defaults to empty");
+    assert!(rt.platforms.is_empty(), "missing `platforms` defaults to empty");
     assert!(
         rt.submodules.is_empty(),
-        "missing `submodules` field defaults to empty Vec"
+        "missing `submodules` defaults to empty"
     );
 }
 
@@ -1910,5 +1902,392 @@ fn drop_glue_name_separates_nested_adt_argument_boundaries() {
         drop_glue_symbol_name(&module, &outer_two_args),
         drop_glue_symbol_name(&module, &outer_two_args),
         "equal nested ADTs must retain equal identity"
+    );
+}
+
+// ---- CallableSlot witness mint (S119 types-first slice;
+// design/arch/concreteness-types-first.md §3.1/§3.2) ----
+
+fn generic_scheme(ty: Type, vars: Vec<crate::TypeId>) -> Scheme {
+    Scheme {
+        type_vars: vars,
+        constraints: HashMap::new(),
+        ty,
+    }
+}
+
+// spec: design/arch/concreteness-types-first.md §3.2 — the mint refuses a
+// non-concrete scheme (the planted fault: a `∀a. a→a` template must not
+// acquire a slot).
+#[test]
+fn mint_refuses_non_concrete_scheme() {
+    let mut st = SymbolTable::new(ModuleFullPath::from("m"));
+    let poly = generic_scheme(
+        Type::Fn(vec![Type::Var(0)], Box::new(Type::Var(0))),
+        vec![0],
+    );
+    let err = st
+        .mint_callable_slot(&poly)
+        .expect_err("non-concrete scheme must refuse");
+    assert!(
+        matches!(err, SlotMintError::NotConcrete(crate::NotConcrete::Var(0))),
+        "refusal carries the residual var: {err:?}"
+    );
+    // The refusal is side-effect-free: the cursor did not advance.
+    assert_eq!(st.next_got_slot, 0, "refusal must not consume a slot");
+}
+
+// spec: design/arch/concreteness-types-first.md §3.2 — the negative leg: a
+// concrete scheme mints, slots are monotone from 0, and the witness index
+// matches the cursor the allocation consumed.
+#[test]
+fn mint_accepts_concrete_scheme_monotonically() {
+    let mut st = SymbolTable::new(ModuleFullPath::from("m"));
+    let conc = mono_scheme(Type::Fn(vec![Type::Int], Box::new(Type::Int)));
+    let a = st.mint_callable_slot(&conc).expect("concrete scheme mints");
+    let b = st.mint_callable_slot(&conc).expect("concrete scheme mints");
+    assert_eq!(a.index(), 0);
+    assert_eq!(b.index(), 1);
+    assert_eq!(st.next_got_slot, 2);
+}
+
+// spec: design/arch/concreteness-types-first.md §3.2 — a TyConApp head is
+// non-concrete at the mint gate (same acceptance set as Type::is_concrete()).
+#[test]
+fn mint_refuses_hkt_head() {
+    let mut st = SymbolTable::new(ModuleFullPath::from("m"));
+    let hkt = generic_scheme(Type::TyConApp(4, vec![Type::Int]), vec![4]);
+    let err = st.mint_callable_slot(&hkt).expect_err("HKT head refuses");
+    assert!(matches!(
+        err,
+        SlotMintError::NotConcrete(crate::NotConcrete::HktHead(4))
+    ));
+}
+
+// spec: design/arch/concreteness-types-first.md §3.2 — exhaustion surfaces as
+// SlotMintError::Exhausted with the pre-existing GotExhausted meaning.
+#[test]
+fn mint_surfaces_got_exhaustion() {
+    let mut st = SymbolTable::new(ModuleFullPath::from("m"));
+    st.next_got_slot = GOT_TABLE_SIZE;
+    let conc = mono_scheme(Type::Int);
+    let err = st.mint_callable_slot(&conc).expect_err("slab exhausted");
+    assert!(matches!(err, SlotMintError::Exhausted(_)));
+    assert_eq!(
+        st.next_got_slot, GOT_TABLE_SIZE,
+        "exhaustion is stable and repeatable"
+    );
+}
+
+// spec: design/arch/concreteness-types-first.md §3.1 — rebind (the
+// Decision-31 REPL slot carry-forward) re-checks concreteness: transfer to a
+// concrete redefinition succeeds and preserves the index; transfer to a
+// non-concrete redefinition refuses.
+#[test]
+fn rebind_rechecks_concreteness() {
+    let mut st = SymbolTable::new(ModuleFullPath::from("m"));
+    let conc = mono_scheme(Type::Fn(vec![Type::Int], Box::new(Type::Int)));
+    let slot = st.mint_callable_slot(&conc).expect("mint");
+
+    let conc2 = mono_scheme(Type::Fn(vec![Type::Bool], Box::new(Type::Int)));
+    let rebound = slot.rebind(&conc2).expect("concrete rebind succeeds");
+    assert_eq!(rebound.index(), slot.index(), "rebind preserves the index");
+
+    let poly = generic_scheme(Type::Fn(vec![Type::Var(9)], Box::new(Type::Var(9))), vec![9]);
+    let err = rebound
+        .rebind(&poly)
+        .expect_err("non-concrete rebind refuses");
+    assert!(matches!(err, crate::NotConcrete::Var(9)));
+}
+
+// spec: design/arch/concreteness-types-first.md §3.6 — the wire pin:
+// CallableSlot is #[serde(transparent)], so the serialized form is the bare
+// index (byte-identical to the usize it will replace at the S120 flip — the
+// retype alone forces no schema bump).
+#[test]
+fn callable_slot_serde_is_transparent() {
+    let mut st = SymbolTable::new(ModuleFullPath::from("m"));
+    let slot = st
+        .mint_callable_slot(&mono_scheme(Type::Int))
+        .expect("mint");
+    let json = serde_json::to_string(&slot).expect("serialize");
+    assert_eq!(json, "0", "wire shape is the bare index");
+    let rt: CallableSlot = serde_json::from_str("17").expect("deserialize");
+    assert_eq!(rt.index(), 17, "serde bypasses the mint — the cache load \
+        boundary re-checks restored slots (R-29)");
+}
+
+// spec: design/arch/concreteness-types-first.md §3.3 — the DORMANT CtorState
+// sum's wire shape, pinned ahead of the 0931 flip so the schema-window review
+// diffs against a recorded shape.
+#[test]
+fn ctor_state_serde_shape_pin() {
+    let template = CtorState::Template;
+    assert_eq!(
+        serde_json::to_string(&template).expect("serialize"),
+        "\"Template\""
+    );
+    let mut st = SymbolTable::new(ModuleFullPath::from("m"));
+    let slot = st
+        .mint_callable_slot(&mono_scheme(Type::Int))
+        .expect("mint");
+    let concrete = CtorState::Concrete { got_slot: slot };
+    assert_eq!(
+        serde_json::to_string(&concrete).expect("serialize"),
+        "{\"Concrete\":{\"got_slot\":0}}"
+    );
+    let rt: CtorState =
+        serde_json::from_str("{\"Concrete\":{\"got_slot\":3}}").expect("deserialize");
+    assert_eq!(rt, CtorState::Concrete { got_slot: rt_slot(3) });
+
+    fn rt_slot(n: usize) -> CallableSlot {
+        serde_json::from_str(&n.to_string()).expect("transparent slot")
+    }
+}
+
+// ---- Injective GOT data-symbol mint (S119, FIXME 0748; safety-register R4) ----
+
+/// Test-only decoder for the escape image — unambiguous decode IS the
+/// injectivity argument: every `_` in the image begins exactly one legal pair.
+fn decode_got_flat(flat: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut chars = flat.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '_' {
+            out.push(c);
+            continue;
+        }
+        match chars.next()? {
+            '_' => out.push('_'),
+            'd' => out.push('.'),
+            'h' => out.push('-'),
+            'u' => {
+                let hex: String = (0..6).map(|_| chars.next()).collect::<Option<String>>()?;
+                out.push(char::from_u32(u32::from_str_radix(&hex, 16).ok()?)?);
+            }
+            _ => return None, // illegal pair — not in the image
+        }
+    }
+    Some(out)
+}
+
+fn got_flat(path: &str) -> String {
+    got_data_symbol_name(&ModuleFullPath::from(path))
+        .strip_prefix("__cranelisp_got_")
+        .expect("prefix")
+        .to_string()
+}
+
+// spec: design/arch/safety-invariants.md §4 R4 — the collision class is closed:
+// `a.b` and `a_b` mint DISTINCT GOT slab symbols (the inverted 0748 witness).
+#[test]
+fn got_data_symbol_name_is_injective_on_the_0748_pair() {
+    assert_ne!(
+        got_data_symbol_name(&ModuleFullPath::from("a.b")),
+        got_data_symbol_name(&ModuleFullPath::from("a_b")),
+    );
+}
+
+// spec: design/arch/fixmes/0748 constraint 1 — purely-alphanumeric paths are
+// FIXED POINTS (`__cranelisp_got_primitives` is a link-time ABI literal).
+#[test]
+fn got_data_symbol_name_alphanumeric_paths_are_fixed_points() {
+    for path in ["primitives", "prelude", "user", "macros", "sudoku9"] {
+        assert_eq!(
+            got_data_symbol_name(&ModuleFullPath::from(path)),
+            format!("__cranelisp_got_{path}")
+        );
+    }
+}
+
+// spec: design/arch/fixmes/0748 constraint 3 — the `_entry` sentinel is outside
+// the escape image (no path can mint it).
+#[test]
+fn got_data_symbol_name_entry_sentinel_outside_image() {
+    assert_eq!(
+        got_data_symbol_name(&ModuleFullPath::from("")),
+        "__cranelisp_got__entry"
+    );
+    // `_entry` decodes as an illegal `_e` pair — not in the image.
+    assert_eq!(decode_got_flat("_entry"), None);
+    // Nearby paths that COULD be confused all mint something else.
+    for path in ["entry", "_entry", ".entry", "-entry"] {
+        assert_ne!(got_flat(path), "_entry", "path {path:?} must not collide with the sentinel");
+    }
+}
+
+// spec: design/arch/fixmes/0748 — round-trip battery: encode→decode is the
+// identity over a corpus spanning every escape class, so the mint is injective
+// on everything the decoder covers.
+#[test]
+fn got_data_symbol_name_round_trips() {
+    for path in [
+        "user",
+        "a.b",
+        "a_b",
+        "a-b",
+        "a.b.c",
+        "a_b.c",
+        "a.b_c",
+        "my-lib.sub_mod.deep",
+        "compare.ord",
+        "fn.option.test",
+        "__x",
+        "x__",
+        "ümlaut.mod",
+    ] {
+        assert_eq!(
+            decode_got_flat(&got_flat(path)).as_deref(),
+            Some(path),
+            "escape must round-trip for {path:?}"
+        );
+    }
+    // Pairwise distinctness over the historically-colliding cluster.
+    let cluster = ["a.b", "a_b", "a-b", "a.b.c", "a_b.c", "a.b_c"];
+    for (i, p) in cluster.iter().enumerate() {
+        for q in &cluster[i + 1..] {
+            assert_ne!(got_flat(p), got_flat(q), "{p:?} vs {q:?}");
+        }
+    }
+}
+
+// ---- trait_impl_key + enrol_written_trait_impl (S119, FIXME 0869 carrier;
+// design/arch/trait-impl-cache-carrier.md §4) ----
+
+fn wt_record(methods: &[&str]) -> WrittenTraitImpl {
+    WrittenTraitImpl::new(
+        FQTraitName::new(ModuleFullPath::from("core"), TraitName::from("Display")),
+        FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Point")),
+        ModuleFullPath::from("user"),
+        methods.iter().map(|m| Symbol::from(*m)).collect(),
+        Visibility::Public,
+    )
+}
+
+// spec: design/arch/trait-impl-cache-carrier.md §4 — the ONE key mint matches
+// the (to-be-re-pointed) hand-rolled `format!("impl${}${}", type, trait)` sites
+// byte-for-byte.
+#[test]
+fn trait_impl_key_matches_the_handrolled_grammar() {
+    let r = wt_record(&["show"]);
+    let key = crate::trait_impl_key(&r.impl_type, &r.trait_name);
+    assert_eq!(
+        key.as_ref(),
+        format!("impl${}${}", r.impl_type, r.trait_name).as_str()
+    );
+}
+
+// spec: design/arch/trait-impl-cache-carrier.md §4 — absent ⇒ insert the shell
+// (Enrolled); identical replay ⇒ AlreadyEnrolled (idempotence carried by the
+// helper, not caller bookkeeping).
+#[test]
+fn enrol_written_trait_impl_inserts_then_idempotent() {
+    let mut home = SymbolTable::new(ModuleFullPath::from("core"));
+    let r = wt_record(&["show"]);
+    assert_eq!(
+        enrol_written_trait_impl(&mut home, &r).expect("fresh enrol"),
+        EnrolOutcome::Enrolled
+    );
+    let key = crate::trait_impl_key(&r.impl_type, &r.trait_name);
+    match home.get(key.as_ref()) {
+        Some(ModuleEntry::TraitImpl {
+            trait_name,
+            impl_module,
+            methods,
+            ..
+        }) => {
+            assert_eq!(trait_name, &r.trait_name);
+            assert_eq!(impl_module, &r.impl_module);
+            assert_eq!(methods, &r.methods);
+        }
+        other => panic!("expected the discovery shell, got {other:?}"),
+    }
+    assert_eq!(
+        enrol_written_trait_impl(&mut home, &r).expect("replay"),
+        EnrolOutcome::AlreadyEnrolled
+    );
+}
+
+// spec: design/arch/trait-impl-cache-carrier.md §4 — divergent payload is a
+// hard error naming both, never a silent pick; a non-TraitImpl occupant is
+// equally divergent.
+#[test]
+fn enrol_written_trait_impl_rejects_divergence() {
+    let mut home = SymbolTable::new(ModuleFullPath::from("core"));
+    let r = wt_record(&["show"]);
+    enrol_written_trait_impl(&mut home, &r).expect("fresh enrol");
+    let divergent = wt_record(&["show", "extra"]);
+    let err = enrol_written_trait_impl(&mut home, &divergent)
+        .expect_err("divergent methods must hard-error");
+    assert!(matches!(err, crate::CranelispError::ModuleError { .. }));
+
+    // Non-TraitImpl occupant at the key.
+    let mut home2 = SymbolTable::new(ModuleFullPath::from("core"));
+    let key = crate::trait_impl_key(&r.impl_type, &r.trait_name);
+    home2.insert(key, ModuleEntry::Ambiguous { visibility: Visibility::Public });
+    let err2 = enrol_written_trait_impl(&mut home2, &r)
+        .expect_err("non-TraitImpl occupant must hard-error");
+    assert!(matches!(err2, crate::CranelispError::ModuleError { .. }));
+}
+
+// spec: design/arch/trait-impl-cache-carrier.md §5 (R6) — a malformed record
+// (empty method list) is rejected before enrolment; nothing is inserted.
+#[test]
+fn enrol_written_trait_impl_rejects_malformed_record() {
+    let mut home = SymbolTable::new(ModuleFullPath::from("core"));
+    let r = wt_record(&[]);
+    let err = enrol_written_trait_impl(&mut home, &r).expect_err("empty methods must reject");
+    assert!(matches!(err, crate::CranelispError::ModuleError { .. }));
+    let key = crate::trait_impl_key(&r.impl_type, &r.trait_name);
+    assert!(home.get(key.as_ref()).is_none(), "nothing enrolled on rejection");
+}
+
+// spec: design/arch/trait-impl-cache-carrier.md §2 — the carrier is
+// serde-visible with NO default: a sidecar missing `written_trait_impls` is a
+// hard serde error (absence unrepresentable post-bump), and a populated field
+// round-trips in order.
+#[test]
+fn written_trait_impls_serde_required_and_round_trips() {
+    let mut st = SymbolTable::new(ModuleFullPath::from("user"));
+    st.written_trait_impls.push(wt_record(&["show"]));
+    let json = serde_json::to_string(&st).expect("serialize");
+    assert!(json.contains("written_trait_impls"));
+    let rt: SymbolTable = serde_json::from_str(&json).expect("round trip");
+    assert_eq!(rt.written_trait_impls, st.written_trait_impls);
+
+    // Field stripped ⇒ hard error, not a silently-empty default.
+    let v: serde_json::Value = serde_json::from_str(&json).expect("value");
+    let mut obj = v;
+    obj.as_object_mut()
+        .expect("object")
+        .remove("written_trait_impls")
+        .expect("field present");
+    let stripped = serde_json::to_string(&obj).expect("re-serialize");
+    assert!(
+        serde_json::from_str::<SymbolTable>(&stripped).is_err(),
+        "a pre-24 sidecar (no carrier field) must be a hard serde error"
+    );
+}
+
+// spec: design/arch/platform-interface.md §1 — the platform GOT symbol is the
+// DLL's ratified export_name literal; the host mint reproduces it verbatim
+// (the S119 escape carves out the synthetic platform.* namespace).
+#[test]
+fn got_data_symbol_name_platform_carve_out_matches_the_dll_abi_literal() {
+    assert_eq!(
+        got_data_symbol_name(&ModuleFullPath::from("platform.stdio")),
+        "__cranelisp_got_platform_stdio"
+    );
+    assert_eq!(
+        got_data_symbol_name(&ModuleFullPath::from("platform.test-capture")),
+        "__cranelisp_got_platform_test-capture",
+        "the platform name joins VERBATIM (hyphen preserved) — the DLL \
+         concat! literal is the authority"
+    );
+    // Outside the carve-out, a root module spelled `platform_stdio` escapes
+    // its underscore and therefore cannot collide with a platform slab.
+    assert_ne!(
+        got_data_symbol_name(&ModuleFullPath::from("platform_stdio")),
+        got_data_symbol_name(&ModuleFullPath::from("platform.stdio")),
     );
 }

@@ -10,6 +10,17 @@ refers_to: spec/07-traits.md §7.3; spec/08-modules.md §8.5;
 status: open
 ---
 
+> **CARRIER HALF LANDED (/arch, S119 arch wave, per
+> `design/arch/trait-impl-cache-carrier.md`):** `WrittenTraitImpl`,
+> `SymbolTable.written_trait_impls` (serde-visible, NO default),
+> `enrol_written_trait_impl` (Enrolled/AlreadyEnrolled/hard-error-on-divergence),
+> and the hoisted `trait_impl_key` mint are in `cranelisp-types` with unit
+> coverage; `CACHE_SCHEMA_VERSION` 23→24 taken (the ONE S119 window).
+> **REMAINING (`/dev`):** the typecheck producer append at `check_trait_impl`'s
+> success point (+ re-point the two hand-rolled `impl$` sites,
+> `traits/impl_check.rs` / `traits/dispatch.rs`), and int's restore-time
+> enrolment at BOTH cache entry points; then the committed discriminator flips.
+
 # Cache restoration loses sibling-written trait implementations
 
 ## Issue

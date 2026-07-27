@@ -3,8 +3,9 @@ use std::collections::HashMap;
 
 use crate::{
     ConcreteType, DefnVariant, FQSymbol, FQTraitName, FQTypeName, GOT_TABLE_SIZE, GotTable,
-    LinkerSymbol, ModeSummary, ModuleFullPath, ModuleName, MonoDefnVariant, SchedulingClass,
-    Scheme, Sexp, Span, Symbol, TraitDeclInfo, TraitName, Type, TypeDefInfo, TypeName, Visibility,
+    LinkerSymbol, ModeSummary, ModuleFullPath, ModuleName, MonoDefnVariant, NotConcrete,
+    SchedulingClass, Scheme, Sexp, Span, Symbol, TraitDeclInfo, TraitName, Type, TypeDefInfo,
+    TypeName, Visibility,
 };
 
 // --- CodeStore / LinkerStore marker traits (Sprint 58 Wave 3a; Decision 32) ---
@@ -57,23 +58,33 @@ impl<T: Clone + Send + Sync + 'static> LinkerStore for T {}
 
 /// Per-module symbol table.
 ///
-/// Mostly pure data (types, schemes, docstrings) with a single runtime-only
-/// field: `got` (the per-module Global Offset Table). The GOT holds code
-/// pointers that codegen writes and JIT-emitted call sites read; it is
-/// `#[serde(skip)]` so cache files stay pointer-free and re-initialise to a
-/// fresh null table on deserialise.
+/// Mostly pure data (types, schemes, docstrings) with two runtime-only
+/// fields: `got` (the per-module Global Offset Table) and `linker`. The GOT
+/// holds code pointers that codegen writes and JIT-emitted call sites read;
+/// it is `#[serde(skip)]` so cache files stay pointer-free and re-initialise
+/// to a fresh null table on deserialise.
 ///
-/// Owned by `TypeChecker` (via `DashMap<ModuleFullPath, SymbolTable>`), read
-/// by `Backend` for type information, and mutated atomically per-slot by
-/// codegen workers through `got.store_slot`.
+/// Owned by the **session**: the integration layer constructs the per-session
+/// `SymbolTables<Code, ()>` collection (`SharedState.symbol_tables`) at
+/// startup and threads it as a shared reference into typecheck (which reads
+/// and writes entries through its orchestrator accessors) and backend (which
+/// reads type information and writes GOT slots atomically per-slot through
+/// `got.store_slot`).
+///
+/// **GOT slots.** Slot indices are module-local, allocated from the
+/// `next_got_slot` cursor. [`Self::mint_callable_slot`] is the checked mint —
+/// it refuses a non-concrete scheme, returning the [`CallableSlot`] witness
+/// that slot-carrying callable kinds require (`slot ⇒ is_concrete()`, BC §7
+/// "Callability is structural"); the raw [`Self::allocate_got_slot`] is the
+/// transitional unchecked allocator, scheduled to demote to `pub(crate)` when
+/// the S120 wash re-routes its callers (FIXME 0931).
 ///
 /// Structural declarations (`imports`, `exports`, `platforms`, `submodules`)
 /// retain the *original specification* of the module's `(import …)` /
 /// `(export …)` / `(platform …)` / `(mod …)` forms — the per-symbol
 /// `ModuleEntry::Import` entries are the *resolved effects* of imports.
-/// See Decision 33 in `design/arch/CLAUDE.md` (Sprint 58 Step 5a). The
-/// `ModuleStructure` parallel store in `src/save.rs` (Sprint-57 transitional
-/// shape) dissolves at Step 5a — its fields move 1:1 to these.
+/// (Decision 33, Sprint 58; the pre-S58 `ModuleStructure` parallel store is
+/// long dissolved into these fields.)
 ///
 /// Generic over `C: CodeStore` (per-function compiled-code store carried on
 /// `ModuleEntry::Def.code`) and `L: LinkerStore` (per-module linker store
@@ -143,12 +154,13 @@ pub struct SymbolTable<C: CodeStore = (), L: LinkerStore = ()> {
     /// design upgrade — eliminates side-table drift, matches the
     /// `next_got_slot` allocation pattern).
     ///
-    /// Source-side this is plain `u64` mutated under the existing
-    /// `&mut SymbolTable` discipline (mirrors `next_got_slot: usize`). The
-    /// facade target is `AtomicU64` (peer of facade's `next_got_slot:
-    /// AtomicUsize`); the conversion lands as part of the broader
-    /// SymbolTable concurrency cascade (S-DRIFT-19/20/21), not in this
-    /// change-set.
+    /// Plain `u64` mutated under the ordinary `&mut SymbolTable` discipline
+    /// (mirrors `next_got_slot: usize`) — this IS the end-state. The former
+    /// "facade target: `AtomicU64` / DashMap-inner concurrency cascade"
+    /// narrative (S-DRIFT-19/20/21) was formally RETRACTED at S119 (FIXME
+    /// 0919; BC §7 records the retraction): per-module writes are serialized
+    /// by the DashMap shard guard the orchestrator already holds, so the
+    /// atomic-field conversion buys nothing the access pattern needs.
     ///
     /// `#[serde(default)]` so pre-existing caches deserialise as `0` and the
     /// loader re-derives the high-water mark from the maximum `seq` across
@@ -164,9 +176,7 @@ pub struct SymbolTable<C: CodeStore = (), L: LinkerStore = ()> {
     /// Wrapped in `Arc` so codegen workers can hold a cheap handle to the
     /// GOT while the `DashMap` read guard is released. Cloning a
     /// `SymbolTable` shares the same underlying GOT via refcount bump — the
-    /// GOT is runtime state, not copied data. Phase 2 bridge: `/int`'s
-    /// Wave 2 may swap the `Arc` for a bare field once
-    /// `compile_and_register_defn_shared` and its helpers are deleted.
+    /// GOT is runtime state, not copied data.
     ///
     /// Not serialised: cache reconstruction creates a fresh GOT and
     /// re-populates slot pointers during cache-hit codegen.
@@ -183,9 +193,10 @@ pub struct SymbolTable<C: CodeStore = (), L: LinkerStore = ()> {
     /// private `(import …)`-edge from public `(export [foreign-sym])`-edge
     /// — see `Import` variant in this enum
     /// variant docstring).
-    /// Consumers that need the effective set (transitive impl-resolution;
-    /// module-locality short-name lookups) walk both stores — see
-    /// `transitive_import_closure` in `crates/cranelisp-typecheck/src/checker.rs`.
+    /// Resolution never walks this form-record: cross-module reachability is
+    /// answered per-name by chain-following the per-symbol `Import` entries
+    /// (Principle 17 — closure walks over the import graph are forbidden; the
+    /// former `transitive_import_closure` helper is deleted).
     ///
     /// Append-only during the form-by-form classification pass; insertion
     /// order MUST match source order. No deduplication: duplicate `(import …)`
@@ -214,6 +225,30 @@ pub struct SymbolTable<C: CodeStore = (), L: LinkerStore = ()> {
     /// by `/int` for submodule loading.
     #[serde(default)]
     pub submodules: Vec<ModDecl>,
+
+    // --- Written-impl cache carrier (S119, FIXME 0869; trait-impl-cache-carrier.md) ---
+    /// Trait impls **this module wrote** — the writer-side persistence
+    /// projection of the `ModuleEntry::TraitImpl` discovery shells that fresh
+    /// registration placed in each trait's HOME module (Decision 45 as
+    /// amended S110). The trait home's own sidecar cannot reliably carry
+    /// impls other modules wrote into it (snapshot-ordering/cache-hit races —
+    /// `design/arch/trait-impl-cache-carrier.md` §1), so the durable home is
+    /// the causal producer: restoration re-derives each shell from this
+    /// record via [`enrol_written_trait_impl`] after the writer's dependency
+    /// closure installs.
+    ///
+    /// Appended by typecheck at the `check_trait_impl` success point (the
+    /// same single-source values the shell is built from — one derivation,
+    /// two carriers; Principles 24/26). Vec order is registration order
+    /// (deterministic from source; keeps `.meta.json` byte-reproducible).
+    ///
+    /// **Deliberately NO `#[serde(default)]`** (the schema-22
+    /// typed-resolution-carrier precedent): post-bump, absence is a hard
+    /// serde error, never a silently-empty default — a default-empty read of
+    /// a pre-carrier sidecar would silently reproduce the 0869 defect. Its
+    /// addition is a serde shape change: `CACHE_SCHEMA_VERSION` 23→24 rides
+    /// this change-set (the ONE S119 window).
+    pub written_trait_impls: Vec<WrittenTraitImpl>,
 
     // --- Cache schema version (Sprint 58 Step 5b; Decision 34) ---
     /// Schema version of the serialised symbol table. Bumped on every
@@ -278,7 +313,7 @@ fn default_got_arc() -> std::sync::Arc<GotTable> {
 /// The alias is consumed by multiple implementation-crate surfaces:
 ///
 /// - `cranelisp-typecheck` — `check_forms(parsed, ctx, symbol_tables: &SymbolTables, module_aliases: &ModuleAliases)` and `check_type_expr(expr, ctx, symbol_tables, module_aliases, current_module, span)` (see `bounded-contexts.md` §2 + Decision 0044; the per-crate `facades/typecheck.md` document was retired in S72 Wave 5)
-/// - `cranelisp` (the `int` integration layer) — `SharedState.symbol_tables: SymbolTables<Code, ()>` (see `design/arch/facades/int.md` + Decision 0035); int's Pass-1 macro recognition also reads it via `cranelisp_types::resolve_macro_head`
+/// - `cranelisp` (the `int` integration layer) — `SharedState.symbol_tables: SymbolTables<Code, ()>` (see `bounded-contexts.md` §6; the per-crate `facades/int.md` document was retired in S81 W-Retire); int's Pass-1 macro recognition also reads it via the types-owned resolution primitive (`ResolutionScope`)
 /// - `cranelisp-backend` — codegen reads `symbol_tables` as the single codegen source (see `bounded-contexts.md` §3)
 ///
 /// (Post-S76 W-Macro `cranelisp-frontend` no longer consumes `SymbolTables` —
@@ -299,17 +334,12 @@ fn default_got_arc() -> std::sync::Arc<GotTable> {
 /// The same alias name spans both parameterisations — there is one
 /// session-level table name across the workspace.
 ///
-/// **Drift note — no `Arc<…>` wrapper.** Earlier facade text declared
-/// `pub type SymbolTables<C, L> = DashMap<ModuleFullPath, Arc<SymbolTable<C, L>>>;`
-/// (with `Arc<…>`). The canonical form is **without** `Arc` — the
-/// integration layer's `SharedState.symbol_tables: SymbolTables<Code, ()>`
-/// holds the per-module `SymbolTable` values directly inside the DashMap
-/// shards. The `Arc` was an editorial drift on the frontend facade
-/// (self-classified in the S70 Phase B frontend audit memo at
-/// `design/arch/facades/frontend-audit-s70.md`; the frontend facade
-/// itself was retired in S70 Phase B group B3-C — its narrative folded
-/// into the lib.rs //! preamble + BC §1); the sibling
-/// `int::SharedState.symbol_tables` is the workspace-stable shape.
+/// **No `Arc<…>` wrapper.** The canonical form holds the per-module
+/// `SymbolTable` values directly inside the DashMap shards — the integration
+/// layer's `SharedState.symbol_tables: SymbolTables<Code, ()>` is the
+/// workspace-stable shape. (An `Arc<SymbolTable>`-wrapped spelling in retired
+/// facade text was editorial drift; provenance:
+/// `design/arch/facades/frontend-audit-s70.md`.)
 ///
 /// See also `bounded-contexts.md` §7 (types-crate BC; "Module aliases live
 /// at session level"), `design/arch/principles/15-facade-types-live-with-behavior.md`,
@@ -481,6 +511,7 @@ impl SymbolTable<(), ()> {
             exports: Vec::new(),
             platforms: Vec::new(),
             submodules: Vec::new(),
+            written_trait_impls: Vec::new(),
             schema_version: 0,
             linker: None,
         }
@@ -521,6 +552,7 @@ impl SymbolTable<(), ()> {
             exports: self.exports,
             platforms: self.platforms,
             submodules: self.submodules,
+            written_trait_impls: self.written_trait_impls,
             schema_version: self.schema_version,
             linker: None,
         }
@@ -604,23 +636,11 @@ impl ModuleEntry<()> {
                 visibility,
                 docstring,
             },
-            // ModuleEntry::Constructor variant retired — constructors are now
-            // ModuleEntry::Def entries with kind: DefKind::Constructor { .. }
-            // and synthesised DefnVariant bodies whose body expression is
-            // Expr::ConstrADT (S69 Submission 35 narrowed ast from Option<Defn>
-            // to Option<DefnVariant>; see `DefKind::Constructor` rustdoc
-            // and `design/arch/bounded-contexts.md` §7).
-            // ModuleEntry::Macro variant retired (Submission 22) — macros are
-            // now ModuleEntry::Def entries with kind: DefKind::Macro
-            // { clauses_meta } (see `DefKind::Macro` rustdoc). Per-symbol
-            // source / sexp / clif_ir / disasm / code_size live on the
-            // integration-layer Introspection record (Decision 41), not on
-            // the Def variant — symmetric across all DefKinds.
-            // ModuleEntry::PlatformDecl variant retired (Submission 22) —
-            // platforms register as synthetic modules at
-            // symbol_tables["platform.<name>"] per spec §8.9.3; the DLL handle
-            // lives on the platform module's own SymbolTable.dll
-            // (see `design/arch/bounded-contexts.md` §7).
+            // Retired variants (canonical retirement records live at the
+            // variant-gap comments in the `ModuleEntry` enum below):
+            // Constructor → `Def { kind: DefKind::Constructor }`;
+            // Macro → `Def { kind: DefKind::Macro }`;
+            // PlatformDecl → synthetic `platform.<name>` module (spec §8.9.3).
             ModuleEntry::TraitImpl {
                 trait_name,
                 impl_type,
@@ -668,6 +688,295 @@ impl std::fmt::Display for GotExhausted {
 
 impl std::error::Error for GotExhausted {}
 
+// --- Callable-slot witness (S119 types-first slice; concreteness-types-first.md §3) ---
+
+/// A GOT slot index paired, at mint, with the concreteness check of the scheme
+/// it serves — the witness half of the `slot ⇒ is_concrete()` invariant
+/// (`design/arch/total-concreteness.md` §2 I-CONC; BC §7 "Callability is
+/// structural").
+///
+/// The field is **private**: outside `cranelisp-types` a `CallableSlot` value
+/// can only be obtained from [`SymbolTable::mint_callable_slot`] (fresh,
+/// checked), [`CallableSlot::rebind`] (reuse, re-checked — the REPL
+/// slot-carry-forward path), or deserialization. Because constructing a
+/// slot-carrying kind variant requires a `CallableSlot` *value*, the enum
+/// variants that will carry it need no field privatisation — the S119
+/// hand-mint spelling (`allocate_got_slot()` then a `Concrete { got_slot }`
+/// literal) becomes a compile error once the kind fields retype.
+///
+/// **Trust-boundary obligation (R-29).** Serde bypasses the mint
+/// (`#[serde(transparent)]` — the wire shape is the bare index, byte-identical
+/// to the `usize` it replaces). The cache-load loop therefore re-checks every
+/// restored slot-carrying entry: a restored slot whose scheme fails
+/// `is_concrete()` is a diagnosed `CacheStale` recompile
+/// (`concreteness-types-first.md` §3.6, the `GotSlotOutOfRange` precedent),
+/// never a trusted witness. Clone/copy can likewise move a slot beside a
+/// different scheme in-process; the standing falsifier for that residual is
+/// the NC-1 universal sweep (tier 5 of the §3.2 ladder).
+///
+/// **Status: vocabulary landed, kind fields not yet retyped.** The
+/// `DefKind`/`UserFnState` slot fields still carry raw `usize` at HEAD; the
+/// retype (`UserFnState::Concrete.got_slot`, `PrimitiveBody::Extern`,
+/// `DefKind::PlatformEffect`, and `DefKind::Constructor` → [`CtorState`]) is
+/// the S120 wash flip (FIXME 0931), which also demotes
+/// [`SymbolTable::allocate_got_slot`] to `pub(crate)` as the mint's interior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct CallableSlot(usize);
+
+impl CallableSlot {
+    /// The raw GOT slot index (for `SymbolTable.got` `store_slot`/`load_slot`
+    /// and serde/storage sites). Read-only — there is no public inverse.
+    pub fn index(&self) -> usize {
+        self.0
+    }
+
+    /// Checked slot REUSE — the Decision-31 REPL-redefinition carry-forward:
+    /// transfer this slot to a new scheme iff the scheme is concrete.
+    ///
+    /// Consumes the witness and re-issues it against `scheme`, so a slot
+    /// cannot silently migrate from a concrete definition to a non-concrete
+    /// redefinition (the redefinition path must instead take the slot-less
+    /// template route and the old slot is retired/frozen per the session's
+    /// retention rules). The error carries the first residual position
+    /// ([`NotConcrete`]) for a located diagnostic.
+    pub fn rebind(self, scheme: &Scheme) -> Result<CallableSlot, NotConcrete> {
+        // `ConcreteType::from_type` is the witness-producing form of
+        // `Type::is_concrete()` (identical acceptance set; the Err carries the
+        // exact residual TypeId) — one predicate, one choke point (P7).
+        ConcreteType::from_type(&scheme.ty)?;
+        Ok(self)
+    }
+}
+
+/// Why [`SymbolTable::mint_callable_slot`] refused to mint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SlotMintError {
+    /// The scheme is not fully concrete — a GOT slot is the value-capability
+    /// of a CONCRETE callable (Principle 20 / I-CONC); the entry must take a
+    /// slot-less template state instead (`Constrained` / `Polymorphic` /
+    /// [`CtorState::Template`]).
+    NotConcrete(NotConcrete),
+    /// The module's fixed GOT slab has no free slot (the pre-existing
+    /// [`GotExhausted`] failure, unchanged in meaning).
+    Exhausted(GotExhausted),
+}
+
+impl std::fmt::Display for SlotMintError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SlotMintError::NotConcrete(nc) => write!(
+                f,
+                "cannot mint a callable GOT slot for a non-concrete scheme ({nc:?}): \
+                 only a fully-concrete callable may hold a slot"
+            ),
+            SlotMintError::Exhausted(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for SlotMintError {}
+
+/// The slotted-or-template state of a [`DefKind::Constructor`] entry — the
+/// ctor-side sibling of [`UserFnState`] (S119 design, `concreteness-types-first.md`
+/// §3.3; register rows R-1/R-2/R-8/R-19).
+///
+/// **DORMANT AT HEAD — the flip is FIXME 0931's S120 change-set.**
+/// `DefKind::Constructor` still carries a mandatory raw `got_slot: usize`
+/// field; this enum is landed ahead of the flip (the S114 `VarRef`/`ApplyRef`
+/// dormant-then-flip template) so the wire shape and the contract are pinned
+/// where the wash can review them. The flip — `Constructor { got_slot: usize, … }`
+/// → `Constructor { state: CtorState, … }` — is a serde shape change and takes
+/// the ctor tranche's ONE `CACHE_SCHEMA_VERSION` window (0931 item 4).
+///
+/// Two states, not `Option<CallableSlot>`, mirroring the S84 `UserFnState`
+/// precedent: the *why* stays legible at every exhaustive matcher.
+///
+/// - [`CtorState::Template`] — the declaration-side template of a **generic**
+///   ADT ctor: slot-less, excluded from codegen (`defined_symbols()` gains the
+///   conjunct at the flip), a monomorphisation SOURCE. The template keeps its
+///   full declaration payload — scheme, tag, `field_count`, the product type
+///   facet, pattern/display identity — and serialises and travels for
+///   cross-module monomorphisation (R-8: templates stay representable **as
+///   templates** while becoming unrepresentable **as callables**).
+/// - [`CtorState::Concrete`] — a concrete ctor (`Tally`) or a minted ctor
+///   instance: a slotted callable, the slot witness-carried.
+///
+/// This enum is in the closed-sum exception class of the `#[non_exhaustive]`
+/// policy (like `UserFnState` / `Mode` / `VarRef`): exhaustive consumer
+/// matches are the contract — a third state must break every match at compile
+/// time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CtorState {
+    /// Generic-ctor declaration template: slot-less, non-codegen, a mono
+    /// source. (`IO.Bind` and every generic-ADT ctor land here at the flip.)
+    Template,
+    /// Concrete ctor or minted ctor instance: slotted callable.
+    Concrete {
+        /// The witness-carried GOT slot through which the ctor is invoked
+        /// (operator-as-value indirects through it; direct construction is
+        /// inline emission at concrete sites).
+        got_slot: CallableSlot,
+    },
+}
+
+// --- Written-impl cache carrier (S119, FIXME 0869; trait-impl-cache-carrier.md) ---
+
+/// One trait impl this module WROTE — the persistence projection of the
+/// [`ModuleEntry::TraitImpl`] discovery shell that fresh registration placed
+/// in the **trait's home** table (Decision 45 as amended S110 §1.1.1).
+///
+/// Serde-visible on the writer module's `.meta.json` via
+/// `SymbolTable.written_trait_impls`; restoration re-enrols the shell from
+/// this record through [`enrol_written_trait_impl`] — never from mangled-name
+/// parsing, never from a foreign-table scan (both Principle-24 banned shapes).
+/// The Principle-7 second-home justification (authority split by lifetime:
+/// live-session discovery = the shell; cross-session persistence = this
+/// record; ONE derivation, conflict-checked at the enrolment seam) is
+/// `design/arch/trait-impl-cache-carrier.md` §7.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct WrittenTraitImpl {
+    /// Canonical resolved trait identity (never re-derived at restore).
+    pub trait_name: FQTraitName,
+    /// Canonical resolved implementing-type identity.
+    pub impl_type: FQTypeName,
+    /// The writer's module — equal to the owning table's `path` (the load
+    /// boundary validates this; a mismatched record is diagnosed cache-stale,
+    /// never trusted into enrolment — R6, `safety-invariants.md` §4).
+    pub impl_module: ModuleFullPath,
+    /// Local method names (not mangled).
+    pub methods: Vec<Symbol>,
+    /// `Public` per spec §5.11.1.
+    pub visibility: Visibility,
+}
+
+impl WrittenTraitImpl {
+    /// Construct a record (`#[non_exhaustive]` — this is the cross-crate
+    /// construction path, used by typecheck's `check_trait_impl` success
+    /// point).
+    pub fn new(
+        trait_name: FQTraitName,
+        impl_type: FQTypeName,
+        impl_module: ModuleFullPath,
+        methods: Vec<Symbol>,
+        visibility: Visibility,
+    ) -> Self {
+        WrittenTraitImpl {
+            trait_name,
+            impl_type,
+            impl_module,
+            methods,
+            visibility,
+        }
+    }
+}
+
+/// Outcome of [`enrol_written_trait_impl`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnrolOutcome {
+    /// The discovery shell was absent and has been inserted.
+    Enrolled,
+    /// An identical shell was already present — no-op (idempotence under
+    /// multi-path restore; carried by the helper, not caller bookkeeping).
+    AlreadyEnrolled,
+}
+
+/// The ONE idempotent shell-enrolment primitive over the **trait home's**
+/// table (`trait-impl-cache-carrier.md` §4) — shared by the fresh
+/// registration path and the cache-restore path, so both route the key mint
+/// and the conflict discrimination through the same code (Principle 7).
+///
+/// Semantics: mint the storage key via [`crate::trait_impl_key`]; probe
+/// `table`; **absent** → insert the shell → [`EnrolOutcome::Enrolled`];
+/// **present and payload-identical** → no-op →
+/// [`EnrolOutcome::AlreadyEnrolled`]; **present and divergent** (different
+/// payload, or a non-`TraitImpl` occupant) → hard `ModuleError` naming both —
+/// deterministic conflict handling, never a silent pick.
+///
+/// A malformed record (empty method list — the R6 well-formedness floor this
+/// crate can check without the sidecar context) is rejected before the probe;
+/// the load boundary additionally validates `impl_module` against the owning
+/// sidecar's module path (int/backend side, same R6 row).
+pub fn enrol_written_trait_impl<C, L>(
+    table: &mut SymbolTable<C, L>,
+    record: &WrittenTraitImpl,
+) -> Result<EnrolOutcome, crate::CranelispError>
+where
+    C: CodeStore,
+    L: LinkerStore,
+{
+    use crate::{CranelispError, ErrorLocation};
+
+    if record.methods.is_empty() {
+        return Err(CranelispError::ModuleError {
+            message: format!(
+                "malformed written-impl record: impl of {} for {} (writer {}) has an empty \
+                 method list — rejecting enrolment (stale or corrupted cache metadata)",
+                record.trait_name, record.impl_type, record.impl_module
+            ),
+            location: ErrorLocation::unknown(),
+        });
+    }
+
+    let key = crate::trait_impl_key(&record.impl_type, &record.trait_name);
+    match table.get(key.as_ref()) {
+        None => {
+            table.insert(
+                key,
+                ModuleEntry::TraitImpl {
+                    trait_name: record.trait_name.clone(),
+                    impl_type: record.impl_type.clone(),
+                    impl_module: record.impl_module.clone(),
+                    methods: record.methods.clone(),
+                    visibility: record.visibility,
+                },
+            );
+            Ok(EnrolOutcome::Enrolled)
+        }
+        Some(ModuleEntry::TraitImpl {
+            trait_name,
+            impl_type,
+            impl_module,
+            methods,
+            visibility,
+        }) if *trait_name == record.trait_name
+            && *impl_type == record.impl_type
+            && *impl_module == record.impl_module
+            && *methods == record.methods
+            && *visibility == record.visibility =>
+        {
+            Ok(EnrolOutcome::AlreadyEnrolled)
+        }
+        Some(existing) => {
+            // `C` is not `Debug`-bounded; describe the occupant without it.
+            let existing_desc = match existing {
+                ModuleEntry::TraitImpl {
+                    trait_name,
+                    impl_type,
+                    impl_module,
+                    methods,
+                    visibility,
+                } => format!(
+                    "TraitImpl {{ trait: {trait_name}, type: {impl_type}, writer: \
+                     {impl_module}, methods: {methods:?}, visibility: {visibility:?} }}"
+                ),
+                _ => "a non-TraitImpl entry".to_string(),
+            };
+            Err(crate::CranelispError::ModuleError {
+                message: format!(
+                    "divergent trait-impl enrolment at key `{key}` in module `{}`: the table \
+                     holds {existing_desc} but the writer-side record is {record:?} — refusing \
+                     to choose (recompile the writer module)",
+                    table.path
+                ),
+                location: ErrorLocation::unknown(),
+            })
+        }
+    }
+}
+
 impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
     /// Construct an empty `SymbolTable<C, L>` for a generic instantiation.
     ///
@@ -694,6 +1003,7 @@ impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
             exports: Vec::new(),
             platforms: Vec::new(),
             submodules: Vec::new(),
+            written_trait_impls: Vec::new(),
             schema_version: 0,
             linker: None,
         }
@@ -707,6 +1017,18 @@ impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
     /// exhaustion is stable and repeatable (a second call fails identically).
     /// This makes exhaustion a diagnosed compile error at the seam rather than
     /// release-mode UB at the eventual `store_slot`/`load_slot` (Phase H).
+    ///
+    /// **TRANSITIONAL — unchecked with respect to concreteness.** This
+    /// allocator hands out a raw `usize` with no scheme in hand, which is how
+    /// two hand-mint sites violated the `slot ⇒ is_concrete()` invariant
+    /// undetected S84→S119 (the S119 census; `total-concreteness.md`).
+    /// [`SymbolTable::mint_callable_slot`] is the sanctioned fresh-slot path
+    /// for slot-carrying callable entries — it checks concreteness and
+    /// allocates in one act, returning the [`CallableSlot`] witness. This raw
+    /// allocator remains public only until the S120 wash re-routes the
+    /// downstream callers (typecheck ×~12, primitives, int), at which point it
+    /// demotes to `pub(crate)` as the mint's interior (FIXME 0931;
+    /// `concreteness-types-first.md` §3.2).
     pub fn allocate_got_slot(&mut self) -> Result<usize, GotExhausted> {
         if self.next_got_slot >= GOT_TABLE_SIZE {
             return Err(GotExhausted {
@@ -718,21 +1040,42 @@ impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
         Ok(slot)
     }
 
-    /// REPL append path — extends the appropriate structural Vec with one new
-    /// entry. Used for `(import …)` / `(export …)` / `(declare-platform …)` /
-    /// `(mod …)` forms entered interactively at the REPL prompt. File-loaded
-    /// modules use a bulk-load shape (`write_structural_decls`, facade-target —
-    /// not present source-side yet) instead. Brief per-eval `&mut`
-    /// window — one enum-carrier method, no parallel per-section append
-    /// methods. Per `repl/spec.md` §15.4 and Decision 39 (S69 Phase 3 upgrade).
-    pub fn append_structural_decl(&mut self, entry: StructuralDeclEntry) {
-        match entry {
-            StructuralDeclEntry::Import(spec) => self.imports.push(spec),
-            StructuralDeclEntry::Export(spec) => self.exports.push(spec),
-            StructuralDeclEntry::Platform(spec) => self.platforms.push(spec),
-            StructuralDeclEntry::Mod(decl) => self.submodules.push(decl),
+    /// The ONE way to obtain a fresh [`CallableSlot`]: checks
+    /// `scheme.ty.is_concrete()` AND allocates from `next_got_slot` in one
+    /// act (`concreteness-types-first.md` §3.2 D2).
+    ///
+    /// A refusal ([`SlotMintError::NotConcrete`]) means the entry must take a
+    /// slot-less template state (`Constrained` / `Polymorphic` /
+    /// [`CtorState::Template`]) — there is no legal way to hold a callable
+    /// slot over a non-concrete scheme. Like [`Self::allocate_got_slot`], the
+    /// cursor is not advanced on either failure, so refusals are stable and
+    /// side-effect-free.
+    ///
+    /// The concreteness check runs through [`ConcreteType::from_type`] — the
+    /// witness-producing form of `Type::is_concrete()` (identical acceptance
+    /// set; the `Err` carries the exact residual `TypeId` for a located
+    /// diagnostic).
+    pub fn mint_callable_slot(&mut self, scheme: &Scheme) -> Result<CallableSlot, SlotMintError> {
+        if let Err(nc) = ConcreteType::from_type(&scheme.ty) {
+            return Err(SlotMintError::NotConcrete(nc));
         }
+        let slot = self
+            .allocate_got_slot()
+            .map_err(SlotMintError::Exhausted)?;
+        Ok(CallableSlot(slot))
     }
+
+    // `append_structural_decl` + its `StructuralDeclEntry` carrier DELETED
+    // (S119, FIXME 0918 — resolving the Decision-39 append-carrier question
+    // ONE way): the helper had zero callers repo-wide and the carrier enum
+    // was constructed nowhere. **The `pub` structural Vec fields ARE the
+    // append contract**: writers (int's form handlers) push directly onto
+    // `imports` / `exports` / `platforms` / `submodules` in source/authorship
+    // order under the append-only, no-dedup discipline stated on each field.
+    // There is no bulk-load method either — the once-cited
+    // `write_structural_decls` never existed (the phantom is retracted here;
+    // a stale mention survives in `cranelisp-frontend/src/module_extract.rs`
+    // rustdoc for the frontend wash to sweep).
 
     pub fn get(&self, name: &str) -> Option<&ModuleEntry<C>> {
         self.symbols.get(name)
@@ -1163,35 +1506,24 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         visibility: Visibility,
         docstring: Option<String>,
     },
-    // ModuleEntry::Constructor variant retired. Constructors are now
-    // ModuleEntry::Def entries with kind: DefKind::Constructor { type_name,
-    // tag, field_count, internal } and synthesised DefnVariant bodies whose
-    // body expression is Expr::ConstrADT (S69 Submission 35 narrowed ast from
-    // Option<Defn> to Option<DefnVariant>; see `design/arch/bounded-contexts.md` §7
-    // — the single store" §"DefKind" for the ctor-as-Def shape and rejected
-    // alternatives). See crates/cranelisp-types/src/check.rs for the
-    // retirement of ConstructorInfo struct and TypeDefInfo.constructors:
-    // Vec<Symbol> shape.
-    // ModuleEntry::Macro variant retired (Submission 22 — 2026-05-21).
-    // Macros are now ModuleEntry::Def entries with
-    // kind: DefKind::Macro { clauses_meta } (see `DefKind::Macro` rustdoc
-    // in this file). Per-clause bodies are ordinary Def entries with mangled
-    // names `{macro-name}$clause-{N}` parallel to multi-sig fn variants like
-    // `add$Int+Int`. The session-level `MacroEnv` sidecar retires alongside
-    // this variant (consumer cascade in /dev wave-3). The `MacroClauseInfo`
-    // / `MacroParam` support types below continue to exist because
-    // `DefKind::Macro` still references them; their own retirement (if any)
-    // is a separate cascade item. Per-symbol source / sexp / clif_ir /
-    // disasm / code_size live on the integration-layer Introspection record
-    // (Decision 41), NOT on `DefKind::Macro` — symmetric with all other Def
-    // variants.
+    // ModuleEntry::Constructor variant retired (S69 Sub 35) — constructors
+    // are `Def { kind: DefKind::Constructor }` entries with synthesised
+    // `Expr::ConstrADT` bodies; see the `DefKind::Constructor` rustdoc +
+    // BC §7 "Multi-legged authoring".
+    // ModuleEntry::Macro variant retired (Submission 22) — macros are
+    // `Def { kind: DefKind::Macro { clauses_meta } }` parents with per-clause
+    // mangled-name `Def` bodies; see the `DefKind::Macro` rustdoc (the
+    // canonical macro storage/introspection statement) + BC §7 "Macros are
+    // Defs".
     //
     // ModuleEntry::PlatformDecl variant retired (Submission 22 — 2026-05-21).
     // Per spec §8.9.3, `(platform <name>)` registers a synthetic module at
     // `symbol_tables["platform.<name>"]` — a normal module per the existing
-    // module map. The DLL handle is retained on that platform module's own
-    // `SymbolTable.dll: Option<D>` field (via the `D: DllStore` generic; see
-    // `design/arch/bounded-contexts.md` §7).
+    // module map. The loaded DLL handle is NOT carried on the SymbolTable
+    // (no `dll` field, no third generic — an earlier `SymbolTable.dll:
+    // Option<D>` / `D: DllStore` narrative here described a design that was
+    // never built); the handle is retained int-side in
+    // `SharedState.kept_dlls` (`src/platform.rs`).
     // The variant previously stored a per-platform DLL record AS AN ENTRY
     // WITHIN the declaring module, which contradicted spec §8.9.3 — platforms
     // are modules of their own, not entries within other modules. The
@@ -1259,9 +1591,10 @@ pub enum ModuleEntry<C: CodeStore = ()> {
 }
 
 // SAFETY: `ModuleEntry::Def` carries no raw pointer fields directly —
-// the runtime address for an entry lives in the GOT slot referenced by
-// `got_slot: Option<usize>` (the single source of truth for "where to call
-// to invoke this entry"). `code: Option<C>` (Decision 25 + Decision 32) is
+// the runtime address for an entry lives in the GOT slot carried on the
+// callable `DefKind` variants (read via `callable_got_slot()`; the GOT is
+// the single source of truth for "where to call to invoke this entry").
+// `code: Option<C>` (Decision 25 + Decision 32) is
 // parameterised over `C: CodeStore`, which itself requires `Send + Sync +
 // 'static`. The safety of `code` is therefore delegated to whatever
 // concrete type the integration layer chooses for `C` — for `C = ()` (the
@@ -1832,9 +2165,11 @@ pub enum DefKind {
     /// `scheduling_class` is the cross-crate-load-bearing payload — read
     /// by `src/worker.rs` for JIT-symbol-table registration of DLL-routed
     /// effects, and carried in IO trampoline records per Decision 26.
-    /// PlatformEffect's body lives in a platform DLL (loaded into the
-    /// platform module's `SymbolTable.dll`); contrast `DefKind::Primitive`
-    /// whose body is bundled in `cranelisp-primitives`.
+    /// PlatformEffect's body lives in a platform DLL — loaded by the
+    /// integration layer, its function pointer written into the platform
+    /// module's GOT at this variant's slot, the handle retained int-side in
+    /// `SharedState.kept_dlls` (`src/platform.rs`); contrast
+    /// `DefKind::Primitive` whose body is bundled in `cranelisp-primitives`.
     ///
     /// See `DefKind::PlatformEffect` rustdoc and
     /// Decision 26 (scheduling-class lives on the platform-effect variant
@@ -2537,13 +2872,11 @@ pub struct ExportSpec {
     pub span: Span,
 }
 
-/// Stored impl S-expression for deferred processing.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ImplSexp {
-    pub trait_name: TraitName,
-    pub target: TypeName,
-    pub sexp: Sexp,
-}
+// `ImplSexp` DELETED (S119, FIXME 0918 — the S87 dead-surface class): a
+// zero-consumer public type (not a field anywhere, in-crate included). Impl
+// forms are processed directly; the persisted trait-impl record is
+// `WrittenTraitImpl` (below) and the discovery shell is
+// `ModuleEntry::TraitImpl`.
 
 // --- Platform Declarations ---
 
@@ -2559,16 +2892,21 @@ pub struct ImplSexp {
 /// bare symbol — no alias is permitted. Per spec §10.9 the form is valid
 /// only in the entry module; non-entry modules use
 /// `(import [platform.<name> [*]])`. Per spec §8.9.3 the form registers a
-/// synthetic module at `symbol_tables["platform.<name>"]` whose
-/// `SymbolTable.dll` retains the loaded DLL handle (see
-/// `design/arch/bounded-contexts.md` §7).
+/// synthetic module at `symbol_tables["platform.<name>"]`. (As stated above,
+/// the loaded DLL handle is NOT carried on that module's `SymbolTable` —
+/// it is retained int-side in `SharedState.kept_dlls`, `src/platform.rs`.)
 ///
-/// **Target narrow (Submission 21).** `name: String → name: ModuleName`
-/// per the newtype rule (`design/arch/CLAUDE.md` §"String Newtypes"). The
-/// retired-shape fields `manifest_path` and `alias` are NOT introduced —
-/// `manifest_path` is resolved data (belongs elsewhere); `alias` is
-/// excluded by spec §2.2.9 grammar. Source migration in the /dev
-/// wave-3 concurrency-cluster brief.
+/// **Standing target narrow (S69 Submission 21; re-affirmed S119, FIXME
+/// 0919).** `name: String → name: ModuleName` per the newtype rule
+/// (`design/arch/CLAUDE.md` §"String Newtypes"). **Trigger:** rides the
+/// first change-set that touches the field's construction sites — the S120
+/// concreteness wash's int step (`src/platform.rs` manifest-order mint,
+/// `concreteness-types-first.md` §4 step 5) or any earlier
+/// `/dev`(frontend) change-set touching
+/// `module_extract.rs::parse_platform`. The retired-shape fields
+/// `manifest_path` and `alias` are NOT introduced — `manifest_path` is
+/// resolved data (belongs elsewhere); `alias` is excluded by spec §2.2.9
+/// grammar.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlatformSpec {
     pub name: String,
@@ -2600,20 +2938,9 @@ pub struct ModDecl {
     pub span: Span,
 }
 
-/// REPL append-path carrier — one variant per structural Vec field on
-/// `SymbolTable`. Consumed by `SymbolTable::append_structural_decl`. Per
-/// `repl/spec.md` §15.4: structural forms entered at the REPL prompt extend
-/// the corresponding section in authorship order (no dedup, mirroring the
-/// file-load discipline). Per Decision 39 (S69 Phase 3 upgrade) — one
-/// enum-carrier replaces four parallel `append_*` methods.
-#[derive(Debug, Clone)]
-#[non_exhaustive]
-pub enum StructuralDeclEntry {
-    Import(ImportSpec),
-    Export(ExportSpec),
-    Platform(PlatformSpec),
-    Mod(ModDecl),
-}
+// `StructuralDeclEntry` DELETED (S119, FIXME 0918) — see the note at the
+// former `append_structural_decl` site: the pub structural Vec fields are the
+// append contract; the enum carrier was constructed nowhere.
 
 // `use crate::JitSymbol;` retired (S69 Submission 36 — the `jit_name` field
 // on `DefKind::Primitive` is gone; the symbol-table key IS the JIT linker
@@ -2686,16 +3013,79 @@ where
 /// string function over `ModuleFullPath` with zero codegen dependency, a peer
 /// of `ensure_module_exists`. Relocated DOWN from `cranelisp-backend`'s
 /// former `pub(crate) compiler::got_data_symbol_name` at S76 per the /arch
-/// Phase 2 review (single-source-of-truth, Principle 7).
+/// Phase 2 review (single-source-of-truth, Principle 7); the backend keeps a
+/// one-line forward fenced by a corpus-equality test.
+///
+/// **Injective escape (S119, FIXME 0748 — safety-register R4).** The former
+/// bare `.`→`_` flatten was non-injective: `a.b` and `a_b` both minted
+/// `__cranelisp_got_a_b` — two modules sharing ONE GOT slab data symbol, a
+/// constructible cross-module wrong-slab dispatch. The flatten is now the
+/// unambiguously-decodable escape recovered from the retired backend
+/// `escape_symbol` scheme:
+///
+/// - `_` → `__`, `.` → `_d`, `-` → `_h`, any other non-alphanumeric
+///   codepoint → `_u{cp:06x}`; alphanumerics pass through.
+/// - **Purely-alphanumeric paths are fixed points** — load-bearing:
+///   `__cranelisp_got_primitives` is an `export_name` LITERAL in
+///   `cranelisp-primitives/src/lib.rs` that every `--link` binary links
+///   against.
+/// - The `_entry` sentinel for the empty path is **outside the escape
+///   image** (an escaped path can begin `__`/`_d`/`_h`/`_u` but never `_e`).
+/// - **The synthetic `platform.*` namespace is a carve-out** that keeps the
+///   legacy `.`→`_` join verbatim: the platform GOT symbol is a RATIFIED
+///   C-ABI literal minted by the DLL itself
+///   (`#[export_name = concat!("__cranelisp_got_platform_", name)]`,
+///   `cranelisp-platform/src/declare.rs` — `platform-interface.md` §1's
+///   three-exports contract, linked directly by every `--link` binary and
+///   `dlsym`'d by the host), so the host-side mint MUST reproduce it. This is
+///   not a Principle-19 name privilege: `platform.<name>` is a synthetic
+///   namespace *by construction* (spec §8.9.3 — only the `(platform …)` form
+///   creates these modules), and the prefix here is the namespace's
+///   definition, exactly like a synthetic-module construction site. Named
+///   residual (recorded on the R4 register row): a platform whose name begins
+///   `d`/`h`/`u`/`_` could collide with the escape image of a contrived
+///   root-module spelling (`platform-x` vs a platform named `hx`); closing it
+///   is loader-side platform-name validation, not a mint change.
+///
+/// Decoding is unambiguous (every `_` in the image starts exactly one legal
+/// escape pair), so the mint is injective by construction over the
+/// non-platform domain; the round-trip battery in `module/tests.rs` is the
+/// standing witness. Changing this scheme renames every cached `.o`'s
+/// relocations — a cache-invalidation event covered by the
+/// `CACHE_SCHEMA_VERSION` window of the change-set that lands it (S119: the
+/// 23→24 window).
 pub fn got_data_symbol_name(module_path: &ModuleFullPath) -> String {
-    let flat = module_path.as_ref().replace('.', "_");
-    format!(
-        "__cranelisp_got_{}",
-        if flat.is_empty() { "_entry" } else { &flat }
-    )
+    let path: &str = module_path.as_ref();
+    if path.is_empty() {
+        return "__cranelisp_got__entry".to_string();
+    }
+    // Platform carve-out: the DLL's export_name literal is the authority.
+    if path == "platform" || path.starts_with("platform.") {
+        return format!("__cranelisp_got_{}", path.replace('.', "_"));
+    }
+    let mut flat = String::with_capacity(path.len());
+    for ch in path.chars() {
+        match ch {
+            '_' => flat.push_str("__"),
+            '.' => flat.push_str("_d"),
+            '-' => flat.push_str("_h"),
+            c if c.is_ascii_alphanumeric() => flat.push(c),
+            c => {
+                use std::fmt::Write as _;
+                write!(flat, "_u{:06x}", c as u32).expect("String write");
+            }
+        }
+    }
+    format!("__cranelisp_got_{flat}")
 }
 
 /// Injective module-qualified linker identity for one complete concrete type.
+///
+/// Part of the **result-root grammar**: the program-result release symbol is
+/// minted over `ConcreteType::result_root()` (the single IO-head-strip rule,
+/// FIXME 0898) — backend's result-root glue enumeration and int's
+/// `release_key` both derive the root through that method and the symbol
+/// through this one.
 pub fn drop_glue_symbol_name(module: &ModuleFullPath, ty: &ConcreteType) -> LinkerSymbol {
     let mut out = String::from("__cranelisp_drop_");
     encode_component(&mut out, module.as_ref());

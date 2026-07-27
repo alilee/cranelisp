@@ -372,7 +372,23 @@ pub mod serialize;
 /// would reproduce the COW-var-pattern UAF on a warm run — the fact's MEANING
 /// was corrected, so pre-fix caches must not be trusted. Per the S111 0621
 /// precedent both ride ONE bump; no second invalidation event this sprint.
-pub const CACHE_SCHEMA_VERSION: u32 = 23;
+/// **23 → 24 (S119 types-first concreteness window — the ONE S119 bump;
+/// `design/arch/concreteness-types-first.md` §3.6 +
+/// `design/arch/trait-impl-cache-carrier.md` §6).** Taken by the `/arch`
+/// types change-set; downstream S119 waves RIDE it (the S111 0621 precedent)
+/// rather than taking their own. Covered by this single invalidation event:
+/// (1) `SymbolTable.written_trait_impls: Vec<WrittenTraitImpl>` — the 0869
+/// writer-side trait-impl cache carrier, serde-visible with deliberately NO
+/// `#[serde(default)]` (a pre-24 sidecar fails at parse; a default-empty
+/// read would silently reproduce the 0869 restoration loss). (2) The 0748
+/// injective GOT data-symbol escape (`got_data_symbol_name`): every cached
+/// `.o` with a dotted module path bakes relocations against the OLD
+/// non-injective names, so pre-24 objects must not be re-linked. (3) The
+/// S119 typecheck-producer serde-meaning changes (0924 accessor
+/// monomorphisation / 0913 lenient-view root) and the 0869 enrolment call
+/// sites ride this same window when they land in-sprint; a rider that slips
+/// past S119 close takes its own window in its landing sprint.
+pub const CACHE_SCHEMA_VERSION: u32 = 24;
 
 /// Compile-time build identifier (Sprint 60 Workstream C).
 ///

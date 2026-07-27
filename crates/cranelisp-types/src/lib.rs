@@ -48,9 +48,12 @@
 //!   [`DefKind`], [`OverloadVariant`], [`ConstrainedFn`],
 //!   [`MacroClauseInfo`], [`MacroParam`], [`ImportSpec`], [`ExportSpec`],
 //!   [`ImportNames`], [`PlatformSpec`], [`ModDecl`],
-//!   [`StructuralDeclEntry`], [`ensure_module_exists`], [`install_module`],
+//!   [`ensure_module_exists`], [`install_module`],
 //!   [`EnsureOutcome`], the chain-follow primitives) — THE per-module
-//!   store. [`SymbolTables<C, L>`] is the session-level collection
+//!   store. The structural-decl Vec fields (`imports`/`exports`/`platforms`/
+//!   `submodules`) are `pub` and ARE the append contract (direct push,
+//!   source/authorship order, no dedup — FIXME 0918 resolved the Decision-39
+//!   carrier question by deleting the unused enum carrier). [`SymbolTables<C, L>`] is the session-level collection
 //!   threaded across frontend, typecheck, and the integration layer.
 //!   All per-symbol
 //!   metadata lives on `ModuleEntry`; structural declarations live as Vec
@@ -74,8 +77,16 @@
 //!   through [`ModuleEntry::callable_got_slot`] (the single read-through
 //!   point; trivial since the reshape). The S82 stopgap
 //!   (`mark_constrained_template()` flip-and-clear sole-writer +
-//!   `assert_well_formed()` phantom-slot guard) is retired. See
-//!   `design/arch/bounded-contexts.md` §7 "Callability is structural" and
+//!   `assert_well_formed()` phantom-slot guard) is retired.
+//!   **S119 types-first slice ([`CallableSlot`], [`SlotMintError`],
+//!   [`CtorState`], [`SymbolTable::mint_callable_slot`]):** the witness-
+//!   carrying slot vocabulary is landed — a fresh slot for a callable comes
+//!   from the ONE fallible mint, which checks `is_concrete()` and allocates
+//!   in one act; the kind-field retypes onto `CallableSlot` (and
+//!   `DefKind::Constructor`'s flip onto the dormant `CtorState` sum) are the
+//!   S120 wash (FIXME 0931; `design/arch/concreteness-types-first.md` §3),
+//!   whose change-set owns the accompanying `CACHE_SCHEMA_VERSION` window.
+//!   See `design/arch/bounded-contexts.md` §7 "Callability is structural" and
 //!   Principle 20.
 //! - **Module aliases** ([`ModuleAliasEntry`], [`ModuleAliases`]) — the
 //!   parallel session-level alias table introduced by spec §8.3.4
@@ -121,16 +132,20 @@
 //!   `HeapCategory::Value` arm delegate to (soundness-coupled; spine §6.3) —
 //!   plus [`type_ctor_names`], the single ctor-name resolver both
 //!   `value_layout` and the backend heap classifiers delegate to (FIXME 0528
-//!   mirror cure).
+//!   mirror cure), and the instantiation-substituting ctor-field projection
+//!   ([`ctor_field_types_at`], [`CtorFieldsAtError`]) — concrete-or-refuse,
+//!   never fabricating (S119; register rows R-6/R-16).
 //! - **Errors and warnings** ([`CranelispError`], [`PlatformError`],
 //!   [`ErrorLocation`], [`LineCol`], [`LineColRange`], [`ResolutionGap`],
 //!   [`Warning`], [`WarningKind`]) — every error carries an
 //!   `ErrorLocation` per Decision 39; coordinates as data, formatted
 //!   downstream by `int`'s display layer.
 //! - **Pipeline / orchestration** ([`CodegenBehaviour`],
-//!   [`ModuleStrategy`], [`CompileContext`], [`CompileResult`],
-//!   [`CallEdge`], [`CallInfo`], [`CallGraph`]) — discrimination + carrier
-//!   types threaded between int and backend.
+//!   [`ModuleStrategy`], [`CompileContext`]) — discrimination + carrier
+//!   types threaded between int and backend. (The former `CompileResult` +
+//!   `CallEdge`/`CallInfo`/`CallGraph` cluster was zero-consumer dead surface,
+//!   deleted S119 per FIXME 0918 — the live call-graph mechanism is the
+//!   per-entry `ModuleEntry::Def.callees` field, Decision 21.)
 //! - **Marshal tags** ([`TAG_SNIL`], [`TAG_SCONS`], [`TAG_SEXP_INT`] …)
 //!   — fixed runtime tag layout for the `Sexp` / `SList` ADTs used by the
 //!   macro system. Authoritative constructor order in
@@ -300,11 +315,12 @@ pub use scheduling::SchedulingClass;
 // *types* are part of every build. See `crates/cranelisp-types/src/scheduling.rs`
 // and `design/arch/effect-concurrency.md` §5/§6/§12.
 pub use module::{
-    CHAIN_FOLLOW_DEPTH_LIMIT, CodeStore, ConstrainedFn, DefBuilder, DefKind, EnsureOutcome,
-    ExportSpec, GotExhausted, ImplSexp, ImportNames, ImportSpec, LinkerStore, MacroClauseInfo,
-    MacroParam, ModDecl, ModuleAliasEntry, ModuleAliases, ModuleEntry, OverloadVariant,
-    ParametricFn, PlatformSpec, PrimitiveBody, StructuralDeclEntry, SymbolTable, SymbolTables,
-    UserFnState, drop_glue_symbol_name, ensure_module_exists, for_each_in_module,
+    CHAIN_FOLLOW_DEPTH_LIMIT, CallableSlot, CodeStore, ConstrainedFn, CtorState, DefBuilder,
+    DefKind, EnrolOutcome, EnsureOutcome, ExportSpec, GotExhausted, ImportNames, ImportSpec,
+    LinkerStore, MacroClauseInfo, MacroParam, ModDecl, ModuleAliasEntry, ModuleAliases,
+    ModuleEntry, OverloadVariant, ParametricFn, PlatformSpec, PrimitiveBody, SlotMintError,
+    SymbolTable, SymbolTables, UserFnState, WrittenTraitImpl, drop_glue_symbol_name,
+    enrol_written_trait_impl, ensure_module_exists, for_each_in_module,
     get_implementing_types_chain, get_impls_for_type_chain, got_data_symbol_name, install_module,
     lookup_trait_decl_chain, lookup_type_def_chain, resolve_module_by_name_chain,
     resolve_terminal_entry_and_home,
@@ -340,21 +356,28 @@ pub use heap::HeapHeader;
 // backend did NOT flatten is a UAF; one predicate, both delegate). See
 // `design/arch/ownership-inference.md` §6.3 + BC §7.
 pub use heap::{VALUE_LAYOUT_MAX_WORDS, ValueLayout, type_ctor_names, value_layout};
+// The substituting ctor-field projection (S119 types-first slice; register
+// rows R-6/R-16): field types of a ctor AT a concrete instantiation, or a
+// refusal — the only legal derivation of instantiated ctor-field types for
+// category/glue purposes (the backend's hand-rolled walk retires onto it in
+// the S120 wash). Beside the preserved declaration-side model site
+// (`value_layout`'s `ctor_field_concrete_types` interior).
+pub use heap::{CtorFieldsAtError, ctor_field_types_at};
 // `HeapCategory` relocated to `cranelisp-backend` per S69 Sub 38 — backend-internal
-// codegen classification, not a cross-crate substrate. See `facades/backend.md`
-// §"Heap classification".
+// codegen classification, not a cross-crate substrate (canonical home: BC §3 +
+// the backend source rustdoc; the per-crate facade specs are retired).
 pub use macro_expander::{MacroExpander, MacroInvokeError};
 pub use marshal::{
     TAG_SCONS, TAG_SEXP_ANNOTATED, TAG_SEXP_BOOL, TAG_SEXP_BRACKET, TAG_SEXP_FLOAT, TAG_SEXP_INT,
     TAG_SEXP_LIST, TAG_SEXP_STR, TAG_SEXP_SYM, TAG_SNIL,
 };
 pub use pipeline::{
-    CallEdge, CallGraph, CallInfo, CodegenBehaviour, CompileContext, CompileResult, GOT_TABLE_SIZE,
-    ModuleStrategy, NULLARY_TAG_THRESHOLD,
+    CodegenBehaviour, CompileContext, GOT_TABLE_SIZE, ModuleStrategy, NULLARY_TAG_THRESHOLD,
 };
 pub use resolve::{
     BindingProvenance, ResolutionScope, ResolveError, Resolved, bare_member_name,
     check_binding_addition, member_key, reject_def_over_binding, substitute_module_alias,
+    trait_impl_key,
 };
 pub use view::View;
 

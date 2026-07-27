@@ -13,8 +13,8 @@
 //! returns `View::union(staging, live)`; in `ClusterContext::Live` mode the
 //! accessor returns `View::single(live)`.
 //!
-//! See `design/arch/`view.rs` rustdoc for the canonical
-//! specification.
+//! This rustdoc IS the canonical specification of the view surface
+//! (cross-surface narrative: `design/arch/bounded-contexts.md` §7).
 //!
 //! ## Shape — `struct` with private fields, NOT `pub enum` (S69 Submission 34)
 //!

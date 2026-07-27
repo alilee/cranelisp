@@ -1045,6 +1045,24 @@ pub fn member_key(type_name: &TypeName, member: &str) -> Symbol {
     Symbol::from(format!("{}.{}", type_name, member).as_str())
 }
 
+/// Mint the synthetic `impl$FQType$FQTrait` storage key under which a trait
+/// impl's **discovery shell** (`ModuleEntry::TraitImpl`) is stored in the
+/// trait's home module (Decision 45).
+///
+/// The ONE mint point for the `impl$` key grammar (the [`member_key`]
+/// pattern, hoisted S119 per `design/arch/trait-impl-cache-carrier.md` §4):
+/// fresh registration (`cranelisp-typecheck::traits::impl_check`), dispatch's
+/// home probe (`traits::dispatch`), and cache-restore enrolment
+/// (`crate::enrol_written_trait_impl`) all route here — the two formerly
+/// hand-rolled `format!("impl${}${}", …)` sites re-point in the S119/S120
+/// wash. Injective by construction over canonical FQ inputs (both halves
+/// render with their module qualifier and `$` never occurs inside an FQ
+/// rendering), which discharges the safety-register R4 census obligation for
+/// the `impl$` family.
+pub fn trait_impl_key(impl_type: &crate::FQTypeName, trait_name: &crate::FQTraitName) -> Symbol {
+    Symbol::from(format!("impl${impl_type}${trait_name}").as_str())
+}
+
 /// The projection **inverse of [`member_key`]** — the bare member name of a
 /// (possibly `/`-qualified, possibly `.`-dotted) constructor / member
 /// reference or storage key: `Maybe.Some` → `Some`, `macros/SCons` → `SCons`,

@@ -327,3 +327,166 @@ fn generic_ctor_field_is_conservatively_ineligible() {
     let boxed = ConcreteType::ADT(fqtn("Box"), vec![ConcreteType::Int]);
     assert!(value_layout(&boxed, Some(&t)).is_none());
 }
+
+// ---------------------------------------------------------------------------
+// `ctor_field_types_at` — the instantiation-substituting projection (S119
+// types-first slice; register rows R-6/R-16;
+// design/arch/concreteness-types-first.md §3.5).
+// ---------------------------------------------------------------------------
+
+/// A GENERIC constructor `Def`: scheme `∀vars. field_tys… -> ADT(type, vars)`.
+fn generic_ctor_entry(
+    type_name: &str,
+    type_var_ids: &[crate::TypeId],
+    field_tys: Vec<Type>,
+) -> ModuleEntry<()> {
+    let adt = Type::ADT(
+        fqtn(type_name),
+        type_var_ids.iter().map(|&id| Type::Var(id)).collect(),
+    );
+    let ty = if field_tys.is_empty() {
+        adt
+    } else {
+        Type::Fn(field_tys.clone(), Box::new(adt))
+    };
+    ModuleEntry::def(
+        Scheme {
+            type_vars: type_var_ids.to_vec(),
+            constraints: HashMap::new(),
+            ty,
+        },
+        DefKind::Constructor {
+            got_slot: 0,
+            type_name: fqtn(type_name),
+            tag: 0,
+            field_count: field_tys.len(),
+            internal: false,
+            type_def: None,
+            mode_summary: None,
+        },
+    )
+    .build()
+}
+
+fn one_table(entries: Vec<(&str, ModuleEntry<()>)>) -> SymbolTable<(), ()> {
+    let mut table = SymbolTable::<(), ()>::new_with_params(ModuleFullPath::from(M));
+    for (name, entry) in entries {
+        table.insert(Symbol::from(name), entry);
+    }
+    table
+}
+
+// spec: design/arch/concreteness-types-first.md §3.5 — substitution instantiates
+// the generic field type at the supplied concrete args.
+#[test]
+fn ctor_field_types_at_substitutes_generic_field() {
+    // (deftype (Bx a) [:a v]) at (Bx Int) ⇒ field types [Int].
+    let t = one_table(vec![(
+        "Bx",
+        generic_ctor_entry("Bx", &[7], vec![Type::Var(7)]),
+    )]);
+    let got = ctor_field_types_at(&t, &Symbol::from("Bx"), &[ConcreteType::Int])
+        .expect("concrete instantiation must project");
+    assert_eq!(got, vec![ConcreteType::Int]);
+}
+
+// spec: design/arch/concreteness-types-first.md §3.5 — a concrete ctor projects
+// its declared field types verbatim at the empty instantiation.
+#[test]
+fn ctor_field_types_at_concrete_ctor_projects_verbatim() {
+    let t = one_table(vec![(
+        "Tally",
+        ctor_entry("Tally", vec![Type::Int, Type::String], true),
+    )]);
+    let got = ctor_field_types_at(&t, &Symbol::from("Tally"), &[])
+        .expect("concrete ctor projects");
+    assert_eq!(got, vec![ConcreteType::Int, ConcreteType::String]);
+}
+
+// spec: design/arch/concreteness-types-first.md §3.5 — a nullary ctor has zero
+// fields at any well-formed instantiation.
+#[test]
+fn ctor_field_types_at_nullary_is_empty() {
+    let t = one_table(vec![("None", generic_ctor_entry("Option", &[3], vec![]))]);
+    let got = ctor_field_types_at(&t, &Symbol::from("None"), &[ConcreteType::Bool])
+        .expect("nullary ctor projects");
+    assert!(got.is_empty());
+}
+
+// spec: design/arch/concreteness-types-first.md §3.5 — ONE residual field
+// refuses the whole ctor (the model-site spelling; never fabricates). The
+// IO.Bind existential shape: a field var NOT bound by the result params.
+#[test]
+fn ctor_field_types_at_refuses_residual_field() {
+    // Bind : ∀a b. (IO b, Fn [b] (IO a)) -> IO a — `b` does not occur in the
+    // result params, so no instantiation of `IO a` can pin it.
+    let io_b = Type::ADT(fqtn("IO"), vec![Type::Var(11)]);
+    let t = one_table(vec![(
+        "IO.Bind",
+        generic_ctor_entry("IO", &[10], vec![io_b]),
+    )]);
+    let err = ctor_field_types_at(&t, &Symbol::from("IO.Bind"), &[ConcreteType::Int])
+        .expect_err("existential payload must refuse");
+    assert!(
+        matches!(err, CtorFieldsAtError::NotConcrete(NotConcrete::Var(11))),
+        "refusal names the residual var: {err:?}"
+    );
+}
+
+// spec: design/arch/concreteness-types-first.md §3.5 — caller-side bugs are
+// distinct from refusals: wrong key / non-ctor / wrong arity.
+#[test]
+fn ctor_field_types_at_caller_bug_arms() {
+    let t = one_table(vec![
+        ("Bx", generic_ctor_entry("Bx", &[7], vec![Type::Var(7)])),
+        ("T", type_def_entry("T", &["A"])),
+    ]);
+    assert_eq!(
+        ctor_field_types_at(&t, &Symbol::from("missing"), &[]),
+        Err(CtorFieldsAtError::NotACtor)
+    );
+    assert_eq!(
+        ctor_field_types_at(&t, &Symbol::from("T"), &[]),
+        Err(CtorFieldsAtError::NotACtor),
+        "a TypeDef entry is not a ctor"
+    );
+    assert_eq!(
+        ctor_field_types_at(&t, &Symbol::from("Bx"), &[]),
+        Err(CtorFieldsAtError::ParamArity {
+            expected: 1,
+            got: 0
+        })
+    );
+}
+
+// spec: design/arch/concreteness-types-first.md §3.5 — an already-concrete
+// result param must agree with the supplied instantiation argument.
+#[test]
+fn ctor_field_types_at_instantiation_mismatch() {
+    // Ctor of a type whose result param is pinned Int; instantiating at Bool
+    // is a caller bug, not a refusal.
+    let adt = Type::ADT(fqtn("P"), vec![Type::Int]);
+    let entry = ModuleEntry::def(
+        mono_scheme(Type::Fn(vec![Type::Int], Box::new(adt))),
+        DefKind::Constructor {
+            got_slot: 0,
+            type_name: fqtn("P"),
+            tag: 0,
+            field_count: 1,
+            internal: false,
+            type_def: None,
+            mode_summary: None,
+        },
+    )
+    .build();
+    let t = one_table(vec![("P", entry)]);
+    assert_eq!(
+        ctor_field_types_at(&t, &Symbol::from("P"), &[ConcreteType::Bool]),
+        Err(CtorFieldsAtError::InstantiationMismatch { position: 0 })
+    );
+    assert_eq!(
+        ctor_field_types_at(&t, &Symbol::from("P"), &[ConcreteType::Int]),
+        Ok(vec![ConcreteType::Int]),
+        "the agreeing instantiation projects"
+    );
+}

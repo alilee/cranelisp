@@ -185,6 +185,27 @@ spelling — FIXME 0935 records the defect and the fix shape for
 
 ## 3. The revised `cranelisp-types` design
 
+> **LANDING STATUS (S119 arch wave, user-widened scope).** The tree-compiling
+> share of this section is LANDED in `cranelisp-types`: D1/D2 (`CallableSlot`
+> + `SlotMintError` + `mint_callable_slot` + `rebind`), the `CtorState` sum
+> (DORMANT — wire shape pinned; not yet wired into `DefKind::Constructor`),
+> D7 (`ctor_field_types_at` + `CtorFieldsAtError`), and the `defined_symbols`
+> rustdoc trajectory. **Deferred to the S120 wash flip (FIXME 0931), because
+> they cannot compile without the downstream crates' edits:** the kind-field
+> retypes (D3/D4/D5), the `AdtCtorSpec` state field, D6's `is_concrete()`
+> conjunct on `defined_symbols()` (landing it before A-MINT/ctor-mono would
+> break every generic-ctor program wholesale), the `allocate_got_slot`
+> demotion, and D10 stages 2–3. Landed alongside under the same wave (widened
+> scope): FIXME 0898 (`ConcreteType::result_root`), FIXME 0748 (injective
+> `got_data_symbol_name`, with a ratified-ABI carve-out for the synthetic
+> `platform.*` namespace the FIXME had not enumerated), FIXME 0869's carrier
+> half (`WrittenTraitImpl` + `enrol_written_trait_impl` + `trait_impl_key`),
+> FIXME 0918's deletions, and the 0919 facade-truth pass. **Schema: ONE
+> S119 window, `CACHE_SCHEMA_VERSION` 23→24, taken by this change-set**
+> (forced by `written_trait_impls`; covers the GOT-symbol renaming); §3.6's
+> "CtorState forces the window" now reads: the ctor flip RIDES the 24 window
+> if it lands in-sprint, else takes its own in its landing sprint.
+
 Register share: R-1, R-2, R-3, R-5, R-6, R-7, R-8, R-11, R-16, R-29, R-31.
 The thesis: land the vocabulary change first so every downstream violation is a
 compile error, not a discipline.

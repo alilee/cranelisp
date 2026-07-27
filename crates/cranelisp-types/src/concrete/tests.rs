@@ -101,3 +101,44 @@ fn from_type_agrees_with_is_concrete() {
         );
     }
 }
+
+// ---- result_root — the ONE IO-head-strip rule (S118 ruling, FIXME 0898) ----
+
+fn adt(module: &str, name: &str, args: Vec<ConcreteType>) -> ConcreteType {
+    ConcreteType::ADT(
+        crate::FQTypeName::new(
+            crate::ModuleFullPath::from(module),
+            crate::TypeName::from(name),
+        ),
+        args,
+    )
+}
+
+// spec: design/arch/fixmes/0898 ruling — `(IO a)` strips ONE hop to `a`;
+// `(IO (IO a))` strips to `(IO a)`, never recursively.
+#[test]
+fn result_root_strips_exactly_one_io_hop() {
+    let io_int = adt("primitives", "IO", vec![ConcreteType::Int]);
+    assert_eq!(io_int.result_root(), &ConcreteType::Int);
+
+    let io_io_int = adt("primitives", "IO", vec![io_int.clone()]);
+    assert_eq!(io_io_int.result_root(), &io_int, "one hop only");
+}
+
+// spec: design/arch/fixmes/0898 ruling — everything that is not the
+// `primitives/IO` non-empty-args head is its own root: scalars, other ADTs,
+// a USER-module type named IO, and a nullary IO head.
+#[test]
+fn result_root_is_identity_off_the_io_head() {
+    let int = ConcreteType::Int;
+    assert_eq!(int.result_root(), &int);
+
+    let opt = adt("primitives", "Option", vec![ConcreteType::Int]);
+    assert_eq!(opt.result_root(), &opt);
+
+    let user_io = adt("user", "IO", vec![ConcreteType::Int]);
+    assert_eq!(user_io.result_root(), &user_io, "user IO is not primitives/IO");
+
+    let nullary_io = adt("primitives", "IO", vec![]);
+    assert_eq!(nullary_io.result_root(), &nullary_io, "nullary head is itself");
+}

@@ -18,12 +18,11 @@ incomplete without the cross-crate bump (precedents: `codegen_view` 7→8, S101
 (`SymbolTable.schema_version` rustdoc, `module.rs:218`).
 
 - `#[serde(skip)]` runtime fields: `got`, `linker`, `Def.code`. Caches
-  deserialize as `SymbolTable<(), ()>`; int rehydrates via `into_concrete`
-  (`module.rs:503`) — every `code` becomes `None`.
+  deserialize as `SymbolTable<(), ()>`; int rehydrates via `SymbolTable::into_concrete` — every `code` becomes `None`.
 - The `#[serde(bound = "")]` on `SymbolTable` and `ModuleEntry` derives is
   load-bearing: without it the derive demands `C: Serialize` even for skipped
-  fields and the `()` default stops compiling (`module.rs:88–99`).
-- **`GotTable::clone()` returns a fresh, all-null table** (`got.rs:167`) —
+  fields and the `()` default stops compiling (the `SymbolTable` derive).
+- **`GotTable::clone()` returns a fresh, all-null table** (`got.rs`) —
   deliberate, matching `#[serde(default)]`. Sharing happens only through the
   `Arc` on `SymbolTable.got`. Cloning a `GotTable` never copies pointers.
 
@@ -33,17 +32,17 @@ The GOT slot rides the callable `DefKind` variants, not a flat `Def` field
 (S83, FIXME 0356/0357, Principle 20). Use the read-throughs, never re-pattern
 the kind set:
 
-- `ModuleEntry::callable_got_slot()` (`module.rs:1318`) — the ONE callable-address
+- `ModuleEntry::callable_got_slot()` — the ONE callable-address
   read. `PrimitiveBody::Inline` answers `None` by construction (S102, FIXME 0476).
-- `ModuleEntry::is_callable_target()` (`module.rs:1354`) — the resolution
+- `ModuleEntry::is_callable_target()` — the resolution
   STOP condition; covers slot-less inline primitives. A
   `callable_got_slot().is_some()` probe at a resolution seam reopens the 0476
   shadowing hole.
-- `SymbolTable::defined_symbols()` (`module.rs:676`) — the codegen-compilable
+- `SymbolTable::defined_symbols()` — the codegen-compilable
   filter (Decision 22): `ast.is_some()` AND kind not `Overloaded` /
   `Constrained`/`Polymorphic` (templates are mono SOURCES; emitting a
   `Polymorphic` body was the FIXME-0381 317× backstop fire).
-- `mode_summary()` / `set_mode_summary()` (`module.rs:1377/1399`) — the summary
+- `mode_summary()` / `set_mode_summary()` — the summary
   rides where the slot rides; `set_` returns `false` for non-carrying kinds.
 - `ModuleEntry::type_def_info()` — the ONE "does this entry answer as a
   type" reader over the S79 dual facet (`TypeDef` entry OR product ctor
@@ -53,12 +52,51 @@ the kind set:
   projection over the same switch.
 - `DefKind::PlatformEffect.poll_shape` polarity is INVERTED from the C-ABI
   `blocking` so the serde default (`false`) = blocking — a cached pre-S94
-  entry deserializes as blocking (`module.rs:1691`).
+  entry deserializes as blocking (the `poll_shape` field rustdoc).
+
+## S119 types-first concreteness slice (concreteness-types-first.md §3)
+
+- **`SymbolTable::mint_callable_slot(scheme)` is the ONE sanctioned fresh-slot
+  path** for slot-carrying callables: checks `is_concrete()` + allocates in
+  one act, returns the opaque `CallableSlot` witness (private field —
+  obtainable only from the mint, `CallableSlot::rebind`, or serde).
+  `allocate_got_slot` is TRANSITIONAL-public until the S120 wash re-routes
+  its callers, then demotes to `pub(crate)`.
+- **`CtorState { Template, Concrete }` is DORMANT** — landed ahead of the
+  FIXME-0931 flip of `DefKind::Constructor.got_slot: usize` → `state:
+  CtorState` (a serde shape change owned by the ctor tranche's window). Wire
+  shape pinned in `module/tests.rs::ctor_state_serde_shape_pin`.
+- **`heap::ctor_field_types_at(table, ctor_key, args)`** — the ONLY legal
+  derivation of ctor field types at a concrete instantiation
+  (concrete-or-refuse; one residual field refuses the whole ctor; caller bugs
+  are `CtorFieldsAtError::NotACtor`/`ParamArity`/`InstantiationMismatch`,
+  never conflated with the refusal). The backend's hand-rolled `scheme.ty`
+  walk retires onto it in the S120 wash.
+- **`ConcreteType::result_root()`** — the ONE IO-head-strip rule (FIXME 0898;
+  one hop, `primitives/IO` only). Backend `result_roots` and int
+  `release_key` re-express over it in the wash; hand-rolling the match again
+  is the two-encodings defect it closed.
+- **`got_data_symbol_name` is INJECTIVE** (FIXME 0748): `_`→`__`, `.`→`_d`,
+  `-`→`_h`, `_u{cp:06x}` catch-all; alphanumeric paths are fixed points
+  (`__cranelisp_got_primitives` is a link-time ABI literal); `_entry` is
+  outside the escape image. Changing the scheme renames every cached `.o`'s
+  relocations — a schema-window event.
+- **`SymbolTable.written_trait_impls` + `WrittenTraitImpl` +
+  `enrol_written_trait_impl` + `trait_impl_key`** — the 0869 writer-side
+  trait-impl cache carrier (`trait-impl-cache-carrier.md`). The field has
+  deliberately NO `#[serde(default)]` (absence = hard serde error;
+  wholesale pre-24 invalidation). `trait_impl_key` is the ONE `impl$` key
+  mint — never hand-roll `format!("impl${{}}${{}}", …)`; the two legacy
+  typecheck sites re-point in the wash.
+- **Deleted dead surface (FIXME 0918)**: `ImplSexp`, `CompileResult`,
+  `CallEdge`/`CallInfo`/`CallGraph`, `StructuralDeclEntry` +
+  `append_structural_decl`. The pub structural Vec fields ARE the append
+  contract; the live call graph is `ModuleEntry::Def.callees`.
 
 ## Fields populated by convention, not construction
 
-`DefBuilder` has NO setter for `callees`, `value_use`, or `code` (table at
-`module.rs:1465`): typecheck writes `callees` (the S101 transaction reverse
+`DefBuilder` has NO setter for `callees`, `value_use`, or `code` (the
+`DefBuilder` rustdoc default table): typecheck writes `callees` (the S101 transaction reverse
 index starves silently if a body-check seam skips the harvest — completeness
 contract in `crates/cranelisp-typecheck/CLAUDE.md`), typecheck's ownership
 pass writes `value_use`, backend writes `code`.
@@ -78,7 +116,7 @@ Fields that LOOK optional but are contractually required downstream:
   routed as a located error, NEVER into the lenient fallback.
 - `ModeSummary` vectors — **never index directly**; `param_mode(i)` /
   `param_flow(i)`/`spark_op(i)` are the ONE home for ⊤-on-absence
-  (missing/short ⇒ Owned/Retained/true, `ownership.rs:167`). ABI comparison
+  (missing/short ⇒ Owned/Retained/true; the `ModeSummary` accessors in `ownership.rs`). ABI comparison
   only via `abi_eq`/`abi_eq_opt` (`None` ≡ all-conservative).
   `ownership_analysis_off()` is read-once (OnceLock — one polarity per
   process) and flips a backend cache global key.
@@ -127,18 +165,18 @@ Fields that LOOK optional but are contractually required downstream:
   as a not-found miss, never a stack overflow (pin:
   `resolve/tests.rs::same_module_alias_cycle_is_a_miss_not_a_stack_overflow`).
 - The bare primitive's generic miss is `TypeNotFound`-shaped regardless of
-  kind (`not_found`, `resolve.rs:803`) — never infer entry kind from the
+  kind (`resolve.rs::not_found`) — never infer entry kind from the
   error variant.
 
 ## Soundness-coupled single-source predicates
 
-- `value_layout` (`heap.rs:131`) — the Copy/value-flattening verdict BOTH
+- `value_layout` (`heap.rs`) — the Copy/value-flattening verdict BOTH
   typecheck's `Copy` classifier and backend's `HeapCategory::Value` arm must
   delegate to; divergence is a UAF. Single-field-only is soundness, not a
-  size bound (Wave-3a blockers, `heap.rs:221–244`); bumping
+  size bound (Wave-3a blockers; the `adt_layout_words` rustdoc); bumping
   `VALUE_LAYOUT_MAX_WORDS` is a cache-schema-bump event. The walk drops its
-  DashMap guard before recursing — two Refs in one shard deadlock (`heap.rs:207`).
-- `type_ctor_names` (`heap.rs:269`) — the ONE `TypeDef`-vs-product-ctor-facet
+  DashMap guard before recursing — two Refs in one shard deadlock (see the guard-drop comment in `adt_layout_words`).
+- `type_ctor_names` (`heap.rs`) — the ONE `TypeDef`-vs-product-ctor-facet
   reader (FIXME 0528 mirror cure); backend heap classifiers delegate here.
 - `is_strict_type_concrete` (`mono_expr.rs`) — the pure-TYPE half of the
   `from_expr` gate (Annotate erased; every other node's `inferred_type` must
@@ -147,12 +185,12 @@ Fields that LOOK optional but are contractually required downstream:
   summary; ask THIS predicate, never re-walk the gate (and never probe via
   `from_expr` with empty maps — since S114 that answers `Unresolved`, not the
   type question).
-- `Type::is_concrete()` (`types.rs:92`) — the GOT-slot eligibility gate,
+- `Type::is_concrete()` (`types.rs`) — the GOT-slot eligibility gate,
   strictly stronger than "no constraints" (constraint-emptiness gating was the
   S84 `(Box a)`-through-HOF SIGSEGV); `TyConApp` counts as non-concrete.
-- `render_type` (`types.rs:149`) — the single `Type`→string walk (S87, FIXME
+- `render_type` (`types.rs`) — the single `Type`→string walk (S87, FIXME
   0420); new variants edit one walk, not five renderers. `apply` carries a
-  direct self-map cycle guard (`types.rs:295`, FIXME 0279/0295) —
+  direct self-map cycle guard (FIXME 0279/0295) —
   debug-asserts, treats the var as unbound in release.
 
 ## Known asymmetries a reader would misread as bugs
@@ -160,10 +198,13 @@ Fields that LOOK optional but are contractually required downstream:
 - `Pattern::Constructor.name: SymbolRef` — the parser does NOT split
   qualified names: `(option/Some x)` lands verbatim as
   `{ module: None, name: "option/Some" }`; the split is a pending lift, the
-  `SymbolRef` slot its destination (`ast.rs:87–98`). The resolved FQ lives in
+  `SymbolRef` slot its destination (`ast.rs`). The resolved FQ lives in
   the `MethodResolutions.pattern_ctors` span-keyed sidecar, not on the AST.
-- `PlatformSpec.name` is still bare `String` (`module.rs:2348`) — the
-  `ModuleName` narrow is a recorded target (S69 Submission 21), not landed.
+- `PlatformSpec.name` is still bare `String` — the `ModuleName` narrow is a
+  recorded standing target (S69 Sub 21, re-affirmed S119/FIXME 0919) with a
+  real trigger: it rides the first change-set touching the construction sites
+  (frontend `module_extract.rs::parse_platform` / the S120 int wash's
+  `src/platform.rs` manifest-order mint). See the `PlatformSpec` rustdoc.
 - `MethodResolutions` derives `Serialize` but is NOT serde_json-safe
   (`Span`-keyed maps; non-string keys). Fine for the binary cache; never
   JSON it (S106 latent note).
@@ -171,7 +212,7 @@ Fields that LOOK optional but are contractually required downstream:
   `cranelisp-typecheck::builtins::register_macros_module` — unassertable from
   this crate (dependency direction); `marshal/tests.rs` guards only the
   constants themselves.
-- `unsafe impl Send/Sync for ModuleEntry` (`module.rs:1151`) is informational
+- `unsafe impl Send/Sync for ModuleEntry` (beside the `ModuleEntry` enum) is informational
   — safety delegates to `C: CodeStore`'s own bounds.
 
 ## Public-surface mechanics

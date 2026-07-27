@@ -823,6 +823,20 @@ impl MonoExpr {
     /// `signature_heap_category`, never the deleted `classify(Var)` panic), so
     /// the walk yields a total `MonoExpr`. Byte-identical to the strict builder
     /// on a fully-concrete body (every `node_ty` succeeds; carriers identical).
+    ///
+    /// **STAGED RETIREMENT (S119 ruling, register row R-11 / FIXME 0913;
+    /// `design/arch/concreteness-types-first.md` §3.8).** The
+    /// `unwrap_or(ConcreteType::Int)` below is the types-crate fabrication
+    /// site the concreteness programme closes: (1) S119 CS-3 replaces the
+    /// fabricating default for the populations typecheck owns, with a
+    /// lenient-fallback census whose zero reading is the flip criterion;
+    /// (2) the S120 ctor tranche (FIXME 0931) deletes the largest legitimate
+    /// lenient population (generic ctor/accessor templates stop being codegen
+    /// targets; A-MINT instances are built with real concrete node types);
+    /// (3) end state (S121, census-gated): this builder DELETES and
+    /// [`MonoExpr::from_expr`] is the sole view builder
+    /// (`synthetic_local_from_expr` retires with it once synthesis stamps
+    /// types).
     pub fn lenient_from_expr(
         expr: &Expr,
         pattern_ctors: &HashMap<Span, FQSymbol>,

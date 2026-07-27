@@ -149,9 +149,11 @@ fn drop_glue_naming_identity_span_keyed_mirrors() {
 //    the path here alone made every cross-module call fail with
 //    `can't resolve symbol __cranelisp_got_compare_dord` and the whole stdlib
 //    stopped loading. This cell is that fence.
-// 2. **Injectivity (OWED, FIXME 0748 → /arch).** The `.`→`_` flatten collides
-//    `a.b` with `a_b`. The fix belongs at the types home; it cannot land
-//    one-sidedly here (see 1).
+// 2. **Injectivity (CLOSED S119, FIXME 0748).** The types-owned mint now
+//    escapes injectively (`_`→`__`, `.`→`_d`, `-`→`_h`, `_u{cp:06x}`
+//    catch-all; alphanumerics fixed points; `_entry` outside the image). The
+//    fix landed at the types home exactly because a one-sided change here
+//    breaks the definer/consumer agreement (see 1).
 
 // spec: design/arch/principles/07-single-source-of-truth.md — the GOT
 // data-symbol scheme has ONE home (`cranelisp_types::got_data_symbol_name`); the
@@ -208,20 +210,18 @@ fn got_data_symbol_name_matches_the_pinned_link_time_abi_literals() {
     );
 }
 
-// spec: design/arch/safety-invariants.md §4 R4 — the OWED collision, recorded so
-// the census claim is checkable against source rather than asserted. This pins
-// the CURRENT (non-injective) behaviour deliberately: it is the evidence FIXME
-// 0748 carries, and it flips to an injectivity assertion in the change-set that
-// fixes the types-owned mint.
+// spec: design/arch/safety-invariants.md §4 R4 — the R4 witness, INVERTED at
+// S119 (FIXME 0748 fixed at the types home): the injective escape mints
+// DISTINCT GOT slab data symbols for `a.b` and `a_b`. The types-side
+// round-trip battery (`cranelisp-types/src/module/tests.rs`) carries the
+// full injectivity argument; this cell is the backend-visible fence.
 #[test]
 fn got_data_symbol_name_collision_is_the_owed_r4_witness() {
     use cranelisp_types::ModuleFullPath;
-    assert_eq!(
+    assert_ne!(
         got_data_symbol_name(&ModuleFullPath::from("a.b")),
         got_data_symbol_name(&ModuleFullPath::from("a_b")),
-        "R4 OWED (FIXME 0748): the `.`->`_` flatten collides these two distinct \
-         modules onto ONE GOT slab data symbol. When 0748 lands at the types \
-         home this assertion INVERTS to assert_ne! — it is the witness, not an \
-         endorsement."
+        "R4 (FIXME 0748, fixed S119): two distinct modules must never share \
+         one GOT slab data symbol"
     );
 }

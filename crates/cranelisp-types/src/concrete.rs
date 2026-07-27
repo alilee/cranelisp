@@ -40,6 +40,18 @@ use crate::{FQTypeName, Type, TypeId};
 /// `Eq + Hash` (which `Type` cannot derive — it carries `Var(TypeId)` that hashes
 /// unstably across inference runs) make `ConcreteType` a stable key for the mono
 /// `done`-set and the codegen cache key.
+///
+/// **Constructibility — sealing DECLINED (S119 ruling, register row R-5;
+/// `design/arch/concreteness-types-first.md` §3.7).** The variants stay `pub`
+/// and directly constructible: exhaustive backend matching over the closed sum
+/// is a Principle-18 safety feature (a `_ =>` arm compelled by privatised
+/// variants would hide missed variants), and legitimate known-`Int` literal
+/// construction exists. The defence against fabrication ("manufacture a
+/// `ConcreteType` where the real type is unknown") is NOT a constructor gate —
+/// it is the NC-2 two-family fabrication census (family A: discarded
+/// `from_type` `Result`s; family B: a `Type` fabricated upstream so it passes
+/// `from_type` cleanly), with a pinned allow-list in which every entry cites an
+/// open defect. Residual grade: asserted-with-a-named-falsifier.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ConcreteType {
     Int,
@@ -97,6 +109,35 @@ impl ConcreteType {
             )),
             Type::Var(id) => Err(NotConcrete::Var(*id)),
             Type::TyConApp(id, _) => Err(NotConcrete::HktHead(*id)),
+        }
+    }
+
+    /// The program-result ROOT of this type — the IO-head-strip rule
+    /// (S118 ruling, FIXME 0898; the single derivation behind backend's
+    /// result-root glue enumeration in `compile_to_module` and int's
+    /// `release_key` in `src/result_owner.rs`, whose two literal encodings
+    /// re-express over this method and delete — Principle 7).
+    ///
+    /// `(IO a)` — the `primitives/IO` ADT with non-empty args — strips to
+    /// `a`; anything else is itself. **ONE hop, no recursion**
+    /// (`(IO (IO a))` → `(IO a)`), by design: both consumers' semantics are
+    /// pinned to the single-hop form. A user-module type named `IO` is NOT
+    /// stripped (the match is on the canonical `primitives` home), and a
+    /// nullary `IO` head (no args) is itself.
+    ///
+    /// Part of the result-root grammar whose other authority is
+    /// `drop_glue_symbol_name` (`module.rs`) — the release symbol for a
+    /// program result is minted over THIS root.
+    pub fn result_root(&self) -> &ConcreteType {
+        match self {
+            ConcreteType::ADT(name, args)
+                if name.module.as_ref() == "primitives"
+                    && name.name.as_ref() == "IO"
+                    && !args.is_empty() =>
+            {
+                &args[0]
+            }
+            other => other,
         }
     }
 

@@ -1,8 +1,6 @@
-use std::collections::HashMap;
-
 use serde::{Deserialize, Serialize};
 
-use crate::{ModuleFullPath, Span, Symbol};
+use crate::ModuleFullPath;
 
 /// Which codegen queues receive work from `compile_unit`.
 ///
@@ -19,20 +17,12 @@ pub enum CodegenBehaviour {
     ObjectOnly,
 }
 
-/// Result of compiling a single unit (returned by binary crate pipeline).
-pub struct CompileResult {
-    /// Updated symbol table entries
-    pub symbols: Vec<(Symbol, crate::ModuleEntry)>,
-    /// Codegen artifacts (DefCodegen lives in backend crate, so this uses a
-    /// serializable summary — full DefCodegen is backend-internal)
-    pub codegen_names: Vec<Symbol>,
-    /// Accumulated warnings
-    pub warnings: Vec<crate::Warning>,
-}
-
-// --- Backend types that live in cranelisp-backend, documented here for reference ---
-// ModuleCodegenState, DefCodegen, CacheMetadata, NULLARY_TAG_THRESHOLD
-// are NOT defined here — they live in cranelisp-backend because they contain runtime state.
+// `CompileResult` DELETED (S119, FIXME 0918 — the S87 dead-surface class): a
+// zero-consumer public type; the binary's pipeline returns its own internal
+// shapes. The call-graph cluster (`CallEdge`/`CallInfo`/`CallGraph`) is
+// likewise deleted — the LIVE call-graph mechanism is the per-entry
+// `ModuleEntry::Def.callees: Vec<FQSymbol>` field (Decision 21), not a
+// parallel map.
 
 /// Named constant for GOT table size. Shared between backend and runtime crates
 /// so that GOT memcpy operations use the same size. Single source of truth.
@@ -67,27 +57,3 @@ pub struct CompileContext {
     /// Which codegen queues receive work (in-mem+object vs object-only).
     pub codegen: CodegenBehaviour,
 }
-
-// --- Call graph types ---
-
-/// An edge in the call graph from one function to another.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CallEdge {
-    /// Name of the called function.
-    pub callee: Symbol,
-    /// Whether this call is in tail position.
-    pub tail_position: bool,
-    /// Source location of the call site.
-    pub span: Span,
-}
-
-/// Call information for a single function.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CallInfo {
-    /// Outgoing call edges from this function.
-    pub edges: Vec<CallEdge>,
-}
-
-/// Map from function name to its call information.
-/// Populated during typecheck, consumed by codegen and analysis passes.
-pub type CallGraph = HashMap<Symbol, CallInfo>;
