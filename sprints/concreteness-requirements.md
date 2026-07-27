@@ -41,7 +41,7 @@ likely superseded and should not be built until that is settled.
 |---|---|---|
 | R-1 | A GOT slot cannot exist on a non-concrete entry. Not checked — **unrepresentable**. | Slotted-and-polymorphic today: every generic-ADT ctor (mandatory slot on `DefKind::Constructor`), `IO.Bind`, `vec-len`. |
 | R-2 | The slot⟺concreteness relation must not be a `⟺` between two independent fields. | `ModuleEntry::Def { scheme, kind, .. }` — `UserFnState::Concrete { got_slot }` is constructible over any scheme; nothing joins them. |
-| R-3 | One slot carrier, or all carriers gated by one fallible mint. | Four independent carriers: `UserFnState::Concrete`, `DefKind::Constructor`, `PrimitiveBody::Extern`, `SymbolTable::next_got_slot`. Unified only on the *read* side by `callable_got_slot()` (`module.rs:1445`). |
+| R-3 | One slot carrier, or all carriers gated by one fallible mint. | **Five** independent carriers (corrected 2026-07-27 — I under-counted): `UserFnState::Concrete`, `DefKind::Constructor`, `PrimitiveBody::Extern`, `SymbolTable::next_got_slot`, and **`src/platform.rs:351`, which writes `next_got_slot` directly**. Unified only on the *read* side by `callable_got_slot()` (`module.rs:1445`). |
 | R-4 | No constructor may assert a property it does not check. | `scheme::mono` (`typecheck/src/scheme.rs:10-17`) sets `type_vars: vec![]` **without inspecting the type at all**. The name is the fabrication. |
 | R-5 | `ConcreteType` must not be constructible except through a checked path. | Its variants are `pub`. `from_type` is "the only way to obtain one *from a `Type`*" — true, and no defence against direct literal construction, which is how four of the fabrication sites work. |
 | R-6 | Backend metadata must carry concrete types, not `Type`. | `CtorField { ty: Type }` (`backend/compiler/context.rs:274-281`), populated from the ctor **declaration's** polymorphic scheme → `Type::Var(a)` permanently. |
@@ -80,8 +80,8 @@ built for family A. Both must close.
 | # | Requirement |
 |---|---|
 | R-22 | Specialisation must be **forced by construction**, not opt-in by discovery. Today it is a walk with four collectors and a nine-condition chain (`typecheck/program/mono_collect.rs:567-583`); a missed call site silently falls through to a poly body wherever one is slotted. |
-| R-23 | Synthesised bodies must be instantiable. The accessor's body is `Span::SYNTHETIC` throughout, so `monomorphise_call`'s body re-check cannot produce an instance — A-MINT requires re-running the synthesiser at concrete type args. Any design that routes accessors through the generic mono path is wrong. |
-| R-24 | **OPEN — unresolved and must be settled.** For a direct concrete call `(val (Bx 1024))` the gate (`entry_is_monomorphisable_polymorphic`) and the trigger (`local_parametric_call_triggers`) both **pass**, yet no instance is minted. I narrowed the decline to `callee_has_keyed_carrier` or `resolve_terminal_fq_scoped` but **did not prove which**. A revised design must not be written over this gap. |
+| R-23 | Synthesised bodies must be instantiable **and the instance must be sound**. ~~The generic mono path cannot produce an instance~~ — **corrected 2026-07-27**: it *can*. The dotted spelling `(Bx.v (Bx 5))` mints `user/Bx.v$user/Bx$Int`, and **that instance is unsound** — its CLIF carries the `<1024`-guarded `atomic_rmw` on the field word, and `(Bx.v (Bx 1024))` crashes. So monomorphisation alone is **not sufficient**: the mono body is still built through the declaration→`CtorMeta` channel (R-6). A-MINT is strengthened, not weakened — and R-6 and R-23 are one problem, not two. |
+| R-24 | **RESOLVED 2026-07-27 — and my narrowing was wrong.** Both suspects *pass*: `checker.rs:1733-1737` records `VarRef::Global` for the bare alias, `checker.rs:2148-2155` succeeds. The actual cause is the **collector→mint identity handoff**: `mono_collect.rs:592` pushes `resolved.fq.symbol` — the *written spelling* `v` — and `get_constrained_fn`'s raw local probe (`monomorphise.rs:1171`) lands on the bare-alias `ModuleEntry::Import`, which its match rejects, returning `Ok(None)` **silently**. The 0620 alias class, one line below the comment stating the rule. Differential proof: bare `(v (Bx 5))` mints nothing; dotted `(Bx.v (Bx 5))` mints. Owned by FIXME **0935** (`/design` typecheck). |
 
 ## E — The concrete-tree requirement (user, 2026-07-27)
 
@@ -140,10 +140,24 @@ R-25, R-26), `cranelisp-backend` (R-9, R-12, R-13, R-14, R-27, R-32), `cranelisp
 **REDs are not a constraint during the wash** (user direction). The suite's role here is
 differential — what *changed* — not absolute.
 
-## Open items this register does not resolve
+## Open items — status 2026-07-27
 
-1. **R-24** — the unproven decline condition in the mono collector chain.
-2. **I-ABI's fate** — `/arch` must re-rule under R-25/R-27; NC-R is likely superseded.
-3. **R-15's severity** — the int-layer trio is ungraded, deliberately.
-4. Whether closing R-2 needs a schema bump (`/arch` argued not; confirm under the revised
-   design, which is larger than the one that argument was made about).
+The revised design is `design/arch/concreteness-types-first.md` (commit `c2783975`), whose §6
+carries the 40-row cross-check. Disposition of the four items this register opened:
+
+1. **R-24 — RESOLVED.** See the corrected row. My narrowing was falsified; the cause is the
+   written-spelling handoff, FIXME 0935.
+2. **I-ABI — RESOLVED as I-EMIT.** The emitted tree references no polymorphic callable. The
+   shared Rust body survives *below* the tree as the backend-interior **realization roster**
+   with declared representation dependencies — an enumerated contract, not an invariant
+   exception, so R-39 is discharged rather than evaded. `/arch` recorded its own earlier
+   "wrappers add names without soundness" argument as **overruled**: the name is where the
+   type closes. **NC-R is not dead** — it survives mechanically (the assertion is still true
+   at HEAD and buildable now) and mutates in meaning; FIXME 0936.
+3. **R-15's severity — still open**, deliberately ungraded.
+4. **Schema bump — ANSWERED: one bump.** Forced by `CtorState { Template, Concrete }`
+   replacing the constructor's mandatory slot, and shared with the S120 window.
+
+Still open beyond the above: **R-15**, and the whole register's *confirmation* — every row
+now has a disposition in `concreteness-types-first.md` §6, but a disposition is a claim, and
+the rows are confirmed only when their instruments (R-33–R-37) execute.
