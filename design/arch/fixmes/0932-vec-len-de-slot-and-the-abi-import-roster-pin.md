@@ -18,6 +18,15 @@ status: open
 
 **Target: `/design`(backend + runtime pair). S120 scope.**
 
+> **AMENDED 2026-07-28 (I-ABI → I-EMIT, `concreteness-types-first.md` §1).**
+> The "I-ABI roster" below is re-labelled the **backend uniform-realization
+> roster** (FIXME 0936 carries the NC-R relabel). Consequences here: `/arch`
+> records a **preference for spelling (a) Inline** — it keeps the realization
+> roster at one member (`catch-runtime-error`), and the inline model is the
+> shape `bind`/`race`/`select` themselves re-kind to under I-EMIT. Spelling
+> (b) remains legal but adds a roster member the re-ruling is working to
+> avoid; choose it only if the emission is genuinely not element-independent.
+
 Per `design/arch/total-concreteness.md` §3.2, `vec-len` is the single slotted
 polymorphic primitive in the system and the last `Primitive`-kind exception to
 the universal `slot ⇒ is_concrete()` invariant. Choose and design one of the

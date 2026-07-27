@@ -24,6 +24,16 @@ status: open
 **Target: `/design`(typecheck), with backend adjacency for the wrapper
 promotion. S120 scope — do NOT interleave with S119 Phase 5.**
 
+> **AMENDED 2026-07-28.** The types-side representation is now PINNED by
+> `design/arch/concreteness-types-first.md` §3: the slot retirement is
+> `DefKind::Constructor { state: CtorState { Template | Concrete { got_slot:
+> CallableSlot } }, .. }` with the ONE fallible witness mint
+> (`SymbolTable::mint_callable_slot`) — design item 1 below builds against
+> that vocabulary, not an `Option<usize>`. Item 4's schema window is
+> confirmed (ONE bump, shared). The collection design additionally absorbs
+> FIXME 0935 (carrier/storage-key identity — the register R-24 resolution)
+> and A-MINT's pairing constraint recorded there.
+
 Per the user-directed re-ruling (`design/arch/total-concreteness.md`), the
 generic-ADT ctor's mandatory slot is the largest remaining exception to the
 universal `slot ⇒ is_concrete()` invariant, held under a licence (I-CT'

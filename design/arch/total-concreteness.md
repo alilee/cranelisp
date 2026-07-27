@@ -17,6 +17,23 @@ planned (§5).
 land; the invariant statements fold into BC §7 + `module.rs` rustdoc + R11; this
 file moves to `design/arch/archive/`.
 
+> **AMENDED 2026-07-28 (`/arch`, the design commission): I-ABI is re-ruled.**
+> The user's follow-on direction (R-25/R-27 of
+> `sprints/concreteness-requirements.md` — "typecheck must emit fully
+> concrete-typed syntax tree including calls to primitives … I don't think we
+> should tolerate any slotted-and-polymorphic") overrides §2's I-ABI clause:
+> the four-member roster does NOT survive as a typecheck-boundary licence.
+> The replacement clause **I-EMIT** — no polymorphic callable is referenced by
+> the emitted tree; per-member dispositions (`bind`/`race`/`select` re-kind to
+> the inline model; `catch-runtime-error` gets per-instantiation concrete
+> facades over its one uniform body); the roster survives only as the
+> backend-interior **realization roster** — is ruled in
+> `design/arch/concreteness-types-first.md` §1, which also carries the
+> `cranelisp-types` representation design (`CallableSlot` witness mint,
+> `CtorState`), the wash plan, and the 40-row register cross-check. §2's
+> I-CONC and I-FRAME stand unchanged; read §2's I-ABI text and §3.3 as the
+> superseded record.
+
 ---
 
 ## 0. The user's ruling, verbatim, and what it binds
@@ -103,7 +120,9 @@ Three clauses; each is assertable on its own.
 > exactly as `Polymorphic`/`Constrained` already are. Codegen never sees a
 > `Type::Var`, at any seam, for any kind.
 
-> **I-ABI (the boundary residual, closed and pinned).** The only polymorphic
+> **I-ABI (the boundary residual, closed and pinned). — SUPERSEDED 2026-07-28
+> by I-EMIT (`concreteness-types-first.md` §1); retained as the record the
+> re-ruling amends.** The only polymorphic
 > callables that survive are **hand-written runtime bodies dispatched by ABI
 > name** — never compiled by codegen, never slotted, never a codegen frame.
 > The roster is closed and enumerated (at HEAD: `bind`, `race`, `select`,
@@ -235,7 +254,17 @@ specialisation (a common length-word is a layout-contract choice); `vec-get`/
 `set`/`push` cannot — and they already don't share a body. The family's exposure
 is therefore already discharged except for one entry.
 
-### 3.3 The by-name imports (row 5): the I-ABI roster, pinned
+### 3.3 The by-name imports (row 5): the I-ABI roster, pinned — SUPERSEDED 2026-07-28
+
+> This subsection's treatment ("minting per-type wrapper symbols that call the
+> same body would add names without adding soundness") is **overruled in
+> direction by the user** (R-25/R-27): typecheck emits concrete calls for
+> every member; the name IS where the type closes. The ruled dispositions —
+> `bind`/`race`/`select` re-kinded inline, `catch-runtime-error` behind
+> per-instantiation concrete facades, the roster demoted to the
+> backend-interior realization contract, NC-R's re-label — are
+> `concreteness-types-first.md` §1. The text below stands as the superseded
+> record only.
 
 `bind`, `race`, `select` — backend-intercepted by name, lowering **inline IO
 node construction at concrete call sites**; no shared compiled body exists for
