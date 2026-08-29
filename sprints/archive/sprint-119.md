@@ -1,7 +1,11 @@
 # Sprint 119: The Non-Concrete Release Contract, and the Typed Consume Funnel
 
-**Status**: PHASE 5 LANGUAGE (ACTIVE) — Phase 3 closed with `/arch` **PASS WITH CONDITIONS**
-(§Phase-3 exit gate); waves organized below. Phase 5 stage 1 (`/testing`) not yet dispatched.
+**Status**: **CLOSED 2026-08-29 — user-directed, Phase 5 closed short at zero waves.**
+Phases 1–4 completed; Phase 3 closed with `/arch` **PASS WITH CONDITIONS** (§Phase-3 exit
+gate) and waves were organized below, but Phase 5 stage 1 (`/testing`) was never dispatched
+and all seven waves stand `pending`. Phases 6a/6b and the `src/` audit were skipped. The
+mid-sprint user ruling on direction (2026-07-27, §Notes) invalidated the premise the waves
+were organized against. See §Outcome (Phase 7).
 
 **Goal**: State and enforce the contract for releasing a value whose static type codegen
 cannot fully see — the question the stratum has never answered and whose five faces produce
@@ -876,4 +880,256 @@ Pending that ruling, `/qa`'s NC-1 partition table (`fdea7e29`) may be superseded
 
 ## Outcome (Phase 7)
 
-{Pending.}
+## Outcome (Phase 7)
+
+**Close decision: USER-DIRECTED, 2026-08-29.** The user is changing direction and wants a clean
+sprint boundary. Phase 5 is closed **short at zero waves** — all seven waves stand `pending`,
+Phase 5 stage 1 (`/testing`) was never dispatched, and Phases 6a/6b were skipped. This is an
+authorised close, not a completed one, and the record below says so in those terms.
+
+**Suite at close (measured 2026-08-29 at `c3000277`, tree clean apart from two untracked
+user zips): 5,687 run / 5,667 passed / 20 failed / 1 skipped.** The 20 REDs are the
+S118-certified carry set, name for name. **No regressions and no untraced RED — and zero
+defects closed.** The sprint's stated acceptance floor was 21 REDs → 10 and its ceiling
+21 → 2; **both were missed entirely.** Not narrowly, not partially: the RED count moved by
+one, and that one moved by a flap, not by a fix (see §Findings, the 0694 datum).
+
+### Why the shortfall — stated once, plainly
+
+The sprint was organised in Phase 4 around one outcome and two spines, and the wave structure
+encoded a specific technical premise: `/arch`'s kind-partitioned slot invariant (`f5d30808`),
+under which the non-concrete release class had five faces, three standing licences, and a
+partition-table instrument. **On 2026-07-27 the user overruled that premise** — total
+concreteness at end of typecheck, no licences, generic calls unrepresentable in the emitted
+tree (`30d16971`). Under the new target, faces 1–3 and 5 of the contract's own table become
+*unreachable states* rather than dispositions, R-1 goes vacuous, and `/qa`'s NC-1 partition
+instrument is superseded by a universal predicate.
+
+Waves 2 through 7 were scoped against the superseded premise. Re-organising them was the wrong
+spend when the direction itself was about to change again: the honest sequence was to let
+`/arch` re-rule, capture the new target as a checkable register, and stop — which is what
+happened. **Every commit in the sprint window after `f5d30808` is design and ruling work
+serving the new direction, and none of it is implementation of the old one.** That is the
+correct outcome for the information available; it is also, unambiguously, a sprint that
+shipped no defect fixes.
+
+### Delivered
+
+Verified against `git log 5520186d..c3000277` (21 commits), not against §Scope.
+
+- **The direction ruling itself, and `/arch`'s clean concession — this sprint's most valuable
+  artefact.** `30d16971` records the user's ruling; `d5723831` is `/arch` conceding without
+  dissent *and self-correcting its own census twice in the same breath*. Three further rulings
+  followed and each held under challenge: slot-in-`MonoDefnVariant` rejected, the flip proceeds
+  unchanged (`97569d7b`); slot-identity realignment — the register's proposal rejected, D11
+  adopted (`c7156cb7`); the clean-sheet symbol-table lifecycle design with both corrections
+  conceded (`c3000277`). New arch corpus: `design/arch/total-concreteness.md` (416 lines),
+  `design/arch/concreteness-types-first.md` (886), `design/arch/symbol-table-lifecycle.md` (719).
+- **The 40-row concreteness requirements register** (`sprints/concreteness-requirements.md`,
+  `f0adbf24` / `c2783975` / `b725c41d`) — the cross-check instrument for the revised design,
+  owned by `/sprint` as a programme artefact spanning S119–S121+. It has already earned its
+  keep: it caught R-24 and forced R-3/R-23 corrections, and it flags the I-ABI four-callable
+  roster as overridden by R-25/R-27 and awaiting re-ruling.
+- **Code — the concreteness slice in `cranelisp-types`** (`3d37028b`): an opaque `CallableSlot`
+  with a private field obtainable only from the single fallible `mint_callable_slot`, which
+  checks `is_concrete()` and allocates in one act — so *constructing* `Concrete { got_slot }`
+  now requires a slot value, and the two hand-mint sites that falsified safety-register row R11
+  for thirty-five sprints have no second home to hide in. Plus `heap::ctor_field_types_at` (the
+  substituting ctor projection, with honest refusals distinguished from caller bugs),
+  `ConcreteType::result_root`, the injective GOT mint with its `platform.*` carve-out and named
+  residual, the `WrittenTraitImpl` carrier, `CtorState` landed DORMANT, and the facade-truth
+  pass in full. `public-api.txt` regenerated; unit tiers alongside.
+- **The assurance principle and its mechanical enforcement** (`162bedd9`): the three admissible
+  grades and the arming discipline written into `CLAUDE.md`, plus `scripts/verify-citations.py`
+  (441 lines), a 616-line drift ratchet baseline, and `tests/citation_drift.rs` (271 lines) —
+  **an executing gate with a consumer in the same change-set**, not a static artefact. This is
+  the sprint's one piece of standing instrument work.
+- **The Phase-2 restructuring** (`935b488e`, `3232a061`): `/arch` collapsed the Phase-1 ledger
+  into one outcome with two spines and **resolved FIXME 0920** by re-scoping tranche B onto the
+  int marshal boundary — a scope defect found by the verify-against-source pass, which is the
+  METHOD §3.3 discipline working exactly as designed.
+- **The Phase-3 design corpus** (`65357390`, `f22a8804`, gate `4166fbdb`): the non-concrete
+  release contract (870 lines), tranche A / the typed consume funnel (739), the 0889 macro-turn
+  ownership protocol (563), typecheck's non-concrete producer obligations (799), `/qa`'s
+  s119 test plan (849), and the Phase-3 exit gate PASS WITH CONDITIONS. **None of it is
+  implemented.** Under the new direction the four Phase-3 design documents need re-reading
+  against total concreteness before any of them is built to — `/arch` has already ruled that
+  the contract's five-face table largely dissolves.
+- **`/qa`'s instrument correction** (`1858034e`, `fdea7e29`, `743126b5`): negative-coverage
+  failure confirmed and quantified with an owner; NC-1 first corrected to the kind-partitioned
+  sweep, then reverted to the universal predicate when the ruling landed, with the roster pin
+  added. The revert is the right behaviour and is recorded as such.
+
+### Delivered — nothing else
+
+No defect was closed. No RED flipped green by a fix. No user-facing artefact changed. No spec
+text changed. `src/`, `crates/cranelisp-frontend`, `crates/cranelisp-typecheck`,
+`crates/cranelisp-backend` (beyond cache/resolution adjustments consequent on the types slice),
+`crates/cranelisp-primitives`, `crates/cranelisp-intrinsics` and `crates/cranelisp-platform`
+were not implemented against.
+
+### Deferred (with rationale)
+
+- **All seven waves, in full.** W1 (`/testing` QA-first, sprint-wide), W2 (Spine 1 backend, 10
+  of the 11 REDs), W3 (tranche A, runtime pair), W4 (typecheck producer), W5 (tranche B-int),
+  W6 (cache carrier), W7 (riders + 0863). Rationale above: the premise they were organised
+  against was overruled mid-sprint. **They do not carry forward as-written** — the next Phase 1
+  re-derives waves from the concreteness programme, and treating the S119 wave table as a
+  ready-made backlog would rebuild against a superseded design.
+- **Spine 1 (the non-concrete release contract) as a distinct programme.** Its *defects*
+  (0903, 0907, 0916, 0913, 0917, 0891, 0915, 0906) remain live and remain open FIXMEs; its
+  *contract* is substantially dissolved by total concreteness and must be re-derived, not
+  resumed. The design document stays on the record as the analysis that produced the five-face
+  table the ruling then collapsed.
+- **Spine 2 (the typed consume funnel).** Tranche A designed and public-API-approved, zero
+  lines implemented; tranche B-int (the 0889 recovery vehicle) designed with its ownership
+  protocol ruled, zero lines implemented. Neither is invalidated by the direction change — both
+  are ownership-stratum work orthogonal to concreteness — so both are clean, ready scope input.
+- **0863** — the conditional third deferral (§Open items ①) was never reached. Per that item's
+  own terms it is **S120's first item and needs no further sign-off**. Its design remains READY.
+- **Track C** — the D1 discriminating experiment was not run. See §Findings for the obligation
+  it now carries, which grew rather than shrank.
+- **The option-2 measurement** (report-only, gated behind Spine-1 implementation): not run,
+  because its gate never opened.
+- **The `src/` whole-context audit: SKIPPED — user-directed.** It was scoped to the Phase 6/7
+  window and never dispatched; `audits/src-s119.md` does not exist. The audit's value is
+  Phase-1 input to the *next* sprint, and with the direction changing, `src/` may no longer be
+  the right rotation target. **The rotation obligation carries forward and is NOT dropped from
+  the ledger** — S120's Phase 1 picks the target afresh. Rotation state at close: `src/` S109
+  (oldest), backend S110, frontend S113, typecheck S114, intrinsics S115, primitives S116,
+  platform S117, types S118.
+- **Phases 6a and 6b: SKIPPED.** Nothing user-facing shipped, so the five user-proxies' standing
+  quality questions (METHOD §2.2) would have assessed an unchanged surface. **The standing-quality
+  obligations carry forward untouched** — they are not discharged by being skipped, and S120's
+  Phase 6 owes two sprints' worth of them.
+
+### Close checklist (METHOD §2.2)
+
+**FIXME-vs-§Delivered consistency — asserted, verified against the live directory rather than
+against commit messages.**
+
+- **At open (`5520186d`): 65 files — 56 open, 9 deferred. At close (`c3000277`): 76 files —
+  68 open, 8 deferred.** Twenty filed in-window; nine deleted; net +11.
+- **Nine deletions, each verified:** `0748` (deleted in `3d37028b`, the injective GOT mint
+  landed with the platform carve-out), `0918` + `0919` (filed at Phase 1 in `e39eabcf`, both
+  resolved in `3d37028b` — 0919 "done in full"), `0920` (`3232a061`), `0922` + `0923` + `0925`
+  (all three at the Phase-3 exit gate, `4166fbdb`), `0926` (`1858034e`), `0930` (`743126b5`).
+  **Every one is a deletion by the targeted skill, and none contradicts a §Delivered line.**
+- **Correction to the dispatch brief, recorded rather than smoothed:** the brief stated that
+  `3d37028b` deleted five FIXME files. It deleted **three** (0748, 0918, 0919). The other six
+  in-window deletions belong to `3232a061`, `4166fbdb` (×3), `1858034e` and `743126b5`. The
+  count of nine total is right; the attribution to one commit was not.
+- **One status flip:** `0898` moved `deferred` → `open`. Correct — its types half landed in the
+  arch wave and its `/dev` half (collapsing the two literal encodings onto `result_root`) is
+  now live work, not a deferral. Its file records both halves explicitly.
+- **Partial-landing honesty holds at the file level.** `0869` and `0898` each carry an
+  in-file banner naming what landed, what remains, and who owns the remainder. No surviving
+  FIXME asserts a state the tree contradicts.
+- **The twelve surviving in-window filings** — 0921, 0924, 0927, 0928, 0929, 0931, 0932, 0933,
+  0934, 0935, 0936, 0937 — are all `status: open` and all are scope input for S120 Phase 1.
+  0921 carries a **confirmed defect** (`consume_sexp` has no `TAG_SEXP_ANNOTATED` arm, leaking
+  both heap fields of every annotated cell) and should be read first.
+
+**Rulings-vs-implementation (METHOD §2.2, the S115 back-edge rule).** Four `/arch` rulings were
+recorded this sprint (`d5723831`, `97569d7b`, `c7156cb7`, `c3000277`) plus the user's direction
+ruling. **None has landed its implementation**, and this is recorded as an explicit, owned
+deferral rather than as routing: the whole set flows into S120 as the concreteness programme's
+scope, tracked by the 40-row register, which is the scheduling artefact. *Routing is not
+scheduling* — the register is what makes this a schedule rather than a routing note.
+
+**Spec coverage-annotation gate (METHOD §2.2 item 5, added S115).** `git diff --name-status
+5520186d..c3000277 -- spec/ repl/spec.md` is **empty**. No normative prose changed, therefore no
+annotation band was cleared, therefore **no cleared-and-unrestored row exists and no carry is
+owed under this gate.** Recorded as a measured negative, not an assumption.
+
+**Frontmatter-vs-table audit (mechanical).** All 14 `.claude/commands/*.md` and all 14
+`.claude/agents/*.md` match `sprints/artefacts.md` §II.3 exactly, model and effort. `/review`'s
+`fable`/`high` frontmatter denotes the adjudicator tier per the delegation amendment, as at
+S118. **Zero mismatches.**
+
+**Dispatch log review.** Two dispatch rows recorded: a Phase-1 read-only `Explore ×4` fan-out
+and the Phase-2 `/arch` shim at fable/xhigh. Phase-3's three rounds and the four post-ruling
+`/arch` re-rulings were dispatched but **not written into the dispatch-log table** — a
+`/sprint` bookkeeping lapse, recorded here as a finding rather than back-filled from memory.
+No escalation or downgrade was used; every dispatch ran at its shim-pinned default.
+
+**Audit calibration check: N/A this sprint** — no audit was dispatched, so there is no
+assessment to calibrate. The check is owed at S120 close.
+
+### Carries into S120 Phase 1 — the binding list
+
+1. **The total-concreteness programme is LIVE, not shelved.** The 40-row register
+   (`sprints/concreteness-requirements.md`) plus `design/arch/total-concreteness.md`,
+   `concreteness-types-first.md` and `symbol-table-lifecycle.md` are **ratified and
+   unimplemented**. The register's own status line scopes it S119–S121+. Open threads it names:
+   I-ABI needs re-ruling on the R-25/R-27 basis (the four-callable polymorphic roster does not
+   survive at the typecheck boundary), and `/qa`'s NC-R roster-pin cell is likely superseded and
+   **should not be built until that is settled**.
+2. **`CACHE_SCHEMA_VERSION` is 24 — Window 1's bump 23→24 was CONSUMED** by `3d37028b`
+   (`crates/cranelisp-backend/src/cache/mod.rs:391`). **The next sprint must not double-bump.**
+   Window 2 (24→25, the 0869 cache carrier) was never opened and is unspent — and note the
+   binding condition `3d37028b` attached: the 24 bump *replaced both* previously-assigned S119
+   windows, and **a rider that slipped past S119 close takes its own window in its landing
+   sprint**. The slipped riders are 0869's `src/` enrolment sites, the typecheck producer
+   meaning changes, and the `Constructor`→`CtorState` flip.
+3. **FIXME debt: 76 files — 68 open, 8 deferred — carried forward untouched and NOT
+   re-dispositioned at close.** S120 Phase 1 scans them fresh against the new direction. The
+   2× escalation ledger (METHOD §2.4) is unchanged by this sprint, with one exception already
+   signed off: **0863's conditional third deferral was granted at S119 Phase 1 and never
+   consumed, so it is S120's first item and needs no further sign-off.**
+4. **The audit rotation obligation, unspent.** `src/` is still the oldest in rotation (S109) but
+   the target is S120 Phase 1's to choose, not S119's to bequeath.
+5. **Phase 6a/6b standing-quality obligations, unspent** for all five user-proxies.
+6. **Track C's 0694 obligation, and it grew.** See §Findings.
+7. **Both spines as clean scope input**, with the caveat in §Deferred: tranche A and tranche
+   B-int are ready to build; Spine 1's *contract* must be re-derived under total concreteness
+   before its defects are worked.
+
+### Findings
+
+- **The direction ruling is the sprint's return, and the process that produced it worked.**
+  `/sprint` did not defend the landed ruling; it put the user's reading to `/arch` with an
+  honest-dissent clause, and `/arch` conceded without dissent while volunteering that **its own
+  census had been wrong twice**. That is the assurance principle operating on a design decision:
+  a ruling that had not survived measurement did not bind. It cost one sprint of implementation
+  and saved building a licence structure that `design/arch/release-llvm-backend.md` was already
+  scheduled to demolish — silently, with a wrong body rather than a type error.
+- **A second 0694 flap datum, unprompted, and it points the other way from the first.** The
+  sprint opened with `nullary_return_dispatch_method_only_import::…_no_codegen_leak` firing on
+  a run where it had not been expected (recorded in §Baseline as the sprint's opening datum);
+  the closing run at `c3000277` shows it **not firing**, with no code between the two runs that
+  touches its seam. Two spontaneous flaps in opposite directions, twenty-one commits apart, on a
+  test that is a named member of the 0694 load-flap family. **This is now the strongest
+  load-dependence evidence the project holds, and it was obtained for free.** The Track-C
+  obligation carries forward *enlarged*: the S116 D1 discriminating experiment plus a recorded
+  re-measurement now has two opposed datapoints to explain rather than one.
+- **The 40-row register earned its cost inside the design window.** It was commissioned as a
+  cross-check instrument and immediately falsified parts of the design it was checking (R-24
+  resolved, R-3 and R-23 corrected, I-ABI flagged as overridden). A checklist that only ever
+  agrees with its subject is not an instrument; this one disagreed three times in its first
+  week.
+- **`/arch`'s self-correction rate is a positive signal, not a negative one.** Across four
+  rulings it conceded two corrections it was not asked to make and reversed one of its own
+  proposals (the register's slot-identity realignment, rejected in favour of D11). Read
+  alongside S119's opening premise being overruled, the pattern is a design authority that
+  updates on evidence — which is what the top-tier allocation is buying.
+- **The R11 exhibit closed structurally, and it is worth naming.** Safety-register row R11 was
+  graded `unconstructable` from S84 to S119 while two hand-mint sites violated it. The corrective
+  that landed in `3d37028b` is not a better inspection: `CallableSlot`'s private field plus the
+  single fallible mint means the violating construction **does not compile**. That is a
+  grade-1 (structural) conversion of a claim that had been grade-0 ("reviewed and correct")
+  wearing a grade-1 label for thirty-five sprints.
+- **`/sprint` process debt: the dispatch log was not maintained after Phase 2.** Seven
+  dispatches (three Phase-3 rounds, four post-ruling `/arch` re-rulings) are visible in git and
+  absent from the table. The table is the artefact that makes escalation-vs-hard-spots
+  correlation checkable at close, and this sprint cannot answer that question from its own
+  record. Fold into S120's dispatch discipline: **the log row is written at dispatch time, not
+  reconstructed at close.**
+- **A sprint can be worth running and still miss every gate.** The floor/ceiling framing
+  (21→10, 21→2) measures defect closure, and by that measure S119 is a total miss. The sprint's
+  actual product was a direction correction plus the structural closure of a thirty-five-sprint
+  false grade. Both are real; neither is a RED. The finding is not "the metric was wrong" — the
+  metric was right and we missed it — but that **a sprint whose premise is overruled at Phase 5
+  should be re-scoped or closed at that moment**, and this one drifted for its remaining commits
+  without a recorded re-scope decision. The user's close is the correction; the lesson is that
+  it should have been `/sprint`'s proposal at `30d16971`, not at `c3000277`.

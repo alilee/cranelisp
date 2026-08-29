@@ -390,6 +390,69 @@ with groundwork banked (0863 READY, 0869 carrier ruling in force, 0873
 approved design); the option paper's five decisions; both audits'
 recommendations. Full record: `sprints/archive/sprint-118.md`.
 
+### The Non-Concrete Release Contract — S119 ⚠️ CLOSED SHORT 2026-08-29 (user-directed; Phase 5 at zero waves)
+
+**A sprint whose premise was overruled mid-flight, closed at a clean boundary by user
+direction.** Phases 1–4 completed and produced a full design corpus; **Phase 5 stage 1
+(`/testing`) was never dispatched and all seven waves stand `pending`**; Phases 6a/6b and
+the `src/` audit were skipped. **Suite at close: 5,687 run / 5,667 passed / 20 failed /
+1 skipped — the S118-certified carry set name for name, no regressions, no untraced RED,
+and zero defects closed.** The acceptance floor (21 REDs → 10) and ceiling (21 → 2) were
+both missed entirely.
+
+The cause is on the record: on 2026-07-27 the user overruled `/arch`'s kind-partitioned
+slot invariant (`f5d30808`) with **total concreteness at end of typecheck** (`30d16971`) —
+generic calls unrepresentable in the emitted tree, no licences, backend's problem how it
+implements polymorphic primitives. Waves 2–7 were scoped against the superseded premise;
+under the new target the release contract's five-face table largely dissolves into
+unreachable states. Re-organising the waves was the wrong spend with the direction itself
+in motion, so the sprint's remaining commits are design and ruling work serving the new
+direction.
+
+**Delivered**: the direction ruling and `/arch`'s concession without dissent, self-correcting
+its own census twice (`d5723831`), followed by three further rulings that each held under
+challenge — slot-in-`MonoDefnVariant` rejected (`97569d7b`), slot-identity realignment with
+D11 adopted over the register's proposal (`c7156cb7`), clean-sheet symbol-table lifecycle
+(`c3000277`); the arch corpus `total-concreteness.md` / `concreteness-types-first.md` /
+`symbol-table-lifecycle.md`; the **40-row concreteness requirements register**
+(`sprints/concreteness-requirements.md`), which falsified parts of the design it was
+checking in its first week; the **concreteness slice in `cranelisp-types`** (`3d37028b`) —
+an opaque `CallableSlot` behind one fallible `mint_callable_slot`, which converts safety-register
+row **R11 from a thirty-five-sprint false `unconstructable` grade into a structural one** (the
+violating construction no longer compiles), plus the substituting ctor projection, the
+injective GOT mint with its platform carve-out, `result_root`, the `WrittenTraitImpl` carrier
+and the facade-truth pass; the **assurance principle** in `CLAUDE.md` with
+`scripts/verify-citations.py` and `tests/citation_drift.rs` as an executing gate
+(`162bedd9`); the Phase-2 restructuring resolving FIXME 0920; the Phase-3 design corpus
+(release contract, tranche A, the 0889 protocol, typecheck producer obligations, `/qa`'s
+test plan) — all unimplemented.
+
+**FIXMEs**: 65 at open (56 open / 9 deferred) → **76 at close (68 open / 8 deferred)**.
+Twenty filed in-window, nine resolved-and-deleted (0748, 0918, 0919, 0920, 0922, 0923, 0925,
+0926, 0930), each verified against the live directory. `0898` flipped deferred → open (types
+half landed, `/dev` half live). **All 68 open FIXMEs carry forward untouched** — S120 Phase 1
+scans them fresh against the new direction.
+
+**S120 carries**: the **total-concreteness programme is LIVE, not shelved** — four ratified,
+unimplemented `/arch` rulings tracked by the 40-row register, with I-ABI owing a re-ruling on
+the R-25/R-27 basis and `/qa`'s NC-R roster pin likely superseded; **`CACHE_SCHEMA_VERSION`
+is 24 — Window 1's 23→24 bump was CONSUMED, do not double-bump**, and per `3d37028b`'s
+binding condition each slipped rider (0869's `src/` enrolment, the typecheck producer meaning
+changes, the `CtorState` flip) takes its own window in its landing sprint; the **audit
+rotation obligation unspent** (`src/` still oldest at S109, but S120 Phase 1 picks the target
+afresh); the **Phase 6a/6b standing-quality obligations unspent** for all five user-proxies;
+**0863 is S120's first item and needs no further sign-off** (its conditional third deferral
+was granted and never consumed); both ownership spines as clean scope input, with Spine 1's
+contract needing re-derivation under total concreteness before its defects are worked; and
+**Track C enlarged** — the 0694 flap member fired unprompted on the opening run and did *not*
+fire on the closing run, twenty-one commits later, with nothing between them touching its
+seam, so the D1 discriminating experiment now has two opposed datapoints to explain.
+**No spec or `repl/spec.md` prose changed, so no coverage-annotation band was cleared and no
+carry is owed under that gate.** Frontmatter-vs-§II.3 audit: 28 rows, zero mismatches.
+Recorded process debt: the dispatch log was not maintained after Phase 2.
+
+Full record: `sprints/archive/sprint-119.md`.
+
 ### Pipeline v3 migration — COMPLETE (Sprints 29-38)
 
 Steps 1-10 + 14 delivered. Single-pipeline invariant established. ~2,100 lines of v1 code deleted. Steps 11-13 (concurrency) deferred indefinitely. Step 15 (new main.rs) retired — substantially delivered by Step 6. See `design/arch/archive/pipeline-v3-roadmap.md` §Post-Migration for full assessment.
