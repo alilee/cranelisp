@@ -14,18 +14,19 @@ Before doing work in any directory, read all `CLAUDE.md` files in that directory
 
 | Directory | Purpose |
 |---|---|
-| `spec/` | Language specification — owned by `/spec` (scribe; the user arbitrates semantics) |
-| `design/` | Architecture and per-crate implementation design — `design/arch/` owned by `/arch`, `design/{crate}/` by `/design` |
+| `spec/` | Language specification — owned by `spec` (scribe; the user arbitrates semantics) |
+| `design/` | Architecture and per-crate implementation design — `design/arch/` owned by `arch`, `design/{crate}/` by `design` |
 | `src/` | Compiler binary crate — pipeline, REPL, CLI, session |
 | `crates/` | Bounded-context library crates (types, frontend, typecheck, backend, primitives, intrinsics, platform, exe-bundle) |
-| `user/` | User-facing documentation — owned by `/docs` |
-| `stdlib/` | Standard library in Cranelisp — owned by `/stdlib` |
-| `examples/` | Learning-sequence examples — owned by `/examples` |
-| `exemplar/` | Showcase project (Sudoku Solver) — owned by `/port` |
-| `repl/` | REPL experience spec, demos, harness — owned by `/repl` |
-| `tests/` | E2e suite — strategy/plan owned by `/qa`, test sources by `/testing` |
-| `audits/` | Whole-context audit assessments — owned by `/audit` |
-| `sprints/` | Delivery coordination — method, roadmap, current sprint, archive — owned by `/sprint` |
+| `user/` | User-facing documentation — owned by `docs` |
+| `stdlib/` | Standard library in Cranelisp — a `dev` surface |
+| `examples/` | Learning sequence — owned by `training` |
+| `exemplar/` | Showcase project (Sudoku Solver) — a `dev` surface |
+| `repl/` | REPL experience spec (`spec`), demos and harness (`test`) |
+| `tests/` | E2e suite — plan owned by `qa`, test sources by `test` |
+| `audits/` | Whole-context audit assessments — owned by `audit` |
+| `sprints/` | Delivery coordination — method, roadmap, current sprint, actions, archive — owned by `sprint` |
+| `.agents/` | The shared role package, pinned as a submodule (`.agents/CONSUMING.md`) |
 
 ## Sketch Oracle (retired)
 
@@ -48,32 +49,52 @@ rm .claude-role               # clear it
 
 `.claude-role` is git-ignored and local only.
 
-## Skills
+## Roles
 
-14 Claude Code skills are available as slash commands (`.claude/commands/`). Roles, categories, and phase participation are normative in `sprints/METHOD.md` §1; **model/effort allocation per skill is normative in `sprints/artefacts.md` §II.3**.
+Cranelisp dispatches the shared role package pinned as a submodule at `.agents`. The package defines each role's authority, boundaries and handoffs; `.agents/CONSUMING.md` states the wiring and the convergence cadence. This section is cranelisp's declaration of how it uses them.
 
-| Command | Role |
-|---|---|
-| `/spec` | Language Specification Scribe — owns `spec/`; records settled semantics; brings every open normative question to the user, never rules |
-| `/arch` | Compiler Architect — owns `design/arch/` + `crates/cranelisp-types/`; principles, bounded contexts, public-API approvals |
-| `/qa` | QA Authority — test strategy, risk assessment, coverage process & traceability audit, defect attribution & cross-crate triage; owns `tests/plan/` |
-| `/testing` | Test Developer — authors e2e tests, repro isolation & reduction, `// defect:` notation upkeep; owns test sources under `tests/` |
-| `/audit` | Whole-Context Auditor — rolling per-sprint assessment of one bounded context's total state; owns `audits/` |
-| `/design` | Per-crate triad, design role — narrow-deployed one crate per invocation; owns `design/{crate}/` |
-| `/dev` | Per-crate triad, implementation role — narrow-deployed; code + unit tests |
-| `/review` | Per-crate triad, review role — change-set review against design intent |
-| `/sprint` | Sprint Manager — plans increments, waves, gates, dispatch; owns `sprints/` |
-| `/stdlib` | Standard Library Developer — owns `stdlib/` |
-| `/examples` | Example Developer — owns `examples/` |
-| `/docs` | Documentation Owner — owns `user/` |
-| `/repl` | REPL Experience Developer — owns `repl/` |
-| `/port` | Exemplar Project Developer — owns `exemplar/` |
+**Dispatched — all twelve.**
 
-The former `/frontend`, `/typecheck`, `/backend`, `/int`, `/platform` skills were retired (collapsed into `/dev` narrow-deployment) and their command files deleted at increment A of `sprints/artefacts.md`; see git history.
+| Role | Owns here | Notes |
+|---|---|---|
+| `spec` | `spec/` | Scribe: the user arbitrates every normative question |
+| `arch` | `design/arch/`, `crates/cranelisp-types/`, every crate's public API | Final arbiter of decisions crossing crate boundaries |
+| `design` | `design/{crate}/` | Narrow-deployed — one crate-shaped surface per invocation |
+| `dev` | `crates/{crate}/src/`, `src/`, `stdlib/`, `exemplar/` | Narrow-deployed |
+| `review` | no directory | Narrow-deployed; execution delegated to the external Codex reviewer, adjudicated here |
+| `qa` | `tests/plan/` | Risk, evidence allocation, defect intake and attribution, the traceability band |
+| `test` | test sources, fixtures and helpers under `tests/` | |
+| `audit` | `audits/` | One bounded context per sprint, in rotation |
+| `sprint` | `sprints/` | Coordination; owns no technical content |
+| `docs` | `user/` | |
+| `training` | `examples/` | The learning sequence |
+| `ops` | — | Declared and currently unused: cranelisp ships one CLI executable. Phase H release provenance is its first work |
+
+**Where the retired skills went.** `/stdlib` and `/port` are `dev` narrow-deployed to `stdlib/` and `exemplar/` — those modules take the full role set like any other surface, so an exemplar is architected, designed, built and evidenced rather than written. `/examples` became `training`; `/docs` became `docs`; `/testing` became `test`. `/repl` split: `repl/spec.md` is a surface specification owned by `spec` with `design` for its interior, and the demos and harness are `test` artifacts. The earlier `/frontend`, `/typecheck`, `/backend`, `/int` and `/platform` collapsed into `dev` narrow-deployment at increment A of `sprints/artefacts.md`; see git history.
+
+**Narrow deployment.** `design`, `dev` and `review` are dispatched to exactly one crate-shaped surface per invocation, named in the dispatch. Cross-surface work is sequential invocations coordinated by `sprint`; any interface change goes through `arch` first.
+
+**Models.** `.claude/agents/<role>.md` is the executable allocation and this declaration's operative form: `fable` for `arch`, `audit`, `qa`, `review` and `sprint`; `opus[1m]` for the rest. `review` executes on the external Codex reviewer and is adjudicated on `fable`. Any tier change requires user sign-off.
+
+**In transition.** The role contracts are live at `.agents/skills/` and this declaration describes the target. The `.claude/` wiring still carries the fourteen former commands and agents; connecting it to `.agents` is the last step of the migration. Until then, prefer the package contract where the two disagree.
 
 ## Delivery
 
-Reimplementation phases A–G are complete; the project is in **Phase H (release compiler)**. The ring model that structured phases C–G was retired as a scheduling axis in Sprint 64 — sprint is the sole axis; `[R{N}]` annotations in older documents are historical. Current state and trajectory:
+Reimplementation phases A–G are complete; the project is in **Phase H (release compiler)**. The ring model that structured phases C–G was retired as a scheduling axis in Sprint 64 — sprint is the sole axis; `[R{N}]` annotations in older documents are historical.
+
+**Phase mapping.** Cranelisp runs seven named phases. The package states the ordering they must encode rather than naming phases of its own (`.agents/skills/sprint/SKILL.md` §Run the increment); cranelisp's correspond:
+
+| Cranelisp phase | Package obligation |
+|---|---|
+| 1 Scope | Frame |
+| 2 Architecture review · 3 Design · 4 Wave organization | Ready |
+| 5 Language phase | Realise |
+| 6a/6b User-facing | Realise, then Accept |
+| 7 Close | Accept, then Close |
+
+Phase 6a/6b existed to carry the user-proxy standing-quality pass. That question now lives inside the `docs` and `training` contracts, which re-ask it against the whole artifact every increment, so the phase schedules the work without having to carry the discipline.
+
+Current state and trajectory:
 
 - `sprints/METHOD.md` — the delivery method (skills, seven sprint phases, FIXME protocol, artifacts)
 - `sprints/ROADMAP.md` — sprint-by-sprint progress
@@ -81,31 +102,35 @@ Reimplementation phases A–G are complete; the project is in **Phase H (release
 - `sprints/artefacts.md` — agent artefact structure, model allocation, escalation, audit cycle (ratified 2026-07-11)
 - `sprints/reimplementation.md` — the original strategy (historical reference)
 
-`/arch` is the final arbiter of design decisions that cross crate boundaries. `/sprint` orchestrates; the user approves scope, sprint close, and all language-normative questions.
+`arch` is the final arbiter of design decisions that cross crate boundaries. `sprint` orchestrates; the user approves scope, sprint close, and all language-normative questions.
 
 ## Usability Findings and Defects
 
-User-proxy skills (`/stdlib`, `/examples`, `/docs`, `/port`, `/repl`) routinely encounter problems while exercising the language. Two categories, different closure rules:
+Roles working the language from outside — `docs`, `training`, and `dev` on `stdlib/` and `exemplar/` — routinely encounter problems while exercising it. Two categories, different closure rules:
 
-**Usability findings** — corner cases, unhelpful errors, inference friction, missing APIs, ergonomic issues. Filed as FIXME files in `design/arch/fixmes/` (see §Cross-Skill Changes). Documentation is sufficient closure.
+**Usability findings** — corner cases, unhelpful errors, inference friction, missing APIs, ergonomic issues. Filed as actions (see §Cross-Role Changes). Documentation is sufficient closure.
 
-**Defects** — real compiler bugs, spec violations, runtime crashes, REPL/`--run` divergences, output that does not match the spec. **A defect is not closed until `/testing` has committed a narrow test that reproduces it** — failing, un-ignored, with a `// spec:` annotation. The failing test is the durable record, the trigger for compiler-skill resolution, and the regression guard once fixed. A FIXME on a design doc captures intent but doesn't prove the issue exists, catch regression, or trigger CI; the failing test does all three. (A defect with a failing-not-ignored repro does NOT also need a numbered FIXME — the test is the record and the trigger.)
+**Defects** — real compiler bugs, spec violations, runtime crashes, REPL/`--run` divergences, output that does not match the spec. **A defect is not closed until `test` has committed a narrow test that reproduces it** — failing, un-ignored, with a `// spec:` annotation. The failing test is the durable record, the trigger for compiler-skill resolution, and the regression guard once fixed. A FIXME on a design doc captures intent but doesn't prove the issue exists, catch regression, or trigger CI; the failing test does all three. (A defect with a failing-not-ignored repro does NOT also need a numbered FIXME — the test is the record and the trigger.)
 
-**Cross-skill defect handoff requires a minimal repro.** Error signatures alone — "unresolved symbol X", "SIGSEGV in Y" — routinely mask layered bugs: the visible error belongs to one skill, the underlying failure to another. Before `/sprint` spawns a cross-skill triage, the discovering skill MUST produce a minimal repro per `tests/CLAUDE.md` §"Isolating Cross-Crate Failures" — or request `/testing` to. Contested or repeatedly-wrong attribution escalates to `/qa` (fable-tier triage per `sprints/artefacts.md` §II.4). The handoff brief names the repro, not just the symptom.
+**Cross-role defect handoff requires a minimal repro.** Error signatures alone — "unresolved symbol X", "SIGSEGV in Y" — routinely mask layered bugs: the visible error belongs to one surface, the underlying failure to another. Before `sprint` spawns a cross-surface triage, the discovering role MUST produce a minimal repro per `tests/CLAUDE.md` §"Isolating Cross-Crate Failures" — or request `test` to. Attribution itself is `qa`'s, under the control discipline its contract carries: a repro confirms a symptom, and only a discriminating control confirms a mechanism. The handoff brief names the repro, not just the symptom.
 
-**Reproduced defects join the test suite permanently, and small is the goal.** Every reduction — complete or partial — lands as a committed test. Small repros pay twice: the fix often becomes obvious during isolation (Sprint 59's prelude-parity bug was visible the moment the repro shrank to a single function), and small tests produce small CLIF — `/clif <name>` in the REPL or `CRANELISP_CODEGEN_TRACE=1` makes codegen-layer bugs (RC mis-count, missing load, bad relocation) visible in IR before source reduction finds them. Partial reductions commit with `// FIXME(/skill)` naming what is still unknown.
+**Reproduced defects join the test suite permanently, and small is the goal.** Every reduction — complete or partial — lands as a committed test. Small repros pay twice: the fix often becomes obvious during isolation (Sprint 59's prelude-parity bug was visible the moment the repro shrank to a single function), and small tests produce small CLIF — `/clif <name>` in the REPL or `CRANELISP_CODEGEN_TRACE=1` makes codegen-layer bugs (RC mis-count, missing load, bad relocation) visible in IR before source reduction finds them. Partial reductions commit with a comment naming what is still unknown, and an action carrying the remainder.
 
-## Cross-Skill Changes
+## Cross-Role Changes
 
-A skill MUST NOT silently edit a document owned by another skill. It files a FIXME as a numbered file — `design/arch/fixmes/NNNN-short-name.md` — and the owning skill evaluates, actions it in its own files, and **deletes the FIXME file**; git history is the audit trail. File format, frontmatter, and lifecycle are normative in `sprints/METHOD.md` §3.3. Filing is the ONE exception to file ownership (any skill may file targeting any other).
+A role MUST NOT silently edit an artifact owned by another. It files, and the owning role resolves in its own files and deletes the filing; git history is the audit trail. Filing is the ONE exception to artifact ownership — any role may file against any other.
 
-**Inline `FIXME(/skill)` comments are the OLD protocol** (superseded Sprint 63). Do not author new ones; `/sprint` migrates stragglers opportunistically.
+**An action is for deliberate cross-sprint work, an accepted residual, or defect intake routed to `qa` — never for a question available now.** A dependency inside the increment is resolved synchronously through `sprint` in the same wave.
 
-**Wave gate**: before `/sprint` advances a wave, it scans `design/arch/fixmes/` for `target: /skill-in-wave` + `status: open`; any match blocks until resolved or explicitly deferred with rationale.
+**In transition, two surfaces.** New filings are actions at `sprints/actions/ACT-NNNN-short-name.md`. The open FIXMEs at `design/arch/fixmes/` are **run down in place** over the next several sprints rather than converted in bulk; their format and lifecycle stay as `sprints/METHOD.md` §3.3 records them until the directory empties. Inline `FIXME(/skill)` comments are a third and older protocol, superseded at Sprint 63 — do not author new ones.
 
-## Skill Handoff
+**Verify against source first.** Any disposition of a filing — resolve, defer, re-target, or a scheduling decision built on it — verifies its central claim against its `refers_to` source as the first act, and the note records what was opened.
 
-Every skill plan ends with a **"Next skills"** section recommending what to invoke next. When a sprint is active, consult `sprints/SPRINT.md` for the task list and blocking dependencies; otherwise `sprints/ROADMAP.md`.
+**Wave gate**: before `sprint` advances a wave it scans both surfaces for open items targeting a role in that wave; any match blocks until resolved or explicitly deferred with rationale.
+
+## Role Handoff
+
+Each role contract states where its work routes; `sprint` sequences. A role's report ends by recommending what to invoke next. When a sprint is active, consult `sprints/SPRINT.md` for the task list and blocking dependencies; otherwise `sprints/ROADMAP.md`.
 
 ## Design Principles
 
@@ -152,13 +177,13 @@ It checks what can be checked without judgement: cited paths resolve, cited line
 
 ## Testing
 
-- **Always use `cargo nextest run --no-fail-fast`** instead of `cargo test`. Nextest runs each test in its own process, parallelizes across binaries, and completes the full suite in **~60s** (post-build; a rebuild adds ~30–60s). `--no-fail-fast` is required for full-picture runs — the intentional defect guards (below) otherwise stop the run early. The suite includes every crate's lib tier via `[workspace] default-members` (S101). The alias `cargo nt` is also available via `.cargo/config.toml`.
+- **Always use `cargo nextest run --no-fail-fast`** instead of `cargo test`. Nextest runs each test in its own process, parallelizes across binaries, and completes the full suite in **~170s** post-build (measured 2026-08-29 at 5,687 tests; `stdlib_conformance` alone is ~85s of it, and a rebuild adds ~30–60s). `--no-fail-fast` is required for full-picture runs — the intentional defect guards (below) otherwise stop the run early. The suite includes every crate's lib tier via `[workspace] default-members` (S101). The alias `cargo nt` is also available via `.cargo/config.toml`.
 - **Never run tests in background mode.** Wait for the run to complete before proceeding. Background test runs pile up and contend on build locks.
-- **Three-minute timeout expectation.** The full suite is ~60s post-build. If a run exceeds ~3 minutes including build, something is wrong — kill it and investigate.
+- **Five-minute timeout expectation.** The full suite is ~170s post-build. If a run exceeds ~5 minutes including build, something is wrong — kill it and investigate.
 - **One agent, one test run.** When multiple agents are active, only the agent that owns source code changes should run tests. Other agents must not run tests concurrently.
 - **Single agent at a time for source-touching work.** Worktree isolation is broken on this project, so parallel agents share one working tree. Two agents editing concurrently race on the git index and on the editor/linter — a subagent `git stash` or a mid-edit linter pass will silently clobber another agent's changes (observed Sprint 81: a parallel `/dev` fan-out corrupted the tree; recovery cost a full reconciliation). Read-only fan-outs (search, survey, design-planning that only returns text) may run in parallel; any agent that *edits source* runs serially.
 - **Every fix lands with a unit test; assess the e2e need BEFORE writing the fix.** A **unit test is mandatory** for every fix — it pins the behaviour at the exact seam where the bug lived and is the fastest guard against a re-break. **Before** writing the fix, also assess whether an **e2e test** is warranted (add one when the bug is observable end-to-end or crosses `--run`/`--link`/REPL modes — unit and e2e answer different questions). Write the failing test(s) **first**; the fix flips them green; test(s) and fix land in the **same change-set**. A fix guarded only by an e2e — or only by "the suite still passes" — is incomplete, and deferring the test to a follow-up FIXME (the "test owed" anti-pattern) inverts the discipline and routinely never gets done. (Binding statement: `sprints/METHOD.md` §2.2.)
-- **Failing-not-ignored defect repros**: the suite deliberately carries a small number of **known-defect guards** — failing, NOT `#[ignore]`'d — so each flips green when the owning skill fixes its defect. Hiding a spec violation behind `#[ignore]` is itself a defect. **Do not enumerate or count the guards here** — the set changes every sprint and is knowable from the live sources: run `cargo nextest run --no-fail-fast` to see the current REDs; each intentional guard traces to an open defect (FIXME or `// FIXME(/skill)` annotation) naming the owner. A **genuine regression** is any RED that does **not** trace to a known open defect that way. (Defect-repro history/analysis: the `// defect:` notation per `tests/CLAUDE.md` §"Defect-repro notation"; the former failure ledger `tests/plan/ledger.md` is retired — S108, tombstone only.)
+- **Failing-not-ignored defect repros**: the suite deliberately carries a small number of **known-defect guards** — failing, NOT `#[ignore]`'d — so each flips green when the owning role fixes its defect. Hiding a spec violation behind `#[ignore]` is itself a defect. **Do not enumerate or count the guards here** — the set changes every sprint and is knowable from the live sources: run `cargo nextest run --no-fail-fast` to see the current REDs; each intentional guard traces to an open filing naming the owner. A **genuine regression** is any RED that does **not** trace to a known open defect that way. (Defect-repro history/analysis: the `// defect:` notation per `tests/CLAUDE.md` §"Defect-repro notation"; the former failure ledger `tests/plan/ledger.md` is retired — S108, tombstone only.)
 
 ## Git & Remote
 
@@ -199,10 +224,10 @@ fn display_int_result() { ... }
 
 ### Applying Annotations
 
-- `repl/spec.md` — REPL experience spec (owned by `/repl`)
-- `spec/*.md` — language spec files (owned by `/spec`)
+- `repl/spec.md` — REPL experience spec (owned by `spec`)
+- `spec/*.md` — language spec files (owned by `spec`)
 
-When `/testing` writes a test, it adds the test-side `// spec:` comment. When coverage is verified, **`/qa` adds the spec-side `[Tested ...]` annotation directly** — the traceability annotation band (`[Tested …]`, `[Tested+Neg …]`, `[S{M}]`, `[… IGNORED]`) on `spec/*.md` and `repl/spec.md` is `/qa`'s to maintain, edited in place with **no FIXME cycle** to `/spec`/`/repl` (coverage status is `/qa`'s authority; a round-trip to flip a bracket tag is pure friction). Only the requirement *prose* around the annotations stays owner-gated. `/qa` audits the two-sided match as part of its coverage process.
+When `test` writes a test, it adds the test-side `// spec:` comment. When coverage is verified, **`qa` adds the spec-side `[Tested ...]` annotation directly** — the traceability annotation band (`[Tested …]`, `[Tested+Neg …]`, `[S{M}]`, `[… IGNORED]`) is `qa`'s to maintain, edited in place with **no filing cycle** to `spec` (coverage status is `qa`'s authority; a round-trip to flip a bracket tag is pure friction). Only the requirement *prose* around the annotations stays owner-gated. `qa` audits the two-sided match as part of its coverage process.
 
 **`[Done]` is retired.** It provided no traceability and was applied prematurely. All `[Done]` tags should be replaced with either `[Tested tests/file::test_name]` (if covered) or `[S{M}]` (if not).
 
