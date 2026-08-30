@@ -141,7 +141,7 @@ Plus the non-triad surface:
 
 **Binary-surface composition rationale.** `cranelisp-exe-bundle` exists to enable the binary's `--link` capability, not as an independent concern. The two crate paths are one surface for triad purposes: a change touching both is one D/D/R cycle, not two.
 
-**Runtime ownership note (resolves M13 per METHOD_PROPOSED §15).** The backend-emitted runtime library — `cranelisp-primitives` + `cranelisp-intrinsics` (the D43 split of the former `cranelisp-runtime`; Decision 0043) — is owned by `/dev` narrow-deployed in **backend** mode (paired with `cranelisp-backend`), not by a separate `/platform` deployment. Historical references in older `CLAUDE.md` / design / sprint docs that assigned runtime to `/platform`, or that name the pre-split `cranelisp-runtime` crate as a live surface, are obsolete; `/sprint` sweeps them as M13 lands.
+**Runtime ownership note.** The backend-emitted runtime library — `cranelisp-primitives` + `cranelisp-intrinsics` (the D43 split of the former `cranelisp-runtime`; Decision 0043) — is owned by `/dev` narrow-deployed in **backend** mode (paired with `cranelisp-backend`), not by a separate `/platform` deployment. Historical references in older `CLAUDE.md` / design / sprint docs that assigned runtime to `/platform`, or that name the pre-split `cranelisp-runtime` crate as a live surface, are obsolete; `/sprint` sweeps them as M13 lands.
 
 ## Public-API discipline
 
@@ -184,7 +184,7 @@ The facade is `lib.rs`. We groom `lib.rs` rather than introducing a separate `fa
 2. **Re-exports only** — `lib.rs` contains no logic. It `pub use`s items from internal modules. Internal modules default to `pub(crate)` (§Public-API discipline). **No re-exports of `cranelisp-types` items** per Principle 15 — facade types live with their behavior; consumers import directly from each crate they need. **External-audience exception**: a facade whose external audience would not otherwise depend on `cranelisp-types` (e.g., `cranelisp-platform` for out-of-tree DLL authors) MAY re-export the upstream items its public API uses; the exception is justified inline in the crate's source rustdoc.
 3. **`#[non_exhaustive]` on every public DTO** — adding fields is non-breaking. **Exemption**: DTOs carrying `#[repr(C)]` or `#[repr(transparent)]` do NOT also carry `#[non_exhaustive]`. They are layout contracts (consumed by JIT-emitted code or DLL hosts as raw bytes / raw bits), governed by an explicit `ABI_VERSION` bump, not by source-level evolution guards. See Principle 14.
 4. **Sealed traits** (private supertrait pattern) on every trait the types crate publishes for cross-crate impls — only `/arch` extends.
-5. **`cargo-public-api` tracked file per crate** — committed at `crates/{crate}/api.txt` (location convention; M4 confirms the tooling). Any diff requires `/arch` approval. (Setup is M4 in METHOD_PROPOSED §15.)
+5. **`cargo-public-api` tracked file per crate** — committed at `crates/{crate}/api.txt` (location convention; M4 confirms the tooling). Any diff requires `/arch` approval.
 
 ## Sequence diagrams
 

@@ -111,7 +111,7 @@ The principles in `design/arch/principles/NN-*.md` (each auto-imported individua
 
 ## Cross-references
 
-- Methodology: `sprints/METHOD.md` (the delivery method; `METHOD_PROPOSED.md` is the retained working draft, historical).
+- Methodology: `sprints/METHOD.md` (what cranelisp adds to the shared role package).
 - Architectural authority: `.claude/commands/arch.md` and `design/arch/`.
 - Per-crate bounded contexts: `design/arch/bounded-contexts.md`.
 - Per-crate public surface: crate-root rustdoc + `crates/{crate}/public-api.txt` baselines.
