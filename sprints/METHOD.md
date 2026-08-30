@@ -25,6 +25,8 @@ The language-facing surfaces — `stdlib/`, `examples/`, `exemplar/`, `user/`, `
 
 Cross-surface work is sequential invocations coordinated by `sprint`. Any interface change goes through `arch`, in the types crate, before per-surface work proceeds.
 
+**The architectural principles are the standard these surfaces are built and reviewed against.** `design/arch/principles.md` is the canonical index, one file per principle beneath it, owned by `arch` and revised only at close. `design`, `dev` and `review` read it and cite by name when a structural choice is governed by one. Until the 2026-08-30 wiring change these were injected into every triad dispatch by an `@` import block in the retired command files; that mechanism is gone, and reaching them is now the role's own first-read obligation. Principles 5 (testability is structural), 6 (complexity has a budget), 8 (no interim implementations) and 12 (design for the full spec surface) recur most often.
+
 ### 1.2 Where content lives
 
 Three kinds of content, three homes. This is the rule that lets a generic narrow-deployed role carry per-crate weight.
@@ -97,7 +99,20 @@ cd <own scratch dir> && CRANELISP_LIB=<repo>/stdlib <repo>/target/debug/cranelis
 - **Do not copy the repo to get an isolated build.** Source-touching work is serial, so revert-in-place is available and cheaper.
 - **Clean up, or say you did not.**
 
-### 2.3 Deferral
+### 2.3 Gates that are cranelisp's own
+
+**The `dev` release gate.** Before reporting a change complete, all four hold zero-warning for the surface in scope — warnings, not just errors, because dead code introduced by a change (unused imports after a removed parameter, an unused function after its caller went) is how the next agent's signal degrades:
+
+1. `cargo check -p <crate>`
+2. `cargo check --tests -p <crate>` — test code counts
+3. `cargo nextest run -p <crate>` — no `--no-fail-fast` here; build confidence by running clean
+4. `cargo clippy -p <crate> --all-targets` — zero new lints
+
+For the binary surface the package is `cranelisp`; verify `cranelisp-exe-bundle` too when the change touched it. The completion report states before/after warning counts and confirms each gate. This is `dev`'s own responsibility — `review` checks against design intent, not build cleanliness — and handing off with a broken build, a failing test, or new warnings is not a handoff.
+
+**`review` is executed by an external reviewer.** The role runs on Codex for cross-model independence — the reviewer must not share the implementer's blind spots — and the invoked agent acts as **adjudicator**, not reviewer. Compose the brief (scope, plan-of-record paths, the wave's gate criteria, and **test evidence gathered by the adjudicator**, since the reviewer is sandboxed read-only and cannot run cargo); dispatch `scripts/codex-review.sh (--uncommitted | --commit SHA | --base BRANCH) --brief <file> --out <verdict.json>`; then adjudicate. **Every returned finding is a claim, not a fact**: verify it against the code before accepting, file the survivors, and record the verdict plus the reviewer's identity in the dispatch log. Severity may be reclassified with recorded rationale; a blocking finding may never be silently dropped. If the CLI is unavailable, perform the review directly and record the fallback — the gate is never skipped.
+
+### 2.4 Deferral
 
 1. **Defects discovered in Phase 5 are addressed in Phase 5** — fix, defer with explicit rationale, or close Phase 5 short. Conscious and recorded. Phase 6 does not retroactively reopen it.
 2. **Speculative refactoring deferred; emergent refactoring mandatory in-sprint.** When the current work has made cleanup cheap — third duplicate, file over budget, a `mirror` comment — extract in-sprint.
@@ -107,28 +122,28 @@ cd <own scratch dir> && CRANELISP_LIB=<repo>/stdlib <repo>/target/debug/cranelis
 
 Size is not among these: the package's `sprint` contract already rules that decomposition comes before any carry, and that a carry needs evidence of unreachability rather than a judgment that the target is far.
 
-### 2.4 Mid-sprint adjustment
+### 2.5 Mid-sprint adjustment
 
 If `sprint` is invoked mid-sprint: report status; recommend continue, re-scope or close. Scope changes require user sign-off. `sprint` never closes unilaterally.
 
-### 2.5 Escalation
+### 2.6 Escalation
 
-**Decider**: `sprint`, unilaterally within its orchestration remit. User sign-off only where the method already requires it (a third deferral per §2.3.5; scope changes) — and **all language-normative questions go to the user**, never to a model tier. **Routing beats upgrading**: before raising a dispatch's tier, ask whether the judgment belongs to a role already on the frontier tier, and route it there instead of heating up a production role.
+**Decider**: `sprint`, unilaterally within its orchestration remit. User sign-off only where the method already requires it (a third deferral per §2.4.5; scope changes) — and **all language-normative questions go to the user**, never to a model tier. **Routing beats upgrading**: before raising a dispatch's tier, ask whether the judgment belongs to a role already on the frontier tier, and route it there instead of heating up a production role.
 
 Triggers, normative:
 
 1. **Recurring failure by symptom.** The same symptom — test name, error signature, crash site — still failing after **two** dispatches at default model makes the third a `qa` **attribution** dispatch: minimal repro plus owner under the control discipline, not a fix. The frame shifts from "fix it" to "attribute it".
 2. **Contested or layered attribution.** The discovering role and the symptom's apparent owner disagree, or a fix exposed a second failure → `qa` triage before any further `dev` dispatch.
-3. **Second deferral.** An item at its 2× point (§2.3.5): the resolving dispatch that sprint runs at the frontier tier, or a frontier `qa`/`arch` triage explains structurally why it keeps deferring.
+3. **Second deferral.** An item at its 2× point (§2.4.5): the resolving dispatch that sprint runs at the frontier tier, or a frontier `qa`/`arch` triage explains structurally why it keeps deferring.
 4. **Review-resistant blockers.** A blocking finding surviving one `dev` fix round → `sprint` chooses: escalated `dev` (genuinely hard to build) or attribution-first (possibly wrongly attributed).
 5. **Design-authority contact.** Work touching a principle, facade or bounded context never escalates in place — it files to `arch`. Spec ambiguity routes to `spec`, which frames it for the user.
-6. **Out-of-rotation audit.** Triggers 1–4 firing repeatedly in one bounded context, or a major arc completing there, pull that context forward in the audit rotation (§2.6). Attribution fixes the instance; the audit assesses the pattern behind repeated instances.
+6. **Out-of-rotation audit.** Triggers 1–4 firing repeatedly in one bounded context, or a major arc completing there, pull that context forward in the audit rotation (§2.7). Attribution fixes the instance; the audit assesses the pattern behind repeated instances.
 
 **Recording**: the dispatch log in `SPRINT.md`, per wave — `| role | surface | model | effort | non-default reason |`. Default rows may be batched; every non-default row cites its trigger number. Phase 7 reviews the log — did escalations correlate with the sprint's hard spots? — and that is the feedback loop for revising the allocation in root `CLAUDE.md` §Roles.
 
 **Dispatch by role agent, never by prose.** "Read the contract and act as X" inside a generic agent bypasses the frontmatter and silently inherits the session model. Model-tier changes need user sign-off; they are a spend decision, the same class as a scope change.
 
-### 2.6 Rolling whole-context audit
+### 2.7 Rolling whole-context audit
 
 One bounded context is audited per sprint, in rotation, so every context gets a fresh assessment on a bounded period and no sprint pays for more than one frontier-tier deep read. The `SPRINT.md` template carries a standing `Audit: {context}` field filled at Phase 4 — the cue is structural, because an audit that depends on someone remembering it decays like everything else.
 

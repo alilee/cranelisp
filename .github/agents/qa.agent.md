@@ -1,6 +1,7 @@
 ---
 name: qa
-description: Quality Assurance for Cranelisp - test suite, spec conformance, coverage analysis
+description: Risk, evidence allocation, defect intake and attribution, the traceability band
 ---
 
-Read and adopt the role defined in `.claude/commands/qa.md`.
+Read the repository root `CLAUDE.md`, then `sprints/METHOD.md`, then adopt the
+role contract at `.agents/skills/qa/SKILL.md`.

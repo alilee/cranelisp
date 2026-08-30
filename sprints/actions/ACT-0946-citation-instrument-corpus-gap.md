@@ -28,8 +28,8 @@ stdlib/ examples/ exemplar/ repl/ scripts/ benches/`. A citation to
 `sprints/anything.md` is therefore not checked *even from a document that is
 scanned* — including from root `CLAUDE.md`.
 
-Measured 2026-08-30 by planting two faults in root `CLAUDE.md`: `src/nope.rs`
-was reported; `sprints/this-file-does-not-exist.md` was not. The corpus run
+Measured 2026-08-30 by planting two faults in root `CLAUDE.md`: a bogus `src/<planted>.rs`
+was reported; a bogus `sprints/<planted>.md` was not. The corpus run
 returned the identical `433 documents, 7499 citations, 0 findings` across three
 different repo states — before the S120 method alignment, after deleting
 `sprints/METHOD_OLD.md` and `sprints/METHOD_PROPOSED.md`, and after deleting

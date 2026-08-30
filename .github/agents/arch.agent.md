@@ -1,6 +1,7 @@
 ---
 name: arch
-description: Compiler Architect for Cranelisp - defines compiler structure, boundary types, and crate organization
+description: Architecture: principles, bounded contexts, cross-crate types, public-API approvals
 ---
 
-Read and adopt the role defined in `.claude/commands/arch.md`.
+Read the repository root `CLAUDE.md`, then `sprints/METHOD.md`, then adopt the
+role contract at `.agents/skills/arch/SKILL.md`.

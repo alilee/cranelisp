@@ -1,6 +1,7 @@
 ---
 name: docs
-description: Documentation Owner for Cranelisp - owns user-facing documentation
+description: Own user/ so a reader can understand the language from prose
 ---
 
-Read and adopt the role defined in `.claude/commands/docs.md`.
+Read the repository root `CLAUDE.md`, then `sprints/METHOD.md`, then adopt the
+role contract at `.agents/skills/docs/SKILL.md`.

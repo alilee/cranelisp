@@ -1,6 +1,7 @@
 ---
 name: review
-description: Code Reviewer for Cranelisp - code quality, prevents structural debts
+description: Independently inspect one crate-shaped surface's change set
 ---
 
-Read and adopt the role defined in `.claude/commands/review.md`.
+Read the repository root `CLAUDE.md`, then `sprints/METHOD.md`, then adopt the
+role contract at `.agents/skills/review/SKILL.md`.

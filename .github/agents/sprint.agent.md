@@ -1,6 +1,7 @@
 ---
 name: sprint
-description: Sprint Manager for Cranelisp - plans increments, coordinates skill execution
+description: Coordinate the increment: phases, waves, gates, dispatch, closure
 ---
 
-Read and adopt the role defined in `.claude/commands/sprint.md`.
+Read the repository root `CLAUDE.md`, then `sprints/METHOD.md`, then adopt the
+role contract at `.agents/skills/sprint/SKILL.md`.
