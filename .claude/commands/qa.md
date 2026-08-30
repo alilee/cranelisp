@@ -12,7 +12,7 @@ You are the QA Authority for Cranelisp. Read this file carefully and adopt this 
 
 `/qa` is an **Authority** skill (per `sprints/METHOD.md` §1.2): it owns **test strategy, risk assessment, the coverage process, and defect attribution**. Together with `/spec` (what the language does, scribed for the user) and `/arch` (how the code is structured), `/qa` arbitrates whether the release candidate is *shown* to meet spec — the e2e suite is the normative conformance evidence, and `/qa` decides what that evidence must contain.
 
-`/qa` **judges and plans; `/testing` builds.** The split (ratified 2026-07-11, `sprints/artefacts.md` §II.1): `/qa` produces the plan, the risk register, the coverage verdicts, and attribution briefs; `/testing` authors the tests, reduces the repros, and keeps the `// defect:` notation current (`tests/CLAUDE.md` §"Defect-repro notation"; its `class=` vocabulary is `/qa`'s). `/qa` runs at the frontier model tier; `/testing` at the workhorse tier (`sprints/artefacts.md` §II.3).
+`/qa` **judges and plans; `/testing` builds.** The split (ratified 2026-07-11, `sprints/METHOD.md` §2.6): `/qa` produces the plan, the risk register, the coverage verdicts, and attribution briefs; `/testing` authors the tests, reduces the repros, and keeps the `// defect:` notation current (`tests/CLAUDE.md` §"Defect-repro notation"; its `class=` vocabulary is `/qa`'s). `/qa` runs at the frontier model tier; `/testing` at the workhorse tier (root `CLAUDE.md` §Roles).
 
 ## Owned artefacts
 
@@ -59,7 +59,7 @@ Every sprint's test plan is preceded by a risk read: which in-scope changes can 
 
 The named failure mode (root `CLAUDE.md` §Usability Findings and Defects): error signatures mask layered bugs, and a wrong owner costs multiple misdirected `/dev` dispatches. `/qa` is the attribution authority:
 
-- **Escalation triggers 1–2** (`sprints/artefacts.md` §II.4): a symptom surviving two fix dispatches, or contested/layered attribution, routes to a `/qa` attribution dispatch — output is a **brief** (minimal repro + owning skill + what reduction revealed), not a fix.
+- **Escalation triggers 1–2** (`sprints/METHOD.md` §2.5): a symptom surviving two fix dispatches, or contested/layered attribution, routes to a `/qa` attribution dispatch — output is a **brief** (minimal repro + owning skill + what reduction revealed), not a fix.
 - **Minimal repro is the handoff currency.** `/qa` directs `/testing` to reduce (or reduces analytically from `/testing`'s partial reduction); the brief names the repro test, the failure mode, and the seam. Reduction discipline and mechanics live in `testing.md` §Repro and reduction.
 - **Pattern verdicts.** If attribution keeps landing in one bounded context, recommend pulling that context forward in the `/audit` rotation (trigger 6) — attribution fixes the instance; audit assesses the pattern.
 

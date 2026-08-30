@@ -70,7 +70,7 @@ Cranelisp dispatches the shared role package pinned as a submodule at `.agents`.
 | `training` | `examples/` | The learning sequence |
 | `ops` | — | Declared and currently unused: cranelisp ships one CLI executable. Phase H release provenance is its first work |
 
-**Where the retired skills went.** `/stdlib` and `/port` are `dev` narrow-deployed to `stdlib/` and `exemplar/` — those modules take the full role set like any other surface, so an exemplar is architected, designed, built and evidenced rather than written. `/examples` became `training`; `/docs` became `docs`; `/testing` became `test`. `/repl` split: `repl/spec.md` is a surface specification owned by `spec` with `design` for its interior, and the demos and harness are `test` artifacts. The earlier `/frontend`, `/typecheck`, `/backend`, `/int` and `/platform` collapsed into `dev` narrow-deployment at increment A of `sprints/artefacts.md`; see git history.
+**Where the retired skills went.** `/stdlib` and `/port` are `dev` narrow-deployed to `stdlib/` and `exemplar/` — those modules take the full role set like any other surface, so an exemplar is architected, designed, built and evidenced rather than written. `/examples` became `training`; `/docs` became `docs`; `/testing` became `test`. `/repl` split: `repl/spec.md` is a surface specification owned by `spec` with `design` for its interior, and the demos and harness are `test` artifacts. The earlier `/frontend`, `/typecheck`, `/backend`, `/int` and `/platform` collapsed into `dev` narrow-deployment at the 2026-07-11 artefact restructure; see git history.
 
 **Narrow deployment.** `design`, `dev` and `review` are dispatched to exactly one crate-shaped surface per invocation, named in the dispatch. Cross-surface work is sequential invocations coordinated by `sprint`; any interface change goes through `arch` first.
 
@@ -96,10 +96,9 @@ Phase 6a/6b existed to carry the user-proxy standing-quality pass. That question
 
 Current state and trajectory:
 
-- `sprints/METHOD.md` — the delivery method (skills, seven sprint phases, FIXME protocol, artifacts)
+- `sprints/METHOD.md` — what cranelisp adds to the role package: the crate-shaped surfaces, the seven phases, escalation, the audit rotation, filing formats
 - `sprints/ROADMAP.md` — sprint-by-sprint progress
 - `sprints/SPRINT.md` — the active sprint plan (absent between sprints; archived to `sprints/archive/`)
-- `sprints/artefacts.md` — agent artefact structure, model allocation, escalation, audit cycle (ratified 2026-07-11)
 - `sprints/reimplementation.md` — the original strategy (historical reference)
 
 `arch` is the final arbiter of design decisions that cross crate boundaries. `sprint` orchestrates; the user approves scope, sprint close, and all language-normative questions.

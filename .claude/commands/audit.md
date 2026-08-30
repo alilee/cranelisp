@@ -10,7 +10,7 @@ You are the Whole-Context Auditor for Cranelisp. Read this file carefully and ad
 
 ## Role
 
-`/audit` is an **Authority** skill (`sprints/METHOD.md` §1.2), narrow-deployed to exactly one bounded context per invocation, assessing that context's **total accumulated state** — not the current sprint's diff. Every other quality mechanism is delta-shaped or design-shaped: `/review` judges a change-set, `/qa` judges conformance against spec, `/arch` audits the design canon. `/audit` owns what none of them see: deltas can each be locally fine while the integral decays. Normative cycle: `sprints/artefacts.md` §I.7, instantiated §II.1.
+`/audit` is an **Authority** skill (`sprints/METHOD.md` §1.2), narrow-deployed to exactly one bounded context per invocation, assessing that context's **total accumulated state** — not the current sprint's diff. Every other quality mechanism is delta-shaped or design-shaped: `/review` judges a change-set, `/qa` judges conformance against spec, `/arch` audits the design canon. `/audit` owns what none of them see: deltas can each be locally fine while the integral decays. Normative cycle: `sprints/METHOD.md` §2.6.
 
 `/audit` **judges and files; it never edits the context it audits.** Its output is an assessment with recommendations — proposals, not work items.
 
@@ -33,7 +33,7 @@ founding discipline recursively, per bounded context.)
 
 ## The rotation
 
-One bounded context per sprint, in rotation over the six crate-shaped surfaces (`cranelisp-backend`, `cranelisp-typecheck`, `src/` (int), `cranelisp-frontend`, `cranelisp-primitives`+`-intrinsics` as one surface, `cranelisp-platform`). The cue is structural: `SPRINT.md` carries a standing `Audit: {context}` field filled at wave organization; the Phase 7 close checklist verifies the dispatch happened. Out-of-rotation pulls happen via escalation trigger 6 (`sprints/artefacts.md` §II.4): repeated escalations in one context, or a major arc completing there, take the next slot.
+One bounded context per sprint, in rotation over the six crate-shaped surfaces (`cranelisp-backend`, `cranelisp-typecheck`, `src/` (int), `cranelisp-frontend`, `cranelisp-primitives`+`-intrinsics` as one surface, `cranelisp-platform`). The cue is structural: `SPRINT.md` carries a standing `Audit: {context}` field filled at wave organization; the Phase 7 close checklist verifies the dispatch happened. Out-of-rotation pulls happen via escalation trigger 6 (`sprints/METHOD.md` §2.5): repeated escalations in one context, or a major arc completing there, take the next slot.
 
 ## Inputs
 

@@ -48,14 +48,14 @@ Specifically MUST NOT edit:
 
 ## Skills you orchestrate
 
-14 skills (METHOD §1). Model/effort per dispatch: `sprints/artefacts.md` §II.3 (normative allocation table); escalation triggers §II.4.
+14 skills (METHOD §1). Model/effort per dispatch: root `CLAUDE.md` §Roles (normative allocation table); escalation triggers §II.4.
 
 - **Authority**: `/spec` (scribe — normative questions go to the USER, framed as prose; never dispatch a skill to "rule"), `/arch`, `/qa` (strategy, risk, coverage process, defect attribution/triage), `/audit` (rolling whole-context assessment, METHOD §2.6). Route technical questions here.
 - **Per-crate triad**: `/design`, `/dev`, `/review` — generic skills, narrow-deployed one crate per invocation. The crate-shaped surfaces are `cranelisp-frontend`, `cranelisp-typecheck`, `cranelisp-backend`, `cranelisp-primitives` + `cranelisp-intrinsics` (the **backend-emitted runtime library** — S73 D43 split of the former `cranelisp-runtime`; paired with backend, NOT the int surface, which is only a host-client — see BC §4b/§6 + FIXME 0486), `cranelisp-platform`, and `src/` (binary). Always name the crate when invoking.
 - **Test production**: `/testing` — authors the e2e suite and repro reductions to `/qa`'s plan, sprint-wide.
 - **User-proxy**: `/stdlib`, `/examples`, `/docs`, `/repl`, `/port`. Operate in Phase 6 — exercise the language outside-in.
 
-The former `/frontend`, `/typecheck`, `/backend`, `/int`, `/platform` skills were retired (collapsed into `/dev` narrow-deployment) and their command files deleted at `sprints/artefacts.md` increment A (2026-07-11); see git history. The integration-bottleneck rule (sprint sized to one skill's capacity) was retired with them.
+The former `/frontend`, `/typecheck`, `/backend`, `/int`, `/platform` skills were retired (collapsed into `/dev` narrow-deployment) and their command files deleted at the 2026-07-11 artefact restructure; see git history. The integration-bottleneck rule (sprint sized to one skill's capacity) was retired with them.
 
 ## The seven phases
 
@@ -118,7 +118,7 @@ Expected exit: `/qa` failing tests now pass; `cargo nextest run` green; no `#[ig
 
 - Author the Outcome section in `SPRINT.md`: Delivered / Deferred (with rationale) / Findings.
 - Verify the `Audit:` dispatch happened and the assessment landed; check `/audit` calibration (recommendations that consistently die at Phase-1 acceptance are a finding about the audit — METHOD §2.6).
-- **Frontmatter-vs-table audit** (mechanical): `model:`/`effort:` in `.claude/commands/*.md` and `.claude/agents/*.md` match `sprints/artefacts.md` §II.3 — a 14-row grep, not judgment. Review the dispatch log: did escalations correlate with the sprint's hard spots? Feed mismatches into the outcome.
+- **Frontmatter-vs-table audit** (mechanical): `model:`/`effort:` in `.claude/commands/*.md` and `.claude/agents/*.md` match root `CLAUDE.md` §Roles — a 14-row grep, not judgment. Review the dispatch log: did escalations correlate with the sprint's hard spots? Feed mismatches into the outcome.
 - Present outcome to user. **Do not archive or update ROADMAP until user approves close explicitly.**
 - Prompt to consider whether arch's architectural principles are adequately serving the sprint.
 - On approval: `git mv sprints/SPRINT.md sprints/archive/sprint-{id}.md`; update `sprints/ROADMAP.md`; commit.
@@ -146,9 +146,9 @@ FIXMEs are files in `design/arch/fixmes/NNNN-name.md`. File format, frontmatter,
 
 ## Spawning subagents
 
-- **Dispatch by agent type.** Every role dispatch uses its `.claude/agents/{skill}.md` shim (Agent tool `subagent_type: "{skill}"`). The shim pins model + effort per the allocation table (`sprints/artefacts.md` §II.3) and points the agent at its command definition. **NEVER dispatch a role as a general-purpose agent with "read `.claude/commands/X.md` and act as X" prose** — that path bypasses the model pin and silently inherits the session model.
+- **Dispatch by agent type.** Every role dispatch uses its `.claude/agents/{skill}.md` shim (Agent tool `subagent_type: "{skill}"`). The shim pins model + effort per the allocation table (root `CLAUDE.md` §Roles) and points the agent at its command definition. **NEVER dispatch a role as a general-purpose agent with "read `.claude/commands/X.md` and act as X" prose** — that path bypasses the model pin and silently inherits the session model.
 - **Named fallback** (if agent-type dispatch is unavailable or misbehaves in this harness): general-purpose agent + an explicit per-dispatch `model` parameter copied from §II.3 + the command-file pointer in the prompt. Record every fallback use in the dispatch log.
-- **Escalation / downgrade**: a per-dispatch `model` override on a shim dispatch is permitted only per the triggers in `artefacts.md` §II.4; every non-default dispatch is recorded with its trigger number. All language-normative questions go to the USER, never to a model tier.
+- **Escalation / downgrade**: a per-dispatch `model` override on a shim dispatch is permitted only per the triggers in `sprints/METHOD.md` §2.5; every non-default dispatch is recorded with its trigger number. All language-normative questions go to the USER, never to a model tier.
 - **Dispatch log**: record every agent dispatch in `SPRINT.md` §Dispatch log — `wave | agent | surface | model | effort | non-default reason`. Default-tier rows may be batched per wave ("W2: dev×frontend, dev×typecheck — defaults").
 - **One skill per agent.** Never combine roles in one prompt.
 - **No worktree isolation** — known broken on this project. Source-touching agents run serially; read-only fan-outs (including `/audit`) may parallelise.

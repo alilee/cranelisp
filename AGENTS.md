@@ -88,7 +88,7 @@ the sole scheduling axis. Consult:
 - `sprints/METHOD.md` for the delivery method and FIXME protocol.
 - `sprints/ROADMAP.md` for progress.
 - `sprints/SPRINT.md` for the active plan, when present.
-- `sprints/artefacts.md` for agent artefacts, escalation, and audit cycle.
+- `sprints/METHOD.md` for the increment, escalation, and the audit cycle.
 - `sprints/reimplementation.md` only as historical strategy.
 
 `$arch` is the final arbiter of cross-crate design. `$sprint` orchestrates. The

@@ -10,7 +10,7 @@ You are the Test Developer for Cranelisp. Read this file carefully and adopt thi
 
 ## Role
 
-`/testing` authors and maintains the e2e test suite — the executable half of the QA function. The split (ratified 2026-07-11, `sprints/artefacts.md` §II.1): **`/qa` judges and plans** (strategy, risk, coverage process, attribution — frontier model tier); **`/testing` builds** (test authoring, repro isolation and reduction, `// defect:` notation upkeep — workhorse tier). `/testing` works to `/qa`'s plan: `tests/plan/PLAN.md` rows are the specification of what to write.
+`/testing` authors and maintains the e2e test suite — the executable half of the QA function. The split (ratified 2026-07-11, `sprints/METHOD.md` §2.6): **`/qa` judges and plans** (strategy, risk, coverage process, attribution — frontier model tier); **`/testing` builds** (test authoring, repro isolation and reduction, `// defect:` notation upkeep — workhorse tier). `/testing` works to `/qa`'s plan: `tests/plan/PLAN.md` rows are the specification of what to write.
 
 ## Owned artefacts
 

@@ -37,6 +37,14 @@ Three kinds of content, three homes. This is the rule that lets a generic narrow
 
 In doubt: process → the package contract; decision or target shape → design doc; mechanical, API-surface or convention → `CLAUDE.md`.
 
+**What a localized `CLAUDE.md` holds.** Written local memory is what keeps a narrow-deployed `dev` from re-deriving invariants out of source, so every workhorse-deployed surface earns one.
+
+- **In**: API gotchas; data-structure invariants with their provenance; the submodule seam map and where each `#[cfg(test)]` module lives (this is what makes the per-submodule scenario accounting in §2.2 auditable); build and debug hooks; known asymmetries a reader would otherwise misread as bugs.
+- **Out**: direction and target shape (→ `design/{crate}/`), boundary narrative (→ `design/arch/`), public surface (→ crate-root rustdoc), process (→ the role contract).
+- **Budget**: about 150 lines. Past that it is accreting design content, and `review` flags it.
+- **Owner**: `dev` narrow per crate, except `crates/cranelisp-types/` → `arch`, which owns that crate's source and so owns the voice of its code.
+- **Current-state, not changelog**: at most one "current state" section, consolidated at close. Stacked sprint-stamped sections are the named decay smell.
+
 ### 1.3 Where cranelisp overrides the package
 
 **`arch` is a deputy, not an originator of substance.** The package's `arch` contract makes decomposition, facades and technology selections its own to decide and proceed on. **Cranelisp overrides that**: the user is the architect at the language-shape level, and `arch` drafts, ratifies and applies substance the user has approved rather than inventing it.
@@ -103,9 +111,30 @@ Size is not among these: the package's `sprint` contract already rules that deco
 
 If `sprint` is invoked mid-sprint: report status; recommend continue, re-scope or close. Scope changes require user sign-off. `sprint` never closes unilaterally.
 
-### 2.5 Rolling whole-context audit
+### 2.5 Escalation
 
-One bounded context is audited per sprint, in rotation. The `SPRINT.md` template carries a standing `Audit: {context}` field filled at Phase 4. The dispatch runs read-only in the Phase 6/7 window; the assessment lands in `audits/{context}-sNNN.md` with recommendations carrying evidence, cost class and proposed owner. **Next sprint's Phase 1 disposes each recommendation with the user**: accepted → `sprint` files against the proposed owner; declined → recorded in the assessment with rationale. `audit` never files for its own recommendations and never blocks the current sprint. At Phase 7, `sprint` checks the audit's calibration — recommendations that consistently die at acceptance are a finding about `audit`.
+**Decider**: `sprint`, unilaterally within its orchestration remit. User sign-off only where the method already requires it (a third deferral per §2.3.5; scope changes) — and **all language-normative questions go to the user**, never to a model tier. **Routing beats upgrading**: before raising a dispatch's tier, ask whether the judgment belongs to a role already on the frontier tier, and route it there instead of heating up a production role.
+
+Triggers, normative:
+
+1. **Recurring failure by symptom.** The same symptom — test name, error signature, crash site — still failing after **two** dispatches at default model makes the third a `qa` **attribution** dispatch: minimal repro plus owner under the control discipline, not a fix. The frame shifts from "fix it" to "attribute it".
+2. **Contested or layered attribution.** The discovering role and the symptom's apparent owner disagree, or a fix exposed a second failure → `qa` triage before any further `dev` dispatch.
+3. **Second deferral.** An item at its 2× point (§2.3.5): the resolving dispatch that sprint runs at the frontier tier, or a frontier `qa`/`arch` triage explains structurally why it keeps deferring.
+4. **Review-resistant blockers.** A blocking finding surviving one `dev` fix round → `sprint` chooses: escalated `dev` (genuinely hard to build) or attribution-first (possibly wrongly attributed).
+5. **Design-authority contact.** Work touching a principle, facade or bounded context never escalates in place — it files to `arch`. Spec ambiguity routes to `spec`, which frames it for the user.
+6. **Out-of-rotation audit.** Triggers 1–4 firing repeatedly in one bounded context, or a major arc completing there, pull that context forward in the audit rotation (§2.6). Attribution fixes the instance; the audit assesses the pattern behind repeated instances.
+
+**Recording**: the dispatch log in `SPRINT.md`, per wave — `| role | surface | model | effort | non-default reason |`. Default rows may be batched; every non-default row cites its trigger number. Phase 7 reviews the log — did escalations correlate with the sprint's hard spots? — and that is the feedback loop for revising the allocation in root `CLAUDE.md` §Roles.
+
+**Dispatch by role agent, never by prose.** "Read the contract and act as X" inside a generic agent bypasses the frontmatter and silently inherits the session model. Model-tier changes need user sign-off; they are a spend decision, the same class as a scope change.
+
+### 2.6 Rolling whole-context audit
+
+One bounded context is audited per sprint, in rotation, so every context gets a fresh assessment on a bounded period and no sprint pays for more than one frontier-tier deep read. The `SPRINT.md` template carries a standing `Audit: {context}` field filled at Phase 4 — the cue is structural, because an audit that depends on someone remembering it decays like everything else.
+
+**The acid test** (user-ratified 2026-07-11), against which the assessment opens with a graded per-attribute verdict: *if we lost this context's code and docs but retained the insight from experience, and produced a lean, high-quality solution second time around — would it look like this?* Evidence follows: design quality, design realisation (drift in both directions — unrealised design, and design the implementation has silently falsified), simplicity and volume optimality, duplication, risk-weighted coverage on the production path, maintainability, memory freshness. Hygiene findings are evidence within that frame, never a substitute for the verdict. The dispatch runs read-only in the Phase 6/7 window; the assessment lands in `audits/{context}-sNNN.md` with recommendations carrying evidence, cost class and proposed owner. **Next sprint's Phase 1 disposes each recommendation with the user**: accepted → `sprint` files against the proposed owner; declined → recorded in the assessment with rationale. `audit` never files for its own recommendations and never blocks the current sprint. At Phase 7, `sprint` checks the audit's calibration — recommendations that consistently die at acceptance are a finding about `audit` — and verifies both halves of the cycle: that this sprint's audit was dispatched, **and that the previous assessment was disposed**. A lapsed disposition is how four recommendations reached their fourth audit untouched (S110).
+
+Assessments are point-in-time records: appended to with acceptance and decline outcomes, never rewritten. Rotation order is coordination state; reordering is a scope-class decision (trigger 6, or user direction).
 
 ---
 

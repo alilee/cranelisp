@@ -14,7 +14,7 @@ status: open
 
 ## Issue
 
-Nothing in `CLAUDE.md`, `sprints/METHOD.md`, `sprints/artefacts.md`,
+Nothing in `CLAUDE.md`, `sprints/METHOD.md`, the role contracts,
 `tests/CLAUDE.md`, `design/arch/principles/`, or any skill definition records how a
 cross-crate migration is forced through the stack. The one adjacent statement —
 `dev.md` §Reporting, "do not hand off with a broken build" — reads as the *opposite*
