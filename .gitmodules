@@ -1,0 +1,5 @@
+[submodule ".agents"]
+	path = .agents
+	url = https://github.com/alilee/se-agentic.git
+	branch = main
+	update = merge
