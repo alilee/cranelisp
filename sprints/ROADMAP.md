@@ -453,6 +453,25 @@ Recorded process debt: the dispatch log was not maintained after Phase 2.
 
 Full record: `sprints/archive/sprint-119.md`.
 
+### FIXME 0917 Provenance Correction and Role-System Proof — S120 ✅ CLOSED 2026-08-31
+
+The bounded backend correction shipped at `cbb3be9e`: both reduced 0917
+run/link cells now report exact marginal zero, backend module and safety-fence
+evidence passes, and a deterministic compiler-focused CLIF entry was added
+without changing an existing golden. The exemplar remained a downstream
+observation and did not determine compiler behavior.
+
+The sprint also exercised the new shared roles on real compiler delivery and
+repaired the integration weaknesses it exposed. Definitive role/model/effort
+allocation and truthful dispatch outcome accounting now live in the shared
+package, published at `76f6432`; Cranelisp's reviewed host alignment is
+committed locally at `9330f32`. Final census: **5,700 run / 5,682 passed / 18
+failed / 1 skipped**, with both 0917 cells green and all 18 REDs traced to the
+carried non-0917 set. Shared-package, root-maintenance, role-wiring and citation
+gates pass. Carries are the three recorded refusal-coverage gaps, remaining
+undated-review lifecycle classification and ACT-0950. The Cranelisp remote was
+not pushed. Full record: `sprints/archive/sprint-120.md`.
+
 ### Pipeline v3 migration — COMPLETE (Sprints 29-38)
 
 Steps 1-10 + 14 delivered. Single-pipeline invariant established. ~2,100 lines of v1 code deleted. Steps 11-13 (concurrency) deferred indefinitely. Step 15 (new main.rs) retired — substantially delivered by Step 6. See `design/arch/archive/pipeline-v3-roadmap.md` §Post-Migration for full assessment.

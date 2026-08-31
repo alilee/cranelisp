@@ -1,10 +1,10 @@
 # Sprint 120: FIXME 0917 provenance correction
 
-**Status**: PHASE 7 CLOSE — the user approved advancement on 2026-08-31 with
-the exact shared-package commit/push, root integration commit and archive/
-roadmap close operations. The bounded 0917 correction is checkpointed at
-`cbb3be9e`; Phase 6b host alignment was independently reviewed and judged
-adequate by QA with no blocking or required finding.
+**Status**: **CLOSED 2026-08-31 — user-approved after Phase 6b verification.**
+The bounded 0917 correction is checkpointed at `cbb3be9e`; the shared package
+was published at `76f6432`; and the Cranelisp host alignment is committed
+locally at `9330f32`. Phase 6b was independently reviewed and judged adequate
+by QA with no blocking or required finding.
 
 **Goal**: Correct backend value-provenance classification so a match arm that
 returns a nullary constructor beside a freshly boxed arm does not strand the
@@ -257,3 +257,39 @@ Wave-0 readiness:
   and `se-agentic` `origin/main` was fast-forwarded from `ed26b4c` to
   `76f6432`. The `.agents` worktree is clean and synchronized. No Cranelisp
   remote operation was authorized or performed.
+- The reviewed Cranelisp host-alignment delta was committed locally as
+  `9330f32` (`chore(agents): align host wiring with shared role package`) with
+  gitlink `76f6432`. Post-commit role-wiring and citation checks reported zero
+  findings. The Cranelisp remote was not pushed.
+
+## Outcome (Phase 7)
+
+Sprint 120 delivered the approved compiler correction and used its real
+compiler path to evaluate the new shared role system. FIXME 0917 is fixed at
+`cbb3be9e`: both reduced run/link subject-control cells now report exact
+marginal zero, backend module evidence and safety fences pass, and the new
+compiler-focused CLIF entry is deterministic without changing an existing
+golden. The exemplar remained a downstream observation and did not define the
+compiler decision.
+
+The role exercise exposed and repaired host-integration weaknesses instead of
+mistaking successful role launches for proof of fitness. The shared package now
+owns definitive skill/model/effort allocation, truthful terminal-outcome
+accounting and explicit sandbox/tooling escalation; same-harness subagents and
+matching cross-harness dispatch need no extra approval. Cranelisp now checks
+shared/local allocation parity, role and principle reachability, citation
+provenance and the live review corpus. Phase approval remains mandatory before
+advancement. The shared change is published at `76f6432`; the reviewed local
+host alignment is `9330f32`.
+
+Final evidence is 5,700 tests run / 5,682 passed / 18 failed / 1 skipped in
+167.8 seconds after the user-requested retry. Both 0917 cells pass; QA traced
+the stable 18 failures to the carried non-0917 defect set. Shared-package suites
+pass 20/20 and 10/10, the root maintenance binaries pass 9/9, and direct
+role-wiring and citation gates report zero findings.
+
+Carries are limited to the three package refusal-coverage gaps recorded in
+`tests/plan/s120-evidence-delta.md`, lifecycle classification of the remaining
+undated `design/review/` files, and ACT-0950. They are not authorized work in
+this increment. The Cranelisp commits remain local; only the `se-agentic`
+shared-package commit was pushed.
