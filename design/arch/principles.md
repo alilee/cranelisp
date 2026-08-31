@@ -1,6 +1,6 @@
 # Architectural Principles
 
-The criteria `/arch` applies to every design decision and the standard against which sprint scope is reviewed. Maintained, not duplicated — when these principles are cited elsewhere (skill defs, design docs, reviews) they are cited by name; this file is the single canonical home.
+The criteria `arch` applies to every design decision, the standard `design`, `dev` and `review` build and review each surface against, and the standard against which sprint scope is reviewed. This index is the single carrier of the set: every dispatch of those roles reads it first (`sprints/METHOD.md` §1.1; `design/arch/principles/CLAUDE.md`), and a Principle absent from it is not in force. Maintained, not duplicated — cited elsewhere (adapters, design docs, reviews) by name, never restated.
 
 The principles below were derived from the prototype's complexity analysis (59 audit findings across 4 modules) and refined as the reimplementation has progressed. Sprint citations record the originating context where one is recorded; principles 11–13 are Sprint 26 additions surfaced by the dual-pipeline defect.
 

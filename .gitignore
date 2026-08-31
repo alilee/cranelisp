@@ -35,6 +35,7 @@ tests/sprint60_observability/.runs/
 tests/sprint60_cache_build_marker/.runs/
 tests/examples_run/.runs/
 __pycache__/
+.local/
 
 # Stray stdlib self-test backing files emitted CWD-relative when the in-language
 # test runner is invoked from the repo root (regen/extraction writes to CWD

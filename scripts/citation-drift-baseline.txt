@@ -3,33 +3,20 @@
 # repo with an existing backlog. Entries may be DELETED (when the citation
 # is repaired) but must never be ADDED by hand: a new finding is a new
 # stale record, and the check exists to stop those landing.
-# 610 entries.
-audits/intrinsics-2026-06-14.md	PATH	cited path does not exist: src/alloc.rs
-audits/intrinsics-2026-06-14.md	PATH	cited path does not exist: src/catalog.rs
-audits/intrinsics-2026-06-14.md	PATH	cited path does not exist: src/drop.rs
-audits/intrinsics-2026-06-14.md	PATH	cited path does not exist: src/heap_string.rs
-audits/intrinsics-2026-06-14.md	PATH	cited path does not exist: src/io.rs
-audits/intrinsics-2026-06-14.md	PATH	cited path does not exist: src/io_guard.rs
-audits/intrinsics-2026-06-14.md	PATH	cited path does not exist: src/io_observer.rs
-audits/intrinsics-2026-06-14.md	PATH	cited path does not exist: src/ivar.rs
-audits/intrinsics-2026-06-14.md	PATH	cited path does not exist: src/layout.rs
-audits/intrinsics-2026-06-14.md	PATH	cited path does not exist: src/panic.rs
-audits/intrinsics-2026-06-14.md	PATH	cited path does not exist: src/rc.rs
-audits/intrinsics-2026-06-14.md	PATH	cited path does not exist: src/trace.rs
-audits/intrinsics-2026-06-14.md	PATH	cited path does not exist: src/vec_runtime.rs
-audits/platform-2026-06-14.md	PATH	cited path does not exist: src/adt.rs
-audits/platform-2026-06-14.md	PATH	cited path does not exist: src/declare.rs
-audits/platform-2026-06-14.md	PATH	cited path does not exist: src/macros.rs
-audits/platform-2026-06-14.md	PATH	cited path does not exist: src/schema.rs
-audits/primitives-2026-06-14.md	LINE	line 247-336 is past end of crates/cranelisp-primitives/src/lib.rs (219 lines)
-audits/primitives-2026-06-14.md	LINE	line 342-405 is past end of crates/cranelisp-primitives/src/lib.rs (219 lines)
-audits/primitives-2026-06-14.md	PATH	cited path does not exist: src/bool.rs
-audits/primitives-2026-06-14.md	PATH	cited path does not exist: src/float.rs
-audits/primitives-2026-06-14.md	PATH	cited path does not exist: src/int.rs
-audits/primitives-2026-06-14.md	PATH	cited path does not exist: src/operator.rs
-audits/primitives-2026-06-14.md	PATH	cited path does not exist: src/ring0.rs
-audits/primitives-2026-06-14.md	PATH	cited path does not exist: src/string.rs
-audits/primitives-2026-06-14.md	PATH	cited path does not exist: src/vec.rs
+# ONE exception — the standing qa widening rule (S120): when qa widens the
+# corpus or roots, this file is regenerated ONCE with --write-baseline, in the
+# widening change-set and nowhere else, and qa verifies the diff before
+# accepting it:
+# (i) every added entry has its citing document or cited target inside the
+# newly admitted scope; (ii) every removed entry is a named repair or left
+# scope by classification; (iii) the old-scope entry count does not rise.
+# Enrolled entries remain debts of the citing document's owner.
+# Provenance: the rule was first stated in ACT-0946 §Ruling item 5, an action
+# resolved and deleted at S120 whose ruling text was never committed. This
+# header is the rule's surviving durable statement (with condition C4 in
+# tests/plan/s120-evidence-delta.md); this file is qa's per sprints/METHOD.md
+# §3.1.
+# 605 entries.
 audits/s87-clear-all-fixmes.md	LINE	line 932 is past end of src/platform.rs (796 lines)
 audits/s87-clear-all-fixmes.md	SYMBOL	`link_module_referencing_discover_tests_extern_resolves_at_aot_link` does not occur in tests/link.rs — found nowhere in the tree
 audits/s87-maintainability.md	LINE	line 1318 is past end of src/process_form.rs (1201 lines)
@@ -83,21 +70,33 @@ design/arch/effect-concurrency.md	PATH	cited path does not exist: src/concurrenc
 design/arch/fixmes/0052-docs-learn-system-repl-feature.md	PATH	cited path does not exist: tests/plan/ring0.md
 design/arch/fixmes/0463-examples-network-poll-shape-example.md	PATH	cited path does not exist: examples/33-network-poll-leaf.cl
 design/arch/fixmes/0708-annotation-not-folded-in-macro-argument-position.md	SYMBOL	`try_consume_annotation` does not occur in ast_builder.rs — actually in tests/ra_annotation_qualifier_0682.rs
+design/arch/fixmes/0764-review-enforce-repro-before-fix-as-blocker.md	PATH	cited path does not exist: .claude/commands/review.md
+design/arch/fixmes/0765-dev-no-fix-without-a-repro-precondition.md	PATH	cited path does not exist: .claude/commands/dev.md
 design/arch/fixmes/0782-dev-var-pattern-arm-double-releases-an-owned-temporary-scrutinee.md	SYMBOL	`fresh_vec_literal_scrutinee_still_releases` does not occur in scrutinee_ownership_tests.rs — found nowhere in the tree
 design/arch/fixmes/0874-platform-shared-heap-adt-fixture.md	PATH	cited path does not exist: tests/cl_adt_products.rs
 design/arch/fixmes/0874-platform-shared-heap-adt-fixture.md	PATH	cited path does not exist: tests/cl_adt_sums.rs
 design/arch/fixmes/0874-platform-shared-heap-adt-fixture.md	PATH	cited path does not exist: tests/worked_examples.rs
 design/arch/fixmes/0907-io-bind-existential-ctor-defeats-canonical-glue-derivation.md	PATH	cited path does not exist: stdlib/core/io/test.cl
+design/arch/fixmes/0938-arch-principle-wording-states-intent.md	PATH	cited path does not exist: .claude/commands/arch.md
+design/arch/fixmes/0940-arch-callee-first-migration-directionality.md	PATH	cited path does not exist: .claude/commands/dev.md
+design/arch/fixmes/0941-arch-cascade-done-signal-is-e2e-not-cargo-check.md	PATH	cited path does not exist: .claude/commands/dev.md
+design/arch/fixmes/0943-arch-proposal-discipline-checklist.md	PATH	cited path does not exist: .claude/commands/arch.md
+design/arch/fixmes/0944-qa-coverage-by-definition-variants-standing-category.md	PATH	cited path does not exist: .claude/commands/qa.md
 design/arch/legacy/decisions/0025-compiled-code-on-moduleentry-def-code.md	PATH	cited path does not exist: tests/v4_jit_reclaim.rs
 design/arch/legacy/decisions/0029-io-trampoline-shallow-dec-runtime-primitive.md	PATH	cited path does not exist: crates/cranelisp-runtime/src/io.rs
 design/arch/legacy/decisions/0029-io-trampoline-shallow-dec-runtime-primitive.md	PATH	cited path does not exist: crates/cranelisp-runtime/src/rc.rs
 design/arch/legacy/decisions/0032-codestore-and-linkerstore-empty-marker.md	PATH	cited path does not exist: crates/cranelisp-typecheck/src/program.rs
+design/arch/legacy/substance-action-plan.md	PATH	cited path does not exist: .claude/commands/arch.md
+design/arch/legacy/substance-action-plan.md	PATH	cited path does not exist: sprints/triad-shared.md
+design/arch/legacy/substance-scoping.md	PATH	cited path does not exist: .claude/commands/review.md
 design/arch/legacy/substance-scoping.md	PATH	cited path does not exist: crates/cranelisp-runtime/CLAUDE.md
 design/arch/legacy/substance-scoping.md	PATH	cited path does not exist: crates/cranelisp-runtime/src/io.rs
 design/arch/legacy/substance-scoping.md	PATH	cited path does not exist: crates/cranelisp-runtime/src/io_observer.rs
 design/arch/legacy/substance-scoping.md	PATH	cited path does not exist: crates/cranelisp-runtime/src/io_trace.rs
 design/arch/legacy/substance-scoping.md	PATH	cited path does not exist: crates/cranelisp-runtime/src/lib.rs
 design/arch/legacy/substance-scoping.md	PATH	cited path does not exist: crates/cranelisp-runtime/src/trace.rs
+design/arch/legacy/substance-scoping.md	PATH	cited path does not exist: sprints/fixmes/0001..0009
+design/arch/legacy/substance-scoping.md	PATH	cited path does not exist: sprints/triad-shared.md
 design/arch/legacy/substance-scoping.md	PATH	cited path does not exist: tests/v4_jit_reclaim.rs
 design/arch/macro-expansion-ownership.md	PATH	cited path does not exist: crates/cranelisp-frontend/src/expand.rs
 design/arch/macro-expansion-ownership.md	SYMBOL	`process_regular_form` does not occur in src/worker.rs — actually in src/process_form.rs, src/lib.rs, src/process_form/form_dispatch.rs
@@ -346,6 +345,7 @@ design/stdlib/examples-run-path.md	PATH	cited path does not exist: tests/example
 design/typecheck/ast-annotation.md	LINE	line 1324 is past end of src/session_v4.rs (623 lines)
 design/typecheck/ast-annotation.md	LINE	line 2482 is past end of crates/cranelisp-backend/src/lib.rs (1804 lines)
 design/typecheck/ast-annotation.md	LINE	line 885 is past end of src/session_v4.rs (623 lines)
+design/typecheck/ast-annotation.md	PATH	cited path does not exist: .claude/commands/typecheck.md
 design/typecheck/ast-annotation.md	PATH	cited path does not exist: crates/cranelisp-backend/src/got.rs
 design/typecheck/ast-annotation.md	PATH	cited path does not exist: crates/cranelisp-typecheck/src/imports.rs
 design/typecheck/ast-annotation.md	PATH	cited path does not exist: crates/cranelisp-typecheck/src/program.rs
@@ -450,6 +450,14 @@ spec/12-runtime.md	SYMBOL	`test_alloc_string_empty` does not occur in crates/cra
 spec/12-runtime.md	SYMBOL	`test_import_ambiguity` does not occur in crates/cranelisp-typecheck/src/checker.rs — actually in crates/cranelisp-typecheck/src/checker/tests.rs
 spec/12-runtime.md	SYMBOL	`test_live_allocs_tracking` does not occur in crates/cranelisp-intrinsics/src/alloc.rs — actually in crates/cranelisp-intrinsics/src/alloc/tests.rs
 spec/appendix-a-builtins.md	SYMBOL	`test_export_specific` does not occur in crates/cranelisp-frontend/src/module_extract.rs — actually in crates/cranelisp-frontend/src/module_extract/tests.rs
+sprints/ROADMAP.md	PATH	cited path does not exist: .claude/commands/arch.md
+sprints/ROADMAP.md	PATH	cited path does not exist: tests/plan/baseline.md
+sprints/ROADMAP.md	PATH	cited path does not exist: tests/plan/strategy.md
+sprints/reimplementation.md	PATH	cited path does not exist: docs/CLAUDE.md
+sprints/reimplementation.md	PATH	cited path does not exist: docs/spec/CLAUDE.md
+sprints/reimplementation.md	PATH	cited path does not exist: lib/CLAUDE.md
+sprints/reimplementation.md	PATH	cited path does not exist: src/primitives/CLAUDE.md
+sprints/reimplementation.md	PATH	cited path does not exist: src/reader/CLAUDE.md
 src/CLAUDE.md	PATH	cited path does not exist: repl/commands.rs
 src/CLAUDE.md	PATH	cited path does not exist: repl/format.rs
 src/CLAUDE.md	PATH	cited path does not exist: repl/format_type.rs

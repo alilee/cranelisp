@@ -39,6 +39,22 @@ Each diagram is a temporal walkthrough of one execution mode. The actor grain is
 5. The five concurrency-invariant diagrams — verify the correctness claims.
 6. Crate surfaces — once the choreography is in mind, the typed Rust signatures fall into place. All `facades/{crate}.md` specs are retired (see `../CLAUDE.md` §Canonical documents): the canonical surface per crate is the source rustdoc (crate-root `//!` + per-item `///`) plus the tracked `crates/{crate}/public-api.txt` baseline, with cross-surface narrative in `../bounded-contexts.md` (§7 for types, §1 frontend, §2 typecheck, §3 backend, §4a primitives, §4b intrinsics, §5 platform, §6 int).
 
+## Conventions
+
+The diagrams are normative architectural specifications, peers of `../bounded-contexts.md` and the source-rustdoc surface record — not illustrations. `arch` owns them; `design` and `dev` read them as input and file to `arch` on drift rather than editing.
+
+**Each diagram reflects the facades it depicts.**
+
+- Every participant is a crate (frontend, typecheck, backend, primitives, intrinsics, platform), an integration-layer entity (Sess, Sched, Worker, ST_m1, …), or a stdlib/test consumer.
+- Every arrow is a call or return named with the **exact** facade signature — free function name, argument types, return type — from the crate's public source rustdoc. No invented call shapes; no diagram-only convenience names.
+- Every Note describes an invariant or state transition in terms the facade or bounded context can ground. Notes over several participants state invariants; Notes over one participant state local state.
+
+**Lockstep rule.** A facade change that alters a name, signature, parameter, return type or call shape sweeps this directory in the same wave: grep `*.mmd` for every name about to change — the hit set is the impact list — and update each impacted `.mmd` (the canonical edit) in the facade change-set or a paired commit immediately after, regenerating the `.svg`. A new flow crossing two or more crates with non-trivial ordering usually warrants a new diagram; if a commitment lands ahead of its diagram, file it to `arch`.
+
+**Drift detection.** A facade signature no diagram exercises is suspect — dead, or hiding a coordination assumption behind a missing diagram. An arrow no facade signature matches is a drift defect; `arch` reconciles before the next sprint.
+
+**Authoring.** Mermaid `.mmd` source, rendered `.svg` committed beside it; a one-paragraph header note stating scope and entry condition; for long-running flows, one `loop` block with a Note giving the iteration condition rather than repeated sequences.
+
 ## Regenerating
 
 ```bash

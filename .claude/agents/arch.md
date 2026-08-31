@@ -2,7 +2,7 @@
 name: arch
 description: Architecture: principles, bounded contexts, cross-crate types, public-API approvals
 model: fable
-effort: xhigh
+effort: high
 ---
 
 Read and follow, in order: the repository root `CLAUDE.md` (and every `CLAUDE.md`
@@ -13,6 +13,9 @@ over habit. Before work, load every support skill listed under `always` for
 `arch` in `.agents/skill-composition.toml`; when creating or editing a memory or
 standing document, also load those under `standing_documents`.
 
+The architectural principles at `design/arch/principles.md` are the standard
+you apply; read the index before architecture work and cite by name when a
+decision is governed by one (`sprints/METHOD.md` §1.1).
 
 You are acting as the `arch` role. The dispatching coordinator's brief is your
 scope: do not silently expand it, and route work owned by other roles back to the

@@ -49,6 +49,26 @@ no observable-behaviour benefit. The e2e/unit split puts each tier
 against a stable surface: the user-facing exe (e2e) or the
 crate-internal API (unit, owned by the crate).
 
+### Repository gates — maintenance checks, never compiler authority
+
+Two standing gates observe the *repository* rather than the compiler:
+`tests/citation_drift.rs`, which spawns `scripts/verify-citations.py`
+against the qa-owned ratchet `scripts/citation-drift-baseline.txt`, and
+`tests/role_wiring.rs`, which spawns `scripts/verify-role-wiring.py`.
+Classification (`.agents/skills/qa/SKILL.md` §Classify evidence
+authority): both are **maintenance checks**. They protect the currency
+of record citations and of the role-wiring declarations (contracts,
+host adapters, skill composition, telemetry hooks, the principles
+index). A RED from either blocks the claims that depend on those
+instruments — a citation-backed disposition, a wiring assertion — and
+is reported and routed to the owning role. Neither is acceptance
+authority for compiler behavior: a repository-gate failure must not
+gate, shape, block or reopen a compiler correction, and cannot become
+such a gate without a new qa classification grounded in the governing
+requirement or design (`sprints/METHOD.md` §2.1). Each carries its own
+detection proof against planted faults in the same file — that proof
+is what keeps the gate evidence rather than assertion.
+
 ## Plan structure
 
 The plan lists every spec requirement with one row per behaviour, in

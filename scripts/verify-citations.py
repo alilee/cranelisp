@@ -42,8 +42,26 @@ worse than a narrow one:
     semantic and stays human. This tool narrows the human's job; it does not
     remove it.
 
+  * **a citation from one document to another.** `design/`, `spec/`, `audits/`
+    and `user/` are not roots, so a design doc citing a moved design doc is not
+    resolved even from a scanned document — roughly 214 such citations are stale
+    today. Whether those roots join is ACT-0950, deliberately not decided here.
+
+  * **a lifecycle path, whose presence is coordination state rather than a claim
+    about source.** `sprints/SPRINT.md` exists while a sprint runs and is absent
+    between sprints, archived to the numbered plan (root `CLAUDE.md` §Delivery).
+    Verifying it would make this tool's verdict follow the delivery phase rather
+    than the record — 174 findings across 76 documents the moment it is archived
+    — while passing falsely in between, since a note meaning an earlier sprint
+    resolves against the current file. Those citations are recognised and
+    counted (the `lifecycle` figure in the summary) and never verified. A
+    document that means an earlier sprint cites the archive path instead, and
+    that IS checked. See LIFECYCLE_PATHS.
+
 Usage:
-    scripts/verify-citations.py [--fix-hints] [--json] [PATH ...]
+    scripts/verify-citations.py [--corpus live|all|fixmes] [--baseline FILE]
+                                [--write-baseline FILE] [--list-docs] [--json]
+                                [--quiet] [PATH ...]
 
 Exit status is 1 if any citation fails, so it can gate a commit or a test.
 With no PATH arguments it scans the documentation corpus (see DOC_GLOBS).
@@ -62,20 +80,52 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 
-# Documentation corpora that cite source.
+# Documentation corpora that cite source. `sprints/` and the host adapters were
+# admitted at S120: scheduling records (METHOD, ROADMAP, SPRINT, the actions
+# directory) drive dispatch exactly as FIXMEs do, and each adapter carries the
+# wiring claim `.agents/skills/<role>/SKILL.md`.
 DOC_GLOBS = [
     "design/**/*.md",
     "audits/*.md",
     "tests/plan/*.md",
     "spec/*.md",
     "repl/*.md",
+    "sprints/**/*.md",
+    ".claude/agents/*.md",
+    ".github/agents/*.md",
+    ".github/copilot-instructions.md",
     "CLAUDE.md",
     "**/CLAUDE.md",
 ]
 
-# Source trees a citation may legitimately point into.
+# The shared role package is a submodule: its prose is package-root-relative,
+# verified by the package, and rewritten at every converge. Scanning it would let
+# a package edit fail the consumer gate. `**/CLAUDE.md` would otherwise take
+# `.agents/CLAUDE.md`.
+CORPUS_EXCLUDED_ROOTS = (".agents/",)
+
+# Trees a citation may legitimately point into. `sprints/`, `.claude/` and
+# `.agents/` are roots so that a *dead target* under them is visible — a record
+# still naming the retired `.claude/commands/` mechanism, or a deleted action
+# file.
 SOURCE_ROOTS = ("src/", "crates/", "tests/", "platforms/", "stdlib/", "examples/",
+                "exemplar/", "repl/", "scripts/", "benches/", "sprints/",
+                ".claude/", ".agents/")
+
+# Trees whose `.rs` files form the bare-filename symbol set, i.e. what
+# `fn_compiler.rs::foo` may resolve against. Deliberately narrower than
+# SOURCE_ROOTS: the shared package vendors its own Rust overseer, and admitting
+# it would let `lib.rs::sym` or `main.rs::sym` resolve against a file that has
+# nothing to do with the compiler.
+SYMBOL_ROOTS = ("src/", "crates/", "tests/", "platforms/", "stdlib/", "examples/",
                 "exemplar/", "repl/", "scripts/", "benches/")
+
+# Paths under a source root whose presence is coordination state, not a claim
+# about source: recognised, counted, and never verified (the reasoning is in the
+# "does not catch" list above). Kept as an explicit set
+# rather than a pattern — a rule that silently grows to cover neighbouring paths
+# would suppress real drift, and each member owes the argument made above.
+LIFECYCLE_PATHS = frozenset({"sprints/SPRINT.md"})
 
 # Extensions we can count lines in.
 COUNTABLE = {".rs", ".md", ".cl", ".toml", ".txt", ".json", ".sh", ".py", ".mmd"}
@@ -130,6 +180,7 @@ class Stats:
     checked_lines: int = 0
     checked_symbols: int = 0
     exempt: int = 0
+    lifecycle: int = 0
     findings: list = field(default_factory=list)
 
 
@@ -154,7 +205,7 @@ _repo_index: set[str] | None = None
 
 
 def repo_has_identifier(symbol: str) -> bool:
-    """True if `symbol` occurs anywhere under a source root. Cached via ripgrep/grep."""
+    """True if `symbol` occurs anywhere under a symbol root. Cached via ripgrep/grep."""
     global _repo_index
     if _repo_index is None:
         _repo_index = set()
@@ -162,9 +213,9 @@ def repo_has_identifier(symbol: str) -> bool:
         return True
     tool = "rg" if _which("rg") else "grep"
     if tool == "rg":
-        cmd = ["rg", "-l", "--fixed-strings", "--", symbol, *SOURCE_ROOTS]
+        cmd = ["rg", "-l", "--fixed-strings", "--", symbol, *SYMBOL_ROOTS]
     else:
-        cmd = ["grep", "-rlF", "--", symbol, *SOURCE_ROOTS]
+        cmd = ["grep", "-rlF", "--", symbol, *SYMBOL_ROOTS]
     try:
         res = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.TimeoutExpired):
@@ -189,10 +240,20 @@ PLACEHOLDER_RE = re.compile(r"NN|\{|\}|<|>|\*|\.\.\.|XXX|FOO|BAR")
 
 # Historical corpora: a dated record citing a line that has since moved is an
 # accurate record of its moment, not drift. Excluded from the live corpus.
+#
+# The `review/` clause exempts that directory's dated review records, not its
+# standing guidance: `design/review/CLAUDE.md` describes itself as the live
+# review standard and is live corpus, so a convention file routing a role to a
+# retired mechanism is visible. Directory-wide exclusion hid exactly that. The
+# other undated files in `design/review/` stay excluded until `review`
+# classifies each one's lifecycle — admitting a directory without reading its
+# members is the error this clause is correcting.
 HISTORICAL_RE = re.compile(
-    r"(^|/)(archive|review)/|"          # design/**/archive/, design/review/
+    r"(^|/)archive/|"                   # design/**/archive/, sprints/archive/
+    r"(^|/)review/(?!CLAUDE\.md$)|"     # design/review/ dated records, not its CLAUDE.md
     r"sprint-?\d+|"                     # sprint58-wave2-review.md, sprint-84
     r"-s\d{2,3}\.md$|"                  # audits/frontend-s113.md
+    r"-\d{4}-\d{2}-\d{2}|"              # audits/intrinsics-2026-06-14.md
     r"-\d{8}"                           # typecheck-20260423.md
 )
 
@@ -205,6 +266,17 @@ def looks_like_source_path(raw: str) -> bool:
     if PLACEHOLDER_RE.search(raw):
         return False
     return raw.startswith(SOURCE_ROOTS) or raw.endswith(("CLAUDE.md",))
+
+
+def resolve_citation(raw: str, doc: Path) -> Path:
+    """Citations are repo-relative, except `./` and `../` which are relative to the
+    citing document — the form a markdown link takes. Resolving those against the
+    repository root fabricates a finding: `.github/copilot-instructions.md` links
+    `../CLAUDE.md`, which is the root instruction file, not a path above the repo.
+    """
+    if raw.startswith(("./", "../")):
+        return (doc.parent / raw).resolve()
+    return REPO / raw
 
 
 def check_document(doc: Path, stats: Stats) -> None:
@@ -232,8 +304,13 @@ def check_document(doc: Path, stats: Stats) -> None:
             if not looks_like_source_path(raw_path):
                 continue
             stats.citations += 1
+            if raw_path in LIFECYCLE_PATHS:
+                # Counted so that a citation the tool stopped recognising is
+                # distinguishable from one it deliberately leaves alone.
+                stats.lifecycle += 1
+                continue
             citation = m.group(0)
-            target = REPO / raw_path
+            target = resolve_citation(raw_path, doc)
 
             if not target.exists():
                 if exempt_line:
@@ -314,7 +391,7 @@ def _source_files() -> list[Path]:
     global _source_cache
     if _source_cache is None:
         _source_cache = []
-        for root in SOURCE_ROOTS:
+        for root in SYMBOL_ROOTS:
             base = REPO / root
             if not base.exists():
                 continue
@@ -332,6 +409,8 @@ def collect_docs(explicit: list[str], corpus: str) -> list[Path]:
         for p in REPO.glob(pattern):
             if "target" in p.parts or "/.git/" in str(p):
                 continue
+            if str(p.relative_to(REPO)).startswith(CORPUS_EXCLUDED_ROOTS):
+                continue
             if p.is_file():
                 seen.add(p)
     # FIXMEs are the highest-value corpus: they drive scheduling.
@@ -348,6 +427,37 @@ def collect_docs(explicit: list[str], corpus: str) -> list[Path]:
 def fingerprint(f: Finding) -> str:
     """Stable identity for the ratchet: survives line renumbering in the doc."""
     return f"{f.doc}\t{f.kind}\t{f.detail}"
+
+
+DEFAULT_BASELINE_HEADER = (
+    "# Citation-drift ratchet baseline — scripts/verify-citations.py\n"
+    "# Every line is a KNOWN-STALE citation, tolerated so the check can gate a\n"
+    "# repo with an existing backlog. Entries may be DELETED (when the citation\n"
+    "# is repaired) but must never be ADDED by hand: a new finding is a new\n"
+    "# stale record, and the check exists to stop those landing.\n"
+)
+
+BASELINE_COUNT_LINE = re.compile(r"^#\s*\d+\s+entries\.\s*$")
+
+
+def baseline_header(out: Path) -> str:
+    """The comment block to write above the entries.
+
+    An existing baseline's header is carried forward verbatim, minus its stale
+    entry count. That header is where the ratchet's owner states the policy the
+    regeneration is being performed under — the widening exception is authored
+    there and in few other places — so replacing it with this script's default
+    would delete the rule at the one moment it is being applied.
+    """
+    if not out.exists():
+        return DEFAULT_BASELINE_HEADER
+    kept: list[str] = []
+    for line in out.read_text().splitlines():
+        if not line.startswith("#"):
+            break
+        if not BASELINE_COUNT_LINE.match(line):
+            kept.append(line)
+    return "".join(f"{line}\n" for line in kept) if kept else DEFAULT_BASELINE_HEADER
 
 
 def load_baseline(path: Path) -> set[str]:
@@ -370,25 +480,35 @@ def main() -> int:
                          "backlog — the backlog can only shrink.")
     ap.add_argument("--write-baseline", metavar="FILE",
                     help="record current findings as the accepted backlog and exit 0")
+    ap.add_argument("--list-docs", action="store_true",
+                    help="print the corpus this run would scan, one repo-relative path "
+                         "per line, and exit 0. Membership is otherwise unobservable: a "
+                         "run given explicit PATH arguments bypasses DOC_GLOBS, so a "
+                         "glob can be dropped with every check still green")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     ap.add_argument("--quiet", action="store_true", help="findings only, no summary")
     args = ap.parse_args()
 
+    docs = collect_docs(args.paths, args.corpus)
+
+    if args.list_docs:
+        for doc in docs:
+            try:
+                print(doc.relative_to(REPO))
+            except ValueError:
+                print(doc)
+        return 0
+
     stats = Stats()
-    for doc in collect_docs(args.paths, args.corpus):
+    for doc in docs:
         check_document(doc, stats)
 
     if args.write_baseline:
         out = Path(args.write_baseline)
         prints = sorted({fingerprint(f) for f in stats.findings})
-        out.write_text(
-            "# Citation-drift ratchet baseline — scripts/verify-citations.py\n"
-            "# Every line is a KNOWN-STALE citation, tolerated so the check can gate a\n"
-            "# repo with an existing backlog. Entries may be DELETED (when the citation\n"
-            "# is repaired) but must never be ADDED by hand: a new finding is a new\n"
-            "# stale record, and the check exists to stop those landing.\n"
-            f"# {len(prints)} entries.\n"
-            + "\n".join(prints) + "\n")
+        out.write_text(baseline_header(out)
+                       + f"# {len(prints)} entries.\n"
+                       + "\n".join(prints) + "\n")
         print(f"Wrote {len(prints)} baseline entries to {out}.")
         return 0
 
@@ -409,6 +529,7 @@ def main() -> int:
             "checked": {"paths": stats.checked_paths, "lines": stats.checked_lines,
                         "symbols": stats.checked_symbols},
             "exempt": stats.exempt,
+            "lifecycle": stats.lifecycle,
             "findings": [f.as_dict() for f in stats.findings],
         }, indent=2))
         return 1 if stats.findings else 0
@@ -431,7 +552,8 @@ def main() -> int:
     if not args.quiet:
         print(f"\n{stats.docs} documents, {stats.citations} citations "
               f"({stats.checked_paths} paths, {stats.checked_lines} line refs, "
-              f"{stats.checked_symbols} symbols verified; {stats.exempt} exempt).")
+              f"{stats.checked_symbols} symbols verified; {stats.exempt} exempt, "
+              f"{stats.lifecycle} lifecycle).")
         print(f"{len(stats.findings)} finding(s).")
 
     return 1 if stats.findings else 0

@@ -1,7 +1,7 @@
 ---
 name: test
 description: Author e2e evidence to qa's plan; reduce and commit reproductions
-model: opus[1m]
+model: opus
 effort: high
 ---
 

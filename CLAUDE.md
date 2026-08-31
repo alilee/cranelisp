@@ -61,7 +61,7 @@ Cranelisp dispatches the shared role package pinned as a submodule at `.agents`.
 | `arch` | `design/arch/`, `crates/cranelisp-types/`, every crate's public API | Final arbiter of decisions crossing crate boundaries |
 | `design` | `design/{crate}/` | Narrow-deployed — one crate-shaped surface per invocation |
 | `dev` | `crates/{crate}/src/`, `src/`, `stdlib/`, `exemplar/` | Narrow-deployed |
-| `review` | no directory | Narrow-deployed; execution delegated to the external Codex reviewer, adjudicated here |
+| `review` | no directory | Narrow-deployed; runs in a fresh named subagent that did not author the change |
 | `qa` | `tests/plan/` | Risk, evidence allocation, defect intake and attribution, the traceability band |
 | `test` | test sources, fixtures and helpers under `tests/` | |
 | `audit` | `audits/` | One bounded context per sprint, in rotation |
@@ -74,9 +74,36 @@ Cranelisp dispatches the shared role package pinned as a submodule at `.agents`.
 
 **Narrow deployment.** `design`, `dev` and `review` are dispatched to exactly one crate-shaped surface per invocation, named in the dispatch. Cross-surface work is sequential invocations coordinated by `sprint`; any interface change goes through `arch` first.
 
-**Models.** `.claude/agents/<role>.md` is the executable allocation and this declaration's operative form: `fable` for `arch`, `audit`, `qa`, `review` and `sprint`; `opus[1m]` for the rest. `review` executes on the external Codex reviewer and is adjudicated on `fable`. Any tier change requires user sign-off.
+**Models.** The shared package owns the role-to-tier relationship and `high`
+effort default. The primary harness supplies the `sprint` coordinator and its
+model. For Claude subagents, `arch`, `audit`, `qa` and `review` use `fable`; the
+other dispatched roles use `opus`. Cranelisp's local adapters add repository
+entry context and match that shared allocation. Allocation changes are made in
+the shared package; Cranelisp does not remap it locally.
 
-**In transition.** The role contracts are live at `.agents/skills/` and this declaration describes the target. The `.claude/` wiring still carries the fourteen former commands and agents; connecting it to `.agents` is the last step of the migration. Until then, prefer the package contract where the two disagree.
+**Dispatch.** Use a fresh named subagent in the primary harness when it offers
+the exact shared model and effort; fresh context supplies review independence.
+Otherwise invoke the shared cross-harness transport directly with
+`python3 .agents/tools/claude_role.py <role> <brief-file>`. Never use that
+transport for `sprint`. Both paths implement the definitive shared allocation
+and require no further delegation approval. If the required role agent,
+transport, provider access, authentication or permissions are unavailable,
+stop and escalate the tooling gap to the user rather than substituting another
+model, effort or harness.
+
+When Codex is the coordinator, run the shared wrapper with repository-scoped
+unsandboxed/network-escalated command execution. The default Codex command
+sandbox can start `claude` but leave its provider request to time out with zero
+input and output tokens. After a direct `claude -p` smoke test succeeds, that
+zero-token timeout is a sandbox denial: retry the same wrapper through the
+approved `python3 .agents/tools/claude_role.py` escalation, never by changing
+the allocated role, model or effort.
+
+**Host adapters.** `.claude/skills` resolves the shared contracts directly.
+The twelve checked-in `.claude/agents/` adapters carry Cranelisp's model,
+effort and repository-entry context; `.github/agents/` exposes the same role
+inventory to Copilot. Adapters carry no role authority independent of
+`.agents/skills/`.
 
 ## Delivery
 
@@ -92,6 +119,11 @@ Reimplementation phases A–G are complete; the project is in **Phase H (release
 | 6a/6b User-facing | Realise, then Accept |
 | 7 Close | Accept, then Close |
 
+Every transition between these declared phases requires explicit user
+approval. Completing a phase, resolving a question inside it, accepting the
+product outcome or authorizing one operation does not authorize the next phase;
+`sprints/METHOD.md` §2.1 defines each checkpoint.
+
 Phase 6a/6b existed to carry the user-proxy standing-quality pass. That question now lives inside the `docs` and `training` contracts, which re-ask it against the whole artifact every increment, so the phase schedules the work without having to carry the discipline.
 
 Current state and trajectory:
@@ -101,7 +133,9 @@ Current state and trajectory:
 - `sprints/SPRINT.md` — the active sprint plan (absent between sprints; archived to `sprints/archive/`)
 - `sprints/reimplementation.md` — the original strategy (historical reference)
 
-`arch` is the final arbiter of design decisions that cross crate boundaries. `sprint` orchestrates; the user approves scope, sprint close, and all language-normative questions.
+`arch` is the final arbiter of design decisions that cross crate boundaries.
+`sprint` orchestrates within the approved phase; the user approves every phase
+transition and all language-normative questions.
 
 ## Usability Findings and Defects
 

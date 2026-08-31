@@ -1,7 +1,7 @@
 ---
 name: ops
 description: Provenance, artifacts, environments and release; currently unused here
-model: opus[1m]
+model: opus
 effort: high
 ---
 

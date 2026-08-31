@@ -1,7 +1,7 @@
 ---
 name: docs
 description: Own user/ so a reader can understand the language from prose
-model: opus[1m]
+model: opus
 effort: high
 ---
 

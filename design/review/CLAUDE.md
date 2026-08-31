@@ -18,11 +18,11 @@ assembled per-invocation standard.
 
 ## Where the live review standard actually lives
 
-`/review` carries no persistent owned artefact. The standard a change set is
+The standard a change set is
 reviewed against is assembled per invocation from:
 
-- **`.claude/commands/review.md`** — the `/review` role: workflow, findings
-  classification, quality checks, unsafe-code audit.
+- **`.agents/skills/review/SKILL.md`** — the `review` role contract: workflow,
+  findings classification, quality checks and handoffs.
 - **`design/arch/principles.md`** + **`design/arch/principles/NN-*.md`** — the
   architectural principles, cited by name in findings.
 - **`design/{crate}/{crate}.md`** — the per-crate design intent the change is
@@ -30,7 +30,8 @@ reviewed against is assembled per invocation from:
 - **`crates/{crate}/CLAUDE.md`** (or `src/CLAUDE.md`) — local conventions and
   API gotchas; drift from them is a finding.
 - The crate's committed **`public-api.txt`** baseline + `design/arch/bounded-contexts.md`
-  — the as-designed public surface (facade specs retired S69–S81).
+  — the as-designed public surface for library crates with a tracked baseline
+  (facade specs retired S69–S81).
 - The most recent **`audits/{crate}-*.md`** rolling assessment (`/audit`'s
   whole-context record) as point-in-time context.
 - §"Standing change-set cues" below — live cues that extend the skill def's
@@ -40,7 +41,7 @@ reviewed against is assembled per invocation from:
 
 Unlike the frozen records above, this section is a **live** part of the review
 standard. Walk these cues on every change set, alongside the quality checks in
-`.claude/commands/review.md`.
+`.agents/skills/review/SKILL.md`.
 
 ### Duplication — two distinct lenses
 
@@ -70,10 +71,10 @@ each variant is locally reasonable, and a diff-fixated pass sees a sensible
 patch. The *family* is the duplication, and the family is invisible in any
 one diff unless you ask the question above.
 
-- **Flag toward convergence on one codepath** — finding routed per the normal
-  rules (`target: /dev` for the implementation, `/design` where the design
+- **Flag toward convergence on one codepath** — route the finding per the normal
+  rules (`dev` for the implementation, `design` where the design
   doc licensed the variant).
-- **On a third sibling, escalate to `/arch`** (`target: /arch`) — a third
+- **On a third sibling, escalate to `arch`** — a third
   variant is past the consolidation threshold. Do not wave through "one more
   variant."
 
@@ -93,9 +94,9 @@ lens on the same category:
 
 | Altitude | Skill | Lens |
 |---|---|---|
-| Per-diff | `/review` (this cue) | catch the (N+1)th variant as it is proposed |
-| Rolling coverage | `/qa` | the "coverage by definition variants" standing category (`tests/plan/`) |
-| Whole-context | `/audit` | the Duplication quality attribute (FIXME 0564: mirror + divergent + entry-point + spec-surface facets) — sweeps what per-diff review cannot see |
+| Per-diff | `review` (this cue) | catch the (N+1)th variant as it is proposed |
+| Rolling coverage | `qa` | the "coverage by definition variants" standing category (`tests/plan/`) |
+| Whole-context | `audit` | the Duplication quality attribute (FIXME 0564: mirror + divergent + entry-point + spec-surface facets) — sweeps what per-diff review cannot see |
 
 ## Findings
 

@@ -2,7 +2,7 @@
 
 `/arch` commits to six crate-shaped surfaces plus the cross-crate types crate. Each is a **bounded context**: the stable demarcation of what the crate is responsible for. The triad (`/design`, `/dev`, `/review`) narrow-deploys to one surface per invocation; the surface's bounded context is what the triad reads to do its work.
 
-This file is the canonical home for the per-surface full statements. The skill def (`.claude/commands/arch.md` §The crate-shaped surfaces) carries the one-line summaries and points here. The facade specs (`design/arch/facades/{crate}.md`) cite this file rather than restate the bounded context.
+This file is the canonical home for the per-surface full statements. `sprints/METHOD.md` §1.1 lists the surfaces and points here. Each crate's as-designed public surface is its source rustdoc (facade spec files retired S69–S81 — `CLAUDE.md` §Public-API discipline), which cites this file rather than restating the bounded context.
 
 This document is conceptual. Each section answers: *what is this crate's responsibility, why does the boundary lie here, what crosses it.* It does not specify *how* responsibilities are implemented (per-crate design carries that) or *which decisions bind* the implementation (the boundary itself is the decision; cross-cutting principles live in `principles.md`).
 

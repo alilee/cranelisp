@@ -2,13 +2,13 @@
 
 > **Owner**: `sprint`.
 > **Scope**: what cranelisp adds to the shared role package — the crate-shaped surfaces, the seven-phase increment, and the artifacts each role keeps here.
-> **Out of scope**: role authority, boundaries and handoffs (`.agents/skills/{role}/SKILL.md`); the role declaration, phase mapping, model allocation and filing protocol (root `CLAUDE.md`); architectural rules (`design/arch/`); per-crate design (`design/{crate}/`). This document points to these rather than restating them.
+> **Out of scope**: role authority, boundaries, handoffs and shared model relationships (`.agents/`); the role declaration, phase mapping and filing protocol (root `CLAUDE.md`); architectural rules (`design/arch/`); per-crate design (`design/{crate}/`). This document points to these rather than restating them.
 
 ---
 
 ## 1. Roles here
 
-Root `CLAUDE.md` §Roles is the declaration — which of the package's twelve roles cranelisp dispatches, what each owns here, and the model allocation. This section carries what that declaration is too compact to hold.
+Root `CLAUDE.md` §Roles is the declaration — which of the package's twelve roles cranelisp dispatches, what each owns here, and how the shared allocation is hosted. This section carries what that declaration is too compact to hold.
 
 ### 1.1 The crate-shaped surfaces
 
@@ -25,7 +25,7 @@ The language-facing surfaces — `stdlib/`, `examples/`, `exemplar/`, `user/`, `
 
 Cross-surface work is sequential invocations coordinated by `sprint`. Any interface change goes through `arch`, in the types crate, before per-surface work proceeds.
 
-**The architectural principles are the standard these surfaces are built and reviewed against.** `design/arch/principles.md` is the canonical index, one file per principle beneath it, owned by `arch` and revised only at close. `design`, `dev` and `review` read it and cite by name when a structural choice is governed by one. Until the 2026-08-30 wiring change these were injected into every triad dispatch by an `@` import block in the retired command files; that mechanism is gone, and reaching them is now the role's own first-read obligation. Principles 5 (testability is structural), 6 (complexity has a budget), 8 (no interim implementations) and 12 (design for the full spec surface) recur most often.
+**The architectural principles are the standard these surfaces are built and reviewed against.** `design/arch/principles.md` is the canonical index, one file per principle beneath it, owned by `arch` and revised only at close. `arch`, `design`, `dev` and `review` read it first and cite by name when a structural choice is governed by one. Principles 5 (testability is structural), 6 (complexity has a budget), 8 (no interim implementations) and 12 (design for the full spec surface) recur most often.
 
 ### 1.2 Where content lives
 
@@ -63,16 +63,30 @@ Seven phases. Root `CLAUDE.md` §Delivery maps them onto the ordering the packag
 
 ### 2.1 Phase table
 
-| Phase | Name | Roles | Outputs | Exit gate |
+| Phase | Name | Roles | Outputs | Checkpoint for advancement |
 |---|---|---|---|---|
-| 1 | Scope | `sprint` | `SPRINT.md` DRAFT; disposition of the prior sprint's audit assessment | User approval of scope |
-| 2 | Architecture review | `arch` | Interface changes approved or deferred; scope adjustments | `arch` sign-off on scope |
-| 3 | Design | `spec`, `arch`, `design` per surface, `qa` | Updated spec, interface types, per-surface design, evidence plan | `arch` confirms the interface set is complete; `qa` has enough to allocate; touched design docs current |
-| 4 | Wave organization | `sprint` | Wave breakdown; `SPRINT.md` ACTIVE | Waves written |
-| 5 | Language phase | `test` first, sprint-wide; then per surface `design` → `dev` → `review` | Passing evidence; refined design, implementation, module tests, review findings, approved public-API diffs | `sprint` with the user takes the authoritative judgment of what ships |
-| 6a | User-facing assessment | `docs`, `training`, `dev` on `stdlib/`/`exemplar/`, `spec` on `repl/`, `sprint`; `audit` on the rotation context | Plan for the language-facing surfaces against what shipped; gap filings | Plan agreed |
-| 6b | User-facing action | as 6a | New sprint demo; exemplar, stdlib, examples and docs updates; prior demos replayed green | All planned artifacts delivered; demos play green |
-| 7 | Close | `sprint` with the user | Outcome report; archive; ROADMAP update; filings forward | User approval of close |
+| 1 | Scope | `sprint` | `SPRINT.md` DRAFT; disposition of the prior sprint's audit assessment | User approves scope and advancement to Phase 2 |
+| 2 | Architecture review | `arch` | Interface changes approved or deferred; scope adjustments | `arch` signs off; user approves the result and advancement to Phase 3 |
+| 3 | Design | `spec`, `arch`, `design` per surface, `qa` | Updated spec, interface types, per-surface design, evidence plan | Readiness complete; user approves advancement to Phase 4 |
+| 4 | Wave organization | `sprint` | Wave breakdown; `SPRINT.md` ACTIVE | User approves the waves and advancement to Phase 5 |
+| 5 | Language phase | `test` first, sprint-wide; then per surface `design` → `dev` → `review` | Passing evidence; refined design, implementation, module tests, review findings, approved public-API diffs | User accepts what ships and approves advancement to Phase 6a |
+| 6a | User-facing assessment | `docs`, `training`, `dev` on `stdlib/`/`exemplar/`, `spec` on `repl/`, `sprint`; `audit` on the rotation context | Plan for the language-facing surfaces against what shipped; gap filings | User approves the plan and advancement to Phase 6b |
+| 6b | User-facing action | as 6a | New sprint demo; exemplar, stdlib, examples and docs updates; prior demos replayed green | User approves the delivered artifacts and the exact Phase-7 close operations |
+| 7 | Close | `sprint` with the user | Outcome report; approved archive/commit/ROADMAP/filing operations | Close operations completed as approved; final outcome reported |
+
+No phase advances on an internal role sign-off alone. At each checkpoint,
+`sprint` records the completed outcome and evidence, deviations and unresolved
+decisions, then presents the next phase's exact scope, roles, external
+operations and exit condition. Work for that next phase starts only after the
+user approves the named transition. Approval of a correction, an individual
+operation, product acceptance or continued work inside the current phase does
+not approve a later transition.
+
+QA records each condition as acceptance evidence, a safety fence, a diagnostic
+observer or a maintenance check. Phase checkpoints keep those classes visible:
+an observer or maintenance failure is reported and routed, but it cannot become
+an acceptance gate for unrelated compiler behavior without a new QA
+classification grounded in the governing requirement or design.
 
 Phases 6a/6b schedule the language-facing work. The standing-quality question each of those roles owes — re-asked against the whole artifact rather than the delta — lives in their contracts, not here.
 
@@ -110,7 +124,18 @@ cd <own scratch dir> && CRANELISP_LIB=<repo>/stdlib <repo>/target/debug/cranelis
 
 For the binary surface the package is `cranelisp`; verify `cranelisp-exe-bundle` too when the change touched it. The completion report states before/after warning counts and confirms each gate. This is `dev`'s own responsibility — `review` checks against design intent, not build cleanliness — and handing off with a broken build, a failing test, or new warnings is not a handoff.
 
-**`review` is executed by an external reviewer.** The role runs on Codex for cross-model independence — the reviewer must not share the implementer's blind spots — and the invoked agent acts as **adjudicator**, not reviewer. Compose the brief (scope, plan-of-record paths, the wave's gate criteria, and **test evidence gathered by the adjudicator**, since the reviewer is sandboxed read-only and cannot run cargo); dispatch `scripts/codex-review.sh (--uncommitted | --commit SHA | --base BRANCH) --brief <file> --out <verdict.json>`; then adjudicate. **Every returned finding is a claim, not a fact**: verify it against the code before accepting, file the survivors, and record the verdict plus the reviewer's identity in the dispatch log. Severity may be reclassified with recorded rationale; a blocking finding may never be silently dropped. If the CLI is unavailable, perform the review directly and record the fallback — the gate is never skipped.
+**`review` runs in a fresh named subagent.** Fresh context and non-authorship
+supply the required independence. Run the shared model and effort allocation
+in the primary harness when it is available there, and use the configured
+cross-harness transport otherwise. Give the
+reviewer the exact change set, governing authorities and already-executed test
+evidence, and keep it read-only when the host supports that boundary. Every
+returned finding is a claim: `review` verifies and adjudicates technical
+findings; `sprint` routes each surviving finding to its owner and records the
+reviewer identity and disposition. A
+blocking finding may never be silently dropped. Neither same-harness nor
+cross-harness delegation needs approval beyond the approved phase and role
+work. Missing required dispatch tooling is escalated to the user.
 
 ### 2.4 Deferral
 
@@ -124,24 +149,35 @@ Size is not among these: the package's `sprint` contract already rules that deco
 
 ### 2.5 Mid-sprint adjustment
 
-If `sprint` is invoked mid-sprint: report status; recommend continue, re-scope or close. Scope changes require user sign-off. `sprint` never closes unilaterally.
+If `sprint` is invoked mid-sprint: report the current phase and its approved
+scope; recommend continue within it, re-scope, advance or close. Scope changes
+and every phase transition require user sign-off. `sprint` never advances or
+closes unilaterally.
 
 ### 2.6 Escalation
 
-**Decider**: `sprint`, unilaterally within its orchestration remit. User sign-off only where the method already requires it (a third deferral per §2.4.5; scope changes) — and **all language-normative questions go to the user**, never to a model tier. **Routing beats upgrading**: before raising a dispatch's tier, ask whether the judgment belongs to a role already on the frontier tier, and route it there instead of heating up a production role.
+**Decider**: `sprint`, within the currently approved phase and its orchestration
+remit. User sign-off is required for every phase transition, scope change, a
+third deferral per §2.4.5 and every language-normative question. Routing follows
+the definitive shared role, model and effort allocation. Proposed allocation
+changes belong in the shared package, not in a sprint-local exception.
 
 Triggers, normative:
 
-1. **Recurring failure by symptom.** The same symptom — test name, error signature, crash site — still failing after **two** dispatches at default model makes the third a `qa` **attribution** dispatch: minimal repro plus owner under the control discipline, not a fix. The frame shifts from "fix it" to "attribute it".
+1. **Recurring failure by symptom.** The same symptom — test name, error signature, crash site — still failing after **two** dispatches at the role's shared allocation makes the third a `qa` **attribution** dispatch: minimal repro plus owner under the control discipline, not a fix. The frame shifts from "fix it" to "attribute it".
 2. **Contested or layered attribution.** The discovering role and the symptom's apparent owner disagree, or a fix exposed a second failure → `qa` triage before any further `dev` dispatch.
-3. **Second deferral.** An item at its 2× point (§2.4.5): the resolving dispatch that sprint runs at the frontier tier, or a frontier `qa`/`arch` triage explains structurally why it keeps deferring.
+3. **Second deferral.** An item at its 2× point (§2.4.5): a shared-judgment-tier `qa`/`arch` triage explains structurally why it keeps deferring before the user decides its disposition.
 4. **Review-resistant blockers.** A blocking finding surviving one `dev` fix round → `sprint` chooses: escalated `dev` (genuinely hard to build) or attribution-first (possibly wrongly attributed).
 5. **Design-authority contact.** Work touching a principle, facade or bounded context never escalates in place — it files to `arch`. Spec ambiguity routes to `spec`, which frames it for the user.
 6. **Out-of-rotation audit.** Triggers 1–4 firing repeatedly in one bounded context, or a major arc completing there, pull that context forward in the audit rotation (§2.7). Attribution fixes the instance; the audit assesses the pattern behind repeated instances.
 
-**Recording**: the dispatch log in `SPRINT.md`, per wave — `| role | surface | model | effort | non-default reason |`. Default rows may be batched; every non-default row cites its trigger number. Phase 7 reviews the log — did escalations correlate with the sprint's hard spots? — and that is the feedback loop for revising the allocation in root `CLAUDE.md` §Roles.
+**Recording**: the dispatch log in `SPRINT.md`, per wave — `| role | surface | model | effort | harness |`. Rows may be batched only when all recorded fields match. Phase 7 checks that execution matched the definitive shared allocation and routes any proposed relationship change back to the shared package.
 
-**Dispatch by role agent, never by prose.** "Read the contract and act as X" inside a generic agent bypasses the frontmatter and silently inherits the session model. Model-tier changes need user sign-off; they are a spend decision, the same class as a scope change.
+**Dispatch by a named role agent, never by prose.** The primary harness remains
+the coordinator. Use a fresh named subagent there when it offers the exact
+shared allocation; otherwise use the configured cross-harness transport. Both
+are ordinary dispatch and require no further approval. Escalate missing
+required tooling to the user instead of substituting an allocation.
 
 ### 2.7 Rolling whole-context audit
 
@@ -167,6 +203,9 @@ Assessments are point-in-time records: appended to with acceptance and decline o
 | Code conventions per directory | `CLAUDE.md` per directory | directory-owning role |
 | Evidence plan and coverage process | `tests/plan/` (`PLAN.md` normative) | `qa` |
 | E2e tests, fixtures, helpers | `tests/` | `test` |
+| Repository reference and wiring verifiers | `scripts/verify-*.py` | `test` |
+| Citation-drift ratchet | `scripts/citation-drift-baseline.txt` | `qa` |
+| Host role adapters and dispatch wiring | `.claude/agents/`, `.github/agents/`, `.claude/settings.json` | `sprint` |
 | Unit tests | `crates/{crate}/src/**` under `#[cfg(test)]` | `dev` |
 | Whole-context audit assessments | `audits/{context}-sNNN.md` | `audit` |
 | Delivery method | `sprints/METHOD.md` (this) | `sprint` |

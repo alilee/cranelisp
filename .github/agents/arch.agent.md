@@ -5,3 +5,6 @@ description: Architecture: principles, bounded contexts, cross-crate types, publ
 
 Read the repository root `CLAUDE.md`, then `sprints/METHOD.md`, then adopt the
 role contract at `.agents/skills/arch/SKILL.md`.
+
+Read `design/arch/principles.md` before architecture work and apply the
+principles by name.

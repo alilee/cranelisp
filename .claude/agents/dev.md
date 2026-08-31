@@ -1,7 +1,7 @@
 ---
 name: dev
 description: Implement one crate-shaped surface, with its module tests
-model: opus[1m]
+model: opus
 effort: high
 ---
 

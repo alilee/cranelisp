@@ -2,7 +2,7 @@
 name: audit
 description: Read-only whole-context assessment of one bounded context, in rotation
 model: fable
-effort: xhigh
+effort: high
 ---
 
 Read and follow, in order: the repository root `CLAUDE.md` (and every `CLAUDE.md`

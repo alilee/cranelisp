@@ -10,8 +10,8 @@ runtime involvement**. The historical path that got us here (D40 relocation-to-i
 the §7 FOR-USER-REVIEW proposal) have been **enacted**: the proposal is now the decision, the
 counterpoints are resolved as recorded in §3.5 / §6.
 
-**Owner.** `/arch`. Subsystem-design doc per `.claude/commands/arch.md` §"Target documentation
-set" — cited by `bounded-contexts.md` §3 (backend emits + bakes + discovers), §4b (intrinsics
+**Owner.** `/arch`. Subsystem-design doc (document class per `CLAUDE.md` §"Where a commitment
+manifests") — cited by `bounded-contexts.md` §3 (backend emits + bakes + discovers), §4b (intrinsics
 hosts the bodies + table + guard), and §6 (int does nothing but discovery-deletion). Remains
 referenced while `(trace ...)` is part of the language.
 

@@ -2,14 +2,14 @@
 
 Architecture deliverables for the Cranelisp reimplementation. Owned by `/arch`.
 
-Per `sprints/METHOD.md` §1.4 (three-way content split), this `CLAUDE.md` carries domain-local content only — local conventions, the in-progress Decisions-drain backlog, and pointers to canonical documents. Methodology rules live in `sprints/METHOD.md`; architectural principles live in `principles.md`; skill workflows live in `.claude/commands/arch.md`. **Architectural commitments manifest at their natural home in the permanent set** (facades / BC / principles / sequences); no separate Decision log is authored — see `.claude/commands/arch.md` §"The manifestation-site question".
+Per `sprints/METHOD.md` §1.2 (three-way content split), this `CLAUDE.md` carries domain-local content only — the document inventory, local conventions, and the in-progress Decisions-drain backlog. Role procedure and authority live in the package contract `.agents/skills/arch/SKILL.md`; what `arch` owns here is declared in root `CLAUDE.md` §Roles; methodology in `sprints/METHOD.md`; the principles in `principles.md`. **Architectural commitments manifest at their natural home in the permanent set** (BC / principles / sequences / source rustdoc); no separate Decision log is authored — §Where a commitment manifests.
 
 ## Canonical documents (the target documentation set)
 
 | File | Purpose |
 |---|---|
 | `overview.md` | Bridge document — the newcomer entry point. How the language is realized through the surfaces, tested by `/qa`'s integration suite, embodied in the crates. |
-| `principles.md` | Architectural principles — index. Each Principle is one file at `principles/NN-{slug}.md`. Auto-imported by `.claude/commands/arch.md`. |
+| `principles.md` | Architectural principles — index, and the single carrier of the set; every `arch`/`design`/`dev`/`review` dispatch reads it first (`sprints/METHOD.md` §1.1). Each Principle is one file at `principles/NN-{slug}.md`; authoring procedure in `design/arch/principles/CLAUDE.md`. |
 | `principles/` | Architectural Principles register; one file per Principle; index in `principles.md`. |
 | `bounded-contexts.md` | Per-surface bounded-context full statements (Frontend, Typecheck, Backend, Runtime, Platform, Binary/int, plus types crate). |
 | `facades/{crate}.md` | Per-surface facade specs — as-designed public surface. One file per surface. **ALL NINE RETIRED — no live facade-spec documents remain (int retired S81 W-Retire, FIXME 0298, completing the arc):** `facades/types.md` (S69 Sub 42); `facades/frontend.md` (S70 Phase B group B3-C); `facades/platform.md` (S71 Wave 4); `facades/typecheck.md` (S72 Wave 5); `facades/intrinsics.md` (S74 Wave 3 → BC §4b + source rustdoc); `facades/primitives.md` (S74 Wave 3 → BC §4a + source rustdoc); `facades/backend.md` (S75 Wave 5b → BC §3 + source rustdoc); `facades/backend-cache.md` (S75 Wave 5b → **cache submodule source rustdoc only**, an implementation detail of backend — NOT promoted to a BC entry; no §3a); `facades/int.md` (S81 W-Retire → BC §6 + `design/int/` design docs + `src/` source rustdoc + `src/main.rs` `//!` CLI narrative; a binary has no `public-api.txt` boundary — its conformance gate is the e2e suite). For the crate-shaped library retirees, source rustdoc (crate-root `//!` + per-item `///`) is the canonical surface and cross-surface narrative lives in `bounded-contexts.md` (§7 for types, §1 for frontend, §5 for platform, §2 for typecheck, §4b for intrinsics, §4a for primitives, §3 for backend, §6 for int); for `backend-cache` — backend's persistence half — the canonical home is the cache submodule rustdoc (`crates/cranelisp-backend/src/cache/mod.rs` `//!` + per-submodule `//!` + per-item `///`), with **no** bounded-contexts entry, because the cache is an implementation detail of the backend bounded context, not a context of its own. For `int` — a binary, not a library — the cross-surface narrative + the cadence/handoff/window model live in BC §6, the interior contracts live in `design/int/` + `src/` source rustdoc, and the outside-in CLI contract is the `src/main.rs` `//!` narrative (REPL → `repl/spec.md`; language → `spec/`). |
@@ -35,13 +35,13 @@ Per `sprints/METHOD.md` §1.4 (three-way content split), this `CLAUDE.md` carrie
 | `concreteness-types-first.md` | **WORKING DESIGN (S119 design commission, `/arch`, 2026-07-28)** — the types-first concreteness design: (§1) the I-ABI→**I-EMIT** re-ruling (no polymorphic callable referenced by the emitted tree; `bind`/`race`/`select` re-kind inline, `catch-runtime-error` per-instantiation concrete facades over one uniform body; NC-R re-labelled the backend uniform-realization roster, FIXME 0936); (§2) register row **R-24 RESOLVED** — neither suspected condition declines; the silent no-mint is the collector→mint identity handoff (written-spelling `fq.symbol` at `mono_collect.rs:592` vs the raw storage probe at `monomorphise.rs:1171` rejecting the bare-alias `Import`; differential CLIF experiment; the dotted-minted instance is additionally UNSOUND — A-MINT confirmed from the other direction; FIXME 0935); (§3) the `cranelisp-types` reshape — opaque **`CallableSlot`** witness (private field, `#[serde(transparent)]`) + ONE fallible `SymbolTable::mint_callable_slot` + checked `rebind`; **`CtorState { Template, Concrete{slot} }`** replacing `Constructor`'s mandatory slot; `PrimitiveBody::Extern`/`PlatformEffect` slot retypes; `defined_symbols()` gains the `is_concrete()` conjunct; `heap.rs::ctor_field_types_at` substituting projection; ONE `CACHE_SCHEMA_VERSION` window shared with the ctor tranche + the `CacheStale::NonConcreteSlot` load re-check; sealing `ConcreteType` DECLINED (census-as-enforcement reaffirmed); lenient-view staged retirement; (§4) the per-crate wash plan with source-census sizes; (§5) sprint impact (S119 ships as planned; W4 MEASURE-1b pre-answered); (§6) the 40-row `sprints/concreteness-requirements.md` cross-check; (§7) register corrections incl. the fifth slot-writer (`src/platform.rs:351`); (§3.10–§3.11) the rejected-alternatives register for slot identity — slot-in-`MonoDefnVariant` REJECTED (2026-07-27), the `symbol→slot` register beside/inside `GotTable` REJECTED, the `ModuleEntry`-level kind split DECLINED (P20 kind×field debt conceded; `DefKind`-level field-relocation named as a post-wash successor commission), a `PlatformSlot` index newtype REFUSED (one index space, two allocation authorities, unified by the D2 manifest-order mint), slot-reuse policy pinned (cursor-only, rebind-only carry-forward, freeze-on-retire, no free-record, no infill-by-scan), and ONE adopted amendment **D11**: `UserFnState::NotDetermined { prior_slot: Option<CallableSlot> }` interstage carry retiring typecheck's `redef_slots` stash (rides the S120 wash). Archive trigger: the types change-set + wash land; contracts fold into `module.rs` rustdoc + BC §7 + R11. |
 | `symbol-table-lifecycle.md` | **WORKING DESIGN (S119 clean-sheet commission, `/arch`, 2026-07-27; DECIDES NOTHING — the user disposes of its §9).** The optimal symbol table structure with the entity lifecycle legible in the representation, parse → typecheck → monomorphisation → GOT assignment: three-arm outer resolution layer (`Alias | Ambiguous | Decl`) with facets nested below; ONE callable lifecycle machine (`Declared{prior} | Template | Concrete{slot, realization} | Inline | HostPromised | Broken`) replacing the four fragmented state vocabularies (`UserFnState`/`CtorState`/`PrimitiveBody`/raw platform slot); origin metadata orthogonal to state; `Realization` naming every slot's populator (`Body`/`ExternShim`/`Dll`/`FacadeOf`); slot authority re-derived from claims ∪ a table-side `retired_slots` tombstone record (stored `next_got_slot` + the `platform.rs:351` cursor write delete); typed `MonoDemand`/`InstanceLink` template↔instance identity (the 0935 structural close); private `symbols` map with move-enforcing funnels. Absorbs the two user corrections re-opening `concreteness-types-first.md` §3.11 in part (entry-scan infill conceded with the tombstone answer; split decline re-weighed churn-free). §6 the impossibility table; §7 the honest residual ledger; §9 recommends RE-TARGETING the S120 flip to land the unified machine once — flip HELD pending the user. Archive trigger: user disposition; adopted contracts fold into `module.rs` rustdoc + BC §7 + `interfaces.md`. |
 | `fixmes/` | FIXMEs register; one file per FIXME (`design/arch/fixmes/NNNN-name.md`). |
-| `sequences/` | Current target sequence diagrams (`.mmd` + rendered `.svg`). |
+| `sequences/` | Current target sequence diagrams (`.mmd` + rendered `.svg`) — normative peers of `bounded-contexts.md`, kept in lockstep with the facade signatures they draw; index and conventions in `sequences/README.md`. |
 
 ## Sorting buckets
 
 | Directory | Purpose |
 |---|---|
-| `decisions/` | **Draining.** Existing Decision files migrate into the facade / BC / principle section where they manifest, then delete. No new Decisions authored — see `.claude/commands/arch.md` §"No separate Decision log". When the directory is empty it is removed. |
+| `decisions/` | **Draining.** Existing Decision files migrate into the facade / BC / principle section where they manifest, then delete. No new Decisions authored — §Where a commitment manifests. When the directory is empty it is removed. |
 | `legacy/decisions/` | **Draining.** Same as above for outcome-fully-embodied Decisions kept for narrative continuity. Same disposition: migrate substance into the manifestation site (if not already there), delete the file. |
 | `legacy/` | Documents not part of the approved configuration but kept for reference. `/arch` and the per-crate `/design` skills pull back content (or re-author from it) when needed; otherwise files here are triaged into top-level (if they prove still load-bearing) or down to `archive/` (if confirmed superseded). Not a permanent home. |
 | `archive/` | Frozen historical content — superseded by canonical work, kept for context only. See "## Archive" below. |
@@ -71,7 +71,7 @@ Historical pipeline designs (v1, v2, v3) and superseded migration artefacts. Ref
 
 ## Decisions drain backlog
 
-**This register is being drained.** Per `.claude/commands/arch.md` §"The manifestation-site question", each Decision's substance migrates into the facade / BC / principles section where a reader expects to find it. The Decision file deletes once migrated. New architectural commitments are NOT filed here; they go directly to their manifestation site.
+**This register is being drained.** Per §Where a commitment manifests, each Decision's substance migrates into the facade / BC / principles section where a reader expects to find it. The Decision file deletes once migrated. New architectural commitments are NOT filed here; they go directly to their manifestation site.
 
 **Per-Decision target identification format:** As each Decision is queued for drain, mark it `[→ {manifestation-site}]` inline. Then in a follow-up fire: migrate substance, sweep cross-references, delete the file, strike the line here. When the section hits zero lines it is removed.
 
@@ -94,21 +94,40 @@ Current backlog:
 
 Legacy Decisions (outcome fully embodied in architecture; preserved in `legacy/decisions/` for narrative continuity) — `0001`–`0006`, `0008`–`0009`, `0012`–`0013`, `0016`, `0018`–`0019`, `0021`–`0026`, `0029`, `0032`–`0034`, `0036`–`0038`. Retracted/superseded Decisions deleted (rely on git for history): `0007`, `0014` (retracted by 43; commit `754d525`), `0015` (reframed by 43; commit `754d525`), `0017`, `0020`, `0028`, `0031` (substance fully amended into 0041 at Sprint 64; Cranelift `Memory::drop` evidence + safety invariant + callback support forward commitment relocated to 0041 at S69 Phase 3 — per-symbol JIT cardinality is the operative model; D31's stale "per batch" title was a confusion source), `0039` (commitment fully cascaded into `repl/spec.md` §15.4 + `facades/types.md` §"Symbol table" + `cranelisp-types/src/module.rs` at S69 Phase 3 — per-entry `seq: u64` + `next_seq` + `StructuralDeclEntry` upgrade; D39's `defn_order: Vec<Symbol>` shape obsoleted).
 
+## Where a commitment manifests
+
+Before any edit lands, ask: *if this commitment, correction or invariant were already settled, where in the permanent set would a reader expect to find it?* That location is the target; update it, and do not create an alternative home (a notes file, a side-table, a separate rationale document). Interim artefacts — audit findings, working designs, walk-through logs — resolve into the permanent set or die.
+
+The permanent set:
+
+- source rustdoc (crate-root `//!` + per-item `///`) — the per-surface as-designed public surface, its intent and rationale, and load-bearing rejected alternatives;
+- `bounded-contexts.md` — cross-surface narrative and commitments: why these surfaces exist as separate surfaces, what crosses each boundary;
+- `principles.md` + `principles/NN-*.md` — cross-cutting axioms;
+- `sequences/*.mmd` — dynamic cross-crate interaction;
+- `crates/cranelisp-types/src/*.rs` — the code IS the contract for cross-crate types; `interfaces.md` is its narrative companion;
+- `overview.md` — the newcomer bridge.
+
+**No separate Decision log.** The commitment IS the BC / principle / sequence / rustdoc prose. `decisions/` and `legacy/decisions/` are draining (§Decisions drain backlog): when an edit touches a section an existing Decision grounds, fold the substance in and delete the file in the same change-set. Process and sequencing content with no manifestation site ("G8 lands before G9") is not preserved here — sprint archives keep the temporal record.
+
+**Consistency is one change-set.** The canonical set — the document table above, source rustdoc and `sequences/` — is swept as a whole after every edit to any member: every cross-reference still resolves; every document linking into the edited region still reads true; the relevant BC statement and any sequence diagram drawing the changed surface match; `overview.md`'s high-level claims still hold. A gap found in the sweep is fixed in the same change-set; only a gap that is a sprint's work in itself is filed, and never left silent. The obligation holds regardless of dispatch scope — a "just edit X" brief still requires the sweep.
+
+**Document classes and the archive rule.** Canonical documents are maintained ongoing. Working documents (an in-flight migration or convergence) and subsystem designs (one feature below the overview's altitude, cited from it) each carry an explicit archive trigger in their table entry. A document moves to `archive/` when all three hold: the work it describes is closed (delivered, deferred indefinitely, or superseded); its decisions, BC impacts and principles have been folded into the canonical set; and the canonical set cites the lesson directly, or cites `archive/{file}.md` where the prose itself stays valuable. `arch` triages the directory at sprint open and at the close of any working-doc milestone; a document lingering past its trigger is accretion, and accretion is a defect. `archive/` is never emptied — git is the deeper record, the directory the navigable one.
+
 ## Cross-References
 
-- `principles.md` — architectural principles (index; per-Principle bodies in `principles/NN-*.md`; auto-imported by `.claude/commands/arch.md`)
+- `principles.md` — architectural principles (index; per-Principle bodies in `principles/NN-*.md`)
 - `bounded-contexts.md` — per-surface full statements
 - `facades/` — **all facade specs retired** (S69–S81); the directory holds only S69/S70 facade-audit records. The as-designed public surface now lives in per-item source rustdoc; cross-surface narrative lives in `bounded-contexts.md`.
 - `overview.md` — newcomer entry point bridging spec ↔ tests ↔ design ↔ code
 - `sprints/METHOD.md` — methodology
-- `.claude/commands/arch.md` — `/arch` skill definition (the workflow layer)
+- `.agents/skills/arch/SKILL.md` — the `arch` role contract (procedure, authority, handoffs); root `CLAUDE.md` §Roles — what `arch` owns here
 - `sprints/reimplementation.md` — full reimplementation strategy (historical)
 - `src/CLAUDE.md` — cross-cutting source conventions (error handling, code structure, naming)
 - `archive/pipeline-convergence-review.md` — dual-pipeline defect analysis (origin of principles 11–13)
 
 ## Architectural Principles
 
-Extracted to `principles.md` (S63). That file is the single canonical home and is auto-imported by `.claude/commands/arch.md`. Cite principles by name from `principles.md`; do not re-summarise the list here.
+Extracted to `principles.md` (S63). That file is the single canonical home; cite principles by name from it and do not re-summarise the list here.
 
 ## String Newtypes
 
@@ -136,14 +155,35 @@ All newtypes are generated via `string_newtype!()` which derives the standard tr
 
 - All types in `cranelisp-types` derive `Serialize` + `Deserialize` for module caching
 
+## Public-API discipline
+
+`pub(crate)` is the default in every crate; each `pub` is a deliberate act whose rustdoc says why the item must cross the boundary. Both directions of edge change need `arch` approval before they land — a crate exposing a new public item, and a crate consuming a new import from another. Types and traits that cross crate boundaries are authored only in `crates/cranelisp-types/` (Principles 13, 15; `interfaces.md` is the narrative); a consumer needing a new or reshaped one files to `arch`.
+
+The as-designed surface record is the source rustdoc + `bounded-contexts.md` — facade *spec* files are retired (S69–S81). The record is target-stating, and each triad role holds one side of it:
+
+- `design` reads the crate's rustdoc + its BC section at the start of every invocation and files to `arch` when its design needs a new public item;
+- `dev` implements only what the record authorizes and files to `arch` to extend it — never publishing silently; internal items stay `pub(crate)`;
+- `review` compares as-built to as-designed on every change-set: walks the surface against rustdoc + BC and reads the `public-api.txt` diff; over- and under-exposure are the same defect;
+- `arch` settles a sprint's anticipated surface changes in Phase 3 and re-reads the record for currency at every Phase 2.
+
+## Facade convention — `lib.rs` mechanics
+
+The facade is `lib.rs`; there is no separate `facade.rs`. `arch` approves every change to it and to its crate-root `//!`.
+
+1. **Crate-root `//!`** states the bounded context in 1–3 paragraphs and cites `bounded-contexts.md` for the canonical statement.
+2. **Re-exports only** — `lib.rs` carries no logic; it `pub use`s from `pub(crate)` modules. No re-export of `cranelisp-types` items (Principle 15 — facade types live with their behavior; consumers import each crate they need). External-audience exception: a facade whose audience would not otherwise depend on `cranelisp-types` (`cranelisp-platform`, for out-of-tree DLL authors) may re-export the upstream items its API uses, justified inline in the rustdoc.
+3. **`#[non_exhaustive]` on every public DTO**, so adding fields is non-breaking — except `#[repr(C)]` / `#[repr(transparent)]` layout contracts, governed by an explicit `ABI_VERSION` bump (Principle 14), and the closed sums whose exhaustive consumer matches are the safety feature (`crates/cranelisp-types/CLAUDE.md` §Public-surface mechanics names them).
+4. **Sealed traits** (private supertrait) on every trait the types crate publishes for cross-crate impls — `CodeStore`, `LinkerStore`; only `arch` extends.
+5. **`crates/{crate}/public-api.txt`** is the tracked baseline; any diff needs `arch` approval (§Baseline-diff discipline).
+
 ## Baseline-diff discipline (Sprint 67 close)
 
-The S67 edge-settlement sprint established `cargo-public-api` baselines (`crates/cranelisp-{crate}/public-api.txt`) as the frozen contract at every crate edge. Future edge changes — anything that touches a crate's `public-api.txt` baseline — must, in the SAME change-set:
+The S67 edge-settlement sprint established `cargo-public-api` baselines (`crates/cranelisp-{crate}/public-api.txt`) as the frozen contract for the seven library crates enumerated by `tests/public_api_relocations.rs::crates_with_baselines`. The binary `cranelisp-exe-bundle` has no such baseline. Future edge changes — anything that touches a tracked crate's `public-api.txt` baseline — must, in the SAME change-set:
 
 1. **Regenerate** the affected crate's `public-api.txt` via the canonical command `cargo public-api --omit blanket-impls,auto-derived-impls -p <crate> > crates/<crate>/public-api.txt` — mechanical and reproducible. The `--omit blanket-impls,auto-derived-impls` flags strip auto-generated noise (`::into`/`::borrow`/`::from`/`::clone`/`::Owned = T`/Debug etc.) that carries no semver signal; auto-trait impls (`impl Send/Sync/Freeze/Unpin/RefUnwindSafe for ...`) are deliberately KEPT because they are a real semver signal (e.g. a `Mutex` field flipping a type to `!Freeze`/`!Sync` is exactly the regression the baseline diff must catch).
 2. **Update** the canonical surface record for each added/changed/removed item. All `facades/{crate}.md` specs are retired (S69–S81, `int` last per line 15); the canonical surface is now the source rustdoc: per-item `///` + crate-root `//!` name the boundary, and the cross-surface narrative + invariants live in `bounded-contexts.md` (the cache submodule's surface lives in `crates/cranelisp-backend/src/cache/` rustdoc — it has no facade and no BC entry, being an implementation detail of backend).
 3. **Include the diff** in the commit, side-by-side with the source change that produced it. Reviewers (`/review`, the user) read the baseline diff alongside the facade diff to assess whether the change is a legitimate edge evolution or accidental surface leakage.
 
-The facade compliance test scaffolded in S67 Wave 0 (`/qa`) asserts that every pub-api line in the baseline is named in the corresponding facade (or marked internal-but-exposed with rationale). Skipping the facade update breaks the test; skipping the baseline regeneration breaks the next baseline-diff check at PR time. The two-update discipline is the durable enforcement mechanism — no edge change is "done" until both files have caught up.
+The mechanical guard on the first update is `tests/public_api_relocations.rs`: it diffs each enumerated library crate's live `cargo public-api` output against the committed baseline and fails on drift (or on the tool being absent — it does not skip). `tests/facade_compliance.rs` is a tombstone since S75 W5c — no facade spec files remain to comply with — and checks nothing. The second update has no mechanical guard: rustdoc currency is `review`'s reading of the baseline diff beside the source diff, and that reading is the named falsifier. No edge change is done until both files have caught up.
 
-Skill responsibility split: `/dev` (per crate) regenerates the baseline as part of the implementing change-set; `/design` (per crate) updates the canonical surface record (source rustdoc + `bounded-contexts.md`) to match; `/review` confirms both are present in the same diff at PR time.
+Responsibility split: `dev` (per crate) regenerates the baseline as part of the implementing change-set; `design` (per crate) updates the canonical surface record (source rustdoc + `bounded-contexts.md`) to match; `review` confirms both are present in the same diff.

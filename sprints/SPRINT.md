@@ -1,8 +1,10 @@
 # Sprint 120: FIXME 0917 provenance correction
 
-**Status**: USER ACCEPTED — the user accepted the bounded 0917 correction on
-2026-08-31 after independent review and final QA judgment. Commit, archive and
-formal closure remain separate, unauthorized actions.
+**Status**: PHASE 7 CLOSE — the user approved advancement on 2026-08-31 with
+the exact shared-package commit/push, root integration commit and archive/
+roadmap close operations. The bounded 0917 correction is checkpointed at
+`cbb3be9e`; Phase 6b host alignment was independently reviewed and judged
+adequate by QA with no blocking or required finding.
 
 **Goal**: Correct backend value-provenance classification so a match arm that
 returns a nullary constructor beside a freshly boxed arm does not strand the
@@ -42,6 +44,39 @@ A request to cross a crate boundary, change semantics, alter independent
 acceptance evidence, recapture CLIF, or absorb another failure stops the sprint
 and returns to the user for a scope decision.
 
+## Approved post-acceptance Phase 6 scope extension
+
+Before close, align Cranelisp's host wiring with the definitive shared
+`se-agentic` skill/model/effort configuration and repair the records and gates
+reviewed alongside it. This user-approved extension supersedes only the earlier
+exclusion of the rejected shared-role integration proof; the compiler and
+language exclusions above remain in force.
+
+Included:
+
+- correct remaining shared-package adapter, dispatch-tooling and consumer
+  guidance findings, including the network-sandbox execution requirement;
+- remove obsolete Codex review routing and align host adapter ownership and
+  coordinator wording;
+- make the role-wiring gate detect shared allocation and architectural
+  principle first-read drift;
+- preserve ACT-0946's ruling provenance before any later deletion;
+- repair the stale QA checkpoint, citation-check ownership contradiction and
+  live review document hidden by the historical-corpus filter;
+- retain the reviewed architecture/spec repairs and supported ACT-0948/0949
+  dispositions;
+- run affected gates and obtain independent Fable review.
+
+Excluded:
+
+- any further compiler behavior, language, public-API or exemplar change;
+- resolving ACT-0950 in this increment;
+- root commit, archive, publication or formal close before a fresh user
+  checkpoint.
+
+Phase 6b exits when no blocking or required review finding remains and the
+exact commit decomposition is returned to the user for separate approval.
+
 ## Acceptance
 
 1. The two existing `nullary_arm_beside_boxed_arm_0917` run/link cells read an
@@ -72,6 +107,9 @@ result may create separate QA intake, but neither may shape, block or reopen the
 | 3R | `test` | Land the post-fix reduced compiler golden without touching exemplar evidence | complete; deterministic temporary capture added only entry 10 |
 | 4 | `qa` | Judge final adequacy from focused, compiler-focused CLIF and full-suite evidence; classify exemplar observations separately | complete; recommends acceptance with no blocking or required finding |
 | 5 | `sprint` + user | Accept, then close or return a bounded correction | accepted; closure not yet authorized |
+| 6b-A | `review`, `arch`, `qa` | Assess the retained host-alignment change set and settle ownership, transport, provenance and evidence repairs | complete; required repairs allocated |
+| 6b-B | `dev`, `test`, `qa`, `sprint` | Repair shared dispatch tooling, host wiring, standing records and the two repository maintenance gates | complete; focused gates green |
+| 6b-C | `review`, then `qa` | Independently inspect the final alignment delivery and judge Phase 6b adequacy | complete; no blocking or required finding remains |
 
 ## Dispatch log
 
@@ -91,6 +129,15 @@ result may create separate QA intake, but neither may shape, block or reopen the
 | 3 | `design` | finding-scoped acceptance wording | primary Codex subagent | inherited | compiler acceptance separated from downstream exemplar observation |
 | 3R | `test` | post-fix compiler-focused CLIF entry | primary Codex subagent | inherited | entry 10 captured twice identically and wired; no existing golden changed |
 | 4 | `qa` | final 0917 adequacy judgment | primary Codex subagent | inherited | recommends user acceptance; no blocking or required finding |
+| 6b-A | `review` ×3 | host wiring; architecture/spec rehoming; citation provenance | Claude `claude-fable-5` | high | required repairs and advisories identified; no compiler or language change requested |
+| 6b-A | `arch` | shared adapter, transport and telemetry decisions | Claude `claude-fable-5` | high | definitive shared-package repair shape established |
+| 6b-A | `qa` | host-wiring and citation evidence allocation | Claude `claude-fable-5` | high | W6/W7, C8 and provenance conditions allocated as maintenance checks |
+| 6b-B | `dev` | shared `.agents` dispatch tooling | Claude `claude-opus-5` | high | implementation and package tests complete; no allocation changed |
+| 6b-B | `test` | host wiring and citation gates | Claude `claude-opus-5` | high | W6/C8 and header preservation delivered; surfaced stale QA authority and omitted W7 |
+| 6b-B | `qa` | authority/provenance reconciliation | Claude `claude-fable-5` | high | W7 settled from shared carriers; citation gate returned to zero |
+| 6b-B | `test` | W7 allocation parity | Claude `claude-opus-5` | high | 12 shared/local pairs measured; planted remap detected under W7 |
+| 6b-C | `review` | integrated shared-package and host delta | Claude `claude-fable-5` | high | no blocker; one required stale QA-record finding routed; one advisory disproved by the wrapper's structural sprint refusal |
+| 6b-C | `qa` | record repair and final adequacy | Claude `claude-fable-5` | high | required finding resolved; no blocking or required finding remains |
 
 ## Evidence log
 
@@ -173,6 +220,40 @@ Wave-0 readiness:
 - The user accepted the bounded FIXME 0917 correction on 2026-08-31. This
   records product acceptance only; no commit, archive, publication or formal
   sprint closure was authorized by that answer.
-
-The final entry will record exact commands, results, changed paths, review
-findings, full-suite carry comparison and residual risk.
+- Phase 6b aligned the host to the shared package without changing compiler or
+  language behavior. The obsolete Codex review launcher and schema are removed;
+  the primary harness remains coordinator; local Claude adapters match the
+  shared package's model/effort frontmatter; the wrapper records truthful
+  terminal outcomes; and the repository gates now measure principle
+  reachability, allocation parity and the live review standing document.
+- Focused Phase 6b evidence on the integrated tree: shared package suites
+  20/20 and 10/10; role-wiring/citation binaries 9/9; direct wiring check 12
+  roles, 4 first-read roles, 12 + 12 host adapters, 12 allocation pairs, 2
+  composed skills and 26 Principles with zero findings; final live citation
+  corpus 466 documents / 8,107 citations / zero findings.
+- The first fresh full-suite census produced 5,681 passed / 19 failed / 1
+  skipped because
+  `nullary_return_dispatch_method_only_import_no_codegen_leak` failed once.
+  The user requested a retry; the direct cell then passed and a complete second
+  census produced **5,700 run / 5,682 passed / 18 failed / 1 skipped in
+  167.8 s**. Both 0917 run/link cells pass. The stable 18 REDs are the carried
+  non-0917 compiler defect set; Phase 6b introduced no compiler-source change.
+- Final independent review found no defect in the delivered wiring, tooling,
+  gates or standing documents. Its one required finding was stale package-side
+  status in `tests/plan/s120-evidence-delta.md`; QA verified the shared sources
+  first and repaired that record. The review's advisory that the wrapper did
+  not refuse `sprint` was disproved by
+  `.agents/tools/claude_role.py::role_agent` and
+  `test_sprint_refuses_before_provider_launch`.
+- Final QA judged Phase 6b evidence adequate with no blocking or required
+  finding. Carries are the three package refusal-coverage gaps recorded in the
+  evidence delta, lifecycle classification of the remaining undated
+  `design/review/` files, and ACT-0950. They do not authorize work in this
+  increment. Phase 7 begins only if the user approves the exact close
+  operations presented at this checkpoint.
+- The user approved the exact Phase 7 operations on 2026-08-31. The shared
+  package delta was committed as `76f6432` (`Fix role dispatch outcome
+  accounting`), its 20/20 and 10/10 suites passed against the committed tree,
+  and `se-agentic` `origin/main` was fast-forwarded from `ed26b4c` to
+  `76f6432`. The `.agents` worktree is clean and synchronized. No Cranelisp
+  remote operation was authorized or performed.

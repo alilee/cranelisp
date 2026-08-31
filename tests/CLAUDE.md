@@ -20,6 +20,15 @@ Cranelisp tests fall into exactly two tiers:
 2. **Unit tests** — `crates/{crate}/src/` `#[cfg(test)]` modules, authored by
    `/dev` alongside the implementation.
 
+Both tiers observe the *compiler*. A third, small and closed category observes
+the **repository** instead — the standing gates that make root `CLAUDE.md`
+§Assurance's mechanisms run on every `cargo nextest run` rather than when
+someone remembers (`citation_drift.rs`, `role_wiring.rs`). They spawn a
+stdlib-only checker under `scripts/`, take no position on language behaviour,
+and trace to `CLAUDE.md` rather than to a `plan/PLAN.md` row. Each carries its
+own detection proof against planted faults in the same file, because a gate that
+cannot fire is indistinguishable from one that finds nothing.
+
 There is **no middle integration tier.** Tests do NOT construct `Sess`,
 `SharedState`, `SymbolTable`, or any internal session primitive. If a feature
 cannot be expressed e2e, that is a gap in the binary's testability surface —

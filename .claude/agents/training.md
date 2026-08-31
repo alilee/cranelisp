@@ -1,7 +1,7 @@
 ---
 name: training
 description: Own examples/ as an ordered learning sequence
-model: opus[1m]
+model: opus
 effort: high
 ---
 
