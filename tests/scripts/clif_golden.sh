@@ -38,6 +38,7 @@ ENTRIES=(
   "07_trait_dispatch:$BASE/corpus/07_trait_dispatch.cl"
   "08_adt_in_vec_projection:$BASE/corpus/08_adt_in_vec_projection.cl"
   "09_parbind_launch:$BASE/corpus/09_parbind_launch.cl"
+  "10_nullary_arm_beside_boxed_arm:$BASE/corpus/10_nullary_arm_beside_boxed_arm.cl"
   "f1_machinery:$S99/f1_machinery.cl"
   "f2_contention:$S99/f2_contention.cl"
   "f3_inverted_search:$S99/f3_inverted_search.cl"

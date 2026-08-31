@@ -93,7 +93,10 @@ const CONTRACT: &str = "a match whose arms mix a nullary constructor with a \
     does — the nullary arm is not even taken (FIXME 0917)";
 
 // spec: spec/12-runtime.md §12.3.1 — unreachable heap ownership is released.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/fn_compiler.rs::protect_return_value found=S118 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value found=S118 owner=/dev
+//   — the locus token cited `fn_compiler.rs` at filing; the method was never
+//   defined there (FIXME 0917's header carries the `git log -S` proof), so this
+//   is a factual correction of the citation, not a move of the seam.
 #[test]
 fn nullary_arm_beside_boxed_arm_frees_its_loop_under_run() {
     MarginalPair::new(
@@ -111,7 +114,10 @@ fn nullary_arm_beside_boxed_arm_frees_its_loop_under_run() {
 // toggles, so a divergence here would be a NEW finding (mode divergence) on top
 // of 0917, not a duplicate of the cell above.
 // spec: spec/12-runtime.md §12.3.1 — unreachable heap ownership is released.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/fn_compiler.rs::protect_return_value found=S118 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value found=S118 owner=/dev
+//   — the locus token cited `fn_compiler.rs` at filing; the method was never
+//   defined there (FIXME 0917's header carries the `git log -S` proof), so this
+//   is a factual correction of the citation, not a move of the seam.
 #[test]
 fn nullary_arm_beside_boxed_arm_frees_its_loop_under_link() {
     MarginalPair::new(

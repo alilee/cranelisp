@@ -1051,6 +1051,16 @@ counts via `CRANELISP_ALLOC_PARITY_DUMP`).
 
 #### 11.8.1 FIXME 0917 — ACCEPTED and ATTRIBUTED: backend, unbalanced guarded protect inc at the match-result return seam
 
+> **Locus correction (S120 W1, `/qa`):** this section originally placed
+> `protect_return_value` in `fn_compiler.rs`. The method is defined at
+> `crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value`
+> (in `impl FnCompiler`), and FIXME 0917's header carries the `git log -S`
+> proof it was **never** in `fn_compiler.rs` — a factual citation repair, not
+> a seam move (`value_provenance` and `is_fresh_construction` ARE
+> `fn_compiler.rs`'s; only the protect method was mis-placed). The wrong
+> tokens in this section and §11.8.6 item 1 are corrected in place so the
+> stale locus is not re-authored into new `// defect:` lines.
+
 `/port`'s repro reproduces exactly at HEAD (subject 4406/4, control
 4406/4406). The discriminating CLIF probe settles the
 backend-vs-typecheck-summary question **in favour of backend**, and localizes
@@ -1069,7 +1079,7 @@ the mechanism to one instruction:
   its one count, and the whole 4-object tree strands at rc=1 — slope exactly
   4/iteration, deallocs constant. Control's `step` (every arm a boxed
   construction) emits NO protect inc at the same seam.
-- **Mechanism:** `fn_compiler.rs::protect_return_value` is licensed by the
+- **Mechanism:** `rc_emission.rs::protect_return_value` is licensed by the
   `value_provenance`/`is_fresh_construction` join ("fresh iff EVERY arm is
   fresh"). A **nullary `ConstrADT` arm classifies non-Fresh**, so one `None`
   arm — never taken at runtime — flips the whole match result to
@@ -1081,8 +1091,9 @@ the mechanism to one instruction:
   hereby refined: the guard's SKIP direction is fine; the guarded INC is the
   leak.
 - **Attribution:** `cranelisp-backend`,
-  `fn_compiler.rs::{value_provenance, is_fresh_construction,
-  protect_return_value}` — the nullary-`ConstrADT` classification in the
+  `fn_compiler.rs::{value_provenance, is_fresh_construction}` +
+  `rc_emission.rs::protect_return_value` — the nullary-`ConstrADT`
+  classification in the
   provenance lattice (a bare tag mints no box and can alias nothing; it should
   join as Fresh, or protect licensing must require a genuinely aliasable arm).
   Class `rc-miscount`, leak polarity, concrete types throughout — this is NOT
@@ -1100,7 +1111,7 @@ moves emission but zero runtime blocks) and by the 0917 reduction (100% of the
 is re-attributed to **FIXME 0917**; it is expected to flip when 0917's fix
 lands and is **NOT** 0903's acceptance cell (0903's addendum amended
 accordingly). `/testing` re-points the cell's `// defect:` line
-(locus → `fn_compiler.rs::protect_return_value`, FIXME 0917, this section) in
+(locus → `rc_emission.rs::protect_return_value`, FIXME 0917, this section) in
 the close batch. The `f4_sudoku::user::Grid.cells` golden re-baseline stays
 0903's own (static) witness, exactly as the 0903 addendum now records.
 
@@ -1208,7 +1219,7 @@ Baseline: the W8-certified 19 RED (16 named §11.7 + 0910 ×2 + 0911).
 
 | # | Item | Cells | Color |
 |---|---|---|---|
-| 1 | **0917 pair** — new repro file; marginal subject/control pair (control differs only in the arms' returned ctors), PrimitivesOnly, exact marginal balance; `--run --no-cache` face + `--link` face (the two verified toggles); `// spec: spec/12-runtime.md §12.3.1`; `// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/fn_compiler.rs::protect_return_value found=S118 owner=/dev` | 2 | **RED ×2** (control exactness embedded in the pair; a separate control cell, if `/testing` prefers one, is GREEN) |
+| 1 | **0917 pair** — new repro file; marginal subject/control pair (control differs only in the arms' returned ctors), PrimitivesOnly, exact marginal balance; `--run --no-cache` face + `--link` face (the two verified toggles); `// spec: spec/12-runtime.md §12.3.1`; `// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value found=S118 owner=/dev` | 2 | **RED ×2** (control exactness embedded in the pair; a separate control cell, if `/testing` prefers one, is GREEN) |
 | 2 | **Cell #21 re-point** — `exemplar_ownership_residue_s116.rs` comment/`// defect:` edit onto 0917 + §11.8.1 (locus `protect_return_value`; the 0903-family prose removed) | 0 | no change (stays RED, carry #21, now 0917-attributed) |
 | 3 | **0875 replacement** — standing exemplar `--link`-then-run parity cell: fresh scratch copy of `exemplar/*.cl`, no cache, `--link` the entry, run the produced executable, assert exit 0 + stdout byte-identical to `--run` of the same tree; ordinary coverage cell (no `// defect:` — nothing attributed was ever reproduced) | 1 | **GREEN** |
 | 4 | **0913 marginal cell** — REPL-children pair, N identical `(Err "boom")` turns, control differs ONLY in the `:(Result String String)` annotation; instrument = exit counters via `CRANELISP_ALLOC_PARITY_DUMP` (NOT `/mem`, per 0914); assert exact marginal 0; `// spec: spec/12-runtime.md §12.3.1` (+ result-owner design cite); `// defect: class=rc-miscount locus=cranelisp-typecheck::MonoExpr::lenient_from_expr found=S118 owner=/dev` | 1 | **RED** (today: subject +2N allocs/+0 deallocs vs control balanced, exact) |

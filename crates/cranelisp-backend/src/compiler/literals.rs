@@ -12,6 +12,7 @@ use cranelisp_types::{
 };
 
 use super::FnCompiler;
+use super::context::CtorValueShape;
 use crate::heap::{self, HeapClosure};
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
@@ -267,15 +268,18 @@ where
     /// §1.1.2), NO name resolution / chain-follow. Returns the tag iff the fetched
     /// entry is a fieldless (nullary) `DefKind::Constructor`. `None` carrier (a
     /// non-ctor value ref) ⇒ `None`.
+    ///
+    /// The fieldless test is [`CtorMeta::value_shape`] and nothing else, so this
+    /// emission and `fn_compiler::value_provenance`'s verdict about what it
+    /// carries cannot disagree (FIXME 0917, §6.2.1).
     pub(crate) fn nullary_constructor_tag(
         &self,
         resolved_target: Option<&FQSymbol>,
     ) -> Option<usize> {
         let (_fqtn, ctor_info) = self.ctx.ctor_meta_at(resolved_target?)?;
-        if ctor_info.fields.is_empty() {
-            Some(ctor_info.tag)
-        } else {
-            None
+        match ctor_info.value_shape() {
+            CtorValueShape::BareTag => Some(ctor_info.tag),
+            CtorValueShape::Payload => None,
         }
     }
 

@@ -114,7 +114,7 @@ When a top-level function is used as a value (passed as an argument, stored in a
 
 A conforming implementation MUST satisfy the following:
 
-1. Heap-allocated values (strings, closures, data constructors, Vecs) MUST be freed when they are no longer reachable from any live binding or data structure. [Tested tests/spec_12_runtime::string_literal_alloc_drop_balanced]
+1. Heap-allocated values (strings, closures, data constructors, Vecs) MUST be freed when they are no longer reachable from any live binding or data structure. [Tested tests/spec_12_runtime::string_literal_alloc_drop_balanced, tests/nullary_arm_beside_boxed_arm_0917::nullary_arm_beside_boxed_arm_frees_its_loop_under_run]
 2. Freed memory MUST NOT be accessed after deallocation. [Tested tests/spec_12_runtime::string_literal_alloc_drop_balanced]
 3. The user MUST NOT need to manage memory manually — allocation and deallocation are entirely the implementation's responsibility. [Tested tests/spec_12_runtime::string_literal_alloc_drop_balanced]
 

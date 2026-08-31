@@ -92,7 +92,10 @@ fn warm_residue_of(dir: &Path, entry: &str) -> (i64, String) {
 // and the header), and no partial fix can pass.
 // spec: spec/12-runtime.md §12.3.1 — unreachable heap ownership is released;
 // application-scale quantitative acceptance for the transitive-discharge class.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/fn_compiler.rs::protect_return_value found=S115 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value found=S115 owner=/dev
+//   — the locus token cited `fn_compiler.rs` at filing; the method was never
+//   defined there (FIXME 0917's header carries the `git log -S` proof), so this
+//   is a factual correction of the citation, not a move of the seam.
 //   — FIXME 0917: an unbalanced `NULLARY_TAG_THRESHOLD`-guarded protect inc at
 //   the match-result return seam. A nullary `ConstrADT` arm classifies non-Fresh
 //   in the `value_provenance`/`is_fresh_construction` join, so ONE `None` arm —

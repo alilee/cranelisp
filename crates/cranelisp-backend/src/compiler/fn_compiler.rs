@@ -16,6 +16,7 @@ use cranelisp_types::{
 
 use crate::heap::{self, HeapCategory};
 
+use super::context::CtorValueShape;
 use super::{
     CompileContext, find_var_type_in_expr, inner_fn_discriminator_for, signature_heap_category,
 };
@@ -1857,7 +1858,7 @@ where
     /// [`is_fresh_construction`] (the ctor probe is the only context-dependent
     /// part; the shape rules are unit-tested directly).
     pub(crate) fn body_is_fresh_construction(&self, body: &MonoExpr) -> bool {
-        is_fresh_construction(body, &|fq| self.ctx.ctor_meta_at(fq).is_some())
+        is_fresh_construction(body, &|fq| self.ctx.ctor_value_shape_at(fq))
     }
 
     /// The dec side of the §13.7 COW escape gate, read at the match consume seam
@@ -2322,11 +2323,15 @@ pub(crate) fn node_escapes(node: &MonoExpr) -> Option<bool> {
 /// for suppressing `protect_return_value`, S115 W3 change-set 2 / FIXME 0696.)
 ///
 /// True for every **box-minting** node kind — the node's own lowering
-/// unconditionally allocates: `ConstrADT`, `Lambda` (`compile_lambda`),
-/// `StringLit`, `VecLit` (`compile_vec_lit`), an `Apply` whose callee resolves
-/// to a constructor (`is_ctor` hits its carrier), and an `Apply` carrying the
+/// unconditionally allocates: `ConstrADT` with fields, `Lambda`
+/// (`compile_lambda`), `StringLit`, `VecLit` (`compile_vec_lit`), an `Apply`
+/// whose callee resolves to a constructor with fields (`ctor_shape` reads
+/// `CtorValueShape::Payload` off its carrier), and an `Apply` carrying the
 /// `ResolvedCall::AutoCurry` resolution (`compile_auto_curry` `emit_alloc`s a
-/// fresh curry env on every arm). A general `Apply` (a user/trait call) may
+/// fresh curry env on every arm). It is ALSO true, trivially, for a value that
+/// carries no reference at all (`ValueProvenance::NoReference`) — there is
+/// nothing for scope cleanup to take away, so the threshold is `<= Fresh`.
+/// A general `Apply` (a user/trait call) may
 /// RETURN an aliased argument (e.g. `(id x)`), so it is NOT fresh and still
 /// needs the return-protect — the §2.1 fence's G2/item-26 class, deliberately
 /// untouched.
@@ -2365,26 +2370,29 @@ pub(crate) fn node_escapes(node: &MonoExpr) -> Option<bool> {
 /// without a live `FnCompiler` (the `operand_live_binding_root` precedent).
 pub(crate) fn is_fresh_construction(
     body: &MonoExpr,
-    is_ctor: &impl Fn(&cranelisp_types::FQSymbol) -> bool,
+    ctor_shape: &impl Fn(&cranelisp_types::FQSymbol) -> Option<CtorValueShape>,
 ) -> bool {
-    value_provenance(body, is_ctor) == ValueProvenance::Fresh
+    value_provenance(body, ctor_shape) <= ValueProvenance::Fresh
 }
 
 /// Who owns the reference the value of a `MonoExpr` node carries — the ONE
 /// derived answer behind every "is this expression's value mine to release?"
 /// RC gate (S115 W4c; FIXME 0781).
 ///
-/// A three-point lattice, ordered `Fresh ⊑ OwnedTemporary ⊑ NotOwnedHere`
-/// (weaker = later). [`ValueProvenance::join`] is the max, so a control-flow
-/// join is exactly as strong as its weakest arm.
+/// A four-point lattice, ordered
+/// `NoReference ⊑ Fresh ⊑ OwnedTemporary ⊑ NotOwnedHere` (weaker = later).
+/// [`ValueProvenance::join`] is the max, so a control-flow join is exactly as
+/// strong as its weakest arm, and the bottom point is the join's IDENTITY —
+/// an arm carrying no reference is absorbed by its siblings rather than
+/// poisoning them.
 ///
 /// Two consumers read it at two different THRESHOLDS, which is why the answer
 /// is one function and the predicates are two:
 ///
 /// | Consumer | Threshold | Why that threshold |
 /// |---|---|---|
-/// | [`is_fresh_construction`] (return-protect elision) | `== Fresh` | eliding the protect needs the STRONG claim "cannot alias any scope binding"; a call result may hand back its own argument (`(id x)`) |
-/// | [`yields_owned_temporary`] (temporary-release gates) | `!= NotOwnedHere` | releasing needs only "this frame holds a reference nothing else will release"; a call result IS such a reference by the Decision-24 owned-return ABI |
+/// | [`is_fresh_construction`] (return-protect elision) | `<= Fresh` | eliding the protect needs the STRONG claim "cannot alias any scope binding"; a call result may hand back its own argument (`(id x)`). A value carrying no reference satisfies it trivially |
+/// | [`yields_owned_temporary`] (temporary-release gates) | `Fresh \| OwnedTemporary` | releasing needs "this frame holds a reference nothing else will release"; a call result IS such a reference by the Decision-24 owned-return ABI, and a value with NO reference is nothing to release |
 ///
 /// The class this closes: **a syntactic node-kind test standing in for the
 /// derived answer.** `emit_vec_drop_if_temporary` asked
@@ -2397,6 +2405,19 @@ pub(crate) fn is_fresh_construction(
 /// does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum ValueProvenance {
+    /// The value carries no heap reference at all: a scalar literal, or a
+    /// zero-field constructor whose value IS its bare tag (below
+    /// `NULLARY_TAG_THRESHOLD`, so there is nothing to count). ⊥, and the
+    /// join's identity — "carries no reference" is absorbed by any sibling
+    /// arm, never absorbing (FIXME 0917: it used to sit at ⊤ beside "a scope
+    /// binding owns it", and one nullary match arm poisoned the whole join,
+    /// licensing a protect inc on a fresh box that nothing balanced).
+    ///
+    /// This is a claim about the VALUE, and only a zero-field constructor
+    /// earns it: a one-field constructor flattened to a bare word still has
+    /// that word BE the reference when the field is heap-typed. That is
+    /// `HeapCategory::Value`'s fact, not this point.
+    NoReference,
     /// A brand-new box minted by this node's own lowering. Cannot alias any
     /// scope binding, so it is both owned here AND safe to elide a protect on.
     Fresh,
@@ -2407,9 +2428,9 @@ pub(crate) enum ValueProvenance {
     /// temporary; do NOT elide a protect on it.
     OwnedTemporary,
     /// Not this frame's reference to release: a scope binding (whose own scope
-    /// cleanup decs it), a non-heap scalar (no reference at all), or a join
-    /// with any such arm. The conservative ⊤ — both consumers take their
-    /// SAFE action here (protect kept; no release ⇒ leak-safe, never UAF).
+    /// cleanup decs it), or a join with any such arm. The conservative ⊤ —
+    /// both consumers take their SAFE action here (protect kept; no release ⇒
+    /// leak-safe, never UAF).
     NotOwnedHere,
 }
 
@@ -2424,10 +2445,12 @@ impl ValueProvenance {
 /// Classify the provenance of the value `expr` yields — the single source of
 /// truth for both RC ownership thresholds (see [`ValueProvenance`]).
 ///
-/// `is_ctor` is the constructor probe; it is the ONLY context-dependent part,
-/// and it refines `Fresh` vs `OwnedTemporary` ONLY — never the
-/// owned/not-owned threshold (pinned by
-/// `provenance_owned_threshold_is_probe_independent`).
+/// `ctor_shape` is the constructor probe
+/// (`CompileContext::ctor_value_shape_at`); it is the ONLY context-dependent
+/// part. It may only move a node DOWN the lattice, toward stronger ownership —
+/// pinned by `probe_only_moves_provenance_down_the_lattice`, which is what
+/// licenses the probeless gates to answer without symbol-table access: where
+/// they differ they take the leak-safe verdict, never the UAF one.
 ///
 /// The match is **EXHAUSTIVE, deliberately (no `_ =>`)** — the standing
 /// instrument for this family. A new `MonoExpr` variant swept into a catch-all
@@ -2437,10 +2460,14 @@ impl ValueProvenance {
 /// classified here on purpose.
 pub(crate) fn value_provenance(
     expr: &MonoExpr,
-    is_ctor: &impl Fn(&cranelisp_types::FQSymbol) -> bool,
+    ctor_shape: &impl Fn(&cranelisp_types::FQSymbol) -> Option<CtorValueShape>,
 ) -> ValueProvenance {
-    use ValueProvenance::{Fresh, NotOwnedHere, OwnedTemporary};
+    use ValueProvenance::{Fresh, NoReference, NotOwnedHere, OwnedTemporary};
     match expr {
+        // A constructor `Def`'s synthesised body. With fields it mints the box
+        // it returns; with none its whole value is the bare tag, so there is no
+        // reference — probe-free, the field list is in the node itself.
+        MonoExpr::ConstrADT { fields, .. } if fields.is_empty() => NoReference,
         // The box-MINTING node kinds: each unconditionally allocates a
         // brand-new box in its own lowering, so none can alias a scope binding.
         MonoExpr::ConstrADT { .. }
@@ -2470,7 +2497,14 @@ pub(crate) fn value_provenance(
                 MonoExpr::Var {
                     resolution: VarRef::Global(fq),
                     ..
-                } if is_ctor(fq) => Fresh,
+                } => match ctor_shape(fq) {
+                    // Applying a zero-field constructor yields its bare tag —
+                    // the same determinant and the same answer as referencing
+                    // one, so no second rule about which arm asks what.
+                    Some(CtorValueShape::BareTag) => NoReference,
+                    Some(CtorValueShape::Payload) => Fresh,
+                    None => OwnedTemporary,
+                },
                 _ => OwnedTemporary,
             }
         }
@@ -2478,19 +2512,22 @@ pub(crate) fn value_provenance(
         // both thresholds are SCALE-INVARIANT in `let` depth and correct on
         // mixed arms (a join is its weakest arm — one borrowing arm makes the
         // whole join borrowing, which is what cures 0781).
-        MonoExpr::Let { body, .. } => value_provenance(body, is_ctor),
+        MonoExpr::Let { body, .. } => value_provenance(body, ctor_shape),
         MonoExpr::If {
             then_branch,
             else_branch,
             ..
-        } => value_provenance(then_branch, is_ctor).join(value_provenance(else_branch, is_ctor)),
-        // An arm-less `Match` yields no value on any path; ⊤ is the only safe
-        // reading (an empty `all()` would read as `Fresh`).
+        } => value_provenance(then_branch, ctor_shape)
+            .join(value_provenance(else_branch, ctor_shape)),
+        // An arm-less `Match` yields no value on ANY path — a different fact
+        // from "every path yields something carrying no reference", which is
+        // what the fold's `NoReference` identity now means. ⊤ is the only safe
+        // reading, and this guard is what keeps the two distinct.
         MonoExpr::Match { arms, .. } if arms.is_empty() => NotOwnedHere,
         MonoExpr::Match { arms, .. } => arms
             .iter()
-            .map(|arm| value_provenance(&arm.body, is_ctor))
-            .fold(Fresh, ValueProvenance::join),
+            .map(|arm| value_provenance(&arm.body, ctor_shape))
+            .fold(NoReference, ValueProvenance::join),
         // `Trace` forwards its inner value; `ParBind`/`LaunchContinue` yield a
         // joined/continued value. All three FORWARD the borrowing direction
         // (so `(vec-get (trace v) 0)` no longer releases a binding) but are
@@ -2498,29 +2535,44 @@ pub(crate) fn value_provenance(
         // make through a spark join or a trace wrapper, and capping keeps
         // `is_fresh_construction` byte-identical to its pre-0781 answers on
         // these kinds.
-        MonoExpr::Trace { body, .. } => value_provenance(body, is_ctor).join(OwnedTemporary),
-        MonoExpr::ParBind { body, .. } => value_provenance(body, is_ctor).join(OwnedTemporary),
+        MonoExpr::Trace { body, .. } => value_provenance(body, ctor_shape).join(OwnedTemporary),
+        MonoExpr::ParBind { body, .. } => value_provenance(body, ctor_shape).join(OwnedTemporary),
         MonoExpr::LaunchContinue { continuation, .. } => {
-            value_provenance(continuation, is_ctor).join(OwnedTemporary)
+            value_provenance(continuation, ctor_shape).join(OwnedTemporary)
         }
-        // `Var` IS a scope binding — the exact thing both gates must not
-        // claim. Scalar literals carry no reference at all.
-        MonoExpr::Var { .. }
-        | MonoExpr::IntLit { .. }
-        | MonoExpr::FloatLit { .. }
-        | MonoExpr::BoolLit { .. } => NotOwnedHere,
+        // A `Var` naming a zero-field constructor is a bare tag, not a binding:
+        // `emit_adt_construct(tag, &[])` folds it to an `iconst`, so nothing
+        // owns it and nothing may claim it. Every other `Var` IS a scope
+        // binding — the exact thing both gates must not claim — INCLUDING a
+        // constructor WITH fields used as a value, which mints a dispatch
+        // wrapper this node does not own (narrowing that is not this ruling's;
+        // ⊤ stays the conservative answer — Principle 25).
+        MonoExpr::Var {
+            resolution: VarRef::Global(fq),
+            ..
+        } if ctor_shape(fq) == Some(CtorValueShape::BareTag) => NoReference,
+        // Scalar literals carry no reference at all.
+        MonoExpr::IntLit { .. } | MonoExpr::FloatLit { .. } | MonoExpr::BoolLit { .. } => {
+            NoReference
+        }
+        MonoExpr::Var { .. } => NotOwnedHere,
     }
 }
 
 /// Does `expr` yield a reference THIS frame owns and nothing else will
 /// release — the temporary-release threshold (see [`ValueProvenance`])?
 ///
-/// Probe-INDEPENDENT: the constructor probe only separates `Fresh` from
-/// `OwnedTemporary`, and both are owned, so this threshold needs no
-/// symbol-table access. Pinned by
-/// `provenance_owned_threshold_is_probe_independent`.
+/// Answered PROBELESSLY (`|_| None` — "nothing is a constructor"), so these
+/// gates need no symbol-table access. That is safe because the probe only ever
+/// moves a node DOWN the lattice
+/// (`probe_only_moves_provenance_down_the_lattice`): where the probeless
+/// answer differs from the real one it is the weaker, leak-safe verdict, never
+/// the UAF one.
 pub(crate) fn yields_owned_temporary(expr: &MonoExpr) -> bool {
-    value_provenance(expr, &|_| false) != ValueProvenance::NotOwnedHere
+    matches!(
+        value_provenance(expr, &|_| None),
+        ValueProvenance::Fresh | ValueProvenance::OwnedTemporary
+    )
 }
 
 /// The authoritative per-position parameter types of `defn`, read from the
@@ -4021,7 +4073,7 @@ mod rc_release_sweep_tests {
     //!    toggle-ON half of FIXME 0720.
 
     use super::{
-        ValueProvenance, is_fresh_construction, self_call_supersedes_param,
+        CtorValueShape, ValueProvenance, is_fresh_construction, self_call_supersedes_param,
         tail_arg_supersedes_param, value_provenance, yields_owned_temporary,
     };
     use cranelisp_types::{
@@ -4059,20 +4111,30 @@ mod rc_release_sweep_tests {
         }
     }
 
-    fn ctor_adt() -> MonoExpr {
+    fn constr_adt(fields: Vec<MonoExpr>) -> MonoExpr {
         MonoExpr::ConstrADT {
             type_name: cranelisp_types::FQTypeName::new(
                 ModuleFullPath::from("user"),
                 cranelisp_types::TypeName::from("G2"),
             ),
             tag: 0,
-            fields: vec![],
+            fields,
             span: Span::SYNTHETIC,
             ty: ConcreteType::Int,
             escapes: None,
             confined: None,
             unique_static: None,
         }
+    }
+
+    /// A constructor `Def` body that MINTS a box — one field to put in it.
+    fn ctor_adt() -> MonoExpr {
+        constr_adt(vec![var("c")])
+    }
+
+    /// A ZERO-FIELD constructor `Def` body: its whole value is the bare tag.
+    fn nullary_ctor_adt() -> MonoExpr {
+        constr_adt(vec![])
     }
 
     fn apply(callee: MonoExpr, args: Vec<MonoExpr>) -> MonoExpr {
@@ -4121,9 +4183,26 @@ mod rc_release_sweep_tests {
         }
     }
 
-    /// Ctor probe: `user/Gr` is a constructor, nothing else is.
-    fn is_ctor(f: &FQSymbol) -> bool {
-        f.symbol.as_ref() == "Gr"
+    /// The three-state ctor probe: `user/Gr` is a constructor with fields,
+    /// `user/Nil` a zero-field one, nothing else is a constructor at all.
+    fn ctor_shape(f: &FQSymbol) -> Option<CtorValueShape> {
+        match f.symbol.as_ref() {
+            "Gr" => Some(CtorValueShape::Payload),
+            "Nil" => Some(CtorValueShape::BareTag),
+            _ => None,
+        }
+    }
+
+    /// The probe that answers nothing — what the four probeless ownership
+    /// gates pass (`yields_owned_temporary`).
+    fn no_ctor(_: &FQSymbol) -> Option<CtorValueShape> {
+        None
+    }
+
+    /// A bare reference to the zero-field constructor `user/Nil` — the shape
+    /// `compile_var` folds to an `iconst` tag (FIXME 0917's subject).
+    fn nullary_ctor_var() -> MonoExpr {
+        global_var("user", "Nil")
     }
 
     // ---- 1. item-26 fresh-construction ------------------------------------
@@ -4132,10 +4211,10 @@ mod rc_release_sweep_tests {
     // freshly-constructed return needs no protect, in ANY function.
     #[test]
     fn constr_adt_and_ctor_apply_are_fresh() {
-        assert!(is_fresh_construction(&ctor_adt(), &is_ctor));
+        assert!(is_fresh_construction(&ctor_adt(), &ctor_shape));
         assert!(is_fresh_construction(
             &apply(global_var("user", "Gr"), vec![var("c")]),
-            &is_ctor
+            &ctor_shape
         ));
     }
 
@@ -4146,20 +4225,26 @@ mod rc_release_sweep_tests {
     fn general_apply_and_var_returns_are_not_fresh_neg() {
         assert!(!is_fresh_construction(
             &apply(global_var("user", "id"), vec![var("x")]),
-            &is_ctor
+            &ctor_shape
         ));
-        assert!(!is_fresh_construction(&var("v"), &is_ctor));
+        assert!(!is_fresh_construction(&var("v"), &ctor_shape));
         // A LOCAL-resolved callee (a closure value) is never a ctor.
-        assert!(!is_fresh_construction(&apply(var("f"), vec![]), &is_ctor));
+        assert!(!is_fresh_construction(
+            &apply(var("f"), vec![]),
+            &ctor_shape
+        ));
     }
 
     // spec: §2.1 — `let` forwards freshness, so the suppression is scale-invariant
     // in heap-let depth (the R-3 fixed-residual signature).
     #[test]
     fn let_forwards_freshness_both_ways() {
-        assert!(is_fresh_construction(&let_of(ctor_adt()), &is_ctor));
-        assert!(is_fresh_construction(&let_of(let_of(ctor_adt())), &is_ctor));
-        assert!(!is_fresh_construction(&let_of(var("v")), &is_ctor));
+        assert!(is_fresh_construction(&let_of(ctor_adt()), &ctor_shape));
+        assert!(is_fresh_construction(
+            &let_of(let_of(ctor_adt())),
+            &ctor_shape
+        ));
+        assert!(!is_fresh_construction(&let_of(var("v")), &ctor_shape));
     }
 
     // spec: §2.2 (FIXME 0720 toggle-OFF half) — a control-flow JOIN is fresh iff
@@ -4170,11 +4255,11 @@ mod rc_release_sweep_tests {
     fn control_flow_join_is_fresh_iff_every_arm_is() {
         assert!(is_fresh_construction(
             &match_of(var("g"), vec![ctor_adt()]),
-            &is_ctor
+            &ctor_shape
         ));
         assert!(is_fresh_construction(
             &match_of(var("g"), vec![ctor_adt(), ctor_adt()]),
-            &is_ctor
+            &ctor_shape
         ));
         let if_fresh = MonoExpr::If {
             cond: Box::new(var("c")),
@@ -4183,7 +4268,7 @@ mod rc_release_sweep_tests {
             span: Span::SYNTHETIC,
             ty: ConcreteType::Int,
         };
-        assert!(is_fresh_construction(&if_fresh, &is_ctor));
+        assert!(is_fresh_construction(&if_fresh, &ctor_shape));
     }
 
     // spec: §2.1 fence (NEGATIVE, the load-bearing half) — ONE non-fresh arm makes
@@ -4194,11 +4279,11 @@ mod rc_release_sweep_tests {
     fn one_non_fresh_arm_makes_the_join_non_fresh_neg() {
         assert!(!is_fresh_construction(
             &match_of(var("g"), vec![ctor_adt(), var("v")]),
-            &is_ctor
+            &ctor_shape
         ));
         assert!(!is_fresh_construction(
             &match_of(var("g"), vec![var("v"), ctor_adt()]),
-            &is_ctor
+            &ctor_shape
         ));
         let if_mixed = MonoExpr::If {
             cond: Box::new(var("c")),
@@ -4207,11 +4292,11 @@ mod rc_release_sweep_tests {
             span: Span::SYNTHETIC,
             ty: ConcreteType::Int,
         };
-        assert!(!is_fresh_construction(&if_mixed, &is_ctor));
+        assert!(!is_fresh_construction(&if_mixed, &ctor_shape));
         // An arm-less match yields no value that could be fresh.
         assert!(!is_fresh_construction(
             &match_of(var("g"), vec![]),
-            &is_ctor
+            &ctor_shape
         ));
     }
 
@@ -4293,10 +4378,13 @@ mod rc_release_sweep_tests {
     // binding, so each needs no return-protect.
     #[test]
     fn every_box_minting_node_kind_is_fresh() {
-        assert!(is_fresh_construction(&lambda(), &is_ctor));
-        assert!(is_fresh_construction(&string_lit(), &is_ctor));
-        assert!(is_fresh_construction(&vec_lit(), &is_ctor));
-        assert!(is_fresh_construction(&auto_curry_apply(var("g")), &is_ctor));
+        assert!(is_fresh_construction(&lambda(), &ctor_shape));
+        assert!(is_fresh_construction(&string_lit(), &ctor_shape));
+        assert!(is_fresh_construction(&vec_lit(), &ctor_shape));
+        assert!(is_fresh_construction(
+            &auto_curry_apply(var("g")),
+            &ctor_shape
+        ));
     }
 
     // spec: §2.1 / FIXME 0749 — the SCALE-INVARIANCE half: a minted box returned
@@ -4309,17 +4397,20 @@ mod rc_release_sweep_tests {
     fn minted_boxes_forward_freshness_through_binding_indirection() {
         assert!(is_fresh_construction(
             &let_of(auto_curry_apply(var("g"))),
-            &is_ctor
+            &ctor_shape
         ));
-        assert!(is_fresh_construction(&let_of(let_of(lambda())), &is_ctor));
+        assert!(is_fresh_construction(
+            &let_of(let_of(lambda())),
+            &ctor_shape
+        ));
         assert!(is_fresh_construction(
             &let_of(let_of(string_lit())),
-            &is_ctor
+            &ctor_shape
         ));
-        assert!(is_fresh_construction(&let_of(vec_lit()), &is_ctor));
+        assert!(is_fresh_construction(&let_of(vec_lit()), &ctor_shape));
         assert!(is_fresh_construction(
             &match_of(var("g"), vec![lambda(), auto_curry_apply(var("h"))]),
-            &is_ctor
+            &ctor_shape
         ));
     }
 
@@ -4331,16 +4422,16 @@ mod rc_release_sweep_tests {
     fn a_non_curry_apply_through_the_same_callee_is_not_fresh_neg() {
         assert!(!is_fresh_construction(
             &apply(var("g"), vec![var("x")]),
-            &is_ctor
+            &ctor_shape
         ));
         assert!(!is_fresh_construction(
             &let_of(apply(var("g"), vec![])),
-            &is_ctor
+            &ctor_shape
         ));
         // ...and one non-minting arm still poisons the join.
         assert!(!is_fresh_construction(
             &match_of(var("g"), vec![lambda(), var("v")]),
-            &is_ctor
+            &ctor_shape
         ));
     }
 
@@ -4436,18 +4527,18 @@ mod rc_release_sweep_tests {
     fn the_two_thresholds_differ_exactly_at_a_general_apply() {
         let call = apply(global_var("user", "id"), vec![var("x")]);
         assert_eq!(
-            value_provenance(&call, &is_ctor),
+            value_provenance(&call, &ctor_shape),
             ValueProvenance::OwnedTemporary
         );
         assert!(yields_owned_temporary(&call));
-        assert!(!is_fresh_construction(&call, &is_ctor));
+        assert!(!is_fresh_construction(&call, &ctor_shape));
         // ...and they agree at both ends of the lattice.
         assert_eq!(
-            value_provenance(&ctor_adt(), &is_ctor),
+            value_provenance(&ctor_adt(), &ctor_shape),
             ValueProvenance::Fresh
         );
         assert_eq!(
-            value_provenance(&var("v"), &is_ctor),
+            value_provenance(&var("v"), &ctor_shape),
             ValueProvenance::NotOwnedHere
         );
     }
@@ -4460,7 +4551,7 @@ mod rc_release_sweep_tests {
     fn wrapper_kinds_forward_borrowing_but_never_claim_freshness() {
         assert!(!yields_owned_temporary(&trace_of(var("v"))));
         assert!(yields_owned_temporary(&trace_of(vec_lit())));
-        assert!(!is_fresh_construction(&trace_of(ctor_adt()), &is_ctor));
+        assert!(!is_fresh_construction(&trace_of(ctor_adt()), &ctor_shape));
         let par = MonoExpr::ParBind {
             bindings: vec![(Symbol::from("a"), var("t"))],
             body: Box::new(var("v")),
@@ -4468,16 +4559,35 @@ mod rc_release_sweep_tests {
             ty: ConcreteType::Int,
         };
         assert!(!yields_owned_temporary(&par));
-        assert!(!is_fresh_construction(&par, &is_ctor));
+        assert!(!is_fresh_construction(&par, &ctor_shape));
     }
 
-    // spec: FIXME 0781 — the ctor probe refines `Fresh` vs `OwnedTemporary`
-    // ONLY; it can never move a node across the owned/not-owned threshold. That
-    // is what licenses `yields_owned_temporary` to answer without symbol-table
-    // access, so the three vec seams need no `&self`.
-    #[test]
-    fn provenance_owned_threshold_is_probe_independent() {
-        let nodes = [
+    // ---- 1d. the `NoReference` bottom point (FIXME 0917) -------------------
+    //
+    // The conflation this closes lived in ⊤ itself: `NotOwnedHere` meant both
+    // "a scope binding owns it" AND "there is no reference at all". The second
+    // is not an absorbing element — it is the join's IDENTITY. With the two
+    // fused, one nullary-constructor arm dragged a whole `match` to ⊤, so the
+    // fresh boxed arm beside it took an unbalanceable protect inc and the
+    // caller's single consuming dec stranded the tree at rc=1 (measured: 4
+    // objects per iteration, deallocs CONSTANT).
+
+    /// The corpus the probe MOVES — the two shapes §6.3 requires, without
+    /// which a monotonicity pin is vacuously true and indistinguishable from
+    /// an instrument that cannot fire.
+    fn probe_moved_nodes() -> Vec<MonoExpr> {
+        vec![
+            nullary_ctor_var(),
+            match_of(var("it"), vec![nullary_ctor_var(), ctor_adt()]),
+        ]
+    }
+
+    /// The retained pre-0917 eight. The probe may still refine `Fresh` vs
+    /// `OwnedTemporary` here (the ctor `Apply`), but it moves none of them
+    /// across the OWNED threshold — the surviving content of the deleted
+    /// equality pin, and what the four probeless gates rely on.
+    fn probe_static_nodes() -> Vec<MonoExpr> {
+        vec![
             var("v"),
             vec_lit(),
             ctor_adt(),
@@ -4486,13 +4596,211 @@ mod rc_release_sweep_tests {
             let_of(var("w")),
             match_of(var("g"), vec![vec_lit(), var("v")]),
             trace_of(var("v")),
-        ];
-        for node in &nodes {
-            let hits_all = value_provenance(node, &|_| true) != ValueProvenance::NotOwnedHere;
-            let hits_none = value_provenance(node, &|_| false) != ValueProvenance::NotOwnedHere;
+        ]
+    }
+
+    // spec: design/backend/non-concrete-release-contract.md §6.2.1 — the bottom
+    // point is exactly "this value carries no heap reference": a bare
+    // zero-field-constructor reference, an application of one, a fieldless
+    // `ConstrADT` body, and every scalar literal.
+    #[test]
+    fn values_carrying_no_reference_classify_at_the_bottom() {
+        for node in [
+            nullary_ctor_var(),
+            apply(global_var("user", "Nil"), vec![]),
+            nullary_ctor_adt(),
+            MonoExpr::IntLit {
+                value: 7,
+                span: Span::SYNTHETIC,
+                ty: ConcreteType::Int,
+            },
+            MonoExpr::FloatLit {
+                value: 1.5,
+                span: Span::SYNTHETIC,
+                ty: ConcreteType::Int,
+            },
+            MonoExpr::BoolLit {
+                value: true,
+                span: Span::SYNTHETIC,
+                ty: ConcreteType::Int,
+            },
+        ] {
             assert_eq!(
-                hits_all, hits_none,
-                "the ctor probe must not move a node across the owned threshold: {node:?}"
+                value_provenance(&node, &ctor_shape),
+                ValueProvenance::NoReference,
+                "{node:?}"
+            );
+        }
+        // ...and every MINTING kind is unchanged at `Fresh`.
+        for node in [
+            ctor_adt(),
+            lambda(),
+            string_lit(),
+            vec_lit(),
+            apply(global_var("user", "Gr"), vec![var("c")]),
+            auto_curry_apply(var("g")),
+        ] {
+            assert_eq!(
+                value_provenance(&node, &ctor_shape),
+                ValueProvenance::Fresh,
+                "{node:?}"
+            );
+        }
+    }
+
+    // spec: §6.2.1 (NEGATIVE, the UAF direction) — `NoReference` is a claim
+    // about the VALUE, and only a ZERO-FIELD constructor earns it. A
+    // constructor WITH fields referenced as a value mints a dispatch wrapper
+    // this node does not own, so it stays ⊤ under BOTH probes; were it to
+    // reach the bottom, `protect_return_value` would elide a protect that scope
+    // cleanup then consumes.
+    #[test]
+    fn a_constructor_with_fields_as_a_value_stays_at_the_top_neg() {
+        let payload_ctor_ref = global_var("user", "Gr");
+        assert_eq!(
+            value_provenance(&payload_ctor_ref, &ctor_shape),
+            ValueProvenance::NotOwnedHere
+        );
+        assert_eq!(
+            value_provenance(&payload_ctor_ref, &no_ctor),
+            ValueProvenance::NotOwnedHere
+        );
+        // A non-constructor global, and an ordinary binding, likewise.
+        assert_eq!(
+            value_provenance(&global_var("user", "id"), &ctor_shape),
+            ValueProvenance::NotOwnedHere
+        );
+        assert_eq!(
+            value_provenance(&var("v"), &ctor_shape),
+            ValueProvenance::NotOwnedHere
+        );
+    }
+
+    // spec: §6.2 — the join's SEED moves with its identity. A bottom arm is
+    // ABSORBED by its siblings; ⊤ still absorbs everything. The mixed
+    // nullary/boxed match is FIXME 0917's exact subject.
+    #[test]
+    fn a_no_reference_arm_is_absorbed_not_absorbing() {
+        // The 0917 subject: N nullary arms beside one boxed arm reads `Fresh`,
+        // so the protect is elided and the boxed result is not stranded.
+        assert_eq!(
+            value_provenance(
+                &match_of(
+                    var("it"),
+                    vec![nullary_ctor_var(), ctor_adt(), nullary_ctor_var()]
+                ),
+                &ctor_shape
+            ),
+            ValueProvenance::Fresh
+        );
+        // An ALL-nullary match carries no reference — the empty fold's
+        // identity is now the bottom, not a false `Fresh`.
+        assert_eq!(
+            value_provenance(
+                &match_of(var("it"), vec![nullary_ctor_var(), nullary_ctor_var()]),
+                &ctor_shape
+            ),
+            ValueProvenance::NoReference
+        );
+        // ...while an ARM-LESS match yields no value on any path at all. That
+        // is a DIFFERENT fact from "every path carries no reference", and the
+        // explicit guard is what keeps the two distinct now that the fold seeds
+        // at the identity. Deleting the guard silently swaps one for the other.
+        assert_eq!(
+            value_provenance(&match_of(var("it"), vec![]), &ctor_shape),
+            ValueProvenance::NotOwnedHere
+        );
+        // ⊤ still absorbs: one borrowing arm poisons the join as before.
+        assert_eq!(
+            value_provenance(
+                &match_of(var("it"), vec![nullary_ctor_var(), var("v")]),
+                &ctor_shape
+            ),
+            ValueProvenance::NotOwnedHere
+        );
+        // The two join laws, read directly.
+        assert_eq!(
+            ValueProvenance::NoReference.join(ValueProvenance::Fresh),
+            ValueProvenance::Fresh
+        );
+        assert_eq!(
+            ValueProvenance::NoReference.join(ValueProvenance::NotOwnedHere),
+            ValueProvenance::NotOwnedHere
+        );
+    }
+
+    // spec: §6.2 — both consumer thresholds, restated over the four-point
+    // lattice. `is_fresh_construction` is `<= Fresh` (a value carrying no
+    // reference needs no protect either); `yields_owned_temporary` is
+    // `Fresh | OwnedTemporary` and must NOT become `!= NotOwnedHere`, which
+    // would make a bare tag read as an owned temporary at the release gates.
+    #[test]
+    fn both_thresholds_read_the_four_point_lattice_at_their_own_heights() {
+        let bottom = nullary_ctor_var();
+        assert!(is_fresh_construction(&bottom, &ctor_shape));
+        assert!(!yields_owned_temporary(&bottom));
+
+        let fresh = ctor_adt();
+        assert!(is_fresh_construction(&fresh, &ctor_shape));
+        assert!(yields_owned_temporary(&fresh));
+
+        let owned = apply(global_var("user", "id"), vec![var("x")]);
+        assert!(!is_fresh_construction(&owned, &ctor_shape));
+        assert!(yields_owned_temporary(&owned));
+
+        let top = var("v");
+        assert!(!is_fresh_construction(&top, &ctor_shape));
+        assert!(!yields_owned_temporary(&top));
+    }
+
+    // spec: §6.3 — the pin that REPLACES
+    // `provenance_owned_threshold_is_probe_independent` (equality cannot
+    // survive: a nullary-ctor `Var` is only distinguishable from an ordinary
+    // one WITH the probe). Monotonicity is strictly stronger — it states
+    // directly what equality was a proxy for: the four probeless gates never
+    // OVER-claim ownership, so where they differ they take the leak-safe
+    // verdict, never the UAF one.
+    //
+    // Both legs, per the 0768 arming rule. POSITIVE: the probe genuinely moves
+    // the two shapes, and moves them DOWN — an instrument that has never
+    // detected is indistinguishable from one that cannot. NEGATIVE: it moves
+    // nothing else.
+    #[test]
+    fn probe_only_moves_provenance_down_the_lattice() {
+        let moved = probe_moved_nodes();
+        let static_nodes = probe_static_nodes();
+
+        for node in moved.iter().chain(static_nodes.iter()) {
+            assert!(
+                value_provenance(node, &ctor_shape) <= value_provenance(node, &no_ctor),
+                "the ctor probe moved a node UP the lattice: {node:?}"
+            );
+        }
+
+        // Detection proof: over this corpus the probe is not inert.
+        for node in &moved {
+            assert!(
+                value_provenance(node, &ctor_shape) < value_provenance(node, &no_ctor),
+                "the monotonicity corpus is vacuous — the probe does not move {node:?}"
+            );
+        }
+
+        // The negative leg: silence where the fault is absent. On the retained
+        // eight the probe still refines `Fresh` vs `OwnedTemporary` (the ctor
+        // `Apply`), but it moves none of them across the OWNED threshold — so
+        // the four probeless gates read those nodes exactly as they did before
+        // 0917. That is the deleted equality pin's surviving content, and it is
+        // what the mixed nullary/boxed match above genuinely breaks, which is
+        // why equality could not survive as the whole property.
+        for node in &static_nodes {
+            let owned_with_probe = matches!(
+                value_provenance(node, &ctor_shape),
+                ValueProvenance::Fresh | ValueProvenance::OwnedTemporary
+            );
+            assert_eq!(
+                owned_with_probe,
+                yields_owned_temporary(node),
+                "the ctor probe moved a node across the owned threshold: {node:?}"
             );
         }
     }

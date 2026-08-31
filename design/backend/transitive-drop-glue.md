@@ -588,9 +588,12 @@ the fix must satisfy simultaneously:
 - a **mixed** ctor+var match where the var arm forwards no longer suppresses the
   ctor path's release (FIXME 0726's tripwire cells, QA §4.2).
 
-`yields_owned_temporary` (the three-point provenance lattice,
-`Fresh ⊑ OwnedTemporary ⊑ NotOwnedHere`) remains the ownership authority that
-selects the plan; it is not re-derived per pattern kind. The plan is recorded
+`yields_owned_temporary` (the provenance lattice — four points since the S119
+0917 ruling, `NoReference ⊑ Fresh ⊑ OwnedTemporary ⊑ NotOwnedHere`;
+`non-concrete-release-contract.md` §6.2) remains the ownership authority that
+selects the plan; it is not re-derived per pattern kind. The plan gates on
+`scrut_is_heap` as well, and that ordering is the invariant, not an accident:
+category before ownership (§6.2.2 there). The plan is recorded
 **once** before arms are emitted, so a reader can see the arms consume one
 answer rather than two complementary tests.
 

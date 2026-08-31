@@ -62,12 +62,13 @@ golden dumps beside this file under `golden/`.
 | 7 | 07_trait_dispatch | `corpus/07_trait_dispatch.cl` | deftrait + impls + static dispatch | 8 | `05818e9` |
 | 8 | 08_adt_in_vec_projection | `corpus/08_adt_in_vec_projection.cl` | ADT-in-Vec projection-read loop (I-G1 class) | 45 | `05818e9` |
 | 9 | 09_parbind_launch | `corpus/09_parbind_launch.cl` | ParBind/LaunchContinue auto-spark D&C (R6 escape class) | 148 | `05818e9` |
-| 10 | f1_machinery | `tests/fixtures/s99/f1_machinery.cl` | S99 F1 — spark machinery + shared-grid reads | s99_fixtures.rs guards | `05818e9` |
-| 11 | f2_contention | `tests/fixtures/s99/f2_contention.cl` | S99 F2 — shared-Vec-of-ADTs copy contention | s99_fixtures.rs guards | `05818e9` |
-| 12 | f3_inverted_search | `tests/fixtures/s99/f3_inverted_search.cl` | S99 F3 — inverted search | s99_fixtures.rs guards | `05818e9` |
-| 13 | f4_sudoku | `tests/fixtures/s99/f4_sudoku.cl` | S99 F4 — copy-per-guess search | s99_fixtures.rs guards | `05818e9` |
+| 10 | 10_nullary_arm_beside_boxed_arm | `corpus/10_nullary_arm_beside_boxed_arm.cl` | Nullary/boxed match return seam beside an all-boxed control (FIXME 0917) | 200 (2026-08-31) | S120 working tree; commit pending |
+| 11 | f1_machinery | `tests/fixtures/s99/f1_machinery.cl` | S99 F1 — spark machinery + shared-grid reads | s99_fixtures.rs guards | `05818e9` |
+| 12 | f2_contention | `tests/fixtures/s99/f2_contention.cl` | S99 F2 — shared-Vec-of-ADTs copy contention | s99_fixtures.rs guards | `05818e9` |
+| 13 | f3_inverted_search | `tests/fixtures/s99/f3_inverted_search.cl` | S99 F3 — inverted search | s99_fixtures.rs guards | `05818e9` |
+| 14 | f4_sudoku | `tests/fixtures/s99/f4_sudoku.cl` | S99 F4 — copy-per-guess search | s99_fixtures.rs guards | `05818e9` |
 
-The S99 entries (10–13) are referenced in place, not copied — their
+The S99 entries (11–14) are referenced in place, not copied — their
 parallel≡serial guards (`tests/s99_fixtures.rs`) are the green witness; the
 capture runs them serially (`CRANELISP_NO_LENIENT=1` is NOT set — config
 pins above apply; the dump is of compiled code, not execution order).

@@ -43,6 +43,38 @@ pub(crate) struct CtorMeta {
     pub fields: Vec<CtorField>,
 }
 
+/// What a constructor reference's VALUE carries
+/// (`design/backend/non-concrete-release-contract.md` §6.2.1).
+///
+/// "Not a constructor" is not a variant here — it is the probe returning
+/// `None`, i.e. declining to answer. Absence is cardinality, so a
+/// non-constructor global can never be mistaken for a constructor verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CtorValueShape {
+    /// Zero fields: the value IS the tag, lowered to a bare `iconst` below
+    /// `NULLARY_TAG_THRESHOLD`, so it carries no heap reference at all.
+    BareTag,
+    /// One or more fields: using the constructor mints or moves a payload box.
+    Payload,
+}
+
+impl CtorMeta {
+    /// The ONE read of a constructor's field list (Principle 24 — one
+    /// determinant, one read). The bare-tag lowering
+    /// (`literals::nullary_constructor_tag`) and the provenance lattice
+    /// (`fn_compiler::value_provenance`) both answer from here; a second
+    /// `fields.is_empty()` elsewhere would be a channel on which a provenance
+    /// verdict could disagree with what was actually emitted, which is FIXME
+    /// 0917's own shape one level down.
+    pub(crate) fn value_shape(&self) -> CtorValueShape {
+        if self.fields.is_empty() {
+            CtorValueShape::BareTag
+        } else {
+            CtorValueShape::Payload
+        }
+    }
+}
+
 /// Shared immutable context for compilation, bundling references that
 /// are threaded through from `compile_body` to all expression compilers.
 ///
@@ -138,6 +170,15 @@ where
         let table = self.symbol_tables.get(&fq.module)?;
         let entry = table.get(fq.symbol.as_ref())?;
         Self::extract_constructor(entry)
+    }
+
+    /// The constructor probe
+    /// (`design/backend/non-concrete-release-contract.md` §6.2.1): what the
+    /// global reference `fq` names, derived from the ONE keyed
+    /// [`Self::ctor_meta_at`] read and the ONE field-list read
+    /// ([`CtorMeta::value_shape`]). `None` ⇒ not a constructor.
+    pub(crate) fn ctor_value_shape_at(&self, fq: &FQSymbol) -> Option<CtorValueShape> {
+        self.ctor_meta_at(fq).map(|(_, meta)| meta.value_shape())
     }
 
     /// The ONE keyed fetch (S110 W1, `backend-keyed-consumer.md` §1.3) — the
@@ -350,3 +391,6 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod ctor_value_shape_tests;

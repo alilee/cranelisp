@@ -657,17 +657,157 @@ identity, not its absorbing element.**
 >
 > Thresholds: `is_fresh_construction` becomes `<= Fresh`; `yields_owned_temporary`
 > becomes `matches!(p, Fresh | OwnedTemporary)`.
+>
+> **The join's seed moves with its identity.** The `Match` fold currently seeds
+> at `Fresh`, which was the identity of the three-point lattice and is not the
+> identity of the four-point one. It seeds at `NoReference`, so an all-nullary
+> match reads `NoReference` rather than a false `Fresh`. The explicit arm-less
+> guard stays and becomes load-bearing in a second way: ⊤ for a match that
+> yields no value on any path is now distinct from the empty fold's identity,
+> and deleting the guard would silently swap one for the other.
 
 This is a **classification correction, not a new emission licence arm** (G2): no
 emission site gains a branch, the exhaustive `value_provenance` match gains one
 arm's answer, and `protect_return_value` is untouched.
 
+§6.2.1 and §6.2.2 settle the two interior questions the ruling left open: how a
+zero-field constructor is recognised from backend-owned facts, and what the
+scalar bottom does at the consumers that classify without the probe.
+
+#### 6.2.1 The constructor probe carries the distinction — one determinant, one read
+
+`value_provenance`'s context-dependent input is a **boolean** — `is_ctor:
+Fn(&FQSymbol) -> bool` — and its one real producer is
+`FnCompiler::body_is_fresh_construction`'s `|fq| ctx.ctor_meta_at(fq).is_some()`.
+A boolean separates *constructor* from *not a constructor*; it cannot separate
+*zero-field constructor* from *constructor with fields*, so the `Var` arm cannot
+reach the ruled verdict as the probe is shaped. That is the ruling's missing
+interior decision, and it is settled here.
+
+The determinant is already backend-owned and already single-sourced.
+`CompileContext::ctor_meta_at` is the ONE keyed constructor read (Principle 24),
+and the metadata it produces carries the field list; `literals.rs`'s
+`nullary_constructor_tag` asks exactly this question — *does this global
+reference name a zero-field constructor?* — to decide the bare-`iconst`
+lowering. Nothing new has to be learned; the answer has to stop being discarded
+on the way to the lattice.
+
+> **Ruling.** The probe's answer widens from a boolean to a **three-state closed
+> classification of a global reference**: *not a constructor*; *a constructor
+> whose value is the tag itself* (zero fields); *a constructor whose use mints
+> or moves a payload* (one or more fields). Absence is cardinality — "not a
+> constructor" is the probe declining to answer, not a variant of a constructor
+> answer. One probe, one determinant, one keyed read; the probeless consumers
+> pass the constant "not a constructor" exactly as they pass `|_| false` today.
+>
+> **The probe's producer is the same keyed read the bare-tag lowering uses.** A
+> second read of the same fact could disagree with the lowering, and a
+> provenance verdict that disagrees with what was emitted *is* the 0917 shape
+> re-created one level down.
+
+Where the four provenance-carrying arms read it:
+
+| Node | Verdict | Change |
+|---|---|---|
+| `Var`, global, zero-field ctor | `NoReference` | **the correction** — was ⊤ |
+| `Var`, global, ctor with fields | `NotOwnedHere` | unchanged (a ctor-as-value mints a wrapper; ⊤ is conservative and narrowing it is not this ruling's — P25) |
+| `Var`, any other | `NotOwnedHere` | unchanged |
+| `Apply`, callee is a zero-field ctor | `NoReference` | same determinant, same answer — no second rule about which arm asks which question |
+| `Apply`, callee is a ctor with fields | `Fresh` | unchanged |
+| `ConstrADT`, no fields | `NoReference` | **probe-free** — the field list is in the node |
+| `ConstrADT`, one or more fields | `Fresh` | unchanged |
+
+The `ConstrADT` split is not optional trimming. A synthesised nullary
+constructor body carries no reference, and leaving it at `Fresh` would make
+`NoReference` mean "a nullary constructor *reference*" rather than what it is
+named for. It costs one in-node test and no probe.
+
+**`NoReference` is a claim about the value, and only the zero-field
+constructor earns it.** A one-field constructor that is *value-flattened* to a
+bare word is not this point: when its field is heap-typed, that word IS the
+reference. The bare-tag representation below `NULLARY_TAG_THRESHOLD` is why the
+zero-field case carries nothing; representation-flattening is a different fact
+with a different owner (`HeapCategory::Value`), and extending the bottom point
+to it would be a new ruling with its own check.
+
+Rejected, both for the same reason — two homes for one decision:
+
+- **A second `is_nullary_ctor` probe beside `is_ctor`.** Two predicates over one
+  determinant can disagree and nothing reconciles them. This is the polarity gap
+  S118 closed by folding both guarded RC halves onto `heap::emit_nullary_skip_guard`,
+  and the resolver-mirror class S110 closed at `resolution.rs`.
+- **Pre-classifying at the call sites and handing the lattice a richer node.**
+  That pushes the rule back out to the sites `value_provenance` exists to
+  consolidate — the node-kind-standing-in-for-the-derived-answer class (0781).
+
+#### 6.2.2 Scalar bottom at the probeless consumers — admitted, inert by the category gate
+
+Scalar-literal bottom is **probe-independent**, so unlike the constructor half it
+reaches every consumer. The exact census at HEAD is one probe-reading consumer
+and four probeless ones:
+
+| Consumer | Threshold | Probe |
+|---|---|---|
+| `rc_emission::protect_return_value` (via `body_is_fresh_construction`) | `<= Fresh` | real |
+| `match_codegen::compile_match` — the once-recorded arm lifetime plan | owned | constant |
+| `vec_codegen::cow_source_has_separate_owner` | owned | constant |
+| `vec_codegen::is_vec_last_use` | owned | constant |
+| `vec_codegen::emit_vec_drop_if_temporary` | owned | constant |
+
+A scalar **leaf** is verdict-identical: `NotOwnedHere` and `NoReference` are both
+below the owned threshold. The only behavioural difference is at a **join** — a
+scalar arm stops poisoning to ⊤ and is absorbed, so `(if b 0 (f x))` reads
+`OwnedTemporary` where it read `NotOwnedHere`.
+
+> **Ruling.** The scalar bottom is admitted as ruled, and it is inert at every
+> release seam by the standing gate order: **category before ownership.** No RC
+> operation is licensed by a provenance verdict alone. Each seam first asks the
+> value's own type whether a reference exists at all — `HeapCategory::classify` /
+> `signature_heap_category` — and `NeverHeap`/`Value` emit nothing. Provenance
+> answers *whose* reference; it never answers *whether*.
+
+This is R-1 (§3.1, category before operation) one level down, and it is the
+as-built shape at every consumer, not a new obligation: the match seam ANDs its
+plan with `scrut_is_heap`; the three Vec seams take a Vec-typed operand; the
+`BorrowRoot` consumer that the plan also feeds
+(`protect_escaping_borrows_before_tail_jump`) matches on `signature_heap_category`
+with empty `NeverHeap | Value` arms.
+
+The join change therefore cannot reach a value that carries a reference. Every
+arm of a join has the join's type; a scalar literal's type is `Int`/`Float`/
+`Bool`, all `NeverHeap`, so a scalar literal can only ever be absorbed into a
+scalar-typed join. **The nullary constructor reference is the one bottom value
+that can sit in a heap-typed join** — and it is probe-*dependent*, so the four
+probeless seams do not see it and keep their conservative ⊤ reading there. That
+is the leak-safe direction, and §6.3's monotonicity pin is what makes it a
+stated property rather than a coincidence.
+
+**Grade, stated honestly.** Inertness is structural *given* the category gate,
+and the gate's presence is currently asserted seam-by-seam rather than enforced
+by construction. Named falsifier: **a provenance-licensed RC emission not
+preceded by a category gate on the value's own type.** The §9 negative cell is
+where that is observed; converging the gates is a larger reshape than 0917 and
+is not attempted here.
+
+**Named residual, with its trigger.** `Trace`/`ParBind`/`LaunchContinue` cap
+their forwarded value at `OwnedTemporary`, so a `NoReference` inner value is
+lifted to a false ownership claim. It stays: the cap is uniform, monotone-safe
+(it only weakens), and inert under the category gate, and splitting it would add
+a special case for no observable. Revisit when either condition appears — a seam
+that consumes a provenance verdict *without* a preceding category gate, or a
+`NoReference`-carrying value that reaches a release through one of these three
+wrappers.
+
 ### 6.3 The pin that must be amended, and how
 
 `provenance_owned_threshold_is_probe_independent` asserts the owned threshold is
-identical under `|_| true` and `|_| false`, so the five probeless release gates
-need no symbol-table access. A nullary-ctor `Var` is only distinguishable from an
-ordinary `Var` *with* the probe, so equality cannot survive. Replace it with the
+identical under `|_| true` and `|_| false`, so the probeless release gates need
+no symbol-table access. (**Census correction:** there are **four**, not five —
+§6.2.2's table is the count at HEAD. The fifth, `compile_var_pattern_arm`'s
+alias registration, was deleted by `transitive-drop-glue.md` §5.1's single-owner
+ruling at S118; "five ownership gates" survives in the crate `CLAUDE.md` and is
+stale there.) A nullary-ctor `Var` is only distinguishable from an ordinary
+`Var` *with* the probe, so equality cannot survive. Replace it with the
 strictly stronger **monotonicity** pin:
 
 > The constructor probe may only move a node's provenance **down** the lattice
@@ -677,23 +817,45 @@ strictly stronger **monotonicity** pin:
 > never the UAF one.
 
 Equality was a proxy for "the probeless gates are safe"; monotonicity states it
-directly and keeps the instrument's real content. `/dev` re-derives it over the
-same node corpus the existing pin walks.
+directly and keeps the instrument's real content.
+
+**The corpus must contain a node the probe actually moves.** The existing pin
+walks eight nodes, none of which is a zero-field-constructor reference, so
+monotonicity over that corpus alone is vacuously true and the instrument would
+be indistinguishable from one that cannot fire. The pin's corpus gains at least
+a bare nullary-ctor `Var` and a mixed nullary/boxed match, and the strictness is
+asserted where it is expected — the probe *does* move those two, and moves them
+down — so the pin proves detection as well as the property.
 
 ### 6.4 Byte-identity obligation
 
-Moving scalar literals to `NoReference` is the honest classification but must be
-proven emission-neutral: `HeapCategory::classify` already makes a scalar body's
-protect a no-op, so the golden CLIF corpus is expected byte-identical for that
-half. `/dev` verifies against `tests/fixtures/clif_baseline/golden/` and reports;
-a non-identity is a finding, not a re-baseline.
+The correction has two halves and only one of them can move emission.
+
+The **constructor half** is probe-dependent, so it reaches exactly one consumer,
+`protect_return_value` — which is where 0917's unbalanced inc lives. Golden CLIF
+changes there for the covered bodies are the fix, not a regression.
+
+The **scalar half** is probe-independent and reaches all five, and it is claimed
+emission-neutral: the protect is type-gated (`HeapCategory::classify` yields
+`NeverHeap`/`Value` for a scalar body and emits nothing), and §6.2.2's typing
+argument bounds the four probeless seams. That claim is checked, not assumed —
+`/dev` verifies against `tests/fixtures/clif_baseline/golden/` and reports. A
+scalar-body or scalar-typed-join difference is a **finding**, not a re-baseline;
+it would mean a seam consumes a provenance verdict without its category gate,
+which is precisely §6.2.2's named falsifier.
 
 ### 6.5 Acceptance
 
-`nullary_arm_beside_boxed_arm_0917` ×2 (`--run` and `--link`) plus cell #21
-(`exemplar_ownership_residue_s116::sudoku_warm_serial_solve_residue_at_most_1400`
-— re-attributed here by `/qa`, `s118-test-plan.md` §11.8.1). Three REDs, no
-producer dependency, no cross-crate delta.
+FIXME 0917's compiler correction is accepted solely by the two reduced direct
+compiler cells in `nullary_arm_beside_boxed_arm_0917` (`--run` and `--link`),
+both at exact marginal zero, and the backend invariants in §6.2–§6.4 and §9.
+It has no producer dependency and no cross-crate delta.
+
+Exemplar cell #21
+(`exemplar_ownership_residue_s116::sudoku_warm_serial_solve_residue_at_most_1400`)
+is a downstream observer only. A surprising result there creates separate
+defect intake for `/qa`; it cannot shape, block, or reopen acceptance of the
+compiler correction.
 
 ---
 
@@ -800,7 +962,8 @@ owner per the crate `CLAUDE.md` sibling convention.
 | `rc_emission::signature_heap_category` | each concrete shape maps to its category; the census instrument records a licence with frame + shape | a concrete sum with a nullary ctor is `Mixed`; a concrete product is `AlwaysHeap` | **a residual `Type::Var` yields NO category and NO RC op** — not `Mixed`; the census instrument fires (detection proof, per the 0768 rule); after the flip, a located error naming the frame |
 | `fn_compiler` ctor template (replaces §10 row 4) | a generic-ctor template and an undeclared-field template each emit **zero** RC ops on their residual parameters; a concrete-field template still takes the ordinary `drop<T>` path | multi-field template: zero ops on every residual field, ordinary path on every concrete one | no guarded inc and no guarded dec survive on a residual parameter at any seam; `ctor_template_admission_tests::assert_threshold_guarded_rmws` finds no rmw traceable to a residual slot |
 | `drop_glue` IO arm | `ADT(primitives/IO, [T])` classifies runtime-owned and emits dec + tag test + `drop<T>` + `free_io_node`; `IO Int` emits the same shape with `drop<Int>` elided as non-owning | nested `Bind` over `IO (IO Int)` requests one body, not two | `ctor_shapes` is **not** called for `primitives/IO`; no IO-specific payload releaser symbol is minted; the identity check at `:497-505` is unchanged and still fires for a genuinely divergent user type |
-| `fn_compiler::value_provenance` | `NoReference` for a bare nullary ctor `Var` and for scalar literals; `Fresh` for every minting kind | `join(NoReference, Fresh) == Fresh`; `join(NoReference, NotOwnedHere) == NotOwnedHere`; a match with N nullary arms and one boxed arm is `Fresh` | **probe monotonicity** (§6.3) over the existing node corpus; a borrowing kind never reaches an owned point under any probe; the match stays exhaustive (no `_ =>`) |
+| `fn_compiler::value_provenance` | `NoReference` for a bare nullary-ctor `Var`, an `Apply` of one, a fieldless `ConstrADT` and every scalar literal; `Fresh` for every minting kind | `join(NoReference, Fresh) == Fresh`; `join(NoReference, NotOwnedHere) == NotOwnedHere`; a match with N nullary arms and one boxed arm is `Fresh`; an all-nullary match is `NoReference` (the fold seeds at the identity), while an **arm-less** match stays `NotOwnedHere` | **probe monotonicity** (§6.3) over a corpus that includes a node the probe moves — vacuous otherwise; a ctor **with fields** referenced as a value stays `NotOwnedHere` under both probes; a borrowing kind never reaches an owned point under any probe; the match stays exhaustive (no `_ =>`) |
+| `fn_compiler` ctor probe (§6.2.1) | the three-state answer is produced by the one keyed `ctor_meta_at` read and agrees with `literals::nullary_constructor_tag` on every global reference | a constructor with fields answers "mints or moves", never "bare tag" | a non-constructor global declines; no second probe and no second read of the field list exists (the disagreement channel is unconstructable, not merely untested) |
 | `error` / diagnostic frame | a codegen refusal renders one category prefix, a real span, and an unmangled subject | a refusal from inside a monomorphised instance renders the instantiation as types | no `0..0` span from the glue registry; no `module/module/` doubling |
 
 E2e acceptance is `/qa`'s (`tests/plan/s119-test-plan.md`); §7.1 names the
@@ -814,7 +977,8 @@ witnesses this design owes it.
   exception, invariant I-CT, I-CT's standing `Borrowed`-mode obligation, the
   `Err ⇒ Mixed` fabrication, the type-keyed release arm, and (via §5.2) two
   monomorphisation exemptions. **Added: one intrinsics entry point that is a
-  split of an existing body, and one lattice point.** Mechanism count for
+  split of an existing body, one lattice point, and one widened probe answer
+  (§6.2.1) that replaces a boolean rather than joining it.** Mechanism count for
   release stays at one plus the two sanctioned runtime dispatches
   (`transitive-drop-glue.md` §1.1 M5 and, now explicitly, the IO tag-walker).
 - **Observability.** The census instrument (§5.1) is the first thing in this
