@@ -90,7 +90,7 @@ requirement changes. No permanent RED was disabled or removed.
 
 Commit scope was checked against the seven compiler streams, five user-facing
 streams, their evidence and standing records, starting from Sprint 120's close
-commit `18bca20d`. The untraced `Cargo.toml` development-debug setting is
-preserved locally but excluded from publication. The reported executing
-evidence used the existing worktree configuration; no fresh-clone test claim
-is made for the published commit.
+commit `18bca20d`. The user subsequently approved including the existing
+`Cargo.toml` development-debug setting (`debug = 1`); it is included in the
+close follow-up, and Cargo metadata validation passes. The reported executing
+evidence used this configuration; no fresh-clone test claim is made.

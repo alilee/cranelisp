@@ -38,6 +38,11 @@ default-members = [
 ]
 resolver = "2"
 
+[profile.dev]
+# Line-tables-only: keeps file:line in panics/backtraces without full DWARF.
+# Not using a debugger day-to-day; bump to `true` if that changes.
+debug = 1
+
 [workspace.dependencies]
 # Sprint 66 Wave 2 Batch A: D43 runtime split crate skeletons. Path deps
 # declared at the workspace level so consumers can opt in via
