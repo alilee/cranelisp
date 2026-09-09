@@ -1,7 +1,10 @@
 use super::*;
 use crate::builtins::FixtureBuilder;
 use crate::checker::TestFixture;
-use cranelisp_types::{ConstructorDef, ModuleFullPath, TraitName};
+use cranelisp_types::{
+    ApplyRef, Binding, Callable, CallableOrigin, ConstructorDef, Life, ModuleFullPath, TraitName,
+    VarRef,
+};
 
 /// Minimal fixture for the ADT-registration tests (FIXME 0243 narrowing).
 ///
@@ -42,15 +45,39 @@ fn make_ctor(name: &str) -> ConstructorDef {
 }
 
 /// Test helper: resolve a constructor by its BARE name to the terminal `Def`,
-/// following the S109 same-module bare→canonical `Import` alias one hop. A
+/// following the S109 same-module bare→canonical candidate one hop. A
 /// sum ctor's real `Def` is keyed `Type.Ctor` (`member_key`) with the bare
-/// name an alias; a product ctor keeps its bare type-name key (no alias, hit
+/// name exposed as a candidate; a product ctor keeps its bare type-name key
 /// directly). Type-agnostic — follows the alias edge without knowing the type.
-fn ctor_entry<'t>(table: &'t cranelisp_types::SymbolTable, name: &str) -> Option<&'t ModuleEntry> {
-    match table.get(name)? {
-        ModuleEntry::Import { source, .. } => table.get(source.symbol.as_ref()),
-        e => Some(e),
+fn ctor_entry<'t>(table: &'t cranelisp_types::SymbolTable, name: &str) -> Option<&'t Binding> {
+    if let Some(entry) = table.get(name) {
+        return Some(entry);
     }
+    let candidates = table.name_candidates(&Symbol::from(name));
+    let candidate = candidates.as_slice().first()?;
+    (candidates.len() == 1 && candidate.source.module == table.path)
+        .then(|| table.get(candidate.source.symbol.as_ref()))
+        .flatten()
+}
+
+fn ctor_callable<'t>(table: &'t cranelisp_types::SymbolTable, name: &str) -> Option<&'t Callable> {
+    let callable = ctor_entry(table, name)?.callable()?;
+    matches!(callable.origin, CallableOrigin::Ctor { .. }).then_some(callable)
+}
+
+fn is_candidate(table: &cranelisp_types::SymbolTable, name: &str) -> bool {
+    table.get(name).is_none() && table.name_candidates(&Symbol::from(name)).len() == 1
+}
+
+fn is_ambiguous(table: &cranelisp_types::SymbolTable, name: &str) -> bool {
+    table.name_candidates(&Symbol::from(name)).len() > 1
+}
+
+fn is_concrete_callable(binding: Option<&Binding>) -> bool {
+    matches!(
+        binding.and_then(Binding::callable).map(|c| &c.arm.life),
+        Some(Life::Concrete { .. })
+    )
 }
 
 // spec: 05-definitions §5.2.3 — enum type registers constructors in symbol table
@@ -71,9 +98,9 @@ fn test_register_enum_type() {
     assert!(tc.lookup_type_def(&TypeName::from("Color")).is_some());
 
     // Constructors should be in symbol table
-    assert!(tc.symbol_table().get("Red").is_some());
-    assert!(tc.symbol_table().get("Green").is_some());
-    assert!(tc.symbol_table().get("Blue").is_some());
+    assert!(ctor_entry(&tc.symbol_table(), "Red").is_some());
+    assert!(ctor_entry(&tc.symbol_table(), "Green").is_some());
+    assert!(ctor_entry(&tc.symbol_table(), "Blue").is_some());
 
     // Constructor type lookup
     assert_eq!(
@@ -96,9 +123,8 @@ fn test_constructor_scheme_is_adt_type() {
     )
     .unwrap();
 
-    if let Some(ModuleEntry::Def { kind, scheme, .. }) = ctor_entry(&tc.symbol_table(), "True2")
-        && matches!(kind.as_ref(), DefKind::Constructor { .. })
-    {
+    if let Some(callable) = ctor_callable(&tc.symbol_table(), "True2") {
+        let scheme = &callable.arm.scheme;
         assert_eq!(scheme.ty, Type::ADT(user_fqtn("Bool2"), vec![]));
     } else {
         panic!("True2 should be a Constructor entry");
@@ -132,9 +158,8 @@ fn test_register_polymorphic_option() {
     .unwrap();
 
     // None should be polymorphic: forall [a]. (Option a)
-    if let Some(ModuleEntry::Def { kind, scheme, .. }) = ctor_entry(&tc.symbol_table(), "None")
-        && matches!(kind.as_ref(), DefKind::Constructor { .. })
-    {
+    if let Some(callable) = ctor_callable(&tc.symbol_table(), "None") {
+        let scheme = &callable.arm.scheme;
         assert_eq!(
             scheme.type_vars.len(),
             1,
@@ -153,9 +178,8 @@ fn test_register_polymorphic_option() {
     }
 
     // Some should be polymorphic: forall [a]. (Fn [a] (Option a))
-    if let Some(ModuleEntry::Def { kind, scheme, .. }) = ctor_entry(&tc.symbol_table(), "Some")
-        && matches!(kind.as_ref(), DefKind::Constructor { .. })
-    {
+    if let Some(callable) = ctor_callable(&tc.symbol_table(), "Some") {
+        let scheme = &callable.arm.scheme;
         assert_eq!(
             scheme.type_vars.len(),
             1,
@@ -180,6 +204,19 @@ fn test_register_polymorphic_option() {
     } else {
         panic!("Some should be a Constructor entry");
     }
+
+    // spec: 05-definitions §5.2.6 — `val` is payload metadata on the
+    // `Some` sum arm. It must not mint either a canonical accessor or a bare
+    // resolution candidate; payload extraction is positional `match`.
+    let table = tc.symbol_table();
+    assert!(
+        table.get("Option.val").is_none(),
+        "sum payload labels must not mint canonical accessors"
+    );
+    assert!(
+        table.name_candidates(&Symbol::from("val")).is_empty(),
+        "sum payload labels must not mint bare candidates"
+    );
 }
 
 // spec: 05-definitions §5.2.1 — product type constructor is function from fields to ADT
@@ -201,16 +238,15 @@ fn test_register_product_type_with_fields() {
     {
         let mut user = tc.symbol_table_mut();
         for ty in ["Int", "Bool"] {
-            user.insert(
+            user.expose_candidate(
                 Symbol::from(ty),
-                cranelisp_types::ModuleEntry::Import {
-                    source: cranelisp_types::FQSymbol {
-                        module: cranelisp_types::ModuleFullPath::from("primitives"),
-                        symbol: Symbol::from(ty),
-                    },
-                    visibility: Visibility::Public,
+                cranelisp_types::FQSymbol {
+                    module: cranelisp_types::ModuleFullPath::from("primitives"),
+                    symbol: Symbol::from(ty),
                 },
-            );
+                Visibility::Public,
+            )
+            .unwrap();
         }
     }
     tc.register_type_def_self(
@@ -246,9 +282,8 @@ fn test_register_product_type_with_fields() {
     .unwrap();
 
     // MkPair :: (Fn [Int Bool] Pair)
-    if let Some(ModuleEntry::Def { kind, scheme, .. }) = ctor_entry(&tc.symbol_table(), "MkPair")
-        && matches!(kind.as_ref(), DefKind::Constructor { .. })
-    {
+    if let Some(callable) = ctor_callable(&tc.symbol_table(), "MkPair") {
+        let scheme = &callable.arm.scheme;
         assert!(scheme.type_vars.is_empty(), "MkPair should be monomorphic");
         assert_eq!(
             scheme.ty,
@@ -266,18 +301,13 @@ fn test_register_product_type_with_fields() {
     let info = tc.lookup_type_def(&TypeName::from("Pair")).unwrap();
     assert_eq!(info.constructors.len(), 1);
     assert_eq!(info.constructors[0].as_ref(), "MkPair");
-    if let Some(ModuleEntry::Def {
-        kind,
-        scheme,
-        param_names,
-        ..
-    }) = ctor_entry(&tc.symbol_table(), "MkPair")
-    {
-        if let DefKind::Constructor { field_count, .. } = kind.as_ref() {
-            assert_eq!(*field_count, 2);
-        } else {
-            panic!("MkPair should be DefKind::Constructor");
-        }
+    if let Some(callable) = ctor_callable(&tc.symbol_table(), "MkPair") {
+        let CallableOrigin::Ctor { field_count, .. } = &callable.origin else {
+            unreachable!()
+        };
+        assert_eq!(*field_count, 2);
+        let scheme = &callable.arm.scheme;
+        let param_names = &callable.arm.param_names;
         assert_eq!(param_names.len(), 2);
         assert_eq!(param_names[0].as_ref(), "x");
         assert_eq!(param_names[1].as_ref(), "y");
@@ -299,16 +329,15 @@ fn tf_with_scalar_imports() -> TestFixture {
     {
         let mut user = tc.symbol_table_mut();
         for ty in ["Int", "Bool"] {
-            user.insert(
+            user.expose_candidate(
                 Symbol::from(ty),
-                cranelisp_types::ModuleEntry::Import {
-                    source: cranelisp_types::FQSymbol {
-                        module: cranelisp_types::ModuleFullPath::from("primitives"),
-                        symbol: Symbol::from(ty),
-                    },
-                    visibility: Visibility::Public,
+                cranelisp_types::FQSymbol {
+                    module: cranelisp_types::ModuleFullPath::from("primitives"),
+                    symbol: Symbol::from(ty),
                 },
-            );
+                Visibility::Public,
+            )
+            .unwrap();
         }
     }
     tc
@@ -348,36 +377,35 @@ fn product_field_synthesises_concrete_accessor() {
     .unwrap();
 
     // Canonical `Box.v` is a concrete UserFn accessor with a GOT slot; bare
-    // `v` is its Import alias.
+    // `v` exposes it as its sole candidate.
     assert!(
-        matches!(tc.symbol_table().get("v"), Some(ModuleEntry::Import { .. })),
-        "bare `v` must be the Import alias onto Box.v"
+        is_candidate(&tc.symbol_table(), "v"),
+        "bare `v` must expose Box.v as its sole candidate"
     );
-    match tc.symbol_table().get("Box.v") {
-        Some(
-            entry @ ModuleEntry::Def {
-                kind,
-                scheme,
-                ast,
-                param_names,
-                ..
-            },
-        ) => {
+    match tc.symbol_table().get("Box.v").and_then(Binding::callable) {
+        Some(callable) => {
             assert!(
-                matches!(
-                    kind.as_ref(),
-                    DefKind::UserFn {
-                        fn_state: cranelisp_types::UserFnState::Concrete { .. }
-                    }
-                ),
+                matches!(callable.arm.life, Life::Concrete { .. }),
                 "accessor `v` must be a concrete UserFn"
             );
             assert!(
-                entry.callable_got_slot().is_some(),
+                tc.symbol_table()
+                    .get("Box.v")
+                    .unwrap()
+                    .callable_got_slot()
+                    .is_some(),
                 "accessor needs a GOT slot"
             );
-            assert!(ast.is_some(), "accessor carries a synthesised match body");
-            assert_eq!(param_names.len(), 1, "accessor takes one parameter");
+            assert!(
+                matches!(callable.arm.life, Life::Concrete { ast: Some(_), .. }),
+                "accessor carries a synthesised match body"
+            );
+            assert_eq!(
+                callable.arm.param_names.len(),
+                1,
+                "accessor takes one parameter"
+            );
+            let scheme = &callable.arm.scheme;
             // Scheme: (Fn [Box] Int).
             match &scheme.ty {
                 Type::Fn(params, ret) => {
@@ -393,28 +421,27 @@ fn product_field_synthesises_concrete_accessor() {
 }
 
 // spec: 05-definitions §5.2.6 — accessor synthesis over an existing
-// NON-accessor binding is refused (safe disposition): the existing binding
-// is kept, the collision is recorded for a non-fatal diagnostic, and the
-// accessor is NOT inserted (no silent shadow).
+// NON-accessor binding is retained alongside the accessor candidate. The
+// canonical accessor remains independently addressable as `Box.v`.
 #[test]
-fn accessor_collision_with_nonaccessor_is_refused() {
+fn accessor_candidate_coexists_with_nonaccessor_binding() {
     let mut tc = tf_with_scalar_imports();
     // Seed a user binding `v` (a NotDetermined UserFn) BEFORE the deftype.
-    tc.symbol_table_mut().insert(
-        Symbol::from("v"),
-        ModuleEntry::def(
+    tc.symbol_table_mut()
+        .declare(
+            Symbol::from("v"),
             Scheme {
                 type_vars: vec![],
                 constraints: HashMap::new(),
                 ty: Type::Int,
             },
-            DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::NotDetermined,
-            },
+            vec![],
+            None,
+            0,
+            CallableOrigin::Plain,
+            Visibility::Public,
         )
-        .visibility(Visibility::Public)
-        .build(),
-    );
+        .unwrap();
     tc.register_type_def_self(
         &TypeName::from("Box"),
         &None,
@@ -425,27 +452,21 @@ fn accessor_collision_with_nonaccessor_is_refused() {
     )
     .unwrap();
 
-    // A NotDetermined UserFn is NOT an accessor → the collision is refused.
-    // The existing entry is unchanged (still NotDetermined), and the clash
-    // is recorded as a deferred collision for the finalize warning.
-    match tc.symbol_table().get("v") {
-        Some(ModuleEntry::Def { kind, .. }) => assert!(
-            matches!(
-                kind.as_ref(),
-                DefKind::UserFn {
-                    fn_state: cranelisp_types::UserFnState::NotDetermined
-                }
-            ),
+    // The existing local binding is unchanged and the accessor is retained as
+    // another candidate under the bare spelling.
+    match tc.symbol_table().get("v").and_then(Binding::callable) {
+        Some(callable) => assert!(
+            matches!(callable.arm.life, Life::Declared { .. }),
             "existing non-accessor `v` must be preserved, not overwritten"
         ),
         other => panic!("`v` must still be the user binding, got {other:?}"),
     }
+    let candidates = tc.symbol_table().name_candidates(&Symbol::from("v"));
+    assert_eq!(candidates.len(), 2, "local v plus canonical Box.v");
     assert!(
-        tc.state
-            .deferred_accessor_collisions
+        candidates
             .iter()
-            .any(|(n, _)| n.as_ref() == "v"),
-        "the accessor/binding collision must be recorded for a diagnostic"
+            .any(|candidate| candidate.source.symbol.as_ref() == "Box.v")
     );
 }
 
@@ -470,22 +491,19 @@ fn cross_type_duplicate_field_poisons_bare_accessor() {
     )
     .unwrap();
 
-    // Before the collision, bare `v` is the Import ALIAS onto the canonical
-    // `Box.v` (inverted model §1.6.1); `Box.v` is the real concrete accessor.
+    // Before the collision, bare `v` exposes the canonical `Box.v` as its sole
+    // candidate; `Box.v` is the real concrete accessor.
     assert!(
-        matches!(tc.symbol_table().get("v"), Some(ModuleEntry::Import { .. })),
-        "single-type bare `v` is the Import alias onto Box.v before any collision"
+        is_candidate(&tc.symbol_table(), "v"),
+        "single-type bare `v` exposes only Box.v before any collision"
     );
     assert!(
         matches!(
-            tc.symbol_table().get("Box.v"),
-            Some(ModuleEntry::Def { kind, .. })
-                if matches!(
-                    kind.as_ref(),
-                    DefKind::UserFn {
-                        fn_state: cranelisp_types::UserFnState::Concrete { .. }
-                    }
-                )
+            tc.symbol_table()
+                .get("Box.v")
+                .and_then(Binding::callable)
+                .map(|c| &c.arm.life),
+            Some(Life::Concrete { .. })
         ),
         "canonical Box.v is the concrete UserFn accessor"
     );
@@ -502,15 +520,8 @@ fn cross_type_duplicate_field_poisons_bare_accessor() {
     )
     .unwrap();
 
-    // `v` is now POISONED — an `Ambiguous` sentinel, NOT an `Overloaded`
-    // base and NOT a winner-picked concrete UserFn.
-    match tc.symbol_table().get("v") {
-        Some(ModuleEntry::Ambiguous { .. }) => {}
-        other => panic!(
-            "`v` must be poisoned (Ambiguous) after the cross-type field-name \
-                 collision, got {other:?}"
-        ),
-    }
+    // `v` now retains both canonical candidates rather than selecting a winner.
+    assert!(is_ambiguous(&tc.symbol_table(), "v"));
     // It is NOT folded into the overload mechanism: no `Overloaded` base, no
     // mangled `v$Box`/`v$Cup` variants exist.
     assert!(
@@ -578,11 +589,9 @@ fn cross_type_duplicate_field_poisons_bare_accessor() {
 /// while the live symbol table (committed entries) persists. Clearing the
 /// two per-cluster sets reproduces exactly the condition FIXME 0366 closes —
 /// the second deftype's accessor synthesis cannot see the first accessor in
-/// `synthesised_accessor_names`, only in the committed live table.
+/// same-check ephemeral state, only in the committed live table.
 fn new_cluster(tc: &mut TestFixture) {
-    tc.state.synthesised_accessor_names.clear();
     tc.state.accessor_owning_types.clear();
-    tc.state.deferred_accessor_collisions.clear();
 }
 
 // spec: 05-definitions §5.2.6 + 08-modules §8.6.5 (FIXME 0366) — at the REPL
@@ -607,20 +616,11 @@ fn cross_cluster_duplicate_field_poisons_bare_accessor() {
     // Inverted model: bare `v` is the Import alias; canonical `Box.v` is the
     // concrete accessor `Def`.
     assert!(
-        matches!(tc.symbol_table().get("v"), Some(ModuleEntry::Import { .. })),
-        "single-type bare `v` is the Import alias after cluster 1"
+        is_candidate(&tc.symbol_table(), "v"),
+        "single-type bare `v` exposes one candidate after cluster 1"
     );
     assert!(
-        matches!(
-            tc.symbol_table().get("Box.v"),
-            Some(ModuleEntry::Def { kind, .. })
-                if matches!(
-                    kind.as_ref(),
-                    DefKind::UserFn {
-                        fn_state: cranelisp_types::UserFnState::Concrete { .. }
-                    }
-                )
-        ),
+        is_concrete_callable(tc.symbol_table().get("Box.v")),
         "canonical Box.v is the concrete UserFn accessor after cluster 1"
     );
 
@@ -643,22 +643,9 @@ fn cross_cluster_duplicate_field_poisons_bare_accessor() {
 
     // `v` is POISONED (`Ambiguous`), exactly as in the single-cluster
     // (`--run`/`--link`) path — NOT first-wins-suppressed.
-    match tc.symbol_table().get("v") {
-        Some(ModuleEntry::Ambiguous { .. }) => {}
-        other => panic!(
-            "cross-cluster duplicate-field accessor `v` must be poisoned \
-                 (Ambiguous), got {other:?}"
-        ),
-    }
-    // It was NOT routed down the suppress-and-first-wins (non-accessor)
-    // refusal path: no deferred collision recorded for `v`.
     assert!(
-        !tc.state
-            .deferred_accessor_collisions
-            .iter()
-            .any(|(n, _)| n.as_ref() == "v"),
-        "cross-cluster duplicate field must poison, not record a \
-             suppress-and-first-wins refusal"
+        is_ambiguous(&tc.symbol_table(), "v"),
+        "cross-cluster duplicate-field accessor `v` must retain both candidates"
     );
     // The cross-cluster ambiguity hint lists BOTH owning types even though
     // `Box` was recorded in the now-discarded cluster-1 state — the prior
@@ -712,10 +699,7 @@ fn cross_cluster_bare_field_ambiguity_message_lists_canonical_alternatives() {
     )
     .unwrap();
     assert!(
-        matches!(
-            tc.symbol_table().get("v"),
-            Some(ModuleEntry::Ambiguous { .. })
-        ),
+        is_ambiguous(&tc.symbol_table(), "v"),
         "duplicate field `v` must be poisoned after cluster 2"
     );
 
@@ -830,25 +814,13 @@ fn cross_cluster_single_type_accessor_not_poisoned() {
     // `Cup.w` (the real concrete `Def`s).
     for (bare, canonical) in [("v", "Box.v"), ("w", "Cup.w")] {
         assert!(
-            matches!(
-                tc.symbol_table().get(bare),
-                Some(ModuleEntry::Import { .. })
-            ),
-            "distinct-field bare `{bare}` must remain a clean Import alias \
+            is_candidate(&tc.symbol_table(), bare),
+            "distinct-field bare `{bare}` must remain a single candidate \
                  across clusters (no spurious poison), got {:?}",
-            tc.symbol_table().get(bare)
+            tc.symbol_table().name_candidates(&Symbol::from(bare))
         );
         assert!(
-            matches!(
-                tc.symbol_table().get(canonical),
-                Some(ModuleEntry::Def { kind, .. })
-                    if matches!(
-                        kind.as_ref(),
-                        DefKind::UserFn {
-                            fn_state: cranelisp_types::UserFnState::Concrete { .. }
-                        }
-                    )
-            ),
+            is_concrete_callable(tc.symbol_table().get(canonical)),
             "canonical `{canonical}` must be the concrete UserFn accessor, got {:?}",
             tc.symbol_table().get(canonical)
         );
@@ -885,24 +857,12 @@ fn cross_cluster_same_type_redefinition_not_poisoned() {
     // Inverted model: bare `v` stays a clean Import alias (NOT poisoned) — a
     // same-type redefinition is not a cross-type duplicate-field collision;
     // the canonical `Box.v` is re-minted and bare `v` re-aliased to it.
-    match tc.symbol_table().get("v") {
-        Some(ModuleEntry::Import { .. }) => {}
-        other => panic!(
-            "`v` after a same-type Box redefinition must stay a clean Import \
-                 alias, not be poisoned, got {other:?}"
-        ),
-    }
     assert!(
-        matches!(
-            tc.symbol_table().get("Box.v"),
-            Some(ModuleEntry::Def { kind, .. })
-                if matches!(
-                    kind.as_ref(),
-                    DefKind::UserFn {
-                        fn_state: cranelisp_types::UserFnState::Concrete { .. }
-                    }
-                )
-        ),
+        is_candidate(&tc.symbol_table(), "v"),
+        "`v` after a same-type Box redefinition must stay a single candidate"
+    );
+    assert!(
+        is_concrete_callable(tc.symbol_table().get("Box.v")),
         "canonical Box.v stays the concrete UserFn accessor after redefinition"
     );
 }
@@ -1006,10 +966,7 @@ fn dotted_accessor_disambiguates_poisoned_bare_field() {
     .unwrap();
 
     // Bare `v` is the Ambiguous sentinel (ambiguity lives in the alias).
-    assert!(matches!(
-        tc.symbol_table().get("v"),
-        Some(ModuleEntry::Ambiguous { .. })
-    ));
+    assert!(is_ambiguous(&tc.symbol_table(), "v"));
     // Using bare `v` is a resolution error (ambiguous).
     let mut bare = Expr::var(Symbol::from("v"), Span::SYNTHETIC);
     assert!(
@@ -1035,6 +992,219 @@ fn dotted_accessor_disambiguates_poisoned_bare_field() {
         }
         other => panic!("Cup.v must be (Fn [Cup] Bool), got {other:?}"),
     }
+}
+
+// spec: 03-types §3.5.3 + 08-modules §8.6.5 — ordinary argument
+// constraints select one canonical accessor before ambiguity is decided.
+#[test]
+fn contested_bare_accessor_selects_by_argument_and_records_canonical_identity() {
+    let mut tc = tf_with_scalar_imports();
+    tc.register_type_def_self(
+        &TypeName::from("Box"),
+        &None,
+        &[],
+        &[product_int_field("Box", "v")],
+        Visibility::Public,
+        Span::SYNTHETIC,
+    )
+    .unwrap();
+    tc.register_type_def_self(
+        &TypeName::from("Cup"),
+        &None,
+        &[],
+        &[ConstructorDef {
+            name: Symbol::from("Cup"),
+            docstring: None,
+            fields: vec![cranelisp_types::FieldDef {
+                name: Symbol::from("v"),
+                type_expr: cranelisp_types::TypeExpr::Named(cranelisp_types::TypeRef::new(
+                    None,
+                    TypeName::from("Bool"),
+                )),
+                span: Span::SYNTHETIC,
+            }],
+            span: Span::SYNTHETIC,
+        }],
+        Visibility::Public,
+        Span::SYNTHETIC,
+    )
+    .unwrap();
+
+    let callee_span = Span::new(10, 11);
+    let call_span = Span::new(10, 20);
+    let mut call = Expr::Apply {
+        callee: Box::new(Expr::var(Symbol::from("v"), callee_span)),
+        args: vec![Expr::ConstrADT {
+            type_name: user_fqtn("Box"),
+            tag: 0,
+            fields: vec![Expr::IntLit {
+                value: 7,
+                span: Span::new(16, 17),
+                inferred_type: None,
+            }],
+            span: Span::new(12, 18),
+            inferred_type: None,
+        }],
+        span: call_span,
+        resolved_call: None,
+        inferred_type: None,
+    };
+
+    let next_id_before = tc.next_id.load(std::sync::atomic::Ordering::Relaxed);
+    let constraints_before = tc.state.active_constraints.constraints.clone();
+    let warnings_before = tc.state.warnings.len();
+    assert_eq!(tc.infer_expr_for_test(&mut call).unwrap(), Type::Int);
+    assert_eq!(
+        tc.next_id.load(std::sync::atomic::Ordering::Relaxed) - next_id_before,
+        2,
+        "only the real pending anchor and call result may consume IDs; isolated trials consume none"
+    );
+    assert_eq!(tc.state.active_constraints.constraints, constraints_before);
+    assert_eq!(tc.state.warnings.len(), warnings_before);
+    assert_eq!(
+        tc.state.method_resolutions.var_refs.get(&callee_span),
+        Some(&VarRef::Global(FQSymbol {
+            module: ModuleFullPath::from("user"),
+            symbol: Symbol::from("Box.v"),
+        }))
+    );
+    assert_eq!(
+        tc.state.method_resolutions.apply_refs.get(&call_span),
+        Some(&ApplyRef::ViaCallee)
+    );
+}
+
+// spec: 08-modules §8.6.5 — zero type-compatible candidates is distinct
+// from an unknown spelling and reports every considered canonical identity.
+#[test]
+fn contested_bare_accessor_no_match_is_not_undefined() {
+    let mut tc = tf_with_scalar_imports();
+    for ty in ["Box", "Cup"] {
+        tc.register_type_def_self(
+            &TypeName::from(ty),
+            &None,
+            &[],
+            &[product_int_field(ty, "v")],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+    }
+    let mut call = Expr::Apply {
+        callee: Box::new(Expr::var(Symbol::from("v"), Span::new(30, 31))),
+        args: vec![Expr::IntLit {
+            value: 7,
+            span: Span::new(32, 33),
+            inferred_type: None,
+        }],
+        span: Span::new(30, 34),
+        resolved_call: None,
+        inferred_type: None,
+    };
+    let error = tc.infer_expr_for_test(&mut call).unwrap_err();
+    let message = error.message();
+    assert!(message.contains("no matching declaration"), "{message}");
+    assert!(!message.contains("undefined variable"), "{message}");
+    assert!(message.contains("user/Box.v"), "{message}");
+    assert!(message.contains("user/Cup.v"), "{message}");
+}
+
+// design use-site-candidate-selection §§3.5, 3.9 — diagnostics are canonical,
+// complete, deduplicated, and independent of exposure insertion order.
+#[test]
+fn contested_candidate_diagnostic_is_insertion_order_independent() {
+    let diagnose = |owners: [&str; 2]| {
+        let mut tc = tf_with_scalar_imports();
+        for owner in owners {
+            tc.register_type_def_self(
+                &TypeName::from(owner),
+                &None,
+                &[],
+                &[product_int_field(owner, "v")],
+                Visibility::Public,
+                Span::SYNTHETIC,
+            )
+            .unwrap();
+        }
+        let mut call = Expr::Apply {
+            callee: Box::new(Expr::var(Symbol::from("v"), Span::new(135, 136))),
+            args: vec![Expr::BoolLit {
+                value: true,
+                span: Span::new(137, 138),
+                inferred_type: None,
+            }],
+            span: Span::new(135, 139),
+            resolved_call: None,
+            inferred_type: None,
+        };
+        tc.infer_expr_for_test(&mut call)
+            .unwrap_err()
+            .message()
+            .to_string()
+    };
+    let forward = diagnose(["Box", "Cup"]);
+    let reverse = diagnose(["Cup", "Box"]);
+    assert_eq!(forward, reverse);
+    assert_eq!(forward.matches("user/Box.v").count(), 1, "{forward}");
+    assert_eq!(forward.matches("user/Cup.v").count(), 1, "{forward}");
+}
+
+// spec: 03-types §3.5.3 + 08-modules §8.6.5 — a monomorphic local alias
+// preserves the pending source-use anchor and selects the same declaration as
+// the direct-call twin.
+#[test]
+fn contested_bare_accessor_selects_through_local_alias() {
+    let mut tc = tf_with_scalar_imports();
+    for ty in ["Box", "Cup"] {
+        tc.register_type_def_self(
+            &TypeName::from(ty),
+            &None,
+            &[],
+            &[product_int_field(ty, "v")],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+    }
+    let source_span = Span::new(40, 41);
+    let call_span = Span::new(50, 60);
+    let mut expression = Expr::Let {
+        bindings: vec![(
+            Symbol::from("project"),
+            Expr::var(Symbol::from("v"), source_span),
+        )],
+        body: Box::new(Expr::Apply {
+            callee: Box::new(Expr::var(Symbol::from("project"), Span::new(50, 57))),
+            args: vec![Expr::ConstrADT {
+                type_name: user_fqtn("Box"),
+                tag: 0,
+                fields: vec![Expr::IntLit {
+                    value: 9,
+                    span: Span::new(58, 59),
+                    inferred_type: None,
+                }],
+                span: Span::new(57, 60),
+                inferred_type: None,
+            }],
+            span: call_span,
+            resolved_call: None,
+            inferred_type: None,
+        }),
+        span: Span::new(35, 61),
+        inferred_type: None,
+    };
+    assert_eq!(tc.infer_expr_for_test(&mut expression).unwrap(), Type::Int);
+    assert_eq!(
+        tc.state.method_resolutions.var_refs.get(&source_span),
+        Some(&VarRef::Global(FQSymbol {
+            module: ModuleFullPath::from("user"),
+            symbol: Symbol::from("Box.v"),
+        }))
+    );
+    assert_eq!(
+        tc.state.method_resolutions.apply_refs.get(&call_span),
+        Some(&ApplyRef::ViaCallee)
+    );
 }
 
 // spec: 08-modules §8.5.2 — a polymorphic product's dotted accessor reads
@@ -1111,7 +1281,7 @@ fn dotted_accessor_is_first_class_applied() {
 #[test]
 fn canonical_dotted_is_the_def_bare_is_the_alias() {
     let mut tc = tf_with_scalar_imports();
-    let before = tc.symbol_table().defined_symbols().count();
+    let before = tc.symbol_table().codegen_targets().count();
     tc.register_type_def_self(
         &TypeName::from("Box"),
         &None,
@@ -1121,18 +1291,15 @@ fn canonical_dotted_is_the_def_bare_is_the_alias() {
         Span::SYNTHETIC,
     )
     .unwrap();
-    let after = tc.symbol_table().defined_symbols().count();
+    let after = tc.symbol_table().codegen_targets().count();
 
     // Canonical `Box.v` is the real, uniformly-Public accessor `Def`.
     match tc.symbol_table().get("Box.v") {
-        Some(entry @ ModuleEntry::Def { kind, .. }) => {
+        Some(entry) if is_concrete_callable(Some(entry)) => {
             assert!(
-                matches!(
-                    kind.as_ref(),
-                    DefKind::UserFn {
-                        fn_state: cranelisp_types::UserFnState::Concrete { .. }
-                    }
-                ),
+                entry
+                    .callable()
+                    .is_some_and(|c| matches!(c.origin, CallableOrigin::Accessor { .. })),
                 "canonical Box.v must be a concrete UserFn Def"
             );
             assert!(
@@ -1148,10 +1315,10 @@ fn canonical_dotted_is_the_def_bare_is_the_alias() {
     }
     // Bare `v` is the Import ALIAS onto the canonical key (NOT a Def).
     assert!(
-        matches!(tc.symbol_table().get("v"), Some(ModuleEntry::Import { .. })),
-        "bare `v` MUST be the Import alias onto Box.v (not a compiled Def), \
+        is_candidate(&tc.symbol_table(), "v"),
+        "bare `v` MUST expose only Box.v (not be a compiled Def), \
              got {:?}",
-        tc.symbol_table().get("v")
+        tc.symbol_table().name_candidates(&Symbol::from("v"))
     );
     // The deftype adds the product ctor `Box` + the canonical accessor
     // `Box.v` as codegen targets — delta 2. The bare `v` alias adds ZERO (it
@@ -1288,11 +1455,167 @@ fn impl_method_colliding_with_field_accessor_rejected() {
         !tc.has_impl(&TraitName::from("HasV"), &TypeName::from("Box")),
         "the rejected impl MUST NOT register a TraitImpl entry"
     );
-    // The bare `v` accessor is untouched (still the concrete accessor).
+    // The rejected impl leaves both declaration candidates intact: the
+    // product accessor and the trait method. Packet B deliberately makes a
+    // bare collision a candidate set rather than preserving the former
+    // first-wins alias shape.
+    let mut candidates: Vec<String> = tc
+        .symbol_table()
+        .name_candidates(&Symbol::from("v"))
+        .into_iter()
+        .map(|candidate| candidate.source.to_string())
+        .collect();
+    candidates.sort();
+    assert_eq!(candidates, ["user/Box.v", "user/HasV.v"]);
+    let mut contested = Expr::var(Symbol::from("v"), Span::new(70, 71));
+    let message = tc
+        .infer_expr_for_test(&mut contested)
+        .expect_err("an unconstrained mixed declaration use remains ambiguous")
+        .message()
+        .to_string();
+    assert!(message.contains("user/Box.v"), "{message}");
+    assert!(message.contains("user/HasV.v"), "{message}");
+    assert!(
+        tc.symbol_table()
+            .get("Box.v")
+            .and_then(Binding::callable)
+            .is_some()
+    );
+}
+
+// spec: 07-traits §7.4.1; design use-site-candidate-selection §§3.2, 3.8 —
+// argument HM facts can select a trait method over a same-spelling accessor,
+// and dispatch consumes the selected canonical declaration without re-resolving
+// the contested bare spelling.
+#[test]
+fn contested_accessor_and_trait_method_selects_trait_and_records_dispatch() {
+    let mut tc = tf_with_scalar_imports();
+    tc.register_type_def_self(
+        &TypeName::from("Box"),
+        &None,
+        &[],
+        &[product_int_field("Box", "v")],
+        Visibility::Public,
+        Span::SYNTHETIC,
+    )
+    .unwrap();
+    tc.register_trait_decl_self(&collide_trait_decl("v"))
+        .unwrap();
+    tc.register_trait_impl_self(&collide_impl("Int", "v"))
+        .unwrap();
+
+    let callee_span = Span::new(80, 81);
+    let call_span = Span::new(80, 85);
+    let mut expression = Expr::Apply {
+        callee: Box::new(Expr::var(Symbol::from("v"), callee_span)),
+        args: vec![Expr::IntLit {
+            value: 1,
+            span: Span::new(82, 83),
+            inferred_type: None,
+        }],
+        span: call_span,
+        resolved_call: None,
+        inferred_type: None,
+    };
+    assert_eq!(tc.infer_expr_for_test(&mut expression).unwrap(), Type::Int);
+    assert_eq!(
+        tc.state.method_resolutions.var_refs.get(&callee_span),
+        Some(&VarRef::Global(FQSymbol {
+            module: ModuleFullPath::from("user"),
+            symbol: Symbol::from("HasV.v"),
+        }))
+    );
     assert!(matches!(
-        tc.symbol_table().get("v"),
-        Some(ModuleEntry::Def { .. })
+        tc.state.method_resolutions.apply_refs.get(&call_span),
+        Some(ApplyRef::Dispatch(_))
     ));
+    assert!(matches!(
+        tc.state.method_resolutions.resolved_calls.get(&call_span),
+        Some(cranelisp_types::ResolvedCall::TraitMethod { .. })
+    ));
+}
+
+// spec: 06-pattern-matching §§6.2.1, 6.4.1; design
+// use-site-candidate-selection §§3.4, 3.7 — arm-body HM facts flow through a
+// provisional binder and select the one compatible constructor before
+// exhaustiveness reads the canonical pattern identity.
+#[test]
+fn contested_constructor_selects_from_binder_use_and_records_canonical_identity() {
+    let mut tc = tf_with_scalar_imports();
+    for (owner, field_type) in [("IntHit", "Int"), ("BoolHit", "Bool")] {
+        tc.register_type_def_self(
+            &TypeName::from(owner),
+            &None,
+            &[],
+            &[ConstructorDef {
+                name: Symbol::from("Hit"),
+                docstring: None,
+                fields: vec![cranelisp_types::FieldDef {
+                    name: Symbol::from("value"),
+                    type_expr: cranelisp_types::TypeExpr::Named(cranelisp_types::TypeRef::new(
+                        None,
+                        TypeName::from(field_type),
+                    )),
+                    span: Span::SYNTHETIC,
+                }],
+                span: Span::SYNTHETIC,
+            }],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+    }
+
+    use cranelisp_types::{MatchArm, Pattern, SymbolRef};
+    let pattern_span = Span::new(110, 120);
+    let mut expression = Expr::Lambda {
+        params: vec![(Symbol::from("subject"), None)],
+        body: Box::new(Expr::Match {
+            scrutinee: Box::new(Expr::var(Symbol::from("subject"), Span::new(101, 108))),
+            arms: vec![MatchArm {
+                pattern: Pattern::Constructor {
+                    name: SymbolRef::new(None, Symbol::from("Hit")),
+                    bindings: vec![Symbol::from("value")],
+                    span: pattern_span,
+                },
+                body: Expr::If {
+                    cond: Box::new(Expr::var(Symbol::from("value"), Span::new(121, 126))),
+                    then_branch: Box::new(Expr::IntLit {
+                        value: 1,
+                        span: Span::new(127, 128),
+                        inferred_type: None,
+                    }),
+                    else_branch: Box::new(Expr::IntLit {
+                        value: 0,
+                        span: Span::new(129, 130),
+                        inferred_type: None,
+                    }),
+                    span: Span::new(121, 130),
+                    inferred_type: None,
+                },
+                span: Span::new(110, 130),
+            }],
+            span: Span::new(101, 131),
+            compiler_generated: false,
+            inferred_type: None,
+        }),
+        span: Span::new(100, 132),
+        inferred_type: None,
+    };
+    assert_eq!(
+        tc.infer_expr_for_test(&mut expression).unwrap(),
+        Type::Fn(
+            vec![Type::ADT(user_fqtn("BoolHit"), vec![])],
+            Box::new(Type::Int),
+        )
+    );
+    assert_eq!(
+        tc.state.method_resolutions.pattern_ctors.get(&pattern_span),
+        Some(&FQSymbol {
+            module: ModuleFullPath::from("user"),
+            symbol: Symbol::from("BoolHit.Hit"),
+        })
+    );
 }
 
 // spec: 07-traits §7.3.1 — POSITIVE: a non-colliding impl method (`show`
@@ -1440,10 +1763,7 @@ fn impl_method_colliding_with_poisoned_accessor_rejected() {
     )
     .unwrap();
     // Bare `v` is poisoned now.
-    assert!(matches!(
-        tc.symbol_table().get("v"),
-        Some(ModuleEntry::Ambiguous { .. })
-    ));
+    assert!(is_ambiguous(&tc.symbol_table(), "v"));
     tc.register_trait_decl_self(&collide_trait_decl("v"))
         .unwrap();
     let err = tc
@@ -1545,8 +1865,8 @@ fn test_constructor_tags() {
     let table = tc.symbol_table();
     for (i, name) in ["North", "South", "East", "West"].iter().enumerate() {
         assert_eq!(info.constructors[i].as_ref(), *name);
-        if let Some(ModuleEntry::Def { kind, .. }) = ctor_entry(&table, *name) {
-            if let DefKind::Constructor { tag, .. } = kind.as_ref() {
+        if let Some(callable) = ctor_callable(&table, *name) {
+            if let CallableOrigin::Ctor { tag, .. } = &callable.origin {
                 assert_eq!(*tag, i, "{name} should have tag {i}");
             } else {
                 panic!("{name} should be DefKind::Constructor");
@@ -1608,8 +1928,8 @@ fn test_polymorphic_constructor_tags() {
     assert_eq!(info.constructors[1].as_ref(), "Some");
     let table = tc.symbol_table();
     for (i, name) in ["None", "Some"].iter().enumerate() {
-        if let Some(ModuleEntry::Def { kind, .. }) = ctor_entry(&table, *name)
-            && let DefKind::Constructor { tag, .. } = kind.as_ref()
+        if let Some(callable) = ctor_callable(&table, *name)
+            && let CallableOrigin::Ctor { tag, .. } = &callable.origin
         {
             assert_eq!(*tag, i, "{name} should have tag {i}");
         } else {
@@ -1618,47 +1938,34 @@ fn test_polymorphic_constructor_tags() {
     }
 }
 
-// spec: 04-adt §4.2 — constructors are GOT-slotted callable values (0249-a)
-//
-// Every synthesised `DefKind::Constructor` entry must carry a `got_slot`,
-// exactly like a user fn — a constructor reached as a value (`(map Some
-// xs)`, `(let [f None] f)`) needs an address to load. Distinct
-// constructors get distinct slots (monotonic allocator, no aliasing). The
-// +Neg facet: the nullary `None` is slotted too — addressability does not
-// depend on arity, so a naive "only data ctors need slots" implementation
-// (which would leave `None` at `None`) is rejected.
+// spec: 04-adt §4.2 + design/typecheck/non-concrete-producer-obligations.md
+// §2.1 — a polymorphic constructor is a slot-less synthesis template. Its
+// concrete instances, rather than the residual template, are callable values.
 #[test]
-fn constructors_get_got_slots() {
+fn polymorphic_constructors_are_slotless_templates() {
     let mut tc = tf();
     register_option(&mut tc);
 
     let table = tc.symbol_table();
-    let slot_of = |name: &str| -> Option<usize> {
-        match ctor_entry(&table, name) {
-            Some(entry @ ModuleEntry::Def { kind, .. }) => {
-                assert!(
-                    matches!(kind.as_ref(), DefKind::Constructor { .. }),
-                    "{name} should be a Constructor entry"
-                );
-                // S83 (Principle 20): the ctor's slot rides on
-                // `DefKind::Constructor.got_slot`, read via the accessor.
-                entry.callable_got_slot()
-            }
-            _ => panic!("{name} should be a Def(Constructor) entry"),
+    let assert_template = |name: &str| match ctor_entry(&table, name) {
+        Some(entry) if ctor_callable(&table, name).is_some() => {
+            assert!(
+                matches!(
+                    entry.callable().map(|callable| &callable.arm.life),
+                    Some(Life::Template {
+                        body: TemplateBody::Synth(_),
+                        ..
+                    })
+                ),
+                "{name} must be a synthesized template"
+            );
+            assert_eq!(entry.callable_got_slot(), None);
         }
+        _ => panic!("{name} should be a Def(Constructor) entry"),
     };
 
-    // Data constructor `Some` is slotted.
-    let some_slot = slot_of("Some").expect("Some must have a GOT slot");
-    // +Neg: the nullary constructor `None` is slotted too — not left at
-    // `None` by an arity-gated implementation.
-    let none_slot = slot_of("None").expect("nullary None must have a GOT slot");
-
-    // Distinct constructors get distinct slots (monotonic allocator).
-    assert_ne!(
-        some_slot, none_slot,
-        "distinct constructors must not alias the same GOT slot"
-    );
+    assert_template("Some");
+    assert_template("None");
 }
 
 // spec: 03-types §3.3 — polymorphic field type resolves to type variable
@@ -1671,20 +1978,15 @@ fn test_polymorphic_field_has_var_type() {
     // Per S70: info.constructors[i] is Symbol; field metadata lives on the
     // ctor's Def — param_names + scheme.ty's Fn signature.
     assert_eq!(info.constructors[1].as_ref(), "Some");
-    if let Some(ModuleEntry::Def {
-        kind,
-        scheme,
-        param_names,
-        ..
-    }) = ctor_entry(&tc.symbol_table(), "Some")
-    {
-        if let DefKind::Constructor { field_count, .. } = kind.as_ref() {
+    if let Some(callable) = ctor_callable(&tc.symbol_table(), "Some") {
+        if let CallableOrigin::Ctor { field_count, .. } = &callable.origin {
             assert_eq!(*field_count, 1);
         } else {
             panic!("Some should be DefKind::Constructor");
         }
-        assert_eq!(param_names.len(), 1);
-        assert_eq!(param_names[0].as_ref(), "val");
+        assert_eq!(callable.arm.param_names.len(), 1);
+        assert_eq!(callable.arm.param_names[0].as_ref(), "val");
+        let scheme = &callable.arm.scheme;
         // Field type should be a type variable (the allocated ID)
         match &scheme.ty {
             Type::Fn(params, _) => {
@@ -1726,10 +2028,10 @@ fn test_exhaustiveness_with_mixed_constructors() {
     );
 }
 
-// spec: 05-definitions §5.2.4 — shortcut product type with bare field names gets type vars
+// spec: 05-definitions §5.2.4 — explicit product parameters and field types
 #[test]
-fn test_shortcut_product_type() {
-    // (deftype Pair [first second]) -- bare field names with type vars
+fn test_explicitly_parameterised_product_type() {
+    // (deftype (Pair a b) [:a first :b second])
     let mut tc = tf();
     tc.register_type_def_self(
         &TypeName::from("Pair"),
@@ -1758,9 +2060,8 @@ fn test_shortcut_product_type() {
     .unwrap();
 
     // MkPair :: forall [a, b]. (Fn [a b] (Pair a b))
-    if let Some(ModuleEntry::Def { kind, scheme, .. }) = ctor_entry(&tc.symbol_table(), "MkPair")
-        && matches!(kind.as_ref(), DefKind::Constructor { .. })
-    {
+    if let Some(callable) = ctor_callable(&tc.symbol_table(), "MkPair") {
+        let scheme = &callable.arm.scheme;
         assert_eq!(
             scheme.type_vars.len(),
             2,
@@ -1828,9 +2129,8 @@ fn test_register_multi_param_type() {
     assert_eq!(info.constructors.len(), 2);
 
     // Both constructors should have 2 quantified vars
-    if let Some(ModuleEntry::Def { kind, scheme, .. }) = ctor_entry(&tc.symbol_table(), "Left")
-        && matches!(kind.as_ref(), DefKind::Constructor { .. })
-    {
+    if let Some(callable) = ctor_callable(&tc.symbol_table(), "Left") {
+        let scheme = &callable.arm.scheme;
         assert_eq!(scheme.type_vars.len(), 2);
     } else {
         panic!("Left should be a Constructor entry");
@@ -1978,7 +2278,7 @@ fn test_is_internal_constructor() {
 // and compiled in user code.
 #[test]
 fn test_is_internal_constructor_through_import() {
-    use cranelisp_types::{FQSymbol, ModuleEntry, Symbol, Visibility};
+    use cranelisp_types::{FQSymbol, Symbol, Visibility};
     let tc = tf_io();
     let user_path = ModuleFullPath::from("user");
     // Seed user-module Imports of `Bind` and its parent `IO` type from
@@ -1986,17 +2286,17 @@ fn test_is_internal_constructor_through_import() {
     // constructor name and the type name land as Import entries).
     {
         let mut user_tbl = tc.modules.get_mut(&user_path).unwrap();
-        for name in ["Bind", "IO"] {
-            user_tbl.insert(
-                Symbol::from(name),
-                ModuleEntry::Import {
-                    source: FQSymbol {
+        for (name, source) in [("Bind", "IO.Bind"), ("IO", "IO")] {
+            user_tbl
+                .expose_candidate(
+                    Symbol::from(name),
+                    FQSymbol {
                         module: ModuleFullPath::from("primitives"),
-                        symbol: Symbol::from(name),
+                        symbol: Symbol::from(source),
                     },
-                    visibility: Visibility::Public,
-                },
-            );
+                    Visibility::Public,
+                )
+                .unwrap();
         }
     }
     let env = tc.env();

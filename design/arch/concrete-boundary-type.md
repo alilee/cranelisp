@@ -330,19 +330,31 @@ A ctor body (`Expr::ConstrADT` of `Var` fields — `compile_constr_adt`, `apply.
 
 It does NOT apply to `DefKind::Constructor` (signature-driven ctor/accessor synthesis), `DefKind::Primitive` / `DefKind::PrimitiveExtern` (extern/GOT-dispatched — and primitives are never `compile_to_module` targets anyway, FIXME 0393 confirms), or `DefKind::PlatformEffect` (GOT-indirect dispatch). For those, `codegen_view == None` is the **correct, expected** state, not a producer bug. Phase 3's `compile_to_module` reads `codegen_view` for the `Concrete{slot}` `UserFn` arm and falls through to the signature-driven path for `Constructor` (see 2). The `expect` lives inside the `Concrete{slot}` arm, so a `None` on a `Constructor` is never even tested against it.
 
-**2. Ctor/accessor codegen sources its field types from the signature via `from_type` (no body view needed) — AMENDED S118 (FIXME 0902): on the template path the conversion is total by *classification*, not by concreteness.** `HeapCategory::classify` under Phase 3 takes `&ConcreteType` (no `Var` arm). At the ctor/accessor sites the backend converts each signature field `Type` → `ConcreteType` via `ConcreteType::from_type`. The original ruling held the conversion "**must succeed**" on the premise of a "codegen-reached ctor *instance*" whose §3.11.1-checked field types are fully concrete. **That premise is false — there is no such thing as a codegen-reached ctor instance.** A constructor `Def` (and its synthetic accessors) is compiled **once per declaration** — the signature-typed template itself is the codegen target — where a `UserFn` reaches codegen only as a monomorphised concrete instance. Two legal declaration shapes hand the template a non-concrete field parameter:
+**2. Ctor/accessor codegen reads field types from the signature.** Constructor
+definitions are compiled once per declaration. A valid explicit generic
+declaration such as `(deftype (Option a) (Some [:a v]))` therefore presents a
+residual `Type::Var` to the template even though each constructor use in a
+caller is concrete. Missing field types are rejected by the frontend; there is
+no legal monomorphic declaration with a free field variable.
 
-- a **generic** product/sum — `(deftype (Option a) (Some [:a v]))`: the field parameter is the declared type parameter;
-- an **undeclared field** — `(deftype B (Mk [v]))`: typecheck leaves the field a free type variable, and `B` is monomorphic, so no instantiation ever pins it.
+At a concrete use site, `Type → ConcreteType` conversion must succeed. At the
+signature-driven template, a residual declared parameter classifies as
+`HeapCategory::Mixed`; it must not trigger a compiler abort. The release site is
+bounded by `design/backend/transitive-drop-glue.md` §4.1. Generic product
+accessors and generic trait-method instances are the adjacent release-side class
+tracked by FIXME 0903; they do not change this classification rule.
 
-Both are valid source, so an `expect` on this path would be a compiler-bug abort on a legal program. The ruled model distinguishes the two things the original text conflated under "instance":
+Thus “no `Var` reaches `classify`” holds by construction on the body-AST path
+and by total signature classification on the template path, not by pretending
+both paths are concrete.
 
-- **Ctor/accessor *use sites*** (`(Some 1)`, inlined in the caller's frame with `a := Int` pinned) are always concrete — §3.11.1 does guarantee concreteness *there*, and a conversion failure at a use site is a genuine compiler bug.
-- **The ctor/accessor *template*** (compiled once per declaration, signature-typed) may legally carry a residual field type. The classification rule — as-built since S84 and RATIFIED here as the canonical statement (`rc_emission::signature_heap_category`; formerly mis-attributed to FIXME 0394, which closed at S84 on a different axis) — is: the `from_type` `Err` arm classifies the residual signature type **`HeapCategory::Mixed`** (the uniform-i64 category), never `expect`s. The ONE *release* site this classification reaches is bounded by `design/backend/transitive-drop-glue.md` §4.1's frame-checked admission (I-CT — the ctor template's own parameters form a matched counted-borrow pair; no type-directed glue is needed). §4.1's "exactly one class" premise is itself falsified by measurement: synthetic field accessors of generic/undeclared-field products and generic trait-method instances also reach the arm and currently **leak** — the whole-class release-side re-ruling is FIXME 0903 (`/design`(backend), S119). The *classification* rule above is upstream of, and unchanged by, that ruling.
-
-"No `Var` reaches `classify`" therefore holds **by construction on the body-AST path** (every `MonoExpr.ty()` is already a `ConcreteType`) and **by total classification on the signature path** (every field `Type` converts; a residual var classifies `Mixed`) — NOT by concreteness on both paths.
-
-**Declaration-time question (OPEN — routed to `/spec`, FIXME 0912; not ruled here).** §3.11.1's full-concreteness verdict is a check on codegen-reaching *value positions*; it does NOT reject an undeclared `deftype` field at declaration time, and nothing in the current spec does — `(deftype B (Mk [v]))` is accepted with `v` a free var. Whether it *should* be rejected at declaration is a language-normative question for the user. A "reject" ruling would remove the undeclared-field shape from the template class (the generic-parameter shape remains regardless, so the `Mixed` classification rule stands either way). Until ruled, both shapes are legal.
+**Declaration-time question — RESOLVED (user ruling 2026-09-02; spec §5.2.4;
+closes FIXME 0912).** A bare head declares a monomorphic type; a parenthesized
+head declares the complete parameter list; every field carries a written
+`:Type`. Missing field types and undeclared variables are located frontend
+errors before entry emission. This removes the accidental free-variable route
+without changing the `Mixed` classification required by valid explicit generic
+templates.
 
 The sites that take the `Type → ConcreteType` conversion (the signature-read classify calls — these are the ctor/accessor codegen's only type reads):
 
@@ -449,7 +461,7 @@ Part B makes `Polymorphic` symmetric with `Constrained`: never a `compile_to_mod
 
 **The change (both sites):** add `| DefKind::UserFn { fn_state: UserFnState::Polymorphic(_) }` to the excluded set. After this, a slot-less `Polymorphic` template's body is never enumerated as a codegen target — only its concrete `Concrete { got_slot }` mono instances (minted by part A's enumeration, registered by `register_mono_entry`) flow to `compile_to_module`.
 
-**Consolidation opportunity (Principle 7 — /arch flags, /dev decides).** The eligibility predicate lives in two places (`module.rs:641` and `worker.rs:620`). The arc is the natural moment to make `defined_symbols()` the single source and have `worker.rs::try_push` *call it* (or call a shared `ModuleEntry::is_codegen_target()` predicate on `cranelisp-types`) rather than re-spell the match. /dev(typecheck) owns `module.rs`; /dev(int) owns `worker.rs`; coordinate so the predicate is written once. If consolidation is out of scope for the wave, BOTH sites must still change identically — a `Polymorphic` slipping through `try_push` (int) while excluded by `defined_symbols()` (types) is exactly the asymmetry that hides bugs.
+**Consolidation opportunity (Principle 7 — /arch flags, /dev decides).** The eligibility predicate lived in two places (`module.rs:641` and `worker.rs:620`). The arc was the natural moment to make `defined_symbols()` the single source and have `worker.rs::derive_codegen_batch` delegate rather than re-spell the match. /dev(typecheck) owns `module.rs`; /dev(int) owns `worker.rs`; coordinate so the predicate is written once. If consolidation is out of scope for the wave, BOTH sites must still change identically — a `Polymorphic` slipping through the int batch while excluded by `defined_symbols()` (types) is exactly the asymmetry that hides bugs.
 
 **`Constrained` is already correctly skipped** — confirmed at both sites (`module.rs:645`, `worker.rs:623`). Part B makes `Polymorphic` join it; no `Constrained` change.
 

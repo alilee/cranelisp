@@ -1,4 +1,6 @@
 use super::*;
+
+const NON_OWNING_DISPOSER_SENTINEL: i64 = 0x5A5A_5A5A;
 use crate::alloc::{alloc_count, alloc_with_rc, dealloc_count};
 use crate::heap_string::alloc_string;
 use cranelisp_types::TAG_SCONS;
@@ -45,6 +47,14 @@ fn make_sexp_list(items: i64) -> i64 {
     base
 }
 
+fn make_sexp_annotated(stype: i64, sform: i64) -> i64 {
+    let base = alloc_slot(24); // tag + stype + sform
+    write_field(base, TAG_OFFSET, TAG_SEXP_ANNOTATED);
+    write_field(base, FIELD0_OFFSET, stype);
+    write_field(base, FIELD1_OFFSET, sform);
+    base
+}
+
 fn make_vec_struct(cap: i64) -> (i64, *mut i64) {
     let base = alloc_slot(24); // len + cap + data_ptr
     write_field(base, crate::vec_runtime::LEN_OFFSET as isize, 0);
@@ -60,6 +70,14 @@ fn make_vec_struct(cap: i64) -> (i64, *mut i64) {
         data as i64,
     );
     (base, data)
+}
+
+fn make_io_pure(value: i64) -> i64 {
+    let base = alloc_slot(24); // tag + value + payload witness
+    write_field(base, TAG_OFFSET, IO_TAG_PURE);
+    write_field(base, FIELD0_OFFSET, value);
+    write_field(base, FIELD1_OFFSET, 0); // scalar payload
+    base
 }
 
 // Tests -----------------------------------------------------------------
@@ -150,6 +168,178 @@ fn decision24_consume_sexp_preserves_shared_ref() {
     assert_eq!(dealloc_count() - deallocs, 2);
 }
 
+// spec: design/intrinsics/s121-c5-intrinsics-visit.md §3.3, §5 — the closed
+// runtime enum covers every published Sexp tag, including Annotated.
+#[test]
+fn sexp_tag_decode_covers_the_published_tag_set() {
+    assert_eq!(SexpTag::decode(TAG_SEXP_INT), SexpTag::Int);
+    assert_eq!(SexpTag::decode(TAG_SEXP_FLOAT), SexpTag::Float);
+    assert_eq!(SexpTag::decode(TAG_SEXP_BOOL), SexpTag::Bool);
+    assert_eq!(SexpTag::decode(TAG_SEXP_STR), SexpTag::Str);
+    assert_eq!(SexpTag::decode(TAG_SEXP_SYM), SexpTag::Sym);
+    assert_eq!(SexpTag::decode(TAG_SEXP_LIST), SexpTag::List);
+    assert_eq!(SexpTag::decode(TAG_SEXP_BRACKET), SexpTag::Bracket);
+    assert_eq!(SexpTag::decode(TAG_SEXP_ANNOTATED), SexpTag::Annotated);
+    assert_eq!(SexpTag::decode(999), SexpTag::Unknown(999));
+}
+
+// spec: design/intrinsics/s121-c5-intrinsics-visit.md §5 — every published
+// unary heap constructor selects its declared field discharge.
+#[test]
+fn consume_sexp_unary_heap_tags_discharge_their_declared_field() {
+    for tag in [TAG_SEXP_STR, TAG_SEXP_SYM] {
+        let allocs = alloc_count();
+        let deallocs = dealloc_count();
+        let node = alloc_slot(16);
+        write_field(node, TAG_OFFSET, tag);
+        write_field(node, FIELD0_OFFSET, alloc_string(b"field") as i64);
+        consume_sexp(node);
+        assert_eq!(alloc_count() - allocs, 2);
+        assert_eq!(dealloc_count() - deallocs, 2, "shallow tag {tag}");
+    }
+
+    for tag in [TAG_SEXP_LIST, TAG_SEXP_BRACKET] {
+        let allocs = alloc_count();
+        let deallocs = dealloc_count();
+        let int = alloc_slot(16);
+        write_field(int, TAG_OFFSET, TAG_SEXP_INT);
+        write_field(int, FIELD0_OFFSET, 42);
+        let node = alloc_slot(16);
+        write_field(node, TAG_OFFSET, tag);
+        write_field(node, FIELD0_OFFSET, make_scons(int, 0));
+        consume_sexp(node);
+        assert_eq!(alloc_count() - allocs, 3);
+        assert_eq!(dealloc_count() - deallocs, 3, "SList tag {tag}");
+    }
+}
+
+// spec: design/intrinsics/s121-c5-intrinsics-visit.md §5 — Annotated owns two
+// Sexp fields and structural teardown discharges both exactly once.
+#[test]
+fn consume_sexp_annotated_discharges_both_sexp_fields() {
+    let allocs = alloc_count();
+    let deallocs = dealloc_count();
+
+    let stype = make_sexp_sym(alloc_string(b"Int") as i64);
+    let sform = make_sexp_str(alloc_string(b"value") as i64);
+    consume_sexp(make_sexp_annotated(stype, sform));
+
+    assert_eq!(alloc_count() - allocs, 5);
+    assert_eq!(
+        dealloc_count() - deallocs,
+        5,
+        "the Annotated node, both child Sexps, and both strings are released"
+    );
+}
+
+// spec: design/intrinsics/s121-c5-intrinsics-visit.md §5 — either Annotated
+// half may be a bare nullary Sexp tag.
+#[test]
+fn consume_sexp_annotated_accepts_nullary_halves() {
+    let allocs = alloc_count();
+    let deallocs = dealloc_count();
+
+    consume_sexp(make_sexp_annotated(TAG_SEXP_INT, TAG_SEXP_BOOL));
+
+    assert_eq!(alloc_count() - allocs, 1);
+    assert_eq!(dealloc_count() - deallocs, 1);
+}
+
+// spec: design/intrinsics/s121-c5-intrinsics-visit.md §5 — scalar Sexp tags
+// never interpret field 0 as an owned heap reference.
+#[test]
+fn consume_sexp_scalar_tags_discharge_no_fields() {
+    for tag in [TAG_SEXP_INT, TAG_SEXP_FLOAT, TAG_SEXP_BOOL] {
+        let deallocs = dealloc_count();
+        let scalar_bits = alloc_string(b"not-owned-by-the-scalar-node") as i64;
+        let node = alloc_slot(16);
+        write_field(node, TAG_OFFSET, tag);
+        write_field(node, FIELD0_OFFSET, scalar_bits);
+
+        consume_sexp(node);
+
+        assert_eq!(
+            dealloc_count() - deallocs,
+            1,
+            "tag {tag} must release only its outer node"
+        );
+        rc::consume_shallow(scalar_bits);
+    }
+}
+
+// spec: design/intrinsics/s121-c5-intrinsics-visit.md §3.1 — without the
+// diagnostic gate, unknown tags discharge no guessed fields and still release
+// the outer node. A tag-only allocation also guards against a field-0 snapshot.
+#[test]
+fn unknown_io_and_sexp_tags_release_only_the_outer_node_ordinarily() {
+    let deallocs = dealloc_count();
+    let sexp = alloc_slot(8);
+    write_field(sexp, TAG_OFFSET, 998);
+    consume_sexp(sexp);
+    let io = alloc_slot(8);
+    write_field(io, TAG_OFFSET, 999);
+    consume_io_tree(io);
+    assert_eq!(dealloc_count() - deallocs, 2);
+}
+
+// The armed child is selected by exact test name in a fresh process because
+// the diagnostics gate is process-cached. It is inert in the ordinary suite.
+#[test]
+fn unknown_sexp_tag_gate_child() {
+    let tag_family = std::env::var("CRANELISP_UNKNOWN_TAG_GATE_CHILD").ok();
+    let node = match tag_family.as_deref() {
+        Some("sexp") | Some("io") => {
+            let node = alloc_slot(8);
+            write_field(node, TAG_OFFSET, 999);
+            node
+        }
+        _ => return,
+    };
+    match tag_family.as_deref() {
+        Some("sexp") => consume_sexp(node),
+        Some("io") => consume_io_tree(node),
+        _ => unreachable!(),
+    }
+}
+
+// spec: design/intrinsics/s121-c5-intrinsics-visit.md §3.1 — the same unknown
+// tag becomes a located hard failure when CRANELISP_RC_DEC_CHECK is enabled.
+#[test]
+fn unknown_tags_hard_fail_under_the_diagnostic_gate() {
+    let exe = std::env::current_exe().expect("current intrinsics test binary");
+    let module = module_path!();
+    let module = module
+        .split_once("::")
+        .map(|(_, rest)| rest)
+        .unwrap_or(module);
+    let test_name = format!("{module}::unknown_sexp_tag_gate_child");
+    for (family, expected) in [
+        ("sexp", "unknown Sexp tag 999"),
+        ("io", "unknown IO tag 999"),
+    ] {
+        let mut command = std::process::Command::new(&exe);
+        command.env_clear();
+        if let Some(path) = std::env::var_os("LD_LIBRARY_PATH") {
+            command.env("LD_LIBRARY_PATH", path);
+        }
+        let output = command
+            .env("CRANELISP_RC_DEC_CHECK", "1")
+            .env("CRANELISP_UNKNOWN_TAG_GATE_CHILD", family)
+            .args([test_name.as_str(), "--exact", "--nocapture"])
+            .output()
+            .expect("run unknown-tag gate child");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !output.status.success(),
+            "the gated {family} child must hard-fail"
+        );
+        assert!(
+            stderr.contains("[CRANELISP RC/ALLOC SEAM VIOLATION]") && stderr.contains(expected),
+            "the failure must be located at the unknown {family} tag seam: {stderr}"
+        );
+    }
+}
+
 // spec: design/arch/CLAUDE.md Decision 24 — consume_vec_of_string frees elements
 #[test]
 fn decision24_consume_vec_of_string_frees_elements() {
@@ -193,9 +383,7 @@ fn databuf_guard_still_trips_on_stale_fixture_buffer_after_consume() {
 fn decision24_consume_io_pure_frees_node() {
     let allocs = alloc_count();
     let deallocs = dealloc_count();
-    let base = alloc_slot(16); // tag + payload
-    write_field(base, TAG_OFFSET, IO_TAG_PURE);
-    write_field(base, FIELD0_OFFSET, 42);
+    let base = make_io_pure(42);
     consume_io_tree(base);
     assert_eq!(alloc_count() - allocs, 1);
     assert_eq!(dealloc_count() - deallocs, 1);
@@ -213,12 +401,8 @@ fn consume_io_select_frees_branch_vec_and_all_branches() {
     let deallocs = dealloc_count();
 
     // Two Pure branches (each an IO_TAG_PURE leaf node).
-    let b0 = alloc_slot(16);
-    write_field(b0, TAG_OFFSET, IO_TAG_PURE);
-    write_field(b0, FIELD0_OFFSET, 42);
-    let b1 = alloc_slot(16);
-    write_field(b1, TAG_OFFSET, IO_TAG_PURE);
-    write_field(b1, FIELD0_OFFSET, 7);
+    let b0 = make_io_pure(42);
+    let b1 = make_io_pure(7);
 
     // The branch carrier Vec [b0, b1].
     let (vec, data) = make_vec_struct(2);
@@ -229,9 +413,10 @@ fn consume_io_select_frees_branch_vec_and_all_branches() {
     write_field(vec, crate::vec_runtime::LEN_OFFSET as isize, 2);
 
     // The IO_TAG_SELECT (= 6) node: tag + field-0 = the Vec.
-    let node = alloc_slot(16); // tag + 1 field
+    let node = alloc_slot(24); // tag + branch Vec + result disposer
     write_field(node, TAG_OFFSET, 6); // IO_TAG_SELECT
     write_field(node, FIELD0_OFFSET, vec);
+    write_field(node, FIELD1_OFFSET, NON_OWNING_DISPOSER_SENTINEL);
 
     consume_io_tree(node);
 
@@ -257,12 +442,8 @@ fn dec_shallow_io_select_deep_frees_branch_vec_and_all_branches() {
     let deallocs = dealloc_count();
 
     // Two Pure branches.
-    let b0 = alloc_slot(16);
-    write_field(b0, TAG_OFFSET, IO_TAG_PURE);
-    write_field(b0, FIELD0_OFFSET, 42);
-    let b1 = alloc_slot(16);
-    write_field(b1, TAG_OFFSET, IO_TAG_PURE);
-    write_field(b1, FIELD0_OFFSET, 7);
+    let b0 = make_io_pure(42);
+    let b1 = make_io_pure(7);
 
     // Branch carrier Vec [b0, b1].
     let (vec, data) = make_vec_struct(2);
@@ -273,9 +454,10 @@ fn dec_shallow_io_select_deep_frees_branch_vec_and_all_branches() {
     write_field(vec, crate::vec_runtime::LEN_OFFSET as isize, 2);
 
     // Fresh IO_TAG_SELECT (= 6) node: tag + field-0 = the Vec.
-    let node = alloc_slot(16);
+    let node = alloc_slot(24);
     write_field(node, TAG_OFFSET, 6); // IO_TAG_SELECT
     write_field(node, FIELD0_OFFSET, vec);
+    write_field(node, FIELD1_OFFSET, NON_OWNING_DISPOSER_SENTINEL);
 
     dec_shallow_io(node);
 
@@ -297,19 +479,17 @@ fn dec_shallow_io_par_deep_frees_branches() {
     let allocs = alloc_count();
     let deallocs = dealloc_count();
 
-    let b0 = alloc_slot(16);
-    write_field(b0, TAG_OFFSET, IO_TAG_PURE);
-    write_field(b0, FIELD0_OFFSET, 1);
-    let b1 = alloc_slot(16);
-    write_field(b1, TAG_OFFSET, IO_TAG_PURE);
-    write_field(b1, FIELD0_OFFSET, 2);
+    let b0 = make_io_pure(1);
+    let b1 = make_io_pure(2);
 
-    // Fresh IO_TAG_PAR node: tag + count + 2 branch pointers.
-    let par = alloc_slot(32);
+    // Fresh IO_TAG_PAR node: tag + count + 2 (branch, disposer) pairs.
+    let par = alloc_slot(48);
     write_field(par, TAG_OFFSET, IO_TAG_PAR);
     write_field(par, FIELD0_OFFSET, 2); // count
     write_field(par, FIELD1_OFFSET, b0);
-    write_field(par, FIELD1_OFFSET + 8, b1);
+    write_field(par, FIELD1_OFFSET + 8, NON_OWNING_DISPOSER_SENTINEL);
+    write_field(par, FIELD1_OFFSET + 16, b1);
+    write_field(par, FIELD1_OFFSET + 24, NON_OWNING_DISPOSER_SENTINEL);
 
     dec_shallow_io(par);
 
@@ -328,9 +508,7 @@ fn decision24_consume_io_bind_recurses_into_inner() {
     let deallocs = dealloc_count();
 
     // Inner Pure node.
-    let inner = alloc_slot(16);
-    write_field(inner, TAG_OFFSET, IO_TAG_PURE);
-    write_field(inner, FIELD0_OFFSET, 42);
+    let inner = make_io_pure(42);
 
     // Continuation closure: [header | code_ptr | drop_glue_ptr=0]
     let cont = alloc_slot(16);
@@ -338,10 +516,11 @@ fn decision24_consume_io_bind_recurses_into_inner() {
     write_field(cont, 24, 0); // drop_glue_ptr = 0
 
     // Bind node.
-    let bind = alloc_slot(24); // tag + inner + cont
+    let bind = alloc_slot(32); // tag + inner + cont + input disposer
     write_field(bind, TAG_OFFSET, IO_TAG_BIND);
     write_field(bind, FIELD0_OFFSET, inner);
     write_field(bind, FIELD1_OFFSET, cont);
+    write_field(bind, FIELD1_OFFSET + 8, NON_OWNING_DISPOSER_SENTINEL);
 
     consume_io_tree(bind);
     assert_eq!(alloc_count() - allocs, 3);
@@ -355,19 +534,17 @@ fn decision24_consume_io_par_walks_branches() {
     let deallocs = dealloc_count();
 
     // Build two Pure branches.
-    let b0 = alloc_slot(16);
-    write_field(b0, TAG_OFFSET, IO_TAG_PURE);
-    write_field(b0, FIELD0_OFFSET, 1);
-    let b1 = alloc_slot(16);
-    write_field(b1, TAG_OFFSET, IO_TAG_PURE);
-    write_field(b1, FIELD0_OFFSET, 2);
+    let b0 = make_io_pure(1);
+    let b1 = make_io_pure(2);
 
-    // Par node: tag + count + 2 branches = 32 bytes payload.
-    let par = alloc_slot(32);
+    // Par node: tag + count + 2 (branch, disposer) pairs = 48 bytes payload.
+    let par = alloc_slot(48);
     write_field(par, TAG_OFFSET, IO_TAG_PAR);
     write_field(par, FIELD0_OFFSET, 2); // count
     write_field(par, FIELD1_OFFSET, b0);
-    write_field(par, FIELD1_OFFSET + 8, b1);
+    write_field(par, FIELD1_OFFSET + 8, NON_OWNING_DISPOSER_SENTINEL);
+    write_field(par, FIELD1_OFFSET + 16, b1);
+    write_field(par, FIELD1_OFFSET + 24, NON_OWNING_DISPOSER_SENTINEL);
 
     consume_io_tree(par);
     assert_eq!(alloc_count() - allocs, 3);
@@ -398,18 +575,17 @@ fn dec_shallow_io_frees_outer_only() {
     // closure. `dec_shallow_io` must free ONLY the Bind node, leaving the
     // inner Pure and the continuation untouched (they are the
     // transferred-out subfields, still held by other logical owners).
-    let inner = alloc_slot(16);
-    write_field(inner, TAG_OFFSET, IO_TAG_PURE);
-    write_field(inner, FIELD0_OFFSET, 42);
+    let inner = make_io_pure(42);
 
     let cont = alloc_slot(16);
     write_field(cont, 16, 0); // code_ptr placeholder
     write_field(cont, 24, 0); // drop_glue_ptr = 0
 
-    let bind = alloc_slot(24);
+    let bind = alloc_slot(32);
     write_field(bind, TAG_OFFSET, IO_TAG_BIND);
     write_field(bind, FIELD0_OFFSET, inner);
     write_field(bind, FIELD1_OFFSET, cont);
+    write_field(bind, FIELD1_OFFSET + 8, NON_OWNING_DISPOSER_SENTINEL);
 
     dec_shallow_io(bind);
 
@@ -448,9 +624,7 @@ fn dec_shallow_io_preserves_shared_reference() {
     let allocs = alloc_count();
     let deallocs = dealloc_count();
 
-    let node = alloc_slot(16);
-    write_field(node, TAG_OFFSET, IO_TAG_PURE);
-    write_field(node, FIELD0_OFFSET, 99);
+    let node = make_io_pure(99);
 
     // Simulate a second reference (rc: 1 -> 2).
     unsafe {
@@ -467,6 +641,11 @@ fn dec_shallow_io_preserves_shared_reference() {
         "dec_shallow_io must not free when other refs exist"
     );
 
+    // Model the force-side transfer before the last shallow release.
+    assert_eq!(
+        unsafe { swap_pure_payload_to_claimed(node) },
+        PurePayloadState::Scalar
+    );
     // Clean up the remaining reference.
     dec_shallow_io(node);
     assert_eq!(dealloc_count() - deallocs, 1);
@@ -553,15 +732,14 @@ fn consume_launch_node_frees_live_subtree() {
     let allocs = alloc_count();
     let deallocs = dealloc_count();
 
-    // Pure 42 sub-tree (the launched effect, simplest IO leaf): tag + value = 16.
-    let sub = alloc_slot(16);
-    write_field(sub, TAG_OFFSET, IO_TAG_PURE);
-    write_field(sub, FIELD0_OFFSET, 42);
+    // Pure 42 sub-tree (the launched effect, simplest IO leaf).
+    let sub = make_io_pure(42);
 
     // IO_TAG_LAUNCH node holding the LIVE sub-tree at field 0: tag + field0 = 16.
-    let launch = alloc_slot(16);
+    let launch = alloc_slot(24);
     write_field(launch, TAG_OFFSET, cranelisp_platform::IO_TAG_LAUNCH);
     write_field(launch, FIELD0_OFFSET, sub);
+    write_field(launch, FIELD1_OFFSET, NON_OWNING_DISPOSER_SENTINEL);
 
     consume_io_tree(launch);
     // Null-guard sees a non-zero field-0 → recurse: BOTH the Launch node and the
@@ -578,9 +756,10 @@ fn consume_launch_node_detached_field0_sentinel_is_noop() {
     // IO_TAG_LAUNCH node whose field-0 is the `0` sentinel (the trampoline moved
     // the sub-tree into a supervised strand). The null-guard skips field-0; only
     // the node itself is freed — no double-free of the strand-owned sub-tree.
-    let launch = alloc_slot(16);
+    let launch = alloc_slot(24);
     write_field(launch, TAG_OFFSET, cranelisp_platform::IO_TAG_LAUNCH);
     write_field(launch, FIELD0_OFFSET, 0);
+    write_field(launch, FIELD1_OFFSET, NON_OWNING_DISPOSER_SENTINEL);
 
     consume_io_tree(launch);
     assert_eq!(alloc_count() - allocs, 1);

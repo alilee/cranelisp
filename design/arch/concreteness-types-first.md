@@ -6,11 +6,22 @@ the user-directed concreteness programme, following `total-concreteness.md`
 **Cross-check instrument:** `sprints/concreteness-requirements.md` (40 rows;
 the per-row disposition table is §6 — the register is `/sprint`'s; corrections
 to it are returned in §7, not edited in place).
-**Governs:** the S120 `cranelisp-types` change-set (§3), the wash order (§4),
-FIXMEs 0931–0935, and the NC-R re-labelling (FIXME 0936).
-**Archive trigger:** the types change-set and the downstream wash land; the
-representation contract folds into `module.rs` rustdoc + BC §7 + R11; this file
-moves to `design/arch/archive/`.
+**Governs:** the invariant clauses (I-EMIT §1, the R-24 resolution §2), the
+register cross-check (§6/§7) and the wash-size evidence (§4).
+**§3's pinned per-kind types change-set is SUPERSEDED as a migration step
+(user disposition 2026-09-01, S121 Phase 2):** the unified lifecycle machine
+of `symbol-table-lifecycle.md` lands instead, as the ONE S121 C1-led wash —
+the `CtorState` wire-in and the per-kind slot-field retypes were a strict
+waypoint of that design and are not run first (two exhaustive sweeps over
+the same ~200 sites for one destination). What §3 landed ahead of the flip —
+`CallableSlot` + `mint_callable_slot`/`rebind`, `ctor_field_types_at`, the
+`CacheStale` load re-check discipline — survives inside the unified machine
+(`symbol-table-lifecycle.md` §4.3/§9); the dormant `CtorState` deletes
+unwired. FIXMEs 0931–0935 re-point to `symbol-table-lifecycle.md`
+§5.2/§5.5/§5.6 via their owning streams.
+**Archive trigger:** the S121 unified wash lands; the surviving invariant
+content folds into `module.rs` rustdoc + BC §7 + R11; this file moves to
+`design/arch/archive/`.
 
 **Verification statement (R-40).** Every factual claim about source in this
 document was read at HEAD by `/arch` during this commission and is cited
@@ -75,7 +86,7 @@ C-ABI body in the intrinsics archive.
 
 | Member | Disposition under I-EMIT |
 |---|---|
-| `bind`, `race`, `select` | **Re-kind to the inline model.** Their only "body" is already backend inline emission at concrete sites — the honest kind is `Primitive { body: Inline }` (or a bootstrap-seeded equivalent), the `vec-get` family's shape, which is concrete-per-use *by construction* and survives layout specialisation by construction. Value-position use rides the per-concrete-sig `__inlwrap` wrapper family, as for every inline primitive. Their quantified schemes survive as checking artefacts (schemes may quantify; that was never the problem — `total-concreteness.md` §3.4). After the re-kind, no polymorphic callable is referenced by any call to them. Wash home: int (bootstrap seed) + backend (the intercept arm is already the emission), S120/S121. MEASURE-RK: census of value-position uses of the three across the corpus before re-kind (expected ≈ 0; any hit needs its `__inlwrap` before the flip). |
+| `bind`, `race`, `select` | **Re-kind to the inline model.** Their only "body" is already backend inline emission at concrete sites — the honest kind is `Primitive { body: Inline }` (or a bootstrap-seeded equivalent), the `vec-get` family's shape, which is concrete-per-use *by construction* and survives layout specialisation by construction. Value-position use is served by the backend's span-keyed `__wrap_…__` closure-wrapper family over the same inline lowering *(corrected 2026-09-01: the per-concrete-sig `__inlwrap` family named here never existed in source, and no wrapper-body arm exists for these three yet — any MEASURE-RK hit needs its `emit_…` wrapper-body arm before the flip, on the dormant `("vec-len", 1)` precedent, `total-concreteness.md` §3.2)*. Their quantified schemes survive as checking artefacts (schemes may quantify; that was never the problem — `total-concreteness.md` §3.4). After the re-kind, no polymorphic callable is referenced by any call to them. Wash home: int (bootstrap seed) + backend (the intercept arm is already the emission), S120/S121. MEASURE-RK: census of value-position uses of the three across the corpus before re-kind (expected ≈ 0; any hit needs its wrapper-body arm before the flip). |
 | `catch-runtime-error` | **Per-instantiation concrete facade over one uniform body.** Typecheck emits each call as a concrete call to an instantiation-keyed instance (`build_mangled_name` — P-2, no second grammar); the backend realises every instance, today, as an alias onto the single hand-written body (a name-alias/import — zero new code per instance beyond the entry). The earlier `/arch` objection — "per-type wrapper symbols add names without adding soundness" (`total-concreteness.md` §3.3) — is **overruled in direction by the user**: the name is the point. The instance symbol is where the type is closed; when layouts specialise, realization changes per instance with no tree change and no archaeology. |
 
 ### 1.3 NC-R: survives mechanically, mutates in meaning — do not build it to I-ABI's rationale
@@ -93,9 +104,9 @@ sanctioned polymorphic callables") and the flip trajectory. Re-labelled:
   representation dependencies. Same mechanics, new meaning.
 - Trajectory: `bind`/`race`/`select` **leave** the set at their inline re-kind
   (S120/S121 wash); `catch-runtime-error` remains as the uniform-realization
-  pin (joined by `vec-len` only if 0932 chooses spelling (b) — see §6 R-20:
-  this design records a preference for spelling (a) Inline, which keeps the
-  roster minimal).
+  pin. `vec-len` **never joins**: 0932 settled on spelling (a) Inline
+  (2026-09-01, `total-concreteness.md` §3.2), which keeps the roster
+  minimal.
 
 `/testing` may build the cell now with the amended rationale text; FIXME 0936
 routes the re-label to `/qa`. It is **not** superseded and it is not a dead
@@ -504,8 +515,9 @@ type; the view carries no slot.
 > (`symbol-table-lifecycle.md` §1.2/§3). Rulings 1, 2, and 4 stand in
 > substance (the register rejection's determinant argument, D11, one index
 > space) and are re-derived rather than cited in the clean-sheet document.
-> The S120 flip is HELD pending the user's disposition of that document's §9;
-> the `module.rs` rustdoc boxes citing §3.10/§3.11 re-point if it is adopted.
+> The user ADOPTED that document's §9 on 2026-09-01: the per-kind flip does
+> not run; the unified machine lands as the S121 C1-led wash, and the
+> `module.rs` rustdoc boxes citing §3.10/§3.11 re-point in that change-set.
 
 The user came back on §3.10 with four counters and a wider commission: *what
 is the best representation for slot identity, given the freedom to move
@@ -642,11 +654,11 @@ pairs — `Primitive` × `codegen_view`/`callees`/`trait_origin`,
 `codegen_view` (`module.rs:1184-1341` fields × `module.rs:2131+` kinds). The
 user's instinct is right in direction. The cure is wrong in level:
 
-- `ModuleEntry`'s variant set is the **resolution vocabulary**. The
-  visibility filter is uniform across variants (`module.rs:1699-1714`);
-  §8.6.4/§8.6.5 classification matches `Def | TypeDef | TraitDecl` as "a
-  local definition" in one arm (`src/imports.rs:881-883`); chain-follow's
-  terminal test is "non-`Import`". To every one of those consumers the six
+- `Decl` is the terminal **resolution vocabulary**, wrapped by a `Binding`
+  that carries name-level visibility uniformly
+  (`crates/cranelisp-types/src/lifecycle.rs::Binding`). Name candidates are
+  a separate reference layer; use-site resolution follows a candidate to its
+  terminal binding before declaration-kind projection. To those consumers the six
   `DefKind` members are **indistinguishable** — same visibility rules, same
   terminal semantics, same callable-target question. Promoting them
   multiplies every resolution-surface match ~7× for zero resolution-semantic
@@ -725,12 +737,10 @@ distinction is who allocates, and the mint models exactly that.
   de-slotting transitions** — bounded per module by `GOT_TABLE_SIZE`, with
   the `__expr`/`__macro_*` carve-out covering the churn case.
 - **Scrub-on-ambiguity is a non-issue by construction, verified.**
-  `ModuleEntry::Ambiguous` only ever lands over an absent entry or an
-  `Import`-vs-`Import` collision (`src/imports.rs:834-856`, `:911-920`,
-  `:958-969`); a local slotted `Def` is protected by the import-over-def
-  §8.6.4 reject (`imports.rs:881-909`); and the poison lands in the
-  *importing* module while the slot lives on the *defining* module's `Def`.
-  No slot is ever orphaned by a name going ambiguous. The one real
+  `SymbolTable::expose_candidate` stores candidate references separately from
+  terminal bindings. Candidate coexistence therefore cannot replace or orphan
+  a slotted binding; typecheck selects by use-site constraints and diagnoses
+  only a remaining multi-candidate result. The one real
   de-binding transition is the concrete→template redefinition, whose live
   slot's fate is the commit gate's (already ruled; FIXME 0479 lineage).
 
@@ -758,7 +768,7 @@ typecheck 52, backend 46, src 111, types 26, primitives 2, platform 5).
 | 1 | **cranelisp-types** | §3 in one change-set + rustdoc + `public-api.txt` + unit rows (mint refusal both polarities; rebind; `CtorState` serde; `ctor_field_types_at` incl. the refusal leg). Schema bump rides. | 1 change-set, ~large |
 | 2 | **cranelisp-typecheck** | Every fresh-slot site must mint with the scheme in hand — 10 non-test `allocate_got_slot` callers (`adt.rs` ×2, `builtins.rs` ×3, `program/body.rs` ×2, `finalize.rs` ×2, `register/multi_sig.rs` ×2, `register.rs`, `result.rs` ×2, `impl_check.rs`, `monomorphise.rs`) become `mint_callable_slot` calls; **P-1 stops being a discipline and becomes the vocabulary**. The two hand-mints (F1 `adt.rs:617-628`, F2 `impl_check.rs:1039-1043`) cannot compile over non-concrete schemes — forced into A-MINT / `Template` / `Polymorphic` routes (the S119 CS-1/CS-2 designs apply unchanged). `register_type_def_with_ctor_infos` derives `CtorState` per ctor. **D11 (§3.11 ruling 2): `NotDetermined { prior_slot: Option<CallableSlot> }` interstage carry — `accumulator.redef_slots` + the `existing_callable_slot` `or_else` delete; determination points `rebind` off the entry.** Collection redesign: identity from `resolved.storage_key` / the recorded carrier, never `fq.symbol` (FIXME 0935; fixes §2's silent no-mint incl. the renamed-import sibling); F2 trigger over `ApplyRef::Dispatch` per producer-obligations §2.4. Fixture churn (`builtins.rs`, `test_support`). | ~2 change-sets, largest crate share |
 | 3 | **cranelisp-backend** | Cache: schema-bump consts + the `CacheStale::NonConcreteSlot` arm + `CtorState` deserialisation arm. `context.rs::extract_constructor` (:260-287) rewrites onto `ctor_field_types_at` — deletes the `unwrap_or(Type::Int)` launder (R-13) and the declaration-channel feed (NC-5 structural leg). `drop_glue.rs:398` → located refusal (R-12); `fn_compiler.rs:1287` → located error, census-gated arm flip (R-9/R17); `fn_compiler.rs:1214` respelled `expect` (R-14). Ctor-template compile arm has no traffic (D6) — face 1's site vanishes. `Constructor { .. }` destructure sites (~15 non-test) re-pattern on `state`. Golden-CLIF re-baselines expected and accepted (REDs unconstrained). | ~2 change-sets |
-| 4 | **cranelisp-primitives + intrinsics** | Static table mints (2 sites); **`vec-len` de-slot** per 0932 — preference recorded for spelling (a) `Inline` (element-independent length-word load; keeps the realization roster minimal); `__inlwrap` already covers value position. Intrinsics: no slot surface; `catch-runtime-error` realization contract recorded (§1.2). | small |
+| 4 | **cranelisp-primitives + intrinsics** | Static table mints (2 sites); **`vec-len` de-slot** per 0932 — spelling (a) `Inline` **SETTLED** (2026-09-01, `total-concreteness.md` §3.2; element-independent length-word load; keeps the realization roster minimal). Value position needs the ONE dormant `("vec-len", 1)` arm in `vec_codegen.rs::emit_vec_query_into`, allocated to C4's reserved backend visit *(the row's prior claim that "`__inlwrap` already covers value position" was doubly false: the family never existed, and the live span-keyed `__wrap_…__` wrapper body has no `vec-len` arm)*. Intrinsics: no slot surface; `catch-runtime-error` realization contract recorded (§1.2). | small |
 | 5 | **src/ (int)** | The large facade change the user accepted: 111 `got_slot` mentions. `bootstrap.rs` — generic ctor seeds (`Option`/`Result`/`Pair`/`SList`/`IO` incl. `Bind`) become `CtorState::Template`; `bind`/`race`/`select` re-kind (§1.2). `platform.rs` — manifest-order mint replaces the `:351` direct cursor write; 0933's located refusal. `save.rs` (7 `Concrete` constructions), `exe.rs`, `redefine.rs` (slot reuse → `rebind`), `worker.rs` (snapshot/cursor logic reads survive; entry construction mints), `macro_clause.rs`, `expander.rs`, `agent/*`, `code.rs`. REPL `__expr` path unchanged (concrete by construction). | ~2–3 change-sets |
 | 6 | **tests/** | NC-1 populations (b)/(c) flip GREEN as tranches land; NC-4 flips at A-MINT; NC-5 behavioural leg flips at the context.rs rewrite; NC-R re-labelled (0936); unit-fixture churn tracked per crate above. | with each wave |
 

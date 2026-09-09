@@ -176,12 +176,19 @@ where
             })?;
 
         let vec_elem = vec_query_elem_from_fn_type(fn_type);
+        let ctor_result = fn_type
+            .and_then(|ty| ConcreteType::from_type(ty).ok())
+            .and_then(|ty| match ty {
+                ConcreteType::Fn(_, result) => Some(*result),
+                _ => None,
+            });
         self.compile_fn_wrapper_body(
             wrapper_func_id,
             name,
             arity,
             span,
             vec_elem.as_ref(),
+            ctor_result.as_ref(),
             target_fq,
         )?;
 
@@ -367,6 +374,7 @@ where
         arity: usize,
         span: Span,
         vec_elem: Option<&Type>,
+        ctor_result: Option<&ConcreteType>,
         // S110 W2 (§4): the target's STORAGE key — drives `emit_wrapper_call`'s
         // S10/S15/S16/S17 keyed reads.
         target_fq: Option<&FQSymbol>,
@@ -404,6 +412,7 @@ where
             &user_params,
             span,
             vec_elem,
+            ctor_result,
             target_fq,
         )?;
 
@@ -497,6 +506,7 @@ where
         user_params: &[Value],
         span: Span,
         vec_elem: Option<&Type>,
+        ctor_result: Option<&ConcreteType>,
         // S110 W2 (§4): the target's STORAGE key — drives the S15 summary, S16
         // ctor-as-value, S17 vec-query, and S10 GOT-entry keyed reads. `None` for
         // a target with no carrier (the current-unit `func_ids` fast-path below
@@ -549,7 +559,9 @@ where
             // (`cval`) as a bare word — the representation split that returns a
             // garbage pointer. `value_construct` is `None` off-toggle /
             // non-`Value` ⇒ the heap `emit_adt_construct_into` below.
-            let adt_ty = ConcreteType::ADT(fqtn, vec![]);
+            let adt_ty = ctor_result
+                .cloned()
+                .unwrap_or_else(|| ConcreteType::ADT(fqtn.clone(), vec![]));
             if let Some(v) = self.value_construct(&adt_ty, user_params) {
                 return Ok(v);
             }
@@ -560,34 +572,31 @@ where
                     message: "runtime/alloc not declared (need declare_intrinsics)".into(),
                     location: ErrorLocation::from_span(span),
                 })?;
+            let emitted_fields = crate::compiler::apply::append_runtime_ctor_fields(
+                builder,
+                self.module,
+                self.glue,
+                self.ctx.symbol_tables,
+                &fqtn,
+                ctor_info.tag,
+                &adt_ty,
+                user_params,
+                false,
+                span,
+            )?;
             return emit_adt_construct_into(
                 builder,
                 self.module,
                 alloc_id,
                 ctor_info.tag,
-                user_params,
+                &emitted_fields,
                 span,
             );
         }
 
-        // Vec query family (`vec-get`/`vec-set`/`vec-push`) as a first-class
-        // value: these primitives-table entries are `PrimitiveBody::Inline` —
-        // inline-dispatched, no GOT slot by construction (S102 FIXME 0476: no
-        // extern body can exist, since a single monomorphic body cannot know
-        // the element's heap category, so callability is a *kind*, not a
-        // NULL-slot proxy). The GOT-indirect fallback below has no slot to
-        // dispatch through; inline-emit the op into the wrapper instead — the
-        // `emit_adt_construct_into` precedent — using the per-site element
-        // type plumbed from the value-use site. The resolver is
-        // precedence-faithful (a user fn shadowing the name resolves first and
-        // keeps the GOT path); `vec-len` is excluded (real extern shim,
-        // populated slot — the working control path). Re-keys off the inline
-        // kind (§13.2 B1-be — the S101 name-list retired).
-        // S110 W2 (S17): keyed inline-primitive discrimination off the carrier,
-        // replacing `resolve_vec_query_primitive`. A user fn shadowing the name
-        // resolves to a non-inline entry (the carrier is the resolved storage FQ),
-        // so it keeps the GOT path below — precedence-faithful by construction.
-        // The canonical bare name the wrapper inline-emits is `fq.symbol`.
+        // Inline Vec primitives (including vec-len) have no GOT slot. Their
+        // wrappers own the incoming Vec, so release needs the per-site element
+        // type. The resolved entry's kind selects this path, not its spelling.
         if let Some(fq) = target_fq
             && self.ctx.is_inline_primitive_at(fq)
         {
@@ -703,6 +712,7 @@ where
                         all_args,
                         span,
                         vec_elem,
+                        None,
                         Some(&method_fq),
                     );
                 }
@@ -770,6 +780,7 @@ where
                                     all_args,
                                     span,
                                     vec_elem,
+                                    None,
                                     Some(&prim_fq),
                                 );
                             }
@@ -790,7 +801,15 @@ where
 
         // No trait resolution, or resolution didn't match — call by name via the
         // plain-fn carrier (S10/S15).
-        self.emit_wrapper_call(builder, target_name, all_args, span, vec_elem, target_fq)
+        self.emit_wrapper_call(
+            builder,
+            target_name,
+            all_args,
+            span,
+            vec_elem,
+            None,
+            target_fq,
+        )
     }
 
     // --- Auto-curry codegen ---

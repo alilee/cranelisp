@@ -55,7 +55,7 @@ fn t_s2_2_inline_adt_arg_wrapping_vec_preserves_len() {
 (import [platform.stdio [print]])
 (import [primitives [bind Pure]])
 
-(deftype Box [cells])
+(deftype (Box a) [:a cells])
 
 (defn box-set [b idx x] (match b [(Box v) (Box (vec-set v idx x))]))
 (defn box-len [b] (match b [(Box v) (vec-len v)]))
@@ -160,7 +160,7 @@ fn nested_adt_wrapping_vec_looped_double_use_corrupts_heap_neg() {
     // Primitives + special forms only — free-standing, ZERO stdlib.
     let source = r#"(import [primitives [Int add-i64 sub-i64 le-i64 vec-get vec-set Pure]])
 (deftype Cell [:Int v])
-(deftype Grid [cells])
+(deftype (Grid a) [:a cells])
 (defn unc [c] (match c [(Cell x) x]))
 (defn gcells [g] (match g [(Grid c) c]))
 (defn set-cell [g idx d] (Grid (vec-set (gcells g) idx (Cell d))))
@@ -895,7 +895,7 @@ const GRID_TRIMMED: &str = r#";; Trimmed grid.cl — only the symbols html.cl im
   (Solved [:Int value])
   (Candidates [:Int bitmask]))
 
-(deftype Grid [cells])
+(deftype (Grid a) [:a cells])
 
 (defn cell-at [g idx]
   (match g [(Grid cells) (vec-get cells idx)]))
@@ -2096,7 +2096,7 @@ const S60_GRID_EXEMPLAR_SHAPED: &str = r#"(import [primitives [*]])
   (Solved [:Int value])
   (Candidates [:Int bitmask]))
 
-(deftype Grid [cells])
+(deftype (Grid a) [:a cells])
 
 (defn build-helper [v i]
   (if (eq-i64 i 9) v
@@ -2135,7 +2135,7 @@ fn s60_cache_reuse_exemplar_shaped_no_crash() {
 
 const S60_GRID_NO_CELL_ADT: &str = r#"(import [primitives [*]])
 
-(deftype Grid [cells])
+(deftype (Grid a) [:a cells])
 
 (defn build-helper [v i]
   (if (eq-i64 i 9) v
@@ -2369,7 +2369,7 @@ fn s60_control_direct_helper_call_no_crash() {
 
 const S60_DROP_GLUE_MINIMAL: &str = r#"(import [primitives [*]])
 
-(deftype Grid [cells])
+(deftype (Grid a) [:a cells])
 
 (defn cell-at [g idx]
   (match g [(Grid cells) (vec-get cells idx)]))
@@ -2409,7 +2409,7 @@ fn s60_drop_glue_minimal_14_loc_no_crash() {
 
 const S60_DROP_GLUE_ONE_CALL: &str = r#"(import [primitives [*]])
 
-(deftype Grid [cells])
+(deftype (Grid a) [:a cells])
 
 (defn cell-at [g idx]
   (match g [(Grid cells) (vec-get cells idx)]))
@@ -2434,7 +2434,7 @@ fn s60_drop_glue_one_cellat_call_passes() {
 
 const S60_DROP_GLUE_INLINE_MATCH: &str = r#"(import [primitives [*]])
 
-(deftype Grid [cells])
+(deftype (Grid a) [:a cells])
 
 (defn walk [g]
   (let [c1 (match g [(Grid cs) (vec-get cs 0)])
@@ -2458,7 +2458,7 @@ fn s60_drop_glue_inline_match_passes() {
 
 const S60_DROP_GLUE_GRID_VEC_INT: &str = r#"(import [primitives [*]])
 
-(deftype Grid [cells])
+(deftype (Grid a) [:a cells])
 
 (defn cell-at [g idx]
   (match g [(Grid cells) (vec-get cells idx)]))
@@ -2509,7 +2509,7 @@ fn s60_drop_glue_no_adt_wrapper_passes() {
 
 const S60_DROP_GLUE_NO_INTERMEDIATE: &str = r#"(import [primitives [*]])
 
-(deftype Grid [cells])
+(deftype (Grid a) [:a cells])
 
 (defn cell-at [g idx]
   (match g [(Grid cells) (vec-get cells idx)]))
@@ -3067,7 +3067,7 @@ fn wave6_exemplar_solver_full_run_does_not_stack_overflow() {
 
 // regression-for: FIXME 0177 — check_forms cross-form state regression
 // spec: design/arch/decisions/0044-cluster-atomic-typecheck-orchestrator-staging.md
-//       §"`ClusterContext` (Approach B is canonical)"
+//       §"`SymbolTableAccess` (Approach B is canonical)"
 //
 // Pre-S66 the cross-form state hole manifested as stack-overflow when a
 // later REPL input referenced a constrained-polymorphic defn registered
@@ -3098,7 +3098,7 @@ fn regression_0177_cross_form_state_no_bleed() {
 
 // regression-for: FIXME 0179 — cluster-mode union read staging + live
 // spec: design/arch/decisions/0044-cluster-atomic-typecheck-orchestrator-staging.md
-//       §"`ClusterContext` (Approach B is canonical)"
+//       §"`SymbolTableAccess` (Approach B is canonical)"
 //
 // Pre-S66 cluster-mode reads went only to live; an intra-cluster
 // forward reference to a sibling defn staged in the same cluster but not
@@ -3114,7 +3114,7 @@ fn regression_0179_cluster_union_read_staging_and_live() {
     // the bodies of `unwrap` + `roundtrip` read `Box`'s `TypeDef` staged
     // in Pass 1.
     let cap = Cranelisp::repl_prims_capture(
-        "(deftype Box [val])\n\
+        "(deftype (Box a) [:a val])\n\
          (defn unwrap [b] (match b [(Box v) v]))\n\
          (defn roundtrip [n] (unwrap (Box n)))\n\
          (roundtrip 42)\n",
@@ -3927,7 +3927,7 @@ fn mono_ambiguous_unconstrained_top_level_var_rejected_neg() {
         .with_prelude(PreludeVariant::None)
         .user(
             "(import [primitives [IO Pure Int]])\n\
-             (deftype Option None (Some [v]))\n\
+             (deftype (Option a) None (Some [:a v]))\n\
              (defn identity [x] x)\n\
              (defn main [] :(IO Int)\n\
                (let [x (identity None)]\n\
@@ -3976,7 +3976,7 @@ fn mono_ambiguous_neg_does_not_reach_codegen() {
         .with_prelude(PreludeVariant::None)
         .user(
             "(import [primitives [IO Pure Int]])\n\
-             (deftype Option None (Some [v]))\n\
+             (deftype (Option a) None (Some [:a v]))\n\
              (defn ambig [] None)\n\
              (defn main [] :(IO Int) (Pure 0))",
         )
@@ -4036,7 +4036,7 @@ fn mixed_adt_nullary_and_heap_ctor_roundtrip_after_guard_scope() {
         .with_prelude(PreludeVariant::None)
         .user(
             "(import [primitives [IO Pure Int String add-i64 str-len]])\n\
-             (deftype Bag Empty (Full [v]))\n\
+             (deftype (Bag a) Empty (Full [:a v]))\n\
              (defn bag-len [b]\n\
                (match b [Empty 0 (Full v) (str-len v)]))\n\
              (defn main [] :(IO Int)\n\
@@ -4072,7 +4072,7 @@ fn mixed_adt_nullary_and_heap_ctor_roundtrip_after_guard_scope() {
 // These pin the hole CLOSED: the Wave-2 /dev relay position-completes the
 // §3.11.1 scan (typecheck). The shape mirrors the existing `let`-position guard
 // `mono_ambiguous_unconstrained_top_level_var_rejected_neg` (a
-// `(deftype Option None (Some [v]))` + `(defn identity [x] x)` + `(identity None)`
+// `(deftype (Option a) None (Some [:a v]))` + `(defn identity [x] x)` + `(identity None)`
 // unpinned value), differing only in WHERE the unpinned value sits. The Mixed-ADT
 // position guards (match-scrutinee, call-arg, ctor-field, if-branch) have LANDED
 // (they pass today — /dev position-completed the per-node check).
@@ -4117,7 +4117,7 @@ fn mono_ambiguous_match_scrutinee_rejected_neg() {
         .with_prelude(PreludeVariant::None)
         .user(
             "(import [primitives [IO Pure Int]])\n\
-             (deftype Option None (Some [v]))\n\
+             (deftype (Option a) None (Some [:a v]))\n\
              (defn identity [x] x)\n\
              (defn main [] :(IO Int)\n\
                (Pure (match (identity None) [None 0 (Some _) 1])))",
@@ -4160,7 +4160,7 @@ fn mono_ambiguous_call_arg_rejected_neg() {
         .with_prelude(PreludeVariant::None)
         .user(
             "(import [primitives [IO Pure Int]])\n\
-             (deftype Option None (Some [v]))\n\
+             (deftype (Option a) None (Some [:a v]))\n\
              (defn identity [x] x)\n\
              (defn consume [y] 7)\n\
              (defn main [] :(IO Int)\n\
@@ -4204,8 +4204,8 @@ fn mono_ambiguous_ctor_field_rejected_neg() {
         .with_prelude(PreludeVariant::None)
         .user(
             "(import [primitives [IO Pure Int]])\n\
-             (deftype Option None (Some [v]))\n\
-             (deftype Box (Wrap [w]))\n\
+             (deftype (Option a) None (Some [:a v]))\n\
+             (deftype (Box a) (Wrap [:a w]))\n\
              (defn identity [x] x)\n\
              (defn consume [b] 0)\n\
              (defn main [] :(IO Int)\n\
@@ -4249,7 +4249,7 @@ fn mono_ambiguous_if_branch_rejected_neg() {
         .with_prelude(PreludeVariant::None)
         .user(
             "(import [primitives [IO Pure Int Bool eq-i64]])\n\
-             (deftype Option None (Some [v]))\n\
+             (deftype (Option a) None (Some [:a v]))\n\
              (defn identity [x] x)\n\
              (defn use-it [y] 0)\n\
              (defn main [] :(IO Int)\n\
@@ -4409,7 +4409,7 @@ fn mono_option_none_annotation_pins_and_compiles_pos() {
         .with_prelude(PreludeVariant::None)
         .user(
             "(import [primitives [IO Pure Int add-i64]])\n\
-             (deftype Option None (Some [v]))\n\
+             (deftype (Option a) None (Some [:a v]))\n\
              (defn is-some [o] (match o [None 0 (Some _) 1]))\n\
              (defn main [] :(IO Int)\n\
                (Pure (add-i64 (is-some :(Option Int) None)\n\
@@ -4471,7 +4471,7 @@ fn mono_bare_annotated_value_pins_and_compiles_pos() {
         .with_prelude(PreludeVariant::None)
         .user(
             "(import [primitives [IO Pure Int]])\n\
-             (deftype Option None (Some [v]))\n\
+             (deftype (Option a) None (Some [:a v]))\n\
              (defn main [] :(IO Int)\n\
                (Pure (match :(Option Int) None [None 0 (Some _) 1])))",
         )
@@ -4518,7 +4518,7 @@ fn mono_is_some_unannotated_none_rejected_neg() {
         .with_prelude(PreludeVariant::None)
         .user(
             "(import [primitives [IO Pure Int]])\n\
-             (deftype Option None (Some [v]))\n\
+             (deftype (Option a) None (Some [:a v]))\n\
              (defn is-some [o] (match o [None 0 (Some _) 1]))\n\
              (defn main [] :(IO Int)\n\
                (Pure (is-some None)))",

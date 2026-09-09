@@ -1,9 +1,9 @@
 // Par-bind codegen: IO scheduling node emission.
 //
 // Compiles an `Expr::ParBind` into the documented IO-tree structure (a Par
-// node holding N branch pointers, wrapped by a Bind node linking Par to a
-// continuation closure). The continuation closure is built here and nowhere
-// else. See `design/backend/io-scheduling.md §4`.
+// node holding N `(branch, result_disposer)` pairs, wrapped by a Bind node
+// linking Par to a continuation closure). The continuation closure is built
+// here and nowhere else. See `design/backend/io-scheduling.md §4`.
 
 use std::collections::HashSet;
 
@@ -28,8 +28,8 @@ where
     /// ParBind bindings are semantically independent (no binding references
     /// another). This method compiles them into an IO tree structure:
     ///
-    /// 1. Compile each binding's IO expression → IO tree pointers
-    /// 2. Allocate a Par node containing all branch pointers
+    /// 1. Compile each binding's IO expression and derive its result disposer
+    /// 2. Allocate a Par node containing all `(branch, disposer)` pairs
     /// 3. Build a continuation closure that unpacks results and evaluates body
     /// 4. Allocate a Bind node linking Par → continuation
     ///
@@ -63,14 +63,16 @@ where
         // Phase 1: Compile each IO binding expression.
         let mut io_vals = Vec::with_capacity(n);
         for (_name, val_expr) in bindings {
+            let result_disposer = self.result_disposer_for_io_expr(val_expr, span)?;
             let io_val = self.compile_expr(val_expr)?;
-            io_vals.push(io_val);
+            io_vals.push((io_val, result_disposer));
         }
 
         // Phase 2: Allocate Par node.
-        // Layout: [header(16) | tag=3(8) | count(8) | branch_0(8) | ... | branch_{N-1}(8)]
-        // Payload size = tag(8) + count(8) + N*8
-        let par_payload_size = (8 + 8 + n * 8) as i64;
+        // Layout: [header(16) | tag=3(8) | count(8)
+        //          | (branch_0, disposer_0) | ... | (branch_N-1, disposer_N-1)]
+        // Payload size = tag(8) + count(8) + N*(branch + disposer).
+        let par_payload_size = (8 + 8 + n * 16) as i64;
         let par_ptr = heap::emit_alloc(&mut self.builder, self.module, alloc_id, par_payload_size);
 
         // Store tag=3 (IO_TAG_PAR) at offset 16.
@@ -86,14 +88,20 @@ where
             HeapAdt::field_offset(0),
         );
 
-        // Store branch IO pointers at offsets 32, 40, 48, ...
+        // Store `(branch IO pointer, result disposer)` pairs from offset 32.
         // No RC inc — ownership transfer (constructor convention, Decision 20).
-        for (i, &io_val) in io_vals.iter().enumerate() {
+        for (i, &(io_val, result_disposer)) in io_vals.iter().enumerate() {
             heap::heap_store(
                 &mut self.builder,
                 io_val,
                 par_ptr,
-                HeapAdt::field_offset(1 + i),
+                HeapAdt::field_offset(1 + i * 2),
+            );
+            heap::heap_store(
+                &mut self.builder,
+                result_disposer,
+                par_ptr,
+                HeapAdt::field_offset(2 + i * 2),
             );
         }
 
@@ -112,31 +120,11 @@ where
         self.spark_capture_borrow = saved_borrow;
         let cont_ptr = cont_res?;
 
-        // Phase 4: Allocate Bind node.
-        // Layout: [header(16) | tag=2(8) | inner(8) | cont(8)]
-        let bind_payload_size = HeapAdt::payload_size(2) as i64; // tag + 2 fields = 24
-        let bind_ptr =
-            heap::emit_alloc(&mut self.builder, self.module, alloc_id, bind_payload_size);
-
-        // Store tag=2 (IO_TAG_BIND).
-        let bind_tag = self.builder.ins().iconst(types::I64, 2);
-        heap::heap_store(&mut self.builder, bind_tag, bind_ptr, HeapAdt::TAG_OFFSET);
-
-        // Store par_ptr at field_offset(0) (24).
-        heap::heap_store(
-            &mut self.builder,
-            par_ptr,
-            bind_ptr,
-            HeapAdt::field_offset(0),
-        );
-
-        // Store cont_ptr at field_offset(1) (32).
-        heap::heap_store(
-            &mut self.builder,
-            cont_ptr,
-            bind_ptr,
-            HeapAdt::field_offset(1),
-        );
+        // Phase 4: the Par buffer is a runtime-private carrier whose per-slot
+        // disposal is already owned by the Par runner, so this Bind edge has no
+        // language-value disposer.
+        let no_buffer_disposer = self.builder.ins().iconst(types::I64, 0);
+        let bind_ptr = self.emit_bind_node(par_ptr, cont_ptr, no_buffer_disposer, span)?;
 
         // No RC inc on par_ptr or cont_ptr — ownership transfer (Decision 20).
 
@@ -167,7 +155,7 @@ where
         let body_free = find_free_vars(body, &[]);
         let mut captures: Vec<Symbol> = body_free
             .into_iter()
-            .filter(|v| !binding_names.contains(v) && self.variables.contains_key(v))
+            .filter(|v| !binding_names.contains(v) && self.binds(v))
             .collect();
         captures.sort(); // deterministic layout
 
@@ -231,6 +219,13 @@ where
             let env_ptr = block_params[0];
             let results_ptr = block_params[1];
 
+            // The captures' types, read from the ENCLOSING environment before
+            // the inner compiler takes this compiler's module borrow.
+            let capture_types: Vec<Option<cranelisp_types::Type>> = captures
+                .iter()
+                .map(|cap_name| self.lookup_type(cap_name))
+                .collect();
+
             let last_uses = heap::compute_last_uses(body);
             let mut inner = FnCompiler::inner(
                 builder,
@@ -245,15 +240,10 @@ where
             for (i, cap_name) in captures.iter().enumerate() {
                 let cap_val =
                     heap::heap_load(&mut inner.builder, env_ptr, HeapClosure::capture_offset(i));
-                let var = inner.fresh_variable();
-                inner.builder.declare_var(var, types::I64);
-                inner.builder.def_var(var, cap_val);
-                inner.variables.insert(cap_name.clone(), var);
-            }
-
-            // Mark captures so they are not eligible for last-use transfer.
-            for cap_name in captures {
-                inner.captured_vars.insert(cap_name.clone());
+                // The capture ENVIRONMENT, not a scope frame
+                // (`binding-scope.md` §3.2) — which is also what makes a
+                // capture ineligible for last-use transfer.
+                inner.bind_capture(cap_name, cap_val, capture_types.get(i).cloned().flatten());
             }
 
             // Load N results from results_ptr at FIELD_0_OFFSET + i*8.
@@ -273,16 +263,6 @@ where
             for (i, (name, val_expr)) in bindings.iter().enumerate() {
                 let result_val =
                     heap::heap_load(&mut inner.builder, results_ptr, HeapAdt::field_offset(i));
-                let var = inner.fresh_variable();
-                inner.builder.declare_var(var, types::I64);
-                inner.builder.def_var(var, result_val);
-                inner.variables.insert(name.clone(), var);
-                inner
-                    .scope_stack
-                    .last_mut()
-                    .unwrap_or_else(|| unreachable!("invariant: scope_stack non-empty"))
-                    .push(name.clone());
-
                 // Track type for RC — unwrap IO(T) to get inner T.
                 let inner_ty = match val_expr.ty() {
                     ConcreteType::ADT(fqtn, args)
@@ -292,14 +272,14 @@ where
                     }
                     other => other.to_type(),
                 };
-                inner.variable_types.insert(name.clone(), inner_ty);
+                inner.bind_local(name, result_val, Some(inner_ty));
             }
 
             // Compile the body.
-            let skip_var = FnCompiler::<M>::return_var_in_scope(body, inner.scope_stack.last());
+            let skip_var = inner.return_var_in_scope(body);
             let result = inner.compile_expr(body)?;
             inner.protect_return_value(&skip_var, result, body);
-            inner.pop_scope_with_cleanup(skip_var.as_ref())?;
+            inner.pop_scope_with_cleanup(skip_var)?;
 
             // Dec the results buffer. It's an alloc_with_rc allocation —
             // emit_rc_dec with no drop glue (results are plain i64 values,
@@ -387,8 +367,8 @@ where
 
         // Store captured values and inc RC for heap-typed captures.
         for (i, cap_name) in captures.iter().enumerate() {
-            if let Some(var) = self.variables.get(cap_name) {
-                let cap_val = self.builder.use_var(*var);
+            if let Some(var) = self.lookup_var(cap_name) {
+                let cap_val = self.builder.use_var(var);
                 heap::heap_store(
                     &mut self.builder,
                     cap_val,
@@ -407,9 +387,9 @@ where
                 // helper for the *detached* `LaunchContinue` continuation but
                 // never raises the flag, so its captures keep the retain.
                 if !self.spark_capture_borrow
-                    && let Some(ty) = self.variable_types.get(cap_name)
+                    && let Some(ty) = self.lookup_type(cap_name)
                 {
-                    let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
+                    let category = signature_heap_category(&ty, Some(self.ctx.symbol_tables));
                     self.emit_capture_inc(category, cap_val);
                 }
             }

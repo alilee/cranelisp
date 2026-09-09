@@ -17,8 +17,151 @@
 // of backend (frontend/typecheck build the node), so it is not a backend
 // unit; the backend's contract is "given a ParBind, emit a Par node".
 
-use crate::jit::Jit;
-use cranelisp_types::{Defn, DefnVariant, Expr, ResolvedCall, Span, Symbol, Type, Visibility};
+use crate::{heap::HeapAdt, jit::Jit};
+use cranelisp_types::{
+    Defn, DefnVariant, Expr, FQTypeName, ModuleFullPath, ResolvedCall, Span, Symbol, Type,
+    TypeName, Visibility,
+};
+
+fn node_bases_for_tag(clif: &str, tag: i64) -> Vec<String> {
+    let expected = format!("iconst.i64 {tag}");
+    let tag_values: Vec<&str> = clif
+        .lines()
+        .filter_map(|line| {
+            let (lhs, rhs) = line.trim().split_once(" = ")?;
+            (rhs.trim() == expected).then_some(lhs)
+        })
+        .collect();
+    clif.lines()
+        .filter_map(|line| {
+            let code = line.split(';').next()?.trim();
+            let (stored, address) = code
+                .strip_prefix("store notrap aligned ")?
+                .split_once(", ")?;
+            if !tag_values.contains(&stored) {
+                return None;
+            }
+            address
+                .strip_suffix("+16")
+                .map(std::string::ToString::to_string)
+        })
+        .collect()
+}
+
+fn assert_node_func_addr_store(clif: &str, tag: i64, offset: i32) {
+    let func_values: Vec<&str> = clif
+        .lines()
+        .filter_map(|line| {
+            let (lhs, rhs) = line.trim().split_once(" = ")?;
+            rhs.starts_with("func_addr.i64 ").then_some(lhs)
+        })
+        .collect();
+    let bases = node_bases_for_tag(clif, tag);
+    let found = clif.lines().any(|line| {
+        let code = line.split(';').next().unwrap_or(line).trim();
+        let Some((stored, address)) = code
+            .strip_prefix("store notrap aligned ")
+            .and_then(|store| store.split_once(", "))
+        else {
+            return false;
+        };
+        func_values.contains(&stored)
+            && bases
+                .iter()
+                .any(|base| address == format!("{base}+{offset}"))
+    });
+    assert!(
+        found,
+        "node tag {tag} must store its disposer func_addr at +{offset}; CLIF:\n{clif}"
+    );
+}
+
+fn values_for_iconst(clif: &str, value: i64) -> Vec<&str> {
+    let expected = format!("iconst.i64 {value}");
+    clif.lines()
+        .filter_map(|line| {
+            let (lhs, rhs) = line.trim().split_once(" = ")?;
+            (rhs.trim() == expected).then_some(lhs)
+        })
+        .collect()
+}
+
+fn assert_node_const_store(clif: &str, tag: i64, offset: i32, value: i64) {
+    let stored_values = values_for_iconst(clif, value);
+    let bases = node_bases_for_tag(clif, tag);
+    let found = clif.lines().any(|line| {
+        let code = line.split(';').next().unwrap_or(line).trim();
+        let Some((stored, address)) = code
+            .strip_prefix("store notrap aligned ")
+            .and_then(|store| store.split_once(", "))
+        else {
+            return false;
+        };
+        stored_values.contains(&stored)
+            && bases
+                .iter()
+                .any(|base| address == format!("{base}+{offset}"))
+    });
+    assert!(
+        found,
+        "node tag {tag} must store constant {value} at +{offset}; CLIF:\n{clif}"
+    );
+}
+
+fn assert_node_payload_size(clif: &str, tag: i64, payload_size: usize) {
+    let expected = format!("iconst.i64 {payload_size}");
+    let size_values: Vec<&str> = clif
+        .lines()
+        .filter_map(|line| {
+            let (lhs, rhs) = line.trim().split_once(" = ")?;
+            (rhs.trim() == expected).then_some(lhs)
+        })
+        .collect();
+    let bases = node_bases_for_tag(clif, tag);
+    let found = clif.lines().any(|line| {
+        let code = line.split(';').next().unwrap_or(line).trim();
+        let Some((result, rhs)) = code.split_once(" = ") else {
+            return false;
+        };
+        if !bases.iter().any(|base| base == result) {
+            return false;
+        }
+        let Some(arguments) = rhs
+            .strip_prefix("call ")
+            .and_then(|call| call.split_once('('))
+            .and_then(|(_, tail)| tail.strip_suffix(')'))
+        else {
+            return false;
+        };
+        size_values.contains(&arguments.trim())
+    });
+    assert!(
+        found,
+        "node tag {tag} must allocate payload size {payload_size}; CLIF:\n{clif}"
+    );
+}
+
+fn io_int_lit(v: i64) -> Expr {
+    Expr::IntLit {
+        value: v,
+        span: Span::SYNTHETIC,
+        inferred_type: Some(Box::new(Type::ADT(
+            FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("IO")),
+            vec![Type::Int],
+        ))),
+    }
+}
+
+fn io_string_lit(v: i64) -> Expr {
+    Expr::IntLit {
+        value: v,
+        span: Span::SYNTHETIC,
+        inferred_type: Some(Box::new(Type::ADT(
+            FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("IO")),
+            vec![Type::String],
+        ))),
+    }
+}
 
 /// Compile a zero-arg `defn` whose body is the given `Expr`, returning the
 /// emitted CLIF-IR text. Branches need only be structurally valid for
@@ -191,14 +334,54 @@ fn heap_capturing_spark_let() -> Expr {
 /// A `LaunchContinue` whose continuation `(strwork s)` captures the enclosing
 /// heap `String` `s`. Detached — the continuation capture MUST retain.
 fn heap_capturing_launch() -> Expr {
+    let launched = match probe_call(Span::new(1, 2)) {
+        Expr::Apply {
+            callee,
+            args,
+            span,
+            resolved_call,
+            ..
+        } => Expr::Apply {
+            callee,
+            args,
+            span,
+            resolved_call,
+            inferred_type: Some(Box::new(Type::ADT(
+                FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("IO")),
+                vec![Type::Int],
+            ))),
+        },
+        _ => unreachable!("probe_call always builds Apply"),
+    };
     Expr::Let {
         bindings: vec![(Symbol::from("s"), str_lit("hi"))],
         body: Box::new(Expr::LaunchContinue {
-            launched: Box::new(probe_call(Span::new(1, 2))),
+            launched: Box::new(launched),
             continuation: Box::new(user_call1(
                 "strwork",
                 str_var("s", Span::new(3, 4)),
                 Span::new(3, 5),
+            )),
+            span: Span::SYNTHETIC,
+            inferred_type: Some(Box::new(Type::Int)),
+        }),
+        span: Span::SYNTHETIC,
+        inferred_type: Some(Box::new(Type::Int)),
+    }
+}
+
+/// A `ParBind` continuation whose non-closed body consumes the enclosing heap
+/// `s`. The continuation body is emitted in its own Cranelift context, so this
+/// fixture observes only the outer closure-env retain.
+fn heap_capturing_par_bind() -> Expr {
+    Expr::Let {
+        bindings: vec![(Symbol::from("s"), str_lit("hi"))],
+        body: Box::new(Expr::ParBind {
+            bindings: vec![(Symbol::from("result"), io_int_lit(1))],
+            body: Box::new(user_call1(
+                "strwork",
+                str_var("s", Span::new(11, 12)),
+                Span::new(10, 13),
             )),
             span: Span::SYNTHETIC,
             inferred_type: Some(Box::new(Type::Int)),
@@ -502,8 +685,8 @@ fn independent_let_bindings_do_not_inc_an_ivar_capture() {
 fn par_bind_emits_par_node_with_branch_count() {
     let body = Expr::ParBind {
         bindings: vec![
-            (Symbol::from("a"), int_lit(10)),
-            (Symbol::from("b"), int_lit(20)),
+            (Symbol::from("a"), io_int_lit(10)),
+            (Symbol::from("b"), io_int_lit(20)),
         ],
         body: Box::new(int_lit(0)),
         span: Span::SYNTHETIC,
@@ -532,6 +715,67 @@ fn par_bind_emits_par_node_with_branch_count() {
         "ParBind codegen must emit Par-node + continuation allocations \
          (>=2 calls); found {alloc_calls}. CLIF:\n{clif}"
     );
+    assert_node_payload_size(&clif, 3, HeapAdt::payload_size(5));
+    assert_node_payload_size(&clif, 2, HeapAdt::payload_size(3));
+    assert_node_const_store(&clif, 2, HeapAdt::field_offset(2), 0);
+}
+
+// spec: spec/12-runtime.md §12.4.3 — a ParBind continuation closing over a
+// heap value retains it in its outer closure environment. The continuation body
+// itself is intentionally outside this probe's CLIF context; the e2e guard owns
+// its consuming-use observation.
+#[test]
+fn par_bind_continuation_retains_a_heap_capture() {
+    let clif = clif_of_body_with_fns(heap_capturing_par_bind(), &[("strwork", 1)]);
+    assert_eq!(
+        clif.lines()
+            .filter(|line| line.contains("atomic_rmw") && line.contains(" add "))
+            .count(),
+        1,
+        "the outer ParBind continuation closure must retain its heap capture; CLIF:\n{clif}"
+    );
+}
+
+// spec: spec/10-io.md §10.12.9 item 4 + design/backend/io-scheduling.md §4 —
+// each heterogeneous Par branch carries its own result disposer.
+#[test]
+fn par_bind_carries_one_disposer_per_branch() {
+    let scalar = Expr::ParBind {
+        bindings: vec![
+            (Symbol::from("a"), io_int_lit(10)),
+            (Symbol::from("b"), io_int_lit(20)),
+        ],
+        body: Box::new(int_lit(0)),
+        span: Span::SYNTHETIC,
+        inferred_type: Some(Box::new(Type::Int)),
+    };
+    let heterogeneous = Expr::ParBind {
+        bindings: vec![
+            (Symbol::from("a"), io_string_lit(10)),
+            (Symbol::from("b"), io_int_lit(20)),
+        ],
+        body: Box::new(int_lit(0)),
+        span: Span::SYNTHETIC,
+        inferred_type: Some(Box::new(Type::Int)),
+    };
+    let scalar_clif = clif_of_body(scalar);
+    let owning_clif = clif_of_body(heterogeneous);
+    assert_eq!(HeapAdt::payload_size(5), 48);
+    assert_eq!(HeapAdt::field_offset(1), 32);
+    assert_eq!(HeapAdt::field_offset(2), 40);
+    assert_eq!(HeapAdt::field_offset(3), 48);
+    assert_eq!(HeapAdt::field_offset(4), 56);
+    assert_node_payload_size(&scalar_clif, 3, HeapAdt::payload_size(5));
+    assert_node_payload_size(&owning_clif, 3, HeapAdt::payload_size(5));
+    assert_node_const_store(&scalar_clif, 3, HeapAdt::field_offset(2), 0);
+    assert_node_const_store(&scalar_clif, 3, HeapAdt::field_offset(4), 0);
+    assert_node_const_store(&owning_clif, 3, HeapAdt::field_offset(4), 0);
+    assert_eq!(
+        owning_clif.matches("func_addr").count(),
+        scalar_clif.matches("func_addr").count() + 1,
+        "one owning branch adds exactly its canonical disposer\nscalar:\n{scalar_clif}\nowning:\n{owning_clif}"
+    );
+    assert_node_func_addr_store(&owning_clif, 3, HeapAdt::field_offset(2));
 }
 
 // spec: spec/10-io.md §10.12.1 + design/backend/io-scheduling.md §4 —
@@ -543,9 +787,9 @@ fn par_bind_emits_par_node_with_branch_count() {
 fn par_bind_branch_count_tracks_bindings() {
     let body = Expr::ParBind {
         bindings: vec![
-            (Symbol::from("a"), int_lit(1)),
-            (Symbol::from("b"), int_lit(2)),
-            (Symbol::from("c"), int_lit(3)),
+            (Symbol::from("a"), io_int_lit(1)),
+            (Symbol::from("b"), io_int_lit(2)),
+            (Symbol::from("c"), io_int_lit(3)),
         ],
         body: Box::new(int_lit(0)),
         span: Span::SYNTHETIC,
@@ -700,7 +944,7 @@ fn launch_continue(launched: Expr, continuation: Expr) -> Expr {
 #[test]
 fn launch_continue_emits_launch_node_wrapped_by_bind() {
     // (launch (effect-subtree) ; continue with 0)
-    let body = launch_continue(int_lit(10), int_lit(0));
+    let body = launch_continue(io_int_lit(10), int_lit(0));
     let clif = clif_of_body(body);
 
     // The Launch node stores tag=5 (IO_TAG_LAUNCH) at TAG_OFFSET.
@@ -727,6 +971,28 @@ fn launch_continue_emits_launch_node_wrapped_by_bind() {
         "LaunchContinue codegen must emit Launch-node + continuation-closure + \
          Bind-node allocations (>=3 calls); found {alloc_calls}. CLIF:\n{clif}"
     );
+    assert_node_payload_size(&clif, 5, HeapAdt::payload_size(2));
+    assert_node_payload_size(&clif, 2, HeapAdt::payload_size(3));
+    assert_node_const_store(&clif, 2, HeapAdt::field_offset(2), 0);
+}
+
+// spec: spec/10-io.md §10.12.9 item 4 + design/backend/io-trampoline.md §15.4 —
+// Launch carries disposal authority for the detached result it discards.
+#[test]
+fn launch_continue_carries_detached_result_disposer() {
+    let scalar = clif_of_body(launch_continue(io_int_lit(10), int_lit(0)));
+    let owning = clif_of_body(launch_continue(io_string_lit(10), int_lit(0)));
+    assert_eq!(HeapAdt::payload_size(2), 24);
+    assert_eq!(HeapAdt::field_offset(1), 32);
+    assert_node_payload_size(&scalar, 5, HeapAdt::payload_size(2));
+    assert_node_payload_size(&owning, 5, HeapAdt::payload_size(2));
+    assert_node_const_store(&scalar, 5, HeapAdt::field_offset(1), 0);
+    assert_eq!(
+        owning.matches("func_addr").count(),
+        scalar.matches("func_addr").count() + 1,
+        "owning Launch result adds exactly its canonical disposer\nscalar:\n{scalar}\nowning:\n{owning}"
+    );
+    assert_node_func_addr_store(&owning, 5, HeapAdt::field_offset(1));
 }
 
 // spec: design/backend/io-trampoline.md §15.7/§15.9 — NEGATIVE / no-regression:

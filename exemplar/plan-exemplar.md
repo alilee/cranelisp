@@ -1,6 +1,6 @@
 # Exemplar Project: Sudoku Solver
 
-Selected exemplar project for the Cranelisp reimplementation. This document is owned by the `/port` skill, updated from the Sprint 0 candidate evaluation.
+Selected exemplar project for the Cranelisp reimplementation. This document is owned by narrow `dev`, updated from the Sprint 0 candidate evaluation.
 
 ## Showcase target (S86 Phase 6b rebaseline)
 
@@ -685,7 +685,7 @@ This is expected and confirms the exemplar plan's original assessment that the b
 
 **Ring 1 features available** (Chunks A+B+C; 738 tests, 2 ignored):
 - **Strings**: literals, `str-concat`, `str-eq`, `str-len`, `string-identity`, `int-to-string`, `float-to-string`, `bool-to-string`. `parse-int` is defined but its return type is still `Int` (placeholder — needs `Option` ADT return support, hence the 2 ignored tests).
-- **ADTs with fields**: Product types (`(deftype Point [:Int x :Int y])`), sum types with data constructors (`(deftype (Option a) None (Some [:a val]))`), polymorphic type parameters, shortcut syntax (`(deftype Pair [first second])`). Constructor patterns with field bindings in `match`. Exhaustiveness checking (panics at runtime for non-exhaustive). Multiple ADT definitions in the same compilation unit.
+- **ADTs with fields**: Product types (`(deftype Point [:Int x :Int y])`), sum types with data constructors (`(deftype (Option a) None (Some [:a val]))`), and explicit polymorphic products (`(deftype (Pair a b) [:a first :b second])`). Constructor patterns bind payloads in `match`; non-exhaustive matches are rejected before runtime. Multiple ADT definitions may share a compilation unit.
 - **Closures**: Lambda with variable capture (single and multiple captures). Closures returned from functions. Higher-order functions (functions as arguments and return values). Named functions as values. Nested closures. Function composition. Zero-param closures.
 - **RC**: Heap allocation with reference counting. Consuming calling convention with last-use optimization. Drop glue for strings, ADTs with heap fields, and closure environments. Balanced inc/dec verified by 35 RC tests.
 - **Still NOT available**: `Vec` (deferred to Sprint 3), modules/imports, traits (`Eq`, `Display`, `derive`), macros, IO, platform DLLs, `char-at`, `str-split`, `str-contains`, `str-sub`, `mod`/`rem` primitive.
@@ -694,7 +694,7 @@ This is expected and confirms the exemplar plan's original assessment that the b
 
 | Component | Ring 1 viable? | Assessment |
 |---|---|---|
-| `grid.cl` — Grid/Cell types | **Partially** | `Cell` ADT can now be fully defined: `(deftype Cell (Given [:Int given-value]) (Solved [:Int solved-value]) (Candidates [candidates]))`. However, `Candidates` wraps a `:(Vec Int)` which does not exist yet. `Grid` wraps `:(Vec Cell)` — also blocked. Individual `Cell` values can be constructed, passed through functions, and pattern-matched. But no collection to hold 81 of them. |
+| `grid.cl` — Grid/Cell types | **Partially** | `Cell` ADT can now be fully defined: `(deftype Cell (Given [:Int given-value]) (Solved [:Int solved-value]) (Candidates [:Int candidates]))`. `Grid` can be expressed generically as `(deftype (Grid a) [:a cells])`, but no collection yet exists to hold 81 cells. |
 | `solver.cl` — constraint propagation, backtracking | **No** | The solver traverses and transforms a grid (Vec-based). Candidate elimination requires `Vec` filtering. Even with `Cell` definable, the algorithms cannot operate without `Vec`. `PropResult` (pure enum) and `SolveResult` (sum with field) are both expressible, but useless without the grid. |
 | `html.cl` — HTML generation | **Partially** | String concatenation (`str-concat`) and conversion (`int-to-string`) are available. A function like `(defn wrap-tag [tag content] (str-concat (str-concat "<" (str-concat tag ">")) (str-concat content (str-concat "</" (str-concat tag ">")))))` works. But building the 9x9 grid HTML requires iterating over 81 cells — which requires `Vec` or a recursive data structure. Individual string-building helpers (tag wrapping, CSS embedding) are expressible. |
 | `form.cl` — URL form parsing | **No** | Requires `str-split` (to split on `&` and `=`), `char-at` (to inspect individual characters), and iteration over a collection of key-value pairs. None of these are available. `str-eq` is available, which would help compare keys, but without string splitting/indexing, parsing is impossible. |
@@ -1169,7 +1169,7 @@ type variable reached a codegen position` (`class=carrier-loss`, owner
 
 - `make-grid` / `make-grid-helper` — collapsing it makes `make-grid`'s
   `(Option Grid)` return carry a free element-type var (the `Grid`/`SolveResult`
-  ADT fields are *deliberately untyped*, inference-driven), so `user/report`,
+  ADT fields are explicitly generic), so `user/report`,
   which **uses** the built grid (feeds `g` to `solve`/`format-board`/
   `solution-page`), hits the located carrier-gate error monomorphised in
   `user/report$String`.
@@ -1274,7 +1274,7 @@ case, artificial `join` dependency, or memory diagnostic work.
 
 ---
 
-## Sprint 118 Phase-6 assessment (HEAD `501e701f`)
+## Historical Sprint 118 Phase-6 assessment (HEAD `501e701f`)
 
 ### Shipped-impact
 
@@ -1329,35 +1329,30 @@ exemplar never calls that accessor (all Grid reads destructure), and forcing the
 accessor onto the canonical-glue path by spelling the field type moves zero
 runtime blocks. Evidence appended to 0903; numbers in `exemplar/CLAUDE.md`.
 
-### Field-spelling observation (for the 0903 / 0867 / 0912 rulings, NOT a change)
+### Field-spelling observation (0903 / 0867 / 0912)
 
-`(deftype Grid [cells])` **is already on the accessor-minting spelling** — per
-FIXME 0867's finding, deftype-level field lists mint both `Grid.cells` and the
-bare alias regardless of type parameters; what the untyped field costs is not
-the accessor's existence but its *concreteness*. Writing `[:(Vec Cell) cells]`
-is legal (it needs `Vec` in scope — `grid.cl` imports primitives by name, so the
-import line grows), it compiles, it solves, and it changes the emitted
-`Grid.cells` release from the shallow non-glue form to the canonical colocated
-glue call. It changes no runtime number. So: if FIXME 0912 is ruled "reject
-undeclared fields", the exemplar can comply with a one-token edit and would lose
-nothing — but the compliance would buy no memory behaviour, and the exemplar
-deliberately keeps the bare spelling meanwhile, because it is the shape a real
-author writes and its sentinel value is in staying that shape.
+The live exemplar uses `(deftype (Grid cells-type) [:cells-type cells])`.
+Explicit generic spelling preserves the non-concrete template mechanism needed
+by the 0903 regression while satisfying §5.2.4. Because this is a product, it
+mints `Grid.cells`; sum payload labels remain match-only under the 0867 ruling.
 
 ---
 
-## Next Skills
+## Current status (S121 Phase 6b)
 
-- `/qa` — Own FIXME 0917: re-point cell #21 off the 0903 families, route
-  `/testing` the subject/control pair, then attribute (backend release emission
-  vs typecheck ownership summary). Dispose FIXME 0875 (symptom not reproducible
-  at HEAD; a standing `--link`-then-run exemplar parity cell is the better
-  guard). Weigh the 0903 append before the S119 ruling — the exemplar no longer
-  supports "0903 costs the application".
-- `/testing` — The 0917 repro is drop-in: PrimitivesOnly prelude, zero stdlib,
-  absolute balance assertable (control is exact), same numbers under `--link`.
-- `/sprint` — Record: 40/40 both toggles, cold/warm and Run/Link parity green,
-  0875 not reproducible, 0917 filed, cell #21 re-attributed.
-- `/port` — Re-attempt the qualified `Display Cell` adoption only after FIXME
-  0869 is resolved. Re-measure the driver loop and the marquee growth when 0917
-  lands; the acceptance is a residue **flat in N**, not merely smaller.
+The former 0917 nullary/boxed-match failure is resolved by its focused exact
+run/link marginal-balance guards. S121's S99 solved-grid repeated-workload
+observer also passes. The direct full-exemplar observer remains intentionally
+bounded (`<=1400` warm residue with a zero-work control); this plan does not
+claim an unmeasured exact full-exemplar balance.
+
+The linked web-server claim is now exercised rather than inferred: a scratch
+`--link main.cl` executable and the existing `--run` control both passed the
+same GET-form, POST-valid-grid, and missing-path Not Found journey (focused
+nextest 2/2,
+`e5570c10-a939-4a6b-99eb-af2ca985c3b3`). This is link/serve evidence only; it
+does not establish linked fan-out or a performance result.
+
+The 0408 copy-per-guess performance backlog and the deferred qualified
+`Display Cell` adoption pending 0869 remain unchanged. No exemplar algorithm,
+compiler, platform API, or specification change is proposed here.

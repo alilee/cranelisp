@@ -1,16 +1,122 @@
 use super::*;
 use cranelisp_types::{
-    DefKind, DefnVariant, ErrorLocation, Expr, FQSymbol, ImportNames, ImportSpec, ModuleEntry,
-    ModuleFullPath, Scheme, Symbol, Type, Visibility,
+    Binding, CallableArmDraft, CallableArmId, CallableOrigin, CallableTarget, Decl, DefnVariant,
+    ErrorLocation, Expr, FQSymbol, ImportNames, ImportSpec, Life, ModuleFullPath, Realization,
+    Scheme, Sexp, Symbol, TemplateBody, TemplateKind, Type, Visibility,
 };
 use std::collections::HashMap;
 // FIXME 0109 Wave C: these helpers moved to `process_form.rs`; a handful of
 // worker-side tests (introspection + private-submodule enforcement) still
 // exercise them (the latter share `mk_writer_test_ctx`, which stays here).
 use crate::process_form::{
-    check_private_submodule_import, has_code_ptr, record_imports_on_symbol_table,
+    check_private_submodule_import, record_imports_on_symbol_table,
     record_submodule_on_symbol_table,
 };
+
+// spec: repl/spec/18-redefinition.md §18.1.2 — persisted-source restart
+// reconstructs ownership independently of the live replacement gate.
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/ownership/fixpoint.rs found=S121 owner=/dev
+#[test]
+fn cache_preloaded_sum_projection_recheck_preserves_ownership() {
+    use crate::session_v4::{CompilerSession, RunMode, SessionSettings};
+    use cranelisp_backend::cache;
+    use cranelisp_types::CodegenBehaviour;
+    let root = tempfile::tempdir().unwrap();
+    let mut session = CompilerSession::new(
+        SessionSettings {
+            no_color: true,
+            no_cache: true,
+            codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
+            priority_workers: 1,
+            nice_workers: 0,
+            run_mode: RunMode::Run,
+        },
+        root.path().to_path_buf(),
+        "main",
+    )
+    .unwrap();
+    session.set_lib_dirs(Vec::new());
+    let source = "(import [primitives [Int Pure]])
+        (deftype Customer (Addr [:Int a]))
+        (defn r-cust [c] (match c [(Customer.Addr a) a]))
+        (defn main [] (Pure (r-cust (Customer.Addr 40))))";
+    session
+        .register_module_with_source("main", source, &root.path().join("main.cl"))
+        .unwrap();
+    let module = ModuleFullPath::from("main");
+    let cold = session.shared.symbol_tables.get(&module).unwrap().clone();
+    let meta = root.path().join("main.meta.json");
+    cache::serialize::write_meta(&meta, &cold, cache::CACHE_SCHEMA_VERSION).unwrap();
+    let restored = cache::serialize::load_meta(&meta)
+        .unwrap()
+        .into_concrete::<crate::code::Code, ()>();
+    assert_eq!(restored.schema_version, cache::CACHE_SCHEMA_VERSION);
+    let original = cold.get("r-cust").unwrap();
+    let cached = restored.get("r-cust").unwrap();
+    assert_eq!(cached.callable_got_slot(), original.callable_got_slot());
+    assert!(
+        restored
+            .got
+            .load_slot(cached.callable_got_slot().unwrap())
+            .is_null()
+    );
+    assert!(matches!(
+        cached.callable().unwrap().arm.life,
+        Life::Concrete {
+            realization: Realization::Body { code: None, .. },
+            ..
+        }
+    ));
+    let mut without_authored_functions = restored.clone();
+    for name in ["r-cust", "main"] {
+        without_authored_functions
+            .retire_abi_changing(&Symbol::from(name))
+            .unwrap();
+    }
+    let program = build_program_compat(&cranelisp_frontend::parse(source).unwrap()).unwrap();
+    let mut empty = crate::code::SessionSymbolTable::new_with_params(module.clone());
+    for (name, exposure) in cold.all_name_candidates() {
+        if exposure.source.module != module {
+            empty
+                .expose_candidate(name.clone(), exposure.source.clone(), exposure.visibility)
+                .unwrap();
+        }
+    }
+    for (label, initial) in [
+        ("empty", empty),
+        ("restored", restored),
+        ("without_authored_functions", without_authored_functions),
+    ] {
+        let tables = dashmap::DashMap::new();
+        for row in session.shared.symbol_tables.iter() {
+            tables.insert(row.key().clone(), row.value().clone());
+        }
+        tables.insert(module.clone(), initial);
+        let checked = check_cluster_to_staging(
+            &tables,
+            &session.shared.module_aliases,
+            &session.shared.prelude_fallback,
+            &module,
+            &program,
+        )
+        .unwrap()
+        .unwrap()
+        .unwrap();
+        let staged = checked.staging.get("r-cust").unwrap();
+        assert_eq!(
+            staged.callable().unwrap().arm.scheme.ty,
+            original.callable().unwrap().arm.scheme.ty,
+            "{label}"
+        );
+        assert_eq!(staged.mode_summary(), original.mode_summary(), "{label}");
+        assert_eq!(
+            staged.mode_summary().unwrap().param_modes,
+            vec![cranelisp_types::Mode::Copy],
+            "{label}"
+        );
+        validate_guarded_staging(&tables, &module, &checked.staging).unwrap();
+    }
+}
 
 /// Test-only: read a compiled code pointer from a symbol's GOT slot. The
 /// production executor reads clause code ptrs through
@@ -23,7 +129,14 @@ fn get_code_ptr(
 ) -> Option<*const u8> {
     symbol_tables.get(module).and_then(|t| {
         let entry = t.get(name.as_ref())?;
-        let ModuleEntry::Def { code: Some(_), .. } = entry else {
+        let Some(callable) = entry.callable() else {
+            return None;
+        };
+        let Life::Concrete {
+            realization: Realization::Body { code: Some(_), .. },
+            ..
+        } = &callable.arm.life
+        else {
             return None;
         };
         let slot = entry.callable_got_slot()?;
@@ -40,8 +153,31 @@ fn synthetic_scheme() -> Scheme {
     }
 }
 
-/// A trivial single-variant `DefnVariant` body (S69 Submission 35:
-/// `ModuleEntry::Def.ast` is `DefnVariant`, not `Defn`).
+fn binding_target(module: &ModuleFullPath, name: impl Into<Symbol>) -> CallableTarget {
+    CallableTarget::Binding(FQSymbol {
+        module: module.clone(),
+        symbol: name.into(),
+    })
+}
+
+fn concrete_body_draft(name: &str) -> CallableArmDraft {
+    let variant = trivial_variant();
+    let view = cranelisp_types::MonoDefnVariant {
+        name: Symbol::from(name),
+        params: Vec::new(),
+        body: cranelisp_types::MonoExpr::lenient_from_expr(
+            &variant.body,
+            &Default::default(),
+            &Default::default(),
+            &Default::default(),
+        ),
+        span: Span::SYNTHETIC,
+        mode_summary: None,
+    };
+    CallableArmDraft::concrete_body(synthetic_scheme(), Vec::new(), variant, view, Vec::new())
+}
+
+/// A trivial single-variant `DefnVariant` body.
 fn trivial_variant() -> DefnVariant {
     DefnVariant {
         params: vec![],
@@ -54,55 +190,115 @@ fn trivial_variant() -> DefnVariant {
     }
 }
 
-fn mk_def_with_got(
-    mut kind: DefKind,
+fn install_body_fixture(
+    table: &mut crate::code::SessionSymbolTable,
+    name: impl Into<Symbol>,
+    origin: CallableOrigin,
     ast: Option<DefnVariant>,
-    got_slot: Option<usize>,
-) -> ModuleEntry<crate::code::Code> {
-    // S83 reshape: the slot rides on the callable `DefKind` variant. Honour
-    // the legacy `got_slot` arg by re-pointing the kind's slot before
-    // building (no-op for non-callable kinds).
-    if let Some(slot) = got_slot {
-        repoint_callable_slot(&mut kind, slot);
-    }
-    let mut builder = ModuleEntry::def(synthetic_scheme(), kind).visibility(Visibility::Public);
-    if let Some(variant) = ast {
-        // W0.b (`backend-keyed-consumer.md` §4 W0.b): typecheck is the sole
-        // mono-view producer, so `compile_to_module` hard-errors on a
-        // codegen-reached body with `codegen_view: None`. This int-side
-        // fixture mirrors the producer — a TOTAL view (strict `from_expr`
-        // first, lenient fallback) so ctor/macro-clause-style synthetic
-        // bodies still build. (`name`/`params`/`span` on the view are not
-        // read by codegen — only `body`/`mode_summary`.)
-        // S114 carrier flip (`typed-resolution-carrier.md` §4): `from_expr`
-        // now takes the TOTAL typed `var_refs`/`apply_refs` sidecars. This
-        // fixture's bodies are synthetic (all-local carve-out on
-        // `Span::SYNTHETIC`), so empty maps suffice — the carve-out classifies
-        // every synthetic node as `VarRef::Local`/`ApplyRef::ViaCallee`.
-        let body = cranelisp_types::MonoExpr::from_expr(
+    expected_slot: usize,
+) {
+    let name = name.into();
+    let variant = ast.unwrap_or_else(trivial_variant);
+    install_typed_body_fixture(
+        table,
+        name,
+        synthetic_scheme(),
+        origin,
+        variant,
+        expected_slot,
+    );
+}
+
+fn install_typed_body_fixture(
+    table: &mut crate::code::SessionSymbolTable,
+    name: Symbol,
+    scheme: Scheme,
+    origin: CallableOrigin,
+    variant: DefnVariant,
+    expected_slot: usize,
+) {
+    // W0.b (`backend-keyed-consumer.md` §4 W0.b): typecheck is the sole
+    // mono-view producer, so `compile_to_module` hard-errors on a
+    // codegen-reached body with `codegen_view: None`. This int-side
+    // fixture mirrors the producer — a TOTAL view (strict `from_expr`
+    // first, lenient fallback) so ctor/macro-clause-style synthetic
+    // bodies still build. (`name`/`params`/`span` on the view are not
+    // read by codegen — only `body`/`mode_summary`.)
+    // S114 carrier flip (`typed-resolution-carrier.md` §4): `from_expr`
+    // now takes the TOTAL typed `var_refs`/`apply_refs` sidecars. This
+    // fixture's bodies are synthetic (all-local carve-out on
+    // `Span::SYNTHETIC`), so empty maps suffice — the carve-out classifies
+    // every synthetic node as `VarRef::Local`/`ApplyRef::ViaCallee`.
+    let body = cranelisp_types::MonoExpr::from_expr(
+        &variant.body,
+        &Default::default(),
+        &Default::default(),
+        &Default::default(),
+    )
+    .unwrap_or_else(|_| {
+        cranelisp_types::MonoExpr::lenient_from_expr(
             &variant.body,
             &Default::default(),
             &Default::default(),
             &Default::default(),
         )
-        .unwrap_or_else(|_| {
-            cranelisp_types::MonoExpr::lenient_from_expr(
-                &variant.body,
-                &Default::default(),
-                &Default::default(),
-                &Default::default(),
-            )
-        });
-        let view = cranelisp_types::MonoDefnVariant {
-            name: Symbol::from("__fixture"),
-            params: variant.params.iter().map(|(n, _)| n.clone()).collect(),
-            body,
-            span: variant.span,
-            mode_summary: None,
-        };
-        builder = builder.ast(variant).codegen_view(view);
-    }
-    builder.build()
+    });
+    let view = cranelisp_types::MonoDefnVariant {
+        name: name.clone(),
+        params: variant.params.iter().map(|(n, _)| n.clone()).collect(),
+        body,
+        span: variant.span,
+        mode_summary: None,
+    };
+    let slot = table
+        .install_concrete(
+            name,
+            scheme,
+            Vec::new(),
+            None,
+            0,
+            origin,
+            Realization::Body { view, code: None },
+            Some(variant),
+            Vec::new(),
+            Visibility::Public,
+        )
+        .expect("concrete fixture must install through the lifecycle funnel");
+    assert_eq!(slot.index(), expected_slot);
+}
+
+fn has_compiled_owner(binding: &Binding<crate::code::Code>) -> bool {
+    matches!(
+        binding.callable().map(|callable| &callable.arm.life),
+        Some(Life::Concrete {
+            realization: Realization::Body { code: Some(_), .. },
+            ..
+        })
+    )
+}
+
+fn install_plain_template_fixture(
+    table: &mut crate::code::SessionSymbolTable,
+    name: impl Into<Symbol>,
+) {
+    table
+        .install_template(
+            name.into(),
+            Scheme {
+                type_vars: vec![0],
+                constraints: HashMap::new(),
+                ty: Type::Var(0),
+            },
+            Vec::new(),
+            None,
+            0,
+            CallableOrigin::Plain,
+            TemplateBody::Ast(trivial_variant()),
+            TemplateKind::Parametric,
+            Vec::new(),
+            Visibility::Public,
+        )
+        .expect("plain template fixture must install");
 }
 
 // spec: design/arch/macro-availability-model.md §0 (FIXME 0299) — the
@@ -143,9 +339,9 @@ fn dlsym_host_symbol_misses_unexported_name() {
 // construction (Defect-B / OQ-4). The behaviour is guarded e2e by
 // `tests/spec_08_modules.rs::defn_before_import_resumes_correctly_after_dep_load`.
 
-// spec: design/int/phase2-codegen-convergence.md §5 — name-list prep via defined_symbols
+// spec: design/int/phase2-codegen-convergence.md §5 — typed codegen projection
 #[test]
-fn priority_worker_name_list_via_defined_symbols_filter() {
+fn priority_worker_batch_via_codegen_targets_filter() {
     // Seed a symbol table with a cross-section of entries. Only the entries
     // that pass `defined_symbols()` should be candidates for codegen — the
     // worker's name-list preparation MUST produce the same set.
@@ -153,71 +349,55 @@ fn priority_worker_name_list_via_defined_symbols_filter() {
     let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
 
     // Compilable: regular UserFn with ast: Some(_).
-    st.insert(
-        Symbol::from("regular"),
-        mk_def_with_got(
-            DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Concrete {
-                    got_slot: 0,
-                    mode_summary: None,
-                },
-            },
-            Some(trivial_variant()),
-            Some(0),
-        ),
+    install_body_fixture(
+        &mut st,
+        "regular",
+        CallableOrigin::Plain,
+        Some(trivial_variant()),
+        0,
     );
 
-    // Compilable: mangled multi-sig variant (also a UserFn with ast).
-    st.insert(
-        Symbol::from("add$Int+Int"),
-        mk_def_with_got(
-            DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Concrete {
-                    got_slot: 0,
-                    mode_summary: None,
-                },
-            },
-            Some(trivial_variant()),
-            Some(1),
-        ),
-    );
-
-    // Not compilable: Overloaded base — ast: None.
-    st.insert(
+    // Compilable: an owned multi-signature arm; the family binding itself is
+    // not an executable target.
+    st.install_overloaded(
         Symbol::from("add"),
-        mk_def_with_got(DefKind::Overloaded { variants: vec![] }, None, None),
-    );
+        None,
+        0,
+        vec![concrete_body_draft("add__arm0")],
+        Visibility::Public,
+    )
+    .expect("owned overload fixture must install");
 
     // Not compilable: constrained template even if ast happens to be Some.
-    st.insert(
+    let mut template_scheme = synthetic_scheme();
+    template_scheme.type_vars.push(0);
+    template_scheme.ty = Type::Var(template_scheme.type_vars[0]);
+    st.install_template(
         Symbol::from("poly_fn"),
-        mk_def_with_got(
-            DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Constrained(Box::new(
-                    cranelisp_types::ConstrainedFn {
-                        variant: trivial_variant(),
-                        scheme: synthetic_scheme(),
-                    },
-                )),
-            },
-            Some(trivial_variant()),
-            None,
-        ),
-    );
+        template_scheme,
+        Vec::new(),
+        None,
+        0,
+        CallableOrigin::Plain,
+        TemplateBody::Ast(trivial_variant()),
+        TemplateKind::Parametric,
+        Vec::new(),
+        Visibility::Public,
+    )
+    .expect("template fixture must install");
 
     // Not compilable: Import chain entry.
-    st.insert(
+    st.expose_candidate(
         Symbol::from("imported"),
-        ModuleEntry::Import {
-            source: FQSymbol {
-                module: ModuleFullPath::from("other"),
-                symbol: Symbol::from("x"),
-            },
-            visibility: Visibility::Private,
+        FQSymbol {
+            module: ModuleFullPath::from("other"),
+            symbol: Symbol::from("x"),
         },
-    );
+        Visibility::Private,
+    )
+    .expect("candidate fixture must install");
 
-    let compiled: Vec<Symbol> = st.defined_symbols().map(|(name, _)| name.clone()).collect();
+    let compiled: Vec<CallableTarget> = st.codegen_targets().map(|(target, _)| target).collect();
 
     // Exactly the two compilable entries: set equality ignoring order.
     assert_eq!(
@@ -225,11 +405,17 @@ fn priority_worker_name_list_via_defined_symbols_filter() {
         2,
         "expected 2 compilable names, got {compiled:?}"
     );
-    assert!(compiled.contains(&Symbol::from("regular")));
-    assert!(compiled.contains(&Symbol::from("add$Int+Int")));
-    assert!(!compiled.contains(&Symbol::from("add")));
-    assert!(!compiled.contains(&Symbol::from("poly_fn")));
-    assert!(!compiled.contains(&Symbol::from("imported")));
+    assert!(compiled.contains(&binding_target(&module, "regular")));
+    assert!(compiled.contains(&CallableTarget::OverloadArm {
+        owner: FQSymbol {
+            module: module.clone(),
+            symbol: Symbol::from("add"),
+        },
+        arm: CallableArmId::from_ordinal(0).expect("arm 0 is valid"),
+    }));
+    assert!(!compiled.contains(&binding_target(&module, "add")));
+    assert!(!compiled.contains(&binding_target(&module, "poly_fn")));
+    assert!(!compiled.contains(&binding_target(&module, "imported")));
 }
 
 // spec: BC §3 invariant 3 — batch CompilationArtifacts routing to Introspection
@@ -284,28 +470,21 @@ fn priority_worker_stores_code_ptr_in_got_slot() {
         dashmap::DashMap::new();
     let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
 
-    // Advance the next_got_slot by allocating four slots; the 4th is slot 3.
-    let slot_0 = st.allocate_got_slot().expect("fresh table has free slots");
-    let slot_1 = st.allocate_got_slot().expect("fresh table has free slots");
-    let slot_2 = st.allocate_got_slot().expect("fresh table has free slots");
-    let slot_3 = st.allocate_got_slot().expect("fresh table has free slots");
-    assert_eq!(slot_0, 0);
-    assert_eq!(slot_1, 1);
-    assert_eq!(slot_2, 2);
-    assert_eq!(slot_3, 3);
-
-    st.insert(
-        Symbol::from("target"),
-        mk_def_with_got(
-            DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Concrete {
-                    got_slot: 0,
-                    mode_summary: None,
-                },
-            },
+    for index in 0..3 {
+        install_body_fixture(
+            &mut st,
+            format!("padding-{index}"),
+            CallableOrigin::Plain,
             Some(trivial_variant()),
-            Some(3),
-        ),
+            index,
+        );
+    }
+    install_body_fixture(
+        &mut st,
+        "target",
+        CallableOrigin::Plain,
+        Some(trivial_variant()),
+        3,
     );
     symbol_tables.insert(module.clone(), st);
 
@@ -356,47 +535,52 @@ fn inline_jit_codegen_for_names_compiles_single_defn() {
         dashmap::DashMap::new();
 
     let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
-    let slot = st.allocate_got_slot().expect("fresh table has free slots");
-    let defn_name = Symbol::from("__macro_demo_clause_0");
-    st.insert(
-        defn_name.clone(),
-        mk_def_with_got(
-            DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Concrete {
-                    got_slot: 0,
-                    mode_summary: None,
-                },
-            },
-            Some(trivial_variant()),
-            Some(slot),
-        ),
+    let macro_name = Symbol::from("__macro_demo");
+    crate::repl::test_support::install_macro_fixture(
+        &mut st,
+        macro_name.as_ref(),
+        Sexp::Symbol("__macro_demo".to_string(), Span::SYNTHETIC),
+        vec![Vec::new()],
+        Visibility::Public,
     );
+    let target = CallableTarget::MacroClause {
+        owner: FQSymbol {
+            module: module.clone(),
+            symbol: macro_name.clone(),
+        },
+        clause: CallableArmId::from_ordinal(0).expect("clause 0 is valid"),
+    };
     symbol_tables.insert(module.clone(), st);
 
-    let names = [defn_name.clone()];
-    inline_jit_codegen_for_names(&module, &names, &symbol_tables, Some(&introspection), None)
-        .expect("unified codegen should succeed for a trivial int-returning defn");
+    let targets = [target.clone()];
+    inline_jit_codegen_for_names(
+        &module,
+        &targets,
+        &symbol_tables,
+        Some(&introspection),
+        None,
+    )
+    .expect("unified codegen should succeed for a trivial int-returning defn");
 
     // Assert: the symbol table entry carries `code: Some(_)` with a
     // non-null pointer (G6 target write path).
     let code_ptr = {
         let table = symbol_tables.get(&module).expect("symbol table present");
-        let entry = table
-            .get(defn_name.as_ref())
-            .expect("defn entry present after codegen");
-        match entry {
-            // GOT is the address source (D41/D35 — no `Code::ptr`).
-            ModuleEntry::Def { code: Some(_), .. } => {
-                let slot = entry
-                    .callable_got_slot()
-                    .expect("callable Def carries a GOT slot after codegen");
-                let ptr = table.got.load_slot(slot);
-                assert!(!ptr.is_null(), "compiled function pointer must be non-null");
-                ptr
-            }
-            other => {
-                panic!("expected ModuleEntry::Def with code: Some(_) + got_slot; got {other:?}")
-            }
+        let arm = table
+            .callable_target(&target)
+            .expect("owned clause present after codegen");
+        if let Life::Concrete {
+            slot,
+            realization: Realization::Body { code: Some(_), .. },
+            ..
+        } = &arm.life
+        {
+            let slot = slot.index();
+            let ptr = table.got.load_slot(slot);
+            assert!(!ptr.is_null(), "compiled function pointer must be non-null");
+            ptr
+        } else {
+            panic!("expected concrete macro clause with a compiled owner; got {arm:?}")
         }
     };
 
@@ -405,7 +589,7 @@ fn inline_jit_codegen_for_names_compiles_single_defn() {
         .get(&module)
         .expect("symbol table present")
         .got
-        .load_slot(slot);
+        .load_slot(0);
     assert_eq!(
         stored, code_ptr,
         "GOT slot must hold the pointer returned from the unified codegen path"
@@ -414,7 +598,7 @@ fn inline_jit_codegen_for_names_compiles_single_defn() {
     // Assert: introspection entry carries CLIF IR and a code_size.
     let fq = FQSymbol {
         module: module.clone(),
-        symbol: defn_name.clone(),
+        symbol: macro_name.clone(),
     };
     let intro = introspection
         .get(&fq)
@@ -424,7 +608,7 @@ fn inline_jit_codegen_for_names_compiles_single_defn() {
             .clif_ir
             .as_deref()
             .unwrap_or("")
-            .contains(defn_name.as_ref()),
+            .contains("__macro_demo"),
         "CLIF IR should mention the compiled function name"
     );
     assert!(
@@ -445,42 +629,33 @@ fn priority_worker_writes_code_to_entry_via_compile_to_module() {
         dashmap::DashMap::new();
 
     let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
-    let slot = st.allocate_got_slot().expect("fresh table has free slots");
+    let slot = 0;
     let defn_name = Symbol::from("answer");
-    st.insert(
+    install_body_fixture(
+        &mut st,
         defn_name.clone(),
-        mk_def_with_got(
-            DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Concrete {
-                    got_slot: 0,
-                    mode_summary: None,
-                },
-            },
-            Some(trivial_variant()),
-            Some(slot),
-        ),
+        CallableOrigin::Plain,
+        Some(trivial_variant()),
+        slot,
     );
     symbol_tables.insert(module.clone(), st);
 
-    let names = [defn_name.clone()];
-    inline_jit_codegen_for_names(&module, &names, &symbol_tables, None, None)
+    let targets = [binding_target(&module, defn_name.clone())];
+    inline_jit_codegen_for_names(&module, &targets, &symbol_tables, None, None)
         .expect("worker codegen succeeds for a trivial int-returning defn");
 
     let table = symbol_tables.get(&module).expect("symbol table present");
     let entry = table.get(defn_name.as_ref()).expect("entry present");
-    match entry {
-        ModuleEntry::Def { code: Some(_), .. } => {
-            let slot = entry
-                .callable_got_slot()
-                .expect("callable Def carries a GOT slot after codegen");
-            assert!(
-                !table.got.load_slot(slot).is_null(),
-                "code pointer must be non-null after compile"
-            );
-        }
-        other => panic!(
-            "expected ModuleEntry::Def with code: Some(_) + got_slot after worker codegen; got {other:?}"
-        ),
+    if has_compiled_owner(entry) {
+        let slot = entry
+            .callable_got_slot()
+            .expect("callable Def carries a GOT slot after codegen");
+        assert!(
+            !table.got.load_slot(slot).is_null(),
+            "code pointer must be non-null after compile"
+        );
+    } else {
+        panic!("expected concrete Body with a compiled owner; got {entry:?}");
     }
 }
 
@@ -499,58 +674,42 @@ fn introspection_reads_code_from_symbol_table_not_codegen_products() {
         dashmap::DashMap::new();
 
     let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
-    let slot = st.allocate_got_slot().expect("fresh table has free slots");
+    let slot = 0;
     let defn_name = Symbol::from("probe");
-    st.insert(
+    install_body_fixture(
+        &mut st,
         defn_name.clone(),
-        mk_def_with_got(
-            DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Concrete {
-                    got_slot: 0,
-                    mode_summary: None,
-                },
-            },
-            Some(trivial_variant()),
-            Some(slot),
-        ),
+        CallableOrigin::Plain,
+        Some(trivial_variant()),
+        slot,
     );
     symbol_tables.insert(module.clone(), st);
 
     // Before compile: `has_code_ptr` must return false.
     assert!(
-        !has_code_ptr(&symbol_tables, &module, &defn_name),
-        "has_code_ptr must be false before compile"
-    );
-    assert!(
         get_code_ptr(&symbol_tables, &module, &defn_name).is_none(),
         "get_code_ptr must be None before compile"
     );
 
-    let names = [defn_name.clone()];
-    inline_jit_codegen_for_names(&module, &names, &symbol_tables, None, None)
+    let targets = [binding_target(&module, defn_name.clone())];
+    inline_jit_codegen_for_names(&module, &targets, &symbol_tables, None, None)
         .expect("worker codegen succeeds");
 
     // After compile: `has_code_ptr` must return true; `get_code_ptr`
     // must return the same pointer that lives on `ModuleEntry::Def.code`.
-    assert!(
-        has_code_ptr(&symbol_tables, &module, &defn_name),
-        "has_code_ptr must be true after compile"
-    );
+    assert!(get_code_ptr(&symbol_tables, &module, &defn_name).is_some());
     let via_helper = get_code_ptr(&symbol_tables, &module, &defn_name)
         .expect("get_code_ptr returns Some after compile");
     let via_entry = {
         let table = symbol_tables.get(&module).expect("symbol table present");
         let entry = table.get(defn_name.as_ref()).expect("entry present");
-        match entry {
-            ModuleEntry::Def { code: Some(_), .. } => {
-                let slot = entry
-                    .callable_got_slot()
-                    .expect("callable Def carries a GOT slot after codegen");
-                table.got.load_slot(slot)
-            }
-            other => {
-                panic!("expected ModuleEntry::Def with code: Some(_) + got_slot; got {other:?}")
-            }
+        if has_compiled_owner(entry) {
+            let slot = entry
+                .callable_got_slot()
+                .expect("callable Def carries a GOT slot after codegen");
+            table.got.load_slot(slot)
+        } else {
+            panic!("expected concrete Body with a compiled owner; got {entry:?}")
         }
     };
     assert_eq!(
@@ -579,9 +738,8 @@ fn repl_expr_finalize_module_no_longer_uses_special_case() {
         dashmap::DashMap::new();
 
     let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
-    let slot = st.allocate_got_slot().expect("fresh table has free slots");
+    let slot = 0;
     let expr_name = Symbol::from("__expr");
-    // S69 Submission 35: `ModuleEntry::Def.ast` is `DefnVariant`.
     let expr_variant = DefnVariant {
         params: vec![],
         body: Expr::IntLit {
@@ -591,18 +749,12 @@ fn repl_expr_finalize_module_no_longer_uses_special_case() {
         },
         span: Span::SYNTHETIC,
     };
-    st.insert(
+    install_body_fixture(
+        &mut st,
         expr_name.clone(),
-        mk_def_with_got(
-            DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Concrete {
-                    got_slot: 0,
-                    mode_summary: None,
-                },
-            },
-            Some(expr_variant.clone()),
-            Some(slot),
-        ),
+        CallableOrigin::Plain,
+        Some(expr_variant.clone()),
+        slot,
     );
     symbol_tables.insert(module.clone(), st);
 
@@ -611,7 +763,7 @@ fn repl_expr_finalize_module_no_longer_uses_special_case() {
     let program = vec![TopLevel::Expr(expr_variant.body.clone())];
     let names = derive_codegen_batch(&module, &program, &symbol_tables);
     assert!(
-        names.contains(&expr_name),
+        names.contains(&binding_target(&module, expr_name.clone())),
         "__expr must appear in the derived codegen batch alongside any named defn; got {names:?}"
     );
 
@@ -620,19 +772,16 @@ fn repl_expr_finalize_module_no_longer_uses_special_case() {
 
     let table = symbol_tables.get(&module).expect("symbol table present");
     let entry = table.get(expr_name.as_ref()).expect("__expr entry present");
-    match entry {
-        ModuleEntry::Def { code: Some(_), .. } => {
-            let slot = entry
-                .callable_got_slot()
-                .expect("callable __expr Def carries a GOT slot after codegen");
-            assert!(
-                !table.got.load_slot(slot).is_null(),
-                "__expr code pointer must be non-null"
-            );
-        }
-        other => panic!(
-            "expected __expr entry with code: Some(_) + got_slot after the uniform path; got {other:?}"
-        ),
+    if has_compiled_owner(entry) {
+        let slot = entry
+            .callable_got_slot()
+            .expect("callable __expr Def carries a GOT slot after codegen");
+        assert!(
+            !table.got.load_slot(slot).is_null(),
+            "__expr code pointer must be non-null"
+        );
+    } else {
+        panic!("expected __expr concrete Body with a compiled owner; got {entry:?}");
     }
 }
 
@@ -647,20 +796,19 @@ fn derive_codegen_batch_includes_synthesised_constructors() {
     let module = ModuleFullPath::from("user");
     let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
 
-    let ctor = mk_def_with_got(
-        DefKind::Constructor {
-            got_slot: 0,
+    install_body_fixture(
+        &mut st,
+        "Some",
+        CallableOrigin::Ctor {
             type_name: FQTypeName::new(module.clone(), cranelisp_types::TypeName::from("Option")),
             tag: 1,
             field_count: 1,
             internal: false,
             type_def: None,
-            mode_summary: None,
         },
         Some(trivial_variant()),
-        Some(0),
+        0,
     );
-    st.insert(Symbol::from("Some"), ctor);
 
     let symbol_tables = dashmap::DashMap::new();
     symbol_tables.insert(module.clone(), st);
@@ -670,7 +818,7 @@ fn derive_codegen_batch_includes_synthesised_constructors() {
     let program: Vec<TopLevel> = vec![];
     let names = derive_codegen_batch(&module, &program, &symbol_tables);
     assert!(
-        names.contains(&Symbol::from("Some")),
+        names.contains(&binding_target(&module, "Some")),
         "synthesised constructor `Some` must appear in the derived codegen batch (0249-b); got {names:?}"
     );
 }
@@ -699,28 +847,25 @@ fn derive_codegen_batch_enrolls_mangled_impl_methods_even_when_compiled() {
 
     let module = ModuleFullPath::from("user");
     let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
-    let slot = st.allocate_got_slot().expect("fresh table has free slots");
-
     // The callable an `(impl Sizeable Box (defn size [x] …))` compiles to,
     // homed in the impl writer's module (D45 as amended, S110 W0.1).
     let mangled = Symbol::from("Sizeable.size$user/Box");
-    let mut entry = mk_def_with_got(
-        DefKind::UserFn {
-            fn_state: cranelisp_types::UserFnState::Concrete {
-                got_slot: 0,
-                mode_summary: None,
-            },
-        },
+    install_body_fixture(
+        &mut st,
+        mangled.clone(),
+        CallableOrigin::Plain,
         Some(trivial_variant()),
-        Some(slot),
+        0,
     );
     // Prior compiled code, as carried over by `commit_slotted_def` on the
     // AbiPreserving re-impl commit — the state that made the sweep skip it.
-    if let ModuleEntry::Def { code, .. } = &mut entry {
-        let linker = Arc::new(Linker::new().expect("Linker::new must succeed"));
-        *code = Some(crate::code::Code::linker(linker));
-    }
-    st.insert(mangled.clone(), entry);
+    let linker = Arc::new(Linker::new().expect("Linker::new must succeed"));
+    st.publish_compiled_owner(
+        &binding_target(&module, mangled.clone()),
+        crate::code::Code::linker(linker),
+    )
+    .map_err(|rejection| rejection.into_parts().0)
+    .expect("concrete body accepts prior compiled owner");
 
     let symbol_tables = dashmap::DashMap::new();
     symbol_tables.insert(module.clone(), st);
@@ -742,7 +887,7 @@ fn derive_codegen_batch_enrolls_mangled_impl_methods_even_when_compiled() {
 
     let names = derive_codegen_batch(&module, &program, &symbol_tables);
     assert!(
-        names.contains(&mangled),
+        names.contains(&binding_target(&module, mangled.clone())),
         "a re-impl's MANGLED method Def must enter the FORCED codegen batch even \
              though its live entry already carries compiled code (spec §5.4.5 \
              hot-reload); got {names:?}"
@@ -776,27 +921,25 @@ fn derive_codegen_batch_enrolls_omitted_default_method_of_the_impl() {
 
     let provided = Symbol::from("Sizeable.size$user/Box");
     let omitted = Symbol::from("Sizeable.weight$user/Box");
-    for name in [&provided, &omitted] {
-        let slot = st.allocate_got_slot().expect("fresh table has free slots");
-        let mut entry = mk_def_with_got(
-            DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Concrete {
-                    got_slot: 0,
-                    mode_summary: None,
-                },
-            },
+    for (index, name) in [&provided, &omitted].into_iter().enumerate() {
+        install_body_fixture(
+            &mut st,
+            name.clone(),
+            CallableOrigin::Plain,
             Some(trivial_variant()),
-            Some(slot),
+            index,
         );
         // The prior impl's compiled code, carried over by
         // `commit_slotted_def` on the AbiPreserving re-impl commit — the
         // state that makes the `already_compiled` sweep skip the entry, so
         // ONLY the forced TraitImpl arm can enroll it.
-        if let ModuleEntry::Def { code, .. } = &mut entry {
-            let linker = Arc::new(Linker::new().expect("Linker::new must succeed"));
-            *code = Some(crate::code::Code::linker(linker));
-        }
-        st.insert(name.clone(), entry);
+        let linker = Arc::new(Linker::new().expect("Linker::new must succeed"));
+        st.publish_compiled_owner(
+            &binding_target(&module, (*name).clone()),
+            crate::code::Code::linker(linker),
+        )
+        .map_err(|rejection| rejection.into_parts().0)
+        .expect("concrete body accepts prior compiled owner");
     }
 
     let symbol_tables = dashmap::DashMap::new();
@@ -820,11 +963,11 @@ fn derive_codegen_batch_enrolls_omitted_default_method_of_the_impl() {
 
     let names = derive_codegen_batch(&module, &program, &symbol_tables);
     assert!(
-        names.contains(&provided),
+        names.contains(&binding_target(&module, provided.clone())),
         "the explicitly-provided method must be enrolled; got {names:?}"
     );
     assert!(
-        names.contains(&omitted),
+        names.contains(&binding_target(&module, omitted.clone())),
         "a method the re-impl OMITS (reverting to the trait default) must \
              ALSO be enrolled — otherwise the stale override's carried-over code \
              keeps dispatching (spec §7.1.5 + §5.4.5, FIXME 0791); got {names:?}"
@@ -840,42 +983,41 @@ fn derive_codegen_batch_enrolls_omitted_default_method_of_the_impl() {
 fn forced_enrollment_predicate_discriminates() {
     let module = ModuleFullPath::from("user");
     let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
-    let slot = st.allocate_got_slot().expect("fresh table has free slots");
     let live = Symbol::from("Sizeable.size$user/Box");
-    st.insert(
+    install_body_fixture(
+        &mut st,
         live.clone(),
-        mk_def_with_got(
-            DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Concrete {
-                    got_slot: 0,
-                    mode_summary: None,
-                },
-            },
-            Some(trivial_variant()),
-            Some(slot),
-        ),
+        CallableOrigin::Plain,
+        Some(trivial_variant()),
+        0,
     );
 
     assert!(
-        crate::worker::forced_enrollment_resolves(Some(&st), &live),
+        crate::worker::forced_enrollment_resolves(
+            Some(&st),
+            &binding_target(&module, live.clone()),
+        ),
         "a live mangled method Def must satisfy the forced-enrollment predicate"
     );
     // The exact shape the pre-S115 TraitImpl arm pushed: the UNMANGLED method
     // name. No `Def` is ever registered under it — a dead lookup.
     assert!(
-        !crate::worker::forced_enrollment_resolves(Some(&st), &Symbol::from("size")),
+        !crate::worker::forced_enrollment_resolves(Some(&st), &binding_target(&module, "size"),),
         "the unmangled method name resolves to nothing and MUST be rejected — \
              this is the dead lookup that shipped undetected because `try_push`'s \
              `bool` is discarded at every call site"
     );
     assert!(
-        !crate::worker::forced_enrollment_resolves(Some(&st), &Symbol::from("fabricated")),
+        !crate::worker::forced_enrollment_resolves(
+            Some(&st),
+            &binding_target(&module, "fabricated"),
+        ),
         "a fabricated enrollment name must be rejected"
     );
     // A module with no table yet is a legitimate no-table case, not a dead
     // lookup — the instrument must stay silent there.
     assert!(
-        crate::worker::forced_enrollment_resolves(None, &Symbol::from("anything")),
+        crate::worker::forced_enrollment_resolves(None, &binding_target(&module, "anything"),),
         "an absent table must not be reported as a dead lookup"
     );
 }
@@ -1765,48 +1907,29 @@ fn commit_staging_preserves_source_order_slots_into_empty_live() {
 
     // Staging carries three Defs with source-order staged slots 0/1/2 —
     // exactly the `reduce@0`, `reduce-loop@1`, `main@2` shape from the 0348
-    // repro. Insert them in a deliberately NON-slot order so the test does
-    // not accidentally pass on insertion order alone.
+    // repro. Each slot is minted by the lifecycle funnel rather than injected
+    // into the binding fixture.
     let mut staging = crate::code::SessionSymbolTable::new_with_params(module.clone());
-    staging.next_got_slot = 3;
-    staging.insert(
-        Symbol::from("main"),
-        mk_def_with_got(
-            DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Concrete {
-                    got_slot: 0,
-                    mode_summary: None,
-                },
-            },
-            Some(trivial_variant()),
-            Some(2),
-        ),
+    install_body_fixture(
+        &mut staging,
+        "reduce",
+        CallableOrigin::Plain,
+        Some(trivial_variant()),
+        0,
     );
-    staging.insert(
-        Symbol::from("reduce"),
-        mk_def_with_got(
-            DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Concrete {
-                    got_slot: 0,
-                    mode_summary: None,
-                },
-            },
-            Some(trivial_variant()),
-            Some(0),
-        ),
+    install_body_fixture(
+        &mut staging,
+        "reduce-loop",
+        CallableOrigin::Plain,
+        Some(trivial_variant()),
+        1,
     );
-    staging.insert(
-        Symbol::from("reduce-loop"),
-        mk_def_with_got(
-            DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Concrete {
-                    got_slot: 0,
-                    mode_summary: None,
-                },
-            },
-            Some(trivial_variant()),
-            Some(1),
-        ),
+    install_body_fixture(
+        &mut staging,
+        "main",
+        CallableOrigin::Plain,
+        Some(trivial_variant()),
+        2,
     );
 
     let outcomes = commit_staging_to_live(&symbol_tables, &module, staging, None)
@@ -1868,7 +1991,6 @@ fn test_shared_state() -> crate::session_v4::SharedState {
         kept_dlls: Mutex::new(Vec::new()),
         introspection: Some(dashmap::DashMap::new()),
         importable_indices: crate::session_v4::ImportableIndices::default(),
-        broken: dashmap::DashMap::new(),
         retained_code: Mutex::new(Vec::new()),
         fresh_jit_drop_glues: dashmap::DashMap::new(),
         run_mode: crate::session_v4::RunMode::Repl,
@@ -1900,40 +2022,33 @@ fn commit_slotless_staged_over_slotted_prior_retains_prior_code_in_pool() {
     let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
         dashmap::DashMap::new();
     let mut live = crate::code::SessionSymbolTable::new_with_params(module.clone());
-    let prior_slot = live
-        .allocate_got_slot()
-        .expect("fresh table has free slots");
-    let mut prior = mk_def_with_got(
-        DefKind::UserFn {
-            fn_state: cranelisp_types::UserFnState::Concrete {
-                got_slot: 0,
-                mode_summary: None,
-            },
-        },
+    install_body_fixture(
+        &mut live,
+        "f",
+        CallableOrigin::Plain,
         Some(trivial_variant()),
-        Some(prior_slot),
+        0,
     );
-    if let ModuleEntry::Def { code, .. } = &mut prior {
-        let empty_tables: cranelisp_types::SymbolTables<crate::code::Code, ()> =
-            dashmap::DashMap::new();
-        // Same allow + rationale as the production composition site
-        // (`inline_jit_codegen_for_names`, worker.rs): the Arc is the
-        // lifecycle root for the mmap'd pages, never sent across threads.
-        #[allow(clippy::arc_with_non_send_sync)]
-        let jit_arc = Arc::new(Jit::new(&empty_tables).expect("test jit"));
-        *code = Some(crate::code::Code::jit(jit_arc));
-    }
-    live.insert(Symbol::from("f"), prior);
+    let prior_slot = live
+        .get("f")
+        .and_then(Binding::callable_got_slot)
+        .expect("installed concrete fixture has a slot");
+    let empty_tables: cranelisp_types::SymbolTables<crate::code::Code, ()> =
+        dashmap::DashMap::new();
+    #[allow(clippy::arc_with_non_send_sync)]
+    let jit_arc = Arc::new(Jit::new(&empty_tables).expect("test jit"));
+    live.publish_compiled_owner(
+        &binding_target(&module, "f"),
+        crate::code::Code::jit(jit_arc),
+    )
+    .map_err(|rejection| rejection.into_parts().0)
+    .expect("concrete body accepts its compiled owner");
     symbol_tables.insert(module.clone(), live);
 
-    // Staging: `f` redefined as a slot-less template
-    // (`callable_got_slot() == None` — same shape for Polymorphic /
-    // Constrained / Overloaded; the Overloaded base is the simplest).
+    // Staging: `f` redefined as a slot-less parametric template with the same
+    // Plain callable origin as the prior concrete definition.
     let mut staging = crate::code::SessionSymbolTable::new_with_params(module.clone());
-    staging.insert(
-        Symbol::from("f"),
-        mk_def_with_got(DefKind::Overloaded { variants: vec![] }, None, None),
-    );
+    install_plain_template_fixture(&mut staging, "f");
 
     commit_staging_to_live(&symbol_tables, &module, staging, Some(&shared))
         .expect("slot-less commit cannot exhaust the GOT");
@@ -1979,7 +2094,12 @@ fn transaction_top_def(name: &str) -> TopLevel {
     })
 }
 
-fn transaction_entry(ty: Type, codegen_ready: bool) -> ModuleEntry<crate::code::Code> {
+fn install_transaction_entry(
+    table: &mut crate::code::SessionSymbolTable,
+    name: &str,
+    ty: Type,
+    codegen_ready: bool,
+) {
     let variant = if ty == Type::String {
         DefnVariant {
             params: vec![],
@@ -1990,35 +2110,38 @@ fn transaction_entry(ty: Type, codegen_ready: bool) -> ModuleEntry<crate::code::
             },
             span: Span::SYNTHETIC,
         }
-    } else {
+    } else if codegen_ready {
         trivial_variant()
-    };
-    let mut entry = mk_def_with_got(
-        DefKind::UserFn {
-            fn_state: cranelisp_types::UserFnState::Concrete {
-                got_slot: 0,
-                mode_summary: None,
+    } else {
+        DefnVariant {
+            params: Vec::new(),
+            body: Expr::Var {
+                name: Symbol::from("missing-local"),
+                span: Span::SYNTHETIC,
+                inferred_type: Some(Box::new(ty.clone())),
+                resolved_call: None,
             },
-        },
-        Some(variant),
-        Some(0),
-    );
-    if let ModuleEntry::Def {
-        scheme,
-        codegen_view,
-        ..
-    } = &mut entry
-    {
-        scheme.ty = ty;
-        if !codegen_ready {
-            *codegen_view = None;
+            span: Span::SYNTHETIC,
         }
-    }
-    entry
+    };
+    let mut scheme = synthetic_scheme();
+    scheme.ty = ty;
+    let expected_slot = table
+        .all_symbols()
+        .filter_map(|(_, binding)| binding.callable_got_slot())
+        .count();
+    install_typed_body_fixture(
+        table,
+        Symbol::from(name),
+        scheme,
+        CallableOrigin::Plain,
+        variant,
+        expected_slot,
+    );
 }
 
 fn prepared_failure_fixture(
-    prior: Option<ModuleEntry<crate::code::Code>>,
+    prior_ty: Option<Type>,
     staged_ty: Type,
 ) -> (
     crate::session_v4::SharedState,
@@ -2028,21 +2151,28 @@ fn prepared_failure_fixture(
     let shared = test_shared_state();
     let module = ModuleFullPath::from("user");
     let mut live = crate::code::SessionSymbolTable::new_with_params(module.clone());
-    if let Some(prior) = prior {
-        live.next_got_slot = 1;
-        live.symbols.insert(Symbol::from("f"), prior);
+    if let Some(prior_ty) = prior_ty {
+        use cranelisp_backend::cache::linker::Linker;
+        use std::sync::Arc;
+
+        install_transaction_entry(&mut live, "f", prior_ty, true);
+        live.publish_compiled_owner(
+            &binding_target(&module, "f"),
+            crate::code::Code::linker(Arc::new(Linker::new().expect("test linker"))),
+        )
+        .map_err(|rejection| rejection.into_parts().0)
+        .expect("prior concrete body accepts compiled owner");
     }
     shared.symbol_tables.insert(module.clone(), live);
     let mut staging = crate::code::SessionSymbolTable::new_with_params(module.clone());
-    staging
-        .symbols
-        .insert(Symbol::from("f"), transaction_entry(staged_ty, false));
+    install_transaction_entry(&mut staging, "f", staged_ty, false);
     let prepared = plan_staging_commit(
         &shared.symbol_tables,
         &module,
         staging,
         &[transaction_top_def("f")],
         &shared,
+        &[],
     )
     .expect("transaction fixture prepares");
     (shared, module, prepared)
@@ -2052,59 +2182,43 @@ fn prepared_failure_fixture(
 // ABI-preserving, and ABI-changing turns discard every prepared product.
 #[test]
 fn prepared_codegen_failure_strategy_matrix_leaves_live_state_unchanged() {
-    use cranelisp_backend::cache::linker::Linker;
-    use std::sync::Arc;
-
     let cases = [
         ("new", None, Type::Int),
-        (
-            "abi-preserving",
-            Some({
-                let mut prior = transaction_entry(Type::Int, true);
-                if let ModuleEntry::Def { code, .. } = &mut prior {
-                    *code = Some(crate::code::Code::linker(Arc::new(
-                        Linker::new().expect("test linker"),
-                    )));
-                }
-                prior
-            }),
-            Type::Int,
-        ),
-        (
-            "abi-changing",
-            Some({
-                let mut prior = transaction_entry(Type::Int, true);
-                if let ModuleEntry::Def { code, .. } = &mut prior {
-                    *code = Some(crate::code::Code::linker(Arc::new(
-                        Linker::new().expect("test linker"),
-                    )));
-                }
-                prior
-            }),
-            Type::Float,
-        ),
+        ("abi-preserving", Some(Type::Int), Type::Int),
+        ("abi-changing", Some(Type::Int), Type::Float),
     ];
 
     for (label, prior, staged_ty) in cases {
-        let (shared, module, mut prepared) = prepared_failure_fixture(prior, staged_ty);
-        let before_cursor = shared.symbol_tables.get(&module).unwrap().next_got_slot;
+        let (shared, module, prepared) = prepared_failure_fixture(prior, staged_ty);
+        let before_retired = shared
+            .symbol_tables
+            .get(&module)
+            .unwrap()
+            .retired_slots()
+            .len();
         let before_slot = shared
             .symbol_tables
             .get(&module)
-            .and_then(|table| table.get("f").and_then(ModuleEntry::callable_got_slot));
+            .and_then(|table| table.get("f").and_then(Binding::callable_got_slot));
         let before_retained = shared.retained_code.lock().unwrap().len();
         let check_state = CheckState::new(module.clone());
         let check_module = check_state.current_module().clone();
 
+        let mut processed = crate::cluster::ProcessedCluster::empty();
+        processed.set_prepared(prepared);
         assert!(
-            compile_prepared_turn(&mut prepared, &shared.symbol_tables, false).is_err(),
-            "{label} fixture must fail in production compile_prepared"
+            compile_and_publish_processed_without_notify(&mut processed, &shared).is_err(),
+            "{label} fixture must fail in production prepared publication"
         );
 
         let live = shared.symbol_tables.get(&module).unwrap();
-        assert_eq!(live.next_got_slot, before_cursor, "{label}: cursor");
         assert_eq!(
-            live.get("f").and_then(ModuleEntry::callable_got_slot),
+            live.retired_slots().len(),
+            before_retired,
+            "{label}: tombstones"
+        );
+        assert_eq!(
+            live.get("f").and_then(Binding::callable_got_slot),
             before_slot,
             "{label}: live entry/slot"
         );
@@ -2132,26 +2246,26 @@ fn prepared_multi_member_codegen_failure_is_all_or_nothing() {
         crate::code::SessionSymbolTable::new_with_params(module.clone()),
     );
     let mut staging = crate::code::SessionSymbolTable::new_with_params(module.clone());
-    staging
-        .symbols
-        .insert(Symbol::from("good"), transaction_entry(Type::Int, true));
-    staging
-        .symbols
-        .insert(Symbol::from("bad"), transaction_entry(Type::Int, false));
-    let mut prepared = plan_staging_commit(
+    install_transaction_entry(&mut staging, "good", Type::Int, true);
+    install_transaction_entry(&mut staging, "bad", Type::Int, false);
+    let prepared = plan_staging_commit(
         &shared.symbol_tables,
         &module,
         staging,
         &[transaction_top_def("good"), transaction_top_def("bad")],
         &shared,
+        &[],
     )
     .expect("multi-member turn prepares");
 
-    assert!(compile_prepared_turn(&mut prepared, &shared.symbol_tables, false).is_err());
+    let mut processed = crate::cluster::ProcessedCluster::empty();
+    processed.set_prepared(prepared);
+    assert!(compile_and_publish_processed_without_notify(&mut processed, &shared).is_err());
     let live = shared.symbol_tables.get(&module).unwrap();
     assert!(live.get("good").is_none());
     assert!(live.get("bad").is_none());
-    assert_eq!(live.next_got_slot, 0);
+    assert_eq!(live.all_symbols().count(), 0);
+    assert!(live.retired_slots().is_empty());
 }
 
 // spec: design/int/s117-conformance-recovery.md §1.2 — successful publish
@@ -2165,13 +2279,14 @@ fn prepared_publish_installs_entry_drop_glue_and_planned_retention_only() {
     let shared = test_shared_state();
     let module = ModuleFullPath::from("user");
     let mut live = crate::code::SessionSymbolTable::new_with_params(module.clone());
-    let mut prior = transaction_entry(Type::Int, true);
+    install_transaction_entry(&mut live, "f", Type::Int, true);
     let old_owner = Arc::new(Linker::new().expect("old owner"));
-    if let ModuleEntry::Def { code, .. } = &mut prior {
-        *code = Some(crate::code::Code::linker(old_owner));
-    }
-    live.next_got_slot = 1;
-    live.symbols.insert(Symbol::from("f"), prior);
+    live.publish_compiled_owner(
+        &binding_target(&module, "f"),
+        crate::code::Code::linker(old_owner),
+    )
+    .map_err(|rejection| rejection.into_parts().0)
+    .expect("prior concrete body accepts compiled owner");
     shared.symbol_tables.insert(module.clone(), live);
     shared
         .retained_code
@@ -2185,25 +2300,24 @@ fn prepared_publish_installs_entry_drop_glue_and_planned_retention_only() {
         ));
 
     let mut staging = crate::code::SessionSymbolTable::new_with_params(module.clone());
-    staging
-        .symbols
-        .insert(Symbol::from("f"), transaction_entry(Type::String, true));
-    let mut prepared = plan_staging_commit(
+    install_transaction_entry(&mut staging, "f", Type::String, true);
+    let prepared = plan_staging_commit(
         &shared.symbol_tables,
         &module,
         staging,
         &[transaction_top_def("f")],
         &shared,
+        &[],
     )
     .expect("publish fixture prepares");
-    compile_prepared_turn(&mut prepared, &shared.symbol_tables, false)
-        .expect("successful fixture compiles through production helper");
     let mut processed = crate::cluster::ProcessedCluster::empty();
     processed.set_prepared(prepared);
-    publish_prepared_turn(&mut processed, &shared);
+    compile_and_publish_processed_without_notify(&mut processed, &shared)
+        .expect("successful fixture compiles and publishes through production helper");
 
     let live = shared.symbol_tables.get(&module).unwrap();
-    assert_eq!(live.next_got_slot, 2);
+    assert_eq!(live.get("f").and_then(Binding::callable_got_slot), Some(1));
+    assert_eq!(live.retired_slots().len(), 1);
     assert!(live.get("f").is_some());
     drop(live);
     assert!(
@@ -2242,7 +2356,7 @@ fn prepared_empty_batch_emits_terminal_inmem_signal() {
 // phantom's shape — primitives GENUINELY provides bit-and, so the old
 // provider-existence predicate would have passed it) staged into a module
 // whose recorded `D(module)` does NOT include the name is REJECTED at commit.
-// Fail-on-revert: delete the `check_terminal_closure` call in the drain loop
+// Fail-on-revert: delete the `check_exposed_candidate_closure` call in the drain loop
 // and this commit succeeds (the phantom lands live).
 // defect: class=shared-state-write-race locus=src/worker.rs::commit_staging_to_live found=S115 owner=/dev
 #[test]
@@ -2265,16 +2379,16 @@ fn commit_staging_to_live_rejects_out_of_closure_public_write() {
 
     // Staging carries a phantom PUBLIC re-export edge `bit-and` outside D(prelude).
     let mut staging = crate::code::SessionSymbolTable::new_with_params(module.clone());
-    staging.insert(
-        Symbol::from("bit-and"),
-        cranelisp_types::ModuleEntry::Import {
-            source: cranelisp_types::FQSymbol {
+    staging
+        .expose_candidate(
+            Symbol::from("bit-and"),
+            cranelisp_types::FQSymbol {
                 module: ModuleFullPath::from("primitives"),
                 symbol: Symbol::from("bit-and"),
             },
-            visibility: cranelisp_types::Visibility::Public,
-        },
-    );
+            cranelisp_types::Visibility::Public,
+        )
+        .expect("public candidate fixture installs");
 
     let err = commit_staging_to_live(&symbol_tables, &module, staging, Some(&shared))
         .expect_err("a phantom out-of-closure public commit must be rejected at the gate");
@@ -2290,7 +2404,7 @@ fn commit_staging_to_live_rejects_out_of_closure_public_write() {
     // Nothing phantom committed to live.
     let live = symbol_tables.get(&module).unwrap();
     assert!(
-        live.get("bit-and").is_none(),
+        live.name_candidates(&Symbol::from("bit-and")).is_empty(),
         "the phantom must not reach the live table",
     );
 }
@@ -2314,22 +2428,22 @@ fn commit_staging_to_live_permits_declared_public_reexport() {
     );
 
     let mut staging = crate::code::SessionSymbolTable::new_with_params(module.clone());
-    staging.insert(
-        Symbol::from("Int"),
-        cranelisp_types::ModuleEntry::Import {
-            source: cranelisp_types::FQSymbol {
+    staging
+        .expose_candidate(
+            Symbol::from("Int"),
+            cranelisp_types::FQSymbol {
                 module: ModuleFullPath::from("primitives"),
                 symbol: Symbol::from("Int"),
             },
-            visibility: cranelisp_types::Visibility::Public,
-        },
-    );
+            cranelisp_types::Visibility::Public,
+        )
+        .expect("public candidate fixture installs");
 
     commit_staging_to_live(&symbol_tables, &module, staging, Some(&shared))
         .expect("a declared public re-export (Int ∈ D(prelude)) must commit cleanly");
     let live = symbol_tables.get(&module).unwrap();
     assert!(
-        live.get("Int").is_some(),
+        !live.name_candidates(&Symbol::from("Int")).is_empty(),
         "the declared re-export committed"
     );
 }
@@ -2352,28 +2466,20 @@ fn commit_gate_emits_prior_was_def_outcome_for_both_t1_shapes() {
     let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
         dashmap::DashMap::new();
     let mut live = crate::code::SessionSymbolTable::new_with_params(module.clone());
-    let prior_slot = live
-        .allocate_got_slot()
-        .expect("fresh table has free slots");
-    live.insert(
-        Symbol::from("f"),
-        mk_def_with_got(
-            DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Concrete {
-                    got_slot: 0,
-                    mode_summary: None,
-                },
-            },
-            Some(trivial_variant()),
-            Some(prior_slot),
-        ),
+    install_body_fixture(
+        &mut live,
+        "f",
+        CallableOrigin::Plain,
+        Some(trivial_variant()),
+        0,
     );
+    let prior_slot = live
+        .get("f")
+        .and_then(Binding::callable_got_slot)
+        .expect("concrete prior has slot");
     symbol_tables.insert(module.clone(), live);
     let mut staging = crate::code::SessionSymbolTable::new_with_params(module.clone());
-    staging.insert(
-        Symbol::from("f"),
-        mk_def_with_got(DefKind::Overloaded { variants: vec![] }, None, None),
-    );
+    install_plain_template_fixture(&mut staging, "f");
     let outcomes = commit_staging_to_live(&symbol_tables, &module, staging, None)
         .expect("slot-less commit cannot exhaust the GOT");
     assert_eq!(
@@ -2399,16 +2505,10 @@ fn commit_gate_emits_prior_was_def_outcome_for_both_t1_shapes() {
     let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
         dashmap::DashMap::new();
     let mut live = crate::code::SessionSymbolTable::new_with_params(module.clone());
-    live.insert(
-        Symbol::from("t"),
-        mk_def_with_got(DefKind::Overloaded { variants: vec![] }, None, None),
-    );
+    install_plain_template_fixture(&mut live, "t");
     symbol_tables.insert(module.clone(), live);
     let mut staging = crate::code::SessionSymbolTable::new_with_params(module.clone());
-    staging.insert(
-        Symbol::from("t"),
-        mk_def_with_got(DefKind::Overloaded { variants: vec![] }, None, None),
-    );
+    install_plain_template_fixture(&mut staging, "t");
     let outcomes = commit_staging_to_live(&symbol_tables, &module, staging, None)
         .expect("slot-less commit cannot exhaust the GOT");
     assert_eq!(
@@ -2435,39 +2535,28 @@ fn commit_gate_concrete_over_template_prior_and_negative_cells() {
         dashmap::DashMap::new();
     let mut live = crate::code::SessionSymbolTable::new_with_params(module.clone());
     // Slot-less prior template `id`; prior `Import` binding `imp`.
-    live.insert(
-        Symbol::from("id"),
-        mk_def_with_got(DefKind::Overloaded { variants: vec![] }, None, None),
-    );
-    live.insert(
+    install_plain_template_fixture(&mut live, "id");
+    live.expose_candidate(
         Symbol::from("imp"),
-        ModuleEntry::Import {
-            source: FQSymbol {
-                module: ModuleFullPath::from("primitives"),
-                symbol: Symbol::from("add-i64"),
-            },
-            visibility: Visibility::Private,
+        FQSymbol {
+            module: ModuleFullPath::from("primitives"),
+            symbol: Symbol::from("add-i64"),
         },
-    );
+        Visibility::Private,
+    )
+    .expect("import candidate fixture installs");
     symbol_tables.insert(module.clone(), live);
 
-    let concrete = |slot: usize| {
-        mk_def_with_got(
-            DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Concrete {
-                    got_slot: 0,
-                    mode_summary: None,
-                },
-            },
-            Some(trivial_variant()),
-            Some(slot),
-        )
-    };
     let mut staging = crate::code::SessionSymbolTable::new_with_params(module.clone());
-    staging.next_got_slot = 3;
-    staging.insert(Symbol::from("id"), concrete(0));
-    staging.insert(Symbol::from("imp"), concrete(1));
-    staging.insert(Symbol::from("fresh"), concrete(2));
+    for (slot, name) in ["id", "imp", "fresh"].into_iter().enumerate() {
+        install_body_fixture(
+            &mut staging,
+            name,
+            CallableOrigin::Plain,
+            Some(trivial_variant()),
+            slot,
+        );
+    }
 
     let outcomes = commit_staging_to_live(&symbol_tables, &module, staging, None)
         .expect("commit cannot exhaust the GOT");
@@ -2619,22 +2708,22 @@ fn suppress_panic_banner_is_thread_local_and_raii_scoped() {
 fn classify_listing_entry_buckets_every_category() {
     use crate::session_v4::SymbolCategory;
     use cranelisp_types::{
-        FQTypeName, MacroClauseInfo, Sexp, TraitDeclInfo, TraitName, TypeDefInfo, TypeName,
+        FQTypeName, SpecialFormRecord, TraitDeclInfo, TraitName, TraitRecord, TypeDefInfo,
+        TypeName, TypeRecord,
     };
 
     let module = ModuleFullPath::from("user");
 
     // Def(UserFn) → Fn
-    let user_fn = mk_def_with_got(
-        DefKind::UserFn {
-            fn_state: cranelisp_types::UserFnState::Concrete {
-                got_slot: 0,
-                mode_summary: None,
-            },
-        },
+    let mut table = crate::code::SessionSymbolTable::new_with_params(module.clone());
+    install_body_fixture(
+        &mut table,
+        "f",
+        CallableOrigin::Plain,
         Some(trivial_variant()),
-        Some(0),
+        0,
     );
+    let user_fn = table.get("f").expect("fixture installed");
     assert_eq!(
         classify_listing_entry(&user_fn),
         Some(SymbolCategory::Fn),
@@ -2642,31 +2731,31 @@ fn classify_listing_entry_buckets_every_category() {
     );
 
     // Def(Macro) → Macro
-    let mac = ModuleEntry::def(
-        synthetic_scheme(),
-        DefKind::Macro {
-            clauses_meta: Vec::<MacroClauseInfo>::new(),
-            macro_sexp: Sexp::Symbol("m".to_string(), Span::SYNTHETIC),
-        },
-    )
-    .visibility(Visibility::Public)
-    .build();
+    let mac = crate::repl::test_support::install_macro_fixture(
+        &mut table,
+        "m",
+        Sexp::Symbol("m".to_string(), Span::SYNTHETIC),
+        Vec::new(),
+        Visibility::Public,
+    );
     assert_eq!(classify_listing_entry(&mac), Some(SymbolCategory::Macro));
 
     // Def(Constructor) → Constructor
-    let ctor = mk_def_with_got(
-        DefKind::Constructor {
-            got_slot: 0,
+    let mut ctor_table = crate::code::SessionSymbolTable::new_with_params(module.clone());
+    install_body_fixture(
+        &mut ctor_table,
+        "Some",
+        CallableOrigin::Ctor {
             type_name: FQTypeName::new(module.clone(), TypeName::from("Option")),
             tag: 1,
             field_count: 1,
             internal: false,
             type_def: None,
-            mode_summary: None,
         },
         Some(trivial_variant()),
-        Some(0),
+        0,
     );
+    let ctor = ctor_table.get("Some").expect("fixture installed");
     assert_eq!(
         classify_listing_entry(&ctor),
         Some(SymbolCategory::Constructor),
@@ -2674,65 +2763,78 @@ fn classify_listing_entry_buckets_every_category() {
     );
 
     // TypeDef → Type
-    let type_def = ModuleEntry::TypeDef {
-        info: TypeDefInfo {
-            name: FQTypeName::new(module.clone(), TypeName::from("Point")),
-            type_params: Vec::new(),
-            constructors: vec![Symbol::from("Point")],
-        },
-        visibility: Visibility::Public,
-        docstring: None,
-    };
+    let type_def = Binding::new(
+        Decl::Type(TypeRecord::Defined {
+            info: TypeDefInfo {
+                name: FQTypeName::new(module.clone(), TypeName::from("Point")),
+                type_params: Vec::new(),
+                constructors: vec![Symbol::from("Point")],
+            },
+            docstring: None,
+        }),
+        Visibility::Public,
+    );
     assert_eq!(
         classify_listing_entry(&type_def),
         Some(SymbolCategory::Type)
     );
 
     // TraitDecl → Trait
-    let trait_decl = ModuleEntry::TraitDecl {
-        info: TraitDeclInfo {
-            name: TraitName::from("Display"),
-            type_params: Vec::new(),
-            methods: Vec::new(),
-        },
-        visibility: Visibility::Public,
-        docstring: None,
-    };
+    let trait_decl = Binding::new(
+        Decl::Trait(TraitRecord::new(
+            TraitDeclInfo {
+                name: TraitName::from("Display"),
+                type_params: Vec::new(),
+                methods: Vec::new(),
+            },
+            None,
+        )),
+        Visibility::Public,
+    );
     assert_eq!(
         classify_listing_entry(&trait_decl),
         Some(SymbolCategory::Trait)
     );
 
     // SpecialForm → SpecialForm (surfaced by describe_symbol; listings drop it)
-    let special = ModuleEntry::SpecialForm {
-        scheme: synthetic_scheme(),
-        param_names: Vec::new(),
-        docstring: None,
-        description: "let".to_string(),
-        visibility: Visibility::Public,
-    };
+    let special = Binding::new(
+        Decl::SpecialForm(SpecialFormRecord::new(
+            synthetic_scheme(),
+            Vec::new(),
+            None,
+            "let".to_string(),
+        )),
+        Visibility::Public,
+    );
     assert_eq!(
         classify_listing_entry(&special),
         Some(SymbolCategory::SpecialForm)
     );
 
-    // Import → None (never a user definition; surfaced by /imports)
-    let import = ModuleEntry::<crate::code::Code>::Import {
-        source: FQSymbol {
-            module: ModuleFullPath::from("other"),
-            symbol: Symbol::from("x"),
-        },
-        visibility: Visibility::Private,
-    };
-    assert_eq!(
-        classify_listing_entry(&import),
-        None,
-        "an import is not a user definition"
-    );
-
-    // Ambiguous → None
-    let ambiguous = ModuleEntry::<crate::code::Code>::Ambiguous {
-        visibility: Visibility::Public,
-    };
-    assert_eq!(classify_listing_entry(&ambiguous), None);
+    // Imports and ambiguities are spelling candidates, not bindings, and
+    // therefore cannot enter the binding classifier at all.
+    let mut candidate_table =
+        crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("scope"));
+    candidate_table
+        .expose_candidate(
+            Symbol::from("x"),
+            FQSymbol {
+                module: ModuleFullPath::from("other"),
+                symbol: Symbol::from("x"),
+            },
+            Visibility::Private,
+        )
+        .expect("first candidate installs");
+    candidate_table
+        .expose_candidate(
+            Symbol::from("x"),
+            FQSymbol {
+                module: ModuleFullPath::from("third"),
+                symbol: Symbol::from("x"),
+            },
+            Visibility::Public,
+        )
+        .expect("second candidate installs");
+    assert!(candidate_table.get("x").is_none());
+    assert_eq!(candidate_table.name_candidates(&Symbol::from("x")).len(), 2);
 }

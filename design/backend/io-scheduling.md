@@ -31,19 +31,25 @@ Using the base-pointer convention (arch Decision 10):
 
 ```
 Base pointer →
-  +0   alloc_size: i64    (= 16 + 8 + 8 + N*8)
+  +0   alloc_size: i64    (= 16 + 8 + 8 + N*16)
   +8   rc: i64            (initial: 1, atomic)
   +16  tag: i64           (= IO_TAG_PAR = 3)
   +24  branch_count: i64  (N, number of IO branches)
   +32  branch_0: i64      (pointer to IO subtree 0)
-  +40  branch_1: i64      (pointer to IO subtree 1)
+  +40  disposer_0: i64    (canonical drop<a0>, or 0)
+  +48  branch_1: i64      (pointer to IO subtree 1)
+  +56  disposer_1: i64    (canonical drop<a1>, or 0)
   ...
-  +32+(N-1)*8  branch_{N-1}: i64
+  +32+(N-1)*16  branch_{N-1}: i64
+  +40+(N-1)*16  disposer_{N-1}: i64
 
-Total allocation: 32 + N*8 bytes
+Total allocation: 32 + N*16 bytes
 ```
 
-This is a variable-size ADT node. The branch pointers are inline (not behind a separate array indirection), since the count is known at compile time and the trampoline can read them at fixed offsets.
+This is a variable-size internal node. Each inline branch pointer is paired with
+the disposal authority for the value that branch may produce. The scalar
+function address is not traversed by IO-tree teardown; the trampoline arms it
+only while a produced value has not yet transferred to the Par continuation.
 
 The `IO_TAG_PAR` constant (= 3) is already defined in `cranelisp-platform` alongside the existing `IO_TAG_PURE` (0), `IO_TAG_EFFECT` (1), and `IO_TAG_BIND` (2).
 
@@ -54,11 +60,13 @@ The `IO_TAG_PAR` constant (= 3) is already defined in `cranelisp-platform` along
 A `ParBind` with bindings `[(x0, e0), (x1, e1), ..., (xN-1, eN-1)]` and body `B` compiles as:
 
 1. Compile each IO expression `ei` — these produce IO tree pointers.
-2. Allocate a Par node containing all N IO tree pointers.
-3. Inc RC on each IO tree pointer (the Par node holds references).
+2. Allocate a Par node containing all N `(IO tree, result disposer)` pairs.
+3. Transfer each IO tree reference into its branch slot.
 4. Build a continuation closure that unpacks the Par results and evaluates the body.
-5. Allocate a Bind node linking the Par node to the continuation.
-6. Inc RC on the Par node and the continuation (the Bind node holds references).
+5. Allocate a Bind node linking the Par node to the continuation. The Bind
+   carries a zero input disposer because the runtime-private Par buffer owns its
+   per-slot disposal before handoff.
+6. Transfer the Par node and continuation into the Bind node.
 7. Return the Bind node pointer.
 
 When the trampoline encounters this Bind node, it will:
@@ -77,14 +85,16 @@ io_1 = compile_expr(e1)
 io_{N-1} = compile_expr(e_{N-1})
 
 // Phase 2: Allocate Par node
-payload_size = 8 + 8 + N*8          // tag + count + N branches
+payload_size = 8 + 8 + N*16         // tag + count + N (branch, disposer) pairs
 par_ptr = call emit_alloc(payload_size)
 
 // Store fields
 store IO_TAG_PAR (3)  at par_ptr + 16   // tag
 store N               at par_ptr + 24   // branch_count
 store io_0            at par_ptr + 32   // branch_0
-store io_1            at par_ptr + 40   // branch_1
+store drop<a0>         at par_ptr + 40   // disposer_0, or 0
+store io_1            at par_ptr + 48   // branch_1
+store drop<a1>         at par_ptr + 56   // disposer_1, or 0
 ...
 
 // No RC inc — ownership transfer (constructor convention, Decision 20).
@@ -98,10 +108,11 @@ store io_1            at par_ptr + 40   // branch_1
 cont_ptr = compile_par_bind_continuation(bindings, body, span)
 
 // Phase 4: Allocate Bind node
-bind_ptr = call emit_alloc(24)      // payload: tag + inner + cont
+bind_ptr = call emit_alloc(32)      // payload: tag + inner + cont + disposer
 store IO_TAG_BIND (2)  at bind_ptr + 16
 store par_ptr          at bind_ptr + 24
 store cont_ptr         at bind_ptr + 32
+store 0                at bind_ptr + 40 // Par buffer has its own slot disposers
 
 // No RC inc — ownership transfer (constructor convention, Decision 20).
 // Par node and continuation at rc=1 transfer directly into Bind node.
@@ -122,7 +133,13 @@ It is compiled as an anonymous function that:
 
 The continuation captures any free variables of the body that are not among the binding names and are in scope in the enclosing function. These captures are stored in the closure struct at offset 32+ (after header, code_ptr, and drop_glue_ptr per Decision 11).
 
-**Calling convention note**: Par-Bind continuations receive a `results_ptr` (pointer to an array of N i64 result values) as their second argument, unlike regular Bind continuations which receive a single i64 value. This divergence is structurally safe because the Par handler directly calls the continuation rather than going through the normal trampoline result-passing flow — the continuation is compiled specifically for the ParBind codegen path.
+**Calling convention note**: Par-Bind continuations receive a `results_ptr`
+(pointer to an array of N i64 result values) as their second argument, unlike
+regular Bind continuations which receive a single language value. The Par arm
+returns that pointer as an armed `ProducedValue`; the shared trampoline
+`feed_continuation` path then transfers it to the Par-Bind continuation. The
+continuation is compiled specifically for this buffer-shaped argument and
+shallow-consumes the carrier after loading its slots.
 
 ### 4.4 Drop Glue
 
@@ -144,15 +161,16 @@ t if t == IO_TAG_PAR => {
         *((current as isize + FIELD_0_OFFSET) as *const i64)
     } as usize;
 
-    // Read branch IO pointers (at offsets 32, 40, 48, ...)
-    let branch_ptrs: Vec<i64> = (0..count)
+    // Read `(branch IO, result disposer)` pairs (stride 16 from offset 32).
+    let branches: Vec<(i64, i64)> = (0..count)
         .map(|i| unsafe {
-            *((current as isize + FIELD_1_OFFSET + (i as isize) * 8) as *const i64)
+            let base = current as isize + FIELD_1_OFFSET + (i as isize) * 16;
+            (*(base as *const i64), *((base + 8) as *const i64))
         })
         .collect();
 
     // Dispatch with resource token serialization
-    let results = dispatch_par_branches(&branch_ptrs);
+    let results = dispatch_par_branches(&branches);
 
     // Allocate results buffer via alloc_with_rc so the continuation
     // can dec it when done. Results stored at FIELD_0_OFFSET + i*8
@@ -163,19 +181,22 @@ t if t == IO_TAG_PAR => {
             *((results_buf as isize + FIELD_0_OFFSET + (i as isize) * 8) as *mut i64) = val;
         }
     }
-    let results_ptr = results_buf;
-
-    // Pop continuation and call with results array
-    match cont_stack.pop() {
-        Some(cont_ptr) => {
-            current = call_continuation(cont_ptr, results_ptr);
-        }
-        None => return results_ptr,
-    }
+    // Until shared feed_continuation transfers this buffer, the runtime carrier
+    // owns one disposer per initialized slot. Cancellation or fault drops the
+    // armed carrier and disposes those slots exactly once.
+    ProducedValue::par_buffer(results_buf, branch_disposers)
 }
 ```
 
-Note: `FIELD_0_OFFSET` is `TAG_OFFSET + 8` = 24, which is where `branch_count` lives. The branch pointers start at `FIELD_1_OFFSET` = 32. The results buffer uses `alloc_with_rc(8 + N*8)` — the 8-byte padding at offset 16 aligns results to `FIELD_0_OFFSET + i*8` (24, 32, 40, ...) matching `HeapAdt::field_offset(i)`. The continuation emits `emit_rc_dec` on the buffer when done.
+Note: `FIELD_0_OFFSET` is `TAG_OFFSET + 8` = 24, which is where
+`branch_count` lives. Branch/disposer pairs start at `FIELD_1_OFFSET` = 32
+with a 16-byte stride. The results buffer remains
+`alloc_with_rc(8 + N*8)` — the 8-byte padding at offset 16 aligns result
+values to `FIELD_0_OFFSET + i*8` (24, 32, 40, ...) matching
+`HeapAdt::field_offset(i)`. The surrounding trampoline passes the armed buffer
+through the same `feed_continuation` state transition used for every other IO
+result. Transfer disarms runtime ownership; the compiled continuation then emits
+`emit_rc_dec` on the shallow buffer after consuming its values.
 
 ### 5.2 Resource Token Serialization
 
@@ -277,13 +298,15 @@ fn execute_work_item(item: WorkItem) -> Vec<(usize, i64)> {
             vec![(idx, result)]
         }
         WorkItem::SerialGroup(entries) => {
-            entries
-                .into_iter()
-                .map(|(idx, io_ptr)| {
-                    let result = run_io_trampoline(io_ptr);
-                    (idx, result)
-                })
-                .collect()
+            let mut results = Vec::with_capacity(entries.len());
+            for (idx, io_ptr) in entries {
+                let result = run_io_trampoline(io_ptr);
+                if take_runtime_error().is_some() {
+                    break; // abort before any later same-token effect starts
+                }
+                results.push((idx, result));
+            }
+            results
         }
     }
 }
@@ -294,15 +317,30 @@ fn execute_work_item(item: WorkItem) -> Vec<(usize, i64)> {
 Per spec §10.12.4:
 - **Token=0 branches run independently**: each dispatched as a separate rayon work item. They may execute in any order or concurrently.
 - **Same non-zero token groups run sequentially**: all branches in a token group are executed in source order within a single work item. Different token groups run concurrently with each other.
+- **First error stops its token group**: because later entries have not started,
+  the group aborts before starting them, preserving sequential left-to-right
+  behaviour. Other token groups may already be in flight and still require
+  structured cleanup.
 - **Result ordering**: the results array preserves the original binding order (indexed by original position), regardless of dispatch order.
 
 ### 5.3 Continuation Calling Convention
 
-After dispatch, the results array is allocated via `alloc_with_rc(8 + N*8)` — an RC-managed buffer with results stored at `FIELD_0_OFFSET + i*8` (offsets 24, 32, 40, ...) matching `HeapAdt::field_offset(i)`. The 8-byte padding at offset 16 (where the tag would be in a normal ADT) is unused. The continuation receives the buffer pointer as its second argument, loads results at the field offsets, and emits `emit_rc_dec` on the buffer when done (which frees it since rc=1).
+After dispatch, the results array is allocated via `alloc_with_rc(8 + N*8)` —
+an RC-managed buffer with results stored at `FIELD_0_OFFSET + i*8` (offsets
+24, 32, 40, ...) matching `HeapAdt::field_offset(i)`. While it has not been
+handed to the continuation, the runtime pairs the buffer with the branch
+disposers and releases every initialized slot if cancellation or fault abandons
+it. At continuation handoff, ordinary compiled ownership takes over. The
+continuation loads the values and emits `emit_rc_dec` on the shallow carrier.
 
 The continuation is a closure with signature `extern "C" fn(env_ptr: i64, results_ptr: i64) -> i64`. It loads result values from the results buffer at `FIELD_0_OFFSET + i*8` and binds them to the corresponding names.
 
-Par-Bind continuations receive a `results_ptr` (pointer to an `alloc_with_rc` buffer of N i64 result values) as their second argument, unlike regular Bind continuations which receive a single i64 value. This divergence is structurally safe because the Par handler directly calls the continuation rather than going through the normal trampoline result-passing flow — the continuation is compiled specifically for the ParBind codegen path.
+Par-Bind continuations receive a `results_ptr` (pointer to an `alloc_with_rc`
+buffer of N i64 result values) as their second argument, unlike regular Bind
+continuations which receive a single language value. The Par handler returns
+the armed buffer to the common trampoline step; `feed_continuation` performs the
+same explicit transfer used by other IO results, then invokes the continuation
+compiled specifically for this buffer-shaped argument.
 
 ## 6. Integration Points
 

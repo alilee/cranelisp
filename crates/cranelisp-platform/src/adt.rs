@@ -337,6 +337,17 @@ fn resolve_field<T: CLAdtType>(field_name: &str) -> (usize, &'static FieldType) 
     let schema = global_schema();
     let type_key = T::TYPE_NAME;
 
+    if schema.lookup_type(type_key).is_none() {
+        let known = schema.known_type_keys().join(", ");
+        panic!(
+            "CLAdt::read_field schema type-key miss:\n  \
+             type:        {type_key}\n  \
+             known keys:  [{known}]\n  \
+             cause:       type key not in this platform's embedded schema\n  \
+             see:         design/arch/platform-interface.md §5.5"
+        );
+    }
+
     // Dot-qualified form — `"Some.val"` names a sum-type constructor; a
     // self-qualified `"Rectangle.w"` on a product strips to the bare field.
     let (ctor_name, canonical_field): (Option<&str>, &str) = match field_name.split_once('.') {

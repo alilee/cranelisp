@@ -1,14 +1,21 @@
 use super::*;
+#[cfg(test)]
+use cranelisp_types::ConcreteType;
+use cranelisp_types::{ApplyRef, MonoDemand, Scheme};
 
 /// A polymorphic fn-value passed as an argument into a HOF, recorded per
 /// enclosing defn for post-mint `Var` rewrite (FIXME 0374 / 0488 sig b):
 /// (enclosing_defn, bare_fn_value_symbol, arg_span, concrete_param_types,
 /// home_of_imported_callee).
-type FnValueArgSite = (Symbol, Symbol, Span, Vec<Type>, Option<ModuleFullPath>);
+pub(super) struct FnValueArgSite {
+    enclosing: Symbol,
+    arg_span: Span,
+    demand: MonoDemand,
+}
 
 /// A monomorphisation call site collected by `pass4_monomorphise`:
 /// (callee_name, arg_spans, call_span, home_of_imported_callee).
-type MonoCallSite = (Symbol, Vec<Span>, Span, Option<ModuleFullPath>);
+type MonoCallSite = MonoDemand;
 
 /// The body expressions a mono-collect scan must walk for one `Defn`.
 ///
@@ -51,6 +58,286 @@ pub(crate) enum AutoCurryDrain {
 // --- Name mangling for multi-sig overload dispatch ---
 
 impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
+    pub(crate) fn checked_body_template(
+        &self,
+        state: &CheckState,
+        bodies: &BodyLedger,
+        name: &Symbol,
+    ) -> Option<crate::traits::TemplateFn> {
+        // Select the requested source occurrence through the ledger's exact
+        // publication index. The companion snapshot below exists only so a
+        // scoped mono recheck can follow a later same-cluster template hop;
+        // it is not used to discover or choose the requested body.
+        let selected = bodies.checked_for_publication(name)?;
+        let selected_callable = self
+            .current_symbol_table(state)
+            .view()
+            .lookup(name)
+            .and_then(Binding::callable)
+            .cloned()?;
+        let selected_scheme = self.checked_body_scheme(state, selected.registration);
+        if selected_callable.arm.scheme.ty.is_concrete()
+            && selected_callable.arm.scheme.constraints.is_empty()
+        {
+            return None;
+        }
+        let core = crate::traits::TemplateCore {
+            body: TemplateBody::Ast(selected.ast.clone()),
+            scheme: selected_scheme,
+            origin: selected_callable.origin,
+        };
+
+        let mut local_templates = HashMap::new();
+        for body in bodies.checked_bodies() {
+            let publication = &body.registration.publication_name;
+            let Some(callable) = self
+                .current_symbol_table(state)
+                .view()
+                .lookup(publication)
+                .and_then(Binding::callable)
+                .cloned()
+            else {
+                continue;
+            };
+            let scheme = self.checked_body_scheme(state, body.registration);
+            if callable.arm.scheme.ty.is_concrete() && callable.arm.scheme.constraints.is_empty() {
+                continue;
+            }
+            local_templates.insert(
+                publication.clone(),
+                crate::traits::TemplateCore {
+                    body: TemplateBody::Ast(body.ast.clone()),
+                    scheme,
+                    origin: callable.origin,
+                },
+            );
+        }
+        Some(crate::traits::TemplateFn {
+            core,
+            local_templates,
+            template_target: Some(CallableTarget::Binding(FQSymbol {
+                module: state.current_module.clone(),
+                symbol: name.clone(),
+            })),
+        })
+    }
+
+    /// Rebuild a checked body's scheme from the ledger-owned monotypes and the
+    /// current settlement substitution. A symbol-table declaration may still
+    /// carry its pre-drain generalized scheme; instantiating that snapshot would
+    /// sever return/parameter refinements made by overload back-flow.
+    fn checked_body_scheme(&self, state: &CheckState, body: &RegisteredBody) -> Scheme {
+        let fn_type = Type::Fn(
+            body.param_types
+                .iter()
+                .map(|ty| apply(&state.subst, ty))
+                .collect(),
+            Box::new(apply(&state.subst, &body.ret_ty)),
+        );
+        self.generalize(state, &fn_type)
+    }
+
+    fn mono_demand(
+        &self,
+        state: &CheckState,
+        template: FQSymbol,
+        use_type: Type,
+        site: Span,
+        bodies: &BodyLedger,
+    ) -> Option<MonoDemand> {
+        let local = (template.module == state.current_module)
+            .then(|| self.checked_body_template(state, bodies, &template.symbol))
+            .flatten();
+        let scheme = if let Some(local) = local {
+            local.core.scheme
+        } else {
+            self.probe_module_entry_owned(&template.module, template.symbol.as_ref())?
+                .callable()?
+                .arm
+                .scheme
+                .clone()
+        };
+        self.derive_mono_demand(
+            state,
+            CallableTarget::Binding(template),
+            &scheme,
+            &use_type,
+            site,
+        )
+    }
+
+    fn mono_demand_from_spans(
+        &self,
+        state: &CheckState,
+        template: FQSymbol,
+        arg_spans: &[Span],
+        site: Span,
+        bodies: &BodyLedger,
+    ) -> Option<MonoDemand> {
+        let use_type = Self::mono_call_type(
+            state,
+            &state.expr_types,
+            &state.method_resolutions,
+            arg_spans,
+            site,
+        )?;
+        self.mono_demand(state, template, use_type, site, bodies)
+    }
+
+    pub(crate) fn mono_call_type(
+        state: &CheckState,
+        types: &HashMap<Span, Type>,
+        resolutions: &cranelisp_types::MethodResolutions,
+        arg_spans: &[Span],
+        site: Span,
+    ) -> Option<Type> {
+        let mut params = arg_spans
+            .iter()
+            .map(|span| types.get(span).map(|ty| apply(&state.subst, ty)))
+            .collect::<Option<Vec<_>>>()?;
+        let mut result = apply(&state.subst, types.get(&site)?);
+        if matches!(
+            resolutions.resolved_calls.get(&site),
+            Some(ResolvedCall::AutoCurry { .. })
+        ) {
+            let Type::Fn(remaining, ret) = result else {
+                return None;
+            };
+            params.extend(remaining);
+            result = *ret;
+        }
+        Some(Type::Fn(params, Box::new(result)))
+    }
+
+    fn record_mono_dispatch(&self, state: &mut CheckState, span: Span, mangled: JitSymbol) {
+        if span == Span::SYNTHETIC {
+            return;
+        }
+        let resolution = match state.method_resolutions.resolved_calls.get(&span).cloned() {
+            Some(ResolvedCall::AutoCurry {
+                applied_count,
+                total_count,
+                trait_resolution,
+                ..
+            }) => {
+                state.method_resolutions.apply_refs.insert(
+                    span,
+                    ApplyRef::Dispatch(FQSymbol {
+                        module: state.current_module.clone(),
+                        symbol: Symbol::from(mangled.as_ref()),
+                    }),
+                );
+                ResolvedCall::AutoCurry {
+                    target_name: Symbol::from(mangled.as_ref()),
+                    applied_count,
+                    total_count,
+                    trait_resolution,
+                }
+            }
+            _ => {
+                let resolution = ResolvedCall::SigDispatch {
+                    target: CallableTarget::Binding(FQSymbol {
+                        module: state.current_module.clone(),
+                        symbol: Symbol::from(mangled.as_ref()),
+                    }),
+                };
+                self.record_dispatch_target(state, span, &resolution);
+                resolution
+            }
+        };
+        state
+            .method_resolutions
+            .resolved_calls
+            .insert(span, resolution);
+    }
+
+    /// Seed the existing pass-4 driver from reload-captured typed demands.
+    /// This is deliberately a caller of `drive_call_site_monomorphisation`,
+    /// never a second caller of the mint core.
+    pub(crate) fn instantiate_demand_roots(
+        &self,
+        state: &mut CheckState,
+        demands: Vec<MonoDemand>,
+    ) -> Result<CheckResult, CranelispError> {
+        let mut warnings = Vec::new();
+        let mut seen = HashMap::new();
+        let mut mono_defns = Vec::new();
+        let no_local_bodies = BodyLedger::default();
+
+        for demand in demands {
+            let Some(owner) = callable_target_owner(&demand.template) else {
+                continue;
+            };
+            let template_present = self
+                .probe_module_entry_owned(&owner.module, owner.symbol.as_ref())
+                .is_some_and(|binding| match &demand.template {
+                    CallableTarget::Binding(_) => binding.callable().is_some_and(|callable| {
+                        matches!(callable.arm.life, Life::Template { .. })
+                    }),
+                    CallableTarget::OverloadArm { arm, .. } => {
+                        matches!(&binding.declaration, Decl::Overloaded(declaration)
+                            if declaration.arms.get(arm.ordinal()).is_some_and(|candidate|
+                                candidate.id == *arm && matches!(candidate.callable.life, Life::Template { .. })))
+                    }
+                    CallableTarget::MacroClause { .. } => false,
+                    _ => false,
+                });
+            if !template_present {
+                warnings.push(cranelisp_types::Warning {
+                    kind: cranelisp_types::WarningKind::Other,
+                    message: format!(
+                        "declined stale monomorphisation demand for {:?} at ({})",
+                        demand.template,
+                        demand
+                            .type_args
+                            .iter()
+                            .map(|arg| arg.to_type().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                    span: Span::SYNTHETIC,
+                });
+                continue;
+            }
+
+            let drive = self.drive_call_site_monomorphisation(
+                state,
+                std::slice::from_ref(&demand),
+                &mut seen,
+                &mut mono_defns,
+                &no_local_bodies,
+            );
+            match drive {
+                Ok(()) => {}
+                Err(CranelispError::TypeError { message, location })
+                    if location.span == Span::SYNTHETIC =>
+                {
+                    warnings.push(cranelisp_types::Warning {
+                        kind: cranelisp_types::WarningKind::Other,
+                        message: format!(
+                            "declined stale monomorphisation demand for {:?} at ({}): {message}",
+                            demand.template,
+                            demand
+                                .type_args
+                                .iter()
+                                .map(|arg| arg.to_type().to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                        span: Span::SYNTHETIC,
+                    });
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        Ok(CheckResult {
+            warnings,
+            display: None,
+            unresolved_dispatch: Vec::new(),
+        })
+    }
+
     /// Monomorphise every reachable polymorphic / constrained call site into
     /// concrete instances.
     ///
@@ -68,9 +355,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         state: &mut CheckState,
         defns: &[&Defn],
         constrained_fn_names: &HashSet<Symbol>,
+        bodies: &mut BodyLedger,
     ) -> Result<Vec<MonoDefn>, CranelispError> {
         let (call_sites, fn_value_arg_sites) =
-            self.collect_mono_call_sites(state, defns, constrained_fn_names);
+            self.collect_mono_call_sites(state, defns, constrained_fn_names, bodies);
 
         // Nothing to monomorphise (neither local constrained fns nor imported
         // constrained call sites nor polymorphic fn-value arguments) — bail
@@ -79,12 +367,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             return Ok(Vec::new());
         }
 
-        // Resolve expr_types so we can look up concrete arg types
-        let resolved_expr_types = self.resolve_expr_types(state);
-
         // Monomorphise each call site and record dispatch mappings
         let mut mono_defns = Vec::new();
-        let mut seen: HashMap<String, JitSymbol> = HashMap::new();
+        let mut seen: HashMap<Symbol, JitSymbol> = HashMap::new();
         // The caller's module — the fallback home for a LOCAL generic's mono
         // name. `monomorphise_call` restores `state.current_module` per call, so
         // capturing once here is stable across the loop (FIXME 0519).
@@ -93,18 +378,17 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         self.drive_call_site_monomorphisation(
             state,
             &call_sites,
-            &resolved_expr_types,
-            &current_module,
             &mut seen,
             &mut mono_defns,
+            bodies,
         )?;
 
         let fn_value_rewrites = self.drive_fn_value_monomorphisation(
             state,
             &fn_value_arg_sites,
-            &current_module,
             &mut seen,
             &mut mono_defns,
+            bodies,
         )?;
 
         // Apply the fn-value `Var` renames to the stored ASTs. A later
@@ -112,16 +396,22 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // `inferred_type` / `resolved_call` by span — it does not touch the
         // `Var` name — so this rename survives.
         if !fn_value_rewrites.is_empty() {
-            let mut st = self.current_symbol_table_mut(state);
             for (enclosing, arg_span, mangled_sym) in &fn_value_rewrites {
-                if let Some(ModuleEntry::Def {
-                    ast: Some(variant), ..
-                }) = st.symbols.get_mut(enclosing)
-                {
-                    rename_var_at_span(&mut variant.body, *arg_span, mangled_sym);
+                if let Some(body) = bodies.checked_mut_for_publication(enclosing) {
+                    rename_var_at_span(&mut body.ast.body, *arg_span, mangled_sym);
+                    body.callees.push(FQSymbol {
+                        module: current_module.clone(),
+                        symbol: mangled_sym.clone(),
+                    });
+                    body.callees.sort_by(|a, b| {
+                        a.module
+                            .as_ref()
+                            .cmp(b.module.as_ref())
+                            .then(a.symbol.as_ref().cmp(b.symbol.as_ref()))
+                    });
+                    body.callees.dedup();
                 }
             }
-            drop(st);
             // S110 W0.1b (§1.1.1, fn-value mono-rewrite carrier): the rename
             // repoints the arg-position `Var` at the caller-local mangled mono,
             // but the span-keyed carrier still names the slot-less template (or
@@ -158,7 +448,28 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         state: &mut CheckState,
         defns: &[&Defn],
         constrained_fn_names: &HashSet<Symbol>,
+        bodies: &BodyLedger,
     ) -> (Vec<MonoCallSite>, Vec<FnValueArgSite>) {
+        // Same-cluster checked bodies intentionally remain `Life::Declared`
+        // until final publication. Derive the local template trigger set from
+        // the exact ledger records; committed/imported templates continue to be
+        // recognized from their settled table lifecycle.
+        let local_template_names: HashSet<Symbol> = bodies
+            .checked_bodies()
+            .filter_map(|body| {
+                let name = &body.registration.publication_name;
+                let is_template = self
+                    .current_symbol_table(state)
+                    .view()
+                    .lookup(name)
+                    .and_then(Binding::callable)
+                    .is_some_and(|callable| {
+                        !callable.arm.scheme.ty.is_concrete()
+                            || !callable.arm.scheme.constraints.is_empty()
+                    });
+                (name.as_ref() != "__expr" && is_template).then(|| name.clone())
+            })
+            .collect();
         // Collect call sites: (fn_name, arg_spans, call_span, home_module).
         //
         // `home_module` is `None` for a call to a LOCALLY-defined constrained fn
@@ -196,7 +507,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         }
         let mut call_sites: Vec<MonoCallSite> = local_calls
             .into_iter()
-            .map(|(name, spans, span)| (name, spans, span, None))
+            .filter_map(|(name, spans, span)| {
+                let resolved = self.resolve_terminal_fq_scoped(state, name.as_ref())?;
+                self.mono_demand_from_spans(state, resolved.canonical, &spans, span, bodies)
+            })
             .collect();
 
         // FIXME 0355 — collect call sites for IMPORTED callees that
@@ -210,6 +524,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     body,
                     constrained_fn_names,
                     &mut call_sites,
+                    bodies,
                 );
             }
         }
@@ -218,7 +533,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // hops) — collect call sites for LOCAL (same-module) pure-parametric
         // polymorphic callees. These are NOT in `constrained_fn_names` (that set
         // holds only trait-constrained fns — `detect_constrained_fns` keys on
-        // `UserFnState::Constrained`), and they live in the current module so the
+        // `Life::Template { kind: TemplateKind::Constrained(..) }`), and they
+        // live in the current module so the
         // imported-call pass above (which requires `home != current_module`)
         // skips them too. Yet a hop like `(defn h1 [f] (h2 f))` whose RESULT type
         // generalizes to an unbound `Type::Var` is compiled ONCE generically
@@ -240,8 +556,19 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     body,
                     &defn.name,
                     constrained_fn_names,
+                    &local_template_names,
                     &mut call_sites,
+                    bodies,
                 );
+            }
+        }
+
+        // F2: a trait-dispatched apply can resolve directly to a generic impl
+        // method template.  It is not an Apply-of-bare-Var, so widen successor
+        // discovery explicitly while feeding the same typed worklist.
+        for defn in defns {
+            for body in mono_scan_bodies(defn) {
+                self.collect_dispatch_template_calls(state, body, &mut call_sites, bodies);
             }
         }
 
@@ -256,15 +583,22 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         for defn in defns {
             for body in mono_scan_bodies(defn) {
                 let mut sites = Vec::new();
-                self.collect_parametric_fn_value_args(state, body, &mut sites);
-                for (arg_name, arg_span, param_types, home) in sites {
-                    fn_value_arg_sites.push((
-                        defn.name.clone(),
-                        arg_name,
-                        arg_span,
-                        param_types,
-                        home,
-                    ));
+                self.collect_parametric_fn_value_args(
+                    state,
+                    body,
+                    &local_template_names,
+                    &mut sites,
+                );
+                for (template, arg_span, param_types) in sites {
+                    if let Some(demand) =
+                        self.mono_demand(state, template, param_types, arg_span, bodies)
+                    {
+                        fn_value_arg_sites.push(FnValueArgSite {
+                            enclosing: defn.name.clone(),
+                            arg_span,
+                            demand,
+                        });
+                    }
                 }
             }
         }
@@ -282,41 +616,17 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         &self,
         state: &mut CheckState,
         call_sites: &[MonoCallSite],
-        resolved_expr_types: &HashMap<Span, Type>,
-        current_module: &ModuleFullPath,
-        seen: &mut HashMap<String, JitSymbol>,
+        seen: &mut HashMap<Symbol, JitSymbol>,
         mono_defns: &mut Vec<MonoDefn>,
+        bodies: &BodyLedger,
     ) -> Result<(), CranelispError> {
-        for (fn_name, arg_spans, call_span, home_module) in call_sites {
-            // Look up concrete arg types from resolved expr_types
-            let arg_types: Vec<Type> = arg_spans
-                .iter()
-                .filter_map(|span| resolved_expr_types.get(span).cloned())
-                .collect();
-
-            if arg_types.len() != arg_spans.len() {
-                // Missing type info for some args — skip this call site
+        for demand in call_sites {
+            let Some(owner) = callable_target_owner(&demand.template) else {
                 continue;
-            }
-
-            // ALL-ARGS-CONCRETE GUARD (Phase-4 part A, concrete-boundary-type.md
-            // §4-A). The collection-time trigger (`local_parametric_call_triggers`)
-            // gates on `state.subst`-resolved `expr_types`, but the actual arg
-            // types are re-derived HERE from the FINAL `resolved_expr_types` — and
-            // a call collected from a GENERIC caller's body (the
-            // `(reduce-loop f init v (vec-len v) 0)` call inside `reduce`'s body,
-            // while `reduce` is still generic) resolves here to the parent's OWN
-            // free scheme vars (`[Fn[Var,Var]→Var, Var, (Vec Var), Int, Int]`).
-            // Monomorphising that mints the SPURIOUS partial `reduce-loop$Vec+Int+Int`
-            // (lossy name, residual body vars). The genuine concrete instance is
-            // minted via the parent's CONCRETE re-check chain
-            // (`reduce$Int+Vec → reduce-loop$Int+Vec+Int+Int`) — its args ARE all
-            // concrete. Skip any site whose final arg types are not all concrete:
-            // every minted instance is then fully concrete (the carve-out is dead,
-            // `from_expr` succeeds on each — the completeness proof).
-            if !arg_types.iter().all(|t| t.is_concrete()) {
-                continue;
-            }
+            };
+            let fn_name = &owner.symbol;
+            let call_span = demand.site;
+            let home_module = &owner.module;
 
             // Deduplicate: same defining home + fn + arg types = same
             // specialization. Route the dedup key through the ONE canonical
@@ -326,42 +636,51 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // home. `arg_types` are the concrete param types (gated concrete
             // above), so this key string is byte-identical to the `mono.defn.name`
             // that `monomorphise_call` mints below.
-            let key_home = home_module
-                .clone()
-                .unwrap_or_else(|| current_module.clone());
-            let key = crate::traits::build_mangled_name(&key_home, fn_name, &arg_types);
+            let instance_key = demand.instance_key();
+            let key = instance_key.clone();
 
-            if let Some(mangled) = seen.get(&key) {
-                // Already generated this specialization — just record dispatch
-                let resolution = ResolvedCall::SigDispatch {
-                    mangled_name: mangled.clone(),
-                };
-                self.record_dispatch_target(state, *call_span, &resolution);
-                state
-                    .method_resolutions
-                    .resolved_calls
-                    .insert(*call_span, resolution);
+            // The finalize pipeline has three intentional pass-4 windows. An
+            // earlier window may already have settled this typed instance; the
+            // lifecycle funnel correctly refuses a second install, so treat the
+            // existing concrete instance as the cross-window dedup witness.
+            if self
+                .current_symbol_table(state)
+                .view()
+                .lookup(&instance_key)
+                .and_then(Binding::callable)
+                .is_some_and(|callable| matches!(callable.arm.life, Life::Concrete { .. }))
+            {
+                let mangled = JitSymbol::from(key.as_ref());
+                self.record_mono_dispatch(state, call_span, mangled.clone());
+                seen.insert(key, mangled);
                 continue;
             }
 
+            if let Some(mangled) = seen.get(&key) {
+                // Already generated this specialization — just record dispatch
+                self.record_mono_dispatch(state, call_span, mangled.clone());
+                continue;
+            }
+
+            let local_template = match &demand.template {
+                CallableTarget::OverloadArm { .. } => {
+                    self.owned_overload_template(&demand.template)
+                }
+                _ => (home_module == &state.current_module)
+                    .then(|| self.checked_body_template(state, bodies, fn_name))
+                    .flatten(),
+            };
             if let Some(mono) = self.monomorphise_call(
                 state,
                 fn_name,
-                &arg_types,
-                *call_span,
-                home_module.as_ref(),
+                demand,
+                Some(home_module),
                 None,
+                local_template,
             )? {
                 let mangled = JitSymbol::from(mono.defn.name.as_ref());
                 // Record dispatch for this call site
-                let resolution = ResolvedCall::SigDispatch {
-                    mangled_name: mangled.clone(),
-                };
-                self.record_dispatch_target(state, *call_span, &resolution);
-                state
-                    .method_resolutions
-                    .resolved_calls
-                    .insert(*call_span, resolution);
+                self.record_mono_dispatch(state, call_span, mangled.clone());
                 seen.insert(key, mangled);
                 mono_defns.push(mono);
             }
@@ -379,9 +698,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         &self,
         state: &mut CheckState,
         fn_value_arg_sites: &[FnValueArgSite],
-        current_module: &ModuleFullPath,
-        seen: &mut HashMap<String, JitSymbol>,
+        seen: &mut HashMap<Symbol, JitSymbol>,
         mono_defns: &mut Vec<MonoDefn>,
+        bodies: &BodyLedger,
     ) -> Result<Vec<(Symbol, Span, Symbol)>, CranelispError> {
         // FIXME 0374 (Tier 2 — fn-value-argument monomorphisation). For each
         // polymorphic fn passed as a value into a HOF, mint its concrete mono
@@ -392,31 +711,39 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // body re-checks at the concrete param types, so its `(Box a)` field
         // becomes `(Box Int)` — concrete, classifying cleanly, no RC guard.
         let mut fn_value_rewrites: Vec<(Symbol, Span, Symbol)> = Vec::new();
-        for (enclosing, arg_name, arg_span, param_types, home) in fn_value_arg_sites {
+        for site in fn_value_arg_sites {
+            let enclosing = &site.enclosing;
+            let arg_span = site.arg_span;
+            let Some(owner) = callable_target_owner(&site.demand.template) else {
+                continue;
+            };
+            let arg_name = &owner.symbol;
             // Home-qualified dedup key == the minted name (FIXME 0519): `home`
             // for an IMPORTED generic fn-value (FIXME 0488 sig b), else current.
-            let key_home = home.clone().unwrap_or_else(|| current_module.clone());
-            let key = crate::traits::build_mangled_name(&key_home, arg_name, param_types);
-            let mangled_sym = if let Some(existing) = seen.get(&key) {
-                Symbol::from(existing.as_ref())
-            } else if let Some(mono) =
-                // Pass `Span::SYNTHETIC` as the call-span: a fn-VALUE argument is
-                // not a call site, so the FIXME-0349 call-result propagation
-                // inside `monomorphise_call` (which unifies the call-span's
-                // expr-type with the mono's RETURN type) must NOT fire — the
-                // arg-span's type is the fn's FULL `(Fn ..)` type, not its
-                // return. A synthetic span misses the `expr_types` lookup and
-                // skips that unify cleanly. `home` is `Some(defining_module)` for
-                // an IMPORTED generic fn-value (FIXME 0488 sig b), `None` local.
-                self.monomorphise_call(
-                    state,
-                    arg_name,
-                    param_types,
-                    Span::SYNTHETIC,
-                    home.as_ref(),
-                    None,
-                )?
+            let instance_key = site.demand.instance_key();
+            let key = instance_key.clone();
+            let mangled_sym = if self
+                .current_symbol_table(state)
+                .view()
+                .lookup(&instance_key)
+                .and_then(Binding::callable)
+                .is_some_and(|callable| matches!(callable.arm.life, Life::Concrete { .. }))
             {
+                let existing = JitSymbol::from(key.as_ref());
+                seen.insert(key.clone(), existing.clone());
+                Symbol::from(existing.as_ref())
+            } else if let Some(existing) = seen.get(&key) {
+                Symbol::from(existing.as_ref())
+            } else if let Some(mono) = self.monomorphise_call(
+                state,
+                arg_name,
+                &site.demand,
+                Some(&owner.module),
+                None,
+                (owner.module == state.current_module)
+                    .then(|| self.checked_body_template(state, bodies, arg_name))
+                    .flatten(),
+            )? {
                 let mangled = JitSymbol::from(mono.defn.name.as_ref());
                 seen.insert(key, mangled.clone());
                 let sym = Symbol::from(mangled.as_ref());
@@ -425,7 +752,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             } else {
                 continue;
             };
-            fn_value_rewrites.push((enclosing.clone(), *arg_span, mangled_sym));
+            fn_value_rewrites.push((enclosing.clone(), arg_span, mangled_sym));
         }
 
         Ok(fn_value_rewrites)
@@ -448,7 +775,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         state: &CheckState,
         expr: &Expr,
         constrained_fn_names: &HashSet<Symbol>,
-        out: &mut Vec<(Symbol, Vec<Span>, Span, Option<ModuleFullPath>)>,
+        out: &mut Vec<MonoDemand>,
+        bodies: &BodyLedger,
     ) {
         // DEF-1 (S86): resolve the bare callee through the **prelude-fallback**
         // scope resolve (`resolve_terminal_fq_scoped`), NOT the
@@ -468,7 +796,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             && callee_has_keyed_carrier(&state.method_resolutions.var_refs, callee.span())
             && !constrained_fn_names.contains(name)
             && let Some(resolved) = self.resolve_terminal_fq_scoped(state, name.as_ref())
-            && resolved.home != state.current_module
+            && resolved.canonical.module != state.current_module
             && Self::entry_is_monomorphisable_polymorphic(&resolved.entry)
         {
             // FIXME 0488 sig a (cross-module FQ): record the BARE terminal symbol
@@ -477,15 +805,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // home-probe as a `/`-bearing key in the home module → no mint. The
             // resolver already split `mod/sym` and resolved the module alias.
             let arg_spans: Vec<Span> = args.iter().map(|a| a.span()).collect();
-            out.push((
-                resolved.fq.symbol.clone(),
-                arg_spans,
-                *span,
-                Some(resolved.home),
-            ));
+            if let Some(demand) =
+                self.mono_demand_from_spans(state, resolved.canonical, &arg_spans, *span, bodies)
+            {
+                out.push(demand);
+            }
         }
         for_each_child_expr(expr, |child| {
-            self.collect_imported_constrained_calls(state, child, constrained_fn_names, out)
+            self.collect_imported_constrained_calls(state, child, constrained_fn_names, out, bodies)
         });
     }
 
@@ -532,14 +859,51 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         _call_span: &Span,
         args: &[Expr],
     ) -> bool {
-        !args.is_empty()
-            && args.iter().all(|a| {
-                state
-                    .expr_types
-                    .get(&a.span())
-                    .map(|ty| apply(&state.subst, ty).is_concrete())
-                    .unwrap_or(false)
+        args.iter().all(|a| {
+            state
+                .expr_types
+                .get(&a.span())
+                .map(|ty| apply(&state.subst, ty).is_concrete())
+                .unwrap_or(false)
+        })
+    }
+
+    /// Collect F2 calls whose typed dispatch carrier points at a checked AST
+    /// template. Trait dispatch is not syntactically an Apply-of-bare-Var, so
+    /// it joins the same demand worklist through this carrier-driven widening.
+    fn collect_dispatch_template_calls(
+        &self,
+        state: &CheckState,
+        expr: &Expr,
+        out: &mut Vec<MonoDemand>,
+        bodies: &BodyLedger,
+    ) {
+        if let Expr::Apply { args, span, .. } = expr
+            && Self::local_parametric_call_triggers(state, span, args)
+            && let Some(ApplyRef::Dispatch(template)) =
+                state.method_resolutions.apply_refs.get(span)
+            && let Some(binding) =
+                self.probe_module_entry_owned(&template.module, template.symbol.as_ref())
+            && binding.callable().is_some_and(|callable| {
+                matches!(
+                    callable.arm.life,
+                    Life::Template {
+                        body: TemplateBody::Ast(_),
+                        ..
+                    }
+                )
             })
+        {
+            let arg_spans: Vec<Span> = args.iter().map(Expr::span).collect();
+            if let Some(demand) =
+                self.mono_demand_from_spans(state, template.clone(), &arg_spans, *span, bodies)
+            {
+                out.push(demand);
+            }
+        }
+        for_each_child_expr(expr, |child| {
+            self.collect_dispatch_template_calls(state, child, out, bodies)
+        });
     }
 
     /// Walk a defn body collecting calls to LOCAL (same-module) pure-parametric
@@ -556,13 +920,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// `home: None` (the same-module `monomorphise_call` path — recheck the body
     /// in the current module's scope). A call from a fn to ITSELF is skipped:
     /// generic self-recursion is the defn's own generic vars, not a concrete site.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn collect_local_parametric_calls(
         &self,
         state: &CheckState,
         expr: &Expr,
         self_name: &Symbol,
         constrained_fn_names: &HashSet<Symbol>,
-        out: &mut Vec<(Symbol, Vec<Span>, Span, Option<ModuleFullPath>)>,
+        local_template_names: &HashSet<Symbol>,
+        out: &mut Vec<MonoDemand>,
+        bodies: &BodyLedger,
     ) {
         if let Expr::Apply { callee, args, span, .. } = expr
             && let Expr::Var { name, .. } = callee.as_ref()
@@ -578,8 +945,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             && !constrained_fn_names.contains(name)
             && Self::local_parametric_call_triggers(state, span, args)
             && let Some(resolved) = self.resolve_terminal_fq_scoped(state, name.as_ref())
-            && resolved.home == state.current_module
-            && Self::entry_is_monomorphisable_polymorphic(&resolved.entry)
+            && resolved.canonical.module == state.current_module
+            && (local_template_names.contains(&resolved.canonical.symbol)
+                || Self::entry_is_monomorphisable_polymorphic(&resolved.entry))
         {
             // FIXME 0488 sig a (same-module FQ): resolve via the `/`-splitting
             // fallback resolver (the raw `resolve_terminal_entry_and_home` probe
@@ -589,10 +957,22 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // resolves with `home != current` and is left to the imported
             // collector; a prelude fn likewise (home == prelude != current).
             let arg_spans: Vec<Span> = args.iter().map(|a| a.span()).collect();
-            out.push((resolved.fq.symbol.clone(), arg_spans, *span, None));
+            if let Some(demand) =
+                self.mono_demand_from_spans(state, resolved.canonical, &arg_spans, *span, bodies)
+            {
+                out.push(demand);
+            }
         }
         for_each_child_expr(expr, |child| {
-            self.collect_local_parametric_calls(state, child, self_name, constrained_fn_names, out)
+            self.collect_local_parametric_calls(
+                state,
+                child,
+                self_name,
+                constrained_fn_names,
+                local_template_names,
+                out,
+                bodies,
+            )
         });
     }
 
@@ -621,7 +1001,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         &self,
         state: &CheckState,
         expr: &Expr,
-        out: &mut Vec<(Symbol, Span, Vec<Type>, Option<ModuleFullPath>)>,
+        local_template_names: &HashSet<Symbol>,
+        out: &mut Vec<(FQSymbol, Span, Type)>,
     ) {
         // A generic fn referenced in VALUE position at a concrete `Fn` type
         // (FIXME 0374 fn-value monomorphisation; 0571 D1 extension; 0585 —
@@ -647,9 +1028,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         };
         for_each_child_expr(expr, |child| {
             if Some(child.span()) != callee_span {
-                self.try_collect_parametric_fn_value(state, child, out);
+                self.try_collect_parametric_fn_value(state, child, local_template_names, out);
             }
-            self.collect_parametric_fn_value_args(state, child, out);
+            self.collect_parametric_fn_value_args(state, child, local_template_names, out);
         });
     }
 
@@ -662,7 +1043,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         &self,
         state: &CheckState,
         var_expr: &Expr,
-        out: &mut Vec<(Symbol, Span, Vec<Type>, Option<ModuleFullPath>)>,
+        local_template_names: &HashSet<Symbol>,
+        out: &mut Vec<(FQSymbol, Span, Type)>,
     ) {
         if let Expr::Var { name, span, .. } = var_expr
             && let Some(ty) = state.expr_types.get(span)
@@ -673,18 +1055,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             && param_types.iter().all(|p| p.is_concrete())
             && ret_ty.is_concrete()
             && let Some(resolved) = self.resolve_terminal_fq_scoped(state, name.as_ref())
-            && Self::entry_is_monomorphisable_polymorphic(&resolved.entry)
+            && (local_template_names.contains(&resolved.canonical.symbol)
+                || Self::entry_is_monomorphisable_polymorphic(&resolved.entry))
         {
-            // Same-module ⇒ `home: None` (byte-identical to the 0374 path); an
-            // IMPORTED generic fn-value carries its defining module so the mint
-            // re-checks the body in the DEFINING scope (FIXME 0488 sig b). The
-            // BARE terminal symbol keys the mangle + `rename_var_at_span` target.
-            let home = if resolved.home == state.current_module {
-                None
-            } else {
-                Some(resolved.home.clone())
-            };
-            out.push((resolved.fq.symbol.clone(), *span, param_types, home));
+            out.push((resolved.canonical, *span, Type::Fn(param_types, ret_ty)));
         }
     }
 
@@ -692,27 +1066,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// with concrete arg types? (FIXME 0355 — mirrors `get_constrained_fn`'s two
     /// accepted shapes: a trait-constrained `UserFn`, or a pure-parametric
     /// polymorphic `UserFn` carrying a stored annotated `ast`.)
-    pub(crate) fn entry_is_monomorphisable_polymorphic(entry: &ModuleEntry<C>) -> bool {
-        if let ModuleEntry::Def {
-            kind, scheme, ast, ..
-        } = entry
-        {
-            match kind.as_ref() {
-                DefKind::UserFn {
-                    fn_state: UserFnState::Constrained(_),
-                } => true,
-                DefKind::UserFn { fn_state }
-                    if !matches!(fn_state, UserFnState::Constrained(_))
-                        && !scheme.type_vars.is_empty()
-                        && ast.is_some() =>
-                {
-                    true
+    pub(crate) fn entry_is_monomorphisable_polymorphic(entry: &Binding<C>) -> bool {
+        entry.callable().is_some_and(|callable| {
+            matches!(
+                callable.arm.life,
+                Life::Template {
+                    body: TemplateBody::Ast(_) | TemplateBody::Synth(_),
+                    ..
                 }
-                _ => false,
-            }
-        } else {
-            false
-        }
+            )
+        })
     }
 
     /// Recursively walk an expression tree collecting calls to constrained fns.
@@ -720,6 +1083,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// Each call site is recorded as (fn_name, arg_spans, call_span).
     /// The arg_spans are the spans of each argument expression, used to look up
     /// their types from `expr_types`.
+    #[cfg(test)]
     pub(crate) fn collect_constrained_calls(
         expr: &Expr,
         constrained_fn_names: &HashSet<Symbol>,
@@ -807,11 +1171,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ///
     /// | Seam | Discipline | Why |
     /// |---|---|---|
-    /// | `program/body.rs:88` (per-form body post-pass) | `Deferrable` | a later form may still pin the operand type |
-    /// | `program/body.rs:441` (per-variant body post-pass) | `Deferrable` | same, per multi-sig clause |
-    /// | `traits/impl_check.rs:762` / `:1024` (impl-method recheck) | `Final` | recheck-scoped — the resolution map and module scope are swapped, so nothing may be deferred OUT of it |
-    /// | `traits/monomorphise.rs:856` (mono-body recheck) | `Final` | same recheck scoping |
-    /// | `program/finalize.rs:607` (finalize) | `Final` | post-drain / post-Phase-A: the state IS settled, and this is where a `Deferrable` seam's held-back entries are retried |
+    /// The complete six-seam census and the reason each seam selects
+    /// `Deferrable` or `Final` live in `design/typecheck/auto-curry.md` §1.2.
+    /// Keeping the durable set there avoids stale source-line coordinates.
     pub(crate) fn resolve_auto_curry(&self, state: &mut CheckState, drain: AutoCurryDrain) {
         let pending = std::mem::take(&mut state.pending_auto_curry);
         for (
@@ -977,15 +1339,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     pub(crate) fn fq_is_trait_method_decl(&self, fq: &cranelisp_types::FQSymbol) -> bool {
         self.method_to_trait_in_module(&fq.module, &fq.symbol)
             .is_some()
-    }
-
-    /// Resolve all recorded expr_types through the current substitution.
-    pub(super) fn resolve_expr_types(&self, state: &CheckState) -> HashMap<Span, Type> {
-        state
-            .expr_types
-            .iter()
-            .map(|(span, ty)| (*span, apply(&state.subst, ty)))
-            .collect()
     }
 }
 

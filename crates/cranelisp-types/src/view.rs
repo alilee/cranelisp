@@ -2,11 +2,11 @@
 //!
 //! A thin newtype that wraps either two `&SymbolTable<C, L>` references (staging
 //! + live) and routes lookups staging-first then live, or a single
-//! `&SymbolTable<C, L>` (committed mode). It is the read surface that the two-pass
-//! typecheck functions (`check_form_signatures` and `check_form_body`) see for
-//! the current cluster's per-module read. Typecheck does not know whether a given
-//! lookup hits staging, live, or unioned content; it just calls
-//! `view.lookup(name)`.
+//!   `&SymbolTable<C, L>` (committed mode). It is the read surface that the two-pass
+//!   typecheck functions (`check_form_signatures` and `check_form_body`) see for
+//!   the current cluster's per-module read. Typecheck does not know whether a given
+//!   lookup hits staging, live, or unioned content; it just calls
+//!   `view.lookup(name)`.
 //!
 //! Construction site: `View` is produced inside `ClusterContext::current_symbol_table()`
 //! (in `cranelisp-typecheck`). In `ClusterContext::Cluster` mode the accessor
@@ -43,8 +43,9 @@
 //! cluster mode (staging consulted before live); `None` = committed mode (live
 //! only). `live: &'a SymbolTable<C, L>` is unconditional.
 
-use crate::module::{CodeStore, LinkerStore, ModuleEntry, SymbolTable};
+use crate::module::{CodeStore, LinkerStore, SymbolTable};
 use crate::newtype::Symbol;
+use crate::{Binding, NameCandidate};
 
 /// A read-only view over a module's symbol-table, optionally unioned with a
 /// staging table. Constructed by `ClusterContext::current_symbol_table()`.
@@ -100,23 +101,49 @@ impl<'a, C: CodeStore, L: LinkerStore> View<'a, C, L> {
     /// directly to live. Consumers cannot tell from the return value which
     /// side a hit came from — the staging-vs-live distinction is hidden by
     /// construction (per Decision 44 opacity intent + Principle 18).
-    pub fn lookup(&self, name: &Symbol) -> Option<&'a ModuleEntry<C>> {
+    pub fn lookup(&self, name: &Symbol) -> Option<&'a Binding<C>> {
         self.staging
             .and_then(|s| s.get(name.as_ref()))
             .or_else(|| self.live.get(name.as_ref()))
     }
 
+    /// Return the candidate union for one spelling to the types-owned resolver.
+    ///
+    /// Staging and live candidates are deduplicated by canonical source;
+    /// staging owns the same-source exposure when both views contain it, and
+    /// result order is deterministic for diagnostics.
+    pub(crate) fn name_candidates(&self, name: &Symbol) -> Vec<NameCandidate> {
+        let mut candidates = self.live.name_candidates(name);
+        if let Some(staging) = self.staging {
+            for candidate in staging.name_candidates(name) {
+                if let Some(existing) = candidates
+                    .iter_mut()
+                    .find(|existing| existing.source == candidate.source)
+                {
+                    *existing = candidate;
+                } else {
+                    candidates.push(candidate);
+                }
+            }
+        }
+        candidates.sort_by(|left, right| {
+            (&left.source.module, &left.source.symbol)
+                .cmp(&(&right.source.module, &right.source.symbol))
+        });
+        candidates
+    }
+
     /// Iterate the union, staging-first; live entries shadowed by staging keys
     /// are skipped (i.e., iteration produces each key exactly once). Order is
     /// iteration order of the underlying maps; not stable across runs.
-    pub fn iter(&self) -> Box<dyn Iterator<Item = (&'a Symbol, &'a ModuleEntry<C>)> + 'a> {
+    pub fn iter(&self) -> Box<dyn Iterator<Item = (&'a Symbol, &'a Binding<C>)> + 'a> {
         match self.staging {
             Some(staging) => {
                 // Live entries not shadowed by staging follow staging entries.
                 let staging_iter = staging.all_symbols();
                 // Build a set of staging keys so we can filter live.
                 let staging_keys: std::collections::HashSet<Symbol> =
-                    staging.symbols.keys().cloned().collect();
+                    staging.all_symbols().map(|(key, _)| key.clone()).collect();
                 let live_iter = self
                     .live
                     .all_symbols()
@@ -131,7 +158,8 @@ impl<'a, C: CodeStore, L: LinkerStore> View<'a, C, L> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::newtype::ModuleFullPath;
+    use crate::Visibility;
+    use crate::newtype::{FQSymbol, ModuleFullPath};
 
     fn empty_table(name: &str) -> SymbolTable<(), ()> {
         SymbolTable::<(), ()>::new_with_params(ModuleFullPath::from(name))
@@ -153,5 +181,36 @@ mod tests {
         let view: View<'_, (), ()> = View::union(&staging, &live);
         assert!(view.lookup(&Symbol::from("absent")).is_none());
         assert_eq!(view.iter().count(), 0);
+    }
+
+    #[test]
+    fn view_unions_name_candidates_without_source_duplicates() {
+        let mut live = empty_table("consumer");
+        let mut staging = empty_table("consumer");
+        let name = Symbol::from("show");
+        let shared = FQSymbol {
+            module: ModuleFullPath::from("traits"),
+            symbol: crate::member_key("Display", "show"),
+        };
+        live.expose_candidate(name.clone(), shared.clone(), Visibility::Private)
+            .unwrap();
+        staging
+            .expose_candidate(name.clone(), shared.clone(), Visibility::Public)
+            .unwrap();
+        staging
+            .expose_candidate(
+                name.clone(),
+                FQSymbol {
+                    module: ModuleFullPath::from("render"),
+                    symbol: crate::member_key("Render", "show"),
+                },
+                Visibility::Private,
+            )
+            .unwrap();
+
+        let candidates = View::union(&staging, &live).name_candidates(&name);
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[1].source, shared);
+        assert_eq!(candidates[1].visibility, Visibility::Public);
     }
 }

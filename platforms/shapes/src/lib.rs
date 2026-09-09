@@ -13,7 +13,7 @@
 //! field NAMES (`w`/`h`) to byte offsets so `read_field("w")` resolves.
 //!
 //! ## The fixture contract (agreed S79 Phase 3; /qa drives this exact interface)
-//! - Platform name: `shapes`. ABI v3.
+//! - Platform name: `shapes`. ABI v10.
 //! - ADT: `Rectangle` = `(deftype Rectangle [:Int w :Int h])`, FQ identity
 //!   `shapes/Rectangle` (defined in `shapes.cl`, not here).
 //! - Platform fn: `rectangle_area(r: CLAdt<Rectangle>) -> CLIO<CLInt>`, reading
@@ -31,18 +31,6 @@
 use cranelisp_platform::*;
 
 static HOST: HostContext = HostContext::new();
-
-/// Marker type for the `shapes/Rectangle` ADT parameter.
-///
-/// Carries the fully-qualified cranelisp type identity that
-/// [`CLAdt::read_field`] uses to look the layout up in the embedded schema. No
-/// fields -- `CLAdt<Rectangle>` is `#[repr(transparent)]` over the heap
-/// pointer; field access is schema-driven, not via Rust struct layout.
-pub struct Rectangle;
-
-impl CLAdtType for Rectangle {
-    const TYPE_NAME: &'static str = "shapes/Rectangle";
-}
 
 /// Compute the area of a `Rectangle` by reading its two `Int` fields by NAME
 /// from the embedded schema and multiplying them. Returns a deferred IO Effect
@@ -88,6 +76,15 @@ declare_platform! {
     version: "0.1.0",
     host: HOST,
     schema: include_str!("shapes.platform-schema"), // GENERATED -- regenerated via /platform-schema after R2 lands
+    adts: [
+        /// Marker type for the `shapes/Rectangle` ADT parameter.
+        ///
+        /// Carries the fully-qualified cranelisp type identity that
+        /// [`CLAdt::read_field`] uses to look the layout up in the embedded
+        /// schema. `CLAdt<Rectangle>` is transparent over the heap pointer;
+        /// field access is schema-driven, not Rust-struct-driven.
+        Rectangle => "shapes/Rectangle",
+    ],
     functions: [
         rectangle_area {
             cl_name: "area",

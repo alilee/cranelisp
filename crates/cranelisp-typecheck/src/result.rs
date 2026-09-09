@@ -8,8 +8,8 @@
 //! pattern-match target for the gap-orchestration retry loop.
 
 use cranelisp_types::{
-    CranelispError, DisplayInfo, ErrorLocation, GotExhausted, ResolutionGap, ResolveError, Span,
-    Symbol, Warning,
+    CranelispError, DisplayInfo, ErrorLocation, GotExhausted, LifecycleError, ResolutionGap,
+    ResolveError, Span, Symbol, Warning,
 };
 
 /// The ONE typecheck mapping of module-local GOT exhaustion into the crate's
@@ -20,7 +20,18 @@ use cranelisp_types::{
 /// `CodegenError` is self-explanatory; it is lifted to [`CheckError`] at the
 /// `check_forms` boundary (`form.rs::map_cranelisp_error`/`lift_error`) like
 /// every other `CranelispError` the passes raise.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn got_exhausted_error(e: GotExhausted) -> CranelispError {
+    CranelispError::CodegenError {
+        message: e.to_string(),
+        location: ErrorLocation::from_span(Span::SYNTHETIC),
+    }
+}
+
+/// Map a lifecycle-facade refusal into the crate's located internal/codegen
+/// failure carrier. User-program type errors are detected before these funnels;
+/// a refusal here is a violated typecheck→symbol-table invariant.
+pub(crate) fn lifecycle_error(e: LifecycleError) -> CranelispError {
     CranelispError::CodegenError {
         message: e.to_string(),
         location: ErrorLocation::from_span(Span::SYNTHETIC),
@@ -136,7 +147,11 @@ impl From<ResolveError> for CheckError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cranelisp_types::{GOT_TABLE_SIZE, ModuleFullPath, SymbolTable};
+    use cranelisp_types::{
+        GOT_TABLE_SIZE, ModuleFullPath, Scheme, SlotMintError, Symbol, SymbolTable, Type,
+        Visibility,
+    };
+    use std::collections::HashMap;
 
     // spec: 12-runtime §12.2 — GOT exhaustion is a diagnosed compile error (GE-3,
     // typecheck caller-side surface). Exhaust a real module GOT to obtain a
@@ -148,10 +163,39 @@ mod tests {
     #[test]
     fn got_exhausted_maps_to_located_codegen_error_naming_module() {
         let mut st: SymbolTable<(), ()> = SymbolTable::new(ModuleFullPath::from("proj.widget"));
-        for _ in 0..GOT_TABLE_SIZE {
-            st.allocate_got_slot().expect("within-bounds allocation");
+        let scheme = Scheme {
+            type_vars: vec![],
+            constraints: HashMap::new(),
+            ty: Type::Int,
+        };
+        for index in 0..GOT_TABLE_SIZE {
+            st.install_extern(
+                Symbol::from(format!("f{index}")),
+                scheme.clone(),
+                vec![],
+                None,
+                0,
+                None,
+                None,
+                Visibility::Private,
+            )
+            .expect("within-bounds allocation");
         }
-        let exhausted = st.allocate_got_slot().expect_err("GOT must be exhausted");
+        let LifecycleError::SlotMint(SlotMintError::Exhausted(exhausted)) = st
+            .install_extern(
+                Symbol::from("overflow"),
+                scheme,
+                vec![],
+                None,
+                0,
+                None,
+                None,
+                Visibility::Private,
+            )
+            .expect_err("GOT must be exhausted")
+        else {
+            panic!("expected exhausted slot mint")
+        };
         let mapped = got_exhausted_error(exhausted);
         match mapped {
             CranelispError::CodegenError { message, .. } => {

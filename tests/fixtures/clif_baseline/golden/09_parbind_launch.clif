@@ -13,9 +13,9 @@ block1(v1: i64):
 ; === CLIF user::main ===
 function %main() -> i64 system_v {
     gv0 = symbol userextname0
+    gv1 = symbol userextname0
     sig0 = (i64, i64) -> i64 system_v
     sig1 = (i64) -> i64 system_v
-    fn0 = u0:0 sig1
 
 block0:
     jump block1
@@ -24,15 +24,14 @@ block1:
     v0 = iconst.i64 0
     v1 = iconst.i64 8
     v2 = global_value.i64 gv0
-    v3 = iadd_imm v2, 16
+    v3 = iadd_imm v2, 24
     v4 = load.i64 notrap aligned v3
     v5 = call_indirect sig0, v4(v0, v1)  ; v0 = 0, v1 = 8
-    v6 = iconst.i64 16
-    v7 = call fn0(v6)  ; v6 = 16
-    v8 = iconst.i64 0
-    store notrap aligned v8, v7+16  ; v8 = 0
-    store notrap aligned v5, v7+24
-    return v7
+    v6 = global_value.i64 gv1
+    v7 = iadd_imm v6, 0
+    v8 = load.i64 notrap aligned v7
+    v9 = call_indirect sig1, v8(v5)
+    return v9
 }
 ; === end CLIF user::main ===
 ; === CLIF user::mid-of ===
@@ -82,6 +81,25 @@ block4:
     return v22
 }
 ; === end CLIF user::mid-of ===
+; === CLIF user::primitives/IO.Pure$Int ===
+function %primitives/IO.Pure$Int(i64) -> i64 system_v {
+    sig0 = (i64) -> i64 system_v
+    fn0 = u0:0 sig0
+
+block0(v0: i64):
+    jump block1(v0)
+
+block1(v1: i64):
+    v2 = iconst.i64 0
+    v3 = iconst.i64 24
+    v4 = call fn0(v3)  ; v3 = 24
+    v5 = iconst.i64 0
+    store notrap aligned v5, v4+16  ; v5 = 0
+    store notrap aligned v1, v4+24
+    store notrap aligned v2, v4+32  ; v2 = 0
+    return v4
+}
+; === end CLIF user::primitives/IO.Pure$Int ===
 ; === CLIF user::reduce-range ===
 function %reduce-range(i64, i64) -> i64 system_v {
     gv0 = symbol userextname0
@@ -105,19 +123,19 @@ function %reduce-range(i64, i64) -> i64 system_v {
     sig14 = (i64) -> i64 system_v
     sig15 = (i64, i64) -> i64 system_v
     sig16 = (i64, i64) -> i64 system_v
-    fn0 = u0:21 sig2
+    fn0 = u0:22 sig2
     fn1 = u0:0 sig3
-    fn2 = colocated u0:41 sig4
-    fn3 = u0:17 sig5
-    fn4 = u0:18 sig6
+    fn2 = colocated u0:43 sig4
+    fn3 = u0:18 sig5
+    fn4 = u0:19 sig6
     fn5 = u0:0 sig7
-    fn6 = colocated u0:42 sig8
-    fn7 = u0:17 sig9
-    fn8 = u0:18 sig10
-    fn9 = u0:19 sig11
-    fn10 = u0:20 sig12
-    fn11 = u0:19 sig13
-    fn12 = u0:20 sig14
+    fn6 = colocated u0:44 sig8
+    fn7 = u0:18 sig9
+    fn8 = u0:19 sig10
+    fn9 = u0:20 sig11
+    fn10 = u0:21 sig12
+    fn11 = u0:20 sig13
+    fn12 = u0:21 sig14
 
 block0(v0: i64, v1: i64):
     jump block1(v0, v1)
@@ -131,14 +149,14 @@ block1(v2: i64, v3: i64):
 
 block2:
     v9 = global_value.i64 gv0
-    v10 = iadd_imm v9, 0
+    v10 = iadd_imm v9, 8
     v11 = load.i64 notrap aligned v10
     v12 = call_indirect sig0, v11(v2)
     jump block4(v12)
 
 block3:
     v13 = global_value.i64 gv1
-    v14 = iadd_imm v13, 8
+    v14 = iadd_imm v13, 16
     v15 = load.i64 notrap aligned v14
     v16 = call_indirect sig1, v15(v2, v3)
     v17 = iconst.i64 2
@@ -201,11 +219,11 @@ block11:
 
 block6:
     v49 = global_value.i64 gv2
-    v50 = iadd_imm v49, 16
+    v50 = iadd_imm v49, 24
     v51 = load.i64 notrap aligned v50
     v52 = call_indirect sig15, v51(v2, v16)
     v53 = global_value.i64 gv3
-    v54 = iadd_imm v53, 16
+    v54 = iadd_imm v53, 24
     v55 = load.i64 notrap aligned v54
     v56 = call_indirect sig16, v55(v16, v3)
     v57 = iadd v52, v56

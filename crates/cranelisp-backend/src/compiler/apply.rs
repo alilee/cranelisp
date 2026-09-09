@@ -11,8 +11,8 @@ use cranelift_module::Module;
 
 use crate::heap::HeapCategory;
 use cranelisp_types::{
-    ConcreteType, CranelispError, DefKind, ErrorLocation, FQSymbol, HeapHeader, ModuleEntry,
-    MonoExpr, ResolvedCall, Span, Symbol, VarRef,
+    CallableOrigin, ConcreteType, CranelispError, ErrorLocation, FQSymbol, FQTypeName, HeapHeader,
+    Life, MonoExpr, ResolvedCall, Span, Symbol, VarRef,
 };
 
 use crate::heap::{self, HeapAdt, HeapClosure};
@@ -21,6 +21,7 @@ use crate::primitives_inline;
 use super::control_flow::{
     LENIENT_DISABLED, SPARK_ADMIT, SparkAdmit, find_sparkable_args, find_sparkable_args_with,
 };
+use super::fn_compiler::TailTransferContext;
 use super::{FnCompiler, signature_heap_category};
 
 /// Absolute byte offset of the `IO_TAG_EFFECT` node's fn-name handle field
@@ -39,6 +40,116 @@ use super::{FnCompiler, signature_heap_category};
 const EFFECT_FN_NAME_ABS_OFFSET: i64 =
     HeapHeader::SIZE as i64 + cranelisp_platform::IO_EFFECT_FN_NAME_OFFSET;
 
+const PURE_GLUE_ABS_OFFSET: i64 = HeapAdt::field_offset(1) as i64;
+const _: () = assert!(PURE_GLUE_ABS_OFFSET == 32);
+
+fn pure_payload_type<'a>(
+    type_name: &FQTypeName,
+    tag: usize,
+    constructed_type: &'a ConcreteType,
+    authored_field_count: usize,
+) -> Result<Option<&'a ConcreteType>, CranelispError> {
+    let is_pure = type_name.module.as_ref() == "primitives"
+        && type_name.name.as_ref() == "IO"
+        && tag as i64 == cranelisp_platform::IO_TAG_PURE;
+    if !is_pure {
+        return Ok(None);
+    }
+    let ConcreteType::ADT(actual_name, args) = constructed_type else {
+        return Err(CranelispError::CodegenError {
+            message: format!(
+                "Pure construction has non-ADT concrete result type '{constructed_type:?}'"
+            ),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        });
+    };
+    if actual_name != type_name || args.len() != 1 || authored_field_count != 1 {
+        return Err(CranelispError::CodegenError {
+            message: format!(
+                "Pure construction requires one concrete IO argument and one authored field; got type '{constructed_type:?}' and {authored_field_count} fields"
+            ),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        });
+    }
+    Ok(args.first())
+}
+
+fn platform_io_payload_type(
+    callable_type: &cranelisp_types::Type,
+    span: Span,
+) -> Result<ConcreteType, CranelispError> {
+    let cranelisp_types::Type::Fn(_, result) = callable_type else {
+        return Err(CranelispError::CodegenError {
+            message: format!(
+                "platform effect has non-function type at codegen: '{callable_type:?}'"
+            ),
+            location: ErrorLocation::from_span(span),
+        });
+    };
+    let cranelisp_types::Type::ADT(name, args) = result.as_ref() else {
+        return Err(CranelispError::CodegenError {
+            message: format!("platform effect has non-IO result type: '{result:?}'"),
+            location: ErrorLocation::from_span(span),
+        });
+    };
+    if name.module.as_ref() != "primitives" || name.name.as_ref() != "IO" || args.len() != 1 {
+        return Err(CranelispError::CodegenError {
+            message: format!("platform effect has non-IO result type: '{result:?}'"),
+            location: ErrorLocation::from_span(span),
+        });
+    }
+    ConcreteType::from_type(&args[0]).map_err(|not_concrete| CranelispError::CodegenError {
+        message: format!(
+            "platform effect result payload is not concrete at codegen: {not_concrete:?}"
+        ),
+        location: ErrorLocation::from_span(span),
+    })
+}
+
+pub(crate) fn append_runtime_ctor_fields<M, C, L>(
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    glue: &mut crate::drop_glue::DropGlueRegistry,
+    symbol_tables: &dashmap::DashMap<
+        cranelisp_types::ModuleFullPath,
+        cranelisp_types::SymbolTable<C, L>,
+    >,
+    type_name: &FQTypeName,
+    tag: usize,
+    constructed_type: &ConcreteType,
+    authored_fields: &[Value],
+    stack: bool,
+    span: Span,
+) -> Result<Vec<Value>, CranelispError>
+where
+    M: Module,
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    let Some(payload_type) =
+        pure_payload_type(type_name, tag, constructed_type, authored_fields.len())?
+    else {
+        return Ok(authored_fields.to_vec());
+    };
+
+    let glue_id = glue.request_if_owning(module, symbol_tables, payload_type.clone())?;
+    if stack && glue_id.is_some() {
+        return Err(CranelispError::CodegenError {
+            message: "a stack-placed Pure node cannot carry a heap-owning payload".into(),
+            location: ErrorLocation::from_span(span),
+        });
+    }
+    let glue_value = if let Some(glue_id) = glue_id {
+        let glue_ref = module.declare_func_in_func(glue_id, builder.func);
+        builder.ins().func_addr(types::I64, glue_ref)
+    } else {
+        builder.ins().iconst(types::I64, 0)
+    };
+    let mut fields = authored_fields.to_vec();
+    fields.push(glue_value);
+    Ok(fields)
+}
+
 /// The set of let-scope bindings that the tail-jump flush must NOT dec because
 /// their reference MOVES into a tail-call argument as a bare top-level `Var`
 /// (compiled with no consuming inc — the loop param inherits the single
@@ -51,7 +162,7 @@ const EFFECT_FN_NAME_ABS_OFFSET: i64 =
 /// uniformly, so adding them here would leak the protective inc (and, for
 /// distinct-per-branch bindings like `(if c lo hi)`, would wrongly retain the
 /// dead branch's binding). See `compile_tail_self_call` and the F1 UAF cure.
-pub(crate) fn tail_transfer_skip(args: &[MonoExpr]) -> std::collections::HashSet<Symbol> {
+pub(crate) fn tail_bare_var_names(args: &[MonoExpr]) -> std::collections::HashSet<Symbol> {
     args.iter()
         .filter_map(|a| match a {
             MonoExpr::Var { name, .. } => Some(name.clone()),
@@ -198,6 +309,22 @@ where
         // for `cow_source_ownership`'s escape gate). `None` ⇒ absent ⇒ inc default.
         apply_escapes: Option<bool>,
     ) -> Result<Value, CranelispError> {
+        // An ordinary Apply must never lower a macro's private clause body.
+        // Check the exact typecheck-selected storage key before TCO, sparking,
+        // argument emission, or call emission. A local binding still wins
+        // before consulting a stale global carrier.
+        let ordinary_target = apply_target.or_else(|| match callee {
+            MonoExpr::Var {
+                name,
+                resolution: VarRef::Global(fq),
+                ..
+            } if !self.binds(name) => Some(fq),
+            _ => None,
+        });
+        if let Some(fq) = ordinary_target {
+            self.ctx.ensure_language_callable_target(fq, span)?;
+        }
+
         // TCO fast-path: a tail self-call jumps to the loop header instead of
         // emitting a call. Self-call identity is decided by the ONE shared
         // `is_self_call` predicate (Principle 7 / Principle 24; `backend.md`
@@ -209,7 +336,7 @@ where
         //   (module AND symbol). typecheck records exactly this FQ for a genuine
         //   self-call and records NOTHING for a shadowing `let`/`fn`/param local
         //   (which resolves at a deeper frame) — so a carrier-absent callee never
-        //   matches, falls through to `compile_var_apply`, whose local `variables`
+        //   matches, falls through to `compile_var_apply`, whose local-binding
         //   check finds the shadow and emits an indirect call (the `(defn s1 [x]
         //   (let [s1 (fn [y] y)] (s1 x)))` §4.6 lexical-shadow case — LOCAL wins,
         //   no hang). The pre-S113 bare `*name == *fn_name` match was DELETED (not
@@ -442,7 +569,9 @@ where
             ..
         } = callee
         {
-            return self.compile_var_apply(name, *var_span, callee, args, span, saved_tail, stack);
+            return self.compile_var_apply(
+                name, *var_span, callee, args, span, apply_type, saved_tail, stack,
+            );
         }
 
         // Callee is not a variable -- could be a closure call (Ring 1).
@@ -518,10 +647,29 @@ where
                 let sym = Symbol::from(mangled_name.as_ref());
                 self.compile_moded_user_call(&sym, args, span, saved_tail, apply_target)
             }
-            ResolvedCall::SigDispatch { mangled_name } => {
-                let sym = Symbol::from(mangled_name.as_ref());
-                self.compile_moded_user_call(&sym, args, span, saved_tail, apply_target)
-            }
+            ResolvedCall::SigDispatch { target } => match target {
+                cranelisp_types::CallableTarget::Binding(owner) => self.compile_moded_user_call(
+                    &owner.symbol,
+                    args,
+                    span,
+                    saved_tail,
+                    Some(&owner),
+                ),
+                cranelisp_types::CallableTarget::OverloadArm { .. } => {
+                    self.compile_moded_family_target_call(&target, args, span, saved_tail)
+                }
+                cranelisp_types::CallableTarget::MacroClause { .. } => {
+                    Err(CranelispError::CodegenError {
+                        message: "an expansion-only macro clause reached ordinary call codegen"
+                            .into(),
+                        location: ErrorLocation::from_span(span),
+                    })
+                }
+                _ => Err(CranelispError::CodegenError {
+                    message: "an unsupported callable target reached ordinary call codegen".into(),
+                    location: ErrorLocation::from_span(span),
+                }),
+            },
             ResolvedCall::AutoCurry {
                 ref target_name,
                 applied_count,
@@ -588,9 +736,10 @@ where
         // the Bind node's reference. For temporaries, transfer ownership
         // (temp starts at rc=1, Bind node inherits it — no inc/dec needed).
         if op_name.as_ref() == "bind" {
+            let input_disposer = self.result_disposer_for_io_expr(&args[0], span)?;
             let arg_vals = self.compile_consuming_arg_list(args)?;
             self.in_tail_position = saved_tail;
-            return self.compile_bind_inline(&arg_vals, span);
+            return self.compile_bind_inline(&arg_vals, input_disposer, span);
         }
 
         // Race/select combinators (S96 Chunk C, slice 7): name-matched
@@ -603,9 +752,10 @@ where
         // itself via `compile_vec_lit`). Both produce the one
         // `IO_TAG_SELECT` node (`io-trampoline.md §16.3/§16.4`).
         if op_name.as_ref() == "select" {
+            let result_disposer = self.result_disposer_for_select_expr(&args[0], span)?;
             let arg_vals = self.compile_consuming_arg_list(args)?;
             self.in_tail_position = saved_tail;
-            return self.compile_select(&arg_vals, span);
+            return self.compile_select(&arg_vals, result_disposer, span);
         }
         if op_name.as_ref() == "race" {
             self.in_tail_position = saved_tail;
@@ -912,6 +1062,47 @@ where
         Ok(result)
     }
 
+    fn compile_moded_family_target_call(
+        &mut self,
+        target: &cranelisp_types::CallableTarget,
+        args: &[MonoExpr],
+        span: Span,
+        saved_tail: bool,
+    ) -> Result<Value, CranelispError> {
+        let (arg_vals, post_call_decs) =
+            self.compile_consuming_arg_list_moded_target(args, target)?;
+        self.in_tail_position = saved_tail;
+        let owner =
+            crate::callable_target_owner(target).ok_or_else(|| CranelispError::CodegenError {
+                message: format!("unsupported callable target '{target:?}'"),
+                location: ErrorLocation::from_span(span),
+            })?;
+        let slot = self
+            .ctx
+            .symbol_tables
+            .get(&owner.module)
+            .and_then(|table| {
+                table
+                    .callable_target(target)
+                    .and_then(crate::callable_arm_slot)
+            })
+            .ok_or_else(|| CranelispError::CodegenError {
+                message: format!("selected callable target '{target:?}' has no concrete GOT slot"),
+                location: ErrorLocation::from_span(span),
+            })?;
+        let got_symbol = crate::compiler::got_data_symbol_name(&owner.module);
+        let data_id = self
+            .module
+            .declare_data(&got_symbol, cranelift_module::Linkage::Import, false, false)
+            .map_err(|error| CranelispError::CodegenError {
+                message: format!("failed to declare GOT data '{got_symbol}': {error}"),
+                location: ErrorLocation::from_span(span),
+            })?;
+        let result = self.emit_got_indirect_call_via_data_id(data_id, slot, &arg_vals)?;
+        self.emit_post_call_decs(&post_call_decs)?;
+        Ok(result)
+    }
+
     /// The `ResolvedCall::AutoCurry` arm (S111 R5 §2.2) — **TOTAL over the closed
     /// carrier sums** (S115 W3 change-set 3 / FIXME 0705;
     /// `design/backend/s115-carrier-and-rc-sweep.md` §3; Principle 24 corollary
@@ -1020,6 +1211,7 @@ where
         callee: &MonoExpr,
         args: &[MonoExpr],
         span: Span,
+        apply_type: Option<&cranelisp_types::Type>,
         saved_tail: bool,
         // B3.4 (§4.1): stack-eligibility hint for this call IF it is a data
         // constructor. `false` ⇒ heap. Ignored for non-constructor callees.
@@ -1032,10 +1224,10 @@ where
         // carve-out over-matches a same-named local (it records the enclosing
         // fn's storage FQ on a shadowing local Var), so a keyed read taken before
         // the locals check would mis-dispatch a local closure call to the
-        // carrier's FQ. Checking `variables` first makes a shadowing local
+        // carrier's FQ. Checking the local bindings first makes a shadowing local
         // unconditionally win the closure-call path — the carrier is never
         // consulted for it.
-        if self.variables.contains_key(name) {
+        if self.binds(name) {
             let callee_val = self.compile_expr(callee)?;
             // Closure body is a user function — consuming convention.
             let arg_vals = self.compile_consuming_arg_list(args)?;
@@ -1056,7 +1248,7 @@ where
         // scope-stack reference (its slot is backend-side) — `None` here, so it
         // falls through to `compile_direct_call`, whose carrier-miss is the loud
         // hard error (Rev-2, never a re-resolve). A `Local` reaching here has
-        // already missed the `variables` locals-first check above.
+        // already missed the locals-first binding check above.
         let callee_target = match callee {
             MonoExpr::Var { resolution, .. } => match resolution {
                 VarRef::Global(fq) => Some(fq),
@@ -1102,7 +1294,17 @@ where
             // args, so `ADT(fqtn, [])` classifies exactly). `None` off-toggle /
             // non-`Value` ⇒ the heap/stack path below, byte-identical. `fqtn`
             // comes off the SAME legacy lookup — no second scan.
-            let adt_ty = ConcreteType::ADT(fqtn, vec![]);
+            // The Apply result is the authoritative instantiated constructor
+            // result. Older hand-built test/embedding ASTs may omit it; retain
+            // the established parent-ADT fallback for ordinary constructors.
+            // `Pure` cannot use that fallback because its hidden glue word is
+            // selected from the concrete `T` in `IO T`; the central helper
+            // rejects the resulting argument-less `IO` shape loudly.
+            let constructed_ty = apply_type
+                .and_then(|ty| ConcreteType::from_type(ty).ok())
+                .filter(|ty| matches!(ty, ConcreteType::ADT(name, _) if name == &fqtn))
+                .unwrap_or_else(|| ConcreteType::ADT(fqtn.clone(), vec![]));
+            let adt_ty = constructed_ty.clone();
             if let Some(v) = self.value_construct(&adt_ty, &arg_vals) {
                 return Ok(v);
             }
@@ -1111,7 +1313,19 @@ where
             // stack slot (immortal-RC header) instead of the RC heap. `stack` is
             // the verdict from `constructor_call_stack_eligible`; `false` ⇒ heap
             // `emit_alloc`, byte-identical to pre-B3.4.
-            return self.emit_adt_construct_stackable(meta.tag, &arg_vals, span, stack);
+            let emitted_fields = append_runtime_ctor_fields(
+                &mut self.builder,
+                self.module,
+                self.glue,
+                self.ctx.symbol_tables,
+                &fqtn,
+                meta.tag,
+                &constructed_ty,
+                &arg_vals,
+                stack,
+                span,
+            )?;
+            return self.emit_adt_construct_stackable(meta.tag, &emitted_fields, span, stack);
         }
 
         // S5/S7 — user function (keyed): moded consuming convention (§3.1). A bare
@@ -1214,9 +1428,9 @@ where
 
             // Inc heap-typed variable arguments for consuming convention.
             if let MonoExpr::Var { name, .. } = arg
-                && let Some(ty) = self.variable_types.get(name)
+                && let Some(ty) = self.lookup_type(name)
             {
-                let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
+                let category = signature_heap_category(&ty, Some(self.ctx.symbol_tables));
                 // B3.3-R (§5.1): the consuming inc is always atomic. This was
                 // a through-binding site (per-binding Confined carrier),
                 // dropped as dead + latent-race code (/review B3.3) — the
@@ -1283,6 +1497,34 @@ where
         let summary = resolved_target
             .and_then(|fq| self.ctx.entry_at(fq))
             .and_then(|(_, entry)| entry.mode_summary().cloned());
+        self.compile_consuming_arg_list_with_summary(args, summary)
+    }
+
+    fn compile_consuming_arg_list_moded_target(
+        &mut self,
+        args: &[MonoExpr],
+        target: &cranelisp_types::CallableTarget,
+    ) -> Result<ModedArgList, CranelispError> {
+        let summary = crate::callable_target_owner(target).and_then(|owner| {
+            self.ctx.symbol_tables.get(&owner.module).and_then(|table| {
+                table
+                    .callable_target(target)
+                    .and_then(|arm| match &arm.life {
+                        Life::Concrete { mode_summary, .. } | Life::Inline { mode_summary, .. } => {
+                            mode_summary.clone()
+                        }
+                        _ => None,
+                    })
+            })
+        });
+        self.compile_consuming_arg_list_with_summary(args, summary)
+    }
+
+    fn compile_consuming_arg_list_with_summary(
+        &mut self,
+        args: &[MonoExpr],
+        summary: Option<cranelisp_types::ModeSummary>,
+    ) -> Result<ModedArgList, CranelispError> {
         // Fast path: no summary (or an ABI-conservative one) ⇒ the elision cannot
         // fire on any position, so route through the unmodified consuming helper.
         // This is the structural byte-identical-off guarantee — the moded arm
@@ -1342,21 +1584,19 @@ where
 
             let val = self.compile_expr(arg)?;
 
-            // An **owned-binding Var** is a local variable (present in
-            // `variable_types`) whose owner (the enclosing scope) decs it at
+            // An **owned-binding Var** is a local variable (one whose binder
+            // recorded a type) whose owner (the enclosing scope) decs it at
             // scope exit. Anything else at a `Var` position — a fn-as-value name,
             // a bare constructor — mints a FRESH rc=1 value (no scope owner)
             // exactly like a non-`Var` temporary, so it takes the temporary path.
             // This mirrors the pre-S102 `compile_consuming_arg_list` gate, which
-            // inc'd ONLY Vars found in `variable_types`. The arg's category comes
+            // inc'd ONLY Vars with a recorded binder type. The arg's category comes
             // from that binding's authoritative type, else from the node type.
             let (owned_binding, category) = match arg {
-                MonoExpr::Var { name, .. } if self.variable_types.contains_key(name) => {
+                MonoExpr::Var { name, .. } if self.lookup_type(name).is_some() => {
                     let ty = self
-                        .variable_types
-                        .get(name)
-                        .cloned()
-                        .unwrap_or_else(|| unreachable!("contains_key checked above"));
+                        .lookup_type(name)
+                        .unwrap_or_else(|| unreachable!("presence checked above"));
                     (
                         true,
                         signature_heap_category(&ty, Some(self.ctx.symbol_tables)),
@@ -1456,33 +1696,26 @@ where
 
         // Whether the fetched entry is a platform effect (drives S6 poll + S8
         // stamp). Read once off the ONE fetched entry.
-        let platform_effect_poll: Option<(usize, Vec<cranelisp_types::Type>)> = match &entry {
-            ModuleEntry::Def { kind, scheme, .. }
-                if matches!(
-                    kind.as_ref(),
-                    DefKind::PlatformEffect {
-                        poll_shape: true,
-                        ..
-                    }
-                ) =>
-            {
-                let DefKind::PlatformEffect { got_slot, .. } = kind.as_ref() else {
-                    unreachable!("matched poll-shape PlatformEffect above")
+        let platform_effect_poll: Option<(usize, Vec<cranelisp_types::Type>)> =
+            entry.callable().and_then(|callable| {
+                let CallableOrigin::PlatformEffect {
+                    poll_shape: true, ..
+                } = &callable.origin
+                else {
+                    return None;
                 };
+                let slot = entry.callable_got_slot()?;
                 // The effect's param types (for the state-closure capture-dec
                 // glue). A platform effect's scheme is a concrete `Fn`.
-                let params = match &scheme.ty {
+                let params = match &callable.arm.scheme.ty {
                     cranelisp_types::Type::Fn(ps, _ret) => ps.clone(),
                     _ => Vec::new(),
                 };
-                Some((*got_slot, params))
-            }
-            _ => None,
-        };
-        let is_platform_effect = matches!(
-            &entry,
-            ModuleEntry::Def { kind, .. } if matches!(kind.as_ref(), DefKind::PlatformEffect { .. })
-        );
+                Some((slot, params))
+            });
+        let is_platform_effect = entry.callable().is_some_and(|callable| {
+            matches!(callable.origin, CallableOrigin::PlatformEffect { .. })
+        });
 
         // --- S6: Poll-construction arm (FIXME 0457 / S94 R1, byte-identical-off) ---
         // A poll-shape platform effect (`DefKind::PlatformEffect { poll_shape:
@@ -1545,7 +1778,14 @@ where
             // `resolve_platform_effect_target` `(eff_module, bare)`.
             if is_platform_effect {
                 let fq_name = format!("{}/{}", home, fq.symbol);
-                self.stamp_platform_fn_name(node_val, &fq_name, span)?;
+                let callable = entry
+                    .callable()
+                    .ok_or_else(|| CranelispError::CodegenError {
+                        message: format!("platform target '{fq}' is not callable at codegen"),
+                        location: ErrorLocation::from_span(span),
+                    })?;
+                let payload_type = platform_io_payload_type(&callable.arm.scheme.ty, span)?;
+                self.stamp_platform_return(node_val, &fq_name, &payload_type, span)?;
             }
             return Ok(node_val);
         }
@@ -1558,8 +1798,10 @@ where
         // in shape to the platform-effect / intrinsic import path. The body is
         // settled at JIT-finalize via `Jit::define_symbol` (int's session-init
         // promise) or surfaces as an unresolved-symbol link error in `--link`.
-        if matches!(&entry, ModuleEntry::Def { kind, .. } if matches!(kind.as_ref(), DefKind::PrimitiveExtern))
-        {
+        if entry.callable().is_some_and(|callable| {
+            matches!(callable.origin, CallableOrigin::RustPrimitive)
+                && matches!(callable.arm.life, Life::HostPromised)
+        }) {
             return self.compile_extern_call(fq.symbol.as_ref(), arg_vals, span);
         }
 
@@ -1585,10 +1827,8 @@ where
         Ok(self.builder.inst_results(call)[0])
     }
 
-    /// Bake the platform fn's fully-qualified name as a relocated, position-
-    /// independent read-only data symbol and emit IR that stamps its address
-    /// into the returned `IO_TAG_EFFECT` node's fn-name field (field-3), AFTER
-    /// the platform-fn GOT-indirect call has returned the node pointer.
+    /// Adopt the node returned by a blocking platform function according to its
+    /// runtime tag.
     ///
     /// This is step 2/4 of the fault-guarded dispatch funnel (S81 / FIXME 0327;
     /// BC §3 "the platform-dispatch fn-name bake" + §5 invariant 9 Option A).
@@ -1610,35 +1850,80 @@ where
     /// / JIT-patched runtime address (JIT mode), never a baked compiling-process
     /// pointer (mirrors `trace_codegen` FIXME 0275).
     ///
-    /// `node_val` is the Effect node base pointer returned by the platform call.
+    /// `node_val` is the IO node base pointer returned by the platform call.
     /// `fq_name` is the platform fn's fully-qualified `module/symbol` name.
-    fn stamp_platform_fn_name(
+    fn stamp_platform_return(
         &mut self,
         node_val: Value,
         fq_name: &str,
+        payload_type: &ConcreteType,
         span: Span,
     ) -> Result<(), CranelispError> {
+        let glue_id = self.glue.request_if_owning(
+            self.module,
+            self.ctx.symbol_tables,
+            payload_type.clone(),
+        )?;
+
+        let tag = heap::heap_load(&mut self.builder, node_val, HeapAdt::TAG_OFFSET);
+        let effect_tag = self
+            .builder
+            .ins()
+            .iconst(types::I64, cranelisp_platform::IO_TAG_EFFECT);
+        let is_effect = self.builder.ins().icmp(IntCC::Equal, tag, effect_tag);
+        let effect_arm = self.builder.create_block();
+        let pure_check = self.builder.create_block();
+        let pure_arm = self.builder.create_block();
+        let done = self.builder.create_block();
+        self.builder
+            .ins()
+            .brif(is_effect, effect_arm, &[], pure_check, &[]);
+
+        self.builder.switch_to_block(effect_arm);
+        self.builder.seal_block(effect_arm);
         // Bake the FQ name as NUL-terminated read-only data (mode-agnostic,
         // cache-safe — same family as the trace name baker, trace_codegen.rs).
         let bytes = platform_fn_name_bytes(fq_name);
         let name_data_id = self.emit_ro_data(&bytes, 1, "platform fn-name", span)?;
-
-        // Materialise the baked name's address (one relocation in object mode;
-        // JIT patches the runtime address).
         let name_gv = self
             .module
             .declare_data_in_func(name_data_id, self.builder.func);
         let name_ptr = self.builder.ins().global_value(types::I64, name_gv);
-
-        // Stamp it into field-3 at the absolute offset composed from the named
-        // ABI constants (HeapHeader::SIZE + IO_EFFECT_FN_NAME_OFFSET), never a
-        // hard-coded 40.
         self.builder.ins().store(
             MemFlags::trusted(),
             name_ptr,
             node_val,
             EFFECT_FN_NAME_ABS_OFFSET as i32,
         );
+        self.builder.ins().jump(done, &[]);
+
+        self.builder.switch_to_block(pure_check);
+        self.builder.seal_block(pure_check);
+        let pure_tag = self
+            .builder
+            .ins()
+            .iconst(types::I64, cranelisp_platform::IO_TAG_PURE);
+        let is_pure = self.builder.ins().icmp(IntCC::Equal, tag, pure_tag);
+        self.builder.ins().brif(is_pure, pure_arm, &[], done, &[]);
+
+        self.builder.switch_to_block(pure_arm);
+        self.builder.seal_block(pure_arm);
+        let glue_value = if let Some(glue_id) = glue_id {
+            let glue_ref = self.module.declare_func_in_func(glue_id, self.builder.func);
+            self.builder.ins().func_addr(types::I64, glue_ref)
+        } else {
+            self.builder.ins().iconst(types::I64, 0)
+        };
+        self.builder.ins().store(
+            MemFlags::trusted(),
+            glue_value,
+            node_val,
+            PURE_GLUE_ABS_OFFSET as i32,
+        );
+        self.builder.ins().jump(done, &[]);
+
+        self.builder.switch_to_block(done);
+        self.builder.seal_block(done);
         Ok(())
     }
 
@@ -2102,7 +2387,7 @@ where
         // inc on any branch/arm result that directly aliases a binding the flush
         // will dec, so the value handed forward owns exactly one reference.
         // A bare top-level `Var` arg needs no protection: it MOVES (no inc) and
-        // is excluded from the flush by `tail_transfer_skip`; a non-Var, non-
+        // is excluded from the flush by its exact transfer slot; a non-Var, non-
         // control-flow arg (`(wrap v)`) already inc's any binding it consumes via
         // `compile_consuming_arg_list`, so the flush dec is balanced.
         let arg_vals: Vec<Value> = args
@@ -2130,18 +2415,24 @@ where
         // are flushed uniformly and balanced by the protective inc above.
         // (design/backend/ownership-codegen.md §13.3 — the TCO-flush skip-
         // predicate correctness contract; the F1 UAF cure.)
-        let transfer_skip = tail_transfer_skip(args);
+        let transfer_slots = self.tail_transfer_slots(args);
+        let bare_tail_var_names = tail_bare_var_names(args);
+        let tail = TailTransferContext {
+            args,
+            transfer_slots: &transfer_slots,
+            bare_var_names: &bare_tail_var_names,
+        };
         // S118 slice S3 — protect BEFORE any teardown below: a borrowed pattern
         // view escaping into the next iteration must own a reference by the
         // time its owner is released (§2).
-        self.protect_escaping_borrows_before_tail_jump(args, &transfer_skip);
-        self.flush_let_scopes_before_tail_jump(args, &transfer_skip)?;
+        self.protect_escaping_borrows_before_tail_jump(args, &transfer_slots);
+        self.flush_let_scopes_before_tail_jump(tail)?;
         // MS-P8 (FIXME 0688 verdict a) — release the superseded heap LOOP-PARAM
         // slots too (the sibling seam the let flush does not cover): the jump
         // below overwrites each param slot, orphaning the old heap value's
-        // reference (the conj/assoc persistent-op leak). Same `transfer_skip`
+        // reference (the conj/assoc persistent-op leak). The same exact-slot
         // move-contract; in-place COW params are excluded inside.
-        self.flush_superseded_heap_params_before_tail_jump(args, &transfer_skip)?;
+        self.flush_superseded_heap_params_before_tail_jump(tail)?;
         // S118 slice S3 — the third flushed seam: any match wrapper this frame
         // owns for an arm still being compiled. The end-of-arm release would
         // land in the dead block after this jump (FIXME 0810 Face A, one leaked
@@ -2216,7 +2507,23 @@ where
         if let Some(v) = self.value_construct(ty, &field_vals) {
             return Ok(v);
         }
-        self.emit_adt_construct(tag, &field_vals, span)
+        let emitted_fields = if let ConcreteType::ADT(type_name, _) = ty {
+            append_runtime_ctor_fields(
+                &mut self.builder,
+                self.module,
+                self.glue,
+                self.ctx.symbol_tables,
+                type_name,
+                tag,
+                ty,
+                &field_vals,
+                false,
+                span,
+            )?
+        } else {
+            field_vals
+        };
+        self.emit_adt_construct(tag, &emitted_fields, span)
     }
 
     /// R5 value-flattening construction (§7.1): when `ty` classifies as
@@ -2406,14 +2713,16 @@ where
         Ok(self.builder.inst_results(call)[0])
     }
 
-    /// Compile `bind` inline: allocate a Bind node [tag=2, inner_io, cont],
-    /// inc both arguments.
+    /// Compile `bind` inline: allocate a Bind node
+    /// `[tag=2, inner_io, cont, input_disposer]`.
     ///
     /// `bind :: (Fn [(IO a) (Fn [a] (IO b))] (IO b))`
     ///
-    /// The Bind node is an IO ADT constructor (tag=2) with two fields:
+    /// The Bind node is an internal IO node (tag=2) with two owning fields and
+    /// one scalar metadata word:
     /// - inner_io (offset 24): pointer to an IO node
     /// - cont (offset 32): pointer to a continuation closure
+    /// - input_disposer (offset 40): canonical `drop<a>` address or zero
     ///
     /// Both arguments are inc'd because the Bind node holds references to them
     /// that are independent of whatever references the caller already holds.
@@ -2424,6 +2733,7 @@ where
     fn compile_bind_inline(
         &mut self,
         arg_vals: &[Value],
+        input_disposer: Value,
         span: Span,
     ) -> Result<Value, CranelispError> {
         if arg_vals.len() != 2 {
@@ -2436,38 +2746,7 @@ where
         let io_val = arg_vals[0]; // inner IO tree
         let cont_val = arg_vals[1]; // continuation closure
 
-        let alloc_id = self
-            .ctx
-            .alloc_func_id
-            .ok_or_else(|| CranelispError::CodegenError {
-                message: "runtime/alloc not declared (need declare_intrinsics)".into(),
-                location: ErrorLocation::from_span(span),
-            })?;
-
-        // Allocate Bind node: 3 fields x 8 bytes = 24 bytes payload
-        // (tag + inner_io + cont)
-        let payload_size = HeapAdt::payload_size(2) as i64; // tag + 2 fields = 24 bytes
-        let base_ptr = heap::emit_alloc(&mut self.builder, self.module, alloc_id, payload_size);
-
-        // Store tag=2 at TAG_OFFSET (16)
-        let tag_val = self.builder.ins().iconst(types::I64, 2);
-        heap::heap_store(&mut self.builder, tag_val, base_ptr, HeapAdt::TAG_OFFSET);
-
-        // Store inner_io at field_offset(0) (24)
-        heap::heap_store(
-            &mut self.builder,
-            io_val,
-            base_ptr,
-            HeapAdt::field_offset(0),
-        );
-
-        // Store cont at field_offset(1) (32)
-        heap::heap_store(
-            &mut self.builder,
-            cont_val,
-            base_ptr,
-            HeapAdt::field_offset(1),
-        );
+        let base_ptr = self.emit_bind_node(io_val, cont_val, input_disposer, span)?;
 
         // RC: No explicit inc needed here.
         // bind uses consuming calling convention (compile_consuming_arg_list):
@@ -2657,7 +2936,16 @@ mod trace_accessor_tests;
 mod platform_fn_name_stamp_tests;
 
 #[cfg(test)]
+mod io_stamp_tests;
+
+#[cfg(test)]
 mod io_combinator_spark_tests;
+
+#[cfg(test)]
+mod sequence_io_ownership_tests;
+
+#[cfg(test)]
+mod spark_gate_codegen_tests;
 
 #[cfg(test)]
 mod dispatch_tests;
@@ -2670,6 +2958,9 @@ mod moded_arg_rc_tests;
 
 #[cfg(test)]
 mod keyed_miss_tests;
+
+#[cfg(test)]
+mod macro_clause_guard_tests;
 
 #[cfg(test)]
 mod tco_self_call_carrier_tests;

@@ -47,14 +47,14 @@ use cranelisp_platform::{
 
 /// The deliberately-stale ABI version baked into this DLL's manifest.
 ///
-/// The host's `ABI_VERSION` is currently `8` (the single-ABI cutover, §6.8.0);
-/// baking `2` here (a prior ABI) guarantees `found (2) != expected (8)` at the
-/// `check_abi_version` gate, triggering
-/// `PlatformError::AbiVersionMismatch { expected: 8, found: 2 }`. This literal
-/// is intentionally NOT derived from `cranelisp_platform::ABI_VERSION` — it
-/// stays stale across every host ABI bump, so the mismatch holds regardless of
-/// the current real ABI.
-const STALE_ABI_VERSION: u32 = 2;
+/// The host's `ABI_VERSION` is currently `10`; baking the immediately preceding
+/// version `9` here proves that a DLL from the prior deployment is refused with
+/// `PlatformError::AbiVersionMismatch { expected: 10, found: 9 }`.
+///
+/// This literal is intentionally NOT derived from
+/// `cranelisp_platform::ABI_VERSION`: every ABI bump must repoint it to the
+/// previous literal so the fixture remains a realistic adjacent-version check.
+const STALE_ABI_VERSION: u32 = 9;
 
 static HOST: HostContext = HostContext::new();
 
@@ -92,8 +92,8 @@ const AREA_PARAM_R: &str = "r";
 ///
 /// Mirrors `__declare_platform_body!`'s emitted manifest entry point
 /// (init the host context, build a single `PlatformFn` descriptor, return the
-/// `PlatformManifest`) — but with `abi_version: STALE_ABI_VERSION` (= 2) in
-/// place of the macro's `abi_version: ABI_VERSION` (= 6, DEF-5). The host reads
+/// `PlatformManifest`) — but with `abi_version: STALE_ABI_VERSION` (= 9) in
+/// place of the macro's `abi_version: ABI_VERSION` (= 10). The host reads
 /// `abi_version` first (`src/platform.rs` Step 4) and refuses with
 /// `AbiVersionMismatch { expected, found }`, so the descriptor/GOT/schema
 /// machinery the real macro emits is unnecessary here.

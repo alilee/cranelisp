@@ -787,7 +787,7 @@ Review of Ring 1 compiler (Chunks A+B+C) from the stdlib author's perspective. P
 | Product types `(deftype Point [:Int x :Int y])` | Yes | `adt_product_construct_and_match`, etc. |
 | Sum types `(deftype (Option a) None (Some [:a val]))` | Yes | `adt_sum_option_some/none`, etc. |
 | Polymorphic ADTs with type params | Yes | `adt_polymorphic_type` — Option at Int and Bool |
-| Shortcut syntax `(deftype Pair [first second])` | Yes | `adt_shortcut_syntax` |
+| Explicit polymorphic product `(deftype (Pair a b) [:a first :b second])` | Yes | `spec_05_definitions` explicit-field coverage |
 | Constructor patterns with field bindings in match | Yes | All ADT match tests use field bindings |
 | Mixed nullary + data constructors | Yes | `adt_enum_mixed_nullary_and_data` (Result type) |
 | Nested ADTs `(Some Green)` where Green is an enum | Yes | `multiple_adt_definitions` |
@@ -800,7 +800,7 @@ Review of Ring 1 compiler (Chunks A+B+C) from the stdlib author's perspective. P
 - **`fn/option.cl`**: `(deftype (Option a) None (Some [:a val]))` works. Match patterns with field bindings work. Polymorphic instantiation works. The `map`, `and-then`, `unwrap-or` functions (which use match + closures) have the primitives they need. **No gaps.**
 - **`fn/result.cl`**: `(deftype (Result a e) (Ok [:a val]) (Err [:e err]))` — two-param polymorphic ADTs with mixed nullary and data constructors are tested (`adt_either_type`). **No gaps.**
 - **`collections/list.cl`**: `(deftype (List a) Nil (Cons [:a head :(List a) tail]))` — recursive polymorphic ADT. Not directly tested in Ring 1, but the machinery (polymorphic ADTs, data constructors, match patterns) is all present. **Potential concern**: nested heap RC for `(List (Option Int))` — not exercised. **Filed as U1.3.**
-- **`collections/pair.cl`**: `(deftype (Pair a b) (Pair [:a first :b second]))` — two-param product. Covered by shortcut syntax test. **No gaps.**
+- **`collections/pair.cl`**: `(deftype (Pair a b) [:a first :b second])` — two-parameter product with explicit fields. **No gaps.**
 - **Field accessors**: The plan mentions "field accessor generation" for ADTs. Ring 1 does NOT appear to generate field accessor functions (e.g., auto-generated `Point.x :: (Fn [Point] Int)`). All field access goes through `match`. This is a significant ergonomic difference from the sketch, which had dotted field accessors. **Not a blocker** — stdlib functions can use `match` — but it increases verbosity for simple field extraction. **Filed as U1.4.**
 
 ### 9.3 Closure Capability Check
@@ -855,7 +855,7 @@ Ring 1 provides the heap foundation needed for stdlib work to begin at Ring 2. T
 
 1. **String primitives**: All 4 Display-impl primitives present (`int-to-string`, `float-to-string`, `bool-to-string`, `string-identity`). Core string operations (`str-concat`, `str-eq`, `str-len`) present. The 11 missing string operations (`substring`, `split`, etc.) are not needed until Phase 2 module 9 (`text/string.cl`), which can be deferred within Ring 2.
 
-2. **ADT types**: Product, sum, polymorphic, shortcut syntax, field binding in match — all work. This covers Option, Result, List, Pair, Either type definitions and their function implementations via `match`.
+2. **ADT types**: Product, sum, explicit polymorphism, and payload binding in `match` all work. This covers Option, Result, List, Pair and Either definitions and implementations.
 
 3. **Closures**: Capture, higher-order, compose patterns — all work. This covers `fn/compose.cl`, `fn/combinators.cl`, and lambda-taking collection functions like `fmap`.
 
@@ -1276,6 +1276,34 @@ Additional helper functions needed by specific macros (these are NOT SList helpe
 |--------|---------|---------|
 | `quote-sexp` | `const`, `const-`, `def`, `def-` | Converts runtime `Sexp` to a self-reproducing `Sexp` (primitive or stdlib fn) |
 | `make-def-name` | `def`, `def-` | Appends `"-def"` suffix to a symbol name, producing backing fn name |
+
+### 14.1.1 Reader-annotation helpers
+
+`core.syntax` supplies three explicit-import helpers for a macro that needs to
+inspect a reader-folded `:Type form` argument. `annotated?` recognises the
+structural node, `annotation` returns its annotation half as `(Option Sexp)`,
+and `unannotate` returns its subject (or the ordinary input unchanged). They
+are macro-authoring tools, not `core`-shell or prelude exports.
+
+```clojure
+(import [core.syntax [annotated? annotation unannotate]])
+(defmacro keep-subject [form]
+  (if (annotated? form)
+    (unannotate form)
+    form))
+```
+
+Direct structural matching remains available when a macro needs both halves:
+
+```clojure
+(match form
+  [(SexpAnnotated annotation subject) ...
+   _ ...])
+```
+
+`SexpAnnotated` holds raw `Sexp` values in annotation-then-subject order; the
+annotation is the colon-stripped type form. See
+`design/arch/annotated-sexp-node.md` §3 for the macro-facing node contract.
 
 ### 14.2 Implementation Order Confirmation
 
@@ -1945,17 +1973,24 @@ remains independent of FIXME 0863's compiler-side presentation transaction.
 
 ---
 
-## 28. Sprint 118 stdlib assessment (Phase 6a/6b)
+## 28. Sprint 118 historical assessment and current state
 
-Sprint 118 was descoped to the ownership-mechanism collapse: one drop-glue
-mechanism, the program-result owner, and the RE-1 marshal ruling. It shipped no
-stdlib-facing function, type, or primitive. Its effects on this library are one
-regression, one confirmed constraint, and three forward notes for §27.
+Sections 28.1–28.5 preserve the S118 assessment record. Their red/green counts
+and FIXME references describe that historical checkout; they are not current
+authoring constraints. S121 later restored `core.io` and its `core` shell to
+the public-module conformance gate: final-source nextest `6c976cd1` passes the
+three allocated rows, including public timeout and module conformance. The
+separate public `sequence-io` runtime RED is retained and user-deferred; it
+does not reinstate the S118 `when-io` compile refusal.
 
-### 28.1 Conformance gate — 36 of 38 green
+The current accessor rule is `stdlib/CLAUDE.md` §"Current authoring
+constraint": sum payloads do not mint accessors; destructure them with `match`
+and hand-write any public field verbs.
 
-`stdlib_conformance::stdlib_all_public_modules_compile_and_run` reconciles
-name-for-name to the W8 gate's certified carry:
+### 28.1 S118 conformance gate — 36 of 38 green (historical)
+
+At S118 close, `stdlib_conformance::stdlib_all_public_modules_compile_and_run`
+reconciled name-for-name to the W8 gate's certified carry:
 
 | Module | Result |
 |---|---|
@@ -1969,9 +2004,10 @@ binder rows in the same binary stay green. Runtime ~78 s for the enumerating
 test (per-module `--run` subprocess loop, cold cache per module) — the known
 cumulative cold cost, not a hang.
 
-### 28.2 The `when-io` refusal — cost and why no workaround ships
+### 28.2 S118 `when-io` refusal — historical scope and no workaround
 
-Measured at HEAD with one-file `--run` probes (PrimitivesOnly, `--no-cache`):
+Measured at the S118 checkout with one-file `--run` probes (PrimitivesOnly,
+`--no-cache`):
 
 | Shape | Result |
 |---|---|
@@ -1985,22 +2021,23 @@ Measured at HEAD with one-file `--run` probes (PrimitivesOnly, `--no-cache`):
 | 3-arg polymorphic `when-io` — concrete call | **refuses** |
 | same mixed-arm shape over an ordinary user ADT | compiles — the refusal is IO-specific |
 
-Cost to stdlib users: the whole `core.io` surface (`>>`, `map-io`, `when-io`,
-`unless-io`, `sequence-io`, `timeout`) is unreachable, and the `core` shell's
-re-exports of `core.syntax`/`core.trace` go down with it. Direct `bind`/`Pure`/
-`do`/`bind!` use is unaffected — `io.monad` (the prelude's `pure`/`do`/`bind!`)
-is green, which is why a beginner's first effects still work. What is lost is
-exactly the point at which a user starts *abstracting* over effects.
+At that point, the cost to stdlib users was that the whole `core.io` surface
+(`>>`, `map-io`, `when-io`, `unless-io`, `sequence-io`, `timeout`) was
+unreachable, and the `core` shell's re-exports of `core.syntax`/`core.trace`
+went down with it. Direct `bind`/`Pure`/`do`/`bind!` use was unaffected —
+`io.monad` (the prelude's `pure`/`do`/`bind!`) was green, which is why a
+beginner's first effects still worked. What was lost was exactly the point at
+which a user started *abstracting* over effects.
 
 **No workaround ships.** Every re-spelling either changes the published API or
 merely relocates the refusal from module compile to call site, which would hide
 a live defect from the conformance gate while leaving the capability broken.
-The red module is the durable record; the ruling is S119's (`/design`(backend),
-co-ruled with FIXME 0903). Evidence appended to FIXME 0907 §"Stdlib evidence".
+The red module was the durable record; the ruling was S119's (`/design`(backend),
+co-ruled with FIXME 0903). Evidence was appended to FIXME 0907 §"Stdlib evidence".
 
-### 28.3 FIXME 0867 — accessor spelling across this library
+### 28.3 Accessor spelling across this library
 
-Confirmed at HEAD: accessors mint only from a deftype-level field list.
+The current contract is that accessors mint only from a deftype-level field list.
 `(deftype Tally [:Int passed :Int failed :Int panicked])` mints `Tally.passed`
 and bare `passed`; `(deftype (Lst a) Nil2 (Cons2 [:a head :(Lst a) tail]))`
 mints neither `Lst.head` nor `head`.
@@ -2014,13 +2051,12 @@ mints neither `Lst.head` nor `head`.
 | `testing.runner/Outcome` | three named arms | none |
 
 Every one of these is destructured with `match`, and the field verbs are
-hand-written (`collections.list/first`, `collections.pair/first`/`second`), so
-**no stdlib module is broken by 0867** — and that convention is precisely why
-the defect stayed invisible from this side. The constraint on future authoring
-is recorded in `stdlib/CLAUDE.md` §"Known compiler constraints": do not publish
-an API that depends on a synthesised accessor for a constructor-arm field.
+hand-written (`collections.list/first`, `collections.pair/first`/`second`).
+This is a language contract, not an open compiler defect: do not publish an API
+that depends on a synthesised accessor for a constructor-arm field. See
+`stdlib/CLAUDE.md` §"Current authoring constraint".
 
-### 28.4 §27 text track after Sprint 118 — three deltas, no gate moved
+### 28.4 §27 text track after Sprint 118 — historical deltas, no gate moved
 
 The byte-backed text track (§27) remains UNIMPLEMENTED and its five delivery
 gates (§27.3) are untouched; S118 explicitly excluded it. Three S118 outcomes
@@ -2038,13 +2074,14 @@ on, and are recorded here so the eventual implementation inherits them:
    the full field graph. Nested text shapes (a `(Vec Byte)` inside a wrapper
    inside a `List`) would previously have leaked below depth 4. This removes a
    silent hazard the §27 design did not know it had.
-3. **Type shape must stay derivable from its concrete parameters.** FIXME 0907
-   is the lesson: a type whose field types are not determined by the concrete
-   type it is keyed on cannot get static glue and is *refused*. A transparent
-   one-field product over a concrete `(Vec Byte)` is fully determined and safe
-   by this rule; an existential or otherwise under-determined text carrier is
-   not. §27's candidate `Utf8Literal` shape passes; anything fancier must be
-   checked against this constraint before it is proposed.
+3. **Type shape must stay derivable from its concrete parameters.** The then-open
+   FIXME 0907 motivated this S118 design check: a type whose field types are
+   not determined by the concrete type it is keyed on could not receive static
+   glue. The S121 IO repair resolves that earlier refusal; this text-track
+   guidance remains a representation-design check, not a current `core.io`
+   restriction. A transparent one-field product over a concrete `(Vec Byte)`
+   is fully determined; an existential or otherwise under-determined text
+   carrier requires an explicit design check before it is proposed.
 
 `int-to-string` (§27.2) is unchanged: still a native primitive, the
 negative-accumulator algorithm and its five-case matrix (zero, positive,
@@ -2053,17 +2090,17 @@ negative, `INT_MAX`, `INT_MIN`) stand as the future self-test contract. FIXME
 compile-time leak on the expansion path, so a macro-heavy future `text.format`
 inherits it — noted, not blocking.
 
-### 28.5 Self-test coverage at S118 close
+### 28.5 Self-test coverage at S118 close (historical)
 
 24 of the 38 public modules carry backing `(mod- test)` self-tests. Nine of the
 remaining fourteen are declaration-only shell modules (`collections.cl`,
 `compare.cl`, `core.cl`, `fn.cl`, `io.cl`, `num.cl`, `seq.cl`, `testing.cl`,
 `text.cl`) and need none. That leaves five definition-bearing modules without
-self-tests: `core.io` (ceilinged by 0907; its six withheld cases are
+self-tests: `core.io` (then ceilinged by 0907; its six withheld cases were
 enumerated in the file header), `core.trace`, `derive.helpers`, `io.monad`, and
-`seq.lazy`. The last four are pre-existing gaps with no compiler blocker — the
-highest-value target is `io.monad`, whose `pure`/`do`/`bind!` are prelude
-surface. Not actioned in this bounded pass.
+`seq.lazy`. The last four were pre-existing gaps with no compiler blocker — the
+highest-value target was `io.monad`, whose `pure`/`do`/`bind!` are prelude
+surface. This is an S118 inventory, not the current coverage claim.
 
 ---
 

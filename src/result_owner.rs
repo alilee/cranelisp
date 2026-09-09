@@ -712,55 +712,91 @@ pub(crate) mod test_support {
         ctors: &[(&str, usize)],
     ) -> cranelisp_types::SymbolTables<crate::code::Code, ()> {
         use cranelisp_types::{
-            DefKind, FQTypeName, ModuleEntry, Scheme, Symbol, TypeDefInfo, TypeName, Visibility,
+            Binding, CallableOrigin, Decl, DefnVariant, FQTypeName, Realization, Scheme, Symbol,
+            TypeDefInfo, TypeName, TypeRecord, Visibility,
         };
         let fqtn = FQTypeName::new(module.clone(), TypeName::from(type_name));
         let tables: cranelisp_types::SymbolTables<crate::code::Code, ()> = DashMap::new();
         let mut table = SymbolTable::<crate::code::Code, ()>::new_with_params(module.clone());
-        table.insert(
-            Symbol::from(type_name),
-            ModuleEntry::TypeDef {
-                info: TypeDefInfo {
-                    name: fqtn.clone(),
-                    type_params: Vec::new(),
-                    constructors: ctors.iter().map(|(name, _)| Symbol::from(*name)).collect(),
-                },
-                visibility: Visibility::Public,
-                docstring: None,
-            },
-        );
+        table
+            .install_binding(
+                Symbol::from(type_name),
+                Binding::new(
+                    Decl::Type(TypeRecord::Defined {
+                        info: TypeDefInfo {
+                            name: fqtn.clone(),
+                            type_params: Vec::new(),
+                            constructors: ctors
+                                .iter()
+                                .map(|(name, _)| Symbol::from(*name))
+                                .collect(),
+                        },
+                        docstring: None,
+                    }),
+                    Visibility::Public,
+                ),
+            )
+            .expect("type fixture installs");
         for (tag, (name, field_count)) in ctors.iter().enumerate() {
-            table.insert(
-                Symbol::from(*name),
-                ModuleEntry::Def {
-                    scheme: Scheme {
+            let param_names: Vec<_> = (0..*field_count)
+                .map(|i| Symbol::from(format!("f{i}")))
+                .collect();
+            let variant = DefnVariant {
+                params: param_names
+                    .iter()
+                    .cloned()
+                    .map(|name| (name, None))
+                    .collect(),
+                body: cranelisp_types::Expr::IntLit {
+                    value: 0,
+                    span: Span::SYNTHETIC,
+                    inferred_type: None,
+                },
+                span: Span::SYNTHETIC,
+            };
+            let view = cranelisp_types::MonoDefnVariant {
+                name: Symbol::from(*name),
+                params: param_names.clone(),
+                body: cranelisp_types::MonoExpr::lenient_from_expr(
+                    &variant.body,
+                    &Default::default(),
+                    &Default::default(),
+                    &Default::default(),
+                ),
+                span: Span::SYNTHETIC,
+                mode_summary: None,
+            };
+            table
+                .install_concrete(
+                    Symbol::from(*name),
+                    Scheme {
                         type_vars: Vec::new(),
                         constraints: std::collections::HashMap::new(),
-                        ty: Type::ADT(fqtn.clone(), Vec::new()),
+                        ty: if *field_count == 0 {
+                            Type::ADT(fqtn.clone(), Vec::new())
+                        } else {
+                            Type::Fn(
+                                vec![Type::Int; *field_count],
+                                Box::new(Type::ADT(fqtn.clone(), Vec::new())),
+                            )
+                        },
                     },
-                    visibility: Visibility::Public,
-                    docstring: None,
-                    param_names: (0..*field_count)
-                        .map(|i| Symbol::from(format!("f{i}")))
-                        .collect(),
-                    kind: Box::new(DefKind::Constructor {
-                        got_slot: 0,
+                    param_names,
+                    None,
+                    tag as u64,
+                    CallableOrigin::Ctor {
                         type_name: fqtn.clone(),
                         tag,
                         field_count: *field_count,
                         internal: false,
                         type_def: None,
-                        mode_summary: None,
-                    }),
-                    callees: Vec::new(),
-                    trait_origin: None,
-                    seq: 0,
-                    ast: None,
-                    codegen_view: None,
-                    code: None,
-                    value_use: false,
-                },
-            );
+                    },
+                    Realization::Body { view, code: None },
+                    Some(variant),
+                    Vec::new(),
+                    Visibility::Public,
+                )
+                .expect("constructor fixture installs");
         }
         tables.insert(module.clone(), table);
         tables

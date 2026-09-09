@@ -248,12 +248,13 @@ const SHAPES_MODULE: &str = "(deftype Rectangle [:primitives/Int w :primitives/I
 // MUST be refused at load with a structured `PlatformError::AbiVersionMismatch
 // { expected, found }`, and BOTH values MUST appear in the stderr message so a
 // user can see what they have vs. what the runtime expects. The DLL
-// (`platforms/shapes-badabi/`) is hand-rolled with a stale `abi_version` literal
-// (= 2). Per the §5.5.5 DEF-5 invariant it exports the per-platform-namespaced
+// (`platforms/shapes-badabi/`) is hand-rolled with the immediately preceding
+// `abi_version` literal (= 9). Per the §5.5.5 DEF-5 invariant it exports the
+// per-platform-namespaced
 // manifest symbol `cranelisp_platform_manifest_shapes-badabi` (matching
 // `platform_manifest_symbol("shapes-badabi")`), so the host FINDS the manifest,
 // reads the stale ABI, and rejects on the mismatch — NOT a missing-symbol error.
-// Host expected = 6 (DEF-5 bump 5 → 6); DLL found = 2.
+// Host expected = 10 (Pure payload-glue append); DLL found = 9.
 #[test]
 fn platform_abi_version_mismatch_e2e() {
     let out = Cranelisp::new()
@@ -285,9 +286,7 @@ fn platform_abi_version_mismatch_e2e() {
         out.stderr
     );
     // BOTH versions MUST surface so the user sees what they have (the DLL's
-    // stale `found` = 2) vs. what the runtime requires (`expected` = 8 as of
-    // Sprint 96 — the single-ABI cutover took host ABI 7 → 8, recorded in
-    // design/arch/platform-interface.md §6.8.0; was 7 at S93). The
+    // stale `found` = 9) vs. what the runtime requires (`expected` = 10). The
     // `PlatformError::AbiVersionMismatch` Display
     // (`crates/cranelisp-types/src/error.rs:327`) renders
     // `DLL <path> ABI version <found> does not match expected <expected>` — it
@@ -302,10 +301,11 @@ fn platform_abi_version_mismatch_e2e() {
         out.stderr
     );
     assert!(
-        out.stderr.contains("2") && out.stderr.contains("9"),
-        "ABI-version-mismatch error MUST report BOTH the DLL's stale version (2) \
-         and the runtime's required version (9, the S97 ctx-vtable cutover) so the \
-         user sees what they have vs. what is required; got stderr:\n{}",
+        out.stderr
+            .contains("ABI version 9 does not match expected 10"),
+        "ABI-version-mismatch error MUST report the adjacent DLL/runtime pair \
+         exactly (`9` found, `10` expected), without passing on unrelated digits; \
+         got stderr:\n{}",
         out.stderr
     );
 }

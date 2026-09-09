@@ -242,7 +242,8 @@ run. Plan of attack, in order:
 ### 3.1 The synthesized-trigger unit test (/testing; the fail-on-revert guard)
 
 **Design constraint discovered at Phase 3 (matrix R7 row): the existing
-chokepoint test cannot serve.** `src/imports/tests.rs::check_terminal_closure_rejects_out_of_closure_public_write`
+chokepoint test cannot serve.** The former binding-era test is superseded by
+`src/imports/tests.rs::candidate_closure_rejects_out_of_closure_public_write`, which
 injects a public import whose source LACKS the name — a shape that the
 current provider-existence predicate AND the corrected
 declared-export-closure predicate both reject. It fails on revert of the

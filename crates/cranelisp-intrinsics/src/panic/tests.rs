@@ -323,12 +323,13 @@ extern "C" fn main_returns_io_bind_panic() -> i64 {
         }
         b as i64
     };
-    // Bind node [header | tag=BIND | inner | cont].
-    let bind = crate::alloc::alloc_with_rc(24);
+    // Bind node [header | tag=BIND | inner | cont | input disposer].
+    let bind = crate::alloc::alloc_with_rc(32);
     unsafe {
         *((bind as isize + 16) as *mut i64) = cranelisp_platform::IO_TAG_BIND;
         *((bind as isize + 24) as *mut i64) = inner;
         *((bind as isize + 32) as *mut i64) = cont;
+        *((bind as isize + 40) as *mut i64) = 0;
     }
     bind as i64
 }

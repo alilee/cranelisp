@@ -11,9 +11,10 @@
 use std::collections::HashMap;
 
 use cranelisp_types::{
-    ConstructorDef, CranelispError, DefKind, DefnVariant, ErrorLocation, Expr, FQSymbol,
-    FQTypeName, FieldInfo, ModuleEntry, ModuleFullPath, Scheme, Span, Symbol, Type, TypeDefInfo,
-    TypeId, TypeName, Visibility, member_key,
+    AdtEntrySpec, Binding, CallableOrigin, ConstructorDef, CranelispError, Decl, DefnVariant,
+    ErrorLocation, Expr, FQSymbol, FQTypeName, FieldInfo, Life, ModuleFullPath, Realization,
+    Scheme, Span, Symbol, SynthSpec, TemplateBody, TemplateKind, Type, TypeDefInfo, TypeId,
+    TypeName, TypeRecord, Visibility, member_key,
 };
 
 use crate::checker::{CheckState, TypeCheckEnv};
@@ -65,18 +66,32 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // fields (e.g., `:(List a) tail` inside a `(deftype (List a) ...)`) can
         // resolve the type during `build_constructor_infos`. The full TypeDefInfo
         // replaces this placeholder below.
-        self.current_symbol_table_mut(state).insert(
-            Symbol::from(name.as_ref()),
-            ModuleEntry::TypeDef {
-                info: TypeDefInfo {
-                    name: fqtn.clone(),
-                    type_params: type_params.to_vec(),
-                    constructors: vec![],
-                },
-                visibility,
-                docstring: None,
-            },
-        );
+        let type_already_resolves = self
+            .probe_module_entry_owned(&state.current_module, name.as_ref())
+            .as_ref()
+            .and_then(Binding::type_def_info)
+            .is_some_and(|info| info.name == fqtn);
+        if !type_already_resolves {
+            self.current_symbol_table_mut(state)
+                .install_binding(
+                    Symbol::from(name.as_ref()),
+                    Binding::new(
+                        Decl::Type(TypeRecord::Defined {
+                            info: TypeDefInfo {
+                                name: fqtn.clone(),
+                                type_params: type_params.to_vec(),
+                                constructors: vec![],
+                            },
+                            docstring: None,
+                        }),
+                        visibility,
+                    ),
+                )
+                .map_err(|error| CranelispError::TypeError {
+                    message: error.to_string(),
+                    location: ErrorLocation::from_span(span),
+                })?;
+        }
 
         // Build constructor infos with resolved field types.
         // If resolution fails, remove the pre-seeded placeholder so it
@@ -86,8 +101,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 Ok(infos) => infos,
                 Err(e) => {
                     self.current_symbol_table_mut(state)
-                        .symbols
-                        .remove(&Symbol::from(name.as_ref()));
+                        .remove_non_callable(&Symbol::from(name.as_ref()))
+                        .map_err(crate::result::lifecycle_error)?;
                     return Err(e);
                 }
             };
@@ -135,53 +150,67 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         let is_product = ctor_infos.len() == 1 && ctor_infos[0].name.as_ref() == name.as_ref();
 
+        // A product's type facet and constructor share one binding.  Retire the
+        // provisional type-only declaration before the constructor settlement;
+        // `build_adt_entries` carries the completed `TypeDefInfo` on the
+        // constructor origin, preserving the dual facet without a raw overwrite.
+        if is_product
+            && self
+                .probe_module_entry_owned(&state.current_module, name.as_ref())
+                .as_ref()
+                .is_some_and(|binding| binding.callable().is_none())
+        {
+            self.current_symbol_table_mut(state)
+                .remove_non_callable(&Symbol::from(name.as_ref()))
+                .map_err(crate::result::lifecycle_error)?;
+        }
+
         // Sum/enum: pre-seed the type-name placeholder before minting ctor `Def`s
         // (the `register_type_def` path pre-seeds; direct callers may not have —
         // do it defensively so any staging read during insertion sees the type).
         // The real `TypeDef` (with the ctor-name list + docstring) is minted by
         // `build_adt_entries` below and overwrites this placeholder.
         if !is_product {
-            self.current_symbol_table_mut(state).insert(
-                Symbol::from(name.as_ref()),
-                ModuleEntry::TypeDef {
-                    info: TypeDefInfo {
-                        name: fqtn.clone(),
-                        type_params: type_params.to_vec(),
-                        constructors: vec![],
-                    },
-                    visibility,
-                    docstring: None,
-                },
-            );
+            self.current_symbol_table_mut(state)
+                .install_binding(
+                    Symbol::from(name.as_ref()),
+                    Binding::new(
+                        Decl::Type(TypeRecord::Defined {
+                            info: TypeDefInfo {
+                                name: fqtn.clone(),
+                                type_params: type_params.to_vec(),
+                                constructors: vec![],
+                            },
+                            docstring: None,
+                        }),
+                        visibility,
+                    ),
+                )
+                .map_err(|error| CranelispError::TypeError {
+                    message: error.to_string(),
+                    location: ErrorLocation::unknown(),
+                })?;
         }
 
         // **R-2 (S110, the bootstrap↔typecheck ADT-mirror cure; Principle 24).**
         // The ordered `(key, entry)` set an ADT registration produces is derived
         // ONCE by `cranelisp_types::build_adt_entries` — the single derivation
         // both this writer and `src/bootstrap.rs::register_synth_adt` call. This
-        // caller stays thin: it pre-allocates each ctor's GOT slot from staging
-        // (table state the pure builder cannot own), builds the specs, then
-        // inserts the returned pairs sequentially — `Def`/`TypeDef` verbatim, and
-        // each bare-name `Import` alias through the §8.6.5 contest classifier
-        // (`install_bare_ctor_alias`), the ONE structurally-discriminable `Import`
-        // shape the builder returns. Product field-accessor synthesis is a
-        // typecheck-only follow-on kept here (below).
+        // caller stays thin: it builds the specs, settles each returned binding
+        // or callable recipe, and exposes sum constructors under their bare
+        // spelling. Product field-accessor synthesis is a typecheck-only
+        // follow-on kept here (below).
         let specs: Vec<cranelisp_types::AdtCtorSpec> = ctor_infos
             .iter()
             .map(|c| {
-                let got_slot = self
-                    .current_symbol_table_mut(state)
-                    .allocate_got_slot()
-                    .map_err(crate::result::got_exhausted_error)?;
-                Ok(cranelisp_types::AdtCtorSpec::new(
+                cranelisp_types::AdtCtorSpec::new(
                     c.name.clone(),
                     c.fields.clone(),
                     c.docstring.clone(),
                     c.internal,
-                    got_slot,
-                ))
+                )
             })
-            .collect::<Result<Vec<_>, CranelispError>>()?;
+            .collect();
 
         let entries = cranelisp_types::build_adt_entries::<C>(
             &fqtn,
@@ -192,52 +221,116 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             visibility,
         );
 
-        for (key, mut entry) in entries {
-            // **W0.b totalization (`backend-keyed-consumer.md` §4 W0.b / §5).**
-            // Every codegen-reached ctor `Def` carries a `codegen_view` built at
-            // synthesis — typecheck is the SOLE mono-view producer, so the
-            // backend never rebuilds one via a lenient path. A ctor body is a
-            // synthetic `Expr::ConstrADT` (already FQ + tag, NO reference — empty
-            // sidecars), so the lenient view is byte-identical to the deleted
-            // backend build (`lib.rs:909`). The mono-view carrier is set directly
-            // here because the synthetic body's `Span::SYNTHETIC` is outside the
-            // span-keyed sidecar transport.
-            if let ModuleEntry::Def {
-                ast: Some(v),
-                codegen_view,
-                ..
-            } = &mut entry
-            {
-                *codegen_view = Some(cranelisp_types::MonoDefnVariant {
-                    name: key.clone(),
-                    params: v.params.iter().map(|(n, _)| n.clone()).collect(),
-                    body: cranelisp_types::MonoExpr::synthetic_local_from_expr(
-                        &v.body,
-                        &HashMap::new(),
-                    ),
-                    span: v.span,
-                    mode_summary: None,
-                });
-            }
-            match &entry {
-                // The ONLY `Import` shape the builder returns is a sum ctor's
-                // bare-name alias onto its canonical `member_key(Type, Ctor)`
-                // `Def` — route it through the §8.6.5 contest classifier.
-                ModuleEntry::Import { source, .. } => {
-                    self.install_bare_ctor_alias(state, &fqtn, &key, &source.symbol, visibility);
+        for (key, entry) in entries {
+            match entry {
+                AdtEntrySpec::Binding(binding) => {
+                    self.current_symbol_table_mut(state)
+                        .install_binding(key, binding)
+                        .map_err(|error| CranelispError::TypeError {
+                            message: error.to_string(),
+                            location: ErrorLocation::unknown(),
+                        })?;
                 }
-                // Canonical ctor `Def`, product ctor `Def` (dual facet), and the
-                // sum `TypeDef` insert verbatim.
-                _ => {
-                    self.current_symbol_table_mut(state).insert(key, entry);
+                AdtEntrySpec::Callable(spec) => {
+                    let bare_ctor = matches!(
+                        &spec.origin,
+                        CallableOrigin::Ctor { type_name, .. }
+                            if key.as_ref() != type_name.name.as_ref()
+                    )
+                    .then(|| {
+                        Symbol::from(
+                            key.as_ref()
+                                .rsplit('.')
+                                .next()
+                                .expect("canonical member key has a terminal segment"),
+                        )
+                    });
+                    let variant = spec.synth.variant.clone();
+                    let mut table = self.current_symbol_table_mut(state);
+                    let existing_life = table
+                        .get(key.as_ref())
+                        .and_then(Binding::callable)
+                        .map(|callable| &callable.arm.life);
+                    let keep_existing_template =
+                        matches!(existing_life, Some(Life::Template { .. }));
+                    if matches!(
+                        existing_life,
+                        Some(Life::Concrete { .. } | Life::Broken { .. })
+                    ) {
+                        table
+                            .retire_abi_changing(&key)
+                            .map_err(crate::result::lifecycle_error)?;
+                    }
+                    let result = if keep_existing_template {
+                        Ok(())
+                    } else if spec.scheme.ty.is_concrete() {
+                        let view = cranelisp_types::MonoDefnVariant {
+                            name: key.clone(),
+                            params: spec.param_names.clone(),
+                            body: cranelisp_types::MonoExpr::synthetic_local_from_expr(
+                                &variant.body,
+                                &HashMap::new(),
+                            ),
+                            span: variant.span,
+                            mode_summary: None,
+                        };
+                        table
+                            .install_concrete(
+                                key.clone(),
+                                spec.scheme,
+                                spec.param_names,
+                                spec.docstring,
+                                0,
+                                spec.origin,
+                                Realization::Body { view, code: None },
+                                Some(variant),
+                                Vec::new(),
+                                spec.visibility,
+                            )
+                            .map(|_| ())
+                    } else {
+                        table.install_template(
+                            key.clone(),
+                            spec.scheme,
+                            spec.param_names,
+                            spec.docstring,
+                            0,
+                            spec.origin,
+                            TemplateBody::Synth(spec.synth),
+                            TemplateKind::Parametric,
+                            Vec::new(),
+                            spec.visibility,
+                        )
+                    };
+                    result.map_err(|error| CranelispError::TypeError {
+                        message: error.to_string(),
+                        location: ErrorLocation::unknown(),
+                    })?;
+                    drop(table);
+                    if let Some(bare_ctor) = bare_ctor {
+                        self.current_symbol_table_mut(state)
+                            .expose_candidate(
+                                bare_ctor,
+                                FQSymbol {
+                                    module: fqtn.module.clone(),
+                                    symbol: key,
+                                },
+                                visibility,
+                            )
+                            .map_err(|error| CranelispError::TypeError {
+                                message: error.to_string(),
+                                location: ErrorLocation::unknown(),
+                            })?;
+                    }
                 }
             }
         }
 
-        // **Field accessors (S83, spec §5.2.6) — typecheck-only follow-on.** For
-        // a **product** type, auto-generate free accessor fns over the lone ctor
-        // (the builder deliberately does not; bootstrap's seeded product has
-        // none). Sum/enum fields have no total accessor.
+        // **Field accessors (S121, spec §5.2.6) — typecheck-only follow-on.**
+        // Generate total accessors only for the one same-name constructor of a
+        // product type. Sum-constructor payload labels are positional metadata;
+        // extracting them requires `match`, so no partial runtime-checking
+        // accessor is minted for a sum arm.
         if is_product {
             self.synthesise_field_accessors(
                 state,
@@ -250,66 +343,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         }
 
         Ok(())
-    }
-
-    /// Install a sum ctor's **bare-name convenience alias** onto its canonical
-    /// `member_key(Type, Ctor)` `Def`, applying the §8.6.5 cross-type contest
-    /// classification (S109 dotted-ctor keying; `design/arch/
-    /// dotted-ctor-canonical-keys.md` §1). The canonical `Def` was already
-    /// inserted (the builder orders it before this alias). Classify the bare
-    /// binding by following its committed owner:
-    /// - **absent** → install the convenience `Import` alias;
-    /// - **same-type redefinition** (the one deftype re-run) → (re)install afresh;
-    /// - **cross-type contest** → poison the bare name to `Ambiguous` (canonical
-    ///   `Maybe.Some`/`Option.Some` `Def`s stay valid; only the bare alias is
-    ///   ambiguous);
-    /// - **non-ctor binding present** (a user `defn`, an unrelated import) → leave
-    ///   it untouched (the canonical key is still reachable).
-    fn install_bare_ctor_alias(
-        &self,
-        state: &mut CheckState,
-        fqtn: &FQTypeName,
-        bare_name: &Symbol,
-        canonical_key: &Symbol,
-        visibility: Visibility,
-    ) {
-        // Follow the bare binding's one committed edge to read its owner.
-        let probed = self.probe_module_entry_owned(&fqtn.module, bare_name.as_ref());
-        let committed_owner: Option<FQTypeName> = match probed.as_ref() {
-            Some(ModuleEntry::Import { source, .. }) if source.module == fqtn.module => self
-                .probe_module_entry_owned(&source.module, source.symbol.as_ref())
-                .as_ref()
-                .and_then(committed_member_owner),
-            Some(entry) => committed_member_owner(entry),
-            None => None,
-        };
-
-        let install_alias = |this: &Self, state: &mut CheckState| {
-            this.current_symbol_table_mut(state).insert(
-                bare_name.clone(),
-                ModuleEntry::Import {
-                    source: FQSymbol {
-                        module: fqtn.module.clone(),
-                        symbol: canonical_key.clone(),
-                    },
-                    visibility,
-                },
-            );
-        };
-
-        match committed_owner {
-            // Same-type redefinition (the one deftype re-run): (re)install afresh.
-            Some(ref owner) if owner == fqtn => install_alias(self, state),
-            // Cross-type contest (§8.6.5): poison the bare name.
-            Some(_) => {
-                self.current_symbol_table_mut(state)
-                    .insert(bare_name.clone(), ModuleEntry::Ambiguous { visibility });
-            }
-            // Bare name absent → install the convenience alias.
-            None if probed.is_none() => install_alias(self, state),
-            // Bare name present as a non-ctor binding: do NOT clobber it.
-            None => {}
-        }
     }
 
     /// Allocate fresh type variables for type parameters.
@@ -386,22 +419,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// concrete (GOT slot at synthesis), registered under the field name in the
     /// type's own module.
     ///
-    /// **Collision policy (spec §5.2.6 "Duplicate field names in the same
-    /// scope" + §8.6.5 bare-name ambiguity; user ruling S83 W2).** Before
-    /// inserting an accessor `f`:
-    /// - If `f` already names a **field accessor** for ANOTHER product type in
-    ///   this module (cross-type duplicate field name), the bare name `f` is
-    ///   **ambiguous (poisoned)** under the §8.6.5 distinct-terminal rule: the
-    ///   symbol-table entry is replaced with `ModuleEntry::Ambiguous` (the same
-    ///   sentinel an import collision installs), and any later use of bare `f`
-    ///   is a compile-time error listing the qualified alternatives (`Box.v`,
-    ///   `Cup.v`). The compiler MUST NOT fold the colliding accessors into an
-    ///   argument-type-dispatched overload and MUST NOT silently pick a winner.
-    ///   The field stays reachable via `match` (§6) and module-qualification
-    ///   (§8.5.1).
-    /// - If `f` already names a NON-accessor binding (a user `(defn f ..)`, a
-    ///   ctor, etc.), the synthesis is **refused with a clear diagnostic** —
-    ///   the accessor does not silently shadow or corrupt the existing binding.
+    /// The canonical binding is stored at `Type.field`; the bare field spelling
+    /// exposes that terminal as one candidate. Other candidates and a local
+    /// declaration may coexist under the bare spelling without overwriting the
+    /// canonical accessor.
     fn synthesise_field_accessors(
         &self,
         state: &mut CheckState,
@@ -476,97 +497,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             span: body_span,
         };
 
-        // Collision inspection (read the current entry, if any). A name is an
-        // ACCESSOR collision only when THIS check previously synthesised it as
-        // an accessor (tracked in `synthesised_accessor_names`); any other
-        // pre-existing binding — a user `defn`, a ctor, an import — is a
-        // NON-accessor collision (refused). Classifying by `DefKind` alone is
-        // insufficient: a user `(defn v ..)` is also a `UserFn`.
-        //
-        // An ACCESSOR collision (cross-type duplicate field name) POISONS the
-        // bare name per §5.2.6/§8.6.5 — it does NOT overload (user ruling
-        // S83 W2). Once poisoned, a further accessor of the same name (a third
-        // colliding type) leaves it poisoned and extends the alternatives list.
-        //
-        // FIXME 0365 — read the UNION view (staging-first, then live) rather
-        // than staging alone. In the REPL each form is its own cluster, so a
-        // pre-existing `(defn v ..)` from an EARLIER cluster is committed to
-        // LIVE, not the current cluster's staging; a staging-only probe missed
-        // it and the §5.2.6 collision warning never fired across cluster
-        // boundaries. `probe_module_entry_owned` checks staging then live, so
-        // the collision is detected whether the colliding binding is in the
-        // same cluster (staging) or a prior one (live).
-        //
-        // FIXME 0366 — re-derive the accessor collision from the COMMITTED LIVE
-        // entry, not solely the per-`CheckState` `synthesised_accessor_names`
-        // set. At the REPL each input is a separate cluster, so the FIRST
-        // accessor `v` (from `Box`) is committed to LIVE in a PRIOR cluster and
-        // is therefore absent from THIS cluster's `synthesised_accessor_names`.
-        // A set-only probe mis-classifies the collision as `NonAccessor`
-        // (suppress-and-first-wins) instead of the spec'd cross-type ambiguity
-        // (§5.2.6 + §8.6.5). The fix: structurally recognise a committed
-        // synthesised accessor in the probed entry (its `self$accessor` param +
-        // `Fn [ADT] _` scheme name the owning type) and, when that owning type
-        // DIFFERS from the type now being synthesised, treat it as the same
-        // `Accessor` poison the same-cluster path produces. A committed accessor
-        // for the SAME type (a redefinition of that one deftype) is NOT a
-        // cross-type collision and must NOT poison.
-        let probed = self.probe_module_entry_owned(&state.current_module, accessor_name.as_ref());
-        let existing_present = probed.is_some();
-        // Structurally classify a COMMITTED (prior-cluster) entry under the bare
-        // name as a synthesised accessor (FIXME 0366). Under the INVERTED model
-        // (§1.6) the bare key is normally an `Import` ALIAS onto the canonical
-        // `Type.field` accessor — so FOLLOW that alias edge to the canonical
-        // `Def` and classify THAT (a bare `Import → m/Box.v` means bare `v` is
-        // already an accessor alias of `Box`, the first owner of a contested
-        // field). `committed_accessor_kind` itself only classifies a `Def`/
-        // `Ambiguous`; the bare-alias follow is added here. `Concrete` carries
-        // the owning product type; `Poisoned` is an already-`Ambiguous` bare name
-        // (third+ colliding type); `NotAccessor` is a genuine non-accessor (user
-        // defn, ctor) or absent entry.
-        let committed = match probed.as_ref() {
-            Some(ModuleEntry::Import { source, .. }) if source.module == fqtn.module => {
-                // Follow the bare alias to its canonical accessor source.
-                self.probe_module_entry_owned(&source.module, source.symbol.as_ref())
-                    .as_ref()
-                    .map(committed_accessor_kind)
-                    .unwrap_or(CommittedAccessor::NotAccessor)
-            }
-            Some(entry) => committed_accessor_kind(entry),
-            None => CommittedAccessor::NotAccessor,
-        };
-        // The prior owning type when the committed entry is a single concrete
-        // accessor — used to keep the cross-cluster ambiguity hint complete.
-        let committed_accessor_owner: Option<FQTypeName> = match &committed {
-            CommittedAccessor::Concrete(owner) => Some(owner.clone()),
-            _ => None,
-        };
-        let existing_kind: Option<AccessorCollision> = if !existing_present {
-            None
-        } else if state.synthesised_accessor_names.contains(&accessor_name) {
-            // Either a single concrete accessor (first collision) or an
-            // already-poisoned name (third+ collision) — both are accessor
-            // collisions and poison.
-            Some(AccessorCollision::Accessor)
-        } else {
-            // The set is per-cluster, so a committed accessor from a PRIOR
-            // cluster is absent from it. Re-derive the collision from the
-            // committed LIVE entry instead (FIXME 0366) so the REPL behaves like
-            // `--run`/`--link` (one cluster).
-            match &committed {
-                // Same-type redefinition (the one deftype re-run): overwrite the
-                // accessor afresh — NOT a cross-type duplicate-field clash.
-                CommittedAccessor::Concrete(owner) if owner == fqtn => None,
-                // Cross-type committed accessor, or an already-poisoned accessor
-                // name: poison the bare name as ambiguous.
-                CommittedAccessor::Concrete(_) | CommittedAccessor::Poisoned => {
-                    Some(AccessorCollision::Accessor)
-                }
-                // A non-accessor binding (user defn, ctor, import, …): refuse.
-                CommittedAccessor::NotAccessor => Some(AccessorCollision::NonAccessor),
-            }
-        };
-
         // Per-type-qualified CANONICAL accessor key (`Box.v`) — the `Type.field`
         // canonical field accessor (FIXME 0365 Item 1 / spec §8.5.2, INVERTED
         // model §1.6). `Box.v` is ALWAYS the real, uniformly-Public compiled
@@ -596,123 +526,126 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // `lookup_constructor` fallback (byte-identical CLIF — the W0.b golden
         // class 02). This CLOSES the backend's `resolved_ctor: None` synthetic
         // fallback (S19, deleted W3).
-        let mut accessor_pattern_ctors = HashMap::new();
-        accessor_pattern_ctors.insert(
-            body_span,
-            FQSymbol {
-                module: fqtn.module.clone(),
-                symbol: ctor.name.clone(),
-            },
-        );
-        let accessor_view = cranelisp_types::MonoDefnVariant {
-            name: qualified_key.clone(),
-            params: vec![Symbol::from("self$accessor")],
-            body: cranelisp_types::MonoExpr::synthetic_local_from_expr(
-                &ast.body,
-                &accessor_pattern_ctors,
-            ),
-            span: body_span,
-            mode_summary: None,
-        };
-        let canonical_slot = self
-            .current_symbol_table_mut(state)
-            .allocate_got_slot()
-            .map_err(crate::result::got_exhausted_error)?;
-        let canonical = ModuleEntry::def(
-            scheme,
-            DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Concrete {
-                    got_slot: canonical_slot,
-                    mode_summary: None,
-                },
-            },
-        )
-        .visibility(Visibility::Public)
-        .param_names(vec![Symbol::from("self$accessor")])
-        .ast(ast)
-        .codegen_view(accessor_view)
-        .docstring(format!(
+        let docstring = Some(format!(
             "Canonical field accessor `{}.{}` of type `{}`.",
             fqtn.name, accessor_name, fqtn.name
         ));
-        self.current_symbol_table_mut(state)
-            .insert(qualified_key.clone(), canonical.build());
+        let origin = CallableOrigin::Accessor {
+            type_name: fqtn.clone(),
+            field: accessor_name.clone(),
+        };
+        let mut table = self.current_symbol_table_mut(state);
+        let existing_life = table
+            .get(qualified_key.as_ref())
+            .and_then(Binding::callable)
+            .map(|callable| &callable.arm.life);
+        let keep_existing_template = matches!(existing_life, Some(Life::Template { .. }));
+        let replace_existing_synth = matches!(
+            existing_life,
+            Some(Life::Concrete { .. } | Life::Broken { .. })
+        );
+        let result = if keep_existing_template {
+            Ok(())
+        } else if scheme.ty.is_concrete() {
+            let mut accessor_pattern_ctors = HashMap::new();
+            accessor_pattern_ctors.insert(
+                body_span,
+                FQSymbol {
+                    module: fqtn.module.clone(),
+                    symbol: ctor.name.clone(),
+                },
+            );
+            let accessor_view = cranelisp_types::MonoDefnVariant {
+                name: qualified_key.clone(),
+                params: vec![Symbol::from("self$accessor")],
+                body: cranelisp_types::MonoExpr::synthetic_local_from_expr(
+                    &ast.body,
+                    &accessor_pattern_ctors,
+                ),
+                span: body_span,
+                mode_summary: None,
+            };
+            if replace_existing_synth {
+                table
+                    .replace_unpublished_synthesized_concrete(
+                        qualified_key.clone(),
+                        scheme,
+                        vec![Symbol::from("self$accessor")],
+                        docstring,
+                        origin,
+                        SynthSpec::new(ast),
+                        accessor_view,
+                        Visibility::Public,
+                    )
+                    .map(|_| ())
+            } else {
+                table
+                    .install_concrete(
+                        qualified_key.clone(),
+                        scheme,
+                        vec![Symbol::from("self$accessor")],
+                        docstring,
+                        0,
+                        origin,
+                        Realization::Body {
+                            view: accessor_view,
+                            code: None,
+                        },
+                        Some(ast),
+                        Vec::new(),
+                        Visibility::Public,
+                    )
+                    .map(|_| ())
+            }
+        } else if replace_existing_synth {
+            table.replace_unpublished_synthesized_template(
+                qualified_key.clone(),
+                scheme,
+                vec![Symbol::from("self$accessor")],
+                docstring,
+                origin,
+                SynthSpec::new(ast),
+                Visibility::Public,
+            )
+        } else {
+            table.install_template(
+                qualified_key.clone(),
+                scheme,
+                vec![Symbol::from("self$accessor")],
+                docstring,
+                0,
+                origin,
+                TemplateBody::Synth(SynthSpec::new(ast)),
+                TemplateKind::Parametric,
+                Vec::new(),
+                Visibility::Public,
+            )
+        };
+        result.map_err(|error| CranelispError::TypeError {
+            message: error.to_string(),
+            location: ErrorLocation::unknown(),
+        })?;
+        drop(table);
 
-        // Track the field's owning type for the bare-alias ambiguity diagnostic.
-        state
-            .synthesised_accessor_names
-            .insert(accessor_name.clone());
+        // Track the field's owning type for the bare-candidate ambiguity diagnostic.
+        let owners = self.reconstruct_accessor_alternatives(state, accessor_name.as_ref());
         state
             .accessor_owning_types
-            .entry(accessor_name.clone())
-            .or_default()
-            .push(fqtn.clone());
+            .insert(accessor_name.clone(), owners);
 
-        match existing_kind {
-            None => {
-                // Bare `field` (`v`) → a CONVENIENCE ALIAS onto the canonical
-                // `Box.v` (§1.6.1). An `ModuleEntry::Import` entry is EXCLUDED
-                // from `defined_symbols()` (no second compiled function) and
-                // carries NO GOT slot of its own; `resolve_got_target`'s
-                // `resolve_chain` FOLLOWS the `Import` edge to the canonical slot
-                // for BOTH call and value-position dispatch, and
-                // `extract_scheme_from_entry_owned` follows it for typing. ZERO
-                // extra compiled function + ZERO extra GOT slot — the alias is
-                // free. When exactly one type owns `field`, the bare alias
-                // resolves cleanly to the canonical accessor.
-                self.current_symbol_table_mut(state).insert(
-                    accessor_name.clone(),
-                    ModuleEntry::Import {
-                        source: cranelisp_types::FQSymbol {
-                            module: fqtn.module.clone(),
-                            symbol: qualified_key.clone(),
-                        },
-                        visibility,
-                    },
-                );
-            }
-            Some(AccessorCollision::Accessor) => {
-                // Cross-type duplicate field name (spec §5.2.6 + §8.6.5; user
-                // ruling S83 W2 + the INVERTED model §1.6.2): ambiguity lives in
-                // the BARE ALIAS. The canonical `Box.v`/`Cup.v` `Def`s are each
-                // unconditionally real (minted above) and stay valid — no cliff,
-                // no re-mint, because they were always real. The bare `v` key (an
-                // alias to the FIRST type's `Box.v`) now has two candidate targets
-                // → replace it with the `Ambiguous` sentinel (the same sentinel an
-                // import collision installs, §8.6.4), listing the canonical
-                // alternatives `Box.v` / `Cup.v`. Any later BARE use of `v` is a
-                // compile-time error naming those alternatives.
-                self.current_symbol_table_mut(state)
-                    .insert(accessor_name.clone(), ModuleEntry::Ambiguous { visibility });
-                // Seed the FIRST owning type (cross-cluster: recorded in a now-
-                // discarded prior cluster's state, FIXME 0366) before this one so
-                // the ambiguity hint's alternatives are complete. The per-cluster
-                // `accessor_owning_types` push above already added `fqtn`.
-                if let Some(prior) = &committed_accessor_owner {
-                    let alts = state
-                        .accessor_owning_types
-                        .entry(accessor_name.clone())
-                        .or_default();
-                    if !alts.contains(prior) {
-                        // Insert the prior owner ahead of the current one so the
-                        // alternatives read first-defined-first.
-                        alts.insert(0, prior.clone());
-                    }
-                }
-            }
-            Some(AccessorCollision::NonAccessor) => {
-                // A pre-existing NON-accessor bare binding (a user `(defn v …)`,
-                // a ctor, an import): the canonical `Box.v` accessor is still
-                // minted (unconditionally, above), so the field stays reachable
-                // via `Box.v`. The bare alias is NOT installed over the
-                // conflicting user binding (no silent shadow / dispatch
-                // corruption); record a deferred diagnostic and leave bare `v` as
-                // the user's binding (§1.6.2).
-                state
-                    .deferred_accessor_collisions
-                    .push((accessor_name.clone(), fqtn.name.as_ref().to_string()));
-            }
-        }
+        self.current_symbol_table_mut(state)
+            .expose_candidate(
+                accessor_name,
+                FQSymbol {
+                    module: fqtn.module.clone(),
+                    symbol: qualified_key,
+                },
+                visibility,
+            )
+            .map_err(|error| CranelispError::TypeError {
+                message: error.to_string(),
+                location: ErrorLocation::unknown(),
+            })?;
 
         Ok(())
     }
@@ -729,11 +662,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// is a real Public `Def` keyed `Type.field` (`Box.v`) in `fqtn.module` —
     /// `committed_accessor_kind` classifies it `Concrete(fqtn)`. The field name
     /// is the **terminal segment after the last `.`** of the canonical key
-    /// (`Box.v` → `v`). Because the canonical accessor is ALWAYS real (never
-    /// poisoned — poison lives only in the bare alias, §1.6.2), the recognizer
-    /// walk alone is complete: the as-built's `accessor_owning_types` poison-
-    /// consult and the import-alias witness branch both drop out (§2.6,
-    /// Principle 6 — the inversion deletes those special-cases). The enumeration
+    /// (`Box.v` → `v`). Because the canonical accessor is always a real binding,
+    /// the recognizer walk alone is complete. The enumeration
     /// reads the **union view** (staging then live) via `for_each_in_module` so
     /// a REPL `impl` colliding with a canonical accessor defined in an earlier
     /// cluster is still detected (the FIXME-0366 cross-cluster footgun).
@@ -761,18 +691,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         names
     }
 
-    /// Reconstruct the canonical accessor alternatives (`Box.v`, `Cup.v`) for a
-    /// poisoned bare field name from the DURABLE symbol table — the cross-cluster
-    /// (REPL) fallback for the ambiguity diagnostic.
+    /// Reconstruct the canonical accessor alternatives (`Box.v`, `Cup.v`) for an
+    /// ambiguous bare field spelling from the durable symbol table.
     ///
     /// Same-cluster (`--run`) the alternatives are carried on the per-`CheckState`
     /// `accessor_owning_types` map, populated as each accessor is synthesised in
     /// the SAME `check_forms` call that later sees the bare use. The REPL drives
-    /// each form as its own cluster with a FRESH `CheckState` (`form.rs`), so by
-    /// the time `(v …)` is checked the map is empty — the `deftype`s that poisoned
-    /// `v` ran in now-discarded prior clusters. The poison itself survives (it is
-    /// the `ModuleEntry::Ambiguous` sentinel in the live table), but the owning-
-    /// type list does not. This re-derives that list structurally, mirroring the
+    /// each form as its own cluster with a fresh `CheckState`, so by the time
+    /// `(v …)` is checked the per-cluster owner map is empty. The candidate
+    /// references survive in the table. This helper re-derives display owners,
+    /// mirroring the
     /// cross-cluster recognition `committed_accessor_kind` already does for the
     /// FIXME-0366 impl-collision case: it walks the current module's union view
     /// for every canonical `Type.field` accessor `Def` whose terminal field
@@ -806,18 +734,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     }
 }
 
-/// Classification of a COMMITTED (live, prior-cluster) symbol-table entry as a
-/// synthesised field accessor (FIXME 0366). The same-cluster path keys off the
-/// per-`CheckState` `synthesised_accessor_names` set; cross-cluster (the REPL)
-/// must instead re-derive the accessor identity structurally from the committed
-/// entry, since the prior accessor was committed in a now-discarded cluster.
+/// Classification of a COMMITTED symbol-table entry as a synthesised field
+/// accessor (FIXME 0366). Accessor identity is re-derived structurally from the
+/// durable entry so same-cluster and cross-cluster resolution use one source.
 pub(crate) enum CommittedAccessor {
     /// A single concrete synthesised accessor; carries its owning product type
     /// (read from the accessor's `(Fn [ADT] _)` scheme).
     Concrete(FQTypeName),
-    /// An already-poisoned (`Ambiguous`) accessor name — a third colliding type
-    /// re-poisons it; no single owning type to read.
-    Poisoned,
     /// Not a synthesised accessor (a user `defn`, a ctor, an import, …).
     NotAccessor,
 }
@@ -830,26 +753,19 @@ pub(crate) enum CommittedAccessor {
 /// sentinel and whose scheme is `(Fn [ProductType] FieldType)`. The
 /// `self$accessor` param + the `Fn [ADT] _` scheme shape together uniquely mark
 /// an accessor and name its owning type — no user `(defn …)` mints that
-/// signature. A poisoned accessor name surfaces as `ModuleEntry::Ambiguous`.
+/// signature.
 pub(crate) fn committed_accessor_kind<C: cranelisp_types::CodeStore>(
-    entry: &ModuleEntry<C>,
+    entry: &Binding<C>,
 ) -> CommittedAccessor {
-    match entry {
-        ModuleEntry::Ambiguous { .. } => CommittedAccessor::Poisoned,
-        ModuleEntry::Def {
-            kind,
-            scheme,
-            param_names,
-            ..
-        } if matches!(
-            kind.as_ref(),
-            DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Concrete { .. }
-            }
-        ) && param_names.len() == 1
-            && param_names[0].as_ref() == "self$accessor" =>
+    match &entry.declaration {
+        Decl::Callable(callable)
+            if matches!(callable.origin, CallableOrigin::Accessor { .. })
+                && matches!(
+                    callable.arm.life,
+                    Life::Concrete { .. } | Life::Template { .. }
+                ) =>
         {
-            match &scheme.ty {
+            match &callable.arm.scheme.ty {
                 Type::Fn(params, _) if params.len() == 1 => match &params[0] {
                     Type::ADT(fqtn, _) => CommittedAccessor::Concrete(fqtn.clone()),
                     _ => CommittedAccessor::NotAccessor,
@@ -866,12 +782,9 @@ pub(crate) fn committed_accessor_kind<C: cranelisp_types::CodeStore>(
 /// constructor (`Maybe.Some`, owner read directly from `DefKind::Constructor
 /// .type_name`) (S109, design §1.2/§3.1). The single "owning type of the member
 /// under this key" recognizer both the dotted resolver (`resolve_dotted_member
-/// _entry`) and the registration collision classifier share, so accessor and
-/// ctor members resolve + poison through ONE shape (Principle 7). Returns `None`
-/// for a non-member entry (a plain user `defn`, an `Ambiguous` sentinel, a
-/// non-`Constructor` `Def`, an `Import`/`Reexport` edge, …).
+/// _entry`) uses for both member kinds. Returns `None` for a non-member binding.
 pub(crate) fn committed_member_owner<C: cranelisp_types::CodeStore>(
-    entry: &ModuleEntry<C>,
+    entry: &Binding<C>,
 ) -> Option<FQTypeName> {
     // Field accessor?
     if let CommittedAccessor::Concrete(owner) = committed_accessor_kind(entry) {
@@ -881,21 +794,12 @@ pub(crate) fn committed_member_owner<C: cranelisp_types::CodeStore>(
     // at the type name, never probed as a canonical dotted member — so reading
     // its `type_name` here is harmless; the resolver's degenerate-key miss and
     // the registration product gate keep products out of this path.)
-    if let ModuleEntry::Def { kind, .. } = entry
-        && let DefKind::Constructor { type_name, .. } = kind.as_ref()
+    if let Some(callable) = entry.callable()
+        && let CallableOrigin::Ctor { type_name, .. } = &callable.origin
     {
         return Some(type_name.clone());
     }
     None
-}
-
-/// The kind of pre-existing binding an accessor synthesis collides with.
-enum AccessorCollision {
-    /// Another field accessor (same field name across product types) — POISON
-    /// the bare name as ambiguous per §5.2.6 + §8.6.5 (no overload, no winner).
-    Accessor,
-    /// A non-accessor binding (user defn, ctor, …) — refuse the synthesis.
-    NonAccessor,
 }
 
 /// Build a type scheme for a constructor.
@@ -985,8 +889,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             .iter()
             .map(|ctor_sym| {
                 // **BR-2 (S109 blast radius, design §4.2).** Post the dotted-ctor
-                // keying change the bare key is an `Import` alias (or `Ambiguous`),
-                // so a raw bare probe no longer lands on the `Constructor` `Def`
+                // keying change the bare key is a candidate exposure, so a raw
+                // canonical-binding probe no longer lands on the constructor
                 // and every ctor would default `internal: false` — silently
                 // admitting `IO`'s internal `Bind`/`Pure`/`Effect` into user
                 // exhaustiveness. Probe the CANONICAL `member_key(Type, Ctor)`
@@ -1006,12 +910,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         )
                         .map(|(e, _)| e)
                     })
-                    .and_then(|e| match e {
-                        ModuleEntry::Def { kind, .. } => match kind.as_ref() {
-                            DefKind::Constructor { internal, .. } => Some(*internal),
+                    .and_then(|e| {
+                        e.callable().and_then(|callable| match &callable.origin {
+                            CallableOrigin::Ctor { internal, .. } => Some(*internal),
                             _ => None,
-                        },
-                        _ => None,
+                        })
                     })
                     .unwrap_or(false);
                 (ctor_sym.clone(), internal)

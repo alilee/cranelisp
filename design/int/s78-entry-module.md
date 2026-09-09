@@ -240,8 +240,8 @@ This is strictly an int/REPL presentation choice; it has no spec consequence and
 `module_aliases` is the precedent and the template. Confirmed in source:
 
 - **Type:** `pub type ModuleAliases = dashmap::DashMap<ModuleFullPath, ModuleAliasEntry>` (`crates/cranelisp-types/src/module.rs:419`). A session-level map keyed by `ModuleFullPath`.
-- **Home:** owned on `SharedState` — `pub module_aliases: cranelisp_types::ModuleAliases` (`src/session_v4.rs:750`). int owns population; typecheck reads it **read-only**.
-- **Threading:** carried into typecheck as `module_aliases: &'a ModuleAliases` on `TypeCheckEnv` (`checker.rs:204`), supplied via `TypeCheckEnv::new`/`new_with_staging` (`checker.rs:348,380`) and as the 4th argument to `check_forms(parsed, ctx, symbol_tables, module_aliases)` (`form.rs:83–88`). int threads `&self.shared.module_aliases` at every call site (`src/cluster.rs:216`, `src/worker.rs:288`, `src/session_v4.rs:2301/3228/3268/4464`).
+- **Home:** owned on `SharedState` — `pub module_aliases: cranelisp_types::ModuleAliases` (historical `src/session_v4.rs:750`). int owns population; typecheck reads it **read-only**.
+- **Threading:** carried into typecheck as `module_aliases: &'a ModuleAliases` on `TypeCheckEnv` (`checker.rs:204`), supplied via `TypeCheckEnv::new`/`new_with_staging` (`checker.rs:348,380`) and as the 4th argument to `check_forms(parsed, ctx, symbol_tables, module_aliases)` (`form.rs:83–88`). Historical int call sites threaded `&self.shared.module_aliases` at `src/cluster.rs:216`, `src/worker.rs:288`, and `src/session_v4.rs:2301/3228/3268/4464`.
 
 **Decision: the fallback bit rides a companion map of identical shape, threaded through the identical channel.** Introduce (int-owned, in `cranelisp-types` as a *type alias only* — see the cranelisp-types note below):
 
@@ -302,12 +302,12 @@ pub fn check_forms<C, L>(
 ```
 
 - `TypeCheckEnv` gains `pub(crate) prelude_fallback: &'a PreludeFallback` beside `module_aliases` (`checker.rs:204`); `new` / `new_with_staging` gain the matching parameter (`checker.rs:345,375`).
-- **All int call sites** thread `&self.shared.prelude_fallback` (the new SharedState field) at the same points they thread `&self.shared.module_aliases`: `src/worker.rs:288`, `src/cluster.rs:216`, `src/session_v4.rs:2301/3228/3268/4464`, and the `ModuleCompiler`/`WorkerCtx` carriers (`worker.rs:412,483`) gain a parallel `prelude_fallback: &'a PreludeFallback` field.
+- **All historical int call sites** thread `&self.shared.prelude_fallback` (the new SharedState field) at the same points they thread `&self.shared.module_aliases`: `src/worker.rs:288`, `src/cluster.rs:216`, `src/session_v4.rs:2301/3228/3268/4464`, and the `ModuleCompiler`/`WorkerCtx` carriers (`worker.rs:412,483`) gain a parallel `prelude_fallback: &'a PreludeFallback` field.
 - **Test call sites** in `form.rs` / `platform.rs` pass `&PreludeFallback::default()` (empty ⇒ all-OFF, matching today's no-prelude unit-test envs).
 
 **This is a known, bounded boundary change** — additive (one read-only parameter), mechanical at every call site, and symmetric with the existing `module_aliases` thread. It needs the two `/dev` agents to agree on the parameter name/position (pinned here) and lands in one cross-crate change-set. **Flag: needs an `/arch` nod** for the `PreludeFallback` alias under realization (a) — see §2.7.2.
 
-### 2.7.4 The installer populates the bit — `inject_prelude_if_needed` (`src/worker.rs:3055`)
+### 2.7.4 The historical installer populates the bit — `inject_prelude_if_needed` (`src/worker.rs:3055`)
 
 `inject_prelude_if_needed` already computes the exact ON condition (it early-returns OFF for `*module == "prelude"` and when `sexps_reference_prelude(sexps)` is true; `worker.rs:3061,3067`). The change:
 

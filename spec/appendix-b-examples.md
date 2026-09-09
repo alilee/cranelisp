@@ -52,8 +52,8 @@ Product types, sum types, enums, pattern matching, and trait implementations for
 ;; Enum (all-nullary sum type)
 (deftype Color Red Green Blue)
 
-;; Shortcut syntax (polymorphic product)
-(deftype Pair [first second])
+;; Polymorphic product
+(deftype (Pair a b) [:a first :b second])
 
 ;; Constructor + match
 (defn get-x [p]
@@ -189,7 +189,7 @@ Compile-time code transformation with `defmacro`.
 
 ;; Using quasiquote for cleaner syntax
 (defmacro when [cond body]
-  `(if ~cond ~body 0))
+  `(if ~cond (Some ~body) None))
 
 ;; Variadic macro
 (defmacro my-add [& args]
@@ -198,7 +198,7 @@ Compile-time code transformation with `defmacro`.
 (defn main []
   (do
     (print (show (my-inc 41)))       ; → 42
-    (print (show (when true 99)))    ; → 99
+    (print (show (when true 99)))    ; → Some 99
     (print (show (my-add 10 20)))))  ; → 30
 ```
 

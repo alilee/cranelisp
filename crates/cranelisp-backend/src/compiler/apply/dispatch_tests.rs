@@ -124,7 +124,7 @@ fn test_trait_method_dispatch_eq_bool() {
 // path). A non-platform-effect callee must NOT emit such a store.
 #[test]
 fn platform_effect_dispatch_stamps_fn_name_on_bare_import_var_apply_path() {
-    use cranelisp_types::{DefKind, FQSymbol, HeapHeader, ModuleEntry, Scheme};
+    use cranelisp_types::{FQSymbol, FQTypeName, HeapHeader, Scheme};
 
     // The absolute byte offset of the Effect node's fn-name field (field-3),
     // composed from the public ABI constants — must equal 40 today and match
@@ -164,49 +164,45 @@ fn platform_effect_dispatch_stamps_fn_name_on_bare_import_var_apply_path() {
     // that stamps). Slot 0 in the platform GOT.
     {
         let mut st = SymbolTable::new(plat.clone());
-        let _ = st.allocate_got_slot().expect("fresh table has free slots");
-        st.insert(
+        st.install_platform(
             Symbol::from("crash"),
-            ModuleEntry::Def {
-                scheme: Scheme {
-                    type_vars: vec![],
-                    constraints: HashMap::new(),
-                    ty: Type::Fn(vec![], Box::new(Type::Int)),
-                },
-                visibility: Visibility::Public,
-                docstring: None,
-                param_names: vec![],
-                kind: Box::new(DefKind::PlatformEffect {
-                    scheduling_class: Default::default(),
-                    poll_shape: false,
-                    got_slot: 0,
-                    mode_summary: None,
-                }),
-                callees: vec![],
-                trait_origin: None,
-                seq: 0,
-                ast: None,
-                codegen_view: None,
-                code: None,
-                value_use: false,
+            Scheme {
+                type_vars: vec![],
+                constraints: HashMap::new(),
+                ty: Type::Fn(
+                    vec![],
+                    Box::new(Type::ADT(
+                        FQTypeName::new(
+                            ModuleFullPath::from("primitives"),
+                            cranelisp_types::TypeName::from("IO"),
+                        ),
+                        vec![Type::Int],
+                    )),
+                ),
             },
-        );
+            vec![],
+            None,
+            0,
+            Default::default(),
+            false,
+            0,
+            Visibility::Public,
+        )
+        .expect("install platform effect fixture");
         tables.insert(plat.clone(), st);
     }
     // user: imports `crash` from platform.boom + defines `caller` at slot 0.
     {
         let mut st = SymbolTable::new(user.clone());
-        let _ = st.allocate_got_slot().expect("fresh table has free slots");
-        st.insert(
+        st.expose_candidate(
             Symbol::from("crash"),
-            ModuleEntry::Import {
-                source: FQSymbol {
-                    module: plat.clone(),
-                    symbol: Symbol::from("crash"),
-                },
-                visibility: Visibility::Public,
+            FQSymbol {
+                module: plat.clone(),
+                symbol: Symbol::from("crash"),
             },
-        );
+            Visibility::Public,
+        )
+        .expect("expose imported platform effect fixture");
         // W1 (KC-W0-6): `caller`'s `(crash)` reads the callee's `resolved_target`.
         // `crash` is an Import in `user`, so its TERMINAL storage key is the
         // effect's home `platform.boom/crash` (what `storage_fq()` records) — the
@@ -219,15 +215,12 @@ fn platform_effect_dispatch_stamps_fn_name_on_bare_import_var_apply_path() {
                 symbol: Symbol::from("crash"),
             },
         );
-        st.insert(
-            Symbol::from("caller"),
-            make_def_entry_slot_with_targets(caller.clone(), 0, &caller_targets),
-        );
+        install_def_entry_at_slot_with_targets(&mut st, caller.clone(), 0, &caller_targets);
         tables.insert(user.clone(), st);
     }
 
     let mut obj = make_object_module();
-    let artifacts = compile_to_module(
+    let artifacts = compile_names_to_module(
         user.clone(),
         std::slice::from_ref(&caller.name),
         &tables,
@@ -249,10 +242,9 @@ fn platform_effect_dispatch_stamps_fn_name_on_bare_import_var_apply_path() {
 }
 
 // spec: design/arch/bounded-contexts.md §5 invariant 9 (negative) — a NON
-//       platform-effect callee dispatched GOT-indirect must NOT stamp
-//       field-3: its result is not an Effect node and writing +40 would
-//       corrupt an unrelated allocation. `resolve_platform_effect_target`
-//       returns None for a plain UserFn, so no store is emitted.
+//       platform-effect callee dispatched GOT-indirect must NOT emit the IO
+//       tag-dispatch block or either stamp. Its result is not an IO node and
+//       even loading +16 would inspect an unrelated representation.
 #[test]
 fn non_platform_effect_dispatch_does_not_stamp_field3() {
     let user = ModuleFullPath::from("user");
@@ -285,8 +277,6 @@ fn non_platform_effect_dispatch_does_not_stamp_field3() {
     let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
     {
         let mut st = SymbolTable::new(user.clone());
-        let _ = st.allocate_got_slot().expect("fresh table has free slots");
-        let _ = st.allocate_got_slot().expect("fresh table has free slots");
         // W1 (KC-W0-6): `caller`'s `(helper)` reads the callee's `resolved_target`
         // — the plain user fn's own home `user/helper`.
         let mut caller_targets: HashMap<Span, cranelisp_types::FQSymbol> = HashMap::new();
@@ -297,20 +287,18 @@ fn non_platform_effect_dispatch_does_not_stamp_field3() {
                 symbol: Symbol::from("helper"),
             },
         );
-        st.insert(helper.name.clone(), make_def_entry_slot(helper.clone(), 0));
-        st.insert(
-            caller.name.clone(),
-            make_def_entry_slot_with_targets(caller.clone(), 1, &caller_targets),
-        );
+        install_def_entry_at_slot(&mut st, helper.clone(), 0);
+        install_def_entry_at_slot_with_targets(&mut st, caller.clone(), 1, &caller_targets);
         tables.insert(user.clone(), st);
     }
 
     let field3_off: i64 =
         cranelisp_types::HeapHeader::SIZE as i64 + cranelisp_platform::IO_EFFECT_FN_NAME_OFFSET;
     let store_at_field3 = format!("+{field3_off}");
+    let store_at_pure_glue = format!("+{}", crate::heap::HeapAdt::field_offset(1));
 
     let mut obj = make_object_module();
-    let artifacts = compile_to_module(
+    let artifacts = compile_names_to_module(
         user.clone(),
         std::slice::from_ref(&caller.name),
         &tables,
@@ -318,11 +306,18 @@ fn non_platform_effect_dispatch_does_not_stamp_field3() {
         true,
     )
     .expect("compile caller calling a plain user fn");
+    let has_io_tag_load = artifacts
+        .clif_ir
+        .lines()
+        .any(|line| line.contains("load.i64") && line.contains("+16"));
 
     assert!(
-        !artifacts.clif_ir.contains(&store_at_field3),
-        "a non-platform-effect GOT-indirect dispatch MUST NOT stamp field-3 \
-         (no store at {store_at_field3}); only DefKind::PlatformEffect stamps. CLIF:\n{}",
+        !artifacts.clif_ir.contains(&store_at_field3)
+            && !artifacts.clif_ir.contains(&store_at_pure_glue)
+            && !has_io_tag_load,
+        "a non-platform-effect GOT-indirect dispatch MUST NOT emit the IO tag \
+         load or either stamp ({store_at_field3}, {store_at_pure_glue}); only \
+         PlatformEffect entries enter the adoption block. CLIF:\n{}",
         artifacts.clif_ir,
     );
 }

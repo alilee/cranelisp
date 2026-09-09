@@ -152,7 +152,7 @@ Higher-order Vec operations such as `vec-map` and `vec-reduce` are NOT primitive
 
 ### Test discovery and error capture
 
-These are ordinary `primitives`-module entries — **not** special forms. They are import-required (or fully qualified): `(import [primitives [discover-tests catch-runtime-error]])` or `(primitives/discover-tests …)`. They are not reserved words and shadow like any imported name. A test is any zero-argument function whose name begins `test-` and whose type is exactly `(Fn [] (Option String))` (`None` = pass, `Some reason` = fail); see [repl/spec.md §16](../repl/spec.md#16-test-discovery-and-execution).
+These are ordinary `primitives`-module entries — **not** special forms. They are import-required (or fully qualified): `(import [primitives [discover-tests catch-runtime-error]])` or `(primitives/discover-tests …)`. They are not reserved words and shadow like any imported name. A test is any zero-argument function whose name begins `test-` and whose type is exactly `(Fn [] (Option String))` (`None` = pass, `Some reason` = fail); see [repl/spec/16-test-discovery.md §16](../repl/spec/16-test-discovery.md#16-test-discovery-and-execution).
 
 | Function | Type | Description |
 |---|---|---|
@@ -167,7 +167,7 @@ Special forms are keywords processed directly by the compiler. They are **root s
 
 ## A.5 Docstrings for Builtins
 
-All primitive functions (§A.3) and special forms (§A.4) MUST have docstrings available at runtime. The docstring for each builtin is the Description column text from the tables above (or an equivalent concise description). These docstrings MUST be accessible via the `/doc` REPL command and MUST appear in the `; classification - docstring` suffix of the universal output format (repl/spec.md §1.1) when the symbol is displayed.
+All primitive functions (§A.3) and special forms (§A.4) MUST have docstrings available at runtime. The docstring for each builtin is the Description column text from the tables above (or an equivalent concise description). These docstrings MUST be accessible via the `/doc` REPL command and MUST appear in the `; classification - docstring` suffix of the universal output format (`repl/spec/01-display-format.md` §1.1) when the symbol is displayed.
 
 | Form | Description |
 |---|---|

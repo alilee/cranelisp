@@ -321,6 +321,81 @@ Consequences and scope (plan of record: `tests/plan/s119-test-plan.md` §8):
 - No D2/D3, no 0604/0818 root-cause work this sprint (SPRINT §Track C).
   "Flaky" remains banned.
 
+## /qa S121 W0 D1 adjudication (2026-09-01) — host contention suffices; mechanism remains provisional
+
+**D1 executed and its W0 prerequisite is discharged.** Provenance:
+
+- repository HEAD `18bca20d07a0b563314ff38f38c93486809bb980`;
+- test binary
+  `target/debug/deps/nullary_return_dispatch_method_only_import-e34f1e684d53b9ad`,
+  SHA-256
+  `c3286dae44220694a56134719b19714b737c5bcef716ac63c89158d5896a64e4`;
+- one unloaded isolation control, reported GREEN 1/1; and
+- 200 direct repetitions with twelve non-Cranelisp `yes` workers on thirteen
+  logical CPUs: **147 pass / 53 fail**. All 53 failures carried the same REPL
+  face at `tests/helpers/e2e.rs:708`, ending in
+  `codegen error at 14..15: undefined function: z`. No timeout, spawn failure,
+  heap signal or second failure signature occurred.
+
+The load-run capture was `/tmp/s121-0694-d1.log`, SHA-256
+`6450eb8485f6198df6bf38ac7277a9c59a68589225aff9739d0627b883a3032d`.
+The unloaded 1/1 control was reported separately and is not present in that
+capture; it is an anti-vacuity control, not an unloaded-stability claim.
+
+### What D1 establishes and falsifies
+
+Non-Cranelisp CPU contention alone is sufficient to reproduce the exact
+nullary Class-II symptom while only one Cranelisp subprocess is active. D1
+therefore falsifies the branch in which *other Cranelisp subprocesses are
+necessary*: shared Cranelisp cache/tmpdir/`CRANELISP_LIB` state and repository
+`user.cl` contamination are not required causes of this member. They remain
+possible full-suite amplifiers, not the root-cause prerequisite.
+
+The 53 harness panics report missing expected output; they are not the product
+failure. The product failure is the compiler's clean `undefined function: z`
+diagnostic. D1 neither demonstrates a staging→live ordering violation nor a
+data race, and it says nothing about Class I, Class III or the inverse-polarity
+0869 member. The 53/200 ratio belongs only to this binary and load shape. It is
+diagnostic evidence, not an acceptance threshold.
+
+No C1 return follows. A static carrier defect does not explain why identical
+input on one binary succeeds 147 times and takes the exact publication-shaped
+refusal 53 times; the remaining hypothesis is observed at C6's existing
+publication boundary before any correction is attributed.
+
+### Remaining smallest evidence — inside the retained C6 N1/N5 visit
+
+**D2, ordered failure/control pair.** The existing
+`CRANELISP_MODULE_TRACE` emission in `check_terminal_closure` occurs only on a
+terminal-closure breach. It does not emit an ordinary publication/read pair,
+so setting the variable on current HEAD without additional observation would
+be vacuous. Under the same environment gate, the C6 change-set temporarily
+records:
+
+1. N1's `commit_staging_to_live` publication of `zlib/z` and completion of its
+   staged batch; and
+2. N5's REPL/eval boundary making the user expression readable.
+
+Use D1's host-load shape, cap at 200 repetitions and stop after one exact
+`undefined function: z` failure plus one passing control. The attribution is
+demonstrated only if the failed trace orders the read before `zlib/z`/batch
+publication and the passing trace orders publication before the read. Missing
+events or identical ordering falsify the proposed seam; D1 alone does not
+license a fix.
+
+**D3, anti-vacuity plant.** At that same generic publication gate, an
+experiment-only, env-gated dev delay before live publication must make the
+otherwise-unloaded nullary row fail 5/5 with the exact `undefined function: z`
+text; the unarmed twin must return `42` 5/5. Both captures and the instrumented
+binary are hashed. A different signature, a non-deterministic armed leg or an
+unarmed failure leaves attribution provisional.
+
+D2/D3 use paths N1/N5 already reserve and change no facade, lifecycle state,
+cache carrier or C1 contract. The delay and added experiment-only events are
+removed before C6 closes; the existing process-level row remains the standing
+guard. This FIXME stays **open** pending D2/D3 and corrected-build verification,
+but it no longer blocks W0 or the C1 reservation on behalf of 0694.
+
 ## Context
 
 Found by /review W4 while verifying dispatch priority 8 (suite-state

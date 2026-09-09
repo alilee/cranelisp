@@ -1,5 +1,5 @@
 use super::*;
-use cranelisp_types::{ModuleFullPath, SymbolTable};
+use cranelisp_types::{CallableTarget, FQSymbol, ModuleFullPath, Symbol, SymbolTable};
 
 // spec: design/backend/module-caching.md §5 — build_isa with PIC produces valid ISA
 #[test]
@@ -15,14 +15,11 @@ fn test_build_isa_non_pic() {
     assert!(!isa.triple().to_string().is_empty());
 }
 
-// spec: design/backend/module-caching.md §7 — IntrinsicTable construction
-#[test]
-fn test_intrinsic_table_default() {
-    let table = IntrinsicTable::new();
-    assert!(table.runtime_fns.is_empty());
-    assert!(table.primitive_fns.is_empty());
-    assert!(table.platform_fns.is_empty());
-    assert!(table.global_names.is_empty());
+fn target(module: &ModuleFullPath, name: &Symbol) -> CallableTarget {
+    CallableTarget::Binding(FQSymbol {
+        module: module.clone(),
+        symbol: name.clone(),
+    })
 }
 
 // spec: design/backend/module-caching.md §7 — build_cache_packet creates valid packet
@@ -33,14 +30,7 @@ fn test_build_cache_packet() {
     let symbol_table = SymbolTable::new(mp.clone());
     let input = ObjectCompileInput {
         module_path: mp.clone(),
-        defns: vec![],
-        method_resolutions: cranelisp_types::MethodResolutions::new(),
-        fn_slot_assignments: HashMap::new(),
-        fn_to_module: HashMap::new(),
-        intrinsics: IntrinsicTable::new(),
-        expr_types: HashMap::new(),
-        next_got_slot: 0,
-        cross_module_fns: vec![],
+        targets: vec![],
     };
 
     let packet = build_cache_packet(
@@ -75,14 +65,7 @@ fn test_process_cache_packet() {
     let symbol_table = SymbolTable::new(mp.clone());
     let input = ObjectCompileInput {
         module_path: mp.clone(),
-        defns: vec![],
-        method_resolutions: cranelisp_types::MethodResolutions::new(),
-        fn_slot_assignments: HashMap::new(),
-        fn_to_module: HashMap::new(),
-        intrinsics: IntrinsicTable::new(),
-        expr_types: HashMap::new(),
-        next_got_slot: 0,
-        cross_module_fns: vec![],
+        targets: vec![],
     };
 
     let packet = build_cache_packet(
@@ -148,9 +131,7 @@ fn table_with_def(
     defn: cranelisp_types::Defn,
     scheme: cranelisp_types::Scheme,
 ) -> dashmap::DashMap<ModuleFullPath, SymbolTable> {
-    use cranelisp_types::{
-        DefKind, ModuleEntry, MonoDefnVariant, MonoExpr, UserFnState, Visibility,
-    };
+    use cranelisp_types::{CallableOrigin, MonoDefnVariant, MonoExpr, Realization, Visibility};
     let tables = dashmap::DashMap::new();
     let mut st = SymbolTable::new(module.clone());
     let name = defn.name.clone();
@@ -184,28 +165,22 @@ fn table_with_def(
             mode_summary: None,
         }
     });
-    st.insert(
+    st.install_concrete(
         name,
-        ModuleEntry::Def {
-            scheme,
-            visibility: Visibility::Public,
-            docstring: None,
-            param_names,
-            kind: Box::new(DefKind::UserFn {
-                fn_state: UserFnState::Concrete {
-                    got_slot: 0,
-                    mode_summary: None,
-                },
-            }),
-            callees: vec![],
-            trait_origin: None,
-            seq: 0,
-            ast: variant,
-            codegen_view,
+        scheme,
+        param_names,
+        None,
+        0,
+        CallableOrigin::Plain,
+        Realization::Body {
+            view: codegen_view.expect("concrete fixture view"),
             code: None,
-            value_use: false,
         },
-    );
+        variant,
+        vec![],
+        Visibility::Public,
+    )
+    .expect("install object-cache fixture");
     tables.insert(module.clone(), st);
     tables
 }
@@ -241,8 +216,8 @@ fn test_compile_module_to_object_simple() {
 
     let mut obj_module = test_object_module();
     let _result = crate::compile_to_module(
-        module,
-        std::slice::from_ref(&defn.name),
+        module.clone(),
+        std::slice::from_ref(&target(&module, &defn.name)),
         &tables,
         &mut obj_module,
         false,
@@ -307,8 +282,8 @@ fn test_compile_module_to_object_with_params() {
 
     let mut obj_module = test_object_module();
     let _result = crate::compile_to_module(
-        module,
-        std::slice::from_ref(&defn.name),
+        module.clone(),
+        std::slice::from_ref(&target(&module, &defn.name)),
         &tables,
         &mut obj_module,
         false,
@@ -355,14 +330,7 @@ fn test_process_cache_packet_writes_object_file() {
 
     let input = ObjectCompileInput {
         module_path: mp.clone(),
-        defns: vec![(defn.clone(), scheme.clone())],
-        method_resolutions: cranelisp_types::MethodResolutions::new(),
-        fn_slot_assignments: HashMap::new(),
-        fn_to_module: HashMap::new(),
-        intrinsics: IntrinsicTable::new(),
-        expr_types: HashMap::new(),
-        next_got_slot: 0,
-        cross_module_fns: vec![],
+        targets: vec![target(&mp, &defn.name)],
     };
 
     let packet = build_cache_packet(
@@ -400,14 +368,7 @@ fn test_process_cache_packet_no_object_for_empty_defns() {
     let symbol_table = SymbolTable::new(mp.clone());
     let input = ObjectCompileInput {
         module_path: mp.clone(),
-        defns: vec![], // No functions
-        method_resolutions: cranelisp_types::MethodResolutions::new(),
-        fn_slot_assignments: HashMap::new(),
-        fn_to_module: HashMap::new(),
-        intrinsics: IntrinsicTable::new(),
-        expr_types: HashMap::new(),
-        next_got_slot: 0,
-        cross_module_fns: vec![],
+        targets: vec![], // No functions
     };
 
     let packet = build_cache_packet(

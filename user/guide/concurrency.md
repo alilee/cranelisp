@@ -154,8 +154,7 @@ environment variable needed. Import them by name:
 
 ### `race` — the faster branch wins
 
-Define each branch as a named helper so it reads as a self-contained unit of work
-(this is also the supported shape — see [rough edges](#known-rough-edges)):
+Define each branch as a named helper so it reads as a self-contained unit of work:
 
 ```clojure
 (import [primitives [Pure bind sleep race]])
@@ -227,24 +226,8 @@ standard library (run with `CRANELISP_LIB=stdlib`):
 ```
 
 ```
-CRANELISP_LIB=stdlib cranelisp --run timeout.cl   # exit code 0 — the timer fired
+CRANELISP_LIB=stdlib cranelisp --run timeout.cl
 ```
-
-If the work wins instead — `(timeout 1000 (Pure 42))` — the result is `(Some 42)`.
-
-> **Known limitation (current build) — `core.io` does not compile.** The snippet
-> above is the intended behaviour, but it does **not** run today: the `core.io`
-> module (home of `timeout`, `>>`, `map-io`, `when-io`, `unless-io`,
-> `sequence-io`) fails to compile, so importing it fails the whole program with
-> `codegen failed for core.io/when-io: constructor 'Bind' disagrees on declared
-> parameter identity for 'primitives/IO'`. The cause is one compiler defect —
-> [FIXME 0907](../../design/arch/fixmes/0907-io-bind-existential-ctor-defeats-canonical-glue-derivation.md),
-> under active ruling — which refuses **any** user-written combinator over
-> `(IO a)` values, whether it lives in the standard library or in your own code.
-> There is no workaround: re-spelling the combinator polymorphically, or as a
-> trait method, does not restore it. Until the ruling lands, use the
-> **inline pattern** below, which uses only the `primitives` builtins and is
-> verified working.
 
 #### Free-standing code writes the pattern inline
 
@@ -310,8 +293,8 @@ CRANELISP_PLATFORM_PATH=target/debug cranelisp --run cancel.cl
 EARLY
 ```
 
-(This spelling uses only `primitives` — no standard library — because `core.io`'s
-`timeout`/`>>` do not compile today; see the known-limitation note above.)
+(This spelling is free-standing, so it uses only `primitives` rather than the
+standard-library `timeout` helper.)
 
 `LATE` is absent — the cancelled loser's side effect genuinely did not run. The
 normative cancellation semantics are
@@ -339,28 +322,12 @@ The reference patterns are specified in
 Cranelisp's concurrency works as described above, but there are real edges. The docs
 state them plainly rather than imply production-unattended readiness.
 
-- **`timeout` is stdlib, not a primitive** — and its home module `core.io` does not
-  compile in the current build (FIXME 0907, above), so `timeout` is unavailable to
-  *every* program right now, stdlib or not. Write the `race`/`sleep` pattern inline
-  (above); `sleep`, `race`, and `select` are `primitives` builtins and unaffected.
 - **An idle server stays up but does not self-exit.** A long-running `accept` loop
   with no traffic now stays alive indefinitely (the earlier ~30-second no-progress
   watchdog was retired). The flip side: a foreground `cranelisp --run` of a server
   will **not exit on its own** — it is waiting for the next connection. Run it under
   a process manager, or drive it from a test harness that kills it on completion (as
   `tests/exemplar_web.rs` does), rather than expecting it to return.
-
-### Known rough edges
-
-A few shapes currently miscompile or are unsound — avoid them, and use the supported
-shape instead. The snippets above all sidestep these on purpose:
-
-- **`race` with an *inline* `bind`-lambda argument miscompiles** under the default
-  lenient evaluation. Use **named-helper branches** (as every snippet above does)
-  rather than passing an inline `(bind …)` expression directly to `race`. `select` is
-  unaffected.
-
----
 
 ## See also
 

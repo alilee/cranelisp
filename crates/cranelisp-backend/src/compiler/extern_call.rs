@@ -89,7 +89,7 @@ mod tests {
     #[test]
     fn test_extern_primitive_via_resolved_call_succeeds() {
         use cranelisp_types::ResolvedCall;
-        use cranelisp_types::{DefKind, ModuleEntry, Scheme, Visibility};
+        use cranelisp_types::{Scheme, Visibility};
 
         // Build: (defn __expr__ [] (sconcat 0 0))
         let apply_span = Span::new(2000, 2030);
@@ -156,30 +156,23 @@ mod tests {
         let primitives_path = ModuleFullPath::from("primitives");
         let mut prim_table: SymbolTable = SymbolTable::new(primitives_path.clone());
         let slot = prim_table
-            .allocate_got_slot()
-            .expect("fresh table has free slots");
-        prim_table.got.store_slot(slot, sconcat_stub as *const u8);
-        prim_table.insert(
-            Symbol::from("sconcat"),
-            ModuleEntry::Def {
-                scheme: Scheme {
+            .install_extern(
+                Symbol::from("sconcat"),
+                Scheme {
                     type_vars: Vec::new(),
                     constraints: HashMap::new(),
                     ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
                 },
-                visibility: Visibility::Public,
-                docstring: None,
-                param_names: vec![Symbol::from("a"), Symbol::from("b")],
-                kind: Box::new(DefKind::primitive(slot)),
-                callees: Vec::new(),
-                trait_origin: None,
-                seq: 0,
-                ast: None,
-                codegen_view: None,
-                code: None,
-                value_use: false,
-            },
-        );
+                vec![Symbol::from("a"), Symbol::from("b")],
+                None,
+                0,
+                None,
+                None,
+                Visibility::Public,
+            )
+            .expect("install extern primitive fixture")
+            .index();
+        prim_table.got.store_slot(slot, sconcat_stub as *const u8);
         tables.insert(primitives_path, prim_table);
 
         // With resolved_call present (via enrichment), compilation should
@@ -228,14 +221,18 @@ mod tests {
             let mut st = tables
                 .entry(user_module.clone())
                 .or_insert_with(|| SymbolTable::new(user_module.clone()));
-            st.insert(
-                name.clone(),
-                make_def_entry_with_targets(defn, &resolved_targets),
-            );
+            install_def_entry_with_targets(&mut st, defn, &resolved_targets);
         }
 
         let mut jit = Jit::new_with_symbols(&extras).expect("jit init");
-        let result = compile_to_module(user_module, &[name], &tables, jit.jit_module(), true);
+        let target = crate::test_support::binding_target(&user_module, &name);
+        let result = compile_to_module(
+            user_module,
+            &[target],
+            &tables,
+            jit.jit_module(),
+            true,
+        );
         assert!(
             result.is_ok(),
             "extern primitive sconcat should compile via GOT-indirect when resolved_call is BuiltinFn: {}",

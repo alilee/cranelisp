@@ -91,11 +91,11 @@ fn required_method_bare_type_tail_control_green() {
     assert!(c.contains(":primitives/Int 4"), "got:\n{c}");
 }
 
-// RED — replacing an impl must re-stage an omitted default body and resolve its
-// sibling call against the replacement, not a stale or missing definition.
+// Regression guard — the former FIXME 0832 carrier passed the accepted S121
+// full gate (`f0054f85`, 5,897/5,897): replacing an impl re-stages an omitted
+// default body and resolves its sibling call against the replacement.
 // spec: spec/07-traits.md §7.1.5 and spec/05-definitions.md §5.4.5 — defaults
 // survive impl replacement and dispatch through the replacement's siblings.
-// defect: class=check-gate-leak locus=typecheck/backend re-impl default synthesis — default sibling reference becomes undefined after replacement (FIXME 0832) found=S115 owner=/dev
 #[test]
 fn reimpl_default_body_calls_replaced_sibling() {
     let c = repl(

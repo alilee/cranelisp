@@ -1,6 +1,6 @@
 # exemplar/
 
-Exemplar project for Cranelisp: a **Sudoku Solver**. Owned by the `/port` skill.
+Exemplar project for Cranelisp: a **Sudoku Solver**. Owned by narrow `dev`.
 
 Two coexisting showcases share one pure core:
 
@@ -46,7 +46,22 @@ CRANELISP_PLATFORM_PATH=target/debug CRANELISP_LIB=stdlib \
 `solver.cl` also carries its own simpler `main` (solve-and-print a hard-coded
 puzzle) for a quick smoke test.
 
-**S115 Phase-6a re-verification.** `--run` and `--link` are **byte-identical**
+**S121 Phase-6b current verification.** The linked web-server journey and its
+existing `--run` control both pass the same scratch HTTP route: GET `/` returns
+the form, POST `/solve` returns a valid 81-cell solution, and an unknown path
+returns the checked Not Found response. The focused nextest lane is 2/2 PASS (run
+`e5570c10-a939-4a6b-99eb-af2ca985c3b3`); it proves linked serving, not linked
+fan-out or an ownership measurement. The rejected sandbox-only port-bind run is
+environmental and is not product evidence. The terminating `user.cl` Link/Run
+byte-parity guard remains separate evidence.
+
+The historical 0917 compiler defect is fixed by its focused exact-marginal
+run/link guards. The S121 S99 solved-grid repeated-workload observer also
+passes; the direct full-exemplar warm observer remains a `<=1400` threshold
+with a zero-work control. Do not turn those facts into an unmeasured claim that
+every exemplar entry is exactly balanced.
+
+**Historical S115 Phase-6a re-verification.** `--run` and `--link` are **byte-identical**
 on the headline entry; `tests.cl` is **40/40 under both** the default (parallel)
 and `CRANELISP_NO_LENIENT=1` (serial) toggles; the sprint's language rulings had
 **zero impact** on exemplar source — no line changed. The exemplar's one open
@@ -132,7 +147,7 @@ representation (persistent/structural-share Vec or in-place masks) plus a
 Phase-H release backend is the fix. `test-hard-puzzle` stays excluded from the
 runner until then.
 
-**Solve-path never-freed leak — CURRENT STATE (S118 Phase 6, FIXME 0917).**
+**Historical S118 solve-path leak (FIXME 0917; resolved S120).**
 The leak survived S118's 0810/0782/0726 fixes. It is now measured, reduced to a
 free-standing 30-line repro, and re-attributed; **the S115 attribution below is
 retained as history and is discharged** — read this block first.
@@ -185,7 +200,7 @@ at runtime. Free-standing repro (PrimitivesOnly prelude, zero stdlib,
 subject 4406 allocs / **4** deallocs, control 4406 / 4406 at N=1100; slope 4
 objects/iteration; same in `--link`. Filed as **FIXME 0917** with the program.
 
-This face survives every landed guard: `match_owned_temporary_scrutinee_0810`
+At the S118 checkpoint this face survived `match_owned_temporary_scrutinee_0810`
 (14/14), `mixed_arm_match_forward_0726` (4/4) and the `gen_ownership_flows`
 eliminator axis are all GREEN at this HEAD.
 
@@ -248,7 +263,7 @@ directly; the easy puzzle still solves, exit 0) drops the residue from 11,820 to
 calls** per solve (556 `eliminate-from-peers` × 20 peers), each returning one
 `(Some g)` box that is never released.
 
-**Acceptance criterion (S118-current):** the warm-cache serial-solve residue —
+**S118 acceptance criterion (superseded):** the warm-cache serial-solve residue —
 12,431 for `solver.cl`, 12,376 per solve for the driver loop — must go to **0**
 per solve, and the driver loop's residue must be **flat in N**, not merely
 smaller. The ≤1400 bound of cell #21

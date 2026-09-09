@@ -62,7 +62,7 @@
 ;; a codegen position`): `make-grid` → `user/report` (which USES the built
 ;; grid — feeds `g` to `solve`/`format-board`/`solution-page`), and `peers` →
 ;; the solver's polymorphic Vec verbs (`count`/`get`). The exemplar's
-;; `Grid`/`SolveResult` fields are deliberately UNTYPED (inference-driven);
+;; `Grid`/`SolveResult` keep their carrier types explicit and polymorphic;
 ;; annotating the seed or the ADT field to force the back-flow would be
 ;; fighting the language — un-idiomatic for a showcase. RULED A DEFECT (/qa,
 ;; S114 §12; durable record `tests/plan/s114-test-plan.md`): inference is
@@ -89,10 +89,10 @@
   (Solved [:Int solved-value])
   (Candidates [:Int bitmask]))
 
-(deftype Grid [cells])
+(deftype (Grid cells-type) [:cells-type cells])
 
-(deftype SolveResult
-  (Success [grid])
+(deftype (SolveResult grid-type)
+  (Success [:grid-type grid])
   Unsolvable)
 
 (deftype PropResult

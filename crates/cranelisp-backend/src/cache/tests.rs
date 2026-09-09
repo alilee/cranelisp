@@ -193,8 +193,7 @@ fn test_compile_load_and_execute_cached_module() {
     use cranelift_module::default_libcall_names;
     use cranelift_object::{ObjectBuilder, ObjectModule};
     use cranelisp_types::{
-        DefKind, Defn, DefnVariant, Expr, ModuleEntry, ModuleFullPath, Scheme, Span, Symbol,
-        SymbolTable, Type, UserFnState, Visibility,
+        Defn, DefnVariant, Expr, ModuleFullPath, Span, Symbol, SymbolTable, Type, Visibility,
     };
 
     // Step 1: Create a minimal module with (defn answer [] 42)
@@ -218,35 +217,7 @@ fn test_compile_load_and_execute_cached_module() {
     let module = ModuleFullPath::from("user");
     let tables = dashmap::DashMap::new();
     let mut st = SymbolTable::new(module.clone());
-    st.insert(
-        defn.name.clone(),
-        ModuleEntry::Def {
-            scheme: Scheme {
-                type_vars: vec![],
-                constraints: Default::default(),
-                ty: Type::Fn(vec![], Box::new(Type::Int)),
-            },
-            visibility: Visibility::Public,
-            docstring: None,
-            param_names: vec![],
-            kind: Box::new(DefKind::UserFn {
-                fn_state: UserFnState::NotDetermined,
-            }),
-            callees: vec![],
-            trait_origin: None,
-            seq: 0,
-            ast: defn.variants.first().cloned(),
-            // W0.b: every codegen-reached body carries a typecheck-populated view
-            // (KC-W0-6 fixture obligation; the backend hard-errors on None).
-            codegen_view: Some(crate::test_support::test_codegen_view(
-                &defn.name,
-                defn.variants.first().unwrap(),
-                &Default::default(),
-            )),
-            code: None,
-            value_use: false,
-        },
-    );
+    crate::test_support::install_def_entry(&mut st, defn.clone());
     tables.insert(module.clone(), st);
 
     // Step 2: Compile to .o bytes via compile_to_module<ObjectModule>
@@ -255,8 +226,8 @@ fn test_compile_load_and_execute_cached_module() {
     let mut obj_module = ObjectModule::new(obj_builder);
 
     crate::compile_to_module(
-        module,
-        std::slice::from_ref(&defn.name),
+        module.clone(),
+        std::slice::from_ref(&crate::test_support::binding_target(&module, &defn.name)),
         &tables,
         &mut obj_module,
         false,
@@ -283,63 +254,38 @@ fn test_compile_load_and_execute_cached_module() {
 // spec: design/backend/module-caching.md §8 — imported_modules extracts dep paths
 #[test]
 fn test_imported_modules_extracts_deps() {
-    use cranelisp_types::{FQSymbol, ModuleEntry, Scheme, Symbol, Type};
+    use cranelisp_types::{FQSymbol, Symbol};
 
     let dir = tempfile::tempdir().unwrap();
     let mp = ModuleFullPath::from("main.mid");
     let mut table = SymbolTable::new(mp.clone());
 
     // Add an Import entry from main.mid.leaf
-    table.insert(
-        Symbol::from("base-val"),
-        ModuleEntry::Import {
-            source: FQSymbol {
+    table
+        .expose_candidate(
+            Symbol::from("base-val"),
+            FQSymbol {
                 module: ModuleFullPath::from("main.mid.leaf"),
                 symbol: Symbol::from("base-val"),
             },
-            visibility: cranelisp_types::Visibility::Private,
-        },
-    );
+            cranelisp_types::Visibility::Private,
+        )
+        .expect("expose imported fixture");
 
     // Add a Def entry (should NOT appear in imported_modules)
-    table.insert(
-        Symbol::from("relay"),
-        ModuleEntry::Def {
-            scheme: Scheme {
-                type_vars: vec![],
-                constraints: std::collections::HashMap::new(),
-                ty: Type::Fn(vec![], Box::new(Type::Int)),
-            },
-            visibility: cranelisp_types::Visibility::Public,
-            docstring: None,
-            param_names: vec![],
-            kind: Box::new(cranelisp_types::DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Concrete {
-                    got_slot: 0,
-                    mode_summary: None,
-                },
-            }),
-            callees: vec![],
-            trait_origin: None,
-            seq: 0,
-            ast: None,
-            codegen_view: None,
-            code: None,
-            value_use: false,
-        },
-    );
+    crate::test_support::insert_user_fn_stub(&mut table, "relay", 0);
 
     // Add an Import from primitives (should be excluded)
-    table.insert(
-        Symbol::from("add-i64"),
-        ModuleEntry::Import {
-            source: FQSymbol {
+    table
+        .expose_candidate(
+            Symbol::from("add-i64"),
+            FQSymbol {
                 module: ModuleFullPath::from("primitives"),
                 symbol: Symbol::from("add-i64"),
             },
-            visibility: cranelisp_types::Visibility::Private,
-        },
-    );
+            cranelisp_types::Visibility::Private,
+        )
+        .expect("expose primitive import fixture");
 
     let cached = CachedModule {
         symbol_table: table,

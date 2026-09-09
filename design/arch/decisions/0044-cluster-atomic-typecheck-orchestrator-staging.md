@@ -3,7 +3,7 @@ number: 0044
 title: Cluster-atomic typecheck via orchestrator-owned staging + SymbolTableAccess; single `check_forms` facade
 status: pre-implementation
 filed: sprint 66 (Phase 5 Wave 3a structural-finding resolution)
-amended: sprint 66 Phase 3 (FIXME 0167 — Approach B; staging mutation via `current_symbol_table_mut` accessor; SymbolTableAccess introduction; invariant 2 revision; pass return type changes to `Result<(), CheckError>`); sprint 66 Phase 3 (FIXME 0168 — Sequencing α/β split; Wave 3a-α locality-correctness refactor precedes Wave 3a-β triad re-fire — see Decision 0046); 2026-05-13 (state-threading resolution — two-pass split collapsed into single `check_forms` function; Pass-1-to-Pass-2 working state internalised; state-threading hole closed by construction)
+amended: sprint 66 Phase 3 (FIXME 0167 — Approach B; staging mutation via `current_symbol_table_mut` accessor; SymbolTableAccess introduction; invariant 2 revision; pass return type changes to `Result<(), CheckError>`); sprint 66 Phase 3 (FIXME 0168 — Sequencing α/β split; Wave 3a-α locality-correctness refactor precedes Wave 3a-β triad re-fire — see Decision 0046); 2026-05-13 (state-threading resolution — two-pass split collapsed into single `check_forms` function; Pass-1-to-Pass-2 working state internalised; state-threading hole closed by construction); 2026-09-03 (source-ordered `defmacro` checkpoints precede and are outside the non-macro HM rollback domain)
 canonical_location: design/arch/facades/typecheck.md §"check_forms — cluster check"; design/arch/facades/int.md §"process_cluster — the cluster-atomic orchestration loop"; design/arch/facades/types.md §"`ParsedEntry`" + §"`View`"; design/arch/sequences/exec-flow-compilation.mmd, exec-flow-repl.mmd, concurrency-symbol-table-entry.mmd
 amends: []
 amended_by: []
@@ -16,6 +16,23 @@ amended_by_fixme: 0167, 0168
 # 0044 — Cluster-atomic typecheck via orchestrator-owned staging + two pure passes
 
 ## Statement
+
+> **2026-09-03 macro-checkpoint amendment.** “Cluster” in this decision now
+> means the fully expanded **non-macro** HM entry set passed to `check_forms`.
+> Each source-ordered `defmacro` is an independent, module-local compile-time
+> checkpoint: its parent, complete clause set, and defining-module generated
+> realizations publish together only after
+> their complete expansion-time dependency/generated-realization closure has
+> typechecked and codegenerated successfully, and that successful checkpoint
+> is not rolled back by a later form's failure. Dependency modules publish in
+> their own module transactions. This narrows the “whole cluster” statements
+> below; it does not weaken atomicity within `check_forms`, split non-macro
+> forward-reference scope, or introduce per-form typecheck publication. The
+> rejected cluster-wide macro transaction, unpublished-candidate invocation,
+> temporary GOT candidate stack, and cross-module rollback domain are retained
+> only in their historical documents, not as current authority. No additional
+> public API, schema, backend contract, or platform interface follows from this
+> amendment.
 
 > **2026-05-13 third amendment — single `check_forms` facade (state-threading resolution).** The two-pass facade split (`check_form_signatures` + `check_form_body`) below is **superseded** by a single free function `cranelisp_typecheck::check_forms`. The two-pass discipline (Pass 1 signatures, Pass 2 bodies — spec §5.13.1) is preserved as an implementation-phase ordering inside `check_forms`; it does not cross the facade. Pass-1-to-Pass-2 working state lives inside that one stack frame, dropped when the call returns. The state-threading hole (FIXME 0177 — `defn_type_vars`, default-method-defn deferrals, etc. could not survive across two separate free-function calls without a public accumulator) is closed by construction: no working state crosses the facade because there is only one call. `SymbolTableAccess`, the staging-vs-live accessor, `&mut ctx` threading, the 91-register-call-site preservation, whole-cluster atomic commit, and every other structural commitment below remain. What changes: a single canonical signature, and the retirement of `ModuleCheckAccumulator` from public-API consideration (neither typecheck-side nor `int`-side — see facades for the new shape). The orchestrator retries the whole `check_forms` call on `Err(Gap)` (no per-form retry granularity, because there is no per-form facade call). Canonical surface:
 >
@@ -58,6 +75,12 @@ A `View<'a, C, L>` is the read-side abstraction: a thin newtype on `cranelisp-ty
 - A REPL input is a one-form cluster (per the parallel `/spec` resolution of FIXME 0165 — non-`begin`-grouped REPL inputs are processed as single-form clusters; cross-input forward references are NOT supported).
 - A `(begin form₁ ... formN)` REPL input is the explicit multi-form cluster boundary — the orchestrator unwraps and processes the whole list as one cluster.
 - Batch (file) compilation is one big cluster covering the file's non-structural forms (per spec §5.13.1's MAY-reference-freely rule at file scope).
+
+A source-ordered macro checkpoint is a compile-time publication boundary, not
+a new HM cluster boundary: non-macro forms on both sides of a `defmacro` still
+belong to the same batch or explicit REPL `begin` HM cluster and retain their
+forward-reference scope. Only the macro parent and clauses publish at the
+checkpoint.
 
 ## `SymbolTableAccess` (Approach B is canonical)
 

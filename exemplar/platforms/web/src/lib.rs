@@ -1,42 +1,40 @@
 //! `web` platform for cranelisp -- a hand-rolled HTTP/1.0 server cdylib.
 //!
-//! ## S96 Chunk B (Wave B4) — the v8 poll-shape rewrite (FIXME 0465 resolution)
+//! ## S96 Chunk B (Wave B4) — the poll-shape rewrite (FIXME 0465 resolution)
 //!
 //! Originally (Sprint 86 Wave E.1, FIXME 0405) a v6 single-stream BLOCKING
 //! `listen`/`accept`/`send` over a process-global `Mutex<ServerState>`. The S96
-//! single-ABI v8 cutover (`design/arch/platform-interface.md` §6.8.0a) makes the
+//! single-ABI cutover (`design/arch/platform-interface.md` §6.8.0a) makes the
 //! reactor unconditional, so the connection lifecycle is now expressed as
 //! **poll-shape leaves over per-connection tokens**
-//! (`design/platform/poll-support.md §3.5`, the FIXME-0465 interface):
+//! (`design/platform/poll-leaf-authoring.md` §3):
 //!
-//! | effect | shape | FQ signature | leading pair |
+//! | effect | shape | FQ signature | natural arguments |
 //! |---|---|---|---|
 //! | `bind-listener` | blocking (`Sequential`) | `(Fn [Int Int] (IO web/Listener))` | none |
-//! | `accept-conn` | poll `ResourceSerial` | `(Fn [Int Int Int] (IO web/Connection))` | `[listener_fd, 1, listener_fd]` |
-//! | `read-conn` | poll `ResourceSerial` | `(Fn [Int Int Int] (IO web/Request))` | `[conn_token, 1, conn_fd]` |
-//! | `send-conn` | poll `ResourceSerial` | `(Fn [Int Int Int web/Response] (IO Int))` | `[conn_token, 1, conn_fd, resp]` |
+//! | `accept-conn` | poll `Produce` | `(Fn [web/Listener] (IO web/Connection))` | `[listener]` |
+//! | `read-conn` | poll `Consume` | `(Fn [web/Connection] (IO web/Request))` | `[connection]` |
+//! | `send-conn` | poll `Consume` | `(Fn [web/Connection web/Response] (IO Int))` | `[connection, response]` |
 //!
-//! `bind-listener` (blocking) and the three poll leaves coexist in ONE v8
+//! `bind-listener` (blocking) and the three poll leaves coexist in one
 //! `declare_platform!` manifest — exactly the mixed shape stdio's
 //! `print`+`read-line` proved in Chunk A. The poll leaves are written against the
 //! extracted `poll_support` suite ([`PollEnv`] for the env, [`Reactor`] for
 //! fd-readiness, [`PollState`] for the first-poll/re-poll phase) — web is the
-//! **3rd `poll_support` consumer**, adding NO new scaffold (`poll-support.md
-//! §3.5.4`). Two parts stay hand-written (the §2.4 "what `poll_support` does NOT
+//! **3rd `poll_support` consumer**, adding no new scaffold
+//! (`poll-leaf-authoring.md` §5). Two parts stay hand-written (what
+//! `poll_support` does not
 //! own"): the ADT construct/read on the ready phase (via `CLAdt` +
 //! `web.platform-schema`) and the syscall + line-buffering.
 //!
-//! ### The connection-token model (gate (a) non-re-entry, `poll-support.md §3.2`)
+//! ### The connection-token model (`poll-leaf-authoring.md` §3)
 //!
 //! `accept-conn` mints a FRESH connection token (`token == conn fd`) on
 //! listener-readable, so distinct connections are concurrent by construction (the
 //! Chunk-B fan-out vehicle); `read-conn`/`send-conn` ride that token
-//! (`capacity == 1` ⇒ serial within one connection). The `(token, capacity)`
-//! leading pair the `.cl` wrappers supply (`web.cl`) is peeled by the backend to
-//! the IO node's reserved slots (token @abs 32, capacity @abs 40) and drives the
-//! A3 acquire-around-poll permit — the poll-fn never sees them; it reads only its
-//! re-passed fd at `state+8` (`PollEnv::arg(0)`) and (for `send-conn`) the
-//! `Response` base ptr at `state+16` (`arg(1)`).
+//! (`capacity == 1` ⇒ serial within one connection). The scheduling token is
+//! projected by the platform from the handle and passed with capacity 1 through
+//! `ctx.acquire`; the poll-fn reads only natural arguments from `PollEnv`.
 //!
 //! ### Internal state: fd-keyed maps, NOT a process-global `Mutex<ServerState>`
 //!
@@ -64,7 +62,7 @@ use std::sync::{LazyLock, Mutex};
 use cranelisp_platform::poll_support::{PollEnv, PollState, PollStep, Reactor};
 use cranelisp_platform::*;
 
-/// v9 token projection (`poll-support.md §3.6.1`): the platform computes a scheduling
+/// v9 token projection (`poll-leaf-authoring.md` §4): the platform computes a scheduling
 /// token from the connection fd it holds. Read and write project **distinct**
 /// per-direction tokens off one full-duplex handle, so `read`/`send` on a connection
 /// do not serialize against each other; across connections the fds differ ⇒ the tokens
@@ -77,41 +75,6 @@ fn write_tok(fd: i32) -> u64 {
 }
 
 static HOST: HostContext = HostContext::new();
-
-// ---------------------------------------------------------------------
-// ADT marker types -- carry the FQ cranelisp identity for schema lookup
-// ---------------------------------------------------------------------
-
-/// Marker for the `web/Listener` ADT (the value `bind-listener` constructs):
-/// `[fd, pool]` (`web.cl`). `fd` is the bound listener socket fd (accept's serial
-/// admission token); `pool` is `N`, the Chunk-B in-flight-connection ceiling.
-pub struct Listener;
-impl CLAdtType for Listener {
-    const TYPE_NAME: &'static str = "web/Listener";
-}
-
-/// Marker for the `web/Connection` ADT (the value `accept-conn` mints). **v9
-/// ctx-vtable:** an OPAQUE handle carrying the platform's `r` in a GENUINE `fd` field
-/// (`(deftype Connection [:primitives/Int fd])`, `web.cl`). `r == fd`; the platform
-/// reads `fd` back out of the handle and PROJECTS the per-direction token from it
-/// (`read_tok`/`write_tok`) — the token is never stored on the value. No header slot,
-/// no `(token, capacity)` fields (the dead v8 leading-pair shape).
-pub struct Connection;
-impl CLAdtType for Connection {
-    const TYPE_NAME: &'static str = "web/Connection";
-}
-
-/// Marker for the `web/Request` ADT (the value `read-conn` constructs).
-pub struct Request;
-impl CLAdtType for Request {
-    const TYPE_NAME: &'static str = "web/Request";
-}
-
-/// Marker for the `web/Response` ADT (the value `send-conn` reads).
-pub struct Response;
-impl CLAdtType for Response {
-    const TYPE_NAME: &'static str = "web/Response";
-}
 
 // ---------------------------------------------------------------------
 // Pure HTTP parsing / formatting (the unit-tested core) -- UNCHANGED
@@ -356,7 +319,7 @@ fn adt_into_raw<T: CLAdtType>(owned: CLOwned<CLAdt<T>>) -> CLAdt<T> {
 /// `accept-conn` poll-fn — **v9 Produce** (`(Fn [web/Listener] (IO web/Connection))`).
 /// Leaf arg 0 (`state+8`) is the `web/Listener` ADT base ptr; the poll-fn reads its
 /// genuine `fd` field. `accept` is structurally serial in the serve loop, so role
-/// Produce takes NO listener-token acquire (`poll-support.md §3.5.2`) — it only
+/// Produce takes no listener-token acquire (`poll-leaf-authoring.md` §3) — it only
 /// registers listener-readable and accepts. On a connection it mints a FRESH opaque
 /// `Connection [conn_fd]` carrying the new `r` (`r == fd`), materialized at `Ready`.
 ///
@@ -419,7 +382,7 @@ fn accept_step(listener_fd: i32, reactor: &Reactor) -> PollStep {
 /// `read-conn` poll-fn — **v9 Consume** (`(Fn [web/Connection] (IO web/Request))`).
 /// Leaf arg 0 (`state+8`) is the `web/Connection` ADT base ptr; the poll-fn reads its
 /// genuine `fd` field, projects `read_tok(fd)`, and calls `ctx.acquire` ITSELF
-/// (`poll-support.md §3.6.1`). On `Parked` ⇒ `Pending` (backpressure). Then reads
+/// (`poll-leaf-authoring.md` §4). On `Parked` ⇒ `Pending` (backpressure). Then reads
 /// (nonblocking) into the per-fd accumulation buffer until a complete request, parses
 /// it, and constructs a `web/Request`; parks on `EWOULDBLOCK`. The host releases the
 /// permit on `Ready`/cancel.
@@ -709,6 +672,20 @@ declare_platform! {
     version: "0.1.0",
     host: HOST,
     schema: include_str!("web.platform-schema"), // GENERATED -- regenerated via /platform-schema web
+    adts: [
+        /// Marker for the `web/Listener` ADT (the value `bind-listener`
+        /// constructs). Its `fd` is accept's serial-admission token and `pool`
+        /// is the in-flight connection ceiling.
+        Listener => "web/Listener",
+        /// Marker for the opaque `web/Connection` handle. The platform reads
+        /// its genuine `fd` field and projects distinct read/write tokens; no
+        /// scheduling token is stored on the language value.
+        Connection => "web/Connection",
+        /// Marker for the `web/Request` ADT constructed by `read-conn`.
+        Request => "web/Request",
+        /// Marker for the `web/Response` ADT read by `send-conn`.
+        Response => "web/Response",
+    ],
     functions: [
         bind_listener {
             cl_name: "bind-listener",
@@ -838,7 +815,7 @@ mod tests {
 
     // -----------------------------------------------------------------
     // content_length_of -- the poll-read accumulator's header scan
-    // design: design/platform/poll-support.md §3.5.2 -- read-conn accumulates
+    // design: design/platform/poll-leaf-authoring.md §3 -- read-conn accumulates
     // until header terminator + declared body
     // -----------------------------------------------------------------
 

@@ -21,7 +21,7 @@ use std::sync::{LazyLock, Mutex};
 
 use cranelift_module::Module;
 
-use cranelisp_types::{FQSymbol, ModuleEntry, ModuleFullPath, MonoExpr, Span, Symbol};
+use cranelisp_types::{FQSymbol, ModuleFullPath, MonoExpr, Span, Symbol};
 
 use super::FnCompiler;
 
@@ -256,8 +256,8 @@ where
         let mut graph: HashMap<FQSymbol, Vec<FQSymbol>> = HashMap::new();
         for table_ref in self.ctx.symbol_tables.iter() {
             let module = table_ref.key().clone();
-            for (name, entry) in table_ref.value().symbols.iter() {
-                if let ModuleEntry::Def { callees, .. } = entry {
+            for (name, entry) in table_ref.value().all_symbols() {
+                if !entry.callees().is_empty() {
                     let caller = FQSymbol {
                         module: module.clone(),
                         symbol: name.clone(),
@@ -265,7 +265,7 @@ where
                     graph
                         .entry(caller)
                         .or_default()
-                        .extend(callees.iter().cloned());
+                        .extend(entry.callees().iter().cloned());
                 }
             }
         }

@@ -92,7 +92,7 @@ program the corpus currently compiles and runs:
 - `spec_field_accessor` (2): `control_polymorphic_deftype_level_product_mints_both_accessors_green`,
   `control_same_name_constructor_arm_mints_both_accessors_green`
 - `spec_04_expressions` (1): `fn_lambda_param_free_var_annotation`
-- `spec_05_definitions` (1): `deftype_product_shortcut_field_names`
+- `spec_05_definitions` (1): explicit-field §5.2.4 rejection/registration coverage
 
 ### The two further escapee families
 
@@ -100,14 +100,14 @@ Both are ordinary `defn`-shaped frames — not `ConstrADT` bodies — so the rul
 gate refuses them, and neither is a balanced counted-borrow pair, so widening the
 gate to admit them is not I-CT-licensed either. Verbatim from the refusals:
 
-1. **Synthetic field accessors of a generic or undeclared-field product.**
+1. **Synthetic field accessors of a generic product.**
 
    ```
    codegen failed for user/Box.v: release site in 'Box.v' reached a non-concrete
    type ADT(FQTypeName { module: "user", name: "Box" }, [Var(0)])
    ```
 
-   `(deftype Pair [first second])` and `(deftype (Box a) [:a v])` both mint
+   `(deftype (Pair a b) [:a first :b second])` and `(deftype (Box a) [:a v])` both mint
    accessors whose `self` parameter is the ADT with residual type ARGS. This is
    the same "compiled once per declaration, signature-driven" shape §4.1 argues
    for the ctor — and `concrete-boundary-type.md` §3.1.1 pairs the **ctor and
@@ -260,8 +260,8 @@ they cannot substitute for the negatives.
   assertion's second half, and it fails the same way. **RESOLVED S118 W8
   (`/arch`): §3.1.1 point 2 + BC §3 invariant 9 amended — template-path `Err`
   classifies `Mixed` (ratified as-built), the *classification* rule is settled
-  upstream of this FIXME's release-side ruling, and the undeclared-field
-  declaration-time question is FIXME 0912 (`/spec`).**
+  upstream of this FIXME's release-side ruling. Missing field types are rejected
+  at the frontend under the resolved FIXME 0912 rule.**
 - Related: `design/arch/safety-invariants.md` §4 — a silent shallow release that
   deallocs without discharging fields is an unasserted-narrowing instance
   (Principle 25); the accessor/trait families are currently in it.
@@ -270,7 +270,7 @@ they cannot substitute for the negatives.
 
 The S118 golden re-baseline (FIXME 0908; MANIFEST §Re-baselines, S118 entry)
 **blessed a defect sighting of family 1**: `f4_sudoku::user::Grid.cells` — the
-synthetic accessor of the undeclared-field product `(deftype Grid [cells])` —
+synthetic accessor of the explicit generic product `(deftype (Grid a) [:a cells])` —
 drifted into a SHALLOWER release (the golden's transitive step gone, no glue
 call taking it over; the only frame in either lane where a teardown level was
 lost). The blessed golden is a leak record, not certification.

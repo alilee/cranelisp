@@ -82,6 +82,16 @@ doc is subordinate.
 `terminal-styling.md` (the `styled::render` role-span seam).
 
 **Active subordinate feature docs** (scoped, live):
+`s121-c6-visit.md` (S121 — **the current entry point for this surface**: the one
+C6 binary/exe-bundle visit. Ordered bundles N1–N6, per-FIXME dispositions for
+the 21 allocated records plus the C6 half of 0553, the exact `src/` reservations,
+public-API/schema/ABI effects (two individually approved and baseline-confirmed
+types additions; zero schema/ABI change), and the `/review` rejects and
+falsifiers. Reconciled 2026-09-01: the two blockers it opened with are ruled
+upstream — 0869's producer is C3's (`design/arch/trait-impl-cache-carrier.md`
+§9) and 0798's scoped alias lookup is C1's walk and mint
+(`design/arch/module-alias-scoped-lookup.md`) — so N3's entry gates are
+ordinary wash landings and nothing is owed to C6),
 `index-worker-isolation.md` (S110, FIXME 0604 — the index-feed isolation contract),
 `repl-decomposition.md` (S110, FIXME 0606 — the `repl.rs` module-cut sign-off),
 `quote-shield.md` (S111, FIXME 0613 — `expand_scoped` holds quoted data out of Pass-1
@@ -94,7 +104,8 @@ transform to the def/const finalize/typecheck-error path),
 protocol, ruled pre-implementation: single-owner marshalling, transfer-by-ABI-
 crossing, exactly-once result discharge through `consume_sexp`, the
 `MacroClauseAbi` ownership declaration [Rule 0], the arena/epoch rejection, and
-the §9 FIXME-0863 interaction surface; §8 is the `/dev` gate set, D0/D1 binding),
+the §9 S121 macro-checkpoint interaction surface; §8 is the `/dev` gate set,
+D0/D1 binding),
 `macro-marshal-rc-protection.md` (S114, FIXME 0638 — the marshal-boundary RC
 contract: deep protection of the whole marshalled arg tree, curing the macro-clause
 interior-alias double-free. **§2's mechanism is SUPERSEDED by
@@ -103,10 +114,14 @@ negative-control-twin argument, not as current mechanism),
 `expansion-qualification-scope.md` (S114, FIXME 0670 — `qualify_expanded_sexp`
 becomes scope-aware, skipping value-level binder slots; wave-1 of the F8 chain,
 paired with frontend `binder-head-reject.md` re-landing),
-`prelude-table-write-isolation.md` (S114/S115, FIXME 0604 — the foreground
-public-write chokepoint contract; companion to `index-worker-isolation.md`'s
-background half; S115 corrects the predicate to declared-export closure + routes
-`commit_staging_to_live`),
+`prelude-table-write-isolation.md` (S114/S115/S121, FIXMEs 0604 + 0740 + 0793 —
+the foreground public-write chokepoint contract; companion to
+`index-worker-isolation.md`'s background half; S115 corrected the predicate to
+declared-export closure and routed `commit_staging_to_live`; **S121 closed the
+census** with the three session-init rows, the scope-boundary statement, the two
+factual corrections 0740 carried, and one recorded residual — the gate runs
+*after* `commit_slotted_def`, so "nothing committed" on rejection is true of the
+table and not of the slot),
 `impl-redefinition-hot-reload.md` (S115, FIXME 0714 / spec §5.4.5 — a same-type
 re-impl hot-reloads via the existing `commit_staging_to_live`→`commit_slotted_def`
 GOT-patch path; the silent-ignore locus is the `derive_codegen_batch` TraitImpl
@@ -116,11 +131,12 @@ program-result owner across REPL / `--run` / cache-hit / linked startup —
 observe-then-release, exact-once, type-directed via backend's canonical per-concrete
 glue; three resolution adapters, no second heap-type predicate; §8 is the serial
 implementation order, §9 the flip set + armed acceptance leg),
-`s117-conformance-recovery.md` (S117 — the W3a prepared-turn transaction
-[prepare → whole-batch codegen → infallible publish, one cadence for eval and
-worker], W3b presentation readers, and the W7 cached-macro executable-clause
-repair [§2.1.1]; §6 + §1.1.2 are the deferred FIXME-0863 handoff, §6.5 the S118
-precondition re-verification and 0745-ordering note),
+`s117-conformance-recovery.md` (S117, amended S121 — the ordinary W3a
+prepared-turn transaction [prepare → whole-batch codegen → publish, one cadence
+for eval and worker], W3b presentation readers, and the current source-ordered
+macro checkpoint at §1.1.2/§2.1: complete macro-local typecheck+codegen,
+immediate one-module publication, source-continuation retry and deletion of the
+former temporary world; §6 carries presentation),
 `multi-sig-introspection.md` (S113 — extended with the D1 constraint-display
 read-follow, §2.4), `private-submodule-import.md`, `symbol-table-generics.md`,
 `bare-primitive-value-path.md`.

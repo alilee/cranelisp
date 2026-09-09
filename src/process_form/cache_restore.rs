@@ -14,8 +14,8 @@
 use std::path::Path;
 
 use cranelisp_types::{
-    CranelispError, ErrorLocation, ImportNames, ImportSpec, ModuleEntry, ModuleFullPath,
-    PlatformSpec, Span, Symbol,
+    CranelispError, Decl, ErrorLocation, ImportNames, ImportSpec, Life, ModDecl, ModuleFullPath,
+    PlatformSpec, Realization, Span, Symbol, WrittenTraitImpl,
 };
 
 use crate::worker::{ModuleCompiler, ensure_typecheck_product};
@@ -42,32 +42,41 @@ pub(super) fn try_cache_hit_load(
     ctx: &mut ModuleCompiler,
     dep: &ModuleFullPath,
     dep_file: &Path,
-) -> bool {
+) -> Result<bool, CranelispError> {
     // Already-installed guard: another path may have installed this dep
     // already (concurrent load, prelude pre-load). Skip without re-reading.
     // Returning `true` signals "this dep is satisfied — caller proceeds";
     // the caller will register imports against the existing table.
     if ctx.symbol_tables.contains_key(dep) {
-        return true;
+        return Ok(true);
     }
 
     // Phases 1–3: validity check + meta decode + `.o`-exists gate. `None` on any
     // miss → caller returns `false`.
     let (cached, source_hash, needs_inmem_load) = match cache_validity_check(ctx, dep, dep_file) {
         Some(t) => t,
-        None => return false,
+        None => return Ok(false),
     };
 
     // Phase 4: extract all data BEFORE moving the symbol table (avoids clone /
     // honours the extract-before-move ordering invariant).
     let specs = extract_cached_specs(&cached);
 
+    // A writer-side impl record publishes its discovery shell into the trait's
+    // HOME table. Make those homes available before consuming/installing the
+    // writer cache; if a home is not itself cache-restorable, treat the writer
+    // as an ordinary miss so fresh typecheck can drive the dependency. This
+    // also keeps malformed metadata distinct from a benign cache miss.
+    if !prepare_cached_trait_homes(ctx, dep, &specs.written_trait_impls)? {
+        return Ok(false);
+    }
+
     // Restore type info into TC (consumes `symbol_table` by value).
     install_cached_table(ctx, dep, cached);
 
     // Re-resolve platform fn ptrs. A failure aborts the cache-hit (miss).
     if !reresolve_cached_platforms(ctx, dep, &specs.platforms) {
-        return false;
+        return Ok(false);
     }
 
     // Phases 5–8: scheduler register + typecheck-product + record-hit +
@@ -82,12 +91,18 @@ pub(super) fn try_cache_hit_load(
     );
 
     // Phase 9: recurse on transitive imports + re-export targets.
-    register_transitive_cached_imports(ctx, &specs.imports);
+    register_transitive_cached_imports(ctx, &specs.imports)?;
     // Re-export targets are transitive deps too (FIXME 0387 — prelude's
     // `(export [text.string [str]])` etc.). Walk them through the same path.
-    register_transitive_cached_imports(ctx, &specs.reexport_deps);
+    register_transitive_cached_imports(ctx, &specs.reexport_deps)?;
+    enrol_cached_written_impls(ctx, dep, &specs.written_trait_impls)?;
+    // Declared submodules are part of the parent's load graph even when they
+    // are private and never imported. A fresh parent enrolls them after its
+    // own cluster commits; cache restore must mirror that structural walk or
+    // commands such as `/run-tests parent.test` cannot see the child at all.
+    register_cached_submodules(ctx, dep, &specs.submodules)?;
 
-    true
+    Ok(true)
 }
 
 /// Phases 1–3 of `try_cache_hit_load`: cache-dir check, source read + hash,
@@ -135,24 +150,56 @@ fn cache_validity_check(
         Ok(Some(c)) => c,
         _ => return None,
     };
+    if !cache_macro_clauses_valid(&cached.symbol_table) {
+        return None;
+    }
 
     // 3. Check .o exists — UNLESS this is a generic-only module that codegens
     //    nothing (S84 Phase 4B, FIXME 0387). The `.meta.json` persists
     //    independently of the `.o` now: a module whose only defs are slot-less
     //    `Polymorphic` templates produces no codegen object (its
-    //    `defined_symbols()` batch is empty), yet its schemes still cache so a
+    //    `codegen_targets()` batch is empty), yet its schemes still cache so a
     //    downstream module can monomorphise it on cold-load. For such a module a
     //    missing `.o` is the CORRECT cached state, not a miss; we install its
     //    schemes and register it WITHOUT scheduling an `.o` load. A non-empty
     //    codegen batch with a missing `.o` is still a genuine cache miss
     //    (recompile).
-    let has_codegen_targets = cached.symbol_table.defined_symbols().next().is_some();
+    let has_codegen_targets = cached.symbol_table.codegen_targets().next().is_some();
     if !cached.has_object && has_codegen_targets {
         return None;
     }
     let needs_inmem_load = cached.has_object;
 
     Some((cached, source_hash, needs_inmem_load))
+}
+
+/// Cache metadata is accepted only when every owned macro clause has the
+/// canonical expansion argument ABI, a concrete result, and a concrete body.
+/// Macro bodies retain their inferred concrete result type: definition alone
+/// does not require it to be `Sexp`; invocation validates the produced value.
+/// Family roster identity and lifecycle shape are validated by the types-owned
+/// deserialization gate.
+fn cache_macro_clauses_valid(table: &cranelisp_types::SymbolTable) -> bool {
+    let abi = super::macro_clause::macro_clause_scheme();
+    for (_, binding) in table.all_symbols() {
+        let Decl::Macro(declaration) = &binding.declaration else {
+            continue;
+        };
+        for clause in &declaration.clauses {
+            if !super::macro_clause::same_macro_abi(&clause.callable.scheme, &abi)
+                || !matches!(
+                    clause.callable.life,
+                    Life::Concrete {
+                        realization: Realization::Body { .. },
+                        ..
+                    }
+                )
+            {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 /// Structural specs pulled out of a `CachedModule`'s symbol table BEFORE it is
@@ -167,6 +214,12 @@ struct CachedSpecs {
     imports: Vec<ImportSpec>,
     /// Re-export edges (as `ImportSpec`-shaped specs) — also transitive deps.
     reexport_deps: Vec<ImportSpec>,
+    /// `(mod ...)` / `(mod- ...)` declarations — enrolled recursively just as
+    /// they are after a fresh parent compile.
+    submodules: Vec<ModDecl>,
+    /// Canonical writer-side trait implementation records. Cache restore
+    /// re-enrols each one into its trait-home table.
+    written_trait_impls: Vec<WrittenTraitImpl>,
 }
 
 /// Phase 4: extract every spec the install + register + recurse phases need out
@@ -177,9 +230,12 @@ fn extract_cached_specs(cached: &cranelisp_backend::cache::CachedModule) -> Cach
     let symbols: StdHashSet<Symbol> = cached
         .symbol_table
         .all_symbols()
-        .filter_map(|(name, entry)| match entry {
-            ModuleEntry::Def { .. } => Some(name.clone()),
-            _ => None,
+        .filter_map(|(name, entry)| {
+            matches!(
+                entry.declaration,
+                Decl::Callable(_) | Decl::Overloaded(_) | Decl::Macro(_)
+            )
+            .then(|| name.clone())
         })
         .collect();
     // Collect names of functions with GOT slots for trait impl restoration.
@@ -187,13 +243,8 @@ fn extract_cached_specs(cached: &cranelisp_backend::cache::CachedModule) -> Cach
     // 0356/0357) — a Def with a callable slot is a got-slotted function.
     let mangled_names: Vec<String> = cached
         .symbol_table
-        .all_symbols()
-        .filter_map(|(name, entry)| match entry {
-            ModuleEntry::Def { .. } if entry.callable_got_slot().is_some() => {
-                Some(name.as_ref().to_string())
-            }
-            _ => None,
-        })
+        .codegen_targets()
+        .map(|(target, _)| format!("{target:?}"))
         .collect();
     // `mangled_names` is preserved here as a marker for the cached-fn set in
     // case future audits need it (it was a no-op pass-through in the original).
@@ -232,13 +283,76 @@ fn extract_cached_specs(cached: &cranelisp_backend::cache::CachedModule) -> Cach
             span: e.span,
         })
         .collect();
+    let submodules = cached.symbol_table.submodules.clone();
+    let written_trait_impls = cached.symbol_table.written_trait_impls.clone();
 
     CachedSpecs {
         symbols,
         platforms,
         imports,
         reexport_deps,
+        submodules,
+        written_trait_impls,
     }
+}
+
+/// Ensure every foreign trait-home table required by a cached writer is
+/// synchronously restored before the writer table is consumed. A valid cache
+/// miss returns `Ok(false)`; malformed provenance is a hard cache diagnostic.
+fn prepare_cached_trait_homes(
+    ctx: &mut ModuleCompiler,
+    writer: &ModuleFullPath,
+    records: &[WrittenTraitImpl],
+) -> Result<bool, CranelispError> {
+    for record in records {
+        let canonical_names_present = !record.trait_name.module.as_ref().is_empty()
+            && !record.trait_name.name.as_ref().is_empty()
+            && !record.impl_type.module.as_ref().is_empty()
+            && !record.impl_type.name.as_ref().is_empty();
+        if &record.impl_module != writer || record.methods.is_empty() || !canonical_names_present {
+            // Malformed persisted provenance is cache-stale: refuse this
+            // sidecar before installing the writer so the caller can rebuild
+            // it from source. A divergent live shell is different and remains
+            // a hard error at `enrol_written_trait_impl` below.
+            return Ok(false);
+        }
+        let home = &record.trait_name.module;
+        if home == writer || ctx.symbol_tables.contains_key(home) {
+            continue;
+        }
+        let Some(home_file) =
+            crate::pipeline::resolve_module_file(home, ctx.project_root, ctx.lib_dirs)
+        else {
+            return Ok(false);
+        };
+        if !try_cache_hit_load(ctx, home, &home_file)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Publish cached writer records through the single strict trait-home
+/// enrollment primitive. Divergent occupants remain hard errors.
+fn enrol_cached_written_impls(
+    ctx: &ModuleCompiler,
+    writer: &ModuleFullPath,
+    records: &[WrittenTraitImpl],
+) -> Result<(), CranelispError> {
+    for record in records {
+        let mut home = ctx
+            .symbol_tables
+            .get_mut(&record.trait_name.module)
+            .ok_or_else(|| CranelispError::ModuleError {
+                message: format!(
+                    "cannot restore impl written by '{}': trait home '{}' is not loaded",
+                    writer, record.trait_name.module
+                ),
+                location: ErrorLocation::unknown(),
+            })?;
+        cranelisp_types::enrol_written_trait_impl(&mut home, record)?;
+    }
+    Ok(())
 }
 
 /// Install the cached (decoded) symbol table into the live tables — the
@@ -407,7 +521,10 @@ fn register_cached_with_scheduler(
 ///   because cache-hit load is called from inside form processing of the
 ///   *outer* module, which is mid-typecheck and cannot also drive a
 ///   fresh build of a transitive dep.
-pub(super) fn register_transitive_cached_imports(ctx: &mut ModuleCompiler, imports: &[ImportSpec]) {
+pub(super) fn register_transitive_cached_imports(
+    ctx: &mut ModuleCompiler,
+    imports: &[ImportSpec],
+) -> Result<(), CranelispError> {
     for spec in imports {
         let transitive_dep = &spec.module_path;
         // §8.3.6 Null import — skip.
@@ -436,7 +553,7 @@ pub(super) fn register_transitive_cached_imports(ctx: &mut ModuleCompiler, impor
             continue;
         };
         // Try cache-hit load first (recurses transitively itself).
-        if try_cache_hit_load(ctx, transitive_dep, &dep_file) {
+        if try_cache_hit_load(ctx, transitive_dep, &dep_file)? {
             continue;
         }
         // Sprint 60 Workstream E-1 — route the cache-miss branch through the
@@ -476,4 +593,23 @@ pub(super) fn register_transitive_cached_imports(ctx: &mut ModuleCompiler, impor
         ctx.scheduler
             .register_module(transitive_dep.clone(), dep_sexps, true);
     }
+    Ok(())
+}
+
+/// Enrol every child declared by a cache-restored parent. Metadata restoration
+/// is synchronous when the child also hits cache; a cache miss is registered
+/// for the ordinary priority-worker path. Unlike imports, visibility is
+/// irrelevant: `(mod- child)` still belongs to the parent's module graph.
+fn register_cached_submodules(
+    ctx: &mut ModuleCompiler,
+    parent: &ModuleFullPath,
+    declarations: &[ModDecl],
+) -> Result<(), CranelispError> {
+    for decl in declarations {
+        // The cached parent is already terminal, so it does not enter the
+        // fresh parent's TypecheckBlocked/retry protocol. Enrollment itself is
+        // nevertheless identical and errors remain mandatory.
+        let _ = super::dependency::enrol_declared_submodule(ctx, parent, decl)?;
+    }
+    Ok(())
 }

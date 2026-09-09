@@ -183,22 +183,23 @@ fn resolved_target_cross_module_trait_method_records_impl_writer_module() {
     // `impl_module` pointing at a distinct writer module. (Canonical key +
     // bare-name fallback both reach it; the writer module carries the mangled
     // method Defs in production.)
-    tc.symbol_table_mut().insert(
-        Symbol::from("impl$primitives/Int$test/TestTrait"),
-        cranelisp_types::ModuleEntry::TraitImpl {
-            trait_name: cranelisp_types::FQTraitName::new(
-                cranelisp_types::ModuleFullPath::from("test"),
-                TraitName::from("TestTrait"),
-            ),
-            impl_type: cranelisp_types::FQTypeName::new(
-                cranelisp_types::ModuleFullPath::from("primitives"),
-                TypeName::from("Int"),
-            ),
-            impl_module: cranelisp_types::ModuleFullPath::from("writermod"),
-            methods: vec![Symbol::from("test-op")],
-            visibility: Visibility::Public,
-        },
+    let record = cranelisp_types::WrittenTraitImpl::new(
+        cranelisp_types::FQTraitName::new(
+            cranelisp_types::ModuleFullPath::from("test"),
+            TraitName::from("TestTrait"),
+        ),
+        cranelisp_types::FQTypeName::new(
+            cranelisp_types::ModuleFullPath::from("primitives"),
+            TypeName::from("Int"),
+        ),
+        cranelisp_types::ModuleFullPath::from("writermod"),
+        vec![Symbol::from("test-op")],
+        Visibility::Public,
     );
+    tc.symbol_table_mut()
+        .stage_trait_impl_shell(&record)
+        .unwrap()
+        .commit();
 
     let result = tc
         .try_resolve_trait_method_self(
@@ -605,9 +606,7 @@ fn dispatch_mangle_equals_definition_writeback_key_lockstep() {
     // mis-split the `/` in the FQ suffix as a module separator (the documented
     // `/`-split gotcha), so it is not a valid probe for a mangled key.
     assert!(
-        tc.symbol_table()
-            .symbols
-            .contains_key(&Symbol::from(dispatch_key.as_str())),
+        tc.symbol_table().get(dispatch_key.as_str()).is_some(),
         "definition-side writeback must exist under the dispatch key `{dispatch_key}` \
          (lock-step: name-path == definition-path)",
     );

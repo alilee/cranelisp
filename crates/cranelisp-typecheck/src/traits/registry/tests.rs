@@ -4,7 +4,7 @@
 //! 0497 de-pool), now a sibling of the code it exercises so attribution is
 //! structural, per METHOD §2.2 / Principle 23.
 
-use cranelisp_types::{ModuleEntry, Symbol, TraitName, TypeName};
+use cranelisp_types::{Binding, Decl, FQSymbol, Symbol, TraitName, TypeName};
 
 use super::*;
 use crate::traits::test_helpers::*;
@@ -261,7 +261,10 @@ fn test_register_trait_decl() {
     // Trait should be in symbol table
     assert!(matches!(
         tc.symbol_table().get("TestTrait"),
-        Some(ModuleEntry::TraitDecl { .. })
+        Some(Binding {
+            declaration: Decl::Trait(_),
+            ..
+        })
     ));
 }
 
@@ -578,7 +581,23 @@ fn test_trait_method_has_constrained_scheme() {
     let decl = make_test_trait_decl();
     tc.register_trait_decl_self(&decl).unwrap();
 
-    if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("test-op") {
+    let table = tc.symbol_table();
+    let candidates = table.name_candidates(&Symbol::from("test-op"));
+    assert_eq!(candidates.len(), 1, "bare method has one candidate");
+    assert_eq!(
+        candidates[0].source,
+        FQSymbol {
+            module: tc.state.current_module.clone(),
+            symbol: Symbol::from("TestTrait.test-op"),
+        },
+        "the bare spelling projects the canonical trait-member identity"
+    );
+
+    if let Some(record) = table
+        .get("TestTrait.test-op")
+        .and_then(Binding::trait_method)
+    {
+        let scheme = &record.scheme;
         assert_eq!(
             scheme.type_vars.len(),
             1,

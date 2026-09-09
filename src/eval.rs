@@ -9,15 +9,15 @@
 // worker path does. Pure relocation — no behavioural change.
 
 use cranelisp_types::{
-    CranelispError, DefKind, ErrorLocation, FQSymbol, ModuleEntry, ModuleFullPath, ModuleStrategy,
-    Sexp, Span, Symbol, TopLevel, Type,
+    CallableOrigin, CranelispError, Decl, ErrorLocation, FQSymbol, ModuleFullPath, ModuleStrategy,
+    Sexp, Span, Symbol, TopLevel, Type, Warning,
 };
 
 use cranelisp_typecheck::{CheckResult, CheckState};
 
 use crate::session_v4::{
-    CompilerSession, EvalResult, Introspection, extract_def_name_from_sexp,
-    intrinsic_type_from_name, is_comment_only, set_test_runner_state,
+    CompilerSession, EvalResult, Introspection, intrinsic_type_from_name, is_comment_only,
+    set_test_runner_state,
 };
 use crate::worker::ModuleCompiler;
 
@@ -40,20 +40,23 @@ pub(crate) fn record_defining_turn_source(
     result: &EvalResult,
     src: &str,
 ) {
-    let EvalResult::Def {
-        symbol,
-        defined: true,
-        ..
-    } = result
-    else {
-        return;
+    let symbols = match result {
+        EvalResult::Definitions { symbols, .. } => symbols.as_slice(),
+        EvalResult::Def {
+            symbol,
+            defined: true,
+            ..
+        } => std::slice::from_ref(symbol),
+        _ => return,
     };
     if let Some(m) = introspection {
-        let fq = FQSymbol {
-            module: symbol.module.clone(),
-            symbol: symbol.symbol.clone(),
-        };
-        m.entry(fq).or_default().source = Some(src.to_string());
+        for symbol in symbols {
+            let fq = FQSymbol {
+                module: symbol.module.clone(),
+                symbol: symbol.symbol.clone(),
+            };
+            m.entry(fq).or_default().source = Some(src.to_string());
+        }
     }
 }
 
@@ -77,20 +80,6 @@ pub(crate) fn record_defining_turn_source(
 /// (Case-3 rejects the two mismatched shapes), and this echo runs only after a
 /// successful typecheck. The conventional / bare-head form — and any target
 /// already rewritten to `Named` — falls through to the plain head.
-fn impl_echo_type_name(t: &cranelisp_types::TraitImpl) -> String {
-    use cranelisp_types::TypeExpr;
-    if t.head_con_var.is_some()
-        && let TypeExpr::Applied(_, args) = &t.target
-        && let Some(con) = args.first().and_then(TypeExpr::head_ref)
-    {
-        return con.name.to_string();
-    }
-    t.target
-        .head_ref()
-        .map(|r| r.name.to_string())
-        .unwrap_or_else(|| "_".to_string())
-}
-
 impl CompilerSession {
     /// Block the REPL-eval thread on the persistent worker pool driving a
     /// dependency (and its transitive deps) to `inmem_done`, then return so the
@@ -287,9 +276,9 @@ impl CompilerSession {
     /// leading `:Type` annotation sexp groups with the following form sexp so
     /// the frontend's `build_forms` pairing (`Expr::Annotate`) fires — int
     /// orchestrates the cluster boundary; the frontend decides what one form is
-    /// (BC §1 invariant 9; FIXME 0329). The `cluster_head` sexp is the one used
-    /// for `Def`-name extraction and `/source` span when the cluster collapses
-    /// to a single definition during expansion.
+    /// (BC §1 invariant 9; FIXME 0329). Definition results are collected from
+    /// the typed/emitted forms rather than reconstructed from this entered
+    /// cluster's spelling.
     pub(crate) fn process_form_cluster(
         &mut self,
         cluster: &[Sexp],
@@ -299,16 +288,17 @@ impl CompilerSession {
 
         const MAX_DEP_RETRIES: usize = 100;
 
-        // The "head" sexp drives `Def`-name extraction when the cluster
-        // collapses to a single handled-during-expansion form (defmacro,
-        // import, mod, …). For an annotation pair the meaningful head is the
-        // form being annotated (the last sexp), not the leading `:Type`.
-        // `cluster` is always non-empty (the eval loop never builds an empty
-        // span), so `last()` is `Some`.
+        // For an annotation pair the meaningful input form is the final sexp,
+        // not the leading `:Type`. It is used only for the display-only
+        // polymorphic-value check below; definition identities come from the
+        // stack-owned emitted-definition receipt.
         let head_sexp = match cluster.last() {
             Some(s) => s,
             None => return Ok(None),
         };
+        let mut pending = cluster.to_vec();
+        let mut generation_started = false;
+        let mut turn_definitions = crate::session_v4::TurnDefinitions::default();
 
         for retry in 0..MAX_DEP_RETRIES {
             // 0571 D2: a bare QUALIFIED symbol (`mathx/gcount`) is introspectable
@@ -317,14 +307,14 @@ impl CompilerSession {
             // absent ⇒ `None`). Re-check each pass so the bare FQ display takes
             // the introspection path (no codegen) the moment the module loads,
             // instead of compiling a value-position FQ ref to a codegen leak.
-            if cluster.len() == 1
-                && let Some(result) = self.check_bare_symbol_introspection(&cluster[0])
+            if pending.len() == 1
+                && let Some(result) = self.check_bare_symbol_introspection(&pending[0])
             {
                 return Ok(Some(result));
             }
 
             let module = self.current_module_path();
-            let single_sexp = cluster.to_vec();
+            let single_sexp = pending.clone();
 
             let result = {
                 // Extract REPL check_state for worker use, restore after.
@@ -367,6 +357,8 @@ impl CompilerSession {
                     &module,
                     &single_sexp,
                     ModuleStrategy::Additive,
+                    generation_started,
+                    Some(&mut turn_definitions),
                 );
                 // Restore REPL check_state.
                 *self
@@ -394,33 +386,28 @@ impl CompilerSession {
                     // consumed AFTER the target's own codegen succeeds
                     // (design/int/session-transaction.md §13).
                     let redefinitions = processed.redefinitions().to_vec();
+                    let definition_symbols = turn_definitions.published_symbols();
                     // If program is empty, the form was handled during expansion
-                    // (defmacro, import, platform, mod). Return Def with name
-                    // extracted from the original sexp.
+                    // (defmacro, import, platform, mod). Return every definition
+                    // actually published by this turn; structural forms remain
+                    // silent.
                     if program.is_empty() {
                         // F5a (S103, FIXME 0507 Issue 3): the defmacro exit
                         // returns BEFORE the ordinary `apply_redefinition_outcomes`
                         // call below, so the §10 T1 full-cure driver must be
-                        // reachable here too. Currently moot (macro heads carry
-                        // no reverse edges, so a redefined-macro target produces
-                        // an empty stale set and no reload), but the driver MUST
-                        // be reachable from BOTH exits — a redefined macro whose
-                        // dependents use it is cured by the dependent cascade.
+                        // reachable here too. Macro invocations do not create
+                        // stable runtime dependency edges, but ordinary
+                        // redefinition outcomes collected alongside an
+                        // expansion-only result must still reach the sink.
                         self.apply_redefinition_outcomes(&redefinitions);
-                        return match extract_def_name_from_sexp(head_sexp) {
-                            Some(symbol_name) => Ok(Some(EvalResult::Def {
-                                symbol: FQSymbol {
-                                    module: module.clone(),
-                                    symbol: Symbol::from(symbol_name),
-                                },
-                                ty: Type::Int,
-                                warnings: cluster_warnings,
-                                // Handled-during-expansion forms (defmacro)
-                                // are genuine definitions.
-                                defined: true,
-                            })),
+                        return if definition_symbols.is_empty() {
                             // import/platform/mod — no visible result.
-                            None => Ok(None),
+                            Ok(None)
+                        } else {
+                            Ok(Some(EvalResult::Definitions {
+                                symbols: definition_symbols,
+                                warnings: cluster_warnings,
+                            }))
                         };
                     }
                     let check = CheckResult {
@@ -432,7 +419,26 @@ impl CompilerSession {
                         // leaking the backend `__expr`-has-no-GOT-slot error.
                         unresolved_dispatch: processed.unresolved_dispatch().to_vec(),
                     };
-                    let eval_result = self.codegen_and_execute(&module, &program, &check)?;
+                    // §3.11.2 / REPL §1.5.1: a bare polymorphic value is a
+                    // display-only result. Publication correctly leaves its
+                    // synthetic `__expr` as a slot-less Template; carry the
+                    // authored value form and inferred result type to the
+                    // formatter instead of pretending that a runtime word was
+                    // produced. Keep this deliberately narrow: calls (including
+                    // unresolved return-directed dispatch) and annotations do
+                    // not qualify.
+                    if check.unresolved_dispatch.is_empty()
+                        && let Some(display) = self.display_only_polymorphic_value(
+                            &module,
+                            head_sexp,
+                            check.warnings.clone(),
+                        )
+                    {
+                        self.apply_redefinition_outcomes(&redefinitions);
+                        return Ok(Some(display));
+                    }
+                    let eval_result =
+                        self.codegen_and_execute(&module, &program, &definition_symbols, &check)?;
                     // S101 dependent-recompilation transaction: clears broken
                     // records for recovered symbols (§18.6 direction 1) and
                     // runs the affected-set walk for AbiChanging redefinitions,
@@ -440,11 +446,17 @@ impl CompilerSession {
                     self.apply_redefinition_outcomes(&redefinitions);
                     return Ok(Some(eval_result));
                 }
-                ClusterOnce::Gap { dep } => {
+                ClusterOnce::Gap {
+                    dep,
+                    continuation,
+                    generation_started: started,
+                } => {
                     // The dep has already been registered + blocked on inside
                     // `process_cluster_once`; block on the persistent worker
                     // pool driving it to completion, then retry from the top.
                     self.register_dep_for_eval(&dep)?;
+                    pending = continuation;
+                    generation_started = started;
                     if retry == MAX_DEP_RETRIES - 1 {
                         return Err(CranelispError::ModuleError {
                             message: format!(
@@ -458,7 +470,47 @@ impl CompilerSession {
             }
         }
 
-        unreachable!("invariant: loop always returns or errors before exhausting iterations")
+        Err(CranelispError::ModuleError {
+            message: "dependency retry limit exhausted".to_string(),
+            location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+        })
+    }
+
+    /// Build the non-runtime carrier for the two bare polymorphic value forms
+    /// governed by §3.11.2 / REPL §1.5.1. The lifecycle check is authoritative:
+    /// a concrete `__expr` must execute normally, while a template has neither
+    /// a GOT slot nor a runtime value to own.
+    fn display_only_polymorphic_value(
+        &self,
+        module: &ModuleFullPath,
+        form: &Sexp,
+        warnings: Vec<Warning>,
+    ) -> Option<EvalResult> {
+        match form {
+            Sexp::Symbol(_, _) => {}
+            Sexp::Bracket(items, _) if items.is_empty() => {}
+            _ => return None,
+        }
+
+        let table = self.shared.symbol_tables.get(module)?;
+        let callable = table
+            .get(crate::worker::SYNTHETIC_EXPR_WRAPPER)?
+            .callable()?;
+        if !matches!(callable.arm.life, cranelisp_types::Life::Template { .. }) {
+            return None;
+        }
+        let Type::Fn(params, result) = &callable.arm.scheme.ty else {
+            return None;
+        };
+        if !params.is_empty() || result.is_concrete() {
+            return None;
+        }
+
+        Some(EvalResult::DisplayValue {
+            ty: result.as_ref().clone(),
+            form: form.clone(),
+            warnings,
+        })
     }
 
     /// Run codegen for definitions, then execute if there is a trailing expression.
@@ -466,6 +518,7 @@ impl CompilerSession {
         &mut self,
         module: &ModuleFullPath,
         program: &[TopLevel],
+        definition_symbols: &[FQSymbol],
         check: &CheckResult,
     ) -> Result<EvalResult, CranelispError> {
         // Ensure typecheck product exists for this module.
@@ -546,54 +599,15 @@ impl CompilerSession {
                 }),
             }
         } else {
-            // Definition-only: extract the defined symbol name from the last
-            // user-visible form. Inlined defns (mono, default methods, trait
-            // impl mangled methods) are appended after the original forms by
-            // finalize_module — skip them by finding the last non-Defn form
-            // (TraitDecl, TraitImpl, TypeDef) or the first Defn.
-            let last = program
-                .iter()
-                .rev()
-                .find(|tl| {
-                    matches!(
-                        tl,
-                        TopLevel::TraitDecl(_) | TopLevel::TraitImpl(_) | TopLevel::TypeDef { .. }
-                    )
-                })
-                .or_else(|| program.iter().find(|tl| matches!(tl, TopLevel::Defn(_))))
-                .or(program.last());
-
-            let symbol_name = last
-                .map(|tl| match tl {
-                    TopLevel::Defn(d) => d.name.to_string(),
-                    TopLevel::TraitDecl(t) => t.name.to_string(),
-                    TopLevel::TraitImpl(t) => {
-                        // The impl's display label is `Trait.<implementing-type>`
-                        // (later split by the §1.1 `impl <trait> for <type>` echo).
-                        // The implementing type is the SETTLED effective target, not
-                        // the raw slot-2 head — see `impl_echo_type_name`.
-                        format!("{}.{}", t.trait_name.name, impl_echo_type_name(t))
-                    }
-                    TopLevel::TypeDef { name, .. } => name.to_string(),
-                    TopLevel::Expr(_) => unreachable!("has_expr was false"),
-                })
-                .unwrap_or_default();
-
-            let ty = check
-                .display
-                .as_ref()
-                .map(|d| d.ty.clone())
-                .unwrap_or(Type::Int);
-
-            Ok(EvalResult::Def {
-                symbol: FQSymbol {
-                    module: module.clone(),
-                    symbol: Symbol::from(symbol_name),
-                },
-                ty,
+            if definition_symbols.is_empty() {
+                return Err(CranelispError::CodegenError {
+                    message: "definition-only program produced no definition result".to_string(),
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
+                });
+            }
+            Ok(EvalResult::Definitions {
+                symbols: definition_symbols.to_vec(),
                 warnings: check.warnings.clone(),
-                // The definition-only codegen turn — the genuine writer.
-                defined: true,
             })
         }
     }
@@ -700,8 +714,8 @@ impl CompilerSession {
             }
             (e, module_part, Symbol::from(sym))
         } else {
-            let (e, m) = self.lookup_with_prelude_fallback_opt(name, false)?;
-            (e, m, Symbol::from(name))
+            let (e, canonical) = self.lookup_with_prelude_fallback_resolved_opt(name, false)?;
+            (e, canonical.module, canonical.symbol)
         };
 
         // Resolve import/reexport chains fully. Sprint 61 Slice 1: the
@@ -720,27 +734,37 @@ impl CompilerSession {
         // for FQSymbol consumers that read the symbol metadata directly.
         let fq_module = resolved_module;
 
-        match &resolved_entry {
-            ModuleEntry::Def { kind, scheme, .. } => match kind.as_ref() {
-                DefKind::Macro { clauses_meta, .. } => {
-                    // Zero-arg macros should be expanded, not introspected.
-                    let has_zero_arg = clauses_meta
-                        .iter()
-                        .any(|c| c.params.is_empty() && c.rest_param.is_none());
-                    if has_zero_arg {
-                        return None;
-                    }
-                    Some(EvalResult::Def {
-                        symbol: FQSymbol {
-                            module: fq_module,
-                            symbol: display_sym.clone(),
-                        },
-                        ty: Type::Int,
-                        warnings: Vec::new(),
-                        defined: false,
-                    })
+        match &resolved_entry.declaration {
+            Decl::Macro(declaration) => {
+                // Zero-arg macros should be expanded, not introspected.
+                let has_zero_arg = declaration
+                    .clauses
+                    .iter()
+                    .any(|c| c.params.is_empty() && c.rest_param.is_none());
+                if has_zero_arg {
+                    return None;
                 }
-                DefKind::Constructor { field_count, .. } => {
+                Some(EvalResult::Def {
+                    symbol: FQSymbol {
+                        module: fq_module,
+                        symbol: display_sym.clone(),
+                    },
+                    ty: Type::Int,
+                    warnings: Vec::new(),
+                    defined: false,
+                })
+            }
+            Decl::Overloaded(declaration) => Some(EvalResult::Def {
+                symbol: FQSymbol {
+                    module: fq_module,
+                    symbol: display_sym.clone(),
+                },
+                ty: declaration.arms.first()?.callable.scheme.ty.clone(),
+                warnings: Vec::new(),
+                defined: false,
+            }),
+            Decl::Callable(callable) => match &callable.origin {
+                CallableOrigin::Ctor { field_count, .. } => {
                     // D2 (S108): a nullary ctor's disposition splits by
                     // CONCRETENESS (`Type::is_concrete()`, the single-source
                     // predicate, types.rs:92):
@@ -755,7 +779,7 @@ impl CompilerSession {
                     // Non-nullary ctors always introspect. This collapses the
                     // former duplicate value-vs-introspection path for concrete
                     // nullary ctors while preserving §1.5.1 for polymorphic ones.
-                    if *field_count == 0 && !scheme.ty.is_concrete() {
+                    if *field_count == 0 && !callable.arm.scheme.ty.is_concrete() {
                         None
                     } else {
                         Some(EvalResult::Def {
@@ -776,21 +800,30 @@ impl CompilerSession {
                         module: fq_module,
                         symbol: display_sym.clone(),
                     },
-                    ty: scheme.ty.clone(),
+                    ty: callable.arm.scheme.ty.clone(),
                     warnings: Vec::new(),
                     defined: false,
                 }),
             },
-            ModuleEntry::SpecialForm { scheme, .. } => Some(EvalResult::Def {
+            Decl::TraitMethod(method) => Some(EvalResult::Def {
                 symbol: FQSymbol {
                     module: fq_module,
                     symbol: display_sym.clone(),
                 },
-                ty: scheme.ty.clone(),
+                ty: method.scheme.ty.clone(),
                 warnings: Vec::new(),
                 defined: false,
             }),
-            ModuleEntry::TypeDef { .. } | ModuleEntry::TraitDecl { .. } => Some(EvalResult::Def {
+            Decl::SpecialForm(record) => Some(EvalResult::Def {
+                symbol: FQSymbol {
+                    module: fq_module,
+                    symbol: display_sym.clone(),
+                },
+                ty: record.scheme.ty.clone(),
+                warnings: Vec::new(),
+                defined: false,
+            }),
+            Decl::Type(_) | Decl::Trait(_) => Some(EvalResult::Def {
                 symbol: FQSymbol {
                     module: fq_module,
                     symbol: display_sym.clone(),
@@ -914,7 +947,7 @@ mod tests {
     // §1.1 echo splits into `impl <trait> for <type>`.
     // -----------------------------------------------------------------------
     mod impl_echo_display {
-        use super::super::impl_echo_type_name;
+        use crate::session_v4::impl_echo_type_name;
         use cranelisp_types::{
             Span, Symbol, TraitImpl, TraitName, TraitRef, TypeExpr, TypeName, TypeRef,
         };
@@ -996,7 +1029,10 @@ mod tests {
 
     use crate::code::SessionSymbolTable;
     use crate::session_v4::{CompilerSession, RunMode, SessionSettings};
-    use cranelisp_types::{CodegenBehaviour, FQTypeName, Scheme, TypeName, Visibility};
+    use cranelisp_types::{
+        CallableOrigin, CodegenBehaviour, DefnVariant, FQTypeName, Realization, Scheme, SynthSpec,
+        TemplateBody, TemplateKind, TypeName, Visibility,
+    };
     use std::collections::HashMap as StdHashMap;
 
     fn d2_session() -> CompilerSession {
@@ -1009,42 +1045,88 @@ mod tests {
             nice_workers: 1,
             run_mode: RunMode::Repl,
         };
-        CompilerSession::new(settings, tmp.keep(), "user")
+        CompilerSession::new(settings, tmp.keep(), "user").expect("test session bootstrap")
     }
 
     /// Build a nullary `DefKind::Constructor` Def whose scheme type is the ADT
     /// `type_name` applied to `args` — `args` empty ⇒ concrete, a `Var` arg ⇒
     /// non-concrete.
-    fn nullary_ctor_entry(type_name: &str, args: Vec<Type>) -> ModuleEntry<crate::code::Code> {
+    fn install_in_user(s: &CompilerSession, name: &str, type_name: &str, args: Vec<Type>) {
+        let user = s.current_module_path();
         let fqtn = FQTypeName::new(ModuleFullPath::from("user"), TypeName::from(type_name));
         let scheme = Scheme {
-            type_vars: Vec::new(),
+            type_vars: if args.iter().any(|arg| matches!(arg, Type::Var(0))) {
+                vec![0]
+            } else {
+                Vec::new()
+            },
             constraints: StdHashMap::new(),
             ty: Type::ADT(fqtn.clone(), args),
         };
-        ModuleEntry::def(
-            scheme,
-            DefKind::Constructor {
-                got_slot: 0,
-                type_name: fqtn,
-                tag: 0,
-                field_count: 0,
-                internal: false,
-                type_def: None,
-                mode_summary: None,
+        let origin = CallableOrigin::Ctor {
+            type_name: fqtn,
+            tag: 0,
+            field_count: 0,
+            internal: false,
+            type_def: None,
+        };
+        let variant = DefnVariant {
+            params: Vec::new(),
+            body: cranelisp_types::Expr::IntLit {
+                value: 0,
+                span: Span::SYNTHETIC,
+                inferred_type: None,
             },
-        )
-        .visibility(Visibility::Public)
-        .build()
-    }
-
-    fn install_in_user(s: &CompilerSession, name: &str, entry: ModuleEntry<crate::code::Code>) {
-        let user = s.current_module_path();
+            span: Span::SYNTHETIC,
+        };
+        let install = |table: &mut SessionSymbolTable| {
+            if scheme.ty.is_concrete() {
+                let view = cranelisp_types::MonoDefnVariant {
+                    name: Symbol::from(name),
+                    params: Vec::new(),
+                    body: cranelisp_types::MonoExpr::lenient_from_expr(
+                        &variant.body,
+                        &Default::default(),
+                        &Default::default(),
+                        &Default::default(),
+                    ),
+                    span: Span::SYNTHETIC,
+                    mode_summary: None,
+                };
+                table
+                    .install_concrete(
+                        Symbol::from(name),
+                        scheme.clone(),
+                        Vec::new(),
+                        None,
+                        0,
+                        origin.clone(),
+                        Realization::Body { view, code: None },
+                        Some(variant.clone()),
+                        Vec::new(),
+                        Visibility::Public,
+                    )
+                    .map(|_| ())
+            } else {
+                table.install_template(
+                    Symbol::from(name),
+                    scheme.clone(),
+                    Vec::new(),
+                    None,
+                    0,
+                    origin.clone(),
+                    TemplateBody::Synth(SynthSpec::new(variant.clone())),
+                    TemplateKind::Parametric,
+                    Vec::new(),
+                    Visibility::Public,
+                )
+            }
+        };
         if let Some(mut table) = s.shared.symbol_tables.get_mut(&user) {
-            table.insert(Symbol::from(name), entry);
+            install(&mut table).expect("constructor fixture installs");
         } else {
             let mut table = SessionSymbolTable::new_with_params(user.clone());
-            table.insert(Symbol::from(name), entry);
+            install(&mut table).expect("constructor fixture installs");
             s.shared.symbol_tables.insert(user, table);
         }
     }
@@ -1055,7 +1137,7 @@ mod tests {
     #[test]
     fn concrete_nullary_ctor_routes_to_introspection() {
         let s = d2_session();
-        install_in_user(&s, "Red", nullary_ctor_entry("Color", Vec::new()));
+        install_in_user(&s, "Red", "Color", Vec::new());
         let out = s.check_bare_symbol_introspection(&Sexp::Symbol("Red".into(), Span::SYNTHETIC));
         match out {
             Some(EvalResult::Def {
@@ -1078,7 +1160,7 @@ mod tests {
     #[test]
     fn non_concrete_nullary_ctor_falls_through_to_value_path() {
         let s = d2_session();
-        install_in_user(&s, "Nada", nullary_ctor_entry("Opt", vec![Type::Var(0)]));
+        install_in_user(&s, "Nada", "Opt", vec![Type::Var(0)]);
         let out = s.check_bare_symbol_introspection(&Sexp::Symbol("Nada".into(), Span::SYNTHETIC));
         assert!(
             out.is_none(),

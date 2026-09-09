@@ -127,13 +127,14 @@ constructor_def
 field_list   = '[' field_def* ']'                 (* product body: zero fields legal (unit) *)
 ctor_fields  = '[' field_def+ ']'                 (* constructor arm: at least one field — §5.2.2 *)
 
-field_def    = annotation SYMBOL                  (* typed field *)
-             | SYMBOL                              (* bare field -- inferred *)
+field_def    = annotation SYMBOL                  (* :Type field-name *)
 ```
 
 The `deftype` form defines an algebraic data type (ADT). The `deftype-` variant makes it module-private.
 
-The **type head** is either a bare type name (for monomorphic types) or a parenthesized name with type parameters (for polymorphic types). Type names MUST start with an uppercase letter. Type parameters MUST be lowercase symbols.
+The **type head** is either a bare type name, which declares a monomorphic type, or a parenthesized name followed by the polymorphic type's complete ordered parameter list. Type names MUST start with an uppercase letter. Type parameters MUST be lowercase symbols.
+
+**Field types and polymorphic parameters are explicit. [Tested+Neg tests/spec_05_definitions::deftype_omitted_field_types_rejected_without_partial_registration_neg, tests/spec_05_definitions::deftype_bare_head_rejects_undeclared_field_type_variable_neg, crates/cranelisp-frontend/src/ast_builder/tests.rs::test_build_deftype_product]** Every field MUST be written as `:Type name`. A field name without a preceding type annotation is a syntax error located at that field name, under either form of `type_head`. Every type variable used in a field type MUST name a parameter declared by the parenthesized type head; a bare type head declares no type variables. Fields never introduce or infer type parameters. See §5.2.4.
 
 The **type body** takes one of two forms:
 
@@ -153,7 +154,7 @@ The field list MAY be empty: `(deftype Unit [])` is the **unit type**, the degen
 
 **A constructor arm's field list requires at least one field. [S115]** The arm uses `ctor_fields` (`field_def+`), not `field_list`: the empty `(deftype Something (Unit []))` — an empty bracket pair inside an arm — is a **parse error**, because the bare name already spells a nullary variant, so the empty field list is redundant. An empty field list is legal **only** in product position (`product_body = field_list`, the unit type `(deftype Unit [])`, §5.2.1). This is the grammar half of §5.2.2, *An empty field list is legal only in product position*. [S115]
 
-Two further, **non-context-free** restrictions ride on top of these and are stated where they can be checked, at [§5.2.2](05-definitions.md#522-sum-type-multiple-constructors): (1) a **nullary constructor MUST NOT repeat its type's name**, so `(deftype Flag Flag)` — and the documented same-name `(deftype Flag (Flag "doc"))`, since a docstring does not rescue it — are illegal even though the grammar above admits them; a type with one valueless inhabitant is written as the zero-field product `(deftype Unit [])` ([§5.2.1](05-definitions.md#521-product-type-single-constructor)). [S115]
+One further, **non-context-free** restriction rides on top of these and is stated where it can be checked: a **nullary constructor MUST NOT repeat its type's name**, so `(deftype Flag Flag)` — and the documented same-name `(deftype Flag (Flag "doc"))`, since a docstring does not rescue it — are illegal even though the grammar above admits them; a type with one valueless inhabitant is written as the zero-field product `(deftype Unit [])` ([§5.2.1](05-definitions.md#521-product-type-single-constructor), [§5.2.2](05-definitions.md#522-sum-type-multiple-constructors)). [S115]
 
 ```clojure
 ;; Enum (all nullary)
@@ -168,14 +169,6 @@ Two further, **non-context-free** restrictions ride on top of these and are stat
 (deftype (Result a b)
   (Ok "Success value" [:a val])
   (Err "Error value" [:b err]))
-```
-
-**Shortcut syntax**: When a field in a field list has no type annotation (a bare symbol), the field is assigned a fresh type variable. The type variables are assigned alphabetically (`a`, `b`, `c`, ...) in first-appearance order across all constructors. This is equivalent to declaring explicit type parameters.
-
-```clojure
-;; These are equivalent:
-(deftype Pair [first second])
-(deftype (Pair a b) [:a first :b second])
 ```
 
 An optional docstring MAY appear between the type head and the type body:
@@ -916,7 +909,7 @@ The following forms support docstrings:
 (deftrait Display "Convert values to strings"
   (show "Return the string representation" [x] String))
 
-(defmacro unless "Evaluate body when condition is false" [cond body]
+(defmacro my-unless "Evaluate body when condition is false" [cond body]
   `(if ~cond 0 ~body))
 ```
 

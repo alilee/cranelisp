@@ -282,7 +282,7 @@ axis is independent of 0407's web-concurrency axis** (the FIXMEs say so explicit
   lowest crate that can name both intrinsic pointers (`cranelisp-intrinsics`, or a host-side
   `fn host_callbacks() -> HostCallbacks` both call). Both production sites
   (`src/platform.rs:253` JIT/REPL; `cranelisp-exe-bundle/src/lib.rs:131` `--link`) **plus
-  the test mirror** (`src/platform.rs:932`) call it. The platform crate stays unchanged (it
+  the historical test mirror** (`src/platform.rs:932`) call it. The platform crate stays unchanged (it
   is the correct, dependency-clean contract definition; it must NOT depend on intrinsics —
   Principle 3 DAG). Removes the 10-line cross-file "this-makes-the-`--link`-path-match"
   comment that is itself the tell.

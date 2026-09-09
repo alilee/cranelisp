@@ -31,6 +31,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+const MIN_PUBLIC_API_VERSION: (u64, u64) = (0, 52);
+
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -56,19 +58,26 @@ fn crates_with_baselines() -> &'static [&'static str] {
 // S66 must commit its `public-api.txt` baseline per /qa slice §1.1).
 #[test]
 fn public_api_check_runs_against_all_seven_crates() {
-    // Skip if cargo-public-api is not installed; emit instructions.
     let probe = Command::new("cargo")
         .args(["+nightly", "public-api", "--version"])
         .output();
-    let probe_ok = matches!(&probe, Ok(o) if o.status.success());
-    if !probe_ok {
-        panic!(
+    let probe = match probe {
+        Ok(output) if output.status.success() => output,
+        _ => panic!(
             "cargo +nightly public-api unavailable. Install per tests/CLAUDE.md \
              §\"Public-API enforcement\":\n\
              rustup toolchain install nightly\n\
              cargo +nightly install cargo-public-api"
-        );
-    }
+        ),
+    };
+    let version = String::from_utf8_lossy(&probe.stdout);
+    require_supported_public_api_version(&version).unwrap_or_else(|reason| {
+        panic!(
+            "unsupported cargo-public-api for committed baselines: {reason}\n\
+             Install version 0.52 or newer per tests/CLAUDE.md \
+             §\"Public-API enforcement\""
+        )
+    });
 
     let root = workspace_root();
     let mut missing_baseline: Vec<&str> = Vec::new();
@@ -97,17 +106,18 @@ fn public_api_check_runs_against_all_seven_crates() {
         // makes the live output list derive impls that the baselines lack, so
         // every crate spuriously "drifts" by hundreds of lines. The canonical
         // regen command is the same: `cargo +nightly public-api -s
-        // --omit auto-derived-impls > crates/{crate}/public-api.txt`.
+        // --omit auto-derived-impls -p {crate} > crates/{crate}/public-api.txt`.
         let cur = Command::new("cargo")
+            .current_dir(&root)
             .args([
                 "+nightly",
                 "public-api",
                 "--simplified",
                 "--omit",
                 "auto-derived-impls",
-                "--manifest-path",
+                "-p",
+                crate_name,
             ])
-            .arg(crate_dir.join("Cargo.toml"))
             .output();
         let cur = match cur {
             Ok(o) if o.status.success() => o.stdout,
@@ -145,7 +155,7 @@ fn public_api_check_runs_against_all_seven_crates() {
         }
         if !missing_baseline.is_empty() {
             msg.push_str(&format!(
-                "  missing baselines (run `cargo +nightly public-api > crates/{{crate}}/public-api.txt`): {:?}\n",
+                "  missing baselines (run `cargo +nightly public-api -s --omit auto-derived-impls -p <crate> > crates/<crate>/public-api.txt`): {:?}\n",
                 missing_baseline
             ));
         }
@@ -153,6 +163,52 @@ fn public_api_check_runs_against_all_seven_crates() {
             msg.push_str(&format!("  drift in {c}:\n{d}\n"));
         }
         panic!("{msg}");
+    }
+}
+
+fn require_supported_public_api_version(output: &str) -> Result<(), String> {
+    let version = output
+        .split_whitespace()
+        .nth(1)
+        .ok_or_else(|| format!("could not parse version output {output:?}"))?;
+    let mut components = version.split('.');
+    let major = components
+        .next()
+        .and_then(|part| part.parse::<u64>().ok())
+        .ok_or_else(|| format!("could not parse version output {output:?}"))?;
+    let minor = components
+        .next()
+        .and_then(|part| part.parse::<u64>().ok())
+        .ok_or_else(|| format!("could not parse version output {output:?}"))?;
+
+    if (major, minor) < MIN_PUBLIC_API_VERSION {
+        return Err(format!(
+            "found {major}.{minor}; require >= {}.{}",
+            MIN_PUBLIC_API_VERSION.0, MIN_PUBLIC_API_VERSION.1
+        ));
+    }
+    Ok(())
+}
+
+// spec: tests/CLAUDE.md §"Public-API enforcement" — the committed format
+// changed at cargo-public-api 0.52 and an older generator must be rejected.
+#[test]
+fn public_api_version_floor_rejects_pre_052_generator() {
+    let error = require_supported_public_api_version("cargo-public-api 0.51.0")
+        .expect_err("0.51 would generate parameter-name churn");
+    assert!(error.contains("require >= 0.52"));
+}
+
+// spec: tests/CLAUDE.md §"Public-API enforcement" — the floor admits the
+// baseline-producing version and later compatible generators.
+#[test]
+fn public_api_version_floor_accepts_052_and_newer_generators() {
+    for output in [
+        "cargo-public-api 0.52.0",
+        "cargo-public-api 0.53.1",
+        "cargo-public-api 1.0.0",
+    ] {
+        require_supported_public_api_version(output).expect("supported generator");
     }
 }
 

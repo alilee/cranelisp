@@ -157,7 +157,7 @@ fn assert_v9_typechecks(out: CrOutput, ctx: &str) {
 // Item 1 — the v9 user-visible signature change (the HEADLINE behavioral change).
 // =============================================================================
 
-// spec: design/platform/poll-support.md §3.5.2 — v9 `read-conn:(Fn [Connection]
+// spec: design/platform/archive/poll-support-s96.md §3.5.2 — v9 `read-conn:(Fn [Connection]
 // (IO Request))`. The v8 3-arg shape `(read-conn token capacity fd)` over three
 // `Int`s MUST be a typecheck error post-cutover (the descriptor stops being a
 // cranelisp value; the leaf takes ONLY the connection handle). RED-until v9 cutover.
@@ -170,7 +170,7 @@ fn read_conn_three_arg_shape_rejected_neg() {
     assert_v9_rejected(out, "read_conn_three_arg_shape_rejected_neg");
 }
 
-// spec: design/platform/poll-support.md §3.5.2 — v9 `read-conn:(Fn [Connection]
+// spec: design/platform/archive/poll-support-s96.md §3.5.2 — v9 `read-conn:(Fn [Connection]
 // (IO Request))`: `(read-conn conn)` (1-arg, over a `Connection`) MUST typecheck +
 // compile. Compile-only (the leaf need not run). RED-until v9 cutover.
 #[test]
@@ -182,7 +182,7 @@ fn read_conn_handle_only_shape_typechecks() {
     assert_v9_typechecks(out, "read_conn_handle_only_shape_typechecks");
 }
 
-// spec: design/platform/poll-support.md §3.5.2 — v9 `send-conn:(Fn [Connection
+// spec: design/platform/archive/poll-support-s96.md §3.5.2 — v9 `send-conn:(Fn [Connection
 // Response] (IO Int))`: the 2-arg handle+response shape `(send-conn conn resp)` MUST
 // typecheck, AND the v8 4-arg `(send-conn token capacity fd resp)` MUST be rejected
 // (the `_neg` companion, same row). RED-until v9 cutover.
@@ -210,7 +210,7 @@ fn send_conn_handle_plus_response_typechecks() {
     );
 }
 
-// spec: design/platform/poll-support.md §3.5.2 — v9 `accept-conn:(Fn [Listener]
+// spec: design/platform/archive/poll-support-s96.md §3.5.2 — v9 `accept-conn:(Fn [Listener]
 // (IO Connection))`: `(accept-conn listener)` typechecks and PRODUCES a `Connection`
 // value (the lambda binder annotated `:web/Connection` unifies against the leaf's
 // `(IO Connection)` result). RED-until v9 cutover.
@@ -230,7 +230,7 @@ fn accept_conn_listener_only_typechecks() {
 // layout rework — the dead header-slot/`desc_out` model is gone).
 // =============================================================================
 
-// spec: design/platform/poll-support.md §3.5.1 — `(deftype Connection
+// spec: design/platform/archive/poll-support-s96.md §3.5.1 — `(deftype Connection
 // [:primitives/Int fd])` is **tramp-opaque but USER-READABLE** (`/arch`'s ruling,
 // FIXME 0484 / `effect-concurrency.md §4.1.1`): the load-bearing invariant is opacity
 // toward the *trampoline* — the trampoline threads the handle accept→read/send/close
@@ -257,7 +257,7 @@ fn connection_field_user_readable() {
     assert_v9_typechecks(out, "connection_field_user_readable");
 }
 
-// spec: design/platform/poll-support.md §3.5.1 — negative-coverage: NO scheduling
+// spec: design/platform/archive/poll-support-s96.md §3.5.1 — negative-coverage: NO scheduling
 // state rides on the value. A clean load + probe of the opaque `Connection` MUST NOT
 // surface `token` / `capacity` (nor any descriptor/role) anywhere in its display or
 // value-shape — under the ctx-vtable model those live entirely in the trampoline's

@@ -94,7 +94,7 @@
 // S118 W1 BASELINE-RECONCILIATION REPAIR (`/testing`, 2026-07-25). Five of this
 // file's cells — A4, B1, B1-link, B2, B2-link — were failing on a SOURCE-ROT
 // COMPILE ERROR, not on their named defect: their programs spelled the nullary
-// constructor `(deftype O (Non) (Jus [g]))`, and the S116 user ruling made a
+// constructor `(deftype (O a) (Non) (Jus [:a g]))`, and the S116 user ruling made a
 // parenthesized content-free constructor arm a hard reject
 // (`parse error: parenthesized nullary constructor is invalid; write the bare
 // constructor name` — pinned by
@@ -104,7 +104,7 @@
 // not a defect guard: it flips green the moment someone repairs the syntax and
 // says nothing about 0810.
 //
-// The spelling is repaired to the spec-conforming `(deftype O Non (Jus [g]))`
+// The spelling is repaired to the spec-conforming `(deftype (O a) Non (Jus [:a g]))`
 // (the patterns already used the bare form). Re-measured at HEAD `e15ff20f`
 // after the repair, the documented S115 signatures reproduce EXACTLY:
 //
@@ -229,7 +229,7 @@ fn assert_both_toggles(label: &str, program: &str, expect_exit: i32) {
 /// The answer is `sum(0..n) mod 256`.
 fn inline_call_wrapper(n: i64) -> String {
     format!(
-        "(deftype B (Mk [v]))\n\
+        "(deftype (B a) (Mk [:a v]))\n\
          (defn mk [n] (Mk n))\n\
          (defn go [i n acc]\n\
          \x20 (if (eq-i64 i n) acc\n\
@@ -243,7 +243,7 @@ fn inline_call_wrapper(n: i64) -> String {
 /// payload. GREEN today.
 fn let_bound_int_payload(n: i64) -> String {
     format!(
-        "(deftype B (Mk [v]))\n\
+        "(deftype (B a) (Mk [:a v]))\n\
          (defn mk [n] (Mk n))\n\
          (defn go [i n acc]\n\
          \x20 (if (eq-i64 i n) acc\n\
@@ -257,7 +257,7 @@ fn let_bound_int_payload(n: i64) -> String {
 /// call anywhere, which is what rules out "a post-call-seam artifact".
 fn inline_constructor_no_call(n: i64) -> String {
     format!(
-        "(deftype B (Mk [v]))\n\
+        "(deftype (B a) (Mk [:a v]))\n\
          (defn go [i n acc]\n\
          \x20 (if (eq-i64 i n) acc\n\
          \x20   (match (Mk i)\n\
@@ -271,7 +271,7 @@ fn inline_constructor_no_call(n: i64) -> String {
 /// scrutinee object graph, not just the wrapper header.
 fn inline_call_wrapper_heap_payload(n: i64) -> String {
     format!(
-        "(deftype B (Mk [v]))\n\
+        "(deftype (B a) (Mk [:a v]))\n\
          (defn mk [n] (Mk [n n n]))\n\
          (defn go [i n acc]\n\
          \x20 (if (eq-i64 i n) acc\n\
@@ -286,8 +286,8 @@ fn inline_call_wrapper_heap_payload(n: i64) -> String {
 /// `solver/eliminate` returning `(Some g)` reduced to two ADTs.
 fn wrapper_from_call_supersedes_loop_param(n: i64) -> String {
     format!(
-        "(deftype G (Gr [cells]))\n\
-         (deftype O Non (Jus [g]))\n\
+        "(deftype (G a) (Gr [:a cells]))\n\
+         (deftype (O a) Non (Jus [:a g]))\n\
          (defn step [g i] (Jus g))\n\
          (defn go [g i n]\n\
          \x20 (if (eq-i64 i n) g\n\
@@ -302,8 +302,8 @@ fn wrapper_from_call_supersedes_loop_param(n: i64) -> String {
 /// released while `g2` (its payload) is still the live loop parameter.
 fn let_bound_scrutinee_supersedes_loop_param(n: i64) -> String {
     format!(
-        "(deftype G (Gr [cells]))\n\
-         (deftype O Non (Jus [g]))\n\
+        "(deftype (G a) (Gr [:a cells]))\n\
+         (deftype (O a) Non (Jus [:a g]))\n\
          (defn step [g i] (Jus g))\n\
          (defn go [g i n]\n\
          \x20 (if (eq-i64 i n) g\n\
@@ -320,8 +320,8 @@ fn let_bound_scrutinee_supersedes_loop_param(n: i64) -> String {
 /// does not fault at all: it exits 1 with `runtime panic: match failed`.
 fn let_bound_scrutinee_result_outer_matched(n: i64) -> String {
     format!(
-        "(deftype G (Gr [cells]))\n\
-         (deftype O Non (Jus [g]))\n\
+        "(deftype (G a) (Gr [:a cells]))\n\
+         (deftype (O a) Non (Jus [:a g]))\n\
          (defn step [g i] (Jus g))\n\
          (defn go [g i n]\n\
          \x20 (if (eq-i64 i n) g\n\
@@ -338,7 +338,7 @@ fn let_bound_scrutinee_result_outer_matched(n: i64) -> String {
 /// never reached. This is the cell the generative harness already covers.
 fn match_in_callee_on_borrowed_param(n: i64) -> String {
     format!(
-        "(deftype B (Mk [v]))\n\
+        "(deftype (B a) (Mk [:a v]))\n\
          (defn mk [n] (Mk n))\n\
          (defn peek [b] (match b [(Mk v) v]))\n\
          (defn go [i n acc]\n\

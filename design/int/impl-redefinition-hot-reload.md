@@ -86,12 +86,36 @@ impl's **mangled method Defs** into the **forced** first loop, exactly mirroring
 the multi-sig `defn` arm that already enrolls `base$…` mangled variants
 (`worker.rs:971–989`):
 
-- for each `method in impl_.methods`, enroll every live `defined_symbols()` entry
-  whose name is the method's mangled form — `{impl_.trait_name}.{method}$…`
-  (split on the last `$`; prefix `{trait}.{method}`). This is the /dev mechanism;
-  the **binding contract** is: *every mangled method Def of the impl enters the
-  forced batch* (so the sweep's `already_compiled` gate no longer governs whether
-  a re-impl recompiles).
+- enroll every live `defined_symbols()` entry whose name is a mangled method of
+  the impl's **trait** — prefix `{impl_.trait_name}.` with a `$` in the
+  remainder. This is the /dev mechanism; the **binding contract** is: *every
+  mangled method Def of the impl enters the forced batch* (so the sweep's
+  `already_compiled` gate no longer governs whether a re-impl recompiles).
+
+> **Corrected S121 (FIXME 0795) — the enrolment set is derived from the TABLE,
+> not from the FORM.** This bullet originally prescribed *"for each `method in
+> impl_.methods`"*. The W6 change-set implemented that literally, and `/review`
+> found the hole (FIXME 0791, repro-confirmed before the fix): a method whose
+> source changes **explicit → default** is not in `impl_.methods`, and its
+> re-staged default `Defn` is appended to `finalize_cluster`'s working program
+> rather than to the `expanded_program` slice that reaches
+> `derive_codegen_batch`. It was therefore never enrolled;
+> `commit_slotted_def` carried the prior override's code forward as
+> AbiPreserving, the `already_compiled` sweep skipped it, and the **stale
+> override kept dispatching** where spec §7.1.5 requires the default to take
+> over. The landed mechanism (S115 W6b), and the one stated above, keys on the
+> trait alone.
+>
+> **The general caution, worth carrying past this seam:** an enrolment set
+> derived from the FORM under-approximates one derived from the TABLE whenever
+> a pass synthesises entries. `impl_.methods` is not a sound proxy for "the
+> methods this impl's live table holds", because default synthesis routes its
+> `Defn` through a program slice the batch deriver never sees. Where a set must
+> be complete, derive it from settled state (Principle 26), not from the syntax
+> that triggered it.
+>
+> The binding-contract sentence above is unchanged by the correction — only the
+> prescribed derivation of the set was superseded.
 
 Because the forced loop ignores `already_compiled`, the re-impl's carried-over-code
 mangled Def is re-enrolled → codegen recompiles its new body → `commit_slotted_def`
@@ -139,7 +163,13 @@ type-changing re-impl is rejected at seam 1; it never reaches seam 2.)
 - **Unit (mandatory, at the src seam)**: drive `derive_codegen_batch` (or the
   eval-turn recompile chain) for a re-impl and assert the mangled method Def is
   **enrolled** (fail-on-revert: the pre-fix batch omits it). This pins the exact
-  seam the bug lived at, independent of the e2e dispatch outcome.
+  seam the bug lived at, independent of the e2e dispatch outcome. **Two cells
+  stand here, not one** (S121, FIXME 0795): the explicit-method cell, and
+  `worker::tests::derive_codegen_batch_enrolls_omitted_default_method_of_the_impl`
+  — the omitted-method cell, which is the one that discriminates the
+  table-derived set from the form-derived set. A single explicit-method cell
+  passes under both derivations and is therefore not evidence for the
+  correction above.
 - **e2e (the /qa pin)**: `tests/impl_redefinition_dispatch.rs::reimpl_either_dispatches_new_or_notices_not_replaced`
   is the polarity-safe RED; at flip, /testing sharpens it to the ruled branch —
   after a same-type re-impl, `(size (Bx 0))` dispatches the **new** body

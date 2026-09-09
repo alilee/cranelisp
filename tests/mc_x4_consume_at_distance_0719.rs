@@ -108,7 +108,7 @@ fn param_distance_recursive_consumer_seed_empty_green() {
 fn untyped_adt_field_distance_green() {
     assert_run_and_link(
         &format!(
-            "(deftype Box (Bx [contents]))\n\
+            "(deftype (Box a) (Bx [:a contents]))\n\
              (defn peers\n\
              \x20 ([idx]     (peers idx [0]))\n\
              \x20 ([idx acc] (if (eq-i64 idx 0) (Bx acc) (peers (add-i64 idx -1) (vec-push acc idx)))))\n\
@@ -127,7 +127,7 @@ fn untyped_adt_field_distance_green() {
 // consumed at parameter distance.
 #[test]
 fn cross_module_untyped_field_distance_green() {
-    let bld = "(deftype Box (Bx [contents]))\n\
+    let bld = "(deftype (Box a) (Bx [:a contents]))\n\
          (defn peers\n\
          \x20 ([idx]     (peers idx [0]))\n\
          \x20 ([idx acc] (if (eq-i64 idx 0) (Bx acc) (peers (add-i64 idx -1) (vec-push acc idx)))))\n";

@@ -33,6 +33,7 @@
 mod helpers;
 
 use helpers::e2e::{Cranelisp, PreludeVariant};
+use helpers::marginal::{Child, MarginalPair};
 
 // =============================================================================
 // Helpers
@@ -67,6 +68,77 @@ fn pure_bool_unwraps_inline() {
 #[test]
 fn pure_string_unwraps_inline() {
     repl("(Pure \"hello\")\n").assert_stdout_contains(":primitives/String");
+}
+
+fn platform_pure_program(body: &str) -> Child {
+    Child::new(&format!(
+        "(platform test-capture)\n\
+         (import [platform.test-capture [pure-string pure-int]])\n\
+         (import [primitives [Pure bind str-eq]])\n\
+         (defn main [] {body})\n"
+    ))
+}
+
+// spec: spec/10-io.md §10.12.9 — discarding unforced platform Pure releases
+// the DLL-allocated owning result as well as its IO node (S121 R4 E1).
+#[test]
+fn platform_pure_string_unforced_discard_balances() {
+    let pair = MarginalPair::new(
+        "unforced DLL Pure String",
+        platform_pure_program("(Pure 0)"),
+        platform_pure_program("(let [_ (pure-string)] (Pure 0))"),
+    )
+    .measure();
+    assert_eq!(pair.control().exit_code(), Some(0), "{}", pair.report());
+    assert_eq!(pair.subject().exit_code(), Some(0), "{}", pair.report());
+    assert!(
+        pair.allocs() > 0,
+        "DLL workload must allocate: {}",
+        pair.report()
+    );
+    pair.assert_balanced("discarded DLL Pure String");
+}
+
+// spec: spec/10-io.md §10.3.1 — forcing platform Pure hands the exact live
+// string to its continuation and releases it exactly once (S121 R4 E2).
+#[test]
+fn platform_pure_string_forced_transfers_exact_value_and_balances() {
+    let pair = MarginalPair::new(
+        "forced DLL Pure String",
+        platform_pure_program("(Pure 17)"),
+        platform_pure_program(
+            "(bind (pure-string) (fn [s] (Pure (if (str-eq s \"s121-platform-pure\") 17 99))))",
+        ),
+    )
+    .measure();
+    assert_eq!(pair.control().exit_code(), Some(17), "{}", pair.report());
+    assert_eq!(pair.subject().exit_code(), Some(17), "{}", pair.report());
+    assert!(
+        pair.allocs() > 0,
+        "DLL workload must allocate: {}",
+        pair.report()
+    );
+    pair.assert_balanced("forced DLL Pure String");
+}
+
+// spec: spec/10-io.md §10.12.9 — unforced scalar platform Pure tears down
+// safely without a heap-result disposer call (S121 R4 E3).
+#[test]
+fn platform_pure_int_unforced_discard_balances_without_disposer() {
+    let pair = MarginalPair::new(
+        "unforced DLL Pure Int",
+        platform_pure_program("(Pure 0)"),
+        platform_pure_program("(let [_ (pure-int)] (Pure 0))"),
+    )
+    .measure();
+    assert_eq!(pair.control().exit_code(), Some(0), "{}", pair.report());
+    assert_eq!(pair.subject().exit_code(), Some(0), "{}", pair.report());
+    assert!(
+        pair.allocs() > 0,
+        "DLL workload must allocate: {}",
+        pair.report()
+    );
+    pair.assert_balanced("discarded DLL Pure Int");
 }
 
 // =============================================================================
@@ -655,6 +727,19 @@ fn then_discard_string_result() {
     .assert_stdout_contains(":primitives/Int 42");
 }
 
+// spec: spec/10-io.md §10.12.9 item 4 — the linked trampoline carries the
+// owning Bind input's disposer across object relocation and hands the value to
+// the continuation without leaking or disposing it early.
+#[test]
+fn linked_bind_owning_result_disposer_relocates_and_runs() {
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .link_then_run("user.cl")
+        .user(r#"(defn main [] (bind (Pure "discarded") (fn [_] (Pure 17))))"#)
+        .output()
+        .assert_exit(17);
+}
+
 // spec: spec/10-io.md §10.3 — discard a Mixed-heap ADT result, keep an Int.
 #[test]
 fn then_discard_adt_result() {
@@ -795,8 +880,7 @@ fn run_mode_deep_bind_chain_named_continuation() {
 // + I/O jitter swamps the signal), so no integration-tier ceiling is added — the
 // criterion bench is the single authoritative AC-2 measurement.
 
-// spec: spec/10-io.md §"IO observation contract" + spec/12-runtime.md
-// §"Diagnostic logging".
+// spec: design/int/observability.md §7
 // FIXME(/dev intrinsics FIXME 0103 Phase 1 + /dev int FIXME 0103 Phase 2)
 // — fails until the relocated machinery emits trace lines whose shape
 // matches the snapshot fixture (event tags present at minimum).
@@ -845,7 +929,7 @@ fn io_trace_snapshot_pre_post_relocation_byte_equivalent() {
     );
 }
 
-// spec: structural — IoObserver registration site post-FIXME-0103 is in
+// spec: design/int/observability.md §4 — IoObserver registration site post-FIXME-0103 is in
 // `cranelisp-intrinsics`, NOT `cranelisp-runtime` (per /arch Phase-2
 // revision #3). Verifiable through `cargo public-api` baselines: a) the
 // intrinsics baseline must list `register_io_observer`; b) the runtime

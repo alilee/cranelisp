@@ -87,14 +87,14 @@ The former monolithic `traits.rs` is five cohesive production submodules under a
 
 | Submodule | LOC | Concern |
 |---|--:|---|
-| `traits/mod.rs` | ~89 | hub: submodule decls, crate-internal re-exports, `mangle_trait_method` |
-| `traits/registry.rs` | ~364 | **write-side**: `TraitDecl` → symbol-table state; `ActiveConstraints`; `register_trait_decl`, `register_hkt_trait`, `register_trait_method`, `build_method_type` |
-| `traits/impl_check.rs` | ~889 | impl recording (`register_trait_impl`) + method-body checking (`check_impl_method`, `check_impl_method_with_sig`, default generation) |
-| `traits/dispatch.rs` | ~452 | **read-side**: `try_resolve_trait_method`, `primitive_for_trait_method`, HKT/return-type dispatch helpers |
-| `traits/monomorphise.rs` | ~1107 | the monomorphisation engine + mangling primitives (`monomorphise_call`, `recheck_body_for_mono`, `build_mangled_name`, `concrete_type_name`) |
-| `traits/type_resolve.rs` | ~456 | `TypeExpr → Type` resolution free functions |
+| `traits/mod.rs` | 89 | hub: submodule decls, crate-internal re-exports, `mangle_trait_method` |
+| `traits/registry.rs` | 552 | **write-side**: `TraitDecl` → symbol-table state; `ActiveConstraints`; `register_trait_decl`, `register_hkt_trait`, `register_trait_method`, `build_method_type` |
+| `traits/impl_check.rs` | 1,355 | impl recording (`register_trait_impl`, `:94`) + method-body checking (`check_impl_method`, `check_impl_method_with_sig`, default generation) |
+| `traits/dispatch.rs` | 555 | **read-side**: `try_resolve_trait_method`, `primitive_for_trait_method`, HKT/return-type dispatch helpers |
+| `traits/monomorphise.rs` | 1,326 | the monomorphisation engine + mangling primitives (`monomorphise_call`, `recheck_body_for_mono`, `build_mangled_name`, `concrete_type_name`) |
+| `traits/type_resolve.rs` | 292 | `TypeExpr → Type` resolution free functions |
 
-`traits/test_helpers.rs` (~324, test-only) + a sibling `{mod}/tests.rs` per production submodule carry the test surface.
+`traits/test_helpers.rs` (381, test-only) + a sibling `{mod}/tests.rs` per production submodule carry the test surface. (Counts measured 2026-09-01. `impl_check.rs` has grown ~50% since the S87 cut and is the file both S121 CS-1 and CS-6 open; the growth watch-item is `typecheck.md` §3.2's, not a second one here.)
 
 ## 2. Trait Declaration (`deftrait`)
 
@@ -251,15 +251,50 @@ and 26).
   (/ [x y] (div-i64 x y)))
 ```
 
-### Registration pipeline — `register_trait_impl(state, impl_) -> Result<Vec<Defn>>` (`impl_check.rs:18`)
+### Registration pipeline — `register_trait_impl(state, impl_) -> Result<Vec<Defn>>` (`impl_check.rs:94`)
 
 1. **Trait lookup + target resolution.** Chain-follow the trait reference to its `TraitDecl` (error if unknown); resolve the impl target to its `FQTypeName` (`concrete_type_for_impl_target`, ADT-arity-checked).
-2. **Required-method check** (`check_impl_methods_present`, `impl_check.rs:196`): every method without a `default_body` MUST be provided; defaulted methods may be omitted.
+2. **Required-method check** (`check_impl_methods_present`, `impl_check.rs:581`): every method without a `default_body` MUST be provided; defaulted methods may be omitted.
 3. **Field-accessor collision check (spec §7.3.1, FIXME 0365).** An impl method whose name equals an existing field-accessor name of the target type is rejected at impl time (see `design/typecheck/fixme-0365-field-accessor-dotted.md` §2 — the check runs alongside `check_impl_methods_present`, before the impl entry is written).
 4. **Default-method generation** (`generate_default_methods`): for each omitted defaulted method, mint a mangled `Defn` (§3.1) whose body is built by `build_default_body`.
-5. **Impl entry write.** Insert `ModuleEntry::TraitImpl { trait_name, impl_type, methods, visibility: Public }` under `impl${FQTypeName}${FQTraitName}` in the **trait's defining module** (Decision 45, §1.3). There is no explicit dedup guard — a re-run re-`insert`s under the synthetic key, overwriting idempotently.
+5. **Impl entry write — two carriers, one derivation, one transaction.** Stage `ModuleEntry::TraitImpl { trait_name, impl_type, impl_module, methods, visibility: Public }` under the `trait_impl_key` storage key in the **trait's defining module** (Decision 45 as amended, §1.3), retaining the prior entry so the method-check transaction can restore it; and in the **writer's own** table stage the `WrittenTraitImpl` persistence record from the *same* resolved values, under the same retain-prior/rollback discipline. See below.
 6. **Method-body type-checking** (`check_impl_method` / `check_impl_method_with_sig`): resolve the concrete `Self` type, seed a `var_map` `{ trait_type_param → concrete_self }`, resolve each signature param/return through `resolve_trait_type_expr`, and check the body against those concrete types (`check_defn_body_with_types`). The mangled-name `Def` writeback (with its `codegen_view`, `callees`, `ast`) runs through the shared `finalize_impl_method_writeback` tail (the single/HKT paths converge there).
 7. **Return.** The provided + default `Defn` nodes are returned to the caller for codegen (core-trait impls' returns are discarded — §5).
+
+### 3.0.1 The writer-side record — where step 5's second carrier sits (S121 CS-6)
+
+The cross-crate contract is `design/arch/trait-impl-cache-carrier.md` §§3–4 and is not
+restated here: what the record is, why the writer is its durable home, the record ⟺ shell
+bijection, the `(impl_type, trait_name)` upsert identity and the enrolment helper are all
+`arch`'s. What this crate decides is **where in `register_trait_impl`'s existing
+transaction the append sits**, and the answer is: exactly where the shell already goes.
+
+- **Values.** `fq_trait_name`, `fq_impl_type`, `state.current_module` and `method_names`
+  are already resolved once, above the shell construction, and threaded to every
+  writeback path (§3.1's definition-side rule). The record clones those same values.
+  Nothing is re-resolved and no spelling is re-parsed — one derivation, two carriers
+  (Principle 24).
+- **Tables.** The two carriers land in **different tables**: the shell in `trait_home`,
+  the record in the writer's own table, which at this point is `state.current_module`
+  (the per-method module switch happens later, in `check_impl_method_with_sig`). This is
+  not a divergence — it is §1's whole point, that the writer is the causal producer.
+- **Transaction.** Both stage at the same point, both retain their prior value, and both
+  restore on the method-check error arm. A record staged without its shell, or surviving
+  a rollback that removed its shell, breaks the bijection at a commit boundary — which is
+  the invariant `enrol_written_trait_impl` will later hard-error on rather than silently
+  pick between (Principle 26: recorded from settled state, discarded with it).
+- **Identity.** The record's identity is `trait_impl_key`'s input pair. A same-`(type,
+  trait)` re-impl (spec §5.4.5 hot reload) **replaces** its record; it never appends a
+  second. Comparing the two canonical fields *is* that identity and needs no per-element
+  key mint.
+- **The key mint.** `trait_impl_key` becomes the only construction of the `impl$` storage
+  key: the registration site and the dispatch-side probe (`dispatch.rs`) both call it.
+  The two hand-rolled `format!("impl$…")` spellings retire, discharging the R4
+  keyed-identity census obligation for this family.
+
+C1's funnel conversion (`typecheck.md` §9.8.2 CS-1) reaches the same rollback arms, which
+is why CS-6 follows it: the record's staging and restoration are written once, in the
+funnel vocabulary, never as raw `symbols` writes that then need re-arming.
 
 ### Post-inference
 
@@ -676,7 +711,8 @@ These must always hold; violations are implementation bugs.
 2. **Idempotent re-registration.** `register_trait_decl`'s same-module identity probe (`registry.rs:84`) is fallback-less and answers IDENTITY only; name-freedom is decided upstream at the §8.6.4 seam. A same-decl re-submission is a no-op; a different same-module redecl is rejected.
 3. **Impl completeness.** Every impl provides all non-defaulted methods (`check_impl_methods_present`).
 4. **Impl type-correctness.** Every impl method body type-checks against the trait method signature with `Self` substituted for the concrete target.
-5. **Decision-45 placement.** A `TraitImpl` entry lives in the **trait's defining module** under `impl${FQType}${FQTrait}`; impl discovery chain-follows to that module and scans it — no universe scan.
+5. **Decision-45 placement.** A `TraitImpl` shell lives in the **trait's defining module** under `trait_impl_key(FQType, FQTrait)`; impl discovery chain-follows to that module and probes that one key — no universe scan, no closure walk. The mangled method `Def`s live in the writer's module, and the shell's `impl_module` is the pointer between them.
+5a. **Record ⟺ shell bijection** (S121, `trait-impl-cache-carrier.md` §3). At every commit boundary, the writer's `written_trait_impls` and the shells its registration wrote are in bijection: a record with no committed shell, or a committed shell whose writer holds no record, is a defect. At most one record per `(impl_type, trait_name)` per writer — a re-impl replaces, never appends.
 6. **`trait_origin` consistency.** If method `m` resolves to a `Def { trait_origin: Some(T) }`, then `T`'s `TraitDecl` exists and declares a method named `m`.
 
 ### Constraints

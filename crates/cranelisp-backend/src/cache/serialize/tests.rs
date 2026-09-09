@@ -1,11 +1,188 @@
 use super::*;
 use cranelisp_types::{
-    DefKind, DefnVariant, Expr, FQSymbol, ImportSpec, ModuleEntry, ModuleFullPath, Scheme,
-    Span as TSpan, Symbol, Type, UserFnState, Visibility,
+    Binding, CallableSlot, Defn, DefnVariant, Expr, FQSymbol, ImportSpec, Life, ModuleFullPath,
+    Realization, SchedulingClass, Scheme, Span as TSpan, Symbol, Type, Visibility,
 };
 use std::collections::HashMap;
 
-fn make_def(_name: &str) -> ModuleEntry {
+fn result_context_instances() -> SymbolTable {
+    use cranelisp_types::{
+        CallableOrigin, CallableTarget, ConcreteType, InstanceLink, MonoDefnVariant, MonoExpr,
+    };
+
+    let mut table = SymbolTable::new(ModuleFullPath::from("consumer"));
+    for type_arg in [ConcreteType::Int, ConcreteType::String] {
+        let link = InstanceLink::from_type_args(
+            CallableTarget::Binding(FQSymbol {
+                module: ModuleFullPath::from("producer"),
+                symbol: Symbol::from("g"),
+            }),
+            vec![type_arg.clone()],
+        );
+        let closure_ty = ConcreteType::Fn(vec![type_arg], Box::new(ConcreteType::Int));
+        let scheme = Scheme {
+            type_vars: Vec::new(),
+            constraints: HashMap::new(),
+            ty: Type::Fn(Vec::new(), Box::new(closure_ty.to_type())),
+        };
+        let view = MonoDefnVariant {
+            name: link.instance_key(),
+            params: Vec::new(),
+            body: MonoExpr::Lambda {
+                params: vec![Symbol::from("y")],
+                body: Box::new(MonoExpr::IntLit {
+                    value: 100,
+                    span: TSpan::SYNTHETIC,
+                    ty: ConcreteType::Int,
+                }),
+                span: TSpan::SYNTHETIC,
+                ty: closure_ty,
+                escapes: None,
+                confined: None,
+                unique_static: None,
+            },
+            span: TSpan::SYNTHETIC,
+            mode_summary: None,
+        };
+        table
+            .install_instance(
+                link,
+                scheme,
+                Vec::new(),
+                None,
+                0,
+                CallableOrigin::Plain,
+                Realization::Body { view, code: None },
+                None,
+                Vec::new(),
+                Visibility::Private,
+            )
+            .unwrap();
+    }
+    table
+}
+
+// spec: spec/03-types.md §3.6.4; tests/plan/s121-test-plan.md §12
+#[test]
+fn result_context_instances_round_trip_complete_links() {
+    // Bump tripwire: the round trip below is version-agnostic, so this literal
+    // exists only to make a `CACHE_SCHEMA_VERSION` change re-read this cell.
+    // Advance it once the version-log entry for the new epoch is written.
+    assert_eq!(super::super::CACHE_SCHEMA_VERSION, 28);
+    let table = result_context_instances();
+    let bytes = serialise_meta(&table, super::super::CACHE_SCHEMA_VERSION).unwrap();
+    let loaded = deserialise_meta(
+        &bytes,
+        super::super::CACHE_SCHEMA_VERSION,
+        Path::new("consumer.meta.json"),
+    )
+    .unwrap();
+    assert_eq!(loaded.all_symbols().count(), 2);
+    for (key, original) in table.all_symbols() {
+        let restored = loaded.get(key.as_ref()).unwrap();
+        assert_eq!(restored.callable_got_slot(), original.callable_got_slot());
+        let original = original.callable().unwrap();
+        let restored = restored.callable().unwrap();
+        assert_eq!(restored.arm.scheme.ty, original.arm.scheme.ty);
+        assert!(restored.arm.scheme.type_vars.is_empty());
+        assert!(restored.arm.scheme.constraints.is_empty());
+        match (&original.arm.life, &restored.arm.life) {
+            (
+                Life::Concrete {
+                    minted_from: Some(expected),
+                    ..
+                },
+                Life::Concrete {
+                    minted_from: Some(actual),
+                    ..
+                },
+            ) => {
+                assert_eq!(actual, expected);
+                assert_eq!(actual.instance_key(), *key);
+            }
+            other => panic!("expected two concrete instance links, got {other:?}"),
+        }
+    }
+}
+
+// spec: tests/plan/s121-test-plan.md §12 — schema-25 refusal precedes payload decoding
+#[test]
+fn result_context_schema25_rejected_before_legacy_link_decoding() {
+    let table = result_context_instances();
+    let bytes = serialise_meta(&table, 25).unwrap();
+    let mut legacy: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    for binding in legacy["symbols"].as_object_mut().unwrap().values_mut() {
+        let link =
+            binding["binding"]["declaration"]["Callable"]["arm"]["life"]["Concrete"]["minted_from"]
+                .as_object_mut()
+                .unwrap();
+        let type_args = link.remove("type_args").unwrap();
+        link.insert("args".into(), type_args);
+    }
+    let path = Path::new("consumer.meta.json");
+    let bytes = serde_json::to_vec(&legacy).unwrap();
+    let error = deserialise_meta(&bytes, 26, path).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            CacheStale::SchemaMismatch {
+                found: 25,
+                expected: 26,
+                ..
+            }
+        ),
+        "expected old-schema refusal, got {error:?}"
+    );
+    legacy["schema_version"] = serde_json::json!(26);
+    assert!(matches!(
+        deserialise_meta(&serde_json::to_vec(&legacy).unwrap(), 26, path),
+        Err(CacheStale::Deserialise { .. })
+    ));
+}
+
+// spec: design/backend/module-caching.md §14.3 — malformed metadata and legacy version default
+#[test]
+fn schema_stamp_preserves_malformed_and_missing_metadata_dispositions() {
+    let table = SymbolTable::new(ModuleFullPath::from("user"));
+    let bytes = serialise_meta(&table, 26).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let path = Path::new("user.meta.json");
+    for stamp in [
+        serde_json::json!(null),
+        serde_json::json!("26"),
+        serde_json::json!(-1),
+        serde_json::json!(4294967296_u64),
+    ] {
+        let mut malformed = value.clone();
+        malformed["schema_version"] = stamp;
+        assert!(matches!(
+            deserialise_meta(&serde_json::to_vec(&malformed).unwrap(), 26, path),
+            Err(CacheStale::Deserialise { .. })
+        ));
+    }
+    for malformed in [b"{".as_slice(), b"null", b"[]"] {
+        assert!(matches!(
+            deserialise_meta(malformed, 26, path),
+            Err(CacheStale::Deserialise { .. })
+        ));
+    }
+    let mut missing = value;
+    missing.as_object_mut().unwrap().remove("schema_version");
+    assert!(matches!(
+        deserialise_meta(&serde_json::to_vec(&missing).unwrap(), 26, path),
+        Err(CacheStale::SchemaMismatch {
+            found: 0,
+            expected: 26,
+            ..
+        })
+    ));
+}
+
+fn make_def(name: &str) -> Binding {
+    make_def_at_slot(name, 0)
+}
+
+fn make_def_at_slot(name: &str, slot: usize) -> Binding {
     let variant = DefnVariant {
         params: vec![],
         body: Expr::IntLit {
@@ -15,28 +192,87 @@ fn make_def(_name: &str) -> ModuleEntry {
         },
         span: TSpan::new(0, 20),
     };
-    ModuleEntry::Def {
-        scheme: Scheme {
-            type_vars: vec![],
-            constraints: HashMap::new(),
-            ty: Type::Fn(vec![], Box::new(Type::Int)),
-        },
-        visibility: Visibility::Public,
+    let defn = Defn {
+        name: Symbol::from(name),
         docstring: None,
-        param_names: vec![],
-        kind: Box::new(DefKind::UserFn {
-            fn_state: UserFnState::Concrete {
-                got_slot: 7,
-                mode_summary: None,
+        variants: vec![variant],
+        visibility: Visibility::Public,
+        span: TSpan::new(0, 20),
+    };
+    let mut table = SymbolTable::new(ModuleFullPath::from("fixture"));
+    for i in 0..slot {
+        crate::test_support::install_def_entry(
+            &mut table,
+            Defn {
+                name: Symbol::from(format!("filler-{i}")),
+                docstring: None,
+                variants: defn.variants.clone(),
+                visibility: Visibility::Private,
+                span: defn.span,
             },
-        }),
-        callees: vec![],
-        trait_origin: None,
-        seq: 0,
-        ast: Some(variant),
-        codegen_view: None,
-        code: None,
-        value_use: false,
+        );
+    }
+    crate::test_support::install_def_entry_at_slot(&mut table, defn, slot);
+    table.get(name).expect("installed fixture").clone()
+}
+
+fn install(table: &mut SymbolTable, name: &str, binding: Binding) -> CallableSlot {
+    let callable = binding.callable().expect("cache fixture is callable");
+    match &callable.arm.life {
+        Life::Concrete {
+            realization: Realization::Body { view, .. },
+            ast,
+            callees,
+            mode_summary,
+            ..
+        } => {
+            let mut view = view.clone();
+            view.name = Symbol::from(name);
+            let slot = table
+                .install_concrete(
+                    Symbol::from(name),
+                    callable.arm.scheme.clone(),
+                    callable.arm.param_names.clone(),
+                    callable.docstring.clone(),
+                    callable.seq,
+                    callable.origin.clone(),
+                    Realization::Body {
+                        view: view.clone(),
+                        code: None,
+                    },
+                    ast.clone(),
+                    callees.clone(),
+                    binding.visibility,
+                )
+                .expect("install concrete cache fixture");
+            if let Some(summary) = mode_summary {
+                table
+                    .publish_body_ownership(
+                        &crate::test_support::binding_target(&table.path, &Symbol::from(name)),
+                        summary.clone(),
+                        view,
+                    )
+                    .expect("publish cache fixture ownership");
+            }
+            slot
+        }
+        Life::Concrete {
+            realization: Realization::ExternShim { borrowed_sibling },
+            mode_summary,
+            ..
+        } => table
+            .install_extern(
+                Symbol::from(name),
+                callable.arm.scheme.clone(),
+                callable.arm.param_names.clone(),
+                callable.docstring.clone(),
+                callable.seq,
+                *borrowed_sibling,
+                mode_summary.clone(),
+                binding.visibility,
+            )
+            .expect("install extern cache fixture"),
+        _ => panic!("cache fixture uses a supported settled callable lifecycle"),
     }
 }
 
@@ -53,14 +289,14 @@ fn cache_meta_json_is_serialised_symbol_table() {
     let meta_path = dir.path().join("user.meta.json");
 
     let mut table = SymbolTable::new(ModuleFullPath::from("user"));
-    table.insert(Symbol::from("answer"), make_def("answer"));
+    install(&mut table, "answer", make_def("answer"));
 
     write_meta(&meta_path, &table, super::super::CACHE_SCHEMA_VERSION).unwrap();
     let loaded = load_meta(&meta_path).expect("cache load should succeed");
 
     assert_eq!(loaded.path, table.path);
-    assert_eq!(loaded.symbols.len(), 1);
-    assert!(loaded.symbols.contains_key(&Symbol::from("answer")));
+    assert_eq!(loaded.all_symbols().count(), 1);
+    assert!(loaded.get("answer").is_some());
     assert_eq!(
         loaded.schema_version,
         super::super::CACHE_SCHEMA_VERSION,
@@ -153,7 +389,7 @@ fn cache_v4_meta_rejected_after_callability_reshape() {
     // Emit a sidecar stamped at the legacy v4 (current build_id, so only the
     // schema version differs — isolating the schema-mismatch route).
     let mut table = SymbolTable::new(ModuleFullPath::from("user"));
-    table.insert(Symbol::from("callable"), make_def("callable"));
+    install(&mut table, "callable", make_def("callable"));
     write_meta(&meta_path, &table, 4).unwrap();
 
     let bytes = std::fs::read(&meta_path).unwrap();
@@ -200,7 +436,7 @@ fn cache_v18_meta_rejected_after_resolved_target_carriers() {
     // Emit a sidecar stamped at the legacy v18 (current build_id, so only the
     // schema version differs — isolating the schema-mismatch route).
     let mut table = SymbolTable::new(ModuleFullPath::from("user"));
-    table.insert(Symbol::from("callable"), make_def("callable"));
+    install(&mut table, "callable", make_def("callable"));
     write_meta(&meta_path, &table, 18).unwrap();
 
     let bytes = std::fs::read(&meta_path).unwrap();
@@ -221,6 +457,54 @@ fn cache_v18_meta_rejected_after_resolved_target_carriers() {
     }
 }
 
+/// S121 shadowing-reach bump guard (27 -> 28): a `.meta.json` stamped at schema
+/// version 27 — written by the tree whose ownership walker resolved a parameter
+/// reach by binder NAME — MUST be rejected as `CacheStale::SchemaMismatch`, so
+/// the caller recompiles the summary rather than honouring one whose
+/// `ModeSummary` values were computed under a shadow.
+///
+/// This is a VALUE-only epoch: serde shape is identical either side, so the
+/// pre-27 guards above stay green with or without the bump and cannot
+/// discriminate it. Only a sidecar stamped at 27 can.
+// spec: design/typecheck/ownership-inference.md §20.5 (the approved 27 -> 28 bump)
+#[test]
+fn cache_v27_meta_rejected_after_shadowed_param_reach_correction() {
+    // The bump must actually have happened — a v27 cache must be stale now.
+    const {
+        assert!(
+            super::super::CACHE_SCHEMA_VERSION >= 28,
+            "the S121 shadowing correction requires CACHE_SCHEMA_VERSION bumped past 27"
+        );
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let meta_path = dir.path().join("user.meta.json");
+
+    // Emit a sidecar stamped at the pre-correction 27 (current build_id, so only
+    // the schema version differs — isolating the schema-mismatch route).
+    let mut table = SymbolTable::new(ModuleFullPath::from("user"));
+    install(&mut table, "callable", make_def("callable"));
+    write_meta(&meta_path, &table, 27).unwrap();
+
+    let bytes = std::fs::read(&meta_path).unwrap();
+    let result = deserialise_meta(&bytes, super::super::CACHE_SCHEMA_VERSION, &meta_path);
+    match result {
+        Err(CacheStale::SchemaMismatch {
+            found, expected, ..
+        }) => {
+            assert_eq!(found, 27, "the stale cache was stamped at v27");
+            assert_eq!(
+                expected,
+                super::super::CACHE_SCHEMA_VERSION,
+                "rejected against the current (bumped) schema version"
+            );
+        }
+        // Crucially NOT Ok(table): honouring a v27 sidecar resurrects a
+        // `ModeSummary` the pre-fix walker computed under a shadowed binder.
+        other => panic!("v27 cache must be rejected as SchemaMismatch (cache-miss), got {other:?}"),
+    }
+}
+
 /// Per task: write-then-read round-trip. Full multi-field SymbolTable
 /// round-trips byte-identical (modulo skipped fields). Covers the §14.6
 /// symmetry invariant.
@@ -231,19 +515,19 @@ fn cache_round_trip_multi_field_symbol_table() {
     let meta_path = dir.path().join("multi.meta.json");
 
     let mut table = SymbolTable::new(ModuleFullPath::from("multi"));
-    table.insert(Symbol::from("answer"), make_def("answer"));
-    table.insert(Symbol::from("relay"), make_def("relay"));
-    table.insert(
-        Symbol::from("dep-val"),
-        ModuleEntry::Import {
-            source: FQSymbol {
+    install(&mut table, "answer", make_def("answer"));
+    let relay = make_def_at_slot("relay", 1);
+    install(&mut table, "relay", relay);
+    table
+        .expose_candidate(
+            Symbol::from("dep-val"),
+            FQSymbol {
                 module: ModuleFullPath::from("other"),
                 symbol: Symbol::from("dep-val"),
             },
-            visibility: cranelisp_types::Visibility::Private,
-        },
-    );
-    table.next_got_slot = 13;
+            cranelisp_types::Visibility::Private,
+        )
+        .expect("expose imported fixture");
 
     // Populate structural-decl fields (Wave 2a additions per Decision 33).
     table.imports.push(ImportSpec {
@@ -259,8 +543,7 @@ fn cache_round_trip_multi_field_symbol_table() {
 
     // Identity on every persisted field (modulo #[serde(skip)] runtime state).
     assert_eq!(loaded.path, table.path);
-    assert_eq!(loaded.symbols.len(), table.symbols.len());
-    assert_eq!(loaded.next_got_slot, table.next_got_slot);
+    assert_eq!(loaded.all_symbols().count(), table.all_symbols().count());
     assert_eq!(loaded.imports.len(), table.imports.len());
     assert_eq!(loaded.exports.len(), table.exports.len());
     assert_eq!(loaded.platforms.len(), table.platforms.len());
@@ -427,19 +710,27 @@ fn build_id_mismatch_has_diagnostic_reason() {
     assert!(msg.contains("\"b\""), "display includes expected: {msg}");
 }
 
-/// Build a Def carrying an arbitrary GOT slot (used to forge an out-of-range
-/// slot the on-disk cache would otherwise never legally hold).
-fn make_def_with_slot(slot: usize) -> ModuleEntry {
-    let mut entry = make_def("x");
-    if let ModuleEntry::Def { kind, .. } = &mut entry {
-        **kind = DefKind::UserFn {
-            fn_state: UserFnState::Concrete {
-                got_slot: slot,
-                mode_summary: None,
+/// Install a concrete callable at an exact legal manifest-owned slot. Platform
+/// effects are the lifecycle state whose slot is externally assigned, so they
+/// provide the honest max-boundary fixture without forging a live binding.
+fn install_manifest_slot(table: &mut SymbolTable, name: &str, slot: usize) -> CallableSlot {
+    table
+        .install_platform(
+            Symbol::from(name),
+            Scheme {
+                type_vars: vec![],
+                constraints: HashMap::new(),
+                ty: Type::Fn(vec![], Box::new(Type::Int)),
             },
-        };
-    }
-    entry
+            vec![],
+            None,
+            0,
+            SchedulingClass::Sequential,
+            false,
+            slot,
+            Visibility::Public,
+        )
+        .expect("install manifest-slot cache fixture")
 }
 
 // spec: 12-runtime §12.2 — GOT exhaustion / out-of-range slot at the ONE
@@ -456,21 +747,17 @@ fn cache_load_rejects_out_of_range_got_slot_as_stale() {
 
     // A well-formed within-bounds slot loads cleanly.
     let mut ok_table = SymbolTable::new(ModuleFullPath::from("corrupt"));
-    ok_table.insert(
-        Symbol::from("f"),
-        make_def_with_slot(cranelisp_types::GOT_TABLE_SIZE - 1),
-    );
+    install_manifest_slot(&mut ok_table, "f", cranelisp_types::GOT_TABLE_SIZE - 1);
     write_meta(&meta_path, &ok_table, super::super::CACHE_SCHEMA_VERSION).unwrap();
     load_meta(&meta_path).expect("in-bounds slot must load");
 
     // Forge a cache with an out-of-range slot (== GOT_TABLE_SIZE, the first
     // illegal index) and confirm the load refuses it as cache-stale.
     let mut bad_table = SymbolTable::new(ModuleFullPath::from("corrupt"));
-    bad_table.insert(
-        Symbol::from("f"),
-        make_def_with_slot(cranelisp_types::GOT_TABLE_SIZE),
-    );
-    write_meta(&meta_path, &bad_table, super::super::CACHE_SCHEMA_VERSION).unwrap();
+    install_manifest_slot(&mut bad_table, "f", cranelisp_types::GOT_TABLE_SIZE - 1);
+    let mut bytes = serialise_meta(&bad_table, super::super::CACHE_SCHEMA_VERSION).unwrap();
+    tamper_first_number(&mut bytes, "slot", cranelisp_types::GOT_TABLE_SIZE as u64);
+    std::fs::write(&meta_path, bytes).unwrap();
 
     match load_meta(&meta_path) {
         Err(CacheStale::GotSlotOutOfRange { slot, .. }) => {
@@ -497,25 +784,34 @@ fn cache_load_rejects_out_of_range_got_slot_as_stale() {
 // meta LOADS, and the assertion that it was refused fails.
 // =============================================================================
 
-/// A primitive Def carrying an `Extern` body with the R5 borrowed-sibling slot
-/// forged to `slot` — the second GOT-index family.
-fn make_primitive_with_sibling_slot(slot: usize) -> ModuleEntry {
-    let mut entry = make_def("p");
-    if let ModuleEntry::Def { kind, .. } = &mut entry {
-        **kind = DefKind::Primitive {
-            body: cranelisp_types::PrimitiveBody::Extern {
-                got_slot: 3,
-                borrowed_sibling_slot: Some(slot),
+/// Install an extern whose borrowed convention points at a lifecycle-minted
+/// sibling capability.
+fn install_primitive_with_sibling(
+    table: &mut SymbolTable,
+    name: &str,
+    sibling: CallableSlot,
+) -> CallableSlot {
+    table
+        .install_extern(
+            Symbol::from(name),
+            Scheme {
+                type_vars: vec![],
+                constraints: HashMap::new(),
+                ty: Type::Fn(vec![], Box::new(Type::Int)),
             },
-            mode_summary: None,
-        };
-    }
-    entry
+            vec![],
+            None,
+            0,
+            Some(sibling),
+            None,
+            Visibility::Public,
+        )
+        .expect("install extern sibling fixture")
 }
 
 /// A Def whose ownership summary declares `MayAliasOf(index)` over a signature
 /// of `arity` parameters.
-fn make_def_with_may_alias(index: usize, arity: usize) -> ModuleEntry {
+fn make_def_with_may_alias(index: usize, arity: usize) -> Binding {
     make_def_with_result_mode(cranelisp_types::ResultMode::MayAliasOf(index), arity)
 }
 
@@ -523,69 +819,171 @@ fn make_def_with_may_alias(index: usize, arity: usize) -> ModuleEntry {
 /// matrix driver (FIXME 0750: the census must cover EVERY index-carrying
 /// variant, not just the one that happens to be read through a checked
 /// accessor).
-fn make_def_with_result_mode(result: cranelisp_types::ResultMode, arity: usize) -> ModuleEntry {
-    let mut entry = make_def("m");
-    if let ModuleEntry::Def {
-        kind,
-        scheme,
-        param_names,
+fn make_def_with_result_mode(result: cranelisp_types::ResultMode, arity: usize) -> Binding {
+    make_def_with_result_mode_at_slot(result, arity, 0)
+}
+
+fn make_def_with_result_mode_at_slot(
+    result: cranelisp_types::ResultMode,
+    arity: usize,
+    slot: usize,
+) -> Binding {
+    let variant = DefnVariant {
+        params: (0..arity)
+            .map(|i| (Symbol::from(format!("p{i}")), None))
+            .collect(),
+        body: Expr::IntLit {
+            value: 42,
+            span: TSpan::SYNTHETIC,
+            inferred_type: Some(Box::new(Type::Int)),
+        },
+        span: TSpan::SYNTHETIC,
+    };
+    let defn = Defn {
+        name: Symbol::from("m"),
+        docstring: None,
+        variants: vec![variant],
+        visibility: Visibility::Public,
+        span: TSpan::SYNTHETIC,
+    };
+    let mut table = SymbolTable::new(ModuleFullPath::from("fixture"));
+    for i in 0..slot {
+        let filler = format!("filler-{i}");
+        install(&mut table, &filler, make_def_at_slot(&filler, i));
+    }
+    crate::test_support::install_def_entry_at_slot(&mut table, defn, slot);
+    let mut view = table
+        .get("m")
+        .and_then(Binding::codegen_view)
+        .expect("fixture view")
+        .clone();
+    let summary = cranelisp_types::ModeSummary {
+        result,
+        ..Default::default()
+    };
+    view.mode_summary = Some(summary.clone());
+    table
+        .publish_body_ownership(
+            &crate::test_support::binding_target(&table.path, &Symbol::from("m")),
+            summary,
+            view,
+        )
+        .expect("publish fixture ownership");
+    table
+        .get("m")
+        .expect("installed result-mode fixture")
+        .clone()
+}
+
+fn make_def_with_callee(module: &str, symbol: &str) -> Binding {
+    make_def_with_callee_at_slot(module, symbol, 0)
+}
+
+fn make_def_with_callee_at_slot(module: &str, symbol: &str, slot: usize) -> Binding {
+    let mut table = SymbolTable::new(ModuleFullPath::from("fixture"));
+    install(&mut table, "c", make_def_at_slot("c", slot));
+    table
+        .replace_callees(
+            &Symbol::from("c"),
+            vec![FQSymbol {
+                module: ModuleFullPath::from(module),
+                symbol: Symbol::from(symbol),
+            }],
+        )
+        .expect("publish fixture callee");
+    table.get("c").expect("installed callee fixture").clone()
+}
+
+fn make_def_with_view_span(start: u32, end: u32) -> Binding {
+    make_def_with_view_span_at_slot(start, end, 0)
+}
+
+fn make_def_with_view_span_at_slot(start: u32, end: u32, slot: usize) -> Binding {
+    let mut entry = make_def_at_slot("v", slot);
+    let callable = match &mut entry.declaration {
+        cranelisp_types::Decl::Callable(callable) => callable,
+        _ => panic!("def fixture is callable"),
+    };
+    let cranelisp_types::Life::Concrete {
+        realization: cranelisp_types::Realization::Body { view, .. },
         ..
-    } = &mut entry
-    {
-        scheme.ty = Type::Fn(vec![Type::Int; arity], Box::new(Type::Int));
-        *param_names = (0..arity).map(|i| Symbol::from(format!("p{i}"))).collect();
-        **kind = DefKind::UserFn {
-            fn_state: UserFnState::Concrete {
-                got_slot: 1,
-                mode_summary: Some(cranelisp_types::ModeSummary {
-                    result,
-                    ..Default::default()
-                }),
-            },
-        };
-    }
-    entry
-}
-
-fn make_def_with_callee(module: &str, symbol: &str) -> ModuleEntry {
-    let mut entry = make_def("c");
-    if let ModuleEntry::Def { callees, .. } = &mut entry {
-        *callees = vec![FQSymbol {
-            module: ModuleFullPath::from(module),
-            symbol: Symbol::from(symbol),
-        }];
-    }
-    entry
-}
-
-fn make_def_with_view_span(start: u32, end: u32) -> ModuleEntry {
-    let mut entry = make_def("v");
-    if let ModuleEntry::Def { codegen_view, .. } = &mut entry {
-        *codegen_view = Some(cranelisp_types::MonoDefnVariant {
-            name: Symbol::from("v"),
-            params: vec![],
-            body: cranelisp_types::MonoExpr::IntLit {
-                value: 1,
-                span: TSpan::SYNTHETIC,
-                ty: cranelisp_types::ConcreteType::Int,
-            },
-            span: TSpan { start, end },
-            mode_summary: None,
-        });
-    }
+    } = &mut callable.arm.life
+    else {
+        panic!("def fixture is a concrete body");
+    };
+    view.span = TSpan { start, end };
     entry
 }
 
 /// Write a one-entry table and attempt to load it back.
-fn roundtrip(
+fn roundtrip(dir: &std::path::Path, name: &str, entry: Binding) -> Result<SymbolTable, CacheStale> {
+    let meta_path = dir.join(format!("{name}.meta.json"));
+    let mut table = SymbolTable::new(ModuleFullPath::from("r6"));
+    install(&mut table, name, entry);
+    write_meta(&meta_path, &table, super::super::CACHE_SCHEMA_VERSION).unwrap();
+    load_meta(&meta_path)
+}
+
+fn tamper_first_number(bytes: &mut Vec<u8>, key: &str, replacement: u64) {
+    fn replace(value: &mut serde_json::Value, key: &str, replacement: u64) -> bool {
+        match value {
+            serde_json::Value::Object(map) => {
+                if let Some(value) = map.get_mut(key) {
+                    *value = serde_json::Value::from(replacement);
+                    return true;
+                }
+                map.values_mut()
+                    .any(|value| replace(value, key, replacement))
+            }
+            serde_json::Value::Array(values) => values
+                .iter_mut()
+                .any(|value| replace(value, key, replacement)),
+            _ => false,
+        }
+    }
+
+    let mut value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert!(replace(&mut value, key, replacement), "fixture key '{key}'");
+    *bytes = serde_json::to_vec(&value).unwrap();
+}
+
+fn roundtrip_tampered(
     dir: &std::path::Path,
     name: &str,
-    entry: ModuleEntry,
+    entry: Binding,
+    key: &str,
+    replacement: usize,
 ) -> Result<SymbolTable, CacheStale> {
     let meta_path = dir.join(format!("{name}.meta.json"));
     let mut table = SymbolTable::new(ModuleFullPath::from("r6"));
-    table.insert(Symbol::from(name), entry);
-    write_meta(&meta_path, &table, super::super::CACHE_SCHEMA_VERSION).unwrap();
+    install(&mut table, name, entry);
+    let mut bytes = serialise_meta(&table, super::super::CACHE_SCHEMA_VERSION).unwrap();
+    tamper_first_number(&mut bytes, key, replacement as u64);
+    std::fs::write(&meta_path, bytes).unwrap();
+    load_meta(&meta_path)
+}
+
+/// Build the borrowed-sibling cache fixture as one legal lifecycle table. The
+/// sibling is a manifest-owned callable because that is the public facade that
+/// can lawfully mint the exact boundary slot without filling or forging the
+/// intervening ordinary slots. Corruption, when requested, happens only after
+/// serialization at the untrusted cache boundary.
+fn roundtrip_sibling_slot(
+    dir: &std::path::Path,
+    name: &str,
+    sibling_slot: usize,
+    tampered_slot: Option<usize>,
+) -> Result<SymbolTable, CacheStale> {
+    let meta_path = dir.join(format!("{name}.meta.json"));
+    let mut table = SymbolTable::new(ModuleFullPath::from("r6"));
+    let sibling = install_manifest_slot(&mut table, "borrowed-convention", sibling_slot);
+    install_primitive_with_sibling(&mut table, name, sibling);
+
+    let mut bytes = serialise_meta(&table, super::super::CACHE_SCHEMA_VERSION).unwrap();
+    if let Some(slot) = tampered_slot {
+        tamper_first_number(&mut bytes, "borrowed_sibling", slot as u64);
+    }
+    std::fs::write(&meta_path, bytes).unwrap();
     load_meta(&meta_path)
 }
 
@@ -597,16 +995,30 @@ fn roundtrip(
 #[test]
 fn cache_load_rejects_out_of_range_sibling_slot_as_stale() {
     let dir = tempfile::tempdir().unwrap();
-    roundtrip(
-        dir.path(),
-        "ok",
-        make_primitive_with_sibling_slot(cranelisp_types::GOT_TABLE_SIZE - 1),
-    )
-    .expect("an in-bounds sibling slot must load");
-    match roundtrip(
+    let loaded =
+        roundtrip_sibling_slot(dir.path(), "ok", cranelisp_types::GOT_TABLE_SIZE - 1, None)
+            .expect("the exact highest in-bounds sibling slot must load");
+    let loaded_sibling = loaded
+        .get("ok")
+        .and_then(Binding::callable)
+        .and_then(|callable| match &callable.arm.life {
+            Life::Concrete {
+                realization: Realization::ExternShim { borrowed_sibling },
+                ..
+            } => *borrowed_sibling,
+            _ => None,
+        })
+        .map(|slot| slot.index());
+    assert_eq!(
+        loaded_sibling,
+        Some(cranelisp_types::GOT_TABLE_SIZE - 1),
+        "the positive cache fixture must retain the exact highest legal sibling slot"
+    );
+    match roundtrip_sibling_slot(
         dir.path(),
         "bad",
-        make_primitive_with_sibling_slot(cranelisp_types::GOT_TABLE_SIZE),
+        cranelisp_types::GOT_TABLE_SIZE - 1,
+        Some(cranelisp_types::GOT_TABLE_SIZE),
     ) {
         Err(CacheStale::SiblingSlotOutOfRange { slot, .. }) => {
             assert_eq!(slot, cranelisp_types::GOT_TABLE_SIZE);
@@ -679,19 +1091,42 @@ fn cache_load_rejects_out_of_range_index_for_every_result_mode_variant() {
     }
 }
 
-// spec: §4 R6 (NEGATIVE / false-fire fence) — `ResultMode::Fresh` carries NO
-// index, so it must load at every arity including nullary.
+// spec: §4 R6 (NEGATIVE / false-fire fence) — `Fresh` and `MayAliasAny` carry NO
+// index, so both must load at every arity including nullary. `MayAliasAny` is
+// the S121 result ⊤ (`design/typecheck/ownership-inference.md` §19.2): it names
+// no parameter, so the `k < arity` obligation does not apply to it and a nullary
+// callable may legitimately carry it. The refused `MayAliasOf(0)` at arity 0 is
+// the discriminating control — the pair differs only in whether the persisted
+// point names a parameter, which is exactly what the arm must key on. Without
+// it, an arm that admitted every may-alias point would pass this cell.
 #[test]
 fn index_free_result_mode_is_never_rejected_neg() {
+    use cranelisp_types::ResultMode;
     let dir = tempfile::tempdir().unwrap();
-    for arity in [0usize, 1, 3] {
-        roundtrip(
-            dir.path(),
-            "fresh",
-            make_def_with_result_mode(cranelisp_types::ResultMode::Fresh, arity),
-        )
-        .expect("Fresh carries no index and must always load");
+    for result in [ResultMode::Fresh, ResultMode::MayAliasAny] {
+        for arity in [0usize, 1, 3] {
+            roundtrip(
+                dir.path(),
+                "index-free",
+                make_def_with_result_mode(result, arity),
+            )
+            .unwrap_or_else(|e| {
+                panic!("{result:?} carries no index and must load at arity {arity}, got {e:?}")
+            });
+        }
     }
+    assert!(
+        matches!(
+            roundtrip(
+                dir.path(),
+                "named-param",
+                make_def_with_result_mode(ResultMode::MayAliasOf(0), 0)
+            ),
+            Err(CacheStale::SummaryParamIndexOutOfRange { .. })
+        ),
+        "the control: a may-alias point that NAMES parameter 0 is still refused \
+         at arity 0"
+    );
 }
 
 // spec: design/arch/safety-invariants.md §4 R6 — a `callees` FQ with an empty
@@ -740,20 +1175,26 @@ fn cache_load_accepts_a_valid_meta_with_every_persisted_index_populated() {
     let dir = tempfile::tempdir().unwrap();
     let meta_path = dir.path().join("all.meta.json");
     let mut table = SymbolTable::new(ModuleFullPath::from("r6"));
-    table.insert(
-        Symbol::from("slot"),
-        make_def_with_slot(cranelisp_types::GOT_TABLE_SIZE - 1),
+    let sibling = install(&mut table, "slot", make_def("slot"));
+    install_primitive_with_sibling(&mut table, "sib", sibling);
+    install(
+        &mut table,
+        "alias",
+        make_def_with_result_mode_at_slot(cranelisp_types::ResultMode::MayAliasOf(0), 1, 0),
     );
-    table.insert(
-        Symbol::from("sib"),
-        make_primitive_with_sibling_slot(cranelisp_types::GOT_TABLE_SIZE - 2),
+    install(
+        &mut table,
+        "callee",
+        make_def_with_callee_at_slot("user", "f", 3),
     );
-    table.insert(Symbol::from("alias"), make_def_with_may_alias(0, 1));
-    table.insert(Symbol::from("callee"), make_def_with_callee("user", "f"));
-    table.insert(Symbol::from("view"), make_def_with_view_span(0, 12));
+    install(
+        &mut table,
+        "view",
+        make_def_with_view_span_at_slot(0, 12, 4),
+    );
     write_meta(&meta_path, &table, super::super::CACHE_SCHEMA_VERSION).unwrap();
     let loaded = load_meta(&meta_path).expect("a fully-populated valid meta must load clean");
-    assert_eq!(loaded.symbols.len(), 5);
+    assert_eq!(loaded.all_symbols().count(), 5);
 }
 
 // spec: design/arch/safety-invariants.md §4 R6 — the classes are DISTINCT, so a
@@ -763,16 +1204,14 @@ fn cache_load_accepts_a_valid_meta_with_every_persisted_index_populated() {
 fn r6_stale_classes_are_distinct_per_family() {
     let dir = tempfile::tempdir().unwrap();
     let reasons: Vec<&'static str> = vec![
-        roundtrip(
+        roundtrip_tampered(
             dir.path(),
             "a",
-            make_def_with_slot(cranelisp_types::GOT_TABLE_SIZE),
+            make_def("a"),
+            "slot",
+            cranelisp_types::GOT_TABLE_SIZE,
         ),
-        roundtrip(
-            dir.path(),
-            "b",
-            make_primitive_with_sibling_slot(cranelisp_types::GOT_TABLE_SIZE),
-        ),
+        roundtrip_sibling_slot(dir.path(), "b", 1, Some(cranelisp_types::GOT_TABLE_SIZE)),
         roundtrip(dir.path(), "c", make_def_with_may_alias(5, 1)),
         roundtrip(dir.path(), "d", make_def_with_callee("", "f")),
         roundtrip(dir.path(), "e", make_def_with_view_span(9, 1)),

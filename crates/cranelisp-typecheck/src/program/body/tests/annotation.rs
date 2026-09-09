@@ -4,6 +4,13 @@
 
 use super::*;
 
+fn concrete_ast(entry: &Binding) -> Option<&DefnVariant> {
+    match entry.callable().map(|callable| &callable.arm.life) {
+        Some(Life::Concrete { ast, .. }) => ast.as_ref(),
+        _ => None,
+    }
+}
+
 // spec: design/arch/ast-annotation-examples.md §3.1 — simple fn resolved_call
 #[test]
 fn test_ast_annotation_simple_fn_resolved_call() {
@@ -38,10 +45,7 @@ fn test_ast_annotation_simple_fn_resolved_call() {
     // Retrieve the annotated AST from the symbol table
     let st = tc.symbol_table();
     let entry = st.get("double").expect("double should be in symbol table");
-    if let ModuleEntry::Def {
-        ast: Some(defn), ..
-    } = entry
-    {
+    if let Some(defn) = concrete_ast(entry) {
         let body = &defn.body;
 
         // All inferred_types should be concrete (no Var)
@@ -151,10 +155,7 @@ fn test_ast_annotation_trait_method_resolved_call() {
     // Int) → BuiltinFn { name: "add-i64" }.
     let st = tc.symbol_table();
     let entry = st.get("double").expect("double should be in symbol table");
-    if let ModuleEntry::Def {
-        ast: Some(defn), ..
-    } = entry
-    {
+    if let Some(defn) = concrete_ast(entry) {
         let body = &defn.body;
         let rc = find_resolved_call(body, plus_span);
         assert!(
@@ -186,7 +187,7 @@ fn test_ast_annotation_trait_method_resolved_call() {
             );
         }
     } else {
-        panic!("double should have ast: Some(..)");
+        panic!("double should have ast: Some(..), got {entry:?}");
     }
 }
 
@@ -237,10 +238,7 @@ fn test_ast_annotation_let_binding_concrete_type() {
 
     let st = tc.symbol_table();
     let entry = st.get("f").expect("f should be in symbol table");
-    if let ModuleEntry::Def {
-        ast: Some(defn), ..
-    } = entry
-    {
+    if let Some(defn) = concrete_ast(entry) {
         let body = &defn.body;
 
         // All inferred_types should be concrete
@@ -350,10 +348,7 @@ fn test_ast_annotation_self_recursive_all_resolved() {
 
     let st = tc.symbol_table();
     let entry = st.get("fact").expect("fact should be in symbol table");
-    if let ModuleEntry::Def {
-        ast: Some(defn), ..
-    } = entry
-    {
+    if let Some(defn) = concrete_ast(entry) {
         let body = &defn.body;
 
         // All inferred_types should be concrete
@@ -453,10 +448,7 @@ fn test_ast_annotation_constrained_fn_pinned_by_call_site() {
     // The shared substitution pins add's type vars to Int.
     let st = tc.symbol_table();
     let entry = st.get("add").expect("add should be in symbol table");
-    if let ModuleEntry::Def {
-        ast: Some(defn), ..
-    } = entry
-    {
+    if let Some(defn) = concrete_ast(entry) {
         let body = &defn.body;
 
         // All inferred_types should be concrete (Int, no Var)
@@ -493,7 +485,7 @@ fn test_ast_annotation_constrained_fn_pinned_by_call_site() {
             ),
         }
     } else {
-        panic!("add should have ast: Some(..)");
+        panic!("add should have ast: Some(..), got {entry:?}");
     }
 }
 
@@ -523,10 +515,7 @@ fn test_ast_annotation_qualified_extern_resolved_call() {
     let entry = st
         .get("concat-nils")
         .expect("concat-nils should be in symbol table");
-    if let ModuleEntry::Def {
-        ast: Some(defn), ..
-    } = entry
-    {
+    if let Some(defn) = concrete_ast(entry) {
         let body = &defn.body;
 
         // Find the Apply node (there's only one)
@@ -689,26 +678,27 @@ fn test_impl_method_not_marked_constrained_after_body_check() {
     // KEY ASSERTION: The mangled method must NOT be constrained.
     // If it is, codegen will skip it -> null GOT slot -> SIGSEGV.
     let table = tc.symbol_table();
-    if let Some(ModuleEntry::Def { kind, scheme, .. }) = table.get(mangled_name.as_ref()) {
-        match kind.as_ref() {
-            DefKind::UserFn { fn_state } => {
-                assert!(
-                    !matches!(fn_state, UserFnState::Constrained(_)),
-                    "BUG: trait impl method '{}' was marked as constrained fn \
-                    (scheme: {}). This causes codegen to skip it, leaving a null \
-                    GOT slot -> SIGSEGV on dispatch.",
-                    mangled_name,
-                    scheme.ty
-                );
-            }
-            other => panic!("expected UserFn, got {:?}", other),
-        }
+    if let Some(callable) = table.get(mangled_name.as_ref()).and_then(Binding::callable) {
+        assert!(
+            !matches!(
+                callable.arm.life,
+                Life::Template {
+                    kind: TemplateKind::Constrained(_),
+                    ..
+                }
+            ),
+            "BUG: trait impl method '{}' was marked as constrained fn \
+            (scheme: {}). This causes codegen to skip it, leaving a null \
+            GOT slot -> SIGSEGV on dispatch.",
+            mangled_name,
+            callable.arm.scheme.ty
+        );
 
         // Also verify the scheme is concrete
         assert!(
-            scheme.type_vars.is_empty() && scheme.constraints.is_empty(),
+            callable.arm.scheme.type_vars.is_empty() && callable.arm.scheme.constraints.is_empty(),
             "impl method scheme should be concrete (no vars/constraints), got: {:?}",
-            scheme,
+            callable.arm.scheme,
         );
     } else {
         panic!(
@@ -718,11 +708,7 @@ fn test_impl_method_not_marked_constrained_after_body_check() {
     }
 
     // Verify AST annotations are concrete (no Var(N))
-    if let Some(ModuleEntry::Def {
-        ast: Some(annotated),
-        ..
-    }) = table.get(mangled_name.as_ref())
-    {
+    if let Some(annotated) = table.get(mangled_name.as_ref()).and_then(concrete_ast) {
         let body = &annotated.body;
         if let Some(ty) = body.inferred_type() {
             assert!(
@@ -751,14 +737,9 @@ fn def_entry_carries_annotated_ast_after_check() {
     let entry = st
         .get("trivial")
         .expect("'trivial' must be registered after check");
-    match entry {
-        ModuleEntry::Def { ast, .. } => {
-            assert!(
-                ast.is_some(),
-                "ModuleEntry::Def.ast must be Some(_) after Phase-1 AST annotation"
-            );
+    match concrete_ast(entry) {
+        Some(defn) => {
             // The annotated body must carry a resolved (var-free) type.
-            let defn = ast.as_ref().unwrap();
             let body = &defn.body;
             let ty = body
                 .inferred_type()

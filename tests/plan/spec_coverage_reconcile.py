@@ -14,7 +14,8 @@ re-authored as `tests/spec_04_expressions.rs::bar`.
 This script adds the reverse:
 
   1. Parse every `[Tested tests/FILE::name]` / `[Tested+Neg tests/FILE::name]`
-     in spec/*.md + repl/spec.md (capturing file:line + the governing §anchor).
+     in spec/*.md + the split REPL specification (capturing file:line + the
+     governing §anchor).
   2. Assert `tests/FILE.rs` exists AND contains `fn name`.
   3. Build a test→spec index over tests/*.rs + crates/** + src/** (the healthy
      direction) keyed by (spec-file, §anchor).
@@ -130,6 +131,8 @@ def normalize_spec_path(raw: str) -> str | None:
             p = "spec/02-grammar.md"
         if p == "spec/03-type-system.md":
             p = "spec/03-types.md"
+        if p.startswith("repl/spec/"):
+            return "repl/spec.md"
         return p
     sm = SHORT_RE.search(raw)
     if sm:
@@ -413,6 +416,13 @@ def spec_md_for(md: Path, root: Path) -> str:
     return str(md.relative_to(root))
 
 
+def logical_spec_md_for(md: Path, root: Path) -> str:
+    rel = spec_md_for(md, root)
+    if rel.startswith("repl/spec/"):
+        return "repl/spec.md"
+    return rel
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -438,7 +448,14 @@ def main() -> int:
     root = Path(args.root).resolve() if args.root else \
         Path(__file__).resolve().parent.parent.parent
 
-    spec_files = sorted((root / "spec").glob("*.md")) + [root / "repl/spec.md"]
+    spec_files = (
+        sorted((root / "spec").glob("*.md"))
+        + [root / "repl/spec.md"]
+        + sorted(
+            p for p in (root / "repl/spec").glob("*.md")
+            if p.name != "index.md"
+        )
+    )
     spec_files = [p for p in spec_files if p.is_file()
                   and p.name not in ("CLAUDE.md",)]
 
@@ -753,7 +770,7 @@ def main() -> int:
     }
 
     for dc in all_dead:
-        smd = spec_md_for(dc.md, root)
+        smd = logical_spec_md_for(dc.md, root)
         pick = None
         chosen_conf = None
         # Tier 0: exact fn-NAME match in a real test file (the suite reorg
@@ -932,7 +949,7 @@ def main() -> int:
         changed = set()
         proposals = []  # (md, lineno, anchor, tag, cover_TestFn)
         for md in spec_files:
-            smd = spec_md_for(md, root)
+            smd = logical_spec_md_for(md, root)
             lines = md.read_text().splitlines(keepends=True)
             for ln, raw in enumerate(lines, start=1):
                 hm = HEADING_RE.match(raw)

@@ -1,5 +1,5 @@
 use super::*;
-use cranelisp_types::{DefKind, ModuleEntry, PrimitiveBody};
+use cranelisp_types::{CallableOrigin, Life, Realization};
 
 fn extern_shims() -> std::collections::HashMap<&'static str, *const u8> {
     let rows = declarations::declarations();
@@ -41,9 +41,9 @@ fn primitives_table_is_non_empty_with_expected_minimum() {
     // Hold the floor at 30 to absorb small registry churn without
     // requiring this test to track an exact count.
     assert!(
-        PRIMITIVES_TABLE.symbols.len() >= 30,
+        PRIMITIVES_TABLE.all_symbols().count() >= 30,
         "expected at least 30 entries, got {}",
-        PRIMITIVES_TABLE.symbols.len(),
+        PRIMITIVES_TABLE.all_symbols().count(),
     );
 }
 
@@ -58,10 +58,7 @@ fn every_entry_is_a_callable_target() {
     // entry; `is_callable_target()` is the right predicate (it covers both
     // arms). This is the exact stop-predicate the backend's resolution
     // walks now use.
-    for (name, entry) in PRIMITIVES_TABLE.symbols.iter() {
-        let ModuleEntry::Def { .. } = entry else {
-            panic!("entry {name} should be a Def");
-        };
+    for (name, entry) in PRIMITIVES_TABLE.all_symbols() {
         assert!(
             entry.is_callable_target(),
             "entry {name} is not a callable target"
@@ -70,29 +67,21 @@ fn every_entry_is_a_callable_target() {
 }
 
 #[test]
-fn vec_trio_is_inline_no_slot_and_vec_len_is_extern() {
+fn vec_query_family_is_inline_and_has_no_slot() {
     // FIXME-0476 consumption (S102 CS-B1-be): the representation cure. The
-    // three inline-only vec ops carry `PrimitiveBody::Inline` and answer
+    // four inline-only vec ops carry `Life::Inline` and answer
     // `callable_got_slot() == None` **by construction** — no
     // allocated-but-NULL phantom slot is ever constructed (the third
-    // phantom-slot instance is now unrepresentable, Principle 20). `vec-len`
-    // is the sole `Extern` member: it has a real shim and a populated slot.
-    for name in ["vec-get", "vec-set", "vec-push"] {
+    // phantom-slot instance is now unrepresentable, Principle 20).
+    for name in ["vec-get", "vec-set", "vec-push", "vec-len"] {
         let entry = PRIMITIVES_TABLE
             .get(name)
             .unwrap_or_else(|| panic!("missing {name}"));
-        let ModuleEntry::Def { kind, .. } = entry else {
-            panic!("entry {name} should be a Def");
-        };
+        let callable = entry.callable().expect("primitive must be callable");
         assert!(
-            matches!(
-                **kind,
-                DefKind::Primitive {
-                    body: PrimitiveBody::Inline,
-                    ..
-                }
-            ),
-            "entry {name} must be PrimitiveBody::Inline; got {kind:?}"
+            matches!(callable.arm.life, Life::Inline { .. }),
+            "entry {name} must be inline; got {:?}",
+            callable.arm.life
         );
         assert!(
             entry.callable_got_slot().is_none(),
@@ -103,28 +92,6 @@ fn vec_trio_is_inline_no_slot_and_vec_len_is_extern() {
             "inline {name} must still be a callable target (name-resolution stop)"
         );
     }
-
-    let vec_len = PRIMITIVES_TABLE.get("vec-len").expect("missing vec-len");
-    let ModuleEntry::Def { kind, .. } = vec_len else {
-        panic!("vec-len should be a Def");
-    };
-    assert!(
-        matches!(
-            **kind,
-            DefKind::Primitive {
-                body: PrimitiveBody::Extern { .. },
-                ..
-            }
-        ),
-        "vec-len must be PrimitiveBody::Extern; got {kind:?}"
-    );
-    let slot = vec_len
-        .callable_got_slot()
-        .expect("vec-len must carry a populated got_slot");
-    assert!(
-        !PRIMITIVES_TABLE.got.load_slot(slot).is_null(),
-        "vec-len GOT slot must hold its extern shim address"
-    );
 }
 
 #[test]
@@ -135,20 +102,21 @@ fn every_entry_is_def_kind_primitive() {
     // unit variant, and `code: None` (the `ModuleEntry::def(..).build()`
     // builder default; there is no `Code::Primitive` marker). The GOT
     // remains the single source of truth for the `*const u8` (Decision 35).
-    for (name, entry) in PRIMITIVES_TABLE.symbols.iter() {
-        let ModuleEntry::Def { kind, code, .. } = entry else {
-            panic!("entry {name} should be a Def");
-        };
+    for (name, entry) in PRIMITIVES_TABLE.all_symbols() {
+        let callable = entry.callable().expect("primitive must be callable");
         assert!(
-            matches!(**kind, DefKind::Primitive { .. }),
-            "entry {name} must carry DefKind::Primitive; got {kind:?}"
+            matches!(callable.origin, CallableOrigin::RustPrimitive),
+            "entry {name} must carry RustPrimitive origin; got {:?}",
+            callable.origin
         );
-        // Belt-and-suspenders: `code` is the builder default `None`
-        // (no spec contract — `kind` is authoritative).
-        assert!(
-            code.is_none(),
-            "entry {name} must carry code: None; got {code:?}"
-        );
+        assert!(matches!(
+            callable.arm.life,
+            Life::Inline { .. }
+                | Life::Concrete {
+                    realization: Realization::ExternShim { .. },
+                    ..
+                }
+        ));
     }
 }
 
@@ -157,7 +125,7 @@ fn got_slots_hold_extern_ptrs_for_harvested_shims() {
     // For each entry whose name appears in the shim harvest, the GOT
     // slot must hold the matching fn pointer.
     let shims = extern_shims();
-    for (name, entry) in PRIMITIVES_TABLE.symbols.iter() {
+    for (name, entry) in PRIMITIVES_TABLE.all_symbols() {
         // Inline-dispatched primitives (the vec trio, FIXME 0476) carry no
         // slot and no shim by construction — skip them; only slot-carrying
         // Extern entries have a GOT address to check.
@@ -188,19 +156,14 @@ fn assert_content_row(name: &str, expected_ty: &cranelisp_types::Type, expected_
     let entry = PRIMITIVES_TABLE
         .get(name)
         .unwrap_or_else(|| panic!("missing PRIMITIVES_TABLE entry for {name}"));
-    let ModuleEntry::Def {
-        scheme,
-        param_names,
-        kind,
-        ..
-    } = entry
-    else {
-        panic!("entry {name} should be a Def");
-    };
+    let callable = entry.callable().expect("primitive must be callable");
     // scheme.ty is the boundary Type::Fn per spec §A.3.
-    assert_eq!(&scheme.ty, expected_ty, "scheme.ty mismatch for {name}");
+    assert_eq!(
+        &callable.arm.scheme.ty, expected_ty,
+        "scheme.ty mismatch for {name}"
+    );
     // param_names match the spec contract.
-    let actual: Vec<&str> = param_names.iter().map(|p| p.as_ref()).collect();
+    let actual: Vec<&str> = callable.arm.param_names.iter().map(|p| p.as_ref()).collect();
     assert_eq!(
         actual.as_slice(),
         expected_params,
@@ -216,7 +179,7 @@ fn assert_content_row(name: &str, expected_ty: &cranelisp_types::Type, expected_
     );
     // kind is the primitive discriminator.
     assert!(
-        matches!(**kind, DefKind::Primitive { .. }),
+        matches!(callable.origin, CallableOrigin::RustPrimitive),
         "entry {name} kind != Primitive"
     );
     // jit_name IS the symbol-table key (S69 Submission 36) — pinned by the
@@ -524,11 +487,11 @@ fn every_primitive_has_a_docstring() {
     // spec: appendix-a-builtins §A.5 — every primitive MUST carry its
     // Description text. Guards against a new primitive being added without
     // wiring its docstring (the field would be `None` or empty).
-    for (name, entry) in PRIMITIVES_TABLE.symbols.iter() {
-        let ModuleEntry::Def { docstring, .. } = entry else {
-            panic!("entry {name} should be a Def");
-        };
-        let doc = docstring
+    for (name, entry) in PRIMITIVES_TABLE.all_symbols() {
+        let doc = entry
+            .callable()
+            .expect("primitive must be callable")
+            .docstring
             .as_deref()
             .unwrap_or_else(|| panic!("entry {name} has no docstring (None)"));
         assert!(
@@ -548,9 +511,10 @@ fn docstring_spot_check_pins_expected_text() {
         let entry = PRIMITIVES_TABLE
             .get(name)
             .unwrap_or_else(|| panic!("missing entry for {name}"));
-        let ModuleEntry::Def { docstring, .. } = entry else {
-            panic!("entry {name} should be a Def");
-        };
+        let docstring = &entry
+            .callable()
+            .expect("primitive must be callable")
+            .docstring;
         assert_eq!(
             docstring.as_deref(),
             Some(want),
@@ -585,6 +549,10 @@ fn extern_shims_harvest_covers_full_inventory() {
             "shim {name} has no PRIMITIVES_TABLE entry"
         );
     }
+    assert!(
+        !extern_shims().contains_key("vec-len"),
+        "inline vec-len must not be harvested as an extern shim"
+    );
 }
 
 // ---- CS-B: declared ownership fact-table population (S102) ----
@@ -596,19 +564,14 @@ fn extern_shims_harvest_covers_full_inventory() {
 // silently default to `None`.
 #[test]
 fn every_heap_param_primitive_carries_a_declared_summary() {
-    use cranelisp_types::{DefKind, ModuleEntry, Type};
+    use cranelisp_types::Type;
     fn is_scalar(t: &Type) -> bool {
         matches!(t, Type::Int | Type::Bool | Type::Float)
     }
-    for (name, entry) in PRIMITIVES_TABLE.symbols.iter() {
-        let ModuleEntry::Def { scheme, kind, .. } = entry else {
-            continue;
-        };
-        if !matches!(**kind, DefKind::Primitive { .. }) {
-            continue;
-        }
+    for (name, entry) in PRIMITIVES_TABLE.all_symbols() {
+        let callable = entry.callable().expect("primitive must be callable");
         let has_heap_param =
-            matches!(&scheme.ty, Type::Fn(ps, _) if ps.iter().any(|p| !is_scalar(p)));
+            matches!(&callable.arm.scheme.ty, Type::Fn(ps, _) if ps.iter().any(|p| !is_scalar(p)));
         if has_heap_param {
             assert!(
                 entry.mode_summary().is_some(),
@@ -694,14 +657,25 @@ fn built_table_entries_carry_the_expected_declared_facts() {
 // `mode_summary` field, so the accessor reads `None`.
 #[test]
 fn primitive_extern_carries_no_summary() {
-    use cranelisp_types::{DefKind, ModuleEntry, Scheme, Type};
+    use cranelisp_types::{ModuleFullPath, Scheme, Symbol, SymbolTable, Type, Visibility};
     use std::collections::HashMap;
     let scheme = Scheme {
         type_vars: Vec::new(),
         constraints: HashMap::new(),
         ty: Type::Fn(vec![Type::String], Box::new(Type::String)),
     };
-    let entry: ModuleEntry<()> = ModuleEntry::def(scheme, DefKind::PrimitiveExtern).build();
+    let mut table = SymbolTable::new(ModuleFullPath::from("test"));
+    table
+        .install_host_promised(
+            Symbol::from("extern"),
+            scheme,
+            Vec::new(),
+            None,
+            0,
+            Visibility::Public,
+        )
+        .unwrap();
+    let entry = table.get("extern").unwrap();
     assert!(
         entry.mode_summary().is_none(),
         "PrimitiveExtern dispatches by-name and carries no declared facts"

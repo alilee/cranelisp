@@ -1055,14 +1055,28 @@ Decision-24 behaviour.
 ### 6.1 The conservative point is total
 
 Every dimension has a defined conservative value equal to as-built behaviour: mode `Owned`
-(Decision 24), escape `Escapes` (heap), confinement `Crossing` (atomic), uniqueness `shared`
-(clone/COW), duplication `RC-share`. **Every fallback is correct, only ever suboptimal** — the
+(Decision 24), result `MayAliasAny` (S121), escape `Escapes` (heap), confinement `Crossing`
+(atomic), uniqueness `shared` (clone/COW), duplication `RC-share`. **Every fallback is correct, only ever suboptimal** — the
 analysis can time out, a summary can be missing, an edge can be opaque, a whole crate-feature can
 be disabled, and the program still runs with today's semantics and today's costs. There is no
 "analysis required for correctness" path anywhere in this design; the analysis is a pure
 performance refinement of a sound baseline. (The one obligation that is NOT optional once modes
 ship is agreement on the ABI-bearing vector — §3.1/§5 — which is a coherence obligation between
 compiles, not a precision obligation on the analysis.)
+
+**The result axis acquired its conservative value late, and the gap was a soundness defect
+(S121).** Until `ResultMode::MayAliasAny`, the result dimension had no conservative value to
+name: `Fresh` is that axis's STRONGEST claim — the callee's return protect is elided on it
+(backend `return_is_fresh_by_summary`) — and every other point names a specific parameter the
+analysis may not know. A non-converging cluster therefore recovered by publishing `Fresh`,
+the one direction this section forbids, and a builder returning its accumulator compiled to a
+freed-pointer return. Two corrections land together, and the row above is only the first:
+`MayAliasAny` supplies the missing per-dimension value
+(`design/typecheck/ownership-inference.md` §19.2), and **the conservative spelling of a WHOLE
+summary is its absence** — a cluster whose analysis does not converge publishes nothing
+(§19.5). Absence is what every consumer but the return protect already read as ⊤, so it needs
+no new vocabulary. A present summary is therefore a converged claim in every field; no
+producer may mint one as a fallback literal.
 
 ### 6.2 The differential oracle (R7)
 

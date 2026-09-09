@@ -120,6 +120,19 @@ When `find_sparkable_args` returns ≥2 indices, the sparking is no longer *unco
 
 ### 2.6 Dependent-binding sparks — the `let`-path limit #2 (S94, FIXME 0424)
 
+> **S121 amendment — the admitted set and the dependency map are keyed by
+> binding position, not by name** (`design/backend/binding-scope.md` §3.4;
+> approved 2026-09-08). The carve-out below and §4.5's dependency resolution
+> ask their question of a *binder*: "which binder does name N denote immediately
+> before position i", answered by one shared resolver over the binding vector.
+> A repeated name in one binding vector is two binders (`spec/04-expressions.md`
+> §4.3), so a non-sparked rebinding displaces the earlier binder's spark record
+> by construction and a later binding is not admitted as independent of it. The
+> admission *rule* and the emission shape are unchanged; only the key is. The
+> measured failure this closes and its reproduction are recorded in
+> `sprints/SPRINT.md` (S121 repair checkpoint) and `tests/same_form_rebinding.rs`.
+
+
 Apply-arg sparking (§2.5) and the `let`-path independence rule (§2.1) both spark only
 **independent** work: the `let` rule rejects a binding whose RHS references an earlier
 binding (`depends_on_earlier`). FIXME 0424's remaining generalization (arch R5, S93
@@ -1147,6 +1160,10 @@ UAF-exclusion guard; the F1–F4 parallel≡serial correctness guard; the `CRANE
 inc-count-drop witness). Wave 1b co-lands them with the `/dev` fix.
 
 ### 4.5 Dependent-binding emission (S94, FIXME 0424 limit #2)
+
+> **S121**: the earlier-sparked lookup this section describes is position-keyed,
+> not name-keyed — see §2.6's amendment and `binding-scope.md` §3.4.
+
 
 `compile_let_lenient` (§4.2) grows to handle sparkable bindings whose thunks reference
 earlier sparked bindings. The three-phase barrier model is **unchanged**; only Phase 1

@@ -511,7 +511,7 @@ fn spawn_server_env(fixture_rel: &str, port: u16, env: &[(&str, &str)]) -> Serve
     guard
 }
 
-// spec: design/int/reactor.md §8 — a `Server`-mode fan-out server idles with NO traffic
+// spec: design/intrinsics/reactor.md §8 — a `Server`-mode fan-out server idles with NO traffic
 // for T > the scaled `OneShot` backstop, is THEN served one request → MUST succeed (the
 // armed `accept` was NOT killed; production-shaped). The RED-now discriminator is the
 // CONTRAST (case B): the SAME idle under `OneShot` + the scaled backstop MUST abort the

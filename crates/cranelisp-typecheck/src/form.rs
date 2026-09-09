@@ -7,9 +7,9 @@
 //! discipline (Pass 1 register signatures, then Pass 2 check bodies — spec
 //! §5.13.1) is preserved as an implementation-phase ordering inside
 //! `check_forms`; it does not cross the facade. Pass-1-to-Pass-2 working
-//! state (`defn_type_vars`, default-method-defn deferrals, etc.) lives in a
-//! local `ModuleCheckAccumulator` on `check_forms`'s stack frame and never
-//! crosses the facade.
+//! state (the checked-body ledger, default-method-defn deferrals, etc.) lives
+//! in a local `ModuleCheckAccumulator` on `check_forms`'s stack frame and
+//! never crosses the facade.
 //!
 //! `check_forms` is pure with respect to live state; staging mutation flows
 //! through the existing `current_symbol_table_mut` accessor in
@@ -17,10 +17,9 @@
 //! preserved because staging is orchestrator-local and is committed (drained
 //! into live) only on whole-cluster `Ok`.
 //!
-//! Per facade item 3a: per-symbol Pass-2 side products
-//! (`method_resolutions`, `expr_types`, `mono_defns`, `callees`) land on the
-//! staging `ModuleEntry::Def`'s existing fields (`callees`, `ast`
-//! annotations, additional staged `Def` entries for mono specialisations).
+//! Per facade item 3a: Pass-2 bodies and callees remain in the private ledger
+//! until final annotation publishes them atomically to the staging
+//! `ModuleEntry::Def`; mono specialisations are additional staged entries.
 //!
 //! ## Staging redirection (cluster mode)
 //!
@@ -45,8 +44,8 @@
 use std::cell::RefCell;
 
 use cranelisp_types::{
-    CodeStore, Defn, ErrorLocation, LinkerStore, ModuleAliases, ModuleStrategy, ParsedEntry, Span,
-    SymbolTable, SymbolTables, TopLevel,
+    CodeStore, Defn, ErrorLocation, FQSymbol, LinkerStore, ModuleAliases, ModuleStrategy,
+    MonoDemand, ParsedEntry, ResolutionGap, Span, SymbolTable, SymbolTables, TopLevel,
 };
 
 use crate::checker::{CheckState, PreludeFallback, TypeCheckEnv};
@@ -59,7 +58,7 @@ use crate::result::{CheckError, CheckResult};
 /// Drives both internal passes (signature registration, then body checking)
 /// over the cluster's `parsed` list, holding a single local
 /// `ModuleCheckAccumulator` across the two passes so Pass 1's
-/// `defn_type_vars` flow into Pass 2.
+/// registered body facts flow into Pass 2.
 ///
 /// `ctx` carries the staging-vs-live dispatch (see `SymbolTableAccess`); writes
 /// flow through `ctx.current_symbol_table_mut()` — redirected to staging in
@@ -215,27 +214,49 @@ where
         let table = symbol_tables.get(&current_module);
         if let Some(guard) = table {
             for (name, entry) in guard.all_symbols() {
-                if let cranelisp_types::ModuleEntry::Def { kind, .. } = entry
-                    && let cranelisp_types::DefKind::Overloaded { variants } = kind.as_ref()
-                    && !variants.is_empty()
+                if let cranelisp_types::Decl::Overloaded(declaration) = &entry.declaration
+                    && !declaration.arms.is_empty()
                 {
                     let resolved: Vec<(
                         Vec<cranelisp_types::Type>,
                         cranelisp_types::Type,
                         cranelisp_types::Symbol,
-                    )> = variants
+                    )> = declaration
+                        .arms
                         .iter()
-                        .map(|v| {
-                            (
-                                v.param_types.clone(),
-                                v.ret_type.clone(),
-                                v.mangled_name.clone(),
-                            )
+                        .filter_map(|arm| {
+                            let cranelisp_types::Type::Fn(params, ret) = &arm.callable.scheme.ty
+                            else {
+                                return None;
+                            };
+                            Some((
+                                params.clone(),
+                                (**ret).clone(),
+                                cranelisp_types::Symbol::from(format!(
+                                    "{}__arm{}",
+                                    name,
+                                    arm.id.ordinal()
+                                )),
+                            ))
                         })
                         .collect();
-                    let overload_keys: Vec<(cranelisp_types::Symbol, usize)> = variants
+                    let overload_keys: Vec<(cranelisp_types::Symbol, usize)> = declaration
+                        .arms
                         .iter()
-                        .map(|v| (v.mangled_name.clone(), v.param_types.len()))
+                        .filter_map(|arm| {
+                            let cranelisp_types::Type::Fn(params, _) = &arm.callable.scheme.ty
+                            else {
+                                return None;
+                            };
+                            Some((
+                                cranelisp_types::Symbol::from(format!(
+                                    "{}__arm{}",
+                                    name,
+                                    arm.id.ordinal()
+                                )),
+                                params.len(),
+                            ))
+                        })
                         .collect();
                     state.overloads.entry(name.clone()).or_insert(overload_keys);
                     state
@@ -256,7 +277,7 @@ where
         parsed.into_iter().filter_map(parsed_to_top_level).collect();
 
     // Pass 1: register all forms in source order. The accumulator captures
-    // `defn_type_vars` and default-method-defn deferrals for Pass 2.
+    // body signature/scope records and default-method-defn deferrals for Pass 2.
     for form in &working_program {
         let result = env
             .check_form(
@@ -290,9 +311,8 @@ where
     accumulator.default_method_defns = defaults;
 
     // Pass 2: check bodies for all forms. The accumulator carries Pass 1's
-    // `defn_type_vars` into Pass 2 — this is the state-threading hole that
-    // pre-S66's two-function split exposed, closed here by construction
-    // (single call frame).
+    // exact registered-body records into Pass 2 — closing pre-S66's
+    // state-threading hole by construction (single call frame).
     //
     // FIXME 0354 Bug A: snapshot the post-Pass-1 active_constraints (the
     // declared bound-param constraints `resolve_bound_param` recorded for every
@@ -363,8 +383,99 @@ where
     Ok(result)
 }
 
+/// Re-instantiate concrete template demands after a source reload.
+///
+/// This is a seed of the ordinary pass-4 monomorphisation worklist, not a
+/// second instantiation engine. Demands carry terminal storage identity and
+/// concrete arguments. An absent home module returns [`CheckError::Gap`]; a
+/// stale template/arity/constraint demand is declined as an ordinary warning
+/// while the remaining set drains; invariant failures propagate. Synthetic
+/// sites deliberately produce no span-keyed resolution carriers or display.
+pub fn instantiate_demands<C, L>(
+    mut demands: Vec<MonoDemand>,
+    ctx: &mut SymbolTableAccess<'_, C, L>,
+    symbol_tables: &SymbolTables<C, L>,
+    module_aliases: &ModuleAliases,
+    prelude_fallback: &PreludeFallback,
+) -> Result<CheckResult, CheckError>
+where
+    C: CodeStore,
+    L: LinkerStore,
+{
+    let current_module = ctx.current_module().clone();
+    let next_id = std::sync::atomic::AtomicU32::new(0);
+    {
+        let env =
+            TypeCheckEnv::<C, L>::new(symbol_tables, &next_id, module_aliases, prelude_fallback);
+        env.ensure_module_exists(&current_module);
+    }
+
+    for demand in &mut demands {
+        demand.site = Span::SYNTHETIC;
+        let Some(owner) = callable_target_owner(&demand.template) else {
+            return Err(CheckError::Gap(ResolutionGap::SymbolTypechecked(
+                FQSymbol {
+                    module: current_module.clone(),
+                    symbol: cranelisp_types::Symbol::from("<unknown-callable-target>"),
+                },
+            )));
+        };
+        if owner.module != current_module && !symbol_tables.contains_key(&owner.module) {
+            return Err(CheckError::Gap(ResolutionGap::SymbolTypechecked(
+                owner.clone(),
+            )));
+        }
+    }
+
+    let staging_cell: Option<RefCell<&mut SymbolTable<C, L>>> = match ctx {
+        SymbolTableAccess::Cluster { staging, .. } => {
+            let inner: &mut &mut SymbolTable<C, L> = staging.get_mut();
+            let reborrow: &mut SymbolTable<C, L> = inner;
+            Some(RefCell::new(reborrow))
+        }
+        SymbolTableAccess::Live { .. } => None,
+    };
+    let env = match &staging_cell {
+        Some(cell) => TypeCheckEnv::<C, L>::new_with_staging(
+            symbol_tables,
+            &next_id,
+            current_module.clone(),
+            cell,
+            module_aliases,
+            prelude_fallback,
+        ),
+        None => {
+            TypeCheckEnv::<C, L>::new(symbol_tables, &next_id, module_aliases, prelude_fallback)
+        }
+    };
+
+    if let Some(table) = symbol_tables.get(&current_module) {
+        crate::checker::advance_next_id_past_table(&next_id, &table);
+    }
+    for demand in &demands {
+        if let Some(owner) = callable_target_owner(&demand.template)
+            && let Some(table) = symbol_tables.get(&owner.module)
+        {
+            crate::checker::advance_next_id_past_table(&next_id, &table);
+        }
+    }
+
+    let mut state = CheckState::new(current_module);
+    env.instantiate_demand_roots(&mut state, demands)
+        .map_err(|error| lift_error(error, &state))
+}
+
+fn callable_target_owner(target: &cranelisp_types::CallableTarget) -> Option<&FQSymbol> {
+    match target {
+        cranelisp_types::CallableTarget::Binding(owner)
+        | cranelisp_types::CallableTarget::OverloadArm { owner, .. }
+        | cranelisp_types::CallableTarget::MacroClause { owner, .. } => Some(owner),
+        _ => None,
+    }
+}
+
 /// Typecheck a standalone type expression against a symbol-table view,
-/// returning the concrete [`Type`].
+/// returning the concrete [`cranelisp_types::Type`].
 ///
 /// `int`'s platform loader uses this to validate a `PlatformFn.type_sig`
 /// (FIXME 0231 / 0233): leaf names in the sig — including schema-declared

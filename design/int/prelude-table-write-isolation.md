@@ -9,6 +9,37 @@
 > *background* index-feed half, S110); this doc is the *foreground*
 > concurrent-compile half the 0604 re-scope (FIXME §S110) moved attribution to.
 >
+> **Status: S121 correction APPROVED; implementation and QA pending.** The
+> lifecycle migration invalidated the landed binding-shaped proof. FIXME
+> retirement is therefore conditional again on the candidate routes and §4
+> evidence; the historical S114/S115 census below is provenance, not current
+> closure evidence.
+>
+> **S121 correction — current design.** The lifecycle migration separates a
+> terminal binding from its local name candidates. The binding-shaped
+> `check_terminal_closure(M, binding, …)` can no longer observe a re-export and
+> has become a hardcoded no-op; it is deleted, together with
+> `write_is_closure_valid` and their binding-loop call sites. The ONE live gate
+> is candidate-shaped:
+>
+> ```text
+> check_exposed_candidate_closure(destination, local_name, canonical_source,
+>                        visibility, span, declared_exports)
+> ```
+>
+> It admits private candidates, same-module candidates, and a public
+> cross-module candidate whose local name is in `D(destination)` (or whose `D`
+> is not yet known); it rejects the remaining public cross-module exposure.
+> `install_imports`, `install_exports`, prepared publication and the retained
+> staging-publication seam route every candidate exposure through it. Own
+> definitions are exported by §8.4 and are not falsely described as having
+> passed a candidate gate. Bootstrap's proof enumerates name candidates, not
+> bindings, and includes a public cross-module/outside-`D(M)` negative. The
+> S114/S115 diagnosis below remains provenance; this paragraph and §2.2's
+> corrected contract govern the current representation.
+>
+> Historical status below.
+>
 > **Status: LANDED-AND-CORRECTING (S115 Track B).** The chokepoint
 > (`check_terminal_closure`) + census + MODULE_TRACE landed S114 W5
 > (`58ac8e46`), but with a **provider-existence** predicate that is
@@ -45,10 +76,10 @@ inside that module's export closure. That correctness is unasserted, so one
 mis-targeted write (or a materialized fallback hit gone public) reaches
 `prelude`'s table and is never caught until the poison fires N steps later.
 
-The **missing function**: *"a public binding entering a module's live table is
+The **historical missing function**: *"a public binding entering a module's live table is
 inside that module's export closure — checked at ONE chokepoint every foreground
 writer routes through."* Today the check exists only as an S113 observability
-rider (`imports.rs::assert_prelude_closure`, `debug_assert!` + `MODULE_TRACE`),
+rider (historical `imports.rs::assert_prelude_closure`, `debug_assert!` + `MODULE_TRACE`),
 called *beside* insertions, prelude-only, and non-fatal in release.
 
 ## 2. The isolation contract (the structural ship gate)
@@ -57,13 +88,12 @@ Two deliverables, per `/qa`'s plan of record. Neither is a per-interleaving patc
 the cure is isolation **by construction** (the S61→S93 precedent — see
 `heisenbug-race-closure.md` → `signature-body-prepass.md`).
 
-### 2.1 Foreground writer census (the 0660 enumeration discipline)
+### 2.1 Historical foreground-writer census (S114/S115 provenance)
 
-Enumerate **every** seam on the foreground concurrent-compile path that can insert
-a **public** entry into a module's live symbol table. Each writer either **routes
-through the single chokepoint (§2.2)** or carries a **named legal-skip** with its
-rationale. The census table lands **in the change-set** (every writer
-dispositioned — the acceptance instrument, `tests/plan/s114-test-plan.md` §4.2).
+The tables in this subsection record the binding-era investigation. They remain
+useful provenance for the missed writer, but they are not the current routing
+contract: the S121 candidate census is §2.4, and a binding "legal-skip" is no
+substitute for checking a `NameCandidate` exposure.
 
 **Seed (from `prelude-import-convergence.md` §3.4 + the PLAN §S109 static
 narrowing).** As-built dispositions verified at HEAD (`5ba28de8`):
@@ -72,13 +102,53 @@ narrowing).** As-built dispositions verified at HEAD (`5ba28de8`):
 |---|---|---|---|
 | `imports.rs::install_exports` (`Visibility::Public`) | the exporting module (explicit `current_module`) | **yes** — re-export edges | **routes** (`imports.rs:182`) |
 | `imports.rs::install_imports` (`Visibility::Private`) | the importing module (explicit `current_module`) | no (Private) | routes (`imports.rs:116`; no-op — `!is_public()`) |
-| `imports.rs::insert_detecting_ambiguity` (poison consumer) | current module | reads/marks existing | **CORRECT — DO NOT TOUCH** (0604 refers_to; the §8.6.5 consumer) |
+| historical `imports.rs::insert_detecting_ambiguity` (poison consumer) | current module | read/marked existing bindings | superseded by candidate preservation plus use-site selection |
 | `cluster.rs::insert_cluster` (Wave-3a-β scaffold commit) | the cluster's own module | yes (public defs) | routes (`cluster.rs:337`) — **but normally empty**: `process_cluster` commits through `worker::commit_staging_to_live`, so `insert_cluster`'s `entries` loop is a no-op on the live path (see the row below) |
 | **`worker::commit_staging_to_live`** (the REAL staging→live commit) | the cluster's own module (`worker.rs:439`; `live.insert` `:513`) | **yes** — every public Def AND re-export edge | **MISSED at S114** — the census claimed closure while this seam bypasses the gate. **S115: route it** (§2.4) |
-| `process_form/form_dispatch::register_macro_in_module` (defmacro reg) | current module | yes (macro `Def`) | routes (`form_dispatch.rs:395`) — a macro `Def` is non-`Import` → own-def arm → Ok with **no map read**, guard-safe under the held `get_mut` (`:360`) |
+| historical `process_form/form_dispatch::register_macro_in_module` (defmacro reg) | current module | yes (macro `Def`) | binding-era route, superseded by source-ordered macro checkpoint publication |
 | the Code-install sites | mutate existing entries only | no new public entry | legal-skip |
 | `process_form/cache_restore.rs` | restored module | yes | off the recipe path (`--no-cache`); disposition per its own guard |
 | `worker::inject_prelude_if_needed` / `install_module_session_env` | session-side maps (`prelude_fallback`, aliases) — **not** a symbol-table public entry | n/a | legal-skip (§3.4 writers = bit + env, not table entries) |
+
+**The three session-init seams (S121, FIXMEs 0740 + 0793).** The census above
+enumerates the *foreground concurrent-compile* path. Session init is a distinct
+regime — single-threaded, before any worker is spawned — and its seams were
+neither routed nor recorded, so the §2.4 structural grep resolved to an argument
+rather than a disposition. They are named here, with the scope boundary stated
+explicitly so a future reader does not have to re-derive it:
+
+> **Scope boundary.** Session-init table construction (`bootstrap.rs`,
+> `session_v4/lifecycle.rs`) and platform-DLL load orchestration
+> (`platform.rs`) are outside the foreground concurrent-compile path. Init runs
+> once, single-threaded, before the worker pool exists; DLL load is an
+> orchestration act on a synthetic `platform.<name>` module. Neither can produce
+> the phantom this gate exists to catch. They carry dispositions anyway, because
+> a closure claim a grep can falsify is exactly the failure the census discipline
+> prevents.
+
+| Writer seam | Destination table | Public entries? | Disposition |
+|---|---|---|---|
+| `bootstrap.rs::mount_synthetic_modules` (`src/bootstrap.rs:240`) | `root`, `primitives`, `macros`, `Option`, `IO`, `Trace` | **yes** — own definitions, plus ONE intra-module public `Import` | **named legal-skip, ASSERTED**. Own-def and intra-module-self-alias arms only; the skip carries a detection proof (below) |
+| `session_v4/lifecycle.rs` `PRIMITIVES_TABLE` mount (`:268-274`) | `primitives` | **yes** — a whole-table clone of `cranelisp_primitives::PRIMITIVES_TABLE` | **named legal-skip**. A whole-**table** mount, not an entry insert; every entry is `primitives`' own definition (own-def arm), installed at init before `mount_synthetic_modules` (`:286`) and before any worker spawns |
+| `platform.rs::register_platform_in_tc` (`src/platform.rs:316`) | `platform.<name>` | **yes** — own-def `PlatformEffect` | **ROUTED**. `check_terminal_closure` at `:427-433` immediately precedes `table.insert` at `:434`; `declared_exports = None` because a synthetic platform module records no `(export …)` surface. Guard-safe by construction: the own-def arm does no map read |
+
+**Two factual corrections, recorded so they stop propagating.** FIXME 0740
+characterised `bootstrap.rs`'s four `Int/Bool/Float/String → primitives/<name>`
+edges into the live `macros` table as cross-module PUBLIC re-exports — "the exact
+phantom shape". **That is false.** Those edges carry `Visibility::Private`
+(`src/bootstrap.rs:480`), so `check_terminal_closure`'s `!entry.is_public()`
+clause returns `Ok` before any arm is consulted: they are not public writes at
+all. Bootstrap's one genuinely public `Import` is `Bind → primitives/IO.Bind`
+(`src/bootstrap.rs:849-858`), whose source module is `primitives` — the
+destination — so it takes the **intra-module self-alias** arm with no `D` read.
+Four records repeated the "exact phantom shape" wording without opening the file;
+this row states the Private ground so a fifth does not.
+
+**Current bootstrap proof.** The S121 replacement iterates
+`all_name_candidates`, asserts that the sweep is non-empty, sends every
+candidate through §2.2, and injects a public cross-module candidate outside
+`D(M)` that must reject. Iterating bindings or starting from an empty table is
+not acceptable evidence for candidate exposure.
 
 The census's job is to prove the set is **closed** — that no *other* foreground
 seam can insert a public table entry. The S114 census **missed
@@ -90,13 +160,13 @@ through the gate. That is the seam the phantom evidence names (0604 refers_to;
 0698 finding 2). §2.4 dispositions it. The prime suspects §3 tell the census where
 to look hardest.
 
-### 2.2 The ONE chokepoint — terminal-table export-closure gate (LANDED; predicate CORRECTED S115)
+### 2.2 The ONE chokepoint — candidate export-closure gate
 
-Consolidate the public-insert seams onto **one guarded chokepoint**
-(`imports.rs::check_terminal_closure`, landed S114) carrying the invariant:
+Consolidate public candidate-exposure seams onto **one guarded chokepoint**
+(`imports.rs::check_exposed_candidate_closure`) carrying the invariant:
 
-> **A module never accepts a new public entry outside its declared export
-> closure.**
+> **A module never accepts a public cross-module name candidate outside its
+> declared export closure.**
 
 The chokepoint is an **unconditional, diagnosed, generalized error**
 (trust-boundary tier, `safety-invariants.md` §2, /arch Phase-2 §4 sub-form
@@ -133,17 +203,15 @@ them. The correct question is not *"does the source provide the name?"* but
 *"does the **destination** module `M` **declare** this public name in its own
 export surface?"*
 
-> **`check_terminal_closure(M, entry)`** — a **public** entry is closure-valid
-> iff:
-> - the entry is `M`'s **own definition** (non-`Import`: `Def`/`TypeDef`/… — a
->   public def is exported by §8.4) → **Ok with NO map read**; **or**
-> - the entry is a public re-export `Import` whose **name ∈ D(M)**, where **D(M)
->   is `M`'s declared-export name-set** — the union of the names `M`'s own
->   `(export …)` specs bring in. `name ∉ D(M)` (the phantom shape) → **rejected +
->   diagnosed**.
-> - `D(M)` **unknown/not-yet-recorded** for `M` → **permit** (the diagnostic must
->   never false-fire — a foreign write racing ahead of `M`'s own export
->   processing is permitted; the guard catches it once `D(M)` is recorded).
+> **`check_terminal_closure(M, local, source, visibility, D(M))`** — a name
+> candidate is closure-valid iff it is private, its canonical source is in
+> `M`, its public local name belongs to `D(M)`, or `D(M)` is not yet known.
+> Otherwise the public cross-module exposure is rejected and diagnosed.
+
+The lifecycle binding is not an input: own definitions are exported by §8.4,
+while cross-module exposure lives only in `NameCandidate`. A binding-shaped
+gate or a second predicate over bindings is therefore untruthful and must not
+be reintroduced.
 
 This is exactly the /qa synthesized-trigger shape (`tests/plan/s115-test-plan.md`
 §3.1): **provides-name-but-outside-declared-exports** — a public `Import` whose
@@ -175,13 +243,10 @@ hazard; /arch Phase-2 §4 "closure PRECOMPUTED"):
    re-entrancy that a *"read `M`'s own live exports"* implementation would
    deadlock on at `register_macro_in_module` (`form_dispatch.rs:395` runs under
    the `get_mut` at `:360`).
-2. The **own-def arm reads no map at all** — a macro/def `Def` short-circuits to
-   Ok, so `register_macro_in_module` stays guard-safe by construction even for
-   the corrected predicate (it never reaches the `Import` arm).
-3. For `commit_staging_to_live` (§2.4), the `D(M)` lookup is **precomputed
-   before** `symbol_tables.get_mut(module)` and the borrowed set (or a membership
-   closure) is passed into the guarded drain loop — no session-map read under the
-   guard, per the /arch directive.
+2. Every publication route obtains `D(M)` **before** acquiring the destination
+   table's write guard, then passes that value to the candidate-shaped gate.
+   Same-module and private candidates short-circuit from their supplied facts;
+   the gate never re-enters either session map.
 
 The chokepoint is **isolation by construction**: a mis-targeted or materialized
 phantom write is *rejected at the seam*, so no phantom can ever reach a live table
@@ -189,56 +254,32 @@ phantom write is *rejected at the seam*, so no phantom can ever reach a live tab
 
 ### 2.3 What must NOT be touched
 
-- **`insert_detecting_ambiguity`** (`imports.rs::insert_detecting_ambiguity`,
-  ~L547-560) — the §8.6.5 distinct-terminal poison *consumer* is **correct**. It
-  is the *symptom* surface, not the *cause*. Weakening it would "solve" the visible
-  error by hiding a real spec-correct ambiguity (the negative twin
-  `super_import_wrapper_collides_when_prelude_globs_primitive_neg` fences exactly
-  this — do not weaken the poison).
+- **Candidate coexistence and use-site selection**
+  (`imports.rs::install_candidates`) — importing distinct canonical sources is
+  permitted. Typecheck filters those candidates by the use-site constraints and
+  reports ambiguity only when more than one viable candidate remains; do not
+  restore the former import-time poison to pre-empt that decision.
 - The `concurrency_capacity` threshold defect stays a **SEPARATE** defect
   (effect-concurrency track) — not folded here (0604 §Guard/verify notes).
 
-### 2.4 The missed census row — routing `commit_staging_to_live` (S115 disposition)
+### 2.4 Publication routes candidates, not bindings (S121 correction)
 
-`worker::commit_staging_to_live` (`worker.rs:439`) is the **live** staging→live
-commit — every foreground cluster (eval thread + pool workers) commits its
-public Defs and re-export edges here, draining `staging.symbols` into
-`live.insert` (`:513`) under the `symbol_tables.get_mut(module)` guard (`:483`).
-The S114 census claimed closure but this seam **bypasses `check_terminal_closure`
-entirely**; it is the very writer the phantom evidence names (0604 refers_to;
-0698 finding 2). **Disposition: ROUTE it** — the only census row that is neither
-already-routed nor a legal-skip.
+Prepared publication and the retained legacy staging-publication seam validate
+the complete `all_name_candidates` batch before mutating the destination table
+or publishing a GOT change. `install_imports`, `install_exports`, and bootstrap
+birth do the same at their candidate-exposure seams. Each route obtains `D(M)`
+before its module write guard and calls the one §2.2 gate with the candidate's
+local name, canonical source, visibility, and span.
 
-**Shape (deadlock-safe, precompute-before-guard):**
+Bindings are lifecycle values and are not closure-checked. Consequently the
+old binding-loop gate, `write_is_closure_valid`, and the associated
+slot-before-gate residual all retire rather than moving elsewhere. An error
+validating any candidate rejects the candidate batch before table or GOT
+publication.
 
-1. **Before** `symbol_tables.get_mut(module)` (`:483`), look up `D(module)` once
-   from the session-side `declared_exports` map (§2.2) — a read of a **separate**
-   `DashMap`, so it is safe even if it ran under the guard; precomputing it first
-   honors the /arch directive uniformly and keeps the drain loop guard-clean.
-2. Inside the drain loop, **before `live.insert(name, entry)`** (`:513`), call
-   `check_terminal_closure(symbol_tables, module, &name, &entry, span, &d_module)`
-   for each staged entry. A public re-export `Import` whose name ∉ `D(module)`
-   returns the diagnosed error; `commit_staging_to_live` already returns
-   `Result<…, CranelispError>`, so the rejection propagates through the existing
-   error path with nothing committed.
-3. `commit_staging_to_live` commits `module`'s **own** cluster, so `D(module)`
-   (recorded from that same cluster's export specs) contains every legitimate
-   re-export edge → they pass; only a mis-targeted/materialized phantom whose
-   name is absent from `module`'s declared exports rejects. A foreign write
-   mis-targeting a `module` whose `D` is already recorded is rejected; one racing
-   ahead of `D(module)`'s recording hits the unknown-permit arm (never
-   false-fires) — and the landed `MODULE_TRACE`/diagnostic still names the seam
-   if it ever fires.
-
-**Span:** the staged commit has no per-entry user span (drained from staging);
-use `Span::SYNTHETIC` (as `insert_cluster` and `register_macro_in_module`
-already do at their gate calls) — the diagnostic self-identifies as an internal
-R7 breach, so a synthetic span is correct (it is never a user-actionable
-location).
-
-**Greppable structural guard (Principle 18):** after this lands, a public-insert
-seam that bypasses `check_terminal_closure` is a `/review` finding — the census
-table (in `imports.rs` and here) is closed, `commit_staging_to_live` included.
+**Greppable structural guard (Principle 18):** a public cross-module
+name-candidate exposure that bypasses `check_terminal_closure`, or any restored
+binding-shaped closure predicate, is a `/review` finding.
 
 ## 3. Prime suspects (where the census looks first)
 
@@ -258,35 +299,29 @@ table (in `imports.rs` and here) is closed, `commit_staging_to_live` included.
 Per `/qa` (`tests/plan/s115-test-plan.md` §3.1 + 0604 §"/qa S114 Phase-6b
 re-base"):
 
-1. **Synthesized-trigger chokepoint unit test** (METHOD §2.2, fail-on-revert,
-   interleaving-independent): inject a public re-export `Import` whose `source`
-   **provides** the name but whose name is **outside** `D(M)`
-   (provides-name-but-outside-declared-exports) → assert the diagnosed error. The
-   *existing* chokepoint unit test cannot guard the corrected predicate (its
-   injected source lacks the name — it passes both predicates; the /qa binding
-   finding).
-2. **Census table in the change-set** — every foreground writer dispositioned,
-   **`commit_staging_to_live` included** (§2.4).
-3. **Corrected predicate**: provider-existence → declared-export closure
-   (`D(M)`); the `prelude_write_is_closure_valid` / `write_is_closure_valid`
-   rationale comments corrected (bit-and IS a primitive — the falsified-premise
-   rider, /arch Phase-2 §4 revision 2; paired with the /testing fixture-comment
-   correction on `check_terminal_closure_rejects_out_of_closure_public_write`).
-4. **≥25× deterministic-recipe sweep** vs the real stdlib (`--run` + REPL) —
+1. **One candidate-shaped gate:** a public external candidate outside `D(M)`
+   rejects; inside `D(M)` admits; private, same-module/self-alias, and
+   unknown-`D(M)` candidates admit.
+2. **Closed candidate census:** imports, exports, prepared publication, retained
+   staging publication, and bootstrap candidate exposure all route through that
+   gate before table or GOT mutation.
+3. **Obsolete mechanisms absent:** no binding-shaped/no-op gate and no
+   `write_is_closure_valid` remain.
+4. **Bootstrap proof:** `all_name_candidates` is non-empty and the injected
+   forbidden public cross-module/outside-`D(M)` candidate rejects.
+5. **≥25× deterministic-recipe sweep** vs the real stdlib (`--run` + REPL) —
    **behavioural no-regression** (the pre-fix baseline is 0-fire in this
    environment; the fail-on-revert guard is the synthesized trigger, NOT the
    sweep). One time-boxed load-amplified re-induction attempt, abandoned without
    prejudice if quiet.
-5. **The two GREEN twins hold**
+6. **The two GREEN twins hold**
    (`tests/spec_08_prelude_outer_scope.rs::super_import_wrapper_over_specific_prelude_compiles_clean`
    — the correct pole, a free tripwire that reddens if the phantom ever turns
    deterministic; and the `_collides_…_neg` poison twin — the poison stays
    spec-correct).
-6. **This doc records the contract** (done — §2.2/§2.4). FIXME 0604 retires when
-   the corrected predicate + closed census (incl. `commit_staging_to_live`) +
-   synthesized-trigger guard land; **writer identification is DESIRED, not
-   required** (the re-based plan). Any interim firing anywhere names its seam via
-   the diagnosed error and narrows the fix to it.
+7. **This doc records the current contract:** §2.2 defines the sole predicate
+   and §2.4 owns the candidate routes. FIXMEs 0604, 0740 and 0793 retire only
+   with this evidence.
 
 ## 5. Principles cited
 
@@ -307,14 +342,18 @@ re-base"):
 
 - `design/arch/fixmes/0604-*.md` — the defect, the re-scope to foreground, and
   `/qa`'s plan of record.
-- `src/imports.rs` (`check_terminal_closure`:322 / `write_is_closure_valid`:357 —
-  the landed chokepoint + provider-existence predicate to correct;
-  `install_exports`:182 / `install_imports`:116 — routed writers;
-  `assert_prelude_closure`:217 / `prelude_write_is_closure_valid`:245 — the S113
-  rider (falsified comment at :251); `insert_detecting_ambiguity` — the §8.6.5
-  poison consumer, DO NOT TOUCH).
-- `src/worker.rs` (`commit_staging_to_live`:439, `live.insert`:513, `get_mut`:483)
-  — the REAL staging→live commit, the missed census row §2.4 routes.
+- `src/imports.rs` — the sole candidate-shaped `check_terminal_closure` and the
+  `install_exports` / `install_imports` routes; `insert_detecting_ambiguity`
+  remains the §8.6.5 poison consumer.
+- `src/worker.rs` — prepared and retained staging publication enumerate the
+  complete candidate batch before mutation.
+- `src/bootstrap.rs::mount_synthetic_modules` — fallible candidate exposure and
+  the non-vacuous `all_name_candidates` proof.
+- `src/session_v4/lifecycle.rs:268-274` — the `PRIMITIVES_TABLE` whole-table
+  mount, the third session-init census row.
+- `src/platform.rs::register_platform_in_tc` (`:316`; gate `:427-433`, insert
+  `:434`) — the routed DLL-load seam.
+- `design/int/s121-c6-visit.md` §10 — the C6 visit that closes this census.
 - `src/cluster.rs` (`insert_cluster`:337) — the Wave-3a-β scaffold gate call
   (normally-empty entries loop).
 - `crates/cranelisp-primitives/src/lib.rs:412` — `bit-and` IS a bundled

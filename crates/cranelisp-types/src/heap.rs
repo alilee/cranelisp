@@ -7,8 +7,8 @@ use std::collections::HashSet;
 use std::mem::{self, offset_of};
 
 use crate::{
-    CodeStore, ConcreteType, DefKind, FQTypeName, LinkerStore, ModuleEntry, NotConcrete, Symbol,
-    SymbolTable, SymbolTables, Type,
+    Binding, CallableOrigin, CodeStore, ConcreteType, Decl, FQTypeName, LinkerStore,
+    ModuleFullPath, NotConcrete, Symbol, SymbolTable, SymbolTables, Type, TypeRecord,
 };
 
 /// Universal header for all heap-allocated values.
@@ -95,7 +95,7 @@ pub struct ValueLayout {
 /// `HeapCategory::Value` arm, `value_construct`, and match field-binding all
 /// read from THIS predicate. Admitting 0-word or multi-field shapes here splits
 /// those consumers and reintroduces the Copy-on-a-heap-object UAF (the Wave-3a
-/// /review Blockers; see [`adt_layout_words`]).
+/// /review Blockers; see `adt_layout_words`).
 ///
 /// # Why this lives in `cranelisp-types` (soundness single-sourcing)
 ///
@@ -118,7 +118,7 @@ pub struct ValueLayout {
 /// deliberately conservative in these ways, each a `None`:
 /// - **multi-constructor** ADTs (a tag word alongside the payload — §7.1);
 /// - **0-field or ≥2-field** single-ctor products (not the single-value-word
-///   shape the backend flattens — a soundness exclusion, see [`adt_layout_words`]);
+///   shape the backend flattens — a soundness exclusion, see `adt_layout_words`);
 /// - **`Vec`** and other built-in heap collections (heap identity);
 /// - **generic** ADT fields whose stored constructor-scheme type is not already
 ///   fully concrete (no per-instantiation substitution in the first landing —
@@ -128,6 +128,8 @@ pub struct ValueLayout {
 /// `type_defs` is the per-module symbol-table view both crates already hold (the
 /// same `Option<&SymbolTables>` `HeapCategory::classify` takes); `None`
 /// classifies every ADT as ineligible (conservative — the pre-typecheck stages).
+/// This table adapter delegates to [`value_layout_with_lookup`]; callers with
+/// staged declarations supply their coherent lookup through that entry point.
 pub fn value_layout<C, L>(
     ty: &ConcreteType,
     type_defs: Option<&SymbolTables<C, L>>,
@@ -136,6 +138,33 @@ where
     C: CodeStore,
     L: LinkerStore,
 {
+    value_layout_with_lookup(ty, &|module, key| {
+        type_defs?.get(module)?.get(key.as_ref()).cloned()
+    })
+}
+
+/// Calculate the shared Copy/value layout using the caller's declaration view.
+///
+/// Typecheck can supply staged declarations while backend uses [`value_layout`]
+/// over its code-generation tables. Both entry points use the same eligibility,
+/// constructor-key projection and recursive walk documented by [`value_layout`].
+///
+/// `lookup` probes an exact module and storage key, returning an owned binding
+/// or `None` on absence. It performs no name resolution, alias following or
+/// prelude fallback. A staging view returns a present staged binding even if
+/// ineligible, falling through to published state only for an absent key.
+/// The caller keeps the declaration view coherent for the calculation and
+/// releases all table guards or staging borrows before returning each binding.
+/// The walk drops those owned bindings before recursing into field types.
+///
+/// Missing or unsuitable metadata gives `None`. Scalars need no lookup. The
+/// callback is borrowed only for this call; the result retains no bindings,
+/// guards or callback references. No lifecycle or slot is created or published.
+pub fn value_layout_with_lookup<C, F>(ty: &ConcreteType, lookup: &F) -> Option<ValueLayout>
+where
+    C: CodeStore,
+    F: Fn(&ModuleFullPath, &Symbol) -> Option<Binding<C>>,
+{
     // `visited` is the set of ADT names on the *current* resolution path — the
     // cycle guard that keeps a self- or mutually-recursive concrete type
     // (`(deftype Stream (Stream [:Int head :Stream tail]))`, or an A-holds-B /
@@ -143,7 +172,7 @@ where
     // removed once its subtree is resolved), so a value type reused across
     // sibling fields (`Two [:Cell a :Cell b]`) still counts each occurrence.
     let mut visited = HashSet::new();
-    let words = layout_words(ty, type_defs, &mut visited)?;
+    let words = layout_words(ty, lookup, &mut visited)?;
     (words <= VALUE_LAYOUT_MAX_WORDS).then_some(ValueLayout { words })
 }
 
@@ -152,33 +181,33 @@ where
 /// field (i.e. is not Copy-eligible). Structural eligibility only — the
 /// `≤ VALUE_LAYOUT_MAX_WORDS` size bound is applied once, at the top, by
 /// [`value_layout`].
-fn layout_words<C, L>(
+fn layout_words<C, F>(
     ty: &ConcreteType,
-    type_defs: Option<&SymbolTables<C, L>>,
+    lookup: &F,
     visited: &mut HashSet<FQTypeName>,
 ) -> Option<usize>
 where
     C: CodeStore,
-    L: LinkerStore,
+    F: Fn(&ModuleFullPath, &Symbol) -> Option<Binding<C>>,
 {
     match ty {
         // Scalars are the base case: value-represented, one word.
         ConcreteType::Int | ConcreteType::Bool | ConcreteType::Float => Some(1),
         // Heap identities — never value-flattened.
         ConcreteType::String | ConcreteType::Fn(_, _) => None,
-        ConcreteType::ADT(fqtn, _args) => adt_layout_words(fqtn, type_defs, visited),
+        ConcreteType::ADT(fqtn, _args) => adt_layout_words(fqtn, lookup, visited),
     }
 }
 
 /// Word count of a single-constructor value-eligible ADT, or `None`.
-fn adt_layout_words<C, L>(
+fn adt_layout_words<C, F>(
     fqtn: &FQTypeName,
-    type_defs: Option<&SymbolTables<C, L>>,
+    lookup: &F,
     visited: &mut HashSet<FQTypeName>,
 ) -> Option<usize>
 where
     C: CodeStore,
-    L: LinkerStore,
+    F: Fn(&ModuleFullPath, &Symbol) -> Option<Binding<C>>,
 {
     // `Vec` is a built-in heap collection (not registered via deftype) — never a
     // flattened value. A `Vec` OF value elements is handled by the backend's
@@ -201,21 +230,19 @@ where
     // (so a value type reused across sibling fields is not falsely flagged as a
     // cycle). The inner closure carries the `?`-early-returns; the pop always runs.
     let result = (|| {
-        let tables = type_defs?;
-
-        // Recover the constructor's field types WHILE holding the module's Ref,
-        // then drop the guard BEFORE recursing — recursion may `get` a field
-        // type's own module, and holding two DashMap Refs into one shard can
-        // deadlock.
+        // Own only the concrete fields across recursion: another lookup can
+        // enter the same DashMap shard or staging RefCell.
         let field_types: Vec<ConcreteType> = {
-            let table = tables.get(&fqtn.module)?;
-            let ctor_names = type_ctor_names(table.value(), fqtn)?;
+            let binding = lookup(&fqtn.module, &Symbol::from(fqtn.name.as_ref()))?;
+            let ctor_names = type_ctor_names_from_binding(&binding, fqtn, &|key| {
+                lookup(&fqtn.module, key).is_some()
+            })?;
             // Single-constructor only — a multi-ctor ADT needs a tag word
             // alongside the payload, excluded from the first landing (§7.1).
             let [ctor_name] = ctor_names.as_slice() else {
                 return None;
             };
-            ctor_field_concrete_types(table.value(), ctor_name)?
+            ctor_field_concrete_types(&lookup(&fqtn.module, ctor_name)?)?
         };
 
         // R5 first landing (§7.1): EXACTLY ONE field, itself value-eligible. The
@@ -245,7 +272,7 @@ where
         let [ft] = field_types.as_slice() else {
             return None;
         };
-        layout_words(ft, type_defs, visited)
+        layout_words(ft, lookup, visited)
     })();
 
     visited.remove(fqtn);
@@ -259,19 +286,26 @@ where
 ///
 /// # The single ctor-name resolver (FIXME 0528 — Principle-7 mirror cure)
 ///
-/// This is the ONE reader of the `ModuleEntry`→ctor-name-list shape (the
-/// `TypeDef`-vs-product-`Def`-facet switch). Both [`value_layout`] (here) and
-/// the backend's heap classifiers (`is_mixed_adt`, `classify_adt`) delegate to
-/// it, so a change to how a single-ctor product stores its constructors is
-/// mirrored in exactly one place — no independently-drifting copies (the
-/// soundness-coupled-divergence risk `value_layout` cannot tolerate,
-/// `design/arch/ownership-inference.md` §6.3).
+/// This table adapter shares one `Binding`→ctor-name-list projection with
+/// [`value_layout_with_lookup`]. The backend's heap classifiers delegate here,
+/// keeping the defined-type/product-facet switch and canonical-key preference
+/// identical across all layout consumers.
 pub fn type_ctor_names<C, L>(table: &SymbolTable<C, L>, fqtn: &FQTypeName) -> Option<Vec<Symbol>>
 where
     C: CodeStore,
     L: LinkerStore,
 {
-    match table.get(fqtn.name.as_ref())? {
+    type_ctor_names_from_binding(table.get(fqtn.name.as_ref())?, fqtn, &|key| {
+        table.get(key.as_ref()).is_some()
+    })
+}
+
+fn type_ctor_names_from_binding<C: CodeStore>(
+    binding: &Binding<C>,
+    fqtn: &FQTypeName,
+    contains: &impl Fn(&Symbol) -> bool,
+) -> Option<Vec<Symbol>> {
+    match &binding.declaration {
         // **Obligation A (S109 W1, `dotted-ctor-canonical-keys.md` §2).** Return
         // the *storage keys* of the ctor `Def`s, not display names.
         // `TypeDefInfo.constructors` carries bare display names; a sum ctor's real
@@ -280,12 +314,12 @@ where
         // consumers probing `table.get(returned)` MUST get the canonical key. The
         // mapping happens HERE, in the ONE reader. The probe-canonical-else-bare
         // shape stays robust to the product facet (type-name key).
-        ModuleEntry::TypeDef { info, .. } => Some(
+        Decl::Type(TypeRecord::Defined { info, .. }) => Some(
             info.constructors
                 .iter()
                 .map(|c| {
                     let canonical = crate::member_key(&fqtn.name, c.as_ref());
-                    if table.get(canonical.as_ref()).is_some() {
+                    if contains(&canonical) {
                         canonical
                     } else {
                         c.clone()
@@ -293,8 +327,8 @@ where
                 })
                 .collect(),
         ),
-        ModuleEntry::Def { kind, .. } => match &**kind {
-            DefKind::Constructor {
+        Decl::Callable(callable) => match &callable.origin {
+            CallableOrigin::Ctor {
                 type_def: Some(td), ..
             } => Some(td.constructors.clone()),
             _ => None,
@@ -303,25 +337,16 @@ where
     }
 }
 
-/// The field types of the constructor `ctor_name` as fully-concrete types, or
+/// The field types of a constructor binding as fully-concrete types, or
 /// `None` if the entry is not a constructor or any field type is not already
 /// concrete. The ctor's `scheme.ty` is `field_types… -> ADT` (a nullary ctor's
 /// scheme is the ADT type directly, so it has zero fields — a `0`-word value).
-fn ctor_field_concrete_types<C, L>(
-    table: &SymbolTable<C, L>,
-    ctor_name: &Symbol,
-) -> Option<Vec<ConcreteType>>
-where
-    C: CodeStore,
-    L: LinkerStore,
-{
-    let ModuleEntry::Def { scheme, kind, .. } = table.get(ctor_name.as_ref())? else {
-        return None;
-    };
-    if !matches!(&**kind, DefKind::Constructor { .. }) {
+fn ctor_field_concrete_types<C: CodeStore>(binding: &Binding<C>) -> Option<Vec<ConcreteType>> {
+    let callable = binding.callable()?;
+    if !matches!(callable.origin, CallableOrigin::Ctor { .. }) {
         return None;
     }
-    let field_tys: &[Type] = match &scheme.ty {
+    let field_tys: &[Type] = match &callable.arm.scheme.ty {
         Type::Fn(params, _ret) => params.as_slice(),
         _ => &[],
     };
@@ -347,7 +372,7 @@ where
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum CtorFieldsAtError {
-    /// The entry at `ctor_key` is absent or not a `DefKind::Constructor` —
+    /// The entry at `ctor_key` is absent or not a `CallableOrigin::Ctor` —
     /// a caller-side keying bug, not a property of the type.
     NotACtor,
     /// `args.len()` does not match the ctor's result-ADT parameter count.
@@ -414,16 +439,19 @@ where
     C: CodeStore,
     L: LinkerStore,
 {
-    let Some(ModuleEntry::Def { scheme, kind, .. }) = table.get(ctor_key.as_ref()) else {
+    let Some(callable) = table
+        .get(ctor_key.as_ref())
+        .and_then(|binding| binding.callable())
+    else {
         return Err(CtorFieldsAtError::NotACtor);
     };
-    if !matches!(&**kind, DefKind::Constructor { .. }) {
+    if !matches!(callable.origin, CallableOrigin::Ctor { .. }) {
         return Err(CtorFieldsAtError::NotACtor);
     }
 
     // Ctor scheme shape (adt_build::build_adt_entries, the ONE derivation):
     // data ctor → `Fn(field-tys, ADT(fqtn, params))`; nullary → bare ADT.
-    let (field_tys, result_ty): (&[Type], &Type) = match &scheme.ty {
+    let (field_tys, result_ty): (&[Type], &Type) = match &callable.arm.scheme.ty {
         Type::Fn(params, ret) => (params.as_slice(), ret.as_ref()),
         other => (&[], other),
     };

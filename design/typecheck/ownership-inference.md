@@ -74,9 +74,10 @@ seams in today's source:
   `finalize_mono_codegen_view` → `MonoExpr::from_expr` — so **every codegen-bound body the
   analysis walks is a `MonoDefnVariant` whose nodes are concretely typed by construction**
   (Principle 18/20; `mono_expr.rs`). The analysis never sees a `Type::Var`.
-- **The finalisation pass** (`program.rs::finalize_check_result_inner`) — the post-pass
-  sequence the analysis joins: Pass-4 mono runs at `:1901`, callees are written to entries at
-  `:1999` via `write_callees_to_module_entries` (Decision 21). The ownership fixpoint slots
+- **The finalisation pass** (`program/finalize.rs::finalize_check_result_inner`) — the post-pass
+  sequence the analysis joins: Pass-4 mono runs before
+  `program/finalize.rs::finalize_annotations_and_publish`, which consumes each checked ledger
+  record and publishes its final canonical callees with its AST (Decision 21). The ownership fixpoint slots
   **after both** — at that point the cluster's callable set, call edges, and concrete bodies
   are all settled.
 - **The cluster orchestration** (Decision 44; `cluster.rs::SymbolTableAccess`) — the pass reads
@@ -222,7 +223,8 @@ every callable the cluster defines has its `codegen_view` populated (mono instan
 `register_mono_entry`; ordinary concrete defns via `build_concrete_codegen_view`); every
 `Def.callees` edge is written; imported callees resolve by chain-follow. No pipeline
 re-sequencing (spine §4.1). Writes go through `current_symbol_table_mut` exactly as
-`write_callees_to_module_entries` does — staging-aware, cluster-atomic, no new mutation path
+`program/finalize.rs::finalize_annotations_and_publish` does — staging-aware,
+cluster-atomic, no new mutation path
 (Decision 44; Principle 17).
 
 Instantiation minting is recursive (`monomorphise_inner_parametric_hops` mints inner hops
@@ -250,8 +252,14 @@ free.
   `callees` edges — a cluster-local, throwaway index (the session-lifetime reverse index is the
   R3 subsystem's, `/int`-owned; this pass does not build or own it, it merely walks the same
   forward edges — spine §5.3 "one graph, two consumers").
-- **Termination:** finite lattice + monotone transfer ⇒ each callable re-visits at most
-  O(Σ per-param heights) times; in practice ≤ 2–3 visits for recursive clusters, 1 otherwise.
+- **Termination:** the mode, escape/flow and spark axes are finite lattices under a monotone
+  transfer, so on those axes each callable re-visits at most O(Σ per-param heights) times; in
+  practice ≤ 2–3 visits for recursive clusters, 1 otherwise. **The result axis is not covered by
+  that argument, and the visit cap is a live backstop rather than a defensive-unreachable one**
+  — the seed `Fresh` is a claim about the result, not the axis's ⊥, so the iteration is an
+  optimistic-init fixpoint and not a Kleene ascent. §19 gives the axis a real ⊤ and a truthful
+  join, which removes the measured non-convergent class; §19.5 is what makes reaching the cap
+  safe. Section §19.8 states the residual precisely.
 - **Stratification:** modes/escape/flow converge **first**; the confinement join (§5) runs
   **second**, over the surviving-RC-op set the converged modes determine. Confinement never
   feeds back into modes (nothing in the mode transfer reads confinement), so the
@@ -962,7 +970,8 @@ drifted with S101's edits — same seam, same order).
   analysis is off (§13.5).
 - **CS-4 — publication + observability** (`publish.rs`). Post-convergence: summaries
   onto entries via `current_symbol_table_mut` (staging-aware, cluster-atomic —
-  Decision 44, exactly the `write_callees_to_module_entries` write path); the
+  Decision 44, exactly the `program/finalize.rs::finalize_annotations_and_publish`
+  write path); the
   §13.6(b) one-shot site-fact walk annotating the stored `codegen_view`
   (`MonoDefnVariant.mode_summary` + per-node facts + provenance); value-use marks;
   the **H5 `CRANELISP_OWNERSHIP_TRACE`** dump (per-cluster summaries + per-site
@@ -978,9 +987,10 @@ exist; (ii) I-G5/I-G6 run at the B2 seam even under a short close (Q3 pin 2) —
 ### 13.3 Graph-feed verification — what the S101 `callees` widening does and does not give pass5
 
 Verified against the landed S101 work (0470 resolved: single-chokepoint recorder in
-`infer_var`, call- **and** value-position user-fn references, span-keyed delta into
-`call_graph_edges`; 0472 resolved: `harvest_callee_edges` at all body-check seam
-families incl. impl-provided/default/HKT method bodies; schema v11):
+`infer_var`, call- **and** value-position user-fn references, retained in the active
+`BodyFrame`; 0472 resolved: `program/callees.rs::harvest_callees` for ledger bodies
+and `harvest_callees_in_module` for impl-provided/default/HKT method bodies; schema
+v11):
 
 - **What pass5 assumed (§3.2) and now verifiably has:** complete forward
   statically-resolved user-fn edges at **template/defn grain** — plain direct calls,
@@ -1075,9 +1085,13 @@ per audit row.
 
 - **Absent facts ⇒ Decision-24, structurally.** Every read of a summary or site fact
   goes through the CS-A conservative-read accessors (§13.1 items 4–6); no pass5 code
-  path indexes the raw vectors or interprets absence. An absent summary is ⊤
-  (all-`Owned`, `Fresh`, all-`Retained`, all-`spark_ops`); an absent site fact is
-  `None` = escapes/crossing/shared/no-provenance. Joins only widen; init is
+  path indexes the raw vectors or interprets absence. An absent summary reads ⊤ on the
+  parameter axes — all-`Owned`, all-`Retained`, all-`spark_ops` — and an absent site fact is
+  `None` = escapes/crossing/shared/no-provenance. **The result axis is the exception, and
+  always was:** the walk substitutes `ResultMode::Fresh` for an absent callee result, which is
+  that axis's STRONGEST claim, not its ⊤. The axis's real ⊤ is `MayAliasAny` (§19.2); §19.7
+  states the premise that keeps the `Fresh` read co-sound and names the observation that would
+  refute it. Joins only widen; init is
   optimistic per fresh run; `Transferred` collapses to `Crossing` at emission (§5.4);
   `result_unique` and `unique_static` are never emitted true in increment I (§10).
 - **The toggle pin (stated with explicit polarity): when `CRANELISP_NO_OWNERSHIP` is
@@ -1146,20 +1160,28 @@ per audit row.
   an `AliasOf`/`ProjectionOf` callee stays a may-alias — never collapses to
   `Fresh`), mapping to the `ResultMode` at the boundary. **Monotone soundness:**
   widening toward not-`Fresh` is always sound (only less precise — an unneeded
-  retain, i.e. a leak, never an elided one). **Lattice-sizing residual (existing
-  lattice retained):** for a return that may alias MULTIPLE DISTINCT params (the
-  `(if c v w)` shape), the existing 3-element `ResultMode` cannot name "may alias
-  0 or 1"; the representative-lowest-index choice is sound for the live
-  borrow-elision consumer (which needs only the BINARY `Fresh`-vs-not) and is
-  strictly more sound than the pre-cure `Fresh`, but a future index-specific
-  provenance consumer would need a distinct ⊤ element (`MayAliasParam`/
-  `AliasOfAny`) — a `cranelisp-types` carrier change routed to `/arch` as
-  FIXME 0521, not required by increment I. `§4.2-rule-5 materialization is still
-  emitted on each non-`Fresh` path (the returned borrow escapes at that edge).
+  retain, i.e. a leak, never an elided one). **The lowest-index representative is
+  RETIRED (S121, §19.3) — it was not sound, and it was not a join.** For a return that
+  may alias MULTIPLE DISTINCT params (the `(if c v w)` shape) the rule kept one reaching
+  index and discarded the rest, which this section justified as "sound for the live
+  borrow-elision consumer, which needs only the BINARY `Fresh`-vs-not". That premise is
+  false, because the producer is itself an index reader: `walk_apply` composes a callee's
+  `MayAliasOf(k)` by taking argument `k` alone, so a caller that passes a fresh value at the
+  representative position and a parameter at the discarded one composes to `Fresh` and
+  publishes the elide-my-protect claim. Measured 2026-09-07 at the ownership trace on a
+  three-line program: `pick2 [c a b] = (if c a b)` publishes `MayAliasOf(1)`, and its caller
+  `q [c p] = (pick2 c "lit" p)` publishes `result=Fresh` while `q` may return its own
+  parameter `p` (§19.1). The same discard is what makes the transfer non-monotone on the
+  result axis, which is the non-convergence of §19.1. §19.3 replaces the representative
+  with the reaching-parameter SET and publishes `MayAliasAny` when it holds two or more.
+  §4.2-rule-5 materialization is still emitted on each non-`Fresh` path (the returned borrow
+  escapes at that edge).
 - **(d) Provenance is symbol-keyed, with a shadowing guard.** `MonoExpr` bindings
-  are `Symbol`-named; the backend's `borrowed_vars`/last-use machinery is
-  symbol-keyed already, so the provenance site fact carries the root binding's
-  `Symbol`. Where a body rebinds a name that is (or roots) a live provenance root
+  are `Symbol`-named, so the provenance site fact carries the root binding's
+  `Symbol` — the carrier the backend's last-use machinery was expected to key
+  on. **As built no consumer binds that symbol**; §20.5(i) records the consumer
+  position read at source, and nothing below rests on identity matching.
+  Where a body rebinds a name that is (or roots) a live provenance root
   (`let x … let x …` shadowing), the walk emits `provenance: None` for projections
   whose root would be ambiguous under that name — conservative (the backend treats
   no-provenance as materialize-at-Decision-24), and pinned as a scenario row
@@ -1179,10 +1201,12 @@ per audit row.
   (§13.6(i)):** the scope-frame discipline now makes shadow *detection* precise
   (the walker resolves a name to its lexically-correct binding), but the
   `drop_shadowed_provenance` drop-to-`None` (⇒ Decision-24 materialize) STAYS as
-  the sound action at a genuine cross-boundary `Symbol` collision — provenance
-  leaves the walk as a bare `Symbol` the backend re-resolves against its own
-  `borrowed_vars`, so the drop is the boundary-safe behaviour regardless of
-  in-walk scope fidelity. The scope stack does not retire it.
+  the boundary-safe action at a genuine cross-boundary `Symbol` collision: the
+  fact leaves the walk as a bare `Symbol` that the walk's scope discipline does
+  not travel with, and dropping it leaves no fact rooted at a rebound name.
+  **What the backend reads is presence, not identity** (§20.5(i)), so the drop
+  is not established by an observed re-resolving consumer; it is retained as the
+  safe direction for one. The scope stack does not retire it.
 - **(g) Binding-mediated escape re-propagation** (amends §2.2 rules 1–5 for the
   let-indirected shape; FIXME 0512 blocker 1). §3.3's "a later escaping *use of
   `n`* re-classifies the param root through `n`'s Root/Projection origin" fires
@@ -1234,21 +1258,29 @@ per audit row.
   frame-escape fact, so `ParBind` must drain too (F1 second gap). ABI mode is
   unaffected: a constructor field-store is `Owned` on both paths, so `param_modes`
   never moves — this refinement is advisory-half only (`param_flow` + escape).
-- **(h) Cap-exhaustion resets to the conservative ⊤** (hardens §3.2's worklist
-  termination; FIXME 0512 blocker 4). The visit cap is defensive (unreachable
-  under monotone convergence), but a partially-converged summary set is
-  monotone-**below** its true fixpoint ⇒ **too precise** ⇒ unsound to publish.
-  **As-built:** on cap exhaustion the modes worklist resets the WHOLE universe to
-  the conservative ⊤ (`fixpoint::top` — all-`Owned` / `Fresh` / `Retained` /
-  spark-set) before publishing; the confinement worklist (see §5.3) resets every
-  `spark_ops` to all-`true` (Crossing). The reset is universe-wide, not
-  queued-only: a non-queued entry may have converged against a still-too-low
-  queued callee, so ⊤-everywhere is the only sound recovery. **The SITE FACTS are
-  reset too** (Wave 8c-R F3): `fixpoint::conservative_site_facts` re-populates each
-  callable's `SiteFacts` with every escape-bearing node's span `escapes=true` and
-  provenance dropped — an un(fully)visited callable otherwise has no / below-truth
-  escape entries, which the backend would trust to elide a retain (UAF). Cap is a
-  shared test seam (`compute_cluster_with_cap(.., cap=0)` forces the reset).
+- **(h) Cap exhaustion REFUSES the cluster — it publishes nothing** (hardens §3.2's
+  worklist termination; FIXME 0512 blocker 4, **corrected S121, §19.5**). A
+  partially-converged summary set is monotone-**below** its true fixpoint ⇒ too precise ⇒
+  unsound to publish. The universe-wide scope of the recovery stands: a non-queued entry may
+  have converged against a still-too-low queued callee, so no per-callable salvage is
+  available.
+  **What is corrected is WHAT the recovery publishes.** The pre-S121 as-built reset the whole
+  universe to a hand-written ⊤ literal (`fixpoint::top` — all-`Owned` / `Retained` /
+  spark-set / **`result: Fresh`**) and re-populated every `SiteFacts` from
+  `fixpoint::conservative_site_facts`. That literal was ⊤ on four axes and the axis's
+  STRONGEST claim on the fifth, and the claim it published — "the result reaches none of my
+  parameters" — is the one fact the backend's callee-side return protect elides on. Measured
+  S121: the f4 fixture's whole module (41/41 callables) carried that literal, and the
+  builder that returns its accumulator lost its return retain (`sprints/SPRINT.md`, S121
+  active checkpoint). The old claim in this bullet that "⊤-everywhere is the only sound
+  recovery" is **falsified by measurement** and is deleted with the literal.
+  **As-built after §19.5:** a cluster whose analysis does not converge publishes **no
+  summary, no site fact and no value-use mark** for any member. `top`, `reset_to_top` and
+  `conservative_site_facts` retire. The refused cluster is then exactly the
+  `CRANELISP_NO_OWNERSHIP` shape (§13.5), whose safety is the differential oracle's
+  (`design/arch/ownership-inference.md` §6.2) rather than a fresh argument about a literal.
+  The refusal is shared by all three strata (§19.5), and the cap remains the shared test seam
+  (`compute_cluster_with_cap(.., cap=0)` forces the refusal).
 - **(i) The transfer walker models lexical scope — scope-save/restore**
   (Wave 8c-R2, F4 cure; FIXME 0518). **Root cause (the third instance of the
   scope-modeling class, with B1 and B3):** `Let`, `ParBind`, and `Match`-arm
@@ -1684,13 +1716,12 @@ stratification is exact). Its shape and soundness:
   only the conservative point differs: **conservative = `false`** for
   `result_unique` (degrades to the dynamic check). Re-entry rides the same
   harvested `DepSet` edges as the modes stratum (§13.6(e)).
-- **Cap-exhaustion resets to `false` everywhere** (extends §13.6(h)). A
-  partially-converged greatest-fixpoint sits *above* its true fixpoint (too many
-  `true`s) ⇒ unsound to publish. On cap exhaustion the uniqueness stratum publishes
-  `result_unique = false` for the whole universe and drops every `unique_static`
-  site fact to `None` — the write-path analog of the §13.6(h) modes ⊤-reset and
-  site-fact reset. `fixpoint::conservative_site_facts` gains the `unique_static →
-  None` leg. This makes "publish only on clean convergence" structural, not a hope.
+- **Cap exhaustion REFUSES, it does not reset** (§19.5, superseding this section's
+  earlier per-stratum reset). A partially-converged greatest-fixpoint sits *above*
+  its true fixpoint (too many `true`s) ⇒ unsound to publish. S121 collapsed the three
+  per-stratum recoveries into one refusal: a uniqueness exhaustion publishes nothing
+  for the whole cluster instead of resetting `result_unique` to `false` and dropping
+  every `unique_static` site fact, and `fixpoint::conservative_site_facts` is deleted.
 - **Site facts written in the one-shot post-convergence walk** (§13.6(b)):
   `unique_static = Some(true)` is annotated onto the `codegen_view`'s consuming-use
   nodes in the same annotation walk that writes `escapes`/`confined`/`provenance`,
@@ -1742,7 +1773,7 @@ branch's outcome, and is silent (⇒ the check runs) everywhere else. The backen
 reuse machinery is complete without any typecheck emission; the emission is an
 optimisation on top.
 
-### 14.4 FIXME 0521 trigger verdict — **NO. The ⊤ element stays DEFERRED.**
+### 14.4 FIXME 0521 trigger verdict — S103: DEFERRED. **Discharged S121 (§19.2).**
 
 **The Phase-2 conditional (restated):** /design(typecheck) lands the `ResultMode`
 ⊤ element (`AliasOfAny`, monotone-widening) in the B1 carrier change-set + a
@@ -1750,8 +1781,23 @@ optimisation on top.
 a consumer that reads the `AliasOf` **index** (the multi-distinct-param may-alias
 case); else 0521 stays deferred until the reader arrives.
 
-**Verdict: NO index-reader is introduced. 0521 stays deferred; no ⊤ element, no
-schema bump for it in B1.** The reasoning, definitively:
+**S103 verdict: no index-reader was introduced by increment II, so 0521 stayed deferred.**
+The five points below record why that was right for the write path and remain accurate about
+it.
+
+**S121 correction — the trigger fired from the other side, and the conditional was too
+narrow.** The reader that arrived is not a new write-path consumer; it is the **producer**,
+which has read the `MayAliasOf`/`AliasOf` index since increment I at `walk_apply`'s result
+composition (point 4 below records the read and then dismisses it as "never acted on"). It is
+acted on: the composition is what publishes the caller's own `result`, and taking one
+representative argument makes that publication untruthful and the iteration non-monotone
+(§13.6(c), §19.1). The ⊤ element lands as `ResultMode::MayAliasAny` under the user approval of
+2026-09-07, with `CACHE_SCHEMA_VERSION` 26→27; §19 is the design and 0521 closes on it. The
+name differs from this section's `AliasOfAny` because the `AliasOf` prefix is reserved for
+unconditional claims (§3.7's reservation clause) and the new point is the join of conditional
+ones.
+
+The S103 reasoning, for the write path it was about:
 
 1. **The subset's provenance clause admits only `Fresh` results — `AliasOf(i)` is
    excluded by construction.** §14.2 clause 1(i) / §7.2 clause 1(i) require the
@@ -1784,42 +1830,44 @@ recommendation is to co-land the ⊤ element with "the first backend consumer th
 reads the `AliasOf` INDEX (rather than the binary `Fresh` test) — part 12/16
 borrow-elision keyed off the specific param." That per-index borrow-elision
 refinement is a backend part-12/16 item, **not** in the B1/increment-II committed
-floor (reuse tokens + R5 + the static-uniqueness subset). Until that reader lands,
-the 0520 lowest-index representative is sound for every live consumer. **0521 is
-the durable record; it does not action in S103.** (Monotone-soundness of the
-eventual add is preserved: `AliasOfAny` only ever widens a value *away from*
-`Fresh`, so it lands additively whenever its reader arrives, with its own schema
-bump in that change-set.)
+floor (reuse tokens + R5 + the static-uniqueness subset). **0521 was the durable
+record and did not action in S103; it actions in S121 and closes on §19.** The clause this
+section closed with — "the 0520 lowest-index representative is sound for every live
+consumer" — is **falsified** (§13.6(c)); the sentence is retained here only so the
+falsification has its subject. Monotone-soundness of the add held as predicted: the new
+point only ever widens a value *away from* `Fresh`, so it lands additively, with the schema
+bump in its own change-set (26→27, §19.9).
 
-### 14.5 The R5 `value_layout` predicate — coordination (not typecheck-authored)
+### 14.5 Shared value layout and the checked declaration view
 
-R5 value-representation flattening (Block B3; spine §6.3) is the one genuinely-new
-`cranelisp-types` carrier of the sprint, and it is **/arch-authored**
-(`value_layout(ty) -> Option<ValueLayout>` + `VALUE_LAYOUT_MAX_WORDS = 1` in
-`heap.rs`), single-sourced because it is **soundness-coupled**: typecheck's `Copy`
-mode classifier (§2.2) and the backend's `HeapCategory::Value` arm both consume it,
-and a `Copy`-moded param the backend did not flatten is a UAF (spine §6.3). This
-crate's dependency on it:
+Typecheck's `Copy` classifier and backend value flattening consume the same
+`cranelisp-types` layout algorithm. Their agreement is safety-critical: copying
+an unflattened heap object without an RC increment can free it prematurely.
+The shared algorithm owns scalar bases, Vec exclusion, the single-constructor,
+exactly-one-concrete-field restriction, recursion and word limits; typecheck
+does not reproduce these rules.
 
-- **When R5 lands, the §2.2 `Copy` classifier gains the representation clause.**
-  Increment I's classifier is exactly `ConcreteType::{Int, Bool, Float}` (the
-  representation clause fails for every heap type — §2.2). When `value_layout`
-  lands, `Copy(T)` gains "…or an ADT/Vec all of whose field element types are
-  transitively `Copy` **and** `value_layout(T).is_some()`" — the classifier
-  *delegates* to the shared predicate, never recomputes it. This is a **value
-  change to which `ConcreteType`s classify `Copy`**, deterministic (post-mono ⇒
-  total), hence cache-key-safe.
-- **Landing discipline (Principle 8):** the predicate lands **in the B3
-  implementing change-set, never ahead of the R5 mechanism design** — the same
-  not-speculatively discipline the S100 carriers followed. Until it lands the
-  `Copy` point is scalars-only and no unsound configuration is reachable.
-- **Schema-version coordination (flag to /arch).** The sprint plan names the R5
-  bump as `CACHE_SCHEMA_VERSION 12→13`, but the **live schema is already 14**
-  (S102 Waves 8c-R/11 folded the 0520/0523/0524 summary-meaning bumps to 14 —
-  §13.6(c)(j)(k)). The R5 predicate's bump must therefore be from the
-  then-current value (14→15, or whatever S103's earlier waves reach), **not** the
-  stale 12→13 in the plan. **This crate does not author the bump** — it is named
-  here so /arch reconciles the number when authoring the B3 carrier change-set.
+`ownership/fixpoint.rs::checked_value_layout` supplies
+`TypeCheckEnv::probe_module_entry_owned` to
+`cranelisp_types::value_layout_with_lookup`. Both consumers use this private
+adapter: `compute_cluster_with_cap` classifies Copy when the layout is present;
+`UniqClusterEnv::layout_eligible` permits reuse only for String/ADT values whose
+layout is absent. Scalars and functions remain ineligible for heap reuse.
+
+A present staged binding takes precedence even when its layout is ineligible.
+Only an absent staged key falls through to published metadata; nested types in
+other modules use their published declarations. The owned lookup releases each
+storage borrow before recursive layout inspection. No temporary table or world
+is materialized.
+
+The two `ownership/fixpoint/tests.rs` tests
+`copy_layout_uses_staged_declarations` and
+`uniqueness_layout_uses_staged_declarations` observe these consumers separately,
+including both precedence directions, missing-key fallback and a nested type
+in another module. The declaration-access correction changes neither layout
+rules nor the live ownership-ABI refusal or cache schema; the exact boundary
+and composed evidence are governed by
+[the approved API packet](../arch/s121-staged-value-layout-api.md).
 
 ### 14.6 CS staging + acceptance seams (Phase-5 handoff)
 
@@ -2017,7 +2065,7 @@ five sites call this ONE helper. Rationale:
 - Prelude fallback + `Import`-chain follow + the I-1 public-head filter + the
   qualified-never-retries guard are ALL **intrinsic to `ResolutionScope::resolve`** (decided
   once at scope construction from the `PreludeFallback` bit) — so the helper hand-rolls
-  nothing (the `cranelisp-typecheck/CLAUDE.md` "never re-thread `prelude_fallback_target` at a
+  nothing (the `crates/cranelisp-typecheck/CLAUDE.md` "never re-thread `prelude_fallback_target` at a
   new call site" rule). It is the terminal-entry sibling of the existing `resolve_entry_scoped`
   (`checker.rs:1769`), differing only in also returning the home the ownership FQSymbols need.
 - Same-module and explicit-import reach are behaviour-preserved (scope resolve subsumes the
@@ -2104,7 +2152,7 @@ and `user_fn_refs`/`callees` (still `resolved.fq`, `:1468`). Flip `:1468`:
 (`:1388–1395`, which currently documents `callees` as recording `resolved.fq` NOT
 `storage_fq()`). This is a persisted-`.meta.json` meaning change ⇒ it MUST ride the same
 `CACHE_SCHEMA_VERSION` 19→20 bump (the `Def.callees` completeness contract in
-`cranelisp-typecheck/CLAUDE.md` — "changing what `callees` records is a meaning change: bump
+`crates/cranelisp-typecheck/CLAUDE.md` — "changing what `callees` records is a meaning change: bump
 in the same change-set"). Unit pins (`program::tests::callees_*` family): a **renamed import**
 (`[(foo bar)]` → edge names `{m, foo}` the storage key, not the `{m, bar}` alias) and a **bare
 accessor** reference (edge names `{m, Box.v}` canonical, not bare `{m, v}`). Landing check
@@ -2254,7 +2302,7 @@ it; arch W5-status names it the capacity fallback).
 
 ### 16.4 Joint acceptance with the paired `/dev`(backend) consume fix
 
-B-1/I-1/I-2/B-2 do NOT all flip on the typecheck provenance fix alone:
+B-1/I-1/I-2/B-2 did NOT all flip on the typecheck provenance fix alone:
 
 - **B-1** (`(vec-get [v] 0)`) is a **pure false-`Fresh`** defect — cured toggle-OFF already
   (clean exit under `CRANELISP_NO_OWNERSHIP=1`); the row-5 element-store fix flips it (and the
@@ -2268,15 +2316,19 @@ B-1/I-1/I-2/B-2 do NOT all flip on the typecheck provenance fix alone:
 - **I-1** (capture) — the row-7 capture-rooting fix flips the ownership arm; verify against
   toggle-off.
 
-**Joint acceptance (the two change-sets compose):** all **8 committed RED pins**
-(`tests/false_fresh_provenance_residual.rs` — B-1/B-2/I-1/I-2 × {REPL value, `--link` no-heap-
-corruption}) **plus MS-P7** (`tests/safety_oracle_lane.rs` — the COW-set→project `--link`
-mode-divergent cell, the 0641 class's third reaching context) flip GREEN **under the tier-4
-differential lane + the three modes**, and ONLY when BOTH change-sets land. The tier-4 oracle
-(analysis-on ≡ analysis-off byte + RC balance) is the standing end-to-end discharge
-(safety-invariants §3d): an elision is correct iff equivalent to the all-`Owned` lowering. W5
-increment order (arch-ruled): tier-5 modes + tier-3 seam asserts FIRST (detector multipliers),
-then this tiers-1–2 fix wave verified under lane + modes.
+**Joint acceptance — DISCHARGED S113/S114.** The acceptance set was the 8 pins in
+`tests/false_fresh_provenance_residual.rs` (B-1/B-2/I-1/I-2 × {REPL value, `--link`
+no-heap-corruption}) plus MS-P7 (`tests/safety_oracle_lane.rs` — the COW-set→project
+`--link` mode-divergent cell, the 0641 class's third reaching context), under the tier-4
+differential lane + the three modes, and only when BOTH change-sets landed. Both landed —
+the typecheck half in S113 W5b, the backend consume half in S114
+(`sprints/archive/sprint-113.md`, `sprints/archive/sprint-114.md` §0669) — and FIXME 0641
+was deleted at `3297adf8`. **Those 8 cells are GREEN regression guards, not open pins:**
+`qa` measured them green in the whole-suite census of 2026-09-07 13:34, hours before the
+§19 wave, so no S121 movement is attributable to them. The tier-4 oracle (analysis-on ≡
+analysis-off byte + RC balance) remains the standing end-to-end discharge
+(safety-invariants §3d): an elision is correct iff equivalent to the all-`Owned`
+lowering.
 
 ### 16.5 Riders and cross-refs
 
@@ -2360,7 +2412,7 @@ reservation"). The rule-table rows change as follows (all §16.2 grain):
 |---|---|---|
 | **8 — Apply, `MayAliasOf(k)`** (`transfer.rs:747`) | the produced `Conditional` UNIONs the arg's carried cow-alloc spans with **this Apply's own span** (this call minted a fresh may-alias link). `join(Fresh, arg_k)` is unchanged for the `rep`/reach axis (§16 already correct); the span-set is the added carrier | precision-preserving (widening on reach; the span-set only grows) |
 | **2 — Let / ParBind binding** (`:362`) | a `let w = e` alias carries `e`'s cow-alloc span-set unchanged into the new scope (the `w` binding for the let-chained face) | precision-preserving |
-| **4 — If / Match join** (`:298`) | `join_origin` UNIONs the arms' cow-alloc span-sets when the join is `Conditional` (face-3 groundwork; probe-first per §17.4) | widening |
+| **4 — If / Match join** (`:298`) | **CORRECTED (FIXME 0772/0777, landed).** A join whose operands carry may-alias links produces a value carrying their **union**, and the joined **variant** is the ⊤-ward of the two operands (`Unconditional ⊑ Conditional`) — both **independently of which operand contributed them and of operand order** (P24). The original wording, "UNION … when the join is `Conditional`", described one code path rather than the invariant, and left the join's own variant choice free to be `Unconditional`, at which point the as-built discarded the union it had just computed. Order-independence is the property; the union is its consequence | widening |
 | **6 — Projection-out** (`:690`, the W7 arm) | when the projected container is `Conditional`, force `facts.escapes.insert(span, true)` for **EVERY carried cow-alloc span**, not the single `args[k]` syntactic span. The W7 `if let MonoExpr::Apply = &args[k]` reach is DELETED — replaced by iterating the container Origin's carried spans | narrowing→**widening** (the escape-force now covers the whole chain; monotone — it only ADDS incs, never removes a dec, per the test comment "the escape-force only ADDS incs; the failure is in the too-many-decs direction") |
 
 **Why this is not over-widening (the negative control holds).** The force fires
@@ -2400,22 +2452,59 @@ the instance-patch anti-pattern (SPRINT.md §2 constraint 1; test plan §0 risk-
 The family-grain fix inverts the direction: the may-alias VALUE carries its own
 allocation provenance on its `Origin`, so the **count of consumer arms does not
 grow** — the single pre-existing projection-out arm (row 6) discharges every link
-of every chain shape, because the chain's whole allocation history is already in
-the value it consumes. New chain shapes (longer nests, more `let` hops, the
-face-3 `If`/`Match` container once probed) are covered by the composition rules
-(rows 8/2/4) that already run on every walk — no new arm is authored for any of
-them. This is the enumerated-table discipline (§16.2): the soundness argument is
-the *table*, and the table's row count is fixed.
+of every chain shape *for which the composition is closed*.
 
-### 17.4 Face-3 (Conditional-container) — probe-first, no pre-committed arm
+**The closure obligation, named (FIXME 0777).** The original wording claimed the
+composition rules covered every new chain shape outright. That claim was too
+strong, and the face-3 probe falsified it as written: the composition is closed
+only while every composition rule is **order-independent**, and row 4 as
+originally stated was not. What is provable, and what this section now claims, is
+two things and no more:
 
-The `If`/`Match`-shaped container feeding the projection (test plan §1.1 item 3)
-is **not** pinned pre-demonstration. Row 4's join-UNION of cow-alloc span-sets is
-the groundwork that WOULD cover it (an `If`-produced `Conditional` container
-carries the union of both arms' may-alias links; row 6 forces all). `/testing`
-probes the shape first (§3.8 precedent); a green probe pins as a born-green fence
-with the probe recorded, a RED probe pins as a `class=uaf` cell that this same
-composition should flip. No design change beyond rows 4/6 is anticipated.
+1. **The arm count is fixed.** `review` verified by grep that the W7 fix added no
+   consumer arm — the `if let MonoExpr::Apply` reach was deleted and replaced by a
+   loop over the carried spans, and the `Origin::Conditional` arms are pre-existing
+   arms that gained a `cow` field.
+2. **Closure holds iff every composition rule is order-independent at its join.**
+   That is the obligation each new composition rule is checked against, and it is
+   the property the `join_lattice_*` property cells pin. A rule that reads its
+   result off one operand — as the pre-0772 `join_origin` did (`match a {
+   Conditional => …, other => other }`) — breaks closure without adding an arm,
+   which is exactly why arm-counting alone was not a sufficient fence.
+
+### 17.4 Face-3 (Conditional-container) — probed, and closed by the row-4 correction
+
+**The prediction this section carried is retired and replaced by the probe result
+(FIXME 0777).** `review` ran the probe §17.4 originally called for. Result: the
+`If`-joined container was covered when the may-alias arm was written **first** and
+aborted (`--link`, exit 134) when it was written **second** — two programs
+executing the same runtime path, differing only in source order. A `let`-mediated
+variant aborted in **both** orders. The behavioural defect was FIXME 0772; the
+full probe table lived there.
+
+The mechanism gap was row 4's, not a missing arm: the original condition ("union
+when the join is `Conditional`") left the join's own variant choice free, and the
+as-built then discarded the union it had computed whenever the `Unconditional`
+operand happened to be first. `MonoExpr::If` joins its arms in source order, so
+the memory-safety verdict depended on which arm the programmer wrote the COW
+producer in — the P24 acid test, failed.
+
+**Landed.** `transfer.rs::join_origin` (`:391-419`) now computes
+`union_cow(a.cow_spans(), b.cow_spans())` unconditionally, takes the ⊤-ward
+variant from either operand
+(`matches!(a, Conditional) || matches!(b, Conditional)`), and applies both to
+every constructed result. Order symmetry is pinned by the seam-level
+`join_lattice_*` property cells in `transfer/tests.rs` — no program involved —
+because the pre-existing `msp7_chained_*` cells are program-*shape* cells over one
+hand-built tree and are structurally incapable of failing on an order asymmetry,
+which is why 0772 passed review-by-suite. The rustdoc at `transfer.rs:374-390`
+carries the corrected rule at the seam; the crate `CLAUDE.md` §"The two
+order/settlement seams" carries it as as-built memory.
+
+So face 3 is covered, and it is covered by the composition — no new consumer arm
+was authored for it, which was the design's substantive claim. What was wrong was
+the *sufficiency* of row 4 as stated, and this section no longer states it that
+way.
 
 ### 17.5 The 0693 disagreement-fence placement — BEFORE/WITH this fix
 
@@ -2507,6 +2596,982 @@ below this line (primitive-leaf COW, same-cluster spans).
 - **Unit tier (`/dev`, METHOD §2.2):** each corrected §16.2 row exercised —
   the chained-link cow-alloc span carried through the emitted accounting; the
   projection-out force covers ≥2 spans (test plan §6.5 §1.1).
-- **0623 behavioral matrix rider (`/qa`/`/testing`):** the §16.5 container-store ×
+- **0623 behavioral matrix rider (`qa`/`test`):** the §16.5 container-store ×
   projection-out × capture axes extend with the chain-length axis (≥2 links ×
-  {nested, let} × {in-place, shared} × {REPL, `--link`}).
+  {nested, let} × {in-place, shared} × {REPL, `--link`}) **and with an arm-order
+  axis** (FIXME 0777). Order symmetry is the property that failed at the join, and
+  no cell in the behavioural lane tests it — the seam-level `join_lattice_*`
+  property cells do, which is the right home for an algebraic property, but the
+  behavioural matrix should still carry one cell per face with the COW producer in
+  each `If` arm, because that is the shape a user writes.
+
+---
+
+## §18. The ungraded `unwrap_or` narrowings in the ownership walk (S121 C3)
+
+**Status:** DESIGN (S121 Phase 3, `design`(typecheck)). Discharges the typecheck
+arm of FIXME **0929** (site 1) and the successor obligation of FIXME **0762**.
+
+### 18.1 Why these two are one item
+
+Both sites answer a question they may not be able to answer, and both answer it
+with a literal in `unwrap_or` position rather than with a refusal or a proof:
+
+| Site | Expression | The question it cannot answer | Owner |
+|---|---|---|---|
+| `ownership/fixpoint.rs:221` | `ConcreteType::from_type(t).unwrap_or(ConcreteType::String)` | what heap class is a residual-typed parameter? | C3 |
+| `ownership/transfer.rs:830` | `arg_origins.get(k).cloned().unwrap_or(Origin::Fresh)` | what is the origin of argument `k` when `k` is out of range? | C3 |
+
+Root `CLAUDE.md` §Assurance names the failure state exactly: a claim that is
+neither structural nor measured, carrying no named falsifier, is **not a grade**.
+Both sites carry a rationale; neither carries a check; and one of them carries a
+rationale that is narrower than the claim it supports.
+
+### 18.2 Site 1 — `fixpoint.rs:221`, the seed placeholder
+
+The enclosing rustdoc (`fixpoint.rs:213-216`) reads: *"Any non-`Fn` scheme, arity
+mismatch, or non-concrete param type falls back to a non-scalar placeholder
+(`String`) — never mis-classified as `Copy` (sound: a non-`Copy` param seeds
+`Borrowed`)."* The sibling catch-all at `:223` does the same for the whole
+parameter vector.
+
+**The rationale is true and it protects one axis only.** It establishes that the
+placeholder cannot make a heap parameter look `Copy`, which is the Copy⊑Borrowed
+edge. It says nothing about whether a residual-typed parameter may legally *stay*
+at `Borrowed` — below ⊤ `Owned` — through the fixpoint, which is precisely the
+elide-an-inc consequence class R1/R18 exist for. So the grade today is
+**"reviewed and correct on one axis"**, which §Assurance says is not a grade.
+
+**The disposition, and the reason it is a refusal rather than a better default.**
+The concreteness programme (`non-concrete-producer-obligations.md`) removes the
+population that reaches this arm: after P-1 consumption every codegen-bound frame
+has a concrete scheme, so `from_type` succeeds on every parameter of every frame
+the ownership pass runs over. The arm therefore has two admissible end states, and
+a defaulted placeholder is neither:
+
+> **O-1.** The seed reads through the **types-owned refusing projection** rather
+> than a local `unwrap_or`. A parameter whose type is not concrete makes the
+> **frame** ineligible for per-parameter seeding, and the frame seeds at ⊤ —
+> `Owned`, uniformly — which is the monotone-sound direction and needs no
+> per-axis argument. The two model sites `arch` named on register row R18 are the
+> required spelling: `program/support.rs:321`'s explicit `NotConcrete` match, and
+> `cranelisp-types/src/heap.rs:310-334`'s `ctor_field_concrete_types`, whose
+> `Option` collect makes one residual field refuse the whole constructor.
+>
+> **O-2.** The refusal remains observable by exact frame identity in
+> `ownership/fixpoint.rs::residual_param_frames`; the existing ownership trace
+> emits that set when enabled (`ownership/trace.rs::emit`). This observation
+> explains which frames took the conservative seed. It is not the codegen-view
+> refusal aggregate in `program/support.rs`, and it is not a zero-count gate:
+> a non-zero set remains safe because every listed frame already seeds at ⊤.
+
+The safety property comes from O-1's conservative branch. O-2 preserves the
+population needed to inspect or falsify that branch without making a separate
+counter part of correctness.
+
+`qa`'s S119 plan cell **NC-3(b)** is the fail-on-revert unit row for this site and
+stays as planned; O-1 changes what it pins from "the placeholder is `String`" to
+"a residual parameter refuses per-parameter seeding and the frame seeds ⊤".
+
+### 18.3 Site 2 — `transfer.rs:830`, the successor to FIXME 0762
+
+**0762's central claim is falsified at source and the filing retires on it.** The
+filing cites *"the `ProjectionOf` arm's `&args[k]`"* — a raw index over an
+externally-derived, persisted `ModeSummary` index, one boundary past its
+validation. There is no `&args[k]` anywhere in `transfer.rs` at HEAD. The §17.2
+row-6 correction deleted that syntactic reach: the arm now iterates the container
+`Origin`'s carried cow-alloc spans instead, and the only index read left is
+`arg_origins.get(k)` at `:830` — checked, exactly as the filing asked for.
+
+**The obligation the filing actually carried survives the falsification, and this
+is the part that must not be lost with the file.** Principle 25's statement in
+0762 — *validation at one boundary is not a licence for an unchecked read at the
+consumer* — is discharged for the index. It is **not** discharged for the value
+substituted on a miss:
+
+> `arg_origins.get(k).cloned().unwrap_or(Origin::Fresh)` silently answers
+> `Origin::Fresh` when `k` is out of range. `Fresh` means *"not aliased to any
+> param"*, which a borrow-elision consumer trusts to drop a needed RC op — it is
+> the **anti-conservative** point of this lattice, not the conservative one, and
+> `join_origin`'s own rustdoc (`transfer.rs:357-365`) says so: *"`Fresh` is
+> reserved for provably-no-param-reaches-result."*
+
+The filing predicted the miss would be monotone-sound because "declining the
+projection-provenance refinement widens toward the conservative point". At the
+`get(k)` site that prediction does not hold: declining here narrows.
+
+> **O-3.** The out-of-range answer is the lattice's ⊤ (`Origin::Conditional` over
+> the reaching parameter set, i.e. may-alias), not `Fresh` — or, if the arm is
+> believed unreachable, it is a **located refusal**, never a default. Which of the
+> two is chosen is `dev`'s, on the evidence of whether any corpus program reaches
+> it; the prohibition is on a silent anti-conservative default.
+>
+> This is the same rule §3.7 applied to `transfer.rs:590`'s `Fresh` default, and
+> the precedent is instructive rather than permissive: that default was ruled
+> **co-sound under the consuming convention** and kept only because the premise
+> was then made explicit in rustdoc. There is no such premise here, and no rustdoc
+> stating one.
+
+**Relationship to `ResultMode`'s validation.** The R6 cache-load census validates
+`MayAliasOf`, `ProjectionOf` and `AliasOf` indices exhaustively via
+`result_mode_param_index` (S115 W3b, backend side), so the cache path cannot
+deliver an out-of-range `k`. That makes the arm unreachable *today*, by an
+argument about a different crate's boundary — which is the shape 0762 filed
+against in the first place. O-3 is what makes the consumer's own answer safe
+regardless.
+
+**S121 status of O-3.** The default is already gone from source: the arm reads
+`arg_origins.get(k).cloned().unwrap_or_else(|| self.unknown_param_origin())`, and the
+same helper backs the `AliasOf`/`ProjectionOf` arms. What O-3 asked for and did not yet
+have is a **truthful** ⊤: `unknown_param_origin` answers with the frame's LOWEST-index
+parameter, which is the same representative fiction §13.6(c) retires. §19.3 makes it
+answer with the frame's whole parameter set, so an out-of-range index publishes
+`MayAliasAny` — the axis's real ⊤ — and a parameterless frame still proves `Fresh`.
+O-3 closes there; §18.4's byte-identity fence is unchanged, because the arm remains
+unreachable for every in-range `k`.
+
+**The sibling that O-3 does NOT close: the absent-callee result read.** `walk_apply`
+substitutes `ResultMode::Fresh` when the callee has no summary at all. That is the same
+anti-conservative direction O-3 prohibits, at a site O-3 did not name, and §19.5 enlarges
+its population. §19.7 records why it is retained, the premise it rests on and the
+observation that would refute it; it is not silently defaulted any more, and it is not
+changed in this change-set.
+
+**0776's generalisation applies and is `arch`'s.** 0762's instrumentation note
+proposes that every §4 register row whose subject is a closed sum be enforced by
+an exhaustive match somewhere, not only described. That is a register-row
+question, filed and owned by `arch`; C3 records that it applies to this family and
+decides nothing about it.
+
+### 18.4 Acceptance
+
+- **O-1/O-2:** the seed refuses on a residual parameter, and the frame **publishes
+  nothing** (§19.6 supersedes "seeds ⊤ and publishes it" — the ⊤ literal it seeded carried
+  the same present-`Fresh` claim §13.6(h) retires); `residual_param_frames` contains that
+  exact frame, while an all-concrete frame is absent. The ownership trace reports the same
+  keyed set when enabled.
+- **O-3:** a unit row over a seeded `arg_origins` shorter than `k` asserts the
+  result is ⊤ (or that the call is refused), and **not** `Fresh`. This is a
+  seam-level property cell in the `join_lattice_*` style — no program shape.
+- **Byte-identity fence:** neither grade may change the emitted accounting for any
+  frame whose parameters are all concrete and whose `k` is in range, which is every
+  frame in the current corpus. A golden-CLIF or `CRANELISP_RC_STATS` movement is a
+  finding, not a re-baseline.
+- Both changes are **walk-internal** — `Origin` is not the persisted `ResultMode`,
+  and the seed is not a carrier — so §17.6's contingency does **not** fire: no
+  `cranelisp-types` edit, no `CACHE_SCHEMA_VERSION` participation, no public-API
+  movement.
+
+
+---
+
+## §19. The S121 ownership-result correction — a truthful result axis, and refusal publishes nothing
+
+**Status:** DESIGN, S121 Phase 5, `design`(typecheck). Approved by the user on
+2026-09-07 in the direction proposed by `arch`: safe absence fallback, the
+`ResultMode::MayAliasAny` addition (+1 variant, +1 `cranelisp-types/public-api.txt`
+line), `CACHE_SCHEMA_VERSION` 26→27, platform ABI unchanged. The generated baseline
+diff remains a separate post-implementation user gate. Nothing here is a language-spec
+change, a new language constraint, or an additional facade change; anything that would
+be returns to the user (§19.10).
+
+**Governing:** `design/arch/ownership-inference.md` §3.7 (the conditional/unconditional
+split and its naming reservation), §6.1 (the conservative point is total), §6.2 (the
+differential oracle). This section amends §3.2, §13.5, §13.6(c), §13.6(h), §14.2, §14.4
+and §18.3 of this document, each corrected in place.
+
+### 19.1 What is wrong — two failures of one carrier
+
+The `ResultMode` axis carries the claim a consumer acts on most sharply: the backend's
+callee-side return protect is elided exactly when a summary is present and says `Fresh`
+(`crates/cranelisp-backend/src/compiler/fn_compiler.rs::return_is_fresh_by_summary`). The
+axis had four points and no ⊤, so the analysis had nowhere truthful to put "the result
+reaches some parameter, which one undetermined". It put that value in two untruthful
+places instead, and both were measured this sprint:
+
+| | Measured | Where |
+|---|---|---|
+| **F-1 — the transfer does not converge** | `(defn f [i b] (if (eq-i64 i 0) b (f b i)))` publishes `MayAliasOf(1)` and `MayAliasOf(0)` on alternating visits, exhausting the cap at the production bound (44) and at 10,000; the recovery then published the ⊤ literal for **every** callable in the module (41/41 on the f4 fixture), so a builder that returns its accumulator lost its return retain | producer seam, `dev`(typecheck) unit run `a19d1ccd`; module census in `sprints/SPRINT.md` §Active checkpoint |
+| **F-2 — the published claim is false even when it converges** | `pick2 [c a b] = (if c a b)` publishes `MayAliasOf(1)`; its caller `q [c p] = (pick2 c "lit" p)` publishes **`result=Fresh`** although `q` returns its own parameter `p` whenever `c` is false | `CRANELISP_OWNERSHIP_TRACE` on a three-line program, 2026-09-07, current binary |
+
+F-1 is the lowest-index representative composed with itself: `walk_apply` reads
+`MayAliasOf(r)` as "argument `r`", the self-call permutes, and the join's representative
+flips — the involution `r ↦ 1 − r`, which has no fixed point. F-2 is the same discard
+seen from the caller: the representative kept one reaching parameter and the caller
+happened to pass a fresh value there. **They are one defect** — a join that is not a
+join, on an axis that is not a lattice — and F-2 is why fixing convergence alone would
+not be enough.
+
+**F-2's exploitability is not established.** Two probe programs built to turn `q`'s false
+`Fresh` into an observable use-after-free returned correct results, because the backend's
+return-protect path has further gates (`body_has_independent_result`, cleanup-target
+presence). What is established is that the carrier publishes a false claim to a consumer
+whose whole job is to trust it. That is the defect this section fixes; whether it is
+today reachable end-to-end is `qa`'s to attribute (§19.10).
+
+### 19.2 The result axis becomes a join-semilattice with a real ⊤
+
+`ResultMode` gains one variant, `MayAliasAny`, carrying no index: *the result either is a
+fresh value or reaches into some parameter, which one undetermined.* The exact carrier
+delta, the affected producers and consumers, the `public-api.txt` effect and the schema
+consequence are `arch`'s and are recorded in the user-approved proposal; this section
+designs the interior that produces and composes it.
+
+The axis's order, stated as the joins the interior must realise (`i ≠ j`):
+
+| join | result | reading |
+|---|---|---|
+| `Fresh ⊔ Fresh` | `Fresh` | no path carries a parameter |
+| `AliasOf(i) ⊔ AliasOf(i)`, `ProjectionOf(i) ⊔ ProjectionOf(i)` | unchanged | every path is the same unconditional claim |
+| `AliasOf(i) ⊔ ProjectionOf(i)` | `MayAliasOf(i)` | one index, kinds disagree |
+| `Fresh ⊔ AliasOf(i)`, `Fresh ⊔ ProjectionOf(i)`, `Fresh ⊔ MayAliasOf(i)` | `MayAliasOf(i)` | one index, conditional |
+| anything reaching `i` `⊔` anything reaching `j` | **`MayAliasAny`** | two indices ⇒ the ⊤ |
+
+So the atoms are `Fresh` and the per-index unconditional claims; `MayAliasOf(i)` sits above
+`Fresh` and above both unconditional claims for that index; `MayAliasAny` is above
+everything.
+
+Three properties this pins, none of which held before:
+
+- **`Fresh` is an atom, not the ⊥ of the axis.** `Fresh ⊔ AliasOf(i) = MayAliasOf(i)`:
+  "no parameter reaches the result" and "the result IS parameter *i*" are contradictory
+  claims whose join is weaker than either. The optimistic seed is `Fresh` because that is
+  the right *guess*, not because it is the lattice bottom — §19.8 is the consequence.
+- **`MayAliasAny` is a weakening, never a strengthening.** A join of two distinct
+  UNCONDITIONAL roots ("definitely a parameter, unknown which") also publishes
+  `MayAliasAny`, which is a strictly weaker claim than the truth. That is deliberate: the
+  axis names conditionality and index, and there is no point that names "definitely a
+  parameter, index unknown". No later refinement may tighten this arm without adding that
+  point.
+- **The conservative value of the result dimension is now nameable.** The spine's §6.1
+  list of per-dimension conservative values omits the result axis, because before this
+  variant it had none. That is `arch`'s document; §19.10 files the row.
+
+### 19.3 The reach SET replaces the representative
+
+The walk-internal `Origin` (`transfer.rs`) is where the untruth was minted, and it is
+where the fix belongs: the conditional origin carries **the set of parameter-rooted
+bindings the value may reach**, not one representative of them. Concretely:
+
+- `Origin::Conditional` carries a non-empty, deduplicated collection of reaching roots in
+  place of its single `rep`. Everything else about the variant is unchanged, including its
+  `projection` flag and its `cow` may-alias link set (§17.2) — the link set must survive
+  the collapse, or the MS-P7 projection-out consumer loses the protect obligations it
+  discharges.
+- **The join is set union**, and nothing else: `Fresh ⊔ Fresh = Fresh`; unconditional ⊔
+  unconditional over the same root and kind stays unconditional (the definite `AliasOf` /
+  `ProjectionOf` regression pins in `transfer/tests.rs` must stay green); every other
+  combination is conditional over the union of the two reach sets, with `projection` true
+  only when every reaching path is a projection and `cow` unioned as today. Union is
+  commutative, associative and idempotent by construction, so the P24 order-symmetry
+  property the `join_lattice_*` cells assert is structural rather than tested-into-place.
+- **Publication derives from the set, at the boundary only.** `origin_to_result_mode`
+  resolves the reach set to distinct parameter indices: none ⇒ `Fresh` (an owned local
+  returned by value); exactly one ⇒ `MayAliasOf(i)` (or the unconditional `AliasOf(i)` /
+  `ProjectionOf(i)` when the origin is unconditional); two or more ⇒ `MayAliasAny`.
+- **The set is walk-internal and per-visit.** The fixpoint compares `ModeSummary`, not
+  `Origin`, so carrying a set costs the iteration nothing: the published value collapses
+  at "two or more" and cannot grow further, which is why the oscillator settles on the
+  visit after its first disagreement regardless of the permutation's cycle length. The
+  cost that is not nothing is allocation: `param_roots` builds a `Vec` and a `HashSet`
+  per call on the hottest walk path (once per `walk_var`, once per root inside `reach`,
+  and `reach` twice per `join_origin`), where the retired `param_root` allocated nothing.
+  Unmeasured, and no gate would observe a compile-time regression; the
+  resolve-at-construction repair of §19.10 removes it.
+- **`unknown_param_origin` answers with the frame's whole parameter set** (§18.3 O-3), so
+  an out-of-range persisted index publishes ⊤ rather than a fictitious lowest-index
+  may-alias, and a parameterless frame still proves `Fresh`.
+
+Every consumer that followed the old `rep` follows every member of the set instead —
+notably the parameter-widening chase (`param_roots` from `walk_var` and
+`classify_capture_escape`), which is ABI-bearing. Both chases are measured against a
+planted single-root retirement, on shapes with no §13.6(g) drain to mask them:
+`transfer/tests.rs::{match_bound_conditional_widens_every_reaching_param,
+escaping_capture_widens_every_reaching_param}`.
+
+**The narrowing is NOT closed by construction, and it is not confined to the result axis.**
+`Origin`'s roots are SYMBOLS resolved late against the flat `bindings` map, so a binder
+reusing a parameter's name makes the chain self-referential and `param_roots` terminates
+by dropping that root. Measured 2026-09-07 on `(defn f [a b] (let [a (if a b)] (if a
+(fresh))))`: the published result is `MayAliasOf(0)` where the truth is ⊤ — one reaching
+parameter named, the other dropped, so a caller passing a fresh value at the named
+position composes it back to `Fresh`. The probe is
+`transfer/tests.rs::self_shadowed_reach_set_result_is_top` (**known-red, unignored**),
+against the sibling control `renamed_binder_reach_set_result_is_top` — byte-identical
+body with the binder renamed, green at ⊤, so name reuse is the only variable. This is
+the open §13.6(i) / S102 F4 class and not a regression: pre-S121 the same shape published
+outright `Fresh`. In **this** `let` shape the ABI half does not narrow — the §13.6(g)
+escaped-binding drain re-walks the RHS in its defining scope, where both names still
+resolve to their parameters (`self_shadowed_widening_is_covered_by_the_drain`, green, and
+the falsifier for that masking); `qa` re-derived the same answer on 2026-09-07, this
+shape's `modes`/`flow` equalling its rename control's.
+
+**That measurement is shape-specific, and this section over-generalised it.** The sentence
+carried here until 2026-09-07 — that the loss "reaches publication on the RESULT axis
+only", the ABI half being covered by the drain — is true of the drain-carrying shape it was
+measured on and false as a claim about the class. A shape with no drain narrows the ABI
+half as well: §20.1 rows C, C′ and C″ measure `modes`, `flow` and an argument's `escapes@`
+site fact all moving under a shadow, one of them to a runtime abort. §20.1 is the corrected
+record for the class; the drain measurement above stands for its own shape. The repair and
+its authorization are §19.10 and §20.
+
+### 19.4 One conditional-result arm at the call site
+
+`walk_apply` composes a callee's result into the caller's origin. The two conditional
+result points are one rule with two inputs:
+
+> The callee's result may reach a **set of argument positions** — `{k}` for
+> `MayAliasOf(k)`, *all* positions for `MayAliasAny`. Join `Fresh` with those arguments'
+> origins, and when the outcome is conditional, union this `Apply`'s span into its
+> may-alias link set (§17.2 row 8, unchanged).
+
+The unconditional arms are unchanged: `AliasOf(k)` carries argument `k`'s origin verbatim,
+`ProjectionOf(k)` roots at argument `k`'s origin per §17.2 row 6, `Fresh` yields `Fresh`.
+The exhaustive match forces the new arm to be written; no wildcard arm may be added
+(`crates/cranelisp-types/src/ownership.rs` module docs, §Exhaustiveness discipline).
+
+Under this composition F-2 resolves: `pick2` publishes `MayAliasAny`, so `q` joins `Fresh`
+with all three arguments, reaches `p`, and publishes `MayAliasOf(1)` — the truth. F-1
+resolves because the self-call's contribution and the base case disagree on index exactly
+once, after which both sit at ⊤ and the summary stops changing.
+
+**No index filter is applied to the reach set.** A `Copy` parameter cannot in fact be
+aliased, so excluding `Copy` positions would be sound and slightly more precise; it is not
+done, because `MayAliasOf(i)` over a `Copy` parameter is already publishable today and the
+filter would be a second rule for no established gain. Trigger for adding it: a measured
+precision loss attributable to `Copy` positions entering a reach set.
+
+### 19.5 Refusal publishes nothing, and there is one refusal
+
+**Rule.** A cluster whose analysis does not converge publishes **no summary, no site fact
+and no value-use mark** for any of its members. Absence is the single spelling of the
+conservative point.
+
+**The publication map is separate from the seed.** The optimistic seed must keep existing
+— it is the working environment the walk reads — so the obligation is that **only a
+transfer walk's output is publishable**. `compute_cluster` holds two maps: `working`, the
+seed the `ClusterEnv` reads through the modes loop, and `walked`, whose one write site is
+a completed `transfer` walk's output. On normal exit `working` is dropped and `walked`
+becomes the map the confinement and uniqueness strata refine and `ClusterOwnership`
+publishes. A walkable member that is queued and never walked is therefore **absent** from
+the published map rather than carrying its seed — and the seed is the sharper literal (a
+*present* `Fresh` with `Borrowed` params; the deleted `top` was at least ⊤ on the other
+four axes). Re-entry is unchanged, because `changed` still compares against the seeded
+value; the cost is one `ModeSummary` clone per visit.
+
+**Grade: asserted, with a named falsifier — narrowed by one structural fact, not
+unconstructable.** The structural fact is that the published container has a single write
+site fed by a walk output, where it previously had two (seed, then walk). It is not more
+than that, and the limit is measured rather than argued: planting the swap
+(`summaries = working`) reddens **no** cell in the ownership tier, because the two maps are
+content-identical whenever every walkable member is walked, and that condition is not
+constructible through `compute_cluster`. **Named falsifier:** a walkable member queued and
+never walked — `fixpoint.rs`'s `let Some(c) = by_key.get(&key) else { continue }` sits
+ahead of the walk and today cannot fire only because `by_key` and `queue` are built from
+the same list. A member the walk never produced (the refused cluster; the residual frame of
+§19.6) has nothing to publish.
+
+**Why absence rather than a now-truthful ⊤ literal.** With `MayAliasAny` in hand a ⊤
+`ModeSummary` becomes expressible for the first time, and publishing it would be safe. It
+is still the wrong choice. The literal that just failed was ⊤ on four axes and the
+strongest claim on the fifth, and nothing detected that for the whole life of the code;
+re-minting a "this time correct" literal restores exactly the construction that decayed
+(root `CLAUDE.md` §Assurance, R11 and I-CT). Deleting the constructor removes the last
+literal that could reach a consumer: after this change the only construction feeding the
+published map is the converged walk's output, graded above. Absence also lands the refused
+cluster on the `CRANELISP_NO_OWNERSHIP` shape, whose end-to-end safety the differential
+oracle already measures, instead of on a shape that needs its own argument.
+
+**One refusal, all three strata.** The modes worklist, the confinement worklist and the
+uniqueness stratum each carried their own cap-exhaustion recovery. They collapse into one:
+any stratum exhausting the shared cap refuses the whole cluster. This is a net deletion
+(three recovery blocks and their literals become one early return), it removes the
+confinement recovery's asymmetry — it forced `spark_ops` to ⊤ while leaving each site's
+already-written `confined` fact at whatever partial value the interrupted pass had reached
+— and it needs no argument about which partial facts are salvageable. The precision cost
+is a cluster that converges on modes but exhausts on confinement losing everything; that
+has never been observed, and after §19.3 the known non-convergent class no longer reaches
+the cap at all.
+
+**The refusal is observable, and the observation is armed.** `ClusterOwnership` carries
+the refusal (the exhausted stratum, the visits consumed, the cap, the universe size);
+`ownership/trace.rs` renders one line for it beside the existing
+`residual-parameter-refusals` line, under the same `CRANELISP_OWNERSHIP_TRACE` gate. That
+is the whole instrument — no counter in `[RC_STATS]` (wrong crate, and the question is a
+compile-time one), no new environment variable. The residual it observes is silent
+precision collapse, not a correctness risk, so it earns a trace line and nothing more.
+Detection is proved in the same change-set by both legs at the seam: the `cap = 0` seam
+yields a refusal and an empty summary map, and a converging cluster yields no refusal and
+a full one. Neither leg needs stderr capture, because the refusal is a value.
+
+**The confinement arm is unexercised, and the shared cap is not why.** `cap = 0` refuses at
+`Stratum::Modes` and a tuned cap reaches `Stratum::Uniqueness`; no cell executes the
+`Stratum::Confinement` arm. The strata share the cap VALUE but keep separate counters
+(`visits` / `cvisits`), so confinement can exhaust independently of what modes consumed —
+the arm is **asserted, not measured**, and any argument resting on a shared budget is
+wrong. Its falsifier is a spark-propagating chain plus a tuned cap, the construction that
+already produced the uniqueness leg.
+
+### 19.6 Residual-parameter frames publish nothing too
+
+A frame whose scheme still carries a residual parameter type refuses per-parameter seeding
+(§18.2 O-1) and is never walked. It published the same ⊤ literal, including the same
+present-`Fresh` claim, and therefore had its own return protect elided — the §13.6(h)
+hazard on a frame the fixpoint never touches. It now publishes nothing, by the same rule
+and the same constructor deletion; `residual_param_frames` keeps the exact keyed set for
+the trace, so O-2's observation is unchanged. This is behaviour-identical at the frame's
+**callers** (absence and a present all-`Owned` summary read the same through the
+conservative accessors) and strictly safer at the frame itself.
+
+**The member fence — how absence is realised inside the pass.** A cluster member with no
+walk output must read as ABSENT at the pass's own callee-fact environments, not fall
+through to the summary a PREVIOUS compile persisted on its symbol-table entry: the
+chain-follow that serves imports and declared leaves would otherwise deliver a stale fact
+for exactly the frames this section refuses, and `collect_universe` does not filter on
+`code: None`. `compute_cluster` therefore carries the universe's key set, and every
+private-env read consults it before the chain-follow — `ClusterEnv::summary_of`,
+`UniqClusterEnv::summary_of` and `UniqClusterEnv::result_unique_of`. Its live path is REPL
+redefinition and incremental compilation, which the `CACHE_SCHEMA_VERSION` bump does not
+fence within a session.
+
+Measured by `fixpoint/tests.rs::a_cluster_members_persisted_summary_is_never_read`, which
+installs a prior compile's summary on the residual member's entry and asserts all three
+reads refuse it, with the negative twin `a_non_members_persisted_summary_is_read` putting
+the same summary on a non-member and asserting all three DO read it — so the fence is keyed
+on membership and nothing else. Each fence was deleted in turn and reddened its own leg
+while the twin stayed green; the `UniqClusterEnv::summary_of` leg needed a caller whose
+returned binding's uniqueness depends on whether the call consumes it, because no
+pre-existing cell discriminated it.
+
+### 19.7 What deliberately does not change
+
+- **The absent-callee result read stays `Fresh`.** `walk_apply` substitutes `Fresh` when a
+  summarised callee has no summary at all, and §19.5 enlarges that population to include
+  every member of a refused cluster. The claim is retained on a stated premise, not by
+  default: **a callee compiled with no summary is lowered Decision-24, which materialises
+  an independently owned result**, so the caller's value is not a borrowed view of the
+  caller's own parameters and `Fresh` is co-sound. For the population §19.5 adds, that
+  premise is the `CRANELISP_NO_OWNERSHIP` lowering itself, which the differential oracle
+  measures. For the pre-existing population — host-promised externs, and callables outside
+  the strict-concrete universe such as generated accessors — the premise is asserted, and
+  it is load-bearing: measured 2026-09-07, `(defn get-inner [b] (inner b))` over a product
+  accessor publishes `result=Fresh`, resting entirely on the accessor materialising.
+  **Falsifier:** any callable reachable at an absent summary that returns a parameter's
+  reference without materialising it. Filed to `qa` (§19.10); not changed here, because
+  the alternative — reading absence as ⊤ on the result axis — puts typecheck at odds with
+  `ModeSummary::is_abi_conservative`'s published `None ≡ all-Owned/Fresh` equivalence,
+  which is a `cranelisp-types` semantic change and therefore the user's.
+- **`ModeSummary::abi_eq` / `is_abi_conservative` are untouched**, and so is the R3
+  redefinition gate that reads them. Because nothing publishes a ⊤ literal any more, no
+  new `None`-versus-⊤ comparison arises.
+- **The uniqueness stratum is untouched.** It admits only `Fresh` results, and
+  `MayAliasAny` is not `Fresh`, so the new point is excluded exactly as `MayAliasOf` is.
+- **The S121 self-reentry correction stays.** Re-enqueueing a callable on its own summary
+  change is what lets a self-recursive body reach its fixpoint at all; restoring the
+  `other != &key` guard would hide non-convergence by never re-visiting, which is why QA
+  ruled it out as a fix. With §19.3 the self-edge now terminates.
+- **Replace-on-update stays in the worklist.** Joining each visit's output into the stored
+  summary would force an ascending chain, but at the first visit it would turn every
+  exact `AliasOf(i)` into `MayAliasOf(i)` — a precision loss across the whole corpus, in
+  exchange for a termination guarantee the cap already provides safely (§19.8).
+- **No SCC narrowing of the refusal.** Refusing only the non-converged strongly-connected
+  component and its dependants would need an SCC pass over the harvested `DepSet` to buy
+  precision on a path that should now be unreachable. §13.6(h)'s argument for
+  universe-wide scope stands.
+
+### 19.8 Termination, stated honestly
+
+After §19.3 the result axis is a finite join-semilattice with a ⊤, and every transfer rule
+is monotone in the callee summaries it reads. That is **not** a termination proof, and this
+document no longer claims one (§3.2). The iteration is optimistic-init: the seed `Fresh` is
+a claim, not the axis's ⊥, so the first computed value for a callable can be incomparable
+to its seed and the Kleene induction does not start. What is available:
+
+- **Measured, for the known class — as a falsifier, not as a prediction.** The two
+  `dev`(typecheck) cells committed this sprint fail today on the permuting self-call, at
+  the production cap and at 10,000 visits. That this design converges that shape in three
+  visits is derived by hand, not run; those cells are the standing falsifier and the design
+  is wrong if they do not flip.
+- **Grade: structural, for the consequence.** Reaching the cap can no longer publish an
+  untrue claim (§19.5), so non-termination costs precision and nothing else.
+- **Named residual:** a body shape whose result oscillates under the set-union join is not
+  proven impossible. Its refuter is the refusal trace line (§19.5) firing on a corpus
+  compile. If one is found, the next step is the ascent discipline this section declined
+  (join-on-update after the first visit), not another literal.
+
+### 19.9 Change-sets, order, evidence
+
+**One wave, three reservations, in the order the primary set: types → typecheck → backend
+cache.** The tree does **not** compile between them, by design: `ResultMode` carries no
+`#[non_exhaustive]`, so adding the variant is what forces both consumer matches to be
+revisited (`crates/cranelisp-types/src/ownership.rs` module docs, §Exhaustiveness
+discipline). A green build is owed at the end of the wave, not at each step, and the
+`dev` release gate (`sprints/METHOD.md` §2.3) applies to the wave.
+
+| # | Reservation | Content | Owner |
+|---|---|---|---|
+| 1 | `crates/cranelisp-types` | the `MayAliasAny` variant + its rustdoc; regenerate `public-api.txt` (forecast: exactly one added line, the post-implementation user gate) | `arch` |
+| 2 | `crates/cranelisp-typecheck/src/ownership` | §19.3 reach set + union join; §19.4 conditional-result arm; §19.3 `unknown_param_origin`; §19.5 refusal (delete `top`, `reset_to_top`, `conservative_site_facts` and the three per-stratum recoveries) + the refusal value and its trace line; §19.6 residual frames | `dev`(typecheck) |
+| 3 | `crates/cranelisp-backend/src/cache` | the forced `result_mode_param_index` arm (`MayAliasAny` carries no index ⇒ no arity check) and its R6 negative cell; `CACHE_SCHEMA_VERSION` 26→27 with its version-log entry — a soundness invalidation, because a sidecar written by the current tree may carry a present-`Fresh` ⊤ for a permuting body | `dev`(backend) |
+
+No other crate moves: `cranelisp-primitives` only constructs `ResultMode` (no leaf declares
+the new point), `src/redefine.rs`'s `{:?}` is a display, and the platform ABI, DLL manifest
+and `ABI_VERSION` have no `ModeSummary` contact at all. The variant-adding change-set
+re-runs the standing escape grep (`_ =>` / `== Fresh` over `ResultMode`) to confirm no third
+binary read has appeared.
+
+Module-test obligations for reservation 2, red-first, per submodule
+(`sprints/METHOD.md` §2.2):
+
+- `ownership/transfer` — the join as a lattice: union, commutativity, idempotence and the
+  `MayAliasAny` collapse at two distinct reaching parameters, in the existing
+  `join_lattice_*` style; the F-2 shape at the seam (a callee publishing `MayAliasAny`
+  composed by a caller passing one fresh and one parameter argument must publish
+  not-`Fresh`); the O-3 out-of-range row asserting ⊤; the existing definite-case regression
+  pins unchanged.
+- `ownership/transfer` re-expectations: `multi_distinct_param_return_is_not_fresh` now
+  expects `MayAliasAny` rather than "the lowest reaching index"; its `assert_ne!(…, Fresh)`
+  leg is the part that must not move.
+- `ownership/fixpoint` — the two S121 convergence cells flip green with the annotated
+  non-permuting control still green; a three-parameter rotation `(f b c i)` and QA's
+  `find-min-helper` over `(Vec Int)` are added as convergence cells, because the general
+  trigger set is not established (`unit-report.md` §8); `cap_exhaustion_publishes_conservative_top`
+  and `cap_exhaustion_forces_conservative_site_facts` re-expect "publishes nothing";
+  `cap_exhaustion_resets_uniqueness_to_false_and_no_sites` folds into the single refusal;
+  the refusal's two detection legs (§19.5).
+- `ownership/publish` — a refused cluster writes nothing through the publication funnel.
+
+**Evidence that is not this crate's:** the three committed e2e witnesses in
+`tests/s99_fixtures.rs` and the four pre-existing f4 REDs. That they flip is `qa`'s
+single-mechanism reading, and it is a prediction until the run exists — the design does not
+assume it.
+
+**Golden posture.** The wave is emission-affecting: bodies that today publish a
+representative `MayAliasOf` publish `MayAliasAny` (identical codegen, binary consumer), but
+callers whose composition today collapses to `Fresh` through a discarded reaching parameter
+will publish not-`Fresh` and keep a return protect they currently elide. That movement is
+the F-2 correction and is expected; every moved golden is attributed to this seam before any
+recapture, under the standing hold in `tests/plan/s121-test-plan.md` §14.2 and the spine's
+scoped-re-baseline rule.
+
+### 19.10 Residuals, filings and triggered extensions
+
+- **To `arch`:** the spine's §6.1 per-dimension conservative-value list omits the result
+  axis; `MayAliasAny` supplies the missing value and the row should say so. Also `arch`'s
+  own §4.4 observation — whether `result` belongs in the caller-visible ABI half at all, and
+  hence in `abi_eq` — remains open and is not touched here.
+- **To `qa`:** the §19.7 falsifier. Is any callable reachable at an absent summary
+  non-materialising? The two populations to attribute are host-promised externs and
+  callables outside the strict-concrete universe (generated accessors are the measured
+  instance). Related, and separate: whether F-2's false `Fresh` is reachable end-to-end —
+  two probes said no, and `design`'s remit stops at the carrier's truthfulness. Also the
+  §19.3 residual, which attributes to the open §13.6(i) / S102 F4 class: this wave does not
+  close that class, and the conditional e2e trigger — a macro-generated `(let [a a] …)`
+  shape (stdlib `case`/`cond`) reaching an ABI-bearing parameter — is `qa`'s to allocate,
+  not this section's to assume.
+- **Potential extension, with its trigger:** filter `Copy` parameters out of the reach set
+  (§19.4). Trigger — a measured precision loss attributable to `Copy` positions.
+- **Potential extension, with its trigger:** join-on-update after a callable's first visit
+  (§19.8). Trigger — the refusal trace line firing on a corpus compile after the wave lands.
+- **Open residual, direction since approved — the self-shadowed reach set (§19.3).** The
+  published result names one reaching parameter and drops the other when a binder reuses a
+  parameter's name; the probe
+  `transfer/tests.rs::self_shadowed_reach_set_result_is_top` is committed known-red and is
+  the record. The repair is to resolve `Origin` roots to parameter INDICES at construction
+  instead of carrying symbols resolved later against a flat `bindings` map: it makes
+  §19.3's closure genuinely structural, and it dissolves the `param_roots` allocation
+  (§19.3) at the same time. It was not authorized in the §19 wave and is not designed here.
+  **→ §20 carries the design and, since 2026-09-07, the as-built record. The user approved
+  its direction together with the `CACHE_SCHEMA_VERSION` 27 → 28 that landing it requires, and
+  both landed the same day; what is outstanding is the wave's acceptance, not its
+  construction.**
+  §20.1 also records the measured evidence that this residual is NOT confined to the result
+  axis, correcting §19.3 above.
+
+---
+
+## §20. Parameter reach resolved at `Origin` construction (the shadowing correction wave)
+
+**Status: APPROVED AND AS BUILT (2026-09-07) — NOT YET ACCEPTED OR RELEASED.**
+`design`(typecheck); reconciled to source 2026-09-07. The user approved the
+stable-parameter-origin direction below and the `CACHE_SCHEMA_VERSION` 27 → 28 epoch §20.5
+shows it requires, both on 2026-09-07; both landed the same day, as two reservations of one
+wave — `crates/cranelisp-typecheck/src/ownership/transfer.rs` with its module tests (in two
+change-sets, the second closing the `bind_pattern` arm), and `crates/cranelisp-backend`'s
+cache surface for the epoch. The sections below are written **as built and verified against
+source**, and say so wherever an as-built rule is narrower or more precise than the approved
+wording. What is *not* done is the wave's acceptance: independent review, the full-workspace
+census, the CLIF-golden recapture hold and the generated `public-api.txt` diff returning to
+the user. §19 is the approved, landed design and is unchanged here except where §19.3 and
+§19.10 are corrected in place against §20.1's measurements. This closes §19.10's last bullet.
+No language-spec change, no new language constraint, no facade change.
+
+### 20.1 What is measured — and where it differs from the §19.3 record
+
+§19.3 recorded the residual as **result-axis only**, with the ABI half masked by the
+§13.6(g) drain — a generalisation of one drain-carrying `let` shape (§19.3, corrected in
+place). Real-source observations on the **pre-fix** tree's binary
+(`CRANELISP_OWNERSHIP_TRACE=1`, own scratch dir, each paired with a control differing
+**only** in the binder's name) show a wider class. Every row of the table is a **pre-repair**
+measurement, retained as the record of what the defect published. `qa` independently
+reproduced every row on 2026-09-07 and added the last two; the binary and both comment-stripped source hashes were re-checked against the prior
+verified checkpoint, closing `qa`'s open mtime caveat.
+
+| Program (each under `(import [primitives …])`) | Published | Truth | Renamed-binder control |
+|---|---|---|---|
+| **A** `(defn f [flag a b] (let [a (if flag a b)] (if flag a (str-concat a "!"))))` | `result=MayAliasOf(1)` | `MayAliasAny` | `MayAliasAny` |
+| **B** `(defn g [p] (f true "lit" p))` — A's caller | `g: result=Fresh` | `MayAliasOf(0)` (conservative composition) | — |
+| **C** `(defn f [a n] (let [x a] (let [a n] x)))`, `a:String`, `n:Int` | `modes=[Borrowed, Copy] result=AliasOf(0) flow=[Consumed, Consumed]` | `modes=[Owned, Copy] result=AliasOf(0) flow=[IntoResult, Consumed]` | `modes=[Owned, Copy] … flow=[IntoResult, Consumed]` |
+| **C′** as C with the shadow's RHS a fresh literal — `(let [x a] (let [a "q"] x))` | byte-identical to C's summary | as C's | `modes=[Owned, Copy] … flow=[IntoResult, Consumed]` |
+| **C″** as C with both parameters `String` — `(defn f [a b] (let [x a] (let [a b] x)))` | `modes=[Borrowed, Owned] … flow=[Consumed, IntoResult]` | `modes=[Owned, Borrowed] … flow=[IntoResult, Consumed]` | `modes=[Owned, Borrowed] … flow=[IntoResult, Consumed]` |
+
+**C is the face that is not on the result axis.** Its summary is self-contradictory — the
+result IS parameter 0, which is simultaneously `Borrowed`/`Consumed` — and the argument
+literal's `escapes@` site fact is absent where the control has it. **Observed: C aborts at
+runtime** under `--run` (cached and `--no-cache`) and as a `--link` executable, with
+`STALE RC DEC (consume_shallow): dec of non-live heap pointer … already freed + reclaimed`,
+deterministically and with no `--run`/`--link` divergence; the renamed control exits clean,
+and `CRANELISP_NO_OWNERSHIP=1` makes C exit clean too. So the ABI half of the summary is the
+mechanism, not a bystander.
+
+**C′ shows the same defect landing silently, and that matters more than the abort.** Its
+shadow binder's RHS reaches no parameter at all, yet it publishes C's summary byte for byte
+and *exits correctly* — while running one `rc_inc` short of its control (646 vs 647) with
+one extra dealloc (57 vs 56), `CRANELISP_RC_TRACE` showing the argument string freed and its
+chunk re-allocated under the still-live result. Abort versus silence is allocator timing, so
+neither exit code nor the abort string is a sufficient oracle for this class. RC parity
+against a rename control is the oracle **for C′** — and §20.6 records, as built, that it does
+not extend to the class: C″'s subject and control are counter-identical under ownership ON,
+where only the ON/OFF differential fires.
+the modes *permute* onto whichever parameter the shadow binder's RHS happens to reach.
+
+**B is a carrier-composition row, not a demonstrated runtime alias.** A's narrowed
+`MayAliasOf(1)` composes at `g`'s call site — where argument 1 is the literal — to a
+published `result=Fresh`, discarding the may-reach on `p` that A's truthful ⊤ carries at
+argument 2. That is the F-2 discard crossing a procedure boundary on real source, and it is
+what the row is for. It is **not** an observed alias: the measured program passes the
+literal `true` for `flag`, so `g` returns the literal and never returns `p` at runtime. The
+runtime faces are C and C′; do not cite B for one.
+
+The §19.3/§19.10 record — result-axis only, ABI half masked, no demonstrated runtime failure
+— is falsified by C and C′, and both sections are corrected in place. Re-attribution is
+`qa`'s, not this section's (§20.6).
+
+### 20.2 Mechanism — one late resolution, re-derived at every read
+
+`Origin` carries binding **names**. `Walker::param_roots` re-derives *which parameters this
+value reaches* from a name, against the flat `bindings` map, **at every read** — including
+reads taken after `restore_frame` has changed what that name denotes:
+
+```
+              mint site (correct)         read site (wrong)
+  A   (if flag a b) → roots {a, b}   in (let [a …]): "a" → the binder → chain self-refs,
+                                                      drops p1            ⇒ reach {2}
+                                     after restore:  "a" → parameter 1    ⇒ MayAliasOf(1)
+  C   x = a     →  root "a"          in (let [a n]): "a" → the binder → "n"
+                                                                          ⇒ widens p1, not p0
+                                     at publication: "a" → parameter 0    ⇒ AliasOf(0)
+```
+
+The reach is right where the origin is minted; only the re-derivation is wrong — **Principle
+24** (resolve once; the corollary's "bare name past the seam" marker) in spatial form, and
+**Principle 26**'s acid test with *where in the scope stack* for *where in the pass*. The
+language is unambiguous (`spec/04-expressions.md` §Shadowing — a chain of lexical scopes), so
+no spec question is attached.
+
+### 20.3 The repair — resolve at construction, delete the re-derivation
+
+Carry the parameter reach **on** the `Origin`, resolved where the origin is minted:
+
+- `Origin::Unconditional { root: Symbol, param: usize, projection: bool }` — `param` is the
+  parameter this value IS, fixed at mint, and **total**: an unconditional origin that reaches
+  no parameter is not representable. `root` survives for the one *purpose* that needs a live
+  binding identity rather than a reach — the `facts.provenance` fact (§13.6(d)) — which has
+  **two** emission sites, not one: the row-6 projection-out fact keyed by the `Apply` span
+  and the arm fact keyed by the arm span (`transfer.rs::walk`'s `ResultMode::ProjectionOf`
+  arm and `transfer.rs::bind_pattern`; `crates/cranelisp-typecheck/src/ownership/sites.rs::annotate`
+  copies them onto `MonoExpr::Apply.provenance` and `MonoMatchArm.provenance`). `root` is
+  never resolved to an index, and what it *denotes* is fixed by the mint chain below: it is
+  always the **formal parameter's name** — the seed carries the formal's own name, every
+  other mint inherits it verbatim, and `Let`/`ParBind` insert an RHS origin without
+  re-rooting — so it is not a claim about which binding is live at the emitting span.
+  §20.5(i) states what consumers do with the emitted fact and what that does not establish.
+- `Origin::Conditional { params: <sorted index set>, projection, cow }` — §19.3's reach set as
+  indices. `cow` (§17.2) unchanged.
+- **Every mint inherits.** The parameter seed carries its own index; `walk_var` returns the
+  binding's origin verbatim; `bind_pattern`, `walk_apply`'s four result arms and the aggregate
+  rows carry the operand's set through; `join_origin` unions. **No site resolves a name to an
+  index**, so `param_roots`' name graph, its visited set and its per-call `Vec`+`HashSet` (the
+  §19.10 allocation residual) are deleted, and `BindState::param_idx` dies with them.
+  `unknown_param_origin` is `0..arity` off the frame's parameter count; it no longer scans
+  `bindings` for a `param_idx` a shadow corrupts. As built (`transfer.rs`, 2026-09-07):
+  `Walker::param_roots`, `Walker::reach`, `Reach` and `BindState` are gone, and `bindings` is
+  a plain `HashMap<Symbol, Origin>` over a `Vec<(Symbol, Option<Origin>)>` scope frame.
+- **`classify_capture_escape`'s recursion is deleted, not guarded** (see below), so that
+  function resolves no name past its own argument either.
+- `origin_to_result_mode`, the §19.2 lattice and the §19.4 call-site arm are **unchanged** in
+  meaning: they read the set instead of resolving it. As built, `origin_to_result_mode` and
+  `join_origin` use nothing from the walker once the reach is carried and are free functions
+  of their operands.
+- **One reach, three readings — preserved deliberately; the approved wording did not name
+  it.** The retired resolver did **not** follow an unconditional PROJECTION when widening at
+  an ordinary use — a bare accessor's borrowed view must not make its parameter `Owned`, the
+  §4.4 rc-free read path — while it *did* follow one for the result axis and, through the
+  recursion, for a capture. Carrying one index collapses those three readings into one and
+  silently over-widens; `match_arm_binding_is_projection_of_scrutinee` caught it (`Owned`
+  where `Borrowed` is required). The distinction is carried by
+  `Origin::params_widened_by_use()`: an ordinary use widens through an alias and through a
+  CONDITIONAL projection — which may alias on some path, so over-approximating is sound —
+  but not through an UNCONDITIONAL one; a capture and the result axis read the whole reach
+  set. No new state: the existing `projection` flag decides it. A later reader collapsing the
+  two accessors back into one re-opens this paragraph.
+- **`bind_pattern` inherits under a shadow too.** Its `shadow` flag is one flag over two axes
+  whose safe directions are **opposite**: suppressing the provenance fact is the conservative
+  direction at the one eliding consumer and stays (§20.5(i), which states what that
+  establishes and what it does not), while minting `Fresh` for the arm's bindings is the F-2
+  narrowing, since `return_is_fresh_by_summary` elides the return protect on a `Fresh`
+  result. As built, `shadow` gates the `facts.provenance` insert and nothing else, and the
+  bindings take the ordinary inherit path (whole-`Var` verbatim, else a projection of the
+  scrutinee). This arm was the one §20.3 site the first change-set left unrepaired; it was
+  measured RED — `(defn f [p] (match p [(Box p) p]))` publishing `result=Fresh` against its
+  one-identifier rename control's `ProjectionOf(0)` — and closed in a second change-set the
+  same day.
+
+**Why `param` is total, and why that retires the capture recursion.** `Origin::Unconditional`
+has exactly four mint sites, and each either *is* the parameter seed or *inherits* an
+unconditional operand: the per-parameter seed (`root` = the parameter's own name, index
+known); `join_origin`'s definite arm (it keeps one already-index-paired member of the joined
+reach set); the `ResultMode::ProjectionOf` arm (inherits the container's unconditional
+origin); and `bind_pattern` (inherits the scrutinee's). The two sites that could introduce a
+**non-parameter** root do not: a projection out of a `Fresh` container and a pattern bind of
+a `Fresh` scrutinee both yield `Fresh`, never an unconditional origin rooted at a local. By
+induction over those sites, every unconditional origin reaches exactly one parameter, so
+`param: usize` loses nothing and a local-rooted unconditional origin stops compiling.
+
+That is what removed the last name-based resolution from `classify_capture_escape`. Its
+recursion existed to reach a parameter through an unconditional **projection**, which
+`param_roots` did not follow; with the index carried, the function's own widening covers that
+case at the top and the recursion had no remaining input. Deleting it is strictly safer
+than guarding it: the recursion decides which binding reaches `self.escaped`, and under a
+shadow a wrong recursion loses the *right* binding's escape edge — `escapes = Some(false)` ⇒
+stack allocation ⇒ the FIXME-0524 dangle. That is a narrowing, not imprecision, and it is not
+a residual worth carrying when the representation can make it unconstructable.
+
+**Grade and falsifier — two claims, and they do not share a grade.** *Absence* is
+**structural**: `param: usize` makes an unconditional origin reaching no parameter fail to
+compile, so a future mint site that genuinely needs a non-parameter root re-opens this
+paragraph rather than silently narrowing, and that compile error is the falsifier. *Correct
+inheritance* is **measured**, not bought by the type — a present-but-wrong index type-checks
+exactly as well. It is carried by the subject/control cells §20.6 lists: the pre-fix reading
+of `shadowing_binder_must_not_permute_the_obligation` was `[Borrowed, Owned]` against its
+control's `[Owned, Borrowed]`, an index that was present and wrong, so those cells
+discriminate mis-inheritance and not merely absence. The mint-site enumeration that licenses
+totality remains a source reading (`transfer.rs`, 2026-09-07).
+
+Through the scope forms behaviour moves only where a name was mis-resolved: `Fresh`,
+unconditional same-index joins, the `Fresh` collapse of a no-parameter join, `restore_frame`,
+the §13.6(g) drain and the §17.2 link set with its row-6 discharge all keep today's semantics.
+A, B, C, C′ and C″ then publish their truth column above.
+
+### 20.4 Alternatives considered
+
+| Alternative | Why not |
+|---|---|
+| Lexical binding **identities** (a scope stack keyed by binder identity, not name) | Correct and more general, but `facts.provenance` crosses the boundary as a bare `Symbol`, and changing that carrier is an `arch`/backend seam, out of this wave. §20.3's total parameter index closes the escape axis without it; what would still want it is the symbol-carrying provenance fact, whose actual consumer position §20.5(i) records |
+| **Seal** origins at scope exit (substitute restored binders) | Incomplete: C is already wrong *inside* the scope, and it keeps the redundant re-derivation |
+| **Alpha-rename** shadowing binders | The walk does not own the AST, and the backend needs source symbols |
+| **Refuse** (publish nothing, §19.5) for any body shadowing a parameter name | Sound and small, but stdlib `case`/`cond` expand to `(let [a a] …)`, so it de-optimises broadly and silently. Offered as **containment** if the wave cannot be scheduled |
+
+### 20.5 Impact
+
+**No boundary moves.** `Origin` and the walker state it lives in are private to
+`transfer.rs` — `Reach` and `BindState` are deleted outright (§20.3) — so there is no
+`cranelisp-types` edit, no `public-api.txt` line and no platform ABI change. Published summary
+**values** change for affected programs — more `Owned`/`IntoResult`, more `ProjectionOf`, more
+`MayAliasAny`, always toward the conservative point — which moves CLIF goldens into the
+recapture hold that already exists. As built, no golden was recaptured and none reddened in
+the bands run.
+
+**`CACHE_SCHEMA_VERSION` 27 → 28 IS required, was approved, and IS APPLIED.** The user
+approved the bump on 2026-09-07 as part of this wave's landing change-set, and it landed the
+same day at `cache/mod.rs::CACHE_SCHEMA_VERSION` with its version-log entry, the tripwire
+moved to 28, and one added module witness,
+`cache/serialize/tests.rs::cache_v27_meta_rejected_after_shadowed_param_reach_correction` —
+authored before the bump and measured RED against the live 27 (a pre-fix sidecar was
+*honoured* at HEAD), with the other 78 cache cells silent, which is also the measurement
+establishing that no existing cell observes this value-only epoch. The sentence this section
+carried before the approval — no bump, because no serde shape moves and `BUILD_ID` already
+invalidates persisted summaries on rebuild — was wrong on both halves (`arch`,
+source-verified 2026-09-07):
+
+- **`BUILD_ID` does not cover it.** It is `<pkg_version>+git rev-parse HEAD`
+  (`crates/cranelisp-backend/build.rs`), so an *uncommitted* landing build stamps the pre-fix
+  sha and a pre-fix sidecar loads into a post-fix compile. Its own rustdoc
+  (`cache/mod.rs::BUILD_ID`) states it is an **additional** trigger that does not replace the
+  manual bump, and that cross-branch reuse without a compiler rebuild is caught only by the
+  schema gate. This is the identical hole recorded as the reason for the S103 15 → 16 bump.
+- **"No serde shape moves" is the wrong test.** What changes is persisted *meaning*.
+  `ModeSummary` persists on `Life::Concrete.mode_summary` and on the `codegen_view`;
+  `callee_summary_at` reads it for **cache-restored** entries; `param_mode` drives caller
+  arg-protects and callee RC, and `return_is_fresh_by_summary` elides the return protect on
+  `result == Fresh`. The current tree is already at schema 27 **with the defective producer**
+  — §20.1's rows were measured on it — so schema-27 sidecars carrying C's false
+  `Borrowed`/`Consumed` and B's false `Fresh` are producible today, and schema 27 cannot
+  distinguish the two epochs. A warm hit on unchanged source resurrects exactly the elision C
+  measures as a `STALE RC DEC` abort, which no source hash or shape check can catch; paired
+  `.o` files bake the pre-fix RC contract on the generated-code axis too. Bumping on
+  value-only soundness invalidation is the established discipline here — 13→14, 19→20, 21→22
+  and this sprint's own 26→27 are all of that kind.
+- **Smallest adequate handling, and nothing more — AS BUILT:** the literal at
+  `cache/mod.rs::CACHE_SCHEMA_VERSION`, its version-log entry, and the bump tripwire at
+  `cache/serialize/tests.rs::result_context_instances_round_trip_complete_links`, plus the one
+  module witness above. Owner `dev`(backend), taken as a backend-cache reservation in this
+  wave. No new mechanism, no serde change, no `CacheStale` variant, no new serialized field.
+  Consumers: none — every schema-27 sidecar and paired object is rejected wholesale as
+  `CacheStale::SchemaMismatch`, with no translation path and none built; the pre-fix objects
+  bake the pre-fix RC contract, so wholesale rejection is the correct handling.
+  `public-api.txt`: **zero delta** (the baseline records both consts without their values).
+  `--link` is closed-world and needs nothing. Any other persisted-meaning change landing in
+  the same wave rides this one window (S111 0621 / S119 precedent).
+
+**What the epoch does and does not establish.** It establishes that the two epochs never
+mix, and that refusal is now continuously measured by a check proven to detect its own
+absence. It establishes **nothing** about whether the post-fix summary values are correct —
+that is §20.6's evidence, not the cache's. And a warm-cache stale-summary observation taken
+*after* the bump (alternating source at the already-applied epoch 28) is not a demonstration
+of schema-27 reuse and is not cited as one here.
+
+**Remaining limits, with triggers.**
+
+(i) `facts.provenance` stays symbol-carrying and the `bind_pattern` `shadow` suppression is
+retained exactly as built — but its established ground is narrower than "two live bindings
+answer to one `Symbol`, so the backend cannot name the root", and this section does not claim
+the stronger one. Read at source 2026-09-07:
+
+- **Every production consumer tests PRESENCE, not identity.**
+  `crates/cranelisp-backend/src/compiler/apply.rs::is_direct_vecget_projection` matches
+  `MonoExpr::Apply { provenance: Some(_), … }` to elide one borrowed-arg inc on a direct
+  `vec-get` read, and
+  `crates/cranelisp-backend/src/compiler/control_flow/sparkability.rs::accumulate_density`
+  matches the same shape as a spark-**density heuristic**. No production site binds the
+  symbol. `crates/cranelisp-backend/src/compiler/fn_compiler.rs::operand_live_binding_root`
+  is a different, structural classifier over the scope stack, explicitly
+  analysis-independent — it is not this fact.
+- **`MonoMatchArm.provenance` has no reader at all.** It is written by
+  `crates/cranelisp-typecheck/src/ownership/sites.rs::annotate` and consumed nowhere, so the
+  arm fact the `shadow` flag gates currently reaches no decision.
+- **What the suppression therefore buys.** On the presence axis it is conservative at the
+  eliding consumer (absent ⇒ inc emitted verbatim) and inert at the heuristic (absent ⇒ one
+  extra density point). The `Symbol`-ambiguity it is named for is not observed by any
+  consumer today. It is retained because it is the boundary-safe direction for a consumer
+  that binds the symbol and costs one name comparison over the arm's bound names — **not**
+  because a present-day reader would be misled by the fact, and not as a claim that the
+  emitted symbol resolves correctly at its span (§20.3: `root` is the formal parameter's
+  name, whatever the span's live bindings are).
+- **Falsifier.** A production backend site that binds the provenance `Symbol` rather than
+  testing `Some(_)`, or any reader of `MonoMatchArm.provenance`. Either makes the arm fact
+  load-bearing and re-opens this paragraph — including the §20.4 binder-identity
+  alternative, which is what such a consumer would want.
+
+§13.6(d)'s `drop_shadowed_provenance` remains the mitigation for a fact left rooted at a
+rebound name, single-sourced across the `Let`, `ParBind` and `Match` pattern-binding seams
+(`transfer.rs:579`, `:781`, `:1243`).
+
+(ii) **Retired rather than carried.** This section previously kept
+`classify_capture_escape`'s name-based recursion behind a `param: None` guard and graded the
+residual "imprecision, not narrowing". That grading was **not established, and was the unsafe
+direction**: the recursion decides which binding reaches `self.escaped`, and under a shadow it
+can escape the wrong local, leaving the right one's allocation at `escapes = Some(false)` ⇒
+stack allocation ⇒ the FIXME-0524 dangle. §20.3 removes the case by making the carried
+parameter index total, so the recursion is deleted and there is no residual here to grade. The
+enumeration that licenses the totality, its grade and its falsifier are stated in §20.3.
+
+(iii) The escaped worklist stays `Symbol`-keyed. `drain_escaped` partitions it against the
+defining `Let`'s own binding list, so an entry is claimed by the innermost live binding of
+that name — the one in scope when it was pushed — and this repair does not move that. Read at
+source this pass, not measured; trigger — an escaped entry drained by a scope that did not
+bind it, observable as a lost or duplicated allocation-site escape fact under a shadow.
+
+(iv) The §19.2 `MayAliasAny` weakening is unchanged.
+
+### 20.6 Evidence implications and handoffs (allocation is `qa`'s)
+
+**As built, 2026-09-07.** The module tier carries the class; the independent tier carries the
+runtime face. None of it is accepted evidence until the wave's review and census pass.
+
+- **Module tier, `transfer/tests.rs`** — four subject/control pairs, each pair one identifier
+  apart, every subject authored RED-first with its polarity measured against the tree
+  immediately before the change-set that flips it:
+  `shadowing_binder_must_not_narrow_the_returned_parameter` /
+  `renamed_binder_keeps_the_returned_parameter_owned` and
+  `shadowing_binder_must_not_permute_the_obligation` /
+  `renamed_binder_charges_the_obligation_to_the_returned_parameter` (the ABI half this
+  section previously recorded as **owed** — it is now carried, and C″'s permutation with it);
+  `captured_projection_widens_its_parameter_under_a_shadowed_root` /
+  `captured_projection_widens_its_parameter` (the deleted recursion — the control's staying
+  green pins that deletion did not remove the reach the recursion used to find);
+  `shadowing_pattern_binder_must_not_erase_the_scrutinee_reach` /
+  `renamed_pattern_binder_projects_the_scrutinee_parameter` (the `bind_pattern` arm, on the
+  result axis — the subject asserts the §20.5(i) provenance suppression inside the same cell,
+  so a future "repair" that re-emits the symbol-keyed fact reddens there).
+- `self_shadowed_reach_set_result_is_top` flipped GREEN and left the expected-RED set;
+  `renamed_binder_reach_set_result_is_top` stays as its control.
+- `self_shadowed_widening_is_covered_by_the_drain` stays green **for a different reason** —
+  the chase now covers it directly — and the comment asserting the drain masking was corrected
+  where it sits. Whether a separate §13.6(g) drain falsifier is still wanted is `qa`'s.
+- `match_bound_conditional_widens_every_reaching_param`,
+  `escaping_capture_widens_every_reaching_param`, the provenance cells and the
+  `join_lattice_*` property cells are maintained, not weakened: every property is restated
+  over index sets, and `lattice_norm` no longer normalises a representative away because
+  there is none.
+- **The ABI half is module-tier only.** `param_modes`/`param_flow` are not observable
+  end-to-end, so those four cells are the whole of that evidence.
+- **Independent tier** (`tests/shadowed_param_reach_stale_rc_dec.rs`, unmodified): three of
+  the four established REDs flipped GREEN with no assertion weakened or re-baselined — C's
+  `STALE RC DEC` abort, the `--run`/`--link` safety matrix, and C′'s RC balance against
+  ownership-OFF. The fourth is below.
+- **The oracle claim, held at its measured scope.** §20.1's "RC parity against a rename
+  control is the oracle" is **over-general as a claim about the class**, and is not restated
+  as one. Parity detects C′. It does **not** detect C″, whose subject and control were
+  measured counter-identical under ownership ON — only the ON/OFF differential fires there.
+  And on the `bind_pattern` shape the correction has **no measured runtime face at all**:
+  subject and control counters were identical pre-fix and post-fix, on one program, which is
+  an observation about that shape and not a grade on the class. Parity, the ON/OFF
+  differential and the module summary each cover part of this class; none covers it.
+  **The consequence is `qa`'s**: C″ has no allocated cell, none is created here, and the
+  class's final evidence adequacy is `qa`'s judgment, not this section's.
+- **The surviving independent RED is not §20's face, and is not an approved carry.**
+  `binder_rename_must_not_change_rc_counters` has its memory-safety face closed
+  (allocs/deallocs `3/2` on both legs, marginal residual 0, no `STALE RC DEC`, `--run`,
+  `--link` and ownership-OFF agreeing) and publishes a byte-identical summary across the
+  pair — yet one balanced inc/dec pair and one **missing** `Crossing` materialisation site at
+  the function's return value (`crossing_cells` 2 vs 1, the F-2 direction) persist with the
+  ownership carrier out of the pipeline under `CRANELISP_NO_OWNERSHIP=1`, and reproduce
+  identically on the `bind_pattern` shape. `qa` re-attributed it to `dev`(backend); a
+  symbol-keyed backend binding identity is a hypothesis and nobody has observed that seam,
+  with `qa`'s refuter being a shadow of a **non-parameter** local losing the same cell.
+  It is **unresolved**, not an accepted residual, and it is neither this section's to close
+  nor its to carry.
+- Faces A, B, C, C′ and C″ and their attribution remain `qa`'s. The ABI face is **not** the
+  result-axis class §19.10 filed.
+- The `param_roots` rustdoc that carried §19.3's falsified "RESULT axis only … the drain
+  covers it" went with the function, as this section required.
+
+### 20.7 What remains
+
+The direction and the schema epoch are approved and built (2026-09-07); the choice §19.10
+left open — repair, take the §20.4 refusal containment, or carry the residual — is closed in
+favour of the repair, and the repair is in the tree. Nothing below is a design question.
+
+- **Acceptance, which is not design.** Independent review of both change-sets in agents that
+  did not author them, the full-workspace census, and the generated `public-api.txt` diff
+  returning to the user as the wave's standing gate (expected delta zero — the two cache
+  constants are recorded without their values and every changed typecheck item is private to
+  `transfer.rs`). CLIF goldens stay in the existing recapture hold; none was recaptured. The
+  one golden RED observed while running the ownership bands,
+  `ownership_fences::clif_golden_single_module_smoke`, is a toggle-OFF declaration-layer
+  difference already present in the S121 intake census taken before this wave.
+- **`qa`** owns what §20.6 leaves open: C″'s allocation, the drain-falsifier question, and
+  the class's final evidence adequacy.
+- **`dev`(backend)** owns the ownership-independent rename-parity residual named in §20.6,
+  which is outside this design and unresolved.

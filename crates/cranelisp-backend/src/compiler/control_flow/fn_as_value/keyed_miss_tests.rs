@@ -30,7 +30,7 @@
 //! KC-N6 pins that the fence does NOT over-fire (a clean compile).
 
 use crate::test_support::*;
-use cranelisp_types::{DefKind, FQSymbol, ParametricFn, ResolvedCall, Scheme, UserFnState};
+use cranelisp_types::{FQSymbol, ResolvedCall, Scheme};
 
 /// A `useit` defn whose body is a bare value-position `Var` naming `ref_name`
 /// at `ref_span`. Whether that span carries a `resolved_target` is controlled
@@ -108,18 +108,14 @@ fn kc_n3_value_seam_carrier_none_hard_errors() {
     let tables = empty_tables();
     {
         let mut st = SymbolTable::new(user.clone());
-        let _ = st.allocate_got_slot().expect("fresh table has free slots");
         // No carrier for the curry Apply span.
         let empty_targets: HashMap<Span, FQSymbol> = HashMap::new();
-        st.insert(
-            useit.name.clone(),
-            make_def_entry_slot_with_targets(useit.clone(), 0, &empty_targets),
-        );
+        install_def_entry_at_slot_with_targets(&mut st, useit.clone(), 0, &empty_targets);
         tables.insert(user.clone(), st);
     }
 
     let mut obj = make_object_module();
-    let result = compile_to_module(
+    let result = compile_names_to_module(
         user.clone(),
         std::slice::from_ref(&useit.name),
         &tables,
@@ -166,7 +162,6 @@ fn kc_n4_value_seam_entry_miss_hard_errors() {
     let tables = empty_tables();
     {
         let mut st = SymbolTable::new(user.clone());
-        let _ = st.allocate_got_slot().expect("fresh table has free slots");
         // A carrier IS present but points at a non-existent symbol — the wrapper
         // GOT read fetches nothing.
         let mut targets: HashMap<Span, FQSymbol> = HashMap::new();
@@ -177,15 +172,12 @@ fn kc_n4_value_seam_entry_miss_hard_errors() {
                 symbol: Symbol::from("ghost"),
             },
         );
-        st.insert(
-            useit.name.clone(),
-            make_def_entry_slot_with_targets(useit.clone(), 0, &targets),
-        );
+        install_def_entry_at_slot_with_targets(&mut st, useit.clone(), 0, &targets);
         tables.insert(user.clone(), st);
     }
 
     let mut obj = make_object_module();
-    let result = compile_to_module(
+    let result = compile_names_to_module(
         user.clone(),
         std::slice::from_ref(&useit.name),
         &tables,
@@ -218,7 +210,6 @@ fn kc_n5_value_seam_slotless_template_hard_errors() {
     let tables = empty_tables();
     {
         let mut st = SymbolTable::new(user.clone());
-        let _ = st.allocate_got_slot().expect("fresh table has free slots");
         // `gen` is a determined generic template — slot-less, EXCLUDED from
         // codegen. It is present in the table (so the carrier fetches it) but is
         // NOT compiled (not in `names`, so not in func_ids).
@@ -237,29 +228,19 @@ fn kc_n5_value_seam_slotless_template_hard_errors() {
             constraints: HashMap::new(),
             ty: Type::Fn(vec![Type::Var(0)], Box::new(Type::Var(0))),
         };
-        st.insert(
+        st.install_template(
             Symbol::from("gen"),
-            ModuleEntry::Def {
-                scheme: scheme.clone(),
-                visibility: Visibility::Public,
-                docstring: None,
-                param_names: vec![Symbol::from("a")],
-                kind: Box::new(DefKind::UserFn {
-                    fn_state: UserFnState::Polymorphic(Box::new(ParametricFn {
-                        variant: param_variant,
-                        scheme,
-                    })),
-                }),
-                callees: vec![],
-                trait_origin: None,
-                seq: 0,
-                ast: None,
-                codegen_view: None,
-                code: None,
-                value_use: false,
-            },
-        );
-        let _ = st.allocate_got_slot().expect("fresh table has free slots");
+            scheme,
+            vec![Symbol::from("a")],
+            None,
+            0,
+            cranelisp_types::CallableOrigin::Plain,
+            cranelisp_types::TemplateBody::Ast(param_variant),
+            cranelisp_types::TemplateKind::Parametric,
+            vec![],
+            Visibility::Public,
+        )
+        .expect("install polymorphic-template fixture");
         // The value ref DOES carry the template's storage key — the mint-that-
         // should-have-happened never did.
         let mut targets: HashMap<Span, FQSymbol> = HashMap::new();
@@ -270,16 +251,13 @@ fn kc_n5_value_seam_slotless_template_hard_errors() {
                 symbol: Symbol::from("gen"),
             },
         );
-        st.insert(
-            useit.name.clone(),
-            make_def_entry_slot_with_targets(useit.clone(), 1, &targets),
-        );
+        install_def_entry_at_slot_with_targets(&mut st, useit.clone(), 0, &targets);
         tables.insert(user.clone(), st);
     }
 
     let mut obj = make_object_module();
     let names = vec![useit.name.clone()];
-    let result = compile_to_module(user.clone(), &names, &tables, &mut obj, true);
+    let result = compile_names_to_module(user.clone(), &names, &tables, &mut obj, true);
     let err = match result {
         Ok(_) => panic!(
             "a slot-less Polymorphic template referenced as a value MUST hard-error \
@@ -324,16 +302,12 @@ fn kc_n6_local_none_carrier_is_not_a_miss() {
     let tables = empty_tables();
     {
         let mut st = SymbolTable::new(user.clone());
-        let _ = st.allocate_got_slot().expect("fresh table has free slots");
-        st.insert(
-            identity.name.clone(),
-            make_def_entry_slot(identity.clone(), 0),
-        );
+        install_def_entry_at_slot(&mut st, identity.clone(), 0);
         tables.insert(user.clone(), st);
     }
 
     let mut obj = make_object_module();
-    let result = compile_to_module(
+    let result = compile_names_to_module(
         user.clone(),
         std::slice::from_ref(&identity.name),
         &tables,
@@ -368,13 +342,12 @@ fn kc_varref_local_scope_stack_miss_is_hard_invariant_failure_with_binder() {
     let tables = empty_tables();
     {
         let mut st = SymbolTable::new(user.clone());
-        let _ = st.allocate_got_slot().expect("fresh table has free slots");
-        st.insert(ghost.name.clone(), make_def_entry_slot(ghost.clone(), 0));
+        install_def_entry_at_slot(&mut st, ghost.clone(), 0);
         tables.insert(user.clone(), st);
     }
 
     let mut obj = make_object_module();
-    let result = compile_to_module(
+    let result = compile_names_to_module(
         user.clone(),
         std::slice::from_ref(&ghost.name),
         &tables,

@@ -1,7 +1,8 @@
 use super::*;
 use cranelisp_types::{
-    ConstructorDef, DefKind, DefnVariant, Expr, FieldDef, ModuleEntry, ModuleFullPath, Span,
-    Symbol, TraitDecl, TraitImpl, TypeExpr, TypeName, Visibility,
+    Binding, CallableArmId, CallableOrigin, ConstructorDef, Decl, Defn, DefnVariant, Expr,
+    FieldDef, Life, ModuleFullPath, Span, Symbol, TraitImpl, TypeExpr, TypeName, TypeRecord,
+    Visibility,
 };
 use dashmap::DashMap;
 use std::sync::Arc;
@@ -52,6 +53,20 @@ fn one_variant_defn(name: &str) -> ParsedEntry {
     }
 }
 
+fn polymorphic_identity(name: &str) -> ParsedEntry {
+    ParsedEntry::Def {
+        name: Symbol::from(name),
+        variants: vec![DefnVariant {
+            params: vec![(Symbol::from("x"), None)],
+            body: Expr::var(Symbol::from("x"), Span::new(20, 21)),
+            span: Span::new(10, 22),
+        }],
+        visibility: Visibility::Private,
+        docstring: None,
+        span: Span::new(1, 23),
+    }
+}
+
 fn empty_typedef(name: &str) -> ParsedEntry {
     ParsedEntry::TypeDef {
         name: TypeName::from(name),
@@ -68,20 +83,15 @@ fn empty_typedef(name: &str) -> ParsedEntry {
     }
 }
 
-fn empty_traitdecl(name: &str) -> ParsedEntry {
+fn minimal_traitdecl(name: &str) -> ParsedEntry {
     ParsedEntry::TraitDecl {
-        decl: TraitDecl {
-            name: cranelisp_types::TraitName::from(name),
-            type_params: vec![],
-            methods: vec![],
-            docstring: None,
-            visibility: Visibility::Private,
-            span: Span::SYNTHETIC,
-        },
+        decl: crate::traits::test_helpers::parse_trait_decl(&format!(
+            "(deftrait {name} (identity [x] self))"
+        )),
     }
 }
 
-fn empty_traitimpl(trait_name: &str, type_name: &str) -> ParsedEntry {
+fn minimal_traitimpl(trait_name: &str, type_name: &str) -> ParsedEntry {
     ParsedEntry::TraitImpl {
         impl_: TraitImpl {
             head_con_var: None,
@@ -94,8 +104,18 @@ fn empty_traitimpl(trait_name: &str, type_name: &str) -> ParsedEntry {
                 TypeName::from(type_name),
             )),
             type_constraints: vec![],
-            methods: vec![],
-            span: Span::SYNTHETIC,
+            methods: vec![Defn {
+                name: Symbol::from("identity"),
+                docstring: None,
+                variants: vec![DefnVariant {
+                    params: vec![(Symbol::from("x"), None)],
+                    body: Expr::var(Symbol::from("x"), Span::new(120, 121)),
+                    span: Span::new(110, 122),
+                }],
+                visibility: Visibility::Private,
+                span: Span::new(100, 123),
+            }],
+            span: Span::new(90, 124),
         },
     }
 }
@@ -137,13 +157,11 @@ fn check_forms_single_defn_round_trip() {
 
     let guard = modules.get(&module_path()).expect("module exists");
     let entry = guard.get("solo").expect("solo registered");
-    match entry {
-        ModuleEntry::Def { ast, kind, .. } => {
-            assert!(ast.is_some(), "Pass 2 should have annotated the AST");
-            assert!(matches!(kind.as_ref(), DefKind::UserFn { .. }));
-        }
-        _ => panic!("expected Def entry, got {entry:?}"),
-    }
+    let callable = entry.callable().expect("solo is callable");
+    assert!(matches!(
+        callable.arm.life,
+        Life::Concrete { ast: Some(_), .. }
+    ));
 }
 
 /// `check_type_expr` (0231): a standalone type expression resolves its
@@ -159,18 +177,22 @@ fn check_type_expr_resolves_known_adt_and_rejects_unknown() {
     // Seed a nullary ADT `Color` into the module's live table.
     {
         let mut guard = modules.get_mut(&module_path()).expect("module exists");
-        guard.insert(
-            Symbol::from("Color"),
-            ModuleEntry::TypeDef {
-                info: TypeDefInfo {
-                    name: FQTypeName::new(module_path(), TypeName::from("Color")),
-                    type_params: vec![],
-                    constructors: vec![],
-                },
-                visibility: Visibility::Public,
-                docstring: None,
-            },
-        );
+        guard
+            .install_binding(
+                Symbol::from("Color"),
+                Binding::new(
+                    Decl::Type(TypeRecord::Defined {
+                        info: TypeDefInfo {
+                            name: FQTypeName::new(module_path(), TypeName::from("Color")),
+                            type_params: vec![],
+                            constructors: vec![],
+                        },
+                        docstring: None,
+                    }),
+                    Visibility::Public,
+                ),
+            )
+            .unwrap();
     }
 
     let mut ctx: SymbolTableAccess<'_, (), ()> = SymbolTableAccess::live(&modules, module_path());
@@ -336,8 +358,8 @@ fn check_forms_forward_reference_works() {
 
 /// Pass 1 → Pass 2 state threading regression test. Pre-S66 the
 /// two-function shape created a fresh `ModuleCheckAccumulator` per call,
-/// so Pass 1's `defn_type_vars` did not flow to Pass 2 — Pass 2 failed
-/// with an internal "missing type vars" error. The single-function
+/// so Pass 1's registered signature facts did not flow to Pass 2. The
+/// single-function
 /// `check_forms` shape closes this hole by construction: the accumulator
 /// lives in `check_forms`'s frame and persists across both internal
 /// passes.
@@ -362,16 +384,16 @@ fn check_forms_handles_mixed_form_cluster() {
     let mut ctx: SymbolTableAccess<'_, (), ()> = SymbolTableAccess::live(&modules, module_path());
     let parsed = vec![
         empty_typedef("MyT"),
-        empty_traitdecl("MyTr"),
-        empty_traitimpl("MyTr", "MyT"),
+        minimal_traitdecl("MyTr"),
+        minimal_traitimpl("MyTr", "MyT"),
         one_variant_defn("noargs"),
         macro_entry("m"),
         constructor_entry(),
     ];
     let r = check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases(), &no_fallback());
-    // The TypeDef + TraitDecl + Defn registrations should succeed; the
-    // TraitImpl with an empty method set is also valid. Macros and
-    // constructors are no-ops at this surface.
+    // The TypeDef + TraitDecl + TraitImpl + Defn registrations should succeed.
+    // Macros and constructors are no-ops at this surface. Trait and impl both
+    // carry a method because spec/07-traits.md §7.1 requires `method_sig+`.
     assert!(r.is_ok(), "mixed cluster should typecheck: {r:?}");
 
     let guard = modules.get(&module_path()).expect("module exists");
@@ -380,8 +402,8 @@ fn check_forms_handles_mixed_form_cluster() {
     // TypeDef registered (stored under Symbol::from(TypeName) per
     // `register_type_def` in adt.rs).
     assert!(
-        matches!(guard.get("MyT"), Some(ModuleEntry::TypeDef { .. })),
-        "TypeDef registered as ModuleEntry::TypeDef"
+        guard.get("MyT").and_then(Binding::type_def_info).is_some(),
+        "TypeDef registered with its type facet"
     );
 }
 
@@ -423,7 +445,7 @@ fn check_forms_cluster_mode_writes_go_to_staging() {
     // is the empty SymbolTable for `module_path`). Snapshot its key set.
     let live_keys_before: std::collections::HashSet<Symbol> = {
         let guard = modules.get(&module_path()).expect("live module exists");
-        guard.symbols.keys().cloned().collect()
+        guard.all_symbols().map(|(name, _)| name.clone()).collect()
     };
 
     let mut staging = SymbolTable::<(), ()>::new_with_params(module_path());
@@ -440,7 +462,7 @@ fn check_forms_cluster_mode_writes_go_to_staging() {
     // leaked to live.
     let live_keys_after: std::collections::HashSet<Symbol> = {
         let guard = modules.get(&module_path()).expect("live module exists");
-        guard.symbols.keys().cloned().collect()
+        guard.all_symbols().map(|(name, _)| name.clone()).collect()
     };
     assert_eq!(
         live_keys_before, live_keys_after,
@@ -457,10 +479,7 @@ fn check_forms_cluster_mode_writes_go_to_staging() {
         staging.get("staged_defn").is_some(),
         "staged_defn must be registered on the staging table"
     );
-    match staging.get("staged_defn").unwrap() {
-        ModuleEntry::Def { .. } => {}
-        other => panic!("expected Def entry on staging, got {other:?}"),
-    }
+    assert!(staging.get("staged_defn").unwrap().callable().is_some());
 }
 
 /// Wave 3b-2c.3 acceptance test (FIXME 0179): in `SymbolTableAccess::Cluster`
@@ -680,6 +699,8 @@ fn defn_referencing(name: &str, qualified_ref: &str) -> ParsedEntry {
 ///
 /// spec: facade `typecheck.md` invariant 8 (Gap) §"Enactment";
 /// `bounded-contexts.md` §7 (cross-module resolution); ResolutionGap.
+// spec: design/typecheck/checked-body-publication.md §6;
+//   tests/plan/s121-test-plan.md §3.8 LC-2.
 #[test]
 fn gap_on_missing_module_plain() {
     let modules = modules();
@@ -698,6 +719,62 @@ fn gap_on_missing_module_plain() {
         }
         other => panic!("expected Gap(SymbolTypechecked) for missing module, got {other:?}"),
     }
+
+    // Cluster-mode retry reconstructs every attempt-local carrier, including
+    // the body ledger. The first staging table is discarded with the Gap; the
+    // same source is then checked from the top against a fresh staging table
+    // after the dependency becomes available.
+    let cluster_modules = crate::form::tests::modules();
+    let retry_forms = vec![defn_referencing("uses_missing", "some.mod/thing")];
+    let mut failed_staging = SymbolTable::<(), ()>::new_with_params(module_path());
+    {
+        let mut failed_ctx =
+            SymbolTableAccess::cluster(&cluster_modules, &mut failed_staging, module_path());
+        assert!(matches!(
+            check_forms::<(), ()>(
+                retry_forms.clone(),
+                &mut failed_ctx,
+                &cluster_modules,
+                &no_aliases(),
+                &no_fallback(),
+            ),
+            Err(CheckError::Gap(
+                cranelisp_types::ResolutionGap::SymbolTypechecked(_)
+            ))
+        ));
+    }
+    assert!(
+        cluster_modules
+            .get(&module_path())
+            .unwrap()
+            .get("uses_missing")
+            .is_none(),
+        "the failed cluster attempt must not publish its registered body"
+    );
+    drop(failed_staging);
+
+    seed_module(&cluster_modules, "some.mod", "thing");
+    let mut retry_staging = SymbolTable::<(), ()>::new_with_params(module_path());
+    {
+        let mut retry_ctx =
+            SymbolTableAccess::cluster(&cluster_modules, &mut retry_staging, module_path());
+        check_forms::<(), ()>(
+            retry_forms,
+            &mut retry_ctx,
+            &cluster_modules,
+            &no_aliases(),
+            &no_fallback(),
+        )
+        .expect("fresh attempt rebuilds and publishes the retried body once");
+    }
+    let callable = retry_staging
+        .get("uses_missing")
+        .and_then(Binding::callable)
+        .expect("retry publishes exactly one callable");
+    assert!(matches!(
+        callable.arm.life,
+        Life::Concrete { ast: Some(_), .. }
+    ));
 }
 
 /// Gap on a missing module reached VIA an alias: an alias `m/real`
@@ -720,7 +797,7 @@ fn gap_on_missing_module_via_alias() {
     // absent the resolver records the gap carrying the resolved target.
     let aliases = ModuleAliases::new();
     aliases.insert(
-        ModuleFullPath::from("r"),
+        cranelisp_types::module_alias_key(&module_path(), "r"),
         cranelisp_types::ModuleAliasEntry::new(
             ModuleFullPath::from("real.target"),
             Visibility::Public,
@@ -762,7 +839,7 @@ fn gap_on_missing_module_via_alias() {
 /// spec: §5.13 multi-signature dispatch; REPL cross-input persistence.
 #[test]
 fn check_forms_cross_call_multi_sig_dispatch_resolves_to_variant() {
-    use cranelisp_types::{DefKind, ModuleEntry, ResolvedCall};
+    use cranelisp_types::{CallableTarget, ResolvedCall};
 
     let modules = modules();
 
@@ -802,23 +879,20 @@ fn check_forms_cross_call_multi_sig_dispatch_resolves_to_variant() {
     // Sanity: the live base entry is `Overloaded` with both variants.
     {
         let guard = modules.get(&module_path()).expect("module exists");
-        match guard.get("f").expect("f base registered") {
-            ModuleEntry::Def { kind, .. } => match kind.as_ref() {
-                DefKind::Overloaded { variants } => {
-                    assert_eq!(variants.len(), 2, "both clauses recorded on base");
-                }
-                other => panic!("expected Overloaded base, got {other:?}"),
-            },
-            other => panic!("expected Def, got {other:?}"),
+        match &guard.get("f").expect("f base registered").declaration {
+            Decl::Overloaded(declaration) => {
+                assert_eq!(declaration.arms.len(), 2, "both clauses recorded on base");
+            }
+            other => panic!("expected overloaded declaration, got {other:?}"),
         }
     }
 
     // Cluster 2 (a FRESH `CheckState`): a caller body `(f 5)`. The
     // arity-1 variant is a genuinely-polymorphic clause `([x] x)` — a
-    // slot-less `Polymorphic` TEMPLATE under `f$Var` (§11.4). `5` selects it
+    // slot-less template owned by arm 0 (§11.4). `5` selects it
     // (arity 1), and the drain routes the template clause through
     // monomorphisation (§11.4 step 4), minting the concrete instance
-    // `f$Var$Int` and dispatching to it — NOT to the slot-less template.
+    // `f__arm0$Int` and dispatching to it — NOT to the slot-less template.
     //
     // Distinct (non-synthetic) spans: `monomorphise_call` pins the CALL
     // span's return type, which under all-`SYNTHETIC` spans collides with the
@@ -860,14 +934,14 @@ fn check_forms_cross_call_multi_sig_dispatch_resolves_to_variant() {
     }
 
     // The caller's annotated AST must carry a `SigDispatch` to the MONO
-    // INSTANCE of the arity-1 poly clause (`…/f$Var$Int`) on the `(f 5)`
+    // INSTANCE of the arity-1 poly clause (`…/f__arm0$Int`) on the `(f 5)`
     // Apply — pre-S112 this resolved to the bodyless base; pre-§11.4 to the
-    // slot-less `f$Var` template.
+    // slot-less private checking label.
     let guard = modules.get(&module_path()).expect("module exists");
     let caller_entry = guard.get("caller").expect("caller registered");
-    let ast = match caller_entry {
-        ModuleEntry::Def { ast: Some(ast), .. } => ast,
-        other => panic!("expected caller Def with annotated ast, got {other:?}"),
+    let ast = match &caller_entry.callable().expect("caller callable").arm.life {
+        Life::Concrete { ast: Some(ast), .. } => ast,
+        other => panic!("expected caller with annotated ast, got {other:?}"),
     };
     let resolved = match &ast.body {
         Expr::Apply {
@@ -877,13 +951,33 @@ fn check_forms_cross_call_multi_sig_dispatch_resolves_to_variant() {
         other => panic!("expected annotated Apply body, got {other:?}"),
     };
     match resolved {
-        ResolvedCall::SigDispatch { mangled_name } => {
-            let m = mangled_name.as_ref();
-            assert!(
-                m.contains("f$Var") && m.contains("Int"),
-                "cross-cluster (f 5) must dispatch to the mono INSTANCE of the \
-                     arity-1 poly clause (`…/f$Var$Int`), got {m}"
-            );
+        ResolvedCall::SigDispatch {
+            target: CallableTarget::Binding(owner),
+        } => {
+            let arm_target = CallableTarget::OverloadArm {
+                owner: FQSymbol {
+                    module: module_path(),
+                    symbol: Symbol::from("f"),
+                },
+                arm: CallableArmId::from_ordinal(0).expect("arm 0 is representable"),
+            };
+            let expected = cranelisp_types::InstanceLink::from_type_args(
+                arm_target.clone(),
+                vec![cranelisp_types::ConcreteType::Int],
+            )
+            .instance_key();
+            assert_eq!(owner.module, module_path());
+            assert_eq!(owner.symbol, expected);
+            let instance = guard
+                .get(owner.symbol.as_ref())
+                .expect("typed overload-arm instance is installed");
+            assert!(matches!(
+                &instance.callable().expect("instance callable").arm.life,
+                Life::Concrete {
+                    minted_from: Some(link),
+                    ..
+                } if link.template == arm_target
+            ));
         }
         other => panic!("expected SigDispatch across clusters, got {other:?}"),
     }
@@ -908,22 +1002,26 @@ fn check_forms_cross_call_multi_sig_dispatch_resolves_to_variant() {
 /// spec: spec/05-data-types.md §5.2.6 — accessor/binding collision safe
 /// disposition (warn, suppress, keep existing binding).
 #[test]
-fn check_forms_surfaces_accessor_collision_warning() {
-    use cranelisp_types::{Type, WarningKind};
+fn check_forms_preserves_binding_and_accessor_candidate() {
+    use cranelisp_types::Type;
 
     let modules = modules();
     // Seed `Int` as an intrinsic type so the `:Int` field resolves in the
     // bare test module (the fixture seeds no scalar type names).
     {
         let mut guard = modules.get_mut(&module_path()).expect("module exists");
-        guard.insert(
-            Symbol::from("Int"),
-            ModuleEntry::IntrinsicType {
-                ty: Type::Int,
-                visibility: Visibility::Public,
-                docstring: None,
-            },
-        );
+        guard
+            .install_binding(
+                Symbol::from("Int"),
+                Binding::new(
+                    Decl::Type(TypeRecord::Intrinsic {
+                        ty: Type::Int,
+                        docstring: None,
+                    }),
+                    Visibility::Public,
+                ),
+            )
+            .unwrap();
     }
 
     // Pre-register a user binding named `v` — the accessor `v` synthesised
@@ -963,31 +1061,26 @@ fn check_forms_surfaces_accessor_collision_warning() {
     .expect("cluster with an accessor collision still checks clean")
     .warnings;
 
-    // The collision must surface as a ShadowedName warning whose message
-    // names the colliding accessor `v` — this is the channel int threads
-    // onto ProcessedCluster.warnings for the REPL `; warning:` line.
-    let shadow = warnings
-        .iter()
-        .find(|w| w.kind == WarningKind::ShadowedName)
-        .unwrap_or_else(|| panic!("expected a ShadowedName warning, got {warnings:?}"));
     assert!(
-        shadow.message.contains("accessor") && shadow.message.contains('v'),
-        "warning message must name the colliding accessor: {:?}",
-        shadow.message
+        warnings.is_empty(),
+        "coexisting candidates are not a collision"
     );
 
-    // The pre-existing `v` defn is kept; the accessor is suppressed (the
-    // safe disposition the warning records).
+    // The local definition remains canonical while `Box.v` is exposed under
+    // the same spelling for type-directed selection.
     let guard = modules.get(&module_path()).expect("module exists");
-    match guard.get("v").expect("v binding survives") {
-        ModuleEntry::Def { kind, .. } => {
-            assert!(
-                matches!(kind.as_ref(), DefKind::UserFn { .. }),
-                "the original user defn `v` must win, not the accessor"
-            );
-        }
-        other => panic!("expected the user defn for `v`, got {other:?}"),
-    }
+    let v = guard
+        .get("v")
+        .and_then(Binding::callable)
+        .expect("v binding survives");
+    assert!(matches!(v.origin, CallableOrigin::Plain));
+    let candidates = guard.name_candidates(&Symbol::from("v"));
+    assert_eq!(candidates.len(), 2);
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate.source.symbol == "Box.v")
+    );
 }
 
 // =====================================================================
@@ -995,27 +1088,6 @@ fn check_forms_surfaces_accessor_collision_warning() {
 // `check_forms` Pass-1 seam (FIXME 0514). These pin the mode-uniform
 // rejection at the exact seam both REPL/Additive and batch/Replace call.
 // =====================================================================
-
-/// A public `Def` for `name` in a source module `src` — the terminal an
-/// explicit import/export edge chain-follows to, and a prelude-provided
-/// name's canonical entry.
-fn seeded_public_def() -> ModuleEntry<()> {
-    ModuleEntry::def(
-        cranelisp_types::Scheme {
-            type_vars: vec![],
-            constraints: std::collections::HashMap::new(),
-            ty: cranelisp_types::Type::Int,
-        },
-        DefKind::UserFn {
-            fn_state: cranelisp_types::UserFnState::Concrete {
-                got_slot: 0,
-                mode_summary: None,
-            },
-        },
-    )
-    .visibility(Visibility::Public)
-    .build()
-}
 
 fn seed_module(modules: &DashMap<ModuleFullPath, SymbolTable<(), ()>>, module: &str, name: &str) {
     let m = ModuleFullPath::from(module);
@@ -1025,119 +1097,113 @@ fn seed_module(modules: &DashMap<ModuleFullPath, SymbolTable<(), ()>>, module: &
     modules
         .get_mut(&m)
         .unwrap()
-        .insert(Symbol::from(name), seeded_public_def());
+        .install_host_promised(
+            Symbol::from(name),
+            cranelisp_types::Scheme {
+                type_vars: vec![],
+                constraints: std::collections::HashMap::new(),
+                ty: cranelisp_types::Type::Int,
+            },
+            vec![],
+            None,
+            0,
+            Visibility::Public,
+        )
+        .unwrap();
 }
 
-fn import_entry(src_module: &str, name: &str, vis: Visibility) -> ModuleEntry<()> {
-    ModuleEntry::Import {
-        source: cranelisp_types::FQSymbol {
-            module: ModuleFullPath::from(src_module),
-            symbol: Symbol::from(name),
-        },
-        visibility: vis,
-    }
+fn expose_import(
+    table: &mut SymbolTable<(), ()>,
+    local_name: &str,
+    src_module: &str,
+    name: &str,
+    vis: Visibility,
+) {
+    table
+        .expose_candidate(
+            Symbol::from(local_name),
+            cranelisp_types::FQSymbol {
+                module: ModuleFullPath::from(src_module),
+                symbol: Symbol::from(name),
+            },
+            vis,
+        )
+        .unwrap();
 }
 
 /// A `defn` over a name in scope via an explicit `(import …)` is rejected;
 /// the diagnostic names the symbol + the `module/name` FQ remedy.
 #[test]
-fn def_over_import_rejected_at_seam() {
+fn def_over_import_candidate_is_allowed() {
     let modules = modules();
     seed_module(&modules, "util", "measure");
-    modules.get_mut(&module_path()).unwrap().insert(
-        Symbol::from("measure"),
-        import_entry("util", "measure", Visibility::Private),
+    expose_import(
+        &mut modules.get_mut(&module_path()).unwrap(),
+        "measure",
+        "util",
+        "measure",
+        Visibility::Private,
     );
 
     let mut ctx: SymbolTableAccess<'_, (), ()> = SymbolTableAccess::live(&modules, module_path());
-    let err = check_forms::<(), ()>(
+    check_forms::<(), ()>(
         vec![one_variant_defn("measure")],
         &mut ctx,
         &modules,
         &no_aliases(),
         &no_fallback(),
     )
-    .expect_err("defn over an imported name MUST be rejected (§8.6.4)");
-    let msg = match err {
-        CheckError::TypeError { message, .. } => message,
-        other => panic!("expected TypeError, got {other:?}"),
-    };
-    assert!(
-        msg.to_lowercase().contains("conflict")
-            && msg.contains("measure")
-            && msg.contains("util/measure")
-            && msg.contains("import"),
-        "diagnostic must name the symbol + FQ remedy + kind; got: {msg}",
-    );
-    // The import remains the binding (staging dropped on Err — live is
-    // byte-identical).
+    .expect("a local definition may coexist with an imported candidate");
     let guard = modules.get(&module_path()).unwrap();
-    assert!(matches!(
-        guard.get("measure"),
-        Some(ModuleEntry::Import { .. })
-    ));
+    assert!(guard.get("measure").is_some());
+    assert_eq!(guard.name_candidates(&Symbol::from("measure")).len(), 2);
 }
 
 /// A `defn` over a name in scope via an explicit `(export …)` — a Public
 /// inner-scope Import edge (§8.4.0) — is rejected on the same terms; the
 /// message names it an export.
 #[test]
-fn def_over_export_rejected_at_seam() {
+fn def_over_export_candidate_is_allowed() {
     let modules = modules();
     seed_module(&modules, "util", "measure");
-    modules.get_mut(&module_path()).unwrap().insert(
-        Symbol::from("measure"),
-        import_entry("util", "measure", Visibility::Public),
+    expose_import(
+        &mut modules.get_mut(&module_path()).unwrap(),
+        "measure",
+        "util",
+        "measure",
+        Visibility::Public,
     );
 
     let mut ctx: SymbolTableAccess<'_, (), ()> = SymbolTableAccess::live(&modules, module_path());
-    let err = check_forms::<(), ()>(
+    check_forms::<(), ()>(
         vec![one_variant_defn("measure")],
         &mut ctx,
         &modules,
         &no_aliases(),
         &no_fallback(),
     )
-    .expect_err("defn over an exported name MUST be rejected (§8.4.0/§8.6.4)");
-    let msg = match err {
-        CheckError::TypeError { message, .. } => message,
-        other => panic!("expected TypeError, got {other:?}"),
-    };
-    assert!(
-        msg.contains("export") && msg.contains("util/measure"),
-        "diagnostic must name the export + FQ remedy; got: {msg}",
-    );
+    .expect("a local definition may coexist with an exported candidate");
 }
 
 /// The no-exception ruling (2026-07-04): a `defn` over a PRELUDE-provided
 /// public name is the same compile-time error — the prelude (an implicit
 /// import) is checked exactly like an explicit import.
 #[test]
-fn def_over_prelude_rejected_at_seam() {
+fn def_over_prelude_fallback_is_allowed() {
     let modules = modules();
     seed_module(&modules, "prelude", "gulp");
     let fallback = PreludeFallback::default();
     fallback.insert(module_path(), true); // implicit prelude ON
 
     let mut ctx: SymbolTableAccess<'_, (), ()> = SymbolTableAccess::live(&modules, module_path());
-    let err = check_forms::<(), ()>(
+    check_forms::<(), ()>(
         vec![one_variant_defn("gulp")],
         &mut ctx,
         &modules,
         &no_aliases(),
         &fallback,
     )
-    .expect_err("defn over a prelude-provided name MUST be rejected (§8.8.1/§8.6.4)");
-    let msg = match err {
-        CheckError::TypeError { message, .. } => message,
-        other => panic!("expected TypeError, got {other:?}"),
-    };
-    assert!(
-        msg.to_lowercase().contains("conflict")
-            && msg.contains("prelude")
-            && msg.contains("prelude/gulp"),
-        "diagnostic must name the prelude source + FQ remedy; got: {msg}",
-    );
+    .expect("a local definition shadows the implicit prelude fallback");
 }
 
 /// A module redefining its OWN prior `Def` (home == current module) is an
@@ -1197,14 +1263,17 @@ fn def_of_fresh_name_with_prelude_on_allowed() {
 /// sessions use — `Live` (Replace-analog) AND `Cluster`/staging
 /// (Additive-analog) — reject the same def-over-import binding set.
 #[test]
-fn def_over_import_rejection_is_mode_uniform() {
+fn def_over_import_candidate_acceptance_is_mode_uniform() {
     // Live (Replace-analog).
     {
         let modules = modules();
         seed_module(&modules, "util", "measure");
-        modules.get_mut(&module_path()).unwrap().insert(
-            Symbol::from("measure"),
-            import_entry("util", "measure", Visibility::Private),
+        expose_import(
+            &mut modules.get_mut(&module_path()).unwrap(),
+            "measure",
+            "util",
+            "measure",
+            Visibility::Private,
         );
         let mut ctx: SymbolTableAccess<'_, (), ()> =
             SymbolTableAccess::live(&modules, module_path());
@@ -1215,16 +1284,19 @@ fn def_over_import_rejection_is_mode_uniform() {
             &no_aliases(),
             &no_fallback(),
         )
-        .expect_err("Live-mode def-over-import MUST reject");
+        .expect("Live-mode def-over-import candidate must coexist");
     }
     // Cluster/staging (Additive-analog) — the import lives in live, the def
     // stages; the union view sees the import; the seam rejects identically.
     {
         let modules = modules();
         seed_module(&modules, "util", "measure");
-        modules.get_mut(&module_path()).unwrap().insert(
-            Symbol::from("measure"),
-            import_entry("util", "measure", Visibility::Private),
+        expose_import(
+            &mut modules.get_mut(&module_path()).unwrap(),
+            "measure",
+            "util",
+            "measure",
+            Visibility::Private,
         );
         let mut staging = SymbolTable::<(), ()>::new_with_params(module_path());
         let mut ctx: SymbolTableAccess<'_, (), ()> =
@@ -1236,7 +1308,7 @@ fn def_over_import_rejection_is_mode_uniform() {
             &no_aliases(),
             &no_fallback(),
         )
-        .expect_err("Cluster-mode def-over-import MUST reject identically");
+        .expect("Cluster-mode def-over-import candidate must coexist identically");
     }
 }
 
@@ -1249,15 +1321,45 @@ fn def_over_import_rejection_is_mode_uniform() {
 // `CodegenError` lifts to a `CheckError::TypeError` preserving message + location.
 #[test]
 fn got_exhaustion_renders_clean_diagnosed_message_at_check_forms_boundary() {
-    use cranelisp_types::GOT_TABLE_SIZE;
+    use cranelisp_types::{GOT_TABLE_SIZE, LifecycleError, Scheme, SlotMintError, Type};
+    use std::collections::HashMap;
 
     // Exhaust a real module GOT to obtain a genuine `GotExhausted`, then route it
     // through the SAME helper every fallible `allocate_got_slot` caller uses.
     let mut st: SymbolTable<(), ()> = SymbolTable::new(ModuleFullPath::from("proj.widget"));
-    for _ in 0..GOT_TABLE_SIZE {
-        st.allocate_got_slot().expect("within-bounds allocation");
+    let scheme = Scheme {
+        type_vars: vec![],
+        constraints: HashMap::new(),
+        ty: Type::Int,
+    };
+    for index in 0..GOT_TABLE_SIZE {
+        st.install_extern(
+            Symbol::from(format!("f{index}")),
+            scheme.clone(),
+            vec![],
+            None,
+            0,
+            None,
+            None,
+            Visibility::Private,
+        )
+        .expect("within-bounds allocation");
     }
-    let exhausted = st.allocate_got_slot().expect_err("GOT must be exhausted");
+    let LifecycleError::SlotMint(SlotMintError::Exhausted(exhausted)) = st
+        .install_extern(
+            Symbol::from("overflow"),
+            scheme,
+            vec![],
+            None,
+            0,
+            None,
+            None,
+            Visibility::Private,
+        )
+        .expect_err("GOT must be exhausted")
+    else {
+        panic!("expected exhausted slot mint")
+    };
     let codegen_err = crate::result::got_exhausted_error(exhausted);
 
     // The `check_forms` boundary mapper must preserve the diagnosed text, not
@@ -1315,4 +1417,275 @@ fn lift_error_does_not_mask_codegen_error_as_gap_when_a_gap_is_pending() {
         matches!(lift_error(type_err, &state), CheckError::Gap(_)),
         "a not-found TypeError with a pending gap still lifts to Gap"
     );
+}
+
+// design/typecheck/monomorphisation.md §3.8 M-1/M-2 — reload demands seed
+// the existing mono engine, mint the ordinary concrete instance, and dedup a
+// repeated seed without moving its slot.
+#[test]
+fn instantiate_demands_mints_and_deduplicates_existing_instance() {
+    let modules = modules();
+    let aliases = no_aliases();
+    let fallback = no_fallback();
+    let mut ctx: SymbolTableAccess<'_, (), ()> = SymbolTableAccess::live(&modules, module_path());
+    check_forms::<(), ()>(
+        vec![polymorphic_identity("reload-id")],
+        &mut ctx,
+        &modules,
+        &aliases,
+        &fallback,
+    )
+    .expect("template registration succeeds");
+
+    let demand = MonoDemand::from_type_args(
+        cranelisp_types::CallableTarget::Binding(cranelisp_types::FQSymbol {
+            module: module_path(),
+            symbol: Symbol::from("reload-id"),
+        }),
+        vec![cranelisp_types::ConcreteType::Int],
+        Span::new(800, 810),
+    );
+    let result = instantiate_demands(
+        vec![demand.clone()],
+        &mut ctx,
+        &modules,
+        &aliases,
+        &fallback,
+    )
+    .expect("concrete reload demand succeeds");
+    assert!(result.warnings.is_empty());
+
+    let first_slot = modules
+        .get(&module_path())
+        .and_then(|table| {
+            table
+                .get(&demand.instance_key())
+                .and_then(Binding::callable_got_slot)
+        })
+        .expect("the ordinary mono engine installs a concrete instance");
+    let again = instantiate_demands(
+        vec![demand.clone()],
+        &mut ctx,
+        &modules,
+        &aliases,
+        &fallback,
+    )
+    .expect("an already-realized demand deduplicates");
+    assert!(again.warnings.is_empty());
+    let second_slot = modules
+        .get(&module_path())
+        .and_then(|table| {
+            table
+                .get(&demand.instance_key())
+                .and_then(Binding::callable_got_slot)
+        })
+        .expect("the deduplicated instance remains installed");
+    assert_eq!(first_slot, second_slot);
+}
+
+// spec: 03-types §3.6.3 — a map-free demand reconstructs result-only substitutions.
+#[test]
+fn instantiate_demands_result_context_and_malformed_length() {
+    use cranelisp_types::{ConcreteType, Type};
+    let modules = modules();
+    let aliases = no_aliases();
+    let fallback = no_fallback();
+    let mut ctx = SymbolTableAccess::live(&modules, module_path());
+    let mut definition = polymorphic_identity("g");
+    if let ParsedEntry::Def { variants, .. } = &mut definition {
+        variants[0].params.clear();
+        variants[0].body = Expr::Lambda {
+            params: vec![(Symbol::from("y"), None)],
+            body: Box::new(unit_body()),
+            span: Span::new(20, 40),
+            inferred_type: None,
+        };
+    }
+    check_forms(vec![definition], &mut ctx, &modules, &aliases, &fallback).unwrap();
+    let target = cranelisp_types::CallableTarget::Binding(cranelisp_types::FQSymbol {
+        module: module_path(),
+        symbol: Symbol::from("g"),
+    });
+    let malformed = MonoDemand::from_type_args(target.clone(), vec![], Span::SYNTHETIC);
+    let result = instantiate_demands(
+        vec![malformed.clone()],
+        &mut ctx,
+        &modules,
+        &aliases,
+        &fallback,
+    )
+    .unwrap();
+    assert_eq!(result.warnings.len(), 1);
+    assert!(
+        modules
+            .get(&module_path())
+            .unwrap()
+            .get(&malformed.instance_key())
+            .is_none()
+    );
+    let mut slots = Vec::new();
+    for ty in [ConcreteType::Int, ConcreteType::String] {
+        let demand =
+            MonoDemand::from_type_args(target.clone(), vec![ty.clone()], Span::new(100, 110));
+        for _ in 0..2 {
+            let result = instantiate_demands(
+                vec![demand.clone()],
+                &mut ctx,
+                &modules,
+                &aliases,
+                &fallback,
+            )
+            .unwrap();
+            assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+            let table = modules.get(&module_path()).unwrap();
+            let binding = table.get(&demand.instance_key()).unwrap();
+            assert_eq!(
+                binding.callable().unwrap().arm.scheme.ty,
+                Type::Fn(
+                    vec![],
+                    Box::new(Type::Fn(vec![ty.to_type()], Box::new(Type::Int)))
+                )
+            );
+            slots.push(binding.callable_got_slot().unwrap());
+        }
+    }
+    assert_eq!(slots[0], slots[1]);
+    assert_eq!(slots[2], slots[3]);
+    assert_ne!(slots[0], slots[2]);
+}
+
+// design/typecheck/monomorphisation.md §3.8 M-3/M-4 — a stale root is a
+// synthetic warning and does not truncate later valid roots.
+#[test]
+fn instantiate_demands_declines_stale_root_and_drains_remaining_roots() {
+    let modules = modules();
+    let aliases = no_aliases();
+    let fallback = no_fallback();
+    let mut ctx: SymbolTableAccess<'_, (), ()> = SymbolTableAccess::live(&modules, module_path());
+    check_forms::<(), ()>(
+        vec![polymorphic_identity("reload-id")],
+        &mut ctx,
+        &modules,
+        &aliases,
+        &fallback,
+    )
+    .expect("template registration succeeds");
+
+    let stale = MonoDemand::from_type_args(
+        cranelisp_types::CallableTarget::Binding(cranelisp_types::FQSymbol {
+            module: module_path(),
+            symbol: Symbol::from("removed"),
+        }),
+        vec![cranelisp_types::ConcreteType::Int],
+        Span::new(700, 710),
+    );
+    let valid = MonoDemand::from_type_args(
+        cranelisp_types::CallableTarget::Binding(cranelisp_types::FQSymbol {
+            module: module_path(),
+            symbol: Symbol::from("reload-id"),
+        }),
+        vec![cranelisp_types::ConcreteType::Bool],
+        Span::new(720, 730),
+    );
+    let result = instantiate_demands(
+        vec![stale, valid.clone()],
+        &mut ctx,
+        &modules,
+        &aliases,
+        &fallback,
+    )
+    .expect("a stale root is declined rather than failing the batch");
+    assert_eq!(result.warnings.len(), 1);
+    assert_eq!(result.warnings[0].span, Span::SYNTHETIC);
+    assert!(result.warnings[0].message.contains("removed"));
+    assert!(
+        modules
+            .get(&module_path())
+            .is_some_and(|table| table.get(&valid.instance_key()).is_some()),
+        "the valid root after a decline must still be realized"
+    );
+}
+
+// design/typecheck/monomorphisation.md §3.8 M-3 — an absent template home
+// is the orchestrator's ordinary load-and-retry gap, not a stale warning.
+#[test]
+fn instantiate_demands_absent_home_is_gap() {
+    let modules = modules();
+    let aliases = no_aliases();
+    let fallback = no_fallback();
+    let mut ctx: SymbolTableAccess<'_, (), ()> = SymbolTableAccess::live(&modules, module_path());
+    let missing = MonoDemand::from_type_args(
+        cranelisp_types::CallableTarget::Binding(cranelisp_types::FQSymbol {
+            module: ModuleFullPath::from("not_loaded"),
+            symbol: Symbol::from("reload-id"),
+        }),
+        vec![cranelisp_types::ConcreteType::Int],
+        Span::new(900, 910),
+    );
+
+    assert!(matches!(
+        instantiate_demands(vec![missing], &mut ctx, &modules, &aliases, &fallback),
+        Err(CheckError::Gap(ResolutionGap::SymbolTypechecked(fq)))
+            if fq.to_string() == "not_loaded/reload-id"
+    ));
+}
+
+// design/typecheck/monomorphisation.md §3.8 M-3 — an engine/body invariant
+// failure is not reclassified as a stale-root warning merely because reload
+// demands use a synthetic call site.
+#[test]
+fn instantiate_demands_propagates_template_body_invariant_failure() {
+    use cranelisp_types::{Scheme, TemplateBody, TemplateKind, Type};
+
+    let modules = modules();
+    let aliases = no_aliases();
+    let fallback = no_fallback();
+    let template_name = Symbol::from("invalid-template");
+    modules
+        .get_mut(&module_path())
+        .expect("module exists")
+        .install_template(
+            template_name.clone(),
+            Scheme {
+                type_vars: vec![0],
+                constraints: Default::default(),
+                ty: Type::Fn(vec![Type::Var(0)], Box::new(Type::Var(0))),
+            },
+            vec![Symbol::from("x")],
+            None,
+            0,
+            CallableOrigin::Plain,
+            TemplateBody::Ast(DefnVariant {
+                params: vec![(Symbol::from("x"), None)],
+                // Deliberately contradicts the stored a -> a scheme. A reload
+                // demand for Int must surface this engine invariant failure.
+                body: Expr::BoolLit {
+                    value: true,
+                    span: Span::new(1020, 1024),
+                    inferred_type: None,
+                },
+                span: Span::new(1000, 1025),
+            }),
+            TemplateKind::Parametric,
+            vec![],
+            Visibility::Private,
+        )
+        .expect("the lifecycle accepts a structurally valid template carrier");
+    let demand = MonoDemand::from_type_args(
+        cranelisp_types::CallableTarget::Binding(cranelisp_types::FQSymbol {
+            module: module_path(),
+            symbol: template_name,
+        }),
+        vec![cranelisp_types::ConcreteType::Int],
+        Span::new(1100, 1110),
+    );
+    let mut ctx: SymbolTableAccess<'_, (), ()> = SymbolTableAccess::live(&modules, module_path());
+
+    match instantiate_demands(vec![demand], &mut ctx, &modules, &aliases, &fallback) {
+        Err(CheckError::TypeError { message, location }) => {
+            assert!(message.contains("type mismatch"), "{message}");
+            assert_eq!(location.span, Span::new(1000, 1025));
+        }
+        other => panic!("template-body invariant failure must propagate: {other:?}"),
+    }
 }

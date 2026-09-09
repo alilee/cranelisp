@@ -1,5 +1,5 @@
 use super::*;
-use cranelisp_types::{DefKind, FQTypeName, Scheme, Type, TypeDefInfo, TypeName, Visibility};
+use cranelisp_types::{FQTypeName, Scheme, Type, TypeDefInfo, TypeName};
 
 const TEST_MOD: &str = "test";
 
@@ -36,40 +36,31 @@ fn data_ctor(name: &'static str, tag: usize, field_count: usize) -> CtorSpec {
 /// Build a constructor `Def` entry under the ctor-as-Def shape.
 /// `type_def` is `Some(..)` for a single-ctor product type (the ctor IS
 /// its own type — S79 Option 3a dual facet), `None` for sum/enum ctors.
-fn ctor_def_entry(
+fn install_ctor(
+    table: &mut SymbolTable,
     type_fqtn: &FQTypeName,
     spec: &CtorSpec,
     type_def: Option<Box<TypeDefInfo>>,
-) -> ModuleEntry {
+) {
     let scheme = Scheme {
         type_vars: vec![],
         constraints: std::collections::HashMap::new(),
         ty: Type::ADT(type_fqtn.clone(), vec![]),
     };
-    ModuleEntry::Def {
+    crate::test_support::install_ctor_fixture(
+        table,
+        Symbol::from(spec.name),
         scheme,
-        visibility: Visibility::Public,
-        docstring: None,
-        param_names: (0..spec.field_count)
+        (0..spec.field_count)
             .map(|i| Symbol::from(format!("f{i}")))
             .collect(),
-        kind: Box::new(DefKind::Constructor {
-            got_slot: 0,
-            type_name: type_fqtn.clone(),
-            tag: spec.tag,
-            field_count: spec.field_count,
-            internal: false,
-            type_def,
-            mode_summary: None,
-        }),
-        callees: vec![],
-        trait_origin: None,
-        seq: 0,
-        ast: None,
-        codegen_view: None,
-        code: None,
-        value_use: false,
-    }
+        type_fqtn.clone(),
+        spec.tag,
+        spec.field_count,
+        type_def,
+        None,
+        None,
+    );
 }
 
 /// Build a DashMap with a single module, mirroring the production
@@ -107,24 +98,14 @@ fn tables_with_type(
         } else {
             None
         };
-        st.insert(
-            Symbol::from(spec.name),
-            ctor_def_entry(&fqtn, spec, type_def),
-        );
+        install_ctor(&mut st, &fqtn, spec, type_def);
     }
 
     // Sum/enum: a separate `TypeDef` entry under the type name. A product
     // type needs NONE — its got-slotted ctor `Def` already answers as the
     // type via its `type_def` facet.
     if !is_product {
-        st.insert(
-            Symbol::from(type_name),
-            ModuleEntry::TypeDef {
-                info,
-                visibility: Visibility::Public,
-                docstring: None,
-            },
-        );
+        crate::test_support::install_type_fixture(&mut st, Symbol::from(type_name), info);
     }
     tables.insert(ModuleFullPath::from(TEST_MOD), st);
     tables
@@ -225,7 +206,7 @@ fn test_enum_only_adt_never_heap() {
 
 #[test]
 fn test_data_only_adt_always_heap() {
-    // (deftype Wrapper [val]) — non-parameterized with data constructor
+    // (deftype Wrapper [:Int val]) — monomorphic product with data constructor
     // This is the F-2 bug case: was incorrectly NeverHeap
     let tables = tables_with_type("Wrapper", &[], &[data_ctor("Wrapper", 0, 1)]);
     let wrapper = cadt("Wrapper", vec![]);
@@ -237,7 +218,7 @@ fn test_data_only_adt_always_heap() {
 
 #[test]
 fn test_product_type_always_heap() {
-    // (deftype IPoint (IPoint [:Int x :Int y])) — product type
+    // (deftype IPoint [:Int x :Int y]) — product type
     let tables = tables_with_type("IPoint", &[], &[data_ctor("IPoint", 0, 2)]);
     let point = cadt("IPoint", vec![]);
     assert_eq!(
@@ -352,35 +333,24 @@ fn insert_product_typed(st: &mut SymbolTable, type_name: &str, field_types: Vec<
     } else {
         Type::Fn(field_types, Box::new(Type::ADT(fqtn.clone(), vec![])))
     };
-    let entry = ModuleEntry::Def {
-        scheme: Scheme {
+    crate::test_support::install_ctor_fixture(
+        st,
+        Symbol::from(type_name),
+        Scheme {
             type_vars: vec![],
             constraints: std::collections::HashMap::new(),
             ty: scheme_ty,
         },
-        visibility: Visibility::Public,
-        docstring: None,
-        param_names: (0..field_count)
+        (0..field_count)
             .map(|i| Symbol::from(format!("f{i}")))
             .collect(),
-        kind: Box::new(DefKind::Constructor {
-            got_slot: 0,
-            type_name: fqtn.clone(),
-            tag: 0,
-            field_count,
-            internal: false,
-            type_def: Some(Box::new(info)),
-            mode_summary: None,
-        }),
-        callees: vec![],
-        trait_origin: None,
-        seq: 0,
-        ast: None,
-        codegen_view: None,
-        code: None,
-        value_use: false,
-    };
-    st.insert(Symbol::from(type_name), entry);
+        fqtn,
+        0,
+        field_count,
+        Some(Box::new(info)),
+        None,
+        None,
+    );
 }
 
 fn product_tables(specs: &[(&str, Vec<Type>)]) -> dashmap::DashMap<ModuleFullPath, SymbolTable> {

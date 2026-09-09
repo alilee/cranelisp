@@ -315,7 +315,6 @@ fn run_tests_reports_passes() {
     // for fail (per `appendix-a-builtins.md`, the test result protocol).
     repl(
         "(import [primitives [*]])\n\
-         (deftype (Option a) None (Some [:a val]))\n\
          (defn test-one [] None)\n\
          /run-tests\n",
     )
@@ -327,7 +326,6 @@ fn run_tests_reports_passes() {
 fn run_tests_reports_failures_with_reason() {
     repl(
         "(import [primitives [*]])\n\
-         (deftype (Option a) None (Some [:a val]))\n\
          (defn test-fail [] (Some \"expected failure\"))\n\
          /run-tests\n",
     )
@@ -1326,7 +1324,6 @@ fn tco_non_tail_recursion_unchanged() {
 fn run_tests_multiple_passes_count() {
     repl(
         "(import [primitives [*]])\n\
-         (deftype (Option a) None (Some [:a val]))\n\
          (defn test-a [] None)\n\
          (defn test-b [] None)\n\
          (defn test-c [] None)\n\
@@ -1344,7 +1341,6 @@ fn run_tests_multiple_passes_count() {
 fn run_tests_mixed_pass_and_fail_counts() {
     repl(
         "(import [primitives [*]])\n\
-         (deftype (Option a) None (Some [:a val]))\n\
          (defn test-pass-1 [] None)\n\
          (defn test-pass-2 [] None)\n\
          (defn test-fail-1 [] (Some \"broken\"))\n\
@@ -1362,7 +1358,6 @@ fn run_tests_mixed_pass_and_fail_counts() {
 fn run_tests_neg_ignores_non_test_prefixed_fns() {
     let out = repl(
         "(import [primitives [*]])\n\
-         (deftype (Option a) None (Some [:a val]))\n\
          (defn helper [] None)\n\
          (defn test-one [] None)\n\
          /run-tests\n",
@@ -2500,39 +2495,20 @@ fn apply_arg_no_lenient_determinism_oracle() {
 
 // spec: spec/12-runtime.md §12.4.3 — NEGATIVE gating: an apply with only ONE
 // expensive argument `(add-i64 (work big 0) 7)` (the other is a literal) is
-// below the ≥2 gate → NOT sparked → no speedup (majority-of-N) + same result.
-// The apply-site negative gate (≥2-expensive-arg rule); the let-path positive
-// analogue is `lenient_vec_map_reduce_prior_binding_result_identical_to_sequential`.
+// below the ≥2 gate. Its observable result remains identical with lenient
+// evaluation enabled and disabled; emitted-code coverage pins the no-spark arm.
 #[test]
-fn apply_arg_single_expensive_stays_serial() {
+fn apply_arg_single_expensive_preserves_result_parity() {
     let src = format!(
         "{AA_WORK_DEF}(defn main [] (Pure (div-i64 (add-i64 (work 40000000 0) 7) 1000000)))\n"
     );
-    let majority = PMR_ATTEMPTS / 2 + 1;
-    let mut no_speedup = 0u32;
-    let mut observed: Vec<(u128, u128, u128)> = Vec::new();
-    for attempt in 0..PMR_ATTEMPTS {
-        let (on_ms, on_exit) = aa_run_elapsed(&src, &[]);
-        let (off_ms, off_exit) = aa_run_elapsed(&src, &[("CRANELISP_NO_LENIENT", "1")]);
-        assert_eq!(
-            on_exit, off_exit,
-            "attempt {attempt}: single-expensive ON vs OFF differ ({on_exit:?} vs {off_exit:?})"
-        );
-        let threshold = off_ms * PMR_SPEEDUP_NUM / PMR_SPEEDUP_DEN;
-        observed.push((on_ms, off_ms, threshold));
-        if on_ms >= threshold {
-            no_speedup += 1;
-            if no_speedup >= majority {
-                break;
-            }
-        }
-    }
-    assert!(
-        no_speedup >= majority,
-        "expected NO speedup (ON >= 0.7·OFF) in the majority of {PMR_ATTEMPTS} attempts \
-         — a single expensive apply-arg must NOT be sparked (≥2 gate, §12.4.3). \
-         Attempts (on_ms, off_ms, threshold): {observed:?}"
+    let on = aa_run_exit(&src, &[]);
+    let off = aa_run_exit(&src, &[("CRANELISP_NO_LENIENT", "1")]);
+    assert_eq!(
+        on, off,
+        "single-expensive apply-arg ON vs OFF differ ({on:?} vs {off:?})"
     );
+    assert_eq!(on, Some(40), "expected the single work result 40; got {on:?}");
 }
 
 // spec: spec/12-runtime.md §12.4.3 — NEGATIVE gating: an apply whose arguments

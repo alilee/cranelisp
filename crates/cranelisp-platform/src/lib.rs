@@ -14,9 +14,9 @@
 //!   `cranelisp-fs`, etc.) calls the [`declare_platform!`] macro to
 //!   emit its [`PlatformManifest`] static, defines `extern "C"` functions
 //!   that take/return CL wrapper types ([`CLInt`], [`CLBool`], [`CLFloat`],
-//!   [`CLString`], [`CLIO`], [`CLAdt`]), and accesses host services
-//!   (allocator, RC, validation) through the host-installed
-//!   [`HostCallbacks`].
+//!   [`CLString`], [`CLIO`], [`CLAdt`]), and accesses host allocation through
+//!   the host-installed [`HostCallbacks`]. Schema validation is the separate
+//!   layout-hash gate; RC operates on the shared heap header.
 //!
 //! Per Principle 15's **external-audience exception**, this crate's
 //! facade lives with its source rustdoc (after Sprint 71 the standalone
@@ -129,8 +129,8 @@
 //!
 //! - `design/arch/bounded-contexts.md` §5 — Platform bounded-context
 //!   full statement (cross-surface narrative + invariants).
-//! - `design/platform/sprint71-redesign.md` — Sprint 71 design doc
-//!   (schema format, marker-type pattern, ABI v2 growth).
+//! - `design/platform/platform.md` — current platform interface and ABI rules.
+//! - `design/platform/poll-leaf-authoring.md` — poll-shaped platform leaves.
 //! - Principles 6, 8, 14, 15, 18 — design budget, no-interim, FFI
 //!   layout, facade-types-live-with-behaviour, structural invariants.
 
@@ -165,12 +165,11 @@ pub use concurrency::{
 // single-ABI cutover.
 pub mod poll_support;
 
-// The `declare_platform!` three-exports emitter + its compile-time
-// `extract_layout_hash` helper. The macros are `#[macro_export]` (crate-root
-// resolution); `extract_layout_hash` is re-exported here so the macro's
-// `$crate::extract_layout_hash` path and in-crate callers resolve identically.
+// The `declare_platform!` three-exports emitter + its compile-time artifact
+// readers. The macros are `#[macro_export]` (crate-root resolution); the readers
+// are re-exported so the macro's `$crate::…` paths and callers resolve alike.
 mod declare;
-pub use declare::extract_layout_hash;
+pub use declare::{extract_layout_hash, schema_declares_type};
 
 /// GOT table size — re-exported from `cranelisp-types` so the
 /// [`declare_platform!`] macro can size the exported platform GOT
@@ -187,12 +186,13 @@ pub use std::sync::atomic::AtomicPtr as MacroAtomicPtr;
 /// Platform ABI version — bump on any layout-affecting change to the
 /// platform DLL boundary.
 ///
-/// **Bump rules** (per `design/platform/sprint71-redesign.md` §6 / A4):
+/// **Bump rules** (per `design/platform/platform.md` §4.3 / A4):
 ///
 /// (i)  Any field added/removed/reordered in `HostCallbacks`,
 ///      `PlatformFn`, `PlatformManifest`: BUMP.
-/// (ii) Any change to `HEAP_HEADER_SIZE`, `STRING_HEADER_BYTES`,
-///      `IO_TAG_*`, `IO_EFFECT_RESOURCE_OFFSET`: BUMP.
+/// (ii) Any change to `HEAP_HEADER_SIZE`, `STRING_HEADER_BYTES`, `IO_TAG_*`,
+///      or a node layout that a DLL constructs or reads (including
+///      `IO_PURE_GLUE_OFFSET` and the `IO_EFFECT_*_OFFSET` family): BUMP.
 /// (iii) Any new `CL_TYPE_TAG_*` const value: BUMP (DLLs built against
 ///       the old ABI don't know to populate the new tag).
 /// (iv) Adding a new pub `CL<T>` wrapper variant — alone — does NOT
@@ -295,7 +295,10 @@ pub use std::sync::atomic::AtomicPtr as MacroAtomicPtr;
 /// host-reactor edge): the `HostCtx` vtable and `ConcurrencyDescriptor` field
 /// sets changed. With no out-of-tree DLLs the cutover landed as one atomic
 /// in-tree change-set, every in-tree platform rebuilding against v9.
-pub const ABI_VERSION: u32 = 9;
+/// v10 (Sprint 121, FIXME 0934) — the DLL-constructed [`IO_TAG_PURE`] node
+/// appends its payload-drop-glue witness word. A v9 DLL returns a shorter node,
+/// so the host must reject it before reading the v10-only word.
+pub const ABI_VERSION: u32 = 10;
 
 /// The exported-symbol name of a platform's manifest entry point, namespaced by
 /// the platform's raw `name:` literal (`cranelisp_platform_manifest_<name>`).
@@ -367,8 +370,18 @@ pub const IO_TAG_LAUNCH: i64 = 5;
 /// `design/backend/io-trampoline.md §16` + `design/int/reactor.md §2.15`.
 pub const IO_TAG_SELECT: i64 = 6;
 
+/// Payload-relative byte offset of a `Pure` node's payload-drop-glue witness.
+///
+/// A platform DLL initializes this appended word to `0` while the node is fresh
+/// and unpublished. The host adopts a returned node by replacing that sentinel
+/// with `0` for a scalar payload or the canonical `drop<T>` address for a heap
+/// payload. Published nodes are claimed atomically by the runtime.
+pub const IO_PURE_GLUE_OFFSET: i64 = 16;
+
+const _: () = assert!(HEAP_HEADER_SIZE + IO_PURE_GLUE_OFFSET == 32);
+
 /// Byte offset of the resource token within an Effect node payload.
-/// Effect layout (slice-3 / S95, ABI v4 node):
+/// Effect layout (current ABI-governed node):
 /// `[tag i64][thunk_ptr i64][resource_token i64][fn_name_handle i64][capacity i64]`
 /// -- 40 bytes (widened 32 → 40 by the slice-3 capacity append, itself widened
 /// from 24 by FIXME 0327, the dispatch funnel). All offsets are append-only — no
@@ -401,10 +414,8 @@ pub const IO_EFFECT_FN_NAME_OFFSET: i64 = 24;
 /// ⇒ no acquire (unrestricted). `capacity` is a plain `NeverHeap` i64 — the
 /// blocking node's DLL-side drop glue is unchanged.
 ///
-/// The node layout is an **in-process** backend↔intrinsics convention; the append
-/// is **not** an [`ABI_VERSION`] bump (the in-workspace host + DLLs rebuild
-/// together, and a node built by `effect_on_resource` — capacity 1 — and one
-/// built by `…_with_capacity` agree by construction). See `io-trampoline.md` §13.9.
+/// This node is constructed by platform DLLs and read by the host, so any layout
+/// change requires an [`ABI_VERSION`] bump. See `design/platform/platform.md` §4.3.
 pub const IO_EFFECT_CAPACITY_OFFSET: i64 = 32;
 
 /// Scheduling class for a platform function, declared in the platform manifest.
@@ -537,7 +548,11 @@ pub struct PlatformFn {
     pub drop_state: Option<unsafe extern "C" fn(state: *mut c_void)>,
     /// Number of i64 parameters.
     pub param_count: u32,
-    /// Type signature as S-expression string (e.g. "(Fn [String] (IO Int))").
+    /// Fully-qualified, fully concrete type signature as an S-expression
+    /// (for example `(Fn [primitives/String] (primitives/IO primitives/Int))`).
+    /// A bare lowercase leaf parses as a type variable and the host refuses the
+    /// manifest with a located error; a hand-written C-ABI body cannot provide a
+    /// checkable polymorphic implementation.
     pub type_sig: *const u8,
     pub type_sig_len: usize,
     /// Docstring for the function.
@@ -572,28 +587,15 @@ unsafe impl Sync for PlatformFn {}
 /// `cranelisp_platform_manifest` entry point; [`HostContext::init`]
 /// stores it for the DLL's lifetime.
 ///
-/// # Current shape (ABI v3)
+/// # Current shape (ABI v10)
 ///
-/// As of Sprint 76 (`ABI_VERSION = 3`, FIXMEs 0286 + 0288), the struct carries
-/// two fields: `alloc` (the original, ABI v1+) and `alloc_with_tag` (consumed by
-/// [`CLAdt::construct`] — KEPT, ADT construction across the FFI still needs the
-/// host allocator). `alloc_with_tag` is wired to the real host intrinsic. The
+/// The struct permanently carries two fields: `alloc` and `alloc_with_tag`
+/// (consumed by [`CLAdt::construct`], because ADT construction across the FFI
+/// needs the host allocator). `alloc_with_tag` is wired to the host intrinsic. The
 /// former `validate_schema` channel is **gone** (FIXME 0288): schema validation
 /// is superseded by the layout-hash gate (platform-interface.md §5.5.4) — the
 /// host regenerates the schema from its live tables and compares the canonical
 /// hash to the DLL's exported `__cranelisp_layout_hash_<name>`.
-///
-/// # Future shape — Decision 0031 callback support
-///
-/// When `Fn a b` lands on the spec §10.10.1 platform-ABI permitted-types
-/// list (currently future work; not in this sprint's scope), the struct
-/// widens further with `rc_inc`, `rc_dec`, and `invoke_closure` fields.
-/// Platform DLLs retaining user-supplied closures across calls will
-/// inc-on-store / dec-on-release; invocation will dispatch through the
-/// GOT (so REPL redefinition retargets future invocations
-/// transparently). The widening is a binary-incompatible ABI bump
-/// (Principle 14). See `bounded-contexts.md` §5 invariant 3 for the
-/// durable forward-looking contract.
 #[repr(C)]
 pub struct HostCallbacks {
     /// Allocate `size` bytes, returns payload pointer (base + 16).
@@ -791,8 +793,10 @@ impl From<CLFloat> for f64 {
 /// boundary as a `#[repr(transparent)]` `i64`.
 ///
 /// Convention-sealed: only the four primitive wrappers ([`CLInt`],
-/// [`CLBool`], [`CLFloat`], [`CLString`]) plus the parameterised
-/// wrappers ([`CLIO<T>`], [`CLAdt<T>`]) implement `CLType`. The `Copy`
+/// [`CLBool`], [`CLFloat`], [`CLString`]) plus [`CLAdt<T>`] implement
+/// `CLType`. [`CLIO<T>`] deliberately does not: IO nodes are platform return
+/// containers, not values that can themselves be passed or nested through this
+/// wrapper boundary. The `Copy`
 /// super-bound suffices in practice — DLL authors don't own any `Copy`
 /// type satisfying the `i64` + ABI contract. A `mod sealed { pub trait
 /// Sealed {} }` super-bound is a candidate future cleanup but not
@@ -892,10 +896,9 @@ pub struct EffectOutcome {
 /// [`CLIO::pure`] / [`CLIO::effect`] / [`CLIO::effect_on_resource`] for
 /// the three constructors.
 ///
-/// Per spec §10.10.1 the platform calling convention permits `Int`,
-/// `Bool`, `String`, `Float`, and `IO a` as argument and return types.
-/// `Fn a b` is reserved for future callback support per Decision 0031's
-/// "Callback support (forward commitment)" sub-section.
+/// A platform function returns `CLIO<CL>` where `CL: CLType`. Because `CLIO`
+/// itself does not implement `CLType`, a DLL cannot construct a nested
+/// `Pure (IO a)` payload or accept an IO node as an ordinary argument.
 #[repr(transparent)]
 #[derive(Debug)]
 pub struct CLIO<CL: CLType>(i64, std::marker::PhantomData<CL>);
@@ -904,16 +907,20 @@ impl<CL: CLType> CLIO<CL> {
     /// Wrap a completed value in IO by allocating a Pure node on the heap.
     ///
     /// Returns a base pointer (not payload pointer) because the IO trampoline
-    /// reads fields at base + HEAP_HEADER_SIZE offsets.
+    /// reads fields at base + HEAP_HEADER_SIZE offsets. The platform writes the
+    /// required `0` payload-glue sentinel; the host adopts that witness before
+    /// publishing a platform-returned node.
     pub fn pure(val: CL) -> Self {
         let alloc = get_global_alloc();
-        let payload = alloc(16); // 2 x i64: tag + value
+        let payload = alloc(24); // 3 x i64: tag + value + payload glue
         // SAFETY: `payload` is a valid pointer returned by the host allocator for
-        // at least 16 bytes. We write two i64 fields (tag at offset 0, value at
-        // offset 8) within that allocation. The allocator guarantees 8-byte alignment.
+        // at least 24 bytes. We write three i64 fields (tag at offset 0, value at
+        // offset 8, glue sentinel at offset 16) within that allocation. The
+        // allocator guarantees 8-byte alignment.
         unsafe {
             *(payload as *mut i64) = IO_TAG_PURE;
             *((payload + 8) as *mut i64) = val.to_raw();
+            *((payload + IO_PURE_GLUE_OFFSET) as *mut i64) = 0;
         }
         // Return base pointer (payload - header) for trampoline compatibility.
         CLIO(payload - HEAP_HEADER_SIZE, std::marker::PhantomData)

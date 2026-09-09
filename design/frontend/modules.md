@@ -17,7 +17,7 @@ The module system provides:
 ```
 Source text
   --[reader]--> Vec<Sexp>
-  --[module_extract]--> (ModuleStructure, remaining_sexps)
+  --[module_extract]--> (ExtractedDeclarations, remaining_sexps)
   --[ast_builder]--> Vec<TopLevel>
   --[typecheck]--> CheckResult   (uses per-module SymbolTable)
   --[codegen]--> JIT code        (uses shared JIT + GOT)
@@ -89,22 +89,32 @@ Classifies what kind of definition a `Def` entry represents:
 | `UserFn { constrained_fn }` | User-defined function. If `constrained_fn` is `Some`, it is a constrained polymorphic function awaiting monomorphisation |
 | `Overloaded { variants }` | Multi-signature overloaded function base name (Ring 2) |
 
-### 1.5 ModuleStructure
+### 1.5 ExtractedDeclarations — and how it reaches the symbol table
 
-Intermediate representation produced by `module_extract.rs` -- captures the structural metadata parsed from a file before AST building:
+`extract_module_declarations` returns the structural metadata peeled from a file
+before AST building, paired with the residual forms. It is the frontend's one
+public DTO (`crates/cranelisp-frontend/src/module_extract.rs`), carrying the
+containing module's `path` plus `mod_decls`, `import_specs`, `export_specs` and
+`platform_specs`, each in source order. It is `#[non_exhaustive]`, so a new
+declaration category is a non-breaking addition. Trait impls and DLL paths are
+**not** extracted here — they are ordinary forms and reach typecheck through the
+residual vector.
 
-```rust
-pub struct ModuleStructure {
-    pub path: ModuleFullPath,
-    pub file_path: Option<PathBuf>,
-    pub mod_decls: Vec<ModDecl>,
-    pub import_specs: Vec<ImportSpec>,
-    pub export_specs: Vec<ExportSpec>,
-    pub impl_sexps: Vec<ImplSexp>,
-    pub impls: Vec<TraitImpl>,
-    pub dll_path: Option<PathBuf>,
-}
-```
+**The append contract is the `pub` structural `Vec` fields on `SymbolTable`.**
+There is no bulk-load method and no append helper: int's form handlers push
+directly onto `imports` / `exports` / `platforms` / `submodules` in
+source/authorship order, append-only and with no dedup, as each field's own
+documentation states. `SymbolTable::append_structural_decl` and its
+`StructuralDeclEntry` carrier were **deleted at S119** (FIXME 0918) with zero
+callers, resolving the Decision-39 append-carrier question one way; and
+`SymbolTable::write_structural_decls`, which several documents once cited as the
+bulk-load API, **never existed anywhere in the tree**. Do not reintroduce either
+name into a design, a rustdoc or a diagram: naming a method that does not exist
+is what sent readers looking for a carrier the tree had already decided against.
+
+The `ExtractedDeclarations` rustdoc states this direct-append contract. The DTO
+and its source documentation are current; neither names a bulk-load method or a
+parallel structural-declaration store.
 
 ### 1.6 Import/Export Specification Types
 

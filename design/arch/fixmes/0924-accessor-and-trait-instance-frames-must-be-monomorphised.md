@@ -7,9 +7,9 @@ sprint_filed: 119
 refers_to: design/backend/non-concrete-release-contract.md §4 faces 2+3, §4.3 (the
   impossibility proof), §5.2 (the obligation);
   crates/cranelisp-typecheck/src/adt.rs:136,241-245 (accessor synthesis — the
-  0867 seam);
+  product-accessor seam; 0867 retired S121);
   the trait-method instance mangle (`Functor.fmap$primitives/Option`);
-  design/arch/fixmes/0903-*.md families 1+2, 0916, 0867
+  design/arch/fixmes/0903-*.md families 1+2, 0916
 status: open
 ruled_at: design/typecheck/non-concrete-producer-obligations.md §2 (P-1, P-2, A-MINT)
 ruled_by: /design (typecheck)
@@ -21,8 +21,9 @@ ruled_sprint: 119
 > **RULED S119 Phase 3 round 2, `/design`(typecheck)** —
 > `design/typecheck/non-concrete-producer-obligations.md` §2. **Left open**: the
 > design half is discharged; the implementation is `/dev`(typecheck)'s (§6 CS-1 +
-> CS-2 of the ruling) and this file is the gate marker `/sprint` uses for 0916 and
-> rider 0867. Delete when CS-2 lands and its census reads zero.
+> CS-2 of the ruling) and this file is the gate marker `/sprint` uses for 0916.
+> The former rider 0867 widening was retired by the S121 product-only accessor
+> ruling. Delete when CS-2 lands and its census reads zero.
 >
 > **The reduction.** Both families are *hand-mint sites that bypass the S84 slot
 > gate* (`monomorphisation.md` §1: a def has a slot ⟺ its type is
@@ -51,11 +52,9 @@ ruled_sprint: 119
 > directly at synthesis rather than resolved. F2 (a real user-written body) does
 > take the ordinary re-check path.
 >
-> **Sequencing correction for `/sprint`.** Rider **0867 unblocks on P-1 alone**,
-> not on the whole obligation: once the accessor mint is gated, a missed
-> instantiation is a located missing-slot failure, not a SIGSEGV. The ruling §4.2
-> recommends landing P-1-for-accessors and 0867 in the **same** change-set (same
-> function, one review surface).
+> **S121 correction.** Rider **0867 is retired**, not sequenced: only product
+> fields mint accessors. P-1 and A-MINT therefore cover polymorphic product
+> accessors; no partial sum accessor is introduced.
 >
 > **One item stands for `/arch`** (filed as 0925): both this obligation and 0913
 > are serde-visible *meaning* changes to cached entries, and a stale sidecar
@@ -143,11 +142,9 @@ capability two frame kinds are exempted from.
 
 ## Sequencing consequences
 
-- **This gates rider 0867.** 0867 widens accessor minting to every sum type and
-  distinct-name product — i.e. it *widens F1's surface*. `SPRINT.md`
-  §Must-not-interleave already gates 0867 behind the accessor disposition; this
-  FIXME is that gate's content. Landing 0867 first manufactures new members of a
-  memory-unsafe class.
+- **Rider 0867 no longer widens F1.** The S121 product-only ruling retires that
+  proposed surface; sum payload labels mint no accessors. This FIXME continues
+  to govern polymorphic product accessors and generic trait-method instances.
 - **This gates 0916 ×1.** The ruling's staging table (§7) makes 0916
   producer-gated: 10 of the 11 Spine-1 REDs (0917×3 + 0907×7) close with
   backend-only changes; 0916 does not close without this obligation.

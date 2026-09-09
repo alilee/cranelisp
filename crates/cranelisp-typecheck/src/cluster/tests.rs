@@ -1,5 +1,5 @@
 use super::*;
-use cranelisp_types::{ModuleEntry, Symbol};
+use cranelisp_types::{Binding, Decl, Symbol, Type, TypeRecord, Visibility};
 use std::sync::Arc;
 
 fn module_path() -> ModuleFullPath {
@@ -15,14 +15,24 @@ fn empty_modules() -> Arc<DashMap<ModuleFullPath, SymbolTable<(), ()>>> {
     Arc::new(modules)
 }
 
-fn dummy_module_entry() -> ModuleEntry<()> {
-    ModuleEntry::Import {
-        source: cranelisp_types::FQSymbol {
-            module: ModuleFullPath::from("other"),
-            symbol: Symbol::from("x"),
-        },
-        visibility: cranelisp_types::Visibility::Private,
-    }
+fn dummy_binding() -> Binding<()> {
+    Binding::new(
+        Decl::Type(TypeRecord::Intrinsic {
+            ty: Type::Int,
+            docstring: None,
+        }),
+        Visibility::Private,
+    )
+}
+
+fn shadowing_binding() -> Binding<()> {
+    Binding::new(
+        Decl::Type(TypeRecord::Intrinsic {
+            ty: Type::Bool,
+            docstring: None,
+        }),
+        Visibility::Private,
+    )
 }
 
 #[test]
@@ -38,7 +48,8 @@ fn live_mode_routes_to_live_table() {
     // Write through accessor
     {
         let mut w = ctx.current_symbol_table_mut();
-        w.insert(Symbol::from("present"), dummy_module_entry());
+        w.install_binding(Symbol::from("present"), dummy_binding())
+            .unwrap();
     }
     // Read back via accessor (and via live table directly)
     {
@@ -58,7 +69,8 @@ fn cluster_mode_writes_go_to_staging_not_live() {
         let mut ctx: SymbolTableAccess<'_, (), ()> =
             SymbolTableAccess::cluster(&modules, &mut staging, module_path());
         let mut w = ctx.current_symbol_table_mut();
-        w.insert(Symbol::from("staged"), dummy_module_entry());
+        w.install_binding(Symbol::from("staged"), dummy_binding())
+            .unwrap();
     }
     // Staging carries the entry
     assert!(staging.get("staged").is_some());
@@ -73,10 +85,13 @@ fn cluster_mode_reads_union_staging_and_live() {
     // Seed live with one entry
     {
         let mut live = modules.get_mut(&module_path()).unwrap();
-        live.insert(Symbol::from("live_only"), dummy_module_entry());
+        live.install_binding(Symbol::from("live_only"), dummy_binding())
+            .unwrap();
     }
     let mut staging = SymbolTable::<(), ()>::new_with_params(module_path());
-    staging.insert(Symbol::from("staging_only"), dummy_module_entry());
+    staging
+        .install_binding(Symbol::from("staging_only"), dummy_binding())
+        .unwrap();
 
     let ctx: SymbolTableAccess<'_, (), ()> =
         SymbolTableAccess::cluster(&modules, &mut staging, module_path());
@@ -93,32 +108,24 @@ fn cluster_mode_staging_shadows_live() {
     // Seed live with placeholder entry
     {
         let mut live = modules.get_mut(&module_path()).unwrap();
-        live.insert(Symbol::from("name"), dummy_module_entry());
+        live.install_binding(Symbol::from("name"), dummy_binding())
+            .unwrap();
     }
     let mut staging = SymbolTable::<(), ()>::new_with_params(module_path());
     // Stage a shadowing entry with a distinguishable source
-    staging.insert(
-        Symbol::from("name"),
-        ModuleEntry::Import {
-            source: cranelisp_types::FQSymbol {
-                module: ModuleFullPath::from("shadowing"),
-                symbol: Symbol::from("shadow"),
-            },
-            visibility: cranelisp_types::Visibility::Private,
-        },
-    );
+    staging
+        .install_binding(Symbol::from("name"), shadowing_binding())
+        .unwrap();
 
     let ctx: SymbolTableAccess<'_, (), ()> =
         SymbolTableAccess::cluster(&modules, &mut staging, module_path());
     let r = ctx.current_symbol_table();
     let v = r.view();
     let entry = v.lookup(&Symbol::from("name")).expect("name resolves");
-    match entry {
-        ModuleEntry::Import { source, .. } => {
-            assert_eq!(source.module.as_ref(), "shadowing");
-        }
-        _ => panic!("expected Import entry"),
-    }
+    assert!(matches!(
+        &entry.declaration,
+        Decl::Type(TypeRecord::Intrinsic { ty: Type::Bool, .. })
+    ));
 }
 
 #[test]
@@ -169,7 +176,8 @@ fn cluster_mode_empty_staging_reads_live_only() {
     let modules = empty_modules();
     {
         let mut live = modules.get_mut(&module_path()).unwrap();
-        live.insert(Symbol::from("live_only"), dummy_module_entry());
+        live.install_binding(Symbol::from("live_only"), dummy_binding())
+            .unwrap();
     }
     // Staging is empty.
     let mut staging = SymbolTable::<(), ()>::new_with_params(module_path());

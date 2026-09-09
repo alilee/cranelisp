@@ -7,9 +7,7 @@
 //! 2. How the IO trampoline schedules nodes during IO forcing.
 //!
 //! The type lives at the bottom of the dependency DAG (`cranelisp-types`)
-//! so that it can appear both on `DefKind::PlatformEffect` (a sibling
-//! variant on `ModuleEntry::Def.kind` — promoted from the retired
-//! `PrimitiveKind::PlatformEffect` sub-discriminator per S69 Submission 36)
+//! so that it can appear both on `CallableOrigin::PlatformEffect`
 //! and in the platform-ABI surface (derived onto the host-side
 //! `cranelisp-platform::OwnedPlatformFnDescriptor::scheduling_class` from the
 //! unified `PlatformFn::concurrency` — the single-ABI cutover removed the former
@@ -247,7 +245,7 @@ impl ConcurrencyDescriptor {
     /// Best-effort inverse of [`from_scheduling_class`](Self::from_scheduling_class):
     /// map a descriptor's `token`/`cardinality` conflict-domain axis onto the
     /// nearest [`SchedulingClass`]. The host still carries `scheduling_class` on
-    /// `DefKind::PlatformEffect` (the conflict-domain axis, orthogonal to the
+    /// `CallableOrigin::PlatformEffect` (the conflict-domain axis, orthogonal to the
     /// `poll_shape` dispatch axis), so the v7 loader derives it from the lifted
     /// descriptor through this map (FIXME 0457; `platform-interface.md` §6.8).
     ///

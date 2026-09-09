@@ -114,8 +114,8 @@ where
         // `backend-keyed-consumer.md` §4 S10–S18 seams): the Var's typed
         // resolution verdict. `VarRef::Global(storage_fq)` drives every value-seam
         // keyed read below; `VarRef::Local` is a scope-stack reference caught by
-        // the `variables` check first (KC-N6) — a `Local` that MISSES the scope
-        // stack is a hard producer/backend invariant failure carrying the binder
+        // the scope-chain lookup first (KC-N6) — a `Local` that MISSES every
+        // live binder is a hard producer/backend invariant failure carrying the binder
         // identity (§2.7.2), never the old silent "undefined variable".
         resolution: &VarRef,
     ) -> Result<Value, CranelispError> {
@@ -124,19 +124,22 @@ where
         // This handles BOTH a `VarRef::Local` and a `VarRef::Global` whose name
         // shadows a backend local (the self-recursion carve-out records the
         // enclosing fn's storage FQ on a shadowing recursion binding).
-        if let Some(var) = self.variables.get(name) {
-            return Ok(self.builder.use_var(*var));
+        if let Some(var) = self.lookup_var(name) {
+            return Ok(self.builder.use_var(var));
         }
 
         // Past the scope-stack read: convert the typed verdict to the keyed-read
         // target. Exhaustive on the closed `VarRef` sum. A `VarRef::Local` here
         // has no storage FQ — its keyed reads are all `None` (it can only match
-        // the `variables` check, which already missed), and it resolves to the
+        // the binding lookup, which already missed), and it resolves to the
         // hard invariant failure at the terminal below.
         let resolved_target: Option<&FQSymbol> = match resolution {
             VarRef::Global(fq) => Some(fq),
             VarRef::Local { .. } => None,
         };
+        if let Some(fq) = resolved_target {
+            self.ctx.ensure_language_callable_target(fq, span)?;
+        }
 
         // Value-position trait-method reference (spec §7.6). Typecheck
         // annotates a bare `Expr::Var` that names a trait method used in value

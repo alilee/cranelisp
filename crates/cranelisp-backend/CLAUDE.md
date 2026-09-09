@@ -106,6 +106,28 @@ inspection hook (the S66/CLAUDE-cited `CRANELISP_CODEGEN_TRACE` role); pairs wit
 REPL `/clif <name>` and `/disasm` (`produce_disasm`, on-demand — disassembly is
 NOT in the always-created `CompilationArtifacts`).
 
+## Binder identity — ONE SLOT PER BINDER, never per name (S121)
+
+`compiler/scope_chain.rs` owns lexical binder identity; see
+`design/backend/binding-scope.md` for the model. Its frames are ordered
+`BinderSlot`s, so scope exit is `frames.pop()` and return cleanup names a
+`SlotRef`, never a `Symbol`.
+
+The seams that matter on a future edit:
+
+- `bind_local` publishes the value and optional type only after its initializer;
+  `fresh_variable` is private, with `bind_local` and `bind_capture` its only
+  callers.
+- Captures belong to function-lifetime `CaptureEnv`, resolved after the chain;
+  a local shadow cannot release a capture.
+- `Option<Type>` preserves an intentional unrecorded type. Do not invent a
+  scalar type merely to make a slot uniform.
+- Lenient binding state is positional (`sparkability::binder_before`), not
+  name-keyed.
+
+`closure_drop_glue` and `pending_closure_drop_glue` are retired: canonical
+type-directed release does not consume per-binding glue IDs.
+
 ## Submodule seam map + test-module locations
 
 Codegen lives in `impl FnCompiler` blocks across `compiler/` submodules, re-exported
@@ -134,8 +156,13 @@ pub-to-boundary item under `compiler::`; everything else is `pub(crate)`.
   `adt_drop_glue_name` / `adt_instantiation_mangle` / `escape_symbol`, the
   backend-local second identity scheme).
   Grep gate: zero `resolve_driven`/`resolve_*_target` in `compiler/`.
+- `compiler/scope_chain.rs` — the binding environment above (`ScopeChain`,
+  `BinderSlot`, `SlotRef`, `CaptureEnv`, `resolve_binding`); tests in
+  `compiler/scope_chain/tests.rs`.
 - `compiler/control_flow/` — `let_if`, `par_bind`, `lambda`, `fn_as_value`,
   `free_vars`, `sparkability`, `capture_rc`, `select`, `launch`, `utilization`.
+  Publication-order evidence: `control_flow/let_if/binder_publication_tests.rs`;
+  the positional-spark matrix lives in `control_flow/sparkability_tests.rs`.
 - `heap.rs`, `jit.rs`, `got_observer.rs`, `schema.rs`, `exe.rs`,
   `code.rs`, `primitives_inline.rs`, `cache/{manifest,serialize,object,linker,mod}.rs`.
 
@@ -255,8 +282,8 @@ is what the unit tier pins (constructing a live `FnCompiler` is not needed).
 | Predicate | Home | Consumers | Why it is shared |
 |---|---|---|---|
 | `vec_codegen::cow_site_source` (+ `cow_source_has_separate_owner` / `cow_source_is_borrowed` / `cow_retains_reused_gate` / `cow_site_retain_verdict`) | `vec_codegen.rs` | **all four** consumers of "is this a COW site": the producer `cow_source_ownership`, the R3 dec-side seam `fn_compiler::scrutinee_cow_retains_reused`, the MS-P8 flush exemption `fn_compiler::arg_is_inplace_cow_on`, and the return-source producer `fn_compiler::return_cow_source_in_scope` | ONE identity question. Every one of them used to re-derive it from the **syntactic callee spelling** (`matches!(callee_name, "vec-set"\|"vec-push")`) — the resolver-mirror class, with a latent UAF: a user fn literally named `vec-set` made the name test true though the COW gate never ran. S115 W3 converted the R3 seam (0693); **W3b converted the last two (0752)** — `return_cow_source_in_scope` was the sharp one, because its product FEEDS `cow_source_is_borrowed`, so the spelling channel persisted one level upstream of the "consolidated" gate. Identity comes from the RESOLUTION CARRIER (`ResolvedCall::BuiltinFn`), P24. `cow_source_needs_toggle_off_count` is the toggle-inverted face of `cow_source_is_borrowed` and shares its body. |
-| `fn_compiler::is_fresh_construction` | `fn_compiler.rs` | `protect_return_value` (fn-return AND match-arm protect sites) | the return-protect's only license is that the returned box cannot alias a scope binding. Keying it on the fn NAME (`== "main"`) was the 0632/P19 class; freshness is the real license, and it forwards through `let` and through control-flow joins (fresh iff EVERY arm is fresh). **W3b (0749)**: the predicate now covers EVERY box-minting kind (`ConstrADT`, ctor-`Apply`, **`Lambda`, `StringLit`, `VecLit`, auto-curry `Apply`**) and `protect_return_value` no longer carries its own `matches!` list — two lists of "what is fresh", of which the local one did not forward through `let`. The match is **exhaustive (no `_ =>`)**: that is the standing instrument, since a minting kind swept into a catch-all emits a protect inc nothing can balance. |
-| `fn_compiler::value_provenance` → `yields_owned_temporary` | `fn_compiler.rs` | **four** probeless ownership gates plus the one probe-reading consumer: `vec_codegen::{emit_vec_drop_if_temporary, is_vec_last_use, cow_source_has_separate_owner}`, `match_codegen::compile_match`'s once-recorded arm lifetime plan, and `rc_emission::protect_return_value` via `body_is_fresh_construction` | **W4c (0781)**: each probeless gate asked "is this container/scrutinee mine to release?" with `matches!(e, MonoExpr::Var { .. })` — the NODE KIND standing in for the value's provenance. An `If`/`Match`/`Let` that merely YIELDS a borrowed param is not a `Var`, so every one of them claimed a box the enclosing scope still owns: `(defn f [v b] (vec-get (if b v v) 0))` → `--link` exit 134, no `let`, no COW, both arms identical. (`compile_var_pattern_arm`'s alias registration was a fifth reader until S118 W3's single-owner ruling deleted it; "five gates" is the stale count.) The derived answer is a **four-point** lattice `NoReference ⊑ Fresh ⊑ OwnedTemporary ⊑ NotOwnedHere` (join = weakest arm, forwards through `Let`/`If`/`Match`, capped at `OwnedTemporary` through `Trace`/`ParBind`/`LaunchContinue`, and the `Match` fold seeds at the identity `NoReference` — the explicit ARM-LESS guard is what keeps "no value on any path" distinct from "every path carries no reference"), read at TWO thresholds: `is_fresh_construction` = `<= Fresh` (protect elision needs the strong unaliased claim, which a value carrying no reference satisfies trivially), `yields_owned_temporary` = `Fresh \| OwnedTemporary` (release needs "nothing else will release it", and a bare tag is nothing to release — spelling it `!= NotOwnedHere` is now the bug). The match is **exhaustive (no `_ =>`)**: the standing instrument, and triply load-bearing — a minting kind swept into a catch-all leaks (0749), a borrowing kind swept in is a UAF (0781), and a bottom kind swept in poisons its join (0917). |
+| `fn_compiler::body_has_independent_result` | `fn_compiler.rs` | `protect_return_value` at function, binding and match-arm exits | Return protection is unnecessary for a fresh construction or an independently owned callable result. The latter may alias a parameter; cleanup consumes the parameter's other owner. Physical freshness remains a separate predicate. `call_returns_owned_reference` reads the exact resolved language-body target, never its spelling or alias summary; inline primitives retain their existing COW/projection rules. |
+| `fn_compiler::value_provenance_with_calls` → `value_provenance` / `yields_owned_temporary` | `fn_compiler.rs` | Vec temporary-release/COW gates, match arm lifetime planning, and `body_has_independent_result` | One exhaustive walk derives `NoReference ⊑ Fresh ⊑ TransferredCall ⊑ OwnedTemporary ⊑ NotOwnedHere`. Joins take the weakest arm; `Let`/`If`/`Match` forward it, while `Trace`/`ParBind`/`LaunchContinue` remain capped at `OwnedTemporary`. Physical freshness is `<= Fresh`; independent-result protection elision is `<= TransferredCall`. Probeless temporary-release consumers preserve their existing classification; no-reference values require no release. A raw scope-binding arm prevents a join from claiming an independent returned owner. |
 | `context::CtorMeta::value_shape` | `context.rs` | `literals::nullary_constructor_tag` (the bare-`iconst` lowering) and `CompileContext::ctor_value_shape_at` → `value_provenance`'s ctor probe | **S120 (0917)**: the probe is a THREE-STATE closed classification of a global reference — `None` (not a constructor, the probe declining), `BareTag` (zero fields; the value IS the tag), `Payload` (mints or moves a box) — produced by the ONE keyed `ctor_meta_at` read and the ONE `fields.is_empty()` test. A boolean `is_ctor` could not separate a zero-field constructor from one with fields, so `value_provenance`'s `Var` arm classified user-written `None` as ⊤ and one nullary arm poisoned the whole match's join, licensing a protect inc on the fresh boxed arm beside it that nothing balanced (4 objects stranded per iteration, deallocs CONSTANT). A **second** predicate or a second field-list read is the channel on which a provenance verdict can disagree with what was emitted — 0917's own shape one level down — so neither exists. |
 | `apply::classify_auto_curry_target` | `apply.rs` | `compile_auto_curry_call` | the auto-curry seam's totality over the CLOSED carrier sums. The enum IS the totality claim — a new carrier state is a non-exhaustive-match compile error, never a `_ =>` fallthrough. |
 | `FnCompiler::emit_typed_rc_dec` | `rc_emission.rs` | **every** release seam (scope exit, both tail-jump flushes, the match wrapper release, the moded-arg post-call dec, Vec element adapters, capture slots) | **releasing a heap value is a function of its TYPE, not of the site** (0753, completed S118 W3). It converts to a `ConcreteType`, asks the registry for that type's glue, and emits ONE `call`. It has no `needs_guard` parameter — the nullary guard is `GlueShape::guard_nullary`, derived from the type's own ctor set, inside the body — and **no fallback arm**: a non-concrete type is a located `CodegenError`. The per-site classification it replaced (`typed_release_kind`/`TypedRelease`) is deleted; the load-bearing half of that rule, Vec-before-ADT, lives in `drop_glue::shape()`. |
@@ -275,6 +302,12 @@ disagreement "degrades to the producer's truth"; it degrades to a DIFFERENT
 SITE's truth, which is the UAF direction, so it now gets the polarity the
 ambiguity arm always had. An absent record (the producer ran in another
 compiler frame) falls back to the shared predicate.
+
+TCO's COW exemption consumes that same reconciled retain verdict in both
+borrowed-sibling protection and old-slot flushing. A retained result owns a
+separate reference even when its pointer equals the old slot's pointer, so the
+old owner must be released. False or uncertain retain verdicts preserve the
+existing conservative transfer exemption.
 
 ## `got_data_symbol_name` is a FORWARD — never a second body
 

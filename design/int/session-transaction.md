@@ -538,7 +538,7 @@ a stale closure calling mid-window SIGSEGVs today). Changes:
 
 - **Stop zeroing slots.** Old pointers stay live until each symbol's new pointer lands
   (per-slot atomic swap) — the ABI-preserving members get gap-free late binding; nothing is
-  ever NULL. *Landed S101:* `process_form.rs::clear_module_codegen` (`:667`) no longer
+  ever NULL. *Landed S101:* `redefine.rs::clear_module_codegen` no longer
   zeroes; displaced `Code` goes to the retention pool (§6.3), pool-less contexts keep the
   old drop.
 - **Per-symbol gate at Replace commit**: each recommitted symbol classifies against its
@@ -871,15 +871,36 @@ downgraded (below) and T3 is unimplemented-because-unreachable. The triggers, ex
      their own). So replaying the single live `__expr` covers exactly the set that the
      from-source reload cannot otherwise reconstruct.
 
-     **Future generalisation — the SET-capture (FIXME 0553, deferred).** The originally-blessed
-     design captured the full `$`-mangled `UserFn` mono-variant SET (their type-argument tuples)
-     **before** the Replace commit — as *data, not a form* — and re-requested instantiation of
-     that SET after the reload settled. That is the more general cure, but its "re-request their
-     instantiation" step needs a typecheck+backend "instantiate symbol at concrete types" entry
-     point that **does not yet exist**. It is filed as **FIXME 0553** (`target: /typecheck`,
-     co-resolved by `/backend`), sequenced when the enabling monomorphisation seams open
-     (naturally, the increment-I `ModeSummary` sprint). `capture_instantiation_drivers` +
-     `reload_module(extra_forms)` retire when it lands.
+     **The generalisation is now SETTLED and scheduled — the SET-capture lands as a demand set
+     (S121, FIXME 0553).** The originally-blessed design captured the mono-variant SET *before*
+     the Replace commit as **data, not a form**, and re-requested instantiation after the reload
+     settled. Its missing half — a "instantiate this symbol at these types" entry point — is
+     now `cranelisp-typecheck`'s **`instantiate_demands`**, `/arch`-approved 2026-09-01 with the
+     contract pinned at `design/arch/bounded-contexts.md` §2 (a seed of the existing worklist,
+     never a second engine; declined stale demands are `CheckResult` warnings, not errors;
+     reload demands carry `Span::SYNTHETIC`; idempotent on repeat).
+
+     The capture is a **projection of the target module's own table**, not session bookkeeping:
+     after the S121 lifecycle wash every instance is an entry born
+     `Life::Concrete { minted_from: Some(InstanceLink { template, args }), .. }`, so the driver
+     emits one `MonoDemand` per such entry. That covers **every** historical instantiation rather
+     than the last one, and it removes the stale-form hazard by construction — a demand names a
+     template and concrete arguments, so there is no expression that could have acquired
+     ill-typedness since it was minted.
+
+     Ordering (binding): `regenerate_backing_file` → **project the demand set from the live
+     table** → `reload_module` (the Replace commit) → wait for the reload's terminal signal →
+     `instantiate_demands` → the `poll_and_reload` dependent cascade. The projection must precede
+     the Replace commit, which is what displaces the old instances; the re-request must follow
+     the terminal signal, or a demand raised before its template settles takes the
+     `CheckError::Gap` arm and re-enters the orchestrator for a module the eval thread is already
+     driving.
+
+     `capture_instantiation_drivers`, `reload_module`'s `extra_forms` parameter and the
+     `SYNTHETIC_EXPR_WRAPPER` introspection read **retire in the same change-set**. No source-form
+     replay fallback survives: two instantiation triggers for one obligation is the mirror class
+     this spine removes, and the fallback carries one of the two defects being cured. The int
+     half is bundle **N2** of `design/int/s121-c6-visit.md` §4.
 
      **Known limitation — the stale-`__expr` degrade (parity, NOT a fresh regression).**
      `introspection[__expr].sexp` is session-persistent (never cleared on a defn turn), so a T1
@@ -887,8 +908,9 @@ downgraded (below) and T3 is unimplemented-because-unreachable. The triggers, ex
      making `reload_module` return `Err` → spuriously degrading a clean T1 cure to the §10 CS-3
      error-blocked floor. This is **parity** with the prior persisted-`__expr`-in-file behaviour
      (the same stale expression would have re-run from the file) — driver-replay only moved the
-     channel file→memory; it did not introduce the wart. The SET-capture (FIXME 0553) removes it
-     by requesting instantiation at recorded types rather than replaying a form.
+     channel file→memory; it did not introduce the wart. **The demand-set capture above removes
+     it**, by requesting instantiation at recorded types rather than replaying a form; the
+     limitation dies with the replay path, in the same change-set.
   2. **CS-2 — module-grain report integration** (`redefine.rs` report channel + a /repl
      wording increment). Module-grain reload outcomes render through the same
      `TransactionReport`/`pending_cascade_reports` channel as §18.3's sections and §9.1.1's
@@ -1087,7 +1109,7 @@ mechanism, two granularities, not two protocols.
   `redefinitions: Vec<RedefinitionOutcome>` field) back to the driver; the eval path
   (`eval.rs::process_form_cluster` / `codegen_and_execute`) runs the transaction for
   `AbiChanging` outcomes after the target's own codegen succeeds.
-- **Replace path** (`process_form.rs::clear_module_codegen`, `lifecycle.rs::reload_module`):
+- **Replace path** (`redefine.rs::clear_module_codegen`, `lifecycle.rs::reload_module`):
   stop zeroing; per-symbol gate; deleted-symbol freezing; `Code` → pool instead of `None`
   (§6.3, §7.3); stale `kept_jits` comments corrected.
 - **Display**: broken-status via the one shared `redefine.rs::broken_status_line` helper

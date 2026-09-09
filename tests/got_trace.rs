@@ -22,8 +22,8 @@ use helpers::e2e::{Cranelisp, PreludeVariant};
 // FIXME 0099 — GotObserver: JitWrite event
 // =============================================================================
 
-// spec: spec/12-runtime.md §"Diagnostic logging" (CRANELISP_GOT_TRACE
-// reservation, parallel to CRANELISP_IO_TRACE).
+// spec: design/backend/backend.md §"FIXME 0099 — GotObserver implementation (was: GOT-slot population log gap)"
+// (`CRANELISP_GOT_TRACE` reservation, parallel to `CRANELISP_IO_TRACE`).
 // FIXME(/dev backend FIXME 0099 Phase 1 + /dev int FIXME 0099 Phase 2) —
 // fails until backend authors GotObserver trait + int wires the ring
 // buffer + flush guard + register call.
@@ -41,7 +41,7 @@ fn got_trace_emits_jit_write_event() {
     out.assert_stderr_contains("JitWrite");
 }
 
-// spec: spec/12-runtime.md §"Diagnostic logging"
+// spec: design/backend/backend.md §"FIXME 0099 — GotObserver implementation (was: GOT-slot population log gap)"
 // FIXME(/dev backend FIXME 0099 Phase 1 + /dev int FIXME 0099 Phase 2) —
 // fails identically until the observer extension point exists.
 #[test]
@@ -70,7 +70,7 @@ fn got_trace_emits_linker_write_event_on_cache_hit() {
     out.assert_stderr_contains("LinkerWrite");
 }
 
-// spec: spec/12-runtime.md §"Diagnostic logging"
+// spec: design/backend/backend.md §"FIXME 0099 — GotObserver implementation (was: GOT-slot population log gap)"
 // FIXME(/dev backend FIXME 0099 Phase 1 + /dev int FIXME 0099 Phase 2) —
 // fails until the observer surfaces redefinition events.
 #[test]
@@ -90,7 +90,7 @@ fn got_trace_emits_redefinition_event_on_repl_redefn() {
     out.assert_stderr_contains("Redefinition");
 }
 
-// spec: spec/12-runtime.md §"Diagnostic logging" — zero-overhead claim
+// spec: design/backend/backend.md §"FIXME 0099 — GotObserver implementation (was: GOT-slot population log gap)" — zero-overhead claim
 // (negative test).
 // FIXME(/dev backend FIXME 0099 Phase 1) — fails until the observer
 // extension point exists; this test asserts ABSENCE of trace lines when

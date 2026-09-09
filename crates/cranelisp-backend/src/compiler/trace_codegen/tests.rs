@@ -2,8 +2,9 @@ use super::*;
 use cranelisp_intrinsics::heap_string::{alloc_string, read_string_as_str};
 use cranelisp_intrinsics::trace::cranelisp_trace_format;
 use cranelisp_types::{
-    DefKind, ModuleEntry, ModuleFullPath, Scheme, Symbol, SymbolTable, Type, UserFnState,
-    Visibility,
+    CallableArmDraft, CallableOrigin, ConcreteType, DefnVariant, Expr, ModuleFullPath,
+    MonoDefnVariant, MonoExpr, Realization, Scheme, Span, Symbol, SymbolTable, TemplateBody,
+    TemplateKind, Type, Visibility,
 };
 use dashmap::DashMap;
 use std::collections::HashMap;
@@ -192,26 +193,39 @@ fn fn_scheme(params: Vec<Type>, ret: Type) -> Scheme {
 }
 
 /// Insert a Def with a GOT slot + a fake non-zero code pointer.
-fn insert_fn(
-    table: &mut SymbolTable<(), ()>,
-    name: &str,
-    // The GOT slot now rides on the callable `DefKind` variant (S83
-    // reshape), so the caller builds the kind from the allocated slot. For
-    // slot-less kinds (constrained base / overloaded base) the closure
-    // ignores the slot — the entry is then slot-less and discovery skips it
-    // via `callable_got_slot()`.
-    make_kind: impl FnOnce(usize) -> DefKind,
-    scheme: Scheme,
-    fake_ptr: usize,
-) {
+fn insert_fn(table: &mut SymbolTable<(), ()>, name: &str, scheme: Scheme, fake_ptr: Option<usize>) {
+    let symbol = Symbol::from(name);
     let slot = table
-        .allocate_got_slot()
-        .expect("fresh table has free slots");
-    let entry = ModuleEntry::def(scheme, make_kind(slot))
-        .visibility(Visibility::Public)
-        .build();
-    table.insert(Symbol::from(name), entry);
-    table.got.store_slot(slot, fake_ptr as *const u8);
+        .install_concrete(
+            symbol.clone(),
+            scheme,
+            vec![],
+            None,
+            0,
+            CallableOrigin::Plain,
+            Realization::Body {
+                view: MonoDefnVariant {
+                    name: symbol.clone(),
+                    params: vec![],
+                    body: MonoExpr::IntLit {
+                        value: 0,
+                        span: Span::SYNTHETIC,
+                        ty: ConcreteType::Int,
+                    },
+                    span: Span::SYNTHETIC,
+                    mode_summary: None,
+                },
+                code: None,
+            },
+            None,
+            vec![],
+            Visibility::Public,
+        )
+        .expect("install trace-discovery fixture")
+        .index();
+    if let Some(fake_ptr) = fake_ptr {
+        table.got.store_slot(slot, fake_ptr as *const u8);
+    }
 }
 
 #[test]
@@ -222,14 +236,8 @@ fn discovery_includes_all_modules_and_primitives() {
     insert_fn(
         &mut user,
         "fact",
-        |slot| DefKind::UserFn {
-            fn_state: UserFnState::Concrete {
-                got_slot: slot,
-                mode_summary: None,
-            },
-        },
         fn_scheme(vec![Type::Int], Type::Int),
-        0x1000,
+        Some(0x1000),
     );
     tables.insert(ModuleFullPath::from("user"), user);
 
@@ -237,13 +245,20 @@ fn discovery_includes_all_modules_and_primitives() {
     // GOT slot holds the fn ptr. Discovery must pick it up (no project-root
     // filter, primitives included).
     let mut prims = SymbolTable::<(), ()>::new(ModuleFullPath::from("primitives"));
-    insert_fn(
-        &mut prims,
-        "str-concat",
-        |slot| DefKind::primitive(slot),
-        fn_scheme(vec![Type::String, Type::String], Type::String),
-        0x2000,
-    );
+    let primitive_slot = prims
+        .install_extern(
+            Symbol::from("str-concat"),
+            fn_scheme(vec![Type::String, Type::String], Type::String),
+            vec![],
+            None,
+            0,
+            None,
+            None,
+            Visibility::Public,
+        )
+        .expect("install primitive discovery fixture")
+        .index();
+    prims.got.store_slot(primitive_slot, 0x2000 as *const u8);
     tables.insert(ModuleFullPath::from("primitives"), prims);
 
     let traced = discover_traced_fns_from_tables(&tables);
@@ -288,35 +303,46 @@ fn discovery_skips_constrained_poly_base_and_overloaded() {
     let mut m = SymbolTable::<(), ()>::new(ModuleFullPath::from("user"));
 
     // Constrained-poly base name (dispatch placeholder) — skipped.
-    insert_fn(
-        &mut m,
-        "add",
-        |_slot| DefKind::UserFn {
-            fn_state: UserFnState::Constrained(Box::new(make_constrained_fn())),
-        },
+    m.install_template(
+        Symbol::from("add"),
         fn_scheme(vec![Type::Var(0), Type::Var(0)], Type::Var(0)),
-        0x3000,
-    );
-    // Overloaded base name — skipped.
-    insert_fn(
-        &mut m,
-        "show",
-        |_slot| DefKind::Overloaded { variants: vec![] },
-        fn_scheme(vec![Type::Int], Type::String),
-        0x3100,
-    );
+        vec![],
+        None,
+        0,
+        CallableOrigin::Plain,
+        TemplateBody::Ast(template_variant()),
+        TemplateKind::Constrained(Box::new(cranelisp_types::ConstrainedMeta::new(
+            HashMap::new(),
+        ))),
+        vec![],
+        Visibility::Public,
+    )
+    .expect("install constrained template fixture");
+    // A template overload arm is a dispatch source, not a codegen body.
+    m.install_overloaded(
+        Symbol::from("show"),
+        None,
+        0,
+        vec![CallableArmDraft::template(
+            Scheme {
+                type_vars: vec![0],
+                constraints: HashMap::new(),
+                ty: Type::Fn(vec![Type::Var(0)], Box::new(Type::Var(0))),
+            },
+            vec![Symbol::from("x")],
+            TemplateBody::Ast(template_variant()),
+            TemplateKind::Parametric,
+            vec![],
+        )],
+        Visibility::Public,
+    )
+    .expect("install overload fixture");
     // A real mono fn — kept.
     insert_fn(
         &mut m,
         "double",
-        |slot| DefKind::UserFn {
-            fn_state: UserFnState::Concrete {
-                got_slot: slot,
-                mode_summary: None,
-            },
-        },
         fn_scheme(vec![Type::Int], Type::Int),
-        0x3200,
+        Some(0x3200),
     );
     tables.insert(ModuleFullPath::from("user"), m);
 
@@ -339,18 +365,12 @@ fn discovery_skips_empty_got_slots_and_non_fn_schemes() {
     let mut m = SymbolTable::<(), ()>::new(ModuleFullPath::from("user"));
 
     // Def with a got_slot but the GOT slot is 0 (unpopulated) — skipped.
-    let slot = m.allocate_got_slot().expect("fresh table has free slots");
-    let entry = ModuleEntry::def(
+    insert_fn(
+        &mut m,
+        "uncompiled",
         fn_scheme(vec![Type::Int], Type::Int),
-        DefKind::UserFn {
-            fn_state: UserFnState::Concrete {
-                got_slot: slot,
-                mode_summary: None,
-            },
-        },
-    )
-    .build();
-    m.insert(Symbol::from("uncompiled"), entry);
+        None,
+    );
     // (no got.store_slot — slot stays null)
 
     // Non-Fn scheme (e.g. a zero-arg value) with a populated slot — skipped
@@ -358,18 +378,12 @@ fn discovery_skips_empty_got_slots_and_non_fn_schemes() {
     insert_fn(
         &mut m,
         "konst",
-        |slot| DefKind::UserFn {
-            fn_state: UserFnState::Concrete {
-                got_slot: slot,
-                mode_summary: None,
-            },
-        },
         Scheme {
             type_vars: vec![],
             constraints: HashMap::new(),
             ty: Type::Int,
         },
-        0x4000,
+        Some(0x4000),
     );
     tables.insert(ModuleFullPath::from("user"), m);
 
@@ -387,18 +401,15 @@ fn discovery_skips_empty_got_slots_and_non_fn_schemes() {
 
 // A minimal ConstrainedFn for the skip test. We only need the variant
 // discriminator (`constrained_fn: Some(_)`), so any well-formed value works.
-fn make_constrained_fn() -> cranelisp_types::ConstrainedFn {
-    cranelisp_types::ConstrainedFn {
-        variant: cranelisp_types::DefnVariant {
-            params: vec![],
-            body: cranelisp_types::Expr::IntLit {
-                value: 0,
-                span: cranelisp_types::Span::SYNTHETIC,
-                inferred_type: None,
-            },
-            span: cranelisp_types::Span::SYNTHETIC,
+fn template_variant() -> DefnVariant {
+    DefnVariant {
+        params: vec![],
+        body: Expr::IntLit {
+            value: 0,
+            span: Span::SYNTHETIC,
+            inferred_type: None,
         },
-        scheme: fn_scheme(vec![Type::Var(0), Type::Var(0)], Type::Var(0)),
+        span: Span::SYNTHETIC,
     }
 }
 
@@ -422,7 +433,7 @@ fn make_constrained_fn() -> cranelisp_types::ConstrainedFn {
 /// `<(), ()>` symbol table so `lookup_type_def` / `constructor_metas` can
 /// resolve it. Returns the tables + the `IntList` ADT `Type`.
 fn recursive_intlist_tables() -> (DashMap<ModuleFullPath, SymbolTable<(), ()>>, Type) {
-    use cranelisp_types::{DefKind, FQTypeName, TypeDefInfo, TypeName};
+    use cranelisp_types::{FQTypeName, TypeDefInfo, TypeName};
 
     let module = ModuleFullPath::from("user");
     let intlist_fqtn = FQTypeName {
@@ -434,56 +445,43 @@ fn recursive_intlist_tables() -> (DashMap<ModuleFullPath, SymbolTable<(), ()>>, 
     let mut st = SymbolTable::<(), ()>::new(module.clone());
 
     // The TypeDef entry (sum type: type name distinct from both ctors).
-    st.insert(
+    crate::test_support::install_type_fixture(
+        &mut st,
         Symbol::from("IntList"),
-        ModuleEntry::TypeDef {
-            info: TypeDefInfo {
-                name: intlist_fqtn.clone(),
-                type_params: vec![],
-                constructors: vec![Symbol::from("Nil"), Symbol::from("Cons")],
-            },
-            visibility: Visibility::Public,
-            docstring: None,
+        TypeDefInfo {
+            name: intlist_fqtn.clone(),
+            type_params: vec![],
+            constructors: vec![Symbol::from("Nil"), Symbol::from("Cons")],
         },
     );
 
     // Nil — nullary ctor (tag 0, no fields).
-    st.insert(
+    crate::test_support::install_ctor_fixture(
+        &mut st,
         Symbol::from("Nil"),
-        ModuleEntry::def(
-            fn_scheme(vec![], intlist_ty.clone()),
-            DefKind::Constructor {
-                got_slot: 0,
-                type_name: intlist_fqtn.clone(),
-                tag: 0,
-                field_count: 0,
-                internal: false,
-                type_def: None,
-                mode_summary: None,
-            },
-        )
-        .visibility(Visibility::Public)
-        .build(),
+        fn_scheme(vec![], intlist_ty.clone()),
+        vec![],
+        intlist_fqtn.clone(),
+        0,
+        0,
+        None,
+        None,
+        None,
     );
 
     // Cons — data ctor (tag 1): fields [Int, IntList] — the SECOND field is
     // the recursive self-reference that drove the exponential blow-up.
-    st.insert(
+    crate::test_support::install_ctor_fixture(
+        &mut st,
         Symbol::from("Cons"),
-        ModuleEntry::def(
-            fn_scheme(vec![Type::Int, intlist_ty.clone()], intlist_ty.clone()),
-            DefKind::Constructor {
-                got_slot: 0,
-                type_name: intlist_fqtn.clone(),
-                tag: 1,
-                field_count: 2,
-                internal: false,
-                type_def: None,
-                mode_summary: None,
-            },
-        )
-        .visibility(Visibility::Public)
-        .build(),
+        fn_scheme(vec![Type::Int, intlist_ty.clone()], intlist_ty.clone()),
+        vec![Symbol::from("head"), Symbol::from("tail")],
+        intlist_fqtn,
+        1,
+        2,
+        None,
+        None,
+        None,
     );
 
     let tables = DashMap::new();

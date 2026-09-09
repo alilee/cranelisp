@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use cranelisp_types::{CranelispError, ErrorLocation, Sexp, Span};
+use cranelisp_types::{CranelispError, ErrorLocation, QuoteHead, Sexp, Span, quote_head};
 
 use crate::synth;
 
@@ -41,26 +41,6 @@ static SYNTHETIC_SPAN_COUNTER: AtomicU32 = AtomicU32::new(1_000_000);
 pub fn next_synthetic_span() -> Span {
     let v = SYNTHETIC_SPAN_COUNTER.fetch_add(1, Ordering::Relaxed);
     Span::new(v, v)
-}
-
-// ---------------------------------------------------------------------------
-// Sexp form detection helpers
-// ---------------------------------------------------------------------------
-
-fn is_quasiquote(children: &[Sexp]) -> bool {
-    children.len() == 2 && matches!(&children[0], Sexp::Symbol(s, _) if s == "quasiquote")
-}
-
-fn is_quote(children: &[Sexp]) -> bool {
-    children.len() == 2 && matches!(&children[0], Sexp::Symbol(s, _) if s == "quote")
-}
-
-fn is_unquote(children: &[Sexp]) -> bool {
-    children.len() == 2 && matches!(&children[0], Sexp::Symbol(s, _) if s == "unquote")
-}
-
-fn is_unquote_splicing(children: &[Sexp]) -> bool {
-    children.len() == 2 && matches!(&children[0], Sexp::Symbol(s, _) if s == "unquote-splicing")
 }
 
 // ---------------------------------------------------------------------------
@@ -146,26 +126,26 @@ fn make_gensym_name(base: &str) -> String {
 /// forms into explicit `macros/`-qualified constructor calls.
 ///
 /// Pure Sexp-to-Sexp transformation with no typechecker or backend
-/// access needed. Invoked by int/typecheck before macro-head dispatch,
-/// so user macros see already-desugared template syntax. (Post-S76
-/// W-Macro the frontend no longer hosts an `expand` entry; quasiquote
-/// desugaring is the frontend's only syntactic-rewrite step.)
+/// access needed. [`crate::build_forms`] and [`crate::build_form`] invoke it
+/// after macro expansion and before AST dispatch, so user macros receive the
+/// reader's raw quote forms. (Post-S76 W-Macro the frontend no longer hosts an
+/// `expand` entry; quasiquote desugaring is its only syntactic-rewrite step.)
 ///
 /// Pub at the crate root per the standing quasiquote API (used by REPL
 /// `/expand` and by user-authored macros at expansion time).
 pub fn expand_quasiquotes(sexp: &Sexp) -> Result<Sexp, CranelispError> {
     match sexp {
         Sexp::List(children, span) if !children.is_empty() => {
-            if is_quasiquote(children) {
-                let mut gensyms = HashMap::new();
-                let expanded = expand_qq_template(&children[1], 0, &mut gensyms)?;
-                // Recurse into the result in case unquoted sub-expressions
-                // contain their own quasiquotes.
-                return expand_quasiquotes(&expanded);
-            }
-
-            if is_quote(children) {
-                return Ok(expand_quote_template(&children[1]));
+            match quote_head(children) {
+                Some(QuoteHead::Quasiquote) => {
+                    let mut gensyms = HashMap::new();
+                    let expanded = expand_qq_template(&children[1], 0, &mut gensyms)?;
+                    // Recurse into the result in case unquoted sub-expressions
+                    // contain their own quasiquotes.
+                    return expand_quasiquotes(&expanded);
+                }
+                Some(QuoteHead::Quote) => return Ok(expand_quote_template(&children[1])),
+                Some(QuoteHead::Unquote) | Some(QuoteHead::UnquoteSplicing) | None => {}
             }
 
             // Recurse into children.
@@ -311,42 +291,39 @@ fn expand_qq_list(
     // Only check for unquote/quasiquote special forms in true lists,
     // not brackets (brackets cannot contain these as head forms).
     if ctor == "macros/SexpList" {
-        // (unquote expr) at depth 0 -> return expr as-is
-        if is_unquote(children) {
-            if depth == 0 {
-                return Ok(children[1].clone());
+        match quote_head(children) {
+            Some(QuoteHead::Unquote) => {
+                if depth == 0 {
+                    return Ok(children[1].clone());
+                }
+                let inner = expand_qq_template(&children[1], depth - 1, gensym_map)?;
+                return Ok(make_sexp_container(
+                    ctor,
+                    make_slist(vec![make_sexp_sym("unquote"), inner]),
+                ));
             }
-            // Deeper depth: decrement and recurse, wrap result
-            let inner = expand_qq_template(&children[1], depth - 1, gensym_map)?;
-            return Ok(make_sexp_container(
-                ctor,
-                make_slist(vec![make_sexp_sym("unquote"), inner]),
-            ));
-        }
-
-        // (unquote-splicing expr) at top level -> error
-        if is_unquote_splicing(children) {
-            if depth == 0 {
-                return Err(CranelispError::ParseError {
-                    message: "unquote-splicing (~@) not valid at top level of quasiquote"
-                        .to_string(),
-                    location: ErrorLocation::from_span(span),
-                });
+            Some(QuoteHead::UnquoteSplicing) => {
+                if depth == 0 {
+                    return Err(CranelispError::ParseError {
+                        message: "unquote-splicing (~@) not valid at top level of quasiquote"
+                            .to_string(),
+                        location: ErrorLocation::from_span(span),
+                    });
+                }
+                let inner = expand_qq_template(&children[1], depth - 1, gensym_map)?;
+                return Ok(make_sexp_container(
+                    ctor,
+                    make_slist(vec![make_sexp_sym("unquote-splicing"), inner]),
+                ));
             }
-            let inner = expand_qq_template(&children[1], depth - 1, gensym_map)?;
-            return Ok(make_sexp_container(
-                ctor,
-                make_slist(vec![make_sexp_sym("unquote-splicing"), inner]),
-            ));
-        }
-
-        // (quasiquote form) -> increment depth
-        if is_quasiquote(children) {
-            let inner = expand_qq_template(&children[1], depth + 1, gensym_map)?;
-            return Ok(make_sexp_container(
-                ctor,
-                make_slist(vec![make_sexp_sym("quasiquote"), inner]),
-            ));
+            Some(QuoteHead::Quasiquote) => {
+                let inner = expand_qq_template(&children[1], depth + 1, gensym_map)?;
+                return Ok(make_sexp_container(
+                    ctor,
+                    make_slist(vec![make_sexp_sym("quasiquote"), inner]),
+                ));
+            }
+            Some(QuoteHead::Quote) | None => {}
         }
     }
 
@@ -365,9 +342,18 @@ fn expand_qq_children(
     gensym_map: &mut HashMap<String, String>,
 ) -> Result<Sexp, CranelispError> {
     let has_splice = depth == 0
-        && children
-            .iter()
-            .any(|c| matches!(c, Sexp::List(ch, _) if is_unquote_splicing(ch)));
+        && children.iter().any(|child| {
+            let Sexp::List(items, _) = child else {
+                return false;
+            };
+            match quote_head(items) {
+                Some(QuoteHead::UnquoteSplicing) => true,
+                Some(QuoteHead::Quote)
+                | Some(QuoteHead::Quasiquote)
+                | Some(QuoteHead::Unquote)
+                | None => false,
+            }
+        });
 
     if !has_splice {
         // Simple case: no splicing, recurse on each child.
@@ -396,17 +382,21 @@ fn expand_qq_spliced(
     let mut current_group: Vec<Sexp> = Vec::new();
 
     for child in children {
-        if let Sexp::List(ch, _) = child
-            && is_unquote_splicing(ch)
-            && depth == 0
-        {
-            // Flush current group.
-            if !current_group.is_empty() {
-                segments.push(make_slist(std::mem::take(&mut current_group)));
+        if let Sexp::List(items, _) = child {
+            let is_splice = match quote_head(items) {
+                Some(QuoteHead::UnquoteSplicing) => true,
+                Some(QuoteHead::Quote)
+                | Some(QuoteHead::Quasiquote)
+                | Some(QuoteHead::Unquote)
+                | None => false,
+            };
+            if is_splice && depth == 0 {
+                if !current_group.is_empty() {
+                    segments.push(make_slist(std::mem::take(&mut current_group)));
+                }
+                segments.push(items[1].clone());
+                continue;
             }
-            // Add splice expression directly.
-            segments.push(ch[1].clone());
-            continue;
         }
         current_group.push(expand_qq_template(child, depth, gensym_map)?);
     }

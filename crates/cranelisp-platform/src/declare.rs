@@ -6,6 +6,8 @@
 //! - [`extract_layout_hash`] — pulls the `;; layout-hash: <hex>` header out of a
 //!   generated schema artifact at compile time so the `schema:` arm can export it
 //!   as `__cranelisp_layout_hash_<name>`.
+//! - [`schema_declares_type`] — checks at compile time that an `adts:` marker's
+//!   bare FQ key is an entry in that same artifact.
 //! - [`declare_platform!`] — the public macro every platform DLL invokes once
 //!   (two arms: with / without the `schema:` embed).
 //! - [`__declare_platform_body!`] — the shared body emitter (`#[doc(hidden)]`).
@@ -21,7 +23,8 @@
 // -- declare_platform! macro --
 
 /// Extract the `<hex>` from a generated schema artifact's `;; layout-hash:
-/// <hex>` header line, at compile time, so the [`declare_platform!`] `schema:`
+/// <hex>` header line, at compile time, so the
+/// [`macro@crate::declare_platform`] `schema:`
 /// embed arm can export it as `__cranelisp_layout_hash_<name>`
 /// (platform-interface.md §5.5.4).
 ///
@@ -72,6 +75,98 @@ pub const fn extract_layout_hash(artifact: &str) -> &str {
     ""
 }
 
+/// Whether a generated schema artifact declares the bare fully-qualified
+/// `type_key` supplied by a [`macro@crate::declare_platform`] `adts:` marker.
+///
+/// This is a second, const-evaluable reader of the generated artifact grammar;
+/// the runtime parser and grammar authority remain [`crate::Schema::parse`] and
+/// `crate::schema`'s module documentation. Any grammar change must update both
+/// readers. The scan tracks parenthesis depth and skips `;;` comments, so a key
+/// mentioned only as a field type or in commentary is not a declaration.
+///
+/// Only bare keys such as `shapes/Rectangle` are accepted. Empty keys, applied
+/// forms and keys containing ASCII whitespace or parentheses return `false`;
+/// applied marker keys remain expressible through a hand-written
+/// [`crate::CLAdtType`] implementation.
+pub const fn schema_declares_type(artifact: &str, type_key: &str) -> bool {
+    let key = type_key.as_bytes();
+    if key.is_empty() {
+        return false;
+    }
+    let mut k = 0;
+    while k < key.len() {
+        if key[k] == b'('
+            || key[k] == b')'
+            || key[k] == b' '
+            || key[k] == b'\t'
+            || key[k] == b'\r'
+            || key[k] == b'\n'
+        {
+            return false;
+        }
+        k += 1;
+    }
+
+    let bytes = artifact.as_bytes();
+    let mut depth = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b';' && i + 1 < bytes.len() && bytes[i + 1] == b';' {
+            i += 2;
+            while i < bytes.len() && bytes[i] != b'\n' && bytes[i] != b'\r' {
+                i += 1;
+            }
+            continue;
+        }
+        if bytes[i] == b'(' {
+            depth += 1;
+            i += 1;
+            if depth == 2 {
+                while i < bytes.len()
+                    && (bytes[i] == b' '
+                        || bytes[i] == b'\t'
+                        || bytes[i] == b'\r'
+                        || bytes[i] == b'\n')
+                {
+                    i += 1;
+                }
+                let start = i;
+                while i < bytes.len()
+                    && bytes[i] != b' '
+                    && bytes[i] != b'\t'
+                    && bytes[i] != b'\r'
+                    && bytes[i] != b'\n'
+                    && bytes[i] != b'('
+                    && bytes[i] != b')'
+                {
+                    i += 1;
+                }
+                if i - start == key.len() {
+                    let mut same = true;
+                    let mut n = 0;
+                    while n < key.len() {
+                        if bytes[start + n] != key[n] {
+                            same = false;
+                            break;
+                        }
+                        n += 1;
+                    }
+                    if same {
+                        return true;
+                    }
+                }
+                continue;
+            }
+            continue;
+        }
+        if bytes[i] == b')' {
+            depth = depth.saturating_sub(1);
+        }
+        i += 1;
+    }
+    false
+}
+
 /// Declare a platform DLL with metadata and function registrations —
 /// the DLL-author entry point.
 ///
@@ -88,20 +183,20 @@ pub const fn extract_layout_hash(artifact: &str) -> &str {
 ///    wraps the GOT in place (`GotTable::with_static_backing`) and dispatches
 ///    GOT-indirect at `got_slot = manifest index`.
 /// 2. **The manifest** — the `cranelisp_platform_manifest` extern fn returning
-///    a [`PlatformManifest`] of [`PlatformFn`] descriptors (name, FQ type_sig,
+///    a [`crate::PlatformManifest`] of [`crate::PlatformFn`] descriptors (name, FQ type_sig,
 ///    scheduling class, docstring, param-names). The host builds its
 ///    `SymbolTable` from this.
 /// 3. **The embedded schema + layout hash** (optional `schema:` arm) — the
 ///    `/platform-schema`-generated artifact text, embedded via `include_str!`,
-///    parsed once into the per-DLL [`Schema`] (`CLAdt::read_field` reads it by
+///    parsed once into the per-DLL [`crate::Schema`] (`CLAdt::read_field` reads it by
 ///    name); the artifact's `;; layout-hash:` header is exported as the data
 ///    symbol `__cranelisp_layout_hash_<name>` (§5.5.4). The arm is optional —
 ///    an absent schema is tolerated for first builds (the layout-hash gate then
 ///    compares against an empty hash; the REPL warns).
 ///
 /// Platform functions are normal `extern "C"` Rust functions over the `CL*`
-/// wrapper family — defined outside the macro. **Platforms no longer declare
-/// ADTs:** a platform's data types are ordinary `.cl` modules; the macro's
+/// wrapper family — defined outside the macro. **Platforms do not declare ADT
+/// layouts:** a platform's data types are ordinary `.cl` modules; the macro's
 /// signatures reference them by fully-qualified name
 /// (`(Fn [shapes/Rectangle] primitives/Int)`). The Sprint 71 schema
 /// *declaration* dialect (the `LazyLock<Schema>`-as-DSL static, the marker-type
@@ -115,23 +210,25 @@ pub const fn extract_layout_hash(artifact: &str) -> &str {
 /// | `version:` | yes | `&'static str` literal | Platform version |
 /// | `host:` | yes | identifier of a `static HOST: HostContext` | Where the macro calls `init(callbacks)` |
 /// | `schema:` | optional | `&'static str` (the embedded `/platform-schema` artifact, typically `include_str!(...)`) | Embedded generated schema; absent ⇒ no ADT marshaling |
+/// | `adts:` | optional, with `schema:` only | `[ Marker => "module/Type", ... ]` | Emit [`crate::CLAdtType`] markers and assert each bare FQ key is declared by the embedded artifact |
 /// | `functions:` | yes | `[ fn { ... }, ... ]` array | Per-fn descriptors |
 ///
 /// Each per-fn block has four required fields — `cl_name:` (kebab-case
-/// user-visible name), `sig:` (FQ type-signature S-expression), `doc:`
+/// user-visible name), `sig:` (fully-qualified, fully concrete type-signature
+/// S-expression; a bare lowercase leaf is a refused type variable), `doc:`
 /// (docstring), `params:` (named-parameter ident list) — plus a **concurrency
-/// key** that is EITHER `scheduling:` ([`SchedulingClass`] expression — the
+/// key** that is EITHER `scheduling:` ([`crate::SchedulingClass`] expression — the
 /// blocking-effect sugar, lowered via
-/// [`ConcurrencyDescriptor::from_scheduling_class`]) OR `descriptor:`
+/// [`crate::ConcurrencyDescriptor::from_scheduling_class`]) OR `descriptor:`
 /// ([`crate::ConcurrencyDescriptor`] expression — a poll-shape leaf, `blocking =
 /// 0`), and an OPTIONAL `drop_state:` (an
 /// `unsafe extern "C" fn(*mut c_void)` poll-leaf teardown hook).
 ///
-/// # ABI v8 — the single-ABI cutover (Sprint 96)
+/// # ABI v10 — the single ABI
 ///
-/// [`crate::ABI_VERSION`] is now **8**: the v6/v7 dual-channel split is collapsed
-/// into ONE ABI (`design/arch/platform-interface.md` §6.8.0). There is ONE macro
-/// (`declare_concurrent_platform!` is **deleted**), ONE manifest type, ONE GOT
+/// [`crate::ABI_VERSION`] is now **10**. The v6/v7 dual-channel split was
+/// collapsed into one ABI (`design/arch/platform-interface.md` §6.8.0): one macro
+/// (`declare_concurrent_platform!` is **deleted**), one manifest type, one GOT
 /// export, ONE loader path. A platform may freely mix blocking effects
 /// (`scheduling:` / `descriptor` with `blocking = 1`) and poll-shape leaves
 /// (`descriptor` with `blocking = 0`) in ONE manifest; the host reads
@@ -139,8 +236,8 @@ pub const fn extract_layout_hash(artifact: &str) -> &str {
 /// is an `extern "C"` fn returning [`crate::CLIO`]; a poll-shape leaf is a
 /// [`crate::PollFn`] (`unsafe extern "C" fn(state, *HostCtx, *Waker) -> Poll`).
 ///
-/// The 7→8 bump matters only for the load-time ABI gate: a DLL built from this
-/// crate stamps `abi_version: 8`, and the host rejects a mismatched stamp with
+/// The current stamp matters at the load-time ABI gate: a DLL built from this
+/// crate stamps `abi_version: ABI_VERSION`, and the host rejects a mismatch with
 /// [`crate::PlatformError`]`::AbiVersionMismatch`. In-workspace host + platform
 /// DLLs rebuild together, so the stamp stays consistent.
 ///
@@ -193,6 +290,72 @@ pub const fn extract_layout_hash(artifact: &str) -> &str {
 /// ```
 #[macro_export]
 macro_rules! declare_platform {
+    // Arm 1a: schema embed plus compile-time-bound ADT marker types. This
+    // delegates the three exports to arm 1 after emitting the markers and
+    // checking their keys against the exact bytes arm 1 embeds.
+    (
+        name: $platform_name:literal,
+        version: $platform_version:literal,
+        host: $host:ident,
+        schema: $schema_text:expr,
+        adts: [
+            $(
+                $(#[$attr:meta])*
+                $marker:ident => $key:literal
+            ),* $(,)?
+        ],
+        functions: [
+            $(
+                $fn_ident:ident {
+                    cl_name: $cl_name:literal,
+                    sig: $sig:literal,
+                    doc: $doc:literal,
+                    params: [$($param:ident),* $(,)?],
+                    $conc_key:ident: $conc_val:expr,
+                    $(drop_state: $drop_state:expr,)?
+                }
+            ),* $(,)?
+        ]
+    ) => {
+        $(
+            $(#[$attr])*
+            pub struct $marker;
+
+            impl $crate::CLAdtType for $marker {
+                const TYPE_NAME: &'static str = $key;
+            }
+
+            const _: () = assert!(
+                $crate::schema_declares_type($schema_text, $key),
+                concat!(
+                    "declare_platform!: ADT marker `", stringify!($marker), "` names \"", $key,
+                    "\", which is no bare fully-qualified entry in this platform's embedded ",
+                    "schema. The adts: key accepts module/Type names only; check the spelling, ",
+                    "or regenerate the artifact with /platform-schema if the type changed."
+                ),
+            );
+        )*
+
+        $crate::declare_platform! {
+            name: $platform_name,
+            version: $platform_version,
+            host: $host,
+            schema: $schema_text,
+            functions: [
+                $(
+                    $fn_ident {
+                        cl_name: $cl_name,
+                        sig: $sig,
+                        doc: $doc,
+                        params: [$($param),*],
+                        $conc_key: $conc_val,
+                        $(drop_state: $drop_state,)?
+                    }
+                ),*
+            ]
+        }
+    };
+
     // Arm 1: with the `schema:` EMBED arm (the generated artifact text — the
     // schema *declaration* dialect is retired, §6.6). Installs the parsed
     // schema for name-based field access and exports the layout-hash.
@@ -467,6 +630,7 @@ mod tests {
     // -- extract_layout_hash: boundary + negative cells --
 
     use super::extract_layout_hash as elh;
+    use super::schema_declares_type as sdt;
 
     #[test]
     fn extract_layout_hash_finds_marker_not_on_first_line() {
@@ -518,6 +682,53 @@ mod tests {
     fn extract_layout_hash_marker_with_empty_value_is_empty() {
         assert_eq!(elh(";; layout-hash:\n(schema)"), "");
         assert_eq!(elh(";; layout-hash:   \n"), "");
+    }
+
+    const SCHEMA_WITH_NESTED_REFERENCE: &str = "\
+;; layout-hash: marker-tests
+(schema
+  (shapes/Outer
+    (Outer 0 ((inner shapes/Inner))))
+  (shapes/Other
+    (Other 0 ())))";
+
+    #[test]
+    fn schema_declares_type_finds_a_declared_entry() {
+        assert!(sdt(SCHEMA_WITH_NESTED_REFERENCE, "shapes/Outer"));
+        assert!(sdt(SCHEMA_WITH_NESTED_REFERENCE, "shapes/Other"));
+    }
+
+    #[test]
+    fn schema_declares_type_rejects_an_absent_entry() {
+        assert!(!sdt(SCHEMA_WITH_NESTED_REFERENCE, "shapes/Missing"));
+    }
+
+    #[test]
+    fn schema_declares_type_does_not_treat_a_field_type_as_a_declaration() {
+        assert!(!sdt(SCHEMA_WITH_NESTED_REFERENCE, "shapes/Inner"));
+    }
+
+    #[test]
+    fn schema_declares_type_skips_comment_occurrences() {
+        assert!(!sdt(
+            ";; (shapes/Commented (Commented 0 ()))\n(schema)",
+            "shapes/Commented",
+        ));
+    }
+
+    #[test]
+    fn schema_declares_type_rejects_empty_artifacts_and_keys() {
+        assert!(!sdt("", "shapes/Outer"));
+        assert!(!sdt(SCHEMA_WITH_NESTED_REFERENCE, ""));
+    }
+
+    #[test]
+    fn schema_declares_type_rejects_applied_or_non_bare_keys() {
+        assert!(!sdt(
+            "(schema ((shapes/Box primitives/Int) (Box 0 ())))",
+            "(shapes/Box primitives/Int)",
+        ));
+        assert!(!sdt(SCHEMA_WITH_NESTED_REFERENCE, "shapes /Outer"));
     }
 
     // -- declare_platform!: manifest order IS GOT slot order --

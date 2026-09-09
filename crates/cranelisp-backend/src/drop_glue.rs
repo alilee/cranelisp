@@ -8,8 +8,8 @@ use cranelift_module::{FuncId, Linkage, Module};
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    CodeStore, ConcreteType, CranelispError, DefKind, ErrorLocation, FQTypeName, LinkerStore,
-    LinkerSymbol, ModuleEntry, ModuleFullPath, Span, SymbolTable, Type, TypeId,
+    CallableOrigin, CodeStore, ConcreteType, CranelispError, ErrorLocation, FQTypeName,
+    LinkerStore, LinkerSymbol, ModuleFullPath, Span, SymbolTable, Type, TypeId,
     drop_glue_symbol_name, member_key,
 };
 
@@ -229,6 +229,7 @@ impl DropGlueRegistry {
                     self.dealloc_id,
                 );
             }
+            GlueShape::Io => self.emit_io_drop(module, &mut builder, value)?,
             other => self.emit_outer_drop(module, &mut builder, value, &other, &child_ids)?,
         }
         builder.ins().return_(&[]);
@@ -328,10 +329,65 @@ impl DropGlueRegistry {
             }
             // Both handled before `emit_outer_drop`: `Vec` by the rc-gated
             // `vec_drop` seam, `Closure` by `emit_closure_dec_into` (D8).
-            GlueShape::Closure | GlueShape::Vec(_) => unreachable!(),
+            GlueShape::Closure | GlueShape::Vec(_) | GlueShape::Io => unreachable!(),
         }
         let dealloc = module.declare_func_in_func(self.dealloc_id, builder.func);
         builder.ins().call(dealloc, &[value]);
+        builder.ins().jump(done, &[]);
+        builder.switch_to_block(done);
+        builder.seal_block(done);
+        Ok(())
+    }
+
+    fn emit_io_drop<M: Module>(
+        &self,
+        module: &mut M,
+        builder: &mut FunctionBuilder,
+        value: Value,
+    ) -> Result<(), CranelispError> {
+        let done = builder.create_block();
+        let threshold = builder
+            .ins()
+            .iconst(types::I64, heap::NULLARY_THRESHOLD_I64);
+        let is_tag = builder
+            .ins()
+            .icmp(IntCC::UnsignedLessThan, value, threshold);
+        let dec = builder.create_block();
+        builder.ins().brif(is_tag, done, &[], dec, &[]);
+        builder.switch_to_block(dec);
+        builder.seal_block(dec);
+
+        heap::emit_rc_dec_check_gated(builder, module, value);
+        heap::emit_rc_stat_call_gated(builder, module, "runtime/rc_stat_dec");
+        let rc_addr = builder
+            .ins()
+            .iadd_imm(value, i64::from(cranelisp_types::HeapHeader::RC_OFFSET));
+        let one = builder.ins().iconst(types::I64, 1);
+        let old = builder.ins().atomic_rmw(
+            types::I64,
+            MemFlags::trusted(),
+            AtomicRmwOp::Sub,
+            rc_addr,
+            one,
+        );
+        let final_ref = builder.ins().icmp(IntCC::Equal, old, one);
+        let free = builder.create_block();
+        builder.ins().brif(final_ref, free, &[], done, &[]);
+        builder.switch_to_block(free);
+        builder.seal_block(free);
+        builder.ins().fence();
+
+        let mut sig = module.make_signature();
+        sig.params.push(AbiParam::new(types::I64));
+        let free_io = module
+            .declare_function("runtime/free_io_node", Linkage::Import, &sig)
+            .map_err(|error| {
+                self.error(format!(
+                    "failed to declare runtime/free_io_node for IO drop glue: {error}"
+                ))
+            })?;
+        let free_io = module.declare_func_in_func(free_io, builder.func);
+        builder.ins().call(free_io, &[value]);
         builder.ins().jump(done, &[]);
         builder.switch_to_block(done);
         builder.seal_block(done);
@@ -397,6 +453,7 @@ impl DropGlueRegistry {
             ConcreteType::ADT(name, args) if is_vec(name) => Ok(GlueShape::Vec(
                 args.first().cloned().unwrap_or(ConcreteType::Int),
             )),
+            ConcreteType::ADT(name, _) if is_io(name) => Ok(GlueShape::Io),
             ConcreteType::ADT(name, args) => Ok(GlueShape::Adt(self.ctor_shapes(
                 symbol_tables,
                 name,
@@ -421,21 +478,11 @@ impl DropGlueRegistry {
         let table = symbol_tables
             .get(&name.module)
             .ok_or_else(|| self.error(format!("missing module '{}' for drop glue", name.module)))?;
-        let info = match table.get(name.name.as_ref()) {
-            Some(ModuleEntry::TypeDef { info, .. }) => info.clone(),
-            Some(ModuleEntry::Def { kind, .. }) => match &**kind {
-                DefKind::Constructor {
-                    type_def: Some(info),
-                    ..
-                } => (**info).clone(),
-                _ => {
-                    return Err(
-                        self.error(format!("missing type definition '{name}' for drop glue"))
-                    );
-                }
-            },
-            _ => return Err(self.error(format!("missing type definition '{name}' for drop glue"))),
-        };
+        let info = table
+            .get(name.name.as_ref())
+            .and_then(cranelisp_types::Binding::type_def_info)
+            .cloned()
+            .ok_or_else(|| self.error(format!("missing type definition '{name}' for drop glue")))?;
         if info.type_params.len() != args.len() {
             return Err(self.error(format!(
                 "drop glue for '{name}' received {} concrete arguments for {} declared parameters",
@@ -453,16 +500,16 @@ impl DropGlueRegistry {
                 .ok_or_else(|| {
                     self.error(format!("missing constructor '{ctor_name}' of '{name}'"))
                 })?;
-            let ModuleEntry::Def { kind, scheme, .. } = entry else {
+            let Some(callable) = entry.callable() else {
                 return Err(self.error(format!("constructor '{ctor_name}' is not a definition")));
             };
-            let DefKind::Constructor {
+            let CallableOrigin::Ctor {
                 tag, field_count, ..
-            } = &**kind
+            } = &callable.origin
             else {
                 return Err(self.error(format!("'{ctor_name}' is not a constructor")));
             };
-            let (fields, result_ty) = match &scheme.ty {
+            let (fields, result_ty) = match &callable.arm.scheme.ty {
                 Type::Fn(params, result) => {
                     let fields = params.get(..*field_count).ok_or_else(|| {
                         self.error(format!(
@@ -479,7 +526,7 @@ impl DropGlueRegistry {
                     "constructor '{ctor_name}' has non-ADT result type in drop glue"
                 )));
             };
-            if result_name != name || declared_args.len() != info.type_params.len() {
+            if *result_name != *name || declared_args.len() != info.type_params.len() {
                 return Err(self.error(format!(
                     "constructor '{ctor_name}' result does not preserve declared parameter order for '{name}'"
                 )));
@@ -549,6 +596,7 @@ enum GlueShape {
     String,
     Closure,
     Vec(ConcreteType),
+    Io,
     Adt(Vec<CtorShape>),
 }
 impl GlueShape {
@@ -571,6 +619,10 @@ struct CtorShape {
 
 fn is_vec(name: &FQTypeName) -> bool {
     name.module.as_ref() == "primitives" && name.name.as_ref() == "Vec"
+}
+
+fn is_io(name: &FQTypeName) -> bool {
+    name.module.as_ref() == "primitives" && name.name.as_ref() == "IO"
 }
 fn substitute(
     ty: &Type,
@@ -619,7 +671,8 @@ mod tests {
     use cranelift_module::{Module, default_libcall_names};
     use cranelift_object::{ObjectBuilder, ObjectModule};
     use cranelisp_types::{
-        FQTypeName, ModuleEntry, Scheme, Symbol, TypeDefInfo, TypeName, Visibility,
+        CallableOrigin, DefnVariant, Expr, FQTypeName, Scheme, Symbol, SynthSpec, TemplateBody,
+        TemplateKind, TypeDefInfo, TypeName, Visibility,
     };
 
     fn adt(module: &str, name: &str, args: Vec<ConcreteType>) -> ConcreteType {
@@ -652,16 +705,13 @@ mod tests {
         ctors: Vec<(&str, usize, Vec<Type>, Vec<Type>)>,
     ) -> FQTypeName {
         let fq = FQTypeName::new(module.clone(), TypeName::from(name));
-        table.insert(
+        crate::test_support::install_type_fixture(
+            table,
             Symbol::from(name),
-            ModuleEntry::TypeDef {
-                info: TypeDefInfo {
-                    name: fq.clone(),
-                    type_params: type_params.iter().map(|p| Symbol::from(*p)).collect(),
-                    constructors: ctors.iter().map(|(n, ..)| Symbol::from(*n)).collect(),
-                },
-                visibility: Visibility::Public,
-                docstring: None,
+            TypeDefInfo {
+                name: fq.clone(),
+                type_params: type_params.iter().map(|p| Symbol::from(*p)).collect(),
+                constructors: ctors.iter().map(|(n, ..)| Symbol::from(*n)).collect(),
             },
         );
         for (ctor_name, tag, fields, result_args) in ctors {
@@ -671,37 +721,58 @@ mod tests {
             } else {
                 Type::Fn(fields.clone(), Box::new(result))
             };
-            table.insert(
-                Symbol::from(ctor_name),
-                ModuleEntry::Def {
-                    scheme: Scheme {
-                        type_vars: vec![],
-                        constraints: HashMap::new(),
-                        ty: scheme_ty,
-                    },
-                    visibility: Visibility::Public,
-                    docstring: None,
-                    param_names: (0..fields.len())
-                        .map(|i| Symbol::from(format!("f{i}")))
-                        .collect(),
-                    kind: Box::new(DefKind::Constructor {
-                        got_slot: 0,
-                        type_name: fq.clone(),
-                        tag,
-                        field_count: fields.len(),
-                        internal: false,
-                        type_def: None,
-                        mode_summary: None,
-                    }),
-                    callees: vec![],
-                    trait_origin: None,
-                    seq: 0,
-                    ast: None,
-                    codegen_view: None,
-                    code: None,
-                    value_use: false,
-                },
-            );
+            let scheme = Scheme {
+                type_vars: vec![],
+                constraints: HashMap::new(),
+                ty: scheme_ty,
+            };
+            let symbol = Symbol::from(ctor_name);
+            let param_names = (0..fields.len())
+                .map(|i| Symbol::from(format!("f{i}")))
+                .collect();
+            if scheme.ty.is_concrete() {
+                crate::test_support::install_ctor_fixture(
+                    table,
+                    symbol,
+                    scheme,
+                    param_names,
+                    fq.clone(),
+                    tag,
+                    fields.len(),
+                    None,
+                    None,
+                    None,
+                );
+            } else {
+                table
+                    .install_template(
+                        symbol,
+                        scheme,
+                        param_names,
+                        None,
+                        tag as u64,
+                        CallableOrigin::Ctor {
+                            type_name: fq.clone(),
+                            tag,
+                            field_count: fields.len(),
+                            internal: false,
+                            type_def: None,
+                        },
+                        TemplateBody::Synth(SynthSpec::new(DefnVariant {
+                            params: vec![],
+                            body: Expr::IntLit {
+                                value: tag as i64,
+                                span: Span::SYNTHETIC,
+                                inferred_type: Some(Box::new(Type::Int)),
+                            },
+                            span: Span::SYNTHETIC,
+                        })),
+                        TemplateKind::Parametric,
+                        vec![],
+                        Visibility::Public,
+                    )
+                    .expect("install constructor-template fixture");
+            }
         }
         fq
     }
@@ -928,6 +999,71 @@ mod tests {
                 .unwrap(),
             GlueShape::Closure
         ));
+    }
+
+    // spec: design/backend/s121-c4-visit.md §6.4 — IO is runtime-owned and is
+    // classified before general ADT shape discovery. Empty tables are the
+    // discriminating setup: reaching `ctor_shapes` would fail on a missing
+    // primitives module instead of producing the IO shape.
+    #[test]
+    fn an_io_shape_bypasses_constructor_shape_discovery() {
+        let module_path = ModuleFullPath::from("user");
+        let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+        let mut module = object_module();
+        let dealloc = declare_dealloc(&mut module);
+        let registry = DropGlueRegistry::new(module_path, dealloc, None);
+
+        let io_string = adt("primitives", "IO", vec![ConcreteType::String]);
+        assert!(matches!(
+            registry.shape(&tables, &io_string).unwrap(),
+            GlueShape::Io
+        ));
+    }
+
+    // spec: design/backend/s121-c4-visit.md §6.4/§6.5 — every concrete IO
+    // instantiation keeps its canonical public glue identity, but its body
+    // delegates final-node teardown to the single runtime/free_io_node import.
+    // No payload-specific glue is minted by the IO body itself.
+    #[test]
+    fn io_drop_glue_delegates_to_the_runtime_without_minting_payload_glue() {
+        let module_path = ModuleFullPath::from("user");
+        let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+        let mut module = object_module();
+        let dealloc = declare_dealloc(&mut module);
+        let mut registry = DropGlueRegistry::new(module_path.clone(), dealloc, None);
+        let io_string = adt("primitives", "IO", vec![ConcreteType::String]);
+        let io_int = adt("primitives", "IO", vec![ConcreteType::Int]);
+
+        let string_id = registry
+            .request_if_owning(&mut module, &tables, io_string.clone())
+            .unwrap()
+            .expect("IO String owns its node");
+        let int_id = registry
+            .request_if_owning(&mut module, &tables, io_int.clone())
+            .unwrap()
+            .expect("IO Int owns its node");
+        assert_ne!(string_id, int_id, "concrete IO identities remain distinct");
+        assert!(matches!(
+            module.get_name("runtime/free_io_node"),
+            Some(cranelift_module::FuncOrDataId::Func(_))
+        ));
+        assert!(matches!(
+            module.get_name(drop_glue_symbol_name(&module_path, &io_string).as_ref()),
+            Some(cranelift_module::FuncOrDataId::Func(id)) if id == string_id
+        ));
+        assert!(matches!(
+            module.get_name(drop_glue_symbol_name(&module_path, &io_int).as_ref()),
+            Some(cranelift_module::FuncOrDataId::Func(id)) if id == int_id
+        ));
+        assert!(
+            module
+                .get_name(drop_glue_symbol_name(&module_path, &ConcreteType::String).as_ref())
+                .is_none(),
+            "IO teardown must not mint a payload-specific releaser",
+        );
+
+        let finished = registry.finish().expect("both IO bodies reached Defined");
+        assert_eq!(finished.len(), 2, "one body per concrete IO type only");
     }
 
     // spec: appendix-c-nfr §C.1.4 — the nullary-tag guard is a property of the

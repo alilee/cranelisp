@@ -155,48 +155,18 @@ where
     /// dec it later, so the net ownership is correct.
     pub(crate) fn protect_return_value(
         &mut self,
-        skip_var: &Option<Symbol>,
+        skip_var: &Option<crate::compiler::scope_chain::SlotRef>,
         body_val: Value,
         body: &MonoExpr,
     ) {
         if skip_var.is_some() {
             return; // The skip_var mechanism already protects the return value.
         }
-        // Item-26 — a FRESH-CONSTRUCTION return needs no protect, in ANY function
-        // (S115 W3 change-set 2; supersedes the S114 F-R1 `main`-keyed special case
-        // and resolves FIXME 0696 against its design ruling `direction (b)`,
-        // `design/backend/s115-carrier-and-rc-sweep.md` §7).
-        //
-        // The protect exists for ONE reason: scope cleanup decs the scope's heap
-        // bindings, and the returned value may BE one of them. A freshly
-        // MINTED box is brand new: it cannot alias any scope binding, so cleanup
-        // cannot touch it and the inc is a pure over-retention the caller's single
-        // consuming dec can never balance. The license is freshness, never the fn
-        // name (0696: name-as-identity is the 0632 / Principle-19 class, and the
-        // F-R1 comment's "entry-`main` trampoline contract" was never the real
-        // license — `body_is_fresh_construction` was doing the work).
-        //
-        // `body_is_fresh_construction` is the SINGLE source of that truth
-        // (Principle 7). This site used to carry its own `matches!(body,
-        // Lambda | StringLit)` skip ALONGSIDE it — two lists of "what is fresh",
-        // and the local one did not forward through `let`. FIXME 0749 folded it
-        // in; the predicate now covers every box-minting kind and forwards it
-        // through binding indirection and control-flow joins.
-        //
-        // The §2.1 fence is HONORED, not weakened: a general `Apply` return (a
-        // user/trait call that MAY return an aliased argument, e.g. `(id x)`) is
-        // NOT fresh and keeps its protect verbatim — the G2 class the fence
-        // protects is untouched.
-        //
-        // Measured (S115 W3): this is the toggle-OFF half of FIXME 0720. In
-        // `(defn set0 [g m] (match g [(Gr cells) (Gr (vec-set cells 0 m))]))` the
-        // returned `Gr` is fresh; under `CRANELISP_NO_OWNERSHIP` (no summary ⇒
-        // `return_is_fresh_by_summary` cannot fire) the protect inc left every
-        // loop-carried `Gr` at rc≥2, so the TCO flush's dec never reached zero —
-        // 2 objects leaked per iteration. Analysis-ON the summary already
-        // suppressed it, which is why the two toggles disagreed; the two paths now
-        // agree by construction (Principle 7).
-        if self.body_is_fresh_construction(body) {
+        // A callable can return an independently owned reference that aliases a
+        // parameter. Cleanup consumes the parameter's owner, not that returned
+        // reference; retaining it again would strand it after the caller's dec.
+        // Inline COW/projection results keep their existing protection rules.
+        if self.body_has_independent_result(body) {
             return;
         }
         // Only protect if the current scope has heap-typed bindings that
@@ -204,16 +174,10 @@ where
         // `pop_scope_with_cleanup`, so their presence alone does NOT justify
         // a protective inc — emitting one would leave the return value with
         // an inflated RC that the caller cannot balance.
-        let has_cleanup_targets = self.scope_stack.last().is_some_and(|frame| {
-            frame.iter().any(|name| {
-                if self.is_borrowed(name) {
-                    return false;
-                }
-                self.variable_types
-                    .get(name)
-                    .is_some_and(|ty| self.is_heap_type(ty))
-            })
-        });
+        let has_cleanup_targets =
+            self.scope.innermost_frame().iter().any(|slot| {
+                !slot.is_borrowed() && slot.ty().is_some_and(|ty| self.is_heap_type(ty))
+            });
         if !has_cleanup_targets {
             return;
         }
@@ -383,7 +347,7 @@ pub(crate) fn find_var_type_in_expr(expr: &MonoExpr, name: &Symbol) -> Option<Ty
         // per-connection handler) is where a continuation parameter is often
         // used EXCLUSIVELY — e.g. `conn` in `(bind (read-conn conn) (fn [req]
         // … (send-conn conn …)))`. Omitting this arm left such a param
-        // un-typed in `variable_types`, so `compile_consuming_arg_list` skipped
+        // left with no recorded type, so `compile_consuming_arg_list` skipped
         // its consuming inc while the poll state-closure drop glue still dec'd
         // it → double-free of a borrowed heap value owned by an enclosing scope
         // (FIXME 0494 bug #2, the size-32 `Connection` stale RC-dec). Descending
@@ -425,7 +389,7 @@ pub(crate) fn find_var_type_in_expr(expr: &MonoExpr, name: &Symbol) -> Option<Ty
 /// `design/backend/transitive-drop-glue.md` §4.1). The body-AST codegen walk
 /// classifies a `ConcreteType`
 /// off each `MonoExpr` node directly — no `Var` by construction. But the
-/// `Type`-typed RC machinery (`variable_types`, `CtorField`, `resolve_field_types`)
+/// `Type`-typed RC machinery (binder types, `CtorField`, `resolve_field_types`)
 /// reads field/binding types from the **signature** (the `scheme`, `Type::Fn`
 /// params), where a `Var` does survive.
 ///
@@ -436,15 +400,14 @@ pub(crate) fn find_var_type_in_expr(expr: &MonoExpr, name: &Symbol) -> Option<Ty
 ///
 /// 1. **Sanctioned — a constructor `Def`'s own template codegen.** A ctor `Def`
 ///    is compiled ONCE per declaration, so both
-///    `(deftype (Option a) … (Some [:a val]))` (a declared type parameter) and
-///    `(deftype B (Mk [v]))` (an undeclared field typecheck left free) give the
-///    template a `Type::Var` field param. §4.1 rules that class sanctioned and
+///    `(deftype (Option a) … (Some [:a val]))` gives the template a `Type::Var`
+///    field param. §4.1 rules that class sanctioned and
 ///    states its soundness invariant **I-CT** (the shallow dec balances the
 ///    guarded consuming inc on a word the returned box also holds, so it can
 ///    never observe the last reference). §3.1.1's "ctor field types are always
 ///    concrete at codegen" holds for ctor USE sites — a `(Some 1)` instance pins
 ///    `a := Int` — but NOT for the ctor `Def`'s own template body.
-/// 2. Synthetic **field accessors** of a generic or undeclared-field product
+/// 2. Synthetic **field accessors** of a generic product
 ///    (`Box.v`'s `self: ADT(user/Box, [Var(0)])`). §3.1.1 pairs the ctor *and
 ///    accessor* signature paths; §4.1 named only the ctor half.
 /// 3. Generic **trait-method instances** (`Functor.fmap$primitives/Option`'s
@@ -591,3 +554,6 @@ mod find_var_type_tests {
 /// S118 slice S1 — the canonical glue-call emitter (§10 row 3).
 #[cfg(test)]
 mod glue_call_emitter_tests;
+
+#[cfg(test)]
+mod return_ownership_tests;

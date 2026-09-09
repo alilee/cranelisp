@@ -43,7 +43,7 @@ use helpers::e2e::{Cranelisp, PreludeVariant};
 // (Decision 44 — cluster-atomic typecheck via two pure passes + staging)
 // =============================================================================
 
-// spec: spec/08-modules.md §"REPL form sequencing"
+// spec: spec/09-macros.md §9.3.6
 // Passing guard: the macro-after-import orchestration (cross-module macro
 // clause availability across REPL eval) was resolved in S77 W-MacroTrait
 // (FIXME 0299). The fixture was repaired in the same sprint (FIXME 0305) —
@@ -81,8 +81,9 @@ fn process_form_dispatch_macro_after_import_succeeds_in_one_eval() {
         .assert_stdout_contains(":primitives/Int 42");
 }
 
-// spec: spec/05-definitions.md §5.13.2 — REPL Input Boundary and begin Clusters
-//       (cluster-atomic two-pass typecheck; mutual recursion via `(begin ...)`)
+// spec: spec/05-definitions.md §5.13.2 + spec/09-macros.md §9.12.1 — a
+// source-ordered macro checkpoint does not split the surrounding non-macro HM
+// cluster; mutual recursion remains available across it.
 //       design/arch/decisions/0044-cluster-atomic-typecheck-orchestrator-staging.md
 // FIXME(/dev typecheck Phase 3 + /dev int Phase 4 of FIXME 0098, Decision 44)
 //       — fails until `check_form` splits into `check_form_signatures` +
@@ -106,13 +107,14 @@ fn process_form_dispatch_begin_cluster_resolves_mutual_forward_ref() {
         .repl()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .stdin(
-            "(begin (defn f [] (g 1)) (defn g [x] x))\n\
+            "(begin (defn f [] (g 1)) (defmacro identity [x] x) (defn g [x] x))\n\
              (f)\n\
+             (identity 42)\n\
              /list\n",
         )
         .output();
-    // Both defns must be present in /list; (f) must evaluate to 1.
-    out.assert_stdout_contains(":primitives/Int 1")
+    // Both defns must be present in /list; both ordinary and macro uses work.
+    out.assert_stdout_contains_all(&[":primitives/Int 1", ":primitives/Int 42"])
         .assert_stdout_contains_all(&["f", "g"]);
 }
 
@@ -184,8 +186,8 @@ fn process_form_dispatch_bare_forward_ref_errors_clearly() {
         .assert_stdout_does_not_contain("f ");
 }
 
-// spec: spec/12-runtime.md §"Diagnostic logging" (CRANELISP_GOT_TRACE
-// reservation) + facade-level invariant per
+// spec: design/backend/backend.md §"FIXME 0099 — GotObserver implementation (was: GOT-slot population log gap)"
+// (`CRANELISP_GOT_TRACE` reservation) + orchestration invariant per
 // `tests/plan/implementation-slice-s66.md §5.1`.
 // FIXME(/dev int Phase 4 of FIXME 0098 + /dev backend Phase 1 of FIXME 0099,
 //       Decision 44) — fails until backend's `register_got_observer` exists

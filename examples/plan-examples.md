@@ -74,9 +74,9 @@ documented `main` return (sum of sub-test passes); it is the value
 | 18 | `18-macros.cl` | `defmacro`, quasiquote/unquote, multi-clause macros | 89 |
 | 19 | `19-threading.cl` | Data pipelines with `->`, `->>` and friends | 130 |
 | 20 | `20-adt-traits.cl` | Implementing traits (`Eq`, `Display`) for user ADTs | 39 |
-| 21 | `21-hello-io.cl` | The IO model: `Pure`, `bind`, combinators, platform IO | 243 — **RED at HEAD, FIXME 0907** (§2f) |
+| 21 | `21-hello-io.cl` | The IO model: `Pure`, `bind`, combinators, platform IO | 243 — S118 refusal history in §2f; green at the accepted S121 checkpoint |
 | 22 | `22-io-hello.cl` | Testable IO via the `test-capture` platform | 99 |
-| 23 | `23-io-sequence.cl` | IO sequencing patterns with explicit `bind` chains | 178 — **RED at HEAD, FIXME 0907** (§2f) |
+| 23 | `23-io-sequence.cl` | IO sequencing patterns with explicit `bind` chains | 178 — S118 refusal history in §2f; green at the accepted S121 checkpoint |
 | 24 | `24-io-echo.cl` | Input with `read-line`; read-then-process | 20 |
 | 25 | `25-curry.cl` | Auto-currying and partial application — of a named `defn`, of a local **closure value**, and of a **trait operator** (S115 6b). First example to import the examples-local library (`operators`) | 139 |
 | 26 | `26-functor.cl` | The `Functor` trait (higher-kinded `fmap`) | 91 |
@@ -86,7 +86,7 @@ documented `main` return (sum of sub-test passes); it is the value
 | 30 | `30-parallel-map-reduce.cl` | A general parallel `par-map` over a Functor: apply-argument sparking makes recursive divide-and-conquer and `fmap` of an expensive function parallelise automatically | 56 |
 | 31 | `31-bitwise.cl` | Bitwise integer primitives (`bit-and`/`bit-or`/`bit-xor`/`bit-not`/`shl`/`shr`/`popcount`) as bitmask set operations; inline single-bit helpers (`bit-test`/`bit-set`/`bit-clear`/`bit-flip`) and a permission bitmask | 19 |
 | 32 | `32-concurrency-combinators.cl` | Explicit-control concurrency (the CONTROL peer to 28/30's inferred half): `sleep` timer leaf, `race` (first-to-complete wins, loser cancelled), `select` (n-ary race over a Vec), and the `timeout` pattern expressed inline as `race`-against-a-deadline (stdlib `timeout` is off-limits to free-standing examples) | 6 |
-| 33 | `33-redefinition.cl` | Definitions are live: a later `defn` replaces the earlier one, existing dependents rebind, and rebinding cascades transitively — **and the same three claims hold for trait `impl` blocks** (S115 6b) | 139 |
+| 33 | `33-definition-ordering.cl` | Forward references within one compilation cluster: callers before helpers and trait implementations, dependency chains, and the boundary against duplicate `defn` forms | 6 |
 | 34 | `34-async-io-leaf.cl` | Poll-shape platform IO leaf: an async effect (`async-read`) that SUSPENDS on the host reactor and RESUMES with its result, vs. the blocking effects of 21–24; independent poll-shape leaves overlap on one reactor thread. Teaches the poll-shape leaf MECHANISM the network "server-with-no-spawn" shape is built on | 4 |
 | 35 | `35-ctor-disambiguation.cl` | Same-named constructors across two in-scope types: the bare ctor name is ambiguous, the dotted `Type.Ctor` form disambiguates in VALUE position, and the dotted prefix in PATTERN position pins the scrutinee type (a cross-type dotted pattern is a compile-time type error). **Plus (S115 6b) the binder-vs-reference boundary: `.` is never part of a BINDER — rejected uniformly at all four binder positions, message quoted.** Builds on 06/10 | 100 |
 | 36 | `36-multi-arity.cl` | Multi-signature `defn` dispatch (§5.1.2): ARITY dispatch (clauses differ by parameter count), TYPE dispatch (same arity, different concrete param types `:Int`/`:Blob`/`:(Vec Int)`), and the arity-overload-for-defaults idiom (a shorter clause supplies a default and delegates to a longer one). The function-level counterpart to the multi-clause `defmacro` of 18/19; distinct from currying (25). Builds on 05/06/10/14/25 | 8 |
@@ -195,16 +195,13 @@ documented `main` return (sum of sub-test passes); it is the value
   8 + 40 + 4; sum moved 541 → 593, exit code moved 29 → **81** (593 mod
   256 — first example whose sum exceeds the exit-code byte).
 
-- **33-redefinition** (S101 Phase 6b) — teaches "definitions are live": a
-  later `defn` REPLACES the earlier one, existing dependents rebind, and
-  rebinding cascades transitively through a dependency chain (the S101
-  redefinition-machinery R3 transaction made this sound; previously the
-  latent unsound hole). Batch-observable green path only — the interactive
-  half of the surface (cascade `; broken:` reports, trap stubs with
-  provenance, `/info` broken-status, recovery loop) is REPL-only UX owned
-  by `/repl` scripts + `/docs` guide. Three sub-tests: direct call sees
-  the later defn (6), dependent rebinds (18), transitive cascade (112) —
-  exit **136**.
+- **33-definition-ordering** — teaches forward references in the file's
+  single compilation cluster. Callers precede their helpers, a dependency
+  chain points forward twice, and trait dispatch sites precede the sole
+  implementation. Six checks compare results 6, 18, 112, 50, 50, and 100,
+  each contributing one pass: exit **6**. A commented negative example
+  explains why a second `defn` for the same name rejects the cluster;
+  live replacement across separate REPL inputs is a different operation.
 
 - **34-async-io-leaf** (S106 Phase 6, FIXME 0463 partial) — the first
   learning-sequence example of a **poll-shape (async) platform leaf**. Examples
@@ -303,11 +300,13 @@ documented `main` return (sum of sub-test passes); it is the value
   (traits) + 16 (multi-file modules). Multi-file, so `tests/examples.rs` drives
   `37-method-import/main.cl` (like `16-modules/main.cl`), not a bare top-level file.
 
-## 2f. S118 Phase-6 assessment record (2026-07-26) — two examples dark, attributed
+## 2f. S118 Phase-6 assessment record (2026-07-26) — historical refusal, resolved before S121 acceptance
 
-> **Standing exception to Design Principle 5** ("every example is runnable at
-> all times"). Two examples are red at HEAD and are shipped red on purpose.
-> This section is the record; it stands until FIXME 0907 is ruled.
+> **Historical record, not a standing exception.** At the S118 checkpoint,
+> 21 and 23 were red and this section recorded their attribution. Both now
+> have their documented exits in the accepted S121 full gate. Keep the
+> measured S118 account below as provenance; it does not authorize changing or
+> investigating any separate sequence-IO runtime control.
 
 ### 2f.1 The matrix — 35 of 37, all four cells agreeing
 
@@ -796,8 +795,8 @@ structural reasons, in order of severity:
 
 1. **Whole first-order features are unteachable from it.** A reader who
    finishes example 37 has never seen an error handled, a field read without
-   `match`, a private definition, a re-export, a glob import, a trait default
-   method, or twelve of the eighteen string primitives.
+   `match`, a private definition, a re-export, a glob import, or twelve of the
+   eighteen string primitives.
 2. **Examples 21–37 are an append log, not a sequence.** 01–20 were designed;
    everything after is ordered by the sprint that produced it.
 3. **Boundaries are taught only as prose, in 5 files of 37, and never as a
@@ -819,7 +818,7 @@ Ranked by how central the missing thing is to writing ordinary Cranelisp.
 |---|---|---|---|---|
 | A1 | **The entire error model.** Runtime panics; the four panic sources (match non-exhaustion, div-by-zero, vec OOB, stack overflow); `catch-runtime-error` and its `Result`/`Ok`/`Err`; the temporal-bracket rule (effect-run-time panics are *not* catchable); the "no `throw` — encode errors in the type system" doctrine; wrapping-vs-checked arithmetic; float `Inf`/`NaN`. The word "panic" appears in **zero** example files. | §12.7, §12.7.2.1–2, §12.7.3, §12.7.7, App A.3 | **YES** — probe: `catch-runtime-error` over `(div-i64 1 0)` → `(Err …)`, exit 31; over `(vec-get [1 2 3] 9)` + div-by-zero → exit 2. Needs only `(import [primitives [catch-runtime-error Result Ok Err]])`, zero stdlib | live probe |
 | A2 | **Generated field accessors `Type.field`.** `10-adts.cl` states, verbatim, *"Field access requires pattern matching (next example)"* — **false** since §5.2.6. Every example in the corpus reads a single field with a full `match`, which is not the idiomatic form. This is not one missing example; it is a **non-idiomatic style running through ~10 files**. | §5.2.6, §8.5.2 | **YES** — probe: `(Point.x (Point 3 4))` → 3 | live probe |
-| A3 | **Trait default methods.** `15-traits.cl` hand-writes all four `Ord` methods — and `Ord`-with-defaults is the spec's **own worked example** of §7.1.5. The example even comments *"Each method has an explicit implementation."* Also the [NEG] half: defaults are forbidden on higher-kinded traits. | §7.1.5 | **YES** — probe: `(gte [a b] Bool (not (lt a b)))` default synthesized for an impl providing only `lt`, exit 41 | live probe |
+| A3 | **Trait default methods — resolved S121.** `15-traits.cl` now derives `<=`/`>=` from required `<`/`>` methods and exercises the synthesized bodies; it also states the higher-kinded-trait boundary. | §7.1.5 | **YES** — accepted S121 evidence includes default synthesis, override, and re-`impl` default-body controls | S121 full gate |
 | A4 | **Module visibility and the import/export surface.** `16-modules/` teaches exactly three things: `mod`, specific-name `import`, module-qualified call. Untaught: `defn-`/`deftype-`/`deftrait-`/`defmacro-`/`mod-` private forms; the private-import rejection; `export` and re-export; glob import `[*]`; member glob; alias import; renamed import; alias-only; null import; `super`; multiple-module import; §8.6 shadowing/conflict/ambiguity rules. **`export` occurs in no numbered example** (only in `lib/prelude.cl`). §2's row for 16 claims it teaches `export` and `defn-` — it teaches **neither**. | §8.3.2–8.3.9, §8.4, §8.6, §8.7 | **YES** — probes: `defn-` private + call-through works (42); importing the private name is rejected with a good located message (*"'helper' is not public in 'main.util'"*); `[*]` glob works (42); `(export [main.util [pub-double]])` re-export works (42) | live probes |
 | A5 | **The string/text surface.** `09-strings.cl` teaches 6 primitives; `primitives` exposes 18. Untaught: `parse-int`, `substring`, `split`, `join`, `replace`, `trim`, `starts-with?`, `ends-with?`, `contains?`, `to-upper`, `to-lower`, and `char-at` (re-exported by the examples prelude but **never called**). `parse-int` returning `Option` is also the canonical fallible-input idiom (App B.4) and has no analogue anywhere. | App A.3, §12.1.2 | **YES** — probe: `substring`/`trim`/`to-upper`/`starts-with?` free-standing, exit 11 | live probe |
 
@@ -893,8 +892,9 @@ verb family): same exclusion as C1.
 
 01–20 genuinely build — 11 needs 10, 13 needs 12, 17 needs 15, 20 needs 17.
 Each earns its position. From 21 on, position is *chronological by sprint*:
-31-bitwise depends on nothing after 02; 33-redefinition depends on nothing
-after 05; 25/26/27 are pure-language topics stranded **inside** the IO arc
+31-bitwise depends on nothing after 02; 33-definition-ordering builds on
+the functions, traits and ADTs of 04/15/20, with Pure from 21 for its result;
+25/26/27 are pure-language topics stranded **inside** the IO arc
 (21–24 … then 28/30/32/34 resume it). A reader cannot tell that 31 is easier
 than 27, because nothing in the numbering says so.
 
@@ -1024,10 +1024,9 @@ nothing. It also breaks the plan's own §1.5 invariant three ways:
    sub-tests that pass by contributing 0, a hand-written listing of the exit
    arithmetic, and a header that names `derive` as the thing this all replaces
    without being able to show it. Worst in the corpus.
-2. **`15-traits.cl`** — 270 lines, 30-level `main`, redeclares three traits
-   that 19 redeclares again, and hand-writes the spec's own default-method
-   showcase *with the defaults expanded out* and a comment asserting that is
-   how it must be.
+2. **`15-traits.cl`** — 270 lines, 30-level `main`, and redeclares three
+   traits that 19 redeclares again. S121 corrects its former default-method
+   omission; the remaining readability concern is its size and repeated setup.
 3. **`19-threading.cl`** — the title promises pipelines; over half the file is
    a from-scratch `->`/`->>` implementation in raw `Sexp` constructors, plus a
    third copy of `Num`. Its own header comment contains a worked example
@@ -1040,8 +1039,8 @@ nothing. It also breaks the plan's own §1.5 invariant three ways:
    sequences. Same shape as 19. (Both are consequences of C1.)
 
 **Best examples, for calibration** — `29-annotations.cl` (a real model, real
-inference work, and a genuine boundary section), `33-redefinition.cl` (68
-lines, three sub-tests, honest pass-count exit, prose that argues), and
+inference work, and a genuine boundary section), `33-definition-ordering.cl`
+(forward references and their boundary, with six pass-count checks), and
 `37-method-import.cl` (states the rule as a slogan — *"Declaration reaches the
 TRAIT; dispatch reaches the METHOD"* — then proves it four ways). These three
 are the house style the rest should be brought to.
@@ -1069,14 +1068,19 @@ failure mode §2c.2 diagnoses. A4 and A5 are *extensions*; A1 and the
 boundaries example are new files that must land in a **regrouped** sequence,
 which is why S119 exists.
 
-### 2c.6 S115 Phase-6b — EXECUTED (2026-07-21)
+### 2c.6 S115 Phase-6b — historical record (2026-07-21)
+
+> The status table and blocker narrative below are retained as S115
+> provenance. S121 supersedes its two relevant outcomes: `33-redefinition.cl`
+> is replaced by `33-definition-ordering.cl`, and the focused default-method
+> beat is now taught in `15-traits.cl` at the unchanged exit 58.
 
 Content beats (the S115-capability half, verified by probe at 6a):
 
 | # | Item | File | Exit | Status |
 |---|---|---|---|---|
-| 1 | **Trait default methods (§7.1.5)** — `<=`/`>=` synthesized from `<`/`>` | `15-traits.cl` | — | **DEFERRED — blocked, see below** |
-| 2 | **Impl redefinition** — re-impl replaces; a dependent dispatch site rebinds; the rebind cascades | `33-redefinition.cl` | 136 → **139** | **DONE** |
+| 1 | **Trait default methods (§7.1.5)** — `<=`/`>=` synthesized from `<`/`>` | `15-traits.cl` | — | **DEFERRED at S115; delivered S121** |
+| 2 | **Impl redefinition** — re-impl replaces; a dependent dispatch site rebinds; the rebind cascades | `33-redefinition.cl` | 136 → **139** | **Superseded S121 by definition ordering** |
 | 3 | **Auto-curry over a local closure** + trait-operator partial (captures kept scalar — FIXME 0796) | `25-curry.cl` | 118 → **139** | **DONE** |
 | 4 | **Dotted-binder rejection** as a comment beat: `.` qualifies types/traits, never binds; message quoted; all four binder positions probed and uniform | `35-ctor-disambiguation.cl` | 100 (unchanged) | **DONE** |
 
@@ -1109,8 +1113,10 @@ second layer, which is the exact claim the file's plain-`defn` half already
 makes. Item 2's three sub-tests are now the trait-`impl` mirror of the
 file's first three, which reads more deliberately than the original mix.
 
-**Both beats return when 0825 settles** — sequence them together, since
-"reverts to the default" is only a payoff once defaults exist.
+**S121 disposition.** The settled default-method contract and accepted
+executing evidence release the `15-traits.cl` default beat. The batch
+redefinition carrier does not return: S121 replaces it with the separate,
+correct definition-ordering lesson.
 
 Correction beats (§2c.3 / §2c.4) — **all landed**:
 
@@ -1259,7 +1265,7 @@ no environment variable:
 > things that *were* covered, so it could never show what was missing. The
 > S115 outside-in sweep against `spec/` found whole first-order features with
 > **no** row and no example — the error model (§12.7), field accessors
-> (§5.2.6), trait default methods (§7.1.5), module visibility and the
+> (§5.2.6), module visibility and the
 > import/export surface (§8.3–8.7), twelve of eighteen string primitives,
 > docstrings (all six positions), and `trace`/`Trace`. Restructuring this
 > table so absence is visible is item 10 of the 6b plan (§2c.6).
@@ -1282,6 +1288,7 @@ no environment variable:
 | Higher-order functions, composition | 13 |
 | Vec (incl. vec primitives as first-class values) | 14 |
 | Traits + operator dispatch + constrained poly | 15, 17, 20 |
+| Trait default methods (`<=`/`>=` synthesized from `<`/`>`) | 15 |
 | Modules / imports / exports | 16, 37 |
 | Method-import dispatch (call a trait method with only the method in scope; §7.11.2) | 37 |
 | Macros (defmacro, quasiquote, multi-clause) | 18 |
@@ -1295,7 +1302,7 @@ no environment variable:
 | Explicit-control concurrency combinators (`sleep`/`race`/`select` + inline `timeout` pattern) | 32 |
 | Poll-shape platform IO leaf (async effect suspends/resumes on the reactor; independent leaves overlap) | 34 |
 | `:Type` annotation model (incl. `^`-style whitespace tolerance: `: Int` == `:Int`) | 29 |
-| Redefinition (later `defn` replaces; dependents rebind) — **and impl redefinition: a later `impl` replaces, dispatch sites rebind, cascades** | 33 |
+| Definition ordering: forward references to helpers and trait implementations within one compilation cluster; duplicate `defn` rejection boundary | 33 |
 | Binder-vs-reference boundary (`.` qualifies a reference, never binds — all four binder positions) | 35 |
 | Currying a function VALUE: a local closure, and a trait operator | 25 |
 | Let-polymorphism at multiple instantiations in one batch program | 07 |
@@ -1312,7 +1319,6 @@ outside-in sweep; kept here so absence is as visible as presence.
 |---|---|---|---|
 | The entire error model — runtime panics, the four panic sources, `catch-runtime-error`/`Result`, the temporal-bracket [NEG], "no `throw`", wrapping-vs-checked arithmetic, `Inf`/`NaN` | §12.7, App A.3 | A1 | S116 |
 | Field accessors `Type.field` as the idiomatic single-field read (a ~10-file style correction, not one example) | §5.2.6 | A2 | S116 |
-| Trait **default methods** | §7.1.5 | A3 | **blocked on FIXME 0825** |
 | Module visibility + the import/export surface: `defn-`/`deftype-`/`mod-`, the private-import reject, `export`/re-export, glob `[*]`, alias/renamed/null import, `super`, §8.6 shadowing & conflict | §8.3–8.7 | A4 | S117 |
 | Twelve of eighteen string primitives, incl. `parse-int`→`Option` as the fallible-input idiom | App A.3, §12.1.2 | A5 | S117 |
 | Pattern matching's negative space (§6.6's four prohibitions) + exhaustiveness as a compile error | §6.5–6.6 | B1 | S118 |
@@ -1353,15 +1359,23 @@ for f in $EX; do o=target/ex-$(echo $f | tr / _); \
 ```
 
 A zero exit (or a value below the documented total) means a sub-test failed
-— investigate before shipping. **Known exception:** `21-hello-io.cl` and
-`23-io-sequence.cl` exit 1 in all four cells at HEAD, attributed to FIXME
-0907 (§2f). Any other red is a regression.
+— investigate before shipping. Every sequence entry is expected to reach its
+documented exit; §2f's S118 refusal is historical, not an exception.
 
 The e2e guard `tests/examples.rs` (owned by `/qa`) enforces the on-disk file
 set against an expected-exit table; any file add/remove/rename, or any
 deliberate exit-code change, requires `/qa` to reconcile that table.
 
 ## Next skills
+
+> **S121 current state.** The entries below are dated handoffs and evidence,
+> not a live work queue. The current sequence has 35 top-level programs plus
+> two directory projects; 21 and 23 are green at their documented exits;
+> `33-definition-ordering.cl` replaces the former batch-redefinition lesson;
+> and `15-traits.cl` now teaches default methods. Preserve the separate
+> sequence-IO runtime control without investigation here. FIXME 0463 remains
+> deferred: example 34 is the poll-shape lesson until a separately scheduled,
+> reusable socket platform makes a deterministic network lesson possible.
 
 **S118 Phase 6 (2026-07-26) — added at the top; older entries below stand.**
 

@@ -15,7 +15,7 @@
 //! `target_fq = None` — the 0705 defect, with typecheck complete and correct.
 
 use cranelisp_types::{
-    ConcreteType, FQSymbol, JitSymbol, ModuleFullPath, MonoExpr, ResolvedCall, Span, Symbol, VarRef,
+    ConcreteType, FQSymbol, ModuleFullPath, MonoExpr, ResolvedCall, Span, Symbol, VarRef,
 };
 
 use super::{AutoCurryTarget, classify_auto_curry_target};
@@ -74,9 +74,7 @@ fn builtin_resolution() -> ResolvedCall {
 }
 
 fn sig_resolution() -> ResolvedCall {
-    ResolvedCall::SigDispatch {
-        mangled_name: JitSymbol::from("user/f$Int"),
-    }
+    crate::test_support::sig_binding("user", "f$Int")
 }
 
 // spec: design/backend/s115-carrier-and-rc-sweep.md §3 row 1–3 — a Dispatch

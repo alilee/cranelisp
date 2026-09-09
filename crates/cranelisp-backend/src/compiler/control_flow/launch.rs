@@ -2,8 +2,9 @@
 //
 // Compiles a `MonoExpr::LaunchContinue` (produced by `/int`'s bind-chain
 // independence analysis at the §10.12.7 launch shape — a result-discarded,
-// token-disjoint effect) into the documented IO-tree structure: a thin
-// single-field `IO_TAG_LAUNCH` node wrapping the launched sub-tree, wrapped by a
+// token-disjoint effect) into the documented IO-tree structure: an
+// `IO_TAG_LAUNCH` node carrying the launched sub-tree and its result disposer,
+// wrapped by a
 // `IO_TAG_BIND` node linking it to a continuation closure that ignores the
 // (discarded `Pure Unit`) launch result and evaluates the continuation.
 //
@@ -27,9 +28,6 @@ use super::{FnCompiler, find_free_vars};
 /// `par_bind.rs` `IO_TAG_PAR = 3` / `compile_poll_effect` `= 4` convention).
 /// Canonical home: `cranelisp_platform::IO_TAG_LAUNCH`.
 const IO_TAG_LAUNCH: i64 = 5;
-/// `IO_TAG_BIND` — the wrapping Bind node tag (mirrors `par_bind.rs`).
-const IO_TAG_BIND: i64 = 2;
-
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
 where
     C: cranelisp_types::CodeStore,
@@ -37,7 +35,8 @@ where
 {
     /// Compile a `MonoExpr::LaunchContinue` — emit `Bind(Launch(launched), cont)`.
     ///
-    /// 1. Build the thin `IO_TAG_LAUNCH` node holding the launched sub-tree
+    /// 1. Build the `IO_TAG_LAUNCH` node holding the launched sub-tree and its
+    ///    result disposer
     ///    (`compile_launch`).
     /// 2. Build a continuation closure `(fn [_] continuation)` — it ignores the
     ///    discarded launch result (`Pure Unit`) and evaluates the continuation.
@@ -57,56 +56,37 @@ where
         continuation: &MonoExpr,
         span: Span,
     ) -> Result<Value, CranelispError> {
-        let alloc_id = self
-            .ctx
-            .alloc_func_id
-            .ok_or_else(|| CranelispError::CodegenError {
-                message: "runtime/alloc not declared (need declare_intrinsics)".into(),
-                location: ErrorLocation::from_span(span),
-            })?;
-
         let saved_tail = self.in_tail_position;
         self.in_tail_position = false;
 
         // 1. Build the Launch node wrapping the launched sub-tree.
-        let launch_ptr = self.compile_launch(launched, span)?;
+        let result_disposer = self.result_disposer_for_io_expr(launched, span)?;
+        let launch_ptr = self.compile_launch(launched, result_disposer, span)?;
 
         // 2. Build the continuation closure — discards the launch result.
         let cont_ptr = self.compile_launch_continuation(continuation, span)?;
 
-        // 3. Allocate the wrapping Bind node: [header | tag=2 | inner | cont].
-        let bind_payload_size = HeapAdt::payload_size(2) as i64; // tag + 2 fields = 24
-        let bind_ptr =
-            heap::emit_alloc(&mut self.builder, self.module, alloc_id, bind_payload_size);
-
-        let bind_tag = self.builder.ins().iconst(types::I64, IO_TAG_BIND);
-        heap::heap_store(&mut self.builder, bind_tag, bind_ptr, HeapAdt::TAG_OFFSET);
-        // inner = the Launch node; cont = the continuation closure. No RC inc —
-        // ownership transfer (constructor convention, Decision 20/24).
-        heap::heap_store(
-            &mut self.builder,
-            launch_ptr,
-            bind_ptr,
-            HeapAdt::field_offset(0),
-        );
-        heap::heap_store(
-            &mut self.builder,
-            cont_ptr,
-            bind_ptr,
-            HeapAdt::field_offset(1),
-        );
+        // 3. Launch yields Unit, so its wrapping Bind input owns no heap value.
+        let no_unit_disposer = self.builder.ins().iconst(types::I64, 0);
+        let bind_ptr = self.emit_bind_node(launch_ptr, cont_ptr, no_unit_disposer, span)?;
 
         self.in_tail_position = saved_tail;
         Ok(bind_ptr)
     }
 
-    /// Build the thin `IO_TAG_LAUNCH` node (`io-trampoline.md §15.4`):
-    /// `[header(16) | tag=5 | launched_subtree]` — `HeapAdt::payload_size(1)` (32
-    /// bytes total). The compiled launched sub-tree (a fresh IO tree at rc=1)
+    /// Build the `IO_TAG_LAUNCH` node (`io-trampoline.md §15.4`):
+    /// `[header(16) | tag=5 | launched_subtree | result_disposer]` —
+    /// `HeapAdt::payload_size(2)` (40 bytes total). The compiled launched
+    /// sub-tree (a fresh IO tree at rc=1)
     /// moves into field 0 with **no `rc_inc`** — a plain ownership transfer
     /// (identical to how `compile_par_bind` stores its branch pointers and
     /// `compile_poll_effect` stores its state-closure, Decision 20/24).
-    fn compile_launch(&mut self, launched: &MonoExpr, span: Span) -> Result<Value, CranelispError> {
+    fn compile_launch(
+        &mut self,
+        launched: &MonoExpr,
+        result_disposer: Value,
+        span: Span,
+    ) -> Result<Value, CranelispError> {
         let alloc_id = self
             .ctx
             .alloc_func_id
@@ -118,9 +98,9 @@ where
         // Compile the detached sub-tree — a fresh IO tree at rc=1 (temporary).
         let launched_val = self.compile_expr(launched)?;
 
-        // Allocate the thin node: tag + 1 field = HeapAdt::payload_size(1) = 16
-        // payload (32 total with the 16-byte header).
-        let payload_size = HeapAdt::payload_size(1) as i64;
+        // Allocate tag + one owning field + one scalar metadata word:
+        // HeapAdt::payload_size(2) = 24 payload bytes (40 total).
+        let payload_size = HeapAdt::payload_size(2) as i64;
         let node = heap::emit_alloc(&mut self.builder, self.module, alloc_id, payload_size);
 
         let tag = self.builder.ins().iconst(types::I64, IO_TAG_LAUNCH);
@@ -131,6 +111,12 @@ where
             launched_val,
             node,
             HeapAdt::field_offset(0),
+        );
+        heap::heap_store(
+            &mut self.builder,
+            result_disposer,
+            node,
+            HeapAdt::field_offset(1),
         );
 
         Ok(node)
@@ -156,10 +142,7 @@ where
     ) -> Result<Value, CranelispError> {
         // Captures: free variables of the continuation that are in scope here.
         let cont_free = find_free_vars(continuation, &[]);
-        let mut captures: Vec<Symbol> = cont_free
-            .into_iter()
-            .filter(|v| self.variables.contains_key(v))
-            .collect();
+        let mut captures: Vec<Symbol> = cont_free.into_iter().filter(|v| self.binds(v)).collect();
         captures.sort(); // deterministic layout
 
         // Declare the continuation function: (env_ptr, discarded_result) -> i64.
@@ -213,6 +196,13 @@ where
         let env_ptr = block_params[0];
         // block_params[1] is the discarded launch result (Pure Unit) — unused.
 
+        // The captures' types, read from the ENCLOSING environment before the
+        // inner compiler takes this compiler's module borrow.
+        let capture_types: Vec<Option<cranelisp_types::Type>> = captures
+            .iter()
+            .map(|cap_name| self.lookup_type(cap_name))
+            .collect();
+
         let last_uses = heap::compute_last_uses(continuation);
         let mut inner = FnCompiler::inner(
             builder,
@@ -227,10 +217,6 @@ where
         for (i, cap_name) in captures.iter().enumerate() {
             let cap_val =
                 heap::heap_load(&mut inner.builder, env_ptr, HeapClosure::capture_offset(i));
-            let var = inner.fresh_variable();
-            inner.builder.declare_var(var, types::I64);
-            inner.builder.def_var(var, cap_val);
-            inner.variables.insert(cap_name.clone(), var);
             // Seed the capture's TYPE into the inner compiler so a consuming
             // call in the continuation body emits the required caller-side
             // `rc_inc` on a heap-typed capture before passing it to a consuming
@@ -242,24 +228,22 @@ where
             // freed after the first detached iteration, and the next accept loop
             // reuses the freed address (FIXME 0472 — the launched web handler
             // "ConnectionReset"/heap-corruption defect).
-            if let Some(ty) = self.variable_types.get(cap_name) {
-                inner.variable_types.insert(cap_name.clone(), ty.clone());
-            }
-        }
-        // Mark captures so they are not eligible for last-use transfer/cleanup —
-        // the closure env owns them; its drop glue dec's them (par_bind parity).
-        for cap_name in captures {
-            inner.captured_vars.insert(cap_name.clone());
+            //
+            // Seeded into the CAPTURE ENVIRONMENT (`binding-scope.md` §3.2), which
+            // is also what makes a capture ineligible for last-use transfer and
+            // for body-frame cleanup — the closure env owns them and its drop
+            // glue decs them (par_bind parity).
+            inner.bind_capture(cap_name, cap_val, capture_types.get(i).cloned().flatten());
         }
 
         // Compile the continuation body. It binds NO result name (the launch
         // result is discarded), so there is no per-binding load + no results
         // buffer to dec — the one simplification over the par-bind continuation.
         inner.push_scope();
-        let skip_var = FnCompiler::<M>::return_var_in_scope(continuation, inner.scope_stack.last());
+        let skip_var = inner.return_var_in_scope(continuation);
         let result = inner.compile_expr(continuation)?;
         inner.protect_return_value(&skip_var, result, continuation);
-        inner.pop_scope_with_cleanup(skip_var.as_ref())?;
+        inner.pop_scope_with_cleanup(skip_var)?;
 
         inner.builder.ins().return_(&[result]);
         inner.builder.seal_all_blocks();
@@ -281,6 +265,7 @@ mod tests {
     // Relocated crate-root tests (FIXME 0495 step 1); harness via
     // `crate::test_support`. Verbatim bodies from the former `src/tests.rs`.
     use crate::test_support::*;
+    use cranelisp_types::{FQTypeName, TypeName};
 
     // spec: design/backend/io-trampoline.md §15 — FIXME 0472 regression guard.
     //
@@ -305,8 +290,6 @@ mod tests {
     // drop (the consuming-call inc balanced it); pre-fix `h` is freed → is_live false.
     #[test]
     fn launch_continuation_consuming_call_on_capture_keeps_it_live() {
-        use cranelisp_types::{JitSymbol, ResolvedCall};
-
         // (defn keep$String [v] v) — identity over a heap String: a consuming
         // function (its param ref is consumed-then-returned, RC-neutral).
         let keep = Defn {
@@ -332,9 +315,10 @@ mod tests {
         // (0) — never interpreted; this test invokes only the continuation closure.
         let call_span = Span::new(70, 82);
         let sig_dispatch = || {
-            Some(Box::new(ResolvedCall::SigDispatch {
-                mangled_name: JitSymbol::from("keep$String"),
-            }))
+            Some(Box::new(crate::test_support::sig_binding(
+                "user",
+                "keep$String",
+            )))
         };
         let continuation = Expr::Apply {
             callee: Box::new(Expr::Var {
@@ -369,7 +353,10 @@ mod tests {
                 launched: Box::new(Expr::IntLit {
                     value: 0,
                     span: Span::new(55, 56),
-                    inferred_type: Some(Box::new(Type::Int)),
+                    inferred_type: Some(Box::new(Type::ADT(
+                        FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("IO")),
+                        vec![Type::Int],
+                    ))),
                 }),
                 continuation: Box::new(continuation),
                 span: Span::new(50, 83),

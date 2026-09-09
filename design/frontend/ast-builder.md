@@ -268,12 +268,17 @@ parser's job.
 
 ### Deftype Desugaring
 
-`desugar_type_def` handles three syntactic forms:
+`parse_deftype` normalizes three body spellings to one constructor list:
 
 1. **Enum**: `(deftype Color Red Green Blue)` -> one nullary constructor per variant
-2. **Product**: `(deftype Point [:Int x :Int y])` -> single constructor with typed fields
+2. **Product**: `(deftype Point [:Int x :Int y])` -> single constructor named for the type, with typed fields
 3. **Sum**: `(deftype (Option a) None (Some [:a val]))` -> multiple constructors, some with fields
-4. **Shortcut**: `(deftype Pair [first second])` -> bare field names get sequential type vars (a, b, c, ...)
+
+The type head and every field are explicit. A bare head declares a monomorphic
+type; a parenthesized head declares the complete type-parameter list. Every
+field is written `:Type name`. A missing field type or a field type variable not
+declared by the head is a located compile-time error before any entry is emitted.
+`s116-syntax-and-annotation.md` §3.1 records the enforcement design.
 
 ### Pattern Building
 
@@ -294,7 +299,11 @@ The existing `extract_optional_docstring` needed no changes -- it correctly dist
 
 ### No Structural Changes for ADTs or Closures
 
-The full ADT syntax (type parameters, data constructors with fields, shortcut syntax) and constructor patterns with bindings were implemented structurally in Ring 0, even though the typechecker and backend could not yet handle them. Ring 1 required no frontend changes for these features -- the AST builder already produces the correct nodes. The typechecker and backend are responsible for the new semantics.
+The full ADT syntax (explicit type parameters and typed fields) and constructor
+patterns with bindings were implemented structurally in Ring 0, even though the
+typechecker and backend could not yet handle them. Ring 1 required no frontend
+changes for these features. Sprint 121 later removed the inferred-field shortcut
+to align the builder with spec §5.2.4.
 
 ## Design Decisions
 

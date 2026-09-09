@@ -164,7 +164,12 @@ pub struct CrOutput {
     pub status: ExitStatus,
     pub stdout: String,
     pub stderr: String,
+    /// Whole compiler-child lifecycle through completion. Excludes a separately
+    /// spawned executable from `link_then_run`.
     pub elapsed: Duration,
+    /// Duration of only the executable spawned by `link_then_run`; `None` if
+    /// no produced executable ran.
+    pub linked_execution_elapsed: Option<Duration>,
     pub tmpdir: PathBuf,
     // _td: tempfile::TempDir held internally so cleanup runs on drop.
 }
@@ -238,6 +243,17 @@ impl CrOutput {
     pub fn run_again(self) -> Cranelisp;
 }
 ```
+
+The two durations are intentionally not additive: `elapsed` preserves the
+long-standing compiler-child lifecycle observation, while
+`linked_execution_elapsed` is the optional native executable interval used by
+linked-runtime timing guards. A `--run` invocation has no separately linked
+interval.
+
+The boundary is guarded by
+`tests/concurrency_capacity.rs::linked_execution_duration_excludes_compilation_and_observes_the_child`:
+it rejects compiler-only and compiler-plus-execution substitutes, while
+preserving the existing `elapsed` contract.
 
 ### `PreludeVariant` — named prelude catalogue
 

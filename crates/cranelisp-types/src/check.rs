@@ -5,8 +5,8 @@ use std::collections::HashMap;
 mod tests;
 
 use crate::{
-    ApplyRef, Defn, FQSymbol, FQTraitName, FQTypeName, JitSymbol, ModuleFullPath, Scheme, Span,
-    Symbol, TraitMethodSig, TraitName, Type, VarRef,
+    ApplyRef, CallableTarget, Defn, FQSymbol, FQTraitName, FQTypeName, JitSymbol, ModuleFullPath,
+    Scheme, Span, Symbol, TraitMethodSig, TraitName, Type, VarRef,
 };
 
 /// Per-Span resolved-stage data produced by typecheck, consumed by backend.
@@ -139,7 +139,7 @@ pub enum ResolvedCall {
         /// (the impl-WRITER's module — S110 W0.1b,
         /// `design/arch/backend-keyed-consumer.md` §1.1.1). This is the
         /// resolution PRODUCT: `try_resolve_trait_method` reads it off the
-        /// `ModuleEntry::TraitImpl` shell that grounds the selected mangle, so
+        /// `Decl::ImplShell` that grounds the selected mangle, so
         /// the storage-module carrier (`apply_refs`) and the `callees`
         /// edge derive the method entry's true home — never `current_module`,
         /// which is wrong for a cross-module trait call (impl written in B,
@@ -147,8 +147,11 @@ pub enum ResolvedCall {
         /// re-derive. REQUIRED (no `#[serde(default)]`, Principles 18/20).
         impl_module: ModuleFullPath,
     },
-    /// Resolved to a specific multi-sig variant (Ring 2)
-    SigDispatch { mangled_name: JitSymbol },
+    /// Resolved to a specific callable body selected during type checking.
+    SigDispatch {
+        /// Typed storage identity of the selected binding or declaration arm.
+        target: CallableTarget,
+    },
     /// Resolved to an auto-curried partial application (Ring 2)
     AutoCurry {
         target_name: Symbol,
@@ -206,24 +209,21 @@ pub struct DisplayInfo {
 ///
 /// `constructors: Vec<Symbol>` carries only the constructor NAMES. The
 /// per-constructor metadata (tag, field count, type_name, internal flag)
-/// lives uniquely on each constructor's own `ModuleEntry::Def` entry at
-/// `kind: DefKind::Constructor { .. }` (see `DefKind::Constructor` rustdoc
-/// in `module.rs` and `design/arch/bounded-contexts.md` §7 "Multi-legged
-/// authoring"). Field names live on the Def's
-/// `param_names`; field types fold into the Def's `scheme` (the constructor's
+/// lives uniquely on each constructor's own `CallableOrigin::Ctor`. Field
+/// names live on the callable's `param_names`; field types fold into its `scheme` (the constructor's
 /// polymorphic function-type signature, e.g., `Some : ∀a. a → Option a`).
 ///
-/// Consumers needing per-ctor metadata walk each name → look up the Def →
-/// read the kind discriminator and scheme. No parallel storage; single source
+/// Consumers needing per-ctor metadata walk each name → look up the binding →
+/// read the origin and scheme. No parallel storage; single source
 /// of truth.
 ///
 /// **No `docstring` field (S72 Phase B).** The docstring is owned directly by
-/// the wrapping `ModuleEntry::TypeDef.docstring` field — single source of
+/// the wrapping `TypeRecord::Defined.docstring` field — single source of
 /// truth (Principle 7). Previously `TypeDefInfo.docstring` duplicated /
 /// nested the entry's docstring; the entry now owns it canonically and
 /// `TypeDefInfo` carries only the type's structural metadata (name,
 /// type-parameter binders, constructor names). This parallels the
-/// `ModuleEntry::Def` narrowing where `docstring` is a direct entry field,
+/// callable narrowing where `docstring` is a direct record field,
 /// not buried in the embedded AST wrapper.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TypeDefInfo {
@@ -232,14 +232,13 @@ pub struct TypeDefInfo {
     pub constructors: Vec<Symbol>,
 }
 
-/// Symbol-table-stage trait metadata — the slimmed payload of
-/// `ModuleEntry::TraitDecl`.
+/// Symbol-table-stage trait metadata — the slimmed payload of `TraitRecord`.
 ///
-/// **S72 Phase B.** `ModuleEntry::TraitDecl` previously embedded the full
+/// **S72 Phase B.** The retired trait declaration entry embedded the full
 /// frontend AST node `crate::ast::TraitDecl`, which duplicated `visibility`
 /// and `docstring` (also carried directly on the entry / on the trait's own
 /// AST struct) and dragged the `span: Span` parser coordinate into the
-/// runtime symbol-table model. Following the `ModuleEntry::Def` precedent
+/// runtime symbol-table model. Following the callable-record precedent
 /// (which carries direct `scheme`/`visibility`/`docstring`/`seq` fields plus
 /// a slimmed `ast: Option<DefnVariant>` rather than embedding the full
 /// `Defn`), the entry now carries direct `docstring` + `visibility` fields
@@ -258,27 +257,26 @@ pub struct TypeDefInfo {
 /// each declared signature (spec §5.4.5).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraitDeclInfo {
-    // FQTypeName exception 2 (receiver-pinned: payload of ModuleEntry::TraitDecl, keyed local-to-home-module; FQ = FQTraitName::new(home, name))
+    // FQTypeName exception 2 (receiver-pinned: payload of TraitRecord, keyed local-to-home-module; FQ = FQTraitName::new(home, name))
     pub name: TraitName,
     pub type_params: Vec<Symbol>,
     pub methods: Vec<TraitMethodSig>,
 }
 
-// `pub struct ConstructorInfo { ... }` retired — see `DefKind::Constructor`
-// rustdoc in `module.rs` and `design/arch/bounded-contexts.md` §7
-// "Multi-legged authoring" for the ctor-as-Def shape and the migration map below.
+// `pub struct ConstructorInfo { ... }` retired — constructor facts now live
+// on `CallableOrigin::Ctor` plus the surrounding callable record.
 //
 // Migration map:
-//   - .name           → ModuleEntry::Def.name (the symbol-table key)
-//   - .tag            → DefKind::Constructor.tag
-//   - .fields[i].name → Def.param_names[i]
-//   - .fields[i].ty   → folded into Def.scheme (the polymorphic function-type signature)
-//   - .docstring      → Def.docstring
-//   - .internal       → DefKind::Constructor.internal
+//   - .name           → the symbol-table key
+//   - .tag            → CallableOrigin::Ctor.tag
+//   - .fields[i].name → Callable.param_names[i]
+//   - .fields[i].ty   → folded into Callable.scheme
+//   - .docstring      → Callable.docstring
+//   - .internal       → CallableOrigin::Ctor.internal
 //
 // `FieldInfo` retained — consumed by `HeapCategory::classify` for heap-layout
 // determination. After consumer-cascade migration completes, heap classifier
-// derives `FieldInfo` instances from constructor Defs' schemes rather than
+// derives `FieldInfo` instances from constructor callables' schemes rather than
 // from a pre-built `ConstructorInfo.fields` vector.
 
 /// Information about a constructor field (resolved type, not TypeExpr).

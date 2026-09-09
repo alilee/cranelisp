@@ -4,7 +4,7 @@
 //! of the code it exercises, per METHOD §2.2 / Principle 23.
 
 use cranelisp_types::{
-    Defn, DefnVariant, Expr, ModuleEntry, ModuleFullPath, Span, Symbol, TraitDecl, TraitImpl,
+    Binding, Defn, DefnVariant, Expr, Life, ModuleFullPath, Span, Symbol, TraitDecl, TraitImpl,
     TraitName, Type, TypeExpr, TypeName, Visibility,
 };
 
@@ -90,7 +90,10 @@ fn qualified_conventional_impl_uses_canonical_trait_identity_and_mangle() {
     drop(writer);
 
     let home = tc.modules.get(&fmt).unwrap();
-    let home_keys: Vec<String> = home.symbols.keys().map(ToString::to_string).collect();
+    let home_keys: Vec<String> = home
+        .all_symbols()
+        .map(|(name, _)| name.to_string())
+        .collect();
     assert!(
         home.get("impl$primitives/Int$fmt/Display").is_some(),
         "impl shell is keyed and placed by canonical FQ trait identity; keys={home_keys:?}"
@@ -171,9 +174,13 @@ fn qualified_failed_reimpl_restores_canonical_entries_without_residue() {
     tc.register_trait_impl_self(&replacement).unwrap_err();
 
     let writer = tc.modules.get(&user).unwrap();
-    let Some(ModuleEntry::Def {
-        ast: Some(first), ..
-    }) = writer.get("PairOps.first$primitives/Int")
+    let Some(first) = writer
+        .get("PairOps.first$primitives/Int")
+        .and_then(Binding::callable)
+        .and_then(|c| match &c.arm.life {
+            Life::Concrete { ast: Some(ast), .. } => Some(ast),
+            _ => None,
+        })
     else {
         panic!("prior canonical method must remain enrolled");
     };
@@ -295,12 +302,13 @@ fn failed_reimpl_restores_prior_method_definition() {
     let entry = table
         .get("AtomicReplace.first$primitives/Int")
         .expect("the prior method remains enrolled");
-    let cranelisp_types::ModuleEntry::Def {
-        ast: Some(defn), ..
-    } = entry
-    else {
-        panic!("expected prior checked method definition, got {entry:?}");
-    };
+    let defn = entry
+        .callable()
+        .and_then(|c| match &c.arm.life {
+            Life::Concrete { ast: Some(ast), .. } => Some(ast),
+            _ => None,
+        })
+        .expect("expected prior checked method definition");
     assert!(
         matches!(defn.body, Expr::Apply { .. }),
         "failed replacement must restore the prior body"
@@ -370,9 +378,13 @@ fn omitted_default_can_dispatch_through_candidate_impl_sibling() {
         .expect("the candidate impl must be visible while checking its default sibling call");
     assert!(tc.has_impl(&TraitName::from("Sized"), &TypeName::from("Int")));
     let table = tc.symbol_table();
-    let Some(ModuleEntry::Def { scheme, .. }) = table.get("Sized.bump$primitives/Int") else {
+    let Some(callable) = table
+        .get("Sized.bump$primitives/Int")
+        .and_then(Binding::callable)
+    else {
         panic!("the checked default method must be written under its concrete mangle");
     };
+    let scheme = &callable.arm.scheme;
     assert_eq!(
         scheme.ty,
         Type::Fn(vec![Type::Int], Box::new(Type::Int)),
@@ -395,6 +407,74 @@ fn omitted_default_can_dispatch_through_candidate_impl_sibling() {
         tc.infer_expr_for_test(&mut call).unwrap(),
         Type::Int,
         "dispatch must use the selected concrete method's inferred result"
+    );
+}
+
+// spec: 07-traits §7.1.5 — an omitted default specializes `self` to a user
+// ADT, not to the type of its body result.
+#[test]
+fn omitted_default_for_user_adt_keeps_receiver_type() {
+    let mut tc = tf_prims();
+    seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
+    tc.register_type_def_self(
+        &TypeName::from("Box"),
+        &None,
+        &[],
+        &[cranelisp_types::ConstructorDef {
+            name: Symbol::from("Bx"),
+            docstring: None,
+            fields: vec![cranelisp_types::FieldDef {
+                name: Symbol::from("v"),
+                type_expr: TypeExpr::Named(cranelisp_types::TypeRef::new(
+                    None,
+                    TypeName::from("Int"),
+                )),
+                span: Span::SYNTHETIC,
+            }],
+            span: Span::SYNTHETIC,
+        }],
+        Visibility::Public,
+        Span::SYNTHETIC,
+    )
+    .unwrap();
+    tc.register_trait_decl_self(&parse_trait_decl(
+        "(deftrait Sizeable (size [x] Int) (weight [x] 100))",
+    ))
+    .unwrap();
+
+    tc.register_trait_impl_self(&parse_trait_impl("(impl Sizeable Box (defn size [x] 1))"))
+        .unwrap();
+
+    let table = tc.symbol_table();
+    let dispatch_scheme = &table
+        .get("Sizeable.weight")
+        .and_then(Binding::trait_method)
+        .expect("the trait method must be registered")
+        .scheme;
+    assert!(
+        cranelisp_types::free_vars(&dispatch_scheme.ty)
+            .iter()
+            .all(|var| dispatch_scheme.type_vars.contains(var)),
+        "every variable in the dispatch scheme must be fresh at each use: {dispatch_scheme:?}"
+    );
+    let scheme = &table
+        .get("Sizeable.weight$user/Box")
+        .and_then(Binding::callable)
+        .expect("the omitted default must be settled")
+        .arm
+        .scheme;
+    assert_eq!(
+        scheme.ty,
+        Type::Fn(
+            vec![Type::ADT(
+                cranelisp_types::FQTypeName::new(
+                    ModuleFullPath::from("user"),
+                    TypeName::from("Box"),
+                ),
+                vec![],
+            )],
+            Box::new(Type::Int),
+        )
     );
 }
 
@@ -481,13 +561,10 @@ fn impl_return_mismatch_reports_trait_method_and_declared_direction() {
 // class; the e2e guard is
 // `tests/repl_introspection.rs::impl_of_prelude_globbed_trait_resolves_trait_name`.
 //
-// It pins THREE facets in one fixture: (1) the prelude-globbed trait resolves +
-// its impl registers via the hop; (2) the non-fallback current-module probe
-// still MISSES it — a same-module identity/idempotency check ("is this trait
-// already re-registered in THIS module?"), module-local by design and DISTINCT
-// from the §8.6.4 name-freedom question (see facet-2 assertion below); (3) a
-// locally-defined trait impl AND a genuinely-unknown trait behave exactly as
-// before (unchanged / still `unknown trait`). Fails on revert of the hop.
+// It pins three facets in one fixture: (1) the prelude-globbed trait resolves +
+// its impl registers via the hop; (2) the shared candidate resolver presents
+// the same prelude terminal through the lookup projection; (3) a locally-defined
+// trait impl and a genuinely-unknown trait behave exactly as before.
 //
 // defect: class=prelude-scope-miss locus=crates/cranelisp-typecheck/src/traits/impl_check.rs::register_trait_impl found=S108 owner=/dev
 #[test]
@@ -534,21 +611,13 @@ fn impl_of_prelude_globbed_trait_resolves_via_outer_scope_hop() {
         "the registered `impl Display Int` must be discoverable via the prelude fallback"
     );
 
-    // Facet 2 (same-module identity/idempotency, NOT name-freedom): the
-    // NON-fallback current-module probe — the `deftrait` re-registration check,
-    // "is this exact trait already registered in THIS module?" — must STILL miss
-    // the prelude decl. It is module-local BY DESIGN and does NOT consult the
-    // prelude; that is the correct answer to the identity question. Whether a
-    // user `(deftrait Display …)` may be defined AT ALL is the SEPARATE
-    // name-freedom question, answered by the prelude-consulting
-    // `reject_def_over_binding` seam — which REJECTS a def over a prelude-provided
-    // name as a §8.6.4 compile-time conflict (NOT a shadow). This assertion pins
-    // the identity probe only; it says nothing about name-freedom.
+    // Facet 2: Packet B routes this lookup projection through the shared
+    // candidate resolver, whose approved bare-name rule unions the implicit
+    // prelude candidates when the bit is on. It must therefore see the same
+    // terminal as the impl-form lookup.
     assert!(
-        tc.lookup_trait_decl(&TraitName::from("Display")).is_none(),
-        "the non-fallback current-module lookup must NOT see the prelude decl \
-         (same-module identity/idempotency probe, module-local by design; \
-          name-freedom is the separate §8.6.4 reject_def_over_binding question)"
+        tc.lookup_trait_decl(&TraitName::from("Display")).is_some(),
+        "the candidate-backed lookup projection must see the public prelude trait"
     );
 
     // Facet 3a (unchanged, unknown): a genuinely-unknown trait still misses both

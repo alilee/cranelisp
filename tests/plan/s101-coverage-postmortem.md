@@ -172,10 +172,11 @@ as the 0470 resolution:
    `dependency_sort` directly); `macro_resolution.rs:491` walk terminates and
    does not mid-cluster-compile a not-yet-codegen'd same-module defn.
 
-`/qa`-side: no new e2e is owed for the field itself — L-R3(b)
-(`tests/repl_redefinition.rs::redefine_abi_change_cascade_report_names_exact_affected_set`)
-is the end-to-end witness that the edge set is complete AND exact (its
-positive+negative needles fail on both under- and over-recording).
+`/qa`-side: under the former L-R3(b) cascade requirement, no new e2e was owed
+for the field itself because an existing test was intended to witness the edge
+set's completeness and exactness. That requirement is superseded by the no-callers
+redefinition rule; Sprint 121 must retire or rewrite the old witness rather
+than re-anchor it to different behavior.
 
 ---
 

@@ -27,6 +27,98 @@ use std::time::{Duration, SystemTime};
 
 use helpers::e2e::Cranelisp;
 
+// spec: spec/03-types.md §3.6.3 — cached generic definitions preserve distinct
+// result-context specializations at independent Int and String uses.
+#[test]
+fn cache_result_only_returned_closure_specializations_agree_uncached_cold_and_warm() {
+    let files = [
+        ("util.cl", "(defn g [] (fn [y] 100))\n"),
+        (
+            "main.cl",
+            "(import [primitives [Pure add-i64]])\n\
+             (import [util [g]])\n\
+             (defn main [] (Pure (add-i64 ((g) 5) ((g) \"heap\"))))\n",
+        ),
+    ];
+    let uncached = project(&files)
+        .run("main.cl")
+        .cli_flag("--no-cache")
+        .env("CRANELISP_MODULE_TRACE", "1")
+        .output()
+        .assert_exit(200);
+    assert!(
+        !uncached.stderr.contains("cache hit"),
+        "{}",
+        uncached.stderr
+    );
+    let cold = project(&files)
+        .run("main.cl")
+        .env("CRANELISP_MODULE_TRACE", "1")
+        .output()
+        .assert_exit(200);
+    assert!(!cold.stderr.contains("cache hit"), "{}", cold.stderr);
+    assert_eq!(uncached.stdout, cold.stdout);
+    let warm = cold
+        .run_again()
+        .run("main.cl")
+        .env("CRANELISP_MODULE_TRACE", "1")
+        .output()
+        .assert_exit(200);
+    assert_eq!(uncached.stdout, warm.stdout);
+    assert!(
+        warm.stderr.contains("cache hit (.meta valid) for util"),
+        "warm execution must restore the generic's module from cache:\n{}",
+        warm.stderr
+    );
+}
+
+// spec: repl/spec/18-redefinition.md §18.1.2 — restart reconstruction is not
+// constrained by the live-slot ownership-ABI gate; cold and warm must agree.
+// defect: class=wrong-reject locus=src/session_v4.rs found=S121 owner=/dev
+#[test]
+fn cache_restored_sum_field_projection_keeps_ownership_abi() {
+    let source = "(import [primitives [Int Pure]])\n\
+                  (deftype Customer (Addr [:Int a]))\n\
+                  (defn r-cust [c] (match c [(Customer.Addr a) a]))\n\
+                  (defn main [] (Pure (r-cust (Customer.Addr 40))))\n";
+    let uncached = Cranelisp::new()
+        .run("main.cl")
+        .file("main.cl", source)
+        .cli_flag("--no-cache")
+        .env("CRANELISP_MODULE_TRACE", "1")
+        .output()
+        .assert_exit(40);
+    assert!(
+        !uncached.stderr.contains("entry metadata preloaded"),
+        "{}",
+        uncached.stderr
+    );
+    let cold = Cranelisp::new()
+        .run("main.cl")
+        .file("main.cl", source)
+        .env("CRANELISP_MODULE_TRACE", "1")
+        .output()
+        .assert_exit(40);
+    assert!(
+        !cold.stderr.contains("entry metadata preloaded"),
+        "{}",
+        cold.stderr
+    );
+    let warm = cold
+        .run_again()
+        .run("main.cl")
+        .env("CRANELISP_MODULE_TRACE", "1")
+        .output()
+        .assert_exit(40);
+    assert!(
+        warm.stderr
+            .lines()
+            .any(|line| line == "module-trace: entry metadata preloaded for main"),
+        "warm execution must restore the sum projection's module from cache:\n{}",
+        warm.stderr
+    );
+}
+
 // =============================================================================
 // Helpers
 // =============================================================================
@@ -136,13 +228,23 @@ fn cache_load_fresh_compile_equivalence() {
     fresh.run_again().run("main.cl").output().assert_exit(42);
 }
 
-// spec: design/backend/module-caching.md §8 — install_module_scope shared path
+// spec: design/backend/module-caching.md §8 + spec/09-macros.md §9.12.1 — an
+// imported macro behaves identically on cold compilation and warm cache load.
 #[test]
 fn cache_load_imports_macros_traits_installed() {
-    let fresh = project(&[(
-        "main.cl",
-        "(import [primitives [add-i64 Pure]])\n(defn helper [x] (add-i64 x 1))\n(defn main [] (Pure (helper 9)))",
-    )])
+    let fresh = project(&[
+        (
+            "main.cl",
+            "(import [ops [increment]])\n\
+             (import [primitives [Pure]])\n\
+             (defn main [] (Pure (increment 9)))",
+        ),
+        (
+            "ops.cl",
+            "(import [primitives [add-i64]])\n\
+             (defmacro increment [x] `(add-i64 ~x 1))",
+        ),
+    ])
     .run("main.cl")
     .output()
     .assert_exit(10);
@@ -1470,7 +1572,7 @@ fn cache_pre_r5_schema_object_invalidated_wholesale() {
 // (FQ auto-load from cache). Plan: tests/plan/PLAN.md §S109 §A/§D.
 // =============================================================================
 
-// spec: design/typecheck/dotted-ctor-canonical-keys.md Obligations A/B — a
+// spec: design/arch/dotted-ctor-canonical-keys.md §2 — a
 // dotted-ctor program resolves identically cold and warm: the canonical-key /
 // `type_ctor_names` mapping round-trips through `.meta.json` so the warm run
 // resolves the dotted constructor exactly as the cold run does. RED today (the
@@ -1536,7 +1638,7 @@ fn fq_ref_resolves_from_warm_cache() {
 // /dev bumps the binary to schema 18.
 // =============================================================================
 
-// spec: design/backend/module-caching.md §10.2/§10.8 — schema 17→18 bump: warm
+// spec: design/backend/module-caching.md §14.2 — schema 17→18 bump: warm
 // cache of the DC-12 differing-layout twin stays green + a pre-current-schema
 // meta is rejected wholesale (recompiled to the correct result).
 #[test]
@@ -1593,7 +1695,7 @@ fn pre_schema_18_cache_rejected_and_warm_18_green() {
 // schema_version is re-stamped away from 20).
 // =============================================================================
 
-// spec: design/backend/module-caching.md §10.2/§10.8 — a pre-current-schema
+// spec: design/backend/module-caching.md §14.7 — a pre-current-schema
 // `.meta.json` is refused WHOLESALE (recompiled), never partially deserialized.
 // A cached `$Var`-Concrete multi-sig module (schema-20 era) cannot resurrect via
 // a cache-hit typecheck bypass under schema 21.

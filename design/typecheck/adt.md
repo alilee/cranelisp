@@ -39,10 +39,10 @@ register_type_def(name, type_params, constructors, ...)
 > becomes slot-less `Polymorphic`, and its instances are produced by **re-running
 > this synthesiser at concrete type arguments** (**A-MINT**) rather than by a body
 > re-check — the body is `Span::SYNTHETIC` and outside span-keyed carrier transport.
-> The bare-alias `Import` edge, the §8.6.5 `Ambiguous` contest and the impl-time
+> The bare accessor candidate, the §8.6.5 use-site contest and the impl-time
 > collision pre-flight are **untouched**: they key on the canonical entry, not its
-> `fn_state`. **Rider 0867** (accessor synthesis over every constructor arm)
-> unblocks on P-1 alone. Full statement:
+> lifecycle. The former **Rider 0867** widening is retired by the 2026-09-02
+> language ruling: sum payload labels mint no accessors. Full lifecycle statement:
 > **`non-concrete-producer-obligations.md`**.
 
 ### Type Parameter Allocation
@@ -145,6 +145,26 @@ longer smuggle each other's data through a shared entry.
 
 **Rejected alternative**: Renaming the constructor (e.g., `Mk` prefix). This would break the user-facing syntax where `(Point 1 2)` creates a `Point` value. The same-name convention is idiomatic for product types.
 
+## Field-accessor synthesis — where the design lives
+
+Two questions, two homes; neither is restated here.
+
+- **What an accessor entry is, and how it is keyed.** The canonical `Type.field`
+  `Def` plus its bare `field` `Import` alias, the `Ambiguous` sentinel on a
+  contested bare name, and the impl-time collision rule:
+  `fixme-0365-field-accessor-dotted.md` §1.6.
+- **Which fields get one.** Only product fields. A product is the lone
+  same-name-constructor shape; its fields mint total accessors. A differently
+  named constructor arm is a sum variant even when it is the only arm, and its
+  payload labels are positional metadata extracted by `match` — they mint no
+  callable names. `fixme-0365-field-accessor-dotted.md` §1.6.7 records the
+  S121 correction and the retirement of FIXME 0867's widening proposal.
+- **What lifecycle state the entry takes.** A concrete type's constructor and
+  accessors settle concrete; a generic type's are templates carrying a `SynthSpec`
+  recipe, and their instances are re-synthesised at concrete type arguments —
+  `non-concrete-producer-obligations.md` §2.3 (A-MINT), governed by
+  `design/arch/symbol-table-lifecycle.md` §5.8.
+
 ## Pattern Matching Inference
 
 Constructor patterns in `match` expressions are checked by `check_constructor_pattern` in `infer.rs`.
@@ -228,7 +248,7 @@ check_exhaustiveness(type_name, covered_ctors, has_wildcard, span)
 - Constructor pattern bindings (`[(Some x) ...]`)
 - `TypeExpr::Applied` resolution with arity validation
 - Product type handling (same-name constructor/type)
-- Shortcut syntax (`(deftype Pair [first second])`)
+- Explicit polymorphic products (`(deftype (Pair a b) [:a first :b second])`)
 
 ### Ring 2 — Planned
 

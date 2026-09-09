@@ -1250,7 +1250,7 @@ fn node_ty(expr: &Expr) -> Result<ConcreteType, NotConcrete> {
 /// this predicate holds: totality excludes [`ViewBuildError::Unresolved`], and
 /// `from_expr`'s only other failure is [`ViewBuildError::NotConcrete`], raised
 /// exactly where this predicate answers `false`. Both share the ONE node-level
-/// type gate ([`node_ty`] + the `Annotate` erasure arm), and both matches live
+/// type gate (`node_ty` + the `Annotate` erasure arm), and both matches live
 /// in this file and are exhaustive — a new [`Expr`] variant breaks them in the
 /// same compile, so the erasure set and child coverage cannot drift silently
 /// (Principle 7; the fence the pre-0689 typecheck-local mirror lacked).
@@ -1335,8 +1335,8 @@ pub fn is_strict_type_concrete(expr: &Expr) -> bool {
 /// **Phase 2a (produces-but-unused).** Lands the representation; the mono pass
 /// (Phase 2b, `cranelisp-typecheck`) populates it; the backend (Phase 3) consumes
 /// it. Carries the def's name + visibility-relevant identity alongside the body;
-/// the symbol-table entry shape (GOT-slot / `UserFnState::Concrete`) is built by
-/// `register_mono_entry` independently of the body's AST form.
+/// the symbol-table entry shape (`Life::Concrete`) is built by the settlement
+/// funnel independently of the body's AST form.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MonoDefnVariant {
     pub name: Symbol,
@@ -1346,8 +1346,8 @@ pub struct MonoDefnVariant {
     /// The callable's ownership summary ([`ModeSummary`]) — the
     /// **compile-in-hand carrier** the backend reads during
     /// `compile_to_module` (S102 CS-A; the persisted twin lives on the
-    /// callable `DefKind` variant's `mode_summary` slot, read via
-    /// `ModuleEntry::mode_summary()`). Written by typecheck's ownership pass
+    /// callable `Life::Concrete` state's `mode_summary` slot, read via
+    /// `Binding::mode_summary()`). Written by typecheck's ownership pass
     /// in the same post-convergence walk that annotates the body's site
     /// facts. `None` ⇒ Decision-24 conservative
     /// (`design/arch/ownership-inference.md` §3.3).

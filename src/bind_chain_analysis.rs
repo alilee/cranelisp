@@ -17,7 +17,7 @@ use std::collections::HashSet;
 
 use cranelisp_platform::SchedulingClass;
 use cranelisp_types::{
-    CodeStore, DefKind, Defn, Expr, LinkerStore, MatchArm, ModuleEntry, ModuleFullPath, Span,
+    CallableOrigin, CodeStore, Defn, Expr, Life, LinkerStore, MatchArm, ModuleFullPath, Span,
     Symbol, SymbolTable, TypeExpr, free_vars_expr,
 };
 
@@ -243,40 +243,16 @@ fn effect_descriptor_from_table<C: CodeStore, L: LinkerStore>(
     module: &ModuleFullPath,
     name: &str,
 ) -> Option<(SchedulingClass, bool)> {
-    fn walk<C: CodeStore, L: LinkerStore>(
-        tables: &SymbolTables<C, L>,
-        module: &ModuleFullPath,
-        name: &str,
-        depth: usize,
-    ) -> Option<(SchedulingClass, bool)> {
-        if depth > 16 {
-            return None;
-        }
-        let table = tables.get(module)?;
-        let entry = table.get(name)?;
-        match entry {
-            ModuleEntry::Def { kind, .. } => {
-                if let DefKind::PlatformEffect {
-                    scheduling_class,
-                    poll_shape,
-                    ..
-                } = kind.as_ref()
-                {
-                    Some((*scheduling_class, *poll_shape))
-                } else {
-                    None
-                }
-            }
-            ModuleEntry::Import { source, .. } => {
-                let next_mod = source.module.clone();
-                let next_sym: String = source.symbol.as_ref().to_string();
-                drop(table);
-                walk(tables, &next_mod, &next_sym, depth + 1)
-            }
-            _ => None,
-        }
+    let (binding, _) =
+        cranelisp_types::resolve_terminal_entry_and_home(symbol_tables, module, name)?;
+    let callable = binding.callable()?;
+    match callable.origin {
+        CallableOrigin::PlatformEffect {
+            scheduling_class,
+            poll_shape,
+        } => Some((scheduling_class, poll_shape)),
+        _ => None,
     }
-    walk(symbol_tables, module, name, 0)
 }
 
 /// True if none of the names in `bound_names` appear free in `expr`.
@@ -463,27 +439,17 @@ fn resolves_to_sleep_extern<C: CodeStore, L: LinkerStore>(
     name: &str,
     depth: usize,
 ) -> bool {
-    if depth > 16 {
+    if depth > 16 || name != "sleep" {
         return false;
     }
-    let Some(table) = symbol_tables.get(module) else {
-        return false;
-    };
-    let Some(entry) = table.get(name) else {
-        return false;
-    };
-    match entry {
-        ModuleEntry::Def { kind, .. } => {
-            matches!(kind.as_ref(), DefKind::PrimitiveExtern) && name == "sleep"
-        }
-        ModuleEntry::Import { source, .. } => {
-            let next_mod = source.module.clone();
-            let next_sym: String = source.symbol.as_ref().to_string();
-            drop(table);
-            resolves_to_sleep_extern(symbol_tables, &next_mod, &next_sym, depth + 1)
-        }
-        _ => false,
-    }
+    cranelisp_types::resolve_terminal_entry_and_home(symbol_tables, module, name).is_some_and(
+        |(binding, _)| {
+            binding.callable().is_some_and(|callable| {
+                matches!(callable.origin, CallableOrigin::RustPrimitive)
+                    && matches!(callable.arm.life, Life::HostPromised)
+            })
+        },
+    )
 }
 
 /// True if `effect` is an `Apply` whose first argument is a literal `0` — the

@@ -280,7 +280,7 @@ NotAConstructor
 #[test]
 fn constructor_wrong_arg_count_error() {
     let out = repl(
-        "(deftype Pair (Pair [a b]))
+        "(deftype Pair [:Int a :Int b])
 (Pair 1)
 ",
     );

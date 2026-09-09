@@ -11,32 +11,38 @@ refers_to: repl/spec.md §1.3 (Definition Results), §4.1 (Self-Documentation
 status: open
 ---
 
-# `def` leaks its expansion at the prompt: internal `-def` name in the echo, `defmacro` in introspection, and a `def`-bound function value cannot be called
+# `def`: report both emitted definitions; function-valued application remains open
 
 ## Issue
 
 `def` is a stdlib macro (`stdlib/defs.cl:24`) that expands `(def n v)` into a
-`defn n-def` thunk **plus** a zero-arg macro `n` that expands to `(n-def)`. That
-mechanism is invisible in the source the user typed, but it is fully visible in
-every REPL response. Three faces were probed; a shared implementation root is
-not established (2026-07-21,
+`defn n-def` thunk **plus** a zero-arg macro `n` that expands to `(n-def)`.
+Three faces were probed; a shared implementation root is not established
+(2026-07-21,
 `target/debug/cranelisp`, clean session):
 
-**Face 1 — the definition echo names a symbol the user never wrote (§1.3).**
+**Face 1 — the singular definition result drops one emitted definition
+(§1.3).**
 
 ```
 user> (def n 42)
 :(Fn [] primitives/Int) user/n-def ; defn
 ```
 
-§1.3 requires the definition confirmation to be the definition's own lookup
-display. The user defined `n`, a value of type `Int`; the REPL confirms `n-def`,
-a thunk of type `(Fn [] Int)`. Both halves of the universal format (§1.1) are
-wrong for the form entered. **This is live in the showcase**: `08-sudoku.demo`
-— the centrepiece of the guided arc — prints `user/puzzle-def`,
-`user/answer-def`, `user/contradiction-def` (replay of 2026-07-21).
+The original report treated one emitted definition as an internal leak and
+tried to select `n` instead. The 2026-09-05 user ruling corrected that premise:
+the statement produces two definitions and the REPL should list both, in
+emitted order. The defect is therefore the singular carrier, not the presence
+of `n-def`:
 
-**Face 2 — introspection classifies a `def`-bound value as a macro (§4.1).**
+```text
+:(Fn [] primitives/Int) user/n-def ; defn
+:user/n ; defmacro
+; [] -> Sexp
+```
+
+**Face 2 — confirmed correct: introspection describes the macro binding
+(§4.1).**
 
 ```
 user> /info n
@@ -49,10 +55,10 @@ user> /sig n
 ; [] -> Sexp
 ```
 
-`/sig` and `/info` on a name the user bound to `42` answer "macro, `[] -> Sexp`".
-Bare `n` at the prompt is correct (`:primitives/Int 42`), so the value-display
-path and the introspection path disagree about the same name. §4.1 has **no
-per-class row for `def`** at all, which is the spec-side half of this.
+`n` is a `defmacro`, so `/sig` and `/info` must report `defmacro` and its clause
+signature. Bare `n` is an invocation position: macro expansion produces
+`(n-def)`, whose evaluation yields `:primitives/Int 42`. These surfaces describe
+different operations and do not require a projected presentation scheme.
 
 **Face 3 — a `def`-bound function value cannot be called or curried.**
 
@@ -81,41 +87,32 @@ S115 auto-curry-over-a-local-closure fix works correctly **inside** a function
 body (`(defn t1 [] (let [g (mk 10)] ((g 1) 2)))` → `13`, verified), so the gap
 is specific to the top-level `def` route.
 
-## Why `/repl` cannot resolve this
+## Ownership split
 
-The mechanism is a stdlib macro (`/stdlib`), the echo and introspection routing
-are int-side display concerns (`/dev(src)`), and the face-3 message comes from
-the macro-expansion arity check (`/dev(frontend)`). Which layer should change is
-an attribution question, and the fix is not obviously one-sided: options span
-suppressing the synthesized `-def` `defn` from the turn echo and routing
-`/info`/`/sig`/call through the `def`-macro to its impl thunk, versus changing
-the expansion so `def` binds a value directly. `/repl` owns the contract that is
-violated, not the seam.
+Face 1 is an int-side result-carrier defect: the compiler already knows the
+exact emitted definitions, and the REPL must render all published identities
+without a name-shape rule or symbol-table scan. Face 2 requires no change. Face
+3 remains a stdlib API choice because the current `def` expansion intentionally
+introduces a zero-argument macro.
 
 ## Proposed resolution
 
-1. `/qa` attributes and routes; the minimal repros above are independent and
-   do not by themselves prove one mechanism.
-2. **Face 1 and face 2 are the highest-value pair** — they are what the
-   self-documenting-REPL principle promises, and face 1 ships in the flagship
-   demo today.
+1. Face 1 uses an ordered `EvalResult::Definitions` batch. Each symbol renders
+   through its ordinary `ModuleEntry` classification.
+2. Face 2 stays unchanged: `/info n` and `/sig n` report `defmacro`; bare `n`
+   expands and evaluates.
 3. Face 3 is a stdlib API/usability decision. `def` is the zero-argument macro
    specified by §5.7/§9.10 and implemented in `stdlib/defs.cl`, not a core
    special form. `/stdlib` decides whether and how its API supports a
    function-valued binding. `/qa` attributes and specifies the behavioral test
    after that design choice.
-4. `/repl` owns truthful presentation and diagnostic behavior for the selected
-   stdlib API. Faces 1–2 already violate the existing self-documentation
-   contract and do not wait for face 3.
 
 ## QA disposition (Sprint 117)
 
-Faces 1–2 remain independent REPL presentation defects and are ready for
-`/testing`. The earlier claim that face 3 required a user/core-language ruling
-was a category error: it promoted a stdlib macro API choice into `/spec`
-semantics. Retargeted from `/qa` to `/stdlib`; `/repl` follows for truthful
-presentation/diagnostics, and `/qa` plans face-3 coverage only after the
-user-proxy design exists.
+Face 1 is allocated to the Sprint-121 ordered-definition result work. Face 2 is
+not a defect under the binding semantics in `spec/09-macros.md` §§9.5, 9.10.2,
+and 9.13. Face 3 remains retargeted to `/stdlib`; `/qa` plans its coverage only
+after the user-proxy design exists.
 
 ## Context
 

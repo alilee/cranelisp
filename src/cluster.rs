@@ -40,12 +40,8 @@
 //! the cluster-level REPL/scheduler metadata; the per-symbol staging entries
 //! already committed to live inside `check_program_compat`.
 
-use cranelisp_types::{
-    CranelispError, FQSymbol, ImportNames, ModuleEntry, ModuleFullPath, Symbol, Warning,
-};
-
-use crate::code::Code;
 use crate::session_v4::Introspection;
+use cranelisp_types::{CranelispError, FQSymbol, ImportNames, ModuleFullPath, Symbol, Warning};
 
 // ---------------------------------------------------------------------------
 // ProcessedCluster — opaque carrier between process_cluster and insert_cluster
@@ -72,13 +68,6 @@ use crate::session_v4::Introspection;
 /// records).
 #[non_exhaustive]
 pub struct ProcessedCluster {
-    /// Drained staging entries — one per defined symbol in the cluster.
-    /// Per `facades/int.md` invariant 5b — written into the live
-    /// `SymbolTable` under per-entry inner-DashMap locks during
-    /// `insert_cluster`. (Empty in the current Wave 3a-β scaffold; the
-    /// active `worker::check_program_compat` path commits to live directly.)
-    pub(crate) entries: Vec<(Symbol, ModuleEntry<Code>)>,
-
     /// Warnings accumulated across the cluster's forms. Surfaced by the REPL
     /// driver before commit; routed to `EvalResult::warnings` downstream.
     pub(crate) warnings: Vec<Warning>,
@@ -119,18 +108,11 @@ impl ProcessedCluster {
     /// True if the cluster produced no entries and no cluster-level residue.
     /// `insert_cluster` may skip commit when this holds.
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-            && self.warnings.is_empty()
+        self.warnings.is_empty()
             && self.resolved_imports.is_empty()
             && self.introspection_records.is_empty()
             && self.prepared.is_none()
             && self.pending_codegen_notification.is_none()
-    }
-
-    /// Consume the cluster, yielding its drained entries. Used by
-    /// `insert_cluster` to commit per-symbol via inner-DashMap writes.
-    pub fn into_iter(self) -> impl Iterator<Item = (Symbol, ModuleEntry<Code>)> {
-        self.entries.into_iter()
     }
 
     /// Read-only access to the cluster's accumulated warnings. Surfaced by
@@ -186,13 +168,11 @@ impl ProcessedCluster {
     /// `ProcessedCluster.warnings`, where the REPL driver renders each as a
     /// `; warning: <message>` line.
     pub(crate) fn from_parts(
-        entries: Vec<(Symbol, ModuleEntry<Code>)>,
         warnings: Vec<Warning>,
         resolved_imports: Vec<(ModuleFullPath, ImportNames)>,
         introspection_records: Vec<(FQSymbol, Introspection)>,
     ) -> Self {
         ProcessedCluster {
-            entries,
             warnings,
             resolved_imports,
             introspection_records,
@@ -209,7 +189,6 @@ impl ProcessedCluster {
     #[cfg(test)]
     pub(crate) fn empty() -> Self {
         ProcessedCluster {
-            entries: Vec::new(),
             warnings: Vec::new(),
             resolved_imports: Vec::new(),
             introspection_records: Vec::new(),
@@ -240,6 +219,8 @@ pub enum ClusterOutcome {
     },
     Gap {
         dep: ModuleFullPath,
+        continuation: Vec<cranelisp_types::Sexp>,
+        generation_started: bool,
     },
 }
 
@@ -266,6 +247,7 @@ pub fn process_cluster(
     shared: &crate::session_v4::SharedState,
     forms: std::sync::Arc<[cranelisp_types::Sexp]>,
     scope: &ModuleFullPath,
+    generation_started: bool,
 ) -> Result<ClusterOutcome, CranelispError> {
     use crate::process_form;
     use crate::worker::{ClusterOnce, ModuleCompiler};
@@ -313,9 +295,19 @@ pub fn process_cluster(
         scope,
         &forms,
         cranelisp_types::ModuleStrategy::Replace,
+        generation_started,
+        None,
     )? {
         ClusterOnce::Done { processed, program } => Ok(ClusterOutcome::Done { processed, program }),
-        ClusterOnce::Gap { dep } => Ok(ClusterOutcome::Gap { dep }),
+        ClusterOnce::Gap {
+            dep,
+            continuation,
+            generation_started,
+        } => Ok(ClusterOutcome::Gap {
+            dep,
+            continuation,
+            generation_started,
+        }),
     }
 }
 
@@ -331,39 +323,10 @@ pub fn process_cluster(
 pub fn insert_cluster(
     shared: &crate::session_v4::SharedState,
     processed: ProcessedCluster,
-    target: &ModuleFullPath,
+    _target: &ModuleFullPath,
 ) -> Result<(), cranelisp_types::CranelispError> {
     if processed.is_empty() {
         return Ok(());
-    }
-
-    // Wave 3a-β scaffold: `process_cluster` writes commit directly through
-    // `check_program_compat`, so `entries` is normally empty. When the full
-    // staging pivot lands (FIXME 0176), this loop drains staging into live
-    // per-entry under inner-DashMap locks (target shape from `facades/int.md`
-    // §"Atomicity guarantees").
-    // FIXME 0604 chokepoint (prelude-table-write-isolation.md §2.2): route each
-    // committed write through the terminal-table declared-export-closure gate
-    // BEFORE acquiring the mutable guard. `D(target)` is PRECOMPUTED here (a read
-    // of the SEPARATE `declared_exports` map, honoring the /arch precompute-before-
-    // guard directive uniformly). A phantom out-of-closure public commit is
-    // rejected + diagnosed at the seam. The legacy prelude-only observability
-    // rider (`assert_prelude_closure`) stays as a defense-in-depth tripwire.
-    let declared = shared.declared_exports.get(target).map(|d| d.clone());
-    for (sym, entry) in &processed.entries {
-        crate::imports::assert_prelude_closure(&shared.symbol_tables, target, sym.as_ref(), entry);
-        crate::imports::check_terminal_closure(
-            target,
-            sym.as_ref(),
-            entry,
-            cranelisp_types::Span::SYNTHETIC,
-            declared.as_ref(),
-        )?;
-    }
-    if let Some(mut live) = shared.symbol_tables.get_mut(target) {
-        for (sym, entry) in processed.entries {
-            live.insert(sym, entry);
-        }
     }
 
     // Drain introspection records: each merges into the shared introspection
@@ -403,7 +366,6 @@ mod tests {
         assert!(cluster.warnings().is_empty());
         assert!(cluster.resolved_imports().is_empty());
         assert!(cluster.introspection_records().is_empty());
-        assert_eq!(cluster.into_iter().count(), 0);
     }
 
     #[test]
@@ -414,7 +376,7 @@ mod tests {
             message: "test-warning".into(),
             span: Span::SYNTHETIC,
         }];
-        let cluster = ProcessedCluster::from_parts(Vec::new(), warnings, Vec::new(), Vec::new());
+        let cluster = ProcessedCluster::from_parts(warnings, Vec::new(), Vec::new());
         assert!(!cluster.is_empty(), "cluster with warnings is non-empty");
         assert_eq!(cluster.warnings().len(), 1);
         assert_eq!(cluster.warnings()[0].message, "test-warning");
@@ -429,7 +391,7 @@ mod tests {
             },
             Introspection::default(),
         )];
-        let cluster = ProcessedCluster::from_parts(Vec::new(), Vec::new(), Vec::new(), records);
+        let cluster = ProcessedCluster::from_parts(Vec::new(), Vec::new(), records);
         assert!(
             !cluster.is_empty(),
             "introspection records make cluster non-empty"

@@ -1,5 +1,5 @@
-//! `poll_support` — the `concurrency`-gated ergonomics suite for poll-shape
-//! platform leaves (S96 Chunk A item 2, `design/platform/poll-support.md §2`).
+//! `poll_support` — the core, ungated ergonomics suite for poll-shape platform
+//! leaves (`design/platform/poll-leaf-authoring.md` §2).
 //!
 //! A poll-shape leaf is an `unsafe extern "C" fn(state, *HostCtx, *Waker) -> Poll`
 //! (the [`crate::PollFn`] contract). Three things are repeated, error-prone, and
@@ -21,11 +21,11 @@
 //!    encode that phase branch once, over the env's result slot reused as the
 //!    zero-initialised phase sentinel (the `async-demo`/`poll-pool` trick).
 //!
-//! What this module deliberately does NOT own (`poll-support.md §2.4`): the
+//! What this module deliberately does NOT own (`poll-leaf-authoring.md` §2): the
 //! descriptor (the platform's trust assertion), the syscall + result meaning (the
 //! platform's domain), the reactor/pool/permit (all host/intrinsics-side), and
-//! the codegen operand injection (the backend `inject_poll_leading_pair` pass).
-//! It locates and registers; it does not interpret or schedule.
+//! codegen's poll-node construction. It locates and registers; it does not
+//! interpret or schedule.
 
 use core::ffi::c_void;
 
@@ -44,9 +44,10 @@ use crate::{Acquire, HEAP_HEADER_SIZE, HostCtx, Poll, STRING_HEADER_BYTES, Waker
 ///   ...                      (one slot per leaf arg)
 /// ```
 ///
-/// The leading `(token, capacity)` operands are peeled to the IO node's reserved
-/// fields by the backend and are NOT in this env — `arg(0)` is the first LEAF arg
-/// (`io-trampoline.md §14.2` / `poll-support.md §2.1`).
+/// Every declared platform argument is marshaled unchanged: `arg(0)` is the
+/// leaf's first natural argument. Under the ctx-vtable model, the leaf projects
+/// any scheduling token from those arguments (or uses a manifest-static token)
+/// and calls [`Reactor::acquire`] itself (`poll-leaf-authoring.md` §2).
 pub struct PollEnv {
     base: *mut i64,
 }
@@ -116,7 +117,7 @@ impl PollEnv {
 
 /// A thin, safe wrapper over the host reactor's `register_*` vtable callbacks +
 /// the `*Waker` — turning the raw `(*host).vtable_fn(host, …, waker)` indirection
-/// into one named verb per readiness kind (`poll-support.md §2.2`). It owns no
+/// into one named verb per readiness kind (`poll-leaf-authoring.md` §2). It owns no
 /// reactor state: the host owns the *when*; this is the platform-side projection
 /// of "register interest." It only registers — it never blocks.
 pub struct Reactor {
@@ -195,7 +196,7 @@ pub enum PollStep {
     Park,
 }
 
-/// The first-poll / re-poll phase scaffold (`poll-support.md §2.3`).
+/// The first-poll / re-poll phase scaffold (`poll-leaf-authoring.md` §2).
 ///
 /// The host re-invokes the same `PollFn` after every wake, so a leaf must carry
 /// "which phase am I in" across polls. `PollState` uses the env **result slot**
@@ -206,7 +207,7 @@ pub enum PollStep {
 /// as that non-zero marker; the generic scaffold uses a caller-supplied marker.)
 ///
 /// `drive` never dispatches another effect — it is pure phase logic over the
-/// result slot (the gate-(a) non-re-entry property, `poll-support.md §3.2`).
+/// result slot (the non-re-entry property, `poll-leaf-authoring.md` §3).
 pub struct PollState<'e> {
     env: &'e PollEnv,
 }
@@ -262,7 +263,7 @@ mod tests {
 
     // -----------------------------------------------------------------------
     // §4A — PollEnv typed env accessor round-trip.
-    // design: design/platform/poll-support.md §2.1 — the R1 env-layout
+    // design: design/platform/poll-leaf-authoring.md §2 — the R1 env-layout
     // convention (result @ +0, leaf arg i @ +8+8i) lives in ONE place; a
     // write-then-read round-trip pins the offsets so the poll leaves are
     // offset-safe. (tests/plan/sprint-96.md §4A)
@@ -334,7 +335,7 @@ mod tests {
 
     // -----------------------------------------------------------------------
     // §4B — fd-readiness / timer poll scaffold over the host/waker vtable.
-    // design: design/platform/poll-support.md §2.2 — the Reactor wrapper hides
+    // design: design/platform/poll-leaf-authoring.md §2 — the Reactor wrapper hides
     // the (*host).register_*(host, …, waker) vtable indirection behind one named
     // verb per readiness kind. (tests/plan/sprint-96.md §4B)
     // -----------------------------------------------------------------------
@@ -381,7 +382,7 @@ mod tests {
 
     // -----------------------------------------------------------------------
     // §4B — first-poll / re-poll phase scaffold.
-    // design: design/platform/poll-support.md §2.3 — PollState distinguishes the
+    // design: design/platform/poll-leaf-authoring.md §2 — PollState distinguishes the
     // establish step (first poll: arm/register, stash a non-zero marker) from the
     // resume step (re-poll: read-result), over the env result slot reused as the
     // 0-initialised phase sentinel. (tests/plan/sprint-96.md §4B)

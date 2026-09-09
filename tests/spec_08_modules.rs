@@ -1293,30 +1293,24 @@ fn entry_module_default_user_name_still_runs() {
 }
 
 // =============================================================================
-// §8.6.4 / §8.6.5 — Import-ambiguity model: terminal-source dedup
-//                   vs distinct-terminal collision (FIXME 0316)
+// §8.6.4 / §8.6.5 — module candidates: terminal-source dedup
+//                   vs distinct-terminal use-site ambiguity
 // =============================================================================
 //
 // These two tests pin the §8.6.4 terminal-source comparison ruling
 // (/arch, 2026-06-13). §8.6.4 says same-source duplicates "the same name
 // arriving through two re-export paths from the same original definition"
 // are NOT ambiguous — the comparison is by TERMINAL source, not immediate
-// source. §8.6.5 keeps globs as PEERS of specific imports: ambiguity is
-// decided purely on terminal-source identity, no precedence tier.
-//
-// FAILING-FIRST: `glob_and_reexport_of_same_terminal_dedup` is RED until the
-// int wave lands terminal-source dedup in `src/imports.rs`
-// (`insert_detecting_ambiguity` currently keys dedup on the IMMEDIATE
-// `source.module`, so a glob + a re-export of one of its names read as two
-// sources and falsely collide). `distinct_terminal_overlap_collides` guards
-// that the fix does NOT over-dedup — genuinely-distinct definitions sharing a
-// bare name MUST still poison the name (footgun protection preserved).
+// source. §8.6.5 keeps globs as PEERS of specific imports: candidates have no
+// precedence tier. `glob_and_reexport_of_same_terminal_dedup` rejects duplicate
+// exposure of one terminal; `distinct_terminal_overlap_collides` proves that
+// genuinely distinct terminals both survive until the typed use site.
 
 // spec: spec/08-modules.md §8.6.4 — terminal-source dedup. A glob import of
 // `prim` (immediate source `prim`) co-exists with a specific import of `Foo`
 // from `reexp` (immediate source `reexp`) when `reexp` RE-EXPORTS `prim/Foo`:
 // both bare `Foo` entries chain-follow to the SAME terminal `(prim, Foo)`, so
-// they dedup silently rather than poisoning the name. MUST compile clean — no
+// they dedup silently rather than duplicating the candidate. MUST compile clean — no
 // `Ambiguous`. (Comparing only the immediate sources `prim` vs `reexp` would
 // wrongly read two sources and report a false collision.)
 #[test]
@@ -1347,25 +1341,29 @@ fn glob_and_reexport_of_same_terminal_dedup() {
 
     let combined = format!("{}\n{}", out.stdout, out.stderr);
     assert!(
-        !combined.to_lowercase().contains("ambiguous"),
+        !combined.to_lowercase().contains("ambiguous")
+            && !combined.to_lowercase().contains("no matching")
+            && !combined.contains("undefined variable"),
         "a glob import + a re-export of one of its names share the SAME \
          terminal source `(prim, Foo)` and MUST dedup silently — NOT collide \
-         as `Ambiguous` (spec §8.6.4 terminal-source comparison); got:\n{combined}"
+         as `Ambiguous`, disappear, or become a zero-survivor use (spec §8.6.4 \
+         terminal-source comparison); got:\n{combined}"
     );
     out.assert_exit(42);
 }
 
 // spec: spec/08-modules.md §8.6.5 — distinct-terminal collision. Two modules
 // `a` and `b` each define their OWN, DIFFERENT `Bar`. Importing both bare and
-// referencing bare `Bar` MUST poison the name: a compile-time ambiguity
-// diagnostic naming both qualified alternatives. This is the footgun
+// passing the unconstrained first-class constructor spelling MUST produce a
+// use-site ambiguity naming both qualified alternatives. This is the footgun
 // protection §8.6.5 preserves — globs are PEERS of specific imports, so
-// distinct terminals collide regardless of import shape; terminal-source
-// dedup (§8.6.4) MUST NOT silently pick one winner.
+// distinct terminals remain peers regardless of import shape; terminal-source
+// dedup (§8.6.4) MUST NOT silently merge or pick one winner.
 #[test]
 fn distinct_terminal_overlap_collides() {
     // `a/Bar` and `b/Bar` are genuinely-different definitions (distinct
-    // terminals). Both imported bare; `main` references bare `Bar`.
+    // terminals). `discard` gives the one bare constructor use no selecting
+    // type information, keeping this a single-site diagnostic discriminator.
     let out = Cranelisp::new()
         .file(
             "a.cl",
@@ -1382,7 +1380,8 @@ fn distinct_terminal_overlap_collides() {
             "(import [primitives [Pure]])\n\
              (import [a [Bar]])\n\
              (import [b [Bar]])\n\
-             (defn main [] (Pure (match (Bar 7) [(Bar v) v])))",
+             (defn discard [f] 0)\n\
+             (defn main [] (Pure (discard Bar)))",
         )
         .run("main.cl")
         .output();
@@ -1390,8 +1389,8 @@ fn distinct_terminal_overlap_collides() {
     assert!(
         !out.status.success(),
         "two DISTINCT terminal `Bar` definitions imported under the same bare \
-         name MUST collide (spec §8.6.5 — footgun protection; globs are peers, \
-         no silent winner); compilation MUST fail. stdout:\n{}\nstderr:\n{}",
+         name MUST remain peers and make an unconstrained use ambiguous (spec \
+         §8.6.5; no silent winner); compilation MUST fail. stdout:\n{}\nstderr:\n{}",
         out.stdout,
         out.stderr
     );
@@ -1409,6 +1408,51 @@ fn distinct_terminal_overlap_collides() {
          (`a/Bar` and `b/Bar`) so the user can disambiguate (spec §8.6.5); \
          got:\n{combined}"
     );
+    assert!(
+        !combined.contains("undefined variable")
+            && !combined.to_lowercase().contains("no matching"),
+        "two compatible terminal candidates are an ambiguity, not unknown-name \
+         or zero-survivor failure; got:\n{combined}"
+    );
+    assert_eq!(
+        combined.matches("a/Bar").count(),
+        1,
+        "the ambiguity diagnostic MUST deduplicate canonical alternative `a/Bar`; \
+         got:\n{combined}"
+    );
+    assert_eq!(
+        combined.matches("b/Bar").count(),
+        1,
+        "the ambiguity diagnostic MUST deduplicate canonical alternative `b/Bar`; \
+         got:\n{combined}"
+    );
+
+    // Qualification is the positive twin: both terminal identities remain
+    // directly usable even while their shared bare spelling is contested.
+    Cranelisp::new()
+        .file(
+            "a.cl",
+            "(import [primitives [Int]])\n\
+             (deftype Bar [:Int x])",
+        )
+        .file(
+            "b.cl",
+            "(import [primitives [Int]])\n\
+             (deftype Bar [:Int y])",
+        )
+        .file(
+            "qualified.cl",
+            "(import [primitives [Pure add-i64]])\n\
+             (import [a [Bar]])\n\
+             (import [b [Bar]])\n\
+             (defn main []\n\
+               (Pure (add-i64\n\
+                 (match (a/Bar 3) [(a/Bar x) x])\n\
+                 (match (b/Bar 4) [(b/Bar y) y]))))",
+        )
+        .run("qualified.cl")
+        .output()
+        .assert_exit(7);
 }
 
 // =============================================================================
@@ -2179,34 +2223,15 @@ fn bare_relative_submodule_reexport_resolves() {
 }
 
 // =============================================================================
-// FIXME 0484 (S101 Phase 6a, /stdlib) — definition over an explicit import.
-// RE-ANCHORED S102 Phase 5 stage 1 to the /spec ruling (spec/08-modules.md
-// §8.6.4 §"Definition-Over-Import: Order-Independent, All Modes", landed
-// S102 Phase 3): a definition whose name is bound by an EXPLICIT import MUST
-// be REJECTED with a compile-time error — order-independent, all modes; the
-// rejected form has no effect (the import stays the binding, introspection
-// keeps describing it). The originally-drafted polarity (shadow-wins per the
-// pre-ruling §8.6.1 reading) was itself the violation, so BOTH tests below
-// now expect rejection and BOTH are RED on HEAD: today the binary neither
-// rejects nor resolves order-independently (used-first order keeps the
-// import silently; unused order silently takes the shadow — the S101 6a
-// finding). Resolver: /int (Block A5 — reject the later-arriving conflicting
-// form). Failing-not-ignored; ledger: tests/plan/ledger.md §"Sprint 101
-// Phase 6a/6b defect set" (+ S102 re-anchor note).
-// Re-anchored S102 (user no-exception ruling 2026-07-04; /spec `a953de0`;
-// FIXME 0514/0515): prelude-PROVIDED names are NO LONGER shadowable — the
-// prelude is just an implicit `(import [prelude [*]])`, so a def over a
-// prelude name is the SAME error (§8.6.4/§8.8.1). The former "contrast pins"
-// in tests/vec_query_value_use.rs are FLIPPED to expect rejection; the full
-// positive/negative matrix (all modes) lives in tests/spec_08_name_shadowing.rs.
+// Candidate-registration and use-site selection (§8.6.4–§8.6.5). A local
+// definition and an imported declaration with distinct canonical identities
+// both register. Textual order and prior use do not affect that candidate set;
+// an equally compatible bare call is ambiguous and names both alternatives.
 // Reduced stdlib-free: local module `util`, fn `measure`.
 // =============================================================================
 
-// spec: spec/08-modules.md §8.6.4 — definition-over-import is a compile-time
-// ERROR regardless of call history: import → call (3) → conflicting defn
-// MUST be rejected; the import remains the binding (post-turn call still 3,
-// never 99). RED on HEAD (FIXME 0484): today this order silently keeps the
-// import while `/info` claims the shadow — no rejection, split introspection.
+// spec: spec/08-modules.md §8.6.4–§8.6.5 — an earlier successful call does
+// not make the later local candidate shadow or replace the import.
 #[test]
 fn import_used_then_shadowed_by_defn_is_rejected_error() {
     let out = Cranelisp::new()
@@ -2224,32 +2249,33 @@ fn import_used_then_shadowed_by_defn_is_rejected_error() {
              (measure [1 2 3])\n",
         )
         .output()
-        .assert_ok()
-        // The conflicting definition is rejected with an error naming the
-        // symbol (§8.6.4: the diagnostic SHOULD also name the import source).
-        .assert_stdout_contains("error")
-        .assert_stdout_does_not_contain(":primitives/Int 99"); // rejected form has NO effect
-    // Both calls resolve through the import — pre-conflict AND
-    // post-rejection print 3 (the §8.6.4 transcript is identical with or
-    // without the pre-definition call).
+        .assert_ok();
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    // The first call has one candidate. After the local definition registers,
+    // the same spelling has two compatible candidates and the later use is
+    // ambiguous; prior use does not alter registration or selection.
     assert_eq!(
         out.stdout.matches(":primitives/Int 3").count(),
-        2,
-        "the import must remain the binding before AND after the rejected \
-         definition (spec/08-modules.md §8.6.4); stdout:\n{}",
+        1,
+        "the pre-definition call must resolve through the sole imported \
+         candidate; stdout:\n{}",
         out.stdout
     );
+    assert!(
+        combined.contains("ambiguous bare name 'measure'")
+            && combined.contains("user/measure")
+            && combined.contains("util/measure"),
+        "the post-definition use must report both surviving canonical \
+         candidates under §8.6.5; got:\n{combined}"
+    );
+    assert!(!combined.contains(":primitives/Int 99"));
 }
 
-// spec: spec/08-modules.md §8.6.4 — the SAME rejection with NO pre-conflict
-// call (order-independence: "an implementation in which an already-exercised
-// import behaves differently from an unexercised one … is defective on both
-// legs"). RED on HEAD (FIXME 0484): today this order silently ACCEPTS the
-// shadow (99) — the formerly-"control" behaviour is itself the violation per
-// the S102 /spec ruling.
+// spec: spec/08-modules.md §8.6.4–§8.6.5 — without an earlier call, the same
+// two declarations register and the first bare use is ambiguous.
 #[test]
 fn import_shadowed_by_defn_before_first_call_is_rejected_error() {
-    Cranelisp::new()
+    let out = Cranelisp::new()
         .repl()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .file(
@@ -2263,10 +2289,17 @@ fn import_shadowed_by_defn_before_first_call_is_rejected_error() {
              (measure [1 2 3])\n",
         )
         .output()
-        .assert_ok()
-        .assert_stdout_contains("error") // the definition is rejected
-        .assert_stdout_does_not_contain(":primitives/Int 99") // no silent shadow
-        .assert_stdout_contains(":primitives/Int 3"); // the import stays the binding
+        .assert_ok();
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        combined.contains("ambiguous bare name 'measure'")
+            && combined.contains("user/measure")
+            && combined.contains("util/measure"),
+        "registration succeeds, then the first unresolved use must report both \
+         canonical candidates under §8.6.4–§8.6.5; got:\n{combined}"
+    );
+    assert!(!combined.contains(":primitives/Int 99"));
+    assert!(!combined.contains(":primitives/Int 3"));
 }
 
 // =============================================================================

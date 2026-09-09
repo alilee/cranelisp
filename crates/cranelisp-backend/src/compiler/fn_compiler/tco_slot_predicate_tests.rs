@@ -22,7 +22,7 @@ fn unrelated() -> TailSlotFacts {
 #[test]
 fn a_bare_var_move_transfers_the_old_owner() {
     let facts = TailSlotFacts {
-        named_by_bare_var_arg: true,
+        tail_arg_transfers_this_slot: true,
         ..unrelated()
     };
     assert_eq!(
@@ -103,7 +103,7 @@ fn a_control_flow_argument_does_not_license_a_blanket_skip_neg() {
     );
     // The fact set itself carries no control-flow transfer channel.
     let f = unrelated();
-    assert!(!f.named_by_bare_var_arg && !f.inplace_cow_rooted_here);
+    assert!(!f.tail_arg_transfers_this_slot && !f.inplace_cow_rooted_here);
 }
 
 // spec: spec/12-runtime.md §12.3.1 (NEGATIVE) — §6 row 4: a BORROWED alias
@@ -111,15 +111,12 @@ fn a_control_flow_argument_does_not_license_a_blanket_skip_neg() {
 // suppressing the slot's release on its strength leaves the carried value with
 // no owner at all.
 //
-// `tail_transfer_skip` is spelling-based — "a literal top-level `Var` argument"
-// — and never asked this question, so a borrowed match-field binding SHADOWING
-// a frame-owned parameter suppressed a release on the strength of an alias that
-// owns nothing. The verdict is loud, not a guessed release and not a silent
-// skip: **Narrowing carries its check**.
+// The exact transfer slot now makes that parameter a replacement, but the
+// spelling-sensitive borrowed-shadow validation remains loud rather than
+// silently changing the established UAF protection.
 #[test]
 fn a_borrowed_alias_cannot_license_a_transfer_neg() {
     let facts = TailSlotFacts {
-        named_by_bare_var_arg: true,
         bare_var_arg_is_borrowed: true,
         ..unrelated()
     };

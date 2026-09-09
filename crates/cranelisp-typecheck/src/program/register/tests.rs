@@ -8,6 +8,102 @@ use super::*;
 
 use crate::program::test_support::*;
 
+use std::cell::RefCell;
+use std::sync::atomic::AtomicU32;
+
+use dashmap::DashMap;
+
+fn signature_only_defn(name: &str) -> Defn {
+    make_defn(
+        name,
+        vec![Symbol::from("input")],
+        vec![None],
+        Expr::var(Symbol::from("input"), Span::SYNTHETIC),
+        Visibility::Private,
+        Span::SYNTHETIC,
+    )
+}
+
+fn empty_registration_world(
+    module: &ModuleFullPath,
+) -> (
+    DashMap<ModuleFullPath, SymbolTable>,
+    AtomicU32,
+    cranelisp_types::ModuleAliases,
+    crate::checker::PreludeFallback,
+) {
+    let modules = DashMap::new();
+    modules.insert(module.clone(), SymbolTable::new(module.clone()));
+    (
+        modules,
+        AtomicU32::new(0),
+        cranelisp_types::ModuleAliases::new(),
+        crate::checker::PreludeFallback::new(),
+    )
+}
+
+// Owned macro clauses have no symbol-table binding or origin carrier. Ordinary
+// signature registration remains Plain even when a macro family is visible in
+// the same staging table.
+#[test]
+fn signature_registration_does_not_infer_origin_from_macro_family() {
+    let module = ModuleFullPath::from("orchard");
+    let subject = Symbol::from("hollow-cedar-leaf");
+    let (modules, next_id, aliases, fallback) = empty_registration_world(&module);
+    let mut staging = SymbolTable::new(module.clone());
+    staging
+        .install_macro(
+            Symbol::from("violet-orbit"),
+            None,
+            0,
+            cranelisp_types::Sexp::Symbol("source-form".into(), Span::SYNTHETIC),
+            Vec::new(),
+            Visibility::Public,
+        )
+        .unwrap();
+
+    {
+        let staging_cell = RefCell::new(&mut staging);
+        let env = TypeCheckEnv::new_with_staging(
+            &modules,
+            &next_id,
+            module.clone(),
+            &staging_cell,
+            &aliases,
+            &fallback,
+        );
+        let mut state = CheckState::new(module);
+        env.register_defn_signature(&mut state, &signature_only_defn(subject.as_ref()))
+            .unwrap();
+    }
+
+    assert!(matches!(
+        staging
+            .get(subject.as_ref())
+            .and_then(Binding::callable)
+            .map(|callable| &callable.origin),
+        Some(CallableOrigin::Plain)
+    ));
+}
+
+// spec: spec/05-definitions.md §5.13 — two separate bodies cannot own one
+// canonical target inside a compilation cluster.
+#[test]
+fn same_cluster_duplicate_direct_definition_is_rejected_during_registration() {
+    let mut tc = tc_with_prims();
+    let sexps =
+        cranelisp_frontend::parse("(defn qloop [x] 0)\n(defn qloop [x] (test/qloop x))").unwrap();
+    let program = cranelisp_frontend::build_forms(&sexps).unwrap();
+
+    let error = tc.check_program_self(&program).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("illegal redefinition of `qloop` in one compilation cluster"),
+        "unexpected duplicate-definition diagnostic: {error}",
+    );
+}
+
 // spec: 05-definitions §5.1 — defn registers function with inferred type
 #[test]
 fn test_check_program_simple_defn() {
@@ -41,7 +137,12 @@ fn test_check_program_simple_defn() {
     let _result = tc.check_program_self(&program).unwrap();
 
     // Check the function was registered with correct type: Fn([Int], Int)
-    if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("add-one") {
+    if let Some(scheme) = tc
+        .symbol_table()
+        .get("add-one")
+        .and_then(Binding::callable)
+        .map(|c| &c.arm.scheme)
+    {
         assert_eq!(scheme.ty, Type::Fn(vec![Type::Int], Box::new(Type::Int)));
     } else {
         panic!("add-one not found in symbol table");
@@ -67,7 +168,12 @@ fn test_check_program_identity_is_polymorphic() {
 
     tc.check_program_self(&program).unwrap();
 
-    if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("id") {
+    if let Some(scheme) = tc
+        .symbol_table()
+        .get("id")
+        .and_then(Binding::callable)
+        .map(|c| &c.arm.scheme)
+    {
         // Should be forall [a]. Fn([a], a)
         assert_eq!(scheme.type_vars.len(), 1, "id should have 1 quantified var");
         match &scheme.ty {
@@ -152,7 +258,12 @@ fn test_check_program_with_typedef() {
 
     let _result = tc.check_program_self(&program).unwrap();
 
-    if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("is-red") {
+    if let Some(scheme) = tc
+        .symbol_table()
+        .get("is-red")
+        .and_then(Binding::callable)
+        .map(|c| &c.arm.scheme)
+    {
         assert_eq!(
             scheme.ty,
             Type::Fn(
@@ -327,7 +438,12 @@ fn u5_trait_constraint_annotation_unaffected_by_free_var_rule() {
     // Must type-check (no `unknown type Num` error).
     tc.check_program_self(&program).unwrap();
 
-    if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("show2") {
+    if let Some(scheme) = tc
+        .symbol_table()
+        .get("show2")
+        .and_then(Binding::callable)
+        .map(|c| &c.arm.scheme)
+    {
         assert!(
             !scheme.constraints.is_empty(),
             "show2's `:Num` annotation must produce a constrained scheme, not a plain free var"
@@ -356,7 +472,12 @@ fn u1_bare_written_param_var_is_flexible_body_may_pin() {
     let sexps = cranelisp_frontend::parse("(defn id [:a x] x)").expect("parse");
     let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
     tc.check_program_self(&program).unwrap();
-    if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("id") {
+    if let Some(scheme) = tc
+        .symbol_table()
+        .get("id")
+        .and_then(Binding::callable)
+        .map(|c| &c.arm.scheme)
+    {
         assert!(
             !scheme.ty.is_concrete(),
             "id must stay polymorphic (∀a. a→a)"
@@ -374,7 +495,11 @@ fn u1_bare_written_param_var_is_flexible_body_may_pin() {
     tc2.check_program_self(&program2)
         .expect("a bare `:a` pinned by the body MUST be accepted (§3.3.1 MUST (a))");
     let table = tc2.symbol_table();
-    let Some(ModuleEntry::Def { scheme, .. }) = table.get("f") else {
+    let Some(scheme) = table
+        .get("f")
+        .and_then(Binding::callable)
+        .map(|c| &c.arm.scheme)
+    else {
         panic!("f not found");
     };
     assert!(
@@ -403,7 +528,11 @@ fn u1b_bare_param_corefers_body_annotation_pins_param_row4() {
     tc.check_program_self(&program)
         .expect("a body `:a` annotation co-referring the param `:a` MUST be accepted (row 4)");
     let table = tc.symbol_table();
-    let Some(ModuleEntry::Def { scheme, .. }) = table.get("f") else {
+    let Some(scheme) = table
+        .get("f")
+        .and_then(Binding::callable)
+        .map(|c| &c.arm.scheme)
+    else {
         panic!("f not found");
     };
     assert!(
@@ -438,7 +567,11 @@ fn u3_constraint_param_held_abstract_body_narrow_is_skolem_escape() {
     tc.check_program_self(&program)
         .expect("interface-only use of a `:Num2` param MUST be accepted (row 5)");
     let table = tc.symbol_table();
-    let Some(ModuleEntry::Def { scheme, .. }) = table.get("f5") else {
+    let Some(scheme) = table
+        .get("f5")
+        .and_then(Binding::callable)
+        .map(|c| &c.arm.scheme)
+    else {
         panic!("f5 not found");
     };
     assert!(
@@ -499,7 +632,11 @@ fn u2_nested_fn_written_var_corefers_enclosing_same_typeid() {
     tc.check_program_self(&program).unwrap();
 
     let table = tc.symbol_table();
-    let Some(ModuleEntry::Def { scheme, .. }) = table.get("g") else {
+    let Some(scheme) = table
+        .get("g")
+        .and_then(Binding::callable)
+        .map(|c| &c.arm.scheme)
+    else {
         panic!("g not found");
     };
     // Exactly ONE quantified var — co-reference, not a fresh nested shadow.
@@ -549,15 +686,9 @@ fn test_check_form_single_defn_register() {
         .check_form(&module, &form, CheckPass::Register, &mut accumulator)
         .unwrap();
 
-    // Register pass should produce empty method_resolutions and expr_types
-    assert!(
-        result.method_resolutions.is_empty(),
-        "Register pass produces no method resolutions"
-    );
-    assert!(
-        result.expr_types.is_empty(),
-        "Register pass produces no expr types"
-    );
+    // Register pass does not populate active body facts.
+    assert!(tc.state.method_resolutions.resolved_calls.is_empty());
+    assert!(tc.state.expr_types.is_empty());
     assert!(
         result.constrained_fn.is_none(),
         "Register pass has no constrained fn"
@@ -567,12 +698,12 @@ fn test_check_form_single_defn_register() {
         "Register pass has no mono defns"
     );
 
-    // Signature should be registered in the accumulator's defn_type_vars
+    // Signature and authored scope are registered together in the body ledger.
     assert!(
         accumulator
-            .defn_type_vars
-            .contains_key(&Symbol::from("inc")),
-        "defn_type_vars should contain 'inc' after Register pass"
+            .bodies
+            .registration_for_publication(&Symbol::from("inc"))
+            .is_some()
     );
 
     // Signature should be registered in symbol table
@@ -597,15 +728,21 @@ fn test_check_form_typedef_register() {
     // Registration should be mostly empty result (type is registered internally)
     assert!(result.default_method_defns.is_empty());
 
-    // Constructors should be registered in symbol table
-    assert!(
-        tc.symbol_table().get("Red").is_some(),
-        "Red constructor should be in symbol table"
-    );
-    assert!(
-        tc.symbol_table().get("Green").is_some(),
-        "Green constructor should be in symbol table"
-    );
+    // Packet B stores each sum constructor under its canonical `Type.Ctor`
+    // identity and exposes its bare spelling as a candidate.
+    for ctor in ["Red", "Green"] {
+        let canonical = format!("Color.{ctor}");
+        assert!(
+            tc.symbol_table().get(&canonical).is_some(),
+            "canonical constructor `{canonical}` should be in the symbol table"
+        );
+        let candidates = tc.symbol_table().name_candidates(&Symbol::from(ctor));
+        assert_eq!(candidates.len(), 1, "{ctor} should expose one candidate");
+        assert_eq!(
+            candidates[0].source.to_string(),
+            format!("test/{canonical}")
+        );
+    }
 }
 
 // spec: design/typecheck/check-form-api.md §check_form — TraitDecl Register pass
@@ -622,8 +759,8 @@ fn test_check_form_trait_decl_register() {
         .unwrap();
 
     // Should produce an empty result (registration is internal)
-    assert!(result.method_resolutions.is_empty());
-    assert!(result.expr_types.is_empty());
+    assert!(tc.state.method_resolutions.resolved_calls.is_empty());
+    assert!(tc.state.expr_types.is_empty());
     assert!(result.default_method_defns.is_empty());
 }
 
@@ -713,9 +850,9 @@ fn test_check_form_check_body_before_register_errors() {
     );
 }
 
-// spec: design/typecheck/check-form-api.md §Invariant 1 — Register populates defn_type_vars
+// spec: design/typecheck/check-form-api.md §Invariant 1 — Register records body signature
 #[test]
-fn test_check_form_register_populates_defn_type_vars() {
+fn test_check_form_register_records_body_signature() {
     let mut tc = tc_with_prims();
     let module = ModuleFullPath::from("test");
     let mut accumulator = ModuleCheckAccumulator::new();
@@ -727,14 +864,13 @@ fn test_check_form_register_populates_defn_type_vars() {
         .check_form(&module, &form, CheckPass::Register, &mut accumulator)
         .unwrap();
 
-    // defn_type_vars should contain the defn's name with type vars
-    let (param_types, _ret_ty) = accumulator
-        .defn_type_vars
-        .get(&Symbol::from("inc"))
-        .expect("inc should be in defn_type_vars");
+    let registration = accumulator
+        .bodies
+        .registration_for_publication(&Symbol::from("inc"))
+        .expect("inc should have a registered body");
 
     // inc has 1 parameter
-    assert_eq!(param_types.len(), 1, "inc has 1 parameter");
+    assert_eq!(registration.param_types.len(), 1, "inc has 1 parameter");
 }
 
 // spec: design/typecheck/check-form-api.md §Invariant 2 — TypeDef before defn using constructors
@@ -780,9 +916,10 @@ fn test_check_form_typedef_before_defn() {
 
     // Should succeed and produce expr_types
     assert!(
-        !body_result.expr_types.is_empty(),
+        !tc.state.expr_types.is_empty(),
         "is-red body should have expr_types"
     );
+    assert!(body_result.constrained_fn.is_none());
 }
 
 // spec: spec/03-types.md §3.9.3 — a stacked trait-bound parameter annotation
@@ -823,7 +960,7 @@ fn stacked_trait_bounds_param_accumulates_constraints() {
         .expect("defn with stacked trait-bound param must type-check");
 
     let scheme = match tc.symbol_table().get("identity") {
-        Some(ModuleEntry::Def { scheme, .. }) => scheme.clone(),
+        Some(entry) if entry.callable().is_some() => entry.callable().unwrap().arm.scheme.clone(),
         other => panic!("identity not a Def: {other:?}"),
     };
 
@@ -896,7 +1033,7 @@ fn single_trait_bound_param_resolves_via_try_type_then_trait() {
     );
 
     let scheme = match tc.symbol_table().get("use-it") {
-        Some(ModuleEntry::Def { scheme, .. }) => scheme.clone(),
+        Some(entry) if entry.callable().is_some() => entry.callable().unwrap().arm.scheme.clone(),
         other => panic!("use-it not a Def: {other:?}"),
     };
     // The single binder is generalized and carries the `Eq` constraint.
@@ -946,7 +1083,7 @@ fn single_concrete_type_annotation_stays_concrete_neg() {
         .expect("defn with concrete `:Int` param must type-check");
 
     let scheme = match tc.symbol_table().get("id-int") {
-        Some(ModuleEntry::Def { scheme, .. }) => scheme.clone(),
+        Some(entry) if entry.callable().is_some() => entry.callable().unwrap().arm.scheme.clone(),
         other => panic!("id-int not a Def: {other:?}"),
     };
     // No constrained generalization — the param is the concrete `Int`.
@@ -975,7 +1112,7 @@ fn single_concrete_type_annotation_stays_concrete_neg() {
 fn test_fn_registered_as_mono_root_gets_concrete_instance() {
     let mut tc = tc_with_prims();
     let ctx = cf_test_ctx();
-    // (deftype Option None (Some [v])) + (defn test-x [] None)
+    // (deftype (Option a) None (Some [:a v])) + (defn test-x [] None)
     let test_x = TopLevel::Defn(make_defn(
         "test-x",
         vec![],
@@ -993,17 +1130,14 @@ fn test_fn_registered_as_mono_root_gets_concrete_instance() {
     entry
         .callable_got_slot()
         .expect("test-x must carry a concrete callable slot after mono-root minting");
-    match entry {
-        ModuleEntry::Def { scheme, kind, .. } => {
+    match entry.callable() {
+        Some(callable) => {
             assert!(
-                matches!(
-                    kind.as_ref(),
-                    DefKind::UserFn {
-                        fn_state: UserFnState::Concrete { .. }
-                    }
-                ),
-                "test-x must be `Concrete{{slot}}` after mono-root minting, got {kind:?}",
+                matches!(callable.arm.life, Life::Concrete { .. }),
+                "test-x must be `Concrete{{slot}}` after mono-root minting, got {:?}",
+                callable.arm.life,
             );
+            let scheme = &callable.arm.scheme;
             // Scheme is the concrete `(Fn [] (Option String))`.
             match &scheme.ty {
                 Type::Fn(params, ret) => {
@@ -1090,7 +1224,7 @@ fn normalize_self_qualified_collapses_current_module_spelling() {
     // (§8.6.6 longest-prefix substitution applied BEFORE the current-module
     // comparison).
     tc.module_aliases.insert(
-        ModuleFullPath::from("t"),
+        cranelisp_types::module_alias_key(&ModuleFullPath::from("test"), "t"),
         cranelisp_types::ModuleAliasEntry::new(
             ModuleFullPath::from("test"),
             Visibility::Public,

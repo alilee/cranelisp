@@ -60,6 +60,25 @@ fn local_defn_param_shadows_global_resolves_local_all_modes() {
     .assert_all_equal(42);
 }
 
+// BF-2 — a callable parameter named `f` shadows the top-level function whose
+// body it inhabits (tests/plan/s121-test-plan.md §3.8). `(f 41)` must call the
+// parameter; treating it as self-recursion instead would reject or misroute the
+// integer argument. The exact 42 result covers REPL, `--run`, and `--link` in
+// both fresh and cached compositions.
+// spec: spec/04-expressions.md §4.2 — Variable Reference: `fn` parameters are
+// searched before module scope.
+#[test]
+fn callable_param_shadows_same_named_top_level_function_all_modes() {
+    run_through_all_modes(
+        "(import [primitives [Pure add-i64]])\n\
+         (defn f [f] (f 41))\n\
+         (defn inc [n] (add-i64 n 1))\n\
+         (defn main [] (Pure (f inc)))",
+        PreludeVariant::None,
+    )
+    .assert_all_equal(42);
+}
+
 // CA-3b — the `let` sibling. A `let` binding named `base` shadows the global
 // `base`; the let body `base` MUST resolve to the local (42). `(f)` = 42.
 // spec: spec/04-expressions.md §4.3 — a `let`-bound name shadows a same-named

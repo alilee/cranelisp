@@ -59,8 +59,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use cranelisp_types::TypeName;
 use cranelisp_types::{
-    DefKind, DefnVariant, Expr, FQSymbol, FQTypeName, ModuleEntry, ModuleFullPath, Scheme, Span,
-    Symbol, Type, TypeDefInfo, TypeExpr, TypeId, Visibility,
+    AdtEntrySpec, Binding, CallableOrigin, CranelispError, Decl, DefnVariant, ErrorLocation, Expr,
+    FQSymbol, FQTypeName, ModuleFullPath, Realization, Scheme, Span, SpecialFormRecord, Symbol,
+    TemplateBody, TemplateKind, Type, TypeDefInfo, TypeExpr, TypeId, TypeRecord, Visibility,
 };
 
 use crate::code::{Code, SessionSymbolTable};
@@ -78,6 +79,17 @@ fn mono(ty: Type) -> Scheme {
 /// Allocate the next fresh type variable id from the session counter.
 fn fresh_type_id(next_id: &AtomicU32) -> TypeId {
     next_id.fetch_add(1, Ordering::SeqCst)
+}
+
+fn bootstrap_error(stage: &str, error: impl std::fmt::Display) -> CranelispError {
+    CranelispError::ModuleError {
+        message: format!("session bootstrap failed while {stage}: {error}"),
+        location: ErrorLocation::from_span(Span::SYNTHETIC),
+    }
+}
+
+fn missing_bootstrap_module(module: &ModuleFullPath, stage: &str) -> CranelispError {
+    bootstrap_error(stage, format!("required module `{module}` is absent"))
 }
 
 /// `FQTypeName` in the `primitives` module.
@@ -143,18 +155,14 @@ fn register_synth_adt(
     type_var_ids: &[TypeId],
     adt_docstring: Option<&str>,
     ctors: &[SynthCtor],
-) {
+) -> Result<(), CranelispError> {
     let type_param_syms: Vec<Symbol> = type_params.iter().map(|p| Symbol::from(*p)).collect();
 
-    // Build the caller-resolved specs, pre-allocating each ctor's GOT slot from
-    // the session table in tag order (the pure builder never sees a table). This
-    // preserves the as-built slot assignment: ctor N gets the N-th slot.
+    // Build the caller-resolved specs. Slot assignment belongs to the table's
+    // checked settlement funnel rather than to this synthetic-data adapter.
     let specs: Vec<cranelisp_types::AdtCtorSpec> = ctors
         .iter()
         .map(|c| {
-            let got_slot = module.allocate_got_slot().unwrap_or_else(|_| {
-                unreachable!("invariant: bootstrap seeding cannot exhaust a fresh GOT")
-            });
             cranelisp_types::AdtCtorSpec::new(
                 Symbol::from(c.name),
                 c.fields
@@ -166,7 +174,6 @@ fn register_synth_adt(
                     .collect(),
                 c.docstring.map(String::from),
                 c.internal,
-                got_slot,
             )
         })
         .collect();
@@ -180,12 +187,86 @@ fn register_synth_adt(
         Visibility::Public,
     );
 
-    // Synthetic modules have no §8.6.5 contest — insert every pair verbatim
-    // (canonical ctor `Def`, product dual-facet `Def`, bare-name `Import` alias,
-    // and the sum `TypeDef`), in the builder's insertion order.
+    // Synthetic modules have no §8.6.5 contest. Settle each returned recipe
+    // through the same table-owned lifecycle funnels as source ADTs.
     for (key, entry) in entries {
-        module.insert(key, entry);
+        match entry {
+            AdtEntrySpec::Binding(binding) => {
+                module.install_binding(key, binding).map_err(|error| {
+                    bootstrap_error("installing a synthetic ADT binding", error)
+                })?;
+            }
+            AdtEntrySpec::Callable(spec) => {
+                let bare = matches!(
+                    &spec.origin,
+                    CallableOrigin::Ctor { type_name, .. }
+                        if key.as_ref() != type_name.name.as_ref()
+                )
+                .then(|| Symbol::from(key.as_ref().rsplit('.').next().unwrap_or(key.as_ref())));
+                let variant = spec.synth.variant.clone();
+                if spec.scheme.ty.is_concrete() {
+                    let view = cranelisp_types::MonoDefnVariant {
+                        name: key.clone(),
+                        params: spec.param_names.clone(),
+                        body: cranelisp_types::MonoExpr::synthetic_local_from_expr(
+                            &variant.body,
+                            &HashMap::new(),
+                        ),
+                        span: variant.span,
+                        mode_summary: None,
+                    };
+                    module
+                        .install_concrete(
+                            key.clone(),
+                            spec.scheme,
+                            spec.param_names,
+                            spec.docstring,
+                            0,
+                            spec.origin,
+                            Realization::Body { view, code: None },
+                            Some(variant),
+                            Vec::new(),
+                            spec.visibility,
+                        )
+                        .map_err(|error| {
+                            bootstrap_error("installing a concrete synthetic ADT member", error)
+                        })?;
+                } else {
+                    module
+                        .install_template(
+                            key.clone(),
+                            spec.scheme,
+                            spec.param_names,
+                            spec.docstring,
+                            0,
+                            spec.origin,
+                            TemplateBody::Synth(spec.synth),
+                            TemplateKind::Parametric,
+                            Vec::new(),
+                            spec.visibility,
+                        )
+                        .map_err(|error| {
+                            bootstrap_error("installing a generic synthetic ADT member", error)
+                        })?;
+                }
+                if let Some(bare) = bare {
+                    module
+                        .expose_candidate(
+                            bare,
+                            FQSymbol {
+                                module: fqtn.module.clone(),
+                                symbol: key,
+                            },
+                            Visibility::Public,
+                        )
+                        .map_err(|error| {
+                            bootstrap_error("exposing a synthetic ADT constructor", error)
+                        })?;
+                }
+            }
+        }
     }
+    Ok(())
 }
 
 /// Insert a slot-less `DefKind::PrimitiveExtern` `Def` entry into `module`.
@@ -195,7 +276,7 @@ fn insert_primitive(
     scheme: Scheme,
     param_names: Vec<&str>,
     docstring: &str,
-) {
+) -> Result<(), CranelispError> {
     // These synthetic-module callables (`sconcat`, `quote-sexp`, the Trace field
     // accessors) are seeded slot-less as `DefKind::PrimitiveExtern` — the variant
     // for callees whose body lives outside `cranelisp-primitives` and that
@@ -211,14 +292,16 @@ fn insert_primitive(
     // the synthetic `macros` module has no emitted `__cranelisp_got_macros`) is
     // reverted. genuine GOT-slotted primitives (`add-i64`, vec/sexp ops in
     // `cranelisp-primitives`) STAY `Primitive { got_slot }` — unaffected.
-    module.insert(
-        Symbol::from(name),
-        ModuleEntry::def(scheme, DefKind::PrimitiveExtern)
-            .visibility(Visibility::Public)
-            .param_names(param_names.into_iter().map(Symbol::from).collect())
-            .docstring(docstring)
-            .build(),
-    );
+    module
+        .install_host_promised(
+            Symbol::from(name),
+            scheme,
+            param_names.into_iter().map(Symbol::from).collect(),
+            Some(docstring.to_string()),
+            0,
+            Visibility::Public,
+        )
+        .map_err(|error| bootstrap_error(format!("installing primitive `{name}`").as_str(), error))
 }
 
 /// Mount the synthetic modules into `symbol_tables`. Replaces the deleted
@@ -227,34 +310,37 @@ fn insert_primitive(
 /// this runs.
 ///
 /// **FIXME 0604 census disposition (S115 W6, FIXME 0740): NAMED LEGAL-SKIP of
-/// the foreground public-write chokepoint** (`imports.rs::check_terminal_closure`;
+/// the foreground public-write chokepoint**
+/// (`imports.rs::check_exposed_candidate_closure`;
 /// `design/int/prelude-table-write-isolation.md` §2.1/§2.4). This runs ONCE at
 /// session init, single-threaded, before any worker is spawned — outside the
 /// foreground concurrent-compile path — and every entry it seeds is either the
 /// module's OWN definition or ONE intra-module public self-alias
 /// (`primitives/Bind → primitives/IO.Bind`), both of which the gate admits with
 /// no map read. The skip is ASSERTED, not argued:
-/// `tests::bootstrap_seeds_pass_the_terminal_closure_gate` sweeps every seeded
-/// entry through the gate under `D(M) = {}`, so seeding a cross-module PUBLIC
-/// `Import` edge here turns that test RED.
+/// `tests::bootstrap_public_candidate_exposures_are_self_aliases_or_private`
+/// sweeps every
+/// seeded name candidate through the gate under `D(M) = {}`, so seeding a
+/// cross-module PUBLIC exposure here turns that test RED.
 pub(crate) fn mount_synthetic_modules(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
     next_id: &AtomicU32,
-) {
+) -> Result<(), CranelispError> {
     ensure_module(symbol_tables, &ModuleFullPath::from("primitives"));
     ensure_module(symbol_tables, &ModuleFullPath::from(""));
 
-    register_special_forms(symbol_tables); // step 1
-    register_builtin_type_names(symbol_tables); // step 2
-    register_macros_module(symbol_tables, next_id); // step 3
-    register_option_type(symbol_tables, next_id); // step 4
-    register_pair_type(symbol_tables, next_id); // step 4b (test-discovery.md ruling 1)
-    register_result_type(symbol_tables, next_id); // step 4c (test-discovery.md ruling 1)
-    register_io_type(symbol_tables, next_id); // step 5
-    register_bind_primitive(symbol_tables, next_id); // step 6
-    register_combinators(symbol_tables, next_id); // step 6b (S96 Chunk C, slice 7)
-    register_trace_type(symbol_tables); // step 7
-    register_test_infrastructure(symbol_tables, next_id); // step 8
+    register_special_forms(symbol_tables)?; // step 1
+    register_builtin_type_names(symbol_tables)?; // step 2
+    register_macros_module(symbol_tables, next_id)?; // step 3
+    register_option_type(symbol_tables, next_id)?; // step 4
+    register_pair_type(symbol_tables, next_id)?; // step 4b (test-discovery.md ruling 1)
+    register_result_type(symbol_tables, next_id)?; // step 4c (test-discovery.md ruling 1)
+    register_io_type(symbol_tables, next_id)?; // step 5
+    register_bind_primitive(symbol_tables, next_id)?; // step 6
+    register_combinators(symbol_tables, next_id)?; // step 6b (S96 Chunk C, slice 7)
+    register_trace_type(symbol_tables)?; // step 7
+    register_test_infrastructure(symbol_tables, next_id)?; // step 8
+    Ok(())
 }
 
 /// The built-in **seeded** modules `/search` treats as importable (spec
@@ -291,7 +377,9 @@ fn ensure_module(
 
 // --- Step 1: special forms (root "") ---
 
-fn register_special_forms(symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>) {
+fn register_special_forms(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
+) -> Result<(), CranelispError> {
     // Each special form carries its REAL type scheme — the SpecialForm entry is
     // the SINGLE SOURCE for the `:Type` prefix the REPL renders (FIXME 0338, S82
     // W2). The former placeholder `mono(Type::Int)` schemes + the parallel
@@ -353,18 +441,23 @@ fn register_special_forms(symbol_tables: &dashmap::DashMap<ModuleFullPath, Sessi
     let root_path = ModuleFullPath::from("");
     let mut root = symbol_tables
         .get_mut(&root_path)
-        .unwrap_or_else(|| unreachable!("invariant: root \"\" module should exist (bootstrap)"));
+        .ok_or_else(|| missing_bootstrap_module(&root_path, "registering special forms"))?;
     for (name, scheme, desc) in special_forms {
-        root.insert(
+        root.install_binding(
             Symbol::from(name),
-            ModuleEntry::SpecialForm {
-                scheme,
-                param_names: vec![],
-                docstring: Some(desc.to_string()),
-                description: desc.to_string(),
-                visibility: Visibility::Public,
-            },
-        );
+            Binding::new(
+                Decl::SpecialForm(SpecialFormRecord::new(
+                    scheme,
+                    vec![],
+                    Some(desc.to_string()),
+                    desc.to_string(),
+                )),
+                Visibility::Public,
+            ),
+        )
+        .map_err(|error| {
+            bootstrap_error(format!("installing special form `{name}`").as_str(), error)
+        })?;
     }
 
     // `trace` is a ROOT special form (user ruling 2026-06-04; tracing.md §3.1,
@@ -378,26 +471,30 @@ fn register_special_forms(symbol_tables: &dashmap::DashMap<ModuleFullPath, Sessi
     // the REPL renders a `:Type` prefix from the entry (FIXME 0338).
     let trace_ty = Type::ADT(primitives_fqtn("Trace"), vec![]);
     let trace_form_desc = "Execution trace: (trace expr) — evaluates expr with call instrumentation, returns Trace ADT";
-    root.insert(
+    root.install_binding(
         Symbol::from("trace"),
-        ModuleEntry::SpecialForm {
-            scheme: mono(Type::Fn(
-                vec![Type::Var(0)], // any expression type
-                Box::new(trace_ty),
+        Binding::new(
+            Decl::SpecialForm(SpecialFormRecord::new(
+                mono(Type::Fn(
+                    vec![Type::Var(0)], // any expression type
+                    Box::new(trace_ty),
+                )),
+                vec![Symbol::from("expr")],
+                Some(trace_form_desc.to_string()),
+                trace_form_desc.to_string(),
             )),
-            param_names: vec![Symbol::from("expr")],
-            docstring: Some(trace_form_desc.to_string()),
-            description: trace_form_desc.to_string(),
-            visibility: Visibility::Public,
-        },
-    );
+            Visibility::Public,
+        ),
+    )
+    .map_err(|error| bootstrap_error("installing special form `trace`", error))?;
+    Ok(())
 }
 
 // --- Step 2: intrinsic type names (primitives) ---
 
 fn register_builtin_type_names(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
-) {
+) -> Result<(), CranelispError> {
     let intrinsic_scalars: [(&str, Type, &str); 4] = [
         ("Int", Type::Int, "Machine-word signed integer (spec §3.1)."),
         (
@@ -418,35 +515,49 @@ fn register_builtin_type_names(
     ];
 
     let primitives_path = ModuleFullPath::from("primitives");
-    let mut primitives = symbol_tables
-        .get_mut(&primitives_path)
-        .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
+    let mut primitives = symbol_tables.get_mut(&primitives_path).ok_or_else(|| {
+        missing_bootstrap_module(&primitives_path, "registering intrinsic type names")
+    })?;
 
     for (name, ty, desc) in intrinsic_scalars {
-        primitives.insert(
-            Symbol::from(name),
-            ModuleEntry::IntrinsicType {
-                ty,
-                visibility: Visibility::Public,
-                docstring: Some(desc.to_string()),
-            },
-        );
+        primitives
+            .install_binding(
+                Symbol::from(name),
+                Binding::new(
+                    Decl::Type(TypeRecord::Intrinsic {
+                        ty,
+                        docstring: Some(desc.to_string()),
+                    }),
+                    Visibility::Public,
+                ),
+            )
+            .map_err(|error| {
+                bootstrap_error(
+                    format!("installing intrinsic type `{name}`").as_str(),
+                    error,
+                )
+            })?;
     }
 
     // Vec stays as TypeDef — no Type::Vec variant (vec is Type::ADT(Vec, [elem])).
     // It has no surface constructor, so it is not a product (no type facet).
-    primitives.insert(
-        Symbol::from("Vec"),
-        ModuleEntry::TypeDef {
-            info: TypeDefInfo {
-                name: primitives_fqtn("Vec"),
-                type_params: vec![],
-                constructors: vec![],
-            },
-            visibility: Visibility::Public,
-            docstring: Some("builtin vector type".to_string()),
-        },
-    );
+    primitives
+        .install_binding(
+            Symbol::from("Vec"),
+            Binding::new(
+                Decl::Type(TypeRecord::Defined {
+                    info: TypeDefInfo {
+                        name: primitives_fqtn("Vec"),
+                        type_params: vec![],
+                        constructors: vec![],
+                    },
+                    docstring: Some("builtin vector type".to_string()),
+                }),
+                Visibility::Public,
+            ),
+        )
+        .map_err(|error| bootstrap_error("installing intrinsic type `Vec`", error))?;
+    Ok(())
 }
 
 // --- Step 3: synthetic `macros` module (SList, Sexp, sconcat) ---
@@ -454,7 +565,7 @@ fn register_builtin_type_names(
 fn register_macros_module(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
     next_id: &AtomicU32,
-) {
+) -> Result<(), CranelispError> {
     let macros_path = ModuleFullPath::from("macros");
     ensure_module(symbol_tables, &macros_path);
 
@@ -466,20 +577,25 @@ fn register_macros_module(
     // body — kept so `/info` and qualified-name lookup behave identically.)
     let primitives_path = ModuleFullPath::from("primitives");
     {
-        let mut macros = symbol_tables
-            .get_mut(&macros_path)
-            .unwrap_or_else(|| unreachable!("invariant: macros module should exist"));
+        let mut macros = symbol_tables.get_mut(&macros_path).ok_or_else(|| {
+            missing_bootstrap_module(&macros_path, "installing macro scalar exposures")
+        })?;
         for sym in ["Int", "Bool", "Float", "String"] {
-            macros.insert(
-                Symbol::from(sym),
-                ModuleEntry::Import {
-                    source: FQSymbol {
+            macros
+                .expose_candidate(
+                    Symbol::from(sym),
+                    FQSymbol {
                         module: primitives_path.clone(),
                         symbol: Symbol::from(sym),
                     },
-                    visibility: Visibility::Private,
-                },
-            );
+                    Visibility::Private,
+                )
+                .map_err(|error| {
+                    bootstrap_error(
+                        format!("exposing scalar `{sym}` in the macros module").as_str(),
+                        error,
+                    )
+                })?;
         }
     }
 
@@ -491,7 +607,7 @@ fn register_macros_module(
     {
         let mut macros = symbol_tables
             .get_mut(&macros_path)
-            .unwrap_or_else(|| unreachable!("invariant: macros module should exist"));
+            .ok_or_else(|| missing_bootstrap_module(&macros_path, "installing `SList`"))?;
         register_synth_adt(
             &mut macros,
             &slist_fqtn,
@@ -521,7 +637,7 @@ fn register_macros_module(
                     internal: false,
                 },
             ],
-        );
+        )?;
     }
 
     // Sexp: 7 single-field data constructors plus the two-field annotation node.
@@ -531,7 +647,7 @@ fn register_macros_module(
     {
         let mut macros = symbol_tables
             .get_mut(&macros_path)
-            .unwrap_or_else(|| unreachable!("invariant: macros module should exist"));
+            .ok_or_else(|| missing_bootstrap_module(&macros_path, "installing `Sexp`"))?;
         register_synth_adt(
             &mut macros,
             &sexp_fqtn,
@@ -562,7 +678,7 @@ fn register_macros_module(
                     internal: false,
                 },
             ],
-        );
+        )?;
 
         // sconcat :: (Fn [(SList Sexp) (SList Sexp)] (SList Sexp))
         let sconcat_ty = Type::Fn(
@@ -575,8 +691,9 @@ fn register_macros_module(
             mono(sconcat_ty),
             vec!["a", "b"],
             "Concatenate two SList Sexp values",
-        );
+        )?;
     }
+    Ok(())
 }
 
 fn sexp_ctor(name: &'static str, field: &'static str, ty: Type) -> SynthCtor {
@@ -593,13 +710,13 @@ fn sexp_ctor(name: &'static str, field: &'static str, ty: Type) -> SynthCtor {
 fn register_option_type(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
     next_id: &AtomicU32,
-) {
+) -> Result<(), CranelispError> {
     let primitives_path = ModuleFullPath::from("primitives");
     let option_a = fresh_type_id(next_id);
     let option_fqtn = primitives_fqtn("Option");
     let mut primitives = symbol_tables
         .get_mut(&primitives_path)
-        .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
+        .ok_or_else(|| missing_bootstrap_module(&primitives_path, "installing `Option`"))?;
     register_synth_adt(
         &mut primitives,
         &option_fqtn,
@@ -623,7 +740,7 @@ fn register_option_type(
                 internal: false,
             },
         ],
-    );
+    )
 }
 
 // --- Step 4b: Pair ADT (primitives) ---
@@ -639,14 +756,14 @@ fn register_option_type(
 fn register_pair_type(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
     next_id: &AtomicU32,
-) {
+) -> Result<(), CranelispError> {
     let primitives_path = ModuleFullPath::from("primitives");
     let pair_a = fresh_type_id(next_id);
     let pair_b = fresh_type_id(next_id);
     let pair_fqtn = primitives_fqtn("Pair");
     let mut primitives = symbol_tables
         .get_mut(&primitives_path)
-        .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
+        .ok_or_else(|| missing_bootstrap_module(&primitives_path, "installing `Pair`"))?;
     register_synth_adt(
         &mut primitives,
         &pair_fqtn,
@@ -668,7 +785,7 @@ fn register_pair_type(
             docstring: Some("Construct a pair"),
             internal: false,
         }],
-    );
+    )
 }
 
 // --- Step 4c: Result ADT (primitives) ---
@@ -684,14 +801,14 @@ fn register_pair_type(
 fn register_result_type(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
     next_id: &AtomicU32,
-) {
+) -> Result<(), CranelispError> {
     let primitives_path = ModuleFullPath::from("primitives");
     let result_a = fresh_type_id(next_id);
     let result_b = fresh_type_id(next_id);
     let result_fqtn = primitives_fqtn("Result");
     let mut primitives = symbol_tables
         .get_mut(&primitives_path)
-        .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
+        .ok_or_else(|| missing_bootstrap_module(&primitives_path, "installing `Result`"))?;
     register_synth_adt(
         &mut primitives,
         &result_fqtn,
@@ -718,7 +835,7 @@ fn register_result_type(
                 internal: false,
             },
         ],
-    );
+    )
 }
 
 // --- Step 5: IO ADT (primitives) ---
@@ -726,14 +843,14 @@ fn register_result_type(
 fn register_io_type(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
     next_id: &AtomicU32,
-) {
+) -> Result<(), CranelispError> {
     let primitives_path = ModuleFullPath::from("primitives");
     let io_a = fresh_type_id(next_id);
     let io_fqtn = primitives_fqtn("IO");
 
     let mut primitives = symbol_tables
         .get_mut(&primitives_path)
-        .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
+        .ok_or_else(|| missing_bootstrap_module(&primitives_path, "installing `IO`"))?;
 
     // Pure / Effect via the standard ADT path.
     register_synth_adt(
@@ -762,7 +879,7 @@ fn register_io_type(
                 internal: false,
             },
         ],
-    );
+    )?;
 
     // Bind (tag=2, internal): existential `b` independent of IO's `a`.
     // HM cannot express the existential, so Bind bypasses the normal ctor
@@ -805,57 +922,70 @@ fn register_io_type(
     };
 
     // Append Bind to IO's constructor list.
-    if let Some(ModuleEntry::TypeDef { info, .. }) = primitives.symbols.get_mut(&Symbol::from("IO"))
-    {
-        info.constructors.push(Symbol::from("Bind"));
-    } else {
-        unreachable!("invariant: IO type should be registered before adding Bind");
-    }
+    let mut io_info = primitives
+        .get("IO")
+        .and_then(|binding| binding.type_def_info().cloned())
+        .ok_or_else(|| {
+            bootstrap_error(
+                "extending `IO` with `Bind`",
+                "the newly installed `IO` type definition is absent",
+            )
+        })?;
+    io_info.constructors.push(Symbol::from("Bind"));
+    primitives
+        .install_binding(
+            Symbol::from("IO"),
+            Binding::new(
+                Decl::Type(TypeRecord::Defined {
+                    info: io_info,
+                    docstring: Some("Deferred IO computation tree".to_string()),
+                }),
+                Visibility::Public,
+            ),
+        )
+        .map_err(|error| bootstrap_error("extending the `IO` type definition", error))?;
     // Slot rides on the `Constructor` variant (S83 reshape, FIXME 0356/0357).
     // **Uniform canonical keying (S109 W1):** `Bind` is a sum ctor of `IO`, so —
     // like `Pure`/`Effect` and every user `deftype` sum ctor — the real `Def` is
     // keyed `IO.Bind` (`member_key`), the bare `Bind` an `Import` alias onto it;
     // `internal: true` rides the `Def` unchanged.
-    let bind_ctor_slot = primitives.allocate_got_slot().unwrap_or_else(|_| {
-        unreachable!("invariant: bootstrap seeding cannot exhaust a fresh GOT")
-    });
     let bind_canonical = cranelisp_types::member_key(&io_fqtn.name, "Bind");
-    primitives.insert(
-        bind_canonical.clone(),
-        ModuleEntry::def(
+    let bind_variant = DefnVariant {
+        params: synth_params,
+        body: synth_body,
+        span: body_span,
+    };
+    primitives
+        .install_template(
+            bind_canonical.clone(),
             bind_ctor_scheme,
-            DefKind::Constructor {
-                got_slot: bind_ctor_slot,
+            bind_param_names,
+            Some("Chain IO actions (internal — constructed by bind primitive)".to_string()),
+            0,
+            CallableOrigin::Ctor {
                 type_name: io_fqtn.clone(),
                 tag: 2,
                 field_count: 2,
                 internal: true,
-                // `IO` is a sum type (`Pure`/`Effect`/`Bind`) with a separate
-                // `TypeDef`; `Bind` is not its own type.
                 type_def: None,
-                mode_summary: None,
             },
+            cranelisp_types::TemplateBody::Synth(cranelisp_types::SynthSpec::new(bind_variant)),
+            TemplateKind::Parametric,
+            Vec::new(),
+            Visibility::Public,
         )
-        .visibility(Visibility::Public)
-        .docstring("Chain IO actions (internal — constructed by bind primitive)")
-        .param_names(bind_param_names)
-        .ast(DefnVariant {
-            params: synth_params,
-            body: synth_body,
-            span: body_span,
-        })
-        .build(),
-    );
-    primitives.insert(
-        Symbol::from("Bind"),
-        ModuleEntry::Import {
-            source: cranelisp_types::FQSymbol {
+        .map_err(|error| bootstrap_error("installing the `IO.Bind` constructor", error))?;
+    primitives
+        .expose_candidate(
+            Symbol::from("Bind"),
+            cranelisp_types::FQSymbol {
                 module: io_fqtn.module.clone(),
                 symbol: bind_canonical,
             },
-            visibility: Visibility::Public,
-        },
-    );
+            Visibility::Public,
+        )
+        .map_err(|error| bootstrap_error("exposing the `Bind` constructor", error))?;
+    Ok(())
 }
 
 // --- Step 6: bind primitive (primitives) ---
@@ -863,7 +993,7 @@ fn register_io_type(
 fn register_bind_primitive(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
     next_id: &AtomicU32,
-) {
+) -> Result<(), CranelispError> {
     let primitives_path = ModuleFullPath::from("primitives");
     let a = fresh_type_id(next_id);
     let b = fresh_type_id(next_id);
@@ -880,7 +1010,7 @@ fn register_bind_primitive(
 
     let mut primitives = symbol_tables
         .get_mut(&primitives_path)
-        .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
+        .ok_or_else(|| missing_bootstrap_module(&primitives_path, "installing `bind`"))?;
     // `bind` is a slot-less `DefKind::PrimitiveExtern` (FIXME 0360, ruled S83
     // /arch Path 1). It is intercepted inline by backend *by name*
     // (`apply.rs:153`, `op_name == "bind"`) BEFORE any GOT path is reached, so it
@@ -890,14 +1020,13 @@ fn register_bind_primitive(
     // interim `Primitive { got_slot }` + dlsym cascade is reverted (it serviced a
     // slot that is never read and broke `--link` for the sibling synthetic
     // externs).
-    primitives.insert(
-        Symbol::from("bind"),
-        ModuleEntry::def(bind_scheme, DefKind::PrimitiveExtern)
-            .visibility(Visibility::Public)
-            .docstring("Chain IO actions: extract value from first IO, pass to continuation")
-            .param_names(vec![Symbol::from("io"), Symbol::from("f")])
-            .build(),
-    );
+    insert_primitive(
+        &mut primitives,
+        "bind",
+        bind_scheme,
+        vec!["io", "f"],
+        "Chain IO actions: extract value from first IO, pass to continuation",
+    )
 }
 
 // --- Step 6b: race/select combinators (primitives) ---
@@ -917,7 +1046,7 @@ fn register_bind_primitive(
 fn register_combinators(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
     next_id: &AtomicU32,
-) {
+) -> Result<(), CranelispError> {
     let primitives_path = ModuleFullPath::from("primitives");
     let io_fqtn = primitives_fqtn("IO");
     let vec_fqtn = primitives_fqtn("Vec");
@@ -946,25 +1075,21 @@ fn register_combinators(
 
     let mut primitives = symbol_tables
         .get_mut(&primitives_path)
-        .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
-    primitives.insert(
-        Symbol::from("race"),
-        ModuleEntry::def(race_scheme, DefKind::PrimitiveExtern)
-            .visibility(Visibility::Public)
-            .docstring("Race two IO actions: the first to complete wins; the loser is cancelled")
-            .param_names(vec![Symbol::from("a"), Symbol::from("b")])
-            .build(),
-    );
-    primitives.insert(
-        Symbol::from("select"),
-        ModuleEntry::def(select_scheme, DefKind::PrimitiveExtern)
-            .visibility(Visibility::Public)
-            .docstring(
-                "Race a list of IO actions: the first to complete wins; the losers are cancelled",
-            )
-            .param_names(vec![Symbol::from("branches")])
-            .build(),
-    );
+        .ok_or_else(|| missing_bootstrap_module(&primitives_path, "installing IO combinators"))?;
+    insert_primitive(
+        &mut primitives,
+        "race",
+        race_scheme,
+        vec!["a", "b"],
+        "Race two IO actions: the first to complete wins; the loser is cancelled",
+    )?;
+    insert_primitive(
+        &mut primitives,
+        "select",
+        select_scheme,
+        vec!["branches"],
+        "Race a list of IO actions: the first to complete wins; the losers are cancelled",
+    )?;
 
     // sleep : Int -> IO Int — the runtime timer poll leaf (S96 Chunk C4, slice 7;
     // spec §10.12.8, `reactor.md §2.18`). `(sleep d)` arms the reactor's timer and
@@ -984,21 +1109,21 @@ fn register_combinators(
         constraints: HashMap::new(),
         ty: sleep_ty,
     };
-    primitives.insert(
-        Symbol::from("sleep"),
-        ModuleEntry::def(sleep_scheme, DefKind::PrimitiveExtern)
-            .visibility(Visibility::Public)
-            .docstring(
-                "Sleep for d milliseconds (a timer IO leaf): arms the reactor timer and resumes after the delay",
-            )
-            .param_names(vec![Symbol::from("d")])
-            .build(),
-    );
+    insert_primitive(
+        &mut primitives,
+        "sleep",
+        sleep_scheme,
+        vec!["d"],
+        "Sleep for d milliseconds (a timer IO leaf): arms the reactor timer and resumes after the delay",
+    )?;
+    Ok(())
 }
 
 // --- Step 7: Trace ADT + field accessors + `trace` form (primitives) ---
 
-fn register_trace_type(symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>) {
+fn register_trace_type(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
+) -> Result<(), CranelispError> {
     let primitives_path = ModuleFullPath::from("primitives");
     let trace_fqtn = primitives_fqtn("Trace");
     let trace_ty = Type::ADT(trace_fqtn.clone(), vec![]);
@@ -1007,7 +1132,7 @@ fn register_trace_type(symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionS
 
     let mut primitives = symbol_tables
         .get_mut(&primitives_path)
-        .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
+        .ok_or_else(|| missing_bootstrap_module(&primitives_path, "installing `Trace`"))?;
 
     register_synth_adt(
         &mut primitives,
@@ -1042,7 +1167,7 @@ fn register_trace_type(symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionS
             docstring: Some("Trace call tree node"),
             internal: false,
         }],
-    );
+    )?;
 
     // Field accessor functions (monomorphic Defs): (Fn [Trace] FieldTy).
     let accessors: [(&str, &str, Type); 5] = [
@@ -1066,7 +1191,7 @@ fn register_trace_type(symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionS
     ];
     for (field_name, docstring, return_ty) in accessors {
         let scheme = mono(Type::Fn(vec![trace_ty.clone()], Box::new(return_ty)));
-        insert_primitive(&mut primitives, field_name, scheme, vec!["t"], docstring);
+        insert_primitive(&mut primitives, field_name, scheme, vec!["t"], docstring)?;
     }
 
     // NOTE: the `trace` SpecialForm metadata entry is registered at ROOT `""`
@@ -1074,6 +1199,7 @@ fn register_trace_type(symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionS
     // special form needing no import (user ruling 2026-06-04; FIXME 0266
     // resolved). Only the `Trace`/`TraceCall` ADT + accessors live in
     // `primitives` (form/ADT asymmetry, spec §3.2.4).
+    Ok(())
 }
 
 // --- Step 8: test-discovery primitives (primitives) ---
@@ -1087,11 +1213,11 @@ fn register_trace_type(symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionS
 fn register_test_infrastructure(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
     next_id: &AtomicU32,
-) {
+) -> Result<(), CranelispError> {
     let primitives_path = ModuleFullPath::from("primitives");
-    let mut primitives = symbol_tables
-        .get_mut(&primitives_path)
-        .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
+    let mut primitives = symbol_tables.get_mut(&primitives_path).ok_or_else(|| {
+        missing_bootstrap_module(&primitives_path, "installing test infrastructure")
+    })?;
 
     // The eligible-test callable: `(Fn [] (Option String))` — None=pass,
     // (Some reason)=fail. The wrapper's own type and the eligibility filter
@@ -1111,20 +1237,14 @@ fn register_test_infrastructure(
     // slot, no code; backend lowers a call as Linkage::Import against the key.
     // The no-arg and single-String shapes are stdlib-macro sugar normalising
     // to the `(Vec String)` form (FIXME 0273, /stdlib).
-    primitives.insert(
-        Symbol::from("discover-tests"),
-        ModuleEntry::def(
-            mono(Type::Fn(vec![vec_string], Box::new(vec_pairs))),
-            DefKind::PrimitiveExtern,
-        )
-        .visibility(Visibility::Public)
-        .param_names(vec![Symbol::from("modules")])
-        .docstring(
-            "Discover eligible test-* functions across the given module paths: \
-             returns (Vec (Pair name late-bound-callable)).",
-        )
-        .build(),
-    );
+    insert_primitive(
+        &mut primitives,
+        "discover-tests",
+        mono(Type::Fn(vec![vec_string], Box::new(vec_pairs))),
+        vec!["modules"],
+        "Discover eligible test-* functions across the given module paths: \
+         returns (Vec (Pair name late-bound-callable)).",
+    )?;
 
     // catch-runtime-error :: forall a. (Fn [(Fn [] a)] (Result a String))
     //
@@ -1148,22 +1268,21 @@ fn register_test_infrastructure(
     // that no mode populates (SIGSEGV, observed in `--run` AND `--link`);
     // `PrimitiveExtern` restores the by-name `Linkage::Import` lowering in all
     // modes (FIXME 0360).
-    primitives.insert(
-        Symbol::from("catch-runtime-error"),
-        ModuleEntry::def(cre_scheme, DefKind::PrimitiveExtern)
-            .visibility(Visibility::Public)
-            .param_names(vec![Symbol::from("thunk")])
-            .docstring(
-                "Invoke a thunk under runtime-error protection: returns \
-                 (Ok result) on success or (Err message) on a runtime panic.",
-            )
-            .build(),
-    );
+    insert_primitive(
+        &mut primitives,
+        "catch-runtime-error",
+        cre_scheme,
+        vec!["thunk"],
+        "Invoke a thunk under runtime-error protection: returns \
+         (Ok result) on success or (Err message) on a runtime panic.",
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cranelisp_types::{CallableOrigin, Life};
 
     /// Test helper: resolve a constructor by its BARE name to the terminal `Def`,
     /// following the S109 same-module bare→canonical `Import` alias one hop (a sum
@@ -1171,11 +1290,15 @@ mod tests {
     fn ctor_entry<'t>(
         table: &'t SessionSymbolTable,
         name: &str,
-    ) -> Option<&'t ModuleEntry<crate::code::Code>> {
-        match table.get(name)? {
-            ModuleEntry::Import { source, .. } => table.get(source.symbol.as_ref()),
-            e => Some(e),
+    ) -> Option<&'t Binding<crate::code::Code>> {
+        if let Some(binding) = table.get(name) {
+            return Some(binding);
         }
+        let candidates = table.name_candidates(&Symbol::from(name));
+        let [candidate] = candidates.as_slice() else {
+            return None;
+        };
+        table.get(candidate.source.symbol.as_ref())
     }
 
     fn fresh_tables() -> (
@@ -1194,35 +1317,79 @@ mod tests {
         (tables, AtomicU32::new(0))
     }
 
+    // spec: design/arch/s121-lifecycle-public-api-review.md §13 — session
+    // bootstrap is a typed error boundary. A lifecycle refusal while installing
+    // a synthetic seed must return a located compiler error, never unwind.
+    #[test]
+    fn bootstrap_lifecycle_conflict_returns_error_without_unwind() {
+        let (tables, next_id) = fresh_tables();
+        let root_path = ModuleFullPath::from("");
+        ensure_module(&tables, &root_path);
+        tables
+            .get_mut(&root_path)
+            .expect("root fixture exists")
+            .install_host_promised(
+                Symbol::from("if"),
+                mono(Type::Fn(vec![Type::Int], Box::new(Type::Int))),
+                vec![Symbol::from("x")],
+                Some("incompatible bootstrap fixture".to_string()),
+                0,
+                Visibility::Public,
+            )
+            .expect("conflicting fixture installs");
+
+        let attempt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            mount_synthetic_modules(&tables, &next_id)
+        }));
+        let error = attempt
+            .expect("bootstrap lifecycle refusal must not unwind")
+            .expect_err("incompatible pre-existing `if` binding must be refused");
+        assert!(
+            matches!(error, CranelispError::ModuleError { .. }),
+            "bootstrap refusal uses the existing located compiler-error vocabulary: {error:?}"
+        );
+        assert_eq!(error.span(), Span::SYNTHETIC);
+        assert!(
+            error.message().contains("session bootstrap failed")
+                && error.message().contains("special form `if`"),
+            "bootstrap context identifies the failed seed: {error:?}"
+        );
+    }
+
     // spec: design/int/prelude-table-write-isolation.md §2.1/§2.4 (FIXME 0604
     // census; 0740 disposition) — `mount_synthetic_modules` is a NAMED LEGAL-SKIP
     // of the foreground public-write chokepoint, and this is its DETECTION PROOF
-    // rather than an argument. Every entry the bootstrap seeds is swept through
-    // `check_terminal_closure` with the STRICTEST possible declared-export
-    // closure — `D(M) = {}` — so the unknown-D permit arm cannot mask anything:
-    // the sweep passes iff bootstrap seeds ONLY own-definitions and intra-module
-    // self-aliases (`Bind → primitives/IO.Bind`). A future seed of a
-    // cross-module PUBLIC `Import` edge — the phantom shape the gate exists to
-    // reject — turns this test RED, which is exactly the census closure claim.
+    // rather than an argument. Every candidate exposure the bootstrap seeds is
+    // swept through `check_exposed_candidate_closure` with the STRICTEST possible
+    // declared-export closure — `D(M) = {}` — so the unknown-D permit arm cannot
+    // mask anything. A future cross-module PUBLIC candidate — the phantom shape
+    // the gate exists to reject — turns this test RED.
     #[test]
-    fn bootstrap_seeds_pass_the_terminal_closure_gate() {
+    fn bootstrap_public_candidate_exposures_are_self_aliases_or_private() {
         let (tables, next_id) = fresh_tables();
-        mount_synthetic_modules(&tables, &next_id);
+        mount_synthetic_modules(&tables, &next_id).expect("bootstrap mount");
         let empty: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
         let mut checked = 0usize;
         for module in tables.iter() {
             let path = module.key().clone();
-            for (name, entry) in module.value().symbols.iter() {
-                crate::imports::check_terminal_closure(
+            for (name, exposure) in module.value().all_name_candidates() {
+                if exposure.visibility == Visibility::Public {
+                    assert_eq!(
+                        exposure.source.module, path,
+                        "bootstrap public candidate `{name}` must be a same-module self-alias"
+                    );
+                }
+                crate::imports::check_exposed_candidate_closure(
                     &path,
-                    name.as_ref(),
-                    entry,
+                    name,
+                    &exposure.source,
+                    exposure.visibility,
                     cranelisp_types::Span::SYNTHETIC,
                     Some(&empty),
                 )
                 .unwrap_or_else(|e| {
                     panic!(
-                        "bootstrap seed `{name}` in module `{path}` is not a legal \
+                        "bootstrap candidate `{name}` in module `{path}` is not a legal \
                          skip of the 0604 chokepoint: {e:?}"
                     )
                 });
@@ -1230,89 +1397,122 @@ mod tests {
             }
         }
         assert!(
-            checked > 20,
-            "the sweep must actually see the seeded entries; checked {checked}"
+            checked > 5,
+            "the sweep must actually see seeded candidates; checked {checked}"
+        );
+
+        let planted = crate::imports::check_exposed_candidate_closure(
+            &ModuleFullPath::from("macros"),
+            &Symbol::from("foreign"),
+            &FQSymbol {
+                module: ModuleFullPath::from("primitives"),
+                symbol: Symbol::from("foreign"),
+            },
+            Visibility::Public,
+            Span::SYNTHETIC,
+            Some(&empty),
+        );
+        assert!(
+            planted.is_err(),
+            "a planted public cross-module candidate outside D(M) must be rejected"
         );
     }
 
     #[test]
     fn mounts_special_forms_at_root() {
         let (tables, next_id) = fresh_tables();
-        mount_synthetic_modules(&tables, &next_id);
+        mount_synthetic_modules(&tables, &next_id).expect("bootstrap mount");
         let root = tables.get(&ModuleFullPath::from("")).unwrap();
         assert!(matches!(
             root.get("if"),
-            Some(ModuleEntry::SpecialForm { .. })
+            Some(Binding {
+                declaration: Decl::SpecialForm(_),
+                ..
+            })
         ));
         assert!(matches!(
             root.get("defmacro"),
-            Some(ModuleEntry::SpecialForm { .. })
+            Some(Binding {
+                declaration: Decl::SpecialForm(_),
+                ..
+            })
         ));
     }
 
     #[test]
     fn mounts_intrinsic_scalars_in_primitives() {
         let (tables, next_id) = fresh_tables();
-        mount_synthetic_modules(&tables, &next_id);
+        mount_synthetic_modules(&tables, &next_id).expect("bootstrap mount");
         let prims = tables.get(&ModuleFullPath::from("primitives")).unwrap();
         assert!(matches!(
             prims.get("Int"),
-            Some(ModuleEntry::IntrinsicType { ty: Type::Int, .. })
+            Some(Binding {
+                declaration: Decl::Type(TypeRecord::Intrinsic { ty: Type::Int, .. }),
+                ..
+            })
         ));
         assert!(matches!(
             prims.get("Vec"),
-            Some(ModuleEntry::TypeDef { .. })
+            Some(Binding {
+                declaration: Decl::Type(TypeRecord::Defined { .. }),
+                ..
+            })
         ));
     }
 
     #[test]
     fn mounts_macros_sexp_and_slist() {
         let (tables, next_id) = fresh_tables();
-        mount_synthetic_modules(&tables, &next_id);
+        mount_synthetic_modules(&tables, &next_id).expect("bootstrap mount");
         let macros = tables.get(&ModuleFullPath::from("macros")).unwrap();
         assert!(matches!(
             macros.get("Sexp"),
-            Some(ModuleEntry::TypeDef { .. })
+            Some(Binding {
+                declaration: Decl::Type(TypeRecord::Defined { .. }),
+                ..
+            })
         ));
         assert!(matches!(
             macros.get("SList"),
-            Some(ModuleEntry::TypeDef { .. })
+            Some(Binding {
+                declaration: Decl::Type(TypeRecord::Defined { .. }),
+                ..
+            })
         ));
         // SCons is a data constructor Def.
         assert!(matches!(
             ctor_entry(&macros, "SCons"),
-            Some(ModuleEntry::Def {
-                kind,
-                ..
-            }) if matches!(kind.as_ref(), DefKind::Constructor { .. })
+            Some(Binding { declaration: Decl::Callable(callable), .. })
+                if matches!(callable.origin, CallableOrigin::Ctor { .. })
         ));
         assert!(matches!(
             macros.get("sconcat"),
-            Some(ModuleEntry::Def { .. })
+            Some(Binding {
+                declaration: Decl::Callable(_),
+                ..
+            })
         ));
         // spec: spec/09-macros.md §9.1.2 — reader-folded annotations are
         // available to macro code as (SexpAnnotated stype sform), tag 7.
         match ctor_entry(&macros, "SexpAnnotated") {
-            Some(ModuleEntry::Def {
-                kind,
-                scheme,
-                param_names,
+            Some(Binding {
+                declaration: Decl::Callable(callable),
                 ..
             }) => {
                 assert!(matches!(
-                    kind.as_ref(),
-                    DefKind::Constructor {
+                    callable.origin,
+                    CallableOrigin::Ctor {
                         tag: 7,
                         field_count: 2,
                         ..
                     }
                 ));
                 assert_eq!(
-                    param_names,
+                    &callable.arm.param_names,
                     &vec![Symbol::from("stype"), Symbol::from("sform")]
                 );
                 assert_eq!(
-                    scheme.ty,
+                    callable.arm.scheme.ty,
                     Type::Fn(
                         vec![
                             Type::ADT(macros_fqtn("Sexp"), vec![]),
@@ -1329,31 +1529,56 @@ mod tests {
     #[test]
     fn mounts_option_io_bind() {
         let (tables, next_id) = fresh_tables();
-        mount_synthetic_modules(&tables, &next_id);
+        mount_synthetic_modules(&tables, &next_id).expect("bootstrap mount");
         let prims = tables.get(&ModuleFullPath::from("primitives")).unwrap();
         assert!(matches!(
             prims.get("Option"),
-            Some(ModuleEntry::TypeDef { .. })
+            Some(Binding {
+                declaration: Decl::Type(TypeRecord::Defined { .. }),
+                ..
+            })
         ));
         assert!(matches!(
             ctor_entry(&prims, "Some"),
-            Some(ModuleEntry::Def { .. })
+            Some(Binding {
+                declaration: Decl::Callable(_),
+                ..
+            })
         ));
-        assert!(matches!(prims.get("IO"), Some(ModuleEntry::TypeDef { .. })));
-        assert!(matches!(prims.get("bind"), Some(ModuleEntry::Def { .. })));
+        assert!(matches!(
+            prims.get("IO"),
+            Some(Binding {
+                declaration: Decl::Type(TypeRecord::Defined { .. }),
+                ..
+            })
+        ));
+        assert!(matches!(
+            prims.get("bind"),
+            Some(Binding {
+                declaration: Decl::Callable(_),
+                ..
+            })
+        ));
         // Bind is internal.
         match ctor_entry(&prims, "Bind") {
-            Some(ModuleEntry::Def { kind, .. }) => match kind.as_ref() {
-                DefKind::Constructor { internal, tag, .. } => {
+            Some(Binding {
+                declaration: Decl::Callable(callable),
+                ..
+            }) => match &callable.origin {
+                CallableOrigin::Ctor { internal, tag, .. } => {
                     assert!(*internal);
                     assert_eq!(*tag, 2);
                 }
-                _ => panic!("Bind should be DefKind::Constructor"),
+                _ => panic!("Bind should be a constructor callable"),
             },
             _ => panic!("Bind should be a Def"),
         }
         // IO has 3 constructors recorded.
-        if let Some(ModuleEntry::TypeDef { info, .. }) = prims.get("IO") {
+        if let Some(Binding {
+            declaration: Decl::Type(TypeRecord::Defined { info, .. }),
+            ..
+        }) = prims.get("IO")
+        {
             assert_eq!(info.constructors.len(), 3);
         }
     }
@@ -1367,20 +1592,19 @@ mod tests {
     #[test]
     fn mounts_race_select_combinators() {
         let (tables, next_id) = fresh_tables();
-        mount_synthetic_modules(&tables, &next_id);
+        mount_synthetic_modules(&tables, &next_id).expect("bootstrap mount");
         let prims = tables.get(&ModuleFullPath::from("primitives")).unwrap();
 
         // race : IO a -> IO a -> IO a — slot-less PrimitiveExtern, public, binary.
         match prims.get("race") {
-            Some(ModuleEntry::Def {
-                kind,
-                scheme,
+            Some(Binding {
+                declaration: Decl::Callable(callable),
                 visibility,
                 ..
             }) => {
-                assert!(matches!(kind.as_ref(), DefKind::PrimitiveExtern));
+                assert!(matches!(callable.arm.life, Life::HostPromised));
                 assert_eq!(*visibility, Visibility::Public);
-                match &scheme.ty {
+                match &callable.arm.scheme.ty {
                     Type::Fn(params, _) => assert_eq!(params.len(), 2, "race is binary"),
                     other => panic!("race must be a Fn type, got {other:?}"),
                 }
@@ -1390,15 +1614,14 @@ mod tests {
 
         // select : Vec (IO a) -> IO a — slot-less PrimitiveExtern, public, unary.
         match prims.get("select") {
-            Some(ModuleEntry::Def {
-                kind,
-                scheme,
+            Some(Binding {
+                declaration: Decl::Callable(callable),
                 visibility,
                 ..
             }) => {
-                assert!(matches!(kind.as_ref(), DefKind::PrimitiveExtern));
+                assert!(matches!(callable.arm.life, Life::HostPromised));
                 assert_eq!(*visibility, Visibility::Public);
-                match &scheme.ty {
+                match &callable.arm.scheme.ty {
                     Type::Fn(params, _) => {
                         assert_eq!(params.len(), 1, "select takes one branch list")
                     }
@@ -1418,11 +1641,14 @@ mod tests {
     #[test]
     fn mounts_trace_and_test_infrastructure() {
         let (tables, next_id) = fresh_tables();
-        mount_synthetic_modules(&tables, &next_id);
+        mount_synthetic_modules(&tables, &next_id).expect("bootstrap mount");
         let prims = tables.get(&ModuleFullPath::from("primitives")).unwrap();
         assert!(matches!(
             prims.get("Trace"),
-            Some(ModuleEntry::TypeDef { .. })
+            Some(Binding {
+                declaration: Decl::Type(TypeRecord::Defined { .. }),
+                ..
+            })
         ));
         // FIXME 0266 RESOLVED (user ruling 2026-06-04): `trace` is a ROOT
         // special form needing no import; its SpecialForm metadata lives at
@@ -1434,7 +1660,13 @@ mod tests {
         );
         let root = tables.get(&ModuleFullPath::from("")).unwrap();
         assert!(
-            matches!(root.get("trace"), Some(ModuleEntry::SpecialForm { .. })),
+            matches!(
+                root.get("trace"),
+                Some(Binding {
+                    declaration: Decl::SpecialForm(_),
+                    ..
+                })
+            ),
             "trace SpecialForm metadata must resolve at root \"\""
         );
         // TestResult / run-test RETIRED (test-discovery.md, fourth convergence).
@@ -1446,8 +1678,8 @@ mod tests {
         // discover-tests is now a PrimitiveExtern (host-promised body).
         assert!(matches!(
             prims.get("discover-tests"),
-            Some(entry @ ModuleEntry::Def { kind, .. })
-                if matches!(kind.as_ref(), DefKind::PrimitiveExtern)
+            Some(entry @ Binding { declaration: Decl::Callable(callable), .. })
+                if matches!(callable.arm.life, Life::HostPromised)
                     && entry.callable_got_slot().is_none()
         ));
     }
@@ -1455,7 +1687,7 @@ mod tests {
     #[test]
     fn mounts_pair_and_result_in_primitives() {
         let (tables, next_id) = fresh_tables();
-        mount_synthetic_modules(&tables, &next_id);
+        mount_synthetic_modules(&tables, &next_id).expect("bootstrap mount");
         let prims = tables.get(&ModuleFullPath::from("primitives")).unwrap();
         // `Pair` is a same-name single-ctor **product** type (S79 Option 3a,
         // FIXME 0319): the type and its sole 2-field constructor share the name,
@@ -1466,14 +1698,12 @@ mod tests {
         // `(match _ [(Pair a b) …])` and `Pair` as a first-class value are
         // unresolvable. Assert the dual facet, not just the name's existence.
         match prims.get("Pair") {
-            Some(ModuleEntry::Def {
-                kind,
-                scheme,
-                param_names,
+            Some(Binding {
+                declaration: Decl::Callable(callable),
                 ..
             }) => {
-                match kind.as_ref() {
-                    DefKind::Constructor {
+                match &callable.origin {
+                    CallableOrigin::Ctor {
                         type_def: Some(td),
                         field_count,
                         ..
@@ -1490,11 +1720,11 @@ mod tests {
                     ),
                 }
                 assert_eq!(
-                    param_names,
+                    &callable.arm.param_names,
                     &vec![Symbol::from("first"), Symbol::from("second")],
                     "Pair field names ride on the ctor Def's param_names"
                 );
-                match &scheme.ty {
+                match &callable.arm.scheme.ty {
                     Type::Fn(fields, ret) => {
                         assert_eq!(fields.len(), 2, "Pair constructor takes 2 fields");
                         assert!(
@@ -1509,12 +1739,18 @@ mod tests {
         }
         assert!(matches!(
             prims.get("Result"),
-            Some(ModuleEntry::TypeDef { .. })
+            Some(Binding {
+                declaration: Decl::Type(TypeRecord::Defined { .. }),
+                ..
+            })
         ));
         // Ok=tag 0, Err=tag 1 (declaration order — the combinator assumes this).
         match ctor_entry(&prims, "Ok") {
-            Some(ModuleEntry::Def { kind, .. }) => match kind.as_ref() {
-                DefKind::Constructor {
+            Some(Binding {
+                declaration: Decl::Callable(callable),
+                ..
+            }) => match &callable.origin {
+                CallableOrigin::Ctor {
                     tag, field_count, ..
                 } => {
                     assert_eq!(*tag, 0);
@@ -1525,8 +1761,11 @@ mod tests {
             other => panic!("Ok should be a Def, got {other:?}"),
         }
         match ctor_entry(&prims, "Err") {
-            Some(ModuleEntry::Def { kind, .. }) => match kind.as_ref() {
-                DefKind::Constructor { tag, .. } => assert_eq!(*tag, 1),
+            Some(Binding {
+                declaration: Decl::Callable(callable),
+                ..
+            }) => match &callable.origin {
+                CallableOrigin::Ctor { tag, .. } => assert_eq!(*tag, 1),
                 _ => panic!("Err should be a Constructor"),
             },
             other => panic!("Err should be a Def, got {other:?}"),
@@ -1536,25 +1775,30 @@ mod tests {
     #[test]
     fn mounts_catch_runtime_error_primitive() {
         let (tables, next_id) = fresh_tables();
-        mount_synthetic_modules(&tables, &next_id);
+        mount_synthetic_modules(&tables, &next_id).expect("bootstrap mount");
         let prims = tables.get(&ModuleFullPath::from("primitives")).unwrap();
         match prims.get("catch-runtime-error") {
-            Some(entry @ ModuleEntry::Def { kind, scheme, .. }) => {
+            Some(
+                entry @ Binding {
+                    declaration: Decl::Callable(callable),
+                    ..
+                },
+            ) => {
                 // S83 Wave-1 reshape (FIXME 0360): `catch-runtime-error` is
                 // dispatched by ABI name as a `Linkage::Import` (body
                 // `cranelisp_intrinsics::panic`), never GOT-indirect. It is
                 // therefore a SLOT-LESS `DefKind::PrimitiveExtern`, not a
                 // slot-bearing `DefKind::Primitive` (which post-reshape would
                 // lower the call through an unpopulated GOT slot → SIGSEGV).
-                assert!(matches!(kind.as_ref(), DefKind::PrimitiveExtern));
+                assert!(matches!(callable.arm.life, Life::HostPromised));
                 assert!(
                     entry.callable_got_slot().is_none(),
                     "an ABI-name-dispatched extern carries no GOT slot"
                 );
                 // forall a. (Fn [(Fn [] a)] (Result a String)) — one quantified
                 // var, empty constraints (plain forall, not constrained-fn).
-                assert_eq!(scheme.type_vars.len(), 1);
-                assert!(scheme.constraints.is_empty());
+                assert_eq!(callable.arm.scheme.type_vars.len(), 1);
+                assert!(callable.arm.scheme.constraints.is_empty());
             }
             other => panic!("catch-runtime-error should be a PrimitiveExtern Def, got {other:?}"),
         }
@@ -1563,7 +1807,7 @@ mod tests {
     #[test]
     fn next_type_id_advances_monotonically() {
         let (tables, next_id) = fresh_tables();
-        mount_synthetic_modules(&tables, &next_id);
+        mount_synthetic_modules(&tables, &next_id).expect("bootstrap mount");
         // SList(1) + Option(1) + Pair(2) + Result(2) + IO(1) + Bind(2)
         // + bind(2) + race(1) + select(1) + catch-runtime-error(1) = 14 fresh vars.
         // (S96 Chunk C: `register_combinators` mints one var each for race + select.)

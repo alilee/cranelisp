@@ -1,26 +1,24 @@
-//! On-demand macro recognition + clause-compile + expansion-walk (S87 §1.1
+//! Macro recognition + source-checkpoint compilation + expansion walk (S87 §1.1
 //! extraction from `process_form.rs`).
 //!
 //! The macro family threaded through Pass-2: `SymbolTableMacroResolver` (the
 //! recognition driver for `expand_sexp_recursive`, with the prelude outer-scope
 //! fallback), `try_expand_sexp` (scopes the resolver borrows to the expansion
-//! phase), `qualify_expanded_sexp` (cross-module hygiene), the on-demand clause
-//! compile (`compile_macro_with_state` / `compile_macro_if_needed` /
-//! `compile_macro_clause_inline`), and the shared name/probe primitives
-//! (`macro_clause_jit_name` / `has_code_ptr`). Single concern: recognize a macro
+//! phase), `qualify_expanded_sexp` (cross-module hygiene), source checkpoint
+//! compilation (`compile_macro_if_needed`), and the exact-clause compiled-owner
+//! probe (`has_code_ptr`). Single concern: recognize a macro
 //! head and ensure its clause code is in memory, then expand. The clause
 //! *codegen* lives in `macro_clause.rs`; this module drives it.
 
 use cranelisp_types::{
-    CranelispError, DefKind, FQSymbol, MacroClauseInfo, ModuleEntry, ModuleFullPath, Sexp, Span,
-    Symbol,
+    CranelispError, Decl, FQSymbol, Life, ModuleFullPath, Realization, Sexp, Span, Symbol,
 };
 
 use crate::expander::{self, MacroResolver};
 use crate::scheduler::CompileScheduler;
-use crate::worker::{ModuleCheckAccumulator, ModuleCompiler, handle_cached_codegen};
+use crate::worker::{ModuleCompiler, handle_cached_codegen};
 
-use super::macro_clause::{MacroClauseEnv, compile_macro_clause_core};
+use super::macro_clause::{MacroCheckpoint, MacroClauseEnv, compile_macro_checkpoint};
 
 // ---------------------------------------------------------------------------
 // SymbolTableMacroResolver — on-demand macro resolution from symbol tables
@@ -49,9 +47,6 @@ pub(super) struct SymbolTableMacroResolver<'a> {
     /// prelude-provided macro (`cond`/`when`/`str`/…) is recognized from a user
     /// module via the implicit outer scope (S78 §2; public-only per I-1).
     pub(super) prelude_fallback: &'a cranelisp_typecheck::PreludeFallback,
-    /// Per-module typecheck products (DashMap, interior mutability).
-    pub(super) typecheck_products:
-        &'a dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
     /// Scheduler — for notify_inmem_codegen_complete after on-demand compilation.
     pub(super) scheduler: &'a CompileScheduler,
     /// Shared state — needed for JIT retention during on-demand compilation.
@@ -105,6 +100,7 @@ impl MacroResolver for SymbolTableMacroResolver<'_> {
             // a non-existent module literally named `util` (FIXME 0121).
             let dep = cranelisp_types::substitute_module_alias(
                 self.module_aliases,
+                &self.current_module,
                 &ModuleFullPath::from(mod_part),
             );
             if !self.symbol_tables.contains_key(&dep) {
@@ -146,10 +142,8 @@ impl MacroResolver for SymbolTableMacroResolver<'_> {
         // Step 2: Ensure the clause code is in memory (on-demand compile). The
         // executor (`JitMacroExpander::invoke`) reads clause code ptrs from the
         // GOT, so they must be compiled before the walk executes the macro.
-        let all_compiled = clauses.iter().enumerate().all(|(idx, _)| {
-            let clause_name = macro_clause_jit_name(&fq.symbol, idx);
-            has_code_ptr(self.symbol_tables, &defining_module, &clause_name)
-        });
+        let all_compiled =
+            (0..clauses).all(|idx| has_code_ptr(self.symbol_tables, &fq, idx));
 
         if !all_compiled {
             // Step 2a (S77 W-MacroTrait, FIXME 0299): cache-restore parity.
@@ -175,60 +169,17 @@ impl MacroResolver for SymbolTableMacroResolver<'_> {
                 && self.scheduler.cached_module_contains(&defining_module)
             {
                 let _ = handle_cached_codegen(&defining_module, self.shared_state, self.scheduler);
-                let now_compiled = clauses.iter().enumerate().all(|(idx, _)| {
-                    let clause_name = macro_clause_jit_name(&fq.symbol, idx);
-                    has_code_ptr(self.symbol_tables, &defining_module, &clause_name)
-                });
+                let now_compiled =
+                    (0..clauses).all(|idx| has_code_ptr(self.symbol_tables, &fq, idx));
                 if now_compiled {
                     return Ok(Some(fq));
                 }
             }
 
-            // Step 3: Compile inline. We need DefmacroInfo to drive compilation;
-            // read the macro's original sexp back from the symbol-table
-            // `DefKind::Macro.macro_sexp` field (D1 ruling §6 — re-sourced off
-            // the symbol table, not introspection; this is what makes the
-            // cache-restored cross-module macro recompile here).
-            //
-            // S77 W-MacroTrait (FIXME 0299): the on-demand recompile is for
-            // CROSS-MODULE macros only (an imported macro lives in a dependency,
-            // always-available at expansion per `macro-availability-model.md`
-            // §0.1). For a SAME-MODULE macro, a not-yet-compiled clause at the
-            // point a use is recognised means the use precedes the `defmacro` in
-            // source order — a FORWARD reference, which §0.2 (defmacro-before-use
-            // is normative) REJECTS: the use is a plain unresolved reference, not
-            // a macro call. Same-module backward uses never reach here, because
-            // Pass 2's `compile_macro_if_needed` already JIT-compiled the clause
-            // when it processed the (earlier) `defmacro` form. Guarding the
-            // recompile to cross-module preserves the §0.2 rejection that
-            // `macro_used_before_defmacro_is_unresolved_neg` asserts — without
-            // the guard, the now-always-present symbol-table `macro_sexp` would
-            // let a forward same-module use recompile its clause and expand,
-            // silently hoisting the macro. The §0.2 guard (`defining_module !=
-            // self.current_module`) stays load-bearing after the D1 re-sourcing.
-            let macro_sexp = if defining_module != self.current_module {
-                resolve_macro_sexp_from(self.symbol_tables, &defining_module, fq.symbol.as_ref())
-            } else {
-                None
-            };
-            if let Some(sexp) = macro_sexp {
-                let info = cranelisp_frontend::parse_defmacro(&sexp)?;
-                compile_macro_with_state(
-                    self.symbol_tables,
-                    self.typecheck_products,
-                    self.shared_state,
-                    &defining_module,
-                    &info,
-                    span,
-                    self.scheduler,
-                )?;
-            } else {
-                // No sexp available to compile from. The clauses may already be
-                // compiled by the batch Pass-2 path; recognition still succeeds
-                // so the executor can attempt the GOT-resolved invoke (which
-                // surfaces a clear `Aborted` if the code is genuinely absent).
-                return Ok(Some(fq));
-            }
+            // A published macro checkpoint always contains every active clause.
+            // Cache restore may populate those slots by loading its object, but
+            // resolution never recompiles a candidate generation from source.
+            return Ok(Some(fq));
         }
 
         Ok(Some(fq))
@@ -244,19 +195,12 @@ impl MacroResolver for SymbolTableMacroResolver<'_> {
 fn read_macro_meta(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     fq: &FQSymbol,
-) -> Option<(Vec<MacroClauseInfo>, Option<String>)> {
+) -> Option<(usize, Option<String>)> {
     let table = symbol_tables.get(&fq.module)?;
-    match table.get(fq.symbol.as_ref())? {
-        ModuleEntry::Def {
-            kind, docstring, ..
-        } if matches!(kind.as_ref(), DefKind::Macro { .. }) => {
-            let DefKind::Macro { clauses_meta, .. } = kind.as_ref() else {
-                unreachable!("invariant: guard matched DefKind::Macro");
-            };
-            Some((clauses_meta.clone(), docstring.clone()))
-        }
-        _ => None,
-    }
+    let Decl::Macro(declaration) = &table.get(fq.symbol.as_ref())?.declaration else {
+        return None;
+    };
+    Some((declaration.clauses.len(), declaration.docstring.clone()))
 }
 
 /// Resolve a macro's original sexp for on-demand clause compilation.
@@ -271,76 +215,10 @@ fn read_macro_meta(
 /// inline). `macro_sexp` serializes (no `#[serde(skip)]`), so a cache-restored
 /// macro entry carries it directly off the deserialized symbol table — no
 /// rehydration step. FQ-autoloaded (fresh-build) macros populate it through the
-/// normal `register_macro_in_module` register path before this runs.
+/// ordinary staged macro declaration path before this runs.
 ///
 /// Returns `None` when the entry is absent or is not a `DefKind::Macro` (a
 /// forward reference or a non-macro shadowing the name).
-fn resolve_macro_sexp_from(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-    defining_module: &ModuleFullPath,
-    name: &str,
-) -> Option<Sexp> {
-    let table = symbol_tables.get(defining_module)?;
-    match table.get(name)? {
-        ModuleEntry::Def { kind, .. } => match kind.as_ref() {
-            DefKind::Macro { macro_sexp, .. } => Some(macro_sexp.clone()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// Compile a macro's clauses on demand for the resolver (no `&mut TypeChecker`).
-///
-/// This is the on-demand compilation path for the resolver. The `module_aliases`
-/// / `prelude_fallback` resolution scope derives from `shared_state` — when
-/// absent (unit-test paths) an empty leaked default is a safe stand-in (macro
-/// clause bodies use qualified `macros/*` refs, never aliases or the prelude
-/// bare-name fallback). Built once into a [`MacroClauseEnv`] shared across the
-/// clause loop.
-fn compile_macro_with_state(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-    typecheck_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
-    shared_state: Option<&crate::session_v4::SharedState>,
-    target_module: &ModuleFullPath,
-    info: &cranelisp_frontend::DefmacroInfo,
-    span: Span,
-    scheduler: &CompileScheduler,
-) -> Result<(), CranelispError> {
-    let module_aliases: &cranelisp_types::ModuleAliases = match shared_state {
-        Some(s) => &s.module_aliases,
-        None => Box::leak(Box::new(cranelisp_types::ModuleAliases::default())),
-    };
-    let prelude_fallback: &cranelisp_typecheck::PreludeFallback = match shared_state {
-        Some(s) => &s.prelude_fallback,
-        None => Box::leak(Box::new(cranelisp_typecheck::PreludeFallback::default())),
-    };
-    let env = MacroClauseEnv {
-        symbol_tables,
-        module_aliases,
-        prelude_fallback,
-        typecheck_products,
-        shared_state,
-    };
-    for (clause_idx, clause) in info.clauses.iter().enumerate() {
-        let clause_name = macro_clause_jit_name(&info.name, clause_idx);
-        if has_code_ptr(symbol_tables, target_module, &clause_name) {
-            continue;
-        }
-
-        compile_macro_clause_core(&env, target_module, &info.name, clause_idx, clause, span)?;
-        // Sprint 57 Wave 4 G9: macro-clause compile must NOT set inmem_done
-        // (last=false). Other symbols in the owning module (including
-        // `main`) still need compiling. inmem_done is set by the final
-        // `inline_jit_codegen_for_module` at the end of
-        // `handle_typecheck_work_shared`. Pre-Wave-4 scoped workers got
-        // away with this because the main thread waited on scope exit, not
-        // on the scheduler; persistent workers expose the race.
-        scheduler.notify_inmem_codegen_complete(target_module, &clause_name, false);
-    }
-    Ok(())
-}
-
 /// Scope the resolver's borrows to just the expansion phase.
 ///
 /// Creates a SymbolTableMacroResolver, runs expand_sexp_recursive,
@@ -370,7 +248,6 @@ pub(super) fn try_expand_sexp(
             current_module: module.clone(),
             module_aliases: ctx.module_aliases,
             prelude_fallback: ctx.prelude_fallback,
-            typecheck_products: ctx.typecheck_products,
             scheduler: ctx.scheduler,
             shared_state: ctx.shared_state,
             macro_defining_modules: Vec::new(),
@@ -616,13 +493,14 @@ fn qualify_free_symbol(ctx: &QualifyCtx, sexp: Sexp) -> Sexp {
     }
     // Check defining modules for this symbol.
     for def_mod in ctx.defining_modules {
-        if let Some(table) = ctx.symbol_tables.get(def_mod)
-            && let Some(entry) = table.get(name)
-        {
-            // Follow imports to find the true source module for qualification.
-            let qual_module = match entry {
-                ModuleEntry::Import { source, .. } => &source.module,
-                _ => def_mod,
+        if let Some(table) = ctx.symbol_tables.get(def_mod) {
+            let candidates = table.name_candidates(&Symbol::from(name.as_str()));
+            let qual_module = if candidates.len() == 1 {
+                &candidates[0].source.module
+            } else if table.get(name).is_some() {
+                def_mod
+            } else {
+                continue;
             };
             let qualified = format!("{}/{}", qual_module.as_ref(), name);
             return Sexp::Symbol(qualified, span);
@@ -875,32 +753,22 @@ fn qualify_match(
 // Macro expansion for Pass 2
 // ---------------------------------------------------------------------------
 
-/// Compile all clauses of a macro if any clause lacks a function pointer.
+/// Compile and publish one complete source-ordered macro checkpoint.
 ///
 /// No dependency pre-walk: the former transitive-callee walk was deleted in
 /// S76 (see the in-body note below) — the locked macro-availability model
 /// forbids a clause from calling a same-module non-macro definition at
 /// expansion time, so a clause's callees are either dependency-module
 /// functions (already compiled by ordinary module compilation) or same-module
-/// macros (compiled in source order). Notifies the scheduler per compiled
-/// clause (never claiming module-level `inmem_done`).
+/// macros (compiled in source order). The ordinary prepared-commit publisher
+/// installs the parent and all active clauses together.
 pub(super) fn compile_macro_if_needed(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     info: &cranelisp_frontend::DefmacroInfo,
+    macro_sexp: &Sexp,
     span: Span,
-    accumulator: &mut ModuleCheckAccumulator,
-) -> Result<(), CranelispError> {
-    // Check if all clauses already have function pointers.
-    let all_compiled = info.clauses.iter().enumerate().all(|(idx, _)| {
-        let clause_name = macro_clause_jit_name(&info.name, idx);
-        has_code_ptr(ctx.symbol_tables, module, &clause_name)
-    });
-
-    if all_compiled {
-        return Ok(());
-    }
-
+) -> Result<Option<cranelisp_types::ResolutionGap>, CranelispError> {
     // S76 W-Macro (fire B): the dead `block_for_macro_codegen` dep-walk
     // (`collect_transitive_uncompiled_deps` + the notify-loop) is DELETED, not
     // wired (`macro-availability-model.md` §0.7). The locked decision FORBIDS a
@@ -910,129 +778,48 @@ pub(super) fn compile_macro_if_needed(
     // macros (compiled in source order) — there is no same-module-`defn`-callee
     // with an empty GOT slot to pre-compile here.
 
-    // Compile each clause that is not yet compiled.
-    for (clause_idx, clause) in info.clauses.iter().enumerate() {
-        let clause_name = macro_clause_jit_name(&info.name, clause_idx);
-        if has_code_ptr(ctx.symbol_tables, module, &clause_name) {
-            continue;
-        }
-
-        compile_macro_clause_inline(ctx, &info.name, clause_idx, clause, span, accumulator)?;
-        // Sprint 57 Wave 4 G9: same fix as `compile_macro_with_state` —
-        // macro-clause compile must not claim inmem_done on behalf of the
-        // module. Module-level codegen at the end of process_module_forms
-        // owns that flag.
-        ctx.scheduler
-            .notify_inmem_codegen_complete(module, &clause_name, false);
-    }
-
-    Ok(())
-}
-
-// compile_dep_symbol_inline removed (Sprint 53): was a dead stub that took 10
-// parameters and returned Ok(()). The (now-deleted) scheduler block_for_macro_codegen
-// handles dependency compilation through the normal priority codegen path.
-
-/// Compile a single macro clause inline using the worker's `&mut ModuleCompiler`.
-/// Thin adapter over [`compile_macro_clause_core`] (FIXME 0109 Wave D collapse)
-/// — sources the references from `ctx` directly (its `module_aliases` /
-/// `prelude_fallback` are the live worker maps, no leaked-default fallback).
-/// `accumulator` is vestigial under the collapsed `check_forms` surface.
-fn compile_macro_clause_inline(
-    ctx: &mut ModuleCompiler,
-    macro_name: &Symbol,
-    clause_idx: usize,
-    clause: &cranelisp_frontend::MacroClause,
-    span: Span,
-    accumulator: &mut ModuleCheckAccumulator,
-) -> Result<(), CranelispError> {
-    let _ = accumulator;
-    let module = ctx.current_module.clone();
     let env = MacroClauseEnv {
         symbol_tables: ctx.symbol_tables,
         module_aliases: ctx.module_aliases,
         prelude_fallback: ctx.prelude_fallback,
-        typecheck_products: ctx.typecheck_products,
         shared_state: ctx.shared_state,
     };
-    compile_macro_clause_core(&env, &module, macro_name, clause_idx, clause, span)
+    match compile_macro_checkpoint(&env, module, info, macro_sexp, span)? {
+        MacroCheckpoint::Published => Ok(None),
+        MacroCheckpoint::Gap(gap) => Ok(Some(gap)),
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Macro entry helpers
 // ---------------------------------------------------------------------------
 
-/// Generate the JIT symbol name for a macro clause function.
-///
-/// Must match the naming convention in `synthesize_macro_clause_defn`:
-/// `__macro_{name}_clause_{idx}`.
-fn macro_clause_jit_name(macro_name: &Symbol, clause_idx: usize) -> Symbol {
-    Symbol::from(format!("__macro_{}_clause_{}", macro_name, clause_idx))
-}
-
-/// Check if a symbol has a compiled code pointer on its `ModuleEntry::Def.code`
-/// field (Sprint 57 Wave 2 G6 — `CodegenProduct` deleted; compiled code lives
-/// on the symbol-table entry).
+/// Check if an exact owned clause has a compiled body owner.
 pub(crate) fn has_code_ptr(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-    module: &ModuleFullPath,
-    name: &Symbol,
+    macro_fq: &FQSymbol,
+    clause_index: usize,
 ) -> bool {
     symbol_tables
-        .get(module)
-        .and_then(|t| match t.get(name.as_ref())? {
-            ModuleEntry::Def { code, .. } => Some(code.is_some()),
-            _ => None,
+        .get(&macro_fq.module)
+        .and_then(|t| {
+            let Decl::Macro(declaration) = &t.get(macro_fq.symbol.as_ref())?.declaration else {
+                return Some(false);
+            };
+            match &declaration.clauses.get(clause_index)?.callable.life {
+                Life::Concrete {
+                    realization: Realization::Body { code, .. },
+                    ..
+                } => Some(code.is_some()),
+                _ => Some(false),
+            }
         })
         .unwrap_or(false)
-}
-
-/// Compile a macro's clauses for REPL use.
-///
-/// Called from `make_defmacro_result` to ensure the macro is compiled and
-/// available for expansion in subsequent REPL evals.
-pub fn compile_macro_for_repl(
-    ctx: &mut ModuleCompiler,
-    module: &ModuleFullPath,
-    info: &cranelisp_frontend::DefmacroInfo,
-    span: Span,
-    accumulator: &mut ModuleCheckAccumulator,
-) -> Result<(), CranelispError> {
-    compile_macro_if_needed(ctx, module, info, span, accumulator)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // spec: src/CLAUDE.md §"Macro expansion" — the clause GOT-slot JIT name is
-    // `__macro_{name}_clause_{idx}`. `JitMacroExpander` loads the clause fn's
-    // code pointer by this exact name, so the format is an ABI contract between
-    // the macro compiler (which registers the slot) and the executor (which
-    // reads it) — a drift here silently breaks macro expansion with an
-    // "…not in memory…" abort.
-    #[test]
-    fn macro_clause_jit_name_format() {
-        assert_eq!(
-            macro_clause_jit_name(&Symbol::from("when"), 0).as_ref(),
-            "__macro_when_clause_0"
-        );
-        assert_eq!(
-            macro_clause_jit_name(&Symbol::from("cond"), 3).as_ref(),
-            "__macro_cond_clause_3"
-        );
-    }
-
-    // Distinct macros / distinct clause indices produce distinct slot names
-    // (no collision in the shared flat JIT namespace).
-    #[test]
-    fn macro_clause_jit_name_is_injective_over_name_and_index() {
-        let a = macro_clause_jit_name(&Symbol::from("m"), 0);
-        let b = macro_clause_jit_name(&Symbol::from("m"), 1);
-        let c = macro_clause_jit_name(&Symbol::from("n"), 0);
-        assert_ne!(a.as_ref(), b.as_ref());
-        assert_ne!(a.as_ref(), c.as_ref());
-    }
 
     // -----------------------------------------------------------------------
     // FIXME 0670 — the expansion-seam qualify pass is scope-aware.
@@ -1048,14 +835,6 @@ mod tests {
     // verbatim and qualifies only free defining-module references.
     // -----------------------------------------------------------------------
 
-    fn empty_scheme() -> cranelisp_types::Scheme {
-        cranelisp_types::Scheme {
-            type_vars: vec![],
-            constraints: std::collections::HashMap::new(),
-            ty: cranelisp_types::Type::Int,
-        }
-    }
-
     /// A one-module table set whose `module` publicly defines each of `names`
     /// (as slot-less user fns — the qualify pass only reads presence + kind).
     fn tables_with_defs(
@@ -1065,15 +844,12 @@ mod tests {
         let path = ModuleFullPath::from(module);
         let mut st = crate::code::SessionSymbolTable::new_with_params(path.clone());
         for n in names {
-            let entry = ModuleEntry::def(
-                empty_scheme(),
-                DefKind::UserFn {
-                    fn_state: cranelisp_types::UserFnState::NotDetermined,
-                },
-            )
-            .visibility(cranelisp_types::Visibility::Public)
-            .build();
-            st.insert(Symbol::from(*n), entry);
+            let _ = crate::repl::test_support::install_userfn(
+                &mut st,
+                n,
+                None,
+                cranelisp_types::Visibility::Public,
+            );
         }
         let tables = dashmap::DashMap::new();
         tables.insert(path, st);

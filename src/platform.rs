@@ -10,8 +10,7 @@ use std::path::{Path, PathBuf};
 
 use cranelisp_platform::{ABI_VERSION, HostCallbacks, OwnedPlatformFnDescriptor, PlatformManifest};
 use cranelisp_types::{
-    CranelispError, DefKind, ErrorLocation, ModuleEntry, ModuleFullPath, Scheme, Sexp, Span,
-    Symbol, Type, Visibility,
+    CranelispError, ErrorLocation, ModuleFullPath, Scheme, Sexp, Span, Symbol, Type, Visibility,
 };
 
 /// A loaded platform DLL. Must remain alive for the process lifetime
@@ -345,10 +344,6 @@ pub fn register_platform_in_tc(
         let got = std::sync::Arc::new(cranelisp_types::GotTable::with_static_backing(slab));
         if let Some(mut table) = symbol_tables.get_mut(&module_path) {
             table.got = got;
-            // The platform GOT's slots are owned by the DLL; the host never
-            // allocates into it. Advance `next_got_slot` past the manifest so a
-            // later host allocation (if any) cannot collide with a platform slot.
-            table.next_got_slot = platform.descriptors.len();
         }
     }
 
@@ -398,40 +393,25 @@ pub fn register_platform_in_tc(
             // backend's poll-construction arm; `== 1` ⇒ a blocking effect.
             let poll_shape = desc.concurrency.blocking == 0;
 
-            let mut builder = ModuleEntry::def(
-                scheme,
-                DefKind::PlatformEffect {
-                    scheduling_class: desc.scheduling_class,
+            table
+                .install_platform(
+                    Symbol::from(desc.name.as_str()),
+                    scheme,
+                    param_names,
+                    (!desc.docstring.is_empty()).then(|| desc.docstring.clone()),
+                    slot as u64,
+                    desc.scheduling_class,
                     poll_shape,
-                    got_slot: slot,
-                    mode_summary: None,
-                },
-            )
-            .visibility(Visibility::Public)
-            .param_names(param_names);
-            if !desc.docstring.is_empty() {
-                builder = builder.docstring(desc.docstring.clone());
-            }
-            let entry = builder.build();
-            // FIXME 0604 census (0740 disposition, S115 W6): this is a live-table
-            // PUBLIC write, so it ROUTES through the ONE chokepoint rather than
-            // arguing itself safe. The entry is always the platform module's OWN
-            // definition (a `PlatformEffect` `Def`, never an `Import`), so the
-            // gate takes its own-def arm — Ok with NO map read, which is what
-            // makes the call safe under the held `get_mut` guard (the deadlock
-            // hazard 0604 names). `declared_exports = None`: a synthetic
-            // `platform.<name>` module records no `(export …)` surface; the
-            // unknown-D arm permits, and the own-def arm precedes it anyway.
-            // Routing is therefore behaviour-preserving by construction — no
-            // reachable rejection.
-            crate::imports::check_terminal_closure(
-                &module_path,
-                desc.name.as_str(),
-                &entry,
-                Span::SYNTHETIC,
-                None,
-            )?;
-            table.insert(Symbol::from(desc.name.as_str()), entry);
+                    slot,
+                    Visibility::Public,
+                )
+                .map_err(|error| CranelispError::ModuleError {
+                    message: format!(
+                        "could not register platform effect '{module_path}/{}': {error}",
+                        desc.name
+                    ),
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
+                })?;
         }
     }
 

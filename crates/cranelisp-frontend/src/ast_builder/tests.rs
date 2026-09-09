@@ -543,10 +543,20 @@ fn build_forms_annotation_binds_following_desugared_quote() {
 // harmlessly. Pin the fixpoint at the boundary the fold relies on.
 #[test]
 fn expand_quasiquotes_is_idempotent_fixpoint() {
-    for src in ["'quote", "`(m ~x)", "`(a `(b ~(m 1)))", "'(1 2)"] {
+    for src in [
+        "'quote",
+        "`(m ~x)",
+        "`(a `(b ~(m 1)))",
+        "`(let [x# 1] x#)",
+        "'(1 2)",
+    ] {
         let sexps = crate::reader::parse(src).unwrap();
         let once = crate::quasiquote::expand_quasiquotes(&sexps[0]).unwrap();
         let twice = crate::quasiquote::expand_quasiquotes(&once).unwrap();
+        assert_eq!(
+            once, twice,
+            "one pass must preserve the exact tree, spans, and gensyms for `{src}`"
+        );
         assert_eq!(
             once.format_flat(),
             twice.format_flat(),
@@ -1084,35 +1094,102 @@ fn test_build_deftype_sum() {
     }
 }
 
-// spec: 02-grammar §2.2.2 — deftype shortcut syntax (bare field names)
+// spec: 05-definitions §5.2.4 — every field carries a written type.
 #[test]
-fn test_build_deftype_shortcut_fields() {
-    // (deftype Pair [first second]) — bare names get sequential type vars
-    let prog = parse_and_build_program("(deftype Pair [first second])").unwrap();
-    match &prog[0] {
-        TopLevel::TypeDef {
-            name,
-            type_params,
-            constructors,
-            ..
-        } => {
-            assert_eq!(name, "Pair");
-            assert_eq!(type_params.len(), 2);
-            assert_eq!(type_params[0], "a");
-            assert_eq!(type_params[1], "b");
-            assert_eq!(constructors[0].fields.len(), 2);
-            // Fields should have sequential type vars (a, b, c, ...)
-            match &constructors[0].fields[0].type_expr {
-                TypeExpr::TypeVar(v) => assert_eq!(*v, "a"),
-                other => panic!("expected TypeVar, got {other:?}"),
-            }
-            match &constructors[0].fields[1].type_expr {
-                TypeExpr::TypeVar(v) => assert_eq!(*v, "b"),
-                other => panic!("expected TypeVar, got {other:?}"),
-            }
-        }
-        other => panic!("expected TypeDef, got {other:?}"),
+fn test_build_deftype_untyped_fields_rejected() {
+    let source = "(deftype Pair [first second])";
+    let err = parse_and_build_program(source).unwrap_err();
+    assert!(err.message().contains("requires a written type"));
+    assert_err_span_at(source, &err, "first", 0);
+}
+
+// spec: 05-definitions.md §5.2.4 — a bare head is monomorphic and a
+// parenthesized head declares the complete ordered type-parameter list.
+#[test]
+fn deftype_head_modes_preserve_their_positive_matrix() {
+    let written = build_form(&parse_one("(deftype (Box a) [:a value :Int count])")).unwrap();
+    let ParsedEntry::TypeDef {
+        type_params,
+        constructors,
+        ..
+    } = &written[0]
+    else {
+        panic!("expected written-head TypeDef")
+    };
+    assert_eq!(type_params.as_slice(), &[Symbol::from("a")]);
+    assert!(matches!(constructors[0].fields[0].type_expr, TypeExpr::TypeVar(ref v) if v == "a"));
+    assert!(matches!(
+        constructors[0].fields[1].type_expr,
+        TypeExpr::Named(_)
+    ));
+
+    let mono = build_form(&parse_one("(deftype Named (Named [:String name]))")).unwrap();
+    let ParsedEntry::TypeDef {
+        type_params,
+        constructors,
+        ..
+    } = &mono[0]
+    else {
+        panic!("expected bare-head monomorphic TypeDef")
+    };
+    assert!(type_params.is_empty());
+    assert!(matches!(
+        constructors[0].fields[0].type_expr,
+        TypeExpr::Named(_)
+    ));
+}
+
+// spec: 05-definitions.md §5.2.4 — every field type is written and every type
+// variable is declared by the head, with errors at the field-name span.
+#[test]
+fn deftype_head_modes_reject_at_field_names_before_entry_emission() {
+    for (source, field_name, message_fragment) in [
+        (
+            "(deftype (Box a) [:a value bare])",
+            "bare",
+            "requires a written type",
+        ),
+        (
+            "(deftype (Maybe a) Nothing (Just [:a value bare]))",
+            "bare",
+            "requires a written type",
+        ),
+        (
+            "(deftype (Box a) [:b value])",
+            "value",
+            "not declared by the type head",
+        ),
+        (
+            "(deftype Pair [:b first])",
+            "first",
+            "not declared by the type head",
+        ),
+        ("(deftype Pair [first])", "first", "requires a written type"),
+        (
+            "(deftype (Box a) [:(Maybe b) value])",
+            "value",
+            "not declared by the type head",
+        ),
+    ] {
+        let result = build_form(&parse_one(source));
+        let err = result.expect_err("an invalid declaration must return no ParsedEntry vector");
+        assert!(
+            err.message().contains(message_fragment),
+            "{source}: {}",
+            err.message()
+        );
+        assert_err_span_at(source, &err, field_name, 0);
     }
+}
+
+// spec: 02-grammar.md §2.2.2; 05-definitions.md §5.2.4 — parentheses
+// select written-head mode and therefore require at least one parameter.
+#[test]
+fn deftype_parenthesized_empty_head_is_not_an_omitted_head() {
+    let source = "(deftype (Box) [:Int value])";
+    let err = build_form(&parse_one(source)).expect_err("(Box) is not a legal type head");
+    assert!(err.message().contains("write the bare head `Box`"));
+    assert_err_span_at(source, &err, "(Box)", 0);
 }
 
 // spec: 05-definitions §5.2 — a constructor with a bare type and no field
@@ -1235,9 +1312,9 @@ fn deftype_qualified_ctor_name_rejected_both_arms_bare_twins_accept() {
 
 // spec: 05-definitions §5.2.6 (user ruling 2026-07-19) — a field name is a
 // BINDER (mints a `Type.field` accessor), so a qualified field name rejects,
-// located at the field name. Covers both the annotated and bare field arms.
+// located at the field name.
 #[test]
-fn deftype_qualified_field_name_rejected_bare_twin_accepts() {
+fn deftype_qualified_field_name_rejected_typed_bare_name_twin_accepts() {
     let ann_src = "(deftype T [:Int fmt/r])";
     let ann_err =
         parse_and_build_program(ann_src).expect_err("a qualified annotated field name is rejected");
@@ -1247,7 +1324,7 @@ fn deftype_qualified_field_name_rejected_bare_twin_accepts() {
         ann_err.message()
     );
     assert_err_span_at(ann_src, &ann_err, "fmt/r", 0);
-    // Bare (shortcut) field arm.
+    // The untyped arm also rejects; it does not become shortcut syntax.
     let bare_src = "(deftype T [fmt/r])";
     let bare_err =
         parse_and_build_program(bare_src).expect_err("a qualified bare field name is rejected");
@@ -1257,9 +1334,9 @@ fn deftype_qualified_field_name_rejected_bare_twin_accepts() {
         bare_err.message()
     );
     assert_err_span_at(bare_src, &bare_err, "fmt/r", 0);
-    // Bare-name twins accept.
+    // A bare field *name* with its required written type accepts.
     assert!(parse_and_build_program("(deftype T [:Int r])").is_ok());
-    assert!(parse_and_build_program("(deftype T [r])").is_ok());
+    assert!(parse_and_build_program("(deftype T [r])").is_err());
 }
 
 // spec: 05-definitions §5 binder-positions table — of the LOCAL binder
@@ -1622,19 +1699,21 @@ fn trait_method_preserves_exactly_one_unclassified_tail() {
     assert!(err.message().contains("exactly one trailing"));
 }
 
-// spec: 05-definitions §§5.2–5.2.2 — constructor and field binders are
-// unique and nullary constructors use the specified bare spelling.
+// spec: 05-definitions §§5.2–5.2.2 — constructor and product-field binders
+// are unique; sum payload labels may repeat across arms; nullary constructors
+// use the specified bare spelling.
 #[test]
 fn deftype_uniqueness_and_constructor_spellings_are_enforced() {
     assert!(parse_and_build_program("(deftype T A (B \"doc\") (C [:Int c]))").is_ok());
     assert!(parse_and_build_program("(deftype Cell (Cell [:Int value]))").is_ok());
+    assert!(parse_and_build_program("(deftype T (A [:Int x]) (B [:Int x]))").is_ok());
     for src in [
         "(deftype T (A))",
         "(deftype T (A []))",
         "(deftype T T)",
         "(deftype T (T \"documented nullary\"))",
         "(deftype T A (A \"doc\"))",
-        "(deftype T (A [:Int x]) (B [:Int x]))",
+        "(deftype T [:Int x :Int x])",
     ] {
         assert!(parse_and_build_program(src).is_err(), "must reject: {src}");
     }
@@ -1664,15 +1743,21 @@ fn constructor_pattern_parentheses_require_a_subpattern() {
     assert!(parse_and_build_program("(match x [None 0 (Some value) value])").is_ok());
 }
 
-// spec: 05-definitions §5.2.2 — duplicate constructor and field binders
-// are rejected at the duplicate declaration.
+// spec: 05-definitions §5.2.2 — duplicate constructor and product-field
+// binders are rejected at the duplicate declaration. Sum payload labels are
+// metadata and may repeat across distinct constructor arms.
 #[test]
 fn deftype_duplicate_diagnostics_locate_the_second_binder() {
     let ctor_err = parse_and_build_program("(deftype T A (A \"again\"))").unwrap_err();
     assert_eq!(ctor_err.span(), Span::new(14, 15));
 
-    let field_err = parse_and_build_program("(deftype T (A [:Int x]) (B [:Bool x]))").unwrap_err();
-    assert_eq!(field_err.span(), Span::new(34, 35));
+    let field_err = parse_and_build_program("(deftype T [:Int x :Bool x])").unwrap_err();
+    assert_eq!(field_err.span(), Span::new(25, 26));
+
+    assert!(
+        parse_and_build_program("(deftype T (A [:Int x]) (B [:Bool x]))").is_ok(),
+        "sum payload labels belong to their constructor arm and mint no names"
+    );
 
     // Uniqueness state is definition-local, not global.
     assert!(parse_and_build_program("(deftype A X) (deftype B X)").is_ok());

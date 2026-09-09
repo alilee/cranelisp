@@ -394,7 +394,48 @@ load defensively (cheap, uniform with the loop); it does not build the consumer.
 
 ---
 
-## 6. W-B5 patch-collapse — S114-endorsed design is current (deliverable 6)
+## 6. W-B5 patch-collapse — RULED S121 (FIXME 0747)
+
+> **RULING (`/design`(backend), S121 Phase 3).** FIXME 0747 is right that the
+> mechanism and the acceptance below cannot both hold **as the collapse was
+> framed** — but the fork it offers (narrow the mechanism, or re-write the
+> acceptance) is manufactured. Read at source, the three finders differ on **two
+> independent axes**, and separating them satisfies both clauses.
+>
+> | Finder | Reach | Liveness |
+> |---|---|---|
+> | `fn_compiler::return_var_in_scope` | the node **is** a `Var` | in the current scope frame |
+> | `fn_compiler::return_cow_source_in_scope` | the node is a tail COW site whose source is a `Var` | in the current scope frame |
+> | `fn_compiler::operand_live_binding_root` | `Var`, or forwarded through a `Let` body / a forwarding `Match` scrutinee | any live binding |
+>
+> **Ruled: ONE binding-root finder over `MonoExpr`, with ONE node-kind list,
+> returning the root binding together with the *reach class* by which it was
+> found** — the node itself; through binding indirection; or as the source of a
+> tail COW site. The three consumers become three **thresholds** on that one
+> answer, exactly as `is_fresh_construction` and `yields_owned_temporary` are two
+> thresholds on `value_provenance` (the 0781 precedent this crate already runs).
+> Liveness stays a caller-supplied predicate, as it already is at the third
+> finder.
+>
+> This is the collapse 0668 asked for — one traversal, one place the
+> `Let`/`Match` forwarding rule lives — **and** it is byte-identical-off *by
+> construction*, because each threshold reproduces its current predicate exactly.
+> So the acceptance below stands verbatim: no flips, goldens byte-identical-off,
+> the S114 must-hold cells hold, no new RED. No golden re-baseline, and no
+> "RC-neutral per frame" acceptance class is needed.
+>
+> **The widening is explicitly NOT part of this.** Admitting the
+> binding-indirection class at the *fn-return* seam removes a redundant inc/dec
+> pair and its teardown branch on shapes like `(defn f [v] (let [x 1] v))`, and
+> that is a real improvement — but it is an emission change with a live hazard:
+> the return path asserts the skipped variable is not a `Borrowed` parameter, and
+> the wider class can reach one through a `let`. Trigger for revisiting: a
+> measured frame where the pair is worth a scoped attributed re-baseline, taken
+> with that assertion re-proved first. Landing the widening inside the collapse
+> is a `/review` reject (`s121-c4-visit.md` §13 item 8).
+>
+> Implementation rides `s121-c4-visit.md` bundle B6. FIXME 0696's re-keying,
+> which was scheduled to ride W-B5, was independently resolved at S115 W3.
 
 The W-B5 change-set (`binding-indirection-consume.md` §5 item 4 / §W-B5 table
 row / §7 wave map) is unchanged and current: **collapse the three fn-return

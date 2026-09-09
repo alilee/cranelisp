@@ -165,7 +165,7 @@ cluster across all four re-audits.
 | 43 | `adt_product_in_let` | spec/05 §5.2.1 — product in let scope | `(let [p (Point 5 10)] (match p ...))` | COVERED | `spec_12_runtime.rs::adt_product_alloc_and_match_unwrap` covers let-anchor + match shape |
 | 44 | `adt_product_as_function_arg` | spec/05 §5.2.1 — product as fn arg | `(extract-x (Point 42 99))` = 42 | COVERED | absorbed by `deftype_product_construct_and_destructure` (which threads through a destructure) + `pattern_match_in_defn_multiple_calls` |
 | 45 | `adt_product_as_function_return` | spec/05 §5.2.1 — product as fn return | `(origin)` returns Point, caller matches it | COVERED | absorbed — fn-return is the dual of fn-arg, both implicit in `pattern_match_in_defn_multiple_calls` shape; calling-convention parity holds |
-| 46 | `adt_shortcut_syntax` | spec/05 §5.2.4 — shortcut bare-field-name | `(deftype Pair [first second])` no `:Type` | COVERED | `spec_05_definitions.rs::deftype_product_shortcut_field_names` — exact angle |
+| 46 | `adt_shortcut_syntax` | spec/05 §5.2.4 — field types must be explicit | `(deftype Pair [first second])` no `:Type` | SUPERSEDED — REJECTED | `spec_05_definitions.rs::deftype_omitted_field_types_rejected_without_partial_registration_neg` is the current exact negative; the former shortcut behavior is no longer authoritative. |
 
 #### Cluster E — ADT sums (2 tests, lines 461-485)
 

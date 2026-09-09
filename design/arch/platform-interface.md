@@ -1218,7 +1218,7 @@ together).
      count) and map each through `platform_manifest_symbol`. Update its doc comment (delete
      the "multi-platform needs mangled names — out of scope" limitation note; it is now
      resolved). Update its unit test (`exe.rs:1089`).
-  3. **`src/session_v4.rs:2218-2219`** — `linked_platform_link_data` calls
+  3. **`src/session_v4/lifecycle.rs::linked_platform_link_data`** calls
      `collect_platform_manifest_names(platform_names.len())`; change to pass the deduped
      `platform_names` slice (it is right there at `:2209`) so the names, not the count,
      drive the manifest-symbol list. This is the single call-site adjustment for the new

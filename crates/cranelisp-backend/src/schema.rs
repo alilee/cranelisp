@@ -56,8 +56,7 @@ use std::collections::BTreeMap;
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    DefKind, FQTypeName, ModuleEntry, ModuleFullPath, Subst, Symbol, SymbolTable, Type, TypeId,
-    apply,
+    CallableOrigin, FQTypeName, ModuleFullPath, Subst, Symbol, SymbolTable, Type, TypeId, apply,
 };
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -181,16 +180,7 @@ where
     let type_entry = table.get(fqtn.name.as_ref())?;
     // The TypeDefInfo lives on a `TypeDef` entry (sum/enum) or on the product
     // ctor `Def`'s `type_def` facet (single-ctor product, type-name==ctor-name).
-    let info = match type_entry {
-        ModuleEntry::TypeDef { info, .. } => info.clone(),
-        ModuleEntry::Def { kind, .. } => match &**kind {
-            DefKind::Constructor {
-                type_def: Some(td), ..
-            } => (**td).clone(),
-            _ => return None,
-        },
-        _ => return None,
-    };
+    let info = type_entry.type_def_info()?.clone();
     drop(table);
 
     // Gather per-constructor (name, tag, field (name, ty)) lists.
@@ -219,31 +209,27 @@ where
         // dropped from the schema — the next keying drift would surface as a wrong
         // layout-hash / schema, not an error. Fail loud in CI (release skips).
         debug_assert!(
-            matches!(
-                ctor_probe,
-                Some(ModuleEntry::Def { kind, .. }) if matches!(&**kind, DefKind::Constructor { .. })
-            ),
+            ctor_probe.is_some_and(|entry| entry.callable().is_some_and(|callable| {
+                matches!(callable.origin, CallableOrigin::Ctor { .. })
+            })),
             "ctor '{ctor_name}' of '{fqtn}' has no resolvable Def — keying drift"
         );
-        if let Some(ModuleEntry::Def {
-            kind,
-            scheme,
-            param_names,
-            ..
-        }) = ctor_probe
-            && let DefKind::Constructor {
+        if let Some(callable) = ctor_probe.and_then(cranelisp_types::Binding::callable)
+            && let CallableOrigin::Ctor {
                 tag, field_count, ..
-            } = &**kind
+            } = &callable.origin
         {
             // Sum/enum constructor Def: names from param_names, types from
             // the scheme's Fn params (nullary → no Fn → empty).
-            let field_types: Vec<Type> = match &scheme.ty {
+            let field_types: Vec<Type> = match &callable.arm.scheme.ty {
                 Type::Fn(params, _) => params.clone(),
                 _ => Vec::new(),
             };
             let names: Vec<Symbol> = (0..*field_count)
                 .map(|i| {
-                    param_names
+                    callable
+                        .arm
+                        .param_names
                         .get(i)
                         .cloned()
                         .unwrap_or_else(|| Symbol::from(format!("_{i}")))
@@ -517,13 +503,13 @@ where
 {
     let mut roots: Vec<Type> = Vec::new();
     for (_, entry) in platform_table.all_symbols() {
-        let ModuleEntry::Def { kind, scheme, .. } = entry else {
+        let Some(callable) = entry.callable() else {
             continue;
         };
-        if !matches!(kind.as_ref(), DefKind::PlatformEffect { .. }) {
+        if !matches!(callable.origin, CallableOrigin::PlatformEffect { .. }) {
             continue;
         }
-        match &scheme.ty {
+        match &callable.arm.scheme.ty {
             Type::Fn(params, ret) => {
                 for p in params {
                     collect_adt_roots(p, &mut roots);

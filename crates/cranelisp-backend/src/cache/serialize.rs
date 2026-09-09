@@ -44,7 +44,7 @@
 //! |---|---|---|---|
 //! | `callable_got_slot()` | OOB slot → `store_slot`/`load_slot` `assert!` panics on disk content | `< GOT_TABLE_SIZE` | [`CacheStale::GotSlotOutOfRange`] |
 //! | `PrimitiveBody::Extern.borrowed_sibling_slot` (R5 carrier) | OOB → the same GOT panic when its first consumer reads it | `< GOT_TABLE_SIZE` when present | [`CacheStale::SiblingSlotOutOfRange`] |
-//! | summary param index — `ResultMode::{ProjectionOf,AliasOf,MayAliasOf}(k)` | `k ≥ arity` → a raw `args[k]` index PANIC at the consume seam (see below) | `k < arity` (signature arity, `param_names` fallback), all three variants | [`CacheStale::SummaryParamIndexOutOfRange`] |
+//! | summary param index — `ResultMode::{ProjectionOf,AliasOf,MayAliasOf}(k)` | `k ≥ arity` → a raw `args[k]` index PANIC at the consume seam (see below) | `k < arity` (signature arity, `param_names` fallback), all three index-carrying variants; `Fresh` and `MayAliasAny` name no parameter and are unconditionally admitted | [`CacheStale::SummaryParamIndexOutOfRange`] |
 //! | `Def.callees` FQs (feeds the reverse who-calls-whom index) | empty module/symbol component → resolve / reverse-index corruption | non-empty module AND symbol | [`CacheStale::MalformedCalleeFq`] |
 //! | `codegen_view` span | `start > end` → out-of-source slice / keyed-read miss at the diagnostic seam | `start ≤ end` | [`CacheStale::MalformedSpanKey`] |
 //!
@@ -79,7 +79,8 @@
 use std::path::Path;
 
 use cranelisp_types::{
-    CranelispError, ErrorLocation, GOT_TABLE_SIZE, ModuleFullPath, Span, SymbolTable,
+    CranelispError, ErrorLocation, GOT_TABLE_SIZE, LifecycleError, ModuleFullPath, Span, Symbol,
+    SymbolTable,
 };
 
 // ---------------------------------------------------------------------------
@@ -179,6 +180,13 @@ pub enum CacheStale {
         start: u32,
         end: u32,
     },
+    /// A restored concrete instance's table key disagreed with the canonical
+    /// key derived from its persisted typed template link.
+    InstanceKeyMismatch {
+        path: std::path::PathBuf,
+        symbol: Symbol,
+        expected: Symbol,
+    },
 }
 
 impl CacheStale {
@@ -196,6 +204,7 @@ impl CacheStale {
             CacheStale::SummaryParamIndexOutOfRange { .. } => "summary_param_index_out_of_range",
             CacheStale::MalformedCalleeFq { .. } => "malformed_callee_fq",
             CacheStale::MalformedSpanKey { .. } => "malformed_span_key",
+            CacheStale::InstanceKeyMismatch { .. } => "instance_key_mismatch",
         }
     }
 }
@@ -275,6 +284,15 @@ impl std::fmt::Display for CacheStale {
                  {start}..{end} is inverted",
                 path.display()
             ),
+            CacheStale::InstanceKeyMismatch {
+                path,
+                symbol,
+                expected,
+            } => write!(
+                f,
+                "cache instance key mismatch at {}: found `{symbol}`, expected `{expected}`",
+                path.display()
+            ),
         }
     }
 }
@@ -289,7 +307,10 @@ impl std::fmt::Display for CacheStale {
 pub(crate) fn result_mode_param_index(result: cranelisp_types::ResultMode) -> Option<usize> {
     use cranelisp_types::ResultMode;
     match result {
-        ResultMode::Fresh => None,
+        // The two index-free points. `MayAliasAny` (S121) is the axis's ⊤: it
+        // names no parameter, so there is no `k < arity` obligation to check and
+        // it must load at EVERY arity, nullary included.
+        ResultMode::Fresh | ResultMode::MayAliasAny => None,
         ResultMode::ProjectionOf(k) | ResultMode::AliasOf(k) | ResultMode::MayAliasOf(k) => Some(k),
     }
 }
@@ -377,7 +398,7 @@ pub fn deserialise_meta(
 
 /// Deserialise with an explicit expected `build_id` (Sprint 60 W/S C).
 ///
-/// Check order: parse → schema_version → build_id. Schema mismatch shadows
+/// Check order: parse JSON → schema_version → decode table → build_id. Schema mismatch shadows
 /// build-id mismatch (a shape change strictly subsumes a build-id change),
 /// but both flow through `CacheStale` so the caller routes identically.
 ///
@@ -390,37 +411,53 @@ pub(crate) fn deserialise_meta_with_build_id(
     expected_build_id: &str,
     path: &Path,
 ) -> Result<SymbolTable, CacheStale> {
-    // First: pull the `build_id` sibling off the JSON root before letting
-    // serde derive the SymbolTable (SymbolTable has no `build_id` field,
-    // but serde is lenient with unknown keys by default, so deserialise
-    // succeeds and we only inspect the sidecar field for the version check).
-    let value: serde_json::Value =
+    let value: serde_json::Map<String, serde_json::Value> =
         serde_json::from_slice(bytes).map_err(|e| CacheStale::Deserialise {
             path: path.to_path_buf(),
             message: e.to_string(),
         })?;
+    // Match SymbolTable's default for pre-versioned metadata, but reject an
+    // incompatible schema before decoding any schema-dependent payload.
+    let found_schema_version = value
+        .get("schema_version")
+        .map_or(Ok(0), |stamp| serde_json::from_value::<u32>(stamp.clone()))
+        .map_err(|e| CacheStale::Deserialise {
+            path: path.to_path_buf(),
+            message: e.to_string(),
+        })?;
+    if found_schema_version != expected_schema_version {
+        return Err(CacheStale::SchemaMismatch {
+            path: path.to_path_buf(),
+            found: found_schema_version,
+            expected: expected_schema_version,
+        });
+    }
     let found_build_id = value
         .get("build_id")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
     let table: SymbolTable =
-        serde_json::from_value(value).map_err(|e| CacheStale::Deserialise {
-            path: path.to_path_buf(),
-            message: e.to_string(),
+        serde_json::from_value(serde_json::Value::Object(value)).map_err(|e| {
+            CacheStale::Deserialise {
+                path: path.to_path_buf(),
+                message: e.to_string(),
+            }
         })?;
-    if table.schema_version != expected_schema_version {
-        return Err(CacheStale::SchemaMismatch {
-            path: path.to_path_buf(),
-            found: table.schema_version,
-            expected: expected_schema_version,
-        });
-    }
     if found_build_id != expected_build_id {
         return Err(CacheStale::BuildIdMismatch {
             path: path.to_path_buf(),
             found: found_build_id,
             expected: expected_build_id.to_string(),
+        });
+    }
+    if let Err(LifecycleError::InstanceKeyMismatch { symbol, expected }) =
+        table.validate_lifecycle()
+    {
+        return Err(CacheStale::InstanceKeyMismatch {
+            path: path.to_path_buf(),
+            symbol,
+            expected,
         });
     }
     // S111 R7 — validate every restored callable's GOT slot at the ONE
@@ -448,20 +485,23 @@ pub(crate) fn deserialise_meta_with_build_id(
                 slot,
             });
         }
-        if let cranelisp_types::ModuleEntry::Def { kind, .. } = entry
-            && let cranelisp_types::DefKind::Primitive {
-                body:
-                    cranelisp_types::PrimitiveBody::Extern {
-                        borrowed_sibling_slot: Some(slot),
-                        ..
+        if let Some(callable) = entry.callable()
+            && matches!(
+                callable.origin,
+                cranelisp_types::CallableOrigin::RustPrimitive
+            )
+            && let cranelisp_types::Life::Concrete {
+                realization:
+                    cranelisp_types::Realization::ExternShim {
+                        borrowed_sibling: Some(slot),
                     },
                 ..
-            } = kind.as_ref()
-            && *slot >= GOT_TABLE_SIZE
+            } = &callable.arm.life
+            && slot.index() >= GOT_TABLE_SIZE
         {
             return Err(CacheStale::SiblingSlotOutOfRange {
                 path: path.to_path_buf(),
-                slot: *slot,
+                slot: slot.index(),
             });
         }
         // EVERY index-carrying `ResultMode` variant (FIXME 0750). All three are
@@ -480,14 +520,10 @@ pub(crate) fn deserialise_meta_with_build_id(
             // Arity from the persisted signature — the same positional vector
             // the consume seam's `arg_origins` is built over. The `param_names`
             // list is the fallback for entries whose scheme is not a `Fn` shape.
-            let arity = match entry {
-                cranelisp_types::ModuleEntry::Def {
-                    scheme,
-                    param_names,
-                    ..
-                } => match &scheme.ty {
+            let arity = match entry.callable() {
+                Some(callable) => match &callable.arm.scheme.ty {
                     cranelisp_types::Type::Fn(params, _) => params.len(),
-                    _ => param_names.len(),
+                    _ => callable.arm.param_names.len(),
                 },
                 _ => 0,
             };

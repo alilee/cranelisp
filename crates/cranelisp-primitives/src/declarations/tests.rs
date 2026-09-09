@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
-use cranelisp_types::{DefKind, ModuleEntry, ModuleFullPath, PrimitiveBody, SymbolTable};
+use cranelisp_types::{CallableOrigin, Life, ModuleFullPath, Realization, SymbolTable};
 
 use super::{PrimitiveDecl, build_table, declarations, harvest_shims};
 
@@ -22,7 +22,7 @@ fn production_inventory_projects_both_ways() {
             PrimitiveDecl::HarvestExtern { .. } => None,
         })
         .collect();
-    let table_names: HashSet<_> = table.symbols.keys().map(AsRef::as_ref).collect();
+    let table_names: HashSet<_> = table.all_symbols().map(|(name, _)| name.as_ref()).collect();
     assert_eq!(declared_users, table_names);
 
     let declared_externs: HashSet<_> = declarations
@@ -81,14 +81,16 @@ fn every_callable_declaration_has_ownership_and_primitive_kind() {
             PrimitiveDecl::HarvestExtern { .. } => continue,
         };
         assert!(!ownership.param_modes.is_empty());
-        let ModuleEntry::Def { kind, .. } = table.get(name).unwrap() else {
-            panic!("callable row did not project to a definition");
-        };
+        let callable = table.get(name).unwrap().callable().unwrap();
+        assert!(matches!(callable.origin, CallableOrigin::RustPrimitive));
         assert!(matches!(
-            **kind,
-            DefKind::Primitive {
-                body: PrimitiveBody::Inline | PrimitiveBody::Extern { .. },
+            callable.arm.life,
+            Life::Inline {
+                mode_summary: Some(_)
+            } | Life::Concrete {
+                realization: Realization::ExternShim { .. },
                 mode_summary: Some(_),
+                ..
             }
         ));
     }

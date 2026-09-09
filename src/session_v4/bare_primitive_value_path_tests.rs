@@ -2,26 +2,36 @@ use super::*;
 // S87 §2: types formerly reached via the parent's `use cranelisp_types`/
 // `use crate::code` glob (the impl moved to `lifecycle.rs`); import them
 // directly now.
-use crate::code::Code;
-use cranelisp_types::{DefKind, ModuleEntry, Scheme, Sexp, Span, Symbol, Type, Visibility};
+use cranelisp_types::{Scheme, Sexp, Span, Symbol, Type, Visibility};
 use std::collections::HashMap as StdHashMap;
 
 /// Build a `ModuleEntry::Def` for a primitive (matches how
 /// `register_builtins` seeds `primitives/add-i64`).
-fn mk_primitive_def(ty: Type, docstring: Option<&str>) -> ModuleEntry<Code> {
-    let mut builder = ModuleEntry::def(
-        Scheme {
-            type_vars: vec![],
-            constraints: StdHashMap::new(),
-            ty,
-        },
-        DefKind::primitive(0),
-    )
-    .visibility(Visibility::Public);
-    if let Some(doc) = docstring {
-        builder = builder.docstring(doc);
+fn install_primitive(
+    table: &mut SessionSymbolTable,
+    name: &str,
+    ty: Type,
+    docstring: Option<&str>,
+) {
+    if table.get(name).is_some() {
+        return;
     }
-    builder.build()
+    table
+        .install_extern(
+            Symbol::from(name),
+            Scheme {
+                type_vars: vec![],
+                constraints: StdHashMap::new(),
+                ty,
+            },
+            Vec::new(),
+            docstring.map(str::to_owned),
+            0,
+            None,
+            None,
+            Visibility::Public,
+        )
+        .expect("primitive fixture installs");
 }
 
 /// Fresh session with empty lib_dirs and a temp project_root so no
@@ -43,7 +53,8 @@ fn isolated_session() -> (CompilerSession, PathBuf) {
         nice_workers: 0,
         run_mode: RunMode::Repl,
     };
-    let mut s = CompilerSession::new(settings, tmp_root.clone(), "user");
+    let mut s =
+        CompilerSession::new(settings, tmp_root.clone(), "user").expect("test session bootstrap");
     s.set_lib_dirs(vec![]);
     (s, tmp_root)
 }
@@ -64,10 +75,7 @@ fn stage_primitive_reexport_chain(
         .entry(primitives.clone())
         .or_insert_with(|| SessionSymbolTable::new_with_params(primitives.clone()));
     if let Some(mut st) = s.shared.symbol_tables.get_mut(&primitives) {
-        st.insert(
-            Symbol::from(primitive_name),
-            mk_primitive_def(primitive_ty, docstring),
-        );
+        install_primitive(&mut st, primitive_name, primitive_ty, docstring);
     }
 
     // prelude: Reexport → primitives/<name>.
@@ -76,30 +84,29 @@ fn stage_primitive_reexport_chain(
         .entry(prelude.clone())
         .or_insert_with(|| SessionSymbolTable::new_with_params(prelude.clone()));
     if let Some(mut st) = s.shared.symbol_tables.get_mut(&prelude) {
-        st.insert(
+        st.expose_candidate(
             Symbol::from(primitive_name),
-            ModuleEntry::Import {
-                source: FQSymbol {
-                    module: primitives.clone(),
-                    symbol: Symbol::from(primitive_name),
-                },
-                visibility: Visibility::Public,
+            FQSymbol {
+                module: primitives.clone(),
+                symbol: Symbol::from(primitive_name),
             },
-        );
+            Visibility::Public,
+        )
+        .expect("primitive reexport fixture installs");
     }
 
-    // user: Import → prelude/<name> (implicit prelude glob effect).
+    // user: the import funnel records the exact terminal candidate. It does not
+    // retain an intermediate prelude edge or manufacture an Import binding.
     if let Some(mut st) = s.shared.symbol_tables.get_mut(&user) {
-        st.insert(
+        st.expose_candidate(
             Symbol::from(primitive_name),
-            ModuleEntry::Import {
-                source: FQSymbol {
-                    module: prelude.clone(),
-                    symbol: Symbol::from(primitive_name),
-                },
-                visibility: Visibility::Private,
+            FQSymbol {
+                module: primitives.clone(),
+                symbol: Symbol::from(primitive_name),
             },
-        );
+            Visibility::Private,
+        )
+        .expect("primitive import fixture installs");
     }
 }
 
@@ -119,28 +126,25 @@ fn bare_reexported_primitive_resolves_to_terminal_def() {
         Some("Add two i64 values."),
     );
 
-    // Simulate the bare-value path: look up in user's table and
-    // resolve. This is the exact sequence performed inside
-    // `check_bare_symbol_introspection`.
+    // The user spelling exposes the primitive's exact terminal identity.
     let user = ModuleFullPath::from("user");
-    let entry = s
-        .shared
-        .symbol_tables
-        .get(&user)
-        .and_then(|st| st.get("add-i64").cloned())
-        .expect("user module must carry Import for add-i64");
-    let (resolved_entry, resolved_module) = s.resolve_entry_for_display(&entry, &user);
+    let (resolved_entry, resolved_module) =
+        cranelisp_types::resolve_terminal_entry_and_home(&s.shared.symbol_tables, &user, "add-i64")
+            .expect("user module must expose the terminal add-i64 candidate");
 
-    match &resolved_entry {
-        ModuleEntry::Def { scheme, kind, .. } => {
+    match resolved_entry.callable() {
+        Some(callable) => {
             assert_eq!(
-                scheme.ty, add_i64_ty,
+                callable.arm.scheme.ty, add_i64_ty,
                 "terminal Def must carry the primitive's own type",
             );
             assert!(
-                matches!(kind.as_ref(), DefKind::Primitive { .. }),
+                matches!(
+                    callable.origin,
+                    cranelisp_types::CallableOrigin::RustPrimitive
+                ),
                 "terminal entry must be a Primitive Def, got: {:?}",
-                kind,
+                callable.origin,
             );
         }
         other => panic!(
@@ -166,10 +170,11 @@ fn bare_reexported_primitive_resolves_to_terminal_def() {
 fn bare_reexported_primitive_formats_as_primitives_qualified() {
     let (mut s, root) = isolated_session();
     let add_i64_ty = Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int));
-    stage_primitive_reexport_chain(&s, "add-i64", add_i64_ty, Some("Add two i64 values."));
+    let name = "s61-doc-primitive";
+    stage_primitive_reexport_chain(&s, name, add_i64_ty, Some("Add two i64 values."));
 
     // Drive the bare-value introspection handler directly.
-    let sexp = Sexp::Symbol("add-i64".to_string(), Span::SYNTHETIC);
+    let sexp = Sexp::Symbol(name.to_string(), Span::SYNTHETIC);
     let result = s.check_bare_symbol_introspection(&sexp).expect(
         "re-exported primitive MUST resolve on the bare-value path \
                  (S61 Slice 1 acceptance)",
@@ -177,8 +182,9 @@ fn bare_reexported_primitive_formats_as_primitives_qualified() {
 
     let output = s.format_eval_result(&result);
     assert!(
-        output
-            .starts_with(":(Fn [primitives/Int primitives/Int] primitives/Int) primitives/add-i64"),
+        output.starts_with(
+            ":(Fn [primitives/Int primitives/Int] primitives/Int) primitives/s61-doc-primitive"
+        ),
         "bare-value echo must carry the full qualified type + \
              `primitives/add-i64` name (spec §8.9 re-export provenance); got: {output}",
     );
@@ -259,19 +265,22 @@ fn bare_reexported_primitive_surface_resolves_identically_across_symbols() {
 
     let user = ModuleFullPath::from("user");
     for (name, ty) in cases {
-        let entry = s
-            .shared
-            .symbol_tables
-            .get(&user)
-            .and_then(|st| st.get(name).cloned())
-            .unwrap_or_else(|| panic!("user must carry Import for {name}"));
-        let (resolved_entry, resolved_module) = s.resolve_entry_for_display(&entry, &user);
-        match &resolved_entry {
-            ModuleEntry::Def { scheme, kind, .. } => {
-                assert_eq!(&scheme.ty, ty, "{name}: terminal Def carries its own type");
+        let (resolved_entry, resolved_module) =
+            cranelisp_types::resolve_terminal_entry_and_home(&s.shared.symbol_tables, &user, name)
+                .unwrap_or_else(|| panic!("user must expose terminal candidate for {name}"));
+        match resolved_entry.callable() {
+            Some(callable) => {
+                assert_eq!(
+                    &callable.arm.scheme.ty, ty,
+                    "{name}: terminal Def carries its own type"
+                );
                 assert!(
-                    matches!(kind.as_ref(), DefKind::Primitive { .. }),
-                    "{name}: terminal entry must be a Primitive Def, got {kind:?}"
+                    matches!(
+                        callable.origin,
+                        cranelisp_types::CallableOrigin::RustPrimitive
+                    ),
+                    "{name}: terminal entry must be a Primitive Def, got {:?}",
+                    callable.origin,
                 );
             }
             other => panic!("{name}: expected terminal Def, got {other:?}"),

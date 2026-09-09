@@ -470,35 +470,35 @@ fn jit_cross_module_got_dispatch_end_to_end() {
 
 // ----- §1 `Jit::new(symbol_tables)` — the minimal JIT-setup boundary -----
 
-use cranelisp_types::{ModuleFullPath, SchedulingClass, Scheme, SymbolTable, Type, Visibility};
+use cranelisp_types::{
+    FQSymbol, ModuleFullPath, SchedulingClass, Scheme, SymbolTable, Type, Visibility,
+};
 
-/// Build a `DefKind::PlatformEffect` Def entry with a populated GOT slot,
-/// returning the entry. Mirrors what the platform DLL loader writes — the
-/// runtime pointer lands in `table.got` at the allocated slot.
-fn platform_effect_def(slot: usize) -> ModuleEntry {
-    ModuleEntry::Def {
-        scheme: Scheme {
-            type_vars: vec![],
-            constraints: HashMap::new(),
-            ty: Type::Int,
-        },
-        visibility: Visibility::Public,
-        docstring: None,
-        param_names: vec![],
-        kind: Box::new(DefKind::PlatformEffect {
-            scheduling_class: SchedulingClass::Sequential,
-            poll_shape: false,
-            got_slot: slot,
-            mode_summary: None,
-        }),
-        callees: vec![],
-        trait_origin: None,
-        seq: 0,
-        ast: None,
-        codegen_view: None,
-        code: None,
-        value_use: false,
-    }
+/// Install a platform-effect fixture through the lifecycle facade and return
+/// its manifest-owned GOT slot.
+fn install_platform_effect<C, L>(table: &mut SymbolTable<C, L>, name: Symbol) -> usize
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    table
+        .install_platform(
+            name,
+            Scheme {
+                type_vars: vec![],
+                constraints: HashMap::new(),
+                ty: Type::Int,
+            },
+            vec![],
+            None,
+            0,
+            SchedulingClass::Sequential,
+            false,
+            0,
+            Visibility::Public,
+        )
+        .expect("install platform-effect fixture")
+        .index()
 }
 
 // spec: design/backend/jit-setup-boundary.md §1 — `Jit::new(symbol_tables)`
@@ -539,11 +539,8 @@ fn jit_new_registers_platform_effect_and_got_symbols() {
     // holds `platform_ptr`.
     let plat_mod = ModuleFullPath::from("platform.stdio");
     let mut plat_table = SymbolTable::new(plat_mod.clone());
-    let slot = plat_table
-        .allocate_got_slot()
-        .expect("fresh table has free slots");
+    let slot = install_platform_effect(&mut plat_table, Symbol::from("cranelisp_print"));
     plat_table.got.store_slot(slot, platform_ptr);
-    plat_table.insert(Symbol::from("cranelisp_print"), platform_effect_def(slot));
     tables.insert(plat_mod.clone(), plat_table);
 
     let mut jit = Jit::new(&tables).expect("Jit::new must succeed");
@@ -616,26 +613,23 @@ fn jit_new_follows_import_edge_for_platform_effect() {
     // Defining module: platform.stdio defines `print` as a PlatformEffect.
     let plat_mod = ModuleFullPath::from("platform.stdio");
     let mut plat_table = SymbolTable::new(plat_mod.clone());
-    let slot = plat_table
-        .allocate_got_slot()
-        .expect("fresh table has free slots");
+    let slot = install_platform_effect(&mut plat_table, Symbol::from("print"));
     plat_table.got.store_slot(slot, platform_ptr);
-    plat_table.insert(Symbol::from("print"), platform_effect_def(slot));
     tables.insert(plat_mod.clone(), plat_table);
 
     // Importing module: user imports `print` from platform.stdio.
     let user = ModuleFullPath::from("user");
     let mut user_table = SymbolTable::new(user.clone());
-    user_table.insert(
-        Symbol::from("print"),
-        ModuleEntry::Import {
-            source: cranelisp_types::FQSymbol {
+    user_table
+        .expose_candidate(
+            Symbol::from("print"),
+            FQSymbol {
                 module: plat_mod.clone(),
                 symbol: Symbol::from("print"),
             },
-            visibility: Visibility::Public,
-        },
-    );
+            Visibility::Public,
+        )
+        .expect("expose imported platform-effect fixture");
     tables.insert(user.clone(), user_table);
 
     let mut jit = Jit::new(&tables).expect("Jit::new must succeed");

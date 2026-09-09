@@ -163,11 +163,11 @@ That ADT gains its 8th constructor:
   the ruling accepted.
 - **Destructure/rebuild**: `(match arg [(macros/SexpAnnotated t f) …])`;
   rebuild via the ctor or via `:`-syntax inside a quasiquote template.
-- **Standard unwrap helpers** — recommended, stdlib-owned: a predicate +
-  the two projections (working names `annotated?` / `annotation` /
-  `unannotate`; /stdlib finalizes per Clojure conventions). Filed as
-  **FIXME 0780** (`target: /stdlib`, S116). Not load-bearing for the
-  mechanism.
+- **Standard unwrap helpers** — delivered, stdlib-owned `core.syntax`
+  functions: `annotated?`, `annotation`, and `unannotate`. The
+  [macro-authoring guide](../../user/syntax-cheatsheet-plan.md#macro-authoring-reader-annotations)
+  shows both the helpers and the raw-node form. They are not load-bearing for
+  the mechanism.
 
 **Expansion/qualification walks — the annotation-half parity rule.** Both
 scope-aware walks over expansion I/O gain an `Annotated` arm with identical
@@ -301,6 +301,28 @@ cache/mod.rs:371`, currently 22).
    genuine arity misses. `annotation missing expression` relocates to the
    reader with text preserved; /qa re-points the §1.4.5 traceability rows.
 
+> **Current-state correction (`/arch`, 2026-09-01 — discharging the S121 C6
+> H5 routing; verified at live source).** The S116 read-time fold LANDED
+> (`Sexp::Annotated` is constructed by `reader.rs:453`; row 1's headline
+> sibling-scan `try_consume_annotation` is gone), but the list above
+> over-claims: four mirror rows did **not** retire and are live at HEAD —
+> row 2, `worker::leading_annotation_len`, survives as a constant-`0` stub
+> with a live caller (`src/worker.rs:126`; `src/process_form.rs:791`, feeding
+> dead `annotation_prefix` plumbing); row 3, the `save.rs` colon-suppression
+> renderer, is live (`src/save.rs:250-330`); row 4,
+> `expander::is_annotation_symbol`, is live (`src/expander.rs:1098`, called
+> at `:1220` and `src/process_form/macro_resolution.rs:696`); and row 5's
+> list-head string test is live at relocated loci
+> (`src/pretty.rs:583` `is_type_annotation_list` — still
+> `name.starts_with(':')` — and `:590`). Rows 2–4 are owned by the S121 C6
+> visit (`design/int/s121-c6-visit.md` §7.3: the stub deletes outright; the
+> other two are structural re-expressions over the node, never blind
+> deletions — a deletion leaving a lexical test under another name is a
+> `/review` reject). Row 5 was not in C6's routed three and is flagged to
+> `sprint` for the same disposition on the same surface. Row 6's
+> diagnostic-reachability claim is unverified here and stays as designed
+> intent.
+
 ## 8. S116 implementation plan sketch
 
 Staging follows the S114 dormant-enums→flip template. All source-touching
@@ -324,7 +346,9 @@ waves serial; ONE schema window (§6).
   coverage-by-definition-variants category): fold × {expression, macro-arg,
   bracket interior, quote, quasiquote+`~`, `~@`-as-half, nesting/bounds,
   trailing-introducer error, `:foo/` reject, spaced-`:`} — one codepath, the
-  matrix enforces it; round-trip pins (§4); `/stdlib` helpers (FIXME 0780);
+  matrix enforces it; round-trip pins (§4); delivered `core.syntax` helpers
+  (`annotated?` / `annotation` / `unannotate`) and their
+  [macro-authoring guide](../../user/syntax-cheatsheet-plan.md#macro-authoring-reader-annotations);
   traceability re-point.
 
 **/spec cascade rows (for /spec's next dispatch; not edited here):**

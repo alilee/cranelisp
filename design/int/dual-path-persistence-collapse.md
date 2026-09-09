@@ -156,7 +156,7 @@ Sprint 58 Wave 6 Defect 1 identified 5 sites that needed publish-before-register
 
 | # | File:line | Function | Role | Collapse action |
 |---|---|---|---|---|
-| 1 | `src/session_v4.rs:1938` | `compile_dep_inline` | REPL eval's inline dep compile (session-side second orchestrator) | **Delete.** Replace every call with `self.register_module(dep)`. |
+| 1 | historical `src/session_v4.rs:1938` | `compile_dep_inline` | REPL eval's inline dep compile (session-side second orchestrator) | **Delete.** Replace every call with `self.register_module(dep)`. |
 | 2 | `src/worker.rs:1286` | `handle_import` publish-before-register | Persistent-worker form handler for `(import …)` | Keep the `publish_dep_sexps` + `scheduler.register_module` + `block_for_typecheck` sequence — but ensure it is the *only* orchestrator for this dep. No session-side `compile_dep_inline` mirror. |
 | 3 | `src/worker.rs:1703` | `handle_export` publish-before-register | Persistent-worker form handler for `(export …)` | Same as #2. |
 | 4 | `src/worker.rs:1803` | `handle_mod` publish-before-register | Persistent-worker form handler for `(mod …)` | Same as #2. |
@@ -164,9 +164,9 @@ Sprint 58 Wave 6 Defect 1 identified 5 sites that needed publish-before-register
 
 Additional surfaces to audit during Phase 4 (enumerated explicitly to prevent "collapse surfaces another dual we didn't know about"):
 
-- `CompilerSession::register_module_with_source` (src/session_v4.rs:1240) — used by tests and by `register_entry_module`. This is the public entry shape; its body becomes the canonical `register_module` body. Confirm no call site bypasses it by constructing its internals directly.
-- `CompilerSession::register_entry_module` (src/session_v4.rs:2985) — calls `register_module_with_source`. Unchanged; entry point.
-- `CompilerSession::register_module` (src/session_v4.rs:1224) — today this delegates to `register_entry_module`. Confirm it keeps that shape and is the public name external callers (including REPL eval's dep-discovery) use.
+- `CompilerSession::register_module_with_source` (historical `src/session_v4.rs:1240`) — used by tests and by `register_entry_module`. This is the public entry shape; its body becomes the canonical `register_module` body. Confirm no call site bypasses it by constructing its internals directly.
+- `CompilerSession::register_entry_module` (historical `src/session_v4.rs:2985`) — calls `register_module_with_source`. Unchanged; entry point.
+- `CompilerSession::register_module` (historical `src/session_v4.rs:1224`) — today this delegates to `register_entry_module`. Confirm it keeps that shape and is the public name external callers (including REPL eval's dep-discovery) use.
 
 If Phase 4 discovers a sixth site (e.g., a `handle_*` variant whose dep-registration bypasses both paths), that surface is added to the collapse list before implementation begins. The enumerated list is the commissioned scope, and a new surface resets the list.
 
@@ -265,7 +265,7 @@ This is a structural refactor: net-zero behaviour change in the success case (th
 
 ### 8.2 E-2 — `register_dep_for_eval` passes `delays_other=false`, diverging from every other worker-side site
 
-**Location**: `src/session_v4.rs:1311`.
+**Historical location**: `src/session_v4.rs:1311`.
 
 **What `delays_other` controls.** `scheduler.register_module(module, delays_other: bool)` at `src/scheduler.rs:296` routes the newly-registered module into `ModulePool::TypecheckFirst` if `true`, `ModulePool::TypecheckNext` if `false`. TypecheckFirst is the prioritised queue (`scheduler.rs:487-498`): workers pull from it before TypecheckNext. The semantic distinction is "is some other module currently blocked on this module's typecheck completing?" — if yes, prioritise.
 

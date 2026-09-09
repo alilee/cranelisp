@@ -1,34 +1,17 @@
-// spec_08_name_shadowing.rs — §8.6.4 name-shadowing matrix (S102; the 0514/0516
-// def-over-name-in-scope defect cluster, now RESOLVED).
+// spec_08_name_shadowing.rs — §8.6.4 registration and §8.6.5 use-site
+// selection matrix.
 //
-// The final, no-exception ruling (user, 2026-07-04; scribed `a953de0`):
-//   It is ALWAYS a compile-time error to redefine or shadow a name in scope
-//   via `import` (private), `export` (public), OR the implicit prelude — no
-//   exceptions, order-independent, all import shapes, all visibilities, and
-//   UNIFORM across REPL / `--run` / `--link`. The remedy is the
-//   fully-qualified reference (§8.6.6). Legal (NOT shadowing): not loading the
-//   prelude (empty/reduced/suppressed → name out of scope → define freely),
-//   reuse-by-re-export (same terminal source dedups, §8.6.4/§8.4.0), and
-//   lexical `let`/`fn`/`match` bindings (§8.6.3, layer 1).
+// Distinct canonical declarations may expose the same module-scope spelling.
+// Registration is order- and mode-independent; it neither rejects the later
+// declaration nor makes either candidate shadow the other. Each use first
+// filters by syntactic role and then by ordinary HM constraints. One surviving
+// candidate is selected; several are a located ambiguity naming their canonical
+// identities. Lexical bindings remain the only shadowing layer (§8.6.3).
 //
-// HISTORY (0514/0516 defect cluster — FIXED). The def-over-name-in-scope
-// rejection was once wired on the REPL (Additive) commit-gate ONLY, covering
-// inner-table `import`/`export` — NOT the batch (`--run`/`--link`, Replace)
-// path and NOT the implicit prelude. The §1–§5 negatives below reproduced that
-// cluster: the `--run`/`--link` legs (class=mode-divergence) and the
-// def-over-PRELUDE legs (class=prelude-scope-miss) were the RED guards. The fix
-// moved the check to the shared typecheck seam
-// (`checker.rs::reject_def_over_binding`) and added the prelude-fallback arm;
-// all §1–§6 rows are GREEN on HEAD (verified 2026-07-12). They remain as
-// regression guards and carry `// defect:` notation for defect-class analysis
-// (a fixed repro keeps contributing to class-frequency/hotspot signals).
-//
-// The §6 POSITIVE (legal) tests guard the escape hatches (FQ reference,
-// not-loading, dedup, lexical binding) the rule explicitly preserves.
-//
-// §7 (deftrait/defmacro/trait-method over name-in-scope) and §8 (deftype/defn-
-// legs) are the S109 prelude≡explicit-import matrix rows (PLAN.md §II/§III);
-// §7 carries the live RED acceptance-spec rows for the resolution convergence.
+// Several test function names retain their historical `_rejected` suffix because
+// durable coverage citations refer to those identifiers. Their assertions now
+// distinguish registration success from a later ambiguous use. The macro,
+// trait, type, and trait-method rows additionally pin syntactic-role filtering.
 
 #[path = "helpers/mod.rs"]
 mod helpers;
@@ -65,90 +48,52 @@ fn combined(out: &CrOutput) -> String {
     format!("stdout:\n{}\nstderr:\n{}", out.stdout, out.stderr)
 }
 
-/// A §8.6.4/§8.6.5 collision diagnostic is present (def-over-name-in-scope, or
-/// a distinct-terminal poison). Substring set covers the landed REPL wording
-/// ("conflicts with the explicit import/export") and the ambiguity wording.
-fn has_collision_diagnostic(out: &CrOutput) -> bool {
+/// A §8.6.5 use-site ambiguity diagnostic is present.
+fn has_ambiguity_diagnostic(out: &CrOutput) -> bool {
     let c = combined(out).to_lowercase();
-    c.contains("conflict") || c.contains("ambiguous")
+    c.contains("ambiguous")
 }
 
-/// Batch (`--run` / `--link`) rejection: the collision diagnostic is present
-/// AND the shadowing definition did not run to its exit code (no effect).
-fn assert_batch_rejected(out: &CrOutput, shadow_exit: i32) {
+/// Batch (`--run` / `--link`) unresolved use: registration succeeded, but the
+/// ambiguous call did not run to either candidate's distinguishing exit code.
+fn assert_batch_use_ambiguous(out: &CrOutput, candidate_exit: i32) {
     assert!(
-        has_collision_diagnostic(out),
-        "expected a §8.6.4/§8.6.5 collision (conflict/ambiguous) diagnostic; {}",
+        has_ambiguity_diagnostic(out),
+        "expected a §8.6.5 use-site ambiguity diagnostic; {}",
         combined(out)
     );
     assert_ne!(
         out.status.code(),
-        Some(shadow_exit),
-        "the rejected definition MUST have no effect (must not run to exit {}); {}",
-        shadow_exit,
+        Some(candidate_exit),
+        "the ambiguous use must not run to candidate exit {}; {}",
+        candidate_exit,
         combined(out)
     );
 }
 
-/// §8.6.4 definition-over-name-in-scope rejection family, broadened beyond
-/// `has_collision_diagnostic` to also accept the trait-registry `already
-/// defined` wording. The R2 explicit-arm control rejects a redefined trait with
-/// `trait Show already defined` today; the resolution convergence folds it into
-/// the §8.6.4 `conflicts with '<name>' already in scope` wording (the landed
-/// `defn`/`deftype` legs already use it — see G7/G8). Both contain a
-/// recognisable rejection token, so the predicate matches across the transition.
-fn has_def_conflict_diagnostic(out: &CrOutput) -> bool {
-    let c = combined(out).to_lowercase();
-    c.contains("conflict") || c.contains("ambiguous") || c.contains("already")
-}
-
-/// Batch (`--run` / `--link`) def-conflict rejection: a §8.6.4 def-conflict
-/// diagnostic is present AND the offending definition did not run to its
-/// `shadow_exit` (no effect). `shadow_exit` is the exit code the program would
-/// produce if the shadowing definition were silently accepted (e.g. the macro's
-/// identity result, the private def's value, or `0` for a declaration with no
-/// runtime value — a rejection never exits 0).
-fn assert_def_conflict_rejected(out: &CrOutput, shadow_exit: i32) {
+/// REPL unresolved use: the ambiguity diagnostic is present and no candidate
+/// result is silently selected.
+fn assert_repl_use_ambiguous(out: &CrOutput, candidate_marker: &str) {
     assert!(
-        has_def_conflict_diagnostic(out),
-        "expected a §8.6.4 definition-over-name-in-scope rejection \
-         (conflict/already/ambiguous); {}",
-        combined(out)
-    );
-    assert_ne!(
-        out.status.code(),
-        Some(shadow_exit),
-        "the rejected definition MUST have no effect (must not run to exit {}); {}",
-        shadow_exit,
-        combined(out)
-    );
-}
-
-/// REPL rejection: the collision diagnostic is present, the shadow value never
-/// appears, and the in-scope binding remains the resolution.
-fn assert_repl_rejected(out: &CrOutput, shadow_marker: &str) {
-    assert!(
-        has_collision_diagnostic(out),
-        "expected a §8.6.4 collision diagnostic in the REPL; {}",
+        has_ambiguity_diagnostic(out),
+        "expected a §8.6.5 use-site ambiguity diagnostic in the REPL; {}",
         combined(out)
     );
     assert!(
-        !out.stdout.contains(shadow_marker),
-        "the rejected definition MUST have no effect (found shadow marker '{}'); {}",
-        shadow_marker,
+        !out.stdout.contains(candidate_marker),
+        "the ambiguous use must not select candidate marker '{}'; {}",
+        candidate_marker,
         combined(out)
     );
 }
 
 // =============================================================================
-// 1. NEGATIVE — def-over-explicit-import (specific shape)
+// 1. Selective imports and local definitions
 // =============================================================================
 
-// spec: spec/08-modules.md §8.6.4 — a `defn` over a specifically-imported name
-// is a compile-time error at the REPL. The REPL leg was the always-correct
-// anchor of the 0514 def-over-import cluster (the batch legs below were the RED
-// arms); GREEN on HEAD.
-// defect: class=mode-divergence locus=crates/cranelisp-typecheck/src/checker.rs::reject_def_over_binding found=S102 owner=/dev
+// spec: spec/08-modules.md §8.6.4–§8.6.5 — an import and local defn with
+// distinct canonical identities both register. A use before the defn has one
+// candidate; a later equally compatible use is ambiguous and lists both.
 #[test]
 fn def_over_import_repl_rejected() {
     let out = Cranelisp::new()
@@ -162,20 +107,25 @@ fn def_over_import_repl_rejected() {
              (measure [1 2 3])\n",
         )
         .output();
-    assert_repl_rejected(&out, ":primitives/Int 99");
-    // The import remains the binding before AND after the rejected def.
+    let c = combined(&out);
+    assert!(
+        c.contains("ambiguous bare name 'measure'")
+            && c.contains("user/measure")
+            && c.contains("util/measure"),
+        "the post-registration use must list both compatible candidates; {c}"
+    );
+    assert!(!out.stdout.contains(":primitives/Int 99"));
+    // Before the local declaration registers, the import is the sole candidate.
     assert_eq!(
         out.stdout.matches(":primitives/Int 3").count(),
-        2,
-        "the import must remain the binding across the rejected def; {}",
+        1,
+        "the pre-registration call must use the sole imported candidate; {}",
         combined(&out)
     );
 }
 
-// spec: spec/08-modules.md §8.6.4 — the SAME rejection MUST hold in `--run`.
-// Was a 0514 RED arm (the batch Replace path accepted, def won, exit 99); the
-// check moved to the shared typecheck seam and this is GREEN on HEAD.
-// defect: class=mode-divergence locus=crates/cranelisp-typecheck/src/checker.rs::reject_def_over_binding found=S102 owner=/dev
+// spec: spec/08-modules.md §8.6.4–§8.6.5 — the same candidate set and
+// ambiguous-use result holds in `--run`.
 #[test]
 fn def_over_import_run_rejected() {
     let out = Cranelisp::new()
@@ -189,13 +139,11 @@ fn def_over_import_run_rejected() {
         )
         .run("main.cl")
         .output();
-    assert_batch_rejected(&out, 99);
+    assert_batch_use_ambiguous(&out, 99);
 }
 
-// spec: spec/08-modules.md §8.6.4 — the SAME rejection MUST hold in `--link`.
-// Was a 0514 RED arm (the batch Replace path accepted, def won, exit 99);
-// GREEN on HEAD after the check moved to the shared typecheck seam.
-// defect: class=mode-divergence locus=crates/cranelisp-typecheck/src/checker.rs::reject_def_over_binding found=S102 owner=/dev
+// spec: spec/08-modules.md §8.6.4–§8.6.5 — the same candidate set and
+// ambiguous-use result holds in `--link`.
 #[test]
 fn def_over_import_link_rejected() {
     let out = Cranelisp::new()
@@ -209,14 +157,11 @@ fn def_over_import_link_rejected() {
         )
         .link_then_run("main.cl")
         .output();
-    assert_batch_rejected(&out, 99);
+    assert_batch_use_ambiguous(&out, 99);
 }
 
-// spec: spec/08-modules.md §8.6.4 — symmetric direction: an `import` that binds
-// a bare name already bound by a module-local definition is ALSO the error
-// (order-independent). Was a 0514 RED arm (batch accepted, exit 99); GREEN on
-// HEAD.
-// defect: class=mode-divergence locus=crates/cranelisp-typecheck/src/checker.rs::reject_def_over_binding found=S102 owner=/dev
+// spec: spec/08-modules.md §8.6.4–§8.6.5 — reversing registration order
+// yields the same candidate set and ambiguous use.
 #[test]
 fn import_over_def_run_rejected() {
     let out = Cranelisp::new()
@@ -230,17 +175,15 @@ fn import_over_def_run_rejected() {
         )
         .run("main.cl")
         .output();
-    assert_batch_rejected(&out, 99);
+    assert_batch_use_ambiguous(&out, 99);
 }
 
 // =============================================================================
-// 2. NEGATIVE — def-over-explicit-import (glob shape) — NO glob exemption
+// 2. Glob imports are registration peers
 // =============================================================================
 
-// spec: spec/08-modules.md §8.6.4 — a `defn` over a name a GLOB import would
-// bring in is the SAME error (no glob-exemption). Was a 0514 RED arm (batch
-// accepted, exit 99); GREEN on HEAD.
-// defect: class=mode-divergence locus=crates/cranelisp-typecheck/src/checker.rs::reject_def_over_binding found=S102 owner=/dev
+// spec: spec/08-modules.md §8.6.4–§8.6.5 — glob and selective imports are
+// peers; the same compatible local candidate makes the call ambiguous.
 #[test]
 fn def_over_glob_import_run_rejected() {
     let out = Cranelisp::new()
@@ -254,17 +197,15 @@ fn def_over_glob_import_run_rejected() {
         )
         .run("main.cl")
         .output();
-    assert_batch_rejected(&out, 99);
+    assert_batch_use_ambiguous(&out, 99);
 }
 
 // =============================================================================
-// 3. NEGATIVE — def-over-export (§8.4.0 public brings into scope)
+// 3. Re-exported names are registration peers
 // =============================================================================
 
-// spec: spec/08-modules.md §8.4.0/§8.6.4 — a `defn` over an EXPORTED (public,
-// in-scope) name is the same error as over an imported one. The REPL leg was
-// the always-correct anchor of the 0514 cluster; GREEN on HEAD.
-// defect: class=mode-divergence locus=crates/cranelisp-typecheck/src/checker.rs::reject_def_over_binding found=S102 owner=/dev
+// spec: spec/08-modules.md §8.4.0/§8.6.4–§8.6.5 — a re-export and local
+// declaration both register; an equally compatible bare use is ambiguous.
 #[test]
 fn def_over_export_repl_rejected() {
     let out = Cranelisp::new()
@@ -277,13 +218,11 @@ fn def_over_export_repl_rejected() {
              (measure [1 2 3])\n",
         )
         .output();
-    assert_repl_rejected(&out, ":primitives/Int 99");
+    assert_repl_use_ambiguous(&out, ":primitives/Int 99");
 }
 
-// spec: spec/08-modules.md §8.4.0/§8.6.4 — the SAME export-collision rejection
-// MUST hold in `--run`. Was a 0514 RED arm (batch accepted, exit 99); GREEN on
-// HEAD.
-// defect: class=mode-divergence locus=crates/cranelisp-typecheck/src/checker.rs::reject_def_over_binding found=S102 owner=/dev
+// spec: spec/08-modules.md §8.4.0/§8.6.4–§8.6.5 — batch mode observes the
+// same re-export/local candidate ambiguity.
 #[test]
 fn def_over_export_run_rejected() {
     let out = Cranelisp::new()
@@ -297,19 +236,15 @@ fn def_over_export_run_rejected() {
         )
         .run("main.cl")
         .output();
-    assert_batch_rejected(&out, 99);
+    assert_batch_use_ambiguous(&out, 99);
 }
 
 // =============================================================================
-// 4. NEGATIVE — def-over-PRELUDE-name (the no-exception case)
+// 4. Prelude candidates are registration peers
 // =============================================================================
 
-// spec: spec/08-modules.md §8.6.4/§8.8.1 — the prelude is just an implicit
-// `(import [prelude [*]])`; a `defn` over a prelude-PROVIDED name is the same
-// compile-time error. Was a 0514 prelude-arm RED (the local def silently won
-// over the prelude — the outer scope was not checked); GREEN on HEAD after the
-// prelude-fallback arm landed at the shared seam. REPL leg.
-// defect: class=prelude-scope-miss locus=crates/cranelisp-typecheck/src/checker.rs::reject_def_over_binding found=S102 owner=/dev
+// spec: spec/08-modules.md §8.6.4/§8.8.1 — prelude and local candidates are
+// merged; neither silently shadows the other.
 #[test]
 fn def_over_prelude_repl_rejected() {
     let out = Cranelisp::new()
@@ -321,12 +256,10 @@ fn def_over_prelude_repl_rejected() {
              (gulp 10)\n",
         )
         .output();
-    assert_repl_rejected(&out, ":primitives/Int 110");
+    assert_repl_use_ambiguous(&out, ":primitives/Int 110");
 }
 
-// spec: spec/08-modules.md §8.6.4/§8.8.1 — def-over-prelude in `--run`.
-// Was a 0514 prelude-arm RED (the local def won, exit 105); GREEN on HEAD.
-// defect: class=prelude-scope-miss locus=crates/cranelisp-typecheck/src/checker.rs::reject_def_over_binding found=S102 owner=/dev
+// spec: spec/08-modules.md §8.6.4/§8.8.1 — the same merge holds in `--run`.
 #[test]
 fn def_over_prelude_run_rejected() {
     let out = Cranelisp::new()
@@ -338,12 +271,10 @@ fn def_over_prelude_run_rejected() {
         )
         .run("main.cl")
         .output();
-    assert_batch_rejected(&out, 105);
+    assert_batch_use_ambiguous(&out, 105);
 }
 
-// spec: spec/08-modules.md §8.6.4/§8.8.1 — def-over-prelude in `--link`.
-// Was a 0514 prelude-arm RED (the local def won, exit 105); GREEN on HEAD.
-// defect: class=prelude-scope-miss locus=crates/cranelisp-typecheck/src/checker.rs::reject_def_over_binding found=S102 owner=/dev
+// spec: spec/08-modules.md §8.6.4/§8.8.1 — the same merge holds in `--link`.
 #[test]
 fn def_over_prelude_link_rejected() {
     let out = Cranelisp::new()
@@ -355,21 +286,15 @@ fn def_over_prelude_link_rejected() {
         )
         .link_then_run("main.cl")
         .output();
-    assert_batch_rejected(&out, 105);
+    assert_batch_use_ambiguous(&out, 105);
 }
 
 // =============================================================================
-// 5. NEGATIVE — MODE-PARITY (the normative MUST: same rejection all 3 modes)
+// 5. Mode and registration-order parity
 // =============================================================================
 
-// spec: spec/08-modules.md §8.6.4 "Definition-Over-Import: Order-Independent,
-// All Modes" — "[S102 — mode-parity test owed: /qa to author a test asserting
-// the SAME rejection for one colliding binding set across REPL, --run, and
-// --link]". ONE binding set (def-over-import), asserted rejected identically
-// in all three modes. Was a 0514 RED (the REPL leg rejected, but `--run`/
-// `--link` accepted — that divergence was the defect); GREEN on HEAD, pinning
-// mode parity through the fix.
-// defect: class=mode-divergence locus=crates/cranelisp-typecheck/src/checker.rs::reject_def_over_binding found=S102 owner=/dev
+// spec: spec/08-modules.md §8.6.4–§8.6.5 — one candidate set produces the
+// same use-site ambiguity in REPL, `--run`, and `--link`.
 #[test]
 fn mode_parity_def_over_import_same_rejection_all_modes() {
     // REPL leg.
@@ -384,12 +309,12 @@ fn mode_parity_def_over_import_same_rejection_all_modes() {
         )
         .output();
     assert!(
-        has_collision_diagnostic(&repl),
-        "REPL leg MUST reject the def-over-import; {}",
+        has_ambiguity_diagnostic(&repl),
+        "REPL leg must report the ambiguous use; {}",
         combined(&repl)
     );
 
-    // --run leg — MUST reject identically.
+    // --run leg — same use-site result.
     let run = Cranelisp::new()
         .prelude(PRELUDE_PRIMS)
         .file("util.cl", "(defn measure [v] (vec-len v))\n")
@@ -402,13 +327,12 @@ fn mode_parity_def_over_import_same_rejection_all_modes() {
         .run("main.cl")
         .output();
     assert!(
-        has_collision_diagnostic(&run),
-        "--run leg MUST reject the def-over-import identically to REPL \
-         (mode-parity §8.6.4 is normative); {}",
+        has_ambiguity_diagnostic(&run),
+        "--run leg must report the same ambiguity as REPL; {}",
         combined(&run)
     );
 
-    // --link leg — MUST reject identically.
+    // --link leg — same use-site result.
     let link = Cranelisp::new()
         .prelude(PRELUDE_PRIMS)
         .file("util.cl", "(defn measure [v] (vec-len v))\n")
@@ -421,32 +345,17 @@ fn mode_parity_def_over_import_same_rejection_all_modes() {
         .link_then_run("main.cl")
         .output();
     assert!(
-        has_collision_diagnostic(&link),
-        "--link leg MUST reject the def-over-import identically to REPL \
-         (mode-parity §8.6.4 is normative); {}",
+        has_ambiguity_diagnostic(&link),
+        "--link leg must report the same ambiguity as REPL; {}",
         combined(&link)
     );
 }
 
-// spec: spec/08-modules.md §8.6.4 "Definition-Over-Import: Order-Independent,
-// All Modes" — the #8 residual mode-divergence (FIXME 0516 Issue 2). The
-// SYMMETRIC companion of def-over-import: an `import` (or `export`) that brings
-// a bare name already bound by a LOCAL `def` in the current module MUST be
-// rejected identically — order-independent, all modes. Batch (same cluster)
-// already rejects it; the REPL, when the `import` arrives in a SEPARATE later
-// turn than the `def`, does NOT — no def is registered in the import's cluster,
-// so the def-registration seam never fires and the import installer skips.
-// That REPL/batch divergence IS the #8 hole; this test pins it.
-//
-// Was a 0516-Issue-2 RED (the batch leg rejected, but the REPL separate-turn
-// leg accepted the turn-2 import silently over the turn-1 def); GREEN on HEAD
-// after the fix rejected an import/export whose bare name already resolves to a
-// local `Def`, extended to the cross-cluster REPL case.
-// defect: class=mode-divergence locus=crates/cranelisp-typecheck/src/checker.rs::reject_def_over_binding found=S102 owner=/dev
+// spec: spec/08-modules.md §8.6.4–§8.6.5 — reversing arrival order, including
+// separate REPL turns, preserves both candidates and the same ambiguous use.
 #[test]
 fn import_over_def_repl_separate_turn_rejected() {
-    // Batch leg (import-over-def, single cluster) — GREEN anchor: already
-    // rejected. Establishes the shape the REPL leg must match.
+    // Batch leg (import-over-def, single cluster).
     let batch = Cranelisp::new()
         .prelude(PRELUDE_PRIMS)
         .file("util.cl", "(defn measure [v] (vec-len v))\n")
@@ -459,13 +368,12 @@ fn import_over_def_repl_separate_turn_rejected() {
         .run("main.cl")
         .output();
     assert!(
-        has_collision_diagnostic(&batch),
-        "batch leg MUST reject the import-over-def (§8.6.4 is order-independent); {}",
+        has_ambiguity_diagnostic(&batch),
+        "batch leg must report the ambiguous use; {}",
         combined(&batch)
     );
 
-    // REPL leg — the def in turn 1, the import in a SEPARATE later turn. MUST
-    // reject with mode-parity. RED today: the #8 hole silently accepts it.
+    // REPL leg — the def and import arrive in separate turns.
     let repl = Cranelisp::new()
         .repl()
         .with_prelude(PreludeVariant::PrimitivesOnly)
@@ -477,9 +385,8 @@ fn import_over_def_repl_separate_turn_rejected() {
         )
         .output();
     assert!(
-        has_collision_diagnostic(&repl),
-        "REPL separate-turn import-over-def MUST reject with mode-parity to \
-         batch (§8.6.4 all-modes; FIXME 0516 Issue 2 — the #8 residual); {}",
+        has_ambiguity_diagnostic(&repl),
+        "REPL separate-turn import-over-def must report the same ambiguity; {}",
         combined(&repl)
     );
 }
@@ -591,32 +498,19 @@ fn lexical_fn_param_of_prelude_name_allowed() {
 }
 
 // =============================================================================
-// 7. NEGATIVE — the forgotten-fallback definition forms (PLAN.md §II R2–R8)
+// 7. Syntactic-role filtering across declaration kinds
 //
-// §8.6.4 lists `deftrait`, `defmacro`, and the private `-` variants alongside
-// `defn`/`deftype` as definition forms that MUST be rejected over a name in
-// scope — INCLUDING a prelude-provided name (§8.8.1: the prelude is just an
-// implicit `(import [prelude [*]])`). The `defn`/`deftype` legs land through the
-// §8.6.4 seam (`reject_def_over_binding`); `deftrait` (trait name AND method
-// names) and `defmacro` bypass it. These rows are the acceptance spec for the
-// resolution convergence [S109]: every definition form routes through the ONE
-// §8.6.4 seam so no form can silently register over an in-scope name.
-//
-// Twin shape: where a row has an explicit-import companion (R2↔control,
-// R4↔R5, R6↔R7), the two arms differ ONLY in the contested name's provenance
-// (explicit `(import [prelude [X]])` vs implicit prelude) and MUST reject
-// identically. `defmacro`/trait-method miss the seam on BOTH arms, so both are
-// RED; `deftrait` over an explicit import is caught by the trait registry's
-// duplicate check today, so THAT arm is a GREEN control.
+// Trait, macro, trait-method, and ordinary value candidates may share an
+// unqualified spelling. Registration succeeds. A syntactic role that leaves
+// exactly one candidate selects it before HM filtering; explicit qualification
+// still reaches the other canonical declaration.
 // =============================================================================
 
-// spec: spec/08-modules.md §8.6.4 — a `deftrait` whose name is already in scope
-// via an EXPLICIT import is a compile-time error. GREEN control: the trait
-// registry's duplicate-name check rejects it today (`trait Show already
-// defined`). Twin companion of the prelude-arm row below.
+// spec: spec/08-modules.md §8.6.4 — explicit-import and local trait candidates
+// with distinct canonical identities both register.
 #[test]
 fn deftrait_over_explicitly_imported_trait_rejected_neg() {
-    let out = Cranelisp::new()
+    Cranelisp::new()
         .prelude(PRELUDE_SHOW)
         .file(
             "main.cl",
@@ -625,20 +519,15 @@ fn deftrait_over_explicitly_imported_trait_rejected_neg() {
              (defn main [] (Pure 0))\n",
         )
         .run("main.cl")
-        .output();
-    assert_def_conflict_rejected(&out, 0);
+        .output()
+        .assert_exit(0);
 }
 
-// spec: spec/08-modules.md §8.6.4/§8.8.1 — a `deftrait` whose name a loaded
-// prelude PROVIDES is the SAME compile-time error as over an explicit import.
-// RED signal (R2): today the local `deftrait Show` silently registers
-// `user/Show` over the prelude's `Show` (probed REPL + --run 2026-07-12); the
-// trait registry's duplicate check is current-module-only and
-// `TopLevel::TraitDecl` skips `reject_def_over_binding`.
-// defect: class=prelude-scope-miss locus=crates/cranelisp-typecheck/src/traits/registry.rs::register_trait_decl (lookup_trait_decl_with_state is current-module-only; TopLevel::TraitDecl skips reject_def_over_binding) found=S108 owner=/dev
+// spec: spec/08-modules.md §8.6.4/§8.8.1 — implicit-prelude and local
+// trait candidates follow the same registration rule.
 #[test]
 fn deftrait_over_prelude_provided_trait_rejected_neg() {
-    let out = Cranelisp::new()
+    Cranelisp::new()
         .prelude(PRELUDE_SHOW)
         .file(
             "main.cl",
@@ -646,31 +535,29 @@ fn deftrait_over_prelude_provided_trait_rejected_neg() {
              (defn main [] (Pure 0))\n",
         )
         .run("main.cl")
-        .output();
-    assert_def_conflict_rejected(&out, 0);
+        .output()
+        .assert_exit(0);
 }
 
-// spec: spec/08-modules.md §8.6.4 — mode parity for the deftrait-over-prelude
-// rejection: it MUST be identical in REPL, `--run`, and `--link` (the §8.6.4
-// all-modes MUST). RED signal (R3): all three legs SILENTLY ACCEPT today, so
-// the gap is mode-uniform — this pins parity through the convergence fix.
-// defect: class=prelude-scope-miss locus=crates/cranelisp-typecheck/src/traits/registry.rs::register_trait_decl (deftrait bypasses the §8.6.4 seam in every mode) found=S108 owner=/dev
+// spec: spec/08-modules.md §8.6.4 — trait candidate registration has mode
+// parity across REPL, `--run`, and `--link`.
 #[test]
 fn deftrait_over_prelude_mode_parity_all_modes() {
-    // REPL leg — MUST reject the deftrait-over-prelude.
+    // REPL leg — registration is accepted and identifies the local trait.
     let repl = Cranelisp::new()
         .repl()
         .prelude(PRELUDE_SHOW)
         .stdin("(deftrait Show (shw2 [x] Int))\n")
         .output();
     assert!(
-        has_def_conflict_diagnostic(&repl),
-        "REPL leg MUST reject the deftrait-over-prelude (§8.6.4 all-modes); {}",
+        repl.stdout.contains(":user/Show ; deftrait"),
+        "REPL must register the local canonical trait without replacing the \
+         prelude candidate; {}",
         combined(&repl)
     );
 
-    // --run leg — MUST reject identically.
-    let run = Cranelisp::new()
+    // --run and --link accept the same declaration set.
+    Cranelisp::new()
         .prelude(PRELUDE_SHOW)
         .file(
             "main.cl",
@@ -678,16 +565,10 @@ fn deftrait_over_prelude_mode_parity_all_modes() {
              (defn main [] (Pure 0))\n",
         )
         .run("main.cl")
-        .output();
-    assert!(
-        has_def_conflict_diagnostic(&run),
-        "--run leg MUST reject the deftrait-over-prelude identically to REPL \
-         (mode-parity §8.6.4 is normative); {}",
-        combined(&run)
-    );
+        .output()
+        .assert_exit(0);
 
-    // --link leg — MUST reject identically.
-    let link = Cranelisp::new()
+    Cranelisp::new()
         .prelude(PRELUDE_SHOW)
         .file(
             "main.cl",
@@ -695,66 +576,49 @@ fn deftrait_over_prelude_mode_parity_all_modes() {
              (defn main [] (Pure 0))\n",
         )
         .link_then_run("main.cl")
-        .output();
-    assert!(
-        has_def_conflict_diagnostic(&link),
-        "--link leg MUST reject the deftrait-over-prelude identically to REPL \
-         (mode-parity §8.6.4 is normative); {}",
-        combined(&link)
-    );
+        .output()
+        .assert_exit(0);
 }
 
-// spec: spec/08-modules.md §8.6.4/§8.8.1 — a `defmacro` over a PRELUDE-provided
-// name is the same compile-time error. RED signal (R4): today it is silently
-// accepted AND the identity macro WINS at expansion — bare `(gulp 3)` expands
-// to `3` (exit 3) instead of the prelude `gulp`'s `(+1)` = 4. The macro
-// registration never consults the §8.6.4 seam.
-// defect: class=silent-accept locus=src/expander.rs (macro registration never consults the §8.6.4 reject_def_over_binding seam) found=S108 owner=/dev
+// spec: spec/08-modules.md §8.6.4–§8.6.6 — a local macro and prelude
+// function both register. Macro-head syntax selects the macro; qualification
+// selects the prelude function.
 #[test]
 fn defmacro_over_prelude_provided_name_rejected_neg() {
-    let out = Cranelisp::new()
+    Cranelisp::new()
         .prelude(PRELUDE_GULP)
         .file(
             "main.cl",
             "(defmacro gulp [x] x)\n\
-             (defn main [] (Pure (gulp 3)))\n",
+             (defn main [] (Pure (add-i64 (gulp 3) (prelude/gulp 3))))\n",
         )
         .run("main.cl")
-        .output();
-    // The identity macro must NOT silently win (would expand `(gulp 3)` -> 3).
-    assert_def_conflict_rejected(&out, 3);
+        .output()
+        .assert_exit(7);
 }
 
-// spec: spec/08-modules.md §8.6.4 — the EXPLICIT-import arm of R4: `(import
-// [prelude [gulp]])` + `(defmacro gulp …)` MUST be rejected. RED signal (R5):
-// accepted today — `defmacro` misses the §8.6.4 seam on BOTH arms, not only the
-// prelude one (the identity macro wins, exit 3).
-// defect: class=silent-accept locus=src/expander.rs (macro registration never consults the §8.6.4 reject_def_over_binding seam) found=S108 owner=/dev
+// spec: spec/08-modules.md §8.6.4–§8.6.6 — the same role filtering holds
+// when the function candidate was imported explicitly.
 #[test]
 fn defmacro_over_explicit_import_rejected_neg() {
-    let out = Cranelisp::new()
+    Cranelisp::new()
         .prelude(PRELUDE_GULP)
         .file(
             "main.cl",
             "(import [prelude [gulp Pure add-i64]])\n\
              (defmacro gulp [x] x)\n\
-             (defn main [] (Pure (gulp 3)))\n",
+             (defn main [] (Pure (add-i64 (gulp 3) (prelude/gulp 3))))\n",
         )
         .run("main.cl")
-        .output();
-    assert_def_conflict_rejected(&out, 3);
+        .output()
+        .assert_exit(7);
 }
 
-// spec: spec/08-modules.md §8.6.4 — a `deftrait` METHOD name contesting an
-// in-scope name is a definition over a name in scope (a trait method is a fresh
-// module-scope binding with a fresh terminal — it can never dedup). A
-// `(deftrait Zork (gulp …))` under a prelude providing `gulp` MUST be rejected.
-// RED signal (R6): silently accepted today (exit 0); `register_trait_method`
-// has no §8.6.4 seam.
-// defect: class=silent-accept locus=crates/cranelisp-typecheck/src/traits/registry.rs::register_trait_method (no §8.6.4 seam) found=S108 owner=/dev
+// spec: spec/08-modules.md §8.6.4 — a trait method and prelude function may
+// expose the same spelling as distinct canonical candidates.
 #[test]
 fn deftrait_method_name_over_prelude_provided_name_rejected_neg() {
-    let out = Cranelisp::new()
+    Cranelisp::new()
         .prelude(PRELUDE_GULP)
         .file(
             "main.cl",
@@ -762,17 +626,15 @@ fn deftrait_method_name_over_prelude_provided_name_rejected_neg() {
              (defn main [] (Pure 0))\n",
         )
         .run("main.cl")
-        .output();
-    assert_def_conflict_rejected(&out, 0);
+        .output()
+        .assert_exit(0);
 }
 
-// spec: spec/08-modules.md §8.6.4 — the EXPLICIT-import arm of R6: `(import
-// [prelude [gulp]])` + `(deftrait Zork (gulp …))` MUST be rejected. RED signal
-// (R7): accepted today — the trait-method seam misses on BOTH arms (exit 0).
-// defect: class=silent-accept locus=crates/cranelisp-typecheck/src/traits/registry.rs::register_trait_method (no §8.6.4 seam) found=S108 owner=/dev
+// spec: spec/08-modules.md §8.6.4 — the same trait-method registration rule
+// holds for an explicitly imported function candidate.
 #[test]
 fn deftrait_method_name_over_explicit_import_rejected_neg() {
-    let out = Cranelisp::new()
+    Cranelisp::new()
         .prelude(PRELUDE_GULP)
         .file(
             "main.cl",
@@ -781,19 +643,15 @@ fn deftrait_method_name_over_explicit_import_rejected_neg() {
              (defn main [] (Pure 0))\n",
         )
         .run("main.cl")
-        .output();
-    assert_def_conflict_rejected(&out, 0);
+        .output()
+        .assert_exit(0);
 }
 
-// spec: spec/08-modules.md §8.6.4 (order-independence, symmetric direction) — an
-// `import` whose bare name is already bound by a LOCAL `deftrait` MUST be
-// rejected symmetrically. GREEN (reconciliation): probed RED-expected but is
-// REJECTED today — the trait registry's duplicate-name check fires when the
-// import brings a second `Show` alongside the local trait (`trait Show already
-// defined`). Kept as a pin; the symmetric-macro sibling below is RED.
+// spec: spec/08-modules.md §8.6.4 — registration remains order-independent
+// when the local trait precedes the imported trait.
 #[test]
 fn import_over_local_deftrait_rejected_neg() {
-    let out = Cranelisp::new()
+    Cranelisp::new()
         .prelude(PRELUDE_SHOW)
         .file(
             "main.cl",
@@ -802,48 +660,37 @@ fn import_over_local_deftrait_rejected_neg() {
              (defn main [] (Pure 0))\n",
         )
         .run("main.cl")
-        .output();
-    assert_def_conflict_rejected(&out, 0);
+        .output()
+        .assert_exit(0);
 }
 
-// spec: spec/08-modules.md §8.6.4 (order-independence, symmetric direction) — an
-// `import` whose bare name is already bound by a LOCAL `defmacro` MUST be
-// rejected symmetrically (the later-arriving import is the rejected form). RED
-// signal (R8, macro leg): accepted today — the import-over-local §8.6.4
-// predicate reads `Def` entries; the local macro binding is invisible to it, so
-// the identity macro wins (exit 3).
-// defect: class=silent-accept locus=src/expander.rs (local macro binding invisible to the import-over-local §8.6.4 predicate) found=S108 owner=/dev
+// spec: spec/08-modules.md §8.6.4–§8.6.6 — registration remains
+// order-independent when the local macro precedes the imported function;
+// syntactic role and qualification still select the two candidates.
 #[test]
 fn import_over_local_defmacro_rejected_neg() {
-    let out = Cranelisp::new()
+    Cranelisp::new()
         .prelude(PRELUDE_GULP)
         .file(
             "main.cl",
             "(defmacro gulp [x] x)\n\
-             (import [prelude [gulp Pure]])\n\
-             (defn main [] (Pure (gulp 3)))\n",
+             (import [prelude [gulp Pure add-i64]])\n\
+             (defn main [] (Pure (add-i64 (gulp 3) (prelude/gulp 3))))\n",
         )
         .run("main.cl")
-        .output();
-    assert_def_conflict_rejected(&out, 3);
+        .output()
+        .assert_exit(7);
 }
 
 // =============================================================================
-// 8. NEGATIVE — the landed def-over-prelude legs, pinned (PLAN.md §III G7–G8)
-//
-// The `defn` leg of def-over-prelude is pinned above (§4); these pin the
-// `deftype` and private `defn-` legs, which route through the same §8.6.4 seam
-// and reject with the landed `conflicts with '<name>' already in scope via the
-// implicit prelude` diagnostic. GREEN today; they guard the convergence refactor
-// (behaviour preservation) and make the NEXT forgotten-fallback site fail loud.
+// 8. Type and private-definition candidates
 // =============================================================================
 
-// spec: spec/08-modules.md §8.6.4 — a `deftype` over a prelude-provided TYPE
-// name is the §8.6.4 def-over-name-in-scope error, exactly as the `defn` leg.
-// GREEN (probed): rejected with the implicit-prelude conflict diagnostic.
+// spec: spec/08-modules.md §8.6.4 — local and prelude type candidates with
+// distinct canonical identities both register.
 #[test]
 fn deftype_over_prelude_provided_type_rejected_neg() {
-    let out = Cranelisp::new()
+    Cranelisp::new()
         .prelude(PRELUDE_ZED)
         .file(
             "main.cl",
@@ -851,20 +698,12 @@ fn deftype_over_prelude_provided_type_rejected_neg() {
              (defn main [] (Pure 0))\n",
         )
         .run("main.cl")
-        .output();
-    assert_def_conflict_rejected(&out, 0);
-    // Pin the landed §8.6.4 wording (behaviour-preservation for the convergence).
-    assert!(
-        combined(&out).to_lowercase().contains("conflict"),
-        "the deftype-over-prelude rejection MUST carry the §8.6.4 conflict \
-         wording; {}",
-        combined(&out)
-    );
+        .output()
+        .assert_exit(0);
 }
 
-// spec: spec/08-modules.md §8.6.4/§8.7.2 — the PRIVATE variant: a `defn-` over a
-// prelude-provided name is the SAME rejection (visibility of the definition does
-// not exempt it). GREEN (probed): rejected with the §8.6.4 conflict diagnostic.
+// spec: spec/08-modules.md §8.6.4/§8.7.2 — private visibility does not give a
+// local candidate precedence over an equally compatible prelude candidate.
 #[test]
 fn private_defn_over_prelude_provided_name_rejected_neg() {
     let out = Cranelisp::new()
@@ -876,11 +715,12 @@ fn private_defn_over_prelude_provided_name_rejected_neg() {
         )
         .run("main.cl")
         .output();
-    // The private local `gulp` = (+100); (gulp 5) = 105 if it silently won.
-    assert_def_conflict_rejected(&out, 105);
+    let c = combined(&out);
     assert!(
-        combined(&out).to_lowercase().contains("conflict"),
-        "the defn-over-prelude rejection MUST carry the §8.6.4 conflict wording; {}",
-        combined(&out)
+        c.contains("ambiguous bare name 'gulp'")
+            && c.contains("main/gulp")
+            && c.contains("prelude/gulp"),
+        "the unresolved bare call must list both canonical candidates; {c}"
     );
+    assert!(!out.stdout.contains(":primitives/Int 105"));
 }

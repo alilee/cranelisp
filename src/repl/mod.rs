@@ -13,12 +13,10 @@ pub(crate) mod search;
 pub(crate) use std::io::Write;
 
 pub(crate) use cranelisp_types::{
-    CranelispError, DefKind, ErrorLocation, FQSymbol, FQTraitName, FQTypeName, MacroClauseInfo,
-    MacroParam, ModuleEntry, ModuleFullPath, OverloadVariant, Scheme, Sexp, Span, Symbol, TopLevel,
-    TraitName, Type, TypeName,
+    Binding, CallableOrigin, CranelispError, Decl, ErrorLocation, FQSymbol, FQTraitName,
+    FQTypeName, MacroClause, MacroParam, ModuleFullPath, OverloadArm, Scheme, Sexp, Span, Symbol,
+    TopLevel, TraitName, Type, TypeName, TypeRecord,
 };
-
-pub(crate) use cranelisp_typecheck::CheckState;
 
 pub(crate) use crate::code::{Code, SessionSymbolTable};
 pub(crate) use crate::display::format_type_qualified;
@@ -28,10 +26,53 @@ pub(crate) use crate::session_v4::{
     is_comment_only, parens_balanced, run_test_by_name,
 };
 pub(crate) use crate::styled::{Role, StyledDoc, render};
-pub(crate) use crate::worker::ModuleCompiler;
-
-use format::*;
 use format_type::*;
+
+/// Resolve the sole public terminal exposed under `name` in `module`.
+///
+/// Visibility belongs to the local exposure, so filter candidates before
+/// deciding uniqueness. `NameCandidate::source` is already terminal by the
+/// symbol-table/import invariant; the final read is therefore one keyed lookup.
+fn resolve_unique_public_terminal(
+    tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    module: &ModuleFullPath,
+    name: &str,
+) -> Option<(Binding<crate::code::Code>, ModuleFullPath)> {
+    resolve_unique_terminal_with_key(tables, module, name, true)
+        .map(|(binding, canonical)| (binding, canonical.module))
+}
+
+/// Resolve one terminal candidate while retaining its canonical storage key.
+/// Display-only `EvalResult::Def` uses this keyed form: after candidate-based
+/// lookup, a local spelling such as `+` may resolve to `Num.+`, and reducing
+/// that result back to only `(binding, module)` loses the key needed by the
+/// later formatter.
+fn resolve_unique_terminal_with_key(
+    tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    module: &ModuleFullPath,
+    name: &str,
+    public_only: bool,
+) -> Option<(Binding<crate::code::Code>, FQSymbol)> {
+    let source = {
+        let table = tables.get(module)?;
+        let mut candidates = table
+            .name_candidates(&Symbol::from(name))
+            .into_iter()
+            .filter(|candidate| {
+                !public_only || candidate.visibility == cranelisp_types::Visibility::Public
+            });
+        let candidate = candidates.next()?;
+        if candidates.next().is_some() {
+            return None;
+        }
+        candidate.source
+    };
+    let binding = tables
+        .get(&source.module)?
+        .get(source.symbol.as_ref())?
+        .clone();
+    Some((binding, source))
+}
 
 // ---------------------------------------------------------------------------
 // Slash command types + top-level display free functions (relocated)
@@ -584,7 +625,7 @@ impl CompilerSession {
     pub(crate) fn lookup_with_prelude_fallback(
         &self,
         name: &str,
-    ) -> Option<(ModuleEntry<Code>, ModuleFullPath)> {
+    ) -> Option<(Binding<Code>, ModuleFullPath)> {
         self.lookup_with_prelude_fallback_opt(name, true)
     }
 
@@ -606,10 +647,24 @@ impl CompilerSession {
         &self,
         name: &str,
         root: bool,
-    ) -> Option<(ModuleEntry<Code>, ModuleFullPath)> {
+    ) -> Option<(Binding<Code>, ModuleFullPath)> {
+        self.lookup_with_prelude_fallback_resolved_opt(name, root)
+            .map(|(binding, canonical)| (binding, canonical.module))
+    }
+
+    /// Candidate lookup retaining the terminal storage identity. The binding
+    /// and canonical key travel together so a caller never has to re-resolve a
+    /// potentially ambiguous local spelling later.
+    pub(crate) fn lookup_with_prelude_fallback_resolved_opt(
+        &self,
+        name: &str,
+        root: bool,
+    ) -> Option<(Binding<Code>, FQSymbol)> {
         let module = self.current_module_path();
-        if let Some(e) = self.current_symbol_table().get(name) {
-            return Some((e.clone(), module));
+        if let Some(resolved) =
+            resolve_unique_terminal_with_key(&self.shared.symbol_tables, &module, name, false)
+        {
+            return Some(resolved);
         }
         let prelude_path = ModuleFullPath::from("prelude");
         // Prelude outer-scope hop (S78 §2.7) — a bare prelude-provided name not
@@ -632,14 +687,14 @@ impl CompilerSession {
             // tier when `root`, else `None`. (The resolution-side terminal-vs-
             // head filter is the separate FIXME 0567, cranelisp-types.)
             if on
-                && let Some(e) = self
-                    .shared
-                    .symbol_tables
-                    .get(&prelude_path)
-                    .and_then(|t| t.get(name).cloned())
-                && e.is_public()
+                && let Some(resolved) = resolve_unique_terminal_with_key(
+                    &self.shared.symbol_tables,
+                    &prelude_path,
+                    name,
+                    true,
+                )
             {
-                return Some((e, prelude_path));
+                return Some(resolved);
             }
         }
         if !root {
@@ -652,13 +707,19 @@ impl CompilerSession {
         // global, independent of the prelude bit.
         let root_path = ModuleFullPath::from("");
         if module != root_path
-            && let Some(e) = self
-                .shared
-                .symbol_tables
-                .get(&root_path)
-                .and_then(|t| t.get(name).cloned())
+            && let Some((entry, home)) = cranelisp_types::resolve_terminal_entry_and_home(
+                &self.shared.symbol_tables,
+                &root_path,
+                name,
+            )
         {
-            return Some((e, root_path));
+            return Some((
+                entry,
+                FQSymbol {
+                    module: home,
+                    symbol: Symbol::from(name),
+                },
+            ));
         }
         None
     }
@@ -679,6 +740,7 @@ impl CompilerSession {
             Some((module_part, bare)) => {
                 let resolved = cranelisp_types::substitute_module_alias(
                     &self.shared.module_aliases,
+                    &self.current_module_path(),
                     &ModuleFullPath::from(module_part),
                 );
                 (resolved, bare.to_string())
@@ -696,11 +758,15 @@ impl CompilerSession {
     pub(crate) fn resolve_entry_arg(
         &self,
         name: &str,
-    ) -> Option<(ModuleEntry<Code>, ModuleFullPath, String)> {
+    ) -> Option<(Binding<Code>, ModuleFullPath, String)> {
         if name.contains('/') {
             let (home, bare) = self.resolve_symbol_arg(name);
-            let entry = self.shared.symbol_tables.get(&home)?.get(&bare)?.clone();
-            Some((entry, home, bare))
+            let (entry, resolved_home) = cranelisp_types::resolve_terminal_entry_and_home(
+                &self.shared.symbol_tables,
+                &home,
+                &bare,
+            )?;
+            Some((entry, resolved_home, bare))
         } else {
             let (entry, module) = self.lookup_with_prelude_fallback(name)?;
             Some((entry, module, name.to_string()))
@@ -748,12 +814,8 @@ impl CompilerSession {
     pub fn lookup_special_form(&self, name: &str) -> Option<(Scheme, String)> {
         let root = ModuleFullPath::from("");
         let table = self.shared.symbol_tables.get(&root)?;
-        match table.get(name)? {
-            ModuleEntry::SpecialForm {
-                scheme,
-                description,
-                ..
-            } => Some((scheme.clone(), description.clone())),
+        match &table.get(name)?.declaration {
+            Decl::SpecialForm(record) => Some((record.scheme.clone(), record.description.clone())),
             _ => None,
         }
     }
@@ -820,7 +882,10 @@ impl CompilerSession {
 pub(crate) mod test_support {
     use super::*;
     use crate::session_v4::{RunMode, SessionSettings};
-    use cranelisp_types::{CodegenBehaviour, UserFnState, Visibility};
+    use cranelisp_types::{
+        Binding, CallableArmDraft, CallableOrigin, CodegenBehaviour, Decl, DefnVariant, Expr,
+        MacroClauseDraft, MacroParam, Realization, Sexp, TraitRecord, Visibility, WrittenTraitImpl,
+    };
     use std::collections::HashMap as StdHashMap;
     pub(crate) fn session() -> CompilerSession {
         let tmp = tempfile::tempdir().unwrap();
@@ -832,7 +897,7 @@ pub(crate) mod test_support {
             nice_workers: 1,
             run_mode: RunMode::Repl,
         };
-        CompilerSession::new(settings, tmp.keep(), "user")
+        CompilerSession::new(settings, tmp.keep(), "user").expect("test session bootstrap")
     }
     pub(crate) fn int_fn_scheme() -> Scheme {
         Scheme {
@@ -841,32 +906,134 @@ pub(crate) mod test_support {
             ty: Type::Fn(vec![Type::Int], Box::new(Type::Int)),
         }
     }
-    pub(crate) fn userfn_def(doc: Option<&str>) -> ModuleEntry<Code> {
-        ModuleEntry::Def {
-            scheme: int_fn_scheme(),
-            visibility: Visibility::Public,
-            docstring: doc.map(|s| s.to_string()),
-            param_names: vec![Symbol::from("x")],
-            kind: Box::new(DefKind::UserFn {
-                fn_state: UserFnState::Concrete {
-                    got_slot: 0,
+    pub(crate) fn install_userfn(
+        table: &mut SessionSymbolTable,
+        name: &str,
+        doc: Option<&str>,
+        visibility: Visibility,
+    ) -> Binding<Code> {
+        install_userfn_with_callees(table, name, doc, visibility, Vec::new())
+    }
+
+    pub(crate) fn install_userfn_with_callees(
+        table: &mut SessionSymbolTable,
+        name: &str,
+        doc: Option<&str>,
+        visibility: Visibility,
+        callees: Vec<cranelisp_types::FQSymbol>,
+    ) -> Binding<Code> {
+        let name = Symbol::from(name);
+        let variant = DefnVariant {
+            params: vec![(Symbol::from("x"), None)],
+            body: Expr::IntLit {
+                value: 0,
+                span: Span::SYNTHETIC,
+                inferred_type: None,
+            },
+            span: Span::SYNTHETIC,
+        };
+        let view = cranelisp_types::MonoDefnVariant {
+            name: name.clone(),
+            params: vec![Symbol::from("x")],
+            body: cranelisp_types::MonoExpr::lenient_from_expr(
+                &variant.body,
+                &Default::default(),
+                &Default::default(),
+                &Default::default(),
+            ),
+            span: Span::SYNTHETIC,
+            mode_summary: None,
+        };
+        table
+            .install_concrete(
+                name.clone(),
+                int_fn_scheme(),
+                vec![Symbol::from("x")],
+                doc.map(str::to_owned),
+                0,
+                CallableOrigin::Plain,
+                Realization::Body { view, code: None },
+                Some(variant),
+                callees,
+                visibility,
+            )
+            .expect("user-function fixture installs");
+        table
+            .get(name.as_ref())
+            .cloned()
+            .expect("installed user-function fixture is readable")
+    }
+
+    pub(crate) fn install_macro_fixture(
+        table: &mut SessionSymbolTable,
+        name: &str,
+        macro_sexp: Sexp,
+        clauses: Vec<Vec<MacroParam>>,
+        visibility: Visibility,
+    ) -> Binding<Code> {
+        let drafts = clauses
+            .into_iter()
+            .enumerate()
+            .map(|(ordinal, params)| {
+                let private_name = Symbol::from(format!("{name}__macro_clause{ordinal}"));
+                let variant = DefnVariant {
+                    params: Vec::new(),
+                    body: Expr::IntLit {
+                        value: 0,
+                        span: Span::SYNTHETIC,
+                        inferred_type: Some(Box::new(Type::Int)),
+                    },
+                    span: Span::SYNTHETIC,
+                };
+                let view = cranelisp_types::MonoDefnVariant {
+                    name: private_name,
+                    params: Vec::new(),
+                    body: cranelisp_types::MonoExpr::lenient_from_expr(
+                        &variant.body,
+                        &Default::default(),
+                        &Default::default(),
+                        &Default::default(),
+                    ),
+                    span: Span::SYNTHETIC,
                     mode_summary: None,
-                },
-            }),
-            callees: Vec::new(),
-            trait_origin: None,
-            seq: 0,
-            ast: None,
-            codegen_view: None,
-            code: None,
-            value_use: false,
-        }
+                };
+                MacroClauseDraft::new(
+                    params,
+                    None,
+                    CallableArmDraft::concrete_body(
+                        Scheme {
+                            type_vars: Vec::new(),
+                            constraints: StdHashMap::new(),
+                            ty: Type::Int,
+                        },
+                        Vec::new(),
+                        variant,
+                        view,
+                        Vec::new(),
+                    ),
+                )
+            })
+            .collect();
+        table
+            .install_macro(
+                Symbol::from(name),
+                None,
+                0,
+                macro_sexp,
+                drafts,
+                visibility,
+            )
+            .expect("macro fixture installs through the family funnel");
+        table
+            .get(name)
+            .cloned()
+            .expect("installed macro fixture is readable")
     }
     /// Install module `m` with a single Def `mf`.
     pub(crate) fn install_m(s: &CompilerSession, doc: Option<&str>) {
         let m = ModuleFullPath::from("m");
         let mut table = SessionSymbolTable::new_with_params(m.clone());
-        table.insert(Symbol::from("mf"), userfn_def(doc));
+        let _ = install_userfn(&mut table, "mf", doc, Visibility::Public);
         s.shared.symbol_tables.insert(m, table);
     }
     /// Install a nullary constructor `Red` of the multi-ctor sum type
@@ -874,7 +1041,7 @@ pub(crate) mod test_support {
     /// canonical dotted key `Color.Red` (the terminal ctor `Def`) and the bare
     /// alias `Red` (an `Import` edge), mirroring how the typechecker registers a
     /// sum ctor. Returns the terminal ctor `Def` entry.
-    pub(crate) fn install_color_red(s: &CompilerSession) -> ModuleEntry<Code> {
+    pub(crate) fn install_color_red(s: &CompilerSession) -> Binding<Code> {
         use cranelisp_types::{FQTypeName, TypeDefInfo, TypeName};
         let user = s.current_module_path();
         let fqtn = FQTypeName::new(user.clone(), TypeName::from("Color"));
@@ -889,113 +1056,150 @@ pub(crate) mod test_support {
                 Symbol::from("Blue"),
             ],
         };
-        let ctor = ModuleEntry::def(
-            Scheme {
-                type_vars: Vec::new(),
-                constraints: StdHashMap::new(),
-                ty: Type::ADT(fqtn.clone(), Vec::new()),
+        let scheme = Scheme {
+            type_vars: Vec::new(),
+            constraints: StdHashMap::new(),
+            ty: Type::ADT(fqtn.clone(), Vec::new()),
+        };
+        let variant = DefnVariant {
+            params: Vec::new(),
+            body: Expr::IntLit {
+                value: 0,
+                span: Span::SYNTHETIC,
+                inferred_type: None,
             },
-            DefKind::Constructor {
-                got_slot: 0,
-                type_name: fqtn,
-                tag: 0,
-                field_count: 0,
-                internal: false,
-                type_def: Some(Box::new(info)),
-                mode_summary: None,
-            },
-        )
-        .visibility(Visibility::Public)
-        .build();
-        let alias = ModuleEntry::Import {
-            source: cranelisp_types::FQSymbol {
-                module: user.clone(),
-                symbol: Symbol::from("Color.Red"),
-            },
-            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+        let view = cranelisp_types::MonoDefnVariant {
+            name: Symbol::from("Color.Red"),
+            params: Vec::new(),
+            body: cranelisp_types::MonoExpr::lenient_from_expr(
+                &variant.body,
+                &Default::default(),
+                &Default::default(),
+                &Default::default(),
+            ),
+            span: Span::SYNTHETIC,
+            mode_summary: None,
         };
         if let Some(mut table) = s.shared.symbol_tables.get_mut(&user) {
-            table.insert(Symbol::from("Color.Red"), ctor.clone());
-            table.insert(Symbol::from("Red"), alias);
+            table
+                .install_concrete(
+                    Symbol::from("Color.Red"),
+                    scheme.clone(),
+                    Vec::new(),
+                    None,
+                    0,
+                    CallableOrigin::Ctor {
+                        type_name: fqtn.clone(),
+                        tag: 0,
+                        field_count: 0,
+                        internal: false,
+                        type_def: Some(Box::new(info.clone())),
+                    },
+                    Realization::Body {
+                        view: view.clone(),
+                        code: None,
+                    },
+                    Some(variant.clone()),
+                    Vec::new(),
+                    Visibility::Public,
+                )
+                .expect("constructor fixture installs");
+            table
+                .expose_candidate(
+                    Symbol::from("Red"),
+                    cranelisp_types::FQSymbol {
+                        module: user.clone(),
+                        symbol: Symbol::from("Color.Red"),
+                    },
+                    Visibility::Public,
+                )
+                .expect("constructor alias fixture installs");
         } else {
             let mut table = SessionSymbolTable::new_with_params(user.clone());
-            table.insert(Symbol::from("Color.Red"), ctor.clone());
-            table.insert(Symbol::from("Red"), alias);
+            table
+                .install_concrete(
+                    Symbol::from("Color.Red"),
+                    scheme,
+                    Vec::new(),
+                    None,
+                    0,
+                    CallableOrigin::Ctor {
+                        type_name: fqtn,
+                        tag: 0,
+                        field_count: 0,
+                        internal: false,
+                        type_def: Some(Box::new(info)),
+                    },
+                    Realization::Body { view, code: None },
+                    Some(variant),
+                    Vec::new(),
+                    Visibility::Public,
+                )
+                .expect("constructor fixture installs");
+            table
+                .expose_candidate(
+                    Symbol::from("Red"),
+                    cranelisp_types::FQSymbol {
+                        module: user.clone(),
+                        symbol: Symbol::from("Color.Red"),
+                    },
+                    Visibility::Public,
+                )
+                .expect("constructor alias fixture installs");
             s.shared.symbol_tables.insert(user.clone(), table);
         }
-        ctor
+        s.shared
+            .symbol_tables
+            .get(&user)
+            .and_then(|table| table.get("Color.Red").cloned())
+            .expect("installed constructor fixture is readable")
     }
     // -----------------------------------------------------------------------
     // S108 Increment 3 — resolve-home-enumeration.md §5 (0558) + §5a (E8).
     // -----------------------------------------------------------------------
 
     /// A `TraitDecl` entry with `name`/`visibility`, no methods.
-    pub(crate) fn trait_decl_entry(name: &str, vis: Visibility) -> ModuleEntry<Code> {
-        ModuleEntry::TraitDecl {
-            info: cranelisp_types::TraitDeclInfo {
-                name: cranelisp_types::TraitName::from(name),
-                type_params: vec![],
-                methods: vec![],
-            },
-            visibility: vis,
-            docstring: None,
-        }
+    pub(crate) fn trait_decl_entry(name: &str, vis: Visibility) -> Binding<Code> {
+        Binding::new(
+            Decl::Trait(TraitRecord::new(
+                cranelisp_types::TraitDeclInfo {
+                    name: cranelisp_types::TraitName::from(name),
+                    type_params: vec![],
+                    methods: vec![],
+                },
+                None,
+            )),
+            vis,
+        )
     }
     /// A `TraitImpl` entry `impl <trait> <type>` written to `home` (Decision 0045).
-    pub(crate) fn impl_entry(
+    pub(crate) fn install_impl(
+        table: &mut SessionSymbolTable,
         home: &ModuleFullPath,
         trait_name: &str,
         type_name: &str,
-    ) -> ModuleEntry<Code> {
-        ModuleEntry::TraitImpl {
-            trait_name: cranelisp_types::FQTraitName::new(
+    ) {
+        let record = WrittenTraitImpl::new(
+            cranelisp_types::FQTraitName::new(
                 home.clone(),
                 cranelisp_types::TraitName::from(trait_name),
             ),
-            impl_type: cranelisp_types::FQTypeName::new(
+            cranelisp_types::FQTypeName::new(
                 home.clone(),
                 cranelisp_types::TypeName::from(type_name),
             ),
             // S110 W0.1b: this fixture models a same-module impl (shell + method
             // bodies co-located at `home`), so `impl_module == home`.
-            impl_module: home.clone(),
-            methods: vec![],
-            visibility: Visibility::Public,
-        }
-    }
-    /// A user-fn `Def` with an explicit visibility (the public `userfn_def`
-    /// helper's private-head sibling — for the prelude public-only gate tests).
-    pub(crate) fn userfn_def_vis(vis: Visibility) -> ModuleEntry<Code> {
-        match userfn_def(None) {
-            ModuleEntry::Def {
-                scheme,
-                docstring,
-                param_names,
-                kind,
-                callees,
-                trait_origin,
-                seq,
-                ast,
-                codegen_view,
-                code,
-                value_use,
-                ..
-            } => ModuleEntry::Def {
-                scheme,
-                visibility: vis,
-                docstring,
-                param_names,
-                kind,
-                callees,
-                trait_origin,
-                seq,
-                ast,
-                codegen_view,
-                code,
-                value_use,
-            },
-            other => other,
-        }
+            home.clone(),
+            vec![Symbol::from("__fixture")],
+            Visibility::Public,
+        );
+        table
+            .stage_trait_impl_shell(&record)
+            .expect("trait-implementation fixture stages")
+            .commit();
     }
 }
 
@@ -1043,7 +1247,7 @@ mod prelude_fallback_tests {
 
     use crate::repl::test_support::*;
 
-    use cranelisp_types::{ModuleFullPath, Symbol, Visibility};
+    use cranelisp_types::{ModuleFullPath, Visibility};
 
     // §8.8.1 gate: the prelude provides only its PUBLIC names, so the
     // prelude-fallback seam MUST NOT return a PRIVATE prelude head — it falls
@@ -1056,7 +1260,7 @@ mod prelude_fallback_tests {
         let prelude = ModuleFullPath::from("prelude");
         let scope = s.current_module_path();
         let mut ptbl = SessionSymbolTable::new_with_params(prelude.clone());
-        ptbl.insert(Symbol::from("secret"), userfn_def_vis(Visibility::Private));
+        let _ = install_userfn(&mut ptbl, "secret", None, Visibility::Private);
         s.shared.symbol_tables.insert(prelude.clone(), ptbl);
         s.shared.prelude_fallback.insert(scope, true);
 
@@ -1082,7 +1286,7 @@ mod prelude_fallback_tests {
         let prelude = ModuleFullPath::from("prelude");
         let scope = s.current_module_path();
         let mut ptbl = SessionSymbolTable::new_with_params(prelude.clone());
-        ptbl.insert(Symbol::from("shown"), userfn_def_vis(Visibility::Public));
+        let _ = install_userfn(&mut ptbl, "shown", None, Visibility::Public);
         s.shared.symbol_tables.insert(prelude.clone(), ptbl);
         s.shared.prelude_fallback.insert(scope, true);
 
@@ -1095,6 +1299,80 @@ mod prelude_fallback_tests {
             hit.unwrap().1,
             prelude,
             "the public prelude head resolves IN the prelude module"
+        );
+    }
+
+    // Visibility is filtered before uniqueness: a private exposure does not
+    // make the sole public candidate ambiguous to an outside prelude consumer.
+    #[test]
+    fn lookup_prelude_fallback_selects_public_from_private_public_pair() {
+        let s = session();
+        let prelude = ModuleFullPath::from("prelude");
+        let scope = s.current_module_path();
+        for module in ["hidden", "shown"] {
+            let path = ModuleFullPath::from(module);
+            let mut table = SessionSymbolTable::new_with_params(path.clone());
+            let _ = install_userfn(&mut table, "choice", None, Visibility::Public);
+            s.shared.symbol_tables.insert(path, table);
+        }
+        let mut ptbl = SessionSymbolTable::new_with_params(prelude.clone());
+        ptbl.expose_candidate(
+            Symbol::from("choice"),
+            FQSymbol {
+                module: ModuleFullPath::from("hidden"),
+                symbol: Symbol::from("choice"),
+            },
+            Visibility::Private,
+        )
+        .expect("private candidate fixture installs");
+        ptbl.expose_candidate(
+            Symbol::from("choice"),
+            FQSymbol {
+                module: ModuleFullPath::from("shown"),
+                symbol: Symbol::from("choice"),
+            },
+            Visibility::Public,
+        )
+        .expect("public candidate fixture installs");
+        s.shared.symbol_tables.insert(prelude, ptbl);
+        s.shared.prelude_fallback.insert(scope, true);
+
+        let (_, home) = s
+            .lookup_with_prelude_fallback_opt("choice", false)
+            .expect("the sole public candidate resolves");
+        assert_eq!(home, ModuleFullPath::from("shown"));
+    }
+
+    // Display has no expected type with which to choose between two public
+    // candidates; their shared spelling therefore remains unresolved.
+    #[test]
+    fn lookup_prelude_fallback_leaves_two_public_candidates_unresolved() {
+        let s = session();
+        let prelude = ModuleFullPath::from("prelude");
+        let scope = s.current_module_path();
+        let mut ptbl = SessionSymbolTable::new_with_params(prelude.clone());
+        for module in ["left", "right"] {
+            let path = ModuleFullPath::from(module);
+            let mut table = SessionSymbolTable::new_with_params(path.clone());
+            let _ = install_userfn(&mut table, "choice", None, Visibility::Public);
+            s.shared.symbol_tables.insert(path.clone(), table);
+            ptbl.expose_candidate(
+                Symbol::from("choice"),
+                FQSymbol {
+                    module: path,
+                    symbol: Symbol::from("choice"),
+                },
+                Visibility::Public,
+            )
+            .expect("public candidate fixture installs");
+        }
+        s.shared.symbol_tables.insert(prelude, ptbl);
+        s.shared.prelude_fallback.insert(scope, true);
+
+        assert!(
+            s.lookup_with_prelude_fallback_opt("choice", false)
+                .is_none(),
+            "two public candidates remain unresolved without type context"
         );
     }
 }

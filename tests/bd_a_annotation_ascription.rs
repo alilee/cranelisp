@@ -30,7 +30,7 @@ fn run_prims(src: &str) -> helpers::e2e::CrOutput {
 
 // LET BODY position. `(let [x 41] :Int x)` ascribes the let body — valid per
 // §2.3.8 — but is WRONGLY REJECTED with a parse error. Should return 41.
-// spec: spec/03-types.md §2.3.8 — an annotation may appear in every expression position (let body).
+// spec: spec/03-types.md §3.9 — an annotation may appear in every expression position (let body).
 // defect: class=wrong-reject locus=crates/cranelisp-frontend/src/ast_builder.rs::build_let (body position not routed through build_one_expr_at) found=S113 owner=/dev
 #[test]
 fn let_body_ascription_accepted() {
@@ -44,7 +44,7 @@ fn let_body_ascription_accepted() {
     out.assert_exit(41);
 }
 
-// spec: spec/03-types.md §2.3.8 — bare let body twin (GREEN).
+// spec: spec/03-types.md §3.9 — bare let body twin (GREEN).
 #[test]
 fn let_body_bare_twin() {
     run_prims("(defn f [] (let [x 41] x))\n(defn main [] (Pure (f)))\n").assert_exit(41);
@@ -52,7 +52,7 @@ fn let_body_bare_twin() {
 
 // IMPL-METHOD BODY position. `(impl T Int (defn m [x] :Int x))` — the method body
 // is ascribed; wrongly parse-rejected. Should dispatch `(m 41)` → 41.
-// spec: spec/03-types.md §2.3.8 — annotation in an impl-method body.
+// spec: spec/03-types.md §3.9 — annotation in an impl-method body.
 // defect: class=wrong-reject locus=crates/cranelisp-frontend/src/ast_builder.rs::build_impl_method (body not routed through build_one_expr_at) found=S113 owner=/dev
 #[test]
 fn impl_method_body_ascription_accepted() {
@@ -70,7 +70,7 @@ fn impl_method_body_ascription_accepted() {
     out.assert_exit(41);
 }
 
-// spec: spec/03-types.md §2.3.8 — bare impl-method body twin (GREEN).
+// spec: spec/03-types.md §3.9 — bare impl-method body twin (GREEN).
 #[test]
 fn impl_method_body_bare_twin() {
     run_prims(
@@ -85,7 +85,7 @@ fn impl_method_body_bare_twin() {
 // default body `:Int x` is ascribed; wrongly parse-rejected. Should compile.
 // (The RETURN slot is a bare `type_expr`, §7.1.1 — the fixture formerly wrote it
 // `:Int` too, which is parameter-annotation syntax. Repaired S115 W5a, 0785.)
-// spec: spec/03-types.md §2.3.8 — annotation in a trait default-method body.
+// spec: spec/03-types.md §3.9 — annotation in a trait default-method body.
 // defect: class=wrong-reject locus=crates/cranelisp-frontend/src/ast_builder.rs::build_method_sig (default body not routed through build_one_expr_at) found=S113 owner=/dev
 #[test]
 fn trait_default_method_body_ascription_accepted() {
@@ -99,7 +99,7 @@ fn trait_default_method_body_ascription_accepted() {
     out.assert_exit(0);
 }
 
-// spec: spec/03-types.md §2.3.8 — bare trait default-method body twin (GREEN).
+// spec: spec/03-types.md §3.9 — bare trait default-method body twin (GREEN).
 #[test]
 fn trait_default_method_body_bare_twin() {
     run_prims("(deftrait T (m [x] x))\n(defn main [] (Pure 0))\n").assert_exit(0);
@@ -107,7 +107,7 @@ fn trait_default_method_body_bare_twin() {
 
 // TRACE OPERAND position. `(trace :Int 5)` ascribes the traced operand; wrongly
 // parse-rejected. Should compile.
-// spec: spec/03-types.md §2.3.8 — annotation in a `trace` operand.
+// spec: spec/03-types.md §3.9 — annotation in a `trace` operand.
 // defect: class=wrong-reject locus=crates/cranelisp-frontend/src/ast_builder.rs::build_trace (operand not routed through build_one_expr_at) found=S113 owner=/dev
 #[test]
 fn trace_operand_ascription_accepted() {
@@ -121,7 +121,7 @@ fn trace_operand_ascription_accepted() {
     out.assert_exit(0);
 }
 
-// spec: spec/03-types.md §2.3.8 — bare trace operand twin (GREEN).
+// spec: spec/03-types.md §3.9 — bare trace operand twin (GREEN).
 #[test]
 fn trace_operand_bare_twin() {
     run_prims("(defn f [] (trace 5))\n(defn main [] (Pure 0))\n").assert_exit(0);
@@ -182,7 +182,7 @@ fn trait_method_sig_trailing_form_rejected_neg() {
 
 // M1 ascribed spot-pin — FN BODY. `(fn [n] :Int n)` — the closure body is ascribed
 // and MUST be accepted (routed). `(g 7)` = 7.
-// spec: spec/03-types.md §2.3.8 — an annotation may appear in an `fn` body.
+// spec: spec/03-types.md §3.9 — an annotation may appear in an `fn` body.
 #[test]
 fn m1_fn_body_ascription_accepted_spot() {
     run_prims("(defn f [] (let [g (fn [n] :Int n)] (g 7)))\n(defn main [] (Pure (f)))\n")
@@ -191,7 +191,7 @@ fn m1_fn_body_ascription_accepted_spot() {
 
 // M1 ascribed spot-pin — IF BRANCHES. `(if c :Int 10 :Int 20)` — both branches
 // ascribed, accepted. `(f 0)` = 10.
-// spec: spec/03-types.md §2.3.8 — an annotation may appear in an `if` branch.
+// spec: spec/03-types.md §3.9 — an annotation may appear in an `if` branch.
 #[test]
 fn m1_if_branch_ascription_accepted_spot() {
     run_prims("(defn f [c] (if (eq-i64 c 0) :Int 10 :Int 20))\n(defn main [] (Pure (f 0)))\n")
@@ -200,7 +200,7 @@ fn m1_if_branch_ascription_accepted_spot() {
 
 // M1 ascribed spot-pin — MATCH ARM BODY. `(match v [x :Int x])` — the arm body
 // ascribed, accepted. `(f 7)` = 7.
-// spec: spec/03-types.md §2.3.8 — an annotation may appear in a match arm body.
+// spec: spec/03-types.md §3.9 — an annotation may appear in a match arm body.
 #[test]
 fn m1_match_arm_ascription_accepted_spot() {
     run_prims("(defn f [v] (match v [x :Int x]))\n(defn main [] (Pure (f 7)))\n").assert_exit(7);
@@ -208,7 +208,7 @@ fn m1_match_arm_ascription_accepted_spot() {
 
 // M1 ascribed spot-pin — LET VALUE. `(let [x :Int 7] x)` — the binding value
 // ascribed, accepted. `(f)` = 7.
-// spec: spec/03-types.md §2.3.8 — an annotation may appear in a `let` binding value.
+// spec: spec/03-types.md §3.9 — an annotation may appear in a `let` binding value.
 #[test]
 fn m1_let_value_ascription_accepted_spot() {
     run_prims("(defn f [] (let [x :Int 7] x))\n(defn main [] (Pure (f)))\n").assert_exit(7);
@@ -216,7 +216,7 @@ fn m1_let_value_ascription_accepted_spot() {
 
 // M1 ascribed spot-pin — APPLY ARG. `(add-i64 :Int 3 4)` — an application argument
 // ascribed (multi-operand position, `build_args_with_annotations`), accepted. = 7.
-// spec: spec/03-types.md §2.3.8 — an annotation may appear in an application argument.
+// spec: spec/03-types.md §3.9 — an annotation may appear in an application argument.
 #[test]
 fn m1_apply_arg_ascription_accepted_spot() {
     run_prims("(defn f [] (add-i64 :Int 3 4))\n(defn main [] (Pure (f)))\n").assert_exit(7);

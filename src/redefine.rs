@@ -32,8 +32,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Mutex;
 
 use cranelisp_types::{
-    CranelispError, DefKind, ErrorLocation, FQSymbol, GOT_TABLE_SIZE, ModuleEntry, ModuleFullPath,
-    ModuleStrategy, Sexp, Span, Symbol, UserFnState,
+    Binding, BrokenProvenance, CallableOrigin, CallableTarget, CranelispError, Decl, ErrorLocation,
+    FQSymbol, Life, ModuleFullPath, ModuleStrategy, Realization, Scheme, Sexp, Span, Symbol, Type,
+    TypeId,
 };
 
 use crate::code::{Code, SessionSymbolTable};
@@ -43,29 +44,109 @@ use crate::styled::{Role, StyledDoc, render};
 type SymbolTables = dashmap::DashMap<ModuleFullPath, SessionSymbolTable>;
 
 // ---------------------------------------------------------------------------
-// AbiSurface — the stage-M summary-diff comparand (design §2.2)
+// LanguageType — the guarded-publication semantic comparand
 // ---------------------------------------------------------------------------
 
-/// The alpha-canonical rendering of an entry's fully-qualified type scheme —
-/// the stage-M ABI comparand. Raw `Scheme` structs must NOT be compared
-/// directly (two checks of the same source produce different type-variable
-/// ids); `display::format_scheme_type` normalises vars to consecutive letters
-/// and fully qualifies type names, so equal-shaped schemes render identically.
-///
-/// What is deliberately NOT in the comparand: docstrings, param names,
-/// visibility, `seq`, the body — a body-only edit is `AbiPreserving`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AbiSurface(String);
+/// A scheme's semantic identity, independent of inference-assigned `TypeId`s.
+/// This is deliberately structural: the user-facing renderer omits constraints
+/// in positions where they are not printed and is therefore not an equality
+/// key. Documentation, names, modes, slots and bodies are excluded.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct LanguageType {
+    ty: CanonicalType,
+    quantified: Vec<bool>,
+    constraints: Vec<Vec<String>>,
+    unused_quantified_constraints: Vec<Vec<String>>,
+}
 
-impl AbiSurface {
-    /// The ABI surface of a `Def` entry, or `None` for non-`Def` entries.
-    pub(crate) fn of(entry: &ModuleEntry<Code>) -> Option<AbiSurface> {
-        match entry {
-            ModuleEntry::Def { scheme, .. } => {
-                Some(AbiSurface(crate::display::format_scheme_type(scheme)))
-            }
-            _ => None,
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum CanonicalType {
+    Int,
+    Bool,
+    String,
+    Float,
+    Fn(Vec<CanonicalType>, Box<CanonicalType>),
+    Adt(String, Vec<CanonicalType>),
+    Var(usize),
+    TyConApp(usize, Vec<CanonicalType>),
+}
+
+impl LanguageType {
+    fn of(binding: &Binding<Code>) -> Option<Self> {
+        let scheme = match &binding.declaration {
+            Decl::Callable(callable) => &callable.arm.scheme,
+            _ => return None,
+        };
+        Some(Self::of_scheme(scheme))
+    }
+
+    fn of_scheme(scheme: &Scheme) -> Self {
+        let mut ids = Vec::new();
+        let ty = canonical_type(&scheme.ty, &mut ids);
+        let quantified_ids: HashSet<TypeId> = scheme.type_vars.iter().copied().collect();
+        let quantified = ids.iter().map(|id| quantified_ids.contains(id)).collect();
+        let constraints = ids
+            .iter()
+            .map(|id| canonical_constraints(scheme.constraints.get(id)))
+            .collect();
+        let mut unused_quantified_constraints = quantified_ids
+            .iter()
+            .filter(|id| !ids.contains(id))
+            .map(|id| canonical_constraints(scheme.constraints.get(id)))
+            .collect::<Vec<_>>();
+        unused_quantified_constraints.sort();
+        Self {
+            ty,
+            quantified,
+            constraints,
+            unused_quantified_constraints,
         }
+    }
+}
+
+fn canonical_constraints(constraints: Option<&Vec<cranelisp_types::FQTraitName>>) -> Vec<String> {
+    let mut names = constraints
+        .into_iter()
+        .flatten()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn canonical_var(id: TypeId, ids: &mut Vec<TypeId>) -> usize {
+    if let Some(index) = ids.iter().position(|candidate| *candidate == id) {
+        index
+    } else {
+        let index = ids.len();
+        ids.push(id);
+        index
+    }
+}
+
+fn canonical_type(ty: &Type, ids: &mut Vec<TypeId>) -> CanonicalType {
+    match ty {
+        Type::Int => CanonicalType::Int,
+        Type::Bool => CanonicalType::Bool,
+        Type::String => CanonicalType::String,
+        Type::Float => CanonicalType::Float,
+        Type::Fn(params, result) => CanonicalType::Fn(
+            params
+                .iter()
+                .map(|param| canonical_type(param, ids))
+                .collect(),
+            Box::new(canonical_type(result, ids)),
+        ),
+        Type::ADT(name, args) => CanonicalType::Adt(
+            name.to_string(),
+            args.iter().map(|arg| canonical_type(arg, ids)).collect(),
+        ),
+        Type::Var(id) => CanonicalType::Var(canonical_var(*id, ids)),
+        Type::TyConApp(id, args) => CanonicalType::TyConApp(
+            canonical_var(*id, ids),
+            args.iter().map(|arg| canonical_type(arg, ids)).collect(),
+        ),
     }
 }
 
@@ -164,12 +245,17 @@ pub(crate) fn outcome_clears_broken(o: &RedefinitionOutcome) -> bool {
 
 /// True iff the entry is a concrete single-sig `UserFn` `Def` — the target
 /// kind per-symbol precision covers at stage M (design §2.2).
-pub(crate) fn is_concrete_userfn(entry: &ModuleEntry<Code>) -> bool {
-    matches!(
-        entry,
-        ModuleEntry::Def { kind, .. }
-            if matches!(kind.as_ref(), DefKind::UserFn { fn_state: UserFnState::Concrete { .. } })
-    )
+pub(crate) fn is_concrete_userfn(binding: &Binding<Code>) -> bool {
+    binding.callable().is_some_and(|callable| {
+        matches!(callable.origin, CallableOrigin::Plain)
+            && matches!(
+                callable.arm.life,
+                Life::Concrete {
+                    realization: Realization::Body { .. },
+                    ..
+                }
+            )
+    })
 }
 
 /// True for internal compiler artifacts the gate must never classify as
@@ -181,27 +267,20 @@ pub(crate) fn is_gate_exempt_internal(name: &str) -> bool {
     name == crate::worker::SYNTHETIC_EXPR_WRAPPER || name.starts_with("__macro_")
 }
 
-/// The summary-diff gate's pure classification (design §2): prior live entry
-/// (if any) vs the staged entry. Returns the [`RedefKind`] plus the
-/// `per_symbol` precision flag (see [`RedefinitionOutcome::per_symbol`]).
-///
-/// Routing outside per-symbol precision (design §10 T1 — the redefined
-/// target is not a concrete `UserFn` on both sides) classifies as
-/// `AbiPreserving` with `per_symbol: false`: the commit keeps today's
-/// reuse-and-patch slot policy and the driver runs no per-symbol transaction.
+/// Classify a prior live entry against its staged replacement. Ordinary
+/// single- and multi-signature callables compare as one declaration class by
+/// their complete language-type set (`repl/spec/18-redefinition.md` §§18.1,
+/// 18.3). `per_symbol` records whether both sides are concrete single-body
+/// user functions; it is an implementation routing detail, not the language
+/// legality decision.
 pub(crate) fn classify_redefinition(
     name: &str,
-    prior: Option<&ModuleEntry<Code>>,
-    staged: &ModuleEntry<Code>,
+    prior: Option<&Binding<Code>>,
+    staged: &Binding<Code>,
 ) -> (RedefKind, bool) {
     let Some(prior) = prior else {
         return (RedefKind::New, false);
     };
-    // A prior non-Def (e.g. an Import binding now shadowed by a local defn)
-    // carries no ABI surface of its own — fresh allocation, like New.
-    if !matches!(prior, ModuleEntry::Def { .. }) {
-        return (RedefKind::New, false);
-    }
     if is_gate_exempt_internal(name) {
         return (RedefKind::AbiPreserving, false);
     }
@@ -210,49 +289,339 @@ pub(crate) fn classify_redefinition(
     if prior.callable_got_slot().is_none() {
         return (RedefKind::New, false);
     }
+    if matches!(
+        (&prior.declaration, &staged.declaration),
+        (Decl::Macro(_), Decl::Macro(_))
+    ) {
+        return (RedefKind::AbiPreserving, false);
+    }
+    // A single-signature and multi-signature `defn` are one callable class.
+    // Compare their complete signature sets even when the representation
+    // changes between `Callable` and `Overloaded`.
+    if let (Some(prior_type), Some(staged_type)) = (
+        callable_language_type(prior),
+        callable_language_type(staged),
+    ) {
+        let per_symbol = is_concrete_userfn(prior) && is_concrete_userfn(staged);
+        return if prior_type == staged_type {
+            (RedefKind::AbiPreserving, per_symbol)
+        } else {
+            (RedefKind::AbiChanging, per_symbol)
+        };
+    }
+    if LanguageType::of(prior).is_none() || LanguageType::of(staged).is_none() {
+        return (RedefKind::New, false);
+    }
     let per_symbol = is_concrete_userfn(prior) && is_concrete_userfn(staged);
     if !per_symbol {
         // T1: conservative — today's reuse-and-patch (no ABI-epoch versioning
         // for non-concrete-UserFn targets at stage M).
         return (RedefKind::AbiPreserving, false);
     }
-    if AbiSurface::of(prior) == AbiSurface::of(staged) {
+    if LanguageType::of(prior) == LanguageType::of(staged) {
         (RedefKind::AbiPreserving, true)
     } else {
         (RedefKind::AbiChanging, true)
     }
 }
 
-// ---------------------------------------------------------------------------
-// GOT exhaustion guard (S101 accumulated obligation 3)
-// ---------------------------------------------------------------------------
-
-/// Allocate a live GOT slot, adding the session's user-facing remedy to a
-/// module-local exhaustion.
-///
-/// `SymbolTable::allocate_got_slot` is now the fallible seam (S111 R7): once the
-/// fixed `GOT_TABLE_SIZE`-slot slab is full it returns `GotExhausted` rather
-/// than overflowing (the former unchecked monotone bump risked a release-mode
-/// OOB `store_slot`/`load_slot`). The manual pre-check that used to live here is
-/// gone; this wrapper only re-messages the seam error with the session-specific
-/// "restart to reclaim frozen slots" remedy (the redefinition chokepoint is the
-/// one path where a long dev session with many ABI-changing redefinitions
-/// approaches the bound).
-#[allow(clippy::result_large_err)] // CranelispError is the crate-wide error carrier
-pub(crate) fn allocate_live_got_slot(
-    live: &mut SessionSymbolTable,
+/// Enforce the S121 ordinary-callable admission rule while the live tables are
+/// still untouched. Other declaration classes retain their existing path until
+/// their crate-shaped waves reach this same gate.
+pub(crate) fn validate_guarded_redefinition(
+    symbol_tables: &SymbolTables,
     module: &ModuleFullPath,
-) -> Result<usize, CranelispError> {
-    live.allocate_got_slot()
-        .map_err(|_e| CranelispError::CodegenError {
+    name: &Symbol,
+    _live_table: &SessionSymbolTable,
+    _staging_table: &SessionSymbolTable,
+    prior: Option<&Binding<Code>>,
+    staged: &Binding<Code>,
+) -> Result<(), CranelispError> {
+    let Some(prior) = prior else {
+        return Ok(());
+    };
+    if is_gate_exempt_internal(name.as_ref()) {
+        return Ok(());
+    }
+
+    let target = FQSymbol {
+        module: module.clone(),
+        symbol: name.clone(),
+    };
+    let prior_class = declaration_class(prior);
+    let staged_class = declaration_class(staged);
+    if prior_class.is_some() && staged_class.is_some() && prior_class != staged_class {
+        return Err(CranelispError::TypeError {
             message: format!(
-                "GOT slot table exhausted for module '{module}' \
-             ({GOT_TABLE_SIZE} slots): too many definitions and \
-             ABI-changing redefinitions in one session. Restart the \
-             session to reclaim frozen slots.",
+                "cannot redefine {target}: live redefinition must preserve the declaration class; use a new name or reload persisted source"
             ),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
+        });
+    }
+    if prior_class.is_some() && prior_class == staged_class && prior.visibility != staged.visibility
+    {
+        return Err(CranelispError::TypeError {
+            message: format!(
+                "cannot redefine {target}: declaration visibility cannot change during live redefinition; use a new name or reload persisted source"
+            ),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        });
+    }
+    if prior_class == Some(DeclarationClass::Callable)
+        && staged_class == Some(DeclarationClass::Callable)
+    {
+        let prior_type = callable_language_type(prior);
+        let staged_type = callable_language_type(staged);
+        if prior_type.is_some() && staged_type.is_some() && prior_type != staged_type {
+            let blockers = blocking_dependents(symbol_tables, &target);
+            if blockers.is_empty() {
+                return Ok(());
+            }
+            return Err(type_change_rejection(
+                &target,
+                format_callable_language_type(prior),
+                format_callable_language_type(staged),
+                &blockers,
+            ));
+        }
+    }
+    if !is_concrete_userfn(prior) || !is_concrete_userfn(staged) {
+        return Ok(());
+    }
+
+    let same_language_type = LanguageType::of(prior) == LanguageType::of(staged);
+    if same_language_type {
+        if cranelisp_types::ModeSummary::abi_eq_opt(prior.mode_summary(), staged.mode_summary()) {
+            return Ok(());
+        }
+        return Err(CranelispError::TypeError {
+            message: format!(
+                "cannot redefine {target}: language type is unchanged; old ownership ABI: {}; proposed ownership ABI: {}; the proposed replacement changes the ownership ABI",
+                format_ownership_abi(prior),
+                format_ownership_abi(staged),
+            ),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        });
+    }
+
+    let blockers = blocking_dependents(symbol_tables, &target);
+    if blockers.is_empty() {
+        return Ok(());
+    }
+    Err(type_change_rejection(
+        &target,
+        format_callable_language_type(prior),
+        format_callable_language_type(staged),
+        &blockers,
+    ))
+}
+
+fn type_change_rejection(
+    target: &FQSymbol,
+    old_type: String,
+    proposed_type: String,
+    blockers: &[FQSymbol],
+) -> CranelispError {
+    let blockers = blockers
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    CranelispError::TypeError {
+        message: format!(
+            "cannot redefine {target}; old language type: {old_type}; proposed language type: {proposed_type}; blocking dependents: {blockers}; retain the old type or introduce a new name"
+        ),
+        location: ErrorLocation::from_span(Span::SYNTHETIC),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeclarationClass {
+    Callable,
+    Macro,
+    Type,
+    Trait,
+    Impl,
+}
+
+fn declaration_class(binding: &Binding<Code>) -> Option<DeclarationClass> {
+    match &binding.declaration {
+        Decl::Callable(callable) if matches!(callable.origin, CallableOrigin::Plain) => {
+            Some(DeclarationClass::Callable)
+        }
+        Decl::Overloaded(_) => Some(DeclarationClass::Callable),
+        Decl::Macro(_) => Some(DeclarationClass::Macro),
+        Decl::Type(_) => Some(DeclarationClass::Type),
+        Decl::Trait(_) => Some(DeclarationClass::Trait),
+        Decl::ImplShell(_) => Some(DeclarationClass::Impl),
+        Decl::Callable(_) | Decl::TraitMethod(_) | Decl::SpecialForm(_) => None,
+    }
+}
+
+fn callable_language_type(binding: &Binding<Code>) -> Option<Vec<LanguageType>> {
+    match &binding.declaration {
+        Decl::Callable(callable) if matches!(callable.origin, CallableOrigin::Plain) => {
+            Some(vec![LanguageType::of_scheme(&callable.arm.scheme)])
+        }
+        Decl::Overloaded(declaration) => {
+            let mut signatures = declaration
+                .arms
+                .iter()
+                .map(|arm| LanguageType::of_scheme(&arm.callable.scheme))
+                .collect::<Vec<_>>();
+            signatures.sort();
+            signatures.dedup();
+            Some(signatures)
+        }
+        _ => None,
+    }
+}
+
+fn format_callable_language_type(binding: &Binding<Code>) -> String {
+    match &binding.declaration {
+        Decl::Callable(callable) => crate::display::format_scheme_type(&callable.arm.scheme),
+        Decl::Overloaded(declaration) => {
+            let mut signatures = declaration
+                .arms
+                .iter()
+                .map(|arm| crate::display::format_scheme_type(&arm.callable.scheme))
+                .collect::<Vec<_>>();
+            signatures.sort();
+            format!("{{{}}}", signatures.join(", "))
+        }
+        _ => "<non-callable>".to_string(),
+    }
+}
+
+fn format_ownership_abi(binding: &Binding<Code>) -> String {
+    let arity = binding
+        .callable()
+        .and_then(|callable| match &callable.arm.scheme.ty {
+            Type::Fn(params, _) => Some(params.len()),
+            _ => None,
         })
+        .unwrap_or_default();
+    match binding.mode_summary() {
+        Some(summary) => {
+            let params = (0..arity)
+                .map(|index| format!("{:?}", summary.param_mode(index)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("params [{params}], result {:?}", summary.result)
+        }
+        None => {
+            let params = std::iter::repeat_n("Owned", arity)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("params [{params}], result Fresh")
+        }
+    }
+}
+
+/// Reverse-scan the one durable dependency fact (`Binding::callees`) and fold
+/// storage identities to their authored callable owner before comparing or
+/// reporting them. There is intentionally no parallel callers index.
+fn blocking_dependents(symbol_tables: &SymbolTables, target: &FQSymbol) -> Vec<FQSymbol> {
+    let mut immediate_owners = HashMap::new();
+    let mut edges = Vec::new();
+    for table in symbol_tables.iter() {
+        let module = table.key().clone();
+        for (name, binding) in table.value().all_symbols() {
+            let caller = FQSymbol {
+                module: module.clone(),
+                symbol: name.clone(),
+            };
+            immediate_owners.insert(caller.clone(), immediate_callable_owner(&caller, binding));
+            let callees = binding_callees(binding);
+            if !callees.is_empty() {
+                edges.push((caller, callees));
+            }
+        }
+    }
+
+    let target = normalize_callable_owner(target, &immediate_owners);
+    let mut blockers = HashSet::new();
+    for (caller, callees) in edges {
+        if caller.symbol.as_ref() == crate::worker::SYNTHETIC_EXPR_WRAPPER {
+            continue;
+        }
+        let caller = normalize_callable_owner(&caller, &immediate_owners);
+        if caller == target {
+            continue;
+        }
+        if callees
+            .iter()
+            .map(|callee| normalize_callable_owner(callee, &immediate_owners))
+            .any(|callee| callee == target)
+        {
+            blockers.insert(caller);
+        }
+    }
+    let mut blockers = blockers.into_iter().collect::<Vec<_>>();
+    blockers.sort_by_key(ToString::to_string);
+    blockers
+}
+
+fn immediate_callable_owner(fq: &FQSymbol, binding: &Binding<Code>) -> FQSymbol {
+    let Some(callable) = binding.callable() else {
+        return fq.clone();
+    };
+    if let Life::Concrete {
+        minted_from: Some(link),
+        ..
+    } = &callable.arm.life
+    {
+        return match &link.template {
+            CallableTarget::Binding(owner)
+            | CallableTarget::OverloadArm { owner, .. }
+            | CallableTarget::MacroClause { owner, .. } => owner.clone(),
+            _ => fq.clone(),
+        };
+    }
+    fq.clone()
+}
+
+fn binding_callees(binding: &Binding<Code>) -> Vec<FQSymbol> {
+    fn life_callees(life: &Life<Code>) -> &[FQSymbol] {
+        match life {
+            Life::Template { callees, .. } | Life::Concrete { callees, .. } => callees,
+            _ => &[],
+        }
+    }
+    match &binding.declaration {
+        Decl::Callable(_) => binding.callees().to_vec(),
+        Decl::Overloaded(declaration) => declaration
+            .arms
+            .iter()
+            .flat_map(|arm| life_callees(&arm.callable.life))
+            .cloned()
+            .collect(),
+        Decl::Macro(declaration) => declaration
+            .clauses
+            .iter()
+            .flat_map(|clause| life_callees(&clause.callable.life))
+            .cloned()
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn normalize_callable_owner(
+    fq: &FQSymbol,
+    immediate_owners: &HashMap<FQSymbol, FQSymbol>,
+) -> FQSymbol {
+    let mut current = fq.clone();
+    let mut seen = HashSet::new();
+    while seen.insert(current.clone()) {
+        let Some(next) = immediate_owners.get(&current) else {
+            break;
+        };
+        if next == &current {
+            break;
+        }
+        current = next.clone();
+    }
+    current
 }
 
 // ---------------------------------------------------------------------------
@@ -320,23 +689,6 @@ impl RetainedCode {
 /// The session retention pool (`SharedState.retained_code`).
 pub(crate) type RetentionPool = Mutex<Vec<RetainedCode>>;
 
-/// Symbol-level BROKEN state + provenance (design §5.1; `repl/spec.md` §18.4).
-#[derive(Debug, Clone)]
-pub(crate) struct BrokenInfo {
-    /// The redefined symbol that broke this one — depth-1 provenance, always
-    /// the transaction target (design §5.2). Rendered fully qualified.
-    pub broken_by: FQSymbol,
-    /// The §5.1-format error re-typechecking produced (one line).
-    pub original_error: String,
-    /// The full trap message: `{broken} is broken by the redefinition of
-    /// {cause}: {original error}` — also the buffer text baked into the stub.
-    #[allow(dead_code)] // the trap stub's copy is the runtime reader
-    pub provenance: String,
-}
-
-/// The broken registry type (`SharedState.broken`).
-pub(crate) type BrokenRegistry = dashmap::DashMap<FQSymbol, BrokenInfo>;
-
 /// Compose the normative trap-message / provenance string
 /// (`repl/spec.md` §18.5): `{broken} is broken by the redefinition of
 /// {cause}: {original error}` — fully-qualified names.
@@ -363,7 +715,6 @@ pub(crate) fn compose_provenance(
 pub(crate) fn mark_broken(
     tables: &SymbolTables,
     pool: &RetentionPool,
-    registry: &BrokenRegistry,
     fq: &FQSymbol,
     cause: &FQSymbol,
     original_error: &str,
@@ -374,13 +725,13 @@ pub(crate) fn mark_broken(
     // guard before compiling the stub (no DashMap guard across a JIT build).
     let slotted = tables.get_mut(&fq.module).and_then(|mut st| {
         let got = st.got.clone();
-        let entry = st.symbols.get_mut(fq.symbol.as_ref())?;
-        let slot = entry.callable_got_slot()?;
-        let displaced = match entry {
-            ModuleEntry::Def { code, .. } => code.take(),
-            _ => None,
-        };
-        Some((slot, displaced, got))
+        let transition = st
+            .mark_broken(
+                &fq.symbol,
+                BrokenProvenance::new(cause.clone(), original_error.to_string()),
+            )
+            .ok()?;
+        Some((transition.slot.index(), transition.displaced_owner, got))
     });
 
     if let Some((slot, displaced, got)) = slotted {
@@ -416,20 +767,6 @@ pub(crate) fn mark_broken(
                 // the slot they already embed (L-R1 (a)/(b)/(c)).
                 got.store_slot(slot, stub_ptr);
                 crate::got_trace::emit_trap_patch(&fq.module, &fq.symbol, slot, stub_ptr);
-                // The entry's `code` field holds the stub's handle: the stub
-                // IS the code dispatched through this slot now. Load-bearing
-                // beyond bookkeeping — a `code: None` + `ast: Some` entry
-                // looks "uncompiled" to `derive_codegen_batch`'s synth-def
-                // sweep, which would silently RECOMPILE the broken body
-                // against the new-world callee on the next eval turn
-                // (unsound — the exact hole the trap exists to close) and
-                // overwrite the trap patch.
-                if let Some(mut st) = tables.get_mut(&fq.module)
-                    && let Some(ModuleEntry::Def { code, .. }) =
-                        st.symbols.get_mut(fq.symbol.as_ref())
-                {
-                    *code = Some(stub_code);
-                }
             }
             Err(e) => {
                 // Stub compilation failure: the slot keeps the old (retained)
@@ -442,15 +779,6 @@ pub(crate) fn mark_broken(
             }
         }
     }
-
-    registry.insert(
-        fq.clone(),
-        BrokenInfo {
-            broken_by: cause.clone(),
-            original_error: original_error.to_string(),
-            provenance,
-        },
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -570,8 +898,15 @@ pub(crate) fn stale_callers(tables: &SymbolTables, target: &FQSymbol) -> Vec<FQS
         let compiled = tables
             .get(&caller.module)
             .and_then(|t| {
-                t.get(caller.symbol.as_ref())
-                    .map(|e| matches!(e, ModuleEntry::Def { code: Some(_), .. }))
+                t.get(caller.symbol.as_ref()).map(|e| {
+                    matches!(
+                        e.callable().map(|callable| &callable.arm.life),
+                        Some(Life::Concrete {
+                            realization: Realization::Body { code: Some(_), .. },
+                            ..
+                        })
+                    )
+                })
             })
             .unwrap_or(false);
         if !compiled {
@@ -1000,7 +1335,16 @@ fn process_scc(
                         );
                     }
                     for base in &units {
-                        if session.shared.broken.remove(base).is_some() {
+                        if session
+                            .shared
+                            .symbol_tables
+                            .get(&base.module)
+                            .and_then(|table| table.get(base.symbol.as_ref()).cloned())
+                            .and_then(|binding| binding.callable().cloned())
+                            .is_some_and(|callable| {
+                                matches!(callable.arm.life, Life::Broken { .. })
+                            })
+                        {
                             report.recovered.push(base.clone());
                         }
                         // §18.3 no-internal-artifacts: fold the user-facing
@@ -1022,7 +1366,6 @@ fn process_scc(
                         mark_broken(
                             &session.shared.symbol_tables,
                             &session.shared.retained_code,
-                            &session.shared.broken,
                             base,
                             target,
                             &err,
@@ -1071,7 +1414,6 @@ fn process_scc(
                     mark_broken(
                         &session.shared.symbol_tables,
                         &session.shared.retained_code,
-                        &session.shared.broken,
                         &base,
                         target,
                         &err,
@@ -1186,8 +1528,10 @@ fn resolve_recheck_sexps(
                 .shared
                 .symbol_tables
                 .get(&u.module)
-                .and_then(|t| match t.get(u.symbol.as_ref()) {
-                    Some(ModuleEntry::Def { seq, .. }) => Some(*seq),
+                .and_then(|t| match &t.get(u.symbol.as_ref())?.declaration {
+                    Decl::Callable(callable) => Some(callable.seq),
+                    Decl::Overloaded(declaration) => Some(declaration.seq),
+                    Decl::Macro(declaration) => Some(declaration.seq),
                     _ => None,
                 })
                 .unwrap_or(u64::MAX);
@@ -1227,9 +1571,7 @@ impl CompilerSession {
     /// REPL printer.
     pub(crate) fn apply_redefinition_outcomes(&mut self, outcomes: &[RedefinitionOutcome]) {
         for o in outcomes {
-            if outcome_clears_broken(o) {
-                self.shared.broken.remove(&o.fq);
-            }
+            let _ = outcome_clears_broken(o);
         }
         // Surviving-trigger T1 downgrade targets, driven through the §10 T1
         // full cure AFTER the per-symbol transactions settle (CS-1). Collected
@@ -1471,6 +1813,8 @@ impl CompilerSession {
         use cranelisp_typecheck::CheckState;
 
         const MAX_DEP_RETRIES: usize = 100;
+        let mut pending = sexps.to_vec();
+        let mut generation_started = false;
 
         for _retry in 0..MAX_DEP_RETRIES {
             cranelisp_types::ensure_module_exists(&self.shared.symbol_tables, module);
@@ -1499,8 +1843,10 @@ impl CompilerSession {
             let result = crate::process_form::process_cluster_once(
                 &mut wctx,
                 module,
-                sexps,
+                &pending,
                 ModuleStrategy::Additive,
+                generation_started,
+                None,
             )?;
 
             match result {
@@ -1511,8 +1857,14 @@ impl CompilerSession {
                     crate::worker::compile_and_publish_processed(&mut processed, &self.shared)?;
                     return Ok(processed.redefinitions().to_vec());
                 }
-                ClusterOnce::Gap { dep } => {
+                ClusterOnce::Gap {
+                    dep,
+                    continuation,
+                    generation_started: started,
+                } => {
                     self.register_dep_for_eval(&dep)?;
+                    pending = continuation;
+                    generation_started = started;
                 }
             }
         }
@@ -1534,14 +1886,13 @@ impl CompilerSession {
             Some((m, n)) => (ModuleFullPath::from(m), n),
             None => (module.clone(), name),
         };
-        let fq = FQSymbol {
-            module,
-            symbol: Symbol::from(bare),
+        let table = self.shared.symbol_tables.get(&module)?;
+        let binding = table.get(bare)?;
+        let callable = binding.callable()?;
+        let Life::Broken { error, .. } = &callable.arm.life else {
+            return None;
         };
-        self.shared
-            .broken
-            .get(&fq)
-            .map(|info| broken_status_render(&info.broken_by, &info.original_error))
+        Some(broken_status_render(&error.broken_by, &error.message))
     }
 }
 
@@ -1566,7 +1917,11 @@ fn broken_status_render(broken_by: &FQSymbol, original_error: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cranelisp_types::{Scheme, Type, Visibility};
+    use cranelisp_types::{
+        CallableArm, CallableOrigin, CallableTarget, ConcreteType, DefnVariant, Expr, FQTraitName,
+        InstanceLink, Life, MonoDefnVariant, OverloadedCallable, Scheme, TemplateBody,
+        TemplateKind, TraitName, Type, Visibility,
+    };
     use std::collections::HashMap as StdHashMap;
 
     fn scheme(ty: Type) -> Scheme {
@@ -1577,54 +1932,204 @@ mod tests {
         }
     }
 
-    fn concrete_def(ty: Type, slot: usize) -> ModuleEntry<Code> {
-        ModuleEntry::Def {
-            scheme: scheme(ty),
-            visibility: Visibility::Public,
-            docstring: None,
-            param_names: vec![],
-            kind: Box::new(DefKind::UserFn {
-                fn_state: UserFnState::Concrete {
-                    got_slot: slot,
-                    mode_summary: None,
-                },
-            }),
-            callees: Vec::new(),
-            trait_origin: None,
-            seq: 0,
-            ast: None,
-            codegen_view: None,
-            code: None,
-            value_use: false,
+    fn variant() -> DefnVariant {
+        DefnVariant {
+            params: Vec::new(),
+            body: Expr::IntLit {
+                value: 0,
+                span: Span::SYNTHETIC,
+                inferred_type: Some(Box::new(Type::Int)),
+            },
+            span: Span::SYNTHETIC,
         }
     }
 
-    fn def_with_callees(callees: Vec<FQSymbol>, slot: Option<usize>) -> ModuleEntry<Code> {
-        let kind = match slot {
-            Some(got_slot) => DefKind::UserFn {
-                fn_state: UserFnState::Concrete {
-                    got_slot,
-                    mode_summary: None,
-                },
-            },
-            // A slot-less template kind (Polymorphic carries a scheme id
-            // payload in some shapes; Constrained carries the template).
-            None => DefKind::Overloaded { variants: vec![] },
-        };
-        ModuleEntry::Def {
-            scheme: scheme(Type::Int),
-            visibility: Visibility::Public,
-            docstring: None,
-            param_names: vec![],
-            kind: Box::new(kind),
-            callees,
-            trait_origin: None,
-            seq: 0,
-            ast: None,
-            codegen_view: None,
-            code: None,
-            value_use: false,
+    fn install_concrete_fixture(
+        table: &mut SessionSymbolTable,
+        name: &str,
+        ty: Type,
+        callees: Vec<FQSymbol>,
+        expected_slot: usize,
+    ) {
+        while table
+            .all_symbols()
+            .filter_map(|(_, b)| b.callable_got_slot())
+            .count()
+            < expected_slot
+        {
+            let index = table
+                .all_symbols()
+                .filter_map(|(_, b)| b.callable_got_slot())
+                .count();
+            install_concrete_fixture(
+                table,
+                &format!("__padding_{index}"),
+                Type::Int,
+                Vec::new(),
+                index,
+            );
         }
+        let ast = variant();
+        let view = MonoDefnVariant {
+            name: Symbol::from(name),
+            params: Vec::new(),
+            body: cranelisp_types::MonoExpr::lenient_from_expr(
+                &ast.body,
+                &Default::default(),
+                &Default::default(),
+                &Default::default(),
+            ),
+            span: Span::SYNTHETIC,
+            mode_summary: None,
+        };
+        let slot = table
+            .install_concrete(
+                Symbol::from(name),
+                scheme(ty),
+                Vec::new(),
+                None,
+                0,
+                CallableOrigin::Plain,
+                Realization::Body { view, code: None },
+                Some(ast),
+                callees,
+                Visibility::Public,
+            )
+            .expect("concrete fixture installs through lifecycle funnel");
+        assert_eq!(slot.index(), expected_slot);
+    }
+
+    fn install_template_fixture(
+        table: &mut SessionSymbolTable,
+        name: &str,
+        callees: Vec<FQSymbol>,
+    ) {
+        table
+            .install_template(
+                Symbol::from(name),
+                Scheme {
+                    type_vars: vec![0],
+                    constraints: StdHashMap::new(),
+                    ty: fn_ty(Vec::new(), fn_ty(vec![Type::Var(0)], Type::Int)),
+                },
+                Vec::new(),
+                None,
+                0,
+                CallableOrigin::Plain,
+                TemplateBody::Ast(variant()),
+                TemplateKind::Parametric,
+                callees,
+                Visibility::Public,
+            )
+            .expect("template fixture installs through lifecycle funnel");
+    }
+
+    fn install_instance_fixture(
+        table: &mut SessionSymbolTable,
+        template: FQSymbol,
+        arg: ConcreteType,
+        callees: Vec<FQSymbol>,
+    ) {
+        let link =
+            InstanceLink::from_type_args(CallableTarget::Binding(template), vec![arg.clone()]);
+        let name = link.instance_key();
+        let result_ty = fn_ty(vec![arg.to_type()], Type::Int);
+        let ast = DefnVariant {
+            params: Vec::new(),
+            body: Expr::Lambda {
+                params: vec![(Symbol::from("y"), None)],
+                body: Box::new(variant().body),
+                span: Span::SYNTHETIC,
+                inferred_type: Some(Box::new(result_ty.clone())),
+            },
+            span: Span::SYNTHETIC,
+        };
+        let view = MonoDefnVariant {
+            name,
+            params: Vec::new(),
+            body: cranelisp_types::MonoExpr::lenient_from_expr(
+                &ast.body,
+                &Default::default(),
+                &Default::default(),
+                &Default::default(),
+            ),
+            span: Span::SYNTHETIC,
+            mode_summary: None,
+        };
+        table
+            .install_instance(
+                link,
+                scheme(fn_ty(Vec::new(), result_ty)),
+                Vec::new(),
+                None,
+                0,
+                CallableOrigin::Plain,
+                Realization::Body { view, code: None },
+                Some(ast),
+                callees,
+                Visibility::Public,
+            )
+            .expect("instance fixture installs through lifecycle funnel");
+    }
+
+    fn concrete_def(ty: Type, slot: usize) -> Binding<Code> {
+        let mut table = SessionSymbolTable::new_with_params(ModuleFullPath::from("fixture"));
+        let mut type_vars: Vec<_> = cranelisp_types::free_vars(&ty).into_iter().collect();
+        type_vars.sort_unstable();
+        if type_vars.is_empty() {
+            install_concrete_fixture(&mut table, "target", ty, Vec::new(), slot);
+        } else {
+            table
+                .install_template(
+                    Symbol::from("target"),
+                    Scheme {
+                        type_vars,
+                        constraints: StdHashMap::new(),
+                        ty,
+                    },
+                    Vec::new(),
+                    None,
+                    0,
+                    CallableOrigin::Plain,
+                    TemplateBody::Ast(variant()),
+                    TemplateKind::Parametric,
+                    Vec::new(),
+                    Visibility::Public,
+                )
+                .expect("polymorphic fixture installs through lifecycle funnel");
+        }
+        table.get("target").expect("fixture installed").clone()
+    }
+
+    fn overloaded(types: Vec<Type>) -> Binding<Code> {
+        let arms = types
+            .into_iter()
+            .map(|ty| CallableArm::new(scheme(ty), Vec::new(), Life::Declared { prior: None }))
+            .collect();
+        Binding::new(
+            Decl::Overloaded(
+                OverloadedCallable::new(None, 0, arms)
+                    .expect("overload fixture has a valid roster"),
+            ),
+            Visibility::Public,
+        )
+    }
+
+    fn publish_fixture_owner(table: &mut SessionSymbolTable, name: &str) {
+        let empty_tables: cranelisp_types::SymbolTables<Code, ()> = dashmap::DashMap::new();
+        #[allow(clippy::arc_with_non_send_sync)]
+        let jit_arc =
+            std::sync::Arc::new(cranelisp_backend::jit::Jit::new(&empty_tables).expect("test jit"));
+        table
+            .publish_compiled_owner(
+                &CallableTarget::Binding(FQSymbol {
+                    module: table.path.clone(),
+                    symbol: Symbol::from(name),
+                }),
+                Code::jit(jit_arc),
+            )
+            .map_err(|rejection| rejection.into_parts().0)
+            .expect("concrete body accepts compiled owner");
     }
 
     fn fq(module: &str, name: &str) -> FQSymbol {
@@ -1638,29 +2143,108 @@ mod tests {
         Type::Fn(params, Box::new(ret))
     }
 
-    // spec: design/int/session-transaction.md §2.2 — the comparand is the
-    // alpha-canonical scheme rendering: two checks of the same source with
-    // different type-variable ids compare EQUAL.
+    // spec: repl/spec/18-redefinition.md §18.1 — language types compare
+    // modulo alpha-renaming of bound type variables.
     #[test]
-    fn abi_surface_alpha_canonical_var_ids_compare_equal() {
+    fn language_type_alpha_canonical_var_ids_compare_equal() {
         let a = concrete_def(fn_ty(vec![Type::Var(3)], Type::Var(3)), 0);
         let b = concrete_def(fn_ty(vec![Type::Var(97)], Type::Var(97)), 1);
         assert_eq!(
-            AbiSurface::of(&a),
-            AbiSurface::of(&b),
-            "alpha-equivalent schemes must have the same ABI surface"
+            LanguageType::of(&a),
+            LanguageType::of(&b),
+            "alpha-equivalent schemes must have the same language type"
         );
     }
 
-    // spec: design/int/session-transaction.md §2.2 — a type-scheme change is
-    // AbiChanging; the slot the entry carries is NOT part of the comparand.
+    // spec: repl/spec/18-redefinition.md §18.1 — slot identity is not part of
+    // the language type, while a structural type change is.
     #[test]
-    fn abi_surface_type_change_differs_slot_does_not() {
+    fn language_type_ignores_slot_but_detects_structure() {
         let int_fn = concrete_def(fn_ty(vec![Type::Int], Type::Int), 0);
         let int_fn_other_slot = concrete_def(fn_ty(vec![Type::Int], Type::Int), 7);
         let str_fn = concrete_def(fn_ty(vec![Type::String], Type::Int), 0);
-        assert_eq!(AbiSurface::of(&int_fn), AbiSurface::of(&int_fn_other_slot));
-        assert_ne!(AbiSurface::of(&int_fn), AbiSurface::of(&str_fn));
+        assert_eq!(
+            LanguageType::of(&int_fn),
+            LanguageType::of(&int_fn_other_slot)
+        );
+        assert_ne!(LanguageType::of(&int_fn), LanguageType::of(&str_fn));
+    }
+
+    // spec: repl/spec/18-redefinition.md §18.1 — the fully resolved scheme,
+    // including its constraint set, is the language type. Trait order and
+    // inference-assigned ids do not change it.
+    #[test]
+    fn language_type_canonicalizes_constraints_without_dropping_them() {
+        let trait_name =
+            |name| FQTraitName::new(ModuleFullPath::from("traits"), TraitName::from(name));
+        let make = |id, traits: Vec<FQTraitName>| Scheme {
+            type_vars: vec![id],
+            constraints: StdHashMap::from([(id, traits)]),
+            ty: fn_ty(vec![Type::Var(id)], Type::Var(id)),
+        };
+        let a = make(3, vec![trait_name("Ord"), trait_name("Eq")]);
+        let b = make(97, vec![trait_name("Eq"), trait_name("Ord")]);
+        let different = make(41, vec![trait_name("Eq")]);
+
+        assert_eq!(LanguageType::of_scheme(&a), LanguageType::of_scheme(&b));
+        assert_ne!(
+            LanguageType::of_scheme(&a),
+            LanguageType::of_scheme(&different)
+        );
+    }
+
+    // spec: repl/spec/18-redefinition.md §18.2 — caller discovery is a
+    // reverse scan of settled callee edges. It excludes only the target's own
+    // self-edge, not codegen-pending definitions, and folds realizations to one
+    // authored owner before sorting and deduplication.
+    #[test]
+    fn blockers_are_direct_settled_normalized_and_sorted() {
+        let tables = SymbolTables::new();
+        let mut user = SessionSymbolTable::new_with_params(ModuleFullPath::from("user"));
+        let target = fq("user", "f");
+        install_concrete_fixture(
+            &mut user,
+            "f",
+            fn_ty(vec![Type::Int], Type::Int),
+            vec![target.clone()],
+            0,
+        );
+        install_concrete_fixture(
+            &mut user,
+            "z-direct",
+            fn_ty(vec![Type::Int], Type::Int),
+            vec![target.clone()],
+            1,
+        );
+        install_concrete_fixture(
+            &mut user,
+            "transitive-only",
+            fn_ty(vec![Type::Int], Type::Int),
+            vec![fq("user", "z-direct")],
+            2,
+        );
+        install_template_fixture(&mut user, "poly", Vec::new());
+        install_instance_fixture(
+            &mut user,
+            fq("user", "poly"),
+            ConcreteType::Int,
+            vec![target.clone()],
+        );
+        install_instance_fixture(
+            &mut user,
+            fq("user", "poly"),
+            ConcreteType::String,
+            vec![target.clone()],
+        );
+        tables.insert(ModuleFullPath::from("user"), user);
+
+        assert_eq!(
+            blocking_dependents(&tables, &target)
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            vec!["user/poly", "user/z-direct"]
+        );
     }
 
     // spec: design/int/session-transaction.md §2.1 — RedefKind classification:
@@ -1685,12 +2269,11 @@ mod tests {
         );
     }
 
-    // spec: design/int/session-transaction.md §2.2 — internal artifacts
-    // (`__expr`, macro clauses) never classify AbiChanging (fresh-slot churn
-    // would exhaust the GOT on every expression turn), and non-concrete
-    // targets are outside per-symbol precision (§10 T1).
+    // spec: repl/spec/18-redefinition.md §§18.1, 18.3 — internal artifacts
+    // (`__expr`, macro clauses) never classify AbiChanging, while single- and
+    // multi-signature declarations compare as one callable class.
     #[test]
-    fn classify_neg_internal_names_and_nonconcrete_never_abi_changing() {
+    fn classify_internal_names_and_callable_family_boundaries() {
         let prior = concrete_def(fn_ty(vec![Type::Int], Type::Int), 0);
         let changed = concrete_def(fn_ty(vec![Type::String], Type::String), 0);
         assert_eq!(
@@ -1702,19 +2285,25 @@ mod tests {
             (RedefKind::AbiPreserving, false)
         );
         // Prior slot-less (template) → New (no frozen slot to version).
-        let slotless_prior = def_with_callees(vec![], None);
+        let slotless_prior = concrete_def(fn_ty(vec![Type::Var(0)], Type::Var(0)), 0);
         assert_eq!(
             classify_redefinition("f", Some(&slotless_prior), &changed),
             (RedefKind::New, false)
         );
-        // Non-concrete staged (Overloaded base) → conservative T1.
-        let overloaded = def_with_callees(vec![], None);
-        // (a slot-less staged entry never reaches the gate in production —
-        // the gate is entered only for staged callable slots — but the pure
-        // classifier must still answer conservatively)
+        // Changing representation without changing the signature set keeps the
+        // language type. Adding a signature changes the whole family type.
+        let same_family = overloaded(vec![fn_ty(vec![Type::Int], Type::Int)]);
         assert_eq!(
-            classify_redefinition("f", Some(&prior), &overloaded),
+            classify_redefinition("f", Some(&prior), &same_family),
             (RedefKind::AbiPreserving, false)
+        );
+        let changed_family = overloaded(vec![
+            fn_ty(vec![Type::Int], Type::Int),
+            fn_ty(vec![Type::Int, Type::Int], Type::Int),
+        ]);
+        assert_eq!(
+            classify_redefinition("f", Some(&prior), &changed_family),
+            (RedefKind::AbiChanging, false)
         );
     }
 
@@ -1759,25 +2348,19 @@ mod tests {
         let other = ModuleFullPath::from("other");
         let mut ut = SessionSymbolTable::new_with_params(user.clone());
         // g calls f; h calls g; unrelated calls add-i64 only.
-        ut.insert(Symbol::from("f"), def_with_callees(vec![], Some(0)));
-        ut.insert(
-            Symbol::from("g"),
-            def_with_callees(vec![fq("user", "f")], Some(1)),
-        );
-        ut.insert(
-            Symbol::from("h"),
-            def_with_callees(vec![fq("user", "g")], Some(2)),
-        );
-        ut.insert(
-            Symbol::from("unrelated"),
-            def_with_callees(vec![fq("primitives", "add-i64")], Some(3)),
+        install_concrete_fixture(&mut ut, "f", Type::Int, vec![], 0);
+        install_concrete_fixture(&mut ut, "g", Type::Int, vec![fq("user", "f")], 1);
+        install_concrete_fixture(&mut ut, "h", Type::Int, vec![fq("user", "g")], 2);
+        install_concrete_fixture(
+            &mut ut,
+            "unrelated",
+            Type::Int,
+            vec![fq("primitives", "add-i64")],
+            3,
         );
         tables.insert(user.clone(), ut);
         let mut ot = SessionSymbolTable::new_with_params(other.clone());
-        ot.insert(
-            Symbol::from("x"),
-            def_with_callees(vec![fq("user", "f")], Some(0)),
-        );
+        install_concrete_fixture(&mut ot, "x", Type::Int, vec![fq("user", "f")], 0);
         tables.insert(other, ot);
 
         let reverse = ReverseIndex::build(&tables);
@@ -1822,22 +2405,19 @@ mod tests {
         let tables: SymbolTables = dashmap::DashMap::new();
         let user = ModuleFullPath::from("user");
         let mut ut = SessionSymbolTable::new_with_params(user.clone());
-        ut.insert(Symbol::from("f"), def_with_callees(vec![], Some(0)));
+        install_concrete_fixture(&mut ut, "f", Type::Int, vec![], 0);
         // The eval wrapper — EXCLUDED (the 0491 rule, `__expr`-only).
-        ut.insert(
-            Symbol::from("__expr"),
-            def_with_callees(vec![fq("user", "f")], Some(1)),
-        );
+        install_concrete_fixture(&mut ut, "__expr", Type::Int, vec![fq("user", "f")], 1);
         // A macro clause carrying a REAL callee edge to f — KEPT (F3).
-        ut.insert(
-            Symbol::from("__macro_m_clause_0"),
-            def_with_callees(vec![fq("user", "f")], Some(2)),
+        install_concrete_fixture(
+            &mut ut,
+            "__macro_m_clause_0",
+            Type::Int,
+            vec![fq("user", "f")],
+            2,
         );
         // Control: a real caller with the same edge stays in.
-        ut.insert(
-            Symbol::from("g"),
-            def_with_callees(vec![fq("user", "f")], Some(3)),
-        );
+        install_concrete_fixture(&mut ut, "g", Type::Int, vec![fq("user", "f")], 3);
         tables.insert(user.clone(), ut);
 
         let reverse = ReverseIndex::build(&tables);
@@ -1979,32 +2559,31 @@ mod tests {
         let tables: SymbolTables = dashmap::DashMap::new();
         let user = ModuleFullPath::from("user");
         let mut ut = SessionSymbolTable::new_with_params(user.clone());
-        let slot = ut.allocate_got_slot().expect("fresh table has free slots");
-        ut.insert(
-            Symbol::from("g"),
-            concrete_def(fn_ty(vec![Type::Int], Type::Int), slot),
+        install_concrete_fixture(
+            &mut ut,
+            "g",
+            fn_ty(vec![Type::Int], Type::Int),
+            Vec::new(),
+            0,
         );
+        let slot = 0;
         let old_ptr = 0xDEAD_0000usize as *const u8;
         ut.got.store_slot(slot, old_ptr);
         tables.insert(user.clone(), ut);
 
         let pool: RetentionPool = Mutex::new(Vec::new());
-        let registry: BrokenRegistry = dashmap::DashMap::new();
         mark_broken(
             &tables,
             &pool,
-            &registry,
             &fq("user", "g"),
             &fq("user", "f"),
             "type error: expected primitives/String, got primitives/Int",
         );
 
-        // Registry: depth-1 provenance in the normative phrasing.
-        let info = registry.get(&fq("user", "g")).expect("registry record");
-        assert_eq!(info.broken_by, fq("user", "f"));
-        assert!(
-            info.provenance
-                .starts_with("user/g is broken by the redefinition of user/f:")
+        let expected_provenance = compose_provenance(
+            &fq("user", "g"),
+            &fq("user", "f"),
+            "type error: expected primitives/String, got primitives/Int",
         );
 
         // Pool: the trap stub rides one entry PAIRED with its message buffer.
@@ -2015,7 +2594,7 @@ mod tests {
             .expect("trap stub entry retained");
         assert_eq!(
             stub_entry.trap_msg.as_deref(),
-            Some(info.provenance.as_str()),
+            Some(expected_provenance.as_str()),
             "the stub's baked buffer is the SAME pool entry's message"
         );
         assert_eq!(stub_entry.slot, Some(slot));
@@ -2033,35 +2612,35 @@ mod tests {
         // eval turn and overwrite the trap patch (the exact unsoundness the
         // trap closes; see src/CLAUDE.md §redefine.rs key invariants).
         let entry = table.get("g").expect("broken entry stays in the table");
-        assert!(
-            matches!(entry, ModuleEntry::Def { code: Some(_), .. }),
-            "broken entry's code field must hold the trap stub's handle, \
-             not None (synth-def sweep resurrection guard)"
-        );
+        assert!(matches!(
+            entry.callable().map(|callable| &callable.arm.life),
+            Some(Life::Broken { error, .. })
+                if error.broken_by == fq("user", "f")
+                    && error.message == "type error: expected primitives/String, got primitives/Int"
+        ));
     }
 
     // spec: design/int/session-transaction.md §5.1 — the slot-less degenerate
     // arm: registry record only; NO pool push, NO trap patch.
     #[test]
-    fn mark_broken_slotless_neg_registry_only_no_pool_no_patch() {
+    fn mark_broken_slotless_neg_leaves_template_and_pool_unchanged() {
         let tables: SymbolTables = dashmap::DashMap::new();
         let user = ModuleFullPath::from("user");
         let mut ut = SessionSymbolTable::new_with_params(user.clone());
-        ut.insert(Symbol::from("t"), def_with_callees(vec![], None));
+        install_template_fixture(&mut ut, "t", Vec::new());
         tables.insert(user.clone(), ut);
 
         let pool: RetentionPool = Mutex::new(Vec::new());
-        let registry: BrokenRegistry = dashmap::DashMap::new();
-        mark_broken(
-            &tables,
-            &pool,
-            &registry,
-            &fq("user", "t"),
-            &fq("user", "f"),
-            "err",
-        );
+        mark_broken(&tables, &pool, &fq("user", "t"), &fq("user", "f"), "err");
 
-        assert!(registry.contains_key(&fq("user", "t")), "registry record");
+        let table = tables.get(&user).expect("table remains present");
+        assert!(matches!(
+            table
+                .get("t")
+                .and_then(Binding::callable)
+                .map(|callable| &callable.arm.life),
+            Some(Life::Template { .. })
+        ));
         assert!(
             pool.lock().unwrap().is_empty(),
             "no pool push for a slot-less member"
@@ -2073,38 +2652,44 @@ mod tests {
     // never release-mode UB at slot GOT_TABLE_SIZE.
     #[test]
     fn got_exhaustion_surfaces_error_not_ub() {
+        use cranelisp_types::GOT_TABLE_SIZE;
         let module = ModuleFullPath::from("user");
         let mut st = SessionSymbolTable::new_with_params(module.clone());
-        for _ in 0..GOT_TABLE_SIZE {
-            allocate_live_got_slot(&mut st, &module).expect("in-bounds allocation");
+        for slot in 0..GOT_TABLE_SIZE {
+            install_concrete_fixture(&mut st, &format!("f{slot}"), Type::Int, Vec::new(), slot);
         }
-        let err = allocate_live_got_slot(&mut st, &module)
+        let ast = variant();
+        let view = MonoDefnVariant {
+            name: Symbol::from("overflow"),
+            params: Vec::new(),
+            body: cranelisp_types::MonoExpr::lenient_from_expr(
+                &ast.body,
+                &Default::default(),
+                &Default::default(),
+                &Default::default(),
+            ),
+            span: Span::SYNTHETIC,
+            mode_summary: None,
+        };
+        let err = st
+            .install_concrete(
+                Symbol::from("overflow"),
+                scheme(Type::Int),
+                Vec::new(),
+                None,
+                0,
+                CallableOrigin::Plain,
+                Realization::Body { view, code: None },
+                Some(ast),
+                Vec::new(),
+                Visibility::Public,
+            )
             .expect_err("slot GOT_TABLE_SIZE must be refused");
         assert!(
             err.to_string().contains("GOT slot table exhausted"),
             "got: {err}"
         );
-        assert_eq!(
-            st.next_got_slot, GOT_TABLE_SIZE,
-            "high-water untouched by refusal"
-        );
-    }
-
-    /// Attach a real (empty-table) JIT `Code` handle so the entry reads as a
-    /// "compiled caller" (`code: Some`) to [`stale_callers`]' filter.
-    fn compiled(mut entry: ModuleEntry<Code>) -> ModuleEntry<Code> {
-        if let ModuleEntry::Def { code, .. } = &mut entry {
-            let empty_tables: cranelisp_types::SymbolTables<Code, ()> = dashmap::DashMap::new();
-            // Same allow + rationale as the production composition site
-            // (`inline_jit_codegen_for_names`): the Arc is the lifecycle root
-            // for the mmap'd pages, never sent across threads.
-            #[allow(clippy::arc_with_non_send_sync)]
-            let jit_arc = std::sync::Arc::new(
-                cranelisp_backend::jit::Jit::new(&empty_tables).expect("test jit"),
-            );
-            *code = Some(Code::jit(jit_arc));
-        }
-        entry
+        assert_eq!(st.all_symbols().count(), GOT_TABLE_SIZE);
     }
 
     fn outcome(
@@ -2221,15 +2806,22 @@ mod tests {
         let tables: SymbolTables = dashmap::DashMap::new();
         let user = ModuleFullPath::from("user");
         let mut ut = SessionSymbolTable::new_with_params(user.clone());
-        ut.insert(
-            Symbol::from("dep"),
-            concrete_def(fn_ty(vec![Type::Int], Type::Int), 0),
+        install_concrete_fixture(
+            &mut ut,
+            "dep",
+            fn_ty(vec![Type::Int], Type::Int),
+            Vec::new(),
+            0,
         );
         // A compiled macro clause referencing the redefined dep fn.
-        ut.insert(
-            Symbol::from("__macro_m_clause_0"),
-            compiled(def_with_callees(vec![fq("user", "dep")], Some(1))),
+        install_concrete_fixture(
+            &mut ut,
+            "__macro_m_clause_0",
+            Type::Int,
+            vec![fq("user", "dep")],
+            1,
         );
+        publish_fixture_owner(&mut ut, "__macro_m_clause_0");
         tables.insert(user.clone(), ut);
 
         let stale = stale_callers(&tables, &fq("user", "dep"));
@@ -2250,38 +2842,36 @@ mod tests {
         let user = ModuleFullPath::from("user");
         let lib = ModuleFullPath::from("lib");
         let mut ut = SessionSymbolTable::new_with_params(user.clone());
-        ut.insert(
-            Symbol::from("id"),
-            concrete_def(fn_ty(vec![Type::Int], Type::Int), 0),
+        install_concrete_fixture(
+            &mut ut,
+            "id",
+            fn_ty(vec![Type::Int], Type::Int),
+            Vec::new(),
+            0,
         );
         // Compiled caller: IN.
-        ut.insert(
-            Symbol::from("gcall"),
-            compiled(def_with_callees(vec![fq("user", "id")], Some(1))),
-        );
+        install_concrete_fixture(&mut ut, "gcall", Type::Int, vec![fq("user", "id")], 1);
+        publish_fixture_owner(&mut ut, "gcall");
         // Never-compiled template caller (code: None, slot-less): OUT —
         // late-binds at its next mint (§18.1.1 negative half).
-        ut.insert(
-            Symbol::from("bystander"),
-            def_with_callees(vec![fq("user", "id")], None),
-        );
+        install_template_fixture(&mut ut, "bystander", vec![fq("user", "id")]);
         // Compiled internal wrapper: OUT (the 0491 rule applies identically).
-        ut.insert(
-            Symbol::from("__expr"),
-            compiled(def_with_callees(vec![fq("user", "id")], Some(2))),
-        );
+        install_concrete_fixture(&mut ut, "__expr", Type::Int, vec![fq("user", "id")], 2);
+        publish_fixture_owner(&mut ut, "__expr");
         // Compiled but no edge to the target: OUT.
-        ut.insert(
-            Symbol::from("unrelated"),
-            compiled(def_with_callees(vec![fq("primitives", "add-i64")], Some(3))),
+        install_concrete_fixture(
+            &mut ut,
+            "unrelated",
+            Type::Int,
+            vec![fq("primitives", "add-i64")],
+            3,
         );
+        publish_fixture_owner(&mut ut, "unrelated");
         tables.insert(user.clone(), ut);
         // Cross-module compiled caller: IN.
         let mut lt = SessionSymbolTable::new_with_params(lib.clone());
-        lt.insert(
-            Symbol::from("x"),
-            compiled(def_with_callees(vec![fq("user", "id")], Some(0))),
-        );
+        install_concrete_fixture(&mut lt, "x", Type::Int, vec![fq("user", "id")], 0);
+        publish_fixture_owner(&mut lt, "x");
         tables.insert(lib, lt);
 
         let stale = stale_callers(&tables, &fq("user", "id"));
@@ -2302,23 +2892,31 @@ mod tests {
         let tables: SymbolTables = dashmap::DashMap::new();
         let user = ModuleFullPath::from("user");
         let mut ut = SessionSymbolTable::new_with_params(user.clone());
-        ut.insert(
-            Symbol::from("id"),
-            concrete_def(fn_ty(vec![Type::Int], Type::Int), 0),
+        install_concrete_fixture(
+            &mut ut,
+            "id",
+            fn_ty(vec![Type::Int], Type::Int),
+            Vec::new(),
+            0,
         );
         // Compiled mono caller recorded against the MANGLED mint: IN, as `h`.
-        ut.insert(
-            Symbol::from("h$primitives/Int"),
-            compiled(def_with_callees(
-                vec![fq("user", "id$primitives/Int")],
-                Some(1),
-            )),
+        install_concrete_fixture(
+            &mut ut,
+            "h$primitives/Int",
+            Type::Int,
+            vec![fq("user", "id$primitives/Int")],
+            1,
         );
+        publish_fixture_owner(&mut ut, "h$primitives/Int");
         // The target's own old mint (recursive self-edge shape): excluded.
-        ut.insert(
-            Symbol::from("id$primitives/Int"),
-            compiled(def_with_callees(vec![fq("user", "id")], Some(2))),
+        install_concrete_fixture(
+            &mut ut,
+            "id$primitives/Int",
+            Type::Int,
+            vec![fq("user", "id")],
+            2,
         );
+        publish_fixture_owner(&mut ut, "id$primitives/Int");
         tables.insert(user.clone(), ut);
 
         let stale = stale_callers(&tables, &fq("user", "id"));

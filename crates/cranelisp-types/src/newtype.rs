@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 /// Generate a string newtype with standard derives and trait impls.
 ///
 /// Derives: Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize
-/// Impls: Deref<Target=str>, From<String>, From<&str>, AsRef<str>, Display, Borrow<str>
+/// Impls: `Deref<Target=str>`, `From<String>`, `From<&str>`, `AsRef<str>`,
+/// `Display`, `Borrow<str>`
 #[macro_export]
 macro_rules! string_newtype {
     ($name:ident) => {
@@ -70,7 +71,7 @@ string_newtype!(JitSymbol);
 string_newtype!(LinkerSymbol);
 
 /// Fully qualified symbol: module path + local name.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct FQSymbol {
     pub module: ModuleFullPath,
     pub symbol: Symbol,

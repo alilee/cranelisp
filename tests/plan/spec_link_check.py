@@ -3,7 +3,8 @@
 
 Scans top-level test files in `tests/*.rs` for `// spec:` (and `///
 spec:`) annotations that trace each test back to a normative document
-(`spec/NN-name.md`, `repl/spec.md`, or `design/...md`). For each
+(`spec/NN-name.md`, `repl/spec.md`, its split section files, or
+`design/...md`). For each
 citation, opens the cited file and checks whether the cited section
 anchor exists as a Markdown heading.
 
@@ -171,6 +172,30 @@ def extract_headings(md_path: Path) -> list[tuple[str, str]]:
     return out
 
 
+def repl_alias_headings(root: Path) -> tuple[list[tuple[str, str]], list[str]]:
+    """Return headings behind the stable ``repl/spec.md`` logical path.
+
+    ``index.md`` is navigation, not normative content. A numeric section may
+    have only one owning leaf; otherwise an old-path citation would be
+    ambiguous and must fail instead of selecting the first match.
+    """
+    headings: list[tuple[str, str]] = []
+    owners: dict[str, Path] = {}
+    duplicates: set[str] = set()
+    for leaf in sorted((root / "repl/spec").glob("*.md")):
+        if leaf.name == "index.md":
+            continue
+        for number, title in extract_headings(leaf):
+            headings.append((number, title))
+            if not number:
+                continue
+            if number in owners and owners[number] != leaf:
+                duplicates.add(number)
+            else:
+                owners[number] = leaf
+    return headings, sorted(duplicates)
+
+
 def anchor_matches(anchor: str, headings: list[tuple[str, str]]) -> bool:
     """True iff the anchor matches some heading.
 
@@ -273,6 +298,15 @@ def main() -> int:
 
     # Heading cache, keyed by relative md path.
     heading_cache: dict[Path, list[tuple[str, str]]] = {}
+    repl_headings, repl_duplicate_anchors = repl_alias_headings(root)
+
+    if repl_duplicate_anchors:
+        print(
+            "spec_link_check: duplicate numeric REPL headings behind "
+            f"repl/spec.md: {', '.join(repl_duplicate_anchors)}",
+            file=sys.stderr,
+        )
+        return 1
 
     def get_headings(rel_path: str) -> list[tuple[str, str]] | None:
         md_path = (root / rel_path).resolve()
@@ -281,6 +315,12 @@ def main() -> int:
         if not md_path.is_file():
             return None
         h = extract_headings(md_path)
+        # `repl/spec.md` is the stable compatibility entry point for the
+        # sectioned REPL specification. Historical citations keep that path;
+        # resolve their anchors against the normative leaves without copying
+        # thousands of requirements back into the entry point.
+        if rel_path == "repl/spec.md":
+            h.extend(repl_headings)
         heading_cache[md_path] = h
         return h
 

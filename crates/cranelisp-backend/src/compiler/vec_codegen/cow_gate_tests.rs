@@ -23,9 +23,7 @@
 //! matrix — builtin/user-named × escapes true/false/absent × return-source y/n
 //! × Var/temp source × both ownership toggles.
 
-use cranelisp_types::{
-    ConcreteType, FQSymbol, JitSymbol, MonoExpr, ResolvedCall, Span, Symbol, VarRef,
-};
+use cranelisp_types::{ConcreteType, FQSymbol, MonoExpr, ResolvedCall, Span, Symbol, VarRef};
 
 use super::{
     cow_retains_reused_gate, cow_site_retain_verdict, cow_source_is_borrowed, is_cow_vec_op,
@@ -176,9 +174,10 @@ fn non_builtin_carrier_is_not_a_gate_site_neg() {
         callee: Box::new(var("vec-push")),
         args: vec![var("v"), var("x")],
         span: Span::SYNTHETIC,
-        resolved_call: Some(Box::new(ResolvedCall::SigDispatch {
-            mangled_name: JitSymbol::from("user/vec-push$Vec"),
-        })),
+        resolved_call: Some(Box::new(crate::test_support::sig_binding(
+            "user",
+            "vec-push$Vec",
+        ))),
         dispatch: cranelisp_types::ApplyRef::Dispatch(FQSymbol {
             module: cranelisp_types::ModuleFullPath::from("user"),
             symbol: Symbol::from("vec-push$Vec"),

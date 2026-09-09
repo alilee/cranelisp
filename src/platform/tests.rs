@@ -344,7 +344,8 @@ fn test_register_platform_in_tc() {
         user_mod.clone(),
         crate::code::SessionSymbolTable::new_with_params(user_mod.clone()),
     );
-    crate::bootstrap::mount_synthetic_modules(&symbol_tables, &next_type_id);
+    crate::bootstrap::mount_synthetic_modules(&symbol_tables, &next_type_id)
+        .expect("test bootstrap mount");
     let module_aliases = cranelisp_types::ModuleAliases::default();
     let platform = load_and_register_platform(
         &symbol_tables,
@@ -374,17 +375,11 @@ fn test_register_platform_in_tc() {
 
     // Verify types are correctly parsed AND `got_slot = manifest index`
     // (platform-interface.md §5.3) — the GOT-indirect dispatch activator.
-    if let Some(
-        entry @ ModuleEntry::Def {
-            scheme,
-            kind,
-            docstring,
-            ..
-        },
-    ) = print_entry
+    if let Some(entry) = print_entry
+        && let Some(callable) = entry.callable()
     {
         // print: (Fn [primitives/String] (primitives/IO primitives/Int))
-        match &scheme.ty {
+        match &callable.arm.scheme.ty {
             Type::Fn(params, ret) => {
                 assert_eq!(params.len(), 1);
                 assert_eq!(params[0], Type::String);
@@ -392,8 +387,11 @@ fn test_register_platform_in_tc() {
             }
             _ => panic!("expected Fn type for print"),
         }
-        assert!(matches!(kind.as_ref(), DefKind::PlatformEffect { .. }));
-        assert!(docstring.is_some());
+        assert!(matches!(
+            callable.origin,
+            cranelisp_types::CallableOrigin::PlatformEffect { .. }
+        ));
+        assert!(callable.docstring.is_some());
         // The slot rides on the `PlatformEffect` variant (S83 reshape,
         // FIXME 0358); read it via the `callable_got_slot()` chokepoint.
         assert_eq!(
@@ -404,7 +402,9 @@ fn test_register_platform_in_tc() {
     } else {
         panic!("expected Def entry for print");
     }
-    if let Some(entry @ ModuleEntry::Def { .. }) = read_entry {
+    if let Some(entry) = read_entry
+        && entry.callable().is_some()
+    {
         assert_eq!(
             entry.callable_got_slot(),
             Some(1),

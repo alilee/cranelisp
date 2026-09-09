@@ -55,23 +55,23 @@
   (defn = [a b] (str-eq a b))
   (defn != [a b] (not (str-eq a b))))
 
+;; A trailing expression is a DEFAULT method body, not a return-type
+;; slot. Here <= and >= are derived from the two required comparisons.
+;; An impl may still supply its own body to override a default. Defaults
+;; are for ordinary traits only; higher-kinded traits cannot declare them.
 (deftrait Ord
   (< [a b] Bool)
   (> [a b] Bool)
-  (<= [a b] Bool)
-  (>= [a b] Bool))
+  (<= [a b] (not (> a b)))
+  (>= [a b] (not (< a b))))
 
 (impl Ord Int
   (defn < [a b] (lt-i64 a b))
-  (defn > [a b] (lt-i64 b a))
-  (defn <= [a b] (not (lt-i64 b a)))
-  (defn >= [a b] (not (lt-i64 a b))))
+  (defn > [a b] (lt-i64 b a)))
 
 (impl Ord Float
   (defn < [a b] (lt-f64 a b))
-  (defn > [a b] (lt-f64 b a))
-  (defn <= [a b] (not (lt-f64 b a)))
-  (defn >= [a b] (not (lt-f64 a b))))
+  (defn > [a b] (lt-f64 b a)))
 
 ;; --- Num trait: arithmetic on Int ---
 
@@ -196,9 +196,9 @@
 
 ;; --- Ord and Eq derived methods ---
 
-;; The Ord trait provides >, <=, >= alongside <.
+;; The Ord trait requires < and >; the omitted <= and >= methods above
+;; are the synthesized defaults, so these calls exercise those bodies.
 ;; The Eq trait provides != alongside =.
-;; Each method has an explicit implementation.
 
 (defn test-gt []
   (if (> 5 3) 1 0))                                  ;; -> 1

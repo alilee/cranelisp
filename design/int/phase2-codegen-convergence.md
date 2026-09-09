@@ -25,8 +25,8 @@ Today the compiler has **two** codegen entry points, each with its own GOT/JIT w
 
 | Path | Entry | File:line | What it compiles |
 |------|-------|-----------|------------------|
-| Object (.o via nice worker) | `cranelisp_backend::compile_to_module` | `src/session_v4.rs:3346` | Whole module at once |
-| JIT (priority worker) | `crate::worker::codegen_module_symbols` | `src/worker.rs:2541` | Iterates `program`, calls `compile_and_register_defn_shared` per defn |
+| Object (.o via nice worker) | `cranelisp_backend::compile_to_module` | historical `src/session_v4.rs:3346` | Whole module at once |
+| JIT (priority worker) | `crate::worker::codegen_module_symbols` | historical `src/worker.rs:2541` | Iterates `program`, calls `compile_and_register_defn_shared` per defn |
 
 The object path is already "new-style": it hands a module path, a program-shaped input, and the shared symbol tables to `compile_to_module`, which reads GOT slots from `ModuleEntry::Def` and follows Import chains. After Phase 1 (Sprint 55), bodies and annotations live on `ModuleEntry::Def.ast` and on `Expr` nodes.
 
@@ -34,7 +34,7 @@ The JIT path is the holdout. It:
 
 1. Allocates JITs **per-defn** internally via `compile_and_register_defn_shared` (`src/pipeline.rs:235`), creating one `JITModule` per `Defn`.
 2. Builds a `SessionCompilationEnv` (`src/worker.rs:87`) that today's backend `CompilationEnv` trait consumes for GOT resolution. This duplicates the lookup logic already encoded against `symbol_tables` on the object path. Step 2b retires both the trait and the in-`src/` env (see `design/backend/compile-to-module.md` §12 for the uniform Module-resolved replacement).
-3. Pre-allocates GOT slots for names the typechecker did not register (`pre_register_got_slots_in_tc` at `src/worker.rs:2593`). Wave 0 closes this gap: the typechecker now registers every compilable name with `ast: Some(_)` and its own `got_slot`.
+3. Pre-allocates GOT slots for names the typechecker did not register (`pre_register_got_slots_in_tc` at historical `src/worker.rs:2593`). Wave 0 closes this gap: the typechecker now registers every compilable name with `ast: Some(_)` and its own `got_slot`.
 4. Collects platform-function JIT symbols and GOT data defs via `SessionCompilationEnv::collect_jit_setup_for_module` (`src/worker.rs:308`). After Step 2b, cross-module GOT data defs are uniform `Linkage::Import` declarations emitted by `compile_to_module` (resolved via `JITBuilder::symbol_lookup_fn` on the JIT path and via linker relocations on the object path — see `design/backend/compile-to-module.md` §12). Platform function pointers are registered by the caller directly on the `JITBuilder` via `JITBuilder::symbol` before `JITModule::new`, as shown in the §5 pseudocode.
 5. Calls `expand_multi_sig_defn` inside the backend on `DefnMulti` entries. Wave 0 pre-materialises mangled variants on the symbol table — this expansion becomes dead code.
 
@@ -102,7 +102,7 @@ Per `/arch` review §6 condition 4, the per-function `JITModule` lifetime is exp
 
 ## 5. Priority Worker Loop
 
-The existing priority worker (`src/worker.rs:2878 priority_worker_loop` and `src/worker.rs:3037 priority_worker_thread`) calls `codegen_module_symbols` inside the `ProcessResult::Complete` branch of `process_module_forms`. Step 2b inlines a direct `compile_to_module` call in its place. Per `design/arch/pipeline-v4.md` §9.3 and Principle 11 in `design/arch/CLAUDE.md`, the backend has a single entry point — `compile_to_module<M: Module>(module_path, names, symbol_tables, module) -> CompilationResult` — with no env parameter and no mode. GOT resolution is uniform: the backend emits `Linkage::Import` data symbols named `__cranelisp_got_{module}`; the JIT caller pre-registers a `JITBuilder::symbol_lookup_fn` that maps that name to the GOT's runtime base pointer (see `design/backend/compile-to-module.md` §12). `CompilationResult.artifacts: HashMap<Symbol, FunctionArtifacts>` is populated per-symbol.
+The historical priority worker (`src/worker.rs:2878 priority_worker_loop` and `src/worker.rs:3037 priority_worker_thread`) called `codegen_module_symbols` inside the `ProcessResult::Complete` branch of `process_module_forms`. Step 2b inlined a direct `compile_to_module` call in its place. Per `design/arch/pipeline-v4.md` §9.3 and Principle 11 in `design/arch/CLAUDE.md`, the backend has a single entry point — `compile_to_module<M: Module>(module_path, names, symbol_tables, module) -> CompilationResult` — with no env parameter and no mode. GOT resolution is uniform: the backend emits `Linkage::Import` data symbols named `__cranelisp_got_{module}`; the JIT caller pre-registers a `JITBuilder::symbol_lookup_fn` that maps that name to the GOT's runtime base pointer (see `design/backend/compile-to-module.md` §12). `CompilationResult.artifacts: HashMap<Symbol, FunctionArtifacts>` is populated per-symbol.
 
 ```rust
 Ok(ProcessResult::Complete { check_result, .. }) => {
@@ -237,7 +237,7 @@ Notes on this pseudocode:
 - `result.artifacts: HashMap<Symbol, FunctionArtifacts>` is the per-name introspection bundle (CLIF IR, disasm, code_size). `/arch` Phase 3a Finding 1 resolved the shape; `/backend` Wave 1 populates it. The artifact loop above is the concrete, implementable keying-by-`FQSymbol` pattern called for in `pipeline-v4.md` §9.6.
 - Error handling uses `?` with `CranelispError` throughout, per `src/CLAUDE.md`.
 
-The identical change applies to `priority_worker_thread` in `src/worker.rs:3037` (threaded worker), which mirrors `priority_worker_loop`. Both call `codegen_module_symbols` today; both get the same inline replacement.
+The identical historical change applied to `priority_worker_thread` in `src/worker.rs:3037` (threaded worker), which mirrored `priority_worker_loop`.
 
 ## 6. REPL `__expr` Path
 
@@ -280,12 +280,12 @@ Exhaustive list of items deleted in Step 2b. Line numbers reflect the current HE
 
 | # | Item | File:line | Notes |
 |---|------|-----------|-------|
-| 1 | `pub fn codegen_module_symbols(...)` | `src/worker.rs:2541` (definition) | The entire function. |
-| 2 | Call site from `priority_worker_loop` | `src/worker.rs:2919` | Replaced by the inlined block in §5. |
-| 3 | Call site from `priority_worker_thread` | `src/worker.rs:3135` | Same replacement as #2. |
-| 4 | Call site from `codegen_and_execute` (session_v4) | `src/session_v4.rs:1457` | REPL eval also transitions to the inline pattern. |
+| 1 | `pub fn codegen_module_symbols(...)` | historical `src/worker.rs:2541` (definition) | The entire function. |
+| 2 | Call site from `priority_worker_loop` | historical `src/worker.rs:2919` | Replaced by the inlined block in §5. |
+| 3 | Call site from `priority_worker_thread` | historical `src/worker.rs:3135` | Same replacement as #2. |
+| 4 | Call site from `codegen_and_execute` (session_v4) | historical `src/session_v4.rs:1457` | REPL eval also transitions to the inline pattern. |
 | 5 | `fn compile_regular_defns(...)` | `src/worker.rs:2667` | Dead once `codegen_module_symbols` is deleted. |
-| 6 | `fn pre_register_got_slots_in_tc(...)` | `src/worker.rs:2593` | Dead: Wave 0 makes the typechecker register every name with a `got_slot`. |
+| 6 | `fn pre_register_got_slots_in_tc(...)` | historical `src/worker.rs:2593` | Dead: Wave 0 makes the typechecker register every name with a `got_slot`. |
 | 7 | `pub fn compile_and_register_defn_shared(...)` | `src/pipeline.rs:235` | Dead: `compile_to_module` handles the per-defn work internally. |
 | 8 | `pub struct SessionCompilationEnv<'a>` + `impl CompilationEnv` | `src/worker.rs:87–214` | DELETED (no replacement env in `src/`). The backend has no env parameter — see §3 and `design/backend/compile-to-module.md` §12. |
 | 9 | `impl SessionCompilationEnv<'_> { resolve_in_module, resolve_module_slot, arity_in_module, collect_jit_setup_for_module }` | `src/worker.rs:216–380` | DELETED with the struct. |
@@ -295,8 +295,8 @@ Exhaustive list of items deleted in Step 2b. Line numbers reflect the current HE
 | 12 | Default-method inlining loop in `finalize_module` | `src/worker.rs:1245–1247` | Already on the symbol table per Phase 1; the push into `program` is redundant once callers read `names`. |
 | 13 | Post-pass enrichment loop in `finalize_module` | `src/worker.rs:1260–1277` | `enrich_defn_from_side_maps` / `enrich_expr_from_side_maps` were the Phase 1 dual-write bridge. Wave 0 writes resolutions to AST nodes directly on `register_mono_entry`, so the enrichment is a no-op and the helpers become dead. |
 | 14 | `program: Vec<TopLevel>` field on `ProcessResult::Complete` (and the program-building code at `src/worker.rs:1207–1241`) | `src/worker.rs:1207–1283` | Once `compile_to_module` takes `names` only and nice workers enumerate `defined_symbols()` themselves (Phase 3), the `program` output of `process_module_forms` is dead. **Step 2b may keep the `program` output alive for nice workers' `stash_codegen_program` call**, deferring full removal until Phase 3. This is called out as a deferred deletion — not Step 2b's burden. |
-| 15 | `codegen_and_execute`'s `check: &CheckResult` parameter | `src/session_v4.rs:1444` | After Wave 0, the REPL path does not consume `constrained_fn_names` from `CheckResult` (it reads from the symbol table). The `CheckResult` parameter survives only for warnings and display — those stay. |
-| 16 | The `traced_fns` + test-extern collection around line `src/session_v4.rs:1476–1519` | `src/session_v4.rs:1476–1519` | Retained. Trace display state and test runner state are orthogonal to codegen convergence — they wire extra JIT symbols into the REPL's `compile_to_module` call. Not a deletion; stays as caller-side extra-symbols input. |
+| 15 | `codegen_and_execute`'s `check: &CheckResult` parameter | historical `src/session_v4.rs:1444` | After Wave 0, the REPL path does not consume `constrained_fn_names` from `CheckResult` (it reads from the symbol table). The `CheckResult` parameter survives only for warnings and display — those stay. |
+| 16 | The `traced_fns` + test-extern collection around historical line `src/session_v4.rs:1476–1519` | historical `src/session_v4.rs:1476–1519` | Retained. Trace display state and test runner state are orthogonal to codegen convergence — they wire extra JIT symbols into the REPL's `compile_to_module` call. Not a deletion; stays as caller-side extra-symbols input. |
 
 Items 1–13 are the core Step 2b deletions. Items 14–16 are classifications — notes on what stays, what is deferred, and where `/int` should not over-reach.
 
@@ -350,7 +350,7 @@ Remove items 8, 9 from §7. `SessionCompilationEnv` struct + trait impl + privat
 
 **Mitigation**: `CompileScheduler::take_priority_work` (`src/scheduler.rs:422`) already guarantees that `PriorityWork::Typecheck(module)` and `PriorityWork::JitCodegen(module, symbol)` for a given module do not issue to two workers simultaneously — module state is tracked in `ModulePool` (see `src/scheduler.rs:177`). Step 2b does not change this guarantee. **Finding**: confirmed no gap.
 
-**Edge case**: the REPL eval path (`src/session_v4.rs:1418`) calls `codegen_and_execute` inline — it does not route through `take_priority_work`. For Step 2b, the inline REPL path holds the TypeChecker's per-module mutable access through `check_state`, so no other worker can process the same module concurrently. The `codegen_and_execute` codegen call thus has exclusive access to the module's symbol table and GOT. Document this invariant in the new inline block's comment.
+**Historical edge case**: the REPL eval path (`src/session_v4.rs:1418`) called `codegen_and_execute` inline — it did not route through `take_priority_work`. For Step 2b, the inline REPL path held the TypeChecker's per-module mutable access through `check_state`, so no other worker could process the same module concurrently. The `codegen_and_execute` codegen call thus had exclusive access to the module's symbol table and GOT.
 
 ### 9.2 GOT slot allocation race
 
@@ -502,14 +502,14 @@ Every `codegen_products` read migrates to a symbol-table lookup. Exhaustive enum
 | # | Reader | File:line (Phase 2 HEAD) | Today's read | Phase 3 G6 replacement |
 |---|--------|--------------------------|--------------|------------------------|
 | R1 | Priority worker — cross-module symbol pre-registration for `Linkage::Import` resolution during JIT finalize | `src/worker.rs:2399–2413` (`inline_jit_codegen_for_names` step 2b) | Iterates every `codegen_products` entry, collects `(name, ptr)` pairs | Iterates `symbol_tables` entries; for each `ModuleEntry::Def { code: Some(c), .. }` push `(symbol, c.ptr)`. Same pairs, same order. |
-| R2 | REPL eval — trailing-expression JIT | `src/session_v4.rs:1505–1514` (`codegen_and_execute`) | Passes `&self.shared.codegen_products` to `inline_jit_codegen_for_module`; later reads the compiled `__expr` pointer from `codegen_products[module].code["__expr"]` | `inline_jit_codegen_for_module` writes to symbol table (R1's write path). Eval reads `symbol_tables[module].get("__expr")` → `ModuleEntry::Def { code: Some(Code { ptr, .. }), .. }` → `ptr`. |
+| R2 | REPL eval — trailing-expression JIT | historical `src/session_v4.rs:1505–1514` (`codegen_and_execute`) | Passes `&self.shared.codegen_products` to `inline_jit_codegen_for_module`; later reads the compiled `__expr` pointer from `codegen_products[module].code["__expr"]` | `inline_jit_codegen_for_module` writes to symbol table (R1's write path). Eval reads `symbol_tables[module].get("__expr")` → `ModuleEntry::Def { code: Some(Code { ptr, .. }), .. }` → `ptr`. |
 | R3 | `/clif`, `/disasm` introspection | `src/session_v4.rs` REPL command handlers (search `codegen_products`) | Reads `codegen_products[module].code[name]` to verify the symbol is compiled, then reads `introspection[fq]` for CLIF/disasm text | Reads `symbol_tables[module].get(name).code.is_some()` for the compiled-check; introspection map unchanged (it stays separate per §9.6 / §13.6 below). |
 | R4 | `/source` introspection | same as R3 | Same presence check, then reads the original source span from the entry's `ast` / `sexp` fields | `symbol_tables[module].get(name).ast` is already the source. The `code.is_some()` check is optional (source exists even before code). |
-| R5 | `main` trampoline — look up entry-module `main` code pointer to call from Rust | `src/session_v4.rs:2666–2680` (`lookup_main_code`) | `codegen_products.get(module).and_then(|cp| cp.code.get("main")).map(|c| c.ptr)` | `symbol_tables.get(module).and_then(\|st\| st.get("main")).and_then(\|e\| match e { ModuleEntry::Def { code: Some(c), .. } => Some(c.ptr), _ => None })`. |
-| R6 | Test runner externs (`discover-tests`, `run-test`) — resolve test fn pointers by FQSymbol | `src/session_v4.rs:3536–3590` (`discover_test_names`, `run_test_by_name`) | Reads `codegen_products[module].code[name].ptr` for each `test-*` fn | Replace with `symbol_tables[module].get(name).code.as_ref().map(\|c\| c.ptr)` — same follow-Import-chain logic kept, just reading a different field. |
-| R7 | `TestRunnerState` pointer passing | `src/session_v4.rs:1490, 1566, 3639, 3701, 3745` | Holds `*const DashMap<ModuleFullPath, CodegenProduct>` so externs can later resolve code pointers | Holds `*const DashMap<ModuleFullPath, SymbolTable>` (already in shared state). Drops the dependency on `codegen_products` entirely. |
-| R8 | `reload_module` — clear prior compiled code before recompile | `src/session_v4.rs:982` | `codegen_products.remove(module_path)` | Walk `symbol_tables[module].all_symbols_mut()` and set `code = None` on each `Def`. Cheaper than an entry-level clear because the GOT slot assignments and AST survive. |
-| R9 | `compile_and_execute_expr` — cache-hit fast path for cross-module pointers | `src/session_v4.rs:3573–3605` (`lookup_code_for_fqsymbol`) | `codegen_products[module].code[name].ptr` | `symbol_tables[module].get(name).code.as_ref().map(\|c\| c.ptr)`. Same follow-Import walk. |
+| R5 | `main` trampoline — look up entry-module `main` code pointer to call from Rust | historical `src/session_v4.rs:2666–2680` (`lookup_main_code`) | `codegen_products.get(module).and_then(|cp| cp.code.get("main")).map(|c| c.ptr)` | `symbol_tables.get(module).and_then(\|st\| st.get("main")).and_then(\|e\| match e { ModuleEntry::Def { code: Some(c), .. } => Some(c.ptr), _ => None })`. |
+| R6 | Test runner externs (`discover-tests`, `run-test`) — resolve test fn pointers by FQSymbol | historical `src/session_v4.rs:3536–3590` (`discover_test_names`, `run_test_by_name`) | Reads `codegen_products[module].code[name].ptr` for each `test-*` fn | Replace with `symbol_tables[module].get(name).code.as_ref().map(\|c\| c.ptr)` — same follow-Import-chain logic kept, just reading a different field. |
+| R7 | `TestRunnerState` pointer passing | historical `src/session_v4.rs:1490, 1566, 3639, 3701, 3745` | Holds `*const DashMap<ModuleFullPath, CodegenProduct>` so externs can later resolve code pointers | Holds `*const DashMap<ModuleFullPath, SymbolTable>` (already in shared state). Drops the dependency on `codegen_products` entirely. |
+| R8 | `reload_module` — clear prior compiled code before recompile | historical `src/session_v4.rs:982` | `codegen_products.remove(module_path)` | Walk `symbol_tables[module].all_symbols_mut()` and set `code = None` on each `Def`. Cheaper than an entry-level clear because the GOT slot assignments and AST survive. |
+| R9 | `compile_and_execute_expr` — cache-hit fast path for cross-module pointers | historical `src/session_v4.rs:3573–3605` (`lookup_code_for_fqsymbol`) | `codegen_products[module].code[name].ptr` | `symbol_tables[module].get(name).code.as_ref().map(\|c\| c.ptr)`. Same follow-Import walk. |
 | R10 | Priority worker — `already_compiled` dedup during `derive_codegen_batch` | `src/worker.rs:2269–2275` | `codegen_products.get(module).map(\|cp\| cp.code.contains_key(name))` | `symbol_tables[module].get(name).and_then(\|e\| match e { ModuleEntry::Def { code, .. } => Some(code.is_some()), _ => None }).unwrap_or(false)`. |
 
 Counts: **10 reader sites** across 2 files. All migrate to the same pattern — `symbol_tables[module].get(name) → ModuleEntry::Def.code`. None require inventing a new API; the lookup is the same follow-Import-chain path already used for `scheme`, `got_slot`, `ast`.
@@ -573,13 +573,13 @@ Items added to the Phase 2 Deletion List:
 |---|------|--------------------|-------|
 | 17 | `pub struct CodegenProduct` + `impl Default` | `src/session_v4.rs:422–436` | The struct itself. |
 | 18 | `pub codegen_products: DashMap<ModuleFullPath, CodegenProduct>` on `SharedState` | `src/session_v4.rs:549` | The field. |
-| 19 | `codegen_products` construction | `src/session_v4.rs:660` (`SharedState::new`) | Drop the initialiser line. |
-| 20 | `codegen_products.remove(module_path)` in reload | `src/session_v4.rs:982` (`reload_module`) | Replaced by symbol-table walk (R8). |
+| 19 | `codegen_products` construction | historical `src/session_v4.rs:660` (`SharedState::new`) | Drop the initialiser line. |
+| 20 | `codegen_products.remove(module_path)` in reload | historical `src/session_v4.rs:982` (`reload_module`) | Replaced by symbol-table walk (R8). |
 | 21 | `PriorityWorkerRefs.codegen_products: &'a DashMap<…>` | `src/worker.rs:116` (and call sites at `src/session_v4.rs:1001, 1099`) | Field deleted; call sites drop the argument. |
 | 22 | `inline_jit_codegen_for_module`/`_for_names` `codegen_products: &DashMap<…>` parameter | `src/worker.rs:2322, 2379` | Parameter removed; readers inside the function switch to symbol-table writes. |
 | 23 | `derive_codegen_batch` `codegen_products: &DashMap<…>` parameter | `src/worker.rs:2193` | Parameter removed; R10 `already_compiled` uses symbol table. |
 | 24 | `TestRunnerState.codegen_products: *const DashMap<…>` | `src/session_v4.rs:3639–3747` | Field deleted; test externs switch to `symbol_tables` lookup (R6, R7). |
-| 25 | `discover_test_names`, `run_test_by_name` — accept symbol tables instead of codegen products | `src/session_v4.rs:3536, 3573` | Signature change; body uses R6 lookup. |
+| 25 | `discover_test_names`, `run_test_by_name` — accept symbol tables instead of codegen products | historical `src/session_v4.rs:3536, 3573` | Signature change; body uses R6 lookup. |
 
 Cross-check: after Wave 2, `grep -n codegen_products src/` should return zero matches outside tests (and possibly a small migration test scaffold that `/qa` may retain). `grep -n CodegenProduct src/` should return zero matches.
 
@@ -623,4 +623,3 @@ The sketch's problem was that every use-site of `CompiledModule` (133 references
 
 - **TODO(/backend §9.x)**: `design/backend/compile-to-module.md` §9 update lands the "code-write path" subsection. This extension's §13.2 references that section by number; fill in once `/backend` commits the exact `§9.n` anchor.
 - **TODO(/typecheck §9)**: `design/typecheck/ast-annotation.md` §9 update covers the `code` field on the symbol-table write path. This extension assumes `/typecheck` does NOT write `code` — the field is backend-owned. Confirm this is the design stance; if `/typecheck` needs to write `code: None` at registration time as an explicit default (instead of relying on `Option::default`), §13.2's table updates.
-

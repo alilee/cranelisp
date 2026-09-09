@@ -129,3 +129,59 @@ fn nullary_arm_beside_boxed_arm_frees_its_loop_under_link() {
     .measure()
     .assert_balanced(CONTRACT);
 }
+
+// spec: spec/12-runtime.md §12.3.1 — forwarding an owned result must not retain
+// unreachable heap ownership after the caller releases it.
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value found=S121 owner=/dev
+#[test]
+fn forwarding_fresh_option_releases_its_payload() {
+    let program = |callee: &str, count: i64| {
+        format!(
+            "(import [primitives [*]])\n\
+             (deftype Payload [:(Vec Int) values])\n\
+             (defn make-option [p n] (if (eq-i64 n 0) None (Some p)))\n\
+             (defn forward [p n] (make-option p n))\n\
+             (defn run-loop [n]\n\
+               (if (eq-i64 n 0) 0\n\
+                 (match ({callee} (Payload [1]) n)\n\
+                   [None 100\n\
+                    (Some p) (match p [(Payload xs)\n\
+                      (add-i64 (vec-get xs 0) (run-loop (sub-i64 n 1)))])])))\n\
+             (defn main [] (Pure (run-loop {count})))\n"
+        )
+    };
+    let measurements = [8, 32].map(|count| {
+        let m = MarginalPair::new(
+            &format!("forwarded versus direct fresh Option, {count} iterations"),
+            Child::new(&program("make-option", count)),
+            Child::new(&program("forward", count)),
+        )
+        .instrument(Instrument::RcStats)
+        .measure();
+        assert_eq!(
+            m.control().exit_code(),
+            Some(count as i32),
+            "{}",
+            m.control().stderr
+        );
+        assert_eq!(
+            m.subject().exit_code(),
+            Some(count as i32),
+            "{}",
+            m.subject().stderr
+        );
+        m
+    });
+    let [small, large] = measurements;
+    let report = format!("{}\n{}", small.report(), large.report());
+    assert_eq!(
+        large.control().residual() - small.control().residual(),
+        0,
+        "the direct helper control must not retain unreachable owners as its loop grows\n{report}"
+    );
+    assert_eq!(
+        large.residual() - small.residual(),
+        0,
+        "forwarding an owned Option must not add unreachable retention as its loop grows\n{report}"
+    );
+}

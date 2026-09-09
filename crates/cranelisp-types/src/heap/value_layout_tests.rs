@@ -7,12 +7,28 @@
 //! type shape and assert the `Some(ValueLayout { words })` / `None` verdict.
 
 use super::*;
-use crate::{ModuleFullPath, Scheme, TypeDefInfo, TypeName, Visibility};
+use crate::{
+    Binding, CallableOrigin, Decl, DefnVariant, Expr, ModuleFullPath, MonoDefnVariant, MonoExpr,
+    Realization, Scheme, Span, SynthSpec, TemplateBody, TemplateKind, TypeDefInfo, TypeName,
+    TypeRecord, Visibility,
+};
 use std::collections::HashMap;
 
 type Tables = SymbolTables<(), ()>;
 
 const M: &str = "test";
+
+fn checked_layout<C: CodeStore, L: LinkerStore>(
+    ty: &ConcreteType,
+    type_defs: Option<&SymbolTables<C, L>>,
+) -> Option<ValueLayout> {
+    let from_tables = crate::value_layout(ty, type_defs);
+    let from_lookup = crate::value_layout_with_lookup(ty, &|module, key| {
+        type_defs?.get(module)?.get(key.as_ref()).cloned()
+    });
+    assert_eq!(from_lookup, from_tables, "lookup/table parity for {ty:?}");
+    from_lookup
+}
 
 fn fqtn(name: &str) -> FQTypeName {
     FQTypeName::new(ModuleFullPath::from(M), TypeName::from(name))
@@ -26,9 +42,22 @@ fn mono_scheme(ty: Type) -> Scheme {
     }
 }
 
-/// A constructor `Def` whose scheme is `field_tys… -> ADT(type)`.
-fn ctor_entry(type_name: &str, field_tys: Vec<Type>, is_product: bool) -> ModuleEntry<()> {
-    let adt = Type::ADT(fqtn(type_name), vec![]);
+#[allow(clippy::large_enum_variant)]
+enum TestEntry {
+    Ctor {
+        scheme: Scheme,
+        origin: CallableOrigin,
+    },
+    Binding(Binding),
+}
+
+/// A constructor recipe whose scheme is `field_tys… -> ADT(type)`.
+fn ctor_entry(type_name: &str, field_tys: Vec<Type>, is_product: bool) -> TestEntry {
+    ctor_entry_at(fqtn(type_name), field_tys, is_product)
+}
+
+fn ctor_entry_at(type_name: FQTypeName, field_tys: Vec<Type>, is_product: bool) -> TestEntry {
+    let adt = Type::ADT(type_name.clone(), vec![]);
     let ty = if field_tys.is_empty() {
         adt
     } else {
@@ -36,47 +65,118 @@ fn ctor_entry(type_name: &str, field_tys: Vec<Type>, is_product: bool) -> Module
     };
     let type_def = is_product.then(|| {
         Box::new(TypeDefInfo {
-            name: fqtn(type_name),
+            name: type_name.clone(),
             type_params: vec![],
-            constructors: vec![Symbol::from(type_name)],
+            constructors: vec![Symbol::from(type_name.name.as_ref())],
         })
     });
-    ModuleEntry::def(
-        mono_scheme(ty),
-        DefKind::Constructor {
-            got_slot: 0,
-            type_name: fqtn(type_name),
+    TestEntry::Ctor {
+        scheme: mono_scheme(ty),
+        origin: CallableOrigin::Ctor {
+            type_name,
             tag: 0,
             field_count: field_tys.len(),
             internal: false,
             type_def,
-            mode_summary: None,
         },
-    )
-    .build()
+    }
 }
 
-fn type_def_entry(name: &str, ctors: &[&str]) -> ModuleEntry<()> {
-    ModuleEntry::TypeDef {
-        info: TypeDefInfo {
-            name: fqtn(name),
-            type_params: vec![],
-            constructors: ctors.iter().map(|c| Symbol::from(*c)).collect(),
-        },
-        visibility: Visibility::Public,
-        docstring: None,
-    }
+fn type_def_entry(name: &str, ctors: &[&str]) -> TestEntry {
+    TestEntry::Binding(Binding::new(
+        Decl::Type(TypeRecord::Defined {
+            info: TypeDefInfo {
+                name: fqtn(name),
+                type_params: vec![],
+                constructors: ctors.iter().map(|c| Symbol::from(*c)).collect(),
+            },
+            docstring: None,
+        }),
+        Visibility::Public,
+    ))
 }
 
 /// Build a one-module `SymbolTables` from `(key, entry)` pairs.
-fn tables(entries: Vec<(&str, ModuleEntry<()>)>) -> Tables {
-    let mut table = SymbolTable::<(), ()>::new_with_params(ModuleFullPath::from(M));
-    for (name, entry) in entries {
-        table.insert(Symbol::from(name), entry);
-    }
+fn tables(entries: Vec<(&str, TestEntry)>) -> Tables {
+    let table = one_table(entries);
     let map: Tables = dashmap::DashMap::new();
     map.insert(ModuleFullPath::from(M), table);
     map
+}
+
+fn test_ast() -> DefnVariant {
+    DefnVariant {
+        params: Vec::new(),
+        body: Expr::IntLit {
+            value: 0,
+            span: Span::SYNTHETIC,
+            inferred_type: Some(Box::new(Type::Int)),
+        },
+        span: Span::SYNTHETIC,
+    }
+}
+
+fn test_view() -> MonoDefnVariant {
+    MonoDefnVariant {
+        name: Symbol::from("ctor"),
+        params: Vec::new(),
+        body: MonoExpr::IntLit {
+            value: 0,
+            span: Span::SYNTHETIC,
+            ty: ConcreteType::Int,
+        },
+        span: Span::SYNTHETIC,
+        mode_summary: None,
+    }
+}
+
+fn one_table(entries: Vec<(&str, TestEntry)>) -> SymbolTable<(), ()> {
+    let mut table = SymbolTable::new(ModuleFullPath::from(M));
+    for (name, entry) in entries {
+        match entry {
+            TestEntry::Binding(binding) => {
+                table.install_binding(Symbol::from(name), binding).unwrap();
+            }
+            TestEntry::Ctor { scheme, origin } if scheme.ty.is_concrete() => {
+                table
+                    .install_concrete(
+                        Symbol::from(name),
+                        scheme,
+                        Vec::new(),
+                        None,
+                        0,
+                        origin,
+                        Realization::Body {
+                            view: test_view(),
+                            code: None,
+                        },
+                        Some(test_ast()),
+                        Vec::new(),
+                        Visibility::Public,
+                    )
+                    .unwrap();
+            }
+            TestEntry::Ctor { scheme, origin } => {
+                table
+                    .install_template(
+                        Symbol::from(name),
+                        scheme,
+                        Vec::new(),
+                        None,
+                        0,
+                        origin,
+                        TemplateBody::Synth(SynthSpec {
+                            variant: test_ast(),
+                        }),
+                        TemplateKind::Parametric,
+                        Vec::new(),
+                        Visibility::Public,
+                    )
+                    .unwrap();
+            }
+        }
+    }
+    table
 }
 
 // --- scalars (the value base case) ------------------------------------------
@@ -85,7 +185,7 @@ fn tables(entries: Vec<(&str, ModuleEntry<()>)>) -> Tables {
 #[test]
 fn scalars_are_one_word_values() {
     for ty in [ConcreteType::Int, ConcreteType::Bool, ConcreteType::Float] {
-        let vl = value_layout::<(), ()>(&ty, None).expect("scalar is value-eligible");
+        let vl = checked_layout::<(), ()>(&ty, None).expect("scalar is value-eligible");
         assert_eq!(vl.words, 1, "{ty:?} is one word");
     }
 }
@@ -93,9 +193,9 @@ fn scalars_are_one_word_values() {
 // spec: design/backend/ownership-codegen.md §7.1 — String/Fn keep heap identity
 #[test]
 fn heap_identities_are_not_values() {
-    assert!(value_layout::<(), ()>(&ConcreteType::String, None).is_none());
+    assert!(checked_layout::<(), ()>(&ConcreteType::String, None).is_none());
     let f = ConcreteType::Fn(vec![ConcreteType::Int], Box::new(ConcreteType::Int));
-    assert!(value_layout::<(), ()>(&f, None).is_none());
+    assert!(checked_layout::<(), ()>(&f, None).is_none());
 }
 
 // --- the F2v witness: single-ctor scalar-payload product --------------------
@@ -106,7 +206,7 @@ fn single_ctor_scalar_product_flattens() {
     // (deftype Cell (Cell [:Int value])) — product: type-name == ctor-name.
     let t = tables(vec![("Cell", ctor_entry("Cell", vec![Type::Int], true))]);
     let cell = ConcreteType::ADT(fqtn("Cell"), vec![]);
-    let vl = value_layout(&cell, Some(&t)).expect("Cell is value-eligible");
+    let vl = checked_layout(&cell, Some(&t)).expect("Cell is value-eligible");
     assert_eq!(vl.words, 1);
 }
 
@@ -119,7 +219,7 @@ fn single_ctor_sum_type_flattens() {
         ("Bar", ctor_entry("Foo", vec![Type::Int], false)),
     ]);
     let foo = ConcreteType::ADT(fqtn("Foo"), vec![]);
-    assert_eq!(value_layout(&foo, Some(&t)).unwrap().words, 1);
+    assert_eq!(checked_layout(&foo, Some(&t)).unwrap().words, 1);
 }
 
 // --- size-bound and structural rejections (each a monotone-sound None) ------
@@ -134,7 +234,7 @@ fn two_field_product_exceeds_word_bound() {
         ctor_entry("Pair", vec![Type::Int, Type::Int], true),
     )]);
     let pair = ConcreteType::ADT(fqtn("Pair"), vec![]);
-    assert!(value_layout(&pair, Some(&t)).is_none(), "2 words > bound");
+    assert!(checked_layout(&pair, Some(&t)).is_none(), "2 words > bound");
 }
 
 // spec: design/backend/ownership-codegen.md §7.1 — multi-ctor needs a tag word
@@ -147,7 +247,7 @@ fn multi_ctor_adt_is_not_a_value() {
         ("Nil", ctor_entry("Opt", vec![], false)),
     ]);
     let opt = ConcreteType::ADT(fqtn("Opt"), vec![]);
-    assert!(value_layout(&opt, Some(&t)).is_none());
+    assert!(checked_layout(&opt, Some(&t)).is_none());
 }
 
 // spec: design/backend/ownership-codegen.md §7.1 — a heap-typed field disqualifies
@@ -159,7 +259,7 @@ fn product_with_heap_field_is_not_a_value() {
         ctor_entry("Named", vec![Type::String], true),
     )]);
     let named = ConcreteType::ADT(fqtn("Named"), vec![]);
-    assert!(value_layout(&named, Some(&t)).is_none());
+    assert!(checked_layout(&named, Some(&t)).is_none());
 }
 
 // spec: design/backend/ownership-codegen.md §7.3 — Vec is a heap collection
@@ -167,8 +267,8 @@ fn product_with_heap_field_is_not_a_value() {
 fn vec_is_never_a_value() {
     let v = ConcreteType::ADT(fqtn("Vec"), vec![ConcreteType::Int]);
     // Vec short-circuits before any table lookup.
-    assert!(value_layout(&v, Some(&tables(vec![]))).is_none());
-    assert!(value_layout::<(), ()>(&v, None).is_none());
+    assert!(checked_layout(&v, Some(&tables(vec![]))).is_none());
+    assert!(checked_layout::<(), ()>(&v, None).is_none());
 }
 
 // --- nesting and conservatism ----------------------------------------------
@@ -184,7 +284,7 @@ fn nested_value_field_counts_its_words() {
     ]);
     // Wrap { Cell { Int } } = 1 word total → still within the bound.
     let wrap = ConcreteType::ADT(fqtn("Wrap"), vec![]);
-    assert_eq!(value_layout(&wrap, Some(&t)).unwrap().words, 1);
+    assert_eq!(checked_layout(&wrap, Some(&t)).unwrap().words, 1);
 }
 
 // spec: design/backend/ownership-codegen.md §7.2 — a nested value can push over the bound
@@ -197,7 +297,7 @@ fn nested_value_can_exceed_bound() {
         ("Two", ctor_entry("Two", vec![cell.clone(), cell], true)),
     ]);
     let two = ConcreteType::ADT(fqtn("Two"), vec![]);
-    assert!(value_layout(&two, Some(&t)).is_none(), "2 words > bound");
+    assert!(checked_layout(&two, Some(&t)).is_none(), "2 words > bound");
 }
 
 // spec: design/backend/ownership-codegen.md §7.1 — a 0-FIELD single-ctor product
@@ -212,14 +312,14 @@ fn nullary_single_ctor_product_is_not_a_value() {
     // (deftype Unit (Unit []))
     let t = tables(vec![("Unit", ctor_entry("Unit", vec![], true))]);
     let unit = ConcreteType::ADT(fqtn("Unit"), vec![]);
-    assert!(value_layout(&unit, Some(&t)).is_none());
+    assert!(checked_layout(&unit, Some(&t)).is_none());
 }
 
 // spec: design/backend/ownership-codegen.md §7.1 — Wave-3a /review BLOCKER 1
 // (0-word-but-≥1-field product): the divergence-class guard. `(P [:U u])` whose
 // sole field `U` is a nullary (0-word) product has word-count 0 but ONE field.
 // The OLD `sum ≤ 1` predicate returned `Some(0)` → typecheck's
-// `value_layout(..).is_some()` made P `Copy` (no caller `rc_inc`) while the
+// `checked_layout(..).is_some()` made P `Copy` (no caller `rc_inc`) while the
 // backend kept P a heap object → a heap value across a Copy edge with no inc →
 // leak/UAF. FIXED: single-field-∧-value-field ⇒ `None` (P is heap + Owned +
 // RC everywhere — typecheck and backend agree because they read THIS verdict).
@@ -233,7 +333,7 @@ fn zero_word_field_product_is_not_a_value() {
     ]);
     let p = ConcreteType::ADT(fqtn("P"), vec![]);
     assert!(
-        value_layout(&p, Some(&t)).is_none(),
+        checked_layout(&p, Some(&t)).is_none(),
         "a single-ctor product whose one field is a 0-word type must NOT be \
          value-eligible — else typecheck Copy and backend heap diverge (Blocker 1)",
     );
@@ -257,7 +357,7 @@ fn multi_field_one_word_product_is_not_a_value() {
     ]);
     let m = ConcreteType::ADT(fqtn("M"), vec![]);
     assert!(
-        value_layout(&m, Some(&t)).is_none(),
+        checked_layout(&m, Some(&t)).is_none(),
         "a ≥2-field product must NOT be value-eligible even at ≤1 word — else \
          construction (heap) and match (flat) split the representation (Blocker 2)",
     );
@@ -267,7 +367,7 @@ fn multi_field_one_word_product_is_not_a_value() {
 #[test]
 fn absent_tables_classify_adts_as_ineligible() {
     let cell = ConcreteType::ADT(fqtn("Cell"), vec![]);
-    assert!(value_layout::<(), ()>(&cell, None).is_none());
+    assert!(checked_layout::<(), ()>(&cell, None).is_none());
 }
 
 // spec: design/arch/ownership-inference.md §6.3 — unresolvable / non-ctor entry is None
@@ -275,7 +375,7 @@ fn absent_tables_classify_adts_as_ineligible() {
 fn unresolvable_type_is_none() {
     let t = tables(vec![]); // empty module, "Ghost" not present
     let ghost = ConcreteType::ADT(fqtn("Ghost"), vec![]);
-    assert!(value_layout(&ghost, Some(&t)).is_none());
+    assert!(checked_layout(&ghost, Some(&t)).is_none());
 }
 
 // --- recursion (compiler-DoS) cycle guard -----------------------------------
@@ -284,17 +384,12 @@ fn unresolvable_type_is_none() {
 // product is unbounded-size ⇒ conservative None, and MUST NOT stack-overflow.
 #[test]
 fn self_recursive_type_is_none_without_overflow() {
-    // (deftype Stream (Stream [:Int head :Stream tail])) — the `tail` field is
-    // `Type::ADT("Stream", [])`, concrete and single-ctor, so without the cycle
-    // guard `layout_words` re-enters `Stream` forever.
+    // Exactly one field reaches recursion rather than the multi-field refusal.
     let stream = Type::ADT(fqtn("Stream"), vec![]);
-    let t = tables(vec![(
-        "Stream",
-        ctor_entry("Stream", vec![Type::Int, stream], true),
-    )]);
+    let t = tables(vec![("Stream", ctor_entry("Stream", vec![stream], true))]);
     let s = ConcreteType::ADT(fqtn("Stream"), vec![]);
     assert!(
-        value_layout(&s, Some(&t)).is_none(),
+        checked_layout(&s, Some(&t)).is_none(),
         "recursive type is never a bounded inline value",
     );
 }
@@ -311,10 +406,10 @@ fn mutually_recursive_pair_is_none_without_overflow() {
         ("B", ctor_entry("B", vec![a_ty], true)),
     ]);
     let a = ConcreteType::ADT(fqtn("A"), vec![]);
-    assert!(value_layout(&a, Some(&t)).is_none());
+    assert!(checked_layout(&a, Some(&t)).is_none());
     // Both entry points into the cycle must be guarded.
     let b = ConcreteType::ADT(fqtn("B"), vec![]);
-    assert!(value_layout(&b, Some(&t)).is_none());
+    assert!(checked_layout(&b, Some(&t)).is_none());
 }
 
 // spec: design/backend/ownership-codegen.md §7.2 — generic (non-concrete) ctor field ⇒ conservative None
@@ -325,7 +420,118 @@ fn generic_ctor_field_is_conservatively_ineligible() {
     // even `(Box Int)` is conservatively heap (monotone-sound).
     let t = tables(vec![("Box", ctor_entry("Box", vec![Type::Var(0)], true))]);
     let boxed = ConcreteType::ADT(fqtn("Box"), vec![ConcreteType::Int]);
-    assert!(value_layout(&boxed, Some(&t)).is_none());
+    assert!(checked_layout(&boxed, Some(&t)).is_none());
+}
+
+// spec: spec/08-modules.md §8.5.2 — constructor storage uses canonical member keys
+#[test]
+fn layout_constructor_keys_prefer_canonical_and_fall_back_only_when_absent() {
+    let foo = ConcreteType::ADT(fqtn("Foo"), vec![]);
+    for (canonical, expected) in [
+        (None, None),
+        (Some(Type::Int), Some(ValueLayout { words: 1 })),
+    ] {
+        let mut entries = vec![
+            ("Foo", type_def_entry("Foo", &["Bar"])),
+            ("Bar", ctor_entry("Foo", vec![Type::String], false)),
+        ];
+        if let Some(field) = canonical {
+            entries.push(("Foo.Bar", ctor_entry("Foo", vec![field], false)));
+        }
+        let t = tables(entries);
+        assert_eq!(checked_layout(&foo, Some(&t)), expected);
+        let table = t.get(&ModuleFullPath::from(M)).unwrap();
+        let key = if expected.is_some() { "Foo.Bar" } else { "Bar" };
+        assert_eq!(
+            type_ctor_names(&table, &fqtn("Foo")),
+            Some(vec![Symbol::from(key)])
+        );
+    }
+    let t = tables(vec![
+        ("Foo", type_def_entry("Foo", &["Bar"])),
+        ("Bar", ctor_entry("Foo", vec![Type::Int], false)),
+        ("Foo.Bar", type_def_entry("NotACtor", &[])),
+    ]);
+    assert_eq!(
+        checked_layout(&foo, Some(&t)),
+        None,
+        "present wrong-kind canonical key must not fall back"
+    );
+}
+
+// spec: design/arch/ownership-inference.md §6.3 — missing/non-constructor metadata refuses layout
+#[test]
+fn layout_refuses_incomplete_and_wrong_kind_declarations() {
+    let plain = TestEntry::Ctor {
+        scheme: mono_scheme(Type::Fn(
+            vec![Type::Int],
+            Box::new(Type::ADT(fqtn("Plain"), vec![])),
+        )),
+        origin: CallableOrigin::Plain,
+    };
+    let t = tables(vec![
+        ("Empty", type_def_entry("Empty", &[])),
+        ("Missing", type_def_entry("Missing", &["Absent"])),
+        ("Wrong", type_def_entry("Wrong", &["Empty"])),
+        ("Function", type_def_entry("Function", &["Plain"])),
+        ("Plain", plain),
+        (
+            "Intrinsic",
+            TestEntry::Binding(Binding::new(
+                Decl::Type(TypeRecord::Intrinsic {
+                    ty: Type::Int,
+                    docstring: None,
+                }),
+                Visibility::Public,
+            )),
+        ),
+    ]);
+    for name in [
+        "Empty",
+        "Missing",
+        "Wrong",
+        "Function",
+        "Plain",
+        "Intrinsic",
+    ] {
+        assert_eq!(
+            checked_layout(&ConcreteType::ADT(fqtn(name), vec![]), Some(&t)),
+            None,
+            "{name}"
+        );
+    }
+    let missing_module = ConcreteType::ADT(
+        FQTypeName::new(ModuleFullPath::from("absent"), TypeName::from("Cell")),
+        vec![],
+    );
+    assert_eq!(checked_layout(&missing_module, Some(&t)), None);
+}
+
+// spec: design/arch/ownership-inference.md §6.3 — nested layout follows the field's defining module
+#[test]
+fn layout_lookup_follows_cross_module_fields_without_table_storage() {
+    let inner = fqtn("Cell");
+    let outer = FQTypeName::new(ModuleFullPath::from("outer"), TypeName::from("Wrap"));
+    let t = tables(vec![
+        ("Cell", ctor_entry("Cell", vec![Type::Int], true)),
+        (
+            "Wrap",
+            ctor_entry_at(outer.clone(), vec![Type::ADT(inner.clone(), vec![])], true),
+        ),
+    ]);
+    let table = t.get(&inner.module).unwrap();
+    let cell = table.get("Cell").unwrap().clone();
+    let wrap = table.get("Wrap").unwrap().clone();
+    drop(table);
+    let bindings = HashMap::from([
+        ((inner.module, Symbol::from("Cell")), cell),
+        ((outer.module.clone(), Symbol::from("Wrap")), wrap),
+    ]);
+    let ty = ConcreteType::ADT(outer, vec![]);
+    let result = crate::value_layout_with_lookup(&ty, &|module, key| {
+        bindings.get(&(module.clone(), key.clone())).cloned()
+    });
+    assert_eq!(result, Some(ValueLayout { words: 1 }));
 }
 
 // ---------------------------------------------------------------------------
@@ -339,7 +545,7 @@ fn generic_ctor_entry(
     type_name: &str,
     type_var_ids: &[crate::TypeId],
     field_tys: Vec<Type>,
-) -> ModuleEntry<()> {
+) -> TestEntry {
     let adt = Type::ADT(
         fqtn(type_name),
         type_var_ids.iter().map(|&id| Type::Var(id)).collect(),
@@ -349,31 +555,20 @@ fn generic_ctor_entry(
     } else {
         Type::Fn(field_tys.clone(), Box::new(adt))
     };
-    ModuleEntry::def(
-        Scheme {
+    TestEntry::Ctor {
+        scheme: Scheme {
             type_vars: type_var_ids.to_vec(),
             constraints: HashMap::new(),
             ty,
         },
-        DefKind::Constructor {
-            got_slot: 0,
+        origin: CallableOrigin::Ctor {
             type_name: fqtn(type_name),
             tag: 0,
             field_count: field_tys.len(),
             internal: false,
             type_def: None,
-            mode_summary: None,
         },
-    )
-    .build()
-}
-
-fn one_table(entries: Vec<(&str, ModuleEntry<()>)>) -> SymbolTable<(), ()> {
-    let mut table = SymbolTable::<(), ()>::new_with_params(ModuleFullPath::from(M));
-    for (name, entry) in entries {
-        table.insert(Symbol::from(name), entry);
     }
-    table
 }
 
 // spec: design/arch/concreteness-types-first.md §3.5 — substitution instantiates
@@ -398,8 +593,7 @@ fn ctor_field_types_at_concrete_ctor_projects_verbatim() {
         "Tally",
         ctor_entry("Tally", vec![Type::Int, Type::String], true),
     )]);
-    let got = ctor_field_types_at(&t, &Symbol::from("Tally"), &[])
-        .expect("concrete ctor projects");
+    let got = ctor_field_types_at(&t, &Symbol::from("Tally"), &[]).expect("concrete ctor projects");
     assert_eq!(got, vec![ConcreteType::Int, ConcreteType::String]);
 }
 
@@ -466,19 +660,16 @@ fn ctor_field_types_at_instantiation_mismatch() {
     // Ctor of a type whose result param is pinned Int; instantiating at Bool
     // is a caller bug, not a refusal.
     let adt = Type::ADT(fqtn("P"), vec![Type::Int]);
-    let entry = ModuleEntry::def(
-        mono_scheme(Type::Fn(vec![Type::Int], Box::new(adt))),
-        DefKind::Constructor {
-            got_slot: 0,
+    let entry = TestEntry::Ctor {
+        scheme: mono_scheme(Type::Fn(vec![Type::Int], Box::new(adt))),
+        origin: CallableOrigin::Ctor {
             type_name: fqtn("P"),
             tag: 0,
             field_count: 1,
             internal: false,
             type_def: None,
-            mode_summary: None,
         },
-    )
-    .build();
+    };
     let t = one_table(vec![("P", entry)]);
     assert_eq!(
         ctor_field_types_at(&t, &Symbol::from("P"), &[ConcreteType::Bool]),

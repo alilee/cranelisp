@@ -6,7 +6,7 @@ filed_at: 2026-07-26
 sprint_filed: 118
 refers_to: crates/cranelisp-backend/src/drop_glue.rs:497-505 (ctor_shapes identity check);
   src/bootstrap.rs:767-783 (the seeded Bind ctor scheme);
-  crates/cranelisp-intrinsics/src/drop.rs::free_io_branches (the live runtime IO-tree owner);
+  crates/cranelisp-intrinsics/src/drop.rs::free_io_node_with_disposition (the live runtime IO-node teardown owner);
   design/backend/transitive-drop-glue.md §4.1; design/arch/fixmes/0903-*.md (sibling class);
   tests/plan/s118-test-plan.md §11 (attribution record)
 status: open
@@ -135,8 +135,9 @@ the accessor/trait families without IO leaves the loudest member unfixed.
 ## Candidate directions (for the ruling; none costed here)
 
 - **Route IO to the runtime teardown owner.** `cranelisp-intrinsics` already
-  owns dynamic, tag-directed IO-tree teardown (`drop.rs::free_io_branches`,
-  three call sites, incl. the PAR branch walk); a closure field is already
+  owns dynamic, tag-directed IO-tree teardown
+  (`drop.rs::free_io_node_with_disposition`, with the PAR branch walk in
+  `drop.rs::discharge_io_field`); a closure field is already
   dynamically releasable via its embedded `DROP_GLUE_PTR`. The registry
   would classify `primitives/IO` as runtime-owned and emit a call to the
   intrinsic instead of deriving ctor shapes. Note `Pure`'s payload (`a`) is

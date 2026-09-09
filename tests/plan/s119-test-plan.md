@@ -129,7 +129,8 @@ refusals (FIXME 0903). The assertion form for S119, in three layers:
    `spec_field_accessor::{control_polymorphic_deftype_level_product_mints_both_accessors_green,
    control_same_name_constructor_arm_mints_both_accessors_green}`;
    `spec_04_expressions::fn_lambda_param_free_var_annotation`;
-   `spec_05_definitions::deftype_product_shortcut_field_names`.
+   `spec_05_definitions::{deftype_omitted_field_types_rejected_without_partial_registration_neg,
+   deftype_bare_head_rejects_undeclared_field_type_variable_neg}`.
 2. **Measure-before-binding (design window).** The co-ruling does not bind until
    the corpus run — the 16 above, plus the full `spec_*` corpus as the wider
    screen — is executed against the candidate gate *inside* the design window

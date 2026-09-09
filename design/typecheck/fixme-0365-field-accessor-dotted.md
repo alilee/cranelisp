@@ -201,9 +201,9 @@ Unit tests, typecheck in-crate (`TestFixture`, `crates/cranelisp-typecheck/src/.
 - **Positive (polymorphic)** — `(deftype (Box a) [:a v])`: `Box.v` types as `(Fn [(Box a)] a)`
   (fresh-var-instantiated), confirming the quantified scheme reads correctly through the
   canonical key.
-- **Positive (sum accessor)** — `(deftype (Option a) None (Some [:a unwrap]))`: `Option.unwrap`
-  types as `(Fn [(Option a)] a)` (partial accessor — typing is unaffected by partiality;
-  partiality is a runtime panic, §5.2.6).
+- **Negative (sum payload label)** — `(deftype (Option a) None (Some [:a unwrap]))`
+  creates neither `Option.unwrap` nor bare `unwrap`; `(Some value)` extracts the
+  payload positionally in `match`. No partial accessor enters typing or runtime.
 - **Positive (first-class)** — `Box.v` bound to a let or passed as an argument type-checks as
   the accessor function value (not eagerly applied).
 - **Negative / boundary** — `Box.nonfield` (a member that is not a field accessor of `Box`,
@@ -534,6 +534,24 @@ Unit (typecheck in-crate, `TestFixture`) + e2e listing/glob (`/qa`, `tests/`):
 
 These **replace** the §1.5.2 visibility-by-arm guards (which guarded the now-retired
 poison/non-poison visibility flip).
+
+### 1.6.7 The accessor source — product fields only (S121 ruling; FIXME 0867 retired)
+
+This section's canonical/candidate model says what an accessor entry is and
+where it is keyed. Its source set is deliberately narrower: only fields of the
+lone same-name constructor that defines a product type generate accessors.
+
+A differently named constructor arm defines a sum variant, even when it is the
+only arm. Its payload labels are positional declaration metadata. They generate
+neither canonical `Type.field` entries nor bare candidates; payloads are
+extracted by exhaustive `match`. This keeps every generated accessor total and
+prevents an implicit runtime variant check outside the language.
+
+The earlier FIXME 0867 proposal to synthesise partial accessors over every
+constructor arm is **superseded by the user's 2026-09-02 ruling**. The
+`is_product` / `ctor_infos[0]` restriction is therefore the required product
+boundary, not an enumeration defect. The canonical/candidate mechanics in
+§§1.6.1–1.6.3 continue to apply unchanged to product fields.
 
 ---
 

@@ -33,8 +33,8 @@ type name — no dotted key, no alias (degenerate form; spec §8.5.2).
 
 | Writer | Site | Note |
 |---|---|---|
-| User `deftype` | `cranelisp-typecheck/src/adt.rs::register_constructors` | The W1.1a patch — reuse as-is |
-| Typecheck fixture seeds | `cranelisp-typecheck/src/builtins.rs::register_{slist,sexp}_type` (via `register_constructors`) | Follows automatically; the fixture must mirror the LIVE shape (it exists to stand in for `bootstrap.rs`) — unit-test assertions update, not the mechanism |
+| User `deftype` | `cranelisp-typecheck/src/adt.rs::register_type_def_with_ctor_infos` | The registration seam now delegates ADT shape to `build_adt_entries` |
+| Typecheck fixture seeds | `cranelisp-typecheck/src/builtins.rs::register_{slist,sexp}_type` (via `register_type_def_with_ctor_infos`) | Follows automatically; the fixture must mirror the LIVE shape (it exists to stand in for `bootstrap.rs`) — unit-test assertions update, not the mechanism |
 | Int session seeds | `src/bootstrap.rs::register_synth_adt` (insert at ~:245) — `Option`, `Result`, `IO` (`Pure`/`Effect`), `Trace`, `TestResult`, the `macros` `SList`/`Sexp` families; `Pair` is product (unchanged) | The uniformity half the W1.1a landing missed |
 | The hand-appended `IO.Bind` | `src/bootstrap.rs::register_io_type` (~:802) | Canonical `IO.Bind` + bare alias like every other sum ctor; `internal: true` rides the `Def` unchanged |
 
@@ -339,8 +339,9 @@ change-set.
 
 `chain_follow_committed`'s same-module recursive arm now bottoms out at
 `CHAIN_FOLLOW_DEPTH_LIMIT` (self-alias / a→b→a same-module cycles read as a
-miss; SIGABRT-verified pin
-`resolve/tests.rs::same_module_alias_cycle_is_a_miss_not_a_stack_overflow`).
+miss). The scoped module-alias walker uses the same cap; its direct pin is
+`resolve/tests.rs::alias_walk_refuses_more_than_the_shared_depth_limit`. The
+same-module chain-follow arm has no dedicated C1 unit pin.
 
 ### 10.7 I-2 interaction note (NOT designed here — routed `/spec`→user)
 

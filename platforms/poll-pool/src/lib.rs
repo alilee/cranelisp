@@ -2,9 +2,9 @@
 //!
 //! The poll-carrier analogue of the S95 BLOCKING `pool-demo`. Three
 //! `declare_platform!`-emitted poll-shape effects (`descriptor: blocking = 0`),
-//! each `ResourceSerial`, each declaring its `(token, capacity)` as the **two leading
-//! cranelisp args** (the S95 `pool-demo` convention, now on the poll carrier —
-//! `design/platform/poll-support.md §3.4.2/§3.4.6`). Each routes to the host
+//! each `ResourceSerial`, with explicit `token` and `capacity` arguments that the
+//! leaf reads and passes to the ctx-vtable's `acquire`
+//! (`design/platform/poll-leaf-authoring.md` §2). Each routes to the host
 //! reactor via an armed monotonic timer (mirroring the S94 `async-demo` leaf) so
 //! the token-capacity `Semaphore` pool's admit/park behaviour is wall-clock
 //! observable when the reactor drives N overlapping polls and parks the (N+1)th.
@@ -17,25 +17,21 @@
 //!   suspend ~`ms`, then print `tag` to real stdout (the within-token source-order
 //!   witness), return `ms`.
 //!
-//! ## The leading-pair operand convention (S96 A2/A4)
+//! ## Natural arguments under the ctx-vtable model
 //!
-//! The cranelisp call `(poll-read token capacity ms)` lowers, via the backend's
-//! `ResourceSerial`-keyed leading-pair convention (the producer pass does NOT
-//! inject for a `ResourceSerial` leaf — the source already supplies the pair), to
-//! `arg_vals = [token, capacity, ms]`. The backend peels `token` → node
-//! `field_offset(1)` (abs 32), `capacity` → `field_offset(2)` (abs 40, node-only
-//! admission metadata), and marshals the LEAF args (`arg_vals[2..]` = `[ms]`,
-//! plus `tag` for `poll-log`) into the host-built state-closure env at
-//! `capture(1+i)`. So, relative to the `state` the poll-fn receives:
+//! The cranelisp call `(poll-read token capacity ms)` marshals all three natural
+//! arguments into the host-built state-closure env. The leaf reads the first two
+//! and calls `ctx.acquire(token, capacity)` itself; the poll node carries no live
+//! admission metadata. Relative to the `state` the poll-fn receives:
 //!   - `state + 0`  = the reserved **result slot** (also used here as scratch for
 //!     the parked deadline, exactly like `async-demo`)
-//!   - `state + 8`  = leaf arg 0 = `ms`
-//!   - `state + 16` = leaf arg 1 = `tag` (CLString base pointer — `poll-log` only)
+//!   - `state + 8`  = arg 0 = `token`
+//!   - `state + 16` = arg 1 = `capacity`
+//!   - `state + 24` = arg 2 = `ms`
+//!   - `state + 32` = arg 3 = `tag` (CLString base pointer — `poll-log` only)
 //!
-//! The poll-fn never sees `token`/`capacity` — those are node-only admission
-//! metadata the host reactor reads for acquire-around-poll (the thin-platform
-//! thesis: the platform registers readiness and returns `Poll`; the host owns the
-//! pool/permit).
+//! This keeps policy in the host-owned pool while the platform projects the
+//! resource identity and requests admission through the stable vtable.
 
 use core::ffi::c_void;
 
@@ -77,7 +73,7 @@ unsafe fn arm_timer_poll(state: *mut c_void, host: *const HostCtx, waker: *const
     let env = unsafe { PollEnv::new(state) };
     let reactor = unsafe { Reactor::new(host, waker) };
     // v9 ctx-vtable: the leaf reads its OWN (token, capacity) as plain leaf args
-    // (the v8 leading-pair peel is deleted — `poll-support.md §3.6`) and acquires the
+    // (the v8 leading-pair peel is deleted — `poll-leaf-authoring.md` §3) and acquires the
     // token permit ITSELF. arg(0) = token, arg(1) = capacity, arg(2) = ms.
     // SAFETY: leaf args 0/1/2 are in the env (the effect declares them).
     let token = unsafe { env.arg(0) } as u64;
@@ -173,8 +169,7 @@ pub unsafe extern "C" fn poll_log_pollfn(
         // SAFETY: leaf arg 1 (`tag`) is a live CLString base pointer (the effect
         // declares it as a String param).
         let env = unsafe { PollEnv::new(state) };
-        // v9: tag is leaf arg 3 (token, capacity, ms, tag) — was arg(1) under the
-        // v8 leading-pair peel.
+        // v9: tag is natural arg 3 (token, capacity, ms, tag).
         if let Some(s) = unsafe { env.arg_str(3) } {
             use std::io::Write;
             let mut out = std::io::stdout();

@@ -17,8 +17,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::{Arc, Mutex};
 
 use cranelisp_types::{
-    CranelispError, ErrorLocation, FQSymbol, ModuleEntry, ModuleFullPath, Sexp, Span, Symbol, Type,
-    Warning,
+    CranelispError, Decl, ErrorLocation, FQSymbol, Life, ModuleFullPath, Realization, Sexp, Span,
+    Symbol, Type, Warning,
 };
 
 use cranelisp_typecheck::CheckState;
@@ -70,8 +70,13 @@ impl CompilerSession {
     /// `settings.priority_workers`: values of 0 are interpreted as
     /// "auto-detect" (`available_parallelism()-1`, clamped to `[1, 8]`);
     /// explicit values are clamped to `[1, 8]`. Tests pass
-    /// `priority_workers: 1` for determinism.
-    pub fn new(settings: SessionSettings, project_root: PathBuf, entry_module_name: &str) -> Self {
+    /// `priority_workers: 1` for determinism. Synthetic seed lifecycle
+    /// refusals are returned as located bootstrap errors before workers spawn.
+    pub fn new(
+        settings: SessionSettings,
+        project_root: PathBuf,
+        entry_module_name: &str,
+    ) -> Result<CompilerSession, CranelispError> {
         // Lib dirs: stdlib location(s), NOT including project_root.
         // Project root is tier 2 in §8.11.2, searched separately.
         let lib_dirs = crate::session_setup::assemble_lib_dirs(&project_root);
@@ -106,7 +111,7 @@ impl CompilerSession {
         // Symbol-table seeding (S87 §3.2 — extracted). The strict mount order
         // (entry table → primitives `into_concrete` mount → synthetic mount →
         // Ring-0 GOT-populate) is preserved inside the helper.
-        let symbol_tables = Self::seed_session_symbol_tables(&entry_module, &next_type_id);
+        let symbol_tables = Self::seed_session_symbol_tables(&entry_module, &next_type_id)?;
 
         let shared = Self::build_shared_state(
             project_root,
@@ -128,7 +133,7 @@ impl CompilerSession {
         let (priority_worker_handles, nice_worker_handles) =
             Self::spawn_worker_threads(&shared, priority_workers, nice_workers);
 
-        CompilerSession {
+        Ok(CompilerSession {
             shared,
             error_modules: HashSet::new(),
             failed_forms: HashMap::new(),
@@ -150,7 +155,7 @@ impl CompilerSession {
             // when `--agent` is set + the `agent` feature is built (S88 W3).
             #[cfg(feature = "agent")]
             agent: None,
-        }
+        })
     }
 
     /// Enable the embedded agent for this (REPL) session (Sprint 88 Phase 5
@@ -226,7 +231,7 @@ impl CompilerSession {
     fn seed_session_symbol_tables(
         entry_module: &ModuleFullPath,
         next_type_id: &AtomicU32,
-    ) -> dashmap::DashMap<ModuleFullPath, SessionSymbolTable> {
+    ) -> Result<dashmap::DashMap<ModuleFullPath, SessionSymbolTable>, CranelispError> {
         let symbol_tables: dashmap::DashMap<ModuleFullPath, SessionSymbolTable> =
             dashmap::DashMap::new();
 
@@ -283,7 +288,7 @@ impl CompilerSession {
         // its real name above and registered name-agnostically later — S78 §1).
         // Fresh type vars for the polymorphic ADTs/primitive are allocated
         // from `next_type_id`, advancing the high-water mark monotonically.
-        crate::bootstrap::mount_synthetic_modules(&symbol_tables, next_type_id);
+        crate::bootstrap::mount_synthetic_modules(&symbol_tables, next_type_id)?;
 
         // Per FIXME 0174 + Decision 43: Ring 0 primitives (`add-i64`, `not`,
         // …) are now ordinary `ModuleEntry::Def` entries with `got_slot:
@@ -294,7 +299,7 @@ impl CompilerSession {
         // in backend remains a separate optimisation.
         populate_ring0_got_slots(&symbol_tables);
 
-        symbol_tables
+        Ok(symbol_tables)
     }
 
     /// `new` phase (S87 §3.2): assemble the `Arc<SharedState>` + patch the
@@ -356,10 +361,6 @@ impl CompilerSession {
             // REPL startup only (R17 — REPL-only by construction). In
             // `--run`/`--link`/`--release` the worklist is never enumerated.
             importable_indices: crate::session_v4::ImportableIndices::default(),
-            // S101 R3 machinery: the broken registry + the session retention
-            // pool (design/int/session-transaction.md §5.1/§6.1). Both start
-            // empty; populated only by dev-session redefinition transactions.
-            broken: dashmap::DashMap::new(),
             retained_code: Mutex::new(Vec::new()),
             fresh_jit_drop_glues: dashmap::DashMap::new(),
             run_mode,
@@ -874,11 +875,20 @@ impl CompilerSession {
                     Some(SymbolCategory::SpecialForm) | None => continue,
                     Some(c) => c,
                 };
-                let (scheme, docstring) = match entry {
-                    ModuleEntry::Def {
-                        scheme, docstring, ..
-                    } => (Some(scheme.clone()), docstring.clone()),
-                    ModuleEntry::TraitDecl { docstring, .. } => (None, docstring.clone()),
+                let (scheme, docstring) = match &entry.declaration {
+                    Decl::Callable(callable) => (
+                        Some(callable.arm.scheme.clone()),
+                        callable.docstring.clone(),
+                    ),
+                    Decl::Overloaded(declaration) => (
+                        declaration
+                            .arms
+                            .first()
+                            .map(|arm| arm.callable.scheme.clone()),
+                        declaration.docstring.clone(),
+                    ),
+                    Decl::Macro(declaration) => (None, declaration.docstring.clone()),
+                    Decl::Trait(record) => (None, record.docstring.clone()),
                     _ => (None, None),
                 };
                 out.push(SymbolInfo {
@@ -908,36 +918,23 @@ impl CompilerSession {
     /// `module_exports` of the source module. Threading the original
     /// parse-time `ImportSpec` through to here is tracked by FIXME 0194.
     pub fn module_imports(&self, module: &ModuleFullPath) -> Vec<cranelisp_types::ImportSpec> {
-        use cranelisp_types::{ImportNames, ImportSpec};
-        let mut out = Vec::new();
-        if let Some(table) = self.shared.symbol_tables.get(module) {
-            for (name, entry) in table.all_symbols() {
-                if let ModuleEntry::Import { source, .. } = entry {
-                    out.push(ImportSpec {
-                        module_path: source.module.clone(),
-                        alias: None,
-                        names: ImportNames::Specific(vec![name.clone()]),
-                        span: Span::SYNTHETIC,
-                    });
-                }
-            }
-        }
-        out
+        self.shared
+            .symbol_tables
+            .get(module)
+            .map_or_else(Vec::new, |table| table.imports.clone())
     }
 
     /// REPL `/exports MODULE` — list the publicly-visible symbols of a module.
     /// A symbol is public iff its `ModuleEntry` carries `Visibility::Public`
     /// (Def / TypeDef / TraitDecl / Macro / Constructor / Reexport).
-    pub fn module_exports(&self, module: &ModuleFullPath) -> Vec<(Symbol, ModuleEntry<Code>)> {
+    pub fn module_exports(
+        &self,
+        module: &ModuleFullPath,
+    ) -> Vec<(Symbol, cranelisp_types::Binding<Code>)> {
         let mut out = Vec::new();
         if let Some(table) = self.shared.symbol_tables.get(module) {
-            for (name, entry) in table.all_symbols() {
-                // Uniform per-entry visibility accessor (S70 — covers Def
-                // [incl. macro/constructor kinds], TypeDef, TraitDecl,
-                // SpecialForm, and public-visibility Import re-export edges).
-                if entry.is_public() {
-                    out.push((name.clone(), entry.clone()));
-                }
+            for (name, entry) in table.public_symbols() {
+                out.push((name.clone(), entry.clone()));
             }
         }
         out
@@ -1360,26 +1357,9 @@ impl CompilerSession {
             module_path.as_ref(),
         );
         self.shared.typecheck_products.remove(module_path);
-        if let Some(mut st) = self.shared.symbol_tables.get_mut(module_path) {
-            let mut pool = self
-                .shared
-                .retained_code
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            for (name, entry) in st.symbols.iter_mut() {
-                let slot = entry.callable_got_slot();
-                if let ModuleEntry::Def { code, .. } = entry
-                    && let Some(displaced) = code.take()
-                {
-                    pool.push(crate::redefine::RetainedCode::frozen(
-                        module_path,
-                        name,
-                        slot,
-                        displaced,
-                    ));
-                }
-            }
-        }
+        // Compiled owners stay attached until staged publication replaces
+        // them. The publication record returns each displaced owner so the
+        // commit gate can retain it before releasing the module write guard.
 
         // Parse the new source; the sexps ride the re-register work packet
         // (S78 — no shared `module_sexps` map). Persistent workers parked on
@@ -1698,11 +1678,17 @@ impl CompilerSession {
             .get(&module_path)
             .ok_or_else(no_main)?;
         let entry = table.get("main").ok_or_else(no_main)?;
-        let ModuleEntry::Def {
-            code: Some(code_owner),
-            scheme,
+        let Some(callable) = entry.callable() else {
+            return Err(no_main());
+        };
+        let Life::Concrete {
+            realization:
+                Realization::Body {
+                    code: Some(code_owner),
+                    ..
+                },
             ..
-        } = entry
+        } = &callable.arm.life
         else {
             return Err(no_main());
         };
@@ -1714,7 +1700,7 @@ impl CompilerSession {
         // `validate_main` (run before this read) guarantees `(Fn [] (IO _))`,
         // so a non-`Fn` scheme here is unreachable; it takes the same
         // diagnostic rather than defaulting to a type nobody derived.
-        let Type::Fn(_, ret) = &scheme.ty else {
+        let Type::Fn(_, ret) = &callable.arm.scheme.ty else {
             return Err(no_main());
         };
         Ok(MainEntryRead {
@@ -2010,21 +1996,24 @@ impl CompilerSession {
     /// and the next regen writes a green backing file. Display-only `Def`s
     /// (`defined: false`) and expression turns never clear anything.
     pub(crate) fn clear_repaired_failed_form(&mut self, result: &super::EvalResult) {
-        let super::EvalResult::Def {
-            symbol,
-            defined: true,
-            ..
-        } = result
-        else {
-            return;
+        let symbols = match result {
+            super::EvalResult::Definitions { symbols, .. } => symbols.as_slice(),
+            super::EvalResult::Def {
+                symbol,
+                defined: true,
+                ..
+            } => std::slice::from_ref(symbol),
+            _ => return,
         };
-        let Some(list) = self.failed_forms.get_mut(&symbol.module) else {
-            return;
-        };
-        list.retain(|f| f.symbol.as_ref() != Some(&symbol.symbol));
-        if list.is_empty() {
-            self.failed_forms.remove(&symbol.module);
-            self.error_modules.remove(&symbol.module);
+        for symbol in symbols {
+            let Some(list) = self.failed_forms.get_mut(&symbol.module) else {
+                continue;
+            };
+            list.retain(|f| f.symbol.as_ref() != Some(&symbol.symbol));
+            if list.is_empty() {
+                self.failed_forms.remove(&symbol.module);
+                self.error_modules.remove(&symbol.module);
+            }
         }
     }
 
@@ -2110,10 +2099,17 @@ impl CompilerSession {
         // The synthetic `__expr` wrapper is a per-turn artifact, not a user
         // definition — dropping it keeps the codegen batch sweep from
         // recompiling a stale persisted expression body.
-        table.symbols.remove(crate::worker::SYNTHETIC_EXPR_WRAPPER);
+        let synthetic = Symbol::from(crate::worker::SYNTHETIC_EXPR_WRAPPER);
+        if table.get(synthetic.as_ref()).is_some() && table.retire_abi_changing(&synthetic).is_err()
+        {
+            return;
+        }
         // Fresh type vars must not collide with the persisted schemes' ids.
         cranelisp_typecheck::advance_next_id_past_table(&self.shared.next_type_id, &table);
         cranelisp_types::install_module(&self.shared.symbol_tables, module.clone(), table);
+        if std::env::var("CRANELISP_MODULE_TRACE").is_ok() {
+            eprintln!("module-trace: entry metadata preloaded for {module}");
+        }
     }
 
     /// §8: Link by module name. Collects .o files produced by nice workers,
@@ -2181,8 +2177,8 @@ impl CompilerSession {
             .get("main")
             .unwrap_or_else(|| unreachable!("invariant: validate_main accepted this entry"));
         let codegen_result_ty = main_entry.codegen_view().map(|view| view.body.ty().clone());
-        let inner_result_ty = match main_entry {
-            ModuleEntry::Def { scheme, .. } => match &scheme.ty {
+        let inner_result_ty = match &main_entry.declaration {
+            Decl::Callable(callable) => match &callable.arm.scheme.ty {
                 Type::Fn(_, ret) if ret.is_io() => ret.unwrap_io().clone(),
                 other => other.clone(),
             },
@@ -2538,7 +2534,7 @@ pub(crate) fn populate_ring0_got_slots(
     // The callable slot rides on the `DefKind` variant (S83 reshape, FIXME
     // 0356/0357) — read both the static-source and session-dest slots via the
     // `callable_got_slot()` chokepoint.
-    for (name, static_entry) in static_table.symbols.iter() {
+    for (name, static_entry) in static_table.all_symbols() {
         let Some(src_slot) = static_entry.callable_got_slot() else {
             continue;
         };

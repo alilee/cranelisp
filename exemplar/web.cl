@@ -1,15 +1,18 @@
 ;; web -- the connection-handle ADTs for the `web` HTTP platform DLL.
 ;;
-;; S97 ABI v9 (ctx-vtable handle model; design/platform/poll-support.md §3.5,
-;; design/arch/effect-concurrency.md §4.1.1). Scheduling state (token/capacity)
+;; S97 ABI v9 (ctx-vtable handle model;
+;; design/platform/poll-leaf-authoring.md §4; design/arch/effect-concurrency.md
+;; §4.1.1). Scheduling state (token/capacity)
 ;; NEVER rides on a value -- it flows through a trampoline-owned `ctx` vtable the
 ;; platform's poll-fns call. So `web/Connection` is an OPAQUE handle carrying only
 ;; the platform's `r` in a GENUINE `fd` field (`r == fd`); the platform reads `fd`
 ;; back out and PROJECTS the per-direction token from it. No `token`/`capacity`
 ;; fields (the dead v8 leading-pair shape), no header slot, no descriptor.
 ;;
-;; Platforms still do NOT declare ADTs (platform-interface.md §3a) -- the four
-;; `web/*` types are ordinary `.cl` types; the DLL
+;; Platforms do NOT declare language ADT layouts -- the four `web/*` types are
+;; ordinary `.cl` types. The DLL's `declare_platform! adts:` arm only emits Rust
+;; markers and validates those FQ names against the generated schema; it does
+;; not replace these definitions. The DLL
 ;; (exemplar/platforms/web/src/lib.rs) references them FQ in the
 ;; bind-listener/accept-conn/read-conn/send-conn sigs. The backend generates
 ;; web.platform-schema by walking these deftypes (/platform-schema web).
@@ -21,7 +24,7 @@
 ;; the platform is registered. So if `web` imported `platform.web` it would form a
 ;; load cycle. The convenience wrappers therefore live in the sibling `serve.cl`
 ;; module, loaded AFTER `(platform web)` (see serve.cl + main.cl). The general
-;; platform-authoring rule is poll-support.md §3.6.3 (model-independent).
+;; platform-authoring rule is poll-leaf-authoring.md §6 (model-independent).
 ;;
 ;; This module resolves on the ORDINARY .cl module path (project tree /
 ;; CRANELISP_LIB), NOT on CRANELISP_PLATFORM_PATH (which locates the dylib).

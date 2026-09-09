@@ -74,9 +74,14 @@ pub(crate) fn classify_call(
     match resolved_call {
         // Row 1/2: mangled mono / multi-sig / post-mono trait-impl target —
         // a named, statically-resolved moded body.
-        Some(ResolvedCall::SigDispatch { mangled_name }) => {
-            CallClass::Summarised(Symbol::from(mangled_name.as_ref()))
-        }
+        Some(ResolvedCall::SigDispatch { target }) => match target {
+            cranelisp_types::CallableTarget::Binding(owner)
+            | cranelisp_types::CallableTarget::OverloadArm { owner, .. }
+            | cranelisp_types::CallableTarget::MacroClause { owner, .. } => {
+                CallClass::Summarised(owner.symbol.clone())
+            }
+            _ => CallClass::Decision24,
+        },
         Some(ResolvedCall::TraitMethod { mangled_name, .. }) => {
             CallClass::Summarised(Symbol::from(mangled_name.as_ref()))
         }

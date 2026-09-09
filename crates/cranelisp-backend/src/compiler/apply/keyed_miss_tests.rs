@@ -59,19 +59,15 @@ fn kc_n1_call_seam_carrier_none_hard_errors() {
     let tables = empty_tables();
     {
         let mut st = SymbolTable::new(user.clone());
-        let _ = st.allocate_got_slot().expect("fresh table has free slots");
         // NO carrier recorded for `helper`'s callee span — the keying-drift the
         // hard-miss family exists to catch.
         let empty_targets: HashMap<Span, FQSymbol> = HashMap::new();
-        st.insert(
-            caller.name.clone(),
-            make_def_entry_slot_with_targets(caller.clone(), 0, &empty_targets),
-        );
+        install_def_entry_at_slot_with_targets(&mut st, caller.clone(), 0, &empty_targets);
         tables.insert(user.clone(), st);
     }
 
     let mut obj = make_object_module();
-    let result = compile_to_module(
+    let result = compile_names_to_module(
         user.clone(),
         std::slice::from_ref(&caller.name),
         &tables,
@@ -103,7 +99,6 @@ fn kc_n2_call_seam_entry_miss_hard_errors() {
     let tables = empty_tables();
     {
         let mut st = SymbolTable::new(user.clone());
-        let _ = st.allocate_got_slot().expect("fresh table has free slots");
         // A carrier IS present, but it points at a symbol that does not exist in
         // any table — the entry-miss family.
         let mut targets: HashMap<Span, FQSymbol> = HashMap::new();
@@ -114,15 +109,12 @@ fn kc_n2_call_seam_entry_miss_hard_errors() {
                 symbol: Symbol::from("ghost"),
             },
         );
-        st.insert(
-            caller.name.clone(),
-            make_def_entry_slot_with_targets(caller.clone(), 0, &targets),
-        );
+        install_def_entry_at_slot_with_targets(&mut st, caller.clone(), 0, &targets);
         tables.insert(user.clone(), st);
     }
 
     let mut obj = make_object_module();
-    let result = compile_to_module(
+    let result = compile_names_to_module(
         user.clone(),
         std::slice::from_ref(&caller.name),
         &tables,

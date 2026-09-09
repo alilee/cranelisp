@@ -5,8 +5,8 @@
 use std::collections::{HashMap, HashSet};
 
 use cranelisp_types::{
-    ConcreteType, DefKind, ModeSummary, ModuleEntry, ModuleFullPath, MonoDefnVariant, MonoExpr,
-    ParamFlow, ResultMode, Span, Symbol, UserFnState,
+    CallableOrigin, ConcreteType, ModeSummary, ModuleFullPath, MonoDefnVariant, MonoExpr,
+    ParamFlow, Realization, ResultMode, Span, Symbol, Visibility,
 };
 
 use crate::checker::test_support::TestFixture;
@@ -58,24 +58,28 @@ fn register_callable(tf: &TestFixture, key: &str, body: MonoExpr) {
         span: Span::SYNTHETIC,
         mode_summary: None,
     };
-    let entry: ModuleEntry = ModuleEntry::def(
-        crate::scheme::mono(cranelisp_types::Type::Fn(
-            vec![cranelisp_types::Type::String],
-            Box::new(cranelisp_types::Type::String),
-        )),
-        DefKind::UserFn {
-            fn_state: UserFnState::Concrete {
-                got_slot: 1,
-                mode_summary: None,
-            },
-        },
-    )
-    .codegen_view(cv)
-    .build();
     tf.modules
         .get_mut(&ModuleFullPath::from("user"))
         .unwrap()
-        .insert(Symbol::from(key), entry);
+        .install_concrete(
+            Symbol::from(key),
+            crate::scheme::mono(cranelisp_types::Type::Fn(
+                vec![cranelisp_types::Type::String],
+                Box::new(cranelisp_types::Type::String),
+            )),
+            vec![Symbol::from("g")],
+            None,
+            0,
+            CallableOrigin::Plain,
+            Realization::Body {
+                view: cv,
+                code: None,
+            },
+            None,
+            Vec::new(),
+            Visibility::Public,
+        )
+        .unwrap();
 }
 
 fn summary() -> ModeSummary {
@@ -101,6 +105,8 @@ fn summary_lands_on_entry_and_codegen_view() {
         summaries,
         facts: HashMap::new(),
         value_used: HashSet::new(),
+        residual_param_frames: HashSet::new(),
+        refusal: None,
     };
     let env = tf.env();
     super::publish(&env, &tf.state, &cluster);
@@ -134,6 +140,8 @@ fn site_facts_and_provenance_annotate_the_stored_view() {
         summaries,
         facts: facts_map,
         value_used: HashSet::new(),
+        residual_param_frames: HashSet::new(),
+        refusal: None,
     };
     let env = tf.env();
     super::publish(&env, &tf.state, &cluster);
@@ -170,6 +178,8 @@ fn value_use_mark_set_for_referenced_callable() {
         summaries: HashMap::new(),
         facts: HashMap::new(),
         value_used,
+        residual_param_frames: HashSet::new(),
+        refusal: None,
     };
     let env = tf.env();
     super::publish(&env, &tf.state, &cluster);
@@ -204,6 +214,8 @@ fn non_cluster_entry_is_untouched() {
         summaries,
         facts: HashMap::new(),
         value_used: HashSet::new(),
+        residual_param_frames: HashSet::new(),
+        refusal: None,
     };
     let env = tf.env();
     super::publish(&env, &tf.state, &cluster);
@@ -215,4 +227,68 @@ fn non_cluster_entry_is_untouched() {
         view.lookup(&Symbol::from("other")).unwrap().mode_summary(),
         None
     );
+}
+
+// spec: design/typecheck/ownership-inference.md §19.5 — a REFUSED cluster
+// publishes nothing THROUGH THE FUNNEL. The cluster handed over here carries a
+// full summary map, full site facts and a value-use mark, so a green depends on
+// the funnel refusing them rather than on the producer having handed over empty
+// maps. That is the shape QA named as the third plausible wrong outcome: the
+// seeded environment leaking to the publication path.
+#[test]
+fn a_refused_cluster_publishes_nothing_through_the_funnel() {
+    let tf = TestFixture::new();
+    register_callable(&tf, "area", apply_body(Span::new(10, 20)));
+
+    let mut facts = SiteFacts::default();
+    facts.escapes.insert(Span::new(10, 20), false);
+    facts
+        .provenance
+        .insert(Span::new(10, 20), Symbol::from("g"));
+    let mut facts_map = HashMap::new();
+    facts_map.insert(Symbol::from("area"), facts);
+    let mut summaries = HashMap::new();
+    summaries.insert(Symbol::from("area"), summary());
+    let mut value_used = HashSet::new();
+    value_used.insert(Symbol::from("area"));
+    let cluster = ClusterOwnership {
+        summaries,
+        facts: facts_map,
+        value_used,
+        residual_param_frames: HashSet::new(),
+        refusal: Some(super::super::fixpoint::Refusal {
+            stratum: super::super::fixpoint::Stratum::Modes,
+            visits: 44,
+            cap: 44,
+            universe: 2,
+        }),
+    };
+    let env = tf.env();
+    super::publish(&env, &tf.state, &cluster);
+
+    let read = env.current_symbol_table(&tf.state);
+    let view = read.view();
+    let entry = view.lookup(&Symbol::from("area")).unwrap();
+    assert_eq!(
+        entry.mode_summary(),
+        None,
+        "no summary lands on the entry for a refused cluster"
+    );
+    assert_eq!(
+        entry.codegen_view().unwrap().mode_summary,
+        None,
+        "nor on its codegen_view carrier"
+    );
+    assert!(!entry.value_use(), "nor does the value-use mark get set");
+    match &entry.codegen_view().unwrap().body {
+        MonoExpr::Apply {
+            escapes,
+            provenance,
+            ..
+        } => {
+            assert_eq!(*escapes, None, "the body keeps its absent site facts");
+            assert_eq!(*provenance, None);
+        }
+        _ => panic!("expected Apply body"),
+    }
 }

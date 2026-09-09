@@ -58,7 +58,7 @@ Cranelisp dispatches the shared role package pinned as a submodule at `.agents`.
 | Role | Owns here | Notes |
 |---|---|---|
 | `spec` | `spec/` | Scribe: the user arbitrates every normative question |
-| `arch` | `design/arch/`, `crates/cranelisp-types/`, every crate's public API | Final arbiter of decisions crossing crate boundaries |
+| `arch` | `design/arch/`, `crates/cranelisp-types/`, every crate's public API | Technical steward for decisions crossing crate boundaries; the user approves every inter-crate public-API change |
 | `design` | `design/{crate}/` | Narrow-deployed — one crate-shaped surface per invocation |
 | `dev` | `crates/{crate}/src/`, `src/`, `stdlib/`, `exemplar/` | Narrow-deployed |
 | `review` | no directory | Narrow-deployed; runs in a fresh named subagent that did not author the change |
@@ -73,6 +73,17 @@ Cranelisp dispatches the shared role package pinned as a submodule at `.agents`.
 **Where the retired skills went.** `/stdlib` and `/port` are `dev` narrow-deployed to `stdlib/` and `exemplar/` — those modules take the full role set like any other surface, so an exemplar is architected, designed, built and evidenced rather than written. `/examples` became `training`; `/docs` became `docs`; `/testing` became `test`. `/repl` split: `repl/spec.md` is a surface specification owned by `spec` with `design` for its interior, and the demos and harness are `test` artifacts. The earlier `/frontend`, `/typecheck`, `/backend`, `/int` and `/platform` collapsed into `dev` narrow-deployment at the 2026-07-11 artefact restructure; see git history.
 
 **Narrow deployment.** `design`, `dev` and `review` are dispatched to exactly one crate-shaped surface per invocation, named in the dispatch. Cross-surface work is sequential invocations coordinated by `sprint`; any interface change goes through `arch` first.
+
+**Inter-crate public-API user gate.** Every proposed change to the public API
+between crates requires the user's explicit review and approval before
+implementation starts. This includes additions, removals, renames, signature,
+generic, bound, variant, field or visibility changes, facade re-exports, and a
+new or removed cross-crate consumer edge. `arch` presents the exact proposed
+delta, affected producers and consumers, compatibility and schema/ABI impact,
+and the expected `public-api.txt` effect. After implementation, the generated
+baseline diff returns to the user for confirmation before the wave passes. A
+phase, wave or general architecture approval does not satisfy either gate; an
+unapproved or mismatching delta stops the wave and returns to the user.
 
 **Models.** The shared package owns the role-to-tier relationship and `high`
 effort default. The primary harness supplies the `sprint` coordinator and its

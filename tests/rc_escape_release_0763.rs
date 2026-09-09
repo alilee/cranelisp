@@ -245,7 +245,7 @@ fn lambda_capturing_a_closure_balances() {
 // defect: class=rc-miscount locus=crates/cranelisp-backend type-directed rc-dec emission (ADT-wrapped vec argument, ownership-ON residual) found=S115 owner=/dev
 #[test]
 fn adt_wrapped_vec_argument_balances_both_toggles() {
-    let src = "(deftype G2 (Gr [cells]))\n\
+    let src = "(deftype (G2 a) (Gr [:a cells]))\n\
                (defn peek [g] 7)\n\
                (defn main [] (Pure (peek (Gr [5 5]))))\n";
     assert_balanced("G (0753 reduced shape)", src, 7, RUN_ONLY);
@@ -258,7 +258,7 @@ fn adt_wrapped_vec_argument_balances_both_toggles() {
 // spec: spec/12-runtime.md §12.3.1 — heap values are freed when no longer reachable.
 #[test]
 fn adt_wrapped_string_argument_balances_both_toggles() {
-    let src = "(deftype G2 (Gr [s]))\n\
+    let src = "(deftype (G2 a) (Gr [:a s]))\n\
                (defn peek [g] (match g [(Gr s) (str-len s)]))\n\
                (defn main [] (Pure (peek (Gr \"hi\"))))\n";
     assert_balanced("G2 (0753 String-field twin)", src, 2, RUN_ONLY);

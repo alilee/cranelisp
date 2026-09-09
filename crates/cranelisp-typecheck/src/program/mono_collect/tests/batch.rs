@@ -79,7 +79,8 @@ fn test_batch_monomorphise_generates_mono_defn() {
     );
 
     // Verify add was correctly inferred as Fn([Int, Int], Int)
-    if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("add") {
+    if let Some(callable) = tc.symbol_table().get("add").and_then(Binding::callable) {
+        let scheme = &callable.arm.scheme;
         assert_eq!(
             scheme.ty,
             Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int))
@@ -136,7 +137,8 @@ fn test_batch_constrained_fn_alone_detected() {
     );
 
     // Check the scheme has Num constraint
-    if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("add") {
+    if let Some(callable) = tc.symbol_table().get("add").and_then(Binding::callable) {
+        let scheme = &callable.arm.scheme;
         assert!(
             !scheme.constraints.is_empty(),
             "add should have Num constraint"
@@ -204,8 +206,8 @@ fn test_repl_expr_monomorphise() {
     );
     assert!(
         // FIXME 0519: mono names are home-qualified `{home}/{bare}$sig`.
-        mono_names.iter().any(|n| n.as_ref() == "test/add$Int+Int"),
-        "expected test/add$Int+Int in mono entries, got {mono_names:?}"
+        mono_names.iter().any(|n| n.as_ref() == "test/add$Int"),
+        "expected test/add$Int in mono entries, got {mono_names:?}"
     );
 }
 
@@ -277,8 +279,8 @@ fn test_repl_defn_body_monomorphise() {
     );
     assert!(
         // FIXME 0519: mono names are home-qualified `{home}/{bare}$sig`.
-        mono_names.iter().any(|n| n.as_ref() == "test/add$Int+Int"),
-        "expected test/add$Int+Int in mono entries, got {mono_names:?}"
+        mono_names.iter().any(|n| n.as_ref() == "test/add$Int"),
+        "expected test/add$Int in mono entries, got {mono_names:?}"
     );
 }
 
@@ -400,10 +402,12 @@ fn fold_polymorphic_accumulator_does_not_over_unify() {
     // accumulator parameter must NOT have collapsed to `(Vec _)`. The
     // accumulator is the SECOND parameter of `reduce` (f, init, v) and is
     // the same var as the result.
-    let scheme = match tc.symbol_table().get("reduce") {
-        Some(ModuleEntry::Def { scheme, .. }) => scheme.clone(),
-        other => panic!("reduce not a Def in symbol table: {other:?}"),
-    };
+    let scheme = tc
+        .symbol_table()
+        .get("reduce")
+        .and_then(Binding::callable)
+        .map(|c| c.arm.scheme.clone())
+        .expect("reduce callable");
     assert!(
         scheme.type_vars.len() >= 2,
         "reduce must generalize over (at least) the element AND accumulator \
@@ -418,7 +422,7 @@ fn fold_polymorphic_accumulator_does_not_over_unify() {
         // accumulator (init) is params[1]; result is ret. Neither may be a
         // concrete `(Vec _)` — over-unification stamps Vec onto both.
         assert!(
-            !is_vec(&params[1]) && !is_vec(ret),
+            !is_vec(&params[1]) && !is_vec(ret.as_ref()),
             "reduce's accumulator param and result must stay polymorphic, \
              not collapse to (Vec _): init={:?} ret={:?} (FIXME 0344)",
             params[1],
@@ -580,10 +584,12 @@ fn forward_reference_polymorphic_call_creates_mono_variant() {
     // And the concrete caller `main` must collapse to its true MONOMORPHIC
     // scheme `(Fn [] Int)` — NOT stay spuriously polymorphic. A leftover
     // free var in `main`'s scheme is the witness of the forward-ref defect.
-    let main_scheme = match tc.symbol_table().get("main") {
-        Some(ModuleEntry::Def { scheme, .. }) => scheme.clone(),
-        other => panic!("main not a Def in symbol table: {other:?}"),
-    };
+    let main_scheme = tc
+        .symbol_table()
+        .get("main")
+        .and_then(Binding::callable)
+        .map(|c| c.arm.scheme.clone())
+        .expect("main callable");
     assert!(
         main_scheme.type_vars.is_empty(),
         "main must be monomorphic after pass4 re-generalization \

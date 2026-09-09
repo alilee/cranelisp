@@ -57,6 +57,11 @@ impl CLAdtType for OptionInt {
     const TYPE_NAME: &'static str = "shapes/OptionInt";
 }
 
+struct MissingType;
+impl CLAdtType for MissingType {
+    const TYPE_NAME: &'static str = "shapes/Missing";
+}
+
 // spec: design/arch/platform-interface.md §5.5 — read_tag is a fixed
 // offset-0 read, no schema lookup, no callback.
 #[test]
@@ -112,6 +117,16 @@ fn sum_unqualified_field_rejected() {
     let payload = alloc_cladt_payload(1, &[7]);
     let opt: CLAdt<OptionInt> = CLAdt::from_raw(payload);
     let _ = opt.read_field::<CLInt>("val");
+}
+
+// spec: design/platform/adt-marker-binding.md §6 — an unknown marker key is
+// diagnosed as a type-key miss and lists the artifact's known keys, rather
+// than blaming the requested field with an empty constructor list.
+#[test]
+#[should_panic(expected = "schema type-key miss")]
+fn unknown_type_key_is_not_misattributed_to_the_field() {
+    ensure_test_schema();
+    let _ = resolve_field::<MissingType>("anything");
 }
 
 // CLAdt is #[repr(transparent)] — round-trips through i64.

@@ -22,7 +22,7 @@ function %Point.x(i64) -> i64 system_v {
     sig0 = (i64, i64) -> i64 system_v
     sig1 = (i64) system_v
     fn0 = u0:2 sig0
-    fn1 = colocated u0:41 sig1
+    fn1 = colocated u0:43 sig1
 
 block0(v0: i64):
     jump block1(v0)
@@ -62,7 +62,7 @@ function %Point.y(i64) -> i64 system_v {
     sig0 = (i64, i64) -> i64 system_v
     sig1 = (i64) system_v
     fn0 = u0:2 sig0
-    fn1 = colocated u0:41 sig1
+    fn1 = colocated u0:43 sig1
 
 block0(v0: i64):
     jump block1(v0)
@@ -100,6 +100,7 @@ block2(v2: i64):
 function %main() -> i64 system_v {
     gv0 = symbol userextname1
     gv1 = symbol userextname1
+    gv2 = symbol userextname1
     sig0 = (i64) -> i64 system_v
     sig1 = (i64) -> i64 system_v
     sig2 = (i64) -> i64 system_v
@@ -107,7 +108,6 @@ function %main() -> i64 system_v {
     sig4 = (i64) -> i64 system_v
     fn0 = u0:0 sig0
     fn1 = u0:0 sig2
-    fn2 = u0:0 sig4
 
 block0:
     jump block1
@@ -138,11 +138,29 @@ block1:
     v16 = load.i64 notrap aligned v15
     v17 = call_indirect sig3, v16(v12)
     v18 = iadd v8, v17
-    v19 = iconst.i64 16
-    v20 = call fn2(v19)  ; v19 = 16
-    v21 = iconst.i64 0
-    store notrap aligned v21, v20+16  ; v21 = 0
-    store notrap aligned v18, v20+24
-    return v20
+    v19 = global_value.i64 gv2
+    v20 = iadd_imm v19, 24
+    v21 = load.i64 notrap aligned v20
+    v22 = call_indirect sig4, v21(v18)
+    return v22
 }
 ; === end CLIF user::main ===
+; === CLIF user::primitives/IO.Pure$Int ===
+function %primitives/IO.Pure$Int(i64) -> i64 system_v {
+    sig0 = (i64) -> i64 system_v
+    fn0 = u0:0 sig0
+
+block0(v0: i64):
+    jump block1(v0)
+
+block1(v1: i64):
+    v2 = iconst.i64 0
+    v3 = iconst.i64 24
+    v4 = call fn0(v3)  ; v3 = 24
+    v5 = iconst.i64 0
+    store notrap aligned v5, v4+16  ; v5 = 0
+    store notrap aligned v1, v4+24
+    store notrap aligned v2, v4+32  ; v2 = 0
+    return v4
+}
+; === end CLIF user::primitives/IO.Pure$Int ===

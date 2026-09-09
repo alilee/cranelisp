@@ -691,21 +691,28 @@ impl CompilerSession {
             let Some(mut table) = self.shared.symbol_tables.get_mut(&module) else {
                 return Err(format!("no such definition: {symbol}"));
             };
-            match table.symbols.get_mut(&sym) {
-                Some(cranelisp_types::ModuleEntry::Def {
-                    kind, docstring, ..
-                }) => {
-                    if !matches!(kind.as_ref(), cranelisp_types::DefKind::UserFn { .. }) {
-                        return Err(format!(
-                            "cannot record a docstring on '{symbol}': only function \
-                             definitions persist a docstring across restart"
-                        ));
-                    }
-                    *docstring = Some(text.to_string());
-                }
-                // Absent, or present but not a local `Def` (Import / TypeDef / …).
-                _ => return Err(format!("no such definition: {symbol}")),
+            let Some(binding) = table.get(sym.as_ref()) else {
+                return Err(format!("no such definition: {symbol}"));
+            };
+            let is_plain_body = binding.callable().is_some_and(|callable| {
+                matches!(callable.origin, cranelisp_types::CallableOrigin::Plain)
+                    && matches!(
+                        callable.arm.life,
+                        cranelisp_types::Life::Concrete {
+                            realization: cranelisp_types::Realization::Body { .. },
+                            ..
+                        }
+                    )
+            });
+            if !is_plain_body {
+                return Err(format!(
+                    "cannot record a docstring on '{symbol}': only function \
+                     definitions persist a docstring across restart"
+                ));
             }
+            table
+                .set_plain_callable_docstring(&sym, text.to_string())
+                .map_err(|error| format!("cannot record docstring on '{symbol}': {error}"))?;
         }
         self.regenerate_backing_file();
         Ok(())

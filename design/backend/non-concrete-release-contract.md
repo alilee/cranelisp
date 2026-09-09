@@ -15,6 +15,37 @@ vectors on statically-resolved calls).
 **Carries:** FIXMEs 0903, 0907, 0916, 0917, 0891, 0913 (producer face), 0915
 (the refusal's quality bar), 0906 (rider).
 
+> **S121 RECONCILIATION (`/design`(backend), Phase 3).** The rules (§3), the
+> five-face table (§4), the measurement record (§2) and the reject list (§8)
+> **stand unchanged**. Three of the dispositions' *mechanisms* moved, because
+> upstream work landed that makes the state unconstructible rather than merely
+> refused, and one piece is already done:
+>
+> - **§6 (0917) is LANDED** — S120, `cbb3be9e`. `NoReference`, the identity-seeded
+>   fold and the three-state constructor probe are in source, and both repro
+>   cells are green. §6 is now the *record* of that ruling; §7's piece 1 is a
+>   filing retirement.
+> - **Face 1 is producer-discharged, not backend-edited.** Under C1's unified
+>   lifecycle a `Life::Template` has no slot and no view, and FIXME 0931 retires
+>   the generic-ctor template slot, so **a ctor-template frame with a residual
+>   parameter is no longer a codegen target**. §5.1 step 2's deletion has no site
+>   left to delete; I-CT′ is discharged structurally. Backend *observes* the
+>   `Ctor` partition reading zero.
+> - **Face 4's named residual (§4.4) does not ship.** The user included FIXME
+>   0934 in S121: `Pure` carries a payload-glue word stamped at construction
+>   (`design/arch/total-concreteness.md` §3.4). §5.3's two-part `drop<IO T>` is
+>   superseded by a fixed body that hands the whole node to the runtime walker,
+>   and the residual leak guard §7.1 owed becomes a GREEN acceptance cell.
+> - **§5.1's flip criterion is unreachable as written** until the *ctor
+>   declaration channel* closes (FIXME 0929 row 3): `CtorMeta` materialises field
+>   types from the declaration scheme, so a polymorphic product's field type is
+>   permanent census traffic no frame monomorphisation removes.
+>
+> The live C4 plan — bundles, reservations, the census's arming legs, the closed
+> channel, and the per-FIXME dispositions — is **`s121-c4-visit.md`**, which
+> supersedes §5.1, §5.2, §5.3 and §7 in scope. §5.4 (typecheck's lenient view)
+> is unchanged and is `design/typecheck/non-concrete-producer-obligations.md`'s.
+
 ---
 
 ## 1. The question, and why it has never been answered
@@ -396,13 +427,36 @@ trampoline returns the payload's ownership to the caller",
 
 §5.3 states the exact shape and the one intrinsics entry point it needs.
 
-**The named residual, recorded rather than hidden.** A `Pure` node *nested inside
-an unrun `Bind` sub-tree* has payload type `b` — the existential — which neither
-side can name: backend does not have it, and the runtime sees an opaque word. Its
-payload is not discharged. This is a **bounded leak on unrun IO trees only**, and
-it is a strict improvement on today's hard refusal, but it is a leak and §6.3
-gives it a guard rather than silence. R-2 forbids papering it over with a
-fabricated `b`.
+**The named residual — DISSOLVED at S121, not shipped.** As ruled here, a `Pure`
+node *nested inside an unrun `Bind` sub-tree* has payload type `b` — the
+existential — which neither side can name at *teardown*, so its payload would not
+be discharged: a bounded leak on unrun IO trees, strictly better than the hard
+refusal but still a leak.
+
+The S121 disposition removes the premise rather than guarding the consequence.
+Under I-FRAME every IO-node *construction* site is concrete post-mono, so
+backend's type knowledge is certain at construction even where it is unknowable
+at teardown. The `Pure` node therefore carries a **payload-glue word stamped at
+construction** (FIXME 0934, ruled by `/arch` at
+`design/arch/total-concreteness.md` §3.4; the C4 half at `s121-c4-visit.md` §6):
+the canonical `drop<T>` address, or the sentinel `0` for a non-heap payload or a
+payload whose ownership has already moved out on the run lane. The runtime
+walker calls through it. No new release identity is minted — the word carries the
+same canonical glue every other site calls. The word is an **ownership witness**,
+so the run lane maintains it: it never calls the glue, but it clears the word
+before transferring a payload onward. That clear is required by Decision-24
+sequencing — `cranelisp_run_io` forces the caller's tree and then structurally
+consumes the same tree — not by any cross-reference sharing, so the run lane is
+not byte-identical (`s121-c4-visit.md` §6.2).
+
+Consequences for this section: the split below still holds in principle —
+backend owns what only the type knows — but backend now discharges it at
+**construction** rather than at teardown, which is why §5.3's two-part
+`drop<IO T>` is superseded. The `/qa` guard §7.1 owed for this residual becomes a
+GREEN acceptance cell (a nested `Pure` in an unrun `Bind` **is** discharged),
+with the double-discharge negative as its discriminating control. R-2's
+prohibition on papering over the gap with a fabricated `b` stands and was never
+approached.
 
 ### 4.5 Why 0907's "admission exclusion" option is rejected
 
@@ -460,6 +514,28 @@ traffic**:
 is measure-before-binding institutionalised: the arm is the gate on its own
 removal.
 
+> **S121 corrections to this section — three, all recorded at
+> `s121-c4-visit.md` §5 and §7.**
+>
+> - **Step 2 has no site.** C1's lifecycle plus FIXME 0931 make a ctor template
+>   slot-less and view-less, so a residual-parameter ctor frame is not a codegen
+>   target. The ≈89% delta arrives from the *producer*; backend observes it.
+> - **Step 1's arming leg cannot be inherited.** C3 lands before C4, so the
+>   corpus traffic that demonstrated this instrument's positive leg is gone
+>   before the production instrument is authored. Both legs are therefore
+>   **planted in the instrument's own change-set** against a unit fixture (a
+>   frame whose entry `Scheme.ty` carries a residual parameter fires it; the
+>   concrete twin leaves it silent). The corpus reading zero stays the *flip
+>   criterion*; it is no longer also the proof of life.
+> - **Step 4 is blocked by a channel this section does not name.** `CtorMeta`
+>   materialises constructor field types from the *declaration's* scheme, so a
+>   polymorphic product's field type is a permanent `Type::Var` feeding this
+>   arm (FIXME 0929 row 3). The census cannot read zero while that stands.
+>   Ruled at `s121-c4-visit.md` §7.1: field types become an instantiation fact
+>   carried as `ConcreteType`, materialised through the already-published,
+>   currently unconsumed `cranelisp_types::ctor_field_types_at`, with its
+>   `NotConcrete` refusal located at the reference's span. Zero types delta.
+
 ### 5.2 Typecheck — remove the monomorphisation exemption (R-3)
 
 Owner: `/design`(typecheck) → `/dev`(typecheck). Filed as FIXME (§8).
@@ -475,10 +551,9 @@ Precise form:
   parameter is `ADT(T, [Var…])` and whose result is the declared field type,
   possibly a bare `Var`. The mint must be instantiation-keyed: one `Def` per
   concrete `T <args>` actually demanded, under the existing monomorphic mangle,
-  with `self` and the result substituted. *Interaction with rider 0867*: 0867
-  widens accessor minting to every sum type and distinct-name product, i.e. it
-  **widens this family's surface**. `SPRINT.md` §Must-not-interleave already
-  gates 0867 behind this disposition; this ruling is that gate's content.
+  with `self` and the result substituted. The former rider 0867 widening is
+  retired by the S121 product-only ruling: this family contains product
+  accessors only; sum payload labels mint no frame.
 - **F2 (trait-method instances).** The instance name is keyed on the type
   *constructor* (`Functor.fmap$primitives/Option`). It must be keyed on the
   full concrete instantiation (`…$primitives/Option$Int`), which is a **key
@@ -514,6 +589,14 @@ free_io_node(ptr)     // tag-walk + branch release + dealloc; NO dec, NO fence
 
 Backend's registry then classifies `ADT(primitives/IO, [T])` as **runtime-owned**
 and emits, in place of a derived `ctor_shapes` body:
+
+> **SUPERSEDED S121 (`s121-c4-visit.md` §6.4).** With the 0934 payload-glue word
+> the node self-describes, so backend's body needs no tag test and no `drop<T>`
+> call: it is `guard; dec; fence; call runtime/free_io_node(p)` — **identical for
+> every `T`** — and the runtime walker discharges *every* `Pure` in the tree,
+> including nested ones, through the stamped word. The shape below is retained
+> as the record of the S119 split. The three properties after it are unchanged
+> and still binding.
 
 ```
 drop<IO T>(p):
@@ -614,7 +697,16 @@ the backend-side obligation only.
 
 ---
 
-## 6. FIXME 0917 — the distinct axis (provenance classification)
+## 6. FIXME 0917 — the distinct axis (provenance classification) — **LANDED S120**
+
+> **Implemented at S120 (`cbb3be9e`), exactly as ruled.** `ValueProvenance` has
+> its `NoReference` bottom, the `Match` fold seeds at the identity, the arm-less
+> guard survives as the distinct ⊤, both thresholds moved (`<= Fresh`;
+> `Fresh | OwnedTemporary`), and the constructor probe is the three-state
+> `CtorValueShape` produced by the one keyed `ctor_meta_at` read. Both reduced
+> repro cells are green. This section is now the **record** of the ruling and
+> the reference for its invariants; the filing's `status: open` is stale and
+> retires in the S121 C4 visit (`s121-c4-visit.md` §9).
 
 Ruled here because it shares the window, kept out of the table because it shares
 nothing else: all types are concrete, no residual anything, and the seam is the
@@ -866,6 +958,13 @@ the measured class and every face carries one disposition. **Its implementation
 severs**, and it severs in exactly the order `/arch` named as the fallback, for
 reasons the measurement supplies rather than for capacity reasons:
 
+> **S121: this staging table is SUPERSEDED by `s121-c4-visit.md` §10.** Piece 1
+> landed at S120; piece 3 is producer-discharged and has no backend site; pieces
+> 2 and 4 keep their content but re-order behind the diagnostic frame (0915) and
+> the armed census, because this visit converts *more* sites to located refusals
+> and R-4 must hold before it does. The table is retained as the record of the
+> S119 severance and of which faces carry which REDs.
+
 | Order | Piece | Crates | REDs | Depends on | Corpus gate |
 |---:|---|---|---:|---|---|
 | 1 | **0917** — provenance classification (§6) | backend only | **3** | nothing | full suite byte-identity for the scalar half |
@@ -900,16 +999,24 @@ duplicating arm, and §2.6 shows refusing instead costs the same 16 programs.
   and 4: it is an F2 frame *over* `IO`, so it needs piece 4 (monomorphisation)
   as well as piece 2 (IO glue). It is therefore an acceptance cell for the
   *class*, not for either piece alone, and `/qa` should place it accordingly.
-- **The face-4 residual guard** (§4.4). A nested `Pure` payload inside an unrun
-  `Bind` sub-tree is not discharged. `/qa` owes a failing-not-ignored leak guard
-  for that shape, so the residual is visible rather than silent — the same rule
-  0907's option-3 already carried, applied to the disposition actually taken.
+- **The face-4 residual guard** (§4.4) — **RE-SPECIFIED at S121.** With the 0934
+  payload-glue word the residual does not arise, so the cell `/qa` owes is not a
+  failing-not-ignored leak guard but a **GREEN acceptance cell**: a nested `Pure`
+  payload inside an unrun `Bind` sub-tree **is** discharged. Its discriminating
+  control is the negative — no double discharge when the same node's payload was
+  transferred on the run lane (`s121-c4-visit.md` §6.2, §10 H8).
 - **`repl/demos/archive/ring4s.demo`** — the archive's only red, at its
   `(defn then [a b] (bind a (fn [_] b)))` segment, flips with piece 2. Its shape
   is the S61 double-free idiom, so it is load-bearing history and its flip is
   evidence, not incidental.
 
 ### 7.2 Rider 0906 — the third hand-rolled nullary guard
+
+> **S121 re-scope: there are TWO copies, not one.** Re-measured this window —
+> `vec_codegen.rs` also spells the prologue in `emit_guarded_rc_inc`, which has
+> four call sites of its own. Both fold; the `guarded` selector must keep coming
+> from the element type's `HeapCategory` and must not become a caller-carried
+> boolean. `s121-c4-visit.md` §8.2.
 
 Owner `/dev`(backend). Fold the `guarded` arm of the Vec element inc-adapter
 (`vec_codegen.rs` ≈:986) onto `heap::emit_nullary_skip_guard`. It is
@@ -1019,7 +1126,8 @@ witnesses this design owes it.
 
 - **`/design`(typecheck)** — Round 2 of this Phase, against this landed contract:
   §5.4 (0913, the lenient view) and §5.2 (the monomorphisation exemption, which
-  is the producer half of faces 2 and 3 and gates 0916 and rider 0867).
+  is the producer half of faces 2 and 3 and gates 0916; rider 0867 was retired
+  by the S121 product-only accessor ruling).
 - **`/arch`** — Round 3 exit gate: the IO tri-context seam (§5.3 needs one new
   `cranelisp-intrinsics` public entry point and its `public-api.txt` delta), and
   two new rows for `safety-invariants.md` §4 (R-1 category-before-operation, R-2

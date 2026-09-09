@@ -103,9 +103,20 @@ pub fn execute_compiled_expr(
         // The release key backend itself keyed on, read in the SAME pass
         // (`design/int/result-owner.md` §4.3).
         let codegen_result_ty = entry.codegen_view().map(|view| view.body.ty().clone());
-        let cranelisp_types::ModuleEntry::Def { ast, code, .. } = entry else {
+        let Some(callable) = entry.callable() else {
             return Err(CranelispError::CodegenError {
                 message: "`__expr` entry is not a Def".into(),
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
+            });
+        };
+        let cranelisp_types::Life::Concrete {
+            realization: cranelisp_types::Realization::Body { code, .. },
+            ast,
+            ..
+        } = &callable.arm.life
+        else {
+            return Err(CranelispError::CodegenError {
+                message: "`__expr` entry is not a concrete body".into(),
                 location: ErrorLocation::from_span(Span::SYNTHETIC),
             });
         };

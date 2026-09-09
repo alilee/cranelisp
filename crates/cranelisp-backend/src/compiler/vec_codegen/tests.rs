@@ -2,6 +2,14 @@
 
 use crate::test_support::*;
 
+fn vec_int_type() -> Type {
+    Type::adt(
+        ModuleFullPath::from("primitives"),
+        cranelisp_types::TypeName::from("Vec"),
+        vec![Type::Int],
+    )
+}
+
 // --- Vec codegen tests ---
 
 // spec: 04-expressions §4.10 — empty Vec literal codegen
@@ -200,7 +208,7 @@ fn test_compile_vec_len_inline() {
         pattern_ctors: HashMap::new(),
         constrained_fn_names: HashSet::new(),
         mono_defns: Vec::new(),
-        expr_types: HashMap::new(),
+        expr_types: HashMap::from([(vec_span, vec_int_type())]),
         default_method_defns: Vec::new(),
         warnings: Vec::new(),
         display: None,
@@ -565,7 +573,11 @@ fn test_compile_vec_set_copy_path() {
         pattern_ctors: HashMap::new(),
         constrained_fn_names: HashSet::new(),
         mono_defns: Vec::new(),
-        expr_types: HashMap::new(),
+        expr_types: HashMap::from([
+            (vec_span, vec_int_type()),
+            (Span::new(329, 330), vec_int_type()),
+            (set_span, vec_int_type()),
+        ]),
         default_method_defns: Vec::new(),
         warnings: Vec::new(),
         display: None,
@@ -653,7 +665,7 @@ fn test_compile_vec_push_copy_path() {
         pattern_ctors: HashMap::new(),
         constrained_fn_names: HashSet::new(),
         mono_defns: Vec::new(),
-        expr_types: HashMap::new(),
+        expr_types: HashMap::from([(vec_span, vec_int_type()), (push_span, vec_int_type())]),
         default_method_defns: Vec::new(),
         warnings: Vec::new(),
         display: None,
@@ -1036,7 +1048,7 @@ fn test_compile_vec_push_on_temp() {
         pattern_ctors: HashMap::new(),
         constrained_fn_names: HashSet::new(),
         mono_defns: Vec::new(),
-        expr_types: HashMap::new(),
+        expr_types: HashMap::from([(vec_span, vec_int_type()), (push_span, vec_int_type())]),
         default_method_defns: Vec::new(),
         warnings: Vec::new(),
         display: None,
@@ -1136,7 +1148,7 @@ fn test_compile_vec_set_on_temp() {
         pattern_ctors: HashMap::new(),
         constrained_fn_names: HashSet::new(),
         mono_defns: Vec::new(),
-        expr_types: HashMap::new(),
+        expr_types: HashMap::from([(vec_span, vec_int_type()), (set_span, vec_int_type())]),
         default_method_defns: Vec::new(),
         warnings: Vec::new(),
         display: None,
@@ -1213,7 +1225,7 @@ fn vec_lit(elems: &[i64], base: u32) -> Expr {
             })
             .collect(),
         span: Span::new(base, base + elems.len() as u32 * 3 + 1),
-        inferred_type: None,
+        inferred_type: Some(Box::new(vec_int_type())),
     }
 }
 
@@ -1357,7 +1369,7 @@ fn vec_set_preserves_other_elements() {
         pattern_ctors: HashMap::new(),
         constrained_fn_names: HashSet::new(),
         mono_defns: Vec::new(),
-        expr_types: HashMap::new(),
+        expr_types: HashMap::from([(set_span, vec_int_type())]),
         default_method_defns: Vec::new(),
         warnings: Vec::new(),
         display: None,
@@ -1444,7 +1456,7 @@ fn vec_lifecycle_is_rc_balanced() {
         pattern_ctors: HashMap::new(),
         constrained_fn_names: HashSet::new(),
         mono_defns: Vec::new(),
-        expr_types: HashMap::new(),
+        expr_types: HashMap::from([(set_span, vec_int_type())]),
         default_method_defns: Vec::new(),
         warnings: Vec::new(),
         display: None,
@@ -1529,7 +1541,7 @@ fn test_compile_vec_empty_len() {
         pattern_ctors: HashMap::new(),
         constrained_fn_names: HashSet::new(),
         mono_defns: Vec::new(),
-        expr_types: HashMap::new(),
+        expr_types: HashMap::from([(vec_span, vec_int_type())]),
         default_method_defns: Vec::new(),
         warnings: Vec::new(),
         display: None,
@@ -1605,7 +1617,7 @@ fn test_compile_vec_push_empty_vec() {
         pattern_ctors: HashMap::new(),
         constrained_fn_names: HashSet::new(),
         mono_defns: Vec::new(),
-        expr_types: HashMap::new(),
+        expr_types: HashMap::from([(vec_span, vec_int_type()), (push_span, vec_int_type())]),
         default_method_defns: Vec::new(),
         warnings: Vec::new(),
         display: None,
@@ -1657,7 +1669,7 @@ fn test_compile_vec_len_empty_vec() {
         pattern_ctors: HashMap::new(),
         constrained_fn_names: HashSet::new(),
         mono_defns: Vec::new(),
-        expr_types: HashMap::new(),
+        expr_types: HashMap::from([(Span::new(1409, 1411), vec_int_type())]),
         default_method_defns: Vec::new(),
         warnings: Vec::new(),
         display: None,

@@ -156,7 +156,7 @@ rule, verified in source:
 | `compile_to_module_impl` | `backend/lib.rs:755` | ~304L | within `compile_to_module` |
 | `compile_resolved_call` | `backend/compiler/apply.rs:136` | ~271L | known; not in the top-12 file list (`apply.rs` is 575 corrected) |
 | `check_form_body_single_defn` | `typecheck/program.rs:918` | ~283L | per-form single-defn body check |
-| `try_cache_hit_load` | `src/process_form.rs:1829` | ~254L | known; cache restore + transitive import walk |
+| `try_cache_hit_load` | historical `src/process_form.rs:1829` | ~254L | known; cache restore + transitive import walk |
 | `compile_par_bind_continuation` | `backend/compiler/control_flow.rs:401` | ~230L | par-bind IO continuation inner fn |
 | `build_method_type` | `typecheck/traits.rs:362` | ~214L | trait method type builder |
 | `check_form_body_multi_sig` | `typecheck/program.rs:1201` | ~209L | per-form multi-sig body check |

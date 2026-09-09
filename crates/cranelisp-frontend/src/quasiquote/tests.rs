@@ -182,6 +182,45 @@ fn expand_quote_basic() {
     assert!(contains_symbol(&result, "macros/SCons"));
 }
 
+// spec: 09-macros.md §9.4.1–§9.4.2 — the shared closed quote-head
+// classifier preserves the frontend fold's exact family boundary.
+#[test]
+fn shared_quote_head_classifier_preserves_all_frontend_branches() {
+    let quote = expand_quasiquotes(&parse_one("'x")).unwrap();
+    assert!(is_list_headed_by(&quote, "macros/SexpSym"));
+
+    let quasiquote = expand_quasiquotes(&parse_one("`~x")).unwrap();
+    assert!(matches!(quasiquote, Sexp::Symbol(ref name, _) if name == "x"));
+
+    for source in ["~x", "~@xs"] {
+        let input = parse_one(source);
+        assert_eq!(
+            expand_quasiquotes(&input).unwrap(),
+            input,
+            "standalone unquote forms must recurse unchanged to the AST backstop"
+        );
+    }
+
+    for source in ["(macros/quote x)", "(quote x y)"] {
+        let input = parse_one(source);
+        assert_eq!(
+            expand_quasiquotes(&input).unwrap(),
+            input,
+            "qualified and wrong-arity heads are ordinary lists: {source}"
+        );
+    }
+}
+
+// spec: 09-macros.md §9.4.2 — quote inside a quasiquote template is
+// structural data, not a nested request for pure quote expansion.
+#[test]
+fn quote_inside_quasiquote_remains_structural() {
+    let result = expand_quasiquotes(&parse_one("`(quote x)")).unwrap();
+    assert!(is_list_headed_by(&result, "macros/SexpList"));
+    assert!(contains_string(&result, "quote"));
+    assert!(contains_string(&result, "x"));
+}
+
 // -- Unquote splicing --
 
 // spec: 09-macros.md section 9.4.2 -- unquote-splicing in list
@@ -262,16 +301,13 @@ fn collect_auto_gensyms(sexp: &Sexp, out: &mut Vec<String>) {
     match sexp {
         Sexp::List(ch, _) => {
             // Check for (macros/SexpSym "x__auto_...")
-            if ch.len() == 2 {
-                if let Sexp::Symbol(head, _) = &ch[0] {
-                    if head == "macros/SexpSym" {
-                        if let Sexp::Str(name, _) = &ch[1] {
-                            if name.contains("__auto_") {
-                                out.push(name.clone());
-                            }
-                        }
-                    }
-                }
+            if ch.len() == 2
+                && let Sexp::Symbol(head, _) = &ch[0]
+                && head == "macros/SexpSym"
+                && let Sexp::Str(name, _) = &ch[1]
+                && name.contains("__auto_")
+            {
+                out.push(name.clone());
             }
             for c in ch {
                 collect_auto_gensyms(c, out);
@@ -286,17 +322,29 @@ fn collect_auto_gensyms(sexp: &Sexp, out: &mut Vec<String>) {
     }
 }
 
+fn contains_string(sexp: &Sexp, expected: &str) -> bool {
+    match sexp {
+        Sexp::Str(value, _) => value == expected,
+        Sexp::List(children, _) | Sexp::Bracket(children, _) => children
+            .iter()
+            .any(|child| contains_string(child, expected)),
+        Sexp::Annotated {
+            annotation,
+            subject,
+            ..
+        } => contains_string(annotation, expected) || contains_string(subject, expected),
+        _ => false,
+    }
+}
+
 fn extract_sexp_sym_value(sexp: &Sexp) -> String {
-    if let Sexp::List(ch, _) = sexp {
-        if ch.len() == 2 {
-            if let Sexp::Symbol(head, _) = &ch[0] {
-                if head == "macros/SexpSym" {
-                    if let Sexp::Str(name, _) = &ch[1] {
-                        return name.clone();
-                    }
-                }
-            }
-        }
+    if let Sexp::List(ch, _) = sexp
+        && ch.len() == 2
+        && let Sexp::Symbol(head, _) = &ch[0]
+        && head == "macros/SexpSym"
+        && let Sexp::Str(name, _) = &ch[1]
+    {
+        return name.clone();
     }
     panic!("expected (macros/SexpSym \"...\"), got {:?}", sexp);
 }

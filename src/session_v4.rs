@@ -39,12 +39,14 @@ mod types;
 // types.rs — DTOs + leaf pure helpers (S87 §2.1). Re-exported to preserve
 // `session_v4::X` paths used by main.rs / eval.rs / repl.rs / worker.rs /
 // cluster.rs / platform.rs.
+#[cfg(test)]
+pub(crate) use self::types::impl_echo_type_name;
 pub use self::types::{
     CommandResult, EvalResult, Introspection, ModuleIntroductionOutcome, RunMode, SessionSettings,
     SymbolCategory, SymbolDescription, SymbolInfo, TypecheckProduct, parens_balanced_pub,
 };
 pub(crate) use self::types::{
-    FailedForm, dedup_platform_names_preserving_order, extract_def_name_from_sexp,
+    FailedForm, TurnDefinitions, dedup_platform_names_preserving_order, definition_result_symbol,
     intrinsic_type_from_name, is_comment_only, parens_balanced, resolve_priority_worker_count,
 };
 
@@ -225,7 +227,8 @@ pub struct SharedState {
     /// Per-module declared-export closure `D(M)` (FIXME 0604 §2.2 — the S115
     /// corrected predicate's data source). `M → {names M's own (export …) specs
     /// bring in}`, recorded by the int-side `install_exports` seam and read by
-    /// `check_terminal_closure` at the live commit gate (`commit_staging_to_live`)
+    /// `check_exposed_candidate_closure` at the live commit gate
+    /// (`commit_staging_to_live`)
     /// to reject a phantom PUBLIC re-export whose name is outside `M`'s declared
     /// export surface. A SEPARATE `DashMap` from `symbol_tables` (so a read never
     /// re-enters a `get_mut` shard — the deadlock hazard), session-side and
@@ -322,18 +325,6 @@ pub struct SharedState {
     /// (`worker.rs` `handle_platform`). Replaces the former
     /// `introspection.is_some()` proxy.
     pub run_mode: RunMode,
-
-    /// Symbol-level BROKEN state + provenance (S101 R3 machinery —
-    /// `design/int/session-transaction.md` §5.1; `repl/spec.md` §18.4). A
-    /// closure member that fails re-typechecking during a dependent-
-    /// recompilation transaction is recorded here; the REPL display paths
-    /// (`/info`, `/sig`, bare lookup) read it via `&self.shared`, and the
-    /// nice worker consults it for the §18.8 cache-write poisoning (a module
-    /// holding a BROKEN symbol must not persist `.o`/`.meta`). Write side is
-    /// eval-thread-only (transactions are dev-session, eval-synchronous);
-    /// `DashMap` for the cross-thread reads. Unconditional session state,
-    /// like the scheduler's Failed pool.
-    pub(crate) broken: crate::redefine::BrokenRegistry,
 
     /// Session-lifetime retention pool for superseded code + trap stubs
     /// (S101, `design/int/session-transaction.md` §6). Append-only, never

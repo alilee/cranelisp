@@ -4,6 +4,93 @@
 //! must record none.
 
 use super::*;
+use cranelisp_types::{Realization, Scheme};
+
+// spec: design/typecheck/checked-body-publication.md §5;
+//   tests/plan/s121-test-plan.md §3.8 ML-1.
+#[test]
+fn same_module_mono_lookup_selects_the_exact_checked_publication() {
+    let mut tc = tc_with_prims();
+    let mut bodies = BodyLedger::default();
+    for (offset, name, sentinel) in [
+        (0_u32, "left-template", 11_i64),
+        (100, "right-template", 22),
+    ] {
+        let var = 9_000 + offset;
+        let scheme = Scheme {
+            type_vars: vec![var],
+            constraints: HashMap::new(),
+            ty: Type::Fn(vec![Type::Var(var)], Box::new(Type::Int)),
+        };
+        tc.symbol_table_mut()
+            .declare(
+                Symbol::from(name),
+                scheme,
+                vec![Symbol::from("x")],
+                None,
+                0,
+                CallableOrigin::Plain,
+                Visibility::Public,
+            )
+            .unwrap();
+        let publication = Symbol::from(name);
+        bodies
+            .register(RegisteredBody {
+                target: BodyTarget::Direct(publication.clone()),
+                publication_name: publication.clone(),
+                param_types: vec![Type::Var(var)],
+                ret_ty: Type::Int,
+                written_var_scope: HashMap::new(),
+                span: Span::new(offset, offset + 20),
+            })
+            .unwrap();
+        let handle = bodies.registered_for_check(&publication).unwrap();
+        handle.finish(
+            DefnVariant {
+                params: vec![(Symbol::from("x"), None)],
+                body: Expr::IntLit {
+                    value: sentinel,
+                    span: Span::new(offset + 10, offset + 12),
+                    inferred_type: Some(Box::new(Type::Int)),
+                },
+                span: Span::new(offset, offset + 20),
+            },
+            Vec::new(),
+        );
+    }
+
+    for (name, expected) in [("left-template", 11_i64), ("right-template", 22)] {
+        let mono = {
+            let env = TypeCheckEnv::new(
+                &tc.modules,
+                &tc.next_id,
+                &tc.module_aliases,
+                &tc.prelude_fallback,
+            );
+            let local = env
+                .checked_body_template(&tc.state, &bodies, &Symbol::from(name))
+                .expect("exact publication selects its checked template");
+            env.monomorphise_call(
+                &mut tc.state,
+                &Symbol::from(name),
+                &MonoDemand::from_type_args(
+                    CallableTarget::Binding(fq_sym("test", name)),
+                    vec![ConcreteType::Int],
+                    Span::SYNTHETIC,
+                ),
+                None,
+                None,
+                Some(local),
+            )
+            .unwrap()
+            .expect("selected local template mints")
+        };
+        assert!(matches!(
+            mono.defn.variants[0].body,
+            Expr::IntLit { value, .. } if value == expected
+        ));
+    }
+}
 
 #[test]
 fn builtin_qualified_extern_keeps_abi_name_and_exact_storage_home() {
@@ -40,16 +127,16 @@ fn builtin_qualified_extern_keeps_abi_name_and_exact_storage_home() {
 #[test]
 fn builtin_renamed_import_uses_terminal_abi_name_and_storage_home() {
     let mut tc = tc_with_prims();
-    tc.symbol_table_mut().insert(
-        Symbol::from("sum"),
-        ModuleEntry::Import {
-            source: FQSymbol {
+    tc.symbol_table_mut()
+        .expose_candidate(
+            Symbol::from("sum"),
+            FQSymbol {
                 module: ModuleFullPath::from("primitives"),
                 symbol: Symbol::from("add-i64"),
             },
-            visibility: Visibility::Public,
-        },
-    );
+            Visibility::Public,
+        )
+        .unwrap();
     check_src(&mut tc, "(defn main [] (sum 1 2))");
 
     let view = main_codegen_view_of(&tc, "main");
@@ -321,6 +408,9 @@ fn self_recursion_carveout_skips_nested_let_shadow() {
     );
 }
 
+// spec: spec/04-expressions.md §4.2;
+//   design/typecheck/checked-body-publication.md §11.4;
+//   tests/plan/s121-test-plan.md §3.8 BF-2.
 // A param named identically to the fn (`(defn f [f] …)`) shadows the
 // recursion name: the `f` in `(f 3)` is the PARAM (a backend local), so its
 // callee `Var` must NOT carry the enclosing fn's storage FQ. (The `add-i64`
@@ -331,6 +421,15 @@ fn self_recursion_carveout_skips_nested_let_shadow() {
 fn self_recursion_carveout_skips_param_shadow() {
     let mut tc = tc_with_prims();
     check_src(&mut tc, "(defn f [f] (add-i64 (f 3) 1))");
+    let scheme = tc.lookup("f").expect("f is published");
+    assert_eq!(
+        scheme.ty,
+        Type::Fn(
+            vec![Type::Fn(vec![Type::Int], Box::new(Type::Int))],
+            Box::new(Type::Int),
+        ),
+        "the same-named parameter, not the recursion monotype, determines f's outer scheme",
+    );
     let view = main_codegen_view_of(&tc, "f");
     let mut targets = Vec::new();
     collect_resolved_targets(&view.body, &mut targets);
@@ -614,16 +713,16 @@ fn resolved_target_renamed_import_carrier_is_source_storage_key() {
     check_src(&mut tc, "(defn foo [] 0)");
     // Back in `test`: import `foo` RENAMED to `bar`, then call `(bar)`.
     tc.set_current_module(ModuleFullPath::from("test"));
-    tc.symbol_table_mut().insert(
-        Symbol::from("bar"),
-        ModuleEntry::Import {
-            source: FQSymbol {
+    tc.symbol_table_mut()
+        .expose_candidate(
+            Symbol::from("bar"),
+            FQSymbol {
                 module: ModuleFullPath::from("lib"),
                 symbol: Symbol::from("foo"),
             },
-            visibility: Visibility::Public,
-        },
-    );
+            Visibility::Public,
+        )
+        .unwrap();
     check_src(&mut tc, "(defn use-bar [] (bar))");
     let view = main_codegen_view_of(&tc, "use-bar");
     let mut targets = Vec::new();
@@ -655,23 +754,39 @@ fn resolved_target_builtin_fq_ignores_shadowing_user_fn() {
     // Model the prelude-suppressed shadow: a local UserFn named `add-i64`
     // installed over the primitives import. The already-selected builtin
     // product must remain authoritative.
-    let local_add = cranelisp_types::ModuleEntry::def(
-        cranelisp_types::Scheme {
-            type_vars: vec![],
-            constraints: Default::default(),
-            ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
-        },
-        cranelisp_types::DefKind::UserFn {
-            fn_state: cranelisp_types::UserFnState::Concrete {
-                got_slot: 99,
-                mode_summary: None,
-            },
-        },
-    )
-    .param_names(vec![Symbol::from("a"), Symbol::from("b")])
-    .build();
+    let shadow_body = Expr::IntLit {
+        value: 0,
+        span: Span::SYNTHETIC,
+        inferred_type: Some(Box::new(Type::Int)),
+    };
+    let shadow_view = MonoDefnVariant {
+        name: Symbol::from("add-i64"),
+        params: vec![Symbol::from("a"), Symbol::from("b")],
+        body: MonoExpr::synthetic_local_from_expr(&shadow_body, &HashMap::new()),
+        span: Span::SYNTHETIC,
+        mode_summary: None,
+    };
     tc.symbol_table_mut()
-        .insert(Symbol::from("add-i64"), local_add);
+        .install_concrete(
+            Symbol::from("add-i64"),
+            cranelisp_types::Scheme {
+                type_vars: vec![],
+                constraints: Default::default(),
+                ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
+            },
+            vec![Symbol::from("a"), Symbol::from("b")],
+            None,
+            0,
+            CallableOrigin::Plain,
+            Realization::Body {
+                view: shadow_view,
+                code: None,
+            },
+            None,
+            vec![],
+            Visibility::Public,
+        )
+        .unwrap();
     check_src(&mut tc, "(defn main [] (+ 1 2))");
 
     let view = main_codegen_view_of(&tc, "main");
@@ -695,16 +810,16 @@ fn resolved_target_builtin_fq_ignores_shadowing_user_fn() {
 #[test]
 fn builtin_settled_autocurry_retry_keeps_renamed_nonprimitive_home() {
     let mut tc = tc_with_prims();
-    tc.symbol_table_mut().insert(
-        Symbol::from("cat"),
-        ModuleEntry::Import {
-            source: FQSymbol {
+    tc.symbol_table_mut()
+        .expose_candidate(
+            Symbol::from("cat"),
+            FQSymbol {
                 module: ModuleFullPath::from("macros"),
                 symbol: Symbol::from("sconcat"),
             },
-            visibility: Visibility::Public,
-        },
-    );
+            Visibility::Public,
+        )
+        .unwrap();
     let callee_ty = tc.lookup("cat").expect("renamed builtin scheme").ty;
     let call_span = span(700, 710);
     let callee_span = span(701, 704);
@@ -763,11 +878,12 @@ fn w0b_synth_accessor_view_carries_resolved_ctor() {
     // (deftype Point [:Int x :Int y]) — a product (ctor name == type name).
     check_src(&mut tc, "(deftype Point [:Int x :Int y])");
     let accessor_key = cranelisp_types::member_key(&TypeName::from("Point"), "x");
-    let view = match tc.symbol_table().get(accessor_key.as_ref()) {
-        Some(ModuleEntry::Def {
-            codegen_view: Some(v),
-            ..
-        }) => v.clone(),
+    let view = match tc
+        .symbol_table()
+        .get(accessor_key.as_ref())
+        .and_then(Binding::codegen_view)
+    {
+        Some(v) => v.clone(),
         other => panic!("accessor {accessor_key} has no codegen_view: {other:?}"),
     };
     let ctor = match &view.body {
@@ -901,10 +1017,18 @@ fn w0b_every_codegen_reached_entry_carries_a_view() {
          (defn main [] (v (Box 7)))",
     );
     let st = tc.symbol_table();
-    let missing: Vec<Symbol> = st
-        .defined_symbols()
-        .filter(|(_, e)| e.codegen_view().is_none())
-        .map(|(k, _)| k.clone())
+    let missing: Vec<cranelisp_types::CallableTarget> = st
+        .codegen_targets()
+        .filter(|(_, arm)| {
+            !matches!(
+                arm.life,
+                Life::Concrete {
+                    realization: cranelisp_types::Realization::Body { .. },
+                    ..
+                }
+            )
+        })
+        .map(|(target, _)| target)
         .collect();
     assert!(
         missing.is_empty(),
@@ -929,19 +1053,19 @@ fn u_a1_same_module_fq_call_mints_bare_and_dispatches() {
     );
 
     // `test/iden$Int` minted (home-qualified, FIXME 0519), concrete + slotted.
-    match tc.symbol_table().get("test/iden$Int") {
-        Some(ModuleEntry::Def { kind, scheme, .. }) => {
+    match tc
+        .symbol_table()
+        .get("test/iden$Int")
+        .and_then(Binding::callable)
+    {
+        Some(callable) => {
             assert!(
-                matches!(
-                    kind.as_ref(),
-                    DefKind::UserFn {
-                        fn_state: UserFnState::Concrete { .. }
-                    }
-                ),
-                "test/iden$Int must be a Concrete (slotted) mono instance, got {kind:?}",
+                matches!(callable.arm.life, Life::Concrete { .. }),
+                "test/iden$Int must be a Concrete (slotted) mono instance, got {:?}",
+                callable.arm.life,
             );
             assert!(
-                scheme.ty.is_concrete(),
+                callable.arm.scheme.ty.is_concrete(),
                 "test/iden$Int type must be concrete"
             );
         }

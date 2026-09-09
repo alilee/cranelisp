@@ -65,12 +65,12 @@ where
 
         // Ordinary captures: in-scope free vars of the RHS, excluding the
         // dependency names (those come from the captured IVar pointers, not
-        // `self.variables`). Sorted for deterministic layout (as `lambda.rs`).
+        // the enclosing scope). Sorted for deterministic layout (as `lambda.rs`).
         let dep_names: std::collections::HashSet<Symbol> =
             deps.iter().map(|(n, _, _)| n.clone()).collect();
         let mut ord_captures: Vec<Symbol> = find_free_vars(val_expr, &[])
             .into_iter()
-            .filter(|v| !dep_names.contains(v) && self.variables.contains_key(v))
+            .filter(|v| !dep_names.contains(v) && self.binds(v))
             .collect();
         ord_captures.sort();
 
@@ -146,16 +146,16 @@ where
         // Store ordinary captures (inc heap-typed ones — the env holds its own
         // reference, exactly as `compile_lambda`).
         for (i, cap) in ord_captures.iter().enumerate() {
-            if let Some(var) = self.variables.get(cap) {
-                let cap_val = self.builder.use_var(*var);
+            if let Some(var) = self.lookup_var(cap) {
+                let cap_val = self.builder.use_var(var);
                 heap::heap_store(
                     &mut self.builder,
                     cap_val,
                     base_ptr,
                     HeapClosure::capture_offset(i),
                 );
-                if let Some(ty) = self.variable_types.get(cap) {
-                    let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
+                if let Some(ty) = self.lookup_type(cap) {
+                    let category = signature_heap_category(&ty, Some(self.ctx.symbol_tables));
                     self.emit_capture_inc(category, cap_val);
                 }
             }
@@ -207,6 +207,13 @@ where
         builder.seal_block(entry_block);
         let env_ptr = builder.block_params(entry_block)[0];
 
+        // The captures' types, read from the ENCLOSING environment before the
+        // inner compiler takes this compiler's module borrow.
+        let capture_types: Vec<Option<cranelisp_types::Type>> = ord_captures
+            .iter()
+            .map(|cap| self.lookup_type(cap))
+            .collect();
+
         let last_uses = heap::compute_last_uses(val_expr);
         let mut inner = FnCompiler::inner(
             builder,
@@ -228,22 +235,15 @@ where
         // capture-by-borrow carve-out), so gate 5 is set directly here.
         inner.in_spark_thunk = true;
 
-        // Load ordinary captures from the env. Treated as captures (borrowed):
-        // recorded in `variable_types` (so consuming calls inc them) + marked in
-        // `captured_vars` (not eligible for last-use transfer, not on
-        // `scope_stack` so not dec'd at body exit — the env's drop glue owns the
-        // dec).
+        // Load ordinary captures from the env into the CAPTURE ENVIRONMENT
+        // (`binding-scope.md` §3.2): their type is recorded so consuming calls
+        // inc them, they are never eligible for last-use transfer, and they are
+        // on no scope frame, so no body frame decs them — the env's drop glue
+        // owns that dec.
         for (i, cap) in ord_captures.iter().enumerate() {
             let cap_val =
                 heap::heap_load(&mut inner.builder, env_ptr, HeapClosure::capture_offset(i));
-            let var = inner.fresh_variable();
-            inner.builder.declare_var(var, types::I64);
-            inner.builder.def_var(var, cap_val);
-            inner.variables.insert(cap.clone(), var);
-            if let Some(ty) = self.variable_types.get(cap) {
-                inner.variable_types.insert(cap.clone(), ty.clone());
-            }
-            inner.captured_vars.insert(cap.clone());
+            inner.bind_capture(cap, cap_val, capture_types.get(i).cloned().flatten());
         }
 
         // Force prologue: per dependency, load its captured IVar pointer, force
@@ -259,22 +259,15 @@ where
                 HeapClosure::capture_offset(cap_idx),
             );
             let forced = inner.emit_extern_call("cranelisp_ivar_force", &[ivar_cap], span)?;
-            let var = inner.fresh_variable();
-            inner.builder.declare_var(var, types::I64);
-            inner.builder.def_var(var, forced);
-            inner.variables.insert(dep_name.clone(), var);
-            inner
-                .variable_types
-                .insert(dep_name.clone(), dep_ty.clone());
-            inner.captured_vars.insert(dep_name.clone());
+            inner.bind_capture(dep_name, forced, Some(dep_ty.clone()));
         }
 
-        // Compile the unmodified RHS. The initial `scope_stack` frame
+        // Compile the unmodified RHS. The initial chain frame
         // (`FnCompiler::inner`) is the body frame; captures/deps are NOT on it.
-        let skip_var = FnCompiler::<M>::return_var_in_scope(val_expr, inner.scope_stack.last());
+        let skip_var = inner.return_var_in_scope(val_expr);
         let result = inner.compile_expr(val_expr)?;
         inner.protect_return_value(&skip_var, result, val_expr);
-        inner.pop_scope_with_cleanup(skip_var.as_ref())?;
+        inner.pop_scope_with_cleanup(skip_var)?;
 
         inner.builder.ins().return_(&[result]);
         inner.builder.seal_all_blocks();
@@ -313,8 +306,8 @@ where
             .iter()
             .enumerate()
             .filter_map(|(i, cap)| {
-                let ty = self.variable_types.get(cap)?;
-                let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
+                let ty = self.lookup_type(cap)?;
+                let category = signature_heap_category(&ty, Some(self.ctx.symbol_tables));
                 match category {
                     HeapCategory::AlwaysHeap | HeapCategory::Mixed => Some((i, category)),
                     HeapCategory::NeverHeap | HeapCategory::Value => None,

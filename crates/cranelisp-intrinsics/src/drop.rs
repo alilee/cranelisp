@@ -20,7 +20,7 @@
 //! - `consume_slist` — SList (SCons chain; SNil is a nullary tag)
 //! - `consume_sexp` — Sexp ADT (tag-dispatched: SexpInt/Float/Bool have no
 //!   heap sub-refs; SexpStr/Sym have a String field; SexpList/Bracket have
-//!   an SList field)
+//!   an SList field; SexpAnnotated has two Sexp fields)
 //! - `consume_vec_of_heap` — Vec whose elements are heap-typed String
 //!   pointers (walks elements, dec's each, frees data buffer, frees Vec)
 //! - `consume_io_tree` — IO ADT (tag-dispatched: Pure has a payload (may
@@ -40,9 +40,13 @@
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use cranelisp_platform::{IO_TAG_BIND, IO_TAG_EFFECT, IO_TAG_PAR, IO_TAG_PURE};
+use cranelisp_platform::{
+    IO_PURE_GLUE_OFFSET, IO_TAG_BIND, IO_TAG_EFFECT, IO_TAG_EFFECT_POLL, IO_TAG_LAUNCH, IO_TAG_PAR,
+    IO_TAG_PURE, IO_TAG_SELECT,
+};
 use cranelisp_types::{
-    HeapHeader, NULLARY_TAG_THRESHOLD, TAG_SEXP_BRACKET, TAG_SEXP_LIST, TAG_SEXP_STR, TAG_SEXP_SYM,
+    HeapHeader, NULLARY_TAG_THRESHOLD, TAG_SEXP_ANNOTATED, TAG_SEXP_BOOL, TAG_SEXP_BRACKET,
+    TAG_SEXP_FLOAT, TAG_SEXP_INT, TAG_SEXP_LIST, TAG_SEXP_STR, TAG_SEXP_SYM,
 };
 
 use crate::alloc;
@@ -67,6 +71,187 @@ const NULLARY_THRESHOLD: i64 = NULLARY_TAG_THRESHOLD as i64;
 const TAG_OFFSET: isize = HeapHeader::SIZE as isize;
 const FIELD0_OFFSET: isize = TAG_OFFSET + 8;
 const FIELD1_OFFSET: isize = TAG_OFFSET + 16;
+const PURE_STATE_OFFSET: isize = HeapHeader::SIZE as isize + IO_PURE_GLUE_OFFSET as isize;
+const _: () = assert!(PURE_STATE_OFFSET == FIELD1_OFFSET);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PurePayloadState {
+    Scalar,
+    Claimed,
+    Owned(i64),
+}
+
+impl PurePayloadState {
+    fn decode(raw: i64) -> Self {
+        match raw {
+            0 => Self::Scalar,
+            1 => Self::Claimed,
+            glue => Self::Owned(glue),
+        }
+    }
+}
+
+/// Atomically replace a published Pure node's payload witness with `Claimed`.
+///
+/// # Safety
+/// `ptr` must be a live `IO_TAG_PURE` node using the ABI-10 three-word payload.
+pub(crate) unsafe fn swap_pure_payload_to_claimed(ptr: i64) -> PurePayloadState {
+    // SAFETY: the caller establishes the Pure shape before this offset is
+    // formed. ABI 10 makes the field an aligned i64 at absolute offset 32, and
+    // every post-publication access to it is atomic.
+    let state =
+        unsafe { &*((ptr as *const u8).add(PURE_STATE_OFFSET as usize) as *const AtomicI64) };
+    PurePayloadState::decode(state.swap(1, Ordering::AcqRel))
+}
+
+/// Read a published Pure node's payload-witness state without changing it.
+///
+/// # Safety
+/// `ptr` must be a live `IO_TAG_PURE` node using the ABI-10 three-word payload.
+unsafe fn load_pure_payload_state(ptr: i64) -> PurePayloadState {
+    // SAFETY: same ABI-10 shape and alignment contract as the swap helper.
+    let state =
+        unsafe { &*((ptr as *const u8).add(PURE_STATE_OFFSET as usize) as *const AtomicI64) };
+    PurePayloadState::decode(state.load(Ordering::Acquire))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum IoTag {
+    Pure,
+    Effect,
+    Bind,
+    Par,
+    EffectPoll,
+    Launch,
+    Select,
+    Unknown(i64),
+}
+
+impl IoTag {
+    fn decode(raw: i64) -> Self {
+        match raw {
+            IO_TAG_PURE => Self::Pure,
+            IO_TAG_EFFECT => Self::Effect,
+            IO_TAG_BIND => Self::Bind,
+            IO_TAG_PAR => Self::Par,
+            IO_TAG_EFFECT_POLL => Self::EffectPoll,
+            IO_TAG_LAUNCH => Self::Launch,
+            IO_TAG_SELECT => Self::Select,
+            other => Self::Unknown(other),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SexpTag {
+    Int,
+    Float,
+    Bool,
+    Str,
+    Sym,
+    List,
+    Bracket,
+    Annotated,
+    Unknown(i64),
+}
+
+impl SexpTag {
+    fn decode(raw: i64) -> Self {
+        match raw {
+            TAG_SEXP_INT => Self::Int,
+            TAG_SEXP_FLOAT => Self::Float,
+            TAG_SEXP_BOOL => Self::Bool,
+            TAG_SEXP_STR => Self::Str,
+            TAG_SEXP_SYM => Self::Sym,
+            TAG_SEXP_LIST => Self::List,
+            TAG_SEXP_BRACKET => Self::Bracket,
+            TAG_SEXP_ANNOTATED => Self::Annotated,
+            other => Self::Unknown(other),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum SexpFieldKind {
+    Shallow,
+    SList,
+    Sexp,
+}
+
+#[derive(Clone, Copy)]
+struct SexpField {
+    offset: isize,
+    kind: SexpFieldKind,
+}
+
+const NO_SEXP_FIELDS: &[SexpField] = &[];
+const SHALLOW_SEXP_FIELD: &[SexpField] = &[SexpField {
+    offset: FIELD0_OFFSET,
+    kind: SexpFieldKind::Shallow,
+}];
+const SLIST_SEXP_FIELD: &[SexpField] = &[SexpField {
+    offset: FIELD0_OFFSET,
+    kind: SexpFieldKind::SList,
+}];
+const ANNOTATED_SEXP_FIELDS: &[SexpField] = &[
+    SexpField {
+        offset: FIELD0_OFFSET,
+        kind: SexpFieldKind::Sexp,
+    },
+    SexpField {
+        offset: FIELD1_OFFSET,
+        kind: SexpFieldKind::Sexp,
+    },
+];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum IoDisposition {
+    Structural,
+    SpineTransferred,
+}
+
+#[derive(Clone, Copy)]
+enum IoFieldKind {
+    IoTree,
+    NonZeroIoTree,
+    Closure,
+    InlineIoBranches,
+    IoBranchVec,
+}
+
+#[derive(Clone, Copy)]
+struct IoField {
+    offset: isize,
+    kind: IoFieldKind,
+}
+
+const NO_IO_FIELDS: &[IoField] = &[];
+const BIND_FIELDS: &[IoField] = &[
+    IoField {
+        offset: FIELD0_OFFSET,
+        kind: IoFieldKind::IoTree,
+    },
+    IoField {
+        offset: FIELD1_OFFSET,
+        kind: IoFieldKind::Closure,
+    },
+];
+const PAR_FIELDS: &[IoField] = &[IoField {
+    offset: FIELD0_OFFSET,
+    kind: IoFieldKind::InlineIoBranches,
+}];
+const POLL_FIELDS: &[IoField] = &[IoField {
+    offset: FIELD0_OFFSET,
+    kind: IoFieldKind::Closure,
+}];
+const LAUNCH_FIELDS: &[IoField] = &[IoField {
+    offset: FIELD0_OFFSET,
+    kind: IoFieldKind::NonZeroIoTree,
+}];
+const SELECT_FIELDS: &[IoField] = &[IoField {
+    offset: FIELD0_OFFSET,
+    kind: IoFieldKind::IoBranchVec,
+}];
 
 // The raw `*(base + off)` primitive is `heap_access::{read_i64, write_i64}` —
 // the single mechanical owner (MED-1 / FIXME 0370 / 0850). This module used to
@@ -208,6 +393,7 @@ pub fn consume_slist(mut ptr: i64) {
 /// - SexpSym (tag 4): field0 is a String heap pointer (the symbol name).
 /// - SexpList (tag 5): field0 is an `SList<Sexp>`.
 /// - SexpBracket (tag 6): field0 is an `SList<Sexp>`.
+/// - SexpAnnotated (tag 7): field0 and field1 are both `Sexp` values.
 ///
 /// # Safety
 /// `ptr` must be a valid Sexp heap pointer (rc > 0) or a bare nullary tag.
@@ -215,21 +401,6 @@ pub fn consume_sexp(ptr: i64) {
     if ptr < NULLARY_THRESHOLD {
         return;
     }
-    // Read tag + field0 before dec so the recursive step has them on the
-    // last-ref path.
-    // SAFETY: `ptr` cleared the nullary-tag guard above, so per this fn's
-    // `# Safety` contract it is a live Sexp base, and the dec below has not run
-    // — our caller's reference still holds the allocation. Every heap Sexp is a
-    // data-constructor allocation `[header | tag@16 | field0@24]`, so
-    // `TAG_OFFSET` (16) is in bounds and 8-aligned.
-    let tag = unsafe { heap_access::read_i64(ptr, TAG_OFFSET) };
-    // SAFETY: same still-owned, pre-dec Sexp base. Every Sexp constructor that
-    // is heap-allocated is unary (nullary ones are bare tags, excluded by the
-    // guard), so `FIELD0_OFFSET` (24) is a present, in-bounds, 8-aligned cell
-    // whatever `tag` turned out to be — the read is sound before the tag is
-    // interpreted below.
-    let field0 = unsafe { heap_access::read_i64(ptr, FIELD0_OFFSET) };
-
     // SAFETY: `atomic_dec_rc` requires a valid heap base with `rc > 0`; `ptr`
     // passed the nullary-tag guard and is a live Sexp node per this fn's
     // `# Safety` contract. This call releases the caller's one reference.
@@ -239,26 +410,47 @@ pub fn consume_sexp(ptr: i64) {
     }
     std::sync::atomic::fence(Ordering::Acquire);
 
-    // Last ref — release heap sub-refs according to tag.
-    match tag {
-        TAG_SEXP_STR | TAG_SEXP_SYM => {
-            // field0 is a String pointer.
-            rc::consume_shallow(field0);
-        }
-        TAG_SEXP_LIST | TAG_SEXP_BRACKET => {
-            // field0 is an SList<Sexp>.
-            consume_slist(field0);
-        }
-        _ => {
-            // SexpInt/Float/Bool (tags 0/1/2) — field0 is a scalar, no RC.
+    // SAFETY: the zero-observing decrement and Acquire fence make this frame
+    // the sole owner of the still-allocated node. Every Sexp node carries its
+    // tag directly after the header.
+    let tag = SexpTag::decode(unsafe { heap_access::read_i64(ptr, TAG_OFFSET) });
+    if let SexpTag::Unknown(unknown) = tag {
+        if crate::diagnostics::rc_check_release_enabled() {
+            crate::diagnostics::seam_hard_fail(&format!(
+                "consume_sexp: unknown Sexp tag {unknown} at ptr {ptr:#x}"
+            ));
         }
     }
+
+    for field in sexp_fields(tag) {
+        discharge_sexp_field(ptr, *field);
+    }
+
     // SAFETY: reached only with `old_rc == 1`, i.e. this thread dropped the last
     // reference and no other holder can observe the node; the Acquire fence
-    // above orders prior owners' writes before the free. `atomic_dec_rc` does
-    // not free, so `ptr` is still the un-freed `alloc_with_rc` base, and
-    // `tag`/`field0` were copied out before this point.
+    // above orders prior owners' writes before the free. Every field declared
+    // by the decoded tag has been discharged; unknown tags declare none.
     unsafe { alloc::dealloc(ptr as *mut u8) };
+}
+
+fn sexp_fields(tag: SexpTag) -> &'static [SexpField] {
+    match tag {
+        SexpTag::Int | SexpTag::Float | SexpTag::Bool | SexpTag::Unknown(_) => NO_SEXP_FIELDS,
+        SexpTag::Str | SexpTag::Sym => SHALLOW_SEXP_FIELD,
+        SexpTag::List | SexpTag::Bracket => SLIST_SEXP_FIELD,
+        SexpTag::Annotated => ANNOTATED_SEXP_FIELDS,
+    }
+}
+
+fn discharge_sexp_field(ptr: i64, field: SexpField) {
+    // SAFETY: the closed tag-to-field table names an in-bounds word for the
+    // decoded node shape; the last-reference fence has completed.
+    let value = unsafe { heap_access::read_i64(ptr, field.offset) };
+    match field.kind {
+        SexpFieldKind::Shallow => rc::consume_shallow(value),
+        SexpFieldKind::SList => consume_slist(value),
+        SexpFieldKind::Sexp => consume_sexp(value),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -355,33 +547,6 @@ pub fn consume_io_tree(ptr: i64) {
     if ptr < NULLARY_THRESHOLD {
         return;
     }
-    // SAFETY: `ptr` cleared the nullary-tag guard above, so per this fn's
-    // `# Safety` contract it is a live IO-tree node base, and the dec below has
-    // not run — the caller's reference still holds the allocation. Every IO node
-    // is a data-constructor allocation `[header | tag@16 | field0@24 | …]`, so
-    // `TAG_OFFSET` (16) is in bounds and 8-aligned.
-    let tag = unsafe { heap_access::read_i64(ptr, TAG_OFFSET) };
-
-    // Snapshot fields needed for recursion on the last-ref path.
-    // SAFETY: same still-owned, pre-dec IO node. Field 0 is present on every IO
-    // constructor this module dispatches (Pure payload, Effect thunk, Bind
-    // inner, Par count, EffectPoll state-closure, Launch sub-tree, Select
-    // carrier), so `FIELD0_OFFSET` (24) is in bounds whatever `tag` holds —
-    // including the `_` unknown-tag arm, which only discards the value.
-    let field0 = unsafe { heap_access::read_i64(ptr, FIELD0_OFFSET) };
-
-    // For Bind/Par we also need field1/branches.
-    let field1 = if tag == IO_TAG_BIND {
-        // SAFETY: same still-owned, pre-dec IO node, and this read is reached
-        // only under `tag == IO_TAG_BIND` — a Bind is the two-field allocation
-        // `[header | tag | inner@24 | cont@32]`, so `FIELD1_OFFSET` (32) is in
-        // bounds here. The tag test is load-bearing: the one-field constructors
-        // (Pure/Effect-poll/Launch/Select) have no cell at 32.
-        unsafe { heap_access::read_i64(ptr, FIELD1_OFFSET) }
-    } else {
-        0
-    };
-
     // SAFETY: `atomic_dec_rc` requires a valid heap base with `rc > 0`; `ptr`
     // passed the nullary-tag guard and is a live IO node per this fn's
     // `# Safety` contract. This call releases the caller's one reference.
@@ -390,149 +555,145 @@ pub fn consume_io_tree(ptr: i64) {
         return;
     }
     std::sync::atomic::fence(Ordering::Acquire);
+    free_io_node_with_disposition(ptr, IoDisposition::Structural);
+}
 
-    match tag {
-        t if t == IO_TAG_PURE => {
-            // Pure's payload is opaque — the trampoline returns it to the
-            // caller as the final value. No action here.
-            let _ = field0;
+fn io_fields(tag: IoTag, disposition: IoDisposition) -> &'static [IoField] {
+    match (tag, disposition) {
+        (IoTag::Pure | IoTag::Effect | IoTag::Unknown(_), _) => NO_IO_FIELDS,
+        (IoTag::Bind, IoDisposition::Structural) => BIND_FIELDS,
+        (IoTag::Bind, IoDisposition::SpineTransferred) => NO_IO_FIELDS,
+        (IoTag::Par, _) => PAR_FIELDS,
+        (IoTag::EffectPoll, _) => POLL_FIELDS,
+        (IoTag::Launch, _) => LAUNCH_FIELDS,
+        (IoTag::Select, _) => SELECT_FIELDS,
+    }
+}
+
+fn discharge_io_field(ptr: i64, field: IoField) {
+    match field.kind {
+        IoFieldKind::IoTree => {
+            // SAFETY: the closed tag-to-field table names an in-bounds word for
+            // the decoded node shape; the last-reference fence has completed.
+            let value = unsafe { heap_access::read_i64(ptr, field.offset) };
+            consume_io_tree(value);
         }
-        t if t == IO_TAG_EFFECT => {
-            // field0 is a raw thunk pointer (Box<Box<dyn FnOnce>>) which
-            // the trampoline consumes on invocation; field1 is the resource
-            // token (Int). Neither is a Cranelisp heap alloc.
-            let _ = field0;
+        IoFieldKind::NonZeroIoTree => {
+            // SAFETY: same table-owned shape guarantee as the `IoTree` arm.
+            let value = unsafe { heap_access::read_i64(ptr, field.offset) };
+            if value != 0 {
+                consume_io_tree(value);
+            }
         }
-        t if t == IO_TAG_BIND => {
-            consume_io_tree(field0);
-            // field1 is a continuation closure. Closure drop glue lives in
-            // the backend (embedded drop_glue_ptr at offset 24). From the
-            // runtime side we can only do a shallow consume — the closure's
-            // inline drop-glue function pointer is not invokable without
-            // the JIT context. Call the closure's embedded drop glue if
-            // present, then dec-and-free the closure struct.
-            consume_closure(field1);
+        IoFieldKind::Closure => {
+            // SAFETY: same table-owned shape guarantee as the `IoTree` arm.
+            let value = unsafe { heap_access::read_i64(ptr, field.offset) };
+            consume_closure(value);
         }
-        t if t == IO_TAG_PAR => {
-            // Walk + free the N branch sub-trees (single source — same helper
-            // the fresh-node release path `dec_shallow_io` uses; FIXME 0474).
-            free_io_branches(ptr, tag);
+        IoFieldKind::InlineIoBranches => {
+            // SAFETY: this kind is declared only for Par: `field.offset` is its
+            // count word and the allocation carries exactly that many
+            // `(branch, result-disposer)` pairs from `FIELD1_OFFSET`.
+            let count = unsafe { heap_access::read_i64(ptr, field.offset) } as usize;
+            for index in 0..count {
+                // SAFETY: `index < count`; see the Par layout guarantee above.
+                let branch =
+                    unsafe { heap_access::read_i64(ptr, FIELD1_OFFSET + (index as isize) * 16) };
+                consume_io_tree(branch);
+            }
         }
-        // IO_TAG_EFFECT_POLL (= 4, the S94 poll-shape node; literal here because
-        // the constant is `concurrency`-gated in cranelisp-platform and this file
-        // is ungated). field0 is the host-built state-closure — its embedded
-        // drop glue dec's the captured i64 args; `consume_closure` runs it +
-        // deallocs the closure. The result slot is a plain i64 (no dec). This dec
-        // is the node's HALF of the arg-lifetime keep-alive (`bounded-contexts.md
-        // §4b` invariant 15; FIXME 0486 bug #2): `await_poll_node` takes ONE extra
-        // RC ref on the state-closure (net-zero-inc) that the `EffectPoll` releases
-        // at resolve, so this node-release dec no longer necessarily frees the
-        // closure — the closure is freed only when this ref AND the EffectPoll's
-        // keep-alive ref have both dropped (true rc→0). field-0 is NOT
-        // sentinel-moved (net-zero-inc leaves the node untouched), so this arm
-        // stays unconditional.
-        4 => {
-            consume_closure(field0);
-        }
-        // IO_TAG_LAUNCH (= 5, the S96 launch-and-continue node). field0 is the
-        // detached IO sub-tree — OR the `0` sentinel if the trampoline already
-        // moved it into a supervised strand (the move-out, `io-trampoline.md
-        // §15.5`). This is the **null-guarded field-0 drop glue**: an
-        // un-interpreted Launch (an unchosen `if`/`match` arm dropped without the
-        // trampoline reaching it) still holds the live sub-tree → recurse + free
-        // it (no leak); a detached one (field0 == 0) is a no-op (the strand owns
-        // it and `consume_io_tree`s it on completion). The `0`-sentinel write is
-        // the backend↔intrinsics contract (§15.5) — without it node-drop would
-        // double-free the now-strand-owned sub-tree. (Literal `5` to match the
-        // `4` poll arm's style; `cranelisp_platform::IO_TAG_LAUNCH` is the home.)
-        // The `field0 != 0` guard IS the null-guard (§15.5); a detached node
-        // (field-0 == 0) falls through to the `_` no-op and just deallocs.
-        5 if field0 != 0 => {
-            consume_io_tree(field0);
-        }
-        // IO_TAG_SELECT (= 6, the S96 Chunk-C race/select node). field0 is the
-        // branch carrier — a `Vec (IO a)` of the N candidate sub-trees. Unlike
-        // launch there is **no move-out and no null-guard** (select never
-        // detaches, `io-trampoline.md §16.5`): the node owns the Vec for the whole
-        // tree lifetime, and `consume_vec_with(field0, consume_io_tree)` dec's the
-        // Vec, consuming each branch IO sub-tree (winner AND losers, exactly once)
-        // and freeing the data buffer. Cancellation dropped only the loser
-        // *futures* (releasing their permits/interest); the loser *heap* sub-trees
-        // are reclaimed uniformly here with the rest of the list. (Literal `6` to
-        // match the `4`/`5` arms' style; `cranelisp_platform::IO_TAG_SELECT` is the
-        // home.)
-        6 => {
-            // Walk + free the branch carrier Vec + each branch IO sub-tree
-            // (single source — same helper `dec_shallow_io` uses; FIXME 0474).
-            free_io_branches(ptr, tag);
-        }
-        _ => {
-            // Unknown IO tag — treat conservatively as scalar fields.
+        IoFieldKind::IoBranchVec => {
+            // SAFETY: this kind is declared only for Select, whose field 0 is
+            // the branch-carrier `Vec (IO a)`.
+            let value = unsafe { heap_access::read_i64(ptr, field.offset) };
+            consume_vec_with(value, consume_io_tree);
         }
     }
-    // SAFETY: reached only with `old_rc == 1` — this thread dropped the last
-    // reference, so no other holder can observe the node, and the Acquire fence
-    // above orders prior owners' writes before the free. `atomic_dec_rc` does
-    // not free, so `ptr` is still the un-freed `alloc_with_rc` base; every field
-    // the arms above needed was read (or, for PAR/SELECT, walked by
-    // `free_io_branches`) before this point.
+}
+
+/// Release the fields and allocation of an IO node whose RC has reached zero.
+///
+/// The caller must have completed the Release decrement and Acquire fence. This
+/// is the sole IO-node teardown tail; it performs no RC operation on `ptr`.
+fn free_io_node_with_disposition(ptr: i64, disposition: IoDisposition) {
+    // SAFETY: the caller guarantees `ptr` is the still-allocated, solely-owned
+    // IO node after the zero-observing decrement and Acquire fence. Every node
+    // has the tag word directly after its heap header.
+    let raw_tag = unsafe { heap_access::read_i64(ptr, TAG_OFFSET) };
+    let tag = IoTag::decode(raw_tag);
+
+    if let IoTag::Unknown(unknown) = tag {
+        if crate::diagnostics::rc_check_release_enabled() {
+            crate::diagnostics::seam_hard_fail(&format!(
+                "free_io_node: unknown IO tag {unknown} at ptr {ptr:#x}"
+            ));
+        }
+    }
+
+    if tag == IoTag::Pure {
+        discharge_pure_payload(ptr, disposition);
+    }
+
+    for field in io_fields(tag, disposition) {
+        discharge_io_field(ptr, *field);
+    }
+
+    if tag == IoTag::Pure {
+        crate::diagnostics::forget_pure_claim(ptr);
+    }
+
+    // SAFETY: `ptr` is still allocated and solely owned; every declared field
+    // has now been discharged. Unknown tags retain the conservative historical
+    // direction: no field is touched before the outer node is freed.
     unsafe { alloc::dealloc(ptr as *mut u8) };
 }
 
-/// Deep-free the branch container of a last-ref multi-child IO node
-/// (`IO_TAG_PAR` / `IO_TAG_SELECT`). The **single source** of the branch walk
-/// shared by `consume_io_tree`'s PAR/SELECT arms and the fresh-node release
-/// path `dec_shallow_io` (FIXME 0474, `design/backend/ring2-rc.md §3.5.10`,
-/// Principle 7 — not a second free path).
-///
-/// - `IO_TAG_PAR` (3): field0 is the branch count; the N branch IO pointers
-///   live at `FIELD1_OFFSET + i*8`. Each is `consume_io_tree`'d.
-/// - `IO_TAG_SELECT` (6): field0 is the branch carrier `Vec (IO a)`;
-///   `consume_vec_with(field0, consume_io_tree)` dec's the Vec, consuming each
-///   branch IO sub-tree (winner AND losers, exactly once) and freeing the data
-///   buffer.
-///
-/// Caller contract: the node is at its LAST reference (rc just reached 0) and
-/// not yet deallocated — so fields are readable and, per §3.5.10's safety
-/// condition, no in-flight future references the branch sub-trees (Select's
-/// losers were cancellation-dropped when the winner was found; Par's branches
-/// all joined). The branch roots are the rc=1 sub-trees the recursive branch
-/// trampolines / reactor left behind.
+fn discharge_pure_payload(ptr: i64, disposition: IoDisposition) {
+    match disposition {
+        IoDisposition::Structural => {
+            // SAFETY: the caller decoded a live ABI-10 Pure node and owns its
+            // zero-count teardown. Competing force and teardown paths use this
+            // same exchange, so exactly one can acquire the payload obligation.
+            let prior = unsafe { swap_pure_payload_to_claimed(ptr) };
+            if let PurePayloadState::Owned(glue) = prior {
+                // Read payload only after this teardown won the obligation.
+                // SAFETY: field 0 is present on every Pure node and the caller's
+                // Acquire fence completed before dispatch.
+                let payload = unsafe { heap_access::read_i64(ptr, FIELD0_OFFSET) };
+                // SAFETY: every non-zero/non-tombstone witness is the canonical
+                // backend-generated `drop<T>` entry with ABI `(i64) -> ()`.
+                let drop_payload: extern "C" fn(i64) =
+                    unsafe { std::mem::transmute(glue as *const ()) };
+                drop_payload(payload);
+            }
+        }
+        IoDisposition::SpineTransferred => {
+            // SAFETY: the caller decoded a live ABI-10 Pure node. This path does
+            // not mutate the state: only the force path may have transferred it.
+            let state = unsafe { load_pure_payload_state(ptr) };
+            if state != PurePayloadState::Claimed {
+                if crate::diagnostics::rc_check_release_enabled() {
+                    crate::diagnostics::seam_hard_fail(&format!(
+                        "dec_shallow_io: Pure payload reached SpineTransferred in state {state:?} at ptr {ptr:#x}"
+                    ));
+                }
+                debug_assert!(
+                    false,
+                    "dec_shallow_io: Pure payload reached SpineTransferred in state {state:?} at ptr {ptr:#x}"
+                );
+            }
+        }
+    }
+}
+
+/// Backend-callable structural teardown tail for an IO node at RC zero.
 ///
 /// # Safety
-/// `ptr` must be a still-allocated IO node base pointer whose `tag` is
-/// `IO_TAG_PAR` or `IO_TAG_SELECT`.
-fn free_io_branches(ptr: i64, tag: i64) {
-    if tag == IO_TAG_PAR {
-        // SAFETY: per this fn's `# Safety` contract `ptr` is a still-allocated
-        // IO node base — both callers reach here on their last-ref path, after
-        // the dec but strictly before their `alloc::dealloc`, so the node's
-        // memory is live and solely owned by this thread. This branch is guarded
-        // by `tag == IO_TAG_PAR`, whose layout is `[header | tag@16 | count@24 |
-        // branch_0@32 | …]`, so `FIELD0_OFFSET` (24) is the in-bounds,
-        // 8-aligned count cell.
-        let count = unsafe { heap_access::read_i64(ptr, FIELD0_OFFSET) } as usize;
-        for i in 0..count {
-            // Branches live at FIELD1_OFFSET + i*8.
-            // SAFETY: same still-allocated, solely-owned Par node. `count` was
-            // just read from that node's own count field, and the backend
-            // allocates exactly `count` branch cells starting at
-            // `FIELD1_OFFSET`, so `FIELD1_OFFSET + i*8` for `i < count` stays
-            // inside the allocation and stays 8-aligned.
-            let branch = unsafe { heap_access::read_i64(ptr, FIELD1_OFFSET + (i as isize) * 8) };
-            consume_io_tree(branch);
-        }
-    } else if tag == 6 {
-        // IO_TAG_SELECT (literal 6 — the constant is `concurrency`-gated in
-        // cranelisp-platform and this file is ungated; same style as the
-        // `consume_io_tree` SELECT arm).
-        // SAFETY: same still-allocated, solely-owned node the `# Safety`
-        // contract promises (read before the caller's `dealloc`), here under
-        // `tag == IO_TAG_SELECT`, whose field 0 is the branch-carrier
-        // `Vec (IO a)` pointer — an in-bounds, 8-aligned cell of the node.
-        let field0 = unsafe { heap_access::read_i64(ptr, FIELD0_OFFSET) };
-        consume_vec_with(field0, consume_io_tree);
-    }
+/// The caller must have decremented `ptr` from RC 1 to 0 and completed an
+/// Acquire fence. `ptr` must still name the allocated IO node.
+#[unsafe(export_name = "runtime/free_io_node")]
+pub(crate) extern "C" fn free_io_node(ptr: i64) {
+    free_io_node_with_disposition(ptr, IoDisposition::Structural);
 }
 
 // ---------------------------------------------------------------------------
@@ -569,32 +730,6 @@ pub fn dec_shallow_io(ptr: i64) {
     if ptr < NULLARY_THRESHOLD {
         return;
     }
-    // An `IO_TAG_EFFECT_POLL` node (= 4) is the one exception to "shallow": its
-    // field0 state-closure is NOT re-owned elsewhere (unlike a Bind's inner /
-    // cont, which transfer to `current` / `cont_stack`), so a last-ref shallow
-    // dec MUST also release the closure or it leaks. (Literal 4 — the constant is
-    // `concurrency`-gated; this file is ungated.) This dec is the node's HALF of
-    // the arg-lifetime keep-alive (`bounded-contexts.md §4b` invariant 15; FIXME
-    // 0486): `await_poll_node` takes ONE extra net-zero-inc RC ref on the
-    // state-closure that the `EffectPoll` releases at resolve, so this shallow dec
-    // frees the closure only at true rc→0 (when both refs have dropped) — field-0 is
-    // untouched (no sentinel), so this stays a plain unconditional dec.
-    // SAFETY: `ptr` cleared the nullary-tag guard above, so per this fn's
-    // `# Safety` contract it is a live IO ADT node with `rc > 0`, and the dec
-    // below has not run — the caller's reference still holds the allocation.
-    // `TAG_OFFSET` (16) is the tag cell every IO node carries directly after the
-    // header, so the read is in bounds and 8-aligned.
-    let tag = unsafe { heap_access::read_i64(ptr, TAG_OFFSET) };
-    let poll_closure = if tag == 4 {
-        // SAFETY: same still-owned, pre-dec IO node, guarded by `tag == 4`
-        // (`IO_TAG_EFFECT_POLL`) — that node carries its state-closure at field
-        // 0, so `FIELD0_OFFSET` (24) is an in-bounds, 8-aligned cell. It must be
-        // read here, before the dec-and-free below, because the node is gone by
-        // the time the value is used.
-        unsafe { heap_access::read_i64(ptr, FIELD0_OFFSET) }
-    } else {
-        0
-    };
     // SAFETY: `atomic_dec_rc` requires a valid heap base with `rc > 0`; `ptr`
     // passed the nullary-tag guard and is a live IO node per this fn's
     // `# Safety` contract. This call releases the caller's one reference.
@@ -603,32 +738,7 @@ pub fn dec_shallow_io(ptr: i64) {
         return; // other references remain; outer allocation stays live.
     }
     std::sync::atomic::fence(Ordering::Acquire);
-    // A poll node owns its state-closure outright — release it before the node.
-    if poll_closure != 0 {
-        consume_closure(poll_closure);
-    }
-    // The multi-child tags `IO_TAG_PAR` (3) / `IO_TAG_SELECT` (6) are the other
-    // exception to "shallow" (FIXME 0474, ring2-rc.md §3.5.10): their branches
-    // live in a branch container at field 0 that is NOT on the `current` spine
-    // (the trampoline leaves them for the node's drop glue). A fresh par/select
-    // node — one a bind continuation built, e.g. `(bind X (fn [_] (select […])))`
-    // — is released here, so a bare shallow dec would leak the branch container
-    // Vec + every branch sub-tree. Deep-free them via the SINGLE branch-walk
-    // `consume_io_tree`'s PAR/SELECT arms also use (Principle 7), then dealloc the
-    // header. All other tags stay byte-identically shallow.
-    if tag == IO_TAG_PAR || tag == 6 {
-        free_io_branches(ptr, tag);
-    }
-    // Last ref — free the outer allocation. For non-PAR/SELECT tags the fields
-    // are intentionally NOT walked; the caller has transferred ownership of
-    // every heap-typed field to another holder (see §3.5.4).
-    // SAFETY: reached only with `old_rc == 1` — this thread dropped the last
-    // reference, so no other holder can observe the node, and the Acquire fence
-    // above orders prior owners' writes before the free. `atomic_dec_rc` does
-    // not free, so `ptr` is still the un-freed `alloc_with_rc` base; the poll
-    // closure and any PAR/SELECT branches were released above, before the node
-    // holding their pointers goes away.
-    unsafe { alloc::dealloc(ptr as *mut u8) };
+    free_io_node_with_disposition(ptr, IoDisposition::SpineTransferred);
 }
 
 // ---------------------------------------------------------------------------

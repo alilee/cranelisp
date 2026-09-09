@@ -18,14 +18,14 @@ pub use cranelisp_backend::Code;
 /// `SymbolTable` itself is reserved for future expansion).
 pub type SessionSymbolTable = cranelisp_types::SymbolTable<Code, ()>;
 
-/// Strongly typed alias for the integration layer's `ModuleEntry`
+/// Strongly typed alias for the integration layer's `Binding`
 /// instantiation. `C = Code` (matches `SessionSymbolTable`).
 ///
-/// No production callers — `ModuleEntry<Code>` is spelled inline where used;
+/// No production callers — `Binding<Code>` is spelled inline where used;
 /// referenced only by this module's unit tests. Retained as the canonical
 /// alias name, so `#[allow(dead_code)]` (dead in a non-test build).
 #[allow(dead_code)]
-pub(crate) type SessionModuleEntry = cranelisp_types::ModuleEntry<Code>;
+pub(crate) type SessionModuleEntry = cranelisp_types::Binding<Code>;
 
 #[cfg(test)]
 mod tests {
@@ -40,8 +40,8 @@ mod tests {
         use cranelisp_backend::cache::linker::Linker;
         use cranelisp_backend::jit::Jit;
         use cranelisp_types::{
-            DefKind, DefnVariant, Expr, ModuleEntry, ModuleFullPath, Scheme, Span, Symbol, Type,
-            Visibility,
+            CallableOrigin, DefnVariant, Expr, Life, ModuleFullPath, Realization, Scheme, Span,
+            Symbol, Type, Visibility,
         };
         use std::collections::HashMap;
         use std::sync::Arc;
@@ -59,31 +59,49 @@ mod tests {
             }
         }
 
-        fn mk_def(code: Option<Code>, _name: &str) -> SessionModuleEntry {
-            // Struct literal (not the builder) because this test sets `code`
-            // explicitly, which the builder deliberately does not expose.
-            ModuleEntry::Def {
-                scheme: Scheme {
-                    type_vars: vec![],
-                    constraints: HashMap::new(),
-                    ty: Type::Int,
-                },
-                visibility: Visibility::Public,
-                docstring: None,
-                param_names: vec![],
-                kind: Box::new(DefKind::UserFn {
-                    fn_state: cranelisp_types::UserFnState::Concrete {
-                        got_slot: 0,
-                        mode_summary: None,
+        fn install_def(table: &mut SessionSymbolTable, code: Code, name: &str) {
+            let variant = trivial_variant();
+            let view = cranelisp_types::MonoDefnVariant {
+                name: Symbol::from(name),
+                params: Vec::new(),
+                body: cranelisp_types::MonoExpr::lenient_from_expr(
+                    &variant.body,
+                    &Default::default(),
+                    &Default::default(),
+                    &Default::default(),
+                ),
+                span: Span::SYNTHETIC,
+                mode_summary: None,
+            };
+            table
+                .install_concrete(
+                    Symbol::from(name),
+                    Scheme {
+                        type_vars: vec![],
+                        constraints: HashMap::new(),
+                        ty: Type::Int,
                     },
-                }),
-                callees: Vec::new(),
-                trait_origin: None,
-                seq: 0,
-                ast: Some(trivial_variant()),
-                codegen_view: None,
-                code,
-                value_use: false,
+                    Vec::new(),
+                    None,
+                    0,
+                    CallableOrigin::Plain,
+                    Realization::Body { view, code: None },
+                    Some(variant),
+                    Vec::new(),
+                    Visibility::Public,
+                )
+                .expect("callable fixture installs");
+            if table
+                .publish_compiled_owner(
+                    &cranelisp_types::CallableTarget::Binding(cranelisp_types::FQSymbol {
+                        module: ModuleFullPath::from("user"),
+                        symbol: Symbol::from(name),
+                    }),
+                    code,
+                )
+                .is_err()
+            {
+                panic!("compiled owner fixture publishes");
             }
         }
 
@@ -93,29 +111,37 @@ mod tests {
 
         let mut st: SessionSymbolTable =
             cranelisp_types::SymbolTable::<Code, ()>::new_with_params(ModuleFullPath::from("user"));
-        st.insert(
-            Symbol::from("fresh"),
-            mk_def(Some(Code::jit(Arc::clone(&jit))), "fresh"),
-        );
-        st.insert(
-            Symbol::from("cached"),
-            mk_def(Some(Code::linker(Arc::clone(&linker))), "cached"),
-        );
+        install_def(&mut st, Code::jit(Arc::clone(&jit)), "fresh");
+        install_def(&mut st, Code::linker(Arc::clone(&linker)), "cached");
 
         // Both variants coexist in the same table (S75 slim: lifecycle owner
         // only; callable address lives in the GOT, not on `Code`).
         match st.get("fresh") {
-            Some(ModuleEntry::Def {
-                code: Some(Code::Jit(_)),
-                ..
-            }) => {}
+            Some(binding)
+                if matches!(
+                    binding.callable().map(|callable| &callable.arm.life),
+                    Some(Life::Concrete {
+                        realization: Realization::Body {
+                            code: Some(Code::Jit(_)),
+                            ..
+                        },
+                        ..
+                    })
+                ) => {}
             other => panic!("expected Code::Jit, got {:?}", other),
         }
         match st.get("cached") {
-            Some(ModuleEntry::Def {
-                code: Some(Code::Linker(_)),
-                ..
-            }) => {}
+            Some(binding)
+                if matches!(
+                    binding.callable().map(|callable| &callable.arm.life),
+                    Some(Life::Concrete {
+                        realization: Realization::Body {
+                            code: Some(Code::Linker(_)),
+                            ..
+                        },
+                        ..
+                    })
+                ) => {}
             other => panic!("expected Code::Linker, got {:?}", other),
         }
     }

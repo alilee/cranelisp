@@ -1,5 +1,6 @@
 use super::*;
-use cranelisp_types::{Scheme, Type};
+use crate::code::Code;
+use cranelisp_types::{Binding, Decl, Scheme, TraitRecord, Type, Visibility};
 use std::collections::HashMap as StdHashMap;
 
 fn tables() -> SessionTables {
@@ -20,18 +21,34 @@ fn ensure(tables: &SessionTables, path: &str) {
         .or_insert_with(|| SessionSymbolTable::new_with_params(p));
 }
 
-/// A public primitive Def, as `primitives` carries `add-i64`.
-fn primitive_def() -> ModuleEntry<Code> {
-    ModuleEntry::def(
-        Scheme {
-            type_vars: vec![],
-            constraints: StdHashMap::new(),
-            ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
-        },
-        DefKind::primitive(0),
-    )
-    .visibility(Visibility::Public)
-    .build()
+fn primitive_scheme() -> Scheme {
+    Scheme {
+        type_vars: vec![],
+        constraints: StdHashMap::new(),
+        ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
+    }
+}
+
+/// Install a public primitive through the lifecycle funnel.
+fn install_primitive(table: &mut SessionSymbolTable, name: &str) {
+    table
+        .install_extern(
+            Symbol::from(name),
+            primitive_scheme(),
+            Vec::new(),
+            None,
+            0,
+            None,
+            None,
+            Visibility::Public,
+        )
+        .expect("primitive fixture installs");
+}
+
+fn sole_candidate(table: &SessionSymbolTable, name: &str) -> cranelisp_types::NameCandidate {
+    let candidates = table.name_candidates(&Symbol::from(name));
+    assert_eq!(candidates.len(), 1, "expected one candidate for {name}");
+    candidates.into_iter().next().expect("length checked")
 }
 
 fn glob_spec(module: &str) -> ImportSpec {
@@ -66,10 +83,10 @@ fn glob_import_does_not_re_expose_private_imports() {
     let aliases = ModuleAliases::default();
 
     // primitives carries a public Def for add-i64.
-    tables
-        .get_mut(&ModuleFullPath::from("primitives"))
-        .unwrap()
-        .insert(Symbol::from("add-i64"), primitive_def());
+    install_primitive(
+        &mut tables.get_mut(&ModuleFullPath::from("primitives")).unwrap(),
+        "add-i64",
+    );
 
     // prelude does `(import [primitives [*]])` → Private bindings in prelude.
     install_imports(
@@ -84,9 +101,9 @@ fn glob_import_does_not_re_expose_private_imports() {
     // The prelude binding is present but Private.
     {
         let prelude = tables.get(&ModuleFullPath::from("prelude")).unwrap();
-        let entry = prelude.get("add-i64").expect("prelude has the import");
+        let entry = sole_candidate(&prelude, "add-i64");
         assert!(
-            !entry.is_public(),
+            entry.visibility == Visibility::Private,
             "an `(import …)` binding MUST be Private (spec §8.7.3)",
         );
     }
@@ -104,7 +121,7 @@ fn glob_import_does_not_re_expose_private_imports() {
     // user MUST NOT have received add-i64 — prelude's binding was Private.
     let user = tables.get(&ModuleFullPath::from("user")).unwrap();
     assert!(
-        user.get("add-i64").is_none(),
+        user.name_candidates(&Symbol::from("add-i64")).is_empty(),
         "Private prelude import MUST NOT flow through the user glob \
              (spec §8.7.3) — this is what produces `undefined variable: add-i64` \
              when a fixture uses `import` instead of `export` (FIXME 0263)",
@@ -123,10 +140,10 @@ fn glob_picks_up_re_exported_public_names() {
     ensure(&tables, "user");
     let aliases = ModuleAliases::default();
 
-    tables
-        .get_mut(&ModuleFullPath::from("primitives"))
-        .unwrap()
-        .insert(Symbol::from("add-i64"), primitive_def());
+    install_primitive(
+        &mut tables.get_mut(&ModuleFullPath::from("primitives")).unwrap(),
+        "add-i64",
+    );
 
     // prelude does `(export [primitives [*]])` → Public re-export bindings.
     install_exports(
@@ -140,9 +157,9 @@ fn glob_picks_up_re_exported_public_names() {
 
     {
         let prelude = tables.get(&ModuleFullPath::from("prelude")).unwrap();
-        let entry = prelude.get("add-i64").expect("prelude re-exports it");
+        let entry = sole_candidate(&prelude, "add-i64");
         assert!(
-            entry.is_public(),
+            entry.visibility == Visibility::Public,
             "an `(export …)` re-export binding MUST be Public (spec §8.4)",
         );
     }
@@ -158,17 +175,8 @@ fn glob_picks_up_re_exported_public_names() {
     .unwrap();
 
     let user = tables.get(&ModuleFullPath::from("user")).unwrap();
-    let entry = user
-        .get("add-i64")
-        .expect("re-exported primitive MUST flow through the user glob");
-    match entry {
-        ModuleEntry::Import { source, .. } => {
-            // Provenance chain-follows to prelude (one hop); the terminal
-            // resolve to primitives is the resolver's job, not the installer's.
-            assert_eq!(source.module, ModuleFullPath::from("prelude"));
-        }
-        other => panic!("expected an Import binding, got {other:?}"),
-    }
+    let entry = sole_candidate(&user, "add-i64");
+    assert_eq!(entry.source.module, ModuleFullPath::from("primitives"));
 }
 
 fn specific_spec(module: &str, name: &str) -> ImportSpec {
@@ -205,10 +213,10 @@ fn import_then_export_same_source_upgrades_to_public() {
     let aliases = ModuleAliases::default();
 
     // base defines a public `base-val`.
-    tables
-        .get_mut(&ModuleFullPath::from("base"))
-        .unwrap()
-        .insert(Symbol::from("base-val"), primitive_def());
+    install_primitive(
+        &mut tables.get_mut(&ModuleFullPath::from("base")).unwrap(),
+        "base-val",
+    );
 
     // relay: (import [base [base-val]]) → Private binding (source base/base-val).
     install_imports(
@@ -222,7 +230,7 @@ fn import_then_export_same_source_upgrades_to_public() {
     {
         let relay = tables.get(&ModuleFullPath::from("relay")).unwrap();
         assert!(
-            !relay.get("base-val").unwrap().is_public(),
+            sole_candidate(&relay, "base-val").visibility == Visibility::Private,
             "the bare import binding must start Private",
         );
     }
@@ -239,7 +247,7 @@ fn import_then_export_same_source_upgrades_to_public() {
     {
         let relay = tables.get(&ModuleFullPath::from("relay")).unwrap();
         assert!(
-            relay.get("base-val").unwrap().is_public(),
+            sole_candidate(&relay, "base-val").visibility == Visibility::Public,
             "import-then-export of the same source MUST yield a Public \
                  binding (spec §8.4) — the same-source dedup must not swallow \
                  the re-export's visibility upgrade",
@@ -271,10 +279,10 @@ fn export_then_import_same_source_stays_public() {
     ensure(&tables, "relay");
     let aliases = ModuleAliases::default();
 
-    tables
-        .get_mut(&ModuleFullPath::from("base"))
-        .unwrap()
-        .insert(Symbol::from("base-val"), primitive_def());
+    install_primitive(
+        &mut tables.get_mut(&ModuleFullPath::from("base")).unwrap(),
+        "base-val",
+    );
 
     // Public re-export first.
     install_exports(
@@ -297,7 +305,7 @@ fn export_then_import_same_source_stays_public() {
 
     let relay = tables.get(&ModuleFullPath::from("relay")).unwrap();
     assert!(
-        relay.get("base-val").unwrap().is_public(),
+        sole_candidate(&relay, "base-val").visibility == Visibility::Public,
         "a later same-source Private import MUST NOT downgrade an existing \
              Public re-export",
     );
@@ -319,10 +327,10 @@ fn same_terminal_two_paths_dedup_no_ambiguity() {
     let aliases = ModuleAliases::default();
 
     // prim defines a public `Foo`.
-    tables
-        .get_mut(&ModuleFullPath::from("prim"))
-        .unwrap()
-        .insert(Symbol::from("Foo"), primitive_def());
+    install_primitive(
+        &mut tables.get_mut(&ModuleFullPath::from("prim")).unwrap(),
+        "Foo",
+    );
 
     // reexp re-exports prim/Foo (Public Import edge → prim).
     install_exports(
@@ -358,10 +366,11 @@ fn same_terminal_two_paths_dedup_no_ambiguity() {
     );
 
     let main = tables.get(&ModuleFullPath::from("main")).unwrap();
-    let entry = main.get("Foo").expect("Foo is installed");
-    assert!(
-        !matches!(entry, ModuleEntry::Ambiguous { .. }),
-        "same-terminal dedup MUST NOT poison the name as Ambiguous; got {entry:?}",
+    let candidates = main.name_candidates(&Symbol::from("Foo"));
+    assert_eq!(
+        candidates.len(),
+        1,
+        "same terminal deduplicates: {candidates:?}"
     );
 }
 
@@ -372,21 +381,21 @@ fn same_terminal_two_paths_dedup_no_ambiguity() {
 // installed (poison-on-reference model), but the eager error is what carries
 // the alternatives (the sentinel variant has no payload).
 #[test]
-fn distinct_terminals_error_naming_both_alternatives() {
+fn distinct_terminals_coexist_for_use_site_selection() {
     let tables = tables();
     ensure(&tables, "a");
     ensure(&tables, "b");
     ensure(&tables, "main");
     let aliases = ModuleAliases::default();
 
-    tables
-        .get_mut(&ModuleFullPath::from("a"))
-        .unwrap()
-        .insert(Symbol::from("Bar"), primitive_def());
-    tables
-        .get_mut(&ModuleFullPath::from("b"))
-        .unwrap()
-        .insert(Symbol::from("Bar"), primitive_def());
+    install_primitive(
+        &mut tables.get_mut(&ModuleFullPath::from("a")).unwrap(),
+        "Bar",
+    );
+    install_primitive(
+        &mut tables.get_mut(&ModuleFullPath::from("b")).unwrap(),
+        "Bar",
+    );
 
     // main imports a/Bar bare (no collision yet).
     install_imports(
@@ -398,39 +407,20 @@ fn distinct_terminals_error_naming_both_alternatives() {
     )
     .expect("first bare import of Bar installs cleanly");
 
-    // main imports b/Bar bare → distinct terminal → MUST error.
-    let err = install_imports(
+    // main imports b/Bar bare: both canonical candidates remain until the
+    // type-directed use-site selector can choose or diagnose ambiguity.
+    install_imports(
         &tables,
         &ModuleFullPath::from("main"),
         &aliases,
         &no_pf(),
         &[specific_spec("b", "Bar")],
     )
-    .expect_err(
-        "two DISTINCT terminal `Bar` definitions imported under the same \
-             bare name MUST collide (spec §8.6.5 footgun protection)",
-    );
+    .expect("distinct candidates may coexist until use-site selection");
 
-    let msg = match &err {
-        CranelispError::TypeError { message, .. } => message.clone(),
-        other => panic!("expected a TypeError, got {other:?}"),
-    };
-    assert!(
-        msg.to_lowercase().contains("ambiguous"),
-        "the diagnostic MUST identify the conflict as ambiguous; got: {msg}",
-    );
-    assert!(
-        msg.contains("a/Bar") && msg.contains("b/Bar"),
-        "the diagnostic MUST name BOTH qualified alternatives \
-             (`a/Bar` and `b/Bar`); got: {msg}",
-    );
-
-    // The poison sentinel is installed too (poison-on-reference model).
+    // Both terminal candidates remain for use-site type-directed selection.
     let main = tables.get(&ModuleFullPath::from("main")).unwrap();
-    assert!(
-        matches!(main.get("Bar"), Some(ModuleEntry::Ambiguous { .. })),
-        "the colliding name MUST be poisoned with the Ambiguous sentinel",
-    );
+    assert_eq!(main.name_candidates(&Symbol::from("Bar")).len(), 2);
 }
 
 // spec: 08-modules.md §8.11.2 (step 1) — install_imports resolves a BARE submodule
@@ -449,10 +439,12 @@ fn install_imports_resolves_bare_submodule_current_module_relative() {
     let aliases = ModuleAliases::default();
 
     // The child submodule defines a public `foo`.
-    tables
-        .get_mut(&ModuleFullPath::from("shell.child"))
-        .unwrap()
-        .insert(Symbol::from("foo"), primitive_def());
+    install_primitive(
+        &mut tables
+            .get_mut(&ModuleFullPath::from("shell.child"))
+            .unwrap(),
+        "foo",
+    );
 
     // shell does `(import [child [foo]])` — module_path is the BARE `child`.
     install_imports(
@@ -468,16 +460,11 @@ fn install_imports_resolves_bare_submodule_current_module_relative() {
     );
 
     let shell = tables.get(&ModuleFullPath::from("shell")).unwrap();
-    match shell.get("foo").expect("foo installed in shell") {
-        ModuleEntry::Import { source, .. } => {
-            assert_eq!(
-                source.module,
-                ModuleFullPath::from("shell.child"),
-                "foo must be sourced from the shell.child submodule, not root child",
-            );
-        }
-        other => panic!("expected an Import binding for foo, got {other:?}"),
-    }
+    assert_eq!(
+        sole_candidate(&shell, "foo").source.module,
+        ModuleFullPath::from("shell.child"),
+        "foo must be sourced from the shell.child submodule, not root child",
+    );
 }
 
 // spec: 08-modules.md §8.11.2 — NEGATIVE: a bare import name with NO
@@ -603,8 +590,8 @@ fn session_env_reregisters_import_alias() {
     );
 }
 
-// Submodule short-name aliases are re-registered keyed by the bare name →
-// `<module>.<name>` — mirror of `register_submodule_alias`.
+// Submodule short-name aliases are re-registered under their declaring-module
+// scope → `<module>.<name>` — mirror of `register_submodule_alias`.
 #[test]
 fn session_env_reregisters_submodule_alias() {
     let tables = tables();
@@ -620,10 +607,10 @@ fn session_env_reregisters_submodule_alias() {
     }
     let (aliases, fallback) = env_maps();
     install_module_session_env(&tables, &ModuleFullPath::from("shell"), &aliases, &fallback);
-    let entry = aliases.get(&ModuleFullPath::from("child"));
+    let entry = aliases.get(&ModuleFullPath::from("shell.child"));
     assert!(
         entry.is_some(),
-        "submodule short-name alias `child` must be registered"
+        "module-scoped submodule alias `shell.child` must be registered"
     );
     assert_eq!(
         entry.unwrap().target.as_ref(),
@@ -645,115 +632,91 @@ fn session_env_is_idempotent() {
     assert_eq!(fallback.get(&m).map(|b| *b), Some(true));
 }
 
-// =====================================================================
-// §8.6.4 (FIXME 0516) — the def/import symmetric collision is enforced at
-// ONE shared predicate (`cranelisp_types::check_binding_addition`), called
-// at BOTH binding events. The def-event fires at the typecheck `check_forms`
-// seam (a def registered over an installed import); the IMPORT-event fires
-// HERE (an import/export installed over an existing module-local def — the
-// #8 cross-cluster REPL case the def-seam cannot catch, because no def
-// registers in the import's cluster). Same rule, both events, all modes —
-// no dual path (the pre-0516 installer silently SKIPPED this direction,
-// which was the #8 mode-divergence hole).
-// =====================================================================
-
-// spec: 08-modules.md §8.6.4 — the IMPORT-event arm: an `import` that binds
-// a bare name already held by a module-LOCAL definition is a collision,
-// rejected via the shared predicate (the symmetric companion of
-// def-over-import; closes the #8 REPL separate-turn hole, FIXME 0516
-// Issue 2). The FQ remedy names the import's terminal.
+// The candidate model retains same-spelling local and imported bindings at
+// creation time. Type-directed selection or canonical qualification resolves
+// them at use sites; creation itself does not discard either candidate.
 #[test]
-fn import_over_local_def_rejected_via_shared_predicate() {
+fn import_over_local_def_retains_both_use_site_candidates() {
     let tables = tables();
     ensure(&tables, "base");
     ensure(&tables, "user");
     let aliases = ModuleAliases::default();
-    tables
-        .get_mut(&ModuleFullPath::from("user"))
-        .unwrap()
-        .insert(Symbol::from("measure"), primitive_def());
-    tables
-        .get_mut(&ModuleFullPath::from("base"))
-        .unwrap()
-        .insert(Symbol::from("measure"), primitive_def());
+    install_primitive(
+        &mut tables.get_mut(&ModuleFullPath::from("user")).unwrap(),
+        "measure",
+    );
+    install_primitive(
+        &mut tables.get_mut(&ModuleFullPath::from("base")).unwrap(),
+        "measure",
+    );
 
-    let err = install_imports(
+    install_imports(
         &tables,
         &ModuleFullPath::from("user"),
         &aliases,
         &no_pf(),
         &[specific_spec("base", "measure")],
     )
-    .expect_err(
-        "an import over an existing module-local def MUST reject \
-             (§8.6.4 symmetric companion; FIXME 0516 #8)",
-    );
-    let msg = match &err {
-        CranelispError::TypeError { message, .. } => message.to_lowercase(),
-        other => panic!("expected a TypeError, got {other:?}"),
-    };
-    assert!(msg.contains("conflict"), "collision diagnostic: {msg}");
-    assert!(msg.contains("base/measure"), "remedy FQ present: {msg}");
-    // The local def stays the binding — the rejected import had no effect.
+    .expect("local and imported callables coexist until use-site selection");
+    // The local def stays terminal and the imported terminal joins its
+    // candidate set; type-directed use or qualification resolves the choice.
     let user = tables.get(&ModuleFullPath::from("user")).unwrap();
-    assert!(matches!(user.get("measure"), Some(ModuleEntry::Def { .. })));
+    assert!(matches!(
+        user.get("measure").map(|binding| &binding.declaration),
+        Some(Decl::Callable(_))
+    ));
+    assert_eq!(user.name_candidates(&Symbol::from("measure")).len(), 2);
 }
 
-// spec: 08-modules.md §8.6.4/§8.4.0 — the EXPORT order: an `export` (a
-// Public inner Import edge) over an existing module-local def rejects
-// identically (the incoming Export vs existing Definition arm of the shared
-// predicate). Pins event-parity across import AND export incoming edges.
+// The same retention rule applies to a public re-export over a local binding.
 #[test]
-fn export_over_local_def_rejected_via_shared_predicate() {
+fn export_over_local_def_retains_both_use_site_candidates() {
     let tables = tables();
     ensure(&tables, "base");
     ensure(&tables, "user");
-    tables
-        .get_mut(&ModuleFullPath::from("user"))
-        .unwrap()
-        .insert(Symbol::from("measure"), primitive_def());
-    tables
-        .get_mut(&ModuleFullPath::from("base"))
-        .unwrap()
-        .insert(Symbol::from("measure"), primitive_def());
+    install_primitive(
+        &mut tables.get_mut(&ModuleFullPath::from("user")).unwrap(),
+        "measure",
+    );
+    install_primitive(
+        &mut tables.get_mut(&ModuleFullPath::from("base")).unwrap(),
+        "measure",
+    );
 
-    let err = install_exports(
+    install_exports(
         &tables,
         &ModuleFullPath::from("user"),
         &no_pf(),
         None,
         &[specific_export("base", "measure")],
     )
-    .expect_err("an export over a module-local def MUST reject (§8.6.4)");
-    let msg = match &err {
-        CranelispError::TypeError { message, .. } => message.to_lowercase(),
-        other => panic!("expected a TypeError, got {other:?}"),
-    };
-    assert!(msg.contains("conflict"), "collision diagnostic: {msg}");
+    .expect("local and exported callables coexist until use-site selection");
     let user = tables.get(&ModuleFullPath::from("user")).unwrap();
-    assert!(matches!(user.get("measure"), Some(ModuleEntry::Def { .. })));
+    assert!(matches!(
+        user.get("measure").map(|binding| &binding.declaration),
+        Some(Decl::Callable(_))
+    ));
+    assert_eq!(user.name_candidates(&Symbol::from("measure")).len(), 2);
 }
 
-/// A public local `deftrait` binding (`ModuleEntry::TraitDecl`) named `name`.
-fn trait_decl(name: &str) -> ModuleEntry<Code> {
-    ModuleEntry::TraitDecl {
-        info: cranelisp_types::TraitDeclInfo {
-            name: TraitName::from(name),
-            type_params: vec![],
-            methods: vec![],
-        },
-        visibility: Visibility::Public,
-        docstring: None,
-    }
+fn trait_decl(name: &str) -> Binding<Code> {
+    Binding::new(
+        Decl::Trait(TraitRecord::new(
+            cranelisp_types::TraitDeclInfo {
+                name: cranelisp_types::TraitName::from(name),
+                type_params: vec![],
+                methods: vec![],
+            },
+            None,
+        )),
+        Visibility::Public,
+    )
 }
 
-// spec: 08-modules.md §8.6.4 (S108 Wave-G CS2) — the local-definition arm of
-// the import-event seam now includes `TraitDecl`: an `import` binding a bare
-// name already held by a module-LOCAL `deftrait` is a §8.6.4 collision,
-// rejected via the shared predicate. Fail-on-revert: dropping `TraitDecl`
-// from the arm makes the import silently win (Ok), failing this expect_err.
+// Candidate retention is declaration-category independent: two same-spelling
+// traits also remain available for later qualification/use-site selection.
 #[test]
-fn import_over_local_trait_decl_rejected_via_shared_predicate() {
+fn import_over_local_trait_decl_retains_both_use_site_candidates() {
     let tables = tables();
     ensure(&tables, "base");
     ensure(&tables, "user");
@@ -762,34 +725,32 @@ fn import_over_local_trait_decl_rejected_via_shared_predicate() {
     tables
         .get_mut(&ModuleFullPath::from("user"))
         .unwrap()
-        .insert(Symbol::from("Show"), trait_decl("Show"));
+        .install_binding(Symbol::from("Show"), trait_decl("Show"))
+        .expect("local trait fixture installs");
     tables
         .get_mut(&ModuleFullPath::from("base"))
         .unwrap()
-        .insert(Symbol::from("Show"), trait_decl("Show"));
+        .install_binding(Symbol::from("Show"), trait_decl("Show"))
+        .expect("local trait fixture installs");
 
-    let err = install_imports(
+    install_imports(
         &tables,
         &ModuleFullPath::from("user"),
         &aliases,
         &no_pf(),
         &[specific_spec("base", "Show")],
     )
-    .expect_err(
-        "an import over a module-local deftrait (TraitDecl) MUST reject \
-             (§8.6.4 symmetric companion; CS2 TraitDecl widening)",
-    );
-    let msg = match &err {
-        CranelispError::TypeError { message, .. } => message.to_lowercase(),
-        other => panic!("expected a TypeError, got {other:?}"),
-    };
-    assert!(msg.contains("conflict"), "collision diagnostic: {msg}");
-    // The local trait stays the binding — the rejected import had no effect.
+    .expect("local and imported traits coexist until use-site selection");
+    // The local trait stays terminal and both canonical traits remain visible.
     let user = tables.get(&ModuleFullPath::from("user")).unwrap();
     assert!(matches!(
         user.get("Show"),
-        Some(ModuleEntry::TraitDecl { .. })
+        Some(Binding {
+            declaration: Decl::Trait(_),
+            ..
+        })
     ));
+    assert_eq!(user.name_candidates(&Symbol::from("Show")).len(), 2);
 }
 
 // spec: 08-modules.md §8.4.0 — a module can USE a name it only EXPORTS.
@@ -801,10 +762,10 @@ fn export_only_binds_name_in_exporting_module_scope() {
     let tables = tables();
     ensure(&tables, "base");
     ensure(&tables, "user");
-    tables
-        .get_mut(&ModuleFullPath::from("base"))
-        .unwrap()
-        .insert(Symbol::from("helper"), primitive_def());
+    install_primitive(
+        &mut tables.get_mut(&ModuleFullPath::from("base")).unwrap(),
+        "helper",
+    );
 
     // user does ONLY `(export [base [helper]])` — no import of `helper`.
     install_exports(
@@ -817,14 +778,9 @@ fn export_only_binds_name_in_exporting_module_scope() {
     .unwrap();
 
     let user = tables.get(&ModuleFullPath::from("user")).unwrap();
-    let entry = user
-        .get("helper")
-        .expect("export must bring the name into the exporting module's scope");
-    // It is an Import edge (resolvable per §8.6.2 chain-follow → usable in
-    // this module's own bodies) AND Public (part of the public API).
-    assert!(
-        matches!(entry, ModuleEntry::Import { .. }) && entry.is_public(),
-        "an export-only name is a Public inner-scope Import edge (§8.4.0)",
+    assert_eq!(
+        sole_candidate(&user, "helper").visibility,
+        Visibility::Public
     );
 }
 
@@ -838,10 +794,10 @@ fn redundant_import_then_export_dedups_to_public() {
     ensure(&tables, "base");
     ensure(&tables, "user");
     let aliases = ModuleAliases::default();
-    tables
-        .get_mut(&ModuleFullPath::from("base"))
-        .unwrap()
-        .insert(Symbol::from("x"), primitive_def());
+    install_primitive(
+        &mut tables.get_mut(&ModuleFullPath::from("base")).unwrap(),
+        "x",
+    );
 
     install_imports(
         &tables,
@@ -862,81 +818,18 @@ fn redundant_import_then_export_dedups_to_public() {
     .expect("redundant import+export of the same terminal must NOT collide");
 
     let user = tables.get(&ModuleFullPath::from("user")).unwrap();
-    let entry = user.get("x").expect("x is bound");
-    assert!(
-        matches!(entry, ModuleEntry::Import { .. }) && entry.is_public(),
-        "redundant pair upgrades to a Public import edge (§8.4.0)",
-    );
+    assert_eq!(sole_candidate(&user, "x").visibility, Visibility::Public);
 }
 
-// -----------------------------------------------------------------------
-// R7/0604 prelude-export-closure seam assert (index-worker-isolation.md §8)
-// -----------------------------------------------------------------------
-
-fn public_import_entry(src_module: &str, src_symbol: &str) -> ModuleEntry<Code> {
-    ModuleEntry::Import {
+fn public_import_entry(src_module: &str, src_symbol: &str) -> CandidateExposure {
+    CandidateExposure {
+        local_name: Symbol::from(src_symbol),
         source: FQSymbol {
             module: ModuleFullPath::from(src_module),
             symbol: src_symbol.into(),
         },
         visibility: Visibility::Public,
     }
-}
-
-// A legitimate prelude re-export (`(export [primitives [*]])` bringing
-// `add-i64`, which primitives genuinely provides publicly) is closure-valid —
-// the assert is a no-op (no panic).
-// spec: index-worker-isolation.md §8.1 — prelude-export closure invariant.
-#[test]
-fn assert_prelude_closure_permits_legitimate_reexport() {
-    let tables = tables();
-    ensure(&tables, "primitives");
-    ensure(&tables, "prelude");
-    tables
-        .get_mut(&ModuleFullPath::from("primitives"))
-        .unwrap()
-        .insert("add-i64".into(), primitive_def());
-    // A public re-export edge into prelude whose source (primitives) really
-    // provides `add-i64` — closure-valid, no panic.
-    let entry = public_import_entry("primitives", "add-i64");
-    assert_prelude_closure(&tables, &ModuleFullPath::from("prelude"), "add-i64", &entry);
-}
-
-// Prelude's OWN definition (a non-`Import` public entry) is exported by §8.4 —
-// closure-valid regardless of source, no panic.
-// spec: index-worker-isolation.md §8.1.
-#[test]
-fn assert_prelude_closure_permits_prelude_own_definition() {
-    let tables = tables();
-    ensure(&tables, "prelude");
-    let entry = primitive_def(); // a public non-Import Def
-    assert_prelude_closure(&tables, &ModuleFullPath::from("prelude"), "map", &entry);
-}
-
-// A non-prelude target is never checked — the assert is a no-op even for a
-// bogus write (the invariant is prelude-specific).
-// spec: index-worker-isolation.md §8.1.
-#[test]
-fn assert_prelude_closure_ignores_non_prelude_module() {
-    let tables = tables();
-    ensure(&tables, "user");
-    let entry = public_import_entry("primitives", "bit-and");
-    assert_prelude_closure(&tables, &ModuleFullPath::from("user"), "bit-and", &entry);
-}
-
-// The PHANTOM: a public `bit-and → primitives/bit-and` written into prelude,
-// where primitives does NOT provide `bit-and` (it is homed in num.bits) — the
-// FIXME 0604 write mis-targeting prelude. The seam assert TRIPS (debug), so a
-// future firing NAMES the seam instead of a silent phantom.
-// spec: index-worker-isolation.md §8.1 — the phantom prelude write.
-#[test]
-#[should_panic(expected = "R7 prelude-export-closure breach")]
-fn assert_prelude_closure_trips_on_phantom_write() {
-    let tables = tables();
-    ensure(&tables, "primitives"); // exists but has NO bit-and
-    ensure(&tables, "prelude");
-    let entry = public_import_entry("primitives", "bit-and");
-    assert_prelude_closure(&tables, &ModuleFullPath::from("prelude"), "bit-and", &entry);
 }
 
 // -----------------------------------------------------------------------
@@ -971,12 +864,11 @@ fn declared_without_bit_and() -> HashSet<Symbol> {
 // provides-name-but-outside-declared-exports discriminating trigger below).
 // spec: prelude-table-write-isolation.md §2.2 — declared-export-closure gate.
 #[test]
-fn check_terminal_closure_rejects_out_of_closure_public_write() {
+fn candidate_closure_rejects_out_of_closure_public_write() {
     let entry = public_import_entry("primitives", "bit-and");
     let d = declared_without_bit_and();
-    let res = check_terminal_closure(
+    let res = check_candidate_closure(
         &ModuleFullPath::from("prelude"),
-        "bit-and",
         &entry,
         cranelisp_types::Span::SYNTHETIC,
         Some(&d),
@@ -1002,23 +894,22 @@ fn check_terminal_closure_rejects_out_of_closure_public_write() {
 // independent (a direct call against constructed tables, no session, no
 // threads) — the fail-on-revert guard for the CORRECTION (not just the gate).
 // spec: prelude-table-write-isolation.md §2.2 — provides-name-but-outside-D(M).
-// defect: class=shared-state-write-race locus=src/imports.rs::write_is_closure_valid found=S115 owner=/dev
+// defect: class=shared-state-write-race locus=src/imports.rs::check_exposed_candidate_closure found=S115 owner=/dev
 #[test]
-fn check_terminal_closure_rejects_provided_name_outside_declared_exports() {
+fn candidate_closure_rejects_provided_name_outside_declared_exports() {
     let tables = tables();
     // primitives REALLY provides bit-and publicly (the phantom's genuine
     // provider — provider-existence would pass).
     ensure(&tables, "primitives");
-    tables
-        .get_mut(&ModuleFullPath::from("primitives"))
-        .unwrap()
-        .insert(Symbol::from("bit-and"), primitive_def());
+    install_primitive(
+        &mut tables.get_mut(&ModuleFullPath::from("primitives")).unwrap(),
+        "bit-and",
+    );
     // ...but bit-and is OUTSIDE prelude's declared export closure.
     let entry = public_import_entry("primitives", "bit-and");
     let d = declared_without_bit_and();
-    let res = check_terminal_closure(
+    let res = check_candidate_closure(
         &ModuleFullPath::from("prelude"),
-        "bit-and",
         &entry,
         cranelisp_types::Span::SYNTHETIC,
         Some(&d),
@@ -1044,12 +935,11 @@ fn check_terminal_closure_rejects_provided_name_outside_declared_exports() {
 // population. Fail-on-revert of an over-strict correction.
 // spec: prelude-table-write-isolation.md §2.2 — name ∈ D(M) permits.
 #[test]
-fn check_terminal_closure_permits_name_in_declared_exports() {
+fn candidate_closure_permits_name_in_declared_exports() {
     let entry = public_import_entry("primitives", "Int");
     let d = declared_without_bit_and(); // includes Int
-    let res = check_terminal_closure(
+    let res = check_candidate_closure(
         &ModuleFullPath::from("prelude"),
-        "Int",
         &entry,
         cranelisp_types::Span::SYNTHETIC,
         Some(&d),
@@ -1065,11 +955,10 @@ fn check_terminal_closure_permits_name_in_declared_exports() {
 // rejected on incomplete information (FIXME 0604 §2.2 unknown-permit arm).
 // spec: prelude-table-write-isolation.md §2.2 — D(M) unknown permits.
 #[test]
-fn check_terminal_closure_permits_when_declared_exports_unknown() {
+fn candidate_closure_permits_when_declared_exports_unknown() {
     let entry = public_import_entry("primitives", "bit-and");
-    let res = check_terminal_closure(
+    let res = check_candidate_closure(
         &ModuleFullPath::from("prelude"),
-        "bit-and",
         &entry,
         cranelisp_types::Span::SYNTHETIC,
         None,
@@ -1085,13 +974,12 @@ fn check_terminal_closure_permits_when_declared_exports_unknown() {
 // the gate does not).
 // spec: prelude-table-write-isolation.md §2.2 — any terminal module.
 #[test]
-fn check_terminal_closure_generalizes_beyond_prelude() {
+fn candidate_closure_generalizes_beyond_prelude() {
     // A non-prelude terminal module with a recorded D(M) that lacks the name.
     let entry = public_import_entry("primitives", "bit-and");
     let d: HashSet<Symbol> = [Symbol::from("something-else")].into_iter().collect();
-    let res = check_terminal_closure(
+    let res = check_candidate_closure(
         &ModuleFullPath::from("some.terminal"),
-        "bit-and",
         &entry,
         cranelisp_types::Span::SYNTHETIC,
         Some(&d),
@@ -1106,12 +994,11 @@ fn check_terminal_closure_generalizes_beyond_prelude() {
 // closure PASSES — the gate must not false-fire the build.
 // spec: prelude-table-write-isolation.md §2.2 — declared name permits.
 #[test]
-fn check_terminal_closure_permits_legitimate_reexport() {
+fn candidate_closure_permits_legitimate_reexport() {
     let entry = public_import_entry("primitives", "add-i64");
     let d: HashSet<Symbol> = [Symbol::from("add-i64")].into_iter().collect();
-    let res = check_terminal_closure(
+    let res = check_candidate_closure(
         &ModuleFullPath::from("prelude"),
-        "add-i64",
         &entry,
         cranelisp_types::Span::SYNTHETIC,
         Some(&d),
@@ -1122,34 +1009,14 @@ fn check_terminal_closure_permits_legitimate_reexport() {
     );
 }
 
-// The module's OWN public definition (a non-`Import` entry) is exported by
-// §8.4 — always closure-valid.
-// spec: prelude-table-write-isolation.md §2.2 — own definition.
-#[test]
-fn check_terminal_closure_permits_own_definition() {
-    let entry = primitive_def(); // public non-Import Def
-    // Own-def arm returns Ok with NO map read — even with an empty D(M).
-    let d: HashSet<Symbol> = HashSet::new();
-    let res = check_terminal_closure(
-        &ModuleFullPath::from("prelude"),
-        "map",
-        &entry,
-        cranelisp_types::Span::SYNTHETIC,
-        Some(&d),
-    );
-    assert!(
-        res.is_ok(),
-        "own public definition is exported by §8.4: {res:?}"
-    );
-}
-
 // A PRIVATE write (an `import` edge) is never a cross-module phantom — the
 // isolation invariant is PUBLIC-write-only, so the gate is a no-op even when
 // the source lacks the name (census legal-skip for `install_imports`).
 // spec: prelude-table-write-isolation.md §2.1 — private-only legal-skip.
 #[test]
-fn check_terminal_closure_noop_for_private_write() {
-    let entry = ModuleEntry::Import {
+fn candidate_closure_noop_for_private_write() {
+    let entry = CandidateExposure {
+        local_name: Symbol::from("bit-and"),
         source: FQSymbol {
             module: ModuleFullPath::from("primitives"),
             symbol: "bit-and".into(),
@@ -1159,9 +1026,8 @@ fn check_terminal_closure_noop_for_private_write() {
     // Private edge short-circuits on !is_public BEFORE consulting D(M); an
     // empty D(M) that would otherwise reject a public edge must be a no-op here.
     let d: HashSet<Symbol> = HashSet::new();
-    let res = check_terminal_closure(
+    let res = check_candidate_closure(
         &ModuleFullPath::from("user"),
-        "bit-and",
         &entry,
         cranelisp_types::Span::SYNTHETIC,
         Some(&d),

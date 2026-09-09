@@ -49,7 +49,7 @@
 //!   orchestrator-owned staging table and live (staging-first).
 //!
 //! Same primitive, different first-hop view supplied by the caller. The
-//! *cross-module* hops (chain-following `Import` edges to a dependency
+//! *cross-module* hops (chain-following [`BindingBody::Alias`] edges to a dependency
 //! module, and the alias-resolved FQ target module) always land in **other,
 //! already-committed** modules — staging only ever holds the *current*
 //! cluster's module (Principle 17 + Decision 44), so beyond the first hop the
@@ -64,12 +64,12 @@
 use crate::ast::Visibility;
 use crate::error::{CranelispError, ErrorLocation};
 use crate::module::{
-    CHAIN_FOLLOW_DEPTH_LIMIT, CodeStore, LinkerStore, ModuleAliases, ModuleEntry, SymbolTables,
-    resolve_terminal_entry_home_and_key,
+    CHAIN_FOLLOW_DEPTH_LIMIT, CodeStore, LinkerStore, ModuleAliases, SymbolTables,
 };
 use crate::newtype::{FQSymbol, ModuleFullPath, Symbol, TraitName, TypeName};
 use crate::span::Span;
 use crate::view::View;
+use crate::{Binding, Decl, NameCandidate};
 
 /// The reference-resolution scope — a name lookup with the implicit-prelude
 /// **fallback intrinsic to the scope**, decided ONCE at construction, never at
@@ -129,7 +129,30 @@ impl<'a, C: CodeStore, L: LinkerStore> ResolutionScope<'a, C, L> {
     /// substitution for qualified names. A qualified `mod/sym` NEVER takes the
     /// prelude retry (it names its module — made explicit inside the walk).
     pub fn resolve(&self, name: &str, span: Span) -> Result<Resolved<C>, ResolveError> {
-        resolve_with_prelude(
+        let candidates = self.resolve_candidates(name, span)?;
+        match candidates.as_slice() {
+            [resolved] => Ok(resolved.clone()),
+            _ => Err(ResolveError::Ambiguous {
+                name: Symbol::from(name),
+                from_module: self.current_module.clone(),
+                candidates: candidates
+                    .into_iter()
+                    .map(|resolved| resolved.canonical)
+                    .collect(),
+                span,
+            }),
+        }
+    }
+
+    /// Return every terminal declaration exposed by `name`. The resolver
+    /// performs scope, qualification and visibility work only; typecheck
+    /// applies isolated HM constraints to this complete set.
+    pub fn resolve_candidates(
+        &self,
+        name: &str,
+        span: Span,
+    ) -> Result<Vec<Resolved<C>>, ResolveError> {
+        resolve_candidates_with_prelude(
             self.symbol_tables,
             self.module_aliases,
             self.first_hop,
@@ -142,7 +165,7 @@ impl<'a, C: CodeStore, L: LinkerStore> ResolutionScope<'a, C, L> {
 
     /// Typed projection retained on the scope (macro-head recognition). Resolve
     /// `name`, succeed with `Some(fq)` only if the canonical entry is a macro
-    /// (`DefKind::Macro`); a resolved non-macro entry or a not-found-class miss
+    /// ([`Decl::Macro`]); a resolved non-macro entry or a not-found-class miss
     /// yields `Ok(None)` (a bare forward reference is not yet known to be a
     /// macro); a hard failure (private, unknown qualified module) surfaces as
     /// `Err`. The prelude fallback is intrinsic (same as [`Self::resolve`]),
@@ -152,95 +175,34 @@ impl<'a, C: CodeStore, L: LinkerStore> ResolutionScope<'a, C, L> {
         name: &str,
         span: Span,
     ) -> Result<Option<FQSymbol>, ResolveError> {
-        match self.resolve(name, span) {
-            Ok(resolved) => match &resolved.entry {
-                ModuleEntry::Def { kind, .. }
-                    if matches!(kind.as_ref(), crate::DefKind::Macro { .. }) =>
-                {
-                    Ok(Some(resolved.fq))
+        match self.resolve_candidates(name, span) {
+            Ok(candidates) => {
+                let macro_candidates = candidates
+                    .into_iter()
+                    .filter(|resolved| matches!(&resolved.entry.declaration, Decl::Macro(_)))
+                    .collect::<Vec<_>>();
+                match macro_candidates.as_slice() {
+                    [] => Ok(None),
+                    [resolved] => Ok(Some(resolved.canonical.clone())),
+                    _ => Err(ResolveError::Ambiguous {
+                        name: Symbol::from(name),
+                        from_module: self.current_module.clone(),
+                        candidates: macro_candidates
+                            .into_iter()
+                            .map(|resolved| resolved.canonical)
+                            .collect(),
+                        span,
+                    }),
                 }
-                _ => Ok(None),
-            },
+            }
             Err(ResolveError::TraitNotFound { .. })
             | Err(ResolveError::TypeNotFound { .. })
             | Err(ResolveError::ConstructorNotFound { .. }) => Ok(None),
             Err(e @ ResolveError::PrivateInaccessible { .. })
-            | Err(e @ ResolveError::QualifiedModuleUnknown { .. }) => Err(e),
+            | Err(e @ ResolveError::QualifiedModuleUnknown { .. })
+            | Err(e @ ResolveError::Ambiguous { .. }) => Err(e),
         }
     }
-
-    /// The inner-table (first-hop) head for `name`, WITHOUT chain-follow or the
-    /// prelude fallback — the raw entry as it sits in the current module's view.
-    /// Used by [`reject_def_over_binding`] to classify provenance (an inner
-    /// `Import` head is an explicit import/export; its absence with a resolving
-    /// terminal means the binding came from the prelude fallback).
-    fn first_hop_head(&self, name: &str) -> Option<ModuleEntry<C>> {
-        self.first_hop.lookup(&Symbol::from(name)).cloned()
-    }
-}
-
-/// The §8.6.4 definition seam — "may this bare `name` be defined in this
-/// scope?" — derived from the SAME [`ResolutionScope::resolve`] walk as
-/// reference resolution (S108 Wave-G convergence §4.1). Every definition form
-/// (`defn`/`deftype` on the typecheck side, `deftrait` name + method names,
-/// `defmacro` in int) routes through this ONE seam, which consults the prelude
-/// — to **REJECT**, per §8.6.4 (a name provided by the prelude is in scope on
-/// identical terms to an explicit import; a definition over it is a conflict,
-/// never a shadow).
-///
-/// Grounds: the rule already has ONE predicate ([`check_binding_addition`],
-/// FIXME 0516); what was still per-surface was the resolve+classify glue, now
-/// single-sourced here so int's defmacro path calls the identical seam without
-/// a typecheck dependency (the same multi-consumer argument that placed the
-/// resolution primitive in this crate).
-///
-/// Decision, read off the resolved terminal's `home`:
-/// - resolve MISS ⇒ not in scope ⇒ **free to define** (§8.8.3 "not-loading");
-/// - `home == current_module` ⇒ the module's OWN prior definition ⇒ ordinary
-///   **redefinition, ALLOWED** (the REPL redefine path);
-/// - `home != current_module` ⇒ the in-scope binding is an explicit
-///   `import`/`export` inner head, or (inner head absent) a prelude PUBLIC
-///   terminal ⇒ classify provenance and delegate to [`check_binding_addition`].
-///
-/// Synthetic / mangled names (`$`-containing or `__`-prefixed) are never
-/// user-facing bare definitions contesting an in-scope binding; they skip the
-/// seam so it only ever fires on an authored bare name.
-pub fn reject_def_over_binding<C: CodeStore, L: LinkerStore>(
-    scope: &ResolutionScope<'_, C, L>,
-    name: &Symbol,
-    span: Span,
-) -> Result<(), CranelispError> {
-    let n = name.as_ref();
-    if n.contains('$') || n.starts_with("__") {
-        return Ok(());
-    }
-    let resolved = match scope.resolve(n, span) {
-        Ok(r) => r,
-        Err(_) => return Ok(()), // not in scope — free to define (§8.8.3)
-    };
-    let existing = if &resolved.home == scope.current_module {
-        // The module's OWN prior def/typedef — ordinary redefinition.
-        BindingProvenance::Definition
-    } else {
-        // Name the source kind from the inner (first-hop) head, no chain-follow,
-        // no fallback: an inner `Import` head is an explicit import (Private) or
-        // export (Public); absence means the binding came from the implicit
-        // prelude outer scope.
-        match scope.first_hop_head(n) {
-            Some(e) if matches!(e, ModuleEntry::Import { .. }) && e.is_public() => {
-                BindingProvenance::Export
-            }
-            Some(ModuleEntry::Import { .. }) => BindingProvenance::Import,
-            _ => BindingProvenance::Prelude,
-        }
-    };
-    check_binding_addition(
-        name,
-        BindingProvenance::Definition,
-        existing,
-        &resolved.fq,
-        span,
-    )
 }
 
 /// Error returned by the resolution primitive and its typed wrappers.
@@ -270,6 +232,13 @@ pub fn reject_def_over_binding<C: CodeStore, L: LinkerStore>(
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum ResolveError {
+    /// Several distinct terminal declarations remain viable for one use.
+    Ambiguous {
+        name: Symbol,
+        from_module: ModuleFullPath,
+        candidates: Vec<FQSymbol>,
+        span: Span,
+    },
     /// Trait name is not reachable from the calling module's import scope,
     /// nor anywhere on its chain-follow path.
     TraitNotFound {
@@ -328,7 +297,8 @@ impl ResolveError {
     /// The source span the failure is attributed to.
     pub fn span(&self) -> Span {
         match self {
-            ResolveError::TraitNotFound { span, .. }
+            ResolveError::Ambiguous { span, .. }
+            | ResolveError::TraitNotFound { span, .. }
             | ResolveError::TypeNotFound { span, .. }
             | ResolveError::ConstructorNotFound { span, .. }
             | ResolveError::QualifiedModuleUnknown { span, .. }
@@ -340,6 +310,19 @@ impl ResolveError {
     /// projection so the two never drift.
     pub fn message(&self) -> String {
         match self {
+            ResolveError::Ambiguous {
+                name,
+                from_module,
+                candidates,
+                ..
+            } => format!(
+                "ambiguous name `{name}` from module `{from_module}`; qualify one of: {}",
+                candidates
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             ResolveError::TraitNotFound {
                 name, from_module, ..
             } => {
@@ -384,61 +367,14 @@ impl From<ResolveError> for CranelispError {
     }
 }
 
-/// A successfully resolved name: the canonical entry, its defining (home)
-/// module, and TWO identities — the **reference identity** (`fq`) and the
-/// **storage identity** (`storage_key` / [`Resolved::storage_fq`]).
-///
-/// The home module is the chain-follow terminus (the module that owns the
-/// canonical, non-`Import` entry).
-///
-/// **The two identities (FIXME 0620,
-/// `design/arch/backend-keyed-consumer.md` §1.1):**
-///
-/// - `fq` = `home` + `canonical_symbol(written name)` — the *reference*
-///   identity: how the caller spelled the name, homed at the terminus. This
-///   is the display/attribution/`callees` identity (macro-head dispatch,
-///   error messages, §8.6.4 remedies). It does **NOT** in general address the
-///   entry in `home`'s table: across a member alias (`v` → `Box.v`,
-///   `Pure` → `IO.Pure`) or a renamed import/export (`[(foo bar)]`) the
-///   written spelling is an `Import`-edge alias, not the table key.
-/// - `storage_key` — the *storage* identity: the exact symbol-table key the
-///   chain-follow terminated at (the last followed edge's `source.symbol`,
-///   or the written name when no edge renamed). `symbol_tables[home]
-///   [storage_key]` IS the terminal entry, always. This is the identity a
-///   keyed consumer (the backend `entry_at` read, the `VarRef::Global` /
-///   `ApplyRef::Dispatch` carrier values) must record — captured here, at the ONE place it is knowable,
-///   because a `ModuleEntry` does not carry its own key (Principle 24
-///   "Resolve once": the walk that found the entry reports where it found
-///   it; no consumer ever reconstructs the key from a written spelling).
+/// A successfully resolved terminal declaration and its canonical identity.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Resolved<C: CodeStore = ()> {
-    /// The canonical (non-`Import`/non-`Reexport`) entry the name resolves to.
-    pub entry: ModuleEntry<C>,
-    /// The module that defines the canonical entry (chain-follow terminus).
-    pub home: ModuleFullPath,
-    /// The reference identity: `home` + the canonical written spelling. For
-    /// storage addressing use [`Resolved::storage_fq`] — see the type-level
-    /// rustdoc for the distinction.
-    pub fq: FQSymbol,
-    /// The terminal storage key: the exact key the entry sits under in
-    /// `home`'s table ("whichever storage key HIT"). Equals the written
-    /// spelling iff no followed `Import`/`Reexport` edge renamed.
-    pub storage_key: Symbol,
-}
-
-impl<C: CodeStore> Resolved<C> {
-    /// The storage identity as an [`FQSymbol`] — `home` + [`Self::storage_key`].
-    /// The key a direct two-level table read (`symbol_tables[module][symbol]`)
-    /// fetches this exact terminal entry with; the `VarRef::Global` /
-    /// `ApplyRef::Dispatch` carrier value
-    /// (`design/arch/backend-keyed-consumer.md` §1.1).
-    pub fn storage_fq(&self) -> FQSymbol {
-        FQSymbol {
-            module: self.home.clone(),
-            symbol: self.storage_key.clone(),
-        }
-    }
+    /// The terminal declaration binding.
+    pub entry: Binding<C>,
+    /// The one terminal storage identity for the declaration.
+    pub canonical: FQSymbol,
 }
 
 /// The single general resolution primitive: resolve `name` from
@@ -450,10 +386,9 @@ impl<C: CodeStore> Resolved<C> {
 /// [`View`] over the *current* module — `View::single(live)` for committed
 /// search (int Pass-1 recognition), `View::union(staging, live)` for the
 /// staging-aware search (typecheck Pass-2/3). The primitive consults
-/// `first_hop` only for the entry-point lookup; once a hop crosses into a
-/// different module (an `Import` edge's `source.module`, or an alias-resolved
-/// FQ target), it reads `symbol_tables` directly — those modules are
-/// dependencies, always already-committed (Principle 17 + Decision 44), so no
+/// `first_hop` for current-module candidates. Terminal candidates in other
+/// modules are read directly from `symbol_tables`; those modules are
+/// dependencies, always already committed (Principle 17 + Decision 44), so no
 /// staging view applies to them.
 ///
 /// **Inputs are types-owned only.** `symbol_tables` and `module_aliases` are
@@ -464,19 +399,19 @@ impl<C: CodeStore> Resolved<C> {
 /// **Resolution algorithm** (per spec §8.6.6 + Principle 17 shapes 1–2):
 ///
 /// 1. If `name` contains a `/` it is a **qualified** reference `mod/sym`:
-///    apply longest-prefix alias substitution to `mod` (via `module_aliases`),
-///    then look the symbol up directly in the alias-resolved module. A missing
-///    target module yields [`ResolveError::QualifiedModuleUnknown`] (the
-///    orchestrator promotes this to a load-and-retry gap).
-/// 2. Otherwise it is an **unqualified short name**: look it up in `first_hop`
-///    (current-module view). If absent → not found. If present and it is an
-///    `Import`/`Reexport`, chain-follow `source.module` one edge at a time
-///    against `symbol_tables` to the canonical entry.
-/// 3. Apply the **visibility filter**: a non-public canonical entry is
-///    accessible only from within the defining module's subtree; otherwise
-///    [`ResolveError::PrivateInaccessible`].
+///    apply the scoped keyed module-alias walk to `mod` (via `module_aliases`),
+///    then resolve `sym` through the alias-resolved module's candidate set.
+///    Only public exposures participate across a module boundary, and the
+///    returned identity is the candidate's canonical terminal. A missing target
+///    module yields [`ResolveError::QualifiedModuleUnknown`] (the orchestrator
+///    promotes this to a load-and-retry gap).
+/// 2. Otherwise it is an **unqualified short name**: union every candidate in
+///    `first_hop` with every public candidate exposed by the implicit prelude.
+///    Candidates naming the same canonical terminal are deduplicated.
+/// 3. Current-module candidates retain local/private visibility; only public
+///    prelude exposures participate in the implicit set.
 ///
-/// Returns the [`Resolved`] triple on success. The typed projections on
+/// Returns the terminal [`Resolved`] candidates on success. The typed projections on
 /// [`ResolutionScope`] ([`ResolutionScope::resolve_macro_head`], the checker's
 /// `resolve_trait`-shaped kind projections, etc.) layer kind-specific
 /// success/error projection on top of this one walk (Principle 6 — one
@@ -487,6 +422,200 @@ impl<C: CodeStore> Resolved<C> {
 /// **Private (S108 Wave-G).** The former `pub fn resolve` walk; the sole public
 /// entry point is now [`ResolutionScope::resolve`] (fallback intrinsic) — there
 /// is no bare fallback-less resolve on the public surface.
+fn resolve_candidates_with_prelude<C, L>(
+    symbol_tables: &SymbolTables<C, L>,
+    module_aliases: &ModuleAliases,
+    first_hop: &View<'_, C, L>,
+    current_module: &ModuleFullPath,
+    name: &str,
+    prelude: Option<&ModuleFullPath>,
+    span: Span,
+) -> Result<Vec<Resolved<C>>, ResolveError>
+where
+    C: CodeStore,
+    L: LinkerStore,
+{
+    if let Some((module_part, symbol_part)) = split_qualified(name) {
+        return resolve_qualified_candidates(
+            symbol_tables,
+            module_aliases,
+            first_hop,
+            current_module,
+            &module_part,
+            &symbol_part,
+            span,
+        );
+    }
+
+    let mut candidates = match resolve_unqualified_candidates(
+        symbol_tables,
+        first_hop,
+        current_module,
+        name,
+        false,
+        span,
+    ) {
+        Ok(candidates) => candidates,
+        Err(ResolveError::TraitNotFound { .. })
+        | Err(ResolveError::TypeNotFound { .. })
+        | Err(ResolveError::ConstructorNotFound { .. }) => Vec::new(),
+        Err(error) => return Err(error),
+    };
+
+    if let Some(prelude) = prelude.filter(|prelude| *prelude != current_module)
+        && let Some(table) = symbol_tables.get(prelude)
+    {
+        let view = View::single(&table);
+        match resolve_unqualified_candidates(symbol_tables, &view, prelude, name, true, span) {
+            Ok(prelude_candidates) => {
+                for candidate in prelude_candidates {
+                    if !candidates
+                        .iter()
+                        .any(|existing| existing.canonical == candidate.canonical)
+                    {
+                        candidates.push(candidate);
+                    }
+                }
+            }
+            Err(ResolveError::TraitNotFound { .. })
+            | Err(ResolveError::TypeNotFound { .. })
+            | Err(ResolveError::ConstructorNotFound { .. }) => {}
+            Err(error) => return Err(error),
+        }
+    }
+
+    if candidates.is_empty() {
+        Err(not_found(name, current_module, span))
+    } else {
+        Ok(candidates)
+    }
+}
+
+fn resolve_unqualified_candidates<C, L>(
+    symbol_tables: &SymbolTables<C, L>,
+    view: &View<'_, C, L>,
+    exposure_module: &ModuleFullPath,
+    name: &str,
+    public_only: bool,
+    span: Span,
+) -> Result<Vec<Resolved<C>>, ResolveError>
+where
+    C: CodeStore,
+    L: LinkerStore,
+{
+    let candidates = view.name_candidates(&Symbol::from(name));
+    let mut resolved = Vec::with_capacity(candidates.len());
+    for candidate in candidates {
+        if public_only && candidate.visibility != Visibility::Public {
+            continue;
+        }
+        if let Some(candidate) = resolve_candidate(symbol_tables, view, exposure_module, candidate)
+        {
+            resolved.push(candidate);
+        }
+    }
+    if resolved.is_empty() {
+        Err(not_found(name, exposure_module, span))
+    } else {
+        Ok(resolved)
+    }
+}
+
+fn resolve_candidate<C, L>(
+    symbol_tables: &SymbolTables<C, L>,
+    view: &View<'_, C, L>,
+    exposure_module: &ModuleFullPath,
+    candidate: NameCandidate,
+) -> Option<Resolved<C>>
+where
+    C: CodeStore,
+    L: LinkerStore,
+{
+    let entry = if candidate.source.module == *exposure_module {
+        view.lookup(&candidate.source.symbol).cloned()
+    } else {
+        symbol_tables
+            .get(&candidate.source.module)
+            .and_then(|table| table.get(candidate.source.symbol.as_ref()).cloned())
+    }?;
+    Some(Resolved {
+        entry,
+        canonical: candidate.source,
+    })
+}
+
+fn resolve_qualified_candidates<C, L>(
+    symbol_tables: &SymbolTables<C, L>,
+    module_aliases: &ModuleAliases,
+    first_hop: &View<'_, C, L>,
+    current_module: &ModuleFullPath,
+    module_part: &ModuleFullPath,
+    symbol_part: &str,
+    span: Span,
+) -> Result<Vec<Resolved<C>>, ResolveError>
+where
+    C: CodeStore,
+    L: LinkerStore,
+{
+    let module = substitute_module_alias(module_aliases, current_module, module_part);
+    if module == *current_module {
+        return resolve_unqualified_candidates(
+            symbol_tables,
+            first_hop,
+            &module,
+            symbol_part,
+            false,
+            span,
+        );
+    }
+
+    let table = symbol_tables
+        .get(&module)
+        .ok_or_else(|| ResolveError::QualifiedModuleUnknown {
+            module: module.clone(),
+            name: Symbol::from(symbol_part),
+            span,
+        })?;
+    let view = View::single(&table);
+    let candidates = view.name_candidates(&Symbol::from(symbol_part));
+    let mut resolved = Vec::with_capacity(candidates.len());
+    for candidate in candidates {
+        if candidate.visibility != Visibility::Public {
+            continue;
+        }
+        if let Some(candidate) = resolve_candidate(symbol_tables, &view, &module, candidate) {
+            visibility_check(
+                &candidate.entry,
+                &candidate.canonical.module,
+                current_module,
+                symbol_part,
+                span,
+            )?;
+            resolved.push(candidate);
+        }
+    }
+    if !resolved.is_empty() {
+        return Ok(resolved);
+    }
+
+    // Preserve the established direct-lookup diagnostic: a private canonical
+    // binding is reported as private, while a private candidate-only exposure
+    // remains absent to an external caller.
+    if let Some(entry) = table.get(symbol_part).cloned() {
+        visibility_check(&entry, &module, current_module, symbol_part, span)?;
+        return Ok(vec![Resolved {
+            entry,
+            canonical: FQSymbol {
+                module,
+                symbol: Symbol::from(symbol_part),
+            },
+        }]);
+    } else {
+        return Err(not_found(symbol_part, &module, span));
+    }
+}
+
+#[cfg(any())]
 fn resolve_one<C, L>(
     symbol_tables: &SymbolTables<C, L>,
     module_aliases: &ModuleAliases,
@@ -529,6 +658,7 @@ where
 ///   [`ResolveError::QualifiedModuleUnknown`], which the orchestrator promotes
 ///   to a load-and-retry gap (a current-module gap is the 0655 false
 ///   self-dependency mint: "circular dependency detected: m -> m").
+#[cfg(any())]
 fn resolve_current_via_view<C, L>(
     symbol_tables: &SymbolTables<C, L>,
     first_hop: &View<'_, C, L>,
@@ -585,6 +715,7 @@ where
 /// chaining to a public terminal elsewhere must NOT leak as a bare name) —
 /// plus the terminal-side public check as defence in depth. A filtered hit
 /// reads as the ORIGINAL current-module not-found.
+#[cfg(any())]
 fn resolve_with_prelude<C, L>(
     symbol_tables: &SymbolTables<C, L>,
     module_aliases: &ModuleAliases,
@@ -689,15 +820,16 @@ where
 /// of four sources; the collision rule is a pure function of the (incoming,
 /// existing) provenance pair.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(any())]
 pub enum BindingProvenance {
     /// A module-local definition (`defn` / `def` / `deftype`).
     Definition,
     /// A name brought into scope by an explicit `(import …)` (spec §8.3 — a
-    /// `Private` inner `Import` edge).
+    /// private [`BindingBody::Alias`](crate::BindingBody::Alias) head).
     Import,
     /// A name brought into scope by an `(export …)` re-export (spec §8.4.0 — a
-    /// `Public` inner `Import` edge; it enters the exporting module's own bare
-    /// scope).
+    /// public [`BindingBody::Alias`](crate::BindingBody::Alias) head; it enters
+    /// the exporting module's own bare scope).
     Export,
     /// A name reachable only through the implicit-prelude OUTER SCOPE
     /// (spec §8.8.1).
@@ -732,6 +864,8 @@ pub enum BindingProvenance {
 /// Both binding events install imports/exports (Pass-0) before registering
 /// definitions (Pass-1), so def-over-import AND import-over-def both reduce to
 /// this one probe, identically in every mode (the mode-parity MUST).
+#[allow(clippy::result_large_err)]
+#[cfg(any())]
 pub fn check_binding_addition(
     name: &Symbol,
     incoming: BindingProvenance,
@@ -775,14 +909,15 @@ pub fn check_binding_addition(
     })
 }
 
-/// Qualified `mod/sym` resolution (Principle 17 shape 2). Applies §8.6.6
-/// longest-prefix alias substitution to `module_part`; a reference whose
+/// Qualified `mod/sym` resolution (Principle 17 shape 2). Applies the §8.6.6
+/// referring-module-scoped keyed alias walk to `module_part`; a reference whose
 /// alias-resolved module is the CURRENT module delegates to
 /// [`resolve_current_via_view`] (S113 0655 — the qualified spelling of a local
 /// name resolves identically to the bare spelling, staging included); any
 /// other module resolves via the committed tables (dependencies are always
 /// committed), chain-following within the named module (a qualified name may
 /// land on a re-export that points further on).
+#[cfg(any())]
 fn resolve_qualified<C, L>(
     symbol_tables: &SymbolTables<C, L>,
     module_aliases: &ModuleAliases,
@@ -796,7 +931,7 @@ where
     C: CodeStore,
     L: LinkerStore,
 {
-    let resolved_module = substitute_module_alias(module_aliases, module_part);
+    let resolved_module = substitute_module_alias(module_aliases, current_module, module_part);
     // S113 0655 (user ruling (a); TB-25 resolved identity): a reference
     // qualified with the CURRENT module — after §8.6.6 alias substitution —
     // is another spelling of the local name. Resolve it through the caller's
@@ -863,23 +998,25 @@ fn split_qualified(name: &str) -> Option<(ModuleFullPath, String)> {
 /// `design/arch/dotted-ctor-canonical-keys.md` §3.5/§6).** The S76 premise that
 /// "beyond the first hop the walk always lands in other, already-committed
 /// modules" is FALSE for a SAME-MODULE member alias: a bare constructor /
-/// field-accessor name is an `Import` edge onto its canonical `Type.member`
-/// `Def` in the SAME module, and within one typecheck cluster that canonical
-/// `Def` lives in the caller's STAGING, not the committed live table. When an
-/// `Import` edge's `source.module == current_module`, take the hop through the
+/// field-accessor name is a [`BindingBody::Alias`] edge onto its canonical
+/// `Type.member` declaration in the SAME module, and within one typecheck
+/// cluster that canonical declaration lives in the caller's STAGING, not the
+/// committed live table. When the edge's
+/// `source.module == current_module`, take the hop through the
 /// caller's first-hop VIEW (staging∪live) rather than the live-only committed
 /// primitive — otherwise a same-cluster bare→canonical alias misses (the
 /// `undefined variable: v` field-accessor same-cluster `--run` defect, AN-5,
 /// and the S109 ctor alias). Cross-module hops stay on the committed primitive
 /// (dependencies are always committed).
+#[cfg(any())]
 fn chain_follow_committed<C, L>(
     symbol_tables: &SymbolTables<C, L>,
     first_hop: &View<'_, C, L>,
     current_module: &ModuleFullPath,
-    head: ModuleEntry<C>,
+    head: Binding<C>,
     home: ModuleFullPath,
     key: Symbol,
-) -> Option<(ModuleEntry<C>, ModuleFullPath, Symbol)>
+) -> Option<(Binding<C>, ModuleFullPath, Symbol)>
 where
     C: CodeStore,
     L: LinkerStore,
@@ -893,15 +1030,16 @@ where
 /// failure for it) bottoms out at [`CHAIN_FOLLOW_DEPTH_LIMIT`] and reads as a
 /// not-found miss, mirroring the committed primitive's own depth cap
 /// (`resolve_terminal_entry_and_home`).
+#[cfg(any())]
 fn chain_follow_committed_depth<C, L>(
     symbol_tables: &SymbolTables<C, L>,
     first_hop: &View<'_, C, L>,
     current_module: &ModuleFullPath,
-    head: ModuleEntry<C>,
+    head: Binding<C>,
     home: ModuleFullPath,
     key: Symbol,
     depth: usize,
-) -> Option<(ModuleEntry<C>, ModuleFullPath, Symbol)>
+) -> Option<(Binding<C>, ModuleFullPath, Symbol)>
 where
     C: CodeStore,
     L: LinkerStore,
@@ -909,8 +1047,8 @@ where
     if depth > CHAIN_FOLLOW_DEPTH_LIMIT {
         return None;
     }
-    match &head {
-        ModuleEntry::Import { source, .. } if source.module == *current_module => {
+    match &head.body {
+        BindingBody::Alias { source } if source.module == *current_module => {
             // Same-module member alias — follow through the caller's view so a
             // same-cluster staged canonical `Def` is visible. The alias and its
             // canonical target are both in `current_module`, so `home` is unchanged;
@@ -927,7 +1065,7 @@ where
                 depth + 1,
             )
         }
-        ModuleEntry::Import { source, .. } => {
+        BindingBody::Alias { source } => {
             // Delegate the cross-module remainder to the existing committed
             // chain-follow primitive — single source of truth for the walk
             // (it carries its own depth cap and threads the storage key).
@@ -941,10 +1079,7 @@ where
     }
 }
 
-/// §8.6.6 step 5 longest-prefix module-alias substitution. Find the longest
-/// alias-table key that is a dot-segment prefix of `module_path`, substitute
-/// its `target`, and carry any remaining dot-segments through. No match →
-/// unchanged.
+/// Mint the owner-scoped key used for one module-alias segment.
 ///
 /// **Public surface (Principle 7 — single source of truth).** The int
 /// FQ-autoload boundary (`SymbolTableMacroResolver::recognize`,
@@ -953,50 +1088,66 @@ where
 /// §8.6.6 alias resolution typecheck would (otherwise a bare submodule
 /// reference like `util/...` after `(mod util)` would try to load a module
 /// literally named `util`). It calls this primitive directly rather than
-/// re-implementing the longest-prefix walk — the former int-side
+/// re-implementing the scoped keyed walk — the former int-side
 /// `resolve_module_alias` re-implementation (a byte-identical copy that aged
 /// independently) is retired. This is also the same walk
-/// [`resolve_qualified`] applies internally, so all three qualified-reference
+/// The qualified resolver applies it internally, so all qualified-reference
 /// resolution sites share one implementation.
+pub fn module_alias_key(owner: &ModuleFullPath, alias: &str) -> ModuleFullPath {
+    if owner.as_ref().is_empty() {
+        ModuleFullPath::from(alias)
+    } else {
+        ModuleFullPath::from(format!("{owner}.{alias}"))
+    }
+}
+
+/// Resolve `module_path` through aliases visible from `referring_module`.
+///
+/// The first segment is looked up in the referring module's private namespace.
+/// Each later segment is looked up under the path resolved so far and may only
+/// traverse a public mount. This is a keyed walk: resolution never scans the
+/// alias map and therefore cannot accidentally borrow another module's local
+/// alias by matching its textual suffix.
 pub fn substitute_module_alias(
     module_aliases: &ModuleAliases,
+    referring_module: &ModuleFullPath,
     module_path: &ModuleFullPath,
 ) -> ModuleFullPath {
-    let queried: &str = module_path.as_ref();
-    let mut best: Option<(usize, ModuleFullPath)> = None;
-    for entry in module_aliases.iter() {
-        let key: &str = entry.key().as_ref();
-        let is_prefix = queried == key
-            || (queried.len() > key.len()
-                && queried.as_bytes()[key.len()] == b'.'
-                && queried.starts_with(key));
-        if is_prefix {
-            let take = best
-                .as_ref()
-                .map(|(len, _)| key.len() > *len)
-                .unwrap_or(true);
-            if take {
-                best = Some((key.len(), entry.value().target.clone()));
+    let original = module_path.clone();
+    let mut segments = module_path.as_ref().split('.');
+    let Some(first) = segments.next().filter(|segment| !segment.is_empty()) else {
+        return original;
+    };
+
+    let leading_key = module_alias_key(referring_module, first);
+    let (mut resolved, mut traversed) = match module_aliases.get(&leading_key) {
+        Some(entry) => (entry.target.clone(), 1usize),
+        None => (ModuleFullPath::from(first), 0usize),
+    };
+
+    for segment in segments {
+        let key = module_alias_key(&resolved, segment);
+        let target = module_aliases.get(&key).and_then(|entry| {
+            (resolved == *referring_module || entry.visibility == Visibility::Public)
+                .then(|| entry.target.clone())
+        });
+        if let Some(target) = target {
+            traversed += 1;
+            if traversed > CHAIN_FOLLOW_DEPTH_LIMIT {
+                return original;
             }
+            resolved = target;
+        } else {
+            resolved = module_alias_key(&resolved, segment);
         }
     }
-    match best {
-        None => module_path.clone(),
-        Some((matched_len, target)) => {
-            let remainder = &queried[matched_len..];
-            if remainder.is_empty() {
-                target
-            } else {
-                ModuleFullPath::from(format!("{target}{remainder}"))
-            }
-        }
-    }
+    resolved
 }
 
 /// Visibility filter (spec §8.7.3): a non-public canonical entry is accessible
 /// only from within the defining module's subtree.
 fn visibility_check<C: CodeStore>(
-    entry: &ModuleEntry<C>,
+    entry: &Binding<C>,
     home: &ModuleFullPath,
     from_module: &ModuleFullPath,
     name: &str,
@@ -1023,14 +1174,15 @@ fn in_subtree(accessor: &ModuleFullPath, definer: &ModuleFullPath) -> bool {
     a == d || a.starts_with(&format!("{d}."))
 }
 
-/// Mint the canonical `Type.member` symbol-table key for a type-owned member.
+/// Mint the canonical `Parent.member` symbol-table key for a type- or
+/// trait-owned member.
 ///
 /// The inverted member model (spec §8.5.2, `bounded-contexts.md` §7) stores a
 /// type's members as real `Def` entries under a **dotted canonical key** in
 /// the type's home module — `Box.v` for the field accessor, and (S109
 /// dotted-ctor capability) `Maybe.Some` for a constructor — with the bare
 /// member name as a convenience ALIAS that §8.6.5 poisons to
-/// `ModuleEntry::Ambiguous` on distinct-terminal collision. This function is
+/// `BindingBody::Ambiguous` on distinct-terminal collision. This function is
 /// the ONE mint point for that key shape (Principle 7): registration
 /// (`cranelisp-typecheck::adt`), the checker's canonical-key probes, and the
 /// dotted-reference resolver all call it instead of hand-rolling
@@ -1038,15 +1190,15 @@ fn in_subtree(accessor: &ModuleFullPath, definer: &ModuleFullPath) -> bool {
 ///
 /// The `.` separator is deliberate and distinct from the `/` module
 /// separator: `mod/Type.member` splits at `/` into (module, `Type.member`)
-/// via [`split_qualified`], and the dotted remainder is then a member key in
-/// the home module's table. `member` is accepted as `&str` so both `Symbol`
-/// and `TypeName` (a ctor name) deref in.
-pub fn member_key(type_name: &TypeName, member: &str) -> Symbol {
-    Symbol::from(format!("{}.{}", type_name, member).as_str())
+/// via the qualified-name splitter, and the dotted remainder is then a member key in
+/// the home module's table. Both arguments are `&str` so type names, trait
+/// names and member symbols can dereference into the single mint.
+pub fn member_key(parent_name: &str, member: &str) -> Symbol {
+    Symbol::from(format!("{parent_name}.{member}").as_str())
 }
 
 /// Mint the synthetic `impl$FQType$FQTrait` storage key under which a trait
-/// impl's **discovery shell** (`ModuleEntry::TraitImpl`) is stored in the
+/// impl's **discovery shell** (`Decl::ImplShell`) is stored in the
 /// trait's home module (Decision 45).
 ///
 /// The ONE mint point for the `impl$` key grammar (the [`member_key`]
@@ -1091,20 +1243,6 @@ pub fn bare_member_name(name: &str) -> &str {
         .filter(|(t, m)| !t.is_empty() && !m.is_empty())
         .map(|(_, m)| m)
         .unwrap_or(after_slash)
-}
-
-/// The canonical local symbol for a (possibly qualified) name — the part
-/// after the last `/`, which is the symbol within its home module. A bare
-/// punctuation operator like `/` (or `//`) whose post-`/` remainder would be
-/// empty is NOT split — it is its own canonical symbol (Principle 16; mirrors
-/// `split_qualified`'s non-empty-part guard).
-fn canonical_symbol(name: &str) -> Symbol {
-    Symbol::from(
-        name.rsplit_once('/')
-            .filter(|(_, s)| !s.is_empty())
-            .map(|(_, s)| s)
-            .unwrap_or(name),
-    )
 }
 
 /// Generic not-found projection used before the kind is known. The typed

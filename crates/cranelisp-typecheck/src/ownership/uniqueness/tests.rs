@@ -10,8 +10,8 @@
 use std::collections::HashMap;
 
 use cranelisp_types::{
-    ConcreteType, FQTypeName, JitSymbol, Mode, ModeSummary, ModuleFullPath, MonoExpr, ParamFlow,
-    ResultMode, Span, Symbol, TypeName,
+    CallableTarget, ConcreteType, FQSymbol, FQTypeName, Mode, ModeSummary, ModuleFullPath,
+    MonoExpr, ParamFlow, ResultMode, Span, Symbol, TypeName,
 };
 
 use super::super::classify::TerminalKind;
@@ -109,7 +109,10 @@ fn call(span: Span, name: &str, ty: ConcreteType, args: Vec<MonoExpr>) -> MonoEx
         args,
         span,
         resolved_call: Some(Box::new(cranelisp_types::ResolvedCall::SigDispatch {
-            mangled_name: JitSymbol::from(name),
+            target: CallableTarget::Binding(FQSymbol {
+                module: ModuleFullPath::from("user"),
+                symbol: Symbol::from(name),
+            }),
         })),
         ty,
         escapes: None,

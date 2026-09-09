@@ -2,9 +2,9 @@
 ; "Is there already a function for this?" — answered before you import.
 
 ; /imports shows what is in scope right now. /list shows what you have
-; defined. But the standard library is much larger than what is imported.
-; /search looks across every module reachable on the lib path that is NOT
-; yet in scope — "importable, but not yet imported".
+; defined. /search looks across public non-macro symbols reachable on the
+; library path and project root, including an exact in-scope name when that
+; is the best answer.
 
 /imports
 
@@ -58,9 +58,8 @@
 (import [num.bits [popcount]])
 (popcount 255)
 
-; Now popcount is in scope — so it is no longer "importable but not in
-; scope", and /search stops listing it. /search only ever shows what you
-; could still pull in:
+; Now popcount is in scope. An exact search still shows it, marked
+; "already in scope — no import needed" rather than suggesting another import:
 
 /search popcount
 

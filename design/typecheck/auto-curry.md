@@ -1,244 +1,311 @@
-# Auto-Curry Design
+# Auto-currying — detection, settlement, and the drain seams
+
+Owner: `design`(typecheck). Subordinate to `typecheck.md` §9.6.
+Normative source: `spec/04-expressions.md` §4.6.3 and **§4.6.3.1** (S121);
+`spec/03-types.md` §3.11.1/§3.11.4 for the ambiguity interaction.
+
+Auto-currying is the language feature where calling a function with fewer arguments than it
+declares parameters yields a closure capturing the applied arguments. This document
+describes how the crate detects it, where the detection is settled, and what the S121 C3
+visit changes.
 
-This document describes the design for auto-curry detection (A1) in the reimplementation typechecker. Auto-currying is the language feature where calling a function with fewer arguments than it declares parameters returns a closure capturing the applied arguments (spec 04-expressions.md section 4.6.3).
+**Supersedes the pre-implementation sketch this file used to carry.** That version compared
+against the retired prototype, named the retired `TypeChecker` type, and proposed adding
+`total_count` to `ResolvedCall::AutoCurry` — all landed or obsolete. `sprints/archive/`
+holds the historical record; the current shape is §1.
+
+---
+
+## 1. Current state (verified at HEAD 2026-09-01)
+
+### 1.1 Detection — `infer.rs::try_auto_curry`
+
+Detection is a fallback on unification failure inside `infer_apply`, which is the right
+trigger because it means "these types do not match as a direct call" without a speculative
+branch on the normal path. `try_auto_curry` is defined at `infer.rs:1106` and called from
+`infer.rs:983`.
+
+Four exits, and the difference between them is the subject of §2:
 
-## Spec Summary
-
-- `(f arg1 ... argk)` where `f :: (Fn [T1 ... Tn] R)` and `k < n` produces a closure of type `(Fn [Tk+1 ... Tn] R)`
-- Works at any depth: supplying k of n arguments returns a function expecting n-k
-- `args.is_empty()` is NOT auto-curry (zero-arg call is a normal call or bare reference)
-- Multi-sig disambiguation uses expected return type arity when multiple variants are curry candidates (section 4.7.4)
-- Multi-sig bare references (zero args) are a compile error (ambiguous)
-
-## Sketch Comparison
-
-The sketch implements auto-curry via two mechanisms:
-
-### 1. Single-arity auto-curry (in `inference.rs`)
-
-Detection happens during `infer_apply`. The sketch attempts normal unification (`callee_ty` with `Fn(arg_types, ret_ty)`) first. When that unification FAILS:
-
-1. Resolve the callee type to check if it is `Type::Fn(params, ret)`
-2. Check `args.len() < params.len() && !args.is_empty()`
-3. Unify each applied arg with the corresponding parameter
-4. Build the curry return type: `Fn(remaining_params, ret)`
-5. Push a `(span, name, applied_count, total_count)` tuple onto `pending_auto_curry`
-6. Return the curry return type — the original unification error is discarded
-
-This approach uses unification failure as the trigger for auto-curry detection.
-
-### 2. Multi-sig auto-curry (in `overloads.rs`)
-
-In `resolve_overloads`, after checking exact-arity matches, the sketch checks for curry candidates:
-
-1. For each variant where `param_types.len() > concrete_args.len() && !concrete_args.is_empty()`, check type compatibility
-2. If exactly one curry candidate: unify applied args, build `Fn(remaining, ret)`, emit `ResolvedCall::AutoCurry`
-3. If multiple curry candidates: try to disambiguate using the resolved return type — if it is `Type::Fn(expected_params, _)`, keep only candidates where `remaining == expected_params.len()`
-4. After narrowing, if exactly one candidate remains, proceed; otherwise error
-
-### Key data structures
-
-- `pending_auto_curry: Vec<(Span, String, usize, usize)>` — span, function name, applied_count, total_count
-- `ResolvedCall::AutoCurry { target_name, applied_count, total_count }` — the resolution stored in `MethodResolutions`
-
-### Resolution timing
-
-Both single-arity and multi-sig auto-curry resolutions are finalized in `resolve_overloads()`, which runs as a post-inference pass. Single-arity entries are trivially converted from the pending list. Multi-sig entries are resolved alongside overload dispatch.
-
-## Reimplementation Approach
-
-### Strategy: detect at unification failure in `infer_apply`
-
-Follow the sketch's approach of detecting auto-curry as a fallback when normal function application unification fails. This is clean because:
-
-- No speculative branching before trying the normal path
-- The callee type is already inferred, so we know the full parameter list
-- Unification failure is a natural trigger — it means "these types don't match as a direct call"
-
-### Changes to `infer_apply` (in `crates/cranelisp-typecheck/src/infer.rs`)
-
-Currently, `infer_apply` does:
-
-```rust
-let expected_fn = Type::Fn(arg_types.clone(), Box::new(ret_ty.clone()));
-self.unify(&callee_ty, &expected_fn, span)?;
-```
-
-Change to:
-
-```rust
-let expected_fn = Type::Fn(arg_types.clone(), Box::new(ret_ty.clone()));
-let unify_result = self.unify(&callee_ty, &expected_fn, span);
-
-if let Err(ref _e) = unify_result {
-    // Try auto-curry: callee has more params than provided args
-    let resolved_callee = self.apply_subst(&callee_ty);
-    if let Type::Fn(params, ret) = &resolved_callee {
-        if args.len() < params.len() && !args.is_empty() {
-            // Unify applied args with first N params
-            for (arg_ty, param_ty) in arg_types.iter().zip(params.iter()) {
-                self.unify(arg_ty, param_ty, span)?;
-            }
-            let remaining: Vec<Type> = params[args.len()..]
-                .iter()
-                .map(|t| self.apply_subst(t))
-                .collect();
-            let curry_ret = Type::Fn(remaining, ret.clone());
-
-            // Record auto-curry resolution
-            if let Expr::Var { name, .. } = callee {
-                self.pending_auto_curry.push((
-                    span,
-                    name.clone(),
-                    args.len(),
-                    params.len(),
-                ));
-            }
-
-            let ty = self.apply_subst(&curry_ret);
-            self.record_expr_type(span, ty.clone());
-            return Ok(ty);
-        }
-    }
-    // Not auto-curryable — propagate original error
-    unify_result?;
-}
-```
-
-### New field on TypeChecker (in `crates/cranelisp-typecheck/src/checker.rs`)
-
-Add:
-
-```rust
-/// Pending auto-curry resolutions for single-arity functions.
-/// (call_span, function_name, applied_arg_count, total_param_count)
-pub(crate) pending_auto_curry: Vec<(Span, Symbol, usize, usize)>,
-```
-
-Initialize to `Vec::new()` in `TypeChecker::new()`.
-
-### Changes to `ResolvedCall::AutoCurry` (in `crates/cranelisp-types/src/check.rs`)
-
-The existing definition is missing `total_count`. The backend needs total_count to know how many parameters the wrapper closure must accept. Add it:
-
-```rust
-AutoCurry {
-    target_name: Symbol,
-    applied_count: usize,
-    total_count: usize,
-}
-```
-
-### Resolution pass: drain pending_auto_curry
-
-Add a method to TypeChecker (in a new `overloads.rs` or in `program.rs`):
-
-```rust
-pub(crate) fn resolve_auto_curry(&mut self) {
-    let pending = std::mem::take(&mut self.pending_auto_curry);
-    for (span, name, applied_count, total_count) in pending {
-        self.method_resolutions.insert(
-            span,
-            ResolvedCall::AutoCurry {
-                target_name: name,
-                applied_count,
-                total_count,
-            },
-        );
-    }
-}
-```
-
-Call this at the end of `check_program` (or wherever `resolve_overloads` will eventually live), before building `CheckResult`.
-
-### REPL path
-
-The REPL checks one form at a time. After `infer_expr` for a REPL input, call `resolve_auto_curry()` before returning `ReplCheckResult`. The `pending_auto_curry` list should be drained per-input.
-
-## Key Decisions
-
-### Q1: When is partial application detected?
-
-**During `infer_apply`, on unification failure.** This is the sketch's approach and it works well. The alternative — checking arity before unification — would require extra machinery to distinguish "too few args" from "wrong types", and would complicate the normal path.
-
-### Q2: How does it interact with multi-sig functions?
-
-Multi-sig functions are not yet implemented in the reimplementation. When they are added (via `resolve_overloads`), multi-sig auto-curry follows the sketch pattern:
-
-1. In the overload resolution loop, after checking exact-arity matches, check for curry candidates (variants with more params than supplied args)
-2. If multiple curry candidates, disambiguate using the resolved return type's arity
-3. Emit `ResolvedCall::AutoCurry` with the mangled variant name as `target_name`
-
-The single-arity detection in `infer_apply` will NOT fire for multi-sig calls because multi-sig callee types are registered with their base name (which maps to multiple signatures). The overload resolution path handles them separately. This is the same separation the sketch uses.
-
-### Q3: How does it interact with constrained polymorphism?
-
-A constrained polymorphic function (e.g., `(defn add [x y] (+ x y))` with inferred `:Num a => (Fn [a a] a)`) currently cannot be used as a bare value (the `in_call_position` check in `infer_var`). Auto-curry is a call — the callee IS in call position — so constrained fns can be auto-curried.
-
-However, the auto-curried result is a closure. The monomorphisation request must still be generated at the call site where the curried closure is applied. This means:
-
-- At the curry site `(add 5)`, the constraint `Num Int` is established and the concrete specialization `add$Int+Int` is known
-- The `target_name` in `AutoCurry` should be the monomorphised name (e.g., `add$Int+Int`), not the base name
-- This requires that constrained fn detection runs before or during auto-curry resolution
-
-For now (A1 scope), constrained + auto-curry interaction is deferred. The initial implementation handles non-constrained user functions and inline primitives (like `(+ 1)` which is already a trait method call, handled differently). A follow-up task will address the constrained case.
-
-### Q4: What type does the curried result have?
-
-`(Fn [Tk+1 ... Tn] R)` where the types are taken from the callee's function type after applying current substitutions. This is straightforward: the callee type is `Fn(params, ret)`, we take `params[k..]` and `ret`.
-
-## Edge Cases
-
-### Bare function references (zero args)
-
-`(let [f add] ...)` where `add :: (Fn [Int Int] Int)` is NOT auto-curry. This is a normal variable reference — the function value is captured. `args.is_empty()` guard prevents this from entering the auto-curry path.
-
-For constrained fns, bare references are already rejected by the `in_call_position` check.
-
-For multi-sig fns, bare references are a compile error per spec section 4.6.3.
-
-### Zero-arg functions
-
-`(defn f [] 42)` — calling `(f)` is a normal zero-arg call. There is no auto-curry for zero-arg functions because you cannot supply fewer than zero arguments.
-
-### Currying a curried result
-
-```clojure
-(defn add3 [x y z] (+ x (+ y z)))
-(let [f (add3 1)]       ; f :: (Fn [Int Int] Int)
-  (let [g (f 2)]        ; g :: (Fn [Int] Int) — curries the closure
-    (g 3)))
-```
-
-The second curry `(f 2)` where `f` is already a closure works because:
-- `f` has type `(Fn [Int Int] Int)`
-- `(f 2)` supplies 1 of 2 args
-- Unification of `(Fn [Int Int] Int)` with `(Fn [Int] ?ret)` fails
-- Auto-curry fallback fires: remaining is `[Int]`, curry result is `(Fn [Int] Int)`
-
-The callee is NOT a `Var` naming a top-level function — it is a `Var` naming a let-bound closure. In the sketch, `pending_auto_curry` records are only pushed when callee is a `Var`, so this case IS handled. The backend sees `AutoCurry { target_name: "f" }` but `f` is a closure variable, not a named function. The codegen for auto-curry of a closure is: allocate a new env capturing the old env pointer plus the new args, produce a wrapper that unpacks and calls. This is entirely a backend concern.
-
-**Important subtlety**: For let-bound closures, we still need to emit the `AutoCurry` resolution so the backend knows to generate a wrapper. But the `target_name` should be the variable name (for closures, this gets the code pointer from the env). The sketch handles this by always pushing to `pending_auto_curry` when callee is a Var, regardless of whether it names a top-level function or a local binding.
-
-### Operator auto-curry: `(+ 1)`
-
-`+` resolves via trait method dispatch to `Num.+`. The callee type after trait resolution is `(Fn [Int Int] Int)` (or polymorphic). The auto-curry path fires because unification of `(Fn [Int Int] Int)` with `(Fn [Int] ?ret)` fails. The result is `(Fn [Int] Int)`.
-
-This works for concrete types. For unconstrained polymorphic operators, the monomorphisation interaction (Q3 above) applies. The initial A1 implementation may need to test this case specifically.
-
-## Implementation Checklist
-
-1. **Add `total_count` to `ResolvedCall::AutoCurry`** in `crates/cranelisp-types/src/check.rs`
-2. **Add `pending_auto_curry` field** to `TypeChecker` in `crates/cranelisp-typecheck/src/checker.rs`
-3. **Modify `infer_apply`** in `crates/cranelisp-typecheck/src/infer.rs` — add unification-failure fallback with auto-curry detection
-4. **Add `resolve_auto_curry` method** — drain pending list into `method_resolutions`
-5. **Call `resolve_auto_curry`** at the end of batch `check_program` and REPL per-input checking
-6. **Include `pending_auto_curry` in `ReplSnapshot`** — snapshot/restore must save/restore this list for error recovery
-7. **Un-ignore tests** in `tests/io.rs` — the 4 auto-curry tests (`auto_curry_two_param_partial_apply`, `auto_curry_three_param_partial_apply`, `auto_curry_higher_order_usage`, `auto_curry_repl`)
-8. **Backend work** (owned by `/backend`): implement `compile_auto_curry` in codegen — allocate closure env, capture applied args, generate wrapper function
-
-### Out of scope for A1
-
-- Multi-sig auto-curry (requires multi-sig dispatch, not yet reimplemented)
-- Constrained polymorphic auto-curry (requires monomorphisation integration)
-- Auto-curry of constructors (e.g., `(Some)` is already a function value, not auto-curry)
+| Exit | Site | Behaviour |
+|---|---|---|
+| Empty argument list | `infer.rs:1115-1117` | `Ok(None)` — silent. `args.is_empty()` is a bare reference or a zero-arg call, never a curry (§4.6.3). |
+| Callee is `Type::Fn` with more parameters than arguments | `infer.rs:1121-1122` | the curry forms: applied args unify with the leading parameters, the result is `Fn(remaining, ret)`, and a record is pushed onto `pending_auto_curry`. |
+| **Callee is anything else** | `infer.rs:1123` — `_ => return Ok(None)` | **silent.** This is the arm §2 is about. |
+| Callee is a constructor | `infer.rs:1138-1150` | a located arity `TypeError` (spec §5.2.7). A product ctor's scheme is curry-shaped, so without this guard `(Point 1)` would silently return a closure instead of an arity error. Sum ctors hit the same guard. |
+| Callee is not a `Var` | `infer.rs:1153-1158` | a hard error. `((fn [a b] …) 1)` must bind the lambda to a variable first (§4.6.3). |
+
+### 1.2 Settlement — `resolve_auto_curry` and its six seams
+
+`mono_collect.rs:815` drains `pending_auto_curry` into `MethodResolutions`. Its signature
+takes a **required** `AutoCurryDrain` (`mono_collect.rs:39-49`, variants `Deferrable` and
+`Final`, re-exported at `program/mod.rs:51`). There is no defaulting wrapper and no short
+convenience name: `Final` — "this seam is settled, nothing is held back" — is the dangerous
+polarity, so a new seam must never inherit it for free (FIXME 0775, Principle 18, landed
+S115 W4b).
+
+The drain runs at **six** non-equivalent production seams:
+
+| # | Seam | Discipline | Why |
+|---|---|---|---|
+| 1 | `program/body.rs:92` | `Deferrable` | single-sig body post-pass; the callee's overload set may still be unsettled, so a curry over a multi-sig base is held for the finalize drain |
+| 2 | `program/body.rs:467` | `Deferrable` | the same, per multi-sig clause |
+| 3 | `program/finalize.rs:632` | `Final` | runs immediately after `resolve_pending_overloads`; the overload sets are settled, so nothing may be held back |
+| 4 | `traits/impl_check.rs:923` | `Final` | explicit impl-method body check — a recheck over settled state |
+| 5 | `traits/impl_check.rs:1212` | `Final` | default/synthesised impl-method body check — the same |
+| 6 | `traits/monomorphise.rs:870` | `Final` | mono-instance body recheck — settled by construction; the instance exists only because its argument types were already concrete |
+
+Seams 1–2 are the two *per-form* body passes; 3 is the *settlement* drain; 4–6 are
+*recheck-scoped* — each re-derives from state that is settled before the recheck begins.
+That is the whole taxonomy, and §3 makes it a required input rather than prose.
+
+`transfer.rs`-style ordering concerns do not apply here: the drain is idempotent over a
+taken list (`mem::take`), so a `Deferrable` seam that holds a record back simply leaves it
+for seam 3.
+
+### 1.3 Carriers
+
+- `pending_auto_curry` on `CheckState` — the transient per-check list, included in
+  `ReplSnapshot` so REPL error recovery restores it.
+- `ResolvedCall::AutoCurry { target_name, applied_count, total_count }` in
+  `cranelisp-types` — carries `total_count`, so the backend knows the wrapper closure's
+  arity. `target_name` is the variable name; for a let-bound closure the backend reads the
+  code pointer from the environment, which is entirely a backend concern.
+- The callee-span transport added at S110 W0.1 keeps the curry site's resolution keyed
+  (`design/arch/backend-keyed-consumer.md` §1.1.1).
+
+---
+
+## 2. FIXME 0799 — the free-type-variable acceptance path
+
+### 2.1 The rule, which the spec now settles
+
+`spec/04-expressions.md` §4.6.3.1 (S121) is decisive and needs no further arbitration:
+
+> A curried closure is an ordinary value, and the ambiguity rule of §3.11 governs it on the
+> ordinary terms. **Neither the supplied nor the residual parameter positions need be
+> concrete for the curry to form.** … A written parameter annotation is identical to an
+> inference-generated variable. Whether a parameter carries a written annotation therefore
+> MUST NOT decide whether a curry forms … Rejecting a partial application because a
+> parameter was left unannotated is a defect, not an application of this rule.
+
+Three dispositions, all inherited rather than invented:
+
+| Shape | Disposition |
+|---|---|
+| a reachable use pins the residual variable — `((f 5) 3)`, `(let [h (f 5)] (h 3))` | **accepted**, and monomorphised at that use, producing the same result as the full application `(f 5 3)` |
+| unpinned in a codegen-reaching value position | the §3.11.1 ambiguity error, disposition 2 of §3.11.4 |
+| bare at the REPL | type display, disposition 3 of §3.11.4 |
+
+**The ambiguity semantics are not changed by this work.** Cell (e) of the filing's matrix —
+a curry whose *residual* carries a free variable that nothing pins — stays rejected by the
+§3.11 gate, and that rejection is principled. What is a defect is the rejection of cells
+(a), (f), (h) and (m), where a reachable use *does* pin the variable.
+
+### 2.2 The measured axis, and the discriminating control
+
+From the filing (HEAD `9088c82e`, `--run`, `PrimitivesOnly`), reduced to the pair that
+matters:
+
+| # | Program (`x` unannotated ⇒ free type var) | Result |
+|---|---|---|
+| a | `(defn g [x y] (add-i64 y 0))` → `((g 5) 3)` | **rejected**: `expected (Fn [Int] Int), got Int` |
+| c | `(defn g [:Int x :Int y] …)` → `((g 5) 3)` — annotated twin | exit 3 ✓ |
+| **j** | same `g` as (a), non-callee use `(add-i64 (g 5) 1)` | rejected with `got (Fn [Int] Int)` — **the curry DID form** |
+| m | same `g`, let-bound then applied | rejected, same message as (a) |
+
+**(j) beside (a) is the discriminating control**: same function, same free parameter, and
+the only variable is whether the curried result is applied. The curry demonstrably forms
+when the result flows to a non-application use, so the boundary is not deliberate — which
+is what makes this a `wrong-reject` rather than a spec fork, and why §4.6.3.1 could be
+written without a new user ruling.
+
+### 2.3 The seam is a hypothesis — observe before designing the cure
+
+METHOD §2.2 and the filing both say the same thing, and this design honours it rather than
+pre-empting it: **the first act is to observe which arm `try_auto_curry` takes for cell (a),
+not to fix from the table.**
+
+The available hypothesis is that the callee type at `infer.rs:1121` is not yet resolved to
+`Type::Fn` — because `g`'s scheme instantiates to a type whose shape is still a variable at
+that point — so the guard falls through the silent `_ => Ok(None)` at `:1123`. After that an
+ordinary apply-unification against a bare type variable cannot enforce arity, the inner node
+types as `Int` (a *full* application of a 2-parameter function to 1 argument), and the error
+surfaces at the *outer* node with exactly the observed message. It fits every observation,
+including the message's location. It is still a hypothesis.
+
+**The design rule, which holds whichever arm is taken:**
+
+> **AC-1. The curry decision is a function of the callee's settled arity, and the callee's
+> arity is on its carrier, not on the substituted type at the moment of the guard.**
+> `infer_var` already resolves every `Var` once and records a typed verdict
+> (`VarRef::Global(FQSymbol)` / `VarRef::Local { binder, .. }`,
+> `design/arch/typed-resolution-carrier.md`). A global callee's declared parameter count is
+> on its entry's scheme; a local binder's is on the binder. Reading arity from the carrier
+> rather than from `apply_subst`'s current answer is Principle 24 at this seam — the type is
+> a trigger, the carrier is the identity — and it is what makes the decision independent of
+> how much of the callee's type inference has settled by the time the guard runs.
+
+Two consequences follow, and both are stated as obligations rather than as a diff, because
+the observation decides which of them is load-bearing:
+
+1. **The silent fallthrough at `infer.rs:1123` stops being silent.** Whatever the arm's
+   correct behaviour, an unobservable `Ok(None)` on a callee whose arity is knowable is the
+   mechanism that made this invisible. Either it curries (arity known from the carrier), or
+   it declines *for a stated reason* that the enclosing error can cite.
+2. **Diagnostic quality is part of acceptance, not a nicety.** The present message describes
+   the failure of the *application* (`expected (Fn [Int] Int), got Int`) rather than the
+   reason the curry did not form, so it sends a reader to the wrong line. Whatever lands
+   must say something a user can act on, and the text is pinned by a cell.
+
+**AC-2. What must not change.** The four other exits of §1.1 keep their behaviour exactly:
+`args.is_empty()` is not a curry; a constructor callee is an arity error, not a curry; a
+non-`Var` callee is an error; and a curry whose residual variable nothing pins still reaches
+the §3.11 gate. A fix that makes cell (a) pass by *also* accepting cell (e) has widened the
+ambiguity rule and is a `review` reject.
+
+### 2.4 Falsifiers
+
+- **The minimal pair is (a) RED beside (j) GREEN** — one function, two uses. That pair is
+  worth more than (a) alone: it pins that the curry *can* form, so a "fix" that simply
+  rejects both cannot pass. Cell (c) is the born-green annotated twin control.
+- A fix that changes any golden for an already-green `auto_curry_*` cell is a finding.
+- A fix that makes cell (e) compile is a reject (AC-2).
+
+---
+
+## 3. The seam taxonomy — FIXME 0776's typecheck instance, FIXME 0779's evidence
+
+### 3.1 The class, and where the ruling lives
+
+FIXME 0776 proposes a register row: *when one operation runs at more than one settlement
+seam, the seams are an enumerated set with a named discipline per seam, and the discipline
+is a required input at every call site — never a default, never prose. Growing the set is an
+architectural event.* Four instances were cited inside this crate: the three
+`pass4_monomorphise` settlement windows (`monomorphisation.md` §11.8.10), this drain's six
+seams, the inline-vs-deferred overload dispatch arm, and §11.8.9's own scan discipline.
+
+**The class ruling is `arch`'s and stays with `arch`** — C3 does not author a register row
+or a principle. What C3 owes is the *instance*: this crate's two multi-seam operations each
+carry an enumerated seam set with a stated per-seam reason, in their design, so the seam →
+discipline mapping is checkable rather than folklore.
+
+- The drain's set is §1.2's table. It is complete at six production seams plus one
+  test-only call (`program/mono_collect/tests/carriers.rs:734`).
+- `pass4_monomorphise`'s set is `monomorphisation.md` §11.8.10's three windows, already
+  enumerated with per-window justification and a standing "a fourth forces an `arch` class
+  ruling" rule.
+
+The structural half — a **required** `AutoCurryDrain` parameter, so a new seam cannot
+inherit `Final` silently — landed S115 W4b and is verified live (`mono_collect.rs:815`).
+
+### 3.2 The detection gap, and the honest boundary
+
+FIXME 0779 measured the mapping's detection by flipping each seam to the opposite discipline
+and running the full typecheck unit tier: **one of six** reddens (`body.rs`'s single-sig
+post-pass, via
+`mono_collect::tests::autocurry_over_trait_operator_never_carries_the_decl_fq`). The other
+five leave the tier green.
+
+`qa` decided the shape at S118 Phase 3 and this design consumes that decision:
+
+> **Candidate (1) adopted** — a **seam-level polarity cell** driving `resolve_auto_curry`
+> directly over a seeded `pending_auto_curry`, testing both disciplines exhaustively at the
+> function. The template is the `join_lattice_*` property cells in
+> `ownership/transfer/tests.rs`: seam-level property cells over the operand set, with no
+> program shape to fight.
+>
+> **Candidate (2) declined for the recheck seams** — a per-seam behavioural cell needs a
+> program whose settled carrier differs by discipline at that seam, which is the hard part
+> for seams 4–6 precisely because a recheck is settled by construction. The honest
+> disposition is recorded rather than left as a silent gap: **seams 4, 5 and 6 are `Final`
+> by construction, not by test.**
+
+That boundary is only honest if the *reason* per seam is written down, which is what §1.2's
+table supplies: a recheck derives from state settled before it begins, so there is nothing
+for a `Deferrable` polarity to hold back. The seam-level cell tests that the function's two
+polarities are both correct; the table is the argument that each seam passes the right one.
+Neither substitutes for the other, and neither is claimed to.
+
+**Owner:** the cell is `dev`(typecheck)'s and lands in this visit (§4). It is the S119-owed
+residual 0779 records; there was no typecheck wave in S118.
+
+### 3.3 A stale record inside the instrument
+
+`mono_collect.rs:810-814`'s rustdoc carries the seam census as a table of file:line pairs —
+`body.rs:88`, `body.rs:441`, `impl_check.rs:762`/`:1024`, `monomorphise.rs:856`,
+`finalize.rs:607` — and **every one has drifted** from the live call sites in §1.2, by
+between 4 and 190 lines. The crate `CLAUDE.md` already warns "do not read the census table
+as an instrument"; a census whose citations do not resolve is worse than that, it is a
+record that will misroute the next reader. The correction is reserved to this visit (§4).
+
+The durable fix is not a better line number. It is that the *set* is enumerated in this
+design with its per-seam reason, and the rustdoc cites the design rather than re-listing
+sites it cannot keep current.
+
+---
+
+## 4. What the C3 visit changes
+
+| Item | Class | Where |
+|---|---|---|
+| The 0799 acceptance path | **live implementation**, observation-first | `infer.rs::try_auto_curry` + whatever the observation names; §2.3 |
+| The 0779 seam-level polarity cell | **live evidence** | `program/mono_collect/tests/` per the crate `CLAUDE.md` test-home table |
+| The seam → discipline table with per-seam reasons | **current-state wash** | §1.2 of this doc (done) |
+| `mono_collect.rs:810-814`'s drifted census citations | **live source hygiene**, reserved | §3.3 |
+| The §4.6.3 traceability band, including the free-type-variable column | **evidence**, `qa`-owned | `spec/04-expressions.md` §4.6.3/§4.6.3.1 |
+| 0776's register row | **not C3's** | `arch` |
+
+The free-type-variable column of the §4.6.3 matrix — all twelve existing `auto_curry_*`
+tests curry over a *determined* type, a coverage-by-definition-variants hole — is `qa`'s to
+allocate and `test`'s to author. Rows owed, each with its annotated twin: free var in the
+supplied position; free var in the residual position (expect the §3.11 gate); free var in
+both; ≥3 arity with the free var in a middle position; and the curried result used as a
+value (the (j) shape) vs applied (the (a) shape) vs let-bound-then-applied (the (m) shape).
+
+**Adjacency worth checking in one breath:** if the §2.3 observation lands in the drain
+machinery rather than in the guard, then 0799 and 0779 are one finding — 0779's detection
+gap is why 0799 was invisible — and the polarity cell should be authored to redden on it.
+
+---
+
+## 5. Edge cases (retained, verified)
+
+**Bare function references (zero args).** `(let [f add] …)` is a normal variable reference,
+not a curry; the `args.is_empty()` guard prevents it. For a multi-sig name a bare reference
+is a compile error (§4.6.3, and §4.7's restriction), because the compiler cannot determine
+which variant is meant.
+
+**Zero-arg functions.** `(defn f [] 42)` — `(f)` is a normal call. There is no curry for a
+zero-arg function because there are no fewer than zero arguments to supply.
+
+**Currying a curried result.** `(let [f (add3 1)] (let [g (f 2)] (g 3)))` works because `f`
+has type `(Fn [Int Int] Int)`, `(f 2)` supplies 1 of 2, unification fails, and the fallback
+fires. The callee is a `Var` naming a let-bound closure rather than a top-level function, so
+the record is still pushed and the backend generates a wrapper that captures the old
+environment pointer plus the new arguments.
+
+**Operator curry `(+ 1)`.** `+` resolves via trait dispatch to `Num.+`; the callee type after
+resolution is `(Fn [Int Int] Int)`, unification against `(Fn [Int] ?ret)` fails, and the
+fallback yields `(Fn [Int] Int)`. Constrained polymorphic operators inherit the constraint
+and are monomorphised at the call site where concrete types become known (§4.6.3's
+`make-adder` example), which is the same accept path §2.1 states for the unconstrained case.
+
+**Product constructors do not auto-curry.** §1.1's constructor guard; see
+`adt.md` §"Product Type Handling".
+
+---
+
+## 6. Cross-references
+
+- `spec/04-expressions.md` §4.6.3, §4.6.3.1 (S121), §4.7; `spec/03-types.md` §3.11.1,
+  §3.11.4
+- `monomorphisation.md` §11.8.10 — the sibling multi-seam operation and its standing
+  fourth-window rule
+- `ownership-inference.md` §16.2 — the enumerated rule-table discipline this taxonomy is an
+  instance of; `ownership/transfer/tests.rs::join_lattice_*` — the property-cell template
+  0779's cell copies
+- `crates/cranelisp-typecheck/CLAUDE.md` §"The two order/settlement seams" — the as-built
+  memory for both cures
+- `design/arch/backend-keyed-consumer.md` §1.1.1 — the AutoCurry callee-span transport
+- `design/arch/typed-resolution-carrier.md` — the `VarRef`/`ApplyRef` carrier AC-1 reads

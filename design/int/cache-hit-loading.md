@@ -1,5 +1,16 @@
 # Cache-Hit Loading + File Watcher Migration — Steps 13+14 Design
 
+> **Restoration parity is NOT specified here (S121).** This document designs how
+> a cache hit *enters* the pipeline. What a restored module must additionally
+> re-establish so that the warm world equals the fresh one — its declared
+> children (FIXME 0868), the trait impls it wrote (FIXME 0869), its module
+> aliases (FIXME 0798), and its monomorphic instances — is
+> `design/int/s121-c6-visit.md` §5. The organising rule stated there is
+> Principle 11: a restored world is not a second kind of world, so each cure is
+> the *same* call the fresh path makes, at the equivalent lifecycle point, never
+> a cache-specific parallel. Read that section before adding anything to the
+> cache-hit branch.
+
 ## 1. Overview
 
 Step 13 adds cache-hit loading to the v4 scheduler-driven pipeline: when `handle_import` discovers a dependency, it checks the disk cache before falling through to full typecheck. Cache-hit modules enter the scheduler at `TypecheckDone` via `register_module_cached`, skipping all parsing and typechecking. In-memory code is loaded on demand via Linker when a worker needs callable symbols.
@@ -37,7 +48,8 @@ handle_import(ctx, module, specs):
     return Block { dep_module, dep_sexps }
 ```
 
-The `try_cache_hit_load` function:
+The `try_cache_hit_load` function returns `Result<bool, CranelispError>` so an
+ordinary cache miss remains distinct from conflicting live state:
 
 1. **Check cache validity.** Read source, compute SHA-256. Check against the cache manifest. If invalid (hash mismatch or no manifest entry), return false.
 2. **Load metadata.** Call `cache::try_load_cached_module(cache_dir, dep)` to read `.meta.json`. If missing or malformed, return false.
@@ -46,7 +58,9 @@ The `try_cache_hit_load` function:
 5. **Register with scheduler.** Extract symbol names from the symbol table, call `scheduler.register_module_cached(dep, symbols)`. The module enters `TypecheckDone` with `object_done = true`, `inmem_done = false`.
 6. **Wire GOT slots.** Call `pre_register_got_slots` for the cached module's symbols so GOT slot indices are allocated. Do NOT load code yet — that is deferred to on-demand Linker loading (section 2.2).
 7. **Record cache hit.** Store the source hash in the cache state so downstream modules can validate their dep hashes.
-8. **Return true.** The caller registers the import and continues without blocking.
+8. **Return `Ok(true)`.** The caller registers the import and continues without
+   blocking. A validity/staleness miss is `Ok(false)`; a divergent live
+   publication is `Err`, never silently downgraded to a miss.
 
 After a successful cache hit, `tc.has_module(dep)` returns true, so subsequent import specs referencing the same module skip to the fast path.
 

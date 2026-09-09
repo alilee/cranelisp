@@ -2,12 +2,13 @@ use super::*;
 use crate::alloc::alloc_with_rc;
 
 /// Helper: allocate a Pure node with the given value.
-/// Layout: [header(16) | tag=0(8) | value(8)]
+/// Layout: [header(16) | tag=0(8) | value(8) | payload witness(8)]
 fn make_pure_node(value: i64) -> i64 {
-    let base = alloc_with_rc(16); // tag + 1 field = 16 bytes payload
+    let base = alloc_with_rc(24);
     unsafe {
         *((base as isize + TAG_OFFSET) as *mut i64) = IO_TAG_PURE;
         *((base as isize + FIELD_0_OFFSET) as *mut i64) = value;
+        *((base as isize + FIELD_1_OFFSET) as *mut i64) = 0;
     }
     base as i64
 }
@@ -67,14 +68,105 @@ fn faulting_effect_thunk(cause: &'static str) -> i64 {
     Box::into_raw(thunk) as i64
 }
 
+static RESULT_DISPOSALS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static FIRST_DISPOSED_VALUE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+static SECOND_DISPOSED_VALUE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+static BLOCKING_EFFECT_ENTERED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+static LATER_SERIAL_EFFECT_RAN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn count_result_disposal(_value: i64) {
+    RESULT_DISPOSALS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+extern "C" fn record_first_disposal(value: i64) {
+    FIRST_DISPOSED_VALUE.store(value, std::sync::atomic::Ordering::SeqCst);
+    count_result_disposal(value);
+}
+
+extern "C" fn record_second_disposal(value: i64) {
+    SECOND_DISPOSED_VALUE.store(value, std::sync::atomic::Ordering::SeqCst);
+    count_result_disposal(value);
+}
+
+// spec: spec/10-io.md §10.12.9 item 4 — a produced value remains owned until
+// it is transferred to its continuation/caller. Dropping an armed owner invokes
+// its type-directed disposer exactly once; transferring it suppresses disposal.
+#[test]
+fn produced_value_disposes_on_drop_but_not_after_transfer() {
+    RESULT_DISPOSALS.store(0, std::sync::atomic::Ordering::SeqCst);
+    {
+        let _abandoned =
+            ProducedValue::with_disposer(41, ResultDisposer::from_fn(count_result_disposal));
+    }
+    assert_eq!(
+        RESULT_DISPOSALS.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "an abandoned produced value is discharged exactly once"
+    );
+
+    let delivered =
+        ProducedValue::with_disposer(42, ResultDisposer::from_fn(count_result_disposal)).transfer();
+    assert_eq!(delivered, 42);
+    assert_eq!(
+        RESULT_DISPOSALS.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "transfer moves the ownership obligation to the receiver"
+    );
+}
+
+// spec: spec/10-io.md §10.12.9 item 4 — a Par buffer owns every initialized
+// branch result until the buffer is handed to its continuation.
+#[test]
+fn abandoned_par_buffer_disposes_every_initialized_slot() {
+    RESULT_DISPOSALS.store(0, std::sync::atomic::Ordering::SeqCst);
+    FIRST_DISPOSED_VALUE.store(0, std::sync::atomic::Ordering::SeqCst);
+    SECOND_DISPOSED_VALUE.store(0, std::sync::atomic::Ordering::SeqCst);
+    let deallocs_before = crate::alloc::dealloc_count();
+    let buffer = alloc_with_rc(24) as i64;
+    unsafe {
+        crate::heap_access::write_i64(buffer, FIELD_0_OFFSET, 41);
+        crate::heap_access::write_i64(buffer, FIELD_0_OFFSET + 8, 42);
+    }
+    drop(ProducedValue::par_buffer(
+        buffer,
+        vec![
+            ResultDisposer::from_fn(record_first_disposal),
+            ResultDisposer::from_fn(record_second_disposal),
+        ],
+    ));
+    assert_eq!(
+        RESULT_DISPOSALS.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "each initialized result is discharged exactly once"
+    );
+    assert_eq!(
+        FIRST_DISPOSED_VALUE.load(std::sync::atomic::Ordering::SeqCst),
+        41,
+        "slot 0 uses branch 0's disposer"
+    );
+    assert_eq!(
+        SECOND_DISPOSED_VALUE.load(std::sync::atomic::Ordering::SeqCst),
+        42,
+        "slot 1 uses branch 1's disposer"
+    );
+    assert_eq!(crate::alloc::dealloc_count() - deallocs_before, 1);
+}
+
 /// Helper: allocate a Bind node linking inner IO to a continuation.
-/// Layout: [header(16) | tag=2(8) | inner_io(8) | cont(8)]
+/// Layout: [header | tag | inner_io | cont | input_disposer].
 fn make_bind_node(inner: i64, cont: i64) -> i64 {
-    let base = alloc_with_rc(24); // tag + inner + cont = 24 bytes
+    make_bind_node_with_disposer(inner, cont, ResultDisposer::NONE)
+}
+
+fn make_bind_node_with_disposer(inner: i64, cont: i64, input_disposer: ResultDisposer) -> i64 {
+    let base = alloc_with_rc(32);
     unsafe {
         *((base as isize + TAG_OFFSET) as *mut i64) = IO_TAG_BIND;
         *((base as isize + FIELD_0_OFFSET) as *mut i64) = inner;
         *((base as isize + FIELD_1_OFFSET) as *mut i64) = cont;
+        *((base as isize + FIELD_2_OFFSET) as *mut i64) = input_disposer.0;
     }
     base as i64
 }
@@ -105,6 +197,41 @@ fn make_add_and_pure_closure(offset: i64) -> i64 {
     base as i64
 }
 
+/// A continuation that consumes its transferred argument once and returns
+/// `Pure 9`, modelling the compiled ownership of an unused owning parameter.
+fn make_consume_and_pure_closure() -> i64 {
+    extern "C" fn consume_and_pure(_env_ptr: i64, val: i64) -> i64 {
+        count_result_disposal(val);
+        make_pure_node_inline(9)
+    }
+    let base = alloc_with_rc(16);
+    unsafe {
+        *((base as isize + 16) as *mut i64) = consume_and_pure as *const () as i64;
+        *((base as isize + 24) as *mut i64) = 0;
+    }
+    base as i64
+}
+
+// spec: spec/10-io.md §10.12.9 item 4 — Bind's runtime owner transfers the
+// produced value before invoking the continuation. The continuation, not both
+// layers, performs the one disposal after handoff.
+#[test]
+fn bind_handoff_disarms_runtime_owner_before_continuation_consumes() {
+    RESULT_DISPOSALS.store(0, std::sync::atomic::Ordering::SeqCst);
+    let bind = make_bind_node_with_disposer(
+        make_pure_node(77),
+        make_consume_and_pure_closure(),
+        ResultDisposer::from_fn(count_result_disposal),
+    );
+
+    assert_eq!(cranelisp_run_io(bind), 9);
+    assert_eq!(
+        RESULT_DISPOSALS.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "Bind handoff must have exactly one owner, never runtime + continuation"
+    );
+}
+
 /// Helper: allocate an identity continuation closure `(fn [x] (Pure x))`.
 fn make_identity_pure_closure() -> i64 {
     extern "C" fn identity_pure(_env_ptr: i64, val: i64) -> i64 {
@@ -121,10 +248,11 @@ fn make_identity_pure_closure() -> i64 {
 
 /// Allocate a Pure node — callable from any context including extern "C".
 fn make_pure_node_inline(value: i64) -> i64 {
-    let base = alloc_with_rc(16);
+    let base = alloc_with_rc(24);
     unsafe {
         *((base as isize + TAG_OFFSET) as *mut i64) = IO_TAG_PURE;
         *((base as isize + FIELD_0_OFFSET) as *mut i64) = value;
+        *((base as isize + FIELD_1_OFFSET) as *mut i64) = 0;
     }
     base as i64
 }
@@ -222,15 +350,27 @@ fn test_run_io_unknown_tag_panics() {
 // --- Par node tests ---
 
 /// Helper: allocate a Par node with the given branch IO pointers.
-/// Layout: [header(16) | tag=3(8) | count(8) | branch_0(8) | branch_1(8) | ...]
+/// Layout: [header | tag | count | branch_0 | disposer_0 | ...].
 fn make_par_node(branches: &[i64]) -> i64 {
-    let payload_size = 8 + 8 + branches.len() * 8; // tag + count + N branches
+    make_par_node_with_disposers(
+        &branches
+            .iter()
+            .copied()
+            .map(|branch| (branch, ResultDisposer::NONE))
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn make_par_node_with_disposers(branches: &[(i64, ResultDisposer)]) -> i64 {
+    let payload_size = 8 + 8 + branches.len() * 16;
     let base = alloc_with_rc(payload_size);
     unsafe {
         *((base as isize + TAG_OFFSET) as *mut i64) = IO_TAG_PAR;
         *((base as isize + FIELD_0_OFFSET) as *mut i64) = branches.len() as i64;
-        for (i, &branch) in branches.iter().enumerate() {
-            *((base as isize + FIELD_1_OFFSET + (i as isize) * 8) as *mut i64) = branch;
+        for (i, &(branch, disposer)) in branches.iter().enumerate() {
+            let offset = FIELD_1_OFFSET + (i as isize) * 16;
+            *((base as isize + offset) as *mut i64) = branch;
+            *((base as isize + offset + 8) as *mut i64) = disposer.0;
         }
     }
     base as i64
@@ -483,7 +623,7 @@ fn call_continuation_dec_closure() {
     );
 
     // Clean up the returned Pure.
-    crate::drop::dec_shallow_io(result_io);
+    crate::drop::consume_io_tree(result_io);
     assert_eq!(crate::alloc::dealloc_count() - deallocs_before, 2);
 
     // Case B: cont_is_fresh=false — closure stays live.
@@ -505,7 +645,7 @@ fn call_continuation_dec_closure() {
 
     // Clean up manually.
     crate::drop::consume_closure(cont_b);
-    crate::drop::dec_shallow_io(result_b);
+    crate::drop::consume_io_tree(result_b);
     assert_eq!(crate::alloc::dealloc_count() - deallocs_b_before, 2);
 }
 
@@ -758,6 +898,48 @@ fn make_capacity_effect_node(token: i64, capacity: i64, value: i64) -> i64 {
     base
 }
 
+fn make_observed_capacity_effect_node(token: i64, capacity: i64, value: i64) -> i64 {
+    let thunk: Box<Box<dyn FnOnce() -> cranelisp_platform::EffectOutcome>> =
+        Box::new(Box::new(move || {
+            LATER_SERIAL_EFFECT_RAN.store(true, std::sync::atomic::Ordering::SeqCst);
+            cranelisp_platform::EffectOutcome {
+                value,
+                fault_cause: std::ptr::null(),
+                fault_len: 0,
+            }
+        }));
+    let base = alloc_with_rc(40) as i64;
+    unsafe {
+        crate::heap_access::write_i64(base, TAG_OFFSET, IO_TAG_EFFECT);
+        crate::heap_access::write_i64(base, FIELD_0_OFFSET, Box::into_raw(thunk) as i64);
+        crate::heap_access::write_i64(base, FIELD_1_OFFSET, token);
+        crate::heap_access::write_i64(base, FIELD_2_OFFSET, 0);
+        crate::heap_access::write_i64(base, FIELD_2_OFFSET + 8, capacity);
+    }
+    base
+}
+
+fn make_capacity_runtime_error_effect(token: i64, capacity: i64, message: &'static str) -> i64 {
+    let thunk: Box<Box<dyn FnOnce() -> cranelisp_platform::EffectOutcome>> =
+        Box::new(Box::new(move || {
+            crate::panic::set_runtime_error(message.to_string());
+            cranelisp_platform::EffectOutcome {
+                value: 0,
+                fault_cause: std::ptr::null(),
+                fault_len: 0,
+            }
+        }));
+    let base = alloc_with_rc(40) as i64;
+    unsafe {
+        crate::heap_access::write_i64(base, TAG_OFFSET, IO_TAG_EFFECT);
+        crate::heap_access::write_i64(base, FIELD_0_OFFSET, Box::into_raw(thunk) as i64);
+        crate::heap_access::write_i64(base, FIELD_1_OFFSET, token);
+        crate::heap_access::write_i64(base, FIELD_2_OFFSET, 0);
+        crate::heap_access::write_i64(base, FIELD_2_OFFSET + 8, capacity);
+    }
+    base
+}
+
 // spec: design/intrinsics/reactor.md §2.9 — the RETAINED synchronous rayon dispatcher
 // (the rayon-worker per-branch driver under the single-trampoline cutover,
 // §6.8.0a) token-groups same-token blocking branches via `SerialGroup` and runs
@@ -775,13 +957,91 @@ fn blocking_par_sync_dispatcher_runs_without_semaphore_neg() {
 
     // The SYNC dispatcher (`run_par_node`) — the retained rayon-worker driver. No
     // reactor, no pool: `dispatch_par_branches_with_trace` runs the branches.
-    let results_buf = run_par_node(par);
+    let results_buf = run_par_node(par, CancellationProbe::Never, crate::strand::StrandId::ROOT)
+        .expect("uncancelled Par completes")
+        .transfer();
     let r0 = unsafe { crate::heap_access::read_i64(results_buf, FIELD_0_OFFSET) };
     let r1 = unsafe { crate::heap_access::read_i64(results_buf, FIELD_0_OFFSET + 8) };
     assert_eq!(r0, 10, "blocking branch 0 result via the sync dispatcher");
     assert_eq!(r1, 20, "blocking branch 1 result via the sync dispatcher");
 
-    crate::drop::dec_shallow_io(results_buf);
+    crate::rc::consume_shallow(results_buf);
+    crate::drop::consume_io_tree(par);
+}
+
+// spec: spec/12-runtime.md §12.4.3 + spec/10-io.md §10.12.4 — capacity-1
+// same-token effects execute sequentially in source order, and the first error
+// aborts the enclosing structured join. A later effect that has not started
+// must not be run merely because it shares the already-created Par node.
+#[test]
+fn serial_group_first_fault_prevents_later_owning_effect() {
+    let _ = crate::panic::take_runtime_error();
+    RESULT_DISPOSALS.store(0, std::sync::atomic::Ordering::SeqCst);
+    LATER_SERIAL_EFFECT_RAN.store(false, std::sync::atomic::Ordering::SeqCst);
+
+    let fault = make_capacity_runtime_error_effect(5, 1, "serial-group fault");
+    let owning = make_observed_capacity_effect_node(5, 1, 77);
+    let par = make_par_node_with_disposers(&[
+        (fault, ResultDisposer::NONE),
+        (owning, ResultDisposer::from_fn(count_result_disposal)),
+    ]);
+
+    assert!(
+        run_par_node(par, CancellationProbe::Never, crate::strand::StrandId::ROOT).is_none(),
+        "the branch fault prevents Par from publishing a result buffer"
+    );
+    assert_eq!(
+        crate::panic::take_runtime_error().as_deref(),
+        Some("serial-group fault")
+    );
+    assert_eq!(
+        RESULT_DISPOSALS.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "a value that was never produced has no disposal obligation"
+    );
+    assert!(
+        !LATER_SERIAL_EFFECT_RAN.load(std::sync::atomic::Ordering::SeqCst),
+        "the first error must abort before the later same-token effect starts"
+    );
+
+    crate::drop::consume_io_tree(par);
+}
+
+// spec: spec/12-runtime.md §12.4.3
+// spec: spec/10-io.md §10.12.4.1 item 4
+// The async capacity-1 pool preserves the same rule as SerialGroup: a later
+// branch that was parked behind the failing source-order predecessor must drop
+// its newly acquired permit without spawning its effect.
+#[test]
+fn async_capacity_one_first_fault_prevents_parked_owning_effect() {
+    let _ = crate::panic::take_runtime_error();
+    RESULT_DISPOSALS.store(0, std::sync::atomic::Ordering::SeqCst);
+    LATER_SERIAL_EFFECT_RAN.store(false, std::sync::atomic::Ordering::SeqCst);
+
+    let fault = make_capacity_runtime_error_effect(6, 1, "async token fault");
+    let parked = make_observed_capacity_effect_node(6, 1, 88);
+    let par = make_par_node_with_disposers(&[
+        (fault, ResultDisposer::NONE),
+        (parked, ResultDisposer::from_fn(count_result_disposal)),
+    ]);
+
+    let result = crate::reactor::block_on_reactor(async |env| run_par_node_async(par, env).await)
+        .expect("reactor completes");
+    assert!(result.is_none(), "the first fault aborts the Par result");
+    assert_eq!(
+        crate::panic::take_runtime_error().as_deref(),
+        Some("async token fault")
+    );
+    assert!(
+        !LATER_SERIAL_EFFECT_RAN.load(std::sync::atomic::Ordering::SeqCst),
+        "the parked later effect must not be spawned after the first fault"
+    );
+    assert_eq!(
+        RESULT_DISPOSALS.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "an effect that never starts produces no owning result"
+    );
+
     crate::drop::consume_io_tree(par);
 }
 
@@ -860,11 +1120,12 @@ mod poll_arm {
         start_strand_recording();
         let node = build_poll_node(55);
         let result = crate::reactor::block_on_reactor(async |env| {
-            run_io_trampoline_inner_async(node, env, StrandId::ROOT).await
+            run_io_trampoline_inner_async(node, env, StrandId::ROOT, ResultDisposer::NONE).await
         })
         .expect("reactor");
         assert_eq!(
-            result, 55,
+            result,
+            TrampolineOutcome::Completed(55),
             "poll node result reads back via the generic env slot"
         );
         let events = drain_strand_events();
@@ -979,11 +1240,12 @@ mod poll_arm {
         let result = crate::reactor::block_on_reactor(async |env| {
             // The pool starts empty; the poll path creates + acquires token 21's
             // slot, holds it across the arc, and releases on Ready.
-            run_io_trampoline_inner_async(node, env, StrandId::ROOT).await
+            run_io_trampoline_inner_async(node, env, StrandId::ROOT, ResultDisposer::NONE).await
         })
         .expect("reactor");
         assert_eq!(
-            result, 63,
+            result,
+            TrampolineOutcome::Completed(63),
             "live-capacity poll node completes (acquire→own→release) via the generic env slot"
         );
         crate::drop::consume_io_tree(node);
@@ -1045,6 +1307,7 @@ mod poll_arm {
     fn build_sleeping_blocking_effect(token: i64, capacity: i64, sleep_ms: u64, value: i64) -> i64 {
         let thunk: Box<Box<dyn FnOnce() -> cranelisp_platform::EffectOutcome>> =
             Box::new(Box::new(move || {
+                BLOCKING_EFFECT_ENTERED.store(true, std::sync::atomic::Ordering::Release);
                 std::thread::sleep(std::time::Duration::from_millis(sleep_ms));
                 cranelisp_platform::EffectOutcome {
                     value,
@@ -1065,6 +1328,57 @@ mod poll_arm {
         base
     }
 
+    // spec: spec/10-io.md §10.12.9 item 4 — cancelling an admitted blocking
+    // branch does not interrupt the foreign call; when it returns later, the
+    // worker disposes the result instead of suppressing an owned value.
+    #[test]
+    fn cancelled_blocking_branch_disposes_its_late_result_worker_side() {
+        RESULT_DISPOSALS.store(0, std::sync::atomic::Ordering::SeqCst);
+        BLOCKING_EFFECT_ENTERED.store(false, std::sync::atomic::Ordering::Release);
+        let node = build_sleeping_blocking_effect(0, 1, 20, 77);
+        crate::reactor::block_on_reactor(async |env| {
+            let branch = ParBranch {
+                io: node,
+                disposer: ResultDisposer::from_fn(count_result_disposal),
+            };
+            let mut running = Box::pin(run_blocking_branch(0, branch, env));
+            let waker = futures::task::noop_waker();
+            let mut context = std::task::Context::from_waker(&waker);
+            assert!(
+                matches!(
+                    std::future::Future::poll(running.as_mut(), &mut context),
+                    std::task::Poll::Pending
+                ),
+                "the first poll admits and spawns the delayed worker"
+            );
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+            while !BLOCKING_EFFECT_ENTERED.load(std::sync::atomic::Ordering::Acquire)
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::yield_now();
+            }
+            assert!(
+                BLOCKING_EFFECT_ENTERED.load(std::sync::atomic::Ordering::Acquire),
+                "the foreign call must be entered before cancellation"
+            );
+            drop(running);
+            0
+        })
+        .expect("reactor");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while RESULT_DISPOSALS.load(std::sync::atomic::Ordering::SeqCst) == 0
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            RESULT_DISPOSALS.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the cancelled worker's late result is disposed exactly once"
+        );
+        crate::drop::consume_io_tree(node);
+    }
+
     // spec: design/intrinsics/reactor.md §2.6 (two-pool join) — a mixed `Par` of one
     // BLOCKING branch (→ rayon, across the wakeable bridge) and one POLL branch
     // (→ reactor) overlaps on BOTH pools: the blocking branch offloaded to rayon
@@ -1081,9 +1395,13 @@ mod poll_arm {
         let par = make_par_node(&[blocking, poll]);
 
         let start = std::time::Instant::now();
-        let results_buf =
-            crate::reactor::block_on_reactor(async |env| run_par_node_async(par, env).await)
-                .expect("reactor");
+        let results_buf = crate::reactor::block_on_reactor(async |env| {
+            run_par_node_async(par, env)
+                .await
+                .expect("uncancelled Par completes")
+                .transfer()
+        })
+        .expect("reactor");
         let elapsed_ms = start.elapsed().as_millis() as u64;
 
         // Both branches ran; results merged in binding order.
@@ -1104,7 +1422,7 @@ mod poll_arm {
         );
 
         // Cleanup: free the merged results buffer + the Par tree.
-        crate::drop::dec_shallow_io(results_buf);
+        crate::rc::consume_shallow(results_buf);
         crate::drop::consume_io_tree(par);
     }
 
@@ -1221,8 +1539,8 @@ mod poll_arm {
 
     /// Poll a boxed trampoline future once with a noop waker.
     fn poll_boxed(
-        f: &mut std::pin::Pin<Box<dyn std::future::Future<Output = i64> + '_>>,
-    ) -> std::task::Poll<i64> {
+        f: &mut std::pin::Pin<Box<dyn std::future::Future<Output = TrampolineOutcome> + '_>>,
+    ) -> std::task::Poll<TrampolineOutcome> {
         let w = futures::task::noop_waker();
         let mut cx = std::task::Context::from_waker(&w);
         f.as_mut().poll(&mut cx)
@@ -1248,7 +1566,8 @@ mod poll_arm {
 
         let d_before = crate::alloc::dealloc_count();
         crate::reactor::block_on_reactor(async |env| {
-            let mut fut = run_io_trampoline_inner_async(bind, env, StrandId::ROOT);
+            let mut fut =
+                run_io_trampoline_inner_async(bind, env, StrandId::ROOT, ResultDisposer::NONE);
             // One poll drives Pure → continuation → the fresh poll node → Pending.
             assert!(
                 matches!(poll_boxed(&mut fut), std::task::Poll::Pending),
@@ -1287,10 +1606,15 @@ use crate::strand::{StrandEvent, StrandId, drain_strand_events, start_strand_rec
 /// Build a thin `IO_TAG_LAUNCH` node wrapping `sub_tree` at field 0 (the backend's
 /// `compile_launch` shape, `io-trampoline.md §15.4`).
 fn make_launch_node(sub_tree: i64) -> i64 {
-    let base = alloc_with_rc(16); // tag + 1 field = 16 bytes payload
+    make_launch_node_with_disposer(sub_tree, ResultDisposer::NONE)
+}
+
+fn make_launch_node_with_disposer(sub_tree: i64, result_disposer: ResultDisposer) -> i64 {
+    let base = alloc_with_rc(24);
     unsafe {
         *((base as isize + TAG_OFFSET) as *mut i64) = IO_TAG_LAUNCH;
         *((base as isize + FIELD_0_OFFSET) as *mut i64) = sub_tree;
+        *((base as isize + FIELD_1_OFFSET) as *mut i64) = result_disposer.0;
     }
     base as i64
 }
@@ -1364,6 +1688,26 @@ fn launch_arm_detaches_subtree_continuation_proceeds_without_awaiting() {
             .iter()
             .any(|e| matches!(e, StrandEvent::StrandCompleted { .. })),
         "the detached strand RAN to completion (drained before exit): {events:?}"
+    );
+}
+
+// spec: spec/10-io.md §10.12.9 item 4 — no language caller observes a
+// detached Launch result, so the supervisor consumes its carried result exactly
+// once after successful completion.
+#[test]
+fn launch_supervisor_disposes_unobserved_owning_result_once() {
+    RESULT_DISPOSALS.store(0, std::sync::atomic::Ordering::SeqCst);
+    let launch = make_launch_node_with_disposer(
+        make_pure_node(999),
+        ResultDisposer::from_fn(count_result_disposal),
+    );
+    let bind = make_bind_node(launch, make_add_and_pure_closure(77));
+
+    assert_eq!(cranelisp_run_io(bind), 77);
+    assert_eq!(
+        RESULT_DISPOSALS.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the drained supervisor owns and disposes the detached result exactly once"
     );
 }
 
@@ -1448,12 +1792,70 @@ fn supervisor_catches_runtime_error_strand_records_failed_with_message() {
 /// with a NULL branch-vec pointer (field 0 = 0), which `read_select_branches`
 /// reads back as zero branches (the `(select [])` shape).
 fn make_empty_select_node() -> i64 {
-    let base = alloc_with_rc(16); // tag + 1 field (branch vec) = 16 bytes payload
+    let base = alloc_with_rc(24);
     unsafe {
         *((base as isize + TAG_OFFSET) as *mut i64) = IO_TAG_SELECT;
         *((base as isize + FIELD_0_OFFSET) as *mut i64) = 0; // null vec ⇒ empty
+        *((base as isize + FIELD_1_OFFSET) as *mut i64) = 0; // result disposer
     }
     base as i64
+}
+
+fn make_select_node(branches: &[i64], result_disposer: ResultDisposer) -> i64 {
+    let branch_vec = alloc_with_rc(24) as i64;
+    let data = crate::vec_runtime::alloc_data_buffer(branches.len() as i64);
+    unsafe {
+        crate::heap_access::write_i64(
+            branch_vec,
+            crate::vec_runtime::LEN_OFFSET as isize,
+            branches.len() as i64,
+        );
+        crate::heap_access::write_i64(
+            branch_vec,
+            crate::vec_runtime::CAP_OFFSET as isize,
+            branches.len() as i64,
+        );
+        crate::heap_access::write_i64(
+            branch_vec,
+            crate::vec_runtime::DATA_PTR_OFFSET as isize,
+            data as i64,
+        );
+        for (index, branch) in branches.iter().copied().enumerate() {
+            crate::heap_access::write_i64(data as i64, (index as isize) * 8, branch);
+        }
+    }
+
+    let node = alloc_with_rc(24) as i64;
+    unsafe {
+        crate::heap_access::write_i64(node, TAG_OFFSET, IO_TAG_SELECT);
+        crate::heap_access::write_i64(node, FIELD_0_OFFSET, branch_vec);
+        crate::heap_access::write_i64(node, FIELD_1_OFFSET, result_disposer.0);
+    }
+    node
+}
+
+// spec: spec/10-io.md §10.12.9 item 4 — Select's common disposer guards
+// branch results only until a winner transfers outward. The top-level caller,
+// not the runtime race, owns the returned winner.
+#[test]
+fn select_winner_transfers_common_disposer_to_top_level_caller() {
+    RESULT_DISPOSALS.store(0, std::sync::atomic::Ordering::SeqCst);
+    let disposer = ResultDisposer::from_fn(count_result_disposal);
+    let select = make_select_node(&[make_pure_node(11), make_pure_node(22)], disposer);
+
+    let winner = cranelisp_run_io(select);
+    assert!(winner == 11 || winner == 22);
+    assert_eq!(
+        RESULT_DISPOSALS.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "Select must disarm the winning branch before returning it"
+    );
+    disposer.dispose(winner);
+    assert_eq!(
+        RESULT_DISPOSALS.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the top-level receiver owns the transferred winner exactly once"
+    );
 }
 
 // A witness the empty-select continuation was invoked (it MUST NOT be — the
@@ -1493,15 +1895,16 @@ fn empty_select_raises_runtime_error_and_does_not_feed_continuation() {
     let bind = make_bind_node(select, cont);
 
     let result = crate::reactor::block_on_reactor(async |env| {
-        run_io_trampoline_inner_async(bind, env, StrandId::ROOT).await
+        run_io_trampoline_inner_async(bind, env, StrandId::ROOT, ResultDisposer::NONE).await
     })
     .expect("reactor");
 
     // The sentinel is returned (the trampoline aborts to `0`; int reads the slot,
     // not the return value).
     assert_eq!(
-        result, 0,
-        "an aborted empty-select drive returns the sentinel 0"
+        result,
+        TrampolineOutcome::Stopped,
+        "an aborted empty-select drive produces no value"
     );
     // The runtime-error slot carries the message of record.
     assert_eq!(

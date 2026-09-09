@@ -4,8 +4,8 @@
 //! 10-40 lines, independently testable. Addresses audit HIGH-1 (monolithic infer_expr).
 
 use cranelisp_types::{
-    ApplyRef, CranelispError, ErrorLocation, Expr, JitSymbol, MatchArm, ModuleEntry, Pattern,
-    ResolvedCall, Span, Symbol, Type, TypeExpr, VarRef,
+    ApplyRef, Binding, CallableOrigin, CranelispError, Decl, ErrorLocation, Expr, FQSymbol, Life,
+    MatchArm, Pattern, ResolvedCall, Span, Symbol, TemplateKind, Type, TypeExpr, VarRef,
 };
 
 use crate::checker::{CheckState, TypeCheckEnv};
@@ -54,11 +54,18 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 // monomorphise / register) `insert`s and overwrites this
                 // ViaCallee, so the final verdict is correct regardless of the
                 // pass that resolves the dispatch.
-                state
-                    .method_resolutions
-                    .apply_refs
-                    .entry(*span)
-                    .or_insert(ApplyRef::ViaCallee);
+                let candidate_pending = state.body_frame.pending_name_uses.iter().any(|site| {
+                    site.applications
+                        .iter()
+                        .any(|application| application.call_span == *span)
+                });
+                if !candidate_pending {
+                    state
+                        .method_resolutions
+                        .apply_refs
+                        .entry(*span)
+                        .or_insert(ApplyRef::ViaCallee);
+                }
                 Ok(ty)
             }
             Expr::Match {
@@ -191,19 +198,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let canonical = cranelisp_types::member_key(&type_name.name, ctor_sym.as_ref());
         let (storage_key, scheme) = self
             .probe_module_entry_owned(&type_name.module, canonical.as_ref())
-            .and_then(|e| match e {
-                cranelisp_types::ModuleEntry::Def { scheme, .. } => {
-                    Some((canonical.clone(), scheme.clone()))
-                }
-                _ => None,
+            .and_then(|e| {
+                e.callable()
+                    .map(|c| (canonical.clone(), c.arm.scheme.clone()))
             })
             .or_else(|| {
                 self.probe_module_entry_owned(&type_name.module, ctor_sym.as_ref())
-                    .and_then(|e| match e {
-                        cranelisp_types::ModuleEntry::Def { scheme, .. } => {
-                            Some((ctor_sym.clone(), scheme.clone()))
-                        }
-                        _ => None,
+                    .and_then(|e| {
+                        e.callable()
+                            .map(|c| (ctor_sym.clone(), c.arm.scheme.clone()))
                     })
             })
             .ok_or_else(|| CranelispError::TypeError {
@@ -254,6 +257,38 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // recursion-self carve-out) observes the bare shape. See
         // `TypeCheckEnv::normalize_self_qualified`.
         let name: &str = self.normalize_self_qualified(state, name.as_ref());
+
+        // Lexical bindings shadow the entire module candidate set. Otherwise
+        // retain every value-role terminal until ordinary HM constraints can
+        // select one; raw candidate cardinality is not a resolution verdict.
+        if state.env.lookup(name).is_none()
+            && self.resolve_dotted_member_fq(state, name).is_none()
+            && let Ok(candidates) = self.scope_resolve_candidates(state, name, span)
+        {
+            let contested = candidates.len() > 1;
+            let value_candidates: Vec<_> = candidates
+                .into_iter()
+                .filter(|candidate| {
+                    crate::candidate_selection::is_value_candidate(&candidate.entry)
+                })
+                .collect();
+            // A contested spelling is decided only after the syntactic-role
+            // filter. Zero, one, and many eligible terminals all enter the
+            // same settlement lifecycle: zero becomes no-match, one replays
+            // its canonical identity, and many await ordinary HM constraints.
+            if contested {
+                let survivors = value_candidates
+                    .into_iter()
+                    .map(|candidate| candidate.canonical)
+                    .collect();
+                return Ok(self.collect_pending_name_use(
+                    state,
+                    Symbol::from(name),
+                    span,
+                    survivors,
+                ));
+            }
+        }
         let (scheme, gap) = self.lookup(state, name);
         // Record the in-band gap (if any) so a failed qualified-name resolution
         // surfaces as `CheckError::Gap` once the per-form dispatcher reports its
@@ -268,10 +303,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // owning types in `accessor_owning_types`; surface them as `Type.member`
         // alternatives.
         if scheme.is_none()
-            && matches!(
-                self.resolve_entry_scoped(state, name),
-                Some(ModuleEntry::Ambiguous { .. })
-            )
+            && self
+                .scope_resolve_candidates(state, name, span)
+                .is_ok_and(|candidates| candidates.len() > 1)
         {
             // Same-cluster (`--run`): the owners were recorded on `CheckState`
             // as each accessor was synthesised in this `check_forms` call.
@@ -315,7 +349,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         {
             let r = self.current_symbol_table(state);
             let v = r.view();
-            if let Some(ModuleEntry::SpecialForm { .. }) = v.lookup(&Symbol::from(name)) {
+            if let Some(Binding {
+                declaration: Decl::SpecialForm(_),
+                ..
+            }) = v.lookup(&Symbol::from(name))
+            {
                 return Err(CranelispError::TypeError {
                     message: format!("{name} is a special form, not a value"),
                     location: ErrorLocation::from_span(span),
@@ -350,13 +388,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         if !state.in_call_position
             && state.resolves_to_carrier_identity(name)
             && let Some(entry) = self.resolve_entry_scoped(state, name)
-            && let ModuleEntry::Def { kind, .. } = entry
-            && matches!(
-                kind.as_ref(),
-                cranelisp_types::DefKind::UserFn {
-                    fn_state: cranelisp_types::UserFnState::Constrained(_)
-                }
-            )
+            && entry.callable().is_some_and(|callable| {
+                matches!(
+                    callable.arm.life,
+                    Life::Template {
+                        kind: TemplateKind::Constrained(_),
+                        ..
+                    }
+                )
+            })
         {
             return Err(CranelispError::TypeError {
                 message: format!(
@@ -378,8 +418,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         if !state.in_call_position
             && state.resolves_to_carrier_identity(name)
             && let Some(entry) = self.resolve_entry_scoped(state, name)
-            && let ModuleEntry::Def { kind, .. } = entry
-            && matches!(kind.as_ref(), cranelisp_types::DefKind::Overloaded { .. })
+            && matches!(entry.declaration, Decl::Overloaded(_))
         {
             return Err(CranelispError::TypeError {
                 message: format!(
@@ -597,7 +636,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // irrelevant). The genuine rank-2 / multi-type-use restrictions are enforced
         // ELSEWHERE (value restriction + unification), not by an eager escape check
         // here.
-        let mut var_map = state.written_var_scope.take().unwrap_or_default();
+        let mut var_map = state
+            .body_frame
+            .written_var_scope
+            .take()
+            .unwrap_or_default();
         // Resolve the param annotations (extending the shared `var_map`) in a
         // fallible closure so the shared scope is re-installed and the pushed env
         // frame is popped on EVERY exit (Principle 18, FIXME 0595 item 2). The
@@ -628,7 +671,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Re-install the shared (param-extended) scope on EVERY path BEFORE the
         // body is inferred, so a nested annotation / lambda co-refers through the
         // same scope — and so it is never left `None` on the error path.
-        state.written_var_scope = Some(var_map);
+        state.body_frame.written_var_scope = Some(var_map);
 
         let result = param_result.and_then(|param_types| {
             let body_ty = self.infer_expr(state, body)?;
@@ -673,28 +716,94 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         if home == state.current_module {
             return; // local base — the ordinary registration path owns it
         }
-        if let ModuleEntry::Def { kind, .. } = &entry
-            && let cranelisp_types::DefKind::Overloaded { variants } = kind.as_ref()
-            && !variants.is_empty()
-        {
-            let overload_keys: Vec<(Symbol, usize)> = variants
-                .iter()
-                .map(|v| (v.mangled_name.clone(), v.param_types.len()))
-                .collect();
-            let resolved: Vec<(Vec<Type>, Type, Symbol)> = variants
-                .iter()
-                .map(|v| {
-                    (
-                        v.param_types.clone(),
-                        v.ret_type.clone(),
-                        v.mangled_name.clone(),
-                    )
-                })
-                .collect();
-            state.overloads.insert(name.clone(), overload_keys);
-            state.resolved_overloads.insert(name.clone(), resolved);
-            state.overload_homes.insert(name.clone(), home);
+        if let Decl::Overloaded(declaration) = &entry.declaration {
+            self.rehydrate_overload_group(state, name, &home, declaration);
         }
+    }
+
+    fn rehydrate_overload_group(
+        &self,
+        state: &mut CheckState,
+        name: &Symbol,
+        home: &cranelisp_types::ModuleFullPath,
+        declaration: &cranelisp_types::OverloadedCallable<C>,
+    ) {
+        if declaration.arms.is_empty() {
+            return;
+        }
+        let overload_keys = declaration
+            .arms
+            .iter()
+            .filter_map(|arm| {
+                let Type::Fn(params, _) = &arm.callable.scheme.ty else {
+                    return None;
+                };
+                Some((
+                    Symbol::from(format!("{}__arm{}", name, arm.id.ordinal())),
+                    params.len(),
+                ))
+            })
+            .collect();
+        let resolved = declaration
+            .arms
+            .iter()
+            .filter_map(|arm| {
+                let Type::Fn(params, ret) = &arm.callable.scheme.ty else {
+                    return None;
+                };
+                Some((
+                    params.clone(),
+                    (**ret).clone(),
+                    Symbol::from(format!("{}__arm{}", name, arm.id.ordinal())),
+                ))
+            })
+            .collect();
+        state.overloads.insert(name.clone(), overload_keys);
+        state.resolved_overloads.insert(name.clone(), resolved);
+        state.overload_homes.insert(name.clone(), home.clone());
+    }
+
+    /// Feed an already-selected overload declaration and its application into
+    /// the existing overload queue without re-resolving the contested source
+    /// spelling. Imported groups use their canonical qualified identity as the
+    /// private queue key, so two selected same-named groups cannot overwrite
+    /// one another's variant/home facts.
+    pub(crate) fn enqueue_selected_overload_application(
+        &self,
+        state: &mut CheckState,
+        selected: &cranelisp_types::FQSymbol,
+        binding: &Binding<C>,
+        application: &crate::candidate_selection::PendingApplication,
+        callee_span: Span,
+    ) {
+        let queue_key = if selected.module == state.current_module {
+            selected.symbol.clone()
+        } else {
+            Symbol::from(selected.to_string())
+        };
+        if let Decl::Overloaded(declaration) = &binding.declaration {
+            self.rehydrate_overload_group(state, &queue_key, &selected.module, declaration);
+        }
+        let is_self_call = selected.module == state.current_module
+            && state
+                .body_frame
+                .recursion
+                .as_ref()
+                .is_some_and(|recursion| {
+                    recursion.name == selected.symbol
+                        || recursion
+                            .name
+                            .as_ref()
+                            .starts_with(&format!("{}__v", selected.symbol))
+                });
+        state.pending_overload_resolutions.push((
+            application.call_span,
+            queue_key,
+            application.argument_types.clone(),
+            application.result_type.clone(),
+            is_self_call,
+            callee_span,
+        ));
     }
 
     fn infer_apply(
@@ -704,11 +813,63 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         args: &[Expr],
         span: Span,
     ) -> Result<Type, CranelispError> {
+        // An authored overload family has no stand-alone callable value in the
+        // symbol table while its clauses are being checked. Recognize that
+        // transient typecheck state before ordinary Var inference, otherwise
+        // the removed `Group` placeholder turns every same-cluster call into an
+        // `undefined variable` before the overload drain can select an arm.
+        let normalized_callee: Option<Symbol> = match callee {
+            Expr::Var { name, .. } => Some(Symbol::from(
+                self.normalize_self_qualified(state, name.as_ref()),
+            )),
+            _ => None,
+        };
+        if let Some(name) = normalized_callee.as_ref()
+            && !state.overloads.contains_key(name)
+            && state.env.lookup(name.as_ref()).is_none()
+        {
+            self.maybe_rehydrate_imported_overload_base(state, name);
+        }
+        let overload_callee = normalized_callee.as_ref().is_some_and(|name| {
+            state.overloads.contains_key(name) && state.resolves_to_carrier_identity(name.as_ref())
+        });
+
         // Mark callee as in call position so constrained fn references are allowed.
         // Save/restore is stack-based: each nesting level preserves the outer value.
         let prev_call_position = state.in_call_position;
         state.in_call_position = true;
-        let callee_ty = self.infer_expr(state, callee);
+        let callee_ty = if overload_callee {
+            let ty = Type::Fn(
+                (0..args.len()).map(|_| self.fresh_var()).collect(),
+                Box::new(self.fresh_var()),
+            );
+            let Some(written) = normalized_callee.as_ref() else {
+                unreachable!("invariant: overload callee is a normalized Var")
+            };
+            let owner_module = state
+                .overload_homes
+                .get(written)
+                .cloned()
+                .unwrap_or_else(|| state.current_module.clone());
+            let owner_symbol = Symbol::from(
+                written
+                    .as_ref()
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(written.as_ref()),
+            );
+            state.method_resolutions.var_refs.insert(
+                callee.span(),
+                cranelisp_types::VarRef::Global(FQSymbol {
+                    module: owner_module,
+                    symbol: owner_symbol,
+                }),
+            );
+            self.record_expr_type(state, callee.span(), ty.clone());
+            Ok(ty)
+        } else {
+            self.infer_expr(state, callee)
+        };
         state.in_call_position = prev_call_position;
         let callee_ty = callee_ty?;
 
@@ -726,6 +887,32 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         let ret_ty = self.fresh_var();
 
+        if self.attach_pending_application(
+            state,
+            &callee_ty,
+            span,
+            arg_types.clone(),
+            ret_ty.clone(),
+        ) {
+            self.settle_pending_name_uses(state, false)?;
+            let still_pending = state.body_frame.pending_name_uses.iter().any(|site| {
+                site.applications
+                    .iter()
+                    .any(|application| application.call_span == span)
+            });
+            let handed_to_overload = state
+                .pending_overload_resolutions
+                .iter()
+                .any(|pending| pending.0 == span);
+            if still_pending || handed_to_overload {
+                for (arg, arg_ty) in args.iter().zip(arg_types.iter()) {
+                    self.record_expr_type(state, arg.span(), self.apply_subst(state, arg_ty));
+                }
+                self.record_expr_type(state, span, self.apply_subst(state, &ret_ty));
+                return Ok(ret_ty);
+            }
+        }
+
         // MC-X5 — SPELLING NORMALIZATION at the overload gate. The gate below keys
         // dispatch on the callee's RAW AST name, but a current-module-qualified
         // self-call (`(user/msig …)` inside module `user`) IS the bare local
@@ -738,13 +925,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // pending's base key, the dispatch mangle) observes the bare identity. A
         // non-self qualifier (`mlib/h`) and a bare name are returned unchanged, so
         // the imported-base (MC-X2) and ordinary paths are untouched.
-        let normalized_callee: Option<Symbol> = match callee {
-            Expr::Var { name, .. } => Some(Symbol::from(
-                self.normalize_self_qualified(state, name.as_ref()),
-            )),
-            _ => None,
-        };
-
         // Multi-sig overload dispatch: if the callee is a Var whose name is
         // in the overloads table, defer resolution to the overload pass.
         // We don't unify here because the base name's scheme may not match
@@ -755,13 +935,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // chain-followed `Overloaded` home entry so the SAME overload machinery
         // (gate → drain → carrier) dispatches it, keyed by its HOME module (P24).
         // Only for a not-locally-shadowed Var callee that is not already an overload.
-        if let Some(name) = normalized_callee.as_ref()
-            && !state.overloads.contains_key(name)
-            && state.env.lookup(name.as_ref()).is_none()
-        {
-            self.maybe_rehydrate_imported_overload_base(state, name);
-        }
-
         // §11.8.7 ruling 5 — LOCAL-SCOPE-FIRST guard. A `let`/`fn`/param binding
         // that lexically shadows a multi-sig base (`(defn t1 [x] (let [m1 (fn [y]
         // y)] (m1 x)))`, `m1` a base) MUST resolve to the LOCAL binding (spec §4.6
@@ -795,11 +968,22 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             if state
                 .mono_recheck_self
                 .as_ref()
-                .is_some_and(|(base, _, ip, _)| base == name && ip.len() == arg_types.len())
+                .and_then(|context| context.recursion.as_ref())
+                .is_some_and(|recursion| {
+                    recursion.base == *name && recursion.params.len() == arg_types.len()
+                })
             {
                 let (instance, inst_params, inst_ret) = {
-                    let (_, instance, ip, ir) = state.mono_recheck_self.as_ref().unwrap();
-                    (instance.clone(), ip.clone(), ir.clone())
+                    let recursion = state
+                        .mono_recheck_self
+                        .as_ref()
+                        .and_then(|context| context.recursion.as_ref())
+                        .unwrap();
+                    (
+                        recursion.instance.clone(),
+                        recursion.params.clone(),
+                        recursion.ret.clone(),
+                    )
                 };
                 let resolved_args: Vec<Type> = arg_types
                     .iter()
@@ -815,7 +999,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     }
                     self.unify(state, &inst_ret, &ret_ty, span)?;
                     let resolution = ResolvedCall::SigDispatch {
-                        mangled_name: instance,
+                        target: cranelisp_types::CallableTarget::Binding(FQSymbol {
+                            module: state.current_module.clone(),
+                            symbol: Symbol::from(instance.as_ref()),
+                        }),
                     };
                     self.record_dispatch_target(state, span, &resolution);
                     state
@@ -853,7 +1040,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // exactly as the standalone twin's ordinary call would. The inline path
             // (not a post-body scan) is required so the callee node is retyped
             // concrete for `from_expr`.
-            if let Some(base) = state.mono_recheck_self.as_ref().map(|(b, ..)| b.clone())
+            if let Some(base) = state
+                .mono_recheck_self
+                .as_ref()
+                .and_then(|context| context.recursion.as_ref())
+                .map(|recursion| recursion.base.clone())
                 && base == *name
             {
                 let resolved_args: Vec<Type> = arg_types
@@ -868,56 +1059,111 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     let clause_params = cparams.clone();
                     let clause_mangled = cmangled.clone();
                     let clause_ret = cret.clone();
+                    let clause_index = variants
+                        .iter()
+                        .position(|(_, _, label)| label == &clause_mangled)
+                        .ok_or_else(|| CranelispError::CodegenError {
+                            message: format!(
+                                "internal: selected overload arm missing from `{name}`"
+                            ),
+                            location: ErrorLocation::from_span(span),
+                        })?;
+                    let selected_arm = cranelisp_types::CallableArmId::from_ordinal(clause_index)
+                        .map_err(crate::result::lifecycle_error)?;
+                    let selected_target = cranelisp_types::CallableTarget::OverloadArm {
+                        owner: FQSymbol {
+                            module: state.current_module.clone(),
+                            symbol: name.clone(),
+                        },
+                        arm: selected_arm,
+                    };
+                    // Whether an arm needs an instance is a lifecycle fact, not
+                    // a property of the selected call's substituted parameter
+                    // vector.  A template arm naturally has concrete parameters
+                    // here because overload selection just instantiated it.
+                    let selected_template = state
+                        .mono_recheck_self
+                        .as_ref()
+                        .and_then(|context| {
+                            context
+                                .local_templates
+                                .get(&clause_mangled)
+                                .cloned()
+                                .map(|core| crate::traits::TemplateFn {
+                                    core,
+                                    local_templates: context.local_templates.clone(),
+                                    template_target: Some(selected_target.clone()),
+                                })
+                        })
+                        .or_else(|| self.owned_overload_template(&selected_target));
                     // Resolve the selected sibling clause to a CONCRETE dispatch
                     // target + its concrete signature.
-                    let (dispatch_name, inst_params, inst_ret) =
-                        if clause_params.iter().all(Type::is_concrete) {
-                            // Concrete sibling clause — dispatch to its mangle.
-                            (
-                                JitSymbol::from(clause_mangled.as_ref()),
-                                clause_params.clone(),
-                                self.apply_subst(state, &clause_ret),
-                            )
-                        } else {
-                            // `$Var` template sibling (constrained / genuinely-poly)
-                            // — monomorphise at the concrete args and dispatch to the
-                            // minted instance. `origin_base = Some(name)` so a nested
-                            // self-call inside it resolves as monomorphic recursion.
-                            let mono = self.monomorphise_call(
+                    let (dispatch_name, inst_params, inst_ret) = if let Some(template) =
+                        selected_template
+                    {
+                        // Template sibling (constrained / genuinely-poly) —
+                        // monomorphise at the concrete args and dispatch to
+                        // the minted instance.
+                        let use_type = Type::Fn(
+                            resolved_args.clone(),
+                            Box::new(self.apply_subst(state, &clause_ret)),
+                        );
+                        let demand = self.derive_mono_demand(
+                            state,
+                            selected_target.clone(),
+                            &template.core.scheme,
+                            &use_type,
+                            span,
+                        );
+                        let mono = if let Some(demand) = demand {
+                            self.monomorphise_call(
                                 state,
                                 &clause_mangled,
-                                &resolved_args,
-                                span,
+                                &demand,
                                 None,
                                 Some(name),
-                            )?;
-                            let instance = match &mono {
-                                Some(md) => md.defn.name.clone(),
-                                None => clause_mangled.clone(),
-                            };
-                            let cm = state.current_module.clone();
-                            let inst_ret = self
-                                .probe_module_entry_owned(&cm, instance.as_ref())
-                                .and_then(|e| match e {
-                                    ModuleEntry::Def { scheme, .. } => match &scheme.ty {
+                                Some(template),
+                            )?
+                        } else {
+                            None
+                        };
+                        let instance = match &mono {
+                            Some(md) => md.defn.name.clone(),
+                            None => clause_mangled.clone(),
+                        };
+                        let cm = state.current_module.clone();
+                        let inst_ret = self
+                            .probe_module_entry_owned(&cm, instance.as_ref())
+                            .and_then(|e| {
+                                e.callable()
+                                    .and_then(|callable| match &callable.arm.scheme.ty {
                                         Type::Fn(_, r) => Some((**r).clone()),
                                         _ => None,
-                                    },
-                                    _ => None,
-                                })
-                                .unwrap_or_else(|| self.apply_subst(state, &clause_ret));
-                            (
-                                JitSymbol::from(instance.as_ref()),
-                                resolved_args.clone(),
-                                inst_ret,
-                            )
-                        };
+                                    })
+                            })
+                            .unwrap_or_else(|| self.apply_subst(state, &clause_ret));
+                        (
+                            cranelisp_types::CallableTarget::Binding(FQSymbol {
+                                module: state.current_module.clone(),
+                                symbol: instance,
+                            }),
+                            resolved_args.clone(),
+                            inst_ret,
+                        )
+                    } else {
+                        // Concrete sibling clause — dispatch to its owned arm.
+                        (
+                            selected_target,
+                            clause_params.clone(),
+                            self.apply_subst(state, &clause_ret),
+                        )
+                    };
                     for (p, a) in inst_params.iter().zip(arg_types.iter()) {
                         self.unify(state, p, a, span)?;
                     }
                     self.unify(state, &inst_ret, &ret_ty, span)?;
                     let resolution = ResolvedCall::SigDispatch {
-                        mangled_name: dispatch_name,
+                        target: dispatch_name,
                     };
                     self.record_dispatch_target(state, span, &resolution);
                     state
@@ -945,10 +1191,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // `name__vN` clause) is a monomorphic-recursion sibling self-call — the
             // drain unifies it (back-flow), not monomorphises it.
             let is_self_call = state
-                .current_defn
+                .body_frame
+                .recursion
                 .as_ref()
                 .map(|d| {
-                    let d = d.as_ref();
+                    let d = d.name.as_ref();
                     d == name.as_ref() || d.starts_with(&format!("{}__v", name))
                 })
                 .unwrap_or(false);
@@ -1062,9 +1309,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     impl_module,
                     ..
                 } = &resolution
-                    && let Some(ModuleEntry::Def { scheme, .. }) =
+                    && let Some(entry) =
                         self.probe_module_entry_owned(impl_module, mangled_name.as_ref())
-                    && let Type::Fn(_, selected_ret) = scheme.ty
+                    && let Some(callable) = entry.callable()
+                    && let Type::Fn(_, selected_ret) = &callable.arm.scheme.ty
                 {
                     self.unify(state, &ret_ty, selected_ret.as_ref(), span)?;
                 }
@@ -1135,9 +1383,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 // got-slotted ctor `Def` whose function-type scheme is curry-
                 // shaped, so it would otherwise fall through to the generic
                 // curry path here; reject it with a clear arity diagnostic.
-                if let Some(cranelisp_types::ModuleEntry::Def { kind, .. }) =
-                    self.resolve_constructor_entry(state, name.as_ref())
-                    && let cranelisp_types::DefKind::Constructor { field_count, .. } = kind.as_ref()
+                if let Some(entry) = self.resolve_constructor_entry(state, name.as_ref())
+                    && let Some(callable) = entry.callable()
+                    && let CallableOrigin::Ctor { field_count, .. } = &callable.origin
                 {
                     return Err(CranelispError::TypeError {
                         message: format!(
@@ -1212,23 +1460,18 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         name: &str,
         span: Span,
     ) -> Option<crate::checker::ResolvedBuiltin> {
-        use cranelisp_types::DefKind;
-
         let resolved = self.scope_resolve(state, name, span).ok()?;
-        let ModuleEntry::Def { kind, .. } = &resolved.entry else {
-            return None;
-        };
-        matches!(
-            kind.as_ref(),
-            DefKind::Primitive { .. } | DefKind::PrimitiveExtern
-        )
-        .then(|| {
-            let storage_fq = resolved.storage_fq();
-            crate::checker::ResolvedBuiltin {
-                jit_name: storage_fq.symbol.clone(),
-                storage_fq,
-            }
-        })
+        resolved
+            .entry
+            .callable()
+            .is_some_and(|callable| matches!(callable.origin, CallableOrigin::RustPrimitive))
+            .then(|| {
+                let storage_fq = resolved.canonical;
+                crate::checker::ResolvedBuiltin {
+                    jit_name: storage_fq.symbol.clone(),
+                    storage_fq,
+                }
+            })
     }
 
     /// Post-inference pass: resolve trait method calls that couldn't be resolved
@@ -1258,27 +1501,28 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         expr: &Expr,
     ) -> Result<(), CranelispError> {
         // Per-node action: try to resolve an as-yet-unresolved trait-method Apply.
-        if let Expr::Apply { callee, args, span, .. } = expr
+        if let Expr::Apply {
+            callee, args, span, ..
+        } = expr
             && !state.method_resolutions.resolved_calls.contains_key(span)
-            && let Expr::Var { name, span: callee_span, .. } = callee.as_ref()
-            // §11.8.8 (W3-review Important-1) — "the carrier is the IDENTITY". This
-            // post-inference pass runs AFTER the `let`/`fn` scope is popped, so
-            // `env.lookup` can no longer see a shadowing local; consult the CARRIER
-            // VERDICT `infer_var` already recorded for the callee `Var` instead. A
-            // callee resolved to a §4.6 LOCAL binding (`(let [+ (fn [a b] 0)]
-            // (+ 1 2))`, and its `((+ 1) 2)` auto-curry sibling) carries
-            // `VarRef::Local` — the call is on the local closure, NOT the trait
-            // method (mis-dispatch → 3, spec §4.6 violation). The recursion-self
-            // carve-out records `VarRef::Global`, so a genuine self-call still
-            // dispatches. This is the post-scope form of the same discriminator
-            // `CheckState::resolves_to_carrier_identity` applies at the
-            // inference-time seams (the infer_apply post-unify + auto-curry blocks)
-            // — it READS the recorded verdict rather than recomputing it.
-            && !matches!(
-                state.method_resolutions.var_refs.get(callee_span),
-                Some(cranelisp_types::VarRef::Local { .. })
-            )
-            && self.is_trait_method_with_state(state, name)
+            && let Expr::Var {
+                name,
+                span: callee_span,
+                ..
+            } = callee.as_ref()
+        // §11.8.8 (W3-review Important-1) — "the carrier is the IDENTITY". This
+        // post-inference pass runs AFTER the `let`/`fn` scope is popped, so
+        // `env.lookup` can no longer see a shadowing local; consult the CARRIER
+        // VERDICT `infer_var` already recorded for the callee `Var` instead. A
+        // callee resolved to a §4.6 LOCAL binding (`(let [+ (fn [a b] 0)]
+        // (+ 1 2))`, and its `((+ 1) 2)` auto-curry sibling) carries
+        // `VarRef::Local` — the call is on the local closure, NOT the trait
+        // method (mis-dispatch → 3, spec §4.6 violation). The recursion-self
+        // carve-out records `VarRef::Global`, so a genuine self-call still
+        // dispatches. This is the post-scope form of the same discriminator
+        // `CheckState::resolves_to_carrier_identity` applies at the
+        // inference-time seams (the infer_apply post-unify + auto-curry blocks)
+        // — it READS the recorded verdict rather than recomputing it.
         {
             let resolved_args: Vec<Type> = args
                 .iter()
@@ -1291,9 +1535,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 })
                 .collect();
             // Propagate the located no-impl error (F-D2-10); skip on `Ok(None)`.
-            if let Some(dispatch) =
-                self.try_resolve_trait_method(state, name, &resolved_args, *span)?
-            {
+            if let Some(dispatch) = self.try_resolve_trait_method_from_carrier(
+                state,
+                name,
+                *callee_span,
+                &resolved_args,
+                *span,
+            )? {
                 let resolution = self.settle_dispatch(state, *span, dispatch);
                 // S110 0583 leg 1 (deferred dispatch): carrier at the Apply span.
                 state
@@ -1358,7 +1606,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         if let Expr::Var { name, span, .. } = expr
             && !in_callee_position
             && !state.method_resolutions.resolved_calls.contains_key(span)
-            && self.is_trait_method_with_state(state, name)
         {
             // The Var's final type must be a function type for it to be used
             // as a callable value. Read it from the side map and substitute.
@@ -1381,7 +1628,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 // lets the located `no impl of trait Eq` error surface, uniform ×3
                 // modes. `Ok(None)` (deferred/return-dispatch) records nothing, as
                 // before; only `Ok(Some)` records a resolution.
-                match self.try_resolve_trait_method(state, name, &resolved_params, *span) {
+                match self.try_resolve_trait_method_from_carrier(
+                    state,
+                    name,
+                    *span,
+                    &resolved_params,
+                    *span,
+                ) {
                     Ok(Some(dispatch)) => {
                         let resolution = self.settle_dispatch(state, *span, dispatch);
                         // S110 0583 leg 1 (value-position trait method): the carrier
@@ -1429,6 +1682,46 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         Ok(())
     }
 
+    /// Resolve a trait method from the already-recorded Var carrier.
+    ///
+    /// Candidate selection may have replaced a contested written spelling with
+    /// one canonical declaration after the expression was first inferred.  The
+    /// post-inference settlement passes must therefore consume that canonical
+    /// identity, rather than repeat lookup by the raw AST name and potentially
+    /// select a different declaration.  Absence is retained only for legacy
+    /// unit seams that invoke these passes without first inferring the Var.
+    fn try_resolve_trait_method_from_carrier(
+        &self,
+        state: &mut CheckState,
+        written_name: &Symbol,
+        var_span: Span,
+        argument_types: &[Type],
+        call_span: Span,
+    ) -> Result<Option<crate::checker::PendingDispatch>, CranelispError> {
+        match state.method_resolutions.var_refs.get(&var_span).cloned() {
+            Some(VarRef::Global(selected)) => {
+                let is_trait_method = self
+                    .probe_module_entry_owned(&selected.module, selected.symbol.as_ref())
+                    .is_some_and(|binding| matches!(binding.declaration, Decl::TraitMethod(_)));
+                if is_trait_method {
+                    self.try_resolve_selected_trait_method(
+                        state,
+                        &selected,
+                        argument_types,
+                        call_span,
+                    )
+                } else {
+                    Ok(None)
+                }
+            }
+            Some(VarRef::Local { .. }) => Ok(None),
+            None if self.is_trait_method_with_state(state, written_name) => {
+                self.try_resolve_trait_method(state, written_name, argument_types, call_span)
+            }
+            None => Ok(None),
+        }
+    }
+
     fn infer_match(
         &self,
         state: &mut CheckState,
@@ -1446,7 +1739,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let scrutinee_ty = self.infer_expr(state, scrutinee)?;
         let result_ty = self.fresh_var();
 
-        let mut covered_ctors: Vec<Symbol> = Vec::new();
+        let mut covered_ctor_spans: Vec<Span> = Vec::new();
         let mut has_wildcard = false;
 
         for arm in arms {
@@ -1475,7 +1768,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         &scrutinee_ty,
                         *pat_span,
                     )?;
-                    covered_ctors.push(ctor_sym);
+                    covered_ctor_spans.push(*pat_span);
                 }
                 Pattern::Wildcard { .. } => {
                     has_wildcard = true;
@@ -1496,6 +1789,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             self.pop_scope(state);
         }
 
+        // Arm bodies have now constrained the provisional scrutinee/binder
+        // anchors. Select and replay contested constructors before
+        // exhaustiveness consumes their canonical identities.
+        self.settle_pending_candidates(state, false, true)?;
+
         // Check exhaustiveness for concrete ADT scrutinees.
         // The type is defined in `fqtn.module` (its home module), not the
         // current module — under Principle 17 short-name resolution, looking
@@ -1503,6 +1801,23 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // from other modules (e.g. `macros/SList` matched in `fn.threading`).
         let resolved_scrutinee = self.apply_subst(state, &scrutinee_ty);
         if let Type::ADT(fqtn, _) = &resolved_scrutinee {
+            let covered_ctors = covered_ctor_spans
+                .iter()
+                .filter_map(|pattern_span| {
+                    let selected = state.method_resolutions.pattern_ctors.get(pattern_span)?;
+                    let binding =
+                        self.probe_module_entry_owned(&selected.module, selected.symbol.as_ref())?;
+                    let callable = binding.callable()?;
+                    let CallableOrigin::Ctor { type_name, tag, .. } = &callable.origin else {
+                        return None;
+                    };
+                    if type_name != fqtn {
+                        return None;
+                    }
+                    self.lookup_type_def_in_module(&fqtn.module, &fqtn.name)
+                        .and_then(|info| info.constructors.get(*tag).cloned())
+                })
+                .collect::<Vec<_>>();
             self.check_exhaustiveness_in_module(fqtn, &covered_ctors, has_wildcard, span)?;
         }
 
@@ -1540,9 +1855,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // S109), **bare** (`SCons`, current-module + prelude fallback), or
         // **module-qualified** (`macros/SCons`, FQ, load-bearing for every
         // quasiquote macro). `resolve_constructor_entry` dispatches all three.
-        if let Some(cranelisp_types::ModuleEntry::Def { kind, .. }) =
-            self.resolve_constructor_entry(state, name.as_ref())
-            && let cranelisp_types::DefKind::Constructor { type_name, tag, .. } = kind.as_ref()
+        if let Some(entry) = self.resolve_constructor_entry(state, name.as_ref())
+            && let Some(callable) = entry.callable()
+            && let CallableOrigin::Ctor { type_name, tag, .. } = &callable.origin
         {
             let (fq_sym, instantiated) = self.instantiate_ctor(state, type_name, *tag, span)?;
             state.method_resolutions.pattern_ctors.insert(span, fq_sym);
@@ -1583,10 +1898,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     .unwrap_or(false)
             {
                 let key = cranelisp_types::member_key(&fqtn.name, name.as_ref());
-                if let Some(cranelisp_types::ModuleEntry::Def { kind, .. }) =
-                    self.probe_module_entry_owned(&fqtn.module, key.as_ref())
-                    && let cranelisp_types::DefKind::Constructor { type_name, tag, .. } =
-                        kind.as_ref()
+                if let Some(entry) = self.probe_module_entry_owned(&fqtn.module, key.as_ref())
+                    && let Some(callable) = entry.callable()
+                    && let CallableOrigin::Ctor { type_name, tag, .. } = &callable.origin
                     && type_name == fqtn
                 {
                     let (fq_sym, instantiated) =
@@ -1603,14 +1917,38 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 }
             }
 
+            let constructor_candidates = self
+                .scope_resolve_candidates(state, name.as_ref(), span)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|candidate| {
+                    candidate.entry.callable().is_some_and(|callable| {
+                        matches!(callable.origin, CallableOrigin::Ctor { .. })
+                    })
+                })
+                .map(|candidate| candidate.canonical)
+                .collect::<Vec<_>>();
+            if !constructor_candidates.is_empty() {
+                self.collect_pending_pattern_use(
+                    state,
+                    name.clone(),
+                    span,
+                    scrutinee_ty.clone(),
+                    bindings,
+                    constructor_candidates,
+                );
+                self.settle_pending_pattern_uses(state, false)?;
+                return Ok(());
+            }
+
             // The scrutinee did not disambiguate. A CONTESTED (`Ambiguous`) bare
             // name is then a compile-time error listing the canonical
             // alternatives (spec §6.2.1 "poison only when the scrutinee type
             // cannot disambiguate").
-            if matches!(
-                self.resolve_entry_scoped(state, name.as_ref()),
-                Some(ModuleEntry::Ambiguous { .. })
-            ) {
+            if self
+                .scope_resolve_candidates(state, name.as_ref(), span)
+                .is_ok_and(|candidates| candidates.len() > 1)
+            {
                 let owners = self.reconstruct_accessor_alternatives(state, name.as_ref());
                 let hint = if owners.is_empty() {
                     String::new()
@@ -1787,7 +2125,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // resolves against the definition's SHARED written-var scope (spec §3.3
         // co-reference): a body `:a` CO-REFERS to the param's `a` (FV-6), never a
         // fresh per-`Annotate` shadow. Three W6.3 cases (spec §3.3.1/§3.3.3):
-        let mut var_map = state.written_var_scope.take().unwrap_or_default();
+        let mut var_map = state
+            .body_frame
+            .written_var_scope
+            .take()
+            .unwrap_or_default();
         match self.resolve_annotation_type_expr_in_module(
             annotation,
             &mut var_map,
@@ -1803,7 +2145,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // legitimately-polymorphic residual (`:(Vec a) []`) still flows into
             // the §3.11 ambiguity machinery.
             Ok(ann_type) => {
-                state.written_var_scope = Some(var_map);
+                state.body_frame.written_var_scope = Some(var_map);
                 let expr_ty = self.infer_expr(state, expr)?;
                 self.unify(state, &expr_ty, &ann_type, span)?;
                 let resolved = self.apply_subst(state, &ann_type);
@@ -1818,7 +2160,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // return-type-polymorphic form — only a concrete type does (row 17),
             // so a residual var is left for the §3.11 gate.
             Err(type_err) => {
-                state.written_var_scope = Some(var_map);
+                state.body_frame.written_var_scope = Some(var_map);
                 if let Some(tref) = crate::program::single_trait_bound_from_annotation(annotation) {
                     // Resolve the trait's HOME, honouring a qualified module ref
                     // (`:fmt/Display`) DIRECTLY — mirroring `resolve_bound_param`,

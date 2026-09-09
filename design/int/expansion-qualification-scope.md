@@ -121,36 +121,36 @@ structurally, so a form it does not special-case is qualified as ordinary childr
 
 ## 2.4 Residual ruling 1 — the quote shield (FIXME 0699 item 1, Important)
 
-**Verified against source** (`macro_resolution.rs:466–509`): `qualify_scoped`
-dispatches `Sexp::List` on `is_binding_form(head)` only; a `(quote …)` or
-`quasiquote` list has a **non-binding head**, so it falls to the "recurse into
-every child" arm (`:491–497`) and **rewrites symbols inside quoted DATA**. A
-foreign macro expanding to `'(name)` — where `name` lives in a defining module and
-is absent from the current module — yields `'(dm/name)`, a **different runtime
-value**. `expand_scoped` already holds quoted data out of the walk (Rule Q / Rule
-QQ, `quote-shield.md`); `qualify_scoped` has no such shield. Same defect family as
-0613.
+**Current state.** The Rule Q / Rule QQ shield is present in both int walks:
+`qualify_scoped` and `qualify_shield_qq` call int's local
+`expander::quote_head`, as do `expand_scoped` and `shield_qq`. The shared
+`cranelisp_types::quote_head`/`QuoteHead` contract now controls the structural
+classification beside `Sexp`, and the frontend fold consumes it. Int has not
+yet migrated: C6 is allocated to turn its local classifier into a thin bridge
+to that shared contract (`s121-c6-visit.md` §1). Until that bridge lands, the
+local classifier preserves the shield behaviour but remains the duplicate the
+shared contract retires.
 
 **Ruling.** A symbol inside quoted data is **not a reference at all**, so the §2.1
-rule ("qualify iff a free reference") already excludes it — the walk's arm list
-merely never named the quote family. `qualify_scoped` gains the **Rule Q / Rule QQ
-equivalent**, structurally identical to `expand_scoped`'s shield (Principle 7 — one
-shield model, not a second copy):
+rule ("qualify iff a free reference") already excludes it. `qualify_scoped`'s
+shield is the **Rule Q / Rule QQ equivalent**, structurally identical to
+`expand_scoped`'s shield (Principle 7 — one shield model, not a second copy):
 
-- `(quote X)` — recognized **structurally** by the SAME test the expander shield
-  and the fold use (`quasiquote.rs::is_quote`: bare-symbol head `quote` + `len()==2`,
-  consulting neither `shadows` nor the resolver) — is held **fully verbatim** (no
-  descent);
-- a `quasiquote` body (`quasiquote.rs::is_quasiquote`) is walked holding everything
-  verbatim **except** the body of a **live** `unquote`/`unquote-splicing`, which is
-  re-entered through `qualify_scoped` (ordinary expression position, §9.4.2),
-  tracking quasiquote nesting depth exactly as the expander's `shield_qq` does. If
-  the two structural tests ever diverge, a subtree gets mis-qualified — so both
-  walks MUST call the one `quasiquote.rs` predicate, never a private copy.
+- `(quote X)` — classified by
+  `cranelisp_types::quote_head(children) == Some(QuoteHead::Quote)`, the exact
+  two-element bare-head test that consults neither `shadows` nor the resolver —
+  is held **fully verbatim** (no descent);
+- a body classified as `QuoteHead::Quasiquote` is walked holding everything
+  verbatim **except** the body of a live `QuoteHead::Unquote` or
+  `QuoteHead::UnquoteSplicing`, which is re-entered through `qualify_scoped`
+  (ordinary expression position, §9.4.2), tracking quasiquote nesting depth
+  exactly as the expander's `shield_qq` does. Both int walks MUST consume the
+  shared classifier through the allocated C6 bridge; they must not retain a
+  second structural test.
 
-**Routing:** `target: /dev(int)` + a /qa cell (a foreign macro expanding to `'(name)`
-where `name` collides with a defining-module symbol; assert the quoted datum stays
-bare).
+**C6 bridge evidence:** retain the /qa cell in which a foreign macro expands to
+`'(name)` while `name` collides with a defining-module symbol; the quoted datum
+must stay bare before and after replacing the local classifier.
 
 ## 2.5 Residual ruling 2 — defn self-name in body scope (FIXME 0699 item 2, Minor)
 

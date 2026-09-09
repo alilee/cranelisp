@@ -138,7 +138,7 @@ Pair(A, B)
 
 `Pair` is defined in the `primitives` module and participates in the type system as an ordinary parameterised ADT. It is **not** auto-imported: user code must import it explicitly (e.g., `(import [primitives [Pair]])`) or use qualified names (e.g., `primitives/Pair`). It is the element type of the `discover-tests` result `(Vec (Pair String (Fn [] (Option String))))` (see [Appendix A.3](appendix-a-builtins.md#test-discovery-and-error-capture)) — each pair carries a test's fully-qualified name and its late-bound callable.
 
-A test function is any zero-argument function whose name begins with `test-` and whose type is exactly `(Fn [] (Option String))`. `None` indicates pass; `Some(reason)` indicates failure with a human-readable reason. Test discovery and execution are composed from ordinary library code over `discover-tests` and `catch-runtime-error` (see [Appendix A.3](appendix-a-builtins.md#test-discovery-and-error-capture) and [repl/spec.md §16](../repl/spec.md#16-test-discovery-and-execution)); there is no dedicated test-result type.
+A test function is any zero-argument function whose name begins with `test-` and whose type is exactly `(Fn [] (Option String))`. `None` indicates pass; `Some(reason)` indicates failure with a human-readable reason. Test discovery and execution are composed from ordinary library code over `discover-tests` and `catch-runtime-error` (see [Appendix A.3](appendix-a-builtins.md#test-discovery-and-error-capture) and [repl/spec/16-test-discovery.md §16](../repl/spec/16-test-discovery.md#16-test-discovery-and-execution)); there is no dedicated test-result type.
 
 ### 3.2.7 Vec Type [Tested crates/cranelisp-typecheck/src/resolve.rs::test_resolve_applied_builtin_vec_wrong_arity]
 
@@ -223,7 +223,40 @@ What Cranelisp does **not** support is **rank-2 / first-class polymorphism** —
 
 2. **Rank-2 argument.** A polymorphic value passed as an argument and applied at two types inside the callee is rejected by unification: `(defn apply2 [f] (pair (f "x") (f 5)))` fails — the parameter `f` carries a single monotype for the body-check, so it cannot serve both `String` and `Int` (row 19). This is the same restriction [§3.10](#310-rank-1-hindley-milner) states as "a function MUST NOT take a polymorphic function as an argument and use it at two different types within its body."
 
-3. **Result-only variable held unresolved.** A type variable that appears **only in a called function's result** is pinned by no argument; it must be fixed to a **concrete** type at the use that reaches code generation. A named definition that merely *returns* such a value is sound and code-less until instantiated (see [§3.11.3](#3113-a-named-polymorphic-definition-with-result-only-free-variables-is-sound-not-ambiguous), disposition 1); but a **use** that forces codegen with the variable unpinned — e.g. `(defn g [] (constf 5))` whose result variable no argument fixes — is the [§3.11](#311-ambiguous-types) ambiguous-type error ("pin the type"), the same monomorphisation family as return-type dispatch (§3.3.3, rows 13–16). This is a monomorphisation limitation, **not** a rank-1 rejection of the returning definition.
+3. **Result-only variable held unresolved.** A type variable that appears **only in a called function's result** must be fixed to a concrete type by its surrounding use or a concrete type annotation before that use reaches code generation. A named definition that merely returns such a value is admitted and code-less until instantiated (§3.11.3); an unresolved runtime use is the §3.11 ambiguity type error, not a rejection of the returning definition. [Tested+Neg tests/spec_03_types::result_only_var_unused_named_wrapper_accepted, tests/spec_03_types::result_only_var_unresolved_use_ambiguity_not_rank1_neg]
+
+The following definition is accepted:
+
+```clojure
+(defn g [] (fn [y] 100))
+```
+
+Independent calls are accepted because each is resolved by its own use:
+
+```clojure
+(defn main []
+  (Pure (add-i64 ((g) 5) ((g) "heap"))))
+```
+
+Using one returned function instance at incompatible types is rejected as a
+unification conflict; the `let` binding does not generalize it:
+
+```clojure
+(defn main []
+  (Pure
+    (let [f (g)]
+      (add-i64 (f 5) (f "heap")))))
+```
+
+A runtime result still containing an unresolved type variable is rejected as
+an ambiguity type error:
+
+```clojure
+(defn main [] (Pure (g)))
+```
+
+In the final example, `g` remains an accepted polymorphic definition; the
+codegen-reaching use in `main` is rejected. [Tested+Neg tests/shadowing_scope_lookup::result_only_returned_closure_specializes_at_int_and_string, tests/spec_03_types::single_poly_instance_used_at_two_types_value_restriction_neg, tests/spec_03_types::result_only_var_unresolved_use_ambiguity_not_rank1_neg]
 
 > **MUST (f) — a rank-1 polymorphic function value may be returned or contained (written ≡ unwritten).** A definition that returns or contains a function whose type is rank-1 polymorphic (every `∀` at the enclosing definition's own boundary) MUST be accepted, whether or not the returned lambda's parameters carry written annotations. `(defn mk [] (fn [:b y] y))` MUST be accepted with type `∀a. (Fn [] (Fn [a] a))`, and a written `:b` MUST NOT be treated differently from an unwritten parameter. (Row 10.) [S109]
 
@@ -319,22 +352,42 @@ The inference algorithm relies on five core operations:
 
 **`generalize(T, env)`** -- Quantify over all type variables in `T` that are not free in the environment `env`. Variables with accumulated trait constraints carry those constraints into the resulting scheme.
 
-### 3.5.2 Two-Pass Checking
+### 3.5.2 Two-Pass Checking [Tested+Neg tests/process_form_dispatch::process_form_dispatch_begin_cluster_resolves_mutual_forward_ref, crates/cranelisp-typecheck/src/program/register/tests.rs::same_cluster_duplicate_direct_definition_is_rejected_during_registration]
 
-To support forward references and mutual recursion among top-level definitions, the typechecker uses a two-pass strategy. At file scope this applies across all top-level forms; at the REPL it applies across the forms in a single `begin` cluster (see [§5.13.2](05-definitions.md#5132-repl-input-boundary-and-begin-clusters)).
+To support forward references and mutual recursion, fully expanded non-macro
+definitions are checked as one cluster. At file scope the cluster contains the
+module's non-macro definitions; at the REPL it contains the non-macro forms in
+one `begin` (see
+[§5.13.2](05-definitions.md#5132-repl-input-boundary-and-begin-clusters)).
+Macros instead follow the source-ordered checkpoint rule in
+[§9.12](09-macros.md#912-bootstrapping-order).
 
-**Pass 1 -- Registration**: All top-level `defn` names are registered with fresh type variables for their parameter types and return type:
+**Pass 1 -- Registration**: Each non-macro binding head and its fresh inference
+variables are introduced into private cluster state. For a `defn`, those
+variables include its parameter and return types:
 
 ```
 fact : Fn([t0], t1)    -- parameter and return are unknowns
 main : Fn([], t2)
 ```
 
-**Pass 2 -- Checking**: Each function body is checked in an environment that includes all registered names. Parameter type variables are added to the local environment, the body is inferred, and the result is unified with the function's return type variable. The substitution map accumulates all constraints.
+This representation is an inference scaffold, not a typechecked or published
+provisional signature.
 
-After both passes complete, all function types are generalized into schemes.
+**Pass 2 -- Checking**: Every non-macro body is checked against the shared
+private cluster state. For a function, parameter type variables are added to
+the local environment, the body is inferred, and the result is unified with
+the function's return type variable. The substitution map accumulates the
+cluster's constraints.
 
-This two-pass approach ensures that any function can reference any other function defined in the same scope, regardless of textual order. Recursive and mutually recursive definitions are handled naturally.
+Only if every non-macro definition succeeds are the inferred types finalized,
+function types generalized into schemes, and the cluster published. A failure
+publishes none of the non-macro definitions.
+
+This two-pass approach lets a non-macro definition reference another non-macro
+definition in the same cluster regardless of textual order. Recursive and
+mutually recursive definitions are handled naturally; it does not make a macro
+available before that macro's source-ordered checkpoint succeeds.
 
 ### 3.5.3 Inference Rules [Tested]
 
@@ -375,6 +428,8 @@ G |- x : T'
 ```
 
 When a variable is referenced, its scheme is looked up in the environment and instantiated with fresh type variables. This is the source of let-polymorphism: each use of a polymorphic name gets independent type variables.
+
+**Module-scope candidate references. [Tested+Neg tests/spec_05_definitions::accessor_cross_type_duplicate_field_name, tests/spec_05_definitions::bare_field_ambiguity_message_lists_both_alternatives]** A module-scope spelling may supply several canonical candidates under §8.6.5. Each typed candidate is instantiated independently by the rule above so ordinary unification can eliminate incompatible candidates. The selected declaration is the sole candidate remaining after ordinary constraints settle; if several remain, the reference is a name-ambiguity error rather than a value with a union or overloaded runtime type.
 
 #### Let Binding
 
@@ -481,7 +536,8 @@ Consider the factorial function:
   (if (= n 0) 1 (* n (fact (- n 1)))))
 ```
 
-**Pass 1**: Register `fact : Fn([t0], t1)`.
+**Pass 1**: Register `fact : Fn([t0], t1)` in private cluster state. This is an
+inference scaffold, not a published signature.
 
 **Pass 2**: Infer body with `n : t0`:
 
@@ -558,35 +614,31 @@ Constraints propagate through three mechanisms:
 - **Instantiation**: When a constrained scheme is instantiated, constraints are copied to the fresh type variables.
 - **Generalization**: Constraints on variables that are being quantified are preserved in the resulting scheme.
 
-### 3.6.3 Monomorphisation [Tested tests/spec_03_types::constrained_add_int, tests/spec_03_types::constrained_add_float, tests/spec_07_traits::constrained_polymorphism_int_then_float]
+### 3.6.3 Monomorphisation [Tested+Neg tests/shadowing_scope_lookup::result_only_returned_closure_specializes_at_int_and_string, tests/cache::cache_result_only_returned_closure_specializations_agree_uncached_cold_and_warm, tests/spec_03_types::result_only_var_unused_named_wrapper_accepted, tests/spec_03_types::result_only_var_unresolved_use_ambiguity_not_rank1_neg]
 
-Constrained functions are compiled by **monomorphisation** at call sites. Each distinct combination of concrete type arguments generates a specialized version of the function:
+A polymorphic definition is specialized using the concrete substitutions for
+its generalized type variables. These substitutions may be determined by
+argument types, by constraints on the result from its surrounding use or a
+concrete type annotation, or by both.
 
-```clojure
-(add 1 2)       ; generates add$Int+Int   : Fn([Int, Int], Int)
-(add 1.0 2.0)   ; generates add$Float+Float : Fn([Float, Float], Float)
-```
+Each use independently instantiates the definition's scheme. This includes
+zero-argument functions and variables occurring only within the result type,
+including returned functions and containers.
 
-The monomorphisation process:
+Identical argument types do not imply identical specializations when the
+required result types differ. Deferred trait resolutions use the resulting
+concrete substitutions.
 
-1. At a call site, the concrete argument types are determined by inference.
-2. The constrained scheme's type variables are mapped to the concrete types.
-3. Deferred trait method resolutions are re-resolved with the concrete types.
-4. A specialized function definition is emitted with a mangled name.
-5. The call site is rewritten to dispatch to the specialized version.
+A codegen-reaching use whose type variables remain unresolved MUST produce
+the ambiguity type error specified in §3.11. A named polymorphic definition
+is not rejected merely because it requires specialization at a later use.
 
-### 3.6.4 Name Mangling
+### 3.6.4 Name Mangling [Tested+Neg crates/cranelisp-types/src/module/tests.rs::result_only_substitutions_distinguish_instances_and_reuse_equal_vectors, crates/cranelisp-types/src/module/tests.rs::demand_key_uses_storage_symbol_but_excludes_diagnostic_site]
 
-Specialization names are formed by appending the concrete parameter types, separated by `+`:
-
-```
-function_name$Type1+Type2+...+TypeN
-```
-
-Examples:
-- `add$Int+Int`
-- `add$Float+Float`
-- `compare$String+String`
+Internal names for generic specializations are implementation-defined. Their
+identity MUST distinguish the definition and its concrete generic
+substitutions, including substitutions determined only from result context.
+The encoding of that identity is not language syntax.
 
 ### 3.6.5 Iterative Monomorphisation
 
@@ -734,7 +786,7 @@ unify(ADT(name1, [A1..An]), ADT(name2, [B1..Bm])):
 
 ADTs unify when they have the same name. Type arguments are unified pairwise.
 
-**Type identity is nominal and fully-qualified.** The `name` compared above is the ADT's fully-qualified identity — its home module together with its type name (`FQTypeName`), not the bare name. Two ADTs declared in **different modules** are therefore **distinct types even when they share a bare name and have byte-identical definitions**: `primitives/Option` and `fn.option/Option` do NOT unify, and a value of one does not match a constructor pattern of the other (`primitives/None` does not match `fn.option/Option`'s `None`). This is the standard nominal-typing property; structural coincidence never causes two independently-declared types to be interchangeable. It is the type-system backdrop for the fully-qualified name-resolution discipline in [§8.6.4](08-modules.md#864-conflict-rules): because same-named types from different modules are genuinely different, the fully-qualified reference (`module/Name`) is the unambiguous way to name exactly the one intended.
+**Type identity is nominal and fully-qualified.** The `name` compared above is the ADT's fully-qualified identity — its home module together with its type name (`FQTypeName`), not the bare name. Two ADTs declared in **different modules** are therefore **distinct types even when they share a bare name and have byte-identical definitions**: `primitives/Option` and `fn.option/Option` do NOT unify, and a value of one does not match a constructor pattern of the other (`primitives/None` does not match `fn.option/Option`'s `None`). This is the standard nominal-typing property; structural coincidence never causes two independently-declared types to be interchangeable. It is the type-system backdrop for the use-site name-resolution discipline in [§8.6.5](08-modules.md#865-use-site-selection-and-ambiguity): because same-named types from different modules are genuinely different, the fully-qualified reference (`module/Name`) is the unambiguous way to name exactly the one intended.
 
 ### 3.8.5 Type Constructor Application
 
@@ -793,7 +845,7 @@ Stacking is **nesting**, not a flat run: each `:` binds the immediately-followin
 
 ### 3.9.3 Annotation Resolution
 
-When the annotation name is ambiguous (could be either a type or a trait), the typechecker first attempts to resolve it as a concrete type. If no type with that name exists, it is resolved as a trait constraint. If neither exists, a type error is produced.
+When the annotation name could denote either a type or a trait, the typechecker first considers visible concrete-type candidates. If exactly one exists, it supplies the type reading. If several exist, the annotation name is ambiguous and MUST be canonically qualified (§8.6.5). Only when no type candidate exists does the typechecker consider trait candidates, which likewise require qualification when several remain. If neither category has a candidate, a type error is produced. [Tested+Neg crates/cranelisp-typecheck/src/resolve/tests.rs::named_type_ignores_same_spelling_trait_method_candidate, crates/cranelisp-typecheck/src/resolve/tests.rs::named_type_reports_all_same_spelling_type_candidates]
 
 ## 3.10 Rank-1 Hindley-Milner [Tested tests/regression::mono_tier2_fold_accumulator_not_over_monomorphised]
 
@@ -802,6 +854,8 @@ Cranelisp is a **rank-1** (prenex, predicative) Hindley-Milner language. Univers
 - **No quantified types in value position.** A value never has a polytype. Every value, binding, parameter, and field carries a **monotype** at the point it is used. A type scheme exists only as the generalized signature of a top-level definition (and other generalization boundaries per [§3.5](#35-type-inference-algorithm-w)); a scheme is not itself a first-class value that can be applied at two different types. There is no rank-2 (or higher) polymorphism: a function MUST NOT take a polymorphic function as an argument and use it at two different types within its body, and a single polymorphic *instance* bound as a value MUST NOT be used at two different types (value restriction — see [§3.3.4](#334-rank-1-polymorphic-function-values-are-returnable-only-rank-2-use-is-unsupported)). A definition MAY, however, **return or contain** a function whose type is rank-1 polymorphic — every `∀` at the returning definition's own boundary (prenex): `(defn mk [] (fn [:b y] y))` of scheme `∀a. (Fn [] (Fn [a] a))` is **accepted**, because each call instantiates it at one concrete type, and the returned function is a value only at that instantiated monotype (see [§3.3.4](#334-rank-1-polymorphic-function-values-are-returnable-only-rank-2-use-is-unsupported)). [S84; rank-1-return corrected S109]
 
 - **Instantiation at every use site.** Each reference to a polymorphic name instantiates its scheme with fresh unification variables (see the Variable Reference rule in [§3.5.3](#353-inference-rules)). Distinct uses of the same polymorphic name receive independent instantiations; this is the sole source of polymorphism in the language. [S84]
+
+- **Candidate filtering does not add overload search. [Uncovered S121]** When one module-scope spelling has several typed candidates (§8.6.5), inference MAY eliminate a candidate whose freshly-instantiated scheme cannot unify with the ordinary constraints at that use. It MUST NOT branch, backtrack, or enumerate combinations of choices across uses. Constraints may propagate normally and candidate filtering may be revisited to a fixed point; if that process does not leave exactly one candidate at each reference, the source MUST disambiguate with a canonical qualification or a concrete annotation. This deliberately rejects a program whose only resolution could be discovered by combinatorial overload search.
 
 - **Monomorphic recursion.** A recursive (or mutually recursive) call MUST use the *same* monotype instantiation of the recursive definition that is in force while its body is being checked — it MUST NOT instantiate the definition polymorphically at the recursive call. Polymorphic recursion (a recursive call at a type strictly more general than, or otherwise differing from, the enclosing definition's checked instantiation) is **not supported** and MUST be rejected as a type error. This is the standard Hindley-Milner restriction and is what keeps full monomorphisation-from-roots (see [§3.6.3](#363-monomorphisation)) finite and complete. [S84]
 
@@ -841,11 +895,11 @@ Restricting *import* ambiguity does **not** avoid the use-site ambiguity rule, a
 
 ### 3.11.2 A bare polymorphic value at the REPL is NOT ambiguous [S84]
 
-Entering a **bare, unpinned polymorphic value** at the REPL — `None` (type `∀a. (Option a)`), `[]` (type `∀a. (Vec a)`), or any other value whose finalized type retains an unconstrained, legitimately-quantified scheme variable — is **NOT an error.** Such an input does not reach code generation as a runtime value: there is no slot to fill, no specialization to emit, and no machine representation to choose. Instead, the REPL **displays the value's polymorphic type via introspection**, in `:Type value` form (e.g. `:(…/Option a) Option.None`, or the `Vec` type prefix with `[]`). This is the self-documenting-REPL principle: every valid language construct entered at the REPL produces useful feedback — here, the form's polymorphic type — rather than an opaque rejection. The normative display contract for this case is owned by `repl/spec.md` (the REPL experience specification); §3.11 only fixes that this case is a **type-display disposition, not an ambiguity error**. [S84]
+Entering a **bare, unpinned polymorphic value** at the REPL — `None` (type `∀a. (Option a)`), `[]` (type `∀a. (Vec a)`), or any other value whose finalized type retains an unconstrained, legitimately-quantified scheme variable — is **NOT an error.** Such an input does not reach code generation as a runtime value: there is no slot to fill, no specialization to emit, and no machine representation to choose. Instead, the REPL **displays the value's polymorphic type via introspection**, in `:Type value` form (e.g. `:(…/Option a) Option.None`, or the `Vec` type prefix with `[]`). This is the self-documenting-REPL principle: every valid language construct entered at the REPL produces useful feedback — here, the form's polymorphic type — rather than an opaque rejection. The normative display contract for this case is owned by `repl/spec/01-display-format.md`; §3.11 only fixes that this case is a **type-display disposition, not an ambiguity error**. [S84]
 
 This does not weaken the no-defaulting rule: the REPL does **not** pick a concrete type for the displayed value. It reports the value's polymorphic type as-is. The §3.11.1 ambiguity error still fires the moment that same value is placed in a position that forces codegen without pinning the variable (e.g. `(let [x None] (some-runtime-use x))` where `x` must become a runtime value at an unpinned type).
 
-### 3.11.3 A named polymorphic definition with result-only free variables is SOUND, not ambiguous [Tested tests/regression::mono_ambiguous_neg_does_not_reach_codegen]
+### 3.11.3 A named polymorphic definition with result-only free variables is SOUND, not ambiguous [Tested+Neg tests/spec_03_types::result_only_var_unused_named_wrapper_accepted, tests/spec_03_types::result_only_var_unresolved_use_ambiguity_not_rank1_neg, tests/shadowing_scope_lookup::result_only_returned_closure_specializes_at_int_and_string]
 
 A **named top-level definition** whose generalized scheme retains free type variables that appear **only in its result** — `(defn empty [] [])` of type `∀a. (Fn [] (Vec a))`, `(defn ambig [] None)` of type `∀a. (Fn [] (Option a))`, or any `pure`/`empty`-style nullary constructor wrapper — is **admitted, not rejected.** Under rank-1 HM (see [§3.10](#310-rank-1-hindley-milner)), such a definition is a legitimate polymorphic scheme: it is **dead for code generation until instantiated at a concrete use site**, where instantiation-at-use (§3.10) pins the variable and monomorphisation mints a concrete instance for that use. The definition itself emits no specialization; only its concrete uses do. [S84]
 

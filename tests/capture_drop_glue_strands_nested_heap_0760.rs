@@ -114,7 +114,7 @@ fn nested_chain(depth: usize) -> String {
     let mut open = String::new();
     let mut close = String::new();
     for i in 1..=depth {
-        defs.push_str(&format!("(deftype T{i} (W{i} [f]))\n"));
+        defs.push_str(&format!("(deftype (T{i} a) (W{i} [:a f]))\n"));
         open.push_str(&format!("(W{i} "));
         close.push(')');
     }
@@ -149,7 +149,7 @@ fn closure_capturing_vec_of_strings_does_not_leak() {
 #[test]
 fn closure_capturing_adt_with_string_field_does_not_leak() {
     let src = format!(
-        "(deftype W (Wr [s]))\n\
+        "(deftype (W a) (Wr [:a s]))\n\
          (defn mk [] (let [w (Wr \"hello\")] \
            (fn [c] (add-i64 c (match w [(Wr s) (str-len s)])))))\n\
          (defn one [] ((mk) 2))\n{DRIVER}"
@@ -197,7 +197,7 @@ fn borrowed_argument_twins_of_k_and_l_balance_green() {
     assert_balanced("control (Vec of Strings as a Borrowed argument)", &vec_arg);
 
     let adt_arg = format!(
-        "(deftype W (Wr [s]))\n\
+        "(deftype (W a) (Wr [:a s]))\n\
          (defn use [w c] (add-i64 c (match w [(Wr s) (str-len s)])))\n\
          (defn one [] (let [w (Wr \"hello\")] (use w 2)))\n{DRIVER}"
     );
@@ -221,16 +221,16 @@ fn borrowed_argument_twins_of_k_and_l_balance_green() {
 #[test]
 fn adt_wrapping_vec_of_adts_balances_green() {
     let scalar_leaf = format!(
-        "(deftype C (Cell [v]))\n\
-         (deftype G (Gr [cells]))\n\
+        "(deftype (C a) (Cell [:a v]))\n\
+         (deftype (G a) (Gr [:a cells]))\n\
          (defn peek [g] (match g [(Gr cs) (match (vec-get cs 0) [(Cell v) v])]))\n\
          (defn one [] (peek (Gr [(Cell 5) (Cell 6)])))\n{DRIVER}"
     );
     assert_balanced("nested (ADT → Vec of ADTs → scalar)", &scalar_leaf);
 
     let string_leaf = format!(
-        "(deftype C (Cell [s]))\n\
-         (deftype G (Gr [cells]))\n\
+        "(deftype (C a) (Cell [:a s]))\n\
+         (deftype (G a) (Gr [:a cells]))\n\
          (defn peek [g] (match g [(Gr cs) (match (vec-get cs 0) [(Cell s) (str-len s)])]))\n\
          (defn one [] (peek (Gr [(Cell \"aa\") (Cell \"bbb\")])))\n{DRIVER}"
     );

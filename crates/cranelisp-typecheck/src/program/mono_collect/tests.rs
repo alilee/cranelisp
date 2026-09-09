@@ -13,6 +13,46 @@ mod batch;
 mod carriers;
 
 mod multi_sig;
+mod result_context;
+
+// spec: 03-types §3.6.3 — result context supplies distinct complete substitutions.
+#[test]
+fn result_context_nullary_instances_have_distinct_schemes_links_and_slots() {
+    let mut tc = tc_with_prims();
+    check_src(
+        &mut tc,
+        "(defn g [] (fn [y] 100)) (defn main [] (add-i64 ((g) 5) ((g) \"heap\"))) (defn again [] ((g) 6))",
+    );
+    let table = tc.symbol_table();
+    let mut slots = Vec::new();
+    let mut keys = Vec::new();
+    for ty in [Type::Int, Type::String] {
+        let link = cranelisp_types::InstanceLink::from_type_args(
+            CallableTarget::Binding(FQSymbol {
+                module: tc.state.current_module.clone(),
+                symbol: Symbol::from("g"),
+            }),
+            vec![ConcreteType::from_type(&ty).unwrap()],
+        );
+        let binding = table
+            .get(&link.instance_key())
+            .expect("result-specific instance exists");
+        let callable = binding.callable().unwrap();
+        assert_eq!(
+            callable.arm.scheme.ty,
+            Type::Fn(vec![], Box::new(Type::Fn(vec![ty], Box::new(Type::Int))))
+        );
+        assert!(
+            matches!(&callable.arm.life, Life::Concrete { minted_from: Some(actual), .. } if actual == &link)
+        );
+        slots.push(binding.callable_got_slot().unwrap());
+        keys.push(link.instance_key());
+    }
+    assert_ne!(slots[0], slots[1]);
+    drop(table);
+    result_context::assert_instance_references(&tc, "main", &keys);
+    result_context::assert_instance_references(&tc, "again", &keys[..1]);
+}
 
 // spec: 03-types §3.6 — collect_constrained_calls finds direct call to constrained fn
 #[test]
@@ -170,7 +210,7 @@ fn test_collect_constrained_calls_recurses_into_if() {
 }
 
 // spec: design/arch/concrete-boundary-type.md §2.4 — Phase 2b mono-population
-// seam. A monomorphised instance (`add$Int+Int` from a generic `add`) now
+// seam. A monomorphised instance (`add$Int` from a generic `add`) now
 // carries a concrete-boundary `MonoDefnVariant` whose `MonoExpr` body is
 // fully `ConcreteType`-annotated. `MonoExpr::from_expr` runs at the seam for
 // every instance (the validation payoff) and the produced variant is retained
@@ -205,7 +245,7 @@ fn mono_instance_carries_concrete_boundary_monoexpr_body() {
     });
     let _ = tc.check_repl_input_self(&defn_input).unwrap();
 
-    // (add 3 4) — pins `add` to `Int`, minting `add$Int+Int`.
+    // (add 3 4) — pins `add` to `Int`, minting `add$Int`.
     let expr_input = TopLevel::Expr(Expr::Apply {
         callee: Box::new(Expr::var(Symbol::from("add"), span(100, 103))),
         args: vec![
@@ -233,10 +273,10 @@ fn mono_instance_carries_concrete_boundary_monoexpr_body() {
     let variants = tc.mono_variants();
     let v = variants
         .iter()
-        .find(|v| v.name.as_ref() == "test/add$Int+Int")
+        .find(|v| v.name.as_ref() == "test/add$Int")
         .unwrap_or_else(|| {
             panic!(
-                "expected a MonoDefnVariant for test/add$Int+Int, got {:?}",
+                "expected a MonoDefnVariant for test/add$Int, got {:?}",
                 variants.iter().map(|v| v.name.as_ref()).collect::<Vec<_>>()
             )
         });
@@ -320,13 +360,11 @@ fn caller_codegen_view_carries_post_mono_sigdispatch() {
     // resolved_call — it MUST be SigDispatch{id$Int}, proving the view was
     // rebuilt AFTER the mono pass rewrote the dispatch.
     let st = tc.symbol_table();
-    let main_view = match st.get("main") {
-        Some(ModuleEntry::Def {
-            codegen_view: Some(v),
-            ..
-        }) => v.clone(),
-        other => panic!("main has no codegen_view: {other:?}"),
-    };
+    let main_view = st
+        .get("main")
+        .and_then(Binding::codegen_view)
+        .cloned()
+        .expect("main has codegen_view");
 
     fn collect_sig_dispatch(e: &MonoExpr, out: &mut Vec<String>) {
         let rc = match e {
@@ -363,8 +401,14 @@ fn caller_codegen_view_carries_post_mono_sigdispatch() {
             }
             _ => None,
         };
-        if let Some(ResolvedCall::SigDispatch { mangled_name }) = rc {
-            out.push(mangled_name.as_ref().to_string());
+        if let Some(ResolvedCall::SigDispatch { target }) = rc {
+            let owner = match target {
+                CallableTarget::Binding(owner)
+                | CallableTarget::OverloadArm { owner, .. }
+                | CallableTarget::MacroClause { owner, .. } => owner,
+                _ => return,
+            };
+            out.push(owner.symbol.as_ref().to_string());
         }
     }
 
@@ -414,12 +458,14 @@ fn box_field_through_hof_monomorphises_concrete() {
     // The generic `mk` template is slot-less Polymorphic.
     assert!(
         matches!(
-            tc.symbol_table().get("mk"),
-            Some(ModuleEntry::Def { kind, .. })
-                if matches!(
-                    kind.as_ref(),
-                    DefKind::UserFn { fn_state: UserFnState::Polymorphic(_) }
-                )
+            tc.symbol_table()
+                .get("mk")
+                .and_then(Binding::callable)
+                .map(|c| &c.arm.life),
+            Some(Life::Template {
+                kind: TemplateKind::Parametric,
+                ..
+            })
         ),
         "the generic `mk` template must be slot-less Polymorphic",
     );
@@ -428,17 +474,17 @@ fn box_field_through_hof_monomorphises_concrete() {
     // own concrete param type `Int`) — a concrete, slotted mono instance
     // with a fully-concrete `(Fn [Int] (Box Int))` stored type (no residual
     // `Type::Var` ADT field).
-    match tc.symbol_table().get("test/mk$Int") {
-        Some(ModuleEntry::Def { kind, scheme, .. }) => {
+    match tc
+        .symbol_table()
+        .get("test/mk$Int")
+        .and_then(Binding::callable)
+    {
+        Some(callable) => {
             assert!(
-                matches!(
-                    kind.as_ref(),
-                    DefKind::UserFn {
-                        fn_state: UserFnState::Concrete { .. }
-                    }
-                ),
-                "mk$Int must be a Concrete (slotted) mono instance, got {kind:?}",
+                matches!(callable.arm.life, Life::Concrete { .. }),
+                "mk$Int must be a Concrete (slotted) mono instance",
             );
+            let scheme = &callable.arm.scheme;
             assert!(
                 scheme.ty.is_concrete(),
                 "mk$Int's stored type must be fully concrete (no Type::Var \
@@ -513,7 +559,7 @@ fn fn_value_in_concrete_multi_sig_clause_minted_and_carried_sugg7() {
     );
     // 2. The carrier covers the base-entry AST-rename skip: `ms$Int`'s
     //    codegen_view resolves the `mk` fn-value `Var` to `mk$Int` (benign).
-    let view = mono_instance_view_containing(&tc, "ms$Int");
+    let view = overload_arm_codegen_view(&tc, "ms", 0);
     let mut targets = Vec::new();
     collect_resolved_targets(&view.body, &mut targets);
     let mk_carrier = targets.iter().any(|(l, fq)| {
@@ -571,15 +617,22 @@ fn cross_module_imported_constrained_fn_monomorphises_in_defining_scope() {
         .expect("constrained `cmp` must type-check in its defining module");
 
     // Sanity: `cmp` is registered as a CONSTRAINED UserFn in `helper`.
-    match tc.modules.get(&helper).unwrap().get("cmp") {
-        Some(ModuleEntry::Def { kind, .. }) => assert!(
+    match tc
+        .modules
+        .get(&helper)
+        .unwrap()
+        .get("cmp")
+        .and_then(Binding::callable)
+    {
+        Some(callable) => assert!(
             matches!(
-                kind.as_ref(),
-                DefKind::UserFn {
-                    fn_state: UserFnState::Constrained(_)
+                callable.arm.life,
+                Life::Template {
+                    kind: TemplateKind::Constrained(_),
+                    ..
                 }
             ),
-            "cmp must be a constrained UserFn in `helper`, got {kind:?}",
+            "cmp must be a constrained template in `helper`",
         ),
         other => panic!("cmp not a Def in helper: {other:?}"),
     }
@@ -633,14 +686,8 @@ fn cross_module_imported_constrained_fn_monomorphises_in_defining_scope() {
         .filter(|(name, _)| name.as_ref().contains("cmp$"))
         .map(|(name, entry)| {
             let concrete = matches!(
-                entry,
-                ModuleEntry::Def {
-                    kind,
-                    ..
-                } if matches!(
-                    kind.as_ref(),
-                    DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
-                )
+                entry.callable().map(|c| &c.arm.life),
+                Some(Life::Concrete { .. })
             );
             (name.as_ref().to_string(), concrete)
         })
@@ -699,16 +746,25 @@ fn def1_bare_prelude_fallback_polymorphic_call_mints_mono_in_consumer() {
 
     // Sanity: `count` is a PUBLIC pure-parametric polymorphic UserFn in
     // `prelude` (a slot-less template — the mono-collectible shape).
-    match tc.modules.get(&prelude).unwrap().get("count") {
-        Some(ModuleEntry::Def { kind, scheme, .. }) => {
+    match tc
+        .modules
+        .get(&prelude)
+        .unwrap()
+        .get("count")
+        .and_then(Binding::callable)
+    {
+        Some(callable) => {
             assert!(
                 matches!(
-                    kind.as_ref(),
-                    DefKind::UserFn { fn_state }
-                        if !matches!(fn_state, UserFnState::Constrained(_))
+                    callable.arm.life,
+                    Life::Template {
+                        kind: TemplateKind::Parametric,
+                        ..
+                    }
                 ),
-                "count must be a non-constrained UserFn template, got {kind:?}",
+                "count must be a non-constrained template",
             );
+            let scheme = &callable.arm.scheme;
             assert!(
                 !scheme.type_vars.is_empty(),
                 "count must be polymorphic (a generic template), got {scheme:?}",
@@ -759,12 +815,8 @@ fn def1_bare_prelude_fallback_polymorphic_call_mints_mono_in_consumer() {
         .filter(|(name, _)| name.as_ref().contains("count$"))
         .map(|(name, entry)| {
             let concrete = matches!(
-                entry,
-                ModuleEntry::Def { kind, .. }
-                    if matches!(
-                        kind.as_ref(),
-                        DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
-                    )
+                entry.callable().map(|c| &c.arm.life),
+                Some(Life::Concrete { .. })
             );
             (name.as_ref().to_string(), concrete)
         })
@@ -841,8 +893,8 @@ fn polymorphic_result_hops_monomorphise_with_concrete_result_type() {
             // FIXME 0519: mono name home-qualified; match the `hN$` infix.
             .find(|(n, _)| n.as_ref().contains(prefix))
             .unwrap_or_else(|| panic!("no mono entry for {prefix}"));
-        match entry {
-            ModuleEntry::Def { scheme, .. } => match &scheme.ty {
+        match entry.callable() {
+            Some(callable) => match &callable.arm.scheme.ty {
                 Type::Fn(_, ret) => assert_eq!(
                     ret.as_ref(),
                     &Type::Int,
@@ -928,17 +980,13 @@ fn cross_module_polymorphic_result_hops_monomorphise_with_concrete_result_type()
                     .collect();
                 panic!("no mono entry for {prefix} in caller; symbols: {all:?}")
             });
-        match entry {
-            ModuleEntry::Def { scheme, kind, .. } => {
+        match entry.callable() {
+            Some(callable) => {
                 assert!(
-                    matches!(
-                        kind.as_ref(),
-                        DefKind::UserFn {
-                            fn_state: UserFnState::Concrete { .. }
-                        }
-                    ),
-                    "{name} mono must be a Concrete UserFn (its own GOT slot), got {kind:?}",
+                    matches!(callable.arm.life, Life::Concrete { .. }),
+                    "{name} mono must be a Concrete callable (its own GOT slot)",
                 );
+                let scheme = &callable.arm.scheme;
                 match &scheme.ty {
                     Type::Fn(_, ret) => assert_eq!(
                         ret.as_ref(),
@@ -976,10 +1024,12 @@ fn u_c1_fold_bodied_scheme_ties_result_to_params() {
     let mut tc = tc_with_prims();
     check_src(&mut tc, FOLD_SRC);
 
-    let scheme = match tc.symbol_table().get("vconcat") {
-        Some(ModuleEntry::Def { scheme, .. }) => scheme.clone(),
-        other => panic!("vconcat not a Def: {other:?}"),
-    };
+    let scheme = tc
+        .symbol_table()
+        .get("vconcat")
+        .and_then(Binding::callable)
+        .map(|callable| callable.arm.scheme.clone())
+        .expect("vconcat callable");
     // Exactly ONE quantified var — the element var shared across both
     // (Vec _) params and the (Vec _) result.
     assert_eq!(
@@ -1039,9 +1089,9 @@ fn u_c2_minted_mono_scheme_return_is_concrete() {
         .all_symbols()
         // FIXME 0519: mono name is home-qualified with a lossless sig.
         .find(|(n, _)| n.as_ref().contains("vconcat$"))
-        .and_then(|(n, e)| match e {
-            ModuleEntry::Def { scheme, .. } => Some((n.as_ref().to_string(), scheme.clone())),
-            _ => None,
+        .and_then(|(n, e)| {
+            e.callable()
+                .map(|c| (n.as_ref().to_string(), c.arm.scheme.clone()))
         })
         .expect("a `vconcat$..` mono instance must be minted for the concrete call");
     assert!(
@@ -1218,7 +1268,7 @@ fn fq_is_trait_method_decl_discriminates_decl_from_callable() {
 // is proven to detect). This cell pins the CONTRACT for the multi-sig form; it
 // does NOT detect a discipline flip at the per-variant drain seam
 // (`program/body.rs:441` `Deferrable`→`Final` leaves it GREEN, measured S115
-// W4b). The reason is structural: the 1-arity clause here stays a `$Var`
+// W4b). The reason is structural: the 1-arity clause here stays an owned
 // template, so the observable carrier is minted by the mono-body RECHECK — a
 // `Final` seam — which re-derives it from settled state regardless of what the
 // per-variant drain concluded. Five of the six drain seams have no unit-tier
@@ -1233,8 +1283,8 @@ fn autocurry_in_a_multi_sig_clause_never_carries_the_decl_fq() {
         "(defn g ([x] (+ x)) ([x y] (+ x y)))\n\
          (defn h [] ((g 3) 4))",
     );
-    // The 1-arity clause is a `$Var` template; `(g 3)` mints its instance.
-    let view = mono_instance_view_containing(&tc, "g$");
+    // The 1-arity clause is owned arm 0; `(g 3)` mints its typed instance.
+    let view = mono_instance_view_containing(&tc, "g__arm0$");
     match autocurry_dispatch_in(&view) {
         cranelisp_types::ApplyRef::Dispatch(fq) => {
             assert!(

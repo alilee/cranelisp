@@ -52,7 +52,8 @@ fn spark_op_absent_reads_true() {
     assert!(s2.spark_op(1));
 }
 
-// --- Defaults are the Decision-24 conservative point ---
+// --- Defaults are the caller-side Decision-24 point (a present default
+// summary is NOT the absence fallback — ownership.rs §Monotone defaults) ---
 
 #[test]
 fn default_summary_is_abi_conservative() {
@@ -187,6 +188,51 @@ fn may_alias_of_is_non_conservative_and_serde_stable() {
         ..Default::default()
     };
     assert!(!cow.abi_eq(&alias));
+}
+
+// --- MayAliasAny (S121 §19.2) — the result axis's ⊤ ---
+
+// spec: design/typecheck/ownership-inference.md §19.2 — MayAliasAny is a
+// distinct, index-less, serde-visible unit variant; NON-conservative for the
+// `== Fresh` binaries (protect kept), ABI-distinct from Fresh and from every
+// indexed may-alias point; the `Default` stays Fresh.
+#[test]
+fn may_alias_any_is_top_indexless_non_conservative_and_serde_stable() {
+    let top = ModeSummary {
+        result: ResultMode::MayAliasAny,
+        ..Default::default()
+    };
+    // Defaults are unchanged by the addition.
+    assert_eq!(ResultMode::default(), ResultMode::Fresh);
+    // The two `== Fresh` escape reads classify it non-conservative.
+    assert!(
+        !top.is_abi_conservative(),
+        "MayAliasAny is the result ⊤, never the Fresh conservative point"
+    );
+    assert!(!ModeSummary::abi_eq_opt(Some(&top), None));
+    // Serde: a unit variant with no payload; the persisted spelling is pinned
+    // because it is the schema-27 cache shape.
+    let json = serde_json::to_string(&top).unwrap();
+    assert!(
+        json.contains("\"result\":\"MayAliasAny\""),
+        "persisted shape must be the bare unit-variant string: {json}"
+    );
+    let back: ModeSummary = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.result, ResultMode::MayAliasAny);
+    assert!(back.abi_eq(&top));
+    // ABI-distinct from Fresh and from the indexed conditional points — a
+    // MayAliasOf(k) → MayAliasAny redefinition IS an R3 ABI change.
+    assert!(!top.abi_eq(&ModeSummary::default()));
+    for k in 0..2 {
+        let indexed = ModeSummary {
+            result: ResultMode::MayAliasOf(k),
+            ..Default::default()
+        };
+        assert!(
+            !top.abi_eq(&indexed),
+            "MayAliasAny must not ABI-equal MayAliasOf({k})"
+        );
+    }
 }
 
 // --- The toggle is a read-once bool (polarity consistency) ---

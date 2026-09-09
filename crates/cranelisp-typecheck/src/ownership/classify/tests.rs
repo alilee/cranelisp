@@ -8,8 +8,8 @@
 //!   `Copy` classifier admits exactly `{Int, Bool, Float}`; memo determinism.
 
 use cranelisp_types::{
-    ConcreteType, FQTypeName, JitSymbol, ModuleFullPath, MonoExpr, ResolvedCall, Span, Symbol,
-    TypeName,
+    CallableTarget, ConcreteType, FQSymbol, FQTypeName, JitSymbol, ModuleFullPath, MonoExpr,
+    ResolvedCall, Span, Symbol, TypeName,
 };
 
 use super::*;
@@ -52,10 +52,13 @@ fn adt(name: &str) -> ConcreteType {
 // --- Complexity matrix: the eight §2.1 rows ---
 
 #[test]
-fn row_sigdispatch_is_summarised_by_mangled_name() {
+fn row_sigdispatch_is_summarised_by_authored_owner() {
     // spec: design/typecheck/ownership-inference.md §2.1 — Var+SigDispatch ⇒ static moded
     let rc = ResolvedCall::SigDispatch {
-        mangled_name: JitSymbol::from("id$Int"),
+        target: CallableTarget::Binding(FQSymbol {
+            module: ModuleFullPath::from("user"),
+            symbol: Symbol::from("id$Int"),
+        }),
     };
     let got = classify_call(Some(&rc), &var("id"), |_| None);
     assert_eq!(got, CallClass::Summarised(Symbol::from("id$Int")));
@@ -148,7 +151,10 @@ fn row_autocurry_is_decision24() {
 fn resolved_call_dominates_and_resolver_not_consulted() {
     // spec: §2.1 — a resolved SigDispatch never consults the None-row resolver
     let rc = ResolvedCall::SigDispatch {
-        mangled_name: JitSymbol::from("f$Int"),
+        target: CallableTarget::Binding(FQSymbol {
+            module: ModuleFullPath::from("user"),
+            symbol: Symbol::from("f$Int"),
+        }),
     };
     // Resolver would say Decision-24 (PinnedBoundary) but must be ignored.
     let got = classify_call(Some(&rc), &var("f"), |_| Some(TerminalKind::PinnedBoundary));

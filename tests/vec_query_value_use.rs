@@ -172,7 +172,7 @@ fn vec_get_returned_from_fn_applies() {
 #[test]
 fn vec_get_stored_in_adt_field_applies() {
     repl_prims(
-        "(deftype VHolder (VHolder [:(Fn [(Vec Int) Int] Int) vop]))\n\
+        "(deftype VHolder [:(Fn [(Vec Int) Int] Int) vop])\n\
          (match (VHolder vec-get) [(VHolder f) (f [10 20 30] 1)])\n",
     )
     .assert_ok()

@@ -32,8 +32,8 @@
 //! the world the prior `seed_synthetic_modules` + `seed_test_primitives` pair
 //! produced; `TestFixture::new()` delegates to it. The per-preset CONTENT
 //! (schemes, ADT shapes) is typecheck-owned and stays here; entries are built
-//! through `cranelisp_types::ModuleEntry::def` (Tier 1) — no raw struct
-//! literals.
+//! through typed `cranelisp_types::SymbolTable` lifecycle funnels — no raw
+//! lifecycle structs.
 //!
 //! Traits (Num, Eq, Ord, Display) and their impls are ordinary Cranelisp
 //! defined in prelude `.cl` files, NOT seeded here. Tests that need operators
@@ -46,8 +46,9 @@ use std::collections::HashMap;
 use cranelisp_types::TypeId;
 #[cfg(test)]
 use cranelisp_types::{
-    ConstructorDef, DefKind, FQTypeName, FieldDef, ModuleEntry, ModuleFullPath, Scheme, Span,
-    Symbol, Type, TypeDefInfo, TypeExpr, TypeName, Visibility,
+    Binding, CallableOrigin, ConstructorDef, Decl, FQTypeName, FieldDef, LinkerSymbol,
+    ModuleFullPath, Realization, Scheme, Span, SpecialFormRecord, Symbol, SynthSpec, TemplateBody,
+    TemplateKind, Type, TypeDefInfo, TypeExpr, TypeName, TypeRecord, Visibility,
 };
 
 /// Helper: create FQTypeName in the "primitives" module.
@@ -76,8 +77,8 @@ use crate::scheme::mono;
 /// The CONTENT each preset seeds (schemes per spec Appendix A.2/A.3/A.5, ADT
 /// shapes per spec §9.1 / §10) is typecheck-specific and spec-mandated — it
 /// stays here. The generic per-table assembly machinery lives in
-/// `cranelisp_types::test_support` (Tier 2); the Tier-1 `ModuleEntry::def`
-/// builder constructs the entries.
+/// `cranelisp_types::test_support` (Tier 2); typed lifecycle funnels construct
+/// the entries.
 ///
 /// Ordering matters at compose time (bootstrap dependencies):
 /// - `BuiltinTypeNames` must precede `MacrosSexp` (Sexp/SList fields reference
@@ -270,18 +271,20 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         });
 
         for (name, desc) in special_forms {
-            root_table.insert(
-                Symbol::from(name),
-                ModuleEntry::SpecialForm {
-                    // Special forms don't have meaningful type schemes.
-                    // Use a dummy scheme that won't be instantiated.
-                    scheme: mono(Type::Int),
-                    param_names: vec![],
-                    docstring: Some(desc.to_string()),
-                    description: desc.to_string(),
-                    visibility: Visibility::Public,
-                },
-            );
+            root_table
+                .install_binding(
+                    Symbol::from(name),
+                    Binding::new(
+                        Decl::SpecialForm(SpecialFormRecord::new(
+                            mono(Type::Int),
+                            vec![],
+                            Some(desc.to_string()),
+                            desc.to_string(),
+                        )),
+                        Visibility::Public,
+                    ),
+                )
+                .unwrap_or_else(|e| unreachable!("special-form fixture must install: {e}"));
         }
     }
 
@@ -326,29 +329,37 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
 
         for (name, ty, desc) in intrinsic_scalars {
-            primitives_table.insert(
-                Symbol::from(name),
-                ModuleEntry::IntrinsicType {
-                    ty,
-                    visibility: Visibility::Public,
-                    docstring: Some(desc.to_string()),
-                },
-            );
+            primitives_table
+                .install_binding(
+                    Symbol::from(name),
+                    Binding::new(
+                        Decl::Type(TypeRecord::Intrinsic {
+                            ty,
+                            docstring: Some(desc.to_string()),
+                        }),
+                        Visibility::Public,
+                    ),
+                )
+                .unwrap_or_else(|e| unreachable!("intrinsic fixture must install: {e}"));
         }
 
         for (name, desc) in typedef_builtins {
-            primitives_table.insert(
-                Symbol::from(name),
-                ModuleEntry::TypeDef {
-                    info: TypeDefInfo {
-                        name: primitives_fqtn(name),
-                        type_params: vec![],
-                        constructors: vec![],
-                    },
-                    visibility: Visibility::Public,
-                    docstring: Some(desc.to_string()),
-                },
-            );
+            primitives_table
+                .install_binding(
+                    Symbol::from(name),
+                    Binding::new(
+                        Decl::Type(TypeRecord::Defined {
+                            info: TypeDefInfo {
+                                name: primitives_fqtn(name),
+                                type_params: vec![],
+                                constructors: vec![],
+                            },
+                            docstring: Some(desc.to_string()),
+                        }),
+                        Visibility::Public,
+                    ),
+                )
+                .unwrap_or_else(|e| unreachable!("type fixture must install: {e}"));
         }
     }
 
@@ -397,13 +408,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 module: primitives_path.clone(),
                 symbol: Symbol::from(sym),
             };
-            self.current_symbol_table_mut(state).insert(
-                Symbol::from(sym),
-                ModuleEntry::Import {
-                    source,
-                    visibility: Visibility::Private,
-                },
-            );
+            self.current_symbol_table_mut(state)
+                .expose_candidate(Symbol::from(sym), source, Visibility::Private)
+                .unwrap_or_else(|e| unreachable!("import fixture must install: {e}"));
         }
 
         self.register_slist_type(state);
@@ -436,13 +443,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // masked the missing `PrimitiveExtern` classifier arm; the fixture now
         // exercises the real production representation.
         let mut st = self.current_symbol_table_mut(state);
-        st.insert(
+        st.install_host_promised(
             Symbol::from("sconcat"),
-            ModuleEntry::def(mono(sconcat_type), DefKind::PrimitiveExtern)
-                .docstring("Concatenate two SList Sexp values")
-                .param_names(vec![Symbol::from("a"), Symbol::from("b")])
-                .build(),
-        );
+            mono(sconcat_type),
+            vec![Symbol::from("a"), Symbol::from("b")],
+            Some("Concatenate two SList Sexp values".into()),
+            0,
+            Visibility::Public,
+        )
+        .unwrap_or_else(|e| unreachable!("host-promised fixture must install: {e}"));
     }
 
     /// Register `(deftype (SList a) SNil (SCons [:a shead :(SList a) stail]))`.
@@ -455,18 +464,22 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 .modules
                 .get_mut(&macros_path)
                 .unwrap_or_else(|| unreachable!("invariant: macros module should exist"));
-            macros_table.insert(
-                Symbol::from("SList"),
-                ModuleEntry::TypeDef {
-                    info: TypeDefInfo {
-                        name: macros_fqtn("SList"),
-                        type_params: vec![Symbol::from("a")],
-                        constructors: vec![],
-                    },
-                    visibility: Visibility::Public,
-                    docstring: None,
-                },
-            );
+            macros_table
+                .install_binding(
+                    Symbol::from("SList"),
+                    Binding::new(
+                        Decl::Type(TypeRecord::Defined {
+                            info: TypeDefInfo {
+                                name: macros_fqtn("SList"),
+                                type_params: vec![Symbol::from("a")],
+                                constructors: vec![],
+                            },
+                            docstring: None,
+                        }),
+                        Visibility::Public,
+                    ),
+                )
+                .unwrap_or_else(|e| unreachable!("SList fixture must install: {e}"));
         }
 
         let slist_ctors = vec![
@@ -522,18 +535,22 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 .modules
                 .get_mut(&macros_path)
                 .unwrap_or_else(|| unreachable!("invariant: macros module should exist"));
-            macros_table.insert(
-                Symbol::from("Sexp"),
-                ModuleEntry::TypeDef {
-                    info: TypeDefInfo {
-                        name: macros_fqtn("Sexp"),
-                        type_params: vec![],
-                        constructors: vec![],
-                    },
-                    visibility: Visibility::Public,
-                    docstring: None,
-                },
-            );
+            macros_table
+                .install_binding(
+                    Symbol::from("Sexp"),
+                    Binding::new(
+                        Decl::Type(TypeRecord::Defined {
+                            info: TypeDefInfo {
+                                name: macros_fqtn("Sexp"),
+                                type_params: vec![],
+                                constructors: vec![],
+                            },
+                            docstring: None,
+                        }),
+                        Visibility::Public,
+                    ),
+                )
+                .unwrap_or_else(|e| unreachable!("Sexp fixture must install: {e}"));
         }
 
         let slist_sexp = TypeExpr::Applied(
@@ -760,56 +777,68 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             .modules
             .get_mut(&primitives_path)
             .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
-        if let Some(ModuleEntry::TypeDef { info, .. }) =
-            primitives_table.symbols.get_mut(&Symbol::from("IO"))
-        {
-            info.constructors.push(Symbol::from("Bind"));
-        } else {
-            unreachable!("invariant: IO type should be registered before adding Bind");
-        }
+        let (mut io_info, io_docstring) = match primitives_table.get("IO") {
+            Some(Binding {
+                declaration: Decl::Type(TypeRecord::Defined { info, docstring }),
+                ..
+            }) => (info.clone(), docstring.clone()),
+            _ => unreachable!("invariant: IO type should be registered first"),
+        };
+        io_info.constructors.push(Symbol::from("Bind"));
+        primitives_table
+            .remove_non_callable(&Symbol::from("IO"))
+            .unwrap_or_else(|e| unreachable!("IO fixture must be replaceable: {e}"));
+        primitives_table
+            .install_binding(
+                Symbol::from("IO"),
+                Binding::new(
+                    Decl::Type(TypeRecord::Defined {
+                        info: io_info,
+                        docstring: io_docstring,
+                    }),
+                    Visibility::Public,
+                ),
+            )
+            .unwrap_or_else(|e| unreachable!("IO fixture must reinstall: {e}"));
         // **Uniform canonical keying (S109 W1):** mirror the LIVE `bootstrap.rs`
         // shape — the real `Bind` `Def` under `IO.Bind` (`member_key`), the bare
         // `Bind` an `Import` alias onto it (this fixture stands in for the int
         // seeds, so it must not keep a bare-keyed sum-ctor `Def`).
-        let bind_ctor_slot = primitives_table.allocate_got_slot().unwrap_or_else(|_| {
-            unreachable!("invariant: bootstrap seeding cannot exhaust a fresh GOT")
-        });
         let bind_canonical = cranelisp_types::member_key(&io_fqtn.name, "Bind");
-        primitives_table.insert(
-            bind_canonical.clone(),
-            ModuleEntry::def(
+        primitives_table
+            .install_template(
+                bind_canonical.clone(),
                 bind_ctor_scheme,
-                DefKind::Constructor {
-                    got_slot: bind_ctor_slot,
+                bind_param_names,
+                Some("Chain IO actions (internal — constructed by bind primitive)".into()),
+                0,
+                CallableOrigin::Ctor {
                     type_name: io_fqtn.clone(),
                     tag: 2,
                     field_count: bind_field_count,
                     internal: true,
-                    // `Bind` is a sum ctor of `IO` (Pure/Effect/Bind), not a
-                    // product type — it has no type facet (S79 Option 3a).
                     type_def: None,
-                    mode_summary: None,
                 },
+                TemplateBody::Synth(SynthSpec::new(cranelisp_types::DefnVariant {
+                    params: synth_params,
+                    body: synth_body,
+                    span: body_span,
+                })),
+                TemplateKind::Parametric,
+                Vec::new(),
+                Visibility::Public,
             )
-            .docstring("Chain IO actions (internal — constructed by bind primitive)")
-            .param_names(bind_param_names)
-            .ast(cranelisp_types::DefnVariant {
-                params: synth_params,
-                body: synth_body,
-                span: body_span,
-            })
-            .build(),
-        );
-        primitives_table.insert(
-            Symbol::from("Bind"),
-            ModuleEntry::Import {
-                source: cranelisp_types::FQSymbol {
+            .unwrap_or_else(|e| unreachable!("Bind template fixture must install: {e}"));
+        primitives_table
+            .expose_candidate(
+                Symbol::from("Bind"),
+                cranelisp_types::FQSymbol {
                     module: io_fqtn.module.clone(),
                     symbol: bind_canonical,
                 },
-                visibility: cranelisp_types::Visibility::Public,
-            },
-        );
+                Visibility::Public,
+            )
+            .unwrap_or_else(|e| unreachable!("Bind alias fixture must install: {e}"));
     }
 
     /// Register `bind` as an inline primitive in the `primitives` module.
@@ -850,13 +879,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // slot-less `DefKind::PrimitiveExtern`. The fixture now matches the
         // production representation (was `Primitive { got_slot }`, which hid the
         // missing `PrimitiveExtern` classifier arm).
-        primitives_table.insert(
-            Symbol::from("bind"),
-            ModuleEntry::def(bind_scheme, DefKind::PrimitiveExtern)
-                .docstring("Chain IO actions: extract value from first IO, pass to continuation")
-                .param_names(vec![Symbol::from("io"), Symbol::from("f")])
-                .build(),
-        );
+        primitives_table
+            .install_host_promised(
+                Symbol::from("bind"),
+                bind_scheme,
+                vec![Symbol::from("io"), Symbol::from("f")],
+                Some("Chain IO actions: extract value from first IO, pass to continuation".into()),
+                0,
+                Visibility::Public,
+            )
+            .unwrap_or_else(|e| unreachable!("bind fixture must install: {e}"));
     }
 }
 
@@ -1096,28 +1128,38 @@ pub(crate) fn seed_test_primitives<C, L>(
             .get_mut(&primitives_path)
             .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
         for (name, ty, param_names) in mono_primitives {
-            // A genuine GOT-slotted primitive is an addressable callable — its
-            // slot rides on `DefKind::Primitive.got_slot` (S83 deferred
-            // allocation, Principle 20). Allocate it at registration
-            // (primitives are born concrete).
-            //
             // FIXME 0360 (ruled S83 /arch, Path 1): `quote-sexp` is the
             // exception — it dispatches by name as a `Linkage::Import` (the
             // `is_extern_primitive` arm, never GOT-indirect), so it is slot-less
             // `DefKind::PrimitiveExtern`. Seeding it `Primitive { got_slot }`
             // masked the missing `PrimitiveExtern` classifier arm.
-            let kind = if name == "quote-sexp" {
-                DefKind::PrimitiveExtern
+            let scheme = mono(ty);
+            let docstring = builtin_docstring(name);
+            if name == "quote-sexp" {
+                prims
+                    .install_host_promised(
+                        Symbol::from(name),
+                        scheme,
+                        param_names,
+                        docstring,
+                        0,
+                        Visibility::Public,
+                    )
+                    .unwrap_or_else(|e| unreachable!("host primitive fixture must install: {e}"));
             } else {
-                DefKind::primitive(prims.allocate_got_slot().unwrap_or_else(|_| {
-                    unreachable!("invariant: bootstrap seeding cannot exhaust a fresh GOT")
-                }))
-            };
-            let mut builder = ModuleEntry::def(mono(ty), kind).param_names(param_names);
-            if let Some(doc) = builtin_docstring(name) {
-                builder = builder.docstring(doc);
+                prims
+                    .install_extern(
+                        Symbol::from(name),
+                        scheme,
+                        param_names,
+                        docstring,
+                        0,
+                        None,
+                        None,
+                        Visibility::Public,
+                    )
+                    .unwrap_or_else(|e| unreachable!("extern primitive fixture must install: {e}"));
             }
-            prims.insert(Symbol::from(name), builder.build());
         }
     }
 
@@ -1179,15 +1221,22 @@ pub(crate) fn seed_test_primitives<C, L>(
                 constraints: HashMap::new(),
                 ty,
             };
-            let got_slot = prims.allocate_got_slot().unwrap_or_else(|_| {
-                unreachable!("invariant: bootstrap seeding cannot exhaust a fresh GOT")
-            });
-            let mut builder =
-                ModuleEntry::def(scheme, DefKind::primitive(got_slot)).param_names(param_names);
-            if let Some(doc) = builtin_docstring(name) {
-                builder = builder.docstring(doc);
-            }
-            prims.insert(Symbol::from(name), builder.build());
+            prims
+                .install_template(
+                    Symbol::from(name),
+                    scheme,
+                    param_names,
+                    builtin_docstring(name),
+                    0,
+                    CallableOrigin::RustPrimitive,
+                    TemplateBody::UniformRust {
+                        abi_name: LinkerSymbol::from(name),
+                    },
+                    TemplateKind::Parametric,
+                    Vec::new(),
+                    Visibility::Public,
+                )
+                .unwrap_or_else(|e| unreachable!("generic primitive fixture must install: {e}"));
         }
     }
 
@@ -1203,7 +1252,7 @@ pub(crate) fn seed_test_primitives<C, L>(
 mod tests {
     use super::*;
     use crate::checker::TestFixture;
-    use cranelisp_types::{ModuleEntry, Type};
+    use cranelisp_types::{Life, Type};
 
     /// Helper: get the `primitives` module's symbol table from a TestFixture.
     fn primitives_table(
@@ -1218,15 +1267,16 @@ mod tests {
     /// Test helper: resolve a constructor by its BARE name to the terminal `Def`,
     /// following the S109 same-module bare→canonical `Import` alias one hop (a
     /// sum ctor's real `Def` is keyed `Type.Ctor` via `member_key`, the bare name
-    /// an alias). Type-agnostic.
-    fn ctor_entry<'t>(
-        table: &'t cranelisp_types::SymbolTable,
-        name: &str,
-    ) -> Option<&'t ModuleEntry> {
-        match table.get(name)? {
-            ModuleEntry::Import { source, .. } => table.get(source.symbol.as_ref()),
-            e => Some(e),
+    /// a name candidate). Type-agnostic.
+    fn ctor_entry<'t>(table: &'t cranelisp_types::SymbolTable, name: &str) -> Option<&'t Binding> {
+        if let Some(entry) = table.get(name) {
+            return Some(entry);
         }
+        let candidates = table.name_candidates(&Symbol::from(name));
+        let candidate = candidates.as_slice().first()?;
+        (candidates.len() == 1 && candidate.source.module == table.path)
+            .then(|| table.get(candidate.source.symbol.as_ref()))
+            .flatten()
     }
 
     // spec: design/arch/fixmes/0239 — Tier-3 presets compose opt-in, not all-on.
@@ -1251,18 +1301,18 @@ mod tests {
 
     // spec: design/arch/fixmes/0241 — Tier-2 SymbolTableBuilder resolves in the
     // typecheck test build (test-support feature) and round-trips an entry built
-    // via the Tier-1 ModuleEntry::def constructor.
+    // via the typed declaration funnel.
     #[test]
     fn test_tier2_symbol_table_builder_visible() {
+        use cranelisp_types::Symbol;
         use cranelisp_types::test_support::SymbolTableBuilder;
-        use cranelisp_types::{DefKind, Symbol};
         let table: cranelisp_types::SymbolTable =
             SymbolTableBuilder::new(ModuleFullPath::from("t"))
-                .entry(
+                .declared(
                     Symbol::from("k"),
-                    ModuleEntry::def(crate::scheme::mono(Type::Int), DefKind::primitive(0))
-                        .docstring("const")
-                        .build(),
+                    crate::scheme::mono(Type::Int),
+                    CallableOrigin::Plain,
+                    Visibility::Public,
                 )
                 .build();
         assert!(table.get("k").is_some());
@@ -1300,19 +1350,25 @@ mod tests {
         table: &cranelisp_types::SymbolTable,
         name: &str,
     ) -> Option<(usize, usize, bool, FQTypeName)> {
-        match ctor_entry(table, name)? {
-            ModuleEntry::Def { kind, .. } => match kind.as_ref() {
-                DefKind::Constructor {
-                    tag,
-                    field_count,
-                    internal,
-                    type_name,
-                    ..
-                } => Some((*tag, *field_count, *internal, type_name.clone())),
-                _ => None,
-            },
+        match &ctor_entry(table, name)?.callable()?.origin {
+            CallableOrigin::Ctor {
+                tag,
+                field_count,
+                internal,
+                type_name,
+                ..
+            } => Some((*tag, *field_count, *internal, type_name.clone())),
             _ => None,
         }
+    }
+
+    fn callable_scheme<'t>(table: &'t cranelisp_types::SymbolTable, name: &str) -> &'t Scheme {
+        &table
+            .get(name)
+            .and_then(Binding::callable)
+            .unwrap_or_else(|| panic!("{name} must be a callable fixture"))
+            .arm
+            .scheme
     }
 
     // spec: appendix-a-builtins §A.2 — all ring-0 primitives registered in primitives module
@@ -1333,7 +1389,9 @@ mod tests {
     #[test]
     fn test_add_i64_scheme() {
         let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
-        if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tf).get("add-i64") {
+        {
+            let table = primitives_table(&tf);
+            let scheme = callable_scheme(&table, "add-i64");
             // Monomorphic: no quantified vars
             assert!(
                 scheme.type_vars.is_empty(),
@@ -1344,8 +1402,6 @@ mod tests {
                 Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
                 "add-i64: (Fn [Int Int] Int)"
             );
-        } else {
-            panic!("add-i64 not found in symbol table");
         }
     }
 
@@ -1353,7 +1409,9 @@ mod tests {
     #[test]
     fn test_add_f64_scheme() {
         let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
-        if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tf).get("add-f64") {
+        {
+            let table = primitives_table(&tf);
+            let scheme = callable_scheme(&table, "add-f64");
             assert!(
                 scheme.type_vars.is_empty(),
                 "add-f64 should have no quantified vars"
@@ -1363,8 +1421,6 @@ mod tests {
                 Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Float)),
                 "add-f64: (Fn [Float Float] Float)"
             );
-        } else {
-            panic!("add-f64 not found in symbol table");
         }
     }
 
@@ -1372,7 +1428,9 @@ mod tests {
     #[test]
     fn test_eq_i64_scheme() {
         let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
-        if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tf).get("eq-i64") {
+        {
+            let table = primitives_table(&tf);
+            let scheme = callable_scheme(&table, "eq-i64");
             assert!(
                 scheme.type_vars.is_empty(),
                 "eq-i64 should have no quantified vars"
@@ -1382,8 +1440,6 @@ mod tests {
                 Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Bool)),
                 "eq-i64: (Fn [Int Int] Bool)"
             );
-        } else {
-            panic!("eq-i64 not found in symbol table");
         }
     }
 
@@ -1391,7 +1447,9 @@ mod tests {
     #[test]
     fn test_not_scheme() {
         let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
-        if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tf).get("not") {
+        {
+            let table = primitives_table(&tf);
+            let scheme = callable_scheme(&table, "not");
             assert!(
                 scheme.type_vars.is_empty(),
                 "not should have no quantified vars"
@@ -1401,8 +1459,6 @@ mod tests {
                 Type::Fn(vec![Type::Bool], Box::new(Type::Bool)),
                 "not: (Fn [Bool] Bool)"
             );
-        } else {
-            panic!("not not found in symbol table");
         }
     }
 
@@ -1410,14 +1466,15 @@ mod tests {
     #[test]
     fn test_primitives_are_inline_kind() {
         let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
-        if let Some(ModuleEntry::Def { kind, .. }) = primitives_table(&tf).get("add-i64") {
-            assert!(
-                matches!(kind.as_ref(), DefKind::Primitive { .. }),
-                "add-i64 should be Primitive::Inline"
-            );
-        } else {
-            panic!("add-i64 not found");
-        }
+        let table = primitives_table(&tf);
+        let callable = table.get("add-i64").and_then(Binding::callable).unwrap();
+        assert!(matches!(
+            callable.arm.life,
+            Life::Concrete {
+                realization: Realization::ExternShim { .. },
+                ..
+            }
+        ));
     }
 
     // spec: appendix-a-builtins §A.1 — special forms registered in root `""` table
@@ -1443,7 +1500,10 @@ mod tests {
                 "special form {name} should be registered in root \"\""
             );
             assert!(
-                matches!(entry, Some(ModuleEntry::SpecialForm { .. })),
+                matches!(
+                    entry.map(|entry| &entry.declaration),
+                    Some(Decl::SpecialForm(_))
+                ),
                 "{name} should be a SpecialForm"
             );
         }
@@ -1504,7 +1564,10 @@ mod tests {
     #[test]
     fn test_vec_get_scheme_is_polymorphic() {
         let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
-        if let Some(ModuleEntry::Def { scheme, kind, .. }) = primitives_table(&tf).get("vec-get") {
+        {
+            let table = primitives_table(&tf);
+            let callable = table.get("vec-get").and_then(Binding::callable).unwrap();
+            let scheme = &callable.arm.scheme;
             assert_eq!(
                 scheme.type_vars.len(),
                 1,
@@ -1520,11 +1583,15 @@ mod tests {
                 panic!("vec-get should be a function type");
             }
             assert!(
-                matches!(kind.as_ref(), DefKind::Primitive { .. }),
-                "vec-get should be Primitive::Extern"
+                matches!(
+                    callable.arm.life,
+                    Life::Template {
+                        body: TemplateBody::UniformRust { .. },
+                        ..
+                    }
+                ),
+                "vec-get should be a uniform Rust template"
             );
-        } else {
-            panic!("vec-get not found");
         }
     }
 
@@ -1532,7 +1599,9 @@ mod tests {
     #[test]
     fn test_vec_set_scheme_is_polymorphic() {
         let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
-        if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tf).get("vec-set") {
+        {
+            let table = primitives_table(&tf);
+            let scheme = callable_scheme(&table, "vec-set");
             assert_eq!(
                 scheme.type_vars.len(),
                 1,
@@ -1547,8 +1616,6 @@ mod tests {
             } else {
                 panic!("vec-set should be a function type");
             }
-        } else {
-            panic!("vec-set not found");
         }
     }
 
@@ -1556,7 +1623,9 @@ mod tests {
     #[test]
     fn test_vec_push_scheme_is_polymorphic() {
         let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
-        if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tf).get("vec-push") {
+        {
+            let table = primitives_table(&tf);
+            let scheme = callable_scheme(&table, "vec-push");
             assert_eq!(
                 scheme.type_vars.len(),
                 1,
@@ -1568,8 +1637,6 @@ mod tests {
             } else {
                 panic!("vec-push should be a function type");
             }
-        } else {
-            panic!("vec-push not found");
         }
     }
 
@@ -1577,7 +1644,9 @@ mod tests {
     #[test]
     fn test_vec_len_scheme_is_polymorphic() {
         let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
-        if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tf).get("vec-len") {
+        {
+            let table = primitives_table(&tf);
+            let scheme = callable_scheme(&table, "vec-len");
             assert_eq!(
                 scheme.type_vars.len(),
                 1,
@@ -1590,8 +1659,6 @@ mod tests {
             } else {
                 panic!("vec-len should be a function type");
             }
-        } else {
-            panic!("vec-len not found");
         }
     }
 
@@ -1685,16 +1752,17 @@ mod tests {
         );
         let macros_path = ModuleFullPath::from("macros");
         let macros_table = tf.modules.get(&macros_path).unwrap();
-        if let Some(ModuleEntry::Def { kind, scheme, .. }) = ctor_entry(&macros_table, "SNil") {
-            if let DefKind::Constructor {
+        if let Some(callable) = ctor_entry(&macros_table, "SNil").and_then(Binding::callable) {
+            let (_, _, _, _) = read_ctor_kind(&macros_table, "SNil").unwrap();
+            let CallableOrigin::Ctor {
                 tag, field_count, ..
-            } = kind.as_ref()
-            {
-                assert_eq!(*tag, 0, "SNil should be tag 0");
-                assert_eq!(*field_count, 0, "SNil should have no fields");
-            } else {
-                panic!("SNil should be DefKind::Constructor, got {:?}", kind);
-            }
+            } = &callable.origin
+            else {
+                unreachable!()
+            };
+            assert_eq!(*tag, 0, "SNil should be tag 0");
+            assert_eq!(*field_count, 0, "SNil should have no fields");
+            let scheme = &callable.arm.scheme;
             assert_eq!(
                 scheme.type_vars.len(),
                 1,
@@ -1724,22 +1792,17 @@ mod tests {
         );
         let macros_path = ModuleFullPath::from("macros");
         let macros_table = tf.modules.get(&macros_path).unwrap();
-        if let Some(ModuleEntry::Def {
-            kind,
-            scheme,
-            param_names,
-            ..
-        }) = ctor_entry(&macros_table, "SCons")
-        {
-            if let DefKind::Constructor {
+        if let Some(callable) = ctor_entry(&macros_table, "SCons").and_then(Binding::callable) {
+            let CallableOrigin::Ctor {
                 tag, field_count, ..
-            } = kind.as_ref()
-            {
-                assert_eq!(*tag, 1, "SCons should be tag 1");
-                assert_eq!(*field_count, 2, "SCons has 2 fields");
-            } else {
-                panic!("SCons should be DefKind::Constructor");
-            }
+            } = &callable.origin
+            else {
+                unreachable!()
+            };
+            assert_eq!(*tag, 1, "SCons should be tag 1");
+            assert_eq!(*field_count, 2, "SCons has 2 fields");
+            let scheme = &callable.arm.scheme;
+            let param_names = &callable.arm.param_names;
             assert_eq!(param_names.len(), 2, "SCons has 2 fields: shead, stail");
             assert_eq!(param_names[0].as_ref(), "shead");
             assert_eq!(param_names[1].as_ref(), "stail");
@@ -1834,9 +1897,10 @@ mod tests {
         );
         let macros_path = ModuleFullPath::from("macros");
         let macros_table = tf.modules.get(&macros_path).unwrap();
-        if let Some(ModuleEntry::Def { scheme, kind, .. }) = ctor_entry(&macros_table, "SexpSym")
-            && matches!(kind.as_ref(), DefKind::Constructor { .. })
+        if let Some(callable) = ctor_entry(&macros_table, "SexpSym").and_then(Binding::callable)
+            && matches!(callable.origin, CallableOrigin::Ctor { .. })
         {
+            let scheme = &callable.arm.scheme;
             assert!(scheme.type_vars.is_empty(), "SexpSym should be monomorphic");
             assert_eq!(
                 scheme.ty,
@@ -1933,18 +1997,13 @@ mod tests {
         expected_fields: &[(&str, &Type)],
         ret_type: &Type,
     ) {
-        if let Some(ModuleEntry::Def {
-            kind,
-            scheme,
-            param_names,
-            ..
-        }) = ctor_entry(table, name)
-        {
-            let field_count = if let DefKind::Constructor { field_count, .. } = kind.as_ref() {
-                *field_count
-            } else {
-                panic!("{name} should be DefKind::Constructor, got {:?}", kind);
+        if let Some(callable) = ctor_entry(table, name).and_then(Binding::callable) {
+            let CallableOrigin::Ctor { field_count, .. } = &callable.origin else {
+                panic!("{name} should be a constructor, got {:?}", callable.origin);
             };
+            let field_count = *field_count;
+            let scheme = &callable.arm.scheme;
+            let param_names = &callable.arm.param_names;
             assert_eq!(
                 field_count,
                 expected_fields.len(),
@@ -1978,7 +2037,8 @@ mod tests {
         }
     }
 
-    // spec: 09-macros §9.1.3 — qualified access macros/SexpSym works from user module
+    // spec: 09-macros §9.1.3; 08-modules §8.6.5 — canonical member
+    // qualification probes the dotted binding key in the named module.
     #[test]
     fn test_qualified_access_from_user() {
         let tf = TestFixture::with_content(
@@ -1987,11 +2047,10 @@ mod tests {
                 .with_macros_sexp(),
         );
         // The TypeChecker's current module is "user" by default.
-        // Qualified lookup: "macros/SexpSym" should resolve.
-        let scheme = tf.lookup("macros/SexpSym");
+        let scheme = tf.lookup("macros/Sexp.SexpSym");
         assert!(
             scheme.is_some(),
-            "macros/SexpSym should be resolvable from user module"
+            "macros/Sexp.SexpSym should be resolvable from user module"
         );
         let scheme = scheme.unwrap();
         assert_eq!(
@@ -2000,17 +2059,17 @@ mod tests {
                 vec![Type::String],
                 Box::new(Type::ADT(macros_fqtn("Sexp"), vec![]))
             ),
-            "macros/SexpSym :: (Fn [String] Sexp)"
+            "macros/Sexp.SexpSym :: (Fn [String] Sexp)"
         );
 
-        // Also check qualified access to SCons and SNil
+        // Also check the canonical SList constructor keys.
         assert!(
-            tf.lookup("macros/SCons").is_some(),
-            "macros/SCons should be resolvable"
+            tf.lookup("macros/SList.SCons").is_some(),
+            "macros/SList.SCons should be resolvable"
         );
         assert!(
-            tf.lookup("macros/SNil").is_some(),
-            "macros/SNil should be resolvable"
+            tf.lookup("macros/SList.SNil").is_some(),
+            "macros/SList.SNil should be resolvable"
         );
     }
 
@@ -2031,7 +2090,8 @@ mod tests {
         let entry = macros_table.get("sconcat");
         assert!(entry.is_some(), "sconcat should be in macros module");
 
-        if let Some(ModuleEntry::Def { scheme, kind, .. }) = entry {
+        if let Some(callable) = entry.and_then(Binding::callable) {
+            let scheme = &callable.arm.scheme;
             // Type: (Fn [(SList Sexp) (SList Sexp)] (SList Sexp))
             let slist_sexp = Type::ADT(
                 macros_fqtn("SList"),
@@ -2050,7 +2110,7 @@ mod tests {
             // (`Linkage::Import`) dispatched via the `is_extern_primitive` arm,
             // so it is slot-less `DefKind::PrimitiveExtern`, not GOT-slotted.
             assert!(
-                matches!(kind.as_ref(), DefKind::PrimitiveExtern),
+                matches!(callable.arm.life, Life::HostPromised),
                 "sconcat should be PrimitiveExtern (by-name dispatch, slot-less)"
             );
         } else {
@@ -2104,7 +2164,8 @@ mod tests {
         let entry = prims.get("quote-sexp");
         assert!(entry.is_some(), "quote-sexp should be in primitives module");
 
-        if let Some(ModuleEntry::Def { scheme, kind, .. }) = entry {
+        if let Some(callable) = entry.and_then(Binding::callable) {
+            let scheme = &callable.arm.scheme;
             let sexp_type = Type::ADT(macros_fqtn("Sexp"), vec![]);
             assert_eq!(
                 scheme.ty,
@@ -2119,7 +2180,7 @@ mod tests {
             // (`Linkage::Import`) dispatched, so it is slot-less
             // `DefKind::PrimitiveExtern`, not GOT-slotted `Primitive`.
             assert!(
-                matches!(kind.as_ref(), DefKind::PrimitiveExtern),
+                matches!(callable.arm.life, Life::HostPromised),
                 "quote-sexp should be PrimitiveExtern (by-name dispatch, slot-less)"
             );
         } else {
@@ -2172,13 +2233,13 @@ mod tests {
 
         // Verify quote-sexp has the correct type referencing Sexp (proves ordering)
         let sexp_type = Type::ADT(macros_fqtn("Sexp"), vec![]);
-        if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tf).get("quote-sexp") {
+        {
+            let table = primitives_table(&tf);
+            let scheme = callable_scheme(&table, "quote-sexp");
             assert_eq!(
                 scheme.ty,
                 Type::Fn(vec![sexp_type.clone()], Box::new(sexp_type)),
             );
-        } else {
-            panic!("quote-sexp should be registered after macros module");
         }
     }
 
@@ -2217,26 +2278,22 @@ mod tests {
         let primitives_path = ModuleFullPath::from("primitives");
         let primitives_table = tf.modules.get(&primitives_path).unwrap();
 
-        if let Some(ModuleEntry::Def {
-            kind,
-            scheme,
-            param_names,
-            ..
-        }) = ctor_entry(&primitives_table, "Pure")
-        {
-            if let DefKind::Constructor {
+        if let Some(callable) = ctor_entry(&primitives_table, "Pure").and_then(Binding::callable) {
+            if let CallableOrigin::Ctor {
                 tag,
                 field_count,
                 internal,
                 ..
-            } = kind.as_ref()
+            } = &callable.origin
             {
                 assert_eq!(*tag, 0, "Pure should be tag 0");
                 assert_eq!(*field_count, 1, "Pure has 1 field");
                 assert!(!*internal, "Pure is not internal");
             } else {
-                panic!("Pure should be DefKind::Constructor");
+                panic!("Pure should be a constructor");
             }
+            let scheme = &callable.arm.scheme;
+            let param_names = &callable.arm.param_names;
             assert_eq!(param_names.len(), 1);
             assert_eq!(param_names[0].as_ref(), "ioval");
             assert_eq!(
@@ -2276,26 +2333,23 @@ mod tests {
         let primitives_path = ModuleFullPath::from("primitives");
         let primitives_table = tf.modules.get(&primitives_path).unwrap();
 
-        if let Some(ModuleEntry::Def {
-            kind,
-            scheme,
-            param_names,
-            ..
-        }) = ctor_entry(&primitives_table, "Effect")
+        if let Some(callable) = ctor_entry(&primitives_table, "Effect").and_then(Binding::callable)
         {
-            if let DefKind::Constructor {
+            if let CallableOrigin::Ctor {
                 tag,
                 field_count,
                 internal,
                 ..
-            } = kind.as_ref()
+            } = &callable.origin
             {
                 assert_eq!(*tag, 1, "Effect should be tag 1");
                 assert_eq!(*field_count, 1, "Effect has 1 field");
                 assert!(!*internal, "Effect is not internal");
             } else {
-                panic!("Effect should be DefKind::Constructor");
+                panic!("Effect should be a constructor");
             }
+            let scheme = &callable.arm.scheme;
+            let param_names = &callable.arm.param_names;
             assert_eq!(param_names.len(), 1);
             assert_eq!(param_names[0].as_ref(), "thunk");
             assert_eq!(
@@ -2354,12 +2408,9 @@ mod tests {
         assert_eq!(type_name.name.as_ref(), "IO");
 
         // Inspect the synthesised Def: param_names + scheme.ty (Fn).
-        if let Some(ModuleEntry::Def {
-            param_names,
-            scheme,
-            ..
-        }) = ctor_entry(&primitives_table, "Bind")
-        {
+        if let Some(callable) = ctor_entry(&primitives_table, "Bind").and_then(Binding::callable) {
+            let param_names = &callable.arm.param_names;
+            let scheme = &callable.arm.scheme;
             assert_eq!(param_names.len(), 2);
             assert_eq!(param_names[0].as_ref(), "inner");
             assert_eq!(param_names[1].as_ref(), "cont");
@@ -2481,13 +2532,8 @@ mod tests {
         let entry = table_guard.get("bind");
         assert!(entry.is_some(), "bind should be in primitives symbol table");
 
-        if let Some(ModuleEntry::Def {
-            scheme,
-            kind,
-            docstring,
-            ..
-        }) = entry
-        {
+        if let Some(callable) = entry.and_then(Binding::callable) {
+            let scheme = &callable.arm.scheme;
             // bind :: forall [a, b]. (Fn [(IO a) (Fn [a] (IO b))] (IO b))
             assert_eq!(
                 scheme.type_vars.len(),
@@ -2564,11 +2610,11 @@ mod tests {
             // it is never invoked GOT-indirect, so its representation is the
             // slot-less `DefKind::PrimitiveExtern`, not GOT-slotted `Primitive`.
             assert!(
-                matches!(kind.as_ref(), DefKind::PrimitiveExtern),
+                matches!(callable.arm.life, Life::HostPromised),
                 "bind should be PrimitiveExtern (by-name dispatch, slot-less)"
             );
 
-            assert!(docstring.is_some(), "bind should have a docstring");
+            assert!(callable.docstring.is_some(), "bind should have a docstring");
         } else {
             panic!("bind should be a Def entry");
         }
@@ -2597,9 +2643,9 @@ mod tests {
         let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
         let pt = primitives_table(&tf);
         for name in RING0_PRIMITIVE_NAMES {
-            if let Some(ModuleEntry::Def { docstring, .. }) = pt.get(*name) {
+            if let Some(callable) = pt.get(*name).and_then(Binding::callable) {
                 assert!(
-                    docstring.is_some(),
+                    callable.docstring.is_some(),
                     "Ring 0 primitive {name} should have a docstring",
                 );
             } else {
@@ -2614,9 +2660,9 @@ mod tests {
         let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
         let pt = primitives_table(&tf);
         for name in RING1_PRIMITIVE_NAMES {
-            if let Some(ModuleEntry::Def { docstring, .. }) = pt.get(*name) {
+            if let Some(callable) = pt.get(*name).and_then(Binding::callable) {
                 assert!(
-                    docstring.is_some(),
+                    callable.docstring.is_some(),
                     "Ring 1 primitive {name} should have a docstring",
                 );
             } else {
@@ -2631,9 +2677,9 @@ mod tests {
         let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
         let pt = primitives_table(&tf);
         for name in &["vec-get", "vec-set", "vec-push", "vec-len"] {
-            if let Some(ModuleEntry::Def { docstring, .. }) = pt.get(*name) {
+            if let Some(callable) = pt.get(*name).and_then(Binding::callable) {
                 assert!(
-                    docstring.is_some(),
+                    callable.docstring.is_some(),
                     "Vec primitive {name} should have a docstring"
                 );
             } else {
@@ -2649,9 +2695,9 @@ mod tests {
         let pt = primitives_table(&tf);
 
         let check = |name: &str, expected: &str| {
-            if let Some(ModuleEntry::Def { docstring, .. }) = pt.get(name) {
+            if let Some(callable) = pt.get(name).and_then(Binding::callable) {
                 assert_eq!(
-                    docstring.as_deref(),
+                    callable.docstring.as_deref(),
                     Some(expected),
                     "{name} docstring mismatch"
                 );

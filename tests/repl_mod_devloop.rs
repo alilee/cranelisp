@@ -25,7 +25,7 @@
 //!     info_accepts_fq_module_qualified_name                    (0487 face 3)
 //!     refs_accepts_fq_module_qualified_name                    (0487 face 3)
 //!     sig_imported_name_shows_full_signature_line              (0487 face 3 / §3.8)
-//!     cascade_report_broken_name_pasteable_into_info           (0487 face 3)
+//!     redefinition_blocker_name_pasteable_into_info            (0487 face 3)
 //!   GREEN ×5 controls/pins.
 //! Ledger: tests/plan/ledger.md §"Sprint 102 Phase-5 Stage-1 QA-first RED set".
 //!
@@ -40,18 +40,14 @@ mod helpers;
 use helpers::e2e::{Cranelisp, PreludeVariant};
 
 // =============================================================================
-// The dev-loop proper — redefine → cascade → revert → restart
+// The dev-loop proper — rejected replacement retains live and persisted source
 // =============================================================================
 
-// spec: repl/spec.md §18.3 — the full dev-loop over a file-backed module with
-// a SAME-module dependent, fresh session: the signature-changing `/mod m`
-// turn breaks the dependent TRUE (module-local name, real type error), the
-// revert heals it (`recompiled:`), and the world answers correctly after.
-// GREEN control (fresh sessions are the working cell; the cache-restored
-// sibling is the D3 guard).
+// spec: repl/spec/18-redefinition.md §18.1 — a same-module direct caller
+// blocks a type-changing replacement; both live behavior and source survive.
 #[test]
-fn devloop_fresh_same_module_dependent_break_true_and_revert_heal() {
-    Cranelisp::new()
+fn devloop_same_module_blocker_retains_live_behavior_and_source() {
+    let out = Cranelisp::new()
         .repl()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .file(
@@ -64,24 +60,28 @@ fn devloop_fresh_same_module_dependent_break_true_and_revert_heal() {
              (mg 41)\n\
              /mod m\n\
              (defn mf [:String s] (str-len s))\n\
-             (defn mf [:Int x] (add-i64 x 1))\n\
              /mod user\n\
              (mg 41)\n",
         )
         .output()
         .assert_ok()
-        .assert_stdout_contains("mg —") // the TRUE break is reported…
-        .assert_stdout_contains("; recompiled:") // …and the revert heals
+        .assert_stdout_contains("cannot redefine m/mf")
+        .assert_stdout_contains("blocking dependents: m/mg")
+        .assert_stdout_does_not_contain("; recompiled:")
+        .assert_stdout_does_not_contain("; broken:")
         .assert_stdout_does_not_contain("unknown type")
         .assert_stdout_contains(":primitives/Int 142");
+    assert_eq!(out.stdout.matches(":primitives/Int 142").count(), 2);
+    assert_eq!(
+        out.read_tmp("m.cl"),
+        "(defn mf [:Int x] (add-i64 x 1))\n(defn mg [:Int y] (add-i64 (mf y) 100))\n"
+    );
 }
 
-// spec: repl/spec.md §18.3 — the CROSS-module dev-loop survives a restart:
-// after break → revert in `/mod m`, `/quit` + restart restores the healed
-// world from the (unchanged) module sources. GREEN pin — extends the D3
-// fresh-session control through the restart axis.
+// spec: repl/spec/18-redefinition.md §18.1 — a cross-module blocker rejects
+// replacement without persisting it; restart restores the original behavior.
 #[test]
-fn devloop_fresh_cross_module_revert_then_restart_runs_clean() {
+fn devloop_cross_module_rejection_then_restart_runs_original_source() {
     let first = Cranelisp::new()
         .repl()
         .with_prelude(PreludeVariant::PrimitivesOnly)
@@ -96,15 +96,17 @@ fn devloop_fresh_cross_module_revert_then_restart_runs_clean() {
              (ng 41)\n\
              /mod m\n\
              (defn mf [:String s] (str-len s))\n\
-             (defn mf [:Int x] (add-i64 x 1))\n\
              /mod user\n\
              (ng 41)\n\
              /quit\n",
         )
         .output()
         .assert_ok()
-        .assert_stdout_contains("n/ng —") // cross-module break, module-qualified
-        .assert_stdout_contains("; recompiled:");
+        .assert_stdout_contains("cannot redefine m/mf")
+        .assert_stdout_contains("blocking dependents: n/ng")
+        .assert_stdout_does_not_contain("; recompiled:");
+    assert_eq!(first.stdout.matches(":primitives/Int 142").count(), 2);
+    assert_eq!(first.read_tmp("m.cl"), "(defn mf [:Int x] (add-i64 x 1))\n");
     first
         .run_again()
         .repl()
@@ -290,13 +292,10 @@ fn sig_imported_name_shows_full_signature_line() {
         .assert_stdout_contains(":(Fn [primitives/Int] primitives/Int) m/mf ; defn - doc mf");
 }
 
-// spec: repl/spec.md §18.3 — the cascade report prints module-qualified names
-// (`n/ng`); §3.6's self-documentation contract requires those exact names to
-// be pasteable into `/info` to read the break details. RED on HEAD (FIXME
-// 0487 face 3 — "the transaction's own reports print FQ names the user
-// cannot paste into /info").
+// spec: repl/spec/18-redefinition.md §18.1 — canonical blocker names remain
+// pasteable into /info, which describes the still-healthy direct caller.
 #[test]
-fn cascade_report_broken_name_pasteable_into_info() {
+fn redefinition_blocker_name_pasteable_into_info() {
     Cranelisp::new()
         .repl()
         .with_prelude(PreludeVariant::PrimitivesOnly)
@@ -316,7 +315,8 @@ fn cascade_report_broken_name_pasteable_into_info() {
         )
         .output()
         .assert_ok()
-        .assert_stdout_contains("n/ng —") // the report names it FQ…
-        .assert_stdout_does_not_contain("unknown symbol") // …so /info must take it
-        .assert_stdout_contains("broken by the redefinition of m/mf");
+        .assert_stdout_contains("blocking dependents: n/ng")
+        .assert_stdout_does_not_contain("unknown symbol")
+        .assert_stdout_does_not_contain("broken by")
+        .assert_stdout_contains(":(Fn [primitives/Int] primitives/Int) n/ng ; defn");
 }

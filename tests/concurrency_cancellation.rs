@@ -315,6 +315,133 @@ fn select_only_winner_value_returned_losers_side_effects_absent_neg() {
     );
 }
 
+/// Count the process-isolated runtime heap events. These programs load no
+/// prelude, so there is no ambient compile-time residual to subtract.
+fn rc_alloc_free_counts(stderr: &str) -> (usize, usize) {
+    let allocs = stderr
+        .lines()
+        .filter(|line| line.contains("[RC]") && line.contains(" alloc "))
+        .count();
+    let frees = stderr
+        .lines()
+        .filter(|line| line.contains("[RC]") && line.contains(" free "))
+        .count();
+    (allocs, frees)
+}
+
+// spec: spec/10-io.md §10.12.9 — cancelling a Select loser whose nested Par
+// has already entered a non-preemptible blocking call retains the caller tree
+// until that worker acknowledges exit. The entered call may finish, but the
+// cancelled branch must not invoke its later continuation or publish its value.
+#[test]
+fn select_loser_joins_inflight_blocking_par_worker_before_teardown() {
+    let prog = format!(
+        "(platform pool-demo)\n\
+         (platform test-capture)\n\
+         (platform {poll_platform})\n\
+         (import [platform.pool-demo [pool-read]])\n\
+         (import [platform.test-capture [fault-now]])\n\
+         (import [platform.{poll_platform} [{poll_read}]])\n\
+         (import [primitives [select bind Pure add-i64]])\n\
+         (defn later-fault [x] (fault-now))\n\
+         (defn held-loser []\n\
+           (bind (pool-read 31 1 300) (fn [a]\n\
+             (bind (pool-read 32 1 300) (fn [b]\n\
+               (bind (later-fault (add-i64 a b)) (fn [_]\n\
+                 (Pure (add-i64 a b)))))))))\n\
+         (defn main []\n\
+           (select [(held-loser) ({poll_read} 99 1 {fast})]))\n",
+        poll_platform = POLL_PLATFORM,
+        poll_read = POLL_READ,
+        fast = FAST,
+    );
+    let out = Cranelisp::new()
+        .use_workspace_platforms()
+        .env("CRANELISP_RC_TRACE", "1")
+        .file("user.cl", &prog)
+        .run("user.cl")
+        .timeout(std::time::Duration::from_secs(5))
+        .output();
+
+    let stderr = out.stderr.clone();
+    out.assert_exit(FAST as i32);
+    assert!(
+        !stderr.contains("test-capture fault-now"),
+        "the cancelled loser must not invoke the faulting continuation after \
+         its nested blocking Par; got stderr={stderr:?}"
+    );
+    let (allocs, frees) = rc_alloc_free_counts(&stderr);
+    assert!(allocs > 0, "expected the RC trace to observe allocations");
+    assert_eq!(
+        allocs, frees,
+        "the cancelled Select→nested-Par lifecycle must return the heap to \
+         baseline after every blocking worker acknowledges exit; got {allocs} \
+         allocations / {frees} frees\nstderr:\n{}",
+        stderr
+    );
+}
+
+// spec: spec/10-io.md §10.12.5 and §10.12.9 — without Select cancellation,
+// the same blocking-Par subtree joins both workers and runs its continuation.
+#[test]
+fn blocking_par_without_select_waits_for_both_workers_control() {
+    let prog = "(platform pool-demo)\n\
+                (import [platform.pool-demo [pool-read]])\n\
+                (import [primitives [bind Pure add-i64]])\n\
+                (defn main []\n\
+                  (bind (pool-read 31 1 120) (fn [a]\n\
+                    (bind (pool-read 32 1 120) (fn [b]\n\
+                      (Pure (add-i64 a b)))))))\n";
+    let out = Cranelisp::new()
+        .use_workspace_platforms()
+        .env("CRANELISP_RC_TRACE", "1")
+        .file("user.cl", prog)
+        .run("user.cl")
+        .timeout(std::time::Duration::from_secs(5))
+        .output();
+    let stderr = out.stderr.clone();
+    out.assert_exit(240);
+    let (allocs, frees) = rc_alloc_free_counts(&stderr);
+    assert_eq!(
+        allocs, frees,
+        "the normal blocking-Par control must return the heap to baseline; got \
+         {allocs} allocations / {frees} frees\nstderr:\n{stderr}"
+    );
+}
+
+// spec: spec/10-io.md §10.12.9 — a Select with only poll-shaped branches
+// retains the established prompt loser-drop path; bridge joining must not delay it.
+#[test]
+fn select_poll_only_loser_remains_bounded_control() {
+    let prog = format!(
+        "(platform {plat})\n\
+         (import [platform.{plat} [{read} {log}]])\n\
+         (import [primitives [select]])\n\
+         (defn main []\n\
+           (select [({log} 71 1 {slow} \"poll-loser\") \
+                    ({read} 72 1 {fast})]))\n",
+        plat = POLL_PLATFORM,
+        read = POLL_READ,
+        log = POLL_LOG,
+        fast = FAST,
+        slow = SLOW,
+    );
+    let out = run_prog(&prog);
+    let stdout = out.stdout.clone();
+    out.assert_exit(FAST as i32);
+    assert!(
+        !stdout.contains("poll-loser"),
+        "the poll-only loser must still be cancelled before its completion \
+         side-effect; got stdout={stdout:?}"
+    );
+    let elapsed = best_elapsed_ms(&prog);
+    assert!(
+        elapsed < SLOW as u128,
+        "poll-only Select cancellation must remain prompt (< {SLOW}ms); measured \
+         {elapsed}ms — bridge joining appears to delay a path with no bridge"
+    );
+}
+
 // =============================================================================
 // §C3 — `timeout` (`timeout d io`: completes-in-time → result; exceeds → fires +
 // io CANCELLED). DERIVED: `timeout d io ≡ race io (sleep d)`. Expressed INLINE as

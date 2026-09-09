@@ -17,6 +17,7 @@ This is distinct from:
 - **String codegen**: extern call patterns, string primitive dispatch
 - **ADT codegen**: constructor allocation, field access, match compilation, tag discrimination
 - **Closure codegen**: environment capture, calling convention implementation, side-table drop
+- **Binding scope**: binder identity, the scope chain and its slots, the capture environment, per-binding-vector lenient state (`binding-scope.md`)
 - **GOT and JIT**: function registration, GOT layout, relocation, caching
 - **Design evolution**: what changed and why across sprints, and what was considered but rejected (per-sprint history lives in the docs themselves and `sprints/archive/`)
 

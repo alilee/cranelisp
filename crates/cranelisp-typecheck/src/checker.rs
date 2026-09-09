@@ -29,10 +29,10 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    CranelispError, ErrorLocation, FQSymbol, JitSymbol, MethodResolutions, ModuleAliases,
-    ModuleEntry, ModuleFullPath, ResolutionGap, ResolutionScope, ResolveError, ResolvedCall,
-    Scheme, Span, Subst, Symbol, SymbolTable, TraitName, Type, TypeDefInfo, TypeId, TypeName,
-    VarRef, Warning, apply,
+    Binding, CallableOrigin, CranelispError, Decl, ErrorLocation, FQSymbol, JitSymbol,
+    MethodResolutions, ModuleAliases, ModuleFullPath, ResolutionGap, ResolutionScope, ResolveError,
+    ResolvedCall, Scheme, Span, Subst, Symbol, SymbolTable, TraitName, Type, TypeDefInfo, TypeId,
+    TypeName, VarRef, Warning, apply,
 };
 
 // Per single-pair invariant (`facades/typecheck.md` §"Single-pair invariant"):
@@ -41,13 +41,13 @@ use cranelisp_types::{
 // `pub(crate)` pair lives in this file.
 pub(crate) use crate::cluster::{SymbolTableMut, SymbolTableRead};
 
+use crate::candidate_selection::{PendingNameUse, PendingPatternUse};
 use crate::scheme;
 use crate::scope::ScopeStack;
 use crate::traits::ActiveConstraints;
+use crate::traits::TemplateCore;
 
 /// Maximum depth for following Import/Reexport chains (spec §8.6.2).
-const IMPORT_CHAIN_DEPTH_LIMIT: usize = 10;
-
 /// Session-level per-module prelude-fallback flags (S78 §2.7; S108 Wave G).
 ///
 /// `module_path → true` ⇒ a bare-name inner-miss in that module falls back to
@@ -92,18 +92,9 @@ pub(crate) const PRELUDE_MODULE: &str = "prelude";
 /// introspection) reads it uniformly without caring which facet survived under
 /// the `"Rectangle"` key.
 pub(crate) fn type_def_view_of<C: cranelisp_types::CodeStore>(
-    entry: &ModuleEntry<C>,
+    entry: &Binding<C>,
 ) -> Option<&TypeDefInfo> {
-    match entry {
-        ModuleEntry::TypeDef { info, .. } => Some(info),
-        ModuleEntry::Def { kind, .. } => match kind.as_ref() {
-            cranelisp_types::DefKind::Constructor {
-                type_def: Some(td), ..
-            } => Some(&**td),
-            _ => None,
-        },
-        _ => None,
-    }
+    entry.type_def_info()
 }
 
 #[derive(Clone, Debug)]
@@ -138,6 +129,40 @@ pub(crate) type PendingAutoCurry = (
     Option<Span>,
 );
 
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RecursionBinding {
+    pub(crate) name: Symbol,
+    pub(crate) frame: usize,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct BodyFrame {
+    pub(crate) rigid_vars: HashSet<TypeId>,
+    pub(crate) written_var_scope: Option<HashMap<Symbol, TypeId>>,
+    pub(crate) recursion: Option<RecursionBinding>,
+    pub(crate) pending_name_uses: Vec<PendingNameUse>,
+    pub(crate) pending_pattern_uses: Vec<PendingPatternUse>,
+    pub(crate) user_fn_refs: HashMap<Span, FQSymbol>,
+}
+
+pub(crate) struct MonoRecursionContext {
+    pub(crate) base: Symbol,
+    pub(crate) instance: JitSymbol,
+    pub(crate) params: Vec<Type>,
+    pub(crate) ret: Type,
+}
+
+pub(crate) struct MonoRecheckContext {
+    pub(crate) recursion: Option<MonoRecursionContext>,
+    pub(crate) local_templates: HashMap<Symbol, TemplateCore>,
+}
+
+impl BodyFrame {
+    pub(crate) fn explicit_types() -> Self {
+        Self::default()
+    }
+}
+
 /// Per-check transient state for type inference.
 ///
 /// Created or reused by each `check()` call. Contains all state that is
@@ -155,24 +180,9 @@ pub struct CheckState {
     pub(crate) expr_types: HashMap<Span, Type>,
     /// How each call site was resolved (builtin operators in Ring 0).
     pub(crate) method_resolutions: MethodResolutions,
-    /// Statically-resolved user-fn references discovered during body
-    /// inference (FIXME 0470 + 0472, S101). Span-keyed — like
-    /// `method_resolutions.resolved_calls` — so snapshot-delta extraction via
-    /// the ONE shared `program::harvest_callee_edges` helper attributes each
-    /// reference to the body under check at EVERY body-check seam: the Pass-2
-    /// per-form seams (`check_form_body_*`) and the Pass-1 impl-method
-    /// writeback (`finalize_impl_method_writeback` — impl/default/HKT method
-    /// bodies). Covers BOTH call-position and value-position `Var` references
-    /// that resolve (chain-follow, current-module-rooted,
-    /// prelude-fallback-aware) to a module-resident `DefKind::UserFn` entry.
-    /// Flows through the `write_callees_to_module_entries` sink, making
-    /// `Def.callees` the COMPLETE static user-fn reference set required by
-    /// the S101 dependent-recompilation transaction's reverse index
-    /// (`design/int/session-transaction.md` §3.2; sole residue: mono-instance
-    /// bodies, covered via their template — see `harvest_callee_edges`).
-    /// Value and call edges are recorded uniformly — indistinguishable to
-    /// consumers.
-    pub(crate) user_fn_refs: HashMap<Span, FQSymbol>,
+    /// State whose lifetime is exactly one body check. The frame is installed
+    /// and removed together with that body's lexical scope.
+    pub(crate) body_frame: BodyFrame,
     /// Non-fatal warnings accumulated during checking.
     pub(crate) warnings: Vec<Warning>,
     /// Active type variable constraints during body checking (Ring 2).
@@ -212,7 +222,7 @@ pub struct CheckState {
     /// Multi-sig overload table: base name → [(internal_name, arity)].
     /// Populated during pass 1 when a `Defn` has multiple variants.
     pub(crate) overloads: HashMap<Symbol, Vec<(Symbol, usize)>>,
-    /// Resolved overloads: base name → [(param_types, ret_type, mangled_name)].
+    /// Resolved overloads: base name → [(parameter types, return type, private work label)].
     /// Built during overload resolution after pass 2.
     pub(crate) resolved_overloads: HashMap<Symbol, Vec<(Vec<Type>, Type, Symbol)>>,
     /// The HOME module of each overload base name (MC-X2, W2-close). For a
@@ -220,7 +230,7 @@ pub struct CheckState {
     /// (the default). For an IMPORTED multi-sig base (`(import [mlib [h]])`), the
     /// base's `Overloaded` entry + its concrete mangled clause `Def`s live in the
     /// DEFINING module (mlib), so its dispatch carrier's `resolved_target` module
-    /// must be that home — NOT `current_module` (the 0621 `storage_fq()` lesson,
+    /// must be that home — NOT `current_module` (the 0621 canonical-identity lesson,
     /// P24: key by the base's storage identity, not the caller's). Populated when
     /// an imported base is rehydrated into `overloads`/`resolved_overloads`
     /// (`form.rs`); read at the drain's carrier-write to home-qualify the target.
@@ -257,9 +267,8 @@ pub struct CheckState {
     /// finalised (subst-applied) clause params that keys the clause's `Concrete`
     /// entry — order-independence by construction (Principle 24).
     pub(crate) deferred_self_call_dispatch: Vec<(Span, Symbol, usize)>,
-    /// Monomorphic-recursion context active during a multi-sig template clause's
-    /// mono recheck (S112 leg a §11.3.1 caveat (b), the I1 fix).
-    /// `(base_name, instance_mangled, instance_params, instance_ret)`.
+    /// Exact same-cluster template bodies and optional monomorphic-recursion
+    /// identity active during one mono recheck.
     ///
     /// During the recheck of a `$Var` template clause instantiated at concrete
     /// args, an inner self-call to the overloaded base (`(g x)` inside `g`'s poly
@@ -269,21 +278,9 @@ pub struct CheckState {
     /// call's args match `instance_params`, `infer_apply` resolves it inline as
     /// monomorphic recursion to THIS instance (unify + dispatch to
     /// `instance_mangled`), exactly as the standalone-function twin's self-call
-    /// resolves. `None` outside a multi-sig template recheck. Stack-saved/restored.
-    pub(crate) mono_recheck_self: Option<(Symbol, JitSymbol, Vec<Type>, Type)>,
-    /// Field-accessor synthesis collisions with a NON-accessor binding
-    /// (a user `defn`, a ctor, …) — `(accessor_name, owning_type_name)`.
-    /// Surfaced as a non-fatal `ShadowedName` warning at finalize: the accessor
-    /// is suppressed (the existing binding wins) and the clash is reported so it
-    /// is never silent (FIXME 0351(a), spec §5.2.6 safe disposition).
-    pub(crate) deferred_accessor_collisions: Vec<(Symbol, String)>,
-    /// Names this check synthesised as field accessors (FIXME 0351(a)). Used to
-    /// classify a later accessor collision: a clash with a name in this set is
-    /// a cross-type duplicate field name (POISON the bare name as ambiguous per
-    /// §5.2.6 + §8.6.5 — no overload, no winner); a clash with any OTHER
-    /// binding is refused. Populated per-check; a user `defn`/ctor under the
-    /// same name is never in this set.
-    pub(crate) synthesised_accessor_names: std::collections::HashSet<Symbol>,
+    /// resolves. The template map also supports ordinary same-cluster nested
+    /// mono hops while their declarations remain unpublished. Stack-saved/restored.
+    pub(crate) mono_recheck_self: Option<MonoRecheckContext>,
     /// Per field-accessor name → the owning product types whose accessor
     /// generation registered (or poisoned) that name. A single entry means a
     /// normal first-class accessor; two-or-more means the bare name is poisoned
@@ -292,60 +289,6 @@ pub struct CheckState {
     pub(crate) accessor_owning_types: HashMap<Symbol, Vec<cranelisp_types::FQTypeName>>,
     /// The currently active module path for this check.
     pub(crate) current_module: ModuleFullPath,
-    /// **RIGID written type variables active for the definition body currently
-    /// being checked** (spec §3.3 [S109]). A written free lowercase type
-    /// variable (`:a`, or one nested in `:(Box a)`) is a *fixed-but-unknown*
-    /// skolem within its definition — the body may not choose what it is. These
-    /// `TypeId`s are consulted by [`unify`](TypeCheckEnv::unify) (via
-    /// `unify::unify_with_rigid`): a rigid var MUST NOT unify with a concrete
-    /// type nor with a *distinct* rigid var (skolem-escape), while a flexible
-    /// inference var MAY acquire a rigid one.
-    ///
-    /// **Scoped to the owning body, NOT global.** Installed by `check_defn_body`
-    /// from the definition's ASSERTED-constraint param vars (`:C x`), and torn
-    /// down when the body check completes. Under W6.3 (spec §3.3.1–§3.3.2) ONLY a
-    /// constraint at a parameter position is rigid (held abstract over `C`); a
-    /// bare written var is an ordinary flexible inference var (co-reference only,
-    /// via `written_var_scope`). Outside its own body the set is empty so a
-    /// forward-referencing caller instantiates every var flexibly.
-    pub(crate) rigid_vars: HashSet<TypeId>,
-    /// The current definition's **written-var lexical scope** — name → the one
-    /// `TypeId` that name resolves to across the whole definition body,
-    /// **including nested `fn` closures** (spec §3.3.1 lexical co-reference).
-    /// Threaded from Pass-1 signature registration through Pass-2 body checking;
-    /// `infer_annotate`/`infer_lambda` resolve written vars against it (never a
-    /// fresh per-occurrence map — the 0588 seam). `None` outside a definition
-    /// body; a top-level value annotation gets a transient per-annotation scope.
-    /// This is ALL a bare written var carries — a name for relating occurrences,
-    /// never rigidity (W6.3 backs out the W6.2 rigid-bare model).
-    pub(crate) written_var_scope: Option<HashMap<Symbol, TypeId>>,
-    /// The name of the definition whose body is CURRENTLY being checked, when
-    /// that body was entered through `check_defn_body` (the ordinary
-    /// concrete/generic Pass-2 body). Installed + torn down there; `None`
-    /// otherwise (top level, and deliberately during the `check_defn_body_with_
-    /// types` mono/impl-method recheck, whose self-dispatch is recorded by the
-    /// monomorphise-seam SigDispatch writers instead — S110 0583 leg 2).
-    ///
-    /// Sole consumer: the self-recursion carve-out in
-    /// [`TypeCheckEnv::record_reference_target`] — a self-call resolves the
-    /// recursion LOCAL (env-shadowed), yet the backend keys it through the
-    /// fn's own storage slot, so its `var_refs` carrier is the enclosing defn's
-    /// own FQ as `VarRef::Global` (S114 flip — was a bare `resolved_targets`
-    /// entry). Compared by name only (`as_deref`).
-    ///
-    /// **`None` when the fn's own name is also a PARAM** (`(defn f [f] …)`):
-    /// a param named identically to the fn is a genuine LOCAL (a backend
-    /// param), not the self-recursion slot, so the carve-out must not fire
-    /// (FIXME 0619 item 2). The recursion binding is still installed for body
-    /// type inference — suppressing `current_defn` gates only the carrier.
-    pub(crate) current_defn: Option<Symbol>,
-    /// The scope-frame index (0 = base) holding the enclosing defn's recursion
-    /// binding, captured by `check_defn_body`. The self-recursion carve-out
-    /// records a carrier ONLY when the referenced name resolves at THIS frame —
-    /// a same-named nested `let`/`fn` binding resolves in a deeper frame and is
-    /// a LOCAL reference, not self-recursion (FIXME 0619 item 2). `None`
-    /// outside a `check_defn_body` body.
-    pub(crate) current_defn_frame: Option<usize>,
 }
 
 impl CheckState {
@@ -356,7 +299,7 @@ impl CheckState {
             env: ScopeStack::new(),
             expr_types: HashMap::new(),
             method_resolutions: MethodResolutions::new(),
-            user_fn_refs: HashMap::new(),
+            body_frame: BodyFrame::default(),
             warnings: Vec::new(),
             active_constraints: ActiveConstraints::default(),
             pending_gap: None,
@@ -369,14 +312,8 @@ impl CheckState {
             pending_overload_resolutions: Vec::new(),
             deferred_self_call_dispatch: Vec::new(),
             mono_recheck_self: None,
-            deferred_accessor_collisions: Vec::new(),
-            synthesised_accessor_names: std::collections::HashSet::new(),
-            current_defn: None,
-            current_defn_frame: None,
             accessor_owning_types: HashMap::new(),
             current_module: module,
-            rigid_vars: HashSet::new(),
-            written_var_scope: None,
         }
     }
 
@@ -404,8 +341,9 @@ impl CheckState {
     /// base skips the overload path while a genuine self-recursive multi-sig
     /// self-call (the §5.1.2 back-flow) still enters it.
     pub(crate) fn is_recursion_self_ref(&self, name: &str) -> bool {
-        self.current_defn.as_deref() == Some(name)
-            && self.env.lookup_frame(name) == self.current_defn_frame
+        self.body_frame.recursion.as_ref().is_some_and(|binding| {
+            binding.name.as_ref() == name && self.env.lookup_frame(name) == Some(binding.frame)
+        })
     }
 
     /// The §11.8.7 Ruling-5 / §11.8.8 ("name is TRIGGER, carrier is IDENTITY")
@@ -609,7 +547,10 @@ where
             .env
             .resolve_entry_in_module(self.module_path, trait_name.as_ref())?
         {
-            ModuleEntry::TraitDecl { info, .. } => Some(info),
+            Binding {
+                declaration: Decl::Trait(record),
+                ..
+            } => Some(record.info),
             _ => None,
         }
     }
@@ -628,7 +569,7 @@ where
             None => return false,
         };
         // Terminal must be a TraitDecl for this to be a valid trait reference.
-        if !matches!(terminal, ModuleEntry::TraitDecl { .. }) {
+        if !matches!(terminal.declaration, Decl::Trait(_)) {
             return false;
         }
         // Scan the trait's home only (Principle 17 shape 3). Staging-aware.
@@ -637,13 +578,9 @@ where
             if found {
                 return;
             }
-            if let ModuleEntry::TraitImpl {
-                trait_name: tn,
-                impl_type: it,
-                ..
-            } = entry
-                && &tn.name == trait_name
-                && &it.name == impl_type
+            if let Decl::ImplShell(shell) = &entry.declaration
+                && &shell.trait_name.name == trait_name
+                && &shell.impl_type.name == impl_type
             {
                 found = true;
             }
@@ -852,7 +789,7 @@ where
         &self,
         module_path: &ModuleFullPath,
         name: &str,
-    ) -> Option<ModuleEntry<C>> {
+    ) -> Option<Binding<C>> {
         self.resolve_terminal_entry_and_home(module_path, name)
             .map(|(e, _home)| e)
     }
@@ -879,15 +816,12 @@ where
         ctor_name: &str,
     ) -> Option<TypeName> {
         let entry = self.resolve_entry_in_module(module_path, ctor_name)?;
-        match entry {
-            ModuleEntry::Def { kind, .. } => match kind.as_ref() {
-                cranelisp_types::DefKind::Constructor { type_name, .. } => {
-                    Some(type_name.name.clone())
-                }
+        entry
+            .callable()
+            .and_then(|callable| match &callable.origin {
+                CallableOrigin::Ctor { type_name, .. } => Some(type_name.name.clone()),
                 _ => None,
-            },
-            _ => None,
-        }
+            })
     }
 
     /// State-rooted constructor→parent-type resolve (S108 Wave-G §3.3 collapse
@@ -908,15 +842,13 @@ where
         ctor_name: &str,
     ) -> Option<TypeName> {
         let resolved = self.scope_resolve(state, ctor_name, Span::default()).ok()?;
-        match &resolved.entry {
-            ModuleEntry::Def { kind, .. } => match kind.as_ref() {
-                cranelisp_types::DefKind::Constructor { type_name, .. } => {
-                    Some(type_name.name.clone())
-                }
+        resolved
+            .entry
+            .callable()
+            .and_then(|callable| match &callable.origin {
+                CallableOrigin::Ctor { type_name, .. } => Some(type_name.name.clone()),
                 _ => None,
-            },
-            _ => None,
-        }
+            })
     }
 
     /// Check whether a constructor is marked as internal (not user-constructable).
@@ -946,9 +878,8 @@ where
                     // the Import entry, not the Constructor, and miss the
                     // `internal` discriminator.
                     if let Some(entry) = self.resolve_entry_in_module(module_path, c_sym.as_ref())
-                        && let ModuleEntry::Def { kind, .. } = entry
-                        && let cranelisp_types::DefKind::Constructor { internal, .. } =
-                            kind.as_ref()
+                        && let Some(callable) = entry.callable()
+                        && let CallableOrigin::Ctor { internal, .. } = &callable.origin
                     {
                         return *internal;
                     }
@@ -992,8 +923,9 @@ where
         // Constructor Def. `resolve_entry_scoped` already applies the
         // prelude fallback (bit-gated, self-guarded) and the I-1 public
         // filter, so a private prelude ctor never reaches here.
-        if let Some(ModuleEntry::Def { kind, .. }) = self.resolve_entry_scoped(state, ctor_name)
-            && let cranelisp_types::DefKind::Constructor { internal, .. } = kind.as_ref()
+        if let Some(entry) = self.resolve_entry_scoped(state, ctor_name)
+            && let Some(callable) = entry.callable()
+            && let CallableOrigin::Ctor { internal, .. } = &callable.origin
         {
             return *internal;
         }
@@ -1100,9 +1032,8 @@ where
         }
     }
 
-    /// Single-source the scope-construction glue shared by the three resolution
-    /// seams — [`Self::scope_resolve`], [`Self::scope_resolve_in`], and the
-    /// [`Self::reject_def_over_binding`] adapter (S108 Wave-G §3.2; the
+    /// Single-source the scope-construction glue shared by the two resolution
+    /// seams — [`Self::scope_resolve`] and [`Self::scope_resolve_in`] (S108 Wave-G §3.2; the
     /// 0564/0565 divergent-duplication category applied to this crate's own new
     /// code). Each seam differs only in which module's (staging-aware) first-hop
     /// table it resolves against; the `view()` + prelude-bit consult +
@@ -1174,6 +1105,21 @@ where
         })
     }
 
+    /// Resolve every terminal declaration exposed under one spelling. Unlike
+    /// [`Self::scope_resolve`], this does not reject a multi-candidate spelling;
+    /// inference callers can inspect the complete set before selecting one.
+    pub(crate) fn scope_resolve_candidates(
+        &self,
+        state: &CheckState,
+        name: &str,
+        span: Span,
+    ) -> Result<Vec<cranelisp_types::Resolved<C>>, ResolveError> {
+        let read = self.current_symbol_table(state);
+        self.with_scope(&read, &state.current_module, |scope| {
+            scope.resolve_candidates(name, span)
+        })
+    }
+
     /// Arbitrary-root scope resolve (S108 Wave-G §3.2 — collapses the former
     /// `resolve_type_expr_in_module` inline leaf-resolver copy). The first hop
     /// is a staging-aware view over `module_path`; the prelude bit is consulted
@@ -1206,27 +1152,34 @@ where
         self.with_scope(&read, module_path, |scope| scope.resolve(name, span))
     }
 
-    /// §8.6.4 definition-over-(import|export|prelude) rejection — the single,
-    /// mode-uniform seam (FIXME 0514). A `defn`/`deftype` whose name is already
-    /// bound IN SCOPE by anything OTHER than this module's OWN prior definition
-    /// is a compile-time error, resolved by the fully-qualified reference.
-    ///
-    /// The seam glue (synthetic-name guard, resolve-in-scope, provenance
-    /// classification off the scope's first-hop head, `check_binding_addition`
-    /// delegate) is single-sourced in `cranelisp_types::reject_def_over_binding`
-    /// (S108 Wave-G §4.1) so int's defmacro path can call the identical seam
-    /// without a typecheck dependency. This method is the 3-line adapter:
-    /// construct the current-module `ResolutionScope` (the ONE bit consult) and
-    /// hand it to the types-owned seam.
-    pub(crate) fn reject_def_over_binding(
+    /// Arbitrary-root variant of [`Self::scope_resolve_candidates`]. Type
+    /// syntax uses this to discard non-type declarations before deciding
+    /// whether a spelling is unique.
+    pub(crate) fn scope_resolve_candidates_in(
         &self,
-        state: &CheckState,
-        name: &Symbol,
+        module_path: &ModuleFullPath,
+        name: &str,
         span: Span,
-    ) -> Result<(), CranelispError> {
-        let read = self.current_symbol_table(state);
-        self.with_scope(&read, &state.current_module, |scope| {
-            cranelisp_types::reject_def_over_binding(scope, name, span)
+    ) -> Result<Vec<cranelisp_types::Resolved<C>>, ResolveError> {
+        let live = match self.modules.get(module_path) {
+            Some(g) => g,
+            None => {
+                return Err(ResolveError::TypeNotFound {
+                    name: TypeName::from(name),
+                    from_module: module_path.clone(),
+                    span,
+                });
+            }
+        };
+        let read = match &self.staging {
+            Some(staging) if staging.module == *module_path => SymbolTableRead::Cluster {
+                staging: staging.cell.borrow(),
+                live,
+            },
+            _ => SymbolTableRead::Live(live),
+        };
+        self.with_scope(&read, module_path, |scope| {
+            scope.resolve_candidates(name, span)
         })
     }
 
@@ -1257,8 +1210,11 @@ where
             return Ok(info.name.clone());
         }
         match resolved.entry {
-            ModuleEntry::IntrinsicType { .. } => Ok(cranelisp_types::FQTypeName::new(
-                resolved.home,
+            Binding {
+                declaration: Decl::Type(cranelisp_types::TypeRecord::Intrinsic { .. }),
+                ..
+            } => Ok(cranelisp_types::FQTypeName::new(
+                resolved.canonical.module,
                 type_name.clone(),
             )),
             _ => Err(type_not_found()),
@@ -1293,8 +1249,11 @@ where
             return Ok(info.name.clone());
         }
         match resolved.entry {
-            ModuleEntry::IntrinsicType { .. } => Ok(cranelisp_types::FQTypeName::new(
-                resolved.home,
+            Binding {
+                declaration: Decl::Type(cranelisp_types::TypeRecord::Intrinsic { .. }),
+                ..
+            } => Ok(cranelisp_types::FQTypeName::new(
+                resolved.canonical.module,
                 type_name.clone(),
             )),
             _ => Err(type_not_found()),
@@ -1331,7 +1290,10 @@ where
             return Ok(Type::ADT(info.name.clone(), type_args));
         }
         match resolved.entry {
-            ModuleEntry::IntrinsicType { ty, .. } => Ok(ty),
+            Binding {
+                declaration: Decl::Type(cranelisp_types::TypeRecord::Intrinsic { ty, .. }),
+                ..
+            } => Ok(ty),
             _ => Err(type_not_found()),
         }
     }
@@ -1358,7 +1320,10 @@ where
             .scope_resolve(state, trait_name, span)
             .map_err(|e| project_not_found(e, trait_not_found))?;
         match resolved.entry {
-            ModuleEntry::TraitDecl { .. } => Ok(resolved.home),
+            Binding {
+                declaration: Decl::Trait(_),
+                ..
+            } => Ok(resolved.canonical.module),
             _ => Err(trait_not_found()),
         }
     }
@@ -1408,13 +1373,8 @@ where
         let resolved = self
             .scope_resolve(state, ctor_name, span)
             .map_err(|e| project_not_found(e, ctor_not_found))?;
-        match resolved.entry {
-            ModuleEntry::Def { kind, .. } => match kind.as_ref() {
-                cranelisp_types::DefKind::Constructor { type_name, .. } => {
-                    Ok(type_name.name.clone())
-                }
-                _ => Err(ctor_not_found()),
-            },
+        match resolved.entry.callable().map(|callable| &callable.origin) {
+            Some(CallableOrigin::Ctor { type_name, .. }) => Ok(type_name.name.clone()),
             _ => Err(ctor_not_found()),
         }
     }
@@ -1475,6 +1435,7 @@ where
         }
         let resolved = cranelisp_types::substitute_module_alias(
             self.module_aliases,
+            &state.current_module,
             &ModuleFullPath::from(module_part),
         );
         if resolved == state.current_module {
@@ -1621,27 +1582,24 @@ where
     ///   `design/arch/typed-resolution-carrier.md`; `backend-keyed-consumer.md`
     ///   §1.1/§1.1.2). Keyed at the referencing `Var` span, the value is a
     ///   `VarRef` VERDICT — no longer a bare `Option<FQSymbol>`. A table-resolved
-    ///   reference records `VarRef::Global(resolved.storage_fq())` — the TERMINAL
+    ///   reference records `VarRef::Global(resolved.canonical)` — the TERMINAL
     ///   STORAGE key the walk surfaced, "whichever storage key HIT", for EVERY
     ///   table-resolved kind (user fn, primitive, constructor, platform effect,
     ///   host-promised extern, mangled/mono variants a chain-follow lands on —
     ///   any terminal `ModuleEntry::Def`); a §4.6 LOCAL records
     ///   `VarRef::Local { binder, binding_span }` (the positive local verdict with
-    ///   binder identity). `storage_fq()` is NOT `resolved.fq`: for a
-    ///   member-canonical-keyed symbol (sum ctor, field accessor) or a renamed
-    ///   import/re-export, `fq` composes the WRITTEN alias spelling while
-    ///   `storage_fq()` carries the terminal table key the backend's `entry_at`
+    ///   binder identity). `resolved.canonical` carries the terminal table key
+    ///   the backend's `entry_at`
     ///   reads directly (FIXME 0620). Totality holds by construction: every
     ///   successfully-typed reference records exactly one `VarRef` — "unresolved"
     ///   has no constructor, so a dropped carrier fails LOUD at the view-build
     ///   gate (`from_expr` → `ViewBuildError::Unresolved`), never as a codegen
     ///   keyed miss. The backend consumes it via an exhaustive `VarRef` match.
     /// - **`user_fn_refs`** — the `Def.callees` edge feed (FIXME 0470, S101).
-    ///   Records `resolved.storage_fq()` — the TERMINAL STORAGE key the walk
-    ///   surfaced, NOT the written alias `resolved.fq` (FIXME 0621, S111 CS-5:
-    ///   for a renamed import `[(foo bar)]` or a bare accessor, `fq` composes
-    ///   the written spelling `{m, bar}`/`{m, v}` while `storage_fq()` carries
-    ///   the terminal key `{m, foo}`/`{m, Box.v}` the reverse index must key on;
+    ///   Records `resolved.canonical` — the terminal storage key the walk
+    ///   surfaced (FIXME 0621, S111 CS-5): for a renamed import `[(foo bar)]`
+    ///   or a bare accessor, this is `{m, foo}`/`{m, Box.v}`, the identity the
+    ///   reverse index must key on;
     ///   a persisted-`.meta.json` meaning change riding the schema-19→20 bump).
     ///   Kept only when the terminal is a `DefKind::UserFn`
     ///   `Def` (a `UserFn`-filtered PROJECTION of the single resolution).
@@ -1728,25 +1686,26 @@ where
             }
             return;
         }
-        // Ordinary bare/qualified reference: resolve ONCE, record both feeds
-        // (any-`Def` for the carrier; `UserFn`-filtered projection for callees).
+        // Ordinary bare/qualified language-value reference: resolve ONCE,
+        // record its carrier, then project user functions into `callees`.
         if let Some(resolved) = self.resolve_ref_target(state, name, span) {
+            let canonical = resolved.canonical.clone();
             state
                 .method_resolutions
                 .var_refs
-                .insert(span, VarRef::Global(resolved.storage_fq()));
-            if let ModuleEntry::Def { kind, .. } = &resolved.entry
-                && matches!(kind.as_ref(), cranelisp_types::DefKind::UserFn { .. })
-            {
-                state.user_fn_refs.insert(span, resolved.storage_fq());
+                .insert(span, VarRef::Global(canonical.clone()));
+            if resolved.entry.callable().is_some_and(|callable| {
+                matches!(
+                    callable.origin,
+                    CallableOrigin::Plain | CallableOrigin::TraitMethod { .. }
+                )
+            }) {
+                state.body_frame.user_fn_refs.insert(span, canonical);
             }
         } else {
-            // A non-`Def` terminal / miss (`resolve_ref_target` None, but a
-            // scheme was found upstream in `infer_var` so the reference is
-            // successfully-typed) records NOTHING here — the view-build gate then
-            // raises `ViewBuildError::Unresolved` for this real-span `Var`
-            // (design §2.1 last row). This is the LOCATED typecheck-phase error
-            // the carrier exists for, never a silent local default.
+            // A non-value terminal or miss records nothing. If a scheme was
+            // nonetheless found upstream, the view-build gate raises the
+            // located carrier-miss error rather than silently defaulting.
         }
     }
 
@@ -1756,9 +1715,8 @@ where
     /// shared [`Self::qualified_candidate_modules`] source (Principle 7 — the
     /// former hand-rolled mirror is retired) so the recorded identity agrees with
     /// the scheme the reference type-checked against. Resolves ONCE (Principle
-    /// 24); the caller projects the kind filter each feed needs. Returns `None`
-    /// for a non-`Def` terminal (a local, a type, a special form, an unresolved
-    /// name).
+    /// 24). Returns `None` for an expansion-only declaration, another non-value
+    /// terminal, a local, or an unresolved name.
     fn resolve_ref_target(
         &self,
         state: &CheckState,
@@ -1778,10 +1736,9 @@ where
     }
 
     /// One chain-follow + prelude-fallback resolution of a single candidate
-    /// spelling, kept only when it terminates at a `ModuleEntry::Def` of ANY
-    /// kind (S110 0583 — the backend discriminates the kind off the fetched
-    /// entry; Principle 24). Does NOT filter on `DefKind`; the caller applies
-    /// any projection.
+    /// spelling, kept only when it terminates at a language-value declaration.
+    /// Expansion-only macro parents and clauses never acquire a backend
+    /// reference carrier through this path.
     pub(crate) fn def_resolved(
         &self,
         state: &CheckState,
@@ -1789,7 +1746,7 @@ where
         span: Span,
     ) -> Option<cranelisp_types::Resolved<C>> {
         let resolved = self.scope_resolve(state, name, span).ok()?;
-        matches!(&resolved.entry, ModuleEntry::Def { .. }).then_some(resolved)
+        crate::candidate_selection::is_value_candidate(&resolved.entry).then_some(resolved)
     }
 
     /// Resolve a dotted `Type.member` field-accessor reference to its accessor
@@ -1818,7 +1775,7 @@ where
     /// (the caller then proceeds to the `/`-split / undefined-variable path).
     fn resolve_dotted_member(&self, state: &CheckState, name: &str) -> Option<Scheme> {
         let entry = self.resolve_dotted_member_entry(state, name)?;
-        self.extract_scheme_from_entry_owned(&entry, 0)
+        self.extract_scheme_from_entry_owned(&entry)
     }
 
     /// Resolve a dotted `Type.member` reference to the terminal `ModuleEntry` of
@@ -1840,7 +1797,7 @@ where
         &self,
         state: &CheckState,
         name: &str,
-    ) -> Option<ModuleEntry<C>> {
+    ) -> Option<Binding<C>> {
         self.dotted_member_identity(state, name)
             .map(|(_, entry)| entry)
     }
@@ -1873,7 +1830,7 @@ where
         &self,
         state: &CheckState,
         name: &str,
-    ) -> Option<(FQSymbol, ModuleEntry<C>)> {
+    ) -> Option<(FQSymbol, Binding<C>)> {
         // A `Type.member` form: exactly one `.`, both sides non-empty. A
         // module-qualified `m/Type` head carries a `/`, which the `/`-split
         // path owns — restrict the dotted member to a bare type head here.
@@ -1927,7 +1884,7 @@ where
         // is idempotent, so projecting `.entry` is behaviour-identical to
         // returning the head and following downstream.
         let entry = self.scope_resolve(state, name, Span::default()).ok()?.entry;
-        self.extract_scheme_from_entry_owned(&entry, 0)
+        self.extract_scheme_from_entry_owned(&entry)
     }
 
     /// Probe a name in `module_path`'s symbol table, returning an owned
@@ -1942,7 +1899,7 @@ where
         &self,
         module_path: &ModuleFullPath,
         name: &str,
-    ) -> Option<ModuleEntry<C>> {
+    ) -> Option<Binding<C>> {
         // Staging-first when applicable. The borrow is short-lived (clone
         // and drop).
         if let Some(staging) = &self.staging
@@ -1969,7 +1926,7 @@ where
     /// Ref).
     pub(crate) fn for_each_in_module<F>(&self, module_path: &ModuleFullPath, mut f: F)
     where
-        F: FnMut(&Symbol, &ModuleEntry<C>),
+        F: FnMut(&Symbol, &Binding<C>),
     {
         // Snapshot staging entries first (if applicable). Drop the
         // staging borrow before acquiring the DashMap read guard to
@@ -1993,39 +1950,9 @@ where
         }
     }
 
-    /// Extract a Scheme from a ModuleEntry, following Import/Reexport chains.
-    ///
-    /// `depth` tracks recursion to enforce the chain depth limit (spec §8.6.2).
-    /// Named `_owned` to emphasise the caller should clone the entry before calling,
-    /// ensuring no DashMap guard is held during chain following.
-    fn extract_scheme_from_entry_owned(
-        &self,
-        entry: &ModuleEntry<C>,
-        depth: usize,
-    ) -> Option<Scheme> {
-        if depth > IMPORT_CHAIN_DEPTH_LIMIT {
-            return None; // Pathological chain — give up
-        }
-
-        match entry {
-            // A single-ctor product type's scheme lives canonically on its
-            // got-slotted ctor `Def` (S79 Option 3a) — the `TypeDef`-via-
-            // `constructor_scheme` smuggling arm is retired.
-            ModuleEntry::Def { scheme, .. } => Some(scheme.clone()),
-            ModuleEntry::Import { source, .. } => self.resolve_fq_symbol(source, depth + 1),
-            _ => None,
-        }
-    }
-
-    /// Resolve a fully-qualified symbol reference by looking up the source
-    /// module's symbol table.
-    ///
-    /// Clone-and-drop discipline: clone entry from guard, drop guard,
-    /// then follow chain. Staging-aware (FIXME 0179): when
-    /// `fq.module == staging.module`, staging shadows live.
-    fn resolve_fq_symbol(&self, fq: &FQSymbol, depth: usize) -> Option<Scheme> {
-        let entry = self.probe_module_entry_owned(&fq.module, fq.symbol.as_ref())?;
-        self.extract_scheme_from_entry_owned(&entry, depth)
+    /// Extract a scheme from an already-resolved terminal binding.
+    fn extract_scheme_from_entry_owned(&self, entry: &Binding<C>) -> Option<Scheme> {
+        crate::candidate_selection::language_value_scheme(entry).cloned()
     }
 
     /// Resolve a bare `name` in the current-module SCOPE to its terminal
@@ -2045,7 +1972,7 @@ where
         &self,
         state: &CheckState,
         name: &str,
-    ) -> Option<ModuleEntry<C>> {
+    ) -> Option<Binding<C>> {
         // Terminal-entry projection over the single scope resolve (S108 Wave-G).
         // The same-cluster same-module member-alias hop (bare ctor/field-accessor
         // → canonical `Type.member`) is handled at the resolution PRIMITIVE
@@ -2077,7 +2004,7 @@ where
         &self,
         state: &CheckState,
         name: &str,
-    ) -> Option<ModuleEntry<C>> {
+    ) -> Option<Binding<C>> {
         // **Dotted `Type.Ctor` (S109, design §3.3).** A dotted head (`.` and no
         // `/`) is a canonical constructor reference — resolve it through the SAME
         // member core the value seam uses, so value and pattern agree by
@@ -2125,15 +2052,18 @@ where
         &self,
         state: &CheckState,
         name: &str,
-    ) -> Option<(ModuleEntry<C>, ModuleFullPath)> {
+    ) -> Option<(Binding<C>, ModuleFullPath)> {
         // Project the fq-carrying resolver's `Resolved` to (terminal entry, home).
         self.resolve_terminal_fq_scoped(state, name)
-            .map(|resolved| (resolved.entry, resolved.home))
+            .map(|resolved| {
+                let home = resolved.canonical.module;
+                (resolved.entry, home)
+            })
     }
 
     /// Like [`Self::resolve_terminal_entry_scoped`] but returns the full
     /// [`Resolved`] triple so the caller can read the canonical **terminal**
-    /// symbol (`resolved.fq.symbol`) — the bare local name in the home module,
+    /// symbol (`resolved.canonical.symbol`) — the storage key in the home module,
     /// with any `module/symbol` qualifier and module alias already resolved away.
     ///
     /// FIXME 0488 (sig a/b): the pass-4 monomorphisation collectors record the
@@ -2150,7 +2080,7 @@ where
         state: &CheckState,
         name: &str,
     ) -> Option<cranelisp_types::Resolved<C>> {
-        // The full `Resolved` triple over the single scope resolve (S108 Wave-G).
+        // The terminal binding and canonical identity from one scope resolve.
         self.scope_resolve(state, name, Span::default()).ok()
     }
 
@@ -2171,9 +2101,13 @@ where
         &self,
         module_path: &ModuleFullPath,
         name: &str,
-    ) -> Option<(ModuleEntry<C>, ModuleFullPath)> {
-        let entry = self.probe_module_entry_owned(module_path, name)?;
-        self.chain_follow_to_home(entry, module_path.clone(), 0)
+    ) -> Option<(Binding<C>, ModuleFullPath)> {
+        self.scope_resolve_in(module_path, name, Span::SYNTHETIC)
+            .ok()
+            .map(|resolved| {
+                let home = resolved.canonical.module;
+                (resolved.entry, home)
+            })
     }
 
     /// The **prelude-fallback-aware** `(terminal entry, home)` resolver the
@@ -2208,34 +2142,13 @@ where
         &self,
         module_path: &ModuleFullPath,
         name: &str,
-    ) -> Option<(ModuleEntry<C>, ModuleFullPath)> {
+    ) -> Option<(Binding<C>, ModuleFullPath)> {
         self.scope_resolve_in(module_path, name, Span::SYNTHETIC)
             .ok()
             .map(|resolved| {
-                let home = resolved.storage_fq().module;
+                let home = resolved.canonical.module;
                 (resolved.entry, home)
             })
-    }
-
-    /// Recursive helper for [`Self::resolve_terminal_entry_and_home`].
-    fn chain_follow_to_home(
-        &self,
-        entry: ModuleEntry<C>,
-        home: ModuleFullPath,
-        depth: usize,
-    ) -> Option<(ModuleEntry<C>, ModuleFullPath)> {
-        if depth > IMPORT_CHAIN_DEPTH_LIMIT {
-            return None;
-        }
-        match &entry {
-            ModuleEntry::Import { source, .. } => {
-                let next_home = source.module.clone();
-                let next_entry =
-                    self.probe_module_entry_owned(&source.module, source.symbol.as_ref())?;
-                self.chain_follow_to_home(next_entry, next_home, depth + 1)
-            }
-            _ => Some((entry, home)),
-        }
     }
 
     /// Resolve a qualified name `module_path/name` (spec §8.6.6).
@@ -2265,10 +2178,7 @@ where
         // bare `cranelisp_types::resolve` call.
         let qualified = format!("{module_path}/{name}");
         match self.scope_resolve(state, &qualified, Span::SYNTHETIC) {
-            Ok(resolved) => Ok((
-                self.extract_scheme_from_entry_owned(&resolved.entry, 0),
-                None,
-            )),
+            Ok(resolved) => Ok((self.extract_scheme_from_entry_owned(&resolved.entry), None)),
             // Module present, symbol absent (S109 0571 B4/B5). Yield the gap
             // UNCONDITIONALLY (supersedes FIXME 0513's gap-less arm): typecheck
             // reports "the qualified reference `module/name` did not resolve"
@@ -2360,17 +2270,18 @@ where
         t2: &Type,
         span: Span,
     ) -> Result<(), CranelispError> {
-        crate::unify::unify_with_rigid(&mut state.subst, &state.rigid_vars, t1, t2).map_err(|e| {
-            // Re-wrap with the caller's span if the error has SYNTHETIC span
-            if e.span() == Span::SYNTHETIC {
-                CranelispError::TypeError {
-                    message: e.message().to_string(),
-                    location: ErrorLocation::from_span(span),
+        crate::unify::unify_with_rigid(&mut state.subst, &state.body_frame.rigid_vars, t1, t2)
+            .map_err(|e| {
+                // Re-wrap with the caller's span if the error has SYNTHETIC span
+                if e.span() == Span::SYNTHETIC {
+                    CranelispError::TypeError {
+                        message: e.message().to_string(),
+                        location: ErrorLocation::from_span(span),
+                    }
+                } else {
+                    e
                 }
-            } else {
-                e
-            }
-        })
+            })
     }
 
     // --- Scheme operations ---
@@ -2498,7 +2409,7 @@ where
     pub(crate) fn clear_transient_state(state: &mut CheckState) {
         state.expr_types.clear();
         state.method_resolutions.resolved_calls.clear();
-        state.user_fn_refs.clear();
+        state.body_frame.user_fn_refs.clear();
         state.active_constraints = ActiveConstraints::default();
     }
 
@@ -2535,8 +2446,8 @@ where
         // for `module_path`.
         let candidates: Vec<TraitName> = {
             let mut acc = Vec::new();
-            self.for_each_in_module(module_path, |name, entry| match entry {
-                ModuleEntry::TraitDecl { .. } | ModuleEntry::Import { .. } => {
+            self.for_each_in_module(module_path, |name, entry| match &entry.declaration {
+                Decl::Trait(_) => {
                     acc.push(TraitName::from(name.as_ref()));
                 }
                 _ => {}
@@ -2549,7 +2460,13 @@ where
         for candidate in candidates {
             let trait_home =
                 match self.resolve_terminal_entry_and_home(module_path, candidate.as_ref()) {
-                    Some((ModuleEntry::TraitDecl { .. }, home)) => home,
+                    Some((
+                        Binding {
+                            declaration: Decl::Trait(_),
+                            ..
+                        },
+                        home,
+                    )) => home,
                     _ => continue,
                 };
             if !visited_homes.insert(trait_home.clone()) {
@@ -2558,15 +2475,11 @@ where
             // Staging-aware (FIXME 0179): trait_home may equal
             // staging.module when the trait + impl are both in-cluster.
             self.for_each_in_module(&trait_home, |_key, entry| {
-                if let ModuleEntry::TraitImpl {
-                    trait_name,
-                    impl_type,
-                    ..
-                } = entry
-                    && &impl_type.name == type_name
-                    && !traits.contains(&trait_name.name)
+                if let Decl::ImplShell(shell) = &entry.declaration
+                    && &shell.impl_type.name == type_name
+                    && !traits.contains(&shell.trait_name.name)
                 {
-                    traits.push(trait_name.name.clone());
+                    traits.push(shell.trait_name.name.clone());
                 }
             });
         }
@@ -2617,8 +2530,8 @@ where
         trait_name: &TraitName,
     ) -> Option<cranelisp_types::TraitDeclInfo> {
         let (terminal, _home) = self.resolve_terminal_entry_scoped(state, trait_name.as_ref())?;
-        match terminal {
-            ModuleEntry::TraitDecl { info, .. } => Some(info),
+        match terminal.declaration {
+            Decl::Trait(record) => Some(record.info),
             _ => None,
         }
     }
@@ -2642,13 +2555,9 @@ where
         method_name: &Symbol,
     ) -> Option<TraitName> {
         let entry = self.resolve_entry_in_module(module_path, method_name.as_ref())?;
-        match entry {
-            ModuleEntry::Def {
-                trait_origin: Some(fqtn),
-                ..
-            } => Some(fqtn.name.clone()),
-            _ => None,
-        }
+        entry
+            .trait_method()
+            .map(|record| record.trait_name.name.clone())
     }
 
     /// State-rooted variant of [`Self::method_to_trait`].
@@ -2672,13 +2581,12 @@ where
         method_name: &Symbol,
     ) -> Option<(TraitName, ModuleFullPath)> {
         let (entry, _home) = self.resolve_terminal_entry_scoped(state, method_name.as_ref())?;
-        match entry {
-            ModuleEntry::Def {
-                trait_origin: Some(fqtn),
-                ..
-            } => Some((fqtn.name.clone(), fqtn.module.clone())),
-            _ => None,
-        }
+        entry.trait_method().map(|record| {
+            (
+                record.trait_name.name.clone(),
+                record.trait_name.module.clone(),
+            )
+        })
     }
 
     /// Check if a method belongs to a specific trait, via trait_origin on ModuleEntry::Def.
@@ -2737,7 +2645,7 @@ where
                 Some(t) => t,
                 None => return false,
             };
-        if !matches!(terminal, ModuleEntry::TraitDecl { .. }) {
+        if !matches!(terminal.declaration, Decl::Trait(_)) {
             return false;
         }
         self.has_impl_in_home(&trait_home, trait_name, impl_type)
@@ -2763,13 +2671,9 @@ where
             if found {
                 return;
             }
-            if let ModuleEntry::TraitImpl {
-                trait_name: tn,
-                impl_type: it,
-                ..
-            } = entry
-                && &tn.name == trait_name
-                && &it.name == impl_type
+            if let Decl::ImplShell(shell) = &entry.declaration
+                && &shell.trait_name.name == trait_name
+                && &shell.impl_type.name == impl_type
             {
                 found = true;
             }
@@ -2795,10 +2699,12 @@ where
         impl_type: &TypeName,
     ) -> Option<ModuleFullPath> {
         // Exact canonical-key probe (staging-aware).
-        if let Some(ModuleEntry::TraitImpl { impl_module, .. }) =
-            self.probe_module_entry_owned(trait_home, impl_key)
+        if let Some(Binding {
+            declaration: Decl::ImplShell(shell),
+            ..
+        }) = self.probe_module_entry_owned(trait_home, impl_key)
         {
-            return Some(impl_module);
+            return Some(shell.impl_module);
         }
         // Bare-name fallback for a head skew (intrinsic receiver), mirroring
         // `has_impl_in_home`.
@@ -2807,16 +2713,11 @@ where
             if found.is_some() {
                 return;
             }
-            if let ModuleEntry::TraitImpl {
-                trait_name: tn,
-                impl_type: it,
-                impl_module,
-                ..
-            } = entry
-                && &tn.name == trait_name
-                && &it.name == impl_type
+            if let Decl::ImplShell(shell) = &entry.declaration
+                && &shell.trait_name.name == trait_name
+                && &shell.impl_type.name == impl_type
             {
-                found = Some(impl_module.clone());
+                found = Some(shell.impl_module.clone());
             }
         });
         found
@@ -2832,20 +2733,22 @@ where
         // Chain-follow trait reference to its defining module.
         let trait_home =
             match self.resolve_terminal_entry_and_home(module_path, trait_name.as_ref()) {
-                Some((ModuleEntry::TraitDecl { .. }, home)) => home,
+                Some((
+                    Binding {
+                        declaration: Decl::Trait(_),
+                        ..
+                    },
+                    home,
+                )) => home,
                 _ => return types, // trait not reachable from this module
             };
         // Enumerate impls in the trait's home only. Staging-aware (FIXME 0179).
         self.for_each_in_module(&trait_home, |_name, entry| {
-            if let ModuleEntry::TraitImpl {
-                trait_name: tn,
-                impl_type,
-                ..
-            } = entry
-                && &tn.name == trait_name
-                && !types.contains(&impl_type.name)
+            if let Decl::ImplShell(shell) = &entry.declaration
+                && &shell.trait_name.name == trait_name
+                && !types.contains(&shell.impl_type.name)
             {
-                types.push(impl_type.name.clone());
+                types.push(shell.impl_type.name.clone());
             }
         });
         types.sort();
@@ -2896,12 +2799,9 @@ where
         // Unregister traits defined by this module.
         let traits_to_remove: Vec<TraitName> = table
             .all_symbols()
-            .filter_map(|(_, entry)| {
-                if let ModuleEntry::TraitDecl { info, .. } = entry {
-                    Some(info.name.clone())
-                } else {
-                    None
-                }
+            .filter_map(|(_, entry)| match &entry.declaration {
+                Decl::Trait(record) => Some(record.info.name.clone()),
+                _ => None,
             })
             .collect();
         for trait_name in &traits_to_remove {
@@ -3229,7 +3129,7 @@ where
         // the staging-aware first hop are ALL intrinsic to the scope resolve.
         // The structural `TypeExpr` recursion (arity validation, type-var
         // allocation) stays in `crate::resolve::resolve_type_expr`.
-        let resolve_terminal = |tref: &cranelisp_types::TypeRef| -> Option<ModuleEntry<C>> {
+        let resolve_candidates = |tref: &cranelisp_types::TypeRef| {
             // A self-qualified ref (`:t/Box` from inside module `t`) names the
             // requester's OWN module by FQ name. It must resolve against the
             // in-progress cluster staging exactly as a bare `:Box` does — the
@@ -3247,12 +3147,16 @@ where
                 Some(m) if !is_self_qualified => format!("{m}/{}", tref.name),
                 _ => tref.name.to_string(),
             };
-            self.scope_resolve_in(module_path, &name, span)
-                .ok()
-                .map(|resolved| resolved.entry)
+            self.scope_resolve_candidates_in(module_path, &name, span)
+                .map(|candidates| {
+                    candidates
+                        .into_iter()
+                        .map(|candidate| (candidate.entry, candidate.canonical))
+                        .collect()
+                })
         };
         let ctx = crate::resolve::TypeExprCtx {
-            resolve_terminal: &resolve_terminal,
+            resolve_candidates: &resolve_candidates,
             mint_free_var,
             self_type,
             self_params,
@@ -3319,10 +3223,15 @@ where
 {
     let mut max_id: Option<TypeId> = None;
     for (_name, entry) in table.all_symbols() {
-        let scheme = match entry {
-            ModuleEntry::Def { scheme, .. } => Some(scheme),
-            _ => None,
-        };
+        let scheme = entry
+            .callable()
+            .map(|callable| &callable.arm.scheme)
+            .or_else(|| match &entry.declaration {
+                Decl::Overloaded(declaration) => {
+                    declaration.arms.first().map(|arm| &arm.callable.scheme)
+                }
+                _ => None,
+            });
         if let Some(s) = scheme {
             if let Some(id) = cranelisp_types::max_type_var_id(&s.ty) {
                 max_id = Some(max_id.map_or(id, |m: TypeId| m.max(id)));

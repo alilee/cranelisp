@@ -53,7 +53,7 @@ where
         let free_vars = find_free_vars(body, params);
         let mut captures: Vec<Symbol> = free_vars
             .into_iter()
-            .filter(|name| self.variables.contains_key(name))
+            .filter(|name| self.binds(name))
             .collect();
         captures.sort();
 
@@ -132,15 +132,14 @@ where
             base_ptr,
             HeapClosure::DROP_GLUE_PTR_OFFSET,
         );
-        self.pending_closure_drop_glue = drop_glue;
 
         // Store each captured value at HeapClosure::capture_offset(i).
         // For heap-typed captures, emit rc_inc so the closure env holds
         // its own reference (the enclosing scope retains its reference
         // independently and will dec it at scope exit).
         for (i, cap_name) in captures.iter().enumerate() {
-            if let Some(var) = self.variables.get(cap_name) {
-                let cap_val = self.builder.use_var(*var);
+            if let Some(var) = self.lookup_var(cap_name) {
+                let cap_val = self.builder.use_var(var);
                 heap::heap_store(
                     &mut self.builder,
                     cap_val,
@@ -160,9 +159,9 @@ where
                 // (`build_closure_drop_glue`), symmetrically. Skipping only one
                 // would leak (skip dec only) or UAF (skip inc only).
                 if !self.spark_capture_borrow
-                    && let Some(ty) = self.variable_types.get(cap_name)
+                    && let Some(ty) = self.lookup_type(cap_name)
                 {
-                    let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
+                    let category = signature_heap_category(&ty, Some(self.ctx.symbol_tables));
                     self.emit_capture_inc(category, cap_val);
                 }
             }
@@ -207,7 +206,7 @@ where
         // before that builder exists, and the body emits only the call.
         let mut heap_captures: Vec<(usize, CaptureRelease)> = Vec::new();
         for (i, cap_name) in captures.iter().enumerate() {
-            let Some(ty) = self.variable_types.get(cap_name).cloned() else {
+            let Some(ty) = self.lookup_type(cap_name) else {
                 continue;
             };
             let category = signature_heap_category(&ty, Some(self.ctx.symbol_tables));
@@ -342,12 +341,12 @@ where
     /// A captured heap variable returned as the lambda body value requires
     /// an explicit `rc_inc` before `return`, because:
     ///
-    /// 1. The `scope_stack` deliberately excludes captures (see
+    /// 1. The scope chain deliberately excludes captures (see
     ///    `compile_lambda_body` where captures are bound WITHOUT being
     ///    pushed onto the scope frame — captures are the closure env's
     ///    responsibility, not the body scope's).
     /// 2. `protect_return_value` guards its inc-on-return behind
-    ///    `has_cleanup_targets`, which examines `scope_stack` only. For a
+    ///    `has_cleanup_targets`, which examines the innermost frame only. For a
     ///    `(fn [_] b)` shape where `_` is non-heap and `b` is a capture,
     ///    `has_cleanup_targets` is false and `protect_return_value` emits
     ///    no inc.
@@ -371,12 +370,12 @@ where
         let MonoExpr::Var { name, .. } = body else {
             return;
         };
-        if !self.captured_vars.contains(name) {
+        if self.captures.get(name).is_none() {
             return;
         }
         // Look up the capture's type (seeded by `compile_lambda_body` from
         // the enclosing scope). Non-heap captures need no inc.
-        let Some(ty) = self.variable_types.get(name).cloned() else {
+        let Some(ty) = self.lookup_type(name) else {
             return;
         };
         let category = signature_heap_category(&ty, Some(self.ctx.symbol_tables));
@@ -427,6 +426,13 @@ where
         let block_params = builder.block_params(entry_block).to_vec();
         let env_ptr = block_params[0];
 
+        // The captures' types, read from the ENCLOSING environment before the
+        // inner compiler takes this compiler's module borrow.
+        let capture_types: Vec<Option<Type>> = captures
+            .iter()
+            .map(|cap_name| self.lookup_type(cap_name))
+            .collect();
+
         let last_uses = heap::compute_last_uses(body);
         let mut inner_compiler = FnCompiler::inner(
             builder,
@@ -468,12 +474,12 @@ where
 
         // Bind captured variables from the environment.
         //
-        // Record each capture's type in the inner compiler's `variable_types`
-        // so that consuming calling convention inside the body emits the
-        // required `rc_inc` on captured heap values before passing them to
-        // consuming callees. Captures are NOT pushed onto `scope_stack` —
-        // they are borrowed references whose release is the closure env's
-        // drop-glue responsibility, not the body scope's.
+        // Record each capture's type in the inner compiler's CAPTURE
+        // ENVIRONMENT so that the consuming calling convention inside the body
+        // emits the required `rc_inc` on captured heap values before passing
+        // them to consuming callees. Captures are not scope slots — they are
+        // borrowed references whose release is the closure env's drop-glue
+        // responsibility, not the body scope's.
         //
         // Prior bug (S60 Wave 2 Round 2 α): captures had no type recorded,
         // so `compile_consuming_arg_list` skipped the caller-side inc.
@@ -487,17 +493,12 @@ where
                 env_ptr,
                 HeapClosure::capture_offset(i),
             ); // capture_i: i64
-            let var = inner_compiler.fresh_variable();
-            inner_compiler.builder.declare_var(var, types::I64);
-            inner_compiler.builder.def_var(var, cap_val);
-            inner_compiler.variables.insert(cap_name.clone(), var);
-            // Copy the capture's type from the enclosing scope so the body
-            // can correctly RC-inc captured heap values for consuming calls.
-            if let Some(ty) = self.variable_types.get(cap_name) {
-                inner_compiler
-                    .variable_types
-                    .insert(cap_name.clone(), ty.clone());
-            }
+            // Copy the capture's type from the enclosing scope so the body can
+            // correctly RC-inc captured heap values for consuming calls. Into
+            // the CAPTURE ENVIRONMENT, not a scope frame (`binding-scope.md`
+            // §3.2): the closure env's drop glue owns the release, and a
+            // body-local binder shadowing this name must not disturb it.
+            inner_compiler.bind_capture(cap_name, cap_val, capture_types.get(i).cloned().flatten());
         }
 
         // Look up the lambda's inferred type to get parameter types.
@@ -512,44 +513,28 @@ where
             };
 
         // Bind lambda parameters from function params (after env_ptr).
-        // Add params to scope_stack and variable_types so that
+        // Bind params into the body frame with their types so that
         // pop_scope_with_cleanup will emit rc_dec for heap-typed params.
         // This implements the consuming calling convention for closure bodies:
         // the closure owns its parameters and must dec them at exit.
         // Without this, unused params (e.g., `_` in `(fn [_] b)`) leak.
         for (i, param_name) in params.iter().enumerate() {
             let val = block_params[i + 1]; // skip env_ptr
-            let var = inner_compiler.fresh_variable();
-            inner_compiler.builder.declare_var(var, types::I64);
-            inner_compiler.builder.def_var(var, val);
-            inner_compiler.variables.insert(param_name.clone(), var);
-            inner_compiler
-                .scope_stack
-                .last_mut()
-                .unwrap_or_else(|| unreachable!("invariant: scope_stack non-empty"))
-                .push(param_name.clone());
 
             // Use the lambda's inferred param type first.
             // Fall back to derive_param_type_from_body (use-site inference) if the
             // lambda type isn't available.
-            if let Some(Some(ty)) = lambda_param_types.get(i) {
-                inner_compiler
-                    .variable_types
-                    .insert(param_name.clone(), ty.clone());
-            } else if let Some(ty) = Self::derive_param_type_from_body(body, param_name) {
-                inner_compiler.variable_types.insert(param_name.clone(), ty);
-            }
-        }
-
-        // Mark captured variables so they are not eligible for last-use transfer.
-        for cap_name in captures {
-            inner_compiler.captured_vars.insert(cap_name.clone());
+            let ty = match lambda_param_types.get(i) {
+                Some(Some(ty)) => Some(ty.clone()),
+                _ => Self::derive_param_type_from_body(body, param_name),
+            };
+            inner_compiler.bind_local(param_name, val, ty);
         }
 
         // Compile the body with scope cleanup for parameters.
         // This mirrors compile_body: identify the return value variable (if any),
         // protect it from scope cleanup, then dec all other heap-typed params.
-        let skip_var = Self::return_var_in_scope(body, inner_compiler.scope_stack.last());
+        let skip_var = inner_compiler.return_var_in_scope(body);
         let result = inner_compiler.compile_expr(body)?;
         inner_compiler.protect_return_value(&skip_var, result, body);
         // Capture-return inc (Slice 4 / ring2-rc.md "capture-return inc"
@@ -559,9 +544,9 @@ where
         // returned value so the closure's drop-glue dec (run by the
         // trampoline's `consume_closure`) is balanced and the caller
         // receives a live reference. `protect_return_value` does NOT
-        // cover this case because captures are not on `scope_stack`.
+        // cover this case because captures are not scope slots.
         inner_compiler.emit_capture_return_inc(body, result);
-        inner_compiler.pop_scope_with_cleanup(skip_var.as_ref())?;
+        inner_compiler.pop_scope_with_cleanup(skip_var)?;
 
         inner_compiler.builder.ins().return_(&[result]);
         inner_compiler.builder.seal_all_blocks();
@@ -707,7 +692,7 @@ mod tests {
         // AST: (let [s "hello"] ((fn [_] s) 0))
         //
         // Explicit `inferred_type` on the String literal so the let's
-        // `variable_types` picks up `s: String`; that's what
+        // the binder records `s: String`; that's what
         // `emit_capture_return_inc` reads from the enclosing scope when
         // the lambda body is compiled.
         let string_ty = Type::String;

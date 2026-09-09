@@ -87,9 +87,9 @@ The distinction is **bare-promotion vs. module-qualified curation**:
 
 ### 11.4a.1 `first`/`rest` — list vs. pair coexistence
 
-`first`/`rest` are the Clojure idiom for the head/tail of a sequence, and a future sequence trait is the natural owner of the bare names. A standard library MAY rename its concrete list accessors to `first`/`rest` *within the list module* (e.g. `collections.list/first`, `collections.list/rest`), and a `collections/pair` module MAY independently define `first`/`second` as pair accessors. These coexist without conflict **as long as neither bare `first` is re-exported through the prelude**: the two live in distinct modules and are reachable by their fully-qualified paths (`collections.list/first`, `collections.pair/first`).
+`first`/`rest` are the Clojure idiom for the head/tail of a sequence, and a future sequence trait is a natural common abstraction. A standard library MAY rename its concrete list accessors to `first`/`rest` *within the list module* (e.g. `collections.list/first`, `collections.list/rest`), and a `collections/pair` module MAY independently define `first`/`second` as pair accessors. Their canonical identities remain distinct whether they stay module-local or are both re-exported through the prelude.
 
-Re-exporting *both* bare `first` names through one prelude would poison the name under §8.6.4 — the two accessors chain-follow to **distinct terminal sources** (the list `Def` and the pair `Def`), so the bare name is ambiguous (§8.6.5). A standard library SHOULD therefore leave bare `first`/`rest` unbound in the prelude until the future sequence trait decides which abstraction owns them; the concrete accessors stay reachable module-qualified in the interim. (This is the same terminal-source collision rule that governs any two distinct definitions sharing a bare name; the reservation is the author-side discipline that avoids triggering it.)
+Re-exporting both `first` accessors through one prelude is permitted under §8.6.4. A call whose receiver type selects the list or pair accessor resolves normally; an unconstrained first-class use qualifies the intended canonical accessor under §8.6.5. A future sequence trait may still provide a common abstraction, but name collision alone does not require the prelude to withhold either accessor.
 
 ### 11.4a.2 What the reservation does NOT restrict
 

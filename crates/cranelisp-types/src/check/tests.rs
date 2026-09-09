@@ -49,7 +49,13 @@ fn resolved_call_variants_serde_roundtrip() {
             impl_module: ModuleFullPath::from("core.fmt"),
         },
         ResolvedCall::SigDispatch {
-            mangled_name: JitSymbol::from("add$Int+Int"),
+            target: crate::CallableTarget::OverloadArm {
+                owner: crate::FQSymbol {
+                    module: ModuleFullPath::from("core.math"),
+                    symbol: Symbol::from("add"),
+                },
+                arm: crate::CallableArmId::from_ordinal(0).unwrap(),
+            },
         },
         ResolvedCall::BuiltinFn {
             name: Symbol::from("add-i64"),
@@ -109,7 +115,7 @@ fn method_resolutions_population_semantics() {
         Some("user/Some".to_string())
     );
     // A miss on an unrelated span returns None (no phantom entries).
-    assert!(mr.resolved_calls.get(&Span::new(99, 100)).is_none());
+    assert!(!mr.resolved_calls.contains_key(&Span::new(99, 100)));
 }
 
 // spec: design/arch/fixmes/0498 — TypeDefInfo (name + type_params + ctor names)

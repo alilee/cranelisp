@@ -18,8 +18,11 @@
 
 #[path = "helpers/e2e.rs"]
 mod e2e;
+#[path = "helpers/marginal.rs"]
+mod marginal;
 
 use e2e::{Cranelisp, PreludeVariant};
+use marginal::{Child, Instrument, MarginalPair};
 
 /// Run a fixture under the given lenient mode; return (exit_code, stderr).
 fn run_mode(name: &str, src: &str, serial: bool) -> (i32, String) {
@@ -245,6 +248,396 @@ fn s99_f3_inverted_search_parallel_equals_serial() {
 #[test]
 fn s99_f4_sudoku_parallel_equals_serial() {
     assert_parallel_equals_serial("f4.cl", include_str!("fixtures/s99/f4_sudoku.cl"));
+}
+
+// spec: spec/12-runtime.md §12.3.1 — completed solved-grid workloads release
+// their unreachable heap ownership.
+// defect: class=rc-miscount locus=crates/cranelisp-typecheck/src/ownership/fixpoint.rs::compute_cluster_with_cap found=S121 owner=/dev fixed=S121
+// Historical reproduction fixed in S121: the ownership-result correction plus
+// schema-27 cache invalidation made all 23 cells GREEN; repeated solves balance
+// at 4,140/4,140 and 8,279/8,279.
+#[test]
+fn s99_f4_solved_grid_releases_repeated_workloads() {
+    let source = include_str!("fixtures/s99/f4_sudoku.cl");
+    let (declarations, main_body) = source
+        .split_once("(defn main []")
+        .expect("f4 fixture has a main entry");
+    let program = |body: &str, count: i32| {
+        format!(
+            "{declarations}(defn solve-once []{body}\n\
+             (defn repeat-work [n]\n\
+               (if (eq-i64 n 0) 0\n\
+                 (match (solve-once)\n\
+                   [(Pure value)\n\
+                    (add-i64 (if (eq-i64 value 154) 1 0)\n\
+                             (repeat-work (sub-i64 n 1)))\n\
+                    _ 0])))\n\
+             (defn main [] (Pure (repeat-work {count})))\n"
+        )
+    };
+    let [once, twice] = [1, 2].map(|count| {
+        let m = MarginalPair::new(
+            &format!("solved-grid workload versus no-work driver, {count} executions"),
+            Child::new(&program(" (Pure 154))", count)),
+            Child::new(&program(main_body, count)),
+        )
+        .instrument(Instrument::RcStats)
+        .measure();
+        assert_eq!(
+            m.control().exit_code(),
+            Some(count),
+            "{}",
+            m.control().stderr
+        );
+        assert_eq!(
+            m.subject().exit_code(),
+            Some(count),
+            "{}",
+            m.subject().stderr
+        );
+        m
+    });
+    let report = format!("{}\n{}", once.report(), twice.report());
+    assert_eq!(
+        twice.control().residual() - once.control().residual(),
+        0,
+        "the consuming driver must not add unreachable retention\n{report}"
+    );
+    assert_eq!(
+        twice.residual() - once.residual(),
+        0,
+        "an additional completed solved-grid workload must not retain unreachable owners\n{report}"
+    );
+}
+
+// spec: spec/12-runtime.md §12.3.1 — a recursive vector builder releases its
+// unreachable owners when its result is wrapped before returning.
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/vec_codegen.rs::retain_reused_source found=S121 owner=/dev
+// Identical source and compiler emitted both retaining and non-retaining COW
+// paths across captures. This conditional reduction does not replace the full
+// f4 guard; the source of that emission difference remains unresolved.
+#[test]
+fn nested_result_vec_builder_releases_repeated_workloads() {
+    let program = |build_call: &str, count: i32| {
+        format!(
+            "(import [primitives [*]])\n\
+             (deftype Grid [:(Vec Int) cells])\n\
+             (defn raw [n xs]\n\
+               (if (eq-i64 n 0) xs\n\
+                 (raw (sub-i64 n 1) (vec-push xs 1))))\n\
+             (defn boxed [n xs]\n\
+               (if (eq-i64 n 0) (Some (Grid xs))\n\
+                 (boxed (sub-i64 n 1) (vec-push xs 1))))\n\
+             (defn repeat-work [n]\n\
+               (if (eq-i64 n 0) 0\n\
+                 (match {build_call}\n\
+                   [(Some g) (match g [(Grid xs)\n\
+                     (add-i64 (vec-len xs) (repeat-work (sub-i64 n 1)))])\n\
+                    None 0])))\n\
+             (defn main [] (Pure (repeat-work {count})))\n"
+        )
+    };
+    let [once, twice] = [1, 2].map(|count| {
+        let m = MarginalPair::new(
+            &format!("wrapping inside versus after the vector builder, {count} executions"),
+            Child::new(&program("(Some (Grid (raw 8 [])))", count)),
+            Child::new(&program("(boxed 8 [])", count)),
+        )
+        .instrument(Instrument::RcStats)
+        .measure();
+        assert_eq!(
+            m.control().exit_code(),
+            Some(8 * count),
+            "{}",
+            m.control().stderr
+        );
+        assert_eq!(
+            m.subject().exit_code(),
+            Some(8 * count),
+            "{}",
+            m.subject().stderr
+        );
+        m
+    });
+    let report = format!("{}\n{}", once.report(), twice.report());
+    assert_eq!(
+        twice.control().residual() - once.control().residual(),
+        0,
+        "wrapping after the builder must not retain unreachable owners\n{report}"
+    );
+    assert_eq!(
+        twice.residual() - once.residual(),
+        0,
+        "wrapping inside the builder must not add unreachable retention\n{report}"
+    );
+}
+
+// =============================================================================
+// S121 — the parameter-permuting self-call witnesses.
+//
+// QA allocation: `tests/plan/s121-test-plan.md` §14.2 ("Independent crash
+// isolation" — retain a meaningful minimal crash reduction beside the existing
+// partial witness before routing a fix), against the S121 crash attribution
+// (`qa`, 2026-09-07).
+//
+// Both witnesses were committed FAILING-NOT-IGNORED per root `CLAUDE.md`
+// §"Usability Findings and Defects"; the S121 ownership-result correction
+// (`design/typecheck/ownership-inference.md` §19) flipped them, and they stay as
+// the permanent regression guard for the class. Per that rule no numbered FIXME
+// accompanies them, and their `// defect:` lines ride the corpus green
+// (`tests/CLAUDE.md` §"Defect-repro notation").
+//
+// WHAT THE CELLS ASSERT: only what the language guarantees — the correct value
+// under the DEFAULT configuration. `CRANELISP_NO_OWNERSHIP=1` also produced the
+// correct value on every witness here (154 3/3 and 190 3/3); that knob is
+// deliberately NOT asserted.
+//
+// PRE-CORRECTION OBSERVATIONS (measured 2026-09-07 on `18bca20d` before §19; all
+// source-level plus compiler-native traces, no native debugger on this host, so
+// no faulting PC was captured). Retained because they are what makes each face a
+// sound oracle rather than a garbage-value assertion (`tests/CLAUDE.md`
+// §"Forbidden dispositions"), not as a change history.
+//
+//   Merely DECLARING a self-recursive callable whose self-call PERMUTED a scalar
+//   parameter into a parameter position flowing to the result made EVERY
+//   callable in the module publish the ⊤ ownership summary
+//   (`modes=[Owned…] result=Fresh flow=[Retained…]`, under
+//   `CRANELISP_OWNERSHIP_TRACE=1`) — 5/5 callables on the reduction below,
+//   including Int-only helpers and `primitives/IO.Pure$Int`; 41/41 on the
+//   committed `fixtures/s99/f4_sudoku.cl` (`qa`). Un-permuting that one
+//   self-call converged the same cluster instead (`mk: result=MayAliasOf(1)`;
+//   the control cell below). A PRESENT `result=Fresh` is the documented
+//   condition under which the callee-side return protect is elided. The CLIF for
+//   the crashing frame showed an epilogue that released the accumulator and then
+//   returned it, against a passing sibling that retained first (`qa`, not
+//   re-measured here). The non-convergence mechanism inferred from these
+//   observations is the one §19 corrects; the `// defect:` loci below name it.
+//
+//   * the f4 peer-list reduction died by SIGSEGV 20/20 runs with empty stdout
+//     and stderr. A signal death carries no exit code, so `154` cannot be
+//     reached by accident while that failure stands.
+//   * the REPL face of the minimal reduction returned a pointer-shaped 64-bit
+//     word — 25/25 runs distinct, every one of them ≥ 10^17 in magnitude, never
+//     the small correct value. The full word makes `190` a reliable RED there
+//     with no repetition.
+//   * the `--run` face truncates that same word mod 256 (40/40 observed runs
+//     wrong, spread over 0..249; no signal death was recorded on THIS face), so
+//     a single run could land on the correct exit by coincidence. Correct
+//     behaviour is deterministic — every run yields 190 — so that cell states
+//     the exit over eight independent runs, which is a sound strengthening of
+//     the exit-code oracle. It is NOT a quantified accidental-green probability:
+//     neither the per-run distribution of the truncated byte nor independence
+//     across runs is measured. The deterministic REDs for the class are the REPL
+//     face and the crash cell. No `--link` face is committed: it truncates the
+//     same word (5/5 runs wrong, spread 45..237).
+// =============================================================================
+
+/// The committed f4 declarations and the puzzle its `main` embeds. Composed the
+/// same way `s99_f4_solved_grid_releases_repeated_workloads` composes them, so
+/// the reduction below stays bound to the committed fixture rather than to a
+/// copy of it.
+fn f4_declarations_and_puzzle() -> (&'static str, &'static str) {
+    let source = include_str!("fixtures/s99/f4_sudoku.cl");
+    let (declarations, main_body) = source
+        .split_once("(defn main []")
+        .expect("f4 fixture has a main entry");
+    let puzzle = main_body
+        .split('"')
+        .nth(1)
+        .expect("f4 main embeds its puzzle as a string literal");
+    (declarations, puzzle)
+}
+
+/// Run a source under `--run` with no prelude; return the raw `CrOutput`.
+fn run_source(name: &str, src: &str) -> e2e::CrOutput {
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .file(name, src)
+        .run(name)
+        .output()
+}
+
+/// Assert a `--run` child reached `expected`, naming a signal death explicitly:
+/// a use-after-free that faults has no exit code at all, and reporting it as
+/// "expected N, got None" hides which failure mode was observed.
+fn assert_run_exit(name: &str, src: &str, expected: i32, why: &str) {
+    let out = run_source(name, src);
+    match out.status.code() {
+        Some(code) if code == expected => {}
+        Some(code) => panic!(
+            "{name}: expected exit {expected}, got {code} — {why}\nstdout:\n{}\nstderr:\n{}",
+            out.stdout, out.stderr
+        ),
+        None => panic!(
+            "{name}: expected exit {expected}, but the child was KILLED BY A SIGNAL \
+             (status={:?}) — {why}\nstdout:\n{}\nstderr:\n{}",
+            out.status, out.stdout, out.stderr
+        ),
+    }
+}
+
+/// The last `:primitives/Int N` value rendered by a piped REPL capture.
+fn last_repl_int(stdout: &str) -> i64 {
+    let line = stdout
+        .lines()
+        .rev()
+        .find(|l| l.contains(":primitives/Int"))
+        .unwrap_or_else(|| panic!("no `:primitives/Int` value line in:\n{stdout}"));
+    line.rsplit(":primitives/Int ")
+        .next()
+        .and_then(|tail| tail.split_whitespace().next())
+        .and_then(|tok| tok.parse::<i64>().ok())
+        .unwrap_or_else(|| panic!("could not parse the Int value from line: {line:?}"))
+}
+
+/// The builder/consumer pair under test, shared by the witness and its control.
+/// `mk` pushes 0..19 onto its accumulator and RETURNS that accumulator — the
+/// callable whose return protect the ⊤ summary elides. `sum` folds it, so the
+/// program's value is 0+1+…+19 = 190.
+const S121_BUILDER_AND_CONSUMER: &str = concat!(
+    "(defn mk [i acc] (if (eq-i64 i 20) acc (mk (add-i64 i 1) (vec-push acc i))))\n",
+    "(defn sum [pl i acc]\n",
+    "  (if (eq-i64 i (vec-len pl)) acc (sum pl (add-i64 i 1) (add-i64 acc (vec-get pl i)))))\n"
+);
+
+/// The expected fold of `mk`'s vector: 0+1+…+19.
+const S121_BUILDER_SUM: i32 = 190;
+
+/// The QA-allocated minimal reduction (`cases/v23.cl`, verbatim). `f` is never
+/// CALLED — declaring it is enough — so nothing about `f`'s own runtime
+/// behaviour is under test here; the value under test is the ordinary
+/// builder/consumer pair beside it.
+fn permuting_self_call_program(tail: &str) -> String {
+    format!(
+        "(import [primitives [*]])\n\
+         (defn f [i b] (if (eq-i64 i 0) b (f b i)))\n\
+         {S121_BUILDER_AND_CONSUMER}{tail}"
+    )
+}
+
+// spec: spec/12-runtime.md §12.3.1 — Requirements (2): freed memory MUST NOT be
+// accessed after deallocation. `eliminate-from-peers-helper` walks a peer list
+// produced by a recursive `vec-push` builder that returns its own accumulator
+// parameter. On the committed already-solved grid, eliminating digit 0 from a
+// two-element peer list leaves every cell untouched, so the program's checksum
+// is the fixture's own solved-grid checksum, 154 — the same value
+// `s99_f4_sudoku_parallel_equals_serial` pins. Before the §19 correction the
+// builder's vector was released to zero immediately after construction and the
+// consumer read it: SIGSEGV, 20/20 runs, empty stdout and stderr.
+// defect: class=uaf locus=crates/cranelisp-typecheck/src/ownership/fixpoint.rs::compute_cluster_with_cap found=S121 owner=/dev
+#[test]
+fn s99_f4_recursive_peer_list_builder_returns_the_solved_checksum() {
+    let (declarations, puzzle) = f4_declarations_and_puzzle();
+    let program = format!(
+        "{declarations}\
+         (defn mk [i acc]\n\
+         \x20 (if (eq-i64 i 2) acc (mk (add-i64 i 1) (vec-push acc (add-i64 i 1)))))\n\
+         (defn efp-mk [g idx d] (eliminate-from-peers-helper g (mk 0 []) d 0))\n\
+         (defn main []\n\
+         \x20 (match (make-grid \"{puzzle}\")\n\
+         \x20   [None (Pure 0)\n\
+         \x20    (Some g)\n\
+         \x20      (match (efp-mk g 0 0)\n\
+         \x20        [None (Pure 1)\n\
+         \x20         (Some g2) (Pure (rem-i64 (checksum g2) 251))])]))\n"
+    );
+    assert_run_exit(
+        "f4_peer_list_reduction.cl",
+        &program,
+        154,
+        "a peer list returned by a recursive `vec-push` builder MUST stay live for \
+         its consumer; today the builder's return protect is elided under the \
+         module-wide ⊤ ownership summary and the vector is freed before \
+         `eliminate-from-peers-helper` reads it",
+    );
+}
+
+// spec: spec/12-runtime.md §12.3.1 — Requirements (2): freed memory MUST NOT be
+// accessed after deallocation. The REPL face of the minimal reduction, and the
+// DETERMINISTIC one: the pre-correction freed-heap read rendered a
+// pointer-shaped 64-bit word (25/25 runs, all ≥ 10^17), never the correct 190.
+// defect: class=uaf locus=crates/cranelisp-typecheck/src/ownership/fixpoint.rs::compute_cluster_with_cap found=S121 owner=/dev
+#[test]
+fn parameter_permuting_self_call_repl_yields_the_builder_sum() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::None)
+        .stdin(&permuting_self_call_program("(sum (mk 0 []) 0 0)\n"))
+        .output();
+    let value = last_repl_int(&out.stdout);
+    assert_eq!(
+        i64::from(S121_BUILDER_SUM),
+        value,
+        "a vector returned by a recursive builder through its own accumulator \
+         parameter MUST stay live for its consumer: `(sum (mk 0 []) 0 0)` MUST \
+         render 190. Got the pointer-shaped word {value} — merely DECLARING the \
+         parameter-permuting `f` beside the pair publishes the ⊤ ownership \
+         summary for every callable in the module, whose present `result=Fresh` \
+         elides `mk`'s return protect.\nstdout:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/12-runtime.md §12.6 — Entry Point: the program's exit code is the
+// integer inside the `IO Int` returned by `main`, here the fixed fold 190. The
+// `--run` face of the same reduction, preserving the exit-code oracle QA
+// allocated. Stated over eight independent runs because the defect's wrong value
+// is this same freed-heap word truncated mod 256, and correct behaviour is
+// deterministic (every run yields 190) — a sound strengthening of the oracle,
+// not a quantified accidental-green probability (see the basket header).
+// Pre-correction: 40/40 runs wrong, spread over 0..249, no signal death on this
+// face; the signal deaths belong to the f4 peer-list cell above.
+// defect: class=uaf locus=crates/cranelisp-typecheck/src/ownership/fixpoint.rs::compute_cluster_with_cap found=S121 owner=/dev
+#[test]
+fn parameter_permuting_self_call_run_yields_the_builder_sum() {
+    let program = permuting_self_call_program("(defn main [] (Pure (sum (mk 0 []) 0 0)))\n");
+    for attempt in 1..=8 {
+        assert_run_exit(
+            "permuting_self_call.cl",
+            &program,
+            S121_BUILDER_SUM,
+            &format!(
+                "run {attempt}/8 — the builder's vector MUST survive its return; \
+                 today the module-wide ⊤ summary elides `mk`'s return protect and \
+                 the exit code is a freed-heap word truncated mod 256"
+            ),
+        );
+    }
+}
+
+// spec: spec/12-runtime.md §12.6 — Entry Point: the same builder/consumer pair
+// beside a self-recursive `f` whose self-call does NOT permute its parameters
+// MUST also yield 190 — and does, 20/20 runs (GREEN control).
+//
+// This is the discriminating sibling for the two witnesses above: it holds the
+// builder, the consumer, the arity of `f`, and `f`'s result-is-a-parameter shape
+// fixed, and varies ONLY the argument order of the self-call — `(f i b)` here
+// against `(f b i)` in the witness. The `:Int` annotations are load-bearing and
+// not decoration: without them `b` stays polymorphic once the permutation is
+// removed, `f` never enters the analysed callable universe at all, and the
+// control would pass for the wrong reason (the trap `qa` recorded against its
+// own v18–v20 siblings). With them, `CRANELISP_OWNERSHIP_TRACE=1` shows `f`
+// present in the universe and the cluster CONVERGED — `mk: result=MayAliasOf(1)`
+// rather than the witness's `result=Fresh` — which is what makes this control
+// discriminate the permutation rather than universe membership. (The same
+// annotated source WITH the permutation restored reproduces the witness: 20/20
+// runs wrong, ⊤ 5/5 — so the annotation is not the cure. Measured 2026-09-07;
+// see the S121 test report.)
+#[test]
+fn non_permuting_self_call_control_yields_the_builder_sum() {
+    let program = format!(
+        "(import [primitives [*]])\n\
+         (defn f [:Int i :Int b] (if (eq-i64 i 0) b (f i b)))\n\
+         {S121_BUILDER_AND_CONSUMER}(defn main [] (Pure (sum (mk 0 []) 0 0)))\n"
+    );
+    assert_run_exit(
+        "non_permuting_self_call.cl",
+        &program,
+        S121_BUILDER_SUM,
+        "the control's self-call does not permute its parameters, its cluster \
+         converges, and the builder's return protect is emitted",
+    );
 }
 
 // =============================================================================

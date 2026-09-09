@@ -12,8 +12,8 @@ use cranelift_module::FuncId;
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    DefKind, FQSymbol, FQTypeName, ModeSummary, ModuleEntry, ModuleFullPath, PrimitiveBody, Symbol,
-    SymbolTable, Type, TypeDefInfo, UserFnState,
+    Binding, CallableOrigin, CranelispError, Decl, ErrorLocation, FQSymbol, FQTypeName, Life,
+    ModeSummary, ModuleFullPath, Span, Symbol, SymbolTable, Type, TypeDefInfo,
 };
 
 /// A single field of a constructor, as reconstructed for backend codegen.
@@ -197,10 +197,36 @@ where
     /// `CodegenError` at the call site (Principle 18; Rev-2 no-soft-fallback) —
     /// this reader itself just reports `None`, and the caller names the
     /// reference + the missing carrier in the error.
-    pub(crate) fn entry_at(&self, fq: &FQSymbol) -> Option<(ModuleFullPath, ModuleEntry<C>)> {
+    pub(crate) fn entry_at(&self, fq: &FQSymbol) -> Option<(ModuleFullPath, Binding<C>)> {
         let table = self.symbol_tables.get(&fq.module)?;
         let entry = table.get(fq.symbol.as_ref())?;
         Some((fq.module.clone(), entry.clone()))
+    }
+
+    /// Reject an expansion-only macro clause carried into ordinary expression
+    /// codegen. The caller has already selected `fq`; this is a checked keyed
+    /// read of that exact storage identity, never another resolution pass.
+    ///
+    /// Missing entries are left to the existing call/value miss diagnostics.
+    /// Macro expansion invokes clauses through int's dedicated ABI path and
+    /// never enters this backend expression-codegen seam.
+    pub(crate) fn ensure_language_callable_target(
+        &self,
+        fq: &FQSymbol,
+        span: Span,
+    ) -> Result<(), CranelispError> {
+        if self
+            .entry_at(fq)
+            .is_some_and(|(_, entry)| matches!(entry.declaration, Decl::Macro(_)))
+        {
+            return Err(CranelispError::CodegenError {
+                message: format!(
+                    "resolved target '{fq}' is an expansion-only macro clause and cannot be used as an ordinary language value or call"
+                ),
+                location: ErrorLocation::from_span(span),
+            });
+        }
+        Ok(())
     }
 
     // === S110 W2 value-seam keyed reads (`backend-keyed-consumer.md` §1.3/§4;
@@ -220,9 +246,10 @@ where
     /// the fetched `Def` entry. Replaces the `resolve_func_arity` value-site
     /// reach.
     pub(crate) fn arity_at(&self, fq: &FQSymbol) -> Option<usize> {
-        self.entry_at(fq).and_then(|(_, e)| match e {
-            ModuleEntry::Def { param_names, .. } => Some(param_names.len()),
-            _ => None,
+        self.entry_at(fq).and_then(|(_, e)| {
+            e.callable()
+                .map(|callable| callable.arm.param_names.len())
+                .or_else(|| e.trait_method().map(|method| method.param_names.len()))
         })
     }
 
@@ -235,21 +262,15 @@ where
             .and_then(|(_, e)| e.mode_summary().cloned())
     }
 
-    /// S17/S18 (vec-query wrapper discrimination) kind arm: `true` iff `fq`
-    /// fetches a slot-less inline primitive (`DefKind::Primitive { body:
-    /// PrimitiveBody::Inline }` — the vec-query trio `vec-get`/`vec-set`/
-    /// `vec-push`, the ONLY inline primitives; §12.7). Replaces the
-    /// `resolve_vec_query_primitive` value-site reach; the canonical bare name
-    /// the wrapper inline-emits is `fq.symbol`.
+    /// Whether the resolved entry is a slotless inline primitive. The Vec
+    /// family includes `vec-get`, `vec-set`, `vec-push`, and `vec-len`.
     pub(crate) fn is_inline_primitive_at(&self, fq: &FQSymbol) -> bool {
         self.entry_at(fq).is_some_and(|(_, e)| {
             matches!(
-                &e,
-                ModuleEntry::Def { kind, .. }
-                    if matches!(
-                        kind.as_ref(),
-                        DefKind::Primitive { body: PrimitiveBody::Inline, .. }
-                    )
+                e.callable(),
+                Some(callable)
+                    if matches!(callable.origin, CallableOrigin::RustPrimitive)
+                        && matches!(callable.arm.life, Life::Inline { .. })
             )
         })
     }
@@ -273,13 +294,8 @@ where
     pub(crate) fn is_slotless_template_at(&self, fq: &FQSymbol) -> bool {
         self.entry_at(fq).is_some_and(|(_, e)| {
             matches!(
-                &e,
-                ModuleEntry::Def { kind, .. }
-                    if matches!(
-                        kind.as_ref(),
-                        DefKind::UserFn { fn_state: UserFnState::Polymorphic(_) }
-                            | DefKind::UserFn { fn_state: UserFnState::Constrained(_) }
-                    )
+                e.callable(),
+                Some(callable) if matches!(callable.arm.life, Life::Template { .. })
             )
         })
     }
@@ -299,20 +315,20 @@ where
     /// retired. The product ctor enters this routine through the one `Def` arm
     /// below, reading its field types from the `Def`'s own `scheme`.
     fn extract_constructor<C2: cranelisp_types::CodeStore>(
-        entry: &ModuleEntry<C2>,
+        entry: &Binding<C2>,
     ) -> Option<(FQTypeName, CtorMeta)> {
-        match entry {
-            ModuleEntry::Def { kind, scheme, .. } => {
-                let DefKind::Constructor {
+        match &entry.declaration {
+            Decl::Callable(callable) => {
+                let CallableOrigin::Ctor {
                     type_name,
                     tag,
                     field_count,
                     ..
-                } = &**kind
+                } = &callable.origin
                 else {
                     return None;
                 };
-                let field_types: &[Type] = match &scheme.ty {
+                let field_types: &[Type] = match &callable.arm.scheme.ty {
                     Type::Fn(params, _) => params.as_slice(),
                     _ => &[],
                 };
@@ -379,16 +395,10 @@ where
     /// the product `type_name` key IS the ctor `Def`, not a `TypeDef`.
     pub fn lookup_type_def(&self, fqtn: &FQTypeName) -> Option<TypeDefInfo> {
         let table = self.symbol_tables.get(&fqtn.module)?;
-        match table.get(fqtn.name.as_ref()) {
-            Some(ModuleEntry::TypeDef { info, .. }) => Some(info.clone()),
-            Some(ModuleEntry::Def { kind, .. }) => match &**kind {
-                DefKind::Constructor {
-                    type_def: Some(td), ..
-                } => Some((**td).clone()),
-                _ => None,
-            },
-            _ => None,
-        }
+        table
+            .get(fqtn.name.as_ref())
+            .and_then(Binding::type_def_info)
+            .cloned()
     }
 }
 

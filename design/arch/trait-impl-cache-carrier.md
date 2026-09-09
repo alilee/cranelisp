@@ -1,12 +1,33 @@
 # Trait-impl cache carrier — the writer-side persisted record
 
-**Status: RULING (S118 Phase 3, `/arch`, 2026-07-25) — pre-implementation.**
+**Status: RULING AND LANDED (S121, 2026-09-05); carrier half LANDED
+(S119); producer + restore halves LANDED S121 (`/arch`, 2026-09-01 — §9);
+fresh-registration transaction facade AMENDED by the executing C3 falsifier
+(S121, 2026-09-01 — §§3–4).**
 This is the binding cross-crate contract for FIXME 0869
 (`design/arch/fixmes/0869-cache-restoration-loses-sibling-written-trait-impls.md`),
-authored per the S118 Phase-2 ruling 1 (`sprints/SPRINT.md` §Architecture
-review). Implementation is capacity-conditional Track D this sprint; if cut,
-the ruling carries to S119 unchanged. The failing-not-ignored discriminator is
+authored per the S118 Phase-2 ruling 1. The types carrier
+(`WrittenTraitImpl`, `SymbolTable.written_trait_impls`,
+`enrol_written_trait_impl`, `trait_impl_key`) landed S119 with unit coverage;
+At the S121 opening it had **zero producers and zero readers** — the exact
+"landed with zero consumers" pattern root `CLAUDE.md` §Assurance names. §9
+closes that: the producer is C3's, the restore enrolment C6's, both inside
+S121. The failing-not-ignored discriminator is
 `tests/cache.rs::cache_restores_sibling_written_trait_impls_for_dispatch`.
+
+> **Seam-name correction (S121 Phase 3).** §3 as written cites a typecheck
+> `check_trait_impl` success point. **No such symbol exists at HEAD.** The
+> registration seam is `register_trait_impl`
+> (`crates/cranelisp-typecheck/src/traits/impl_check.rs:94`, invoked from
+> `crates/cranelisp-typecheck/src/program/register.rs:66`) — the site that
+> constructs the Decision-45 shell. §3's temporal rule (P26) is unchanged;
+> only the seam's name was a phantom. The same phantom appears at **four**
+> sites in the landed carrier rustdoc (`crates/cranelisp-types/src/module.rs:240`,
+> `:884`, `:1570`, `:1587` — count corrected 2026-09-01 against live source;
+> the earlier three-site enumeration missed `:1587`) — that correction is
+> source text and **rides C3's producer
+> change-set** (`arch` owns the types crate's voice; the edit is approved
+> here so the wave needs no round-trip).
 
 **Archive trigger:** the implementation lands and the contract folds into
 `crates/cranelisp-types/src/module.rs` rustdoc (the record + helper), 
@@ -78,24 +99,35 @@ not change `public-api.txt` shape); int's restore call sites are binary-private.
 
 ## 3. Producer seam — recorded once, from settled state
 
-The record is appended by **typecheck** at the `check_trait_impl` seam
-(`crates/cranelisp-typecheck/src/traits/impl_check.rs`) — the same site that
-constructs the shell — from the **same single-source values** the shell is
-built from (`fq_trait_name`, `fq_impl_type`, `state.current_module`,
-`method_names`): one derivation, two carriers (Principle 24; no re-resolution,
-no spelling re-parse). Per Principle 26, the append happens at the **success
-point of the impl's method-check transaction** (the shell is staged before
-method checks and rolled back on failure; the record must never persist for a
-failed or rolled-back impl — appending after the transaction settles is
-simpler than staging + rollback of the record, and is the required shape). The
-write targets the **writer's own table** through the orchestrator accessor
-(Decision 44 — it commits with the writer's staging like the method `Def`s).
+The record is upserted by **typecheck** at the successful
+`register_trait_impl` seam
+(`crates/cranelisp-typecheck/src/traits/impl_check.rs:94`, invoked from
+`program/register.rs:66`) — the same site that constructs the shell — from the
+**same single-source values** the shell is built from (`fq_trait_name`,
+`fq_impl_type`, `state.current_module`, `method_names`): one derivation, two
+carriers (Principle 24; no re-resolution, no spelling re-parse). Per
+Principle 26, the record rides the **same staging transaction as the shell**.
+Fresh registration first retains the writer's method entries and stages the
+candidate shell in the trait home. The writer record is deliberately not
+touched until every method has checked and settled;
+`upsert_written_trait_impl` is the final fallible table act before the
+method/shell tokens commit. On failure the methods and shell restore/remove
+while the prior writer record was never changed. This ordering is how the two
+carriers commit or roll back together without a speculative writer-record
+append.
+The checkable invariant is **record ⟺ shell** — at any commit boundary the
+writer's `written_trait_impls` set and the shells its registration wrote are
+in bijection; a record without a committed shell, or a committed shell whose
+writer holds no record, is a defect. A same-`(type, trait)` re-impl
+(spec §5.4.5 hot reload) **upserts** its record under the `trait_impl_key`
+identity — at most one record per key per writer, never an appended
+duplicate.
 
-## 4. One mint, one enrolment helper — shared by fresh and restore
+## 4. One mint, restore enrolment, and fresh staging
 
-Two functions in `cranelisp-types`, both routed through by BOTH the fresh path
-and the restore path (Principle 7; the "reusing fresh registration's checks"
-constraint of the Phase-2 ruling):
+The key mint and shell representation are shared. Restore and fresh
+registration deliberately have different conflict policy because only fresh
+registration must provisionally expose a same-key re-impl:
 
 1. **`pub fn trait_impl_key(&FQTypeName, &FQTraitName) -> Symbol`** — the ONE
    mint of the `impl$FQType$FQTrait` storage key, hoisted beside `member_key`
@@ -114,10 +146,28 @@ constraint of the Phase-2 ruling):
    **present and payload-identical** → no-op → `AlreadyEnrolled` (idempotence
    under multi-path restore); **present and payload-divergent** → hard error
    naming both payloads (deterministic conflict handling — reject, never
-   silently choose one row; the FIXME's requirement). Fresh registration's
-   staged insert routes its key mint and its conflict discrimination through
-   the same two functions (its retain-prior/rollback transaction wraps the
-   call; the transaction mechanics stay typecheck-internal).
+   silently choose one row; the FIXME's requirement). This remains the restore
+   path; fresh registration uses item 3.
+
+3. **Fresh-registration transaction facade.** The types-owned public surface
+   is `stage_trait_impl_shell(&mut self, &WrittenTraitImpl) ->
+   Result<StagedImplShell<C>, CranelispError>`,
+   `rollback_trait_impl_shell(&mut self, StagedImplShell<C>)`, and
+   `StagedImplShell::commit(self)`, plus
+   `upsert_written_trait_impl(&mut self, WrittenTraitImpl)`. The opaque token
+   retains an absent/identical/divergent prior same-key shell, never exposes a
+   binding, and rollback verifies the staged candidate before restoring or
+   removing it. Upsert validates writer ownership and non-empty methods, then
+   replaces in place or appends exactly once per `trait_impl_key`.
+
+   Method entries use the sibling types-owned `RetainedCallables<C>` token
+   (`retain_callables` / `rollback_callables` / `commit`) from
+   `symbol-table-lifecycle.md` §4.4. C3 derives one record, retains methods,
+   stages the shell, checks and settles all methods, upserts the writer record,
+   then commits both tokens. Any earlier failure rolls methods back and then
+   the shell; an upsert refusal is non-mutating and takes the same rollback.
+   The temporary candidate-shell/prior-record pairing exists only in staging;
+   the record ⇔ shell bijection is exact at every cluster commit boundary.
 
 ## 5. Restore-time contract (int)
 
@@ -142,22 +192,37 @@ constraint of the Phase-2 ruling):
   qualified and imported-bare impl-head equivalence (both variants produce the
   same canonical record at the producer, so restore cannot distinguish them).
 
+**As built (S121).** `try_cache_hit_load` extracts writer records before moving
+the table, rejects malformed provenance as a cache miss before installation,
+synchronously restores each foreign canonical trait home, installs the writer,
+and calls `enrol_written_trait_impl` for every record. The cache probe is
+`Result<bool, CranelispError>`: an ordinary/stale miss is `Ok(false)`, while a
+divergent live shell is a hard error rather than a silently selected occupant.
+Both object and no-object registrations pass through this single restore entry
+point.
+
 ## 6. Schema window
 
-`CACHE_SCHEMA_VERSION` bumps by **one increment in the implementing change-set**
-— written S118 as "23→24, the sole S118 bump" (Phase-2 ruling 1; QA plan §1
-blocks any other schema delta at close). **S119 Phase-3 gate amendment (FIXME
-0925 ruling):** S119 authorizes exactly TWO windows — the typecheck-producer
-window (shared by 0924 + 0913 under the S111-0621 one-bump precedent) and this
-carrier's window — each a single +1 taken in its owning change-set. In the
-sprint's implementation order the producer window lands first, so this
-carrier's window is expected to be **24→25**; if `/sprint` reorders the waves
-the integers swap. The invariant is two increments, two owners, and no other
-change-set touches the constant.
-Old sidecars lacking the carrier are invalidated wholesale by the version
-gate; no migration shim, no `#[serde(default)]` back-compat (Principle 8 — a
-default-empty read of a pre-24 sidecar would silently reproduce the defect
-this carrier cures).
+**As landed:** the carrier's window was `CACHE_SCHEMA_VERSION` **23→24, taken
+S119** with the field's introduction. Old sidecars lacking the carrier are
+invalidated wholesale by the version gate; no migration shim, no
+`#[serde(default)]` back-compat (Principle 8 — a default-empty read of a
+pre-carrier sidecar would silently reproduce the defect this carrier cures).
+
+**S121:** the producer and restore halves take **no schema increment** — the
+field is already serde-mandatory at 24, and the S121 24→25 window belongs to
+C1's lifecycle wash (`symbol-table-lifecycle.md` §9), which this contract
+reads and never bumps.
+
+**Named residual (S121, honest grade: asserted-with-a-falsifier).** Inside the
+S121 wash there is a window in which schema-25 sidecars can be written after
+C1 lands and before C3's producer lands; such a sidecar carries a **valid but
+empty** `written_trait_impls` and would restore impls-lost if trusted. The
+exposure is developer-local caches inside the wash only — acceptance evidence
+runs against post-C3 caches (the e2e discriminator builds its own cache in a
+scratch dir), and any pre-C1 sidecar is wholesale-invalidated by the 24→25
+gate. Falsifier: a parity failure reproduced from a sidecar whose write
+predates the producer's landing; disposition is regenerate, never a shim.
 
 ## 7. Principle-7 second-home justification (required by the Phase-2 ruling)
 
@@ -203,3 +268,40 @@ parallel-store defect P7 forbids.
   conflict rejection (hard error, no silent pick).
 - QA's stale-cache-rejection cell (`tests/plan/s118-test-plan.md`, 0869
   conditional row) — a pre-24 sidecar is rejected by the version gate.
+- **Producer unit rows (C3, added S121):** record ⟺ shell bijection — the
+  record appears iff the impl's registration commits (absent for a failed or
+  rolled-back impl); a same-key re-impl upserts (one record, not two); the
+  record's five fields equal the shell's construction values byte-for-byte;
+  both hand-rolled `impl$` sites route through `trait_impl_key` (grep-zero
+  `format!("impl$…")` outside the mint).
+
+## 9. S121 allocation (the C6 H1 blocker, discharged 2026-09-01)
+
+The S121 C6 int visit verified the carrier had **no producer and no scheduled
+producer** (`design/int/s121-c6-visit.md` §5.2) — an enrolment loop over a
+permanently empty vector cannot flip the discriminator. `arch` rules the
+allocation rather than rejecting the feature (SPRINT's C3 scope row already
+carried "populate the already-landed written-trait carrier"; the C3 design
+visit closed without it — the omission is a scheduling gap, not a design
+question):
+
+- **C3 (typecheck) — the producer.** The §3 success-only upsert at
+  `register_trait_impl`
+  (`traits/impl_check.rs:94` / `program/register.rs:66`), the re-pointing of
+  the two hand-rolled `impl$` format sites
+  (`traits/impl_check.rs:421`, `traits/dispatch.rs:143` — verified live at
+  HEAD) onto `trait_impl_key`, and the `module.rs:240`/`:884`/`:1570`/`:1587`
+  rustdoc seam-name correction (four sites, verified 2026-09-01). **This
+  contract's amended §§3–4 and `symbol-table-lifecycle.md` §§4.4/5.7 are the
+  complete interior design**: retain methods, stage shell, check/settle,
+  success-only writer upsert, then token commit. The executing falsifier
+  required the C1 facade reopen; C3 consumes that repaired contract without
+  inventing a local transaction vocabulary, alongside `bounded-contexts.md`
+  §2's `instantiate_demands` contract.
+  Zero typecheck public-API delta; zero schema delta (§6).
+- **C6 (int, bundle N3) — the restore enrolment**, exactly as §5 and the C6
+  visit §5.2 design it, at both cache entry points, after the writer's
+  dependency closure installs. N3's entry gate "0869 producer placed" reads
+  **"C3's producer landed"**.
+- **Order:** C3 before C6's N3 — already the §9 stream order of
+  `symbol-table-lifecycle.md`; no reordering needed.

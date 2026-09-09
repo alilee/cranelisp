@@ -4,6 +4,7 @@
 //! (`design/typecheck/monomorphisation.md` §11.3/§11.8).
 
 use super::*;
+use cranelisp_types::Realization;
 
 // §11.8.3 leg D3 — a poly callee (`idpoly`) reached ONLY from a MULTI-SIG
 // clause body MUST have its concrete mono instance minted. Pre-fix the
@@ -59,17 +60,17 @@ fn single_sig_consumer_of_multi_sig_return_monomorphised_mc_x4() {
     );
 }
 
-// MC-X4b (S114 W3) — the untyped-ADT-field face (same root as MC-X4). A `Box`
-// with an UNTYPED field, built by a multi-sig `build` and consumed by a poly
+// MC-X4b (S114 W3) — the generic-ADT-field face (same root as MC-X4). A `Box`
+// with an explicitly parameterised field, built by a multi-sig `build` and consumed by a poly
 // `unwrap`, grounds its field to `Int` only post-drain; the consumer's `unwrap`
 // instance must mint at the settlement re-harvest. Fail-on-revert: no `unwrap$`
 // instance minted (codegen `undefined function` in e2e).
 #[test]
-fn untyped_adt_field_consumer_of_multi_sig_return_monomorphised_mc_x4b() {
+fn generic_adt_field_consumer_of_multi_sig_return_monomorphised_mc_x4b() {
     let mut tc = tc_with_prims();
     check_src(
         &mut tc,
-        "(deftype Box (MkBox [v]))\n\
+        "(deftype (Box a) (MkBox [:a v]))\n\
          (defn unwrap [b] (match b [(MkBox v) v]))\n\
          (defn build ([n] (build n (MkBox 0))) \
                      ([n b] (if (eq-i64 n 0) b \
@@ -78,7 +79,7 @@ fn untyped_adt_field_consumer_of_multi_sig_return_monomorphised_mc_x4b() {
     );
     assert!(
         !symbol_names_containing(&tc, "unwrap$").is_empty(),
-        "the poly consumer `unwrap` over the untyped `Box` field from a \
+        "the poly consumer `unwrap` over the generic `Box` field from a \
          multi-sig return MUST have its ground mono instance minted at the \
          settlement re-harvest (MC-X4b); current-module symbols: {:?}",
         symbol_names_containing(&tc, "unwrap"),
@@ -102,22 +103,32 @@ fn self_qualified_multi_sig_self_call_normalizes_at_overload_gate_mc_x5() {
                         (msig (add-i64 n -1) (add-i64 acc n)))))\n\
          (defn top [] (msig 3))",
     );
-    // The dispatch path was taken (not a fallthrough): `msig`'s concrete clause
-    // variants are mangled + registered. The qualified self-call inside msig's
-    // clause body resolved to the same bare `msig` overload as the bare twin.
+    let table = tc.symbol_table();
+    let declaration = match &table.get("msig").expect("msig family").declaration {
+        Decl::Overloaded(declaration) => declaration,
+        other => panic!("expected owned msig overload, got {other:?}"),
+    };
+    assert_eq!(declaration.arms.len(), 2);
+    // The typed arm identity contributes its canonical home exactly once. The
+    // old string-mangling defect produced `test/test/msig...`; the canonical
+    // instance key is expected to contain the single `test/msig` owner.
+    let expected = cranelisp_types::InstanceLink::from_type_args(
+        CallableTarget::OverloadArm {
+            owner: fq_sym("test", "msig"),
+            arm: declaration.arms[0].id,
+        },
+        vec![],
+    )
+    .instance_key();
     assert!(
-        !symbol_names_containing(&tc, "msig$").is_empty(),
-        "the self-qualified multi-sig self-call MUST normalize to the bare \
-         identity and dispatch through the overload machinery (MC-X5) — \
-         `msig$…` clause variants registered; current-module symbols: {:?}",
-        symbol_names_containing(&tc, "msig"),
+        table.get(expected.as_ref()).is_some(),
+        "the normalized self-call must mint the canonical typed arm instance `{expected}`",
     );
-    // No doubled-qualifier `test/msig` spelling leaked into any registered name.
     assert!(
-        symbol_names_containing(&tc, "test/msig").is_empty(),
-        "no `test/msig` doubled-qualifier mangle may leak from the normalized \
+        symbol_names_containing(&tc, "test/test/msig").is_empty(),
+        "no `test/test/msig` doubled-qualifier mangle may leak from the normalized \
          self-call; got: {:?}",
-        symbol_names_containing(&tc, "test/msig"),
+        symbol_names_containing(&tc, "test/test/msig"),
     );
 }
 
@@ -181,26 +192,24 @@ fn multi_sig_base_dispatch_in_mono_body_carrier_r2() {
     let view = mono_instance_view_containing(&tc, "ga$");
     let mut targets = Vec::new();
     collect_resolved_targets(&view.body, &mut targets);
-    // The `(h 1)` dispatch inside `ga$Int` carries its resolved_target at the
-    // APPLY span (SigDispatch), naming the concrete clause `h$Int` — not absent
-    // (the carrier-loss shape the backend keyed read would hard-fail on).
-    let has_h_dispatch = targets.iter().any(|(l, fq)| {
-        l == "@apply" && matches!(fq, Some(fq) if fq.symbol.as_ref().contains("h$"))
-    });
+    // The `(h 1)` dispatch carries the authored family owner in `ApplyRef`;
+    // `ResolvedCall::SigDispatch` carries the exact arm identity.
+    let has_h_dispatch = targets
+        .iter()
+        .any(|(l, fq)| l == "@apply" && matches!(fq, Some(fq) if fq.symbol.as_ref() == "h"));
     assert!(
         has_h_dispatch,
         "the multi-sig-base call `(h 1)` inside the monomorphised `ga$Int` body \
-         MUST carry a resolved_target to the concrete clause `h$Int` at its \
+         MUST carry the authored `h` owner at its \
          Apply span (leg R2); collected: {targets:?}"
     );
 }
 
 // §11.8.3 leg R2 — W2a /review Important 1a (TEMPLATE-select). A multi-sig
 // dispatch inside a mono body that selects a genuinely-POLY clause (`(h 1 2)`
-// → the `([a b] a)` `$Var+Var` template) MUST monomorphise that clause to a
-// CONCRETE instance and dispatch to it — never write the slot-less `$Var+Var`
-// TEMPLATE mangle into the frozen view (pre-fix `undefined function:
-// h$Var+Var`). The scoped drain gives R2 the full concrete/template
+// → the `([a b] a)` owned template arm) MUST monomorphise that clause to a
+// CONCRETE instance and dispatch to it — never write a slot-less private
+// checking label into the frozen view. The scoped drain gives R2 the full concrete/template
 // bifurcation. `check_src` panics on the residual/undefined path.
 #[test]
 fn multi_sig_dispatch_template_clause_monomorphised_r2a() {
@@ -212,14 +221,14 @@ fn multi_sig_dispatch_template_clause_monomorphised_r2a() {
          (defn use-ga [] (ga 5))",
     );
     // The `([a b] a)` template clause, selected by `(h 1 2)`, was instantiated
-    // at Int (a `h$Var+Var$…` concrete mono instance exists) — proving R2 did
-    // NOT freeze the slot-less `$Var+Var` template mangle into the view.
+    // at Int (an `h__arm1$Int+Int` concrete mono instance exists) — proving R2
+    // did NOT freeze the slot-less template arm into the view.
     assert!(
-        !symbol_names_containing(&tc, "h$Var+Var$").is_empty(),
+        !symbol_names_containing(&tc, "h__arm1$Int+Int").is_empty(),
         "the poly 2-arg clause selected by `(h 1 2)` MUST be monomorphised to a \
          concrete instance (leg R2, Important 1a) — never dispatched to the \
-         slot-less `$Var+Var` template; symbols: {:?}",
-        symbol_names_containing(&tc, "h$Var+Var"),
+         slot-less template arm; symbols: {:?}",
+        symbol_names_containing(&tc, "h__arm1"),
     );
 }
 
@@ -489,6 +498,146 @@ fn imported_multi_sig_base_qualified_call_stored_identity_fix_a() {
     );
 }
 
+fn install_manual_overload_group(tc: &mut TestFixture, module: &str) {
+    let home = ModuleFullPath::from(module);
+    tc.set_current_module(home);
+    let draft = |params: Vec<Type>, label: &str| {
+        let param_names: Vec<_> = (0..params.len())
+            .map(|index| Symbol::from(format!("x{index}")))
+            .collect();
+        let ast = DefnVariant {
+            params: param_names
+                .iter()
+                .cloned()
+                .map(|name| (name, None))
+                .collect(),
+            body: Expr::IntLit {
+                value: 0,
+                span: Span::SYNTHETIC,
+                inferred_type: Some(Box::new(Type::Int)),
+            },
+            span: Span::SYNTHETIC,
+        };
+        let view = MonoDefnVariant {
+            name: Symbol::from(label),
+            params: param_names.clone(),
+            body: MonoExpr::IntLit {
+                value: 0,
+                span: Span::SYNTHETIC,
+                ty: ConcreteType::Int,
+            },
+            span: Span::SYNTHETIC,
+            mode_summary: None,
+        };
+        cranelisp_types::CallableArmDraft::concrete_body(
+            mono(Type::Fn(params, Box::new(Type::Int))),
+            param_names,
+            ast,
+            view,
+            Vec::new(),
+        )
+    };
+    tc.symbol_table_mut()
+        .install_overloaded(
+            Symbol::from("h"),
+            None,
+            0,
+            vec![
+                draft(vec![Type::Int], "h$Int"),
+                draft(vec![Type::Int, Type::Int], "h$Int$Int"),
+            ],
+            Visibility::Public,
+        )
+        .unwrap();
+}
+
+fn install_manual_bool_competitor(tc: &mut TestFixture, module: &str) {
+    tc.set_current_module(ModuleFullPath::from(module));
+    tc.symbol_table_mut()
+        .install_concrete(
+            Symbol::from("h"),
+            mono(Type::Fn(vec![Type::Bool], Box::new(Type::Bool))),
+            vec![Symbol::from("x")],
+            None,
+            0,
+            CallableOrigin::RustPrimitive,
+            Realization::ExternShim {
+                borrowed_sibling: None,
+            },
+            None,
+            vec![],
+            Visibility::Public,
+        )
+        .unwrap();
+}
+
+// design/typecheck/use-site-candidate-selection.md §8; QA CS-7 — selecting
+// an imported overload group from a contested bare spelling must hand its
+// canonical declaration to the existing overload drain. The resulting Apply
+// carrier is identical to the canonically-qualified control.
+#[test]
+fn contested_imported_overload_group_matches_qualified_dispatch_carrier() {
+    let make_fixture = |contested: bool| {
+        let mut tc = tc_with_prims();
+        let mlib = ModuleFullPath::from("mlib_candidate");
+        install_manual_overload_group(&mut tc, mlib.as_ref());
+        if contested {
+            let rival = ModuleFullPath::from("rival_candidate");
+            install_manual_bool_competitor(&mut tc, rival.as_ref());
+        }
+        tc.set_current_module(ModuleFullPath::from("user"));
+        seed_specific_import(&mut tc, &mlib, &["h"]);
+        if contested {
+            seed_specific_import(&mut tc, &ModuleFullPath::from("rival_candidate"), &["h"]);
+        }
+        tc.state.overloads.clear();
+        tc.state.resolved_overloads.clear();
+        tc.state.overload_homes.clear();
+        tc
+    };
+
+    let infer_and_drain = |tc: &mut TestFixture, name: &str, call_span: Span| {
+        let mut call = Expr::Apply {
+            callee: Box::new(Expr::var(
+                Symbol::from(name),
+                Span::new(call_span.start + 1, call_span.start + 2),
+            )),
+            args: vec![Expr::IntLit {
+                value: 1,
+                span: Span::new(call_span.start + 3, call_span.start + 4),
+                inferred_type: None,
+            }],
+            span: call_span,
+            resolved_call: None,
+            inferred_type: None,
+        };
+        tc.infer_expr_for_test(&mut call).unwrap();
+        let env = TypeCheckEnv::new(
+            &tc.modules,
+            &tc.next_id,
+            &tc.module_aliases,
+            &tc.prelude_fallback,
+        );
+        env.resolve_pending_overloads(&mut tc.state, None).unwrap();
+        match tc.state.method_resolutions.apply_refs.get(&call_span) {
+            Some(ApplyRef::Dispatch(target)) => target.clone(),
+            other => panic!("selected overload call must dispatch, got {other:?}"),
+        }
+    };
+
+    let mut bare_fixture = make_fixture(true);
+    let bare = infer_and_drain(&mut bare_fixture, "h", Span::new(300, 305));
+    let mut qualified_fixture = make_fixture(false);
+    let qualified = infer_and_drain(
+        &mut qualified_fixture,
+        "mlib_candidate/h",
+        Span::new(310, 315),
+    );
+    assert_eq!(bare, qualified);
+    assert_eq!(bare.module, ModuleFullPath::from("mlib_candidate"));
+    assert_eq!(bare.symbol.as_ref(), "h$Int");
+}
+
 // Fix 1 / ruling-5 composition (/arch-flagged): §11.8.7's "during a mono
 // recheck the base is not locally bound" is FALSIFIED by a let-rebinds-base
 // case. A multi-sig base `m` shadowed by a `let` INSIDE a mono recheck
@@ -659,8 +808,7 @@ fn multi_sig_self_call_carries_mangled_sig_dispatch() {
     let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
     tc.check_program_self(&program).unwrap();
 
-    // Walk a body Expr tree collecting every `SigDispatch` mangled name.
-    fn collect_sig_dispatch(expr: &Expr, out: &mut Vec<String>) {
+    fn collect_sig_dispatch(expr: &Expr, out: &mut Vec<CallableTarget>) {
         let rc = match expr {
             Expr::Apply {
                 callee,
@@ -701,30 +849,28 @@ fn multi_sig_self_call_carries_mangled_sig_dispatch() {
             }
             _ => None,
         };
-        if let Some(ResolvedCall::SigDispatch { mangled_name }) = rc {
-            out.push(mangled_name.as_ref().to_string());
+        if let Some(ResolvedCall::SigDispatch { target }) = rc {
+            out.push(target.clone());
         }
     }
 
-    // The variant-1 entry lives under the MANGLED key `h$Int` (the internal
-    // `h__v0` key was removed by `register_mangled_variants`).
     let st = tc.symbol_table();
-    let entry = st
-        .get("h$Int")
-        .expect("mangled variant `h$Int` must be registered");
-    let body = match entry {
-        ModuleEntry::Def {
+    let declaration = match &st.get("h").expect("h family").declaration {
+        Decl::Overloaded(declaration) => declaration,
+        other => panic!("expected owned h overload, got {other:?}"),
+    };
+    let body = match &declaration.arms[0].callable.life {
+        Life::Concrete {
             ast: Some(variant), ..
         } => &variant.body,
-        other => panic!("h$Int must carry an annotated ast: {other:?}"),
+        other => panic!("h arm 0 must carry an annotated ast: {other:?}"),
     };
 
     let mut dispatches = Vec::new();
     collect_sig_dispatch(body, &mut dispatches);
     assert!(
-        dispatches.iter().any(|d| d == "h$Int+Int"),
-        "the in-body self-call `(h n n)` must carry SigDispatch{{h$Int+Int}} \
-         on the mangled variant body (not a bare unresolved name); \
+        dispatches.contains(&overload_target("test", "h", 1)),
+        "the in-body self-call `(h n n)` must select h arm 1; \
          found dispatches: {dispatches:?}",
     );
 }
@@ -747,24 +893,24 @@ fn multi_sig_backflow_pins_clause_concrete_no_var_entry_survives() {
     tc.check_program_self(&program)
         .expect("rp4 back-flow infers");
     let st = tc.symbol_table();
-    match st.get("rp4$Int+Int") {
-        Some(ModuleEntry::Def { kind, scheme, .. }) => {
+    let declaration = match &st.get("rp4").expect("rp4 family").declaration {
+        Decl::Overloaded(declaration) => declaration,
+        other => panic!("expected owned rp4 overload, got {other:?}"),
+    };
+    match declaration.arms.first().map(|arm| &arm.callable) {
+        Some(callable) => {
             assert!(
-                matches!(
-                    kind.as_ref(),
-                    DefKind::UserFn {
-                        fn_state: UserFnState::Concrete { .. }
-                    }
-                ),
-                "the back-flow-pinned 2-arg clause must be Concrete, got {kind:?}"
+                matches!(callable.life, Life::Concrete { .. }),
+                "the back-flow-pinned 2-arg clause must be Concrete, got {:?}",
+                callable.life,
             );
             assert!(
-                scheme.ty.is_concrete(),
+                callable.scheme.ty.is_concrete(),
                 "rp4$Int+Int scheme must be fully concrete, got {:?}",
-                scheme.ty
+                callable.scheme.ty
             );
         }
-        other => panic!("rp4$Int+Int concrete sibling not registered: {other:?}"),
+        other => panic!("rp4 arm 0 not registered: {other:?}"),
     }
     // §11.3(B): the stale `$Var` template must NOT survive.
     assert!(
@@ -774,9 +920,8 @@ fn multi_sig_backflow_pins_clause_concrete_no_var_entry_survives() {
     // The concrete 3-arg clause is its own concrete callable.
     assert!(
         matches!(
-            st.get("rp4$Int+Int+Int"),
-            Some(ModuleEntry::Def { kind, .. })
-                if matches!(kind.as_ref(), DefKind::UserFn { fn_state: UserFnState::Concrete { .. } })
+            declaration.arms.get(1).map(|arm| &arm.callable.life),
+            Some(Life::Concrete { .. })
         ),
         "the 3-arg clause must be Concrete rp4$Int+Int+Int"
     );
@@ -805,16 +950,14 @@ fn multi_sig_delegation_chain_self_call_dispatches_name_live_entries_no_var_resi
         .expect("the delegation chain back-flow-pins every clause to Int (§5.1.2)");
 
     let st = tc.symbol_table();
-    // Every clause is a live Concrete entry under its finalised concrete mangle;
-    // NO `$Var` template survives any clause of a fully back-flow-pinned chain.
-    for concrete in ["f3$Int", "f3$Int+Int", "f3$Int+Int+Int"] {
+    let declaration = match &st.get("f3").expect("f3 family").declaration {
+        Decl::Overloaded(declaration) => declaration,
+        other => panic!("expected owned f3 overload, got {other:?}"),
+    };
+    for (ordinal, arm) in declaration.arms.iter().enumerate() {
         assert!(
-            matches!(
-                st.get(concrete),
-                Some(ModuleEntry::Def { kind, .. })
-                    if matches!(kind.as_ref(), DefKind::UserFn { fn_state: UserFnState::Concrete { .. } })
-            ),
-            "clause entry `{concrete}` must be a live Concrete entry",
+            matches!(arm.callable.life, Life::Concrete { .. }),
+            "clause arm {ordinal} must be concrete",
         );
     }
     for var_key in ["f3$Var", "f3$Var+Var", "f3$Var+Var+Var"] {
@@ -827,7 +970,7 @@ fn multi_sig_delegation_chain_self_call_dispatches_name_live_entries_no_var_resi
     // The I3 invariant: walk each mangled clause body; every `SigDispatch`
     // mangled name MUST resolve to an existing symbol-table entry (no dangling
     // `$Var` dispatch), and none may contain `$Var`.
-    fn collect_sig_dispatch(expr: &Expr, out: &mut Vec<String>) {
+    fn collect_sig_dispatch(expr: &Expr, out: &mut Vec<CallableTarget>) {
         let rc = match expr {
             Expr::Apply {
                 callee,
@@ -868,16 +1011,16 @@ fn multi_sig_delegation_chain_self_call_dispatches_name_live_entries_no_var_resi
             }
             _ => None,
         };
-        if let Some(ResolvedCall::SigDispatch { mangled_name }) = rc {
-            out.push(mangled_name.as_ref().to_string());
+        if let Some(ResolvedCall::SigDispatch { target }) = rc {
+            out.push(target.clone());
         }
     }
 
     let mut all_dispatches = Vec::new();
-    for concrete in ["f3$Int", "f3$Int+Int", "f3$Int+Int+Int"] {
-        if let Some(ModuleEntry::Def {
+    for arm in &declaration.arms {
+        if let Life::Concrete {
             ast: Some(variant), ..
-        }) = st.get(concrete)
+        } = &arm.callable.life
         {
             collect_sig_dispatch(&variant.body, &mut all_dispatches);
         }
@@ -885,25 +1028,18 @@ fn multi_sig_delegation_chain_self_call_dispatches_name_live_entries_no_var_resi
     // The chain's two hops must be recorded (proving the deferral fired), and
     // every recorded dispatch names a live bare-keyed entry with no `$Var`.
     assert!(
-        all_dispatches.iter().any(|d| d == "f3$Int+Int"),
-        "clause [a]'s self-call `(f3 a 0)` must dispatch to the live f3$Int+Int \
-         (not a dangling `$Var`); found: {all_dispatches:?}",
+        all_dispatches.contains(&overload_target("test", "f3", 1)),
+        "clause [a]'s self-call `(f3 a 0)` must select f3 arm 1; found: {all_dispatches:?}",
     );
     assert!(
-        all_dispatches.iter().any(|d| d == "f3$Int+Int+Int"),
-        "clause [a b]'s self-call `(f3 a b 1)` must dispatch to f3$Int+Int+Int; \
+        all_dispatches.contains(&overload_target("test", "f3", 2)),
+        "clause [a b]'s self-call `(f3 a b 1)` must select f3 arm 2; \
          found: {all_dispatches:?}",
     );
-    for d in &all_dispatches {
+    for target in &all_dispatches {
         assert!(
-            !d.contains("$Var"),
-            "no self-call `SigDispatch` may name a `$Var` template ({d}) — every \
-             recorded dispatch must name a finalised concrete entry (§11.3.2)",
-        );
-        assert!(
-            st.get(d).is_some(),
-            "the recorded dispatch name `{d}` must resolve to a live symbol-table \
-             entry (recorded-dispatch-name ≡ registered-entry-name, Principle 7)",
+            st.callable_target(target).is_some(),
+            "the recorded dispatch target `{target:?}` must resolve to an owned arm",
         );
     }
 }
@@ -914,7 +1050,7 @@ fn multi_sig_delegation_chain_self_call_dispatches_name_live_entries_no_var_resi
 //   1-arg clause `([x] (if true x (g x)))` monomorphises at an external `(g 5)`;
 //   during the template's mono recheck the inner self-call `(g x)` is
 //   monomorphic recursion to THIS instance, resolved inline against the origin
-//   base — NOT deferred to a pending entry the sole drain has already taken (the
+//   base — NOT deferred to a pending entry the module-wide drain has already taken (the
 //   residual-var wrong-reject with the internal `g$Var$Int` mangle leak).
 #[test]
 fn recursive_poly_multi_sig_clause_monomorphises_inline_no_residual() {
@@ -932,25 +1068,21 @@ fn recursive_poly_multi_sig_clause_monomorphises_inline_no_residual() {
     );
     // The concrete instance is a live, fully-concrete Concrete entry.
     let st = tc.symbol_table();
-    match st.get("test/g$Var$Int") {
-        Some(ModuleEntry::Def { kind, scheme, .. }) => {
+    match st.get("test/g__arm0$Int").and_then(Binding::callable) {
+        Some(callable) => {
             assert!(
-                matches!(
-                    kind.as_ref(),
-                    DefKind::UserFn {
-                        fn_state: UserFnState::Concrete { .. }
-                    }
-                ),
-                "the mono instance `g$Var$Int` must be Concrete, got {kind:?}",
+                matches!(callable.arm.life, Life::Concrete { .. }),
+                "the mono instance `g__arm0$Int` must be Concrete, got {:?}",
+                callable.arm.life,
             );
             assert!(
-                scheme.ty.is_concrete(),
+                callable.arm.scheme.ty.is_concrete(),
                 "the mono instance's stored type must be fully concrete \
                  (the inner self-call left no residual `Var`), got {:?}",
-                scheme.ty,
+                callable.arm.scheme.ty,
             );
         }
-        other => panic!("the `(g 5)` mono instance `test/g$Var$Int` is missing: {other:?}"),
+        other => panic!("the `(g 5)` mono instance `test/g__arm0$Int` is missing: {other:?}"),
     }
 }
 
@@ -1002,32 +1134,33 @@ fn constrained_multi_sig_clause_is_template_and_dispatches_via_mono() {
         .expect("the constrained clause is admissible at a non-overlapping arity (§11.4)");
     let st = tc.symbol_table();
     // u7: the non-concrete-param clause is a SLOT-LESS TEMPLATE under its
-    // normalized `$Var` mangle (`Constrained` with a real Num prelude, or
-    // `Polymorphic` in this reduced fixture where `+`'s constraint does not
+    // owned arm (`Constrained` with a real Num prelude, or `Polymorphic` in
+    // this reduced fixture where `+`'s constraint does not
     // accrue) — never a bogus `Concrete{got_slot}` over the `Var` param
     // (§11.4 step 2 / §11.3(B); the constrained-specific path is exercised
     // end-to-end by `spec_05_definitions::constrained_clause_*` with the real
     // TestStandard Num).
-    match st.get("g$Var") {
-        Some(ModuleEntry::Def { kind, .. }) => assert!(
-            matches!(
-                kind.as_ref(),
-                DefKind::UserFn {
-                    fn_state: UserFnState::Constrained(_) | UserFnState::Polymorphic(_)
-                }
-            ),
-            "g$Var must be a slot-less template (never Concrete over Var), got {kind:?}"
+    let declaration = match &st.get("g").expect("g family").declaration {
+        Decl::Overloaded(declaration) => declaration,
+        other => panic!("expected owned g overload, got {other:?}"),
+    };
+    match declaration.arms.first().map(|arm| &arm.callable) {
+        Some(callable) => assert!(
+            matches!(callable.life, Life::Template { .. }),
+            "g arm 0 must be a slot-less template (never Concrete over Var), got {:?}",
+            callable.life,
         ),
-        other => panic!("the clause template `g$Var` is missing: {other:?}"),
+        other => panic!("the clause template `g` arm 0 is missing: {other:?}"),
     }
     // u8/u9: `(g 3)` monomorphised the clause template at Int — a concrete
-    // instance of `g$Var` at Int exists.
+    // instance of `g` arm 0 at Int exists.
     assert!(
-        st.all_symbols()
-            .any(|(n, e)| n.as_ref().contains("g$Var")
-                && n.as_ref().contains("Int")
-                && matches!(e, ModuleEntry::Def { kind, .. }
-                    if matches!(kind.as_ref(), DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }))),
+        st.all_symbols().any(|(n, e)| n.as_ref().contains("g__arm0")
+            && n.as_ref().contains("Int")
+            && matches!(
+                e.callable().map(|c| &c.arm.life),
+                Some(Life::Concrete { .. })
+            )),
         "`(g 3)` must monomorphise the constrained clause template to a concrete \
          Int instance (§11.4 step 4)"
     );

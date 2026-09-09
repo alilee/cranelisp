@@ -96,7 +96,7 @@ fn mod_simple_head_accepts_name_validation_twin() {
 // 0589 sibling. A qualified-lowercase name in a compound type position is a
 // named-type REFERENCE that must ERROR as an unknown type, NOT silently mint a
 // type variable.
-// spec: spec/03-types.md §2.3.8 — a qualified-lowercase type name is a reference,
+// spec: spec/03-types.md §3.9 — a qualified-lowercase type name is a reference,
 // not a minted var; it errors as an unknown type.
 // defect: class=silent-accept locus=crates/cranelisp-typecheck type-var minting excluded qualified names in compound positions (0589 sibling) found=S113 owner=/dev
 #[test]

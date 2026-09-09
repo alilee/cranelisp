@@ -86,25 +86,13 @@ fn render_search_row_doc(row: &SearchRow, query: &str) -> StyledDoc {
         } else {
             format!("(import [{module} [{name}]])")
         };
-        // Primary line — the canonical §1.1 envelope. A MACRO row is
-        // `:{module}/{name} ; defmacro [- doc]` (§17.19.2a, 0569), mirroring the
-        // bare-lookup / `/info` macro envelope; its `scheme.ty` is a placeholder
-        // scalar and MUST NOT render as a `:Type`. A value/fn row keeps
-        // `:{sig} {name}` — sig R4, name R15 (§10.3 K7).
+        // Primary line — `:{sig} {name}` (sig R4, name R15, §10.3 K7).
+        // Sprint 121 search rows are non-macro callables only.
         let mut out = StyledDoc::new();
-        if hit.is_macro {
-            push_type_annotation(&mut out, &format!("{module}/{name}"));
-            out.plain(" ");
-            push_metadata(
-                &mut out,
-                append_docstring_comment("; defmacro".to_string(), hit.docstring.as_deref()),
-            );
-        } else {
-            let sig = crate::display::format_type_qualified(&hit.scheme);
-            push_type_annotation(&mut out, &sig);
-            out.plain(" ");
-            out.plain(name);
-        }
+        let sig = crate::display::format_type_qualified(&hit.scheme);
+        push_type_annotation(&mut out, &sig);
+        out.plain(" ");
+        out.plain(name);
         // Facet 3 + 4: originating module column (R7, dim) and the action.
         out.plain("\n  in ");
         out.push(Role::ModulePrefix, module);
@@ -341,24 +329,21 @@ impl CompilerSession {
         use crate::session_v4::index_worker::{MatchTier, SearchHit};
         let (entry, module) = self.lookup_with_prelude_fallback(query)?;
         let (resolved, origin) = self.resolve_entry_for_display(&entry, &module);
-        if let ModuleEntry::Def {
-            scheme,
+        let (scheme, docstring) = match &resolved.declaration {
+            Decl::Callable(callable) => (&callable.arm.scheme, callable.docstring.clone()),
+            Decl::Overloaded(declaration) => (
+                &declaration.arms.first()?.callable.scheme,
+                declaration.docstring.clone(),
+            ),
+            _ => return None,
+        };
+        Some(SearchHit {
+            name: Symbol::from(query),
+            module: origin,
+            scheme: scheme.ty.clone(),
             docstring,
-            kind,
-            ..
-        } = resolved
-        {
-            Some(SearchHit {
-                name: Symbol::from(query),
-                module: origin,
-                scheme: scheme.ty.clone(),
-                docstring: docstring.clone(),
-                tier: MatchTier::ExactName,
-                is_macro: matches!(kind.as_ref(), DefKind::Macro { .. }),
-            })
-        } else {
-            None
-        }
+            tier: MatchTier::ExactName,
+        })
     }
 
     /// Render one `/search` result row — the facets of spec §17.19.2. Facet 4 is
@@ -434,7 +419,6 @@ impl CompilerSession {
             return true;
         }
         match self.lookup_with_prelude_fallback(name.as_ref()) {
-            Some((ModuleEntry::Import { source, .. }, _)) => &source.module == module,
             Some((_, resolved_module)) => &resolved_module == module,
             None => false,
         }
@@ -477,7 +461,9 @@ impl CompilerSession {
         };
         for table in self.shared.symbol_tables.iter() {
             let module = table.key().clone();
-            for (name, entry) in table.defined_symbols() {
+            for (name, entry) in table.all_symbols().filter(|(_, entry)| {
+                matches!(entry.declaration, Decl::Callable(_) | Decl::Overloaded(_))
+            }) {
                 // A symbol never counts as referencing itself.
                 if name.as_ref() == target {
                     continue;
@@ -632,7 +618,7 @@ mod fq_arg_search_tests {
 
     use crate::repl::test_support::*;
 
-    use cranelisp_types::{ModuleFullPath, Symbol, Visibility};
+    use cranelisp_types::{ModuleFullPath, Visibility};
 
     // §8.8.1 at the `/search` synthesis seam: `exact_in_scope_hit` synthesizes an
     // in-scope result row for an exact query that resolves bare but is absent from
@@ -646,8 +632,8 @@ mod fq_arg_search_tests {
         let prelude = ModuleFullPath::from("prelude");
         let scope = s.current_module_path();
         let mut ptbl = SessionSymbolTable::new_with_params(prelude.clone());
-        ptbl.insert(Symbol::from("secret"), userfn_def_vis(Visibility::Private));
-        ptbl.insert(Symbol::from("shown"), userfn_def_vis(Visibility::Public));
+        let _ = install_userfn(&mut ptbl, "secret", None, Visibility::Private);
+        let _ = install_userfn(&mut ptbl, "shown", None, Visibility::Public);
         s.shared.symbol_tables.insert(prelude.clone(), ptbl);
         s.shared.prelude_fallback.insert(scope, true);
 
@@ -685,7 +671,6 @@ mod styling_search_row_tests {
                 scheme: Type::Fn(vec![Type::Int], Box::new(Type::Int)),
                 docstring: None,
                 tier: MatchTier::ExactName,
-                is_macro: false,
             },
             in_scope: false,
         };
@@ -693,40 +678,6 @@ mod styling_search_row_tests {
             render(&render_search_row_doc(&row, "count")),
             "\x1b[36m:(Fn [primitives/Int] primitives/Int)\x1b[0m count\n  in \
              \x1b[2mcollections.vec\x1b[0m   — (import [collections.vec [count]])\n"
-        );
-    }
-    // 0569 / §17.19.2a — a MACRO search row's primary line is the canonical
-    // `:{module}/{name} ; defmacro [- doc]` envelope (mirroring bare lookup),
-    // NEVER the placeholder scalar `:Type` the macro's `scheme.ty` would render.
-    // spec: repl/spec.md §17.19.2a — macro `/search` row classification.
-    #[test]
-    fn search_row_macro_renders_defmacro_envelope_not_scalar_type() {
-        use crate::session_v4::index_worker::{MatchTier, SearchHit};
-        let row = SearchRow {
-            hit: SearchHit {
-                name: Symbol::from("twice"),
-                module: ModuleFullPath::from("macx"),
-                // A placeholder scalar scheme (as a real macro entry carries) —
-                // it MUST NOT reach the rendered row.
-                scheme: Type::Int,
-                docstring: Some("double it".to_string()),
-                tier: MatchTier::ExactName,
-                is_macro: true,
-            },
-            in_scope: false,
-        };
-        let rendered = render(&render_search_row_doc(&row, "twice"));
-        assert!(
-            rendered.contains(":macx/twice") && rendered.contains("; defmacro"),
-            "macro row must carry the `:macx/twice ; defmacro` envelope, got: {rendered:?}"
-        );
-        assert!(
-            rendered.contains("double it"),
-            "the macro's docstring rides the `; defmacro` comment, got: {rendered:?}"
-        );
-        assert!(
-            !rendered.contains(":primitives/Int") && !rendered.contains(":(Fn"),
-            "a macro row MUST NOT render a placeholder scalar `:Type`, got: {rendered:?}"
         );
     }
 }

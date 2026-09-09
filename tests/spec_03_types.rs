@@ -20,7 +20,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, PreludeVariant, run_through_all_modes};
+use helpers::e2e::{run_through_all_modes, Cranelisp, PreludeVariant};
 
 // =============================================================================
 // Helpers
@@ -1613,26 +1613,41 @@ fn let_stored_polymorphic_fn_applied_in_place_accepted() {
 // (removed) eager definition-time check.
 #[test]
 fn single_poly_instance_used_at_two_types_value_restriction_neg() {
-    let out = repl_prims(
-        "(deftype (Pair2 a b) [:a x :b y])\n\
-         (defn mkid [] (fn [y] y))\n\
-         (let [f (mkid)] (Pair2 (f \"x\") (f 5)))\n",
-    );
-    let combined = format!("{}{}", out.stdout, out.stderr);
-    assert!(
-        !combined.contains("GOT slot")
-            && !combined.contains("__expr")
-            && !combined.contains("codegen error"),
-        "the value-restriction rejection MUST be a clean type error, never a \
-         backend frame (§3.3.4 MUST (i)); got:\n{combined}"
-    );
-    assert!(
-        combined.to_lowercase().contains("type")
-            && (combined.contains("mismatch") || combined.to_lowercase().contains("error")),
-        "one application-result instance `f` used at String AND Int MUST be a \
-         unification conflict (value restriction, §3.3.4 MUST (i), row 18); \
-         got:\n{combined}"
-    );
+    let definitions = "(deftype (Pair2 a b) [:a x :b y])\n\
+                       (defn mkid [] (fn [y] y))\n";
+    let expression = "(let [f (mkid)] (Pair2 (f \"x\") (f 5)))";
+    for mode in ["repl", "run", "link"] {
+        let cl = Cranelisp::new().with_prelude(PreludeVariant::PrimitivesOnly);
+        let out = if mode == "repl" {
+            cl.stdin(&format!("{definitions}{expression}\n")).output()
+        } else {
+            let cl = cl.user(&format!(
+                "{definitions}(defn main [] (Pure (let [pair {expression}] 0)))\n"
+            ));
+            let cl = if mode == "run" {
+                cl.run("user.cl")
+            } else {
+                cl.link("user.cl")
+            };
+            let out = cl.output();
+            assert!(
+                !out.status.success(),
+                "--{mode}: shared polymorphic instance was accepted"
+            );
+            out
+        };
+        let combined = format!("{}{}", out.stdout, out.stderr);
+        assert!(
+            combined.to_lowercase().contains("type") && combined.contains("mismatch"),
+            "{mode}: one instance used at String and Int must produce a type mismatch:\n{combined}"
+        );
+        for forbidden in ["GOT slot", "GOT-slot", "__expr", "codegen error", "backend"] {
+            assert!(
+                !combined.contains(forbidden),
+                "{mode}: value-restriction rejection leaked {forbidden}:\n{combined}"
+            );
+        }
+    }
 }
 
 // --- R19 (GREEN PIN, neg) — rank-2 argument: one param, two types -------------
@@ -1671,63 +1686,87 @@ fn rank2_argument_applied_at_two_types_neg() {
     );
 }
 
-// --- D-3 (GREEN PIN, neg) — result-only var → §3.11 ambiguity, not rank-1 ------
+// spec: spec/03-types.md §3.11.3 — an unused named result-only wrapper is
+// admitted as a polymorphic definition without forcing a concrete instance.
+#[test]
+fn result_only_var_unused_named_wrapper_accepted() {
+    let program = "(defn constf [x] (fn [y] x))\n\
+                   (defn g [] (constf 5))\n\
+                   (defn main [] (Pure 0))\n";
+    let repl = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .stdin(&format!("{program}(main)\n"))
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":(Fn [a] (Fn [b] a)) user/constf")
+        .assert_stdout_contains(":(Fn [] (Fn [a] primitives/Int)) user/g")
+        .assert_stdout_contains(":primitives/Int 0");
+    assert!(
+        !format!("{}{}", repl.stdout, repl.stderr).contains("error"),
+        "unused named wrapper must be admitted: {}{}",
+        repl.stdout,
+        repl.stderr
+    );
+    for mode in ["run", "link"] {
+        let cl = Cranelisp::new()
+            .with_prelude(PreludeVariant::PrimitivesOnly)
+            .user(program);
+        let cl = if mode == "run" {
+            cl.run("user.cl")
+        } else {
+            cl.link_then_run("user.cl")
+        };
+        cl.output().assert_ok();
+    }
+}
 
-// spec: spec/03-types.md §3.11.3 — MUST (k), row D-3 (result-only var): a
-// definition whose result carries a free type variable that NO argument fixes is
-// admitted at the definition (sound, code-less until instantiated — §3.11.3
-// disposition 1), but a codegen-reaching USE that leaves the variable unpinned is
-// the §3.11 ambiguity error — NOT a rank-1 rejection of the returning definition.
-// `(defn constf [x] (fn [y] x))` is admitted; the use `(defn g [] (constf 5))` —
-// `g`'s result var is nobody's argument-carried quantifier — errors as §3.11
-// ambiguous. AUTHORING NOTE (per plan D-3 verify-first): the surfaced message IS
-// the §3.11 "ambiguous … pin the type" class, mode-uniform, with NO
-// GOT-slot/__expr/codegen-error leak — so NO `check-gate-leak` defect line rides
-// this row (contrast R16, whose §3.11 gate DID leak a backend frame). The message
-// legitimately reads "reached a codegen position" — that is §3.11 prose, not a
-// backend leak.
+// spec: spec/03-types.md §3.11.3 — an unresolved codegen-reaching use is an
+// ambiguity type error, while its named generic definition remains admissible.
 #[test]
 fn result_only_var_unresolved_use_ambiguity_not_rank1_neg() {
-    let out = repl_prims("(defn constf [x] (fn [y] x))\n(defn g [] (constf 5))\n");
-    let combined = format!("{}{}", out.stdout, out.stderr);
-    assert!(
-        combined.contains(":(Fn [a] (Fn [b] a)) user/constf"),
-        "the returning definition `constf` MUST be admitted (sound, code-less \
-         until instantiated — §3.11.3 disposition 1 / MUST (k)); got:\n{combined}"
-    );
-    assert!(
-        !combined.contains("GOT slot")
-            && !combined.contains("__expr")
-            && !combined.contains("codegen error")
-            && !combined.contains("rank-2")
-            && !combined.contains("cannot be returned"),
-        "the unpinned-use rejection MUST be the §3.11 ambiguity class, never a \
-         backend frame nor a rank-1/return rejection (§3.3.4 MUST (k)); got:\n{combined}"
-    );
-    assert!(
-        combined.contains("ambiguous"),
-        "an unpinned result-only var reaching codegen MUST be the §3.11 \
-         ambiguous-type error, NOT a rank-1 rejection (§3.3.4 MUST (k), D-3); \
-         got:\n{combined}"
-    );
-
-    // --run: mode-uniform — the same §3.11 ambiguity, no backend leak.
-    let run = Cranelisp::new()
-        .with_prelude(PreludeVariant::PrimitivesOnly)
-        .run("user.cl")
-        .user("(defn constf [x] (fn [y] x))\n(defn g [] (constf 5))\n(defn main [] (Pure 0))\n")
-        .output();
-    let rcomb = format!("{}{}", run.stdout, run.stderr);
-    assert!(
-        !run.status.success(),
-        "--run: an unpinned result-only var reaching codegen MUST be rejected \
-         (§3.11 / MUST (k)); got success:\n{rcomb}"
-    );
-    assert!(
-        rcomb.contains("ambiguous") && !rcomb.contains("GOT slot") && !rcomb.contains("__expr"),
-        "--run: the rejection MUST be the §3.11 ambiguity, no backend leak \
-         (§3.3.4 MUST (k)); got:\n{rcomb}"
-    );
+    let definitions = "(defn constf [x] (fn [y] x))\n(defn g [] (constf 5))\n";
+    // The local initializer is a runtime use even though main returns Int.
+    let expression = "(let [f (g)] 0)";
+    for mode in ["repl", "run", "link"] {
+        let cl = Cranelisp::new().with_prelude(PreludeVariant::PrimitivesOnly);
+        let out = if mode == "repl" {
+            cl.stdin(&format!("{definitions}{expression}\n")).output()
+        } else {
+            let cl = cl.user(&format!(
+                "{definitions}(defn main [] (Pure {expression}))\n"
+            ));
+            let cl = if mode == "run" {
+                cl.run("user.cl")
+            } else {
+                cl.link("user.cl")
+            };
+            let out = cl.output();
+            assert!(
+                !out.status.success(),
+                "--{mode}: unresolved runtime use succeeded"
+            );
+            out
+        };
+        let combined = format!("{}{}", out.stdout, out.stderr);
+        assert!(
+            combined.contains("ambiguous"),
+            "{mode}: unresolved runtime use must produce an ambiguity type error:\n{combined}"
+        );
+        for forbidden in [
+            "GOT slot",
+            "GOT-slot",
+            "__expr",
+            "codegen error",
+            "backend",
+            "rank-2",
+            "cannot be returned",
+        ] {
+            assert!(
+                !combined.contains(forbidden),
+                "{mode}: ambiguity rejection leaked {forbidden}:\n{combined}"
+            );
+        }
+    }
 }
 
 // --- R11 (RED→pass) — a bare value-position `:a` pins to the concrete type -----
@@ -1924,7 +1963,7 @@ fn unresolved_return_type_dispatch_ambiguity_error_neg() {
     // Discrimination facet (disposition-3): the bare NAME shows the scheme.
     let name = repl_prims(&format!("{ZEROABLE_FIXTURE}zed\n"));
     assert!(
-        name.stdout.contains("user/zed") && !name.stdout.contains("no GOT slot"),
+        name.stdout.contains("user/Zeroable.zed") && !name.stdout.contains("no GOT slot"),
         "the bare name `zed` (no call) MUST be a disposition-3 introspection \
          display, not an error (§3.11.4); got:\n{}",
         name.stdout

@@ -312,6 +312,12 @@ guaranteed-present artifact set." Individual `--link` tests are already
 declarative (program + expected output/exit); the only change is that they
 no longer depend on a per-binary `Once` having fired.
 
+`CrOutput.elapsed` remains the compiler-child lifecycle interval. When
+`link_then_run` actually launches its produced executable, the optional
+`CrOutput.linked_execution_elapsed` records that executable interval
+separately. Linked-runtime timing guards use the latter; it must not be
+substituted for a compiler/startup budget.
+
 **Design rule (record in `tests/CLAUDE.md`):** a `--link` / platform e2e
 test MUST NOT shell out to `cargo build`. The artifact set is a
 suite-level invariant owned by the nextest setup script. A test that needs

@@ -8,7 +8,9 @@
 
 use std::path::PathBuf;
 
-use cranelisp_types::{CodegenBehaviour, FQSymbol, Sexp, Type, Warning};
+use cranelisp_types::{
+    CodegenBehaviour, FQSymbol, ModuleFullPath, Sexp, Symbol, TopLevel, Type, TypeExpr, Warning,
+};
 
 // ---------------------------------------------------------------------------
 // RunMode (D1 ruling — design/arch/d1-introspection-repl-only.md §4)
@@ -96,12 +98,22 @@ pub enum CommandResult {
 
 /// Result of evaluating one input via `CompilerSession::eval()`.
 ///
-/// Either a definition (which introduced a symbol) or a value (which
-/// was computed). Both carry zero or more warnings.
+/// Either an ordered batch of published definitions, a display-only symbol
+/// description, or a computed/trapped value. Every variant carries zero or
+/// more warnings.
 pub enum EvalResult {
-    /// A definition was processed (defn, deftype, deftrait, impl, defmacro)
-    /// — or a bare symbol was introspected (a DISPLAY-ONLY `Def`, marked by
-    /// `defined: false`).
+    /// A genuine definition turn. Every symbol introduced by the entered
+    /// statement is retained in emitted order; the producer invariant is that
+    /// `symbols` is non-empty. This avoids selecting one arbitrary "primary"
+    /// definition when a macro invocation emits several definitions.
+    Definitions {
+        symbols: Vec<FQSymbol>,
+        warnings: Vec<Warning>,
+    },
+    /// The retained compatibility shape for a single definition result, and
+    /// the display-only carrier used by bare-symbol introspection. New genuine
+    /// definition turns use [`Self::Definitions`]; display-only results set
+    /// `defined: false`.
     Def {
         symbol: FQSymbol,
         ty: Type,
@@ -126,6 +138,15 @@ pub enum EvalResult {
         result: crate::result_owner::OwnedProgramResult,
         warnings: Vec<Warning>,
     },
+    /// A syntactically bare polymorphic value whose type is known but which
+    /// cannot be executed because its `__expr` wrapper is a slot-less
+    /// template. The REPL renders the authored value form by introspection;
+    /// no runtime word or program-result owner is fabricated.
+    DisplayValue {
+        ty: Type,
+        form: Sexp,
+        warnings: Vec<Warning>,
+    },
     /// An expression TRAPPED at runtime — a `(runtime_panic …)`-raised error
     /// (a broken symbol's trap stub, an exhaustiveness failure, an empty
     /// `(select [])`, …). Distinct from a compiler error (`Err(CranelispError)`)
@@ -140,31 +161,126 @@ pub enum EvalResult {
     },
 }
 
+/// Stack-owned collection of the definitions emitted by one entered REPL
+/// statement. Macro checkpoints can become durable before the ordinary HM
+/// batch, so each row records whether its own publication boundary has
+/// completed. The collection never enters shared/session state.
+#[derive(Default)]
+pub(crate) struct TurnDefinitions {
+    rows: Vec<TurnDefinition>,
+}
+
+struct TurnDefinition {
+    symbol: FQSymbol,
+    published: bool,
+}
+
+impl TurnDefinitions {
+    pub(crate) fn record(&mut self, symbol: FQSymbol, published: bool) {
+        if let Some(existing) = self.rows.iter_mut().find(|row| row.symbol == symbol) {
+            existing.published |= published;
+            return;
+        }
+        self.rows.push(TurnDefinition { symbol, published });
+    }
+
+    /// Mark an ordinary batch published without inventing receipt rows. Every
+    /// symbol must already have been recorded at its emitted position; a
+    /// missing row means the source-order collector and typed program diverged.
+    pub(crate) fn mark_published(&mut self, symbols: &[FQSymbol]) -> bool {
+        if symbols
+            .iter()
+            .any(|symbol| !self.rows.iter().any(|row| row.symbol == *symbol))
+        {
+            return false;
+        }
+        for symbol in symbols {
+            if let Some(row) = self.rows.iter_mut().find(|row| row.symbol == *symbol) {
+                row.published = true;
+            }
+        }
+        true
+    }
+
+    pub(crate) fn published_symbols(&self) -> Vec<FQSymbol> {
+        self.rows
+            .iter()
+            .filter(|row| row.published)
+            .map(|row| row.symbol.clone())
+            .collect()
+    }
+}
+
+/// Canonical REPL result identity introduced by one authored/emitted top-level
+/// form. Derived from the typed top-level representation, never from spelling
+/// conventions or an ambient symbol-table scan.
+pub(crate) fn definition_result_symbol(
+    module: &ModuleFullPath,
+    top: &TopLevel,
+) -> Option<FQSymbol> {
+    let symbol = match top {
+        TopLevel::Defn(defn) => defn.name.clone(),
+        TopLevel::TraitDecl(trait_decl) => Symbol::from(trait_decl.name.to_string()),
+        TopLevel::TraitImpl(trait_impl) => Symbol::from(format!(
+            "{}.{}",
+            trait_impl.trait_name.name,
+            impl_echo_type_name(trait_impl)
+        )),
+        TopLevel::TypeDef { name, .. } => Symbol::from(name.to_string()),
+        TopLevel::Expr(_) => return None,
+    };
+    Some(FQSymbol {
+        module: module.clone(),
+        symbol,
+    })
+}
+
+pub(crate) fn impl_echo_type_name(trait_impl: &cranelisp_types::TraitImpl) -> String {
+    if trait_impl.head_con_var.is_some()
+        && let TypeExpr::Applied(_, args) = &trait_impl.target
+        && let Some(constructor) = args.first().and_then(TypeExpr::head_ref)
+    {
+        return constructor.name.to_string();
+    }
+    trait_impl
+        .target
+        .head_ref()
+        .map(|reference| reference.name.to_string())
+        .unwrap_or_else(|| "_".to_string())
+}
+
 impl EvalResult {
     pub fn warnings(&self) -> &[Warning] {
         match self {
+            EvalResult::Definitions { warnings, .. } => warnings,
             EvalResult::Def { warnings, .. } => warnings,
             EvalResult::Val { warnings, .. } => warnings,
+            EvalResult::DisplayValue { warnings, .. } => warnings,
             EvalResult::RuntimeError { warnings, .. } => warnings,
         }
     }
 
     pub fn warnings_mut(&mut self) -> &mut Vec<Warning> {
         match self {
+            EvalResult::Definitions { warnings, .. } => warnings,
             EvalResult::Def { warnings, .. } => warnings,
             EvalResult::Val { warnings, .. } => warnings,
+            EvalResult::DisplayValue { warnings, .. } => warnings,
             EvalResult::RuntimeError { warnings, .. } => warnings,
         }
     }
 
     /// The raw i64 value, borrowed from the result owner for observation.
-    /// Returns 0 for `Def` and `RuntimeError` (a trapped expression produced
-    /// no value). Reading this is a READ, never a transfer — only
+    /// Returns 0 for definition, display-only, and trapped results. Reading
+    /// this is a READ, never a transfer — only
     /// [`Self::release_program_result`] finalizes the word.
     pub fn value(&self) -> i64 {
         match self {
             EvalResult::Val { result, .. } => result.observed_value(),
-            EvalResult::Def { .. } | EvalResult::RuntimeError { .. } => 0,
+            EvalResult::Definitions { .. }
+            | EvalResult::Def { .. }
+            | EvalResult::DisplayValue { .. }
+            | EvalResult::RuntimeError { .. } => 0,
         }
     }
 
@@ -179,14 +295,15 @@ impl EvalResult {
         }
     }
 
-    /// The inferred type. A trapped expression has no value type; `Int` is the
-    /// inert placeholder (nothing reads it — the printer renders the message).
-    pub fn ty(&self) -> &Type {
-        static TRAP_TY: Type = Type::Int;
+    /// The inferred type of a result that has exactly one value/display
+    /// subject. A definition batch has no single truthful type, and a runtime
+    /// trap produced no value, so both return `None`.
+    pub fn ty(&self) -> Option<&Type> {
         match self {
-            EvalResult::Val { result, .. } => result.ty(),
-            EvalResult::Def { ty, .. } => ty,
-            EvalResult::RuntimeError { .. } => &TRAP_TY,
+            EvalResult::Val { result, .. } => Some(result.ty()),
+            EvalResult::Def { ty, .. } => Some(ty),
+            EvalResult::DisplayValue { ty, .. } => Some(ty),
+            EvalResult::Definitions { .. } | EvalResult::RuntimeError { .. } => None,
         }
     }
 
@@ -199,7 +316,10 @@ impl EvalResult {
     /// harmless no-op). Replaces the shape-only `is_def()` so no caller can
     /// key regen on the variant alone.
     pub fn is_defining(&self) -> bool {
-        matches!(self, EvalResult::Def { defined: true, .. })
+        matches!(
+            self,
+            EvalResult::Definitions { .. } | EvalResult::Def { defined: true, .. }
+        )
     }
 }
 
@@ -213,7 +333,7 @@ mod eval_result_tests {
     // regen-silence on bare lookup, pinned at the predicate seam both regen
     // sites — main.rs and agent/pull.rs — gate on).
     #[test]
-    fn is_defining_true_for_genuine_def_false_for_display_only_and_val() {
+    fn is_defining_true_only_for_genuine_definition() {
         let fq = FQSymbol {
             module: ModuleFullPath::from("user"),
             symbol: cranelisp_types::Symbol::from("f"),
@@ -223,6 +343,10 @@ mod eval_result_tests {
             ty: Type::Int,
             warnings: Vec::new(),
             defined: true,
+        };
+        let batch = EvalResult::Definitions {
+            symbols: vec![fq.clone()],
+            warnings: Vec::new(),
         };
         let display_only = EvalResult::Def {
             symbol: fq,
@@ -234,12 +358,82 @@ mod eval_result_tests {
             result: crate::result_owner::OwnedProgramResult::inert(1, Type::Int),
             warnings: Vec::new(),
         };
+        let display_value = EvalResult::DisplayValue {
+            ty: Type::Var(0),
+            form: Sexp::Bracket(Vec::new(), cranelisp_types::Span::SYNTHETIC),
+            warnings: Vec::new(),
+        };
         assert!(genuine.is_defining());
+        assert!(batch.is_defining());
         assert!(
             !display_only.is_defining(),
             "bare lookup must not trigger regen"
         );
         assert!(!val.is_defining());
+        assert!(!display_value.is_defining());
+    }
+
+    // design: design/int/s117-conformance-recovery.md §6.2 — retrying the
+    // ordinary prefix around an already-published macro checkpoint must not
+    // duplicate or reorder the turn's definition receipt.
+    #[test]
+    fn turn_definitions_preserve_emitted_order_across_retry() {
+        let ordinary_before = FQSymbol {
+            module: ModuleFullPath::from("user"),
+            symbol: cranelisp_types::Symbol::from("backing"),
+        };
+        let macro_checkpoint = FQSymbol {
+            module: ModuleFullPath::from("user"),
+            symbol: cranelisp_types::Symbol::from("binding"),
+        };
+        let ordinary_after = FQSymbol {
+            module: ModuleFullPath::from("user"),
+            symbol: cranelisp_types::Symbol::from("later"),
+        };
+
+        let mut definitions = TurnDefinitions::default();
+        definitions.record(ordinary_before.clone(), false);
+        definitions.record(macro_checkpoint.clone(), true);
+
+        // Retry replays the uncommitted ordinary prefix but not the macro.
+        definitions.record(ordinary_before.clone(), false);
+        definitions.record(ordinary_after.clone(), false);
+        definitions.mark_published(&[ordinary_before.clone(), ordinary_after.clone()]);
+
+        assert_eq!(
+            definitions.published_symbols(),
+            vec![ordinary_before, macro_checkpoint, ordinary_after]
+        );
+    }
+
+    #[test]
+    fn turn_definitions_refuse_unrecorded_publication() {
+        let recorded = FQSymbol {
+            module: ModuleFullPath::from("user"),
+            symbol: cranelisp_types::Symbol::from("recorded"),
+        };
+        let missing = FQSymbol {
+            module: ModuleFullPath::from("user"),
+            symbol: cranelisp_types::Symbol::from("missing"),
+        };
+        let mut definitions = TurnDefinitions::default();
+        definitions.record(recorded, false);
+
+        assert!(!definitions.mark_published(&[missing]));
+        assert!(definitions.published_symbols().is_empty());
+    }
+
+    // API: a definition batch deliberately has no singular inferred type.
+    #[test]
+    fn definition_batch_has_no_singular_type() {
+        let result = EvalResult::Definitions {
+            symbols: vec![FQSymbol {
+                module: ModuleFullPath::from("user"),
+                symbol: cranelisp_types::Symbol::from("f"),
+            }],
+            warnings: Vec::new(),
+        };
+        assert_eq!(result.ty(), None);
     }
 
     // -----------------------------------------------------------------------
@@ -276,7 +470,11 @@ mod eval_result_tests {
         let _ = take_events();
         let mut val = armed_val(77);
         record(format!("display-read({})", val.value()));
-        assert_eq!(val.ty(), &Type::String, "type reads through the owner too");
+        assert_eq!(
+            val.ty(),
+            Some(&Type::String),
+            "type reads through the owner too"
+        );
         val.release_program_result();
         record("prompt-returns");
         drop(val);
@@ -305,10 +503,10 @@ mod eval_result_tests {
     }
 
     // spec: design/int/result-owner.md §6 (REPL row negatives) — a
-    // display-only `Def` (bare-symbol lookup) and a runtime trap fabricate no
-    // ownership and release nothing.
+    // display-only `Def` (bare-symbol lookup), display-only polymorphic value,
+    // and runtime trap fabricate no ownership and release nothing.
     #[test]
-    fn def_and_trap_turns_release_nothing() {
+    fn non_runtime_turns_release_nothing() {
         let _ = take_events();
         let mut display_only = EvalResult::Def {
             symbol: FQSymbol {
@@ -324,12 +522,24 @@ mod eval_result_tests {
             message: "boom".to_string(),
             warnings: Vec::new(),
         };
+        let mut display_value = EvalResult::DisplayValue {
+            ty: Type::Var(0),
+            form: Sexp::Bracket(Vec::new(), cranelisp_types::Span::SYNTHETIC),
+            warnings: Vec::new(),
+        };
         trap.release_program_result();
+        display_value.release_program_result();
         assert_eq!(display_only.value(), 0, "a Def turn carries no value");
         assert_eq!(trap.value(), 0, "a trapped turn produced no value");
+        assert_eq!(
+            display_value.value(),
+            0,
+            "display syntax is not a runtime word"
+        );
+        assert_eq!(display_value.ty(), Some(&Type::Var(0)));
         assert!(
             take_events().is_empty(),
-            "neither a display-only Def nor a trap may invoke result glue"
+            "non-runtime result variants must never invoke result glue"
         );
     }
 
@@ -572,27 +782,6 @@ pub(crate) fn dedup_platform_names_preserving_order<'a>(
         }
     }
     out
-}
-
-pub(crate) fn extract_def_name_from_sexp(sexp: &Sexp) -> Option<String> {
-    if let Sexp::List(items, _) = sexp
-        && items.len() >= 2
-        && let Sexp::Symbol(head, _) = &items[0]
-    {
-        match head.as_str() {
-            "defmacro" => {
-                if let Sexp::Symbol(name, _) = &items[1] {
-                    return Some(name.to_string());
-                }
-            }
-            "import" | "platform" | "mod" => {
-                // These don't define a named symbol in the usual sense.
-                return None;
-            }
-            _ => {}
-        }
-    }
-    None
 }
 
 /// Check if input is a comment-only line.

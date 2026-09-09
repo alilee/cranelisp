@@ -35,7 +35,7 @@
 
 ;; ── An ADT wrapping a (Vec Cell) — the Sudoku Grid shape ──────────────────
 (deftype Cell (Given [:Int v]) (Solved [:Int v]))
-(deftype Grid [cells])
+(deftype (Grid a) [:a cells])
 
 ;; Thin user-fn wrappers = stdlib collections.vec get/assoc/conj (Var-param
 ;; borrowed-vec RC path — the load-bearing difference from the direct-primitive

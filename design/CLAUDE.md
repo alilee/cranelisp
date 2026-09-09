@@ -24,7 +24,7 @@ The former `/frontend`, `/typecheck`, `/backend`, `/platform` skills were retire
 | `platform/` | `/design` (platform) | DLL loading, IO trampoline, scheduling-class registry design |
 | `int/` | `/design` (int) | Binary/integration layer — pipeline orchestration, REPL session, CLI, `--link` |
 | `review/` | `/review` | Review checklists, ring-completion reports, code-quality standards |
-| `runtime/` | — historical | Pre-D43 `cranelisp-runtime` design; superseded by `primitives/` + `intrinsics/` |
+| `runtime/` | `/design` (runtime-pair contract; one nominated crate pass owns each edit) | Shared `cranelisp-primitives` ↔ `cranelisp-intrinsics` ownership/ABI contracts plus retained pre-D43 history. File status, not the directory name, distinguishes live records from historical ones; a sprint reserves each shared file to one crate pass so both sides do not rewrite it. |
 | `stdlib/` | `/stdlib` | Stdlib design records (e.g. examples `--run` path remediation) |
 
 ## Design-doc expectations

@@ -1,10 +1,10 @@
-# 5. Definitions [Uncovered S115 — was Tested]
+# 5. Definitions [Uncovered S121]
 
 This section specifies the top-level definition forms in Cranelisp. All definitions appear at the top level of a source file or module. They introduce named functions, types, traits, macros, constants, and module structure into the program.
 
 **Declaration heads are binders. [S113]** Every definition form in this section binds a **new** name into the **current** module. A declaration head — the name a definition form introduces — is a **binder, not a reference**, and MUST be a **bare (unqualified) symbol**. This is the settled general principle (user ruling 2026-07-18, generalized to all binder heads; the veto window closed at S112 Phase 7): it holds for **every** binder head, not only the two forms the original ruling named. A **qualified** spelling in declaration-head position — `(defn fmt/foo [x] …)`, `(deftrait (fmt/Foo f) …)`, `(deftype fmt/Foo …)` — is a **compile-time error**, and so is a **dotted** one (`(defn a.foo [x] …)`, `(deftype A.B …)` — user ruling 2026-07-21, *Binder positions* below) [S115]: there is no mechanism for declaring a name into another module; a definition always binds into the module that contains it. This is the dual of the reference rules (§8.5): a **binder** introduces a name where it is written, so it carries no module qualifier; only a **reference** reaches across modules. (`impl` is not an exception — its slot 1 echoes a trait *reference*, not a fresh binder, [§7.3](07-traits.md#73-trait-implementation).)
 
-The **native binder special forms** are `defn`/`defn-`, `deftype`/`deftype-`, `deftrait`/`deftrait-`, and `defmacro`/`defmacro-`, together with the **method definitions inside an `impl` body**, the **method-signature names inside a `deftrait`** (a `deftrait` introduces its method names into the current module, §5.3.3 — a method-signature name such as `show` in `(deftrait Foo (show [x] Int))` is a binder, so a qualified spelling `(deftrait Foo (fmt/show [x] Int))` is a compile-time error on this same principle), and the **variant-constructor names and field names introduced by `deftype`** (each variant constructor mints a module-level callable, §5.2.2; each field name mints a module-level accessor `Type.field`, §5.2.6 — both are binders, user ruling 2026-07-19). Each of these heads is a binder subject to the bare-symbol rule above. [S113]
+The **native binder special forms** are `defn`/`defn-`, `deftype`/`deftype-`, `deftrait`/`deftrait-`, and `defmacro`/`defmacro-`, together with the **method definitions inside an `impl` body**, the **method-signature names inside a `deftrait`** (a `deftrait` introduces its method names into the current module, §5.3.3 — a method-signature name such as `show` in `(deftrait Foo (show [x] Int))` is a binder, so a qualified spelling `(deftrait Foo (fmt/show [x] Int))` is a compile-time error on this same principle), the **variant-constructor names introduced by `deftype`**, and **product-type field names** (a variant constructor mints a module-level callable, §5.2.2; a product field mints the total accessor `Type.field`, §5.2.6). A sum-constructor payload label is declaration metadata for its positional payload and does not bind a callable name. [S113] [S121]
 
 **Binder positions — where the bare-symbol rule applies. [S113]** The user's principle (2026-07-19): **you can define a name only into the module — or lexical scope — that contains the definition; you can never define a name *into another module*, only *reference* one.** A binder therefore never carries a module qualifier (`/`, §1.4.3) or a dotted path (`.`, §1.4.4): those are **reference** syntax (§8.5). A qualified or dotted spelling in **any** binder position is a compile-time error, with the diagnostic span on the offending binder name. The table enumerates every name-introducing position in the language and states the rule for each; the dual — **reference** positions, where a name crosses modules and a qualifier is permitted — is listed last for contrast.
 
@@ -13,7 +13,8 @@ The **native binder special forms** are `defn`/`defn-`, `deftype`/`deftype-`, `d
 | `defn`/`defn-` head | §5.1 | binder | bare symbol; qualified/dotted rejects [S115] |
 | `deftype`/`deftype-` head | §5.2 | binder | bare symbol; qualified/dotted rejects [S115] |
 | `deftype` variant-constructor name | §5.2.2 | binder | bare **uppercase** symbol; qualified/dotted/lowercase rejects [S115] |
-| `deftype` field name (mints `Type.field` accessor) | §5.2.6 | binder | bare symbol; qualified/dotted rejects [S115] |
+| `deftype` product field name (mints `Type.field` accessor) | §5.2.6 | binder | bare symbol; qualified/dotted rejects [S115] [S121] |
+| `deftype` sum-constructor payload label | §5.2.2, §5.2.6 | declaration metadata, not a binder | bare symbol; qualified/dotted rejects; mints no accessor [S121] |
 | `deftype` type parameters | §5.2, §2.2.2 | binder (type var) | bare **lowercase** symbol; qualified/dotted rejects [S115] |
 | `deftrait`/`deftrait-` head | §5.3, §7.1 | binder | bare uppercase symbol; qualified/dotted rejects [S115] |
 | `deftrait` method-signature name | §5.3.3 | binder | bare symbol; qualified/dotted rejects [S115] |
@@ -183,18 +184,34 @@ When any function (single or multi-signature) is called with fewer arguments tha
   (inc 5))              ; -> 6
 ```
 
+### 5.1.4 Redefinition [Uncovered S121]
+
+A `defn` entered in a later compilation cluster may replace an already
+committed callable under
+[`repl/spec/18-redefinition.md` §18.1](../repl/spec/18-redefinition.md#181-callable-redefinition).
+A same-language-type replacement is legal with callers and hot-reloads the
+existing slot. A language-type-changing replacement is legal only when the
+existing definition has no blocking dependent under §18.2; otherwise it is
+rejected before publication and the prior definition remains live.
+Changing between `defn` and `defn-` is not a body or type edit: visibility is
+immutable during live redefinition, so the change is rejected with the prior
+definition and source retained. It requires persisted-source reload/restart or
+a new name.
+
+For a multi-signature `defn`, the unit of redefinition is the whole overload
+family and its language type is the complete clause-signature set (§18.3).
+
 ## 5.2 Type Definition (`deftype` / `deftype-`) [Tested+Neg tests/deftype_constructor_form_rulings_s116.rs::deftype_content_free_paren_constructor_rejected_neg, tests/deftype_constructor_form_rulings_s116.rs::deftype_empty_field_list_arm_rejected_neg, tests/deftype_constructor_form_rulings_s116.rs::deftype_nullary_constructor_sharing_type_name_rejected_neg, tests/deftype_constructor_form_rulings_s116.rs::deftype_unit_zero_field_product_control_green]
 
 ```ebnf
 deftype_form   = '(' ('deftype' | 'deftype-') type_head docstring? type_body ')'
 type_head      = name                         (* monomorphic *)
                | '(' name type_var+ ')'       (* polymorphic *)
-type_var       = symbol                        (* lowercase by convention *)
+type_var       = symbol                        (* lowercase *)
 type_body      = field_list                    (* product type — empty field_list = unit *)
                | constructor+                  (* sum type *)
 field_list     = '[' field_def* ']'            (* product position: zero fields legal (the unit type) *)
 field_def      = colon_prefix symbol           (* :Type fieldname *)
-               | symbol                        (* bare fieldname, type inferred *)
 constructor    = name                                (* nullary — bare name *)
                | '(' name docstring ctor_fields? ')' (* documented ctor; fields optional *)
                | '(' name ctor_fields ')'            (* data constructor *)
@@ -231,7 +248,7 @@ This is not a new construct; it is `field_list` with zero `field_def`s, so it ne
 
 The alternative spelling `(deftype Unit)` — a bare head with no body at all — is **rejected**, and deliberately so (user ruling 2026-07-21): a `deftype` with no body is the shape of a **truncated declaration**, and the compiler's existing `deftype missing constructors` diagnostic is what catches it. Legalising the bare spelling would convert a caught truncation (`(deftype Color)`, where the author meant `(deftype Color Red Green Blue)`) into a silently-declared unit type. The brackets are cheap and they make the intent explicit.
 
-### 5.2.2 Sum Type (Multiple Constructors) [Tested+Neg tests/deftype_constructor_form_rulings_s116.rs::deftype_content_free_paren_constructor_rejected_neg, tests/deftype_constructor_form_rulings_s116.rs::deftype_empty_field_list_arm_rejected_neg, tests/deftype_constructor_form_rulings_s116.rs::deftype_documented_nullary_sharing_type_name_rejected_neg, tests/deftype_constructor_form_rulings_s116.rs::deftype_mixed_bare_nullary_and_fielded_control_green]
+### 5.2.2 Sum Type (Multiple Constructors) [Tested+Neg tests/deftype_constructor_form_rulings_s116::deftype_mixed_bare_nullary_and_fielded_control_green, tests/deftype_constructor_form_rulings_s116::deftype_content_free_paren_constructor_rejected_neg, tests/deftype_constructor_form_rulings_s116::deftype_empty_field_list_arm_rejected_neg, tests/deftype_constructor_form_rulings_s116::deftype_documented_nullary_sharing_type_name_rejected_neg]
 
 When the type body contains one or more constructor forms, each introduces a distinct variant.
 
@@ -251,7 +268,7 @@ When the type body contains one or more constructor forms, each introduces a dis
 - Nullary constructors are values: `None :: (Option a)`.
 - Data constructors are functions: `Some :: (Fn [a] (Option a))`.
 - A constructor name is a **binder** (§5, *Declaration heads are binders*; user ruling 2026-07-19) — it mints a module-level callable, so it MUST be a **bare uppercase** symbol. A qualified **or dotted** spelling (`(deftype Shape (fmt/Circle …))`, `(deftype Shape (Shape.Circle …))`) is a compile-time error, with the diagnostic span on the constructor name: you can define a constructor only into the module that contains the `deftype`, never into another module. This holds in both constructor arms — the nullary bare-name arm and the parenthesized data-constructor arm. (Lowercase constructor names are separately rejected as ill-formed — a lowercase ctor would be callable but unmatchable, since a lowercase pattern symbol binds a variable, §6.2.4.) [S113]
-- A **field name** is likewise a binder — it mints a module-level accessor `Type.field` (§5.2.6), so it MUST be a **bare** symbol; a qualified **or dotted** field name (`(deftype T [:Int fmt/r])`, `(deftype T [:Int a.r])`) is a compile-time error, span at the field name. [S113] [S115]
+- A **product field name** is likewise a binder — it mints a module-level total accessor `Type.field` (§5.2.6), so it MUST be a **bare** symbol. A sum-constructor payload label is not a binder and mints no accessor, but it is still declaration syntax and MUST also be bare. A qualified **or dotted** spelling (`(deftype T [:Int fmt/r])`, `(deftype T (C [:Int a.r]))`) is a compile-time error, span at the field name or payload label. [S113] [S115] [S121]
 
 **Constructor and field binders are unique within one type.** Constructor names
 within a single `deftype` MUST be pairwise distinct, across bare nullaries,
@@ -260,14 +277,14 @@ a compile-time error located at the second occurrence. Thus each variant has one
 constructor binder and one canonical `Type.Ctor` referent (§8.5.2); a later arm
 MUST NOT replace or overload an earlier arm.
 
-Named field binders within a single `deftype` MUST likewise be pairwise
-distinct, including fields declared in different constructor arms. Repeating a
-field name is a compile-time error located at the second occurrence. For
-example, `(deftype T [:Int a :Int a])` is rejected at the second `a`, and a sum
-type MUST NOT declare two fields that would both mint the same canonical
-`Type.field` accessor (§5.2.6, §8.5.2). These rules do not prohibit distinct
-types from reusing a constructor or field name; cross-type reuse is governed by
-the bare-alias ambiguity rules in §8.6.5. (User ruling 2026-07-22.)
+Named product-field binders within a single `deftype` MUST likewise be pairwise
+distinct. Repeating one is a compile-time error located at the second
+occurrence; `(deftype T [:Int a :Int a])` is rejected at the second `a`.
+Payload labels in distinct sum-constructor arms MAY repeat because they mint no
+name and are used only as positional declaration metadata. These rules do not
+prohibit distinct product types from reusing a field name; cross-type reuse is
+governed by the bare-alias ambiguity rules in §8.6.5. (User rulings 2026-07-22
+and 2026-09-02.)
 
 **Parentheses on a constructor require content. [S115]** A constructor written in parens is in parens *because* it takes parameters and/or carries a docstring; with neither, the parens are illegal (user ruling 2026-07-21). `(deftype Flag (Flag))` is a **parse error**, and so is the empty `(deftype Flag ())`. The bare-name spelling above is not a stylistic preference for nullary constructors — it is the **only** spelling, save for the documented case:
 
@@ -323,34 +340,22 @@ This is syntactically a sum type with no field lists. Enum values are represente
 
 Each variant is a **bare** name — the empty-paren spelling `(deftype Color (Red) Green Blue)` is a parse error (§5.2.2), and no variant may repeat the type's own name, so `(deftype Flag Flag)` is illegal; a type with one valueless inhabitant is the unit type `(deftype Unit [])` (§5.2.1). [S115]
 
-### 5.2.4 Shortcut Syntax -- Inferred Type Parameters [Tested tests/spec_05_definitions::deftype_product_shortcut_field_names]
+### 5.2.4 Explicit Type Parameters and Field Types [Tested+Neg tests/spec_05_definitions::deftype_omitted_field_types_rejected_without_partial_registration_neg, tests/spec_05_definitions::deftype_bare_head_rejects_undeclared_field_type_variable_neg, crates/cranelisp-typecheck/src/adt/tests.rs::test_explicitly_parameterised_product_type]
 
-When field brackets contain bare names (no `:Type` prefix), each unique bare name is assigned a fresh type variable. Type parameters on the type head are inferred and need not be written.
+A bare type head declares no type parameters and therefore defines a monomorphic type. A parenthesized type head declares the polymorphic type's complete ordered parameter list. Every type variable used in a field type MUST name one of those declared parameters; fields MUST NOT introduce or infer type parameters.
 
-```clojure
-;; Shortcut                              ;; Equivalent full form
-(deftype Pair [first second])            (deftype (Pair a b) [:a first :b second])
-
-(deftype Option                          (deftype (Option a)
-  None                                     None
-  (Some [unwrap]))                         (Some [:a unwrap]))
-
-(deftype Result                          (deftype (Result a b)
-  (Ok [ok])                                (Ok [:a ok])
-  (Err [err]))                             (Err [:b err]))
-```
-
-**Rules:**
-
-- A bare field name (no `:` prefix) is assigned a fresh type variable. Variables are allocated as `a`, `b`, `c`, ... in order of first appearance across all constructors.
-- `:Type name` uses the explicit type; no inference occurs for that field.
-- When all field types are inferred, the type parameter list on the head MAY be omitted.
-- Mixing explicit and bare fields within one constructor is permitted:
+Every field MUST carry a written type and has the form `:Type name`. A field name without a preceding type annotation is a syntax error located at that field name, whether the type head is bare or parenthesized. This rule applies equally to product fields and fields in constructor arms.
 
 ```clojure
-(deftype Named (Named [:String name value]))
-;; name is :String (explicit), value gets fresh var 'a'
-;; => (deftype (Named a) (Named [:String name :a value]))
+(deftype Point [:Int x :Int y])            ; legal — monomorphic product
+(deftype Unit [])                          ; legal — monomorphic zero-field product
+(deftype (Pair a b) [:a first :b second])  ; legal — complete polymorphic declaration
+(deftype (Maybe a) None (Some [:a value])) ; legal — explicit field type in an arm
+
+(deftype Pair [first second])               ; ILLEGAL — field type required
+(deftype (Pair a b) [first second])         ; ILLEGAL — field type required
+(deftype Pair [:a first])                   ; ILLEGAL — bare head declares no `a`
+(deftype (Box a) [:a value :b extra])       ; ILLEGAL — head does not declare `b`
 ```
 
 ### 5.2.5 Docstrings on Types and Constructors [Tested+Neg tests/spec_05_definitions::deftype_with_docstring_does_not_affect_construct_or_match, tests/deftype_constructor_form_rulings_s116.rs::deftype_documented_nullary_control_green, tests/deftype_constructor_form_rulings_s116.rs::deftype_documented_nullary_sharing_type_name_rejected_neg]
@@ -365,13 +370,13 @@ An optional docstring MAY appear after the type head (before the body) and after
 
 `(None "Represents absence")` is a **documented nullary** constructor: it keeps its parens because the docstring is the content, and this is its only spelling. Dropping the docstring means dropping the parens too — plain `None` — since parens with neither docstring nor field list are a parse error (§5.2.2). [S115] This documented nullary is legal because `None` is **not** the name of its type (`Option`); a documented nullary that *shares* its type's name is illegal — the docstring never rescues a same-name nullary (§5.2.2, *The docstring never enters this verdict*). A documented nullary carries **no** field list — never a spurious `(None "…" [])` (§5.2.2, *An empty field list is legal only in product position*). [S115]
 
-### 5.2.6 Generated Accessors [Tested+Neg tests/spec_05_definitions::generated_field_accessor_resolves_as_free_callable, tests/spec_05_definitions::accessor_cross_type_duplicate_field_name, tests/spec_field_accessor::bare_alias_resolves_when_field_unique, tests/spec_field_accessor::bare_alias_and_canonical_dispatch_equivalently, tests/spec_field_accessor::bare_alias_ambiguous_canonical_both_work]
+### 5.2.6 Generated Accessors [Tested+Neg tests/spec_05_definitions::accessor_cross_type_duplicate_field_name, tests/spec_05_definitions::bare_field_ambiguity_message_lists_both_alternatives, tests/spec_field_accessor::sum_payload_label_extracts_by_match_and_mints_no_accessor_neg]
 
-For each named field in a type definition, an accessor function is automatically generated. **The canonical name of the accessor is the dotted form `Type.field`** — e.g. `Box.v`, `Point.x` — always available wherever `Type` is in bare scope (§8.5.2). This mirrors the language's qualified-display convention used everywhere else (`:primitives/Int`, `:(Fn [a] a) user/id`): the fully-qualified `Type.field` is the primary, displayed/reported name of the accessor (FIXME 0365/0439, settled S91).
+For each named field of a **product type**, a total accessor function is automatically generated. **The canonical name of the accessor is the dotted form `Type.field`** — e.g. `Box.v`, `Point.x` — always available wherever `Type` is in bare scope (§8.5.2). This mirrors the language's qualified-display convention used everywhere else (`:primitives/Int`, `:(Fn [a] a) user/id`): the fully-qualified `Type.field` is the primary, displayed/reported name of the accessor (FIXME 0365/0439, settled S91).
 
-The **bare field name** (`v`, `x`) is a **convenience alias** to the canonical accessor. It resolves to `Type.field` when exactly one in-scope type owns a field of that name. The bare form is the ordinary way to write an accessor in unambiguous code; it is not a separate function — it is shorthand for the canonical `Type.field`.
+The **unqualified accessor name** (`v`, `x`) is a **convenience projection** of the canonical accessor into module scope. It contributes `Type.field` as a candidate for that spelling; it is not a separate function. When several in-scope types contribute the same spelling, ordinary use-site resolution (§8.6.5) may select one by type, or the source uses the canonical `Type.field` form.
 
-**Product type accessors** are total -- they always succeed:
+Product accessors are total -- they always succeed:
 
 ```clojure
 (deftype Point [:Int x :Int y])
@@ -382,29 +387,33 @@ The **bare field name** (`v`, `x`) is a **convenience alias** to the canonical a
 ;; Point.y :: (Fn [Point] Int)
 ```
 
-**Sum type accessors** are partial -- they succeed on the matching variant and panic on mismatched variants:
+Sum-constructor payload labels do **not** generate accessors. A sum value can
+carry different variants at runtime, so a generated `Type.field : Type -> a`
+would require a partial runtime check outside the language's explicit matching
+construct. Payload extraction therefore uses `match`:
 
 ```clojure
 (deftype (Option a) None (Some [:a unwrap]))
 
-(Option.unwrap (Some 42))   ; -> 42
-(unwrap (Some 42))          ; -> 42  (bare alias)
-(Option.unwrap None)        ; -> runtime panic
-;; Option.unwrap :: (Fn [(Option a)] a)
+(match option
+  [(Some value) value
+   None fallback])
+
+Option.unwrap   ; undefined — `unwrap` is payload metadata, not a member
+unwrap          ; undefined — no bare accessor is introduced
 ```
 
-Accessor functions are first-class values and can be passed as arguments or bound to variables. The canonical `Type.field` form is always first-class; the bare alias is first-class wherever it resolves unambiguously.
+Product accessor functions are first-class values and can be passed as arguments or bound to variables. The canonical `Type.field` form is always first-class. An unqualified accessor is also first-class when ordinary argument, result, annotation, or surrounding expected-type constraints select exactly one candidate (§8.6.5).
 
-**Duplicate field names — the ambiguity lives in the bare alias, not the accessor.** Two type definitions MAY use the same field name (e.g. `(deftype Box [:Int v])` and `(deftype Cup [:Bool v])` both have a field `v`). The two canonical accessors `Box.v` and `Cup.v` are **distinct, always-valid functions** — there is no collision and no "poisoning" at the canonical level. What is contested is the single **bare alias** `v`: when two or more in-scope types own a field named `v`, the bare alias has no unique target, so any use of bare `v` is a **compile-time error that lists the canonical alternatives** (`Box.v`, `Cup.v`) under the §8.6.5 bare-name ambiguity rule. The compiler MUST NOT silently fold the alias into an argument-type-dispatched overload, and MUST NOT silently pick a winner.
+**Duplicate product field names share an unqualified spelling, not a canonical identity.** Two product type definitions MAY use the same field name (for example, `(deftype Box [:Int v])` and `(deftype Cup [:Bool v])`). Their canonical accessors `Box.v : (Fn [Box] Int)` and `Cup.v : (Fn [Cup] Bool)` are distinct and always valid. In `(v box)`, `box : Box` eliminates `Cup.v`, so the call resolves to `Box.v`; `(v cup)` analogously resolves to `Cup.v`. A use with no constraints that select exactly one candidate is ambiguous and MUST use `Box.v` or `Cup.v` (§8.6.5). The compiler MUST NOT choose a winner by declaration or import order.
 
 The field stays reachable in every case — the contest never strands a field:
 - via the canonical accessor `Box.v` / `Cup.v` (§8.5.2) — **always valid**, in both the unique and contested cases, same-module and cross-module. This is the primary form; it is never an "escape hatch" because it is the accessor's real name;
-- via `match` (§6) — pattern destructuring is unaffected by alias contention and is always available;
 - cross-module, via module-qualified names (§8.5.1) — `m/Box.v` (or the bare `m/v` where it resolves) reaches the module's accessor.
 
-A field accessor can never be shadowed by a same-named trait method: a trait `impl` whose method name collides with an existing field-accessor name of the target type is rejected at impl time (§7.3.1), so the canonical `Type.field` always denotes exactly one thing.
+A trait implementation MAY realize a same-named trait method for the field's type (§7.3.1). The accessor and method retain distinct canonical identities: `Box.v` denotes the accessor, while `HasV.v` denotes the trait method. If both candidates have types compatible with a use such as `(v box)`, typing cannot distinguish them and the source MUST qualify the intended one.
 
-Alias contention is scoped to the colliding bare name only: a bare field name **not** in contention still resolves uniquely to its canonical accessor and remains first-class (passable as an argument or bound to a variable). A contested bare alias has no single denotation (the coherence reason it cannot silently become an overload), but its canonical accessors each do.
+Candidate selection is scoped to the shared unqualified spelling only. It never changes either canonical accessor and never affects unrelated names. Sum payload extraction remains positional `match` semantics under §6 and creates no accessor candidate.
 
 ### 5.2.7 Constructor Semantics [Tested+Neg tests/deftype_constructor_form_rulings_s116.rs::deftype_content_free_paren_constructor_rejected_neg, tests/deftype_constructor_form_rulings_s116.rs::deftype_empty_field_list_arm_rejected_neg, tests/deftype_constructor_form_rulings_s116.rs::deftype_nullary_constructor_sharing_type_name_rejected_neg, tests/deftype_constructor_form_rulings_s116.rs::deftype_unit_zero_field_product_control_green]
 
@@ -414,6 +423,16 @@ Alias contention is scoped to the colliding bare name only: a bare field name **
 - A nullary constructor is written **bare**; parens on a constructor require a docstring and/or a field list, so the content-free `(Ping)` is a parse error while the documented `(Ping "doc")` is legal (§5.2.2) — provided the documented nullary does not share its type's name (a docstring does not rescue a same-name nullary; §5.2.2, *The docstring never enters this verdict*). An empty field list inside an arm — `(Ping [])` — is also illegal (§5.2.2, *An empty field list is legal only in product position*). [S115]
 - A **nullary** constructor MUST NOT repeat its type's name (§5.2.2); a **product** constructor sharing the type name is the normal case (§5.2.1), including the zero-field unit type `(deftype Unit [])`. [S115]
 - Constructor tags are assigned sequentially starting from 0 in definition order.
+
+### 5.2.8 Redefinition [Uncovered S121]
+
+A committed nominal type may be re-established under the same name only with
+the same runtime and naming structure. Visibility, product/sum shape,
+alpha-equivalent type parameters, constructor identities/order/tags and payload
+types/arities are structural; product field/accessor names, types and order are
+also structural. Type and constructor docstrings and positional sum-payload
+labels are non-structural. The complete rule and atomic-rejection guarantee are
+[`repl/spec/18-redefinition.md` §18.5](../repl/spec/18-redefinition.md#185-type-declaration-re-establishment).
 
 ## 5.3 Trait Declaration (`deftrait` / `deftrait-`) [Tested]
 
@@ -469,6 +488,14 @@ When the trait head includes type parameters, the trait operates on type constru
 - A trait declaration introduces method names into scope. These names cannot be used until at least one implementation is provided. Each method-signature name is a **binder** (§5, *Declaration heads are binders*) — a **bare (unqualified)** symbol; a qualified **or dotted** method name (`(deftrait Foo (fmt/show [x] Int))`, `(deftrait Foo (Foo.show [x] Int))`) is a compile-time error (§5, *Binder positions*). [S113] [S115]
 - Method signatures declare the type contract. Implementations MUST conform to the declared signature.
 - Traits are the mechanism for operator overloading: `+`, `-`, `*`, `/` are methods of the `Num` trait; `=` is a method of `Eq`; `<`, `>`, `<=`, `>=` are methods of `Ord`.
+
+### 5.3.4 Redefinition [Uncovered S121]
+
+A committed trait may be re-established under the same name only with an
+equivalent interface. Documentation updates are live, and a same-interface
+default-body edit affects only future impl realizations. The precise interface
+boundary and atomic-rejection rule are
+[`repl/spec/18-redefinition.md` §18.6](../repl/spec/18-redefinition.md#186-trait-declaration-re-establishment).
 
 ## 5.4 Trait Implementation (`impl`) [Tested+Neg tests/spec_07_traits::trait_impl_concrete_type, tests/spec_07_traits::qualified_impl_trait_reference_resolves_canonical_home_and_dispatches, tests/spec_07_traits::qualified_impl_trait_reference_neg_does_not_mint_written_qualifier_into_method_name, tests/spec_07_traits::qualified_hkt_impl_trait_reference_resolves_canonical_home_and_dispatches]
 
@@ -579,7 +606,16 @@ is module `fmt`; the `f` binder still echoes the declaration verbatim.
 - Method definitions within `impl` follow `defn` syntax but MUST NOT include docstrings (the docstring comes from the trait declaration).
 - The method parameter count and types MUST conform to the trait's declared signature.
 - Method bodies are type-checked against the instantiated trait signature.
-- **Redefinition is hot-reload.** [S115] Re-entering an `impl` for a (trait, target-type) pair that already has an implementation in a live session **replaces** the previous implementation: subsequent method dispatch (§7.4) for that (trait, type) pair uses the **new** method bodies, exactly as re-entering a `defn` hot-reloads a function definition (redefinition runtime semantics — dependent recompilation, broken symbols, the frozen world — are `repl/spec.md` §18; source round-trip is `repl/spec.md` §15.6). The re-`impl` carries the same-type constraint that governs `defn` redefinition — the new method bodies MUST conform to the trait's declared signature for the target type (the conformance rules above), so a re-`impl` whose methods do not type-check against that signature is rejected exactly as any other non-conforming impl; a conforming re-`impl` leaves each method's compiled signature unchanged and is therefore signature-preserving (`repl/spec.md` §18.1). An implementation MUST NOT silently ignore a re-`impl` — accepting the form and printing the ordinary confirmation while continuing to dispatch to the **first** implementation is a defect.
+- **Redefinition is whole-pair hot-reload.** [S115] Re-entering an `impl` for a
+  `(trait, target-type)` pair replaces the previous implementation only after
+  the complete candidate conforms to the immutable trait interface. Subsequent
+  dispatch uses the new method bodies; an omitted default is materialized from
+  the trait's current template. A failed candidate changes nothing, and an
+  implementation MUST NOT confirm the form while continuing to dispatch to the
+  first implementation. The complete atomic and introspection contract is
+  [`repl/spec/18-redefinition.md` §18.7](../repl/spec/18-redefinition.md#187-impl-redefinition--re-entering-an-impl);
+  source replacement is
+  [`repl/spec/15-session-persistence.md` §15.6](../repl/spec/15-session-persistence.md#156-redefinition).
 
 ## 5.5 Macro Definition (`defmacro` / `defmacro-`) [Tested tests/spec_05_definitions::defmacro_registers_with_display]
 
@@ -593,8 +629,8 @@ macro_clause   = '(' macro_params body ')'
 A macro definition introduces a compile-time transformation. The macro body is a Cranelisp function that receives its arguments as `Sexp` values and MUST return a `Sexp` value. Macros run during the macro expansion phase, before AST construction and type checking.
 
 ```clojure
-(defmacro when "Execute body when condition is true" [cond body]
-  `(if ~cond ~body 0))
+(defmacro when "Conditional returning (Some body) when condition is true, else None" [cond body]
+  `(if ~cond (Some ~body) None))
 
 (defmacro my-add [& args]
   `(+ ~@args))
@@ -609,6 +645,13 @@ A macro definition introduces a compile-time transformation. The macro body is a
 - Macros are expanded recursively: a macro may expand to forms containing other macro calls. An expansion limit (implementation-defined, at least 500 iterations) prevents infinite expansion.
 - Quasiquote (`` ` ``), unquote (`~`), and unquote-splicing (`~@`) provide convenient syntax for constructing `Sexp` return values. See [Section 9: Macros](09-macros.md) for full expansion semantics.
 - A `defmacro` MAY have multiple `([params] body)` clauses. Each clause is tried in order; the first whose parameter count and bracket-pattern constraints match the call site is selected. See [Section 9.2.6](09-macros.md#926-multi-clause-macros) for multi-clause macro semantics.
+- A successful macro redefinition affects future expansions only. Existing
+  expanded definitions keep their compiled expansion until typechecked again;
+  reload and restart re-expand authored source with the then-current macro.
+  See [`repl/spec/18-redefinition.md` §18.4](../repl/spec/18-redefinition.md#184-macro-redefinition).
+- Macro visibility is immutable during live redefinition. Changing between
+  `defmacro` and `defmacro-` is rejected atomically and requires
+  persisted-source reload/restart or a new name.
 
 ### 5.5.1 Zero-Argument Macros (Bare-Symbol Expansion)
 
@@ -802,7 +845,7 @@ N reaches `Display` and `Color` through M's re-export of L's names. The `(impl D
 **Visibility is a property of the trait + type pair, not the impl form.** An impl becomes invisible from N only when at least one of `Trait` or `Type` is unreachable from N. In particular, a private name (`defn-`, `deftype-`, `deftrait-`, see §5.11) breaks the chain: an impl declared in L for a private trait or type cannot reach beyond L's submodule subtree, because the names themselves cannot.
 
 **A trait *method* is a sufficient trait-side entry point (D2, user ruling
-2026-07-19). [Tested+Neg tests/nullary_return_dispatch_method_only_import.rs::method_import_single_of_two_dispatches, tests/nullary_return_dispatch_method_only_import.rs::method_import_same_name_two_modules_conflict_neg, tests/nullary_return_dispatch_method_only_import.rs::method_only_import_no_impl_diagnostic_names_owning_trait]** The "reach `Trait`" leg above is
+2026-07-19). [Tested+Neg tests/nullary_return_dispatch_method_only_import::method_import_single_of_two_dispatches, tests/nullary_return_dispatch_method_only_import::method_only_import_no_impl_diagnostic_names_owning_trait]** The "reach `Trait`" leg above is
 satisfied by reaching **any of the trait's methods**: importing a method of
 `Trait` directly (`(import [home [m]])`, without importing the `Trait` name)
 brings `Trait`'s canonical home into N's import closure and suffices to
@@ -837,16 +880,44 @@ Definitions MAY include an optional docstring -- a string literal placed between
 
 The **module-level** analogue of a docstring is the *module preamble* (§8.16) — a **leading `;;` comment block** at the head of a module file (file-header docs) that documents the module as a whole. The lexis is deliberately asymmetric to a docstring: a `defn` docstring is a leading *string literal* (anchored by the binding form), whereas the module preamble is a *comment block*. A module has no binding form to carry a leading string literal unambiguously, and file-header comments are where module documentation naturally lives — so the module preamble uses comment lexis (§8.16.6 explains the asymmetry in full). Like a docstring it is metadata-only, and it is read via the `/doc <module>` family.
 
-## 5.13 Definition Ordering [Tested]
+## 5.13 Definition Ordering [Tested+Neg tests/process_form_dispatch::process_form_dispatch_begin_cluster_resolves_mutual_forward_ref, crates/cranelisp-typecheck/src/program/register/tests.rs::same_cluster_duplicate_direct_definition_is_rejected_during_registration]
+
+All non-macro definitions registered together at file scope, or in one REPL
+`begin`, form one **compilation cluster**. Within one cluster, a canonical
+function name MUST be introduced by at most one `defn` or `defn-` form. A
+second separate form for the same canonical name is an illegal redefinition
+attempt: its binding head does not refer to the earlier definition, and the
+form neither replaces nor augments that definition. The cluster is rejected
+without committing either form. Multiple bodies or dispatch variants for one
+function MUST instead be clauses of the single explicit
+multi-signature form in §5.1.2. This rule does not alter redefinition across
+compilation clusters: a later REPL input that redefines a definition committed
+by a prior input remains governed by
+[`repl/spec/18-redefinition.md` §18](../repl/spec/18-redefinition.md#18-redefinition-semantics--guarded-publication-and-stable-identities).
+[Tested+Neg crates/cranelisp-typecheck/src/program/register/tests.rs::same_cluster_duplicate_direct_definition_is_rejected_during_registration] [Settled 2026-09-03 (user ruling)]
+
+```clojure
+;; Illegal in one file, and equally illegal inside one REPL `begin` cluster:
+(defn qloop [x] x)
+(defn qloop [x y] (qloop x))
+
+;; The explicit multi-signature form is the legal spelling:
+(defn qloop
+  ([x] x)
+  ([x y] (qloop x)))
+```
 
 ### 5.13.1 Functions, Types, Traits, and Implementations [Tested tests/spec_05_definitions::defns_mutual_forward_references]
 
-Top-level definitions of functions, types, traits, and implementations MAY reference each other freely, including forward references. The implementation uses a two-pass approach:
-
-1. **Pass 1 (Registration)**: All names are registered with their types or signatures.
-2. **Pass 2 (Checking)**: All bodies are type-checked against the registered signatures.
-
-This means a function may call another function defined later in the file, and a trait implementation may reference types or functions not yet defined at that point in the source.
+Non-macro definitions of functions, types, traits, and implementations in one
+cluster MAY reference each other freely, including by forward reference. The
+cluster registration, shared-state checking, and all-or-nothing publication
+are defined by [§3.5.2](03-types.md#352-two-pass-checking). A function may
+therefore call another function defined later in the cluster, and a trait
+implementation may reference types or functions not yet encountered at that
+point in the source. Macros do not share this forward-reference rule: §9.12
+processes them in source order, and a `defmacro` becomes available only after
+its checkpoint succeeds.
 
 ```clojure
 ;; Forward reference: is-even calls is-odd before it is defined
@@ -857,13 +928,19 @@ This means a function may call another function defined later in the file, and a
   (if (= n 0) false (is-even (- n 1))))
 ```
 
-### 5.13.2 REPL Input Boundary and `begin` Clusters [Tested tests/process_form_dispatch::process_form_dispatch_begin_cluster_resolves_mutual_forward_ref, tests/process_form_dispatch::process_form_dispatch_bare_forward_ref_errors_clearly]
+### 5.13.2 REPL Input Boundary and `begin` Clusters [Tested+Neg tests/process_form_dispatch::process_form_dispatch_begin_cluster_resolves_mutual_forward_ref, tests/process_form_dispatch::process_form_dispatch_bare_forward_ref_errors_clearly]
 
 In the REPL, **each input is a single top-level form**. Forward references to definitions defined in subsequent REPL inputs are NOT supported -- non-`begin`-grouped forms are processed in source order, one per eval. A reference in a REPL input to a name that has not yet been defined is an error, with the same diagnostic shape as a reference to a non-existent identifier.
 
 **Incomplete form at end of input.** The REPL accumulates input across continuation lines until delimiters balance, then submits the form. If input ends (EOF — Ctrl-D, or the end of piped input) while a top-level form is still incomplete (unbalanced delimiters), the implementation MUST produce a parse error; the incomplete buffer MUST NOT be silently discarded. This mirrors the rule that a complete form at the prompt is submitted and executed: an incomplete form cannot be submitted, so its arrival at EOF is an error. [Tested tests/repl_negative.rs::parse_error_unclosed_paren_neg]
 
-Mutual recursion in the REPL is expressed via `(begin form₁ form₂ ... formN)`, which the orchestrator processes as a single **cluster**: signatures of all forms register first (Pass 1), then bodies are type-checked (Pass 2), and the cluster commits atomically (all-or-nothing). Within a cluster, §5.13.1's MAY-reference-freely rule applies across the forms in that one cluster. This is the REPL analogue of the file-scope two-pass behaviour.
+Mutual recursion in the REPL is expressed via `(begin form₁ form₂ ... formN)`.
+The non-macro definitions in that input form one **cluster** governed by
+§3.5.2. It publishes atomically (all-or-nothing) only if every definition
+succeeds. Within that cluster, §5.13.1's MAY-reference-freely rule applies
+across its non-macro forms. This is the REPL analogue of the file-scope
+two-pass behaviour. A `defmacro` is instead a source-ordered checkpoint
+governed by §9.12.1.
 
 ```clojure
 ;; REPL: forward reference within a single cluster -- OK
@@ -878,11 +955,15 @@ Mutual recursion in the REPL is expressed via `(begin form₁ form₂ ... formN)
 
 This forward-reference rule applies to non-macro top-level definitions: `defn`, `deftype`, `deftrait`, `impl`. **Macros are the exception** -- they follow the **defmacro-before-use** rule (§9.3.4) in both the REPL and batch: a macro MUST be defined before its first use in source order, and a use that appears textually before its `defmacro` is an ordinary reference (it passes through to the AST builder), not a macro call. A `defmacro` is part of the **compile-time layer** that runs *before* the cluster's non-macro forms are registered (the three-pass model, §9.12), so a forward reference to a macro is not resolvable as a macro even within a single cluster. Macro **expansion** may reference dependency-module definitions and same-module macros, never same-module non-macro definitions (§9.3.4). This is the same rule in the REPL and in batch — there is no REPL-vs-batch macro-availability divergence.
 
-**Cluster atomicity**: If type checking fails for any form in the cluster, none of the forms are committed -- the REPL state is unchanged. On success, all forms commit together.
+**Non-macro cluster atomicity**: If any non-macro definition in the cluster
+fails, none of the non-macro definitions are published. A `defmacro` checkpoint
+that completed earlier in source order remains committed; a failed `defmacro`
+checkpoint publishes none of that macro attempt. On success, all non-macro
+definitions publish together (§9.12.1).
 
 **Module-phase declarations** (`mod`, `import`, `export`, `platform`) MUST NOT appear inside a `begin` cluster. They are processed in the module phase (see §5.13.3 and §2.1), before macro expansion and clusters. A `begin` form in user code that contains a module-phase declaration is a compile-time error.
 
-**Batch (file-level) non-macro semantics**: §5.13.1's MAY-reference-freely rule continues to apply across the file scope for `defn`/`deftype`/`deftrait`/`impl`. The orchestrator effectively treats a file's top-level non-macro definitions as one cluster (registered in Pass 2/3 of the three-pass model, §9.12). **Macros are the exception**: a `defmacro` is part of the compile-time layer (Pass 1) that runs *before* the cluster's non-macro forms are registered, so a macro is available only to forms that **follow** its `defmacro` in source order — the defmacro-before-use rule (§9.3.4), uniform across REPL and batch:
+**Batch (file-level) non-macro semantics**: §5.13.1's MAY-reference-freely rule continues to apply across the file scope for `defn`/`deftype`/`deftrait`/`impl`. The orchestrator treats a file's fully expanded top-level non-macro definitions as one cluster (registered and checked in Passes 2–3 of the three-pass model, §9.12). **Macros are the exception**: each `defmacro` is a source-ordered compilation checkpoint in the compile-time layer (Pass 1), outside the file's non-macro publication cluster. A macro is available only to forms that **follow** its successful checkpoint — the defmacro-before-use rule (§9.3.4), uniform across REPL and batch. A failure later in the file does not undo an earlier successful macro checkpoint (§9.12.1):
 
 ```clojure
 ;; Batch: defmacro precedes its use

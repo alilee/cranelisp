@@ -11,7 +11,7 @@ Remaining negative-coverage priority order (for future sprints):
 2. Match exhaustiveness (§6.5) — non-ADT scrutinee wildcard requirement, ADT non-exhaustive rejection
 3. Visibility / private variants (§5) — `defn-` / `deftype-` / `deftrait-` / `mod-` cross-module negative tests
 4. Trait dispatch (§7) — which types MUST NOT satisfy a trait, ambiguous-dispatch rejection
-5. REPL category boundaries (repl/spec.md §3, §4) — empty categories omitted, primitives absent from user category
+5. REPL category boundaries (`repl/spec/03-slash-commands.md` §3, `repl/spec/04-self-documentation.md` §4) — empty categories omitted, primitives absent from user category
 
 Per CLAUDE.md §"Applying Annotations", MUST/MUST NOT requirements should have both positive and negative coverage. Not every `[Tested]` needs upgrading — some describe display formats where "wrong output" is naturally caught. Requirements about what MUST NOT appear deserve explicit negative tests. -->
 

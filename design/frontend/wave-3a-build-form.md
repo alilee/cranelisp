@@ -191,7 +191,7 @@ Cross-referencing `crates/cranelisp-frontend/public-api.txt` (as-built) against 
 
 ### 6.3 Entries unchanged
 
-`parse`, `parse_preserving_comments`, `next_synthetic_span`, `parse_defmacro`, `synthesize_macro_clause_defn`, `is_defmacro`, `is_begin`, `flatten_begin`, `expand_quasiquotes`, `ExtractedDeclarations` (note: facade calls this `StructuralDecls`; rename is row 4 of `implementation-slice-s66.md` and is a SEPARATE concern from this wave's `build_form` shape pivot — `StructuralDecls` rename is out of scope for Wave 3a-β and stays as a follow-up).
+`parse`, `parse_preserving_comments`, `next_synthetic_span`, `parse_defmacro`, `synthesize_macro_clause_defn`, `is_defmacro`, `is_begin`, `flatten_begin`, `expand_quasiquotes`, `ExtractedDeclarations` (the retired facade's `StructuralDecls` spelling is dead; `ExtractedDeclarations` is canonical — `modules.md` §1.5).
 
 ### 6.4 What does not need a FIXME against `/arch`
 

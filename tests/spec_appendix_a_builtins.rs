@@ -116,7 +116,7 @@ fn primitive_lt_f64() {
 // =============================================================================
 
 // spec: spec/appendix-a-builtins.md §A.3 — not true → false; also
-//       design/arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md
+// spec: design/arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md
 //       §"The invariant" — `not` is authored as a primitive per Decision C1; from
 //       S68 onward the dispatch path is functionally equivalent to any other
 //       module (GOT-indirect via PRIMITIVES_TABLE). Assertion is unchanged —
@@ -128,7 +128,7 @@ fn primitive_not_true() {
 }
 
 // spec: spec/appendix-a-builtins.md §A.3 — not false → true; also
-//       design/arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md
+// spec: design/arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md
 //       §"The invariant" — `not` is authored as a primitive per Decision C1.
 #[test]
 fn primitive_not_false() {

@@ -236,7 +236,7 @@ const POLL_PLATFORM: &str = "poll-pool";
 /// error cannot false-match the deadlock-diagnostic assertion below.
 const POLL_UNARMED: &str = "poll-no-interest";
 
-// spec: design/int/reactor.md §8 — a one-shot `--run` program that suspends `Pending`
+// spec: design/intrinsics/reactor.md §8 — a one-shot `--run` program that suspends `Pending`
 // with NOTHING armed MUST abort PROMPTLY (well under the old 30s `MAX_TOTAL_BLOCK`
 // cap) with the deadlock diagnostic — the armed-ness detector trips the instant the
 // stuck state is structurally present, not 30s later. The `.timeout(5s)` proves

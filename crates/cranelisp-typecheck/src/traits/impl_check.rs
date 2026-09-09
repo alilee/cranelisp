@@ -1,13 +1,14 @@
 use std::collections::{HashMap, HashSet};
 
 use cranelisp_types::{
-    CranelispError, DefKind, Defn, DefnVariant, ErrorLocation, FQTraitName, FQTypeName,
-    ModuleEntry, ModuleFullPath, MonoDefnVariant, ResolvedCall, Span, Symbol, TraitDeclInfo,
-    TraitImpl, TraitMethodSig, TraitName, Type, TypeId, UserFnState, Visibility, apply,
+    CallableOrigin, ConstrainedMeta, CranelispError, Decl, Defn, DefnVariant, ErrorLocation,
+    FQSymbol, FQTraitName, FQTypeName, ModuleFullPath, MonoDefnVariant, ResolvedCall, Span, Symbol,
+    TemplateKind, TraitDeclInfo, TraitImpl, TraitMethodSig, TraitName, TraitRecord, Type, TypeId,
+    Visibility, WrittenTraitImpl, apply, trait_impl_key,
 };
 
 use super::*;
-use crate::checker::{CheckState, TypeCheckEnv};
+use crate::checker::{BodyFrame, CheckState, TypeCheckEnv};
 use crate::scheme;
 
 /// Canonical identity and declaration produced by the one impl-head resolve.
@@ -78,14 +79,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         location: ErrorLocation::from_span(span),
                     },
                 })?;
-        let ModuleEntry::TraitDecl { info: decl, .. } = resolved.entry else {
+        let Decl::Trait(TraitRecord { info: decl, .. }) = resolved.entry.declaration else {
             return Err(CranelispError::TypeError {
                 message: format!("unknown trait: {written_name}"),
                 location: ErrorLocation::from_span(span),
             });
         };
         Ok(ResolvedImplTrait {
-            fq: FQTraitName::new(resolved.home, decl.name.clone()),
+            fq: FQTraitName::new(resolved.canonical.module, decl.name.clone()),
             decl,
         })
     }
@@ -416,23 +417,18 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // (`trait_home` / `fq_trait_name` / `fq_impl_type` resolved above — the
         // single-source-of-truth for both the impl registry key and every
         // impl-method mangle in this impl.)
-        let method_names: Vec<Symbol> = impl_.methods.iter().map(|m| m.name.clone()).collect();
+        // The settled implementation surface includes generated defaults as
+        // well as explicitly written bodies. This one list feeds both the
+        // staged shell and its writer-side cache record.
+        let method_names: Vec<Symbol> = decl.methods.iter().map(|m| m.name.clone()).collect();
 
-        let impl_key = Symbol::from(format!("impl${}${}", fq_impl_type, fq_trait_name));
-        let pending_impl_entry = (
-            impl_key,
-            ModuleEntry::TraitImpl {
-                trait_name: fq_trait_name.clone(),
-                impl_type: fq_impl_type.clone(),
-                // S110 W0.1b (§1.1.1): the discovery→storage pointer. The shell
-                // lands in the trait's home (`trait_home`), but the mangled
-                // method `Def`s + GOT slots land in the WRITER's module — which
-                // is `state.current_module` here (no per-method module switch
-                // has happened yet; the switch is in `check_impl_method_with_sig`).
-                impl_module: state.current_module.clone(),
-                methods: method_names,
-                visibility: Visibility::Public,
-            },
+        let writer_module = state.current_module.clone();
+        let written_impl = WrittenTraitImpl::new(
+            fq_trait_name.clone(),
+            fq_impl_type.clone(),
+            writer_module.clone(),
+            method_names,
+            Visibility::Public,
         );
 
         // Default bodies are checked as concrete impl methods below. A default
@@ -442,18 +438,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // method-check transaction can restore it on any failure. This makes the
         // candidate visible to conformance checking without publishing a failed
         // first impl or partially replacing a settled re-impl (§7.1.5, §5.4.5).
-        let prior_impl_entry = {
-            let mut table = self.symbol_table_mut_in(&trait_home);
-            let prior = table.get(pending_impl_entry.0.as_ref()).cloned();
-            table.insert(pending_impl_entry.0.clone(), pending_impl_entry.1.clone());
-            prior
-        };
-
         // Method checking writes each settled mangled `Def` at its normal
         // seam. Snapshot the complete method grain so a later sibling failure
         // can restore the prior enrollment (or remove first-impl writes).
         // This covers first impl and re-impl with the same transaction path.
-        let writer_module = state.current_module.clone();
         let method_symbols: Vec<Symbol> = decl
             .methods
             .iter()
@@ -468,13 +456,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 )
             })
             .collect();
-        let prior_method_entries: Vec<(Symbol, Option<ModuleEntry<C>>)> = {
-            let table = self.current_symbol_table(state);
-            let view = table.view();
-            method_symbols
-                .iter()
-                .map(|name| (name.clone(), view.lookup(name).cloned()))
-                .collect()
+        let retained_methods = self
+            .current_symbol_table_mut(state)
+            .retain_callables(&method_symbols)
+            .map_err(crate::result::lifecycle_error)?;
+        let staged_shell = {
+            let mut table = self.symbol_table_mut_in(&trait_home);
+            table.stage_trait_impl_shell(&written_impl)?
         };
 
         // Type-check each impl method body and generate mangled-name Defns.
@@ -554,25 +542,19 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             Ok(defns) => defns,
             Err(err) => {
                 debug_assert_eq!(state.current_module, writer_module);
-                {
-                    let mut table = self.current_symbol_table_mut(state);
-                    for (name, prior) in prior_method_entries {
-                        if let Some(entry) = prior {
-                            table.insert(name, entry);
-                        } else {
-                            table.symbols.remove(&name);
-                        }
-                    }
-                }
-                let mut table = self.symbol_table_mut_in(&trait_home);
-                if let Some(prior) = prior_impl_entry {
-                    table.insert(pending_impl_entry.0, prior);
-                } else {
-                    table.symbols.remove(&pending_impl_entry.0);
-                }
+                self.current_symbol_table_mut(state)
+                    .rollback_callables(retained_methods)
+                    .map_err(crate::result::lifecycle_error)?;
+                self.symbol_table_mut_in(&trait_home)
+                    .rollback_trait_impl_shell(staged_shell)?;
                 return Err(err);
             }
         };
+
+        self.current_symbol_table_mut(state)
+            .upsert_written_trait_impl(written_impl)?;
+        retained_methods.commit();
+        staged_shell.commit();
 
         Ok(all_defns)
     }
@@ -884,19 +866,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             self.fresh_var()
         };
 
-        // Snapshot side maps for per-defn delta extraction
-        let mr_before: HashSet<Span> = state
-            .method_resolutions
-            .resolved_calls
-            .keys()
-            .copied()
-            .collect();
-        let et_before: HashSet<Span> = state.expr_types.keys().copied().collect();
-        // FIXME 0472: user-fn reference snapshot — this Pass-1 body check is
-        // outside every Pass-2 per-form delta, so the callee edges are
-        // harvested + written HERE (finalize_impl_method_writeback).
-        let ufr_before: HashSet<Span> = state.user_fn_refs.keys().copied().collect();
-
         // Clone the method defn and check the body with the mutable copy.
         //
         // D1 (S86): for a SYNTHESIZED default-method body (`home: Some(trait_home)`),
@@ -911,17 +880,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // scope).
         let saved_current_module =
             home.map(|h| std::mem::replace(&mut state.current_module, h.clone()));
+        let body_module = state.current_module.clone();
+        // An impl/default body settles at this seam rather than joining the
+        // top-level body ledger. Isolate its pending overload calls so this
+        // local drain cannot consume work owned by the later module drain.
+        let saved_pending_overloads = std::mem::take(&mut state.pending_overload_resolutions);
 
         let mut method_clone = method_defn.clone();
         let body_result =
             self.check_defn_body_with_types(state, &mut method_clone, &param_types, &ret_ty);
-
-        // Per-defn post-passes (auto-curry only; overloads deferred to finalize).
-        // Run under the switched module too (auto-curry resolution mirrors the
-        // body's scope), matching `recheck_body_for_mono`.
-        if body_result.is_ok() {
-            self.resolve_auto_curry(state, crate::program::AutoCurryDrain::Final);
-        }
+        state.pending_overload_resolutions = saved_pending_overloads;
 
         // Restore the writer's module before the writeback (unconditional, mirrors
         // `recheck_body_for_mono`'s save/restore discipline).
@@ -929,7 +897,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             state.current_module = prev;
         }
 
-        body_result.map_err(|error| {
+        let user_fn_refs = body_result.map_err(|error| {
             impl_conformance_error(error, &decl.name, &method_sig.name, fq_impl_type)
         })?;
 
@@ -957,28 +925,28 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             mangled_sym,
             &param_types,
             &ret_ty,
-            &mr_before,
-            &et_before,
-            &ufr_before,
+            &user_fn_refs,
+            &body_module,
+            fq_trait_name,
+            fq_impl_type,
         )
     }
 
     /// Shared tail of `check_impl_method_with_sig` / `check_hkt_impl_method`.
     ///
     /// Both methods, after checking the method body with concrete param/return
-    /// types, extract the per-defn side-map delta, annotate a fresh `Defn`
+    /// types, select facts for that exact body's spans, annotate a fresh `Defn`
     /// clone with those types + resolved calls, apply the final substitution,
     /// and write the annotated `DefnVariant` into the symbol table (inserting a
-    /// concrete-scheme `Def` entry if one doesn't already exist). `mr_before` /
-    /// `et_before` / `ufr_before` are the side-map key snapshots taken *before*
-    /// the body check.
+    /// concrete-scheme `Def` entry if one doesn't already exist). Exact body
+    /// spans, rather than a before-key snapshot, remain correct when separately
+    /// parsed forms reuse source offsets; user references come directly from its
+    /// completed `BodyFrame`.
     ///
-    /// **Callee edges (FIXME 0472).** These Pass-1 bodies are outside every
-    /// Pass-2 per-form delta, so the `FormCheckResult.call_graph_edges`
-    /// channel never sees them. The edges are harvested here via the ONE
-    /// shared `harvest_callee_edges` helper and written DIRECTLY to the
-    /// mangled entry — mirroring the `ast`/`codegen_view` direct writes this
-    /// tail already performs (the `codegen_view` all-seams precedent).
+    /// **Callee edges (FIXME 0472).** These Pass-1 bodies settle at this local
+    /// seam rather than entering the module body ledger. Their exact canonical
+    /// callees are harvested here and passed through the same checked-settlement
+    /// call as the AST/view; there is no post-publication callee write.
     ///
     /// The symbol table entry may not yet exist because `register_trait_impl`
     /// runs during Pass 1's TraitImpl processing, BEFORE the mangled-name Defns
@@ -1000,22 +968,27 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         mangled_sym: Symbol,
         param_types: &[Type],
         ret_ty: &Type,
-        mr_before: &HashSet<Span>,
-        et_before: &HashSet<Span>,
-        ufr_before: &HashSet<Span>,
+        user_fn_refs: &HashMap<Span, FQSymbol>,
+        body_module: &ModuleFullPath,
+        fq_trait_name: &FQTraitName,
+        fq_impl_type: &FQTypeName,
     ) -> Result<Defn, CranelispError> {
-        // Extract delta: only entries added during this method's body check
+        let mut body_spans = HashSet::new();
+        crate::program::collect_expr_spans(method_clone.body(), &mut body_spans);
+        // The just-completed body overwrote every fact at its own source spans.
+        // Selecting by exact membership avoids both cross-body leakage and the
+        // repeated-offset hole of before-key delta extraction.
         let method_mr: HashMap<Span, ResolvedCall> = state
             .method_resolutions
             .resolved_calls
             .iter()
-            .filter(|(span, _)| !mr_before.contains(span))
+            .filter(|(span, _)| body_spans.contains(span))
             .map(|(span, res)| (*span, res.clone()))
             .collect();
         let method_et: HashMap<Span, Type> = state
             .expr_types
             .iter()
-            .filter(|(span, _)| !et_before.contains(span))
+            .filter(|(span, _)| body_spans.contains(span))
             .map(|(span, ty)| (*span, apply(&state.subst, ty)))
             .collect();
 
@@ -1040,7 +1013,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             &state.subst,
             &Type::Fn(param_types.to_vec(), Box::new(ret_ty.clone())),
         );
-        let concrete_scheme = crate::scheme::mono(fn_type);
+        // A trait impl method can retain variables supplied by the impl's
+        // generic receiver (F2).  Tell the lifecycle the truth: quantify those
+        // variables instead of claiming a monomorphic scheme over a residual
+        // type.  The ordinary template/mono path can then specialise the
+        // checked source body at a concrete dispatch site.
+        let method_scheme = self.generalize(state, &fn_type);
         let ast_variant: Option<DefnVariant> = annotated.variants.first().cloned();
         // S84 Phase-3 (FIXME 0392): a trait-impl method (mangled `Trait.method$Type`)
         // is a codegen-bound `Concrete` entry — build its concrete-boundary
@@ -1048,65 +1026,67 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // carries (best-effort per `build_concrete_codegen_view`; a `Self`-typed
         // impl-method body checked against a contrived synthetic-span fixture can
         // legitimately leave a residual var the `ast`-path codegen never reads).
-        let codegen_view: Option<MonoDefnVariant> = match ast_variant.as_ref() {
+        let codegen_view: Option<MonoDefnVariant> = match ast_variant
+            .as_ref()
+            .filter(|_| method_scheme.ty.is_concrete())
+        {
             Some(v) => crate::program::build_concrete_codegen_view(
                 &mangled_sym,
                 v,
+                &method_scheme,
                 &state.method_resolutions.pattern_ctors,
                 &state.method_resolutions.var_refs,
                 &state.method_resolutions.apply_refs,
             )?,
             None => None,
         };
-        // FIXME 0472: harvest this method body's callee edges (ResolvedCall
-        // channel + user-fn references) BEFORE taking the table guard; write
-        // them onto the mangled entry after it exists below. This is the
-        // impl/default/HKT-method seam of the ONE shared harvest helper.
-        let callee_edges = self.harvest_callee_edges(state, &mangled_sym, &method_mr, ufr_before);
+        // Harvest before taking the table guard. `body_module` is the module in
+        // which inference ran, so a default body's local SigDispatch keeps the
+        // trait-home identity even after `state.current_module` is restored to
+        // the impl writer.
+        let callees = self.harvest_callees_in_module(&method_mr, user_fn_refs, body_module);
+        let Some(ast) = ast_variant else {
+            return Ok(annotated);
+        };
+        let shell = FQSymbol {
+            module: fq_trait_name.module.clone(),
+            symbol: trait_impl_key(fq_impl_type, fq_trait_name),
+        };
         let mut st = self.current_symbol_table_mut(state);
-        if let Some(ModuleEntry::Def {
-            ast,
-            codegen_view: cv,
-            ..
-        }) = st.symbols.get_mut(&mangled_sym)
-        {
-            *ast = ast_variant;
-            *cv = codegen_view;
+        st.declare(
+            mangled_sym.clone(),
+            method_scheme.clone(),
+            method_defn
+                .params()
+                .iter()
+                .map(|(n, _)| n.clone())
+                .collect(),
+            method_defn.docstring.clone(),
+            0,
+            CallableOrigin::TraitMethod {
+                shell,
+                trait_name: fq_trait_name.clone(),
+                impl_type: fq_impl_type.clone(),
+            },
+            Visibility::Public,
+        )
+        .map_err(crate::result::lifecycle_error)?;
+        if method_scheme.ty.is_concrete() {
+            let Some(view) = codegen_view else {
+                return Ok(annotated);
+            };
+            st.settle_checked_concrete(&mangled_sym, method_scheme, ast, view, callees)
+                .map_err(crate::result::lifecycle_error)?;
         } else {
-            // Concrete trait-impl method body (mangled name), born with its slot
-            // (S83 deferred allocation): slot rides inside `Concrete` fn_state.
-            let got_slot = st
-                .allocate_got_slot()
-                .map_err(crate::result::got_exhausted_error)?;
-            let mut builder = ModuleEntry::def(
-                concrete_scheme,
-                DefKind::UserFn {
-                    fn_state: UserFnState::Concrete {
-                        got_slot,
-                        mode_summary: None,
-                    },
-                },
-            )
-            .param_names(
-                method_defn
-                    .params()
-                    .iter()
-                    .map(|(n, _)| n.clone())
-                    .collect(),
-            );
-            if let Some(doc) = method_defn.docstring.clone() {
-                builder = builder.docstring(doc);
-            }
-            if let Some(ast) = ast_variant {
-                builder = builder.ast(ast);
-            }
-            if let Some(view) = codegen_view {
-                builder = builder.codegen_view(view);
-            }
-            st.insert(mangled_sym.clone(), builder.build());
-        }
-        if !callee_edges.is_empty() {
-            crate::program::write_callees_to_module_entries(&mut *st, &callee_edges);
+            let kind = if method_scheme.constraints.is_empty() {
+                TemplateKind::Parametric
+            } else {
+                TemplateKind::Constrained(Box::new(ConstrainedMeta::new(
+                    method_scheme.constraints.clone(),
+                )))
+            };
+            st.settle_checked_template(&mangled_sym, method_scheme, ast, kind, callees)
+                .map_err(crate::result::lifecycle_error)?;
         }
 
         Ok(annotated)
@@ -1190,26 +1170,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             self.unify(state, param_ty, &concrete_self, method_defn.span)?;
         }
 
-        // Snapshot side maps for per-defn delta extraction
-        let mr_before: HashSet<Span> = state
-            .method_resolutions
-            .resolved_calls
-            .keys()
-            .copied()
-            .collect();
-        let et_before: HashSet<Span> = state.expr_types.keys().copied().collect();
-        // FIXME 0472: user-fn reference snapshot (see check_impl_method_with_sig).
-        let ufr_before: HashSet<Span> = state.user_fn_refs.keys().copied().collect();
-
-        // Clone the method defn and check the body with the mutable copy
+        // Clone the method defn and check the body with the mutable copy. Keep
+        // this local settlement's overload work separate from the module drain.
+        let saved_pending_overloads = std::mem::take(&mut state.pending_overload_resolutions);
         let mut method_clone = method_defn.clone();
-        self.check_defn_body_with_types(state, &mut method_clone, &param_types, &ret_ty)
-            .map_err(|error| {
-                impl_conformance_error(error, &decl.name, &method_sig.name, fq_impl_type)
-            })?;
-
-        // Per-defn post-passes (auto-curry only; overloads deferred to finalize)
-        self.resolve_auto_curry(state, crate::program::AutoCurryDrain::Final);
+        let body_result =
+            self.check_defn_body_with_types(state, &mut method_clone, &param_types, &ret_ty);
+        state.pending_overload_resolutions = saved_pending_overloads;
+        let user_fn_refs = body_result.map_err(|error| {
+            impl_conformance_error(error, &decl.name, &method_sig.name, fq_impl_type)
+        })?;
 
         // Build the mangled name and create annotated defn for symbol table.
         // FQ `$Type` suffix, lock-step with the dispatch site
@@ -1220,6 +1190,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             fq_impl_type,
         );
         let mangled_sym = Symbol::from(mangled.as_str());
+        let body_module = state.current_module.clone();
 
         self.finalize_impl_method_writeback(
             state,
@@ -1228,9 +1199,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             mangled_sym,
             &param_types,
             &ret_ty,
-            &mr_before,
-            &et_before,
-            &ufr_before,
+            &user_fn_refs,
+            &body_module,
+            fq_trait_name,
+            fq_impl_type,
         )
     }
 
@@ -1245,7 +1217,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         defn: &mut Defn,
         param_types: &[Type],
         ret_ty: &Type,
-    ) -> Result<(), CranelispError> {
+    ) -> Result<HashMap<Span, FQSymbol>, CranelispError> {
         // Binder provenance: the defn form span every param shares (S114
         // `VarRef::Local` — the impl-method / mono-recheck body frame).
         self.push_scope(state, defn.span);
@@ -1257,8 +1229,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // VARS — here the params are already concrete, so no rigid var arises.
         // Save/clear/restore the per-body inference sets so nothing leaks past
         // this body.
-        let saved_rigid = std::mem::take(&mut state.rigid_vars);
-        let saved_scope = state.written_var_scope.take();
+        let previous_frame = std::mem::replace(&mut state.body_frame, BodyFrame::explicit_types());
 
         for ((param_name, _), param_ty) in defn.params().iter().zip(param_types.iter()) {
             self.bind_local(state, param_name.clone(), scheme::mono(param_ty.clone()));
@@ -1269,16 +1240,17 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // The signature is the expectation; the inferred body is the
             // supplied value. Keep that direction in the diagnostic too.
             self.unify(state, ret_ty, &body_ty, defn.span)?;
-            // Post-inference deferred trait resolution
-            self.resolve_deferred_trait_calls(state, defn.body())?;
+            self.settle_body_work(
+                state,
+                defn.body(),
+                crate::candidate_selection::BodySettlementScope::Isolated,
+            )?;
             Ok(())
         })();
 
-        state.rigid_vars = saved_rigid;
-        state.written_var_scope = saved_scope;
-
+        let completed_frame = std::mem::replace(&mut state.body_frame, previous_frame);
         self.pop_scope(state);
-        result
+        result.map(|()| completed_frame.user_fn_refs)
     }
 
     /// Generate default method implementations for methods not provided in the impl.

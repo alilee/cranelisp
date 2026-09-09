@@ -9,13 +9,11 @@ filed_at: 2026-07-15
 sprint_filed: 109
 scheduled: S115 (early wave — front-load; 3-sprint carry, escalation flag for
   /sprint Phase 1)
-refers_to: src/worker.rs::commit_staging_to_live (:439; `live.insert` :513 —
-  the census-missed suspected writer) + src/imports.rs census block +
-  check_terminal_closure/write_is_closure_valid (landed 58ac8e46 — predicate
-  provably passes the live phantom) + design/int/prelude-table-write-isolation.md
-  §2.2 (false premise + census + check shape — /design(int) correction rides
-  the fixing wave); poison-consumer (CORRECT, do not touch) at
-  src/imports.rs::insert_detecting_ambiguity ~L547-560.
+refers_to: src/worker.rs::commit_staging_to_live +
+  src/imports.rs::check_exposed_candidate_closure +
+  src/imports.rs::install_candidates +
+  src/bootstrap.rs::bootstrap_public_candidate_exposures_are_self_aliases_or_private +
+  design/int/prelude-table-write-isolation.md §2.2
 status: open
 ---
 
@@ -26,7 +24,7 @@ status: open
 The structural gate landed on its merits (writer-ID desired-not-required). What
 landed:
 
-- **Corrected predicate** (`src/imports.rs::write_is_closure_valid` +
+- **Historical corrected predicate** (`src/imports.rs::write_is_closure_valid` +
   `check_terminal_closure`): provider-existence → **declared-export closure**
   keyed on the DESTINATION `D(M)`. `check_terminal_closure` no longer reads
   `symbol_tables`; its new param is `declared_exports: Option<&HashSet<Symbol>>`.
@@ -169,7 +167,7 @@ durable only in that commit message; scribed here per 0698 finding 1.
    the brief; if the write is session-side (src/), it stays /dev(src).
 3. **Predicate correction lands with the fix**: provider-existence →
    declared-export closure. Forward hazard (0698): the
-   `form_dispatch.rs::register_macro_in_module` gate call runs under a held
+   historical `form_dispatch.rs::register_macro_in_module` gate call ran under a held
    `get_mut` guard and is safe ONLY because the current predicate does no
    map read for non-Import entries — a declared-export-closure check that
    reads the target module's own declared exports would DEADLOCK there
@@ -179,7 +177,7 @@ durable only in that commit message; scribed here per 0698 finding 1.
    corrects `prelude-table-write-isolation.md` §2.2 (false premise,
    check-shape, census — add the staging-commit + defmacro-register rows);
    /testing corrects the counterfactual comment on
-   `imports/tests.rs::check_terminal_closure_rejects_out_of_closure_public_write`
+   `imports/tests.rs::candidate_closure_rejects_out_of_closure_public_write`
    ("primitives has NO bit-and" — mechanics valid, comment false).
 
 ### Amended acceptance (replaces the S114 §4 gate)

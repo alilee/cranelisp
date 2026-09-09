@@ -49,7 +49,7 @@ pub struct PlatformRegistry {
 }
 ```
 
-Session-level field: `CompilerSession.platform_registry: PlatformRegistry` (swapped in/out of a `Mutex<PlatformRegistry>` during worker execution — `src/session_v4.rs:993–1026` and `:1088–1128`). Populated during platform DLL loading; read at codegen time and at bind-chain-analysis time; held for process lifetime because the pointers remain valid only while the DLL is loaded (handled separately by `loaded_platforms`).
+Historical session-level field: `CompilerSession.platform_registry: PlatformRegistry` (swapped in/out of a `Mutex<PlatformRegistry>` during worker execution — `src/session_v4.rs:993–1026` and `:1088–1128`). Populated during platform DLL loading; read at codegen time and at bind-chain-analysis time; held for process lifetime because the pointers remain valid only while the DLL is loaded (handled separately by `loaded_platforms`).
 
 ### 2.2 Writers
 
@@ -289,7 +289,7 @@ What goes away:
 - `src/platform_registry.rs` — the entire file.
 - `CompilerSession.platform_registry` field and all its references.
 - `PriorityWorkerRefs.platform_registry` field.
-- The `Mutex<PlatformRegistry>` swap-in/swap-out dance in `register_module_with_source` (`src/session_v4.rs:993–1026`) and `reload_module` (`src/session_v4.rs:1088–1128`).
+- The historical `Mutex<PlatformRegistry>` swap-in/swap-out dance in `register_module_with_source` (`src/session_v4.rs:993–1026`) and `reload_module` (`src/session_v4.rs:1088–1128`).
 
 What `/platform` must confirm:
 - The DLL-load loop inside `load_and_register_platform` can take a `&DashMap<ModuleFullPath, SymbolTable>` (or equivalent) and write both the symbol-table entry AND the per-module GOT slot (via `symbol_table.got().store_slot(slot, desc.ptr)`) in one pass. No reason this is blocked — the function already writes to the symbol table today; the only new behaviour is also storing one pointer in the entry's GOT slot before the next iteration.
@@ -351,11 +351,11 @@ Per `src/CLAUDE.md` and the sprint's testing ownership clause, `/int` writes uni
 | 2 | `pub struct PlatformFunction` | `src/platform_registry.rs` (entire file) |
 | 3 | `mod platform_registry;` + `pub use` | `src/lib.rs` (find + remove) |
 | 4 | `CompilerSession.platform_registry: PlatformRegistry` | `src/session_v4.rs` (field + constructor) |
-| 5 | `PriorityWorkerRefs.platform_registry: &'a Mutex<PlatformRegistry>` | `src/worker.rs:2853` |
+| 5 | `PriorityWorkerRefs.platform_registry: &'a Mutex<PlatformRegistry>` | historical `src/worker.rs:2853` |
 | 6 | `ModuleCompiler.platform_registry: &'a mut PlatformRegistry` | `src/worker.rs:47, :116` |
 | 7 | `platform_registry` parameter on `collect_jit_setup`, `collect_jit_setup_public`, `inline_jit_codegen_for_module`, `inline_jit_codegen_for_names`, `handle_platform`, `codegen_and_execute` caller chain | `src/worker.rs` (6 call sites) + `src/session_v4.rs` (3 call sites) |
 | 8 | `platform_registry.register(...)` in `handle_platform` | `src/worker.rs:1481` |
-| 9 | `Mutex<PlatformRegistry>` swap-in/out in `register_module_with_source` and `reload_module` | `src/session_v4.rs:993–1026, 1088–1128` |
+| 9 | `Mutex<PlatformRegistry>` swap-in/out in `register_module_with_source` and `reload_module` | historical `src/session_v4.rs:993–1026, 1088–1128` |
 | 10 | Test helpers `PlatformRegistry::with_test_entries`, `PlatformRegistry::new()` in tests | `src/bind_chain_analysis.rs` tests; replace with synthetic `SymbolTable` construction helper |
 
 Cross-check: `grep -n PlatformRegistry src/` returns zero matches after Wave 3.

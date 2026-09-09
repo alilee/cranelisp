@@ -6,7 +6,7 @@
 
 (import [prelude []])
 
-(import [primitives [str-concat]])
+(import [primitives [str-concat Some None]])
 (import [macros [*]])
 
 ;; -- SList Helpers ----------------------------------------------------------
@@ -33,6 +33,24 @@
   (match name-sexp
     [(SexpSym s) (SexpSym (str-concat s "-def"))
      _ name-sexp]))
+
+;; Reader annotations arrive at macros as one structural SexpAnnotated node.
+;; Keep these helpers module-qualified: they are macro-authoring tools, not
+;; general prelude syntax.
+(defn annotated? "True when an Sexp carries a reader annotation" [form]
+  (match form
+    [(SexpAnnotated _ _) true
+     _ false]))
+
+(defn annotation "Return an Sexp's reader annotation, when present" [form]
+  (match form
+    [(SexpAnnotated ann _) (Some ann)
+     _ None]))
+
+(defn unannotate "Return an annotated Sexp's subject, or an ordinary Sexp unchanged" [form]
+  (match form
+    [(SexpAnnotated _ subject) subject
+     _ form]))
 
 ;; -- slist Macro ------------------------------------------------------------
 

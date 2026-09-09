@@ -40,7 +40,7 @@ prelude terminal (`primitives/bit-and`) — two DISTINCT terminals — and the
 
 **What is NOT the bug** (attribution boundaries, so no one re-litigates them):
 
-- `src/imports.rs::insert_detecting_ambiguity` (prelude-overlap branch,
+- Historical `src/imports.rs::insert_detecting_ambiguity` (prelude-overlap branch,
   ~L547–560, via `prelude_terminal`) — the poison-CONSUMER — is **CORRECT**.
   The deterministic `_neg` twin proves the same poison is required when the
   prelude legitimately provides the primitive (glob export). Do not weaken it.

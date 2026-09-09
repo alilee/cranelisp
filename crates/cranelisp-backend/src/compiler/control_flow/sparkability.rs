@@ -179,15 +179,17 @@ pub(crate) fn find_sparkable_bindings_with(
     bindings: &[(Symbol, MonoExpr)],
     worth: impl Fn(&MonoExpr) -> bool,
 ) -> Vec<usize> {
-    let mut bound_names: HashSet<Symbol> = HashSet::new();
-    // Names of earlier bindings that were themselves admitted as sparks — the
-    // dependency-on-sparked carve-out tests membership here.
-    let mut sparked_names: HashSet<Symbol> = HashSet::new();
+    // Positions of earlier bindings that were themselves admitted as sparks —
+    // the dependency-on-sparked carve-out tests membership here. POSITIONS, not
+    // names (`design/backend/binding-scope.md` §3.4): a non-sparked rebinding of
+    // a sparked name displaces it by construction, so the carve-out answers
+    // about the binder the dependency actually denotes.
+    let mut sparked: HashSet<usize> = HashSet::new();
     let mut sparkable: Vec<usize> = Vec::new();
 
     // Free-variable traversal over `MonoExpr` (the in-crate `find_free_vars`,
     // mirroring `cranelisp_types::free_vars_expr` over the post-mono AST).
-    for (i, (name, val_expr)) in bindings.iter().enumerate() {
+    for (i, (_, val_expr)) in bindings.iter().enumerate() {
         let fv = find_free_vars(val_expr, &[]);
         // Admit iff worth sparking AND every earlier-bound dependency it
         // references is itself already sparked (so it is available as an IVar to
@@ -195,15 +197,13 @@ pub(crate) fn find_sparkable_bindings_with(
         // satisfy the `all` vacuously.
         let deps_all_sparked = fv
             .iter()
-            .filter(|v| bound_names.contains(*v))
-            .all(|v| sparked_names.contains(v));
+            .filter_map(|v| binder_before(bindings, i, v))
+            .all(|j| sparked.contains(&j));
 
         if worth(val_expr) && deps_all_sparked {
             sparkable.push(i);
-            sparked_names.insert(name.clone());
+            sparked.insert(i);
         }
-
-        bound_names.insert(name.clone());
     }
 
     if sparkable.len() < 2 {
@@ -211,6 +211,27 @@ pub(crate) fn find_sparkable_bindings_with(
     } else {
         sparkable
     }
+}
+
+/// Which binder does `name` denote immediately before position `i` in this
+/// binding vector?
+///
+/// THE shared resolver for per-binding-vector lenient state
+/// (`design/backend/binding-scope.md` §3.4). `let` bindings are sequential, so
+/// the answer is the LATEST binder at a position `< i` bearing the name; `None`
+/// means the name is free in the vector (an enclosing binding, a capture or a
+/// global). Reading the per-vector state through this one function is what makes
+/// a rebinding displace an earlier binder's spark record structurally: in
+/// `(let [a (ping n) a 5 c (ping a)] c)` the `a` that `c` denotes is position 1,
+/// which was never sparked, so `c` is not independent of it and reads 5.
+pub(crate) fn binder_before(
+    bindings: &[(Symbol, MonoExpr)],
+    i: usize,
+    name: &Symbol,
+) -> Option<usize> {
+    bindings[..i.min(bindings.len())]
+        .iter()
+        .rposition(|(bound, _)| bound == name)
 }
 
 /// Find indices of sparkable arguments in a function application `(f a₁ … aₙ)`.

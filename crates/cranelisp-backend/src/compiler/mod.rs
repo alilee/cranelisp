@@ -38,8 +38,10 @@ pub(crate) mod vec_codegen;
 mod context;
 mod extern_call;
 mod fn_compiler;
+mod io_nodes;
 pub(crate) mod rc_emission;
 mod resolution;
+pub(crate) mod scope_chain;
 
 use cranelisp_types::Type;
 

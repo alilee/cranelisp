@@ -9,9 +9,8 @@
 use crate::builtins::FixtureBuilder;
 use crate::checker::TestFixture;
 use cranelisp_types::{
-    Defn, DefnVariant, Expr, FQSymbol, FQTraitName, FQTypeName, ModuleEntry, ModuleFullPath, Span,
-    Symbol, TraitDecl, TraitImpl, TraitName, TypeExpr, TypeName, UnresolvedTraitMethodSig,
-    Visibility,
+    Defn, DefnVariant, Expr, FQTraitName, FQTypeName, ModuleFullPath, Span, Symbol, TraitDecl,
+    TraitImpl, TraitName, TypeExpr, TypeName, UnresolvedTraitMethodSig, Visibility,
 };
 
 pub(crate) fn parse_trait_decl(source: &str) -> TraitDecl {
@@ -22,6 +21,21 @@ pub(crate) fn parse_trait_decl(source: &str) -> TraitDecl {
     {
         cranelisp_types::ParsedEntry::TraitDecl { decl } => decl,
         other => panic!("expected trait declaration, got {other:?}"),
+    }
+}
+
+/// Parse one trait implementation through the real frontend so authored-body
+/// fixtures carry distinct source spans. Source bodies must not use the
+/// all-`SYNTHETIC` span reserved for directly-derived constructors/accessors:
+/// resolution and expression facts are keyed by source span.
+pub(crate) fn parse_trait_impl(source: &str) -> TraitImpl {
+    let sexps = cranelisp_frontend::parse(source).expect("impl source parses");
+    match cranelisp_frontend::build_form(&sexps[0])
+        .expect("impl source builds")
+        .remove(0)
+    {
+        cranelisp_types::ParsedEntry::TraitImpl { impl_ } => impl_,
+        other => panic!("expected trait implementation, got {other:?}"),
     }
 }
 
@@ -80,24 +94,16 @@ pub(crate) fn tf_prims() -> TestFixture {
 /// typecheck concern (facade `typecheck.md`); tests seed the edges
 /// directly. Inserts an `Import` for every public symbol of `source`.
 pub(crate) fn seed_glob_import(tc: &mut TestFixture, source: &ModuleFullPath) {
-    let names: Vec<Symbol> = {
+    let candidates: Vec<(Symbol, cranelisp_types::NameCandidate)> = {
         let src = tc.modules.get(source).expect("source module exists");
-        src.all_symbols()
-            .filter(|(_, e)| e.is_public())
-            .map(|(n, _)| n.clone())
+        src.public_name_candidates()
+            .map(|(name, candidate)| (name.clone(), candidate))
             .collect()
     };
-    for name in names {
-        tc.symbol_table_mut().insert(
-            name.clone(),
-            ModuleEntry::Import {
-                source: FQSymbol {
-                    module: source.clone(),
-                    symbol: name,
-                },
-                visibility: Visibility::Public,
-            },
-        );
+    for (name, candidate) in candidates {
+        tc.symbol_table_mut()
+            .expose_candidate(name, candidate.source, Visibility::Public)
+            .expect("test import must install");
     }
 }
 

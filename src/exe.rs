@@ -12,7 +12,8 @@
 use std::path::{Path, PathBuf};
 
 use cranelisp_types::{
-    CranelispError, DefKind, ErrorLocation, FQSymbol, ModuleEntry, ModuleFullPath, Span, Type,
+    CallableOrigin, CranelispError, ErrorLocation, FQSymbol, Life, ModuleFullPath, Span,
+    TemplateBody, Type,
 };
 
 /// Generate a startup `.o` that defines `start` (exported, referenced by the
@@ -578,8 +579,8 @@ pub fn validate_main(
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
 
-    match entry {
-        ModuleEntry::Def { scheme, ast, .. } => {
+    match entry.callable() {
+        Some(callable) => {
             // 0611 class-(b) leg (Principle 19): typecheck records the
             // unresolved-return-poly-dispatch signal but never rejects a
             // poly-returning `main` (legitimate as a library defn). int owns the
@@ -587,12 +588,20 @@ pub fn validate_main(
             // unresolved return dispatch (`(defn main [] (Pure (zed)))`) is
             // ambiguous at THIS execution boundary. Filtered to main's own body
             // span so a sibling poly defn in the same module is not implicated.
-            if let Some(variant) = ast.as_ref()
-                && let Some(site) = first_dispatch_within(unresolved_dispatch, variant.body.span())
+            let body_span = match &callable.arm.life {
+                Life::Concrete { ast, .. } => ast.as_ref().map(|variant| variant.body.span()),
+                Life::Template {
+                    body: TemplateBody::Ast(variant),
+                    ..
+                } => Some(variant.body.span()),
+                _ => None,
+            };
+            if let Some(body_span) = body_span
+                && let Some(site) = first_dispatch_within(unresolved_dispatch, body_span)
             {
                 return Err(unresolved_dispatch_error(site));
             }
-            classify_main_return_type(&scheme.ty)
+            classify_main_return_type(&callable.arm.scheme.ty)
         }
         _ => Err(CranelispError::CodegenError {
             message: "'main' in entry module is not a function definition".to_string(),
@@ -680,11 +689,12 @@ pub fn reject_dev_session_externs_in_link(
     let resolves_to_dev_session_extern = |fq: &FQSymbol| -> bool {
         crate::worker::DEV_SESSION_ONLY_EXTERNS.contains(&fq.symbol.as_ref())
             && symbol_tables.get(&fq.module).is_some_and(|st| {
-                matches!(
-                    st.get(fq.symbol.as_ref()),
-                    Some(ModuleEntry::Def { kind, .. })
-                        if matches!(kind.as_ref(), DefKind::PrimitiveExtern)
-                )
+                st.get(fq.symbol.as_ref()).is_some_and(|entry| {
+                    entry.callable().is_some_and(|callable| {
+                        matches!(callable.origin, CallableOrigin::RustPrimitive)
+                            && matches!(callable.arm.life, Life::HostPromised)
+                    })
+                })
             })
     };
 
@@ -692,9 +702,10 @@ pub fn reject_dev_session_externs_in_link(
         let module = st_entry.key();
         let st = st_entry.value();
         for (caller, entry) in st.all_symbols() {
-            if let ModuleEntry::Def {
-                ast: Some(variant), ..
-            } = entry
+            if let Some(callable) = entry.callable()
+                && let Life::Concrete {
+                    ast: Some(variant), ..
+                } = &callable.arm.life
                 && let Some(sym) = body_references_dev_session_extern(
                     &variant.body,
                     &resolves_to_dev_session_extern,
@@ -1020,17 +1031,15 @@ pub fn entry_main_got_slot(
     // The callable slot now rides on the `DefKind` variant (S83 reshape,
     // FIXME 0356/0357) — read it through the `callable_got_slot()` chokepoint.
     // `main` is a concrete user fn, so a pinned slot is expected.
-    match entry {
-        ModuleEntry::Def { .. } => {
-            entry
-                .callable_got_slot()
-                .ok_or_else(|| CranelispError::CodegenError {
-                    message: "entry module's 'main' has no GOT slot — typecheck did \
+    match entry.callable() {
+        Some(_) => entry
+            .callable_got_slot()
+            .ok_or_else(|| CranelispError::CodegenError {
+                message: "entry module's 'main' has no GOT slot — typecheck did \
                           not pin a slot index"
-                        .to_string(),
-                    location: ErrorLocation::from_span(Span::SYNTHETIC),
-                })
-        }
+                    .to_string(),
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
+            }),
         _ => Err(CranelispError::CodegenError {
             message: "entry module's 'main' is not a Def entry".to_string(),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
@@ -1272,25 +1281,71 @@ pub fn collect_platform_manifest_names(platform_names: &[String]) -> Vec<String>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cranelisp_types::{DefKind, Scheme, Symbol, TypeName, Visibility};
+    use cranelisp_types::{DefnVariant, Realization, Scheme, Symbol, TypeName, Visibility};
     use std::collections::HashMap;
 
-    fn make_main_entry(ty: Type) -> ModuleEntry<crate::code::Code> {
-        ModuleEntry::def(
-            Scheme {
-                type_vars: vec![],
-                constraints: HashMap::new(),
-                ty,
-            },
-            DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Concrete {
-                    got_slot: 0,
-                    mode_summary: None,
+    fn install_user_fn(
+        table: &mut crate::code::SessionSymbolTable,
+        name: &str,
+        ty: Type,
+        body: Expr,
+    ) {
+        let param_count = match &ty {
+            Type::Fn(params, _) => params.len(),
+            _ => 0,
+        };
+        let params: Vec<_> = (0..param_count)
+            .map(|index| (Symbol::from(format!("p{index}")), None))
+            .collect();
+        let variant = DefnVariant {
+            params: params.clone(),
+            body,
+            span: Span::SYNTHETIC,
+        };
+        let mono_body = cranelisp_types::MonoExpr::lenient_from_expr(
+            &variant.body,
+            &Default::default(),
+            &Default::default(),
+            &Default::default(),
+        );
+        let view = cranelisp_types::MonoDefnVariant {
+            name: Symbol::from(name),
+            params: params.iter().map(|(name, _)| name.clone()).collect(),
+            body: mono_body,
+            span: Span::SYNTHETIC,
+            mode_summary: None,
+        };
+        table
+            .install_concrete(
+                Symbol::from(name),
+                Scheme {
+                    type_vars: vec![],
+                    constraints: HashMap::new(),
+                    ty,
                 },
+                params.into_iter().map(|(name, _)| name).collect(),
+                None,
+                0,
+                CallableOrigin::Plain,
+                Realization::Body { view, code: None },
+                Some(variant),
+                Vec::new(),
+                Visibility::Public,
+            )
+            .expect("user-function fixture installs");
+    }
+
+    fn install_main(table: &mut crate::code::SessionSymbolTable, ty: Type) {
+        install_user_fn(
+            table,
+            "main",
+            ty,
+            Expr::IntLit {
+                value: 0,
+                span: Span::SYNTHETIC,
+                inferred_type: None,
             },
-        )
-        .visibility(Visibility::Public)
-        .build()
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1403,10 +1458,7 @@ mod tests {
     #[test]
     fn validate_main_bare_int_return_is_rejected() {
         let mut st = crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("user"));
-        st.insert(
-            Symbol::from("main"),
-            make_main_entry(Type::Fn(vec![], Box::new(Type::Int))),
-        );
+        install_main(&mut st, Type::Fn(vec![], Box::new(Type::Int)));
         let err = validate_main(&st, &[]).unwrap_err();
         match err {
             CranelispError::CodegenError { message, .. } => {
@@ -1428,10 +1480,7 @@ mod tests {
     #[test]
     fn validate_main_bare_bool_return_is_rejected() {
         let mut st = crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("user"));
-        st.insert(
-            Symbol::from("main"),
-            make_main_entry(Type::Fn(vec![], Box::new(Type::Bool))),
-        );
+        install_main(&mut st, Type::Fn(vec![], Box::new(Type::Bool)));
         let err = validate_main(&st, &[]).unwrap_err();
         match err {
             CranelispError::CodegenError { message, .. } => {
@@ -1452,9 +1501,9 @@ mod tests {
     #[test]
     fn validate_main_returns_io() {
         let mut st = crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("user"));
-        st.insert(
-            Symbol::from("main"),
-            make_main_entry(Type::Fn(
+        install_main(
+            &mut st,
+            Type::Fn(
                 vec![],
                 Box::new(Type::ADT(
                     cranelisp_types::FQTypeName::new(
@@ -1463,7 +1512,7 @@ mod tests {
                     ),
                     vec![Type::Int],
                 )),
-            )),
+            ),
         );
         // An `(Fn [] (IO Int))` main is the canonical batch shape — accepted.
         assert!(validate_main(&st, &[]).is_ok());
@@ -1486,10 +1535,7 @@ mod tests {
     #[test]
     fn validate_main_wrong_return_type() {
         let mut st = crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("user"));
-        st.insert(
-            Symbol::from("main"),
-            make_main_entry(Type::Fn(vec![], Box::new(Type::String))),
-        );
+        install_main(&mut st, Type::Fn(vec![], Box::new(Type::String)));
         let err = validate_main(&st, &[]).unwrap_err();
         match err {
             CranelispError::CodegenError { message, .. } => {
@@ -1506,10 +1552,7 @@ mod tests {
     #[test]
     fn validate_main_with_params() {
         let mut st = crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("user"));
-        st.insert(
-            Symbol::from("main"),
-            make_main_entry(Type::Fn(vec![Type::Int], Box::new(Type::Int))),
-        );
+        install_main(&mut st, Type::Fn(vec![Type::Int], Box::new(Type::Int)));
         let err = validate_main(&st, &[]).unwrap_err();
         match err {
             CranelispError::CodegenError { message, .. } => {
@@ -1638,7 +1681,7 @@ mod tests {
 
     // ── reject_dev_session_externs_in_link (FIXME 0406) ─────────────────────
 
-    use cranelisp_types::{Expr, UserFnState};
+    use cranelisp_types::Expr;
 
     /// A `primitives` table declaring `name` as a `PrimitiveExtern` (the
     /// dev-session-only `discover-tests` / the also-extern-but-link-OK
@@ -1648,47 +1691,30 @@ mod tests {
         use std::collections::HashMap;
         let mut st =
             crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("primitives"));
-        st.insert(
+        st.install_host_promised(
             Symbol::from(name),
-            ModuleEntry::<crate::code::Code>::def(
-                Scheme {
-                    type_vars: vec![],
-                    constraints: HashMap::new(),
-                    ty: Type::Fn(vec![], Box::new(Type::Int)),
-                },
-                DefKind::PrimitiveExtern,
-            )
-            .visibility(Visibility::Public)
-            .build(),
-        );
-        st
-    }
-
-    /// A `Def` whose single-variant body is `body`. Mirrors a typechecked
-    /// user-fn entry (`ast: Some(variant)`) so the body-Var signal is exercised.
-    fn user_fn_entry_with_body(body: Expr) -> ModuleEntry<crate::code::Code> {
-        use cranelisp_types::{DefnVariant, Scheme, Visibility};
-        use std::collections::HashMap;
-        ModuleEntry::<crate::code::Code>::def(
             Scheme {
                 type_vars: vec![],
                 constraints: HashMap::new(),
                 ty: Type::Fn(vec![], Box::new(Type::Int)),
             },
-            DefKind::UserFn {
-                fn_state: UserFnState::Concrete {
-                    got_slot: 0,
-                    mode_summary: None,
-                },
-            },
+            Vec::new(),
+            None,
+            0,
+            Visibility::Public,
         )
-        .visibility(Visibility::Public)
-        .ast(DefnVariant {
-            params: vec![],
-            body,
-            span: Span::SYNTHETIC,
-        })
-        .build()
+        .expect("dev-session extern fixture installs");
+        st
+    }
+
+    /// A `Def` whose single-variant body is `body`. Mirrors a typechecked
+    /// user-fn entry (`ast: Some(variant)`) so the body-Var signal is exercised.
+    fn install_user_fn_with_body(
+        table: &mut crate::code::SessionSymbolTable,
+        name: &str,
+        body: Expr,
+    ) {
+        install_user_fn(table, name, Type::Fn(vec![], Box::new(Type::Int)), body);
     }
 
     // spec: design/arch/test-discovery.md §4.5 — a `--link` fn that CALLS the
@@ -1720,7 +1746,7 @@ mod tests {
         };
         let mut runner =
             crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("runner"));
-        runner.insert(Symbol::from("run-all"), user_fn_entry_with_body(body));
+        install_user_fn_with_body(&mut runner, "run-all", body);
         tables.insert(ModuleFullPath::from("runner"), runner);
 
         let err = reject_dev_session_externs_in_link(&tables).unwrap_err();
@@ -1765,23 +1791,24 @@ mod tests {
         // does NOT call it.
         let mut runner =
             crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("runner"));
-        runner.insert(
-            Symbol::from("discover-tests"),
-            ModuleEntry::<crate::code::Code>::Import {
-                source: FQSymbol {
+        runner
+            .expose_candidate(
+                Symbol::from("discover-tests"),
+                FQSymbol {
                     module: ModuleFullPath::from("primitives"),
                     symbol: Symbol::from("discover-tests"),
                 },
-                visibility: Visibility::Private,
-            },
-        );
-        runner.insert(
-            Symbol::from("label"),
-            user_fn_entry_with_body(Expr::StringLit {
+                Visibility::Private,
+            )
+            .expect("unused import fixture installs");
+        install_user_fn_with_body(
+            &mut runner,
+            "label",
+            Expr::StringLit {
                 value: "hi".into(),
                 span: Span::SYNTHETIC,
                 inferred_type: None,
-            }),
+            },
         );
         tables.insert(ModuleFullPath::from("runner"), runner);
         assert!(
@@ -1818,7 +1845,7 @@ mod tests {
         };
         let mut user =
             crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("user"));
-        user.insert(Symbol::from("main"), user_fn_entry_with_body(body));
+        install_user_fn_with_body(&mut user, "main", body);
         tables.insert(ModuleFullPath::from("user"), user);
 
         let err = reject_dev_session_externs_in_link(&tables).unwrap_err();
@@ -1858,7 +1885,7 @@ mod tests {
         };
         let mut safe =
             crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("safe"));
-        safe.insert(Symbol::from("guarded"), user_fn_entry_with_body(body));
+        install_user_fn_with_body(&mut safe, "guarded", body);
         tables.insert(ModuleFullPath::from("safe"), safe);
         assert!(
             reject_dev_session_externs_in_link(&tables).is_ok(),
@@ -1879,15 +1906,16 @@ mod tests {
         let body = Expr::var(Symbol::from("user/discover-tests"), Span::SYNTHETIC);
         let mut user =
             crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("user"));
-        user.insert(
-            Symbol::from("discover-tests"),
-            user_fn_entry_with_body(Expr::IntLit {
+        install_user_fn_with_body(
+            &mut user,
+            "discover-tests",
+            Expr::IntLit {
                 value: 1,
                 span: Span::SYNTHETIC,
                 inferred_type: None,
-            }),
+            },
         );
-        user.insert(Symbol::from("main"), user_fn_entry_with_body(body));
+        install_user_fn_with_body(&mut user, "main", body);
         tables.insert(ModuleFullPath::from("user"), user);
         assert!(
             reject_dev_session_externs_in_link(&tables).is_ok(),
@@ -1915,7 +1943,7 @@ mod tests {
         };
         let mut user =
             crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("user"));
-        user.insert(Symbol::from("main"), user_fn_entry_with_body(body));
+        install_user_fn_with_body(&mut user, "main", body);
         tables.insert(ModuleFullPath::from("user"), user);
         assert!(reject_dev_session_externs_in_link(&tables).is_ok());
     }

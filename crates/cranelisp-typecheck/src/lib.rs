@@ -25,10 +25,13 @@
 //!
 //! # Public surface — the cluster-atomic boundary
 //!
-//! The typecheck entry surface is **one** free function per cluster, per
+//! The primary typecheck entry surface is **one** free function per cluster, per
 //! Decision 44 (amended FIXME 0167 for Approach B + [`SymbolTableAccess`];
 //! 2026-05-13 third amendment collapsing the prior two-pass facade split
 //! into a single function):
+//! Reload recovery uses the sibling [`instantiate_demands`] entry point to seed
+//! the same monomorphisation worklist from typed, synthetic-site demands; it
+//! neither replays source forms nor publishes a second instantiation engine.
 //!
 //! ```ignore
 //! pub fn check_forms<C, L>(
@@ -45,9 +48,9 @@
 //!   multi-clause `defmacro`). [`check_forms`] drives Pass 1 (register
 //!   signatures into staging) over every entry, then Pass 2 (check bodies
 //!   against the unioned staging+live view) over every entry. Pass-1-to-
-//!   Pass-2 working state (`defn_type_vars`, default-method deferrals,
-//!   generalisation inputs) is internal to the call frame — never crosses
-//!   the facade.
+//!   Pass-2 working state (checked-body ledger, default-method deferrals,
+//!   generalisation inputs) is internal to the call frame — never crosses the
+//!   facade.
 //! - `ctx` — a [`SymbolTableAccess`] window the orchestrator constructs. In
 //!   `Cluster` mode the read accessor unions staging over live
 //!   (staging-first); the write accessor returns staging. In `Live` mode
@@ -219,6 +222,7 @@
 mod adt;
 #[cfg(test)]
 mod builtins;
+mod candidate_selection;
 mod checker;
 mod cluster;
 mod form;
@@ -245,7 +249,7 @@ mod unify;
 // minimal synthetic seed the unit suite needs (FIXME 0239 test-oracle).
 pub use checker::{CheckState, PreludeFallback, TypeCheckEnv, advance_next_id_past_table};
 pub use cluster::{SymbolTableAccess, SymbolTableMut, SymbolTableRead};
-pub use form::{check_forms, check_type_expr};
+pub use form::{check_forms, check_type_expr, instantiate_demands};
 pub use result::{CheckError, CheckResult, DispatchGap, UnresolvedDispatchSite};
 pub use signature_match::{signature_matches_exact, signature_matches_partial};
 pub use trace::{

@@ -11,6 +11,20 @@
 > until D0's measurement is on the record** (the sprint's measure-before-binding
 > discipline; the S118 §4.1 falsification is the precedent).
 >
+> **S121:** both open dependencies returned settled — §12 records the answers,
+> §3 Rule 0 absorbs the `/arch` enforcement ruling (FIXME 0927), and §8 D2's
+> intrinsics gap is now a scheduled precondition rather than a discovery. The
+> §3 protocol is unchanged. The implementation is bundle **N4** of
+> `design/int/s121-c6-visit.md` §6, which also records the as-built
+> preconditions re-verified in that window.
+>
+> **S121 macro-checkpoint reconciliation (user-approved 2026-09-03).** The
+> invocation ownership protocol remains unchanged, but the adjacent 0863
+> temporary publication design does not. A successful `defmacro` now publishes
+> as an immediate one-module checkpoint. Section 9 replaces the former
+> must-not-interleave guidance; no `PreparedMacroTurn`, `TurnCheckWorld`,
+> candidate invocation, or reserved unpublished GOT stack remains.
+>
 > Supersedes `design/int/macro-marshal-rc-protection.md` §2 (the deep
 > `protect_marshalled_cell` +1). That doc's diagnosis stands and its history is
 > load-bearing; its *mechanism* is retired by §3 Rule 2 here.
@@ -152,6 +166,40 @@ callee's convention could differ *per clause*, and no fixed host-side protocol
 could be correct for both: transferring to a borrowing callee leaks, retaining
 from a consuming callee double-frees. The seam must be pinned, not sampled.
 
+#### Rule 0's enforcement — the pin is int's, at clause preparation (S121, FIXME 0927)
+
+`/arch` ruled the boundary question at the S119 Phase-3 exit gate; the canonical
+statement is `design/arch/bounded-contexts.md` §6. Absorbed here:
+
+1. **Not satisfied by construction today.** Clause defns run the full
+   `check_forms` path and the ownership fixpoint publishes summaries onto
+   callable entries (`crates/cranelisp-typecheck/src/ownership/publish.rs:38`),
+   so a fresh-result clause can legally classify `Mode::Borrowed` and backend
+   elides its parameter release. The declaration needs a **structural pin**, not
+   a normative statement about an accident.
+2. **The pin lives at int's clause-preparation seam.** After `check_forms`
+   returns and before the clause entry is published for codegen, int **clears**
+   the synthesized clause entry's mode summary. Summary-absent ⇒ the all-Owned
+   Decision-24 compilation — exactly the convention `SexpListToSexpI64V1`
+   declares. The cost is a few redundant RC ops inside clause bodies,
+   compile-time only. It is structural under **Principle 19** because int knows
+   clause-ness by construction: it synthesized the defn. No name-prefix
+   privileging enters typecheck or backend. No `cranelisp-types`, schema or
+   public-API delta.
+3. **D4's fence lives in int** — a unit row over the prepared turn asserting the
+   published clause entry carries no mode summary, so a future widening of
+   inference that reattaches one fails loudly. **D0's CLIF measurement stands
+   unchanged** as the binding emission-side gate before Rules 1–3 land: the pin
+   makes the convention uniform, D0 confirms what that uniform convention
+   actually emits.
+
+**As built (verified S121):** not implemented. The only non-test `mode_summary`
+mention in `src/process_form/macro_clause.rs` is the `set_callable_slot`
+destructure at `:455`, which explicitly *preserves* the summary while
+overwriting the slot. Under the S121 C1 lifecycle wash the same act becomes a
+field clear at the settlement funnel (`Life::Concrete`'s `mode_summary`); the
+seam does not move, only the spelling.
+
 `/dev` obligations D0 and D4 below discharge this rule.
 
 ### Rule 1 — the marshaller produces owned trees and retains nothing
@@ -260,11 +308,11 @@ exercised (a nullary macro).
 ### Rule 7 — no marshal handle outlives its invocation
 
 No `Owned`/`Borrowed` from this seam is stored in any structure with a lifetime
-longer than one `invoke_clause` frame: not in `ExecutableMacroClause`, not in
-`TurnCheckWorld`, `PreparedMacroTurn`, `PreparedCommit`, `SharedState`, or any
-introspection record. The turn's ownership extent is **the invocation**, not "the
-turn" in any orchestration sense. §9 explains why this rule is what keeps FIXME
-0863 out of the protocol's way.
+longer than one `invoke_clause` frame: not in `ExecutableMacroClause`,
+`PreparedCommit`, a source retry continuation, `SharedState`, or any
+introspection record. The turn's ownership extent is **the invocation**, not a
+macro publication checkpoint or source-processing attempt. Section 9 explains
+why those lifetimes remain independent.
 
 `ExecutableMacroClause.owner: Code` and `invoke_clause`'s `let _code_lease =
 &clause.owner;` are untouched by this tranche. That borrow is a *code*-lifetime
@@ -404,9 +452,15 @@ wave rather than proceeding on assumption.
   ⇒ §2's argument is confirmed. Any red ⇒ §7.
 - **D2 — confirm `consume_sexp` covers `TAG_SEXP_ANNOTATED`.** Rule 4 discharges
   the result through intrinsics' tag dispatch; the two-field annotated cell
-  (`alloc_sexp_pair`) must have both fields discharged. If it does not, file to
-  `/design`(runtime pair) — the fix is in `drop.rs`, never a compensating walk in
-  `src/marshal.rs`.
+  (`alloc_sexp_pair`) must have both fields discharged. **Confirmed absent, and
+  now scheduled (S121):** `crates/cranelisp-intrinsics/src/drop.rs:242-255` has
+  two arms plus a scalar catch-all, and `TAG_SEXP_ANNOTATED` is not imported
+  (`drop.rs:45`), so an annotated cell today deallocs its parent and leaks both
+  halves. The arm is C5 bundle I1
+  (`design/intrinsics/s121-c5-intrinsics-visit.md` §5). D2 becomes a
+  **precondition check**, not a discovery: it must be landed before Rules 3/4
+  bind, because Rule 4 makes the gap definitely reachable. The fix stays in
+  `drop.rs`; a compensating walk in `src/marshal.rs` is a `/review` reject.
 - **D3 — the drop-bomb detection proof (gate G4's per-tranche obligation).**
   Plant a deliberate leaked-on-the-floor `Owned` at this seam and prove the debug
   bomb catches it, at the frame. Per the 0768 rule an instrument is unverified
@@ -442,51 +496,52 @@ cell, which is the same completeness obligation with the correct number).
 
 ---
 
-## 9. Interaction with FIXME 0863 (must-not-interleave)
+## 9. Interaction with macro checkpoints
 
-`/arch` ruled 0863 runs only after B-int lands or is dropped, and the user signed
-a conditional third deferral. 0863 is **not designed here**. What follows is the
-constraint surface, which is the part most likely to bite.
+Clause invocation and clause publication remain different ownership extents.
+A macro checkpoint prepares and publishes compiler state; `invoke_clause`
+temporarily transfers a runtime argument/result tree. No marshal handle enters
+`PreparedCommit`, the source retry continuation, the table, introspection, or a
+code-owner record.
 
-**The two touch different seams of the same file set.** 0863 reworks *clause
-preparation and publication*: `TurnCheckWorld` moves ahead of Pass 1,
-`prepare_macro_clause_turn` returns an absorbable owned result instead of
-self-publishing, `register_macro_in_module` writes the candidate world, and
-clause code lives in reserved-but-unpublished GOT cells
-(`s117-conformance-recovery.md` §1.1.2/§6.5). B-int reworks *clause invocation*:
-marshalling, transfer, and result discharge inside `invoke_clause`.
+Replacement safety now uses the ordinary module guard. The macro reader holds
+one read guard while it snapshots parent clause metadata and the selected
+clause's validated origin, ABI, GOT pointer, and cloned `Code` owner. It releases
+the guard before marshalling or invoking. The owner clone keeps code alive for
+the complete Rule-3/Rule-4 window. The replacement writer holds the matching
+write guard before backend finalization can patch a reused slot and through the
+one-module `publish_compiled_staged` call. A reader therefore observes one
+complete generation without extending any runtime heap handle.
 
-**Rule 7 is what keeps them orthogonal.** No marshal handle enters any structure
-0863 moves. 0863 may redefine what "the turn" owns as freely as it likes, because
-the protocol's ownership extent is the *invocation frame* and nothing else. This
-is a second, independent reason to prefer transfer over retain-and-release: had
-the protocol released "at turn exit", the word *turn* would have acquired two
-meanings mid-sprint — the invocation and 0863's cluster-wide prepared
-transaction — and the release site would have become ambiguous exactly where
-0863 is moving the boundary.
+Clause-set shrink is part of that same publication. Int derives surplus keys
+only from the prior parent's exact `M..N` clause indices, validates each as a
+private same-parent `MacroClause`, and submits absent-key `ChangeAbi` decisions
+with the replacement parent and active clauses. Publication returns each
+surplus clause's displaced `Code` owner; the writer moves those owners into
+session retention before releasing the guard. Their GOT cells stay frozen at
+the old pointers and their slots remain tombstoned, so an already-snapshotted
+reader stays executable and later clause growth cannot reuse the retired
+indices. This does not authorize removal of any ordinary callable.
 
-**Four specific constraints, in both directions:**
+The interaction constraints are:
 
-1. **B-int must not touch `clause_code_lease`, `ExecutableMacroClause`'s shape,
-   or its construction** (`src/expander.rs:266-288`, `:140-165`). That is 0863's
-   seam — it is where a clause compiled into a reserved-but-unpublished cell must
-   become leasable. Changing it here would force 0863 to rebase over a moved
-   target for no gain.
-2. **0863 must not put a marshal handle in the prepared world.** Absorbed
-   `compiled_drop_glues` rows move as `{artifact, owner}` pairs
-   (`result-owner.md` §3.1.1, restated in §6.5 delta 2); marshal handles are not
-   in that set and must not join it.
-3. **Textual conflict, not semantic.** Both edit `src/expander.rs` in different
-   functions. B-int lands first; 0863 rebases. `/sprint` should expect a mergeable
-   overlap, not a redesign.
-4. **0863's abort path and Rule 3's forfeit are independent and must stay so.**
-   0863's failure path clears reserved GOT cells and drops the candidate world;
-   Rule 3's trap-path forfeit abandons an argument tree inside a longjmp'd frame.
-   Neither cleans up after the other, and neither should try: a marshal tree is
-   not reachable from the candidate world, and a reserved cell is not a heap
-   handle. **If a future 0863 change makes an expansion's argument tree reachable
-   from the candidate world, Rule 7 is violated and this section must be
-   re-ruled.**
+1. `ExecutableMacroClause` owns a code lease, not a marshalled value. Its owner
+   remains live through argument transfer, protected invocation, result copy and
+   discharge.
+2. Macro publication moves generated drop-glue rows as `{artifact, owner}`
+   pairs through the ordinary publication seam. Marshal handles never join
+   those rows.
+3. A publication failure restores any touched GOT cell while candidate code
+   owners remain alive. Rule 3's trap-path forfeit is independent: neither path
+   cleans up the other's resource class.
+4. A `ResolutionGap` parks source continuation only. No marshalled value, JIT
+   owner, checked candidate world, or invocation frame survives the retry.
+5. Failure of any shrink decision leaves parent, clauses, owners, GOT cells and
+   tombstones unchanged; no reader can observe a partially retired generation.
+
+`TurnCheckWorld`, `TurnDelta`, `PreparedMacroTurn`, candidate invocation and
+reserved unpublished GOT cells are prohibited by the S121 checkpoint design,
+not alternate implementations of this ownership protocol.
 
 ---
 
@@ -495,7 +550,7 @@ transaction — and the release site would have become ambiguous exactly where
 | Attribute | Assessment |
 |---|---|
 | **Simplicity** | Net deletion: `protect_marshalled_cell` + 4 call sites + `marshal::rc_inc` + 3 unit rows out; one `consume_sexp` call and a handle type in. One production call site changes. Principle 6 spent negative. |
-| **Maintainability** | Blast radius is one function (`invoke_clause`) and one module (`src/marshal.rs`), both `pub(crate)`. Rule 7 bounds the interaction with the largest adjacent change (0863) structurally rather than by sequencing alone. |
+| **Maintainability** | Blast radius is one function (`invoke_clause`) and one module (`src/marshal.rs`), both `pub(crate)`. Rule 7 structurally separates invocation memory from the adjacent macro-checkpoint publication change. |
 | **Observability** | The two 0889 pins become ordinary balance guards on this boundary permanently, and the marginal harness's ambient term goes to zero — which makes *every* prelude-loading balance cell in the suite an instrument again rather than a measurement of this residual. That is the largest single observability gain available at this seam. |
 | **Concurrency-safety** | Improved and named: Rule 5 removes a non-atomic host RMW on cells the JIT and its lenient-eval sparks touch atomically (§1.1). No new shared state; handles are frame-local by Rule 7. |
 | **Performance** | Strictly fewer RC operations (one inc per marshalled cell removed) and one bounded `consume_sexp` walk added per expansion, over trees that are small by construction. Compile-time only; no runtime path. |
@@ -526,19 +581,30 @@ transaction — and the release site would have become ambiguous exactly where
 
 ---
 
-## 12. Open dependencies (FIXMEs filed with this ruling)
+## 12. Dependencies — both returned settled (S121)
 
-- **FIXME 0920-successor to `/design`(runtime pair)** — the three things this
-  protocol needs from tranche A's `Owned`/`Borrowed` vocabulary: a documented
-  transfer across a **non-`extern`** host↔JIT boundary (Rules 3/4), tolerance of
-  bare nullary-tag words (Rule 6), and `consume_sexp`/`consume_slist` reachable
-  with typed signatures from a third crate.
-- **FIXME to `/arch`** — the macro-clause ABI ownership declaration (Rule 0):
-  whether int may pin or verify the clause parameter's `Mode` from its own side,
-  or whether a declared-fact channel is needed. This is the boundary question
-  `/arch` holds for tranche B.
+- **FIXME 0921 to `/design`(runtime pair) — ANSWERED.** All three requirements
+  are met by `design/runtime/s119-typed-consume-funnel.md` §3: the ABI-crossing
+  pair is `Owned::from_abi` (the one raw entry) / `Owned::into_raw` (the one raw
+  exit, `#[must_use]`, and the crate's only handle-related `mem::forget`), which
+  is what makes Rule 3's transfer — and therefore the JIT trap path's
+  correctness by construction — expressible at a `transmute`d call site with no
+  shim; `from_abi` is nullary-tag-safe and `is_nullary_tag` single-sources the
+  `< NULLARY_TAG_THRESHOLD` predicate, satisfying Rule 6; and
+  `consume_sexp`/`consume_slist` stay `pub` with typed signatures — tranche A's
+  own signatures are what force the handle types public, so Rule 4's single
+  releaser stays reachable from int. **No gap remains to state.** The filing's
+  separately-confirmed intrinsics finding (the missing `TAG_SEXP_ANNOTATED`
+  arm) is D2 above.
+- **FIXME 0927 to `/arch`, then here — ABSORBED.** The macro-clause ABI
+  ownership declaration is ruled: the pin is int's, at clause preparation, by
+  clearing the synthesized clause entry's mode summary. Absorbed at §3 Rule 0's
+  enforcement subsection, with D4 as its standing fence.
 
-Numbers are recorded in §13.
+One item is **not** closed by either: `src/marshal.rs:316`'s non-atomic
+`*rc_ptr += 1` — re-verified live at S121, as `s119-typed-consume-funnel.md`
+asked. Rule 5 deletes it and the typed mint replaces it; it is an obligation,
+not a dependency.
 
 ---
 
@@ -551,8 +617,8 @@ Numbers are recorded in §13.
   negative-control-twin argument are load-bearing here.
 - `design/int/result-owner.md` §1 — the observe-then-release discipline Rule 4
   applies at a second seam.
-- `design/int/s117-conformance-recovery.md` §1.1.2, §6.5 — FIXME 0863's ready
-  design; §9 is the interaction statement.
+- `design/int/s117-conformance-recovery.md` §1.1.2, §2.1, §6.5 — the current
+  macro-checkpoint and presentation design; §9 is the interaction statement.
 - `src/marshal.rs`, `src/expander.rs:512-549` (`invoke_clause`) — the seam.
 - `crates/cranelisp-intrinsics/src/drop.rs:156` (`consume_slist`), `:214`
   (`consume_sexp`) — the single releaser.

@@ -922,7 +922,10 @@ where
         span: Span,
     ) -> Result<Option<cranelift_module::FuncId>, CranelispError> {
         let Some(ty) = elem_type else {
-            return Ok(None);
+            return Err(CranelispError::CodegenError {
+                message: "Vec element release reached a missing element type; canonical drop glue requires a concrete type".into(),
+                location: ErrorLocation::from_span(span),
+            });
         };
         let concrete = cranelisp_types::ConcreteType::from_type(ty).map_err(|_| {
             CranelispError::CodegenError {
@@ -1101,6 +1104,7 @@ where
     /// - `vec-get` — bounds check + element load + element inc (per element
     ///   heap category), then a vec-aware rc-checked release of the consumed
     ///   Vec (the temporary branch of `emit_vec_drop_if_temporary`).
+    /// - `vec-len` — length load, then the same rc-checked Vec release.
     /// - `vec-set` / `vec-push` — the element's reference TRANSFERS into the
     ///   Vec with NO consuming inc (the temporary branch of
     ///   `element_consuming_inc`), and the Vec is trivially at last use, so
@@ -1108,8 +1112,8 @@ where
     ///
     /// `elem_type` is the per-site element type plumbed from the value-use
     /// site's concrete `Fn` type (or from the applied Vec argument on the
-    /// auto-curry path). `None` degrades to the no-elem-RC-ops shape — the
-    /// same safe default as `resolve_elem_inc_fn_ptr`'s unknown-type arm.
+    /// auto-curry path). Element release refuses an absent type rather than
+    /// treating it as a known scalar that needs no element disposer.
     pub(crate) fn emit_vec_query_into(
         &mut self,
         builder: &mut FunctionBuilder,
@@ -1122,6 +1126,19 @@ where
             .as_ref()
             .map(|t| signature_heap_category(t, Some(self.ctx.symbol_tables)));
         match (name, params.len()) {
+            ("vec-len", 1) => {
+                let vec_drop_id =
+                    self.ctx
+                        .vec_drop_func_id
+                        .ok_or_else(|| CranelispError::CodegenError {
+                            message: "runtime/vec_drop not declared".into(),
+                            location: ErrorLocation::from_span(span),
+                        })?;
+                let dec_fn_ptr = self.resolve_elem_dec_fn_ptr_into(elem_type, builder, span)?;
+                let len = heap::heap_load(builder, params[0], HeapVec::LEN_OFFSET);
+                emit_vec_rc_dec_with_drop(builder, self.module, params[0], vec_drop_id, dec_fn_ptr);
+                Ok(len)
+            }
             ("vec-get", 2) => {
                 let panic_id =
                     self.ctx
@@ -1756,3 +1773,6 @@ mod vec_lit_consume_tests;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod element_release_tests;

@@ -13,9 +13,8 @@
 ;;   (Some 42) is a data constructor carrying one field.
 ;;   The (Option a) syntax makes it polymorphic -- a can be any type.
 ;;
-;; Shortcut syntax (bare field names, types inferred):
-;;   (deftype Pair [first second])
-;;   Equivalent to polymorphic (deftype (Pair a b) (Pair [:a first :b second])).
+;; Polymorphic products state every type parameter and field type:
+;;   (deftype (Pair a b) [:a first :b second])
 ;;
 ;; Values are heap-allocated and reference-counted. Constructors are
 ;; called like functions.
@@ -90,8 +89,8 @@
 (defn test-either []
   (add-i64 (get-either (Left 10)) (get-either (Right 20))))
 
-;; Shortcut syntax: bare field names, types inferred
-(deftype Pair [first second])
+;; A polymorphic product with two independently typed fields
+(deftype (Pair a b) [:a first :b second])
 
 (defn sum-pair [p]
   (match p [(Pair a b) (add-i64 a b)]))

@@ -1,6 +1,10 @@
 use super::*;
 use crate::builtins::FixtureBuilder;
-use cranelisp_types::{DefKind, ModuleEntry, ModuleFullPath, Span, Symbol, Visibility};
+use cranelisp_types::{
+    Binding, CallableArmDraft, CallableOrigin, Decl, DefnVariant, FQTraitName, MacroClauseDraft,
+    ModuleFullPath, MonoDefnVariant, MonoExpr, Scheme, Sexp, Span, Symbol, TraitMethodRecord, Type,
+    Visibility,
+};
 
 /// Empty fixture (FIXME 0243 narrowing). The module-locality / resolution /
 /// prelude-fallback tests in this file build their OWN modules and seed
@@ -37,7 +41,7 @@ fn tf_prims() -> TestFixture {
 
 /// Fixture seeding the synthetic `macros` module (Sexp/SList ADTs +
 /// sconcat) — FIXME 0243 narrowing. The qualified-sum-ctor-resolution test
-/// resolves `macros/SCons`, so the `macros` module must be present;
+/// resolves `macros/SList.SCons`, so the `macros` module must be present;
 /// `with_macros_sexp()` requires `with_builtin_type_names()` first
 /// (bootstrap order — Sexp/SList fields reference builtin scalars).
 fn tf_macros() -> TestFixture {
@@ -205,16 +209,17 @@ fn test_switch_back_to_user_preserves_builtins() {
 fn test_modules_are_independent() {
     let mut tf = tf();
     // Define something in user
-    tf.symbol_table_mut().insert(
-        Symbol::from("user-only"),
-        ModuleEntry::def(
+    tf.symbol_table_mut()
+        .declare(
+            Symbol::from("user-only"),
             crate::scheme::mono(Type::Int),
-            DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::NotDetermined,
-            },
+            vec![],
+            None,
+            0,
+            CallableOrigin::Plain,
+            Visibility::Public,
         )
-        .build(),
-    );
+        .unwrap();
 
     // Switch to another module — shouldn't see user-only
     tf.set_current_module(ModuleFullPath::from("other"));
@@ -230,17 +235,17 @@ fn test_modules_are_independent() {
 fn seed_module(tf: &mut TestFixture, path: &str, entries: Vec<(&str, Visibility)>) {
     tf.set_current_module(ModuleFullPath::from(path));
     for (name, vis) in entries {
-        tf.symbol_table_mut().insert(
-            Symbol::from(name),
-            ModuleEntry::def(
+        tf.symbol_table_mut()
+            .declare(
+                Symbol::from(name),
                 crate::scheme::mono(Type::Int),
-                DefKind::UserFn {
-                    fn_state: cranelisp_types::UserFnState::NotDetermined,
-                },
+                vec![],
+                None,
+                0,
+                CallableOrigin::Plain,
+                vis,
             )
-            .visibility(vis)
-            .build(),
-        );
+            .unwrap();
     }
 }
 
@@ -252,27 +257,19 @@ fn seed_module(tf: &mut TestFixture, path: &str, entries: Vec<(&str, Visibility)
 /// directly. Inserts an `Import` binding for every PUBLIC symbol in
 /// `source` (private names are not glob-importable, spec §8.7).
 fn seed_glob_import(tf: &mut TestFixture, source: &ModuleFullPath) {
-    let names: Vec<Symbol> = {
+    let candidates: Vec<(Symbol, cranelisp_types::NameCandidate)> = {
         let src = tf
             .modules
             .get(source)
             .expect("source module exists for glob seed");
-        src.all_symbols()
-            .filter(|(_, e)| e.is_public())
-            .map(|(n, _)| n.clone())
+        src.public_name_candidates()
+            .map(|(name, candidate)| (name.clone(), candidate))
             .collect()
     };
-    for name in names {
-        tf.symbol_table_mut().insert(
-            name.clone(),
-            ModuleEntry::Import {
-                source: FQSymbol {
-                    module: source.clone(),
-                    symbol: name,
-                },
-                visibility: Visibility::Public,
-            },
-        );
+    for (name, candidate) in candidates {
+        tf.symbol_table_mut()
+            .expose_candidate(name, candidate.source, Visibility::Public)
+            .unwrap();
     }
 }
 
@@ -280,15 +277,169 @@ fn seed_glob_import(tf: &mut TestFixture, source: &ModuleFullPath) {
 /// module (mirrors `(import [source [a b]])`). See `seed_glob_import`.
 fn seed_specific_import(tf: &mut TestFixture, source: &ModuleFullPath, names: &[&str]) {
     for name in names {
-        tf.symbol_table_mut().insert(
-            Symbol::from(*name),
-            ModuleEntry::Import {
-                source: FQSymbol {
-                    module: source.clone(),
-                    symbol: Symbol::from(*name),
-                },
-                visibility: Visibility::Public,
-            },
+        let candidates = tf
+            .modules
+            .get(source)
+            .expect("source module exists")
+            .name_candidates(&Symbol::from(*name));
+        for candidate in candidates {
+            tf.symbol_table_mut()
+                .expose_candidate(Symbol::from(*name), candidate.source, Visibility::Public)
+                .unwrap();
+        }
+    }
+}
+
+fn callable_scheme() -> Scheme {
+    crate::scheme::mono(Type::Fn(Vec::new(), Box::new(Type::Int)))
+}
+
+fn dummy_arm(name: &str) -> CallableArmDraft {
+    let ast = DefnVariant {
+        params: Vec::new(),
+        body: cranelisp_types::Expr::IntLit {
+            value: 0,
+            span: Span::SYNTHETIC,
+            inferred_type: Some(Box::new(Type::Int)),
+        },
+        span: Span::SYNTHETIC,
+    };
+    let view = MonoDefnVariant {
+        name: Symbol::from(name),
+        params: Vec::new(),
+        body: MonoExpr::IntLit {
+            value: 0,
+            span: Span::SYNTHETIC,
+            ty: cranelisp_types::ConcreteType::Int,
+        },
+        span: Span::SYNTHETIC,
+        mode_summary: None,
+    };
+    CallableArmDraft::concrete_body(callable_scheme(), Vec::new(), ast, view, Vec::new())
+}
+
+fn seed_expansion_only_binding(tf: &mut TestFixture, module: &str, parent: &str) {
+    tf.set_current_module(ModuleFullPath::from(module));
+    let mut table = tf.symbol_table_mut();
+    table
+        .install_macro(
+            Symbol::from(parent),
+            None,
+            1,
+            Sexp::Symbol("source-form".into(), Span::SYNTHETIC),
+            vec![MacroClauseDraft::new(Vec::new(), None, dummy_arm(parent))],
+            Visibility::Public,
+        )
+        .unwrap();
+}
+
+// design/int/s121-c6-visit.md N5; QA MC-9 — every spelling route reaches the
+// same value projection. These deliberately-public synthetic rows prove the
+// rejection is semantic, not an incidental privacy failure. Names are
+// arbitrary and carry no generated-name convention.
+#[test]
+fn expansion_only_bindings_are_absent_from_every_language_value_route() {
+    let mut tf = tf();
+
+    seed_expansion_only_binding(&mut tf, "garden", "violet-orbit");
+    seed_expansion_only_binding(&mut tf, "garden.branch", "quiet-meadow");
+    seed_expansion_only_binding(&mut tf, "library", "winter-sun");
+    seed_expansion_only_binding(&mut tf, "faraway", "summer-cloud");
+
+    tf.set_current_module(ModuleFullPath::from("garden"));
+    seed_specific_import(&mut tf, &ModuleFullPath::from("library"), &["winter-sun"]);
+
+    for (index, written) in [
+        // bare
+        "violet-orbit",
+        // self-qualified
+        "garden/violet-orbit",
+        // child-qualified
+        "branch/quiet-meadow",
+        // imported
+        "winter-sun",
+        // fully qualified
+        "faraway/summer-cloud",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (scheme, _) = tf.env().lookup(&tf.state, written);
+        assert!(
+            scheme.is_none(),
+            "expansion-only binding {written} entered the language value namespace"
+        );
+
+        let start = 10_000 + (index as u32 * 10);
+        let mut value =
+            cranelisp_types::Expr::var(Symbol::from(written), Span::new(start, start + 1));
+        assert!(
+            tf.infer_expr_for_test(&mut value).is_err(),
+            "expansion-only binding {written} typechecked as a value"
+        );
+
+        let mut call = cranelisp_types::Expr::Apply {
+            callee: Box::new(cranelisp_types::Expr::var(
+                Symbol::from(written),
+                Span::new(start + 2, start + 3),
+            )),
+            args: Vec::new(),
+            span: Span::new(start + 2, start + 4),
+            resolved_call: None,
+            inferred_type: None,
+        };
+        assert!(
+            tf.infer_expr_for_test(&mut call).is_err(),
+            "expansion-only binding {written} typechecked as a call"
+        );
+    }
+}
+
+// MC-9 controls — the projection excludes only expansion-only declarations.
+// Ordinary callables, overload groups and trait methods keep their established
+// value/call admission behavior.
+#[test]
+fn language_value_projection_retains_non_macro_callable_kinds() {
+    let mut table = cranelisp_types::SymbolTable::new(ModuleFullPath::from("garden"));
+    table
+        .declare(
+            Symbol::from("clear-water"),
+            callable_scheme(),
+            Vec::new(),
+            None,
+            0,
+            CallableOrigin::Plain,
+            Visibility::Public,
+        )
+        .unwrap();
+    let ordinary = table.get("clear-water").unwrap().clone();
+    table
+        .install_overloaded(
+            Symbol::from("warm-river"),
+            None,
+            0,
+            vec![dummy_arm("warm-river")],
+            Visibility::Public,
+        )
+        .unwrap();
+    let overload = table.get("warm-river").unwrap().clone();
+    let trait_method = Binding::new(
+        Decl::TraitMethod(TraitMethodRecord::new(
+            callable_scheme(),
+            Vec::new(),
+            None,
+            FQTraitName::new(
+                ModuleFullPath::from("garden"),
+                cranelisp_types::TraitName::from("Renderable"),
+            ),
+        )),
+        Visibility::Public,
+    );
+
+    for binding in [&ordinary, &overload, &trait_method] {
+        assert!(
+            crate::candidate_selection::language_value_scheme(binding).is_some(),
+            "non-macro callable kind was removed from the value projection"
         );
     }
 }
@@ -392,7 +543,7 @@ fn test_resolve_qualified_uses_alias() {
     // full alias path; querying `opt` matches the `opt` key and substitutes
     // its target `core.option` before resolution restarts.
     tf.module_aliases.insert(
-        ModuleFullPath::from("opt"),
+        cranelisp_types::module_alias_key(&ModuleFullPath::from("main"), "opt"),
         cranelisp_types::ModuleAliasEntry::new(
             ModuleFullPath::from("core.option"),
             Visibility::Public,
@@ -590,16 +741,17 @@ fn ensure_module_exists_on_populated_table_preserves_entries() {
     tf.env().ensure_module_exists(&path);
     {
         let mut guard = tf.modules.get_mut(&path).unwrap();
-        guard.insert(
-            Symbol::from("helper-val"),
-            ModuleEntry::def(
+        guard
+            .declare(
+                Symbol::from("helper-val"),
                 crate::scheme::mono(Type::Int),
-                DefKind::UserFn {
-                    fn_state: cranelisp_types::UserFnState::NotDetermined,
-                },
+                vec![],
+                None,
+                0,
+                CallableOrigin::Plain,
+                Visibility::Public,
             )
-            .build(),
-        );
+            .unwrap();
     }
 
     // Second ensure — pre-fix, this OVERWROTE the populated table.
@@ -729,7 +881,7 @@ fn ensure_module_exists_concurrent_same_path_emits_exactly_one_created() {
 // lookups. See `design/typecheck/implementation-slice-s66.md §5`.
 
 use cranelisp_types::{
-    Defn, DefnVariant, Expr, FQSymbol, FQTypeName, TraitDecl, TraitImpl, TraitName, TypeName,
+    Defn, Expr, FQSymbol, FQTypeName, TraitDecl, TraitImpl, TraitName, TypeName,
 };
 
 /// Make a unary trait `T` over type parameter `a` with one method `op`
@@ -822,24 +974,25 @@ fn test_trait_impl_write_lands_in_trait_home_not_writer() {
         .expect("H's symbol table should exist");
     let h_entry = home_table.get(expected_key.as_ref());
     assert!(
-        matches!(h_entry, Some(ModuleEntry::TraitImpl { .. })),
+        matches!(
+            h_entry.map(|binding| &binding.declaration),
+            Some(cranelisp_types::Decl::ImplShell(_))
+        ),
         "Pattern B: TraitImpl MUST be written to H (trait's home), \
              key `{expected_key}`; got {h_entry:?}"
     );
-    if let Some(ModuleEntry::TraitImpl {
-        trait_name,
-        impl_type,
-        ..
-    }) = h_entry
-    {
-        assert_eq!(trait_name.module, home, "trait_name FQ module should be H");
-        assert_eq!(trait_name.name.as_ref(), "PatternBTrait");
+    if let Some(cranelisp_types::Decl::ImplShell(shell)) = h_entry.map(|b| &b.declaration) {
         assert_eq!(
-            impl_type.module.as_ref(),
+            shell.trait_name.module, home,
+            "trait_name FQ module should be H"
+        );
+        assert_eq!(shell.trait_name.name.as_ref(), "PatternBTrait");
+        assert_eq!(
+            shell.impl_type.module.as_ref(),
             "primitives",
             "Int resolves to primitives"
         );
-        assert_eq!(impl_type.name.as_ref(), "Int");
+        assert_eq!(shell.impl_type.name.as_ref(), "Int");
     }
     drop(home_table);
 
@@ -855,10 +1008,11 @@ fn test_trait_impl_write_lands_in_trait_home_not_writer() {
         "Pattern A regression: TraitImpl MUST NOT appear in writer module M's table"
     );
     for (key, entry) in writer_table.all_symbols() {
-        if let ModuleEntry::TraitImpl { trait_name, .. } = entry {
+        if let cranelisp_types::Decl::ImplShell(shell) = &entry.declaration {
             panic!(
-                "writer M contains an unexpected TraitImpl entry `{key}` for trait `{trait_name}` \
-                     — Pattern B requires it to live in the trait's home module H, not M"
+                "writer M contains an unexpected TraitImpl entry `{key}` for trait `{}` \
+                     — Pattern B requires it to live in the trait's home module H, not M",
+                shell.trait_name
             );
         }
     }
@@ -905,16 +1059,16 @@ fn test_impl_resolution_chain_follows_not_universe_scans() {
     seed_specific_import(&mut tf, &l, &["ChainTrait"]);
     // Overwrite the `Import` with a `Reexport` on M so N's import sees
     // a `Reexport` edge — the chain becomes N(Import) → M(Reexport) → L(TraitDecl).
-    tf.symbol_table_mut().insert(
-        Symbol::from("ChainTrait"),
-        ModuleEntry::Import {
-            source: FQSymbol {
+    tf.symbol_table_mut()
+        .expose_candidate(
+            Symbol::from("ChainTrait"),
+            FQSymbol {
                 module: l.clone(),
                 symbol: Symbol::from("ChainTrait"),
             },
-            visibility: Visibility::Public,
-        },
-    );
+            Visibility::Public,
+        )
+        .unwrap();
 
     // 3. N imports T from M.
     tf.set_current_module(n.clone());
@@ -933,7 +1087,6 @@ fn test_impl_resolution_chain_follows_not_universe_scans() {
     // 4. Place decoy TraitImpl entries in D1 and D2. A universe scan
     //    would erroneously match these; chain-follow MUST ignore them
     //    because it probes ONLY the trait's home (L).
-    let decoy_key = Symbol::from("impl$primitives/Int$chain_l/ChainTrait");
     for decoy_path in [&d1, &d2] {
         // Ensure the module exists so a write succeeds.
         tf.env().ensure_module_exists(decoy_path);
@@ -941,22 +1094,14 @@ fn test_impl_resolution_chain_follows_not_universe_scans() {
             .modules
             .get_mut(decoy_path)
             .expect("decoy module just ensured");
-        tbl.insert(
-            decoy_key.clone(),
-            ModuleEntry::TraitImpl {
-                trait_name: cranelisp_types::FQTraitName::new(
-                    l.clone(),
-                    TraitName::from("ChainTrait"),
-                ),
-                impl_type: FQTypeName::new(
-                    ModuleFullPath::from("primitives"),
-                    TypeName::from("Int"),
-                ),
-                impl_module: l.clone(),
-                methods: vec![Symbol::from("ch-op")],
-                visibility: Visibility::Public,
-            },
+        let decoy = cranelisp_types::WrittenTraitImpl::new(
+            cranelisp_types::FQTraitName::new(decoy_path.clone(), TraitName::from("ChainTrait")),
+            FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Int")),
+            decoy_path.clone(),
+            vec![Symbol::from("ch-op")],
+            Visibility::Public,
         );
+        tbl.stage_trait_impl_shell(&decoy).unwrap().commit();
     }
 
     // 5. From N's view, has_impl_with_state MUST find the L-resident
@@ -995,8 +1140,12 @@ fn test_impl_resolution_chain_follows_not_universe_scans() {
     // Negative: probing the writer module N directly for the synthetic
     // impl key MUST find nothing — the entry lives in L only.
     let n_table = tf.modules.get(&n).expect("N's symbol table should exist");
+    let impl_key = cranelisp_types::trait_impl_key(
+        &FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Int")),
+        &cranelisp_types::FQTraitName::new(l.clone(), TraitName::from("ChainTrait")),
+    );
     assert!(
-        n_table.get(decoy_key.as_ref()).is_none(),
+        n_table.get(impl_key.as_ref()).is_none(),
         "N's symbol table MUST NOT carry the impl entry (it lives in L per Pattern B)"
     );
 }
@@ -1126,16 +1275,16 @@ fn test_short_name_lookup_is_current_module_only() {
     // 3. Now inject a per-symbol Import binding into N for M.Foo.
     //    Manual insert mirrors what `register_imports` would build for
     //    a Specific import (TypeDef entries are public-by-default here).
-    tf.symbol_table_mut().insert(
-        Symbol::from("Foo"),
-        ModuleEntry::Import {
-            source: FQSymbol {
+    tf.symbol_table_mut()
+        .expose_candidate(
+            Symbol::from("Foo"),
+            FQSymbol {
                 module: m.clone(),
                 symbol: Symbol::from("Foo"),
             },
-            visibility: Visibility::Private,
-        },
-    );
+            Visibility::Private,
+        )
+        .unwrap();
 
     // 4. The same short-name lookup now chain-follows N(Import) → M(TypeDef)
     //    and succeeds — reach is per-binding, not per-resolver.
@@ -1199,17 +1348,17 @@ fn test_instantiate_no_self_map_when_counter_collides() {
 /// the caller's job.
 fn seed_value(tf: &mut TestFixture, path: &str, name: &str) {
     tf.set_current_module(ModuleFullPath::from(path));
-    tf.symbol_table_mut().insert(
-        Symbol::from(name),
-        ModuleEntry::def(
+    tf.symbol_table_mut()
+        .declare(
+            Symbol::from(name),
             crate::scheme::mono(Type::Int),
-            DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::NotDetermined,
-            },
+            vec![],
+            None,
+            0,
+            CallableOrigin::Plain,
+            Visibility::Public,
         )
-        .visibility(Visibility::Public)
-        .build(),
-    );
+        .unwrap();
 }
 
 /// Turn the prelude-fallback bit ON for `module`.
@@ -1258,29 +1407,27 @@ fn prelude_fallback_absent_when_bit_off() {
     );
 }
 
-// spec: 08-modules §8.6.1 — a local/explicit definition shadows the
-// implicit prelude (the current module is consulted before the fallback).
+// spec: 08-modules §8.6.1, §8.6.4 — module and implicit-prelude declarations
+// with distinct terminal identities coexist as candidates.
 #[test]
-fn prelude_fallback_inner_definition_shadows_prelude() {
+fn prelude_fallback_unions_local_and_prelude_candidates() {
     let mut tf = tf();
-    // Both prelude and M define `map`; M's own def must win (inner first).
     seed_value(&mut tf, "prelude", "map");
     let m = ModuleFullPath::from("app_shadow");
     seed_value(&mut tf, "app_shadow", "map");
     tf.set_current_module(m.clone());
     set_fallback_on(&tf, "app_shadow");
 
-    // The entry path resolves to M's own Def (home == M), not prelude's.
     let state = CheckState::new(m.clone());
-    let entry = tf
+    let mut candidates: Vec<String> = tf
         .env()
-        .resolve_entry_scoped(&state, "map")
-        .expect("map resolves (inner def present)");
-    // M's own entry is a canonical Def (not an Import to prelude).
-    assert!(
-        matches!(entry, ModuleEntry::Def { .. }),
-        "inner definition must shadow the prelude fallback"
-    );
+        .scope_resolve_candidates(&state, "map", Span::SYNTHETIC)
+        .expect("both candidate sources resolve")
+        .into_iter()
+        .map(|resolved| resolved.canonical.to_string())
+        .collect();
+    candidates.sort();
+    assert_eq!(candidates, ["app_shadow/map", "prelude/map"]);
 }
 
 // spec: 08-modules §8.6.4 — the DEF-EVENT routes through the shared
@@ -1288,46 +1435,60 @@ fn prelude_fallback_inner_definition_shadows_prelude() {
 // is already bound by an explicit import in the current module is a
 // compile-time collision; the diagnostic names the FQ remedy.
 #[test]
-fn reject_def_over_import_via_shared_predicate() {
+fn local_definition_may_coexist_with_import_candidate() {
     let mut tf = tf();
     // M defines `measure`; N imports it, then N tries to define it locally.
     seed_value(&mut tf, "m", "measure");
     let n = ModuleFullPath::from("n");
     tf.set_current_module(n.clone());
-    tf.symbol_table_mut().insert(
-        Symbol::from("measure"),
-        ModuleEntry::Import {
-            source: FQSymbol {
+    tf.symbol_table_mut()
+        .expose_candidate(
+            Symbol::from("measure"),
+            FQSymbol {
                 module: ModuleFullPath::from("m"),
                 symbol: Symbol::from("measure"),
             },
-            visibility: Visibility::Private,
-        },
+            Visibility::Private,
+        )
+        .unwrap();
+    tf.symbol_table_mut()
+        .declare(
+            Symbol::from("measure"),
+            crate::scheme::mono(Type::Int),
+            vec![],
+            None,
+            0,
+            CallableOrigin::Plain,
+            Visibility::Public,
+        )
+        .expect("local binding and import candidate coexist");
+    assert_eq!(
+        tf.symbol_table()
+            .name_candidates(&Symbol::from("measure"))
+            .len(),
+        2
     );
-    let state = CheckState::new(n.clone());
-    let res = tf
-        .env()
-        .reject_def_over_binding(&state, &Symbol::from("measure"), Span::SYNTHETIC);
-    let msg = res.unwrap_err().to_string().to_lowercase();
-    assert!(msg.contains("conflict"), "def-over-import rejects: {msg}");
-    assert!(msg.contains("m/measure"), "remedy FQ present: {msg}");
 }
 
 // spec: 08-modules §8.6.4 — the module's OWN prior definition is ordinary
 // redefinition (the shared predicate's Def-over-Def arm returns Ok).
 #[test]
-fn reject_def_over_binding_allows_own_redefinition() {
+fn symbol_table_allows_own_redefinition() {
     let mut tf = tf();
     let m = ModuleFullPath::from("appredef");
     seed_value(&mut tf, "appredef", "measure");
     tf.set_current_module(m.clone());
-    let state = CheckState::new(m.clone());
-    assert!(
-        tf.env()
-            .reject_def_over_binding(&state, &Symbol::from("measure"), Span::SYNTHETIC)
-            .is_ok(),
-        "redefining the module's own prior def is allowed"
-    );
+    tf.symbol_table_mut()
+        .declare(
+            Symbol::from("measure"),
+            crate::scheme::mono(Type::Int),
+            vec![],
+            None,
+            0,
+            CallableOrigin::Plain,
+            Visibility::Public,
+        )
+        .expect("redefining the module's own prior def is allowed");
 }
 
 // spec: 08-modules §8.6.4 — primitives reach user code VIA prelude's
@@ -1341,16 +1502,16 @@ fn prelude_fallback_chain_follows_reexport_to_primitive() {
     seed_value(&mut tf, "prims", "add-i64");
     // prelude re-exports it (an Import edge, like `(export [prims [*]])`).
     tf.set_current_module(ModuleFullPath::from("prelude"));
-    tf.symbol_table_mut().insert(
-        Symbol::from("add-i64"),
-        ModuleEntry::Import {
-            source: FQSymbol {
+    tf.symbol_table_mut()
+        .expose_candidate(
+            Symbol::from("add-i64"),
+            FQSymbol {
                 module: ModuleFullPath::from("prims"),
                 symbol: Symbol::from("add-i64"),
             },
-            visibility: Visibility::Public,
-        },
-    );
+            Visibility::Public,
+        )
+        .unwrap();
     let m = ModuleFullPath::from("app_prim");
     tf.set_current_module(m.clone());
     set_fallback_on(&tf, "app_prim");
@@ -1370,7 +1531,7 @@ fn prelude_fallback_chain_follows_reexport_to_primitive() {
         .resolve_entry_scoped(&state, "add-i64")
         .expect("add-i64 resolves to its terminal entry");
     assert!(
-        matches!(entry, ModuleEntry::Def { .. }),
+        entry.callable().is_some(),
         "fallback + chain-follow must land on the canonical primitive Def, not the Import edge"
     );
 }
@@ -1484,17 +1645,17 @@ fn prelude_fallback_resolves_bare_type_via_resolve_family() {
 /// Seed a value `name` with explicit `vis` into module `path`.
 fn seed_value_vis(tf: &mut TestFixture, path: &str, name: &str, vis: Visibility) {
     tf.set_current_module(ModuleFullPath::from(path));
-    tf.symbol_table_mut().insert(
-        Symbol::from(name),
-        ModuleEntry::def(
+    tf.symbol_table_mut()
+        .declare(
+            Symbol::from(name),
             crate::scheme::mono(Type::Int),
-            DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::NotDetermined,
-            },
+            vec![],
+            None,
+            0,
+            CallableOrigin::Plain,
+            vis,
         )
-        .visibility(vis)
-        .build(),
-    );
+        .unwrap();
 }
 
 // spec: 08-modules §8.7.3 — a PRIVATE prelude def is NOT reachable as a
@@ -1549,7 +1710,7 @@ fn prelude_private_def_does_not_shadow_user_binding() {
         home, m,
         "bare `helper` resolves to the user module, not prelude"
     );
-    assert!(matches!(entry, ModuleEntry::Def { .. }));
+    assert!(entry.callable().is_some());
 }
 
 // spec: 08-modules §8.7.3 (regression guard for the I-1 fix) — a PUBLIC
@@ -1562,16 +1723,16 @@ fn prelude_public_reexport_still_reachable_after_visibility_fix() {
     let mut tf = tf();
     seed_value(&mut tf, "prims", "add-i64"); // canonical, public
     tf.set_current_module(ModuleFullPath::from("prelude"));
-    tf.symbol_table_mut().insert(
-        Symbol::from("add-i64"),
-        ModuleEntry::Import {
-            source: FQSymbol {
+    tf.symbol_table_mut()
+        .expose_candidate(
+            Symbol::from("add-i64"),
+            FQSymbol {
                 module: ModuleFullPath::from("prims"),
                 symbol: Symbol::from("add-i64"),
             },
-            visibility: Visibility::Public, // PUBLIC re-export
-        },
-    );
+            Visibility::Public,
+        )
+        .unwrap();
     let m = ModuleFullPath::from("app_pub");
     tf.set_current_module(m.clone());
     set_fallback_on(&tf, "app_pub");
@@ -1585,7 +1746,7 @@ fn prelude_public_reexport_still_reachable_after_visibility_fix() {
         .env()
         .resolve_entry_scoped(&state, "add-i64")
         .expect("public re-export resolves to its terminal Def");
-    assert!(matches!(entry, ModuleEntry::Def { .. }));
+    assert!(entry.callable().is_some());
 }
 
 // spec: 08-modules §8.7.3 — a PRIVATE prelude TYPE is NOT bare-reachable via
@@ -1777,31 +1938,28 @@ fn fq_sum_ctor_resolves_in_pattern_from_unimporting_module() {
         "bare `SCons` must NOT resolve from a module that has not imported macros"
     );
 
-    // Qualified `macros/SCons` resolves to the SUM ctor's `Def`.
+    // Qualified `macros/SList.SCons` probes the SUM ctor's canonical key.
     let entry = env
-        .resolve_constructor_entry(&state, "macros/SCons")
-        .expect("qualified `macros/SCons` must resolve via the FQ module split");
-    match entry {
-        ModuleEntry::Def { kind, .. } => match kind.as_ref() {
-            DefKind::Constructor {
-                type_name,
-                type_def,
-                ..
-            } => {
-                assert_eq!(
-                    type_name.name,
-                    TypeName::from("SList"),
-                    "macros/SCons is the SList SUM ctor"
-                );
-                assert!(
-                    type_def.is_none(),
-                    "a SUM ctor carries `type_def: None` (the separate TypeDef \
+        .resolve_constructor_entry(&state, "macros/SList.SCons")
+        .expect("qualified canonical constructor must resolve via the FQ module split");
+    match entry.callable().map(|callable| &callable.origin) {
+        Some(CallableOrigin::Ctor {
+            type_name,
+            type_def,
+            ..
+        }) => {
+            assert_eq!(
+                type_name.name,
+                TypeName::from("SList"),
+                "macros/SList.SCons is the SList SUM ctor"
+            );
+            assert!(
+                type_def.is_none(),
+                "a SUM ctor carries `type_def: None` (the separate TypeDef \
                          holds the type) — it must NOT be confused with a product facet"
-                );
-            }
-            other => panic!("expected Constructor Def, got {other:?}"),
-        },
-        other => panic!("expected ModuleEntry::Def, got {other:?}"),
+            );
+        }
+        other => panic!("expected constructor callable, got {other:?}"),
     }
 }
 
@@ -1817,28 +1975,28 @@ fn prelude_fallback_internal_ctor_gate_rejects_bind() {
     // prelude PUBLICLY re-exports `Bind` from primitives (an Import edge,
     // like `(export [primitives [*]])`).
     tf.set_current_module(ModuleFullPath::from("prelude"));
-    tf.symbol_table_mut().insert(
-        Symbol::from("Bind"),
-        ModuleEntry::Import {
-            source: FQSymbol {
+    tf.symbol_table_mut()
+        .expose_candidate(
+            Symbol::from("Bind"),
+            FQSymbol {
                 module: ModuleFullPath::from("primitives"),
-                symbol: Symbol::from("Bind"),
+                symbol: Symbol::from("IO.Bind"),
             },
-            visibility: Visibility::Public,
-        },
-    );
+            Visibility::Public,
+        )
+        .unwrap();
     // Also re-export a NON-internal IO ctor `Pure` to prove the gate returns
     // false for a reachable-but-not-internal ctor (not just "unreachable").
-    tf.symbol_table_mut().insert(
-        Symbol::from("Pure"),
-        ModuleEntry::Import {
-            source: FQSymbol {
+    tf.symbol_table_mut()
+        .expose_candidate(
+            Symbol::from("Pure"),
+            FQSymbol {
                 module: ModuleFullPath::from("primitives"),
-                symbol: Symbol::from("Pure"),
+                symbol: Symbol::from("IO.Pure"),
             },
-            visibility: Visibility::Public,
-        },
-    );
+            Visibility::Public,
+        )
+        .unwrap();
 
     let m = ModuleFullPath::from("app_bind");
     tf.set_current_module(m.clone());
@@ -1877,16 +2035,16 @@ fn prelude_fallback_ctor_chokepoints_off_when_bit_off() {
     let mut tf = tf();
     // prelude PUBLICLY re-exports `Bind`, and defines a public ctor `Solo`.
     tf.set_current_module(ModuleFullPath::from("prelude"));
-    tf.symbol_table_mut().insert(
-        Symbol::from("Bind"),
-        ModuleEntry::Import {
-            source: FQSymbol {
+    tf.symbol_table_mut()
+        .expose_candidate(
+            Symbol::from("Bind"),
+            FQSymbol {
                 module: ModuleFullPath::from("primitives"),
-                symbol: Symbol::from("Bind"),
+                symbol: Symbol::from("IO.Bind"),
             },
-            visibility: Visibility::Public,
-        },
-    );
+            Visibility::Public,
+        )
+        .unwrap();
     tf.register_type_def_self(
         &TypeName::from("SoloT"),
         &None,

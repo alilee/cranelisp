@@ -13,7 +13,7 @@
 //! enter the value-sparking pre-pass.
 
 use super::is_io_combinator_call;
-use cranelisp_types::{JitSymbol, ResolvedCall, Symbol};
+use cranelisp_types::{ResolvedCall, Symbol};
 
 fn builtin(name: &str) -> ResolvedCall {
     ResolvedCall::BuiltinFn {
@@ -44,9 +44,9 @@ fn non_combinator_builtins_and_other_calls_are_not_excluded() {
         );
     }
     // A non-BuiltinFn resolution (e.g. a sig-dispatched user fn) is never excluded.
-    assert!(!is_io_combinator_call(Some(&ResolvedCall::SigDispatch {
-        mangled_name: JitSymbol::from("user-fn$Int"),
-    })));
+    assert!(!is_io_combinator_call(Some(
+        &crate::test_support::sig_binding("user", "user-fn$Int",)
+    )));
     // No resolution at all (a closure-value call) is never excluded.
     assert!(!is_io_combinator_call(None));
 }

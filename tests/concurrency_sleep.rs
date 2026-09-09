@@ -90,7 +90,7 @@ fn sleep_links_and_runs_through_link_mode() {
         .assert_exit(7);
 }
 
-// spec: reactor.md §2.18 — the discriminating control: an identical program WITHOUT
+// spec: design/intrinsics/reactor.md §2.18 — the discriminating control: an identical program WITHOUT
 // the sleep returns promptly (well under the park floor). This pins that the
 // `sleep`-program's wall-clock above comes from the timer park, not from fixed
 // process/startup overhead.

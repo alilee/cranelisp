@@ -15,8 +15,8 @@ use std::io::Write;
 use std::path::Path;
 
 use cranelisp_types::{
-    ExportSpec, FQSymbol, ImportNames, ImportSpec, ModDecl, ModuleEntry, ModuleFullPath,
-    PlatformSpec, Sexp,
+    Binding, CallableOrigin, Decl, ExportSpec, FQSymbol, ImportNames, ImportSpec, ModDecl,
+    ModuleFullPath, PlatformSpec, Sexp,
 };
 
 use dashmap::DashMap;
@@ -689,7 +689,7 @@ fn generate_traits(
 ) -> String {
     let mut items: Vec<(String, String)> = Vec::new();
     for (name, entry) in st.all_symbols() {
-        if let ModuleEntry::TraitDecl { .. } = entry {
+        if matches!(entry.declaration, Decl::Trait(_)) {
             let (sexp, source) = introspection_sexp_and_source(introspection, module_path, name);
             if let Some(text) = emit_decl_or_source(sexp, source) {
                 items.push((name.to_string(), text));
@@ -790,15 +790,13 @@ fn generate_impls(
 
     // Row 1 — shells homed HERE, written HERE.
     for (_name, entry) in st.all_symbols() {
-        if let ModuleEntry::TraitImpl {
-            trait_name,
-            impl_type,
-            impl_module,
-            ..
-        } = entry
-            && impl_module == module_path
+        if let Decl::ImplShell(shell) = &entry.declaration
+            && shell.impl_module == *module_path
         {
-            keys.insert(format!("{}.{}", trait_name.name, impl_type.name));
+            keys.insert(format!(
+                "{}.{}",
+                shell.trait_name.name, shell.impl_type.name
+            ));
         }
     }
 
@@ -897,7 +895,7 @@ fn assert_section_completeness(st: &crate::code::SessionSymbolTable, module_path
 /// design first sketched, since the enums turned out exhaustive to this crate).
 /// The runtime sweep in `assert_section_completeness` remains as the documented
 /// seam + `MODULE_TRACE` hook (it fires if a future classification is set wrong).
-fn section_entry_claimed_or_excluded(name: &str, entry: &ModuleEntry<crate::code::Code>) -> bool {
+fn section_entry_claimed_or_excluded(name: &str, entry: &Binding<crate::code::Code>) -> bool {
     // Internal synthetic names (`$`-mangled impl methods / mono / multi-sig
     // variants, `__expr` / `__macro_*` wrappers) are never persisted as their
     // own row — they ride their owner's form (§8's `is_internal_listing_name`
@@ -905,49 +903,15 @@ fn section_entry_claimed_or_excluded(name: &str, entry: &ModuleEntry<crate::code
     if crate::worker::is_internal_listing_name(name) {
         return true;
     }
-    match entry {
-        // Claimed by a section generator.
-        ModuleEntry::TraitDecl { .. } => true, // §5 traits
-        ModuleEntry::TypeDef { .. } => true,   // §6 types
-        // §7 impls: claimed when written HERE (`impl_module == module_path`); a
-        // shell written in module N is N's regen row (legal exclusion, §12.2
-        // D45-amended storage model). Both dispositions are valid, so no trip.
-        ModuleEntry::TraitImpl { .. } => true,
-        // `DefKind` is EXHAUSTIVE to this crate — every current variant is named
-        // (no `_` arm). A NEW `DefKind` is therefore a COMPILE error here, forcing
-        // its author to classify it as claimed-or-excluded (louder than a runtime
-        // trip — the §12.3.1 intent, structurally).
-        ModuleEntry::Def { kind, .. } => match kind.as_ref() {
-            // §8 fns/macros.
-            cranelisp_types::DefKind::UserFn { .. } | cranelisp_types::DefKind::Macro { .. } => {
-                true
-            }
-            // A product-ctor `Def` carries the type facet — claimed by §6 types
-            // (`type_def_info()`); a sum ctor rides its `TypeDef` form. Either
-            // way a `Constructor` is never a persisted row of its own.
-            cranelisp_types::DefKind::Constructor { .. } => true,
-            // Builtin / non-persisted definition kinds (bootstrap / primitives /
-            // platform effects) — never regenerated to a user `.cl`.
-            cranelisp_types::DefKind::Primitive { .. }
-            | cranelisp_types::DefKind::PlatformEffect { .. }
-            | cranelisp_types::DefKind::PrimitiveExtern => true,
-            // Multi-sig BASE entry. Its authored `(defn h (…) (…))` form regen is
-            // a separate concern from this RT-4 close (generate_fns_and_macros
-            // handles the `UserFn`/`Macro` arms only); a recognized exclusion so
-            // the guard does NOT false-fire on live multi-sig defns.
-            cranelisp_types::DefKind::Overloaded { .. } => true,
-        },
-        // Non-persisted structural / builtin `ModuleEntry` kinds.
-        //
-        // `ModuleEntry` is EXHAUSTIVE to this crate — every current variant is
-        // named (no `_` arm). A NEW variant is a COMPILE error here, forcing its
-        // author to classify it as claimed-or-excluded before it can be persisted
-        // — the §12.3.1 completeness contract, enforced structurally (compile
-        // time > runtime).
-        ModuleEntry::Import { .. }
-        | ModuleEntry::SpecialForm { .. }
-        | ModuleEntry::IntrinsicType { .. }
-        | ModuleEntry::Ambiguous { .. } => true,
+    match &entry.declaration {
+        Decl::Callable(_)
+        | Decl::TraitMethod(_)
+        | Decl::Overloaded(_)
+        | Decl::Macro(_)
+        | Decl::Type(_)
+        | Decl::Trait(_)
+        | Decl::ImplShell(_)
+        | Decl::SpecialForm(_) => true,
     }
 }
 
@@ -1013,17 +977,14 @@ fn generate_fns_and_macros(
         // restore), but `macro_sexp` round-trips the cache — without this
         // fallback `regenerate_backing_file` would silently DROP the macro from
         // the regenerated `.cl`, breaking a cached REPL restart that uses it.
-        let (is_macro, macro_table_sexp) = match entry {
-            ModuleEntry::Def {
-                kind, docstring, ..
-            } => match kind.as_ref() {
-                cranelisp_types::DefKind::Macro { macro_sexp, .. } => {
-                    (true, Some(macro_sexp.clone()))
-                }
-                cranelisp_types::DefKind::UserFn { .. } => {
+        let (is_macro, macro_table_sexp) = match &entry.declaration {
+            Decl::Macro(declaration) => (true, Some(declaration.macro_sexp.clone())),
+            Decl::Overloaded(_) => continue,
+            Decl::Callable(callable) => match &callable.origin {
+                CallableOrigin::Plain => {
                     // Capture the live, authoritative docstring (§11.3a) so regen
                     // re-emits a `set-doc` edit into the §5.12 slot.
-                    if let Some(doc) = docstring {
+                    if let Some(doc) = &callable.docstring {
                         docstrings.insert(name.to_string(), doc.clone());
                     }
                     (false, None)
@@ -1159,11 +1120,9 @@ pub(crate) fn rehydrate_userfn_introspection_from_source(
         if name.contains('$') {
             continue;
         }
-        let is_userfn = matches!(
-            entry,
-            ModuleEntry::Def { kind, .. }
-                if matches!(kind.as_ref(), cranelisp_types::DefKind::UserFn { .. })
-        );
+        let is_userfn = entry
+            .callable()
+            .is_some_and(|callable| matches!(callable.origin, CallableOrigin::Plain));
         if !is_userfn {
             continue;
         }
@@ -1334,7 +1293,72 @@ pub fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cranelisp_types::Span;
+    use cranelisp_types::{
+        Binding, CallableOrigin, Decl, DefnVariant, Expr, MonoDefnVariant, Realization, Scheme,
+        Span, Symbol, TraitRecord, Type, TypeRecord, Visibility,
+    };
+
+    fn int_scheme() -> Scheme {
+        Scheme {
+            type_vars: Vec::new(),
+            constraints: std::collections::HashMap::new(),
+            ty: Type::Int,
+        }
+    }
+
+    fn install_userfn(
+        table: &mut crate::code::SessionSymbolTable,
+        name: &str,
+        expected_slot: usize,
+        callees: Vec<FQSymbol>,
+    ) {
+        let variant = DefnVariant {
+            params: Vec::new(),
+            body: Expr::IntLit {
+                value: 0,
+                span: Span::SYNTHETIC,
+                inferred_type: Some(Box::new(Type::Int)),
+            },
+            span: Span::SYNTHETIC,
+        };
+        let view = MonoDefnVariant {
+            name: Symbol::from(name),
+            params: Vec::new(),
+            body: cranelisp_types::MonoExpr::lenient_from_expr(
+                &variant.body,
+                &Default::default(),
+                &Default::default(),
+                &Default::default(),
+            ),
+            span: Span::SYNTHETIC,
+            mode_summary: None,
+        };
+        let slot = table
+            .install_concrete(
+                Symbol::from(name),
+                int_scheme(),
+                Vec::new(),
+                None,
+                expected_slot as u64,
+                CallableOrigin::Plain,
+                Realization::Body { view, code: None },
+                Some(variant),
+                callees,
+                Visibility::Public,
+            )
+            .expect("user-function fixture installs through lifecycle funnel");
+        assert_eq!(slot.index(), expected_slot);
+    }
+
+    fn install_macro(table: &mut crate::code::SessionSymbolTable, name: &str, macro_sexp: Sexp) {
+        crate::repl::test_support::install_macro_fixture(
+            table,
+            name,
+            macro_sexp,
+            Vec::new(),
+            Visibility::Public,
+        );
+    }
 
     #[test]
     fn merge_imports_filters_prelude() {
@@ -1404,32 +1428,12 @@ mod tests {
     // spec: design/arch/fixmes/0220 §item-3; design/int/session-persistence.md §1.3
     #[test]
     fn rehydrate_recovers_cache_loaded_userfn_dropped_from_regen() {
-        use cranelisp_types::{DefKind, Scheme, Type};
-        use std::collections::HashMap;
-
         let module = ModuleFullPath::from("user");
         let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
 
         // Simulate a cache-restored module: a UserFn `Def` populates the
         // SymbolTable but the REPL-only Introspection map has NO record for it.
-        let scheme = Scheme {
-            type_vars: vec![],
-            constraints: HashMap::new(),
-            ty: Type::Int,
-        };
-        st.insert(
-            "answer".into(),
-            ModuleEntry::def(
-                scheme,
-                DefKind::UserFn {
-                    fn_state: cranelisp_types::UserFnState::Concrete {
-                        got_slot: 0,
-                        mode_summary: None,
-                    },
-                },
-            )
-            .build(),
-        );
+        install_userfn(&mut st, "answer", 0, Vec::new());
 
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
 
@@ -1465,9 +1469,6 @@ mod tests {
     // spec: tests/plan/s101-coverage-postmortem.md §2.1 item 4
     #[test]
     fn dependency_sort_correct_and_total_under_dense_callee_edges() {
-        use cranelisp_types::{DefKind, Scheme, Type, UserFnState};
-        use std::collections::HashMap as StdHashMap;
-
         let module = ModuleFullPath::from("user");
         let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
 
@@ -1476,25 +1477,7 @@ mod tests {
             symbol: s.into(),
         };
         let mut insert_fn = |name: &str, slot: usize, callees: Vec<FQSymbol>| {
-            let scheme = Scheme {
-                type_vars: vec![],
-                constraints: StdHashMap::new(),
-                ty: Type::Int,
-            };
-            let mut entry = ModuleEntry::def(
-                scheme,
-                DefKind::UserFn {
-                    fn_state: UserFnState::Concrete {
-                        got_slot: slot,
-                        mode_summary: None,
-                    },
-                },
-            )
-            .build();
-            if let ModuleEntry::Def { callees: c, .. } = &mut entry {
-                *c = callees;
-            }
-            st.insert(name.into(), entry);
+            install_userfn(&mut st, name, slot, callees);
         };
 
         // Acyclic chain: top → mid → leaf (dense direct-call edges).
@@ -1541,40 +1524,6 @@ mod tests {
     // S102 CS-D1 — origin-uniform regen dedup (Matrix B: single-authority)
     // -----------------------------------------------------------------------
 
-    fn userfn_entry(slot: usize) -> ModuleEntry<crate::code::Code> {
-        use cranelisp_types::{DefKind, Scheme, Type, UserFnState};
-        ModuleEntry::def(
-            Scheme {
-                type_vars: vec![],
-                constraints: std::collections::HashMap::new(),
-                ty: Type::Int,
-            },
-            DefKind::UserFn {
-                fn_state: UserFnState::Concrete {
-                    got_slot: slot,
-                    mode_summary: None,
-                },
-            },
-        )
-        .build()
-    }
-
-    fn macro_entry(macro_sexp: Sexp) -> ModuleEntry<crate::code::Code> {
-        use cranelisp_types::{DefKind, Scheme, Type};
-        ModuleEntry::def(
-            Scheme {
-                type_vars: vec![],
-                constraints: std::collections::HashMap::new(),
-                ty: Type::Int,
-            },
-            DefKind::Macro {
-                clauses_meta: vec![],
-                macro_sexp,
-            },
-        )
-        .build()
-    }
-
     // Matrix B {defmacro (macro-expansion artifact) × single-authority}: a
     // macro-defining-macro turn records the ORIGINAL outer form under BOTH the
     // produced macro (`x`) and the produced defn (`x-def`). Regen MUST emit
@@ -1588,8 +1537,8 @@ mod tests {
         let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
         let expanded_defmacro =
             parse1("(defmacro x [] (macros/SexpList (macros/SCons x-def macros/SNil)))");
-        st.insert("x".into(), macro_entry(expanded_defmacro));
-        st.insert("x-def".into(), userfn_entry(0));
+        install_macro(&mut st, "x", expanded_defmacro);
+        install_userfn(&mut st, "x-def", 0, Vec::new());
 
         let original = parse1("(mdef x 1)");
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
@@ -1621,8 +1570,8 @@ mod tests {
     fn regen_literal_begin_multi_defn_emits_once() {
         let module = ModuleFullPath::from("user");
         let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
-        st.insert("a".into(), userfn_entry(0));
-        st.insert("b".into(), userfn_entry(1));
+        install_userfn(&mut st, "a", 0, Vec::new());
+        install_userfn(&mut st, "b", 1, Vec::new());
 
         let begin_form = parse1("(begin (defn a [] 1) (defn b [] 2))");
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
@@ -1651,10 +1600,10 @@ mod tests {
     fn regen_dedup_neg_distinct_forms_and_direct_defmacro_all_emit() {
         let module = ModuleFullPath::from("user");
         let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
-        st.insert("f".into(), userfn_entry(0));
-        st.insert("g".into(), userfn_entry(1));
+        install_userfn(&mut st, "f", 0, Vec::new());
+        install_userfn(&mut st, "g", 1, Vec::new());
         let twice = parse1("(defmacro twice [e] (add-i64 e e))");
-        st.insert("twice".into(), macro_entry(twice.clone()));
+        install_macro(&mut st, "twice", twice.clone());
 
         // Distinct spans: parse the two defns from one source string.
         let sexps = cranelisp_frontend::parse("(defn f [] 1)\n(defn g [] 1)").unwrap();
@@ -1767,7 +1716,7 @@ mod tests {
         let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
         let authored = "(defmacro twice [e] `(add-i64 ~e ~e))";
         let desugared = parse1(authored);
-        st.insert("twice".into(), macro_entry(desugared.clone()));
+        install_macro(&mut st, "twice", desugared.clone());
 
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
         let fq = FQSymbol {
@@ -1799,7 +1748,7 @@ mod tests {
     fn regen_source_first_neg_inconsistent_source_falls_back_to_render() {
         let module = ModuleFullPath::from("user");
         let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
-        st.insert("f".into(), userfn_entry(0));
+        install_userfn(&mut st, "f", 0, Vec::new());
 
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
         let fq = FQSymbol {
@@ -1830,27 +1779,11 @@ mod tests {
     // spec: design/int/session-persistence.md §11.3a
     #[test]
     fn regen_source_first_docstring_mismatch_falls_back_to_reconciled_render() {
-        use cranelisp_types::{DefKind, Scheme, Type, UserFnState};
         let module = ModuleFullPath::from("user");
         let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
-        st.insert(
-            "f".into(),
-            ModuleEntry::def(
-                Scheme {
-                    type_vars: vec![],
-                    constraints: std::collections::HashMap::new(),
-                    ty: Type::Int,
-                },
-                DefKind::UserFn {
-                    fn_state: UserFnState::Concrete {
-                        got_slot: 0,
-                        mode_summary: None,
-                    },
-                },
-            )
-            .docstring("new doc")
-            .build(),
-        );
+        install_userfn(&mut st, "f", 0, Vec::new());
+        st.set_plain_callable_docstring(&Symbol::from("f"), "new doc".to_string())
+            .expect("plain callable docstring fixture updates through funnel");
 
         let authored = "(defn f \"old doc\" [x] x)";
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
@@ -1880,27 +1813,11 @@ mod tests {
     // spec: design/int/session-persistence.md §11.3a
     #[test]
     fn regen_source_first_docstring_consistent_emits_verbatim() {
-        use cranelisp_types::{DefKind, Scheme, Type, UserFnState};
         let module = ModuleFullPath::from("user");
         let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
-        st.insert(
-            "f".into(),
-            ModuleEntry::def(
-                Scheme {
-                    type_vars: vec![],
-                    constraints: std::collections::HashMap::new(),
-                    ty: Type::Int,
-                },
-                DefKind::UserFn {
-                    fn_state: UserFnState::Concrete {
-                        got_slot: 0,
-                        mode_summary: None,
-                    },
-                },
-            )
-            .docstring("the doc")
-            .build(),
-        );
+        install_userfn(&mut st, "f", 0, Vec::new());
+        st.set_plain_callable_docstring(&Symbol::from("f"), "the doc".to_string())
+            .expect("plain callable docstring fixture updates through funnel");
 
         let authored = "(defn f \"the doc\" [x]    x)"; // authored spacing preserved
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
@@ -1929,7 +1846,7 @@ mod tests {
     fn rehydrate_captures_verbatim_source_slice() {
         let module = ModuleFullPath::from("user");
         let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
-        st.insert("g".into(), userfn_entry(0));
+        install_userfn(&mut st, "g", 0, Vec::new());
 
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
         // Authored formatting a pretty-printer would not reproduce.
@@ -2215,30 +2132,14 @@ mod tests {
     // spec: design/int/session-persistence.md §11.3a — set-doc persists via regen
     #[test]
     fn generate_module_source_emits_live_docstring() {
-        use cranelisp_types::{DefKind, Scheme, Type, UserFnState};
-        use std::collections::HashMap;
-
         let module = ModuleFullPath::from("user");
         let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
-        let scheme = Scheme {
-            type_vars: vec![],
-            constraints: HashMap::new(),
-            ty: Type::Int,
-        };
-        st.insert(
-            "double".into(),
-            ModuleEntry::def(
-                scheme,
-                DefKind::UserFn {
-                    fn_state: UserFnState::Concrete {
-                        got_slot: 0,
-                        mode_summary: None,
-                    },
-                },
-            )
-            .docstring("doubles its argument")
-            .build(),
-        );
+        install_userfn(&mut st, "double", 0, Vec::new());
+        st.set_plain_callable_docstring(
+            &Symbol::from("double"),
+            "doubles its argument".to_string(),
+        )
+        .expect("plain callable docstring fixture updates through funnel");
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
         let fq = FQSymbol {
             module: module.clone(),
@@ -2337,30 +2238,10 @@ mod tests {
     // spec: spec/08-modules.md §8.16.5 — canonical leading position
     #[test]
     fn generate_module_source_emits_preamble_section_zero() {
-        use cranelisp_types::{DefKind, Scheme, Type, UserFnState};
-        use std::collections::HashMap;
-
         let module = ModuleFullPath::from("user");
         let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
         st.module_preamble = Some("Header doc\nsecond line".to_string());
-        let scheme = Scheme {
-            type_vars: vec![],
-            constraints: HashMap::new(),
-            ty: Type::Int,
-        };
-        st.insert(
-            "answer".into(),
-            ModuleEntry::def(
-                scheme,
-                DefKind::UserFn {
-                    fn_state: UserFnState::Concrete {
-                        got_slot: 0,
-                        mode_summary: None,
-                    },
-                },
-            )
-            .build(),
-        );
+        install_userfn(&mut st, "answer", 0, Vec::new());
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
         let fq = FQSymbol {
             module: module.clone(),
@@ -2404,8 +2285,8 @@ mod tests {
         let module = ModuleFullPath::from("user");
         let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
         // The synthetic expression wrapper + a real user fn.
-        st.insert("__expr".into(), userfn_entry(0));
-        st.insert("g".into(), userfn_entry(1));
+        install_userfn(&mut st, "__expr", 0, Vec::new());
+        install_userfn(&mut st, "g", 1, Vec::new());
 
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
         introspection
@@ -2452,9 +2333,9 @@ mod tests {
         let module = ModuleFullPath::from("user");
         let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
         // A real user fn whose name starts with `__expr` but is NOT the wrapper.
-        st.insert("__expr-helper".into(), userfn_entry(0));
+        install_userfn(&mut st, "__expr-helper", 0, Vec::new());
         // The transient wrapper itself, for contrast.
-        st.insert("__expr".into(), userfn_entry(1));
+        install_userfn(&mut st, "__expr", 1, Vec::new());
 
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
         introspection
@@ -2488,30 +2369,34 @@ mod tests {
     // FIXME 0538 — source-first regen for §5–7 (traits/types)
     // -----------------------------------------------------------------------
 
-    fn type_def_entry(module: &ModuleFullPath, type_name: &str) -> ModuleEntry<crate::code::Code> {
+    fn type_def_entry(module: &ModuleFullPath, type_name: &str) -> Binding<crate::code::Code> {
         use cranelisp_types::{FQTypeName, TypeDefInfo, Visibility};
-        ModuleEntry::TypeDef {
-            info: TypeDefInfo {
-                name: FQTypeName::new(module.clone(), type_name.into()),
-                type_params: vec![],
-                constructors: vec![],
-            },
-            visibility: Visibility::Public,
-            docstring: None,
-        }
+        Binding::new(
+            Decl::Type(TypeRecord::Defined {
+                info: TypeDefInfo {
+                    name: FQTypeName::new(module.clone(), type_name.into()),
+                    type_params: vec![],
+                    constructors: vec![],
+                },
+                docstring: None,
+            }),
+            Visibility::Public,
+        )
     }
 
-    fn trait_decl_entry(trait_name: &str) -> ModuleEntry<crate::code::Code> {
+    fn trait_decl_entry(trait_name: &str) -> Binding<crate::code::Code> {
         use cranelisp_types::{TraitDeclInfo, Visibility};
-        ModuleEntry::TraitDecl {
-            info: TraitDeclInfo {
-                name: trait_name.into(),
-                type_params: vec![],
-                methods: vec![],
-            },
-            visibility: Visibility::Public,
-            docstring: None,
-        }
+        Binding::new(
+            Decl::Trait(TraitRecord::new(
+                TraitDeclInfo {
+                    name: trait_name.into(),
+                    type_params: vec![],
+                    methods: vec![],
+                },
+                None,
+            )),
+            Visibility::Public,
+        )
     }
 
     // Source-first: a `deftype` record carrying BOTH sexp and a non-canonically
@@ -2523,7 +2408,8 @@ mod tests {
     fn regen_type_decl_source_first_verbatim() {
         let module = ModuleFullPath::from("user");
         let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
-        st.insert("Pt".into(), type_def_entry(&module, "Pt"));
+        st.install_binding("Pt".into(), type_def_entry(&module, "Pt"))
+            .expect("type fixture installs");
 
         // Non-canonical spacing; re-parses to the recorded sexp.
         let authored = "(deftype   Pt (MkPt [:Int x]  [:Int y]))";
@@ -2553,7 +2439,8 @@ mod tests {
     fn regen_type_decl_falls_back_to_pretty_on_source_mismatch() {
         let module = ModuleFullPath::from("user");
         let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
-        st.insert("Pt".into(), type_def_entry(&module, "Pt"));
+        st.install_binding("Pt".into(), type_def_entry(&module, "Pt"))
+            .expect("type fixture installs");
 
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
         let mut rec = introspection
@@ -2584,7 +2471,8 @@ mod tests {
     fn regen_trait_decl_source_only_emits() {
         let module = ModuleFullPath::from("user");
         let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
-        st.insert("Sizeable".into(), trait_decl_entry("Sizeable"));
+        st.install_binding("Sizeable".into(), trait_decl_entry("Sizeable"))
+            .expect("trait fixture installs");
 
         let authored = "(deftrait (Sizeable a) (size [a] Int))";
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
@@ -2612,7 +2500,8 @@ mod tests {
     fn regen_type_decl_no_record_is_skipped() {
         let module = ModuleFullPath::from("user");
         let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
-        st.insert("Pt".into(), type_def_entry(&module, "Pt"));
+        st.install_binding("Pt".into(), type_def_entry(&module, "Pt"))
+            .expect("type fixture installs");
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
         let out = generate_module_source(&st, Some(&introspection), &module);
         assert!(
@@ -2625,21 +2514,24 @@ mod tests {
     // RT-4 — impl-source-regen close (session-persistence.md §12)
     // -----------------------------------------------------------------------
 
-    fn trait_impl_shell(
+    fn install_trait_impl_shell(
+        table: &mut crate::code::SessionSymbolTable,
         home: &ModuleFullPath,
         trait_name: &str,
         impl_type_module: &ModuleFullPath,
         impl_type: &str,
         impl_module: &ModuleFullPath,
-    ) -> ModuleEntry<crate::code::Code> {
-        use cranelisp_types::{FQTraitName, FQTypeName, Visibility};
-        ModuleEntry::TraitImpl {
-            trait_name: FQTraitName::new(home.clone(), trait_name.into()),
-            impl_type: FQTypeName::new(impl_type_module.clone(), impl_type.into()),
-            impl_module: impl_module.clone(),
-            methods: vec!["dp".into()],
-            visibility: Visibility::Public,
-        }
+    ) {
+        use cranelisp_types::{FQTraitName, FQTypeName, Visibility, WrittenTraitImpl};
+        let record = WrittenTraitImpl::new(
+            FQTraitName::new(home.clone(), trait_name.into()),
+            FQTypeName::new(impl_type_module.clone(), impl_type.into()),
+            impl_module.clone(),
+            vec!["dp".into()],
+            Visibility::Public,
+        );
+        cranelisp_types::enrol_written_trait_impl(table, &record)
+            .expect("trait impl shell fixture enrols through discovery funnel");
     }
 
     // §12.3 row 1: an impl of an M-homed trait, WRITTEN IN M. The registrar stages
@@ -2655,10 +2547,7 @@ mod tests {
         let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
         // Trait homed at `user`, so its shell lives in `user`'s table (== st),
         // written in `user`. Production shape (shell at trait home).
-        st.insert(
-            "impl$user/W$user/Disp".into(),
-            trait_impl_shell(&module, "Disp", &module, "W", &module),
-        );
+        install_trait_impl_shell(&mut st, &module, "Disp", &module, "W", &module);
 
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
         introspection
@@ -2689,10 +2578,7 @@ mod tests {
         let other = ModuleFullPath::from("other");
         let mut st = crate::code::SessionSymbolTable::new_with_params(home.clone());
         // Trait Disp homed at `user` (shell in st), impl written in `other`.
-        st.insert(
-            "impl$other/X$user/Disp".into(),
-            trait_impl_shell(&home, "Disp", &other, "X", &other),
-        );
+        install_trait_impl_shell(&mut st, &home, "Disp", &other, "X", &other);
         // The writer `other` records the source under `{other, "Disp.X"}` — NOT
         // under `user`. `user`'s regen must not reach it.
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
@@ -2750,10 +2636,7 @@ mod tests {
     fn generate_impls_dedups_impl_reachable_via_both_rows() {
         let module = ModuleFullPath::from("user");
         let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
-        st.insert(
-            "impl$user/W$user/Disp".into(),
-            trait_impl_shell(&module, "Disp", &module, "W", &module),
-        );
+        install_trait_impl_shell(&mut st, &module, "Disp", &module, "W", &module);
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
         introspection
             .entry(FQSymbol {
@@ -2806,17 +2689,16 @@ mod tests {
     fn section_completeness_guard_passes_for_realistic_module() {
         let module = ModuleFullPath::from("user");
         let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
-        st.insert("Disp".into(), trait_decl_entry("Disp"));
-        st.insert("W".into(), type_def_entry(&module, "W"));
-        st.insert("g".into(), userfn_entry(0));
-        st.insert(
-            "impl$user/W$user/Disp".into(),
-            trait_impl_shell(&module, "Disp", &module, "W", &module),
-        );
+        st.install_binding("Disp".into(), trait_decl_entry("Disp"))
+            .expect("trait fixture installs");
+        st.install_binding("W".into(), type_def_entry(&module, "W"))
+            .expect("type fixture installs");
+        install_userfn(&mut st, "g", 0, Vec::new());
+        install_trait_impl_shell(&mut st, &module, "Disp", &module, "W", &module);
         // Also an internal `$`-mangled impl method + the `__expr` wrapper — both
         // legal exclusions (ride their owner / transient).
-        st.insert("dp$user/W".into(), userfn_entry(1));
-        st.insert("__expr".into(), userfn_entry(2));
+        install_userfn(&mut st, "dp$user/W", 1, Vec::new());
+        install_userfn(&mut st, "__expr", 2, Vec::new());
         // Every entry must be claimed-or-excluded (the guard's `debug_assert!`
         // would panic this test otherwise).
         for (name, entry) in st.all_symbols() {

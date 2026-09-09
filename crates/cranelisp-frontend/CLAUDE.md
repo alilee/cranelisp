@@ -254,11 +254,12 @@ session is the invariant. Auto-gensym in templates only fires at depth 0.
 
 ## deftype field desugaring
 
-`build_field_list` stores a bare (unannotated) field name as
-`TypeExpr::TypeVar("")` — the empty string is the "assign me a fresh var"
-sentinel. `desugar_type_def` then maps each unique bare field to a sequential
-letter (`a`, `b`, … via `sequential_type_var`), consistent across constructors,
-and infers `type_params` only when none were declared on the head.
+The parsed head preserves whether its parameter list was omitted or written,
+and a parsed field temporarily preserves a missing type only so the builder can
+report the field's own span. A bare head is monomorphic; a parenthesized head is
+the complete parameter list. Every field must have a written type, and every
+type variable in that type must be declared by the head. Validation completes
+before any `ParsedEntry` is emitted.
 
 ## Debugging
 

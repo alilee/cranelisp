@@ -12,6 +12,148 @@ mod annotation;
 
 mod check_form_arms;
 
+fn sentinel_body_frame(module: &ModuleFullPath) -> crate::checker::BodyFrame {
+    crate::checker::BodyFrame {
+        rigid_vars: HashSet::from([999]),
+        written_var_scope: Some(HashMap::from([(Symbol::from("outer"), 998)])),
+        recursion: Some(crate::checker::RecursionBinding {
+            name: Symbol::from("outer-recursion"),
+            frame: 0,
+        }),
+        pending_name_uses: vec![crate::candidate_selection::PendingNameUse {
+            written_name: Symbol::from("outer-name"),
+            source_span: Span::new(80, 81),
+            anchor: Type::Int,
+            survivors: vec![FQSymbol {
+                module: module.clone(),
+                symbol: Symbol::from("outer-name"),
+            }],
+            considered: Vec::new(),
+            applications: vec![crate::candidate_selection::PendingApplication {
+                call_span: Span::new(82, 83),
+                argument_types: vec![Type::Int],
+                result_type: Type::Int,
+            }],
+        }],
+        pending_pattern_uses: vec![crate::candidate_selection::PendingPatternUse {
+            written_name: Symbol::from("OuterCtor"),
+            source_span: Span::new(84, 85),
+            scrutinee: Type::Int,
+            binder_anchors: vec![Type::Int],
+            survivors: Vec::new(),
+            considered: Vec::new(),
+        }],
+        user_fn_refs: HashMap::from([(
+            Span::new(90, 91),
+            FQSymbol {
+                module: module.clone(),
+                symbol: Symbol::from("outer-ref"),
+            },
+        )]),
+    }
+}
+
+fn register_then_require_body_error(
+    tc: &mut crate::checker::TestFixture,
+    module: &ModuleFullPath,
+    defn: &TopLevel,
+) {
+    let mut accumulator = ModuleCheckAccumulator::new();
+    let registered = tc
+        .check_form(module, defn, CheckPass::Register, &mut accumulator)
+        .unwrap();
+    tc.merge_form_result(module, &mut accumulator, registered);
+    let expected_frame = sentinel_body_frame(module);
+    tc.state.body_frame = expected_frame.clone();
+    let frames_before = tc.state.env.top_frame_index();
+
+    assert!(
+        tc.check_form(module, defn, CheckPass::CheckBody, &mut accumulator)
+            .is_err()
+    );
+    assert_eq!(tc.state.env.top_frame_index(), frames_before);
+    assert_eq!(tc.state.body_frame, expected_frame);
+}
+
+// spec: design/typecheck/checked-body-publication.md §11.4;
+//   tests/plan/s121-test-plan.md §3.8 BF-1.
+#[test]
+fn body_frame_and_scope_restore_together_on_body_error() {
+    let mut tc = tc_with_prims();
+    let module = ModuleFullPath::from("test");
+    let defn = TopLevel::Defn(Defn {
+        name: Symbol::from("bad"),
+        docstring: None,
+        variants: vec![DefnVariant {
+            params: vec![(Symbol::from("x"), None)],
+            body: Expr::Apply {
+                callee: Box::new(Expr::var(Symbol::from("add-i64"), span(10, 17))),
+                args: vec![
+                    Expr::var(Symbol::from("x"), span(18, 19)),
+                    Expr::BoolLit {
+                        value: true,
+                        span: span(20, 24),
+                        inferred_type: None,
+                    },
+                ],
+                span: span(9, 25),
+                resolved_call: None,
+                inferred_type: None,
+            },
+            span: span(0, 26),
+        }],
+        visibility: Visibility::Public,
+        span: span(0, 26),
+    });
+    register_then_require_body_error(&mut tc, &module, &defn);
+
+    // Candidate-settlement failure takes the same restore path. Two equally
+    // typed imported candidates survive inference and are refused only by the
+    // final body-scoped candidate drain.
+    for source in ["left", "right"] {
+        tc.set_current_module(ModuleFullPath::from(source));
+        seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
+        check_src(&mut tc, "(defn choice [:Int x] :Int x)");
+    }
+    tc.set_current_module(module.clone());
+    for source in ["left", "right"] {
+        tc.symbol_table_mut()
+            .expose_candidate(
+                Symbol::from("choice"),
+                FQSymbol {
+                    module: ModuleFullPath::from(source),
+                    symbol: Symbol::from("choice"),
+                },
+                Visibility::Public,
+            )
+            .unwrap();
+    }
+    let candidate_error = TopLevel::Defn(Defn {
+        name: Symbol::from("candidate-error"),
+        docstring: None,
+        variants: vec![DefnVariant {
+            params: vec![(
+                Symbol::from("x"),
+                Some(TypeExpr::Named(cranelisp_types::TypeRef::new(
+                    None,
+                    TypeName::from("Int"),
+                ))),
+            )],
+            body: Expr::Apply {
+                callee: Box::new(Expr::var(Symbol::from("choice"), span(110, 116))),
+                args: vec![Expr::var(Symbol::from("x"), span(117, 118))],
+                span: span(109, 119),
+                resolved_call: None,
+                inferred_type: None,
+            },
+            span: span(100, 120),
+        }],
+        visibility: Visibility::Public,
+        span: span(100, 120),
+    });
+    register_then_require_body_error(&mut tc, &module, &candidate_error);
+}
+
 // spec: 03-types §3.5.1 — recursive function inferred as monomorphic via self-reference
 #[test]
 fn test_check_program_recursive_function() {
@@ -82,7 +224,12 @@ fn test_check_program_recursive_function() {
 
     tc.check_program_self(&program).unwrap();
 
-    if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("fact") {
+    if let Some(scheme) = tc
+        .symbol_table()
+        .get("fact")
+        .and_then(Binding::callable)
+        .map(|c| &c.arm.scheme)
+    {
         assert!(
             scheme.type_vars.is_empty(),
             "fact should be monomorphic (Int -> Int)"
@@ -366,7 +513,12 @@ fn test_check_program_forward_reference() {
     tc.check_program_self(&program).unwrap();
 
     // add-self is monomorphic: Fn([Int], Int) — add-i64 pins y to Int
-    if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("add-self") {
+    if let Some(scheme) = tc
+        .symbol_table()
+        .get("add-self")
+        .and_then(Binding::callable)
+        .map(|c| &c.arm.scheme)
+    {
         assert!(
             scheme.type_vars.is_empty(),
             "add-self should have no quantified vars (monomorphic via add-i64)"
@@ -381,7 +533,12 @@ fn test_check_program_forward_reference() {
     }
 
     // double should also be monomorphic (calls add-self with Int)
-    if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("double") {
+    if let Some(scheme) = tc
+        .symbol_table()
+        .get("double")
+        .and_then(Binding::callable)
+        .map(|c| &c.arm.scheme)
+    {
         assert!(
             scheme.type_vars.is_empty(),
             "double should have no quantified vars (monomorphic via add-self)"
@@ -451,14 +608,24 @@ fn test_check_program_forward_reference_pinned() {
     tc.check_program_self(&program).unwrap();
 
     // double is pinned: Fn([Int], Int) — annotation + add-i64 both constrain to Int
-    if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("double") {
+    if let Some(scheme) = tc
+        .symbol_table()
+        .get("double")
+        .and_then(Binding::callable)
+        .map(|c| &c.arm.scheme)
+    {
         assert_eq!(scheme.ty, Type::Fn(vec![Type::Int], Box::new(Type::Int)));
     } else {
         panic!("double not found");
     }
 
     // add-self is also pinned: Fn([Int], Int) — add-i64 constrains y to Int
-    if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("add-self") {
+    if let Some(scheme) = tc
+        .symbol_table()
+        .get("add-self")
+        .and_then(Binding::callable)
+        .map(|c| &c.arm.scheme)
+    {
         assert_eq!(scheme.ty, Type::Fn(vec![Type::Int], Box::new(Type::Int)));
     } else {
         panic!("add-self not found");
@@ -550,7 +717,12 @@ fn test_check_program_string_in_function() {
 
     tc.check_program_self(&program).unwrap();
 
-    if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("greet") {
+    if let Some(scheme) = tc
+        .symbol_table()
+        .get("greet")
+        .and_then(Binding::callable)
+        .map(|c| &c.arm.scheme)
+    {
         assert_eq!(scheme.ty, Type::Fn(vec![], Box::new(Type::String)));
     } else {
         panic!("greet not found in symbol table");
@@ -581,7 +753,11 @@ fn u7_rank1_poly_fn_return_written_and_unwritten_parity_accepted() {
             panic!("`{src}` MUST be accepted (rank-1 poly-return, W6.3 ruling); got {e:?}")
         });
         let table = tc.symbol_table();
-        let Some(ModuleEntry::Def { scheme, .. }) = table.get(name) else {
+        let Some(scheme) = table
+            .get(name)
+            .and_then(Binding::callable)
+            .map(|c| &c.arm.scheme)
+        else {
             panic!("{name} not found after checking `{src}`");
         };
         scheme.clone()
@@ -670,7 +846,11 @@ fn u7_rank1_poly_value_accepted_genuine_restrictions_enforced_elsewhere() {
          (§3.10) — MUST be accepted (B-1)",
     );
     let table = tc.symbol_table();
-    let Some(ModuleEntry::Def { scheme, .. }) = table.get("f1") else {
+    let Some(scheme) = table
+        .get("f1")
+        .and_then(Binding::callable)
+        .map(|c| &c.arm.scheme)
+    else {
         panic!("f1 not found");
     };
     assert_eq!(
@@ -736,16 +916,22 @@ fn u7_rank1_poly_value_accepted_genuine_restrictions_enforced_elsewhere() {
         "rank-2 rejection is a unification type conflict; got: {msg4}"
     );
 
-    // RESULT-ONLY var held unresolved is STILL rejected — by the §3.11
-    // ambiguity gate (pin-the-type), NOT the removed eager check.
+    // An unused generic definition is admitted; its unresolved runtime use is not.
     let mut tc5 = tc_with_prims();
     let sexps5 = cranelisp_frontend::parse("(defn constf [x] (fn [y] x))\n(defn g [] (constf 5))")
         .expect("parse");
     let program5 = cranelisp_frontend::build_forms(&sexps5).expect("build_forms");
-    let err5 = tc5.check_program_self(&program5).expect_err(
-        "a result-only unresolved var at a codegen position MUST be rejected by the \
-         §3.11 ambiguity gate",
-    );
+    tc5.check_program_self(&program5)
+        .expect("an unused generic wrapper is admitted");
+    let mut tc5 = tc_with_prims();
+    let use_sexps = cranelisp_frontend::parse(
+        "(defn constf [x] (fn [y] x)) (defn g [] (constf 5)) (let [f (g)] 0)",
+    )
+    .unwrap();
+    let use_forms = cranelisp_frontend::build_forms(&use_sexps).unwrap();
+    let err5 = tc5
+        .check_program_self(&use_forms)
+        .expect_err("an unresolved runtime use is rejected");
     let msg5 = format!("{err5}").to_lowercase();
     assert!(
         msg5.contains("ambiguous"),
@@ -797,7 +983,11 @@ fn u4_value_position_constraint_is_a_satisfaction_check() {
     tc.check_program_self(&program)
         .expect("a value-position `:Num2 5` MUST be an accepted satisfaction check (row 12)");
     let table = tc.symbol_table();
-    let Some(ModuleEntry::Def { scheme, .. }) = table.get("f12") else {
+    let Some(scheme) = table
+        .get("f12")
+        .and_then(Binding::callable)
+        .map(|c| &c.arm.scheme)
+    else {
         panic!("f12 not found");
     };
     assert_eq!(
@@ -917,12 +1107,14 @@ fn generic_defn_is_polymorphic_not_ambiguous() {
         .expect("a generic defn must NOT be rejected as ambiguous");
     assert!(
         matches!(
-            tc.symbol_table().get("id"),
-            Some(ModuleEntry::Def { kind, .. })
-                if matches!(
-                    kind.as_ref(),
-                    DefKind::UserFn { fn_state: UserFnState::Polymorphic(_) }
-                )
+            tc.symbol_table()
+                .get("id")
+                .and_then(Binding::callable)
+                .map(|c| &c.arm.life),
+            Some(Life::Template {
+                kind: TemplateKind::Parametric,
+                ..
+            })
         ),
         "a generic defn is a sound Polymorphic template, not an error",
     );
@@ -1024,7 +1216,11 @@ fn self_qualified_ref_let_shadow_wins_sec_4_6() {
     tc.check_program_self(&program)
         .expect("a self-qualified ref under a let-shadow MUST type-check");
     let table = tc.symbol_table();
-    let Some(ModuleEntry::Def { scheme, .. }) = table.get("caller") else {
+    let Some(scheme) = table
+        .get("caller")
+        .and_then(Binding::callable)
+        .map(|c| &c.arm.scheme)
+    else {
         panic!("caller not found");
     };
     match &scheme.ty {
@@ -1059,7 +1255,11 @@ fn self_qualified_ref_match_arm_shadow_wins_sec_4_6() {
     tc.check_program_self(&program)
         .expect("a self-qualified ref under a match-arm shadow MUST type-check");
     let table = tc.symbol_table();
-    let Some(ModuleEntry::Def { scheme, .. }) = table.get("caller") else {
+    let Some(scheme) = table
+        .get("caller")
+        .and_then(Binding::callable)
+        .map(|c| &c.arm.scheme)
+    else {
         panic!("caller not found");
     };
     match &scheme.ty {
@@ -1091,8 +1291,7 @@ fn self_qualified_ref_match_arm_shadow_wins_sec_4_6() {
 #[test]
 fn self_qualified_defn_body_self_call_type_checks() {
     let mut tc = tc_with_prims();
-    let src = "(defn qloop [x] 0)\n\
-               (defn qloop [x] (if true 0 (test/qloop x)))";
+    let src = "(defn qloop [x] (if true 0 (test/qloop x)))";
     let sexps = cranelisp_frontend::parse(src).expect("parse");
     let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
     tc.check_program_self(&program).expect(
@@ -1100,7 +1299,11 @@ fn self_qualified_defn_body_self_call_type_checks() {
          `test/qloop` in module `test` IS the recursion-local `qloop`)",
     );
     let table = tc.symbol_table();
-    let Some(ModuleEntry::Def { scheme, .. }) = table.get("qloop") else {
+    let Some(scheme) = table
+        .get("qloop")
+        .and_then(Binding::callable)
+        .map(|c| &c.arm.scheme)
+    else {
         panic!("qloop not found");
     };
     // Body `(if true 0 (test/qloop x))`: the `0` branch fixes the return to

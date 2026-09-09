@@ -44,55 +44,36 @@
 //!   `format_type_display` / `format_type_with_vars` free fns retired; their
 //!   lettered-var capability lives on as `VarNaming::Lettered`. See
 //!   `design/arch/bounded-contexts.md` §7 ("Type rendering").
-//! - **Symbol table** ([`SymbolTable`], [`SymbolTables`], [`ModuleEntry`],
-//!   [`DefKind`], [`OverloadVariant`], [`ConstrainedFn`],
-//!   [`MacroClauseInfo`], [`MacroParam`], [`ImportSpec`], [`ExportSpec`],
-//!   [`ImportNames`], [`PlatformSpec`], [`ModDecl`],
+//! - **Symbol table** ([`SymbolTable`], [`SymbolTables`], [`Binding`],
+//!   [`NameCandidate`], [`Decl`], [`Callable`], [`CallableArm`],
+//!   [`OverloadedCallable`], [`MacroDeclaration`], [`MacroClause`],
+//!   [`CallableTarget`], [`Life`], [`CallableOrigin`], [`Realization`], [`MacroParam`],
+//!   [`ImportSpec`], [`ExportSpec`], [`ImportNames`], [`PlatformSpec`], [`ModDecl`],
 //!   [`ensure_module_exists`], [`install_module`],
 //!   [`EnsureOutcome`], the chain-follow primitives) — THE per-module
-//!   store. The structural-decl Vec fields (`imports`/`exports`/`platforms`/
+//!   store. Each private per-spelling entry contains an optional canonical
+//!   binding and terminal candidate references. Callable lifecycle transitions
+//!   are enforced by `SymbolTable` funnels. The symbols map
+//!   is private; free reads use lookup and iterator projections. Structural
+//!   declaration Vec fields (`imports`/`exports`/`platforms`/
 //!   `submodules`) are `pub` and ARE the append contract (direct push,
 //!   source/authorship order, no dedup — FIXME 0918 resolved the Decision-39
 //!   carrier question by deleting the unused enum carrier). [`SymbolTables<C, L>`] is the session-level collection
 //!   threaded across frontend, typecheck, and the integration layer.
-//!   All per-symbol
-//!   metadata lives on `ModuleEntry`; structural declarations live as Vec
-//!   fields on `SymbolTable`. Generic over `C: CodeStore` (per-function
+//!   Generic over `C: CodeStore` (per-function
 //!   code carrier) and `L: LinkerStore` (per-module linker carrier);
 //!   both default to `()` so crates that don't handle compiled code work
 //!   with `SymbolTable<(), ()>` and never see the parameters.
-//!   **Callability is structural (S83, FIXME 0356/0357, Principle 20):**
-//!   the GOT slot through which an entry is invoked lives on the callable
-//!   [`DefKind`] variants ([`UserFnState::Concrete`], [`DefKind::Primitive`],
-//!   [`DefKind::Constructor`]) — not as a flat `ModuleEntry::Def` field. A
-//!   constrained-fn template ([`ModuleEntry::is_constrained_template`]) is
-//!   [`UserFnState::Constrained`], which carries no slot, so it
-//!   *structurally cannot* hold a callable address — the once-illegal
-//!   pairing is unconstructable. **Generalised in S84 (FIXME 0377):** a slot
-//!   ⟺ the def's type is fully concrete (`Type::is_concrete()`), not merely
-//!   ⟺ it is unconstrained; a determined-but-non-concrete generic def
-//!   ([`UserFnState::Polymorphic`], carrying [`ParametricFn`]) is *also*
-//!   slot-less — only its concrete mono instances are callable. The
-//!   **callable runtime address** is read
-//!   through [`ModuleEntry::callable_got_slot`] (the single read-through
-//!   point; trivial since the reshape). The S82 stopgap
-//!   (`mark_constrained_template()` flip-and-clear sole-writer +
-//!   `assert_well_formed()` phantom-slot guard) is retired.
-//!   **S119 types-first slice ([`CallableSlot`], [`SlotMintError`],
-//!   [`CtorState`], [`SymbolTable::mint_callable_slot`]):** the witness-
-//!   carrying slot vocabulary is landed — a fresh slot for a callable comes
-//!   from the ONE fallible mint, which checks `is_concrete()` and allocates
-//!   in one act; the kind-field retypes onto `CallableSlot` (and
-//!   `DefKind::Constructor`'s flip onto the dormant `CtorState` sum) are the
-//!   S120 wash (FIXME 0931; `design/arch/concreteness-types-first.md` §3),
-//!   whose change-set owns the accompanying `CACHE_SCHEMA_VERSION` window.
-//!   See `design/arch/bounded-contexts.md` §7 "Callability is structural" and
-//!   Principle 20.
+//!   **Callability is structural:** only [`Life::Concrete`] and
+//!   [`Life::Broken`] carry a [`CallableSlot`]; [`Life::Template`],
+//!   [`Life::Declared`], [`Life::Inline`] and [`Life::HostPromised`] cannot.
+//!   Allocation derives from live claims plus [`RetiredSlot`] tombstones, and
+//!   [`SymbolTable::validate_lifecycle`] rechecks restored state.
 //! - **Module aliases** ([`ModuleAliasEntry`], [`ModuleAliases`]) — the
 //!   parallel session-level alias table introduced by spec §8.3.4
 //!   (import alias) and §8.4.4 (export mount). Lives at session scope
 //!   alongside [`SymbolTables`], keyed by the alias's full path; §8.6.6
-//!   qualified-name resolution walks this table by longest-prefix-match.
+//!   qualified-name resolution walks this table with scoped keyed probes.
 //!   See `design/arch/bounded-contexts.md` §7 ("Module aliases live at
 //!   session level").
 //! - **Sealed marker traits** ([`CodeStore`], [`LinkerStore`]) — empty
@@ -100,16 +81,13 @@
 //!   them by virtue of their concrete `C` and `L` satisfying the bounds;
 //!   there is no method surface to extend.
 //! - **Ownership-inference contract** ([`Mode`], [`ModeSummary`],
-//!   [`ResultMode`], [`ParamFlow`], [`PrimitiveBody`],
+//!   [`ResultMode`], [`ParamFlow`],
 //!   [`ownership_analysis_off`]) — the typecheck→backend memory-model
-//!   carrier (S102 CS-A): the mode lattice + per-callable summary riding the
-//!   callable [`DefKind`] variants' `mode_summary` slot (read via
-//!   [`ModuleEntry::mode_summary`]; ⊤-on-absence accessors live on
+//!   carrier: the mode lattice plus per-callable summary riding
+//!   [`Life::Concrete`] (read via [`Binding::mode_summary`]); ⊤-on-absence accessors live on
 //!   `ModeSummary` — the ONE home for conservative reads), advisory site
 //!   facts on [`MonoExpr`] alloc/capture/projection nodes, the per-entry
-//!   value-use mark, the [`PrimitiveBody`] body/dispatch discriminator
-//!   (FIXME 0476 — inline primitives are slot-less by construction;
-//!   resolution stops on [`ModuleEntry::is_callable_target`]), and the
+//!   value-use mark, and the
 //!   read-once `CRANELISP_NO_OWNERSHIP` master toggle. Carrier only — no
 //!   analysis logic. See `design/arch/ownership-inference.md` §3.
 //! - **GOT** ([`GotTable`], [`GOT_TABLE_SIZE`]) — per-module Global Offset
@@ -126,13 +104,15 @@
 //! - **Heap layout** ([`HeapHeader`], [`NULLARY_TAG_THRESHOLD`]) — the
 //!   `#[repr(C)]` header `(alloc_size, rc)` shared between backend codegen
 //!   and the intrinsics runtime; offsets are compile-time constants. Plus the
-//!   R5 value-representation predicate ([`value_layout`], [`ValueLayout`],
+//!   R5 value-representation predicate ([`value_layout`],
+//!   [`value_layout_with_lookup`], [`ValueLayout`],
 //!   [`VALUE_LAYOUT_MAX_WORDS`]) — the single-sourced Copy/value-layout
 //!   verdict both typecheck's `Copy` mode classifier and backend's
 //!   `HeapCategory::Value` arm delegate to (soundness-coupled; spine §6.3) —
-//!   plus [`type_ctor_names`], the single ctor-name resolver both
-//!   `value_layout` and the backend heap classifiers delegate to (FIXME 0528
-//!   mirror cure), and the instantiation-substituting ctor-field projection
+//!   with a lookup input for staged declarations or a table adapter for codegen.
+//!   [`type_ctor_names`] and the layout walk share one constructor-key
+//!   projection, also consumed by the backend heap classifiers. The
+//!   instantiation-substituting ctor-field projection
 //!   ([`ctor_field_types_at`], [`CtorFieldsAtError`]) — concrete-or-refuse,
 //!   never fabricating (S119; register rows R-6/R-16).
 //! - **Errors and warnings** ([`CranelispError`], [`PlatformError`],
@@ -145,7 +125,7 @@
 //!   types threaded between int and backend. (The former `CompileResult` +
 //!   `CallEdge`/`CallInfo`/`CallGraph` cluster was zero-consumer dead surface,
 //!   deleted S119 per FIXME 0918 — the live call-graph mechanism is the
-//!   per-entry `ModuleEntry::Def.callees` field, Decision 21.)
+//!   per-callable lifecycle `callees` field, Decision 21.)
 //! - **Marshal tags** ([`TAG_SNIL`], [`TAG_SCONS`], [`TAG_SEXP_INT`] …)
 //!   — fixed runtime tag layout for the `Sexp` / `SList` ADTs used by the
 //!   macro system. Authoritative constructor order in
@@ -156,12 +136,12 @@
 //!   `&SymbolTable` references (staging + live, cluster mode) or one
 //!   (committed mode) per Decision 44; typecheck reads through it.
 //! - **Resolution primitive** ([`ResolutionScope`] with its intrinsic prelude
-//!   fallback + [`ResolutionScope::resolve`]/[`ResolutionScope::resolve_macro_head`],
-//!   the §8.6.4 definition seam [`reject_def_over_binding`],
+//!   fallback + [`ResolutionScope::resolve_candidates`]/[`ResolutionScope::resolve`]/
+//!   [`ResolutionScope::resolve_macro_head`],
 //!   [`substitute_module_alias`],
 //!   [`Resolved`], [`ResolveError`]) — the one query that turns a name into a
-//!   resolved symbol-table entry, following imports/reexports, §8.6.6
-//!   module-path aliases, visibility, and Principle-17 chain-following. Pure
+//!   terminal candidate set, applying §8.6.6 module-path aliases and
+//!   visibility. Pure
 //!   over `SymbolTables` + `ModuleAliases`; generic over `<C, L>`; no
 //!   inference state. The caller supplies the first-hop [`View`] (committed
 //!   for int's Pass-1 macro recognition; staging ∪ live for typecheck's
@@ -174,15 +154,20 @@
 //!
 //! # Cross-cutting invariants
 //!
-//! - **`#[non_exhaustive]` policy** — every public struct and enum in this
-//!   crate is `#[non_exhaustive]`. Adding a variant or field is
-//!   non-breaking; consumers cannot exhaustively match or destructure
-//!   across crate boundaries. The newtypes (`Symbol`, …) are an
-//!   exception — they wrap a single `String` and field access is
-//!   structurally prevented by the macro-generated private inner field.
-//!   [`SchedulingClass`] is also an exception because it crosses the
-//!   platform-DLL C ABI as a `#[repr(u32)]` discriminant — adding a
-//!   variant requires a bump of `cranelisp_platform::ABI_VERSION`.
+//! - **Exhaustiveness policy** — extensible public payload records are
+//!   `#[non_exhaustive]`; in particular, lifecycle records are constructed
+//!   through their role-specific constructors or [`SymbolTable`] funnels.
+//!   [`NameCandidate`] is a read-only DTO: consumers inspect its fields but
+//!   author exposures only through the table facade.
+//!   Deliberately closed vocabulary sums remain exhaustive so a new state
+//!   breaks every consumer match: [`Decl`],
+//!   [`TypeRecord`], [`Life`], [`TemplateBody`], [`TemplateKind`],
+//!   [`CallableOrigin`], [`Realization`], [`RetireReason`], [`AdtEntrySpec`],
+//!   [`QuoteHead`], [`VarRef`], [`ApplyRef`], and [`ViewBuildError`]. The
+//!   ownership-mode vocabulary and `#[repr(C)]`/`#[repr(u32)]` ABI types are
+//!   likewise closed because exhaustive matching and stable layout are their
+//!   safety contracts. String newtypes and [`View`] need no
+//!   `#[non_exhaustive]`: their fields are already private.
 //! - **Newtype discipline** — no bare `String` for anything that names
 //!   something in the language. The only bare `String` fields allowed
 //!   are error messages, documentation strings, source text, and
@@ -193,7 +178,7 @@
 //!   (`cranelisp_types::module::SymbolTable`) are not reachable for
 //!   consumers.
 //! - **Per-entry visibility** — `Visibility` lives once, on the entry.
-//!   Every `ModuleEntry` variant carries `visibility: Visibility`; there
+//!   Every [`Binding`] carries `visibility: Visibility`; there
 //!   is no parallel exports-set sidecar. Cross-module slot lookups
 //!   consult the per-entry field directly. Same pattern at adjacent
 //!   layers: `ModuleAliasEntry`, form-level `Defn` / `TraitDecl` /
@@ -240,11 +225,12 @@ pub(crate) mod types;
 // stays ignorant of `cranelift_jit::JITModule` (Principle 3); the
 // `SymbolTable<C: CodeStore, L: LinkerStore>` parameterisation is the
 // DAG-compatible mechanism that lets the integration layer place its
-// `Code` enum on `ModuleEntry::Def.code` without inverting the dependency
+// `Code` enum on `Realization::Body.code` without inverting the dependency
 // edge.
 pub(crate) mod adt_build;
 pub(crate) mod got;
 pub(crate) mod heap;
+pub(crate) mod lifecycle;
 pub(crate) mod macro_expander;
 pub(crate) mod marshal;
 pub(crate) mod module;
@@ -274,8 +260,8 @@ pub use error::{
     CranelispError, ErrorLocation, LineCol, LineColRange, PlatformError, ResolutionGap, Warning,
     WarningKind,
 };
-pub use parsed::{DefmacroInfo, MacroClause, ParsedEntry};
-pub use sexp::Sexp;
+pub use parsed::{DefmacroInfo, MacroClause as ParsedMacroClause, ParsedEntry};
+pub use sexp::{QuoteHead, Sexp, quote_head};
 pub use span::Span;
 pub use types::{
     PrimitiveNaming, Scheme, Subst, Type, TypeId, VarNaming, apply, collect_var_ids_ordered,
@@ -314,13 +300,21 @@ pub use scheduling::SchedulingClass;
 // optional (`cranelisp-intrinsics`'s `concurrency-runtime` feature); these ABI
 // *types* are part of every build. See `crates/cranelisp-types/src/scheduling.rs`
 // and `design/arch/effect-concurrency.md` §5/§6/§12.
+pub use lifecycle::{
+    Binding, BrokenProvenance, Callable, CallableArm, CallableArmDraft, CallableArmId,
+    CallableArmSettlement, CallableOrigin, CallableTarget, ConstrainedMeta, Decl, ImplShell,
+    InstanceLink, Life, LifecycleError, MacroClause, MacroClauseDraft, MacroDeclaration,
+    MonoDemand, NameCandidate, OverloadArm, OverloadedCallable, Realization, RetireReason,
+    RetiredSlot, SpecialFormRecord, SynthSpec, TemplateBody, TemplateKind, TraitMethodRecord,
+    TraitRecord, TypeRecord,
+};
 pub use module::{
-    CHAIN_FOLLOW_DEPTH_LIMIT, CallableSlot, CodeStore, ConstrainedFn, CtorState, DefBuilder,
-    DefKind, EnrolOutcome, EnsureOutcome, ExportSpec, GotExhausted, ImportNames, ImportSpec,
-    LinkerStore, MacroClauseInfo, MacroParam, ModDecl, ModuleAliasEntry, ModuleAliases,
-    ModuleEntry, OverloadVariant, ParametricFn, PlatformSpec, PrimitiveBody, SlotMintError,
-    SymbolTable, SymbolTables, UserFnState, WrittenTraitImpl, drop_glue_symbol_name,
-    enrol_written_trait_impl, ensure_module_exists, for_each_in_module,
+    BrokenTransition, CHAIN_FOLLOW_DEPTH_LIMIT, CallablePublicationRecord, CallableSlot, CodeStore,
+    CompiledOwnerRejection, CompiledPublicationRejection, EnrolOutcome, EnsureOutcome, ExportSpec,
+    GotExhausted, ImportNames, ImportSpec, LinkerStore, MacroParam, ModDecl, ModuleAliasEntry,
+    ModuleAliases, PlatformSpec, PublicationRecord, RetainedCallables, SlotMintError,
+    StagedImplShell, StagedPublicationDecision, SymbolTable, SymbolTables, WrittenTraitImpl,
+    drop_glue_symbol_name, enrol_written_trait_impl, ensure_module_exists, for_each_in_module,
     get_implementing_types_chain, get_impls_for_type_chain, got_data_symbol_name, install_module,
     lookup_trait_decl_chain, lookup_type_def_chain, resolve_module_by_name_chain,
     resolve_terminal_entry_and_home,
@@ -331,10 +325,11 @@ pub use scheduling::{Acquire, ConcurrencyDescriptor, Poll, PollFn, ResourceRole}
 // produces — product/sum split, ctor schemes + synthesised `ConstrADT` bodies,
 // canonical `member_key(Type, Ctor)` keying + bare-alias edges, the TypeDef.
 // Two thin callers: typecheck `adt.rs` (user `deftype`) and int
-// `src/bootstrap.rs` (synthetic seeds). Pure — callers keep GOT-slot
-// allocation and insertion policy (§8.6.5 contests are typecheck's).
-// `design/arch/interfaces.md` §"ADT-entry builder".
-pub use adt_build::{AdtCtorSpec, build_adt_entries};
+// `src/bootstrap.rs` (synthetic seeds). Pure and slotless — callers settle
+// callable recipes through the table funnels and keep §8.6.5 contest policy.
+// `symbol-table-lifecycle.md` §5.8 controls the lifecycle bridge; the older
+// raw-slot wording in `interfaces.md` awaits standing-document reconciliation.
+pub use adt_build::{AdtCallableSpec, AdtCtorSpec, AdtEntrySpec, build_adt_entries};
 // Ownership-inference carrier types (S102 CS-A) — the typecheck→backend
 // memory-model contract: the `Mode` lattice, per-callable `ModeSummary`
 // (ABI-bearing `param_modes`/`result` + advisory `param_flow`/`spark_ops`/
@@ -344,7 +339,7 @@ pub use adt_build::{AdtCtorSpec, build_adt_entries};
 // gate. `design/arch/ownership-inference.md` §3 (spine), BC §7.
 pub use ownership::{Mode, ModeSummary, ParamFlow, ResultMode, ownership_analysis_off};
 // `PrimitiveKind` enum retired (S69 Submission 36). PlatformEffect promoted
-// to its own `DefKind::PlatformEffect { scheduling_class }` sibling variant;
+// to its own `CallableOrigin::PlatformEffect { scheduling_class }` record;
 // the prior `Inline` / `Extern` variants were vestigial — see the retirement
 // rationale in `module.rs` (block comment where `pub enum PrimitiveKind` used
 // to live).
@@ -355,7 +350,9 @@ pub use heap::HeapHeader;
 // `HeapCategory::Value` arm (soundness-coupled — a `Copy`-moded param the
 // backend did NOT flatten is a UAF; one predicate, both delegate). See
 // `design/arch/ownership-inference.md` §6.3 + BC §7.
-pub use heap::{VALUE_LAYOUT_MAX_WORDS, ValueLayout, type_ctor_names, value_layout};
+pub use heap::{
+    VALUE_LAYOUT_MAX_WORDS, ValueLayout, type_ctor_names, value_layout, value_layout_with_lookup,
+};
 // The substituting ctor-field projection (S119 types-first slice; register
 // rows R-6/R-16): field types of a ctor AT a concrete instantiation, or a
 // refusal — the only legal derivation of instantiated ctor-field types for
@@ -375,9 +372,8 @@ pub use pipeline::{
     CodegenBehaviour, CompileContext, GOT_TABLE_SIZE, ModuleStrategy, NULLARY_TAG_THRESHOLD,
 };
 pub use resolve::{
-    BindingProvenance, ResolutionScope, ResolveError, Resolved, bare_member_name,
-    check_binding_addition, member_key, reject_def_over_binding, substitute_module_alias,
-    trait_impl_key,
+    ResolutionScope, ResolveError, Resolved, bare_member_name, member_key, module_alias_key,
+    substitute_module_alias, trait_impl_key,
 };
 pub use view::View;
 

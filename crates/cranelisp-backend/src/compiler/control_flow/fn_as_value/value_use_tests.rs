@@ -2,6 +2,63 @@
 
 use crate::test_support::*;
 
+// spec: spec/04-expressions.md §4.6.2; spec/appendix-a-builtins.md §A.3
+#[test]
+fn vec_len_as_value_wrapper_returns_length() {
+    let allocs = cranelisp_intrinsics::alloc_count();
+    let deallocs = cranelisp_intrinsics::dealloc_count();
+    let vec_int = Type::adt(
+        ModuleFullPath::from("primitives"),
+        cranelisp_types::TypeName::from("Vec"),
+        vec![Type::Int],
+    );
+    let consumer = vec_query_value_consumer(
+        "vec-len",
+        Type::Fn(vec![vec_int], Box::new(Type::Int)),
+        vec![vec_int_lit(&[10, 20, 30], 30)],
+        Type::Int,
+    );
+    assert_eq!(run_vec_query_value_consumer(consumer), 3);
+    assert_eq!(
+        cranelisp_intrinsics::alloc_count() - allocs,
+        cranelisp_intrinsics::dealloc_count() - deallocs,
+    );
+}
+
+// spec: spec/12-runtime.md §12.3 — releasing the consumed Vec releases its elements.
+#[test]
+fn vec_len_as_value_wrapper_releases_heap_elements() {
+    let allocs = cranelisp_intrinsics::alloc_count();
+    let deallocs = cranelisp_intrinsics::dealloc_count();
+    let vec_string = Type::adt(
+        ModuleFullPath::from("primitives"),
+        cranelisp_types::TypeName::from("Vec"),
+        vec![Type::String],
+    );
+    let values = Expr::VecLit {
+        elements: vec![Expr::StringLit {
+            value: "owned element".into(),
+            span: Span::new(30, 45),
+            inferred_type: Some(Box::new(Type::String)),
+        }],
+        span: Span::new(29, 46),
+        inferred_type: Some(Box::new(vec_string.clone())),
+    };
+    let consumer = vec_query_value_consumer(
+        "vec-len",
+        Type::Fn(vec![vec_string], Box::new(Type::Int)),
+        vec![values],
+        Type::Int,
+    );
+    assert_eq!(run_vec_query_value_consumer(consumer), 1);
+    let allocated = cranelisp_intrinsics::alloc_count() - allocs;
+    assert!(
+        allocated >= 3,
+        "Vec, closure and owning element must be allocated"
+    );
+    assert_eq!(allocated, cranelisp_intrinsics::dealloc_count() - deallocs);
+}
+
 // spec: 05-definitions §5.2.7; appendix-c-nfr §C.1.4 — a data constructor is
 // first-class and its concrete ADT has per-type drop glue. Implementation
 // lock: design/backend/compile-to-module.md §2.6.6 (generic fn-as-value path).
@@ -32,7 +89,7 @@ use crate::test_support::*;
 // GOT entries are not backend's.
 #[test]
 fn constructor_as_value_falls_through_to_fn_as_value() {
-    use cranelisp_types::{DefKind, FQTypeName, ModuleEntry, Scheme, TypeDefInfo, TypeName};
+    use cranelisp_types::{FQTypeName, Scheme, TypeDefInfo, TypeName};
 
     let module = ModuleFullPath::from("user");
     let fqtn = FQTypeName::new(module.clone(), TypeName::from("Option"));
@@ -62,63 +119,6 @@ fn constructor_as_value_falls_through_to_fn_as_value() {
         visibility: Visibility::Public,
         span: Span::new(0, 12),
     };
-    // make_def_entry_slot stamps kind = UserFn; override to Constructor so
-    // the keyed ctor read (`ctor_meta_at`) recognises it AND the keyed
-    // callable read (`entry_at` → `callable_got_slot()`) finds the got slot
-    // (slot 0).
-    let base_entry = make_def_entry_slot(ctor_defn.clone(), 0);
-    // The slot now rides on the callable variant; carry it onto the
-    // Constructor we re-stamp (slot 0).
-    let ctor_slot = base_entry
-        .callable_got_slot()
-        .expect("make_def_entry_slot stamps a slot");
-    let ctor_entry = match base_entry {
-        ModuleEntry::Def {
-            visibility,
-            docstring,
-            param_names,
-            callees,
-            trait_origin,
-            seq,
-            ast,
-            code,
-            ..
-        } => ModuleEntry::Def {
-            scheme: Scheme {
-                type_vars: vec![],
-                constraints: HashMap::new(),
-                ty: Type::Fn(vec![Type::Int], Box::new(Type::ADT(fqtn.clone(), vec![]))),
-            },
-            visibility,
-            docstring,
-            param_names,
-            kind: Box::new(DefKind::Constructor {
-                got_slot: ctor_slot,
-                type_name: fqtn.clone(),
-                tag: 1,
-                field_count: 1,
-                internal: false,
-                type_def: None,
-                mode_summary: None,
-            }),
-            callees,
-            trait_origin,
-            seq,
-            ast,
-            // W0.b: a codegen-reached ctor `Def` carries a (lenient) view built
-            // at synthesis by the typecheck producer; the fixture mirrors it
-            // (KC-W0-6 — the backend hard-errors on None).
-            codegen_view: Some(crate::test_support::test_codegen_view(
-                &Symbol::from("Some"),
-                ctor_defn.variants.first().unwrap(),
-                &Default::default(),
-            )),
-            code,
-            value_use: false,
-        },
-        _ => unreachable!("make_def_entry_slot builds a Def"),
-    };
-
     // Consumer: (let [f Some] (f 3)) — references `Some` as a value, then
     // calls the bound closure. The `[f Some]` binding compiles `Some` via
     // `compile_var` → fall-through → `compile_fn_as_value` (the path under
@@ -169,53 +169,52 @@ fn constructor_as_value_falls_through_to_fn_as_value() {
         let mut st = SymbolTable::new(module.clone());
         // A real typecheck-produced table always carries the type definition;
         // drop-glue generation needs that canonical constructor inventory.
-        st.insert(
+        install_type_fixture(
+            &mut st,
             Symbol::from("Option"),
-            ModuleEntry::TypeDef {
-                info: TypeDefInfo {
-                    name: fqtn.clone(),
-                    type_params: vec![],
-                    constructors: vec![Symbol::from("None"), Symbol::from("Some")],
-                },
-                visibility: Visibility::Public,
-                docstring: None,
+            TypeDefInfo {
+                name: fqtn.clone(),
+                type_params: vec![],
+                constructors: vec![Symbol::from("None"), Symbol::from("Some")],
             },
         );
-        st.insert(
+        install_ctor_fixture(
+            &mut st,
             Symbol::from("None"),
-            ModuleEntry::Def {
-                scheme: Scheme {
-                    type_vars: vec![],
-                    constraints: HashMap::new(),
-                    ty: Type::ADT(fqtn.clone(), vec![]),
-                },
-                visibility: Visibility::Public,
-                docstring: None,
-                param_names: vec![],
-                kind: Box::new(DefKind::Constructor {
-                    got_slot: 0,
-                    type_name: fqtn.clone(),
-                    tag: 0,
-                    field_count: 0,
-                    internal: false,
-                    type_def: None,
-                    mode_summary: None,
-                }),
-                callees: vec![],
-                trait_origin: None,
-                seq: 0,
-                ast: None,
-                codegen_view: None,
-                code: None,
-                value_use: false,
+            Scheme {
+                type_vars: vec![],
+                constraints: HashMap::new(),
+                ty: Type::ADT(fqtn.clone(), vec![]),
             },
+            vec![],
+            fqtn.clone(),
+            0,
+            0,
+            None,
+            None,
+            None,
         );
-        st.insert(ctor_defn.name.clone(), ctor_entry);
-        st.insert(
-            consumer_defn.name.clone(),
-            make_def_entry_slot(consumer_defn.clone(), 1),
+        install_ctor_fixture(
+            &mut st,
+            ctor_defn.name.clone(),
+            Scheme {
+                type_vars: vec![],
+                constraints: HashMap::new(),
+                ty: Type::Fn(vec![Type::Int], Box::new(Type::ADT(fqtn.clone(), vec![]))),
+            },
+            vec![Symbol::from("v")],
+            fqtn,
+            1,
+            1,
+            None,
+            ctor_defn.variants.first().cloned(),
+            Some(test_codegen_view(
+                &ctor_defn.name,
+                ctor_defn.variants.first().unwrap(),
+                &Default::default(),
+            )),
         );
-        st.next_got_slot = 2;
+        install_def_entry_at_slot(&mut st, consumer_defn.clone(), 2);
         tables.insert(module.clone(), st);
     }
 
@@ -230,7 +229,7 @@ fn constructor_as_value_falls_through_to_fn_as_value() {
 
     let mut jit = Jit::new_with_symbols(&extras).expect("jit init");
     let names = vec![ctor_defn.name.clone(), consumer_defn.name.clone()];
-    compile_to_module(module.clone(), &names, &tables, jit.jit_module(), true)
+    compile_names_to_module(module.clone(), &names, &tables, jit.jit_module(), true)
         .expect("constructor Def + consumer compile (closure deletion regression guard)");
 
     // Stage 1 assertion: the constructor `Def`'s body compiled into a live
@@ -412,13 +411,13 @@ fn value_position_eq_string_dispatches_to_mangled_impl_not_eq_i64() {
     let tables = empty_tables();
     {
         let mut st = SymbolTable::new(module.clone());
-        st.insert(defn.name.clone(), make_def_entry(defn.clone()));
+        install_def_entry(&mut st, defn.clone());
         tables.insert(module.clone(), st);
     }
 
     let mut jit = Jit::new_with_symbols(&[]).expect("jit init");
     let names = vec![defn.name.clone()];
-    let result = compile_to_module(module.clone(), &names, &tables, jit.jit_module(), true);
+    let result = compile_names_to_module(module.clone(), &names, &tables, jit.jit_module(), true);
     // `CompilationArtifacts` is not `Debug`, so match rather than `expect_err`.
     let err = match result {
         Ok(_) => panic!(

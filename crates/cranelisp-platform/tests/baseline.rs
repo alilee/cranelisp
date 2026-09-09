@@ -58,17 +58,14 @@ fn read_source(rel: &str) -> String {
 // T23 per tests/plan/sprint71-platform.md row T23.
 #[test]
 fn sprint71_abi_version_baseline_co_regen() {
-    // (1) Source-side: ABI_VERSION must read `= 9;` after the Sprint 97 ctx-vtable
-    //     handle-model cutover (§6.8.0b — `HostCtx` gains `acquire`/`retire` fn-ptrs,
-    //     `ConcurrencyDescriptor` gains a `role` byte, the `Acquire` enum is added;
-    //     `PollFn`/`Poll` unchanged). Was `= 8;` (Sprint 96 single-ABI cutover),
-    //     `= 7;` (Sprint 93 ABI-v4 cascade), `= 6;` at DEF-5, earlier `= 5;`/etc.
+    // (1) Source-side: ABI_VERSION must read `= 10;` after the Sprint 121
+    //     DLL-constructed Pure node gained its payload-glue witness word.
     let lib_rs = read_source("src/lib.rs");
     assert!(
-        lib_rs.contains("pub const ABI_VERSION: u32 = 9;"),
-        "expected `pub const ABI_VERSION: u32 = 9;` in \
-         crates/cranelisp-platform/src/lib.rs (Sprint 97: the ctx-vtable cutover \
-         bumps the ABI from 8 to 9). If you see this failure the source change \
+        lib_rs.contains("pub const ABI_VERSION: u32 = 10;"),
+        "expected `pub const ABI_VERSION: u32 = 10;` in \
+         crates/cranelisp-platform/src/lib.rs (Sprint 121: the Pure witness \
+         word bumps the ABI from 9 to 10). If you see this failure the source change \
          was skipped or reverted."
     );
 
@@ -98,7 +95,7 @@ fn sprint71_abi_version_baseline_co_regen() {
     );
 
     // New ADT-traversal surface — these names are the Wave 2 acceptance
-    // criterion per `design/platform/sprint71-redesign.md` §3 and the
+    // criterion per `design/platform/platform.md` §4.3 and the
     // SPRINT.md Wave 2 work list. Each name MUST appear at least once in
     // the regenerated baseline; if not, the baseline regen was skipped.
     // Names refined Wave 2 against the actual landed surface

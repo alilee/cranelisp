@@ -23,14 +23,26 @@
 //!
 //! # Monotone defaults — ⊤-on-absence lives HERE and only here
 //!
-//! Absence at every level means the Decision-24 conservative point:
-//! `mode_summary: None` on an entry, an empty/short vector inside a summary,
-//! or an old cache with no field at all — every one of them MUST read as
-//! `Owned` / `Retained` / spark-ops-possible through the conservative-read
-//! accessors ([`ModeSummary::param_mode`], [`ModeSummary::param_flow`],
-//! [`ModeSummary::spark_op`]). **No consumer indexes the vectors directly**
-//! (Principles 7 + 18 — one home for the ⊤ rule; both typecheck and backend
-//! read through these accessors).
+//! **A whole summary's conservative spelling is absence** (`mode_summary:
+//! None`): every consumer reads `None` as the Decision-24 point, and the
+//! callee-side return protect is elided ONLY on a PRESENT summary whose
+//! `result` is [`ResultMode::Fresh`] (backend `return_is_fresh_by_summary`).
+//! A present `Fresh` is therefore the analysis's STRONGEST result claim, never
+//! a fallback: it is publishable only as the output of a converged transfer
+//! walk — non-convergence publishes nothing
+//! (`design/typecheck/ownership-inference.md` §19.5). The result axis's own
+//! ⊤ is [`ResultMode::MayAliasAny`] (S121).
+//!
+//! Inside a present summary, absence on the per-parameter vectors is
+//! conservative: an empty/short vector, or an old cache with no field at all,
+//! MUST read as `Owned` / `Retained` / spark-ops-possible through the
+//! conservative-read accessors ([`ModeSummary::param_mode`],
+//! [`ModeSummary::param_flow`], [`ModeSummary::spark_op`]). **No consumer
+//! indexes the vectors directly** (Principles 7 + 18 — one home for the ⊤
+//! rule; both typecheck and backend read through these accessors). `result`
+//! has no such read: its serde default is `Fresh` (`Default`, kept for cache
+//! compatibility), which is exactly why a summary may never be minted as a
+//! fallback — see [`ModeSummary`]'s serde paragraph.
 //!
 //! # Exhaustiveness discipline — the mode enums carry NO `#[non_exhaustive]`
 //!
@@ -51,7 +63,8 @@
 //! new variant, and every variant-adding change-set re-runs the escape grep
 //! (`_ =>` / `== Fresh` over `ResultMode`) to confirm no third binary read
 //! has appeared. (Exception recorded S111 Phase 3, with the pinned
-//! `MayAliasOf` diff — see `ResultMode`'s type-level docs.)
+//! `MayAliasOf` diff — see `ResultMode`'s type-level docs; re-run S121 for
+//! `MayAliasAny`: the same two binaries, no third.)
 //!
 //! # The master toggle
 //!
@@ -99,7 +112,12 @@ pub enum Mode {
 /// ABI-bearing exactly as the param vector is: whether a returned reference is
 /// owned by the caller (caller decs) or a borrowed view (caller must not dec)
 /// is a caller/callee agreement (spine §3.3, the 0467 folding rationale).
-/// `Fresh` is the `Default` — the Decision-24 as-built convention.
+/// `Fresh` is the `Default` — the Decision-24 as-built convention for a
+/// serde-absent field, NOT the axis's conservative point: a present `Fresh`
+/// is the strongest claim on this axis (the callee's return protect is
+/// elided on it). The axis's ⊤ is [`MayAliasAny`](Self::MayAliasAny); the
+/// conservative spelling of a whole summary is absence (module docs
+/// §Monotone defaults).
 ///
 /// **`MayAliasOf(usize)` — the COW point (S111 Phase 5, schema-20 ownership
 /// wave):** "the result EITHER is a fresh value OR reaches into param *i* — the
@@ -113,7 +131,18 @@ pub enum Mode {
 /// 19→20 rode the landing change-set (with the 0621 `callees`→`storage_fq()`
 /// rider inside the one bump window). Ruling + consumer semantics:
 /// `design/arch/ownership-inference.md` §3.7/§3.7.1; exact diff + consumer
-/// census: `design/arch/interfaces.md` §"Ownership-inference carriers". This
+/// census: `design/arch/interfaces.md` §"Ownership-inference carriers".
+///
+/// **`MayAliasAny` — the result axis's ⊤ (S121, schema 26→27):** the join of
+/// may-alias claims on DISTINCT parameters. Before it, "the result reaches
+/// some parameter, which one undetermined" had no representation, so the
+/// producer's lowest-index representative oscillated on a parameter-permuting
+/// self-call (no fixed point) and discarded reaching parameters in a caller's
+/// composition (a false present `Fresh`). With it the axis is a finite
+/// join-semilattice: `Fresh` and the unconditional per-index claims are the
+/// atoms, `MayAliasOf(i)` sits above `Fresh` and above both unconditional
+/// claims on `i`, and `MayAliasAny` is above everything
+/// (`design/typecheck/ownership-inference.md` §19.2 states the joins). This
 /// enum deliberately carries no `#[non_exhaustive]` — see the module docs
 /// §Exhaustiveness discipline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -134,6 +163,17 @@ pub enum ResultMode {
     /// param. `AliasOf`/`ProjectionOf` are reserved for provable UNCONDITIONAL
     /// claims. (§3.7/§3.7.1; S111.)
     MayAliasOf(usize),
+    /// The result EITHER is a fresh value OR reaches into SOME parameter —
+    /// which one is not determined (the join of may-alias claims on distinct
+    /// parameters). The ⊤ of the result axis: the consumer must keep
+    /// protection and must not assume any particular parameter is reached.
+    /// Carries no index, so the cache's persisted-index (`k < arity`) check
+    /// does not apply to it. Never a fallback literal: like every point on
+    /// this axis it is published only by a converged walk (module docs
+    /// §Monotone defaults). (`design/typecheck/ownership-inference.md` §19.2;
+    /// S121 — the ⊤ FIXME 0521 deferred, triggered by the producer's own
+    /// self-call composition.)
+    MayAliasAny,
 }
 
 /// Where an `Owned` parameter's reference goes inside the callee — the
@@ -160,23 +200,26 @@ pub enum ParamFlow {
 /// Per-callable ownership summary — the typecheck→backend contract carrier
 /// (`design/arch/ownership-inference.md` §3.3, enriched shape).
 ///
-/// Rides (a) the callable [`DefKind`](crate::DefKind) variants' `mode_summary`
-/// slot (persisted into `.meta.json`; read via
-/// [`ModuleEntry::mode_summary`](crate::ModuleEntry::mode_summary)), and
+/// Rides (a) [`Life::Concrete`](crate::Life::Concrete)'s `mode_summary` slot
+/// (persisted into `.meta.json`; read via
+/// [`Binding::mode_summary`](crate::Binding::mode_summary)), and
 /// (b) [`MonoDefnVariant.mode_summary`](crate::MonoDefnVariant) for the
-/// compile in hand. The SAME type carries `DefKind::Primitive`'s hand-declared
-/// fact-table payload (spine §3.1(a)) — the pass cannot tell a declared leaf
-/// from an inferred summary except by `DefKind` (Principle 19).
+/// compile in hand. The same type carries Rust primitives' hand-declared
+/// fact-table payload (spine §3.1(a)).
 ///
 /// Full `Eq` is load-bearing for the fixpoint's change detection: an
 /// advisory-half change must re-enter callers too
 /// (`design/typecheck/ownership-inference.md` §13.1 item 2).
 ///
 /// Serde: every field is `#[serde(default)]`; a bare `{}` deserialises to
-/// [`ModeSummary::default`] — the Decision-24 conservative point — and short
-/// vectors read as conservative through the accessors. Old caches and
-/// unresolved edges therefore deserialise to today's behaviour (strict
-/// additivity, spine §3.3).
+/// [`ModeSummary::default`] and short vectors read as conservative through
+/// the accessors (strict additivity, spine §3.3). That default is the
+/// CALLER-side conservative point only: `result` defaults to `Fresh`, which
+/// a present summary asserts as a strong claim (the callee's return protect
+/// is elided on it). A default / all-`Owned`-`Fresh` summary is therefore
+/// not a substitute for absence, and no producer may mint one as a fallback
+/// — the conservative spelling of a whole summary is `None`
+/// (`design/typecheck/ownership-inference.md` §19.5).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ModeSummary {
     // --- ABI-bearing half (input to the R3 summary-diff gate + §5.6 slot
@@ -185,7 +228,9 @@ pub struct ModeSummary {
     /// (missing/short ⇒ `Owned`).
     #[serde(default)]
     pub param_modes: Vec<Mode>,
-    /// The result mode (spine §4.4). Absent ⇒ `Fresh`.
+    /// The result mode (spine §4.4). A serde-absent field ⇒ `Fresh` (the
+    /// `Default`; cache compatibility, not a conservative read — the axis's ⊤
+    /// is [`ResultMode::MayAliasAny`]).
     #[serde(default)]
     pub result: ResultMode,
 
@@ -241,9 +286,13 @@ impl ModeSummary {
         (0..n).all(|i| self.param_mode(i) == other.param_mode(i)) && self.result == other.result
     }
 
-    /// `true` iff this summary's ABI half is the Decision-24 conservative
-    /// point (all params `Owned`, result `Fresh`) — i.e. ABI-equivalent to
-    /// carrying no summary at all.
+    /// `true` iff this summary's ABI half is the caller-side Decision-24
+    /// point (all params `Owned`, result `Fresh`) — i.e. CALLER-side-ABI
+    /// equivalent to carrying no summary (the R3 gate's `None ≡ ⊤` read via
+    /// [`Self::abi_eq_opt`]). Not substitutable for absence: the callee's
+    /// return protect distinguishes a present `Fresh` from `None` (module
+    /// docs §Monotone defaults). `MayAliasAny` answers `false`, like every
+    /// non-`Fresh` result.
     pub fn is_abi_conservative(&self) -> bool {
         self.param_modes.iter().all(|m| *m == Mode::Owned) && self.result == ResultMode::Fresh
     }

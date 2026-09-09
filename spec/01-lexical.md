@@ -203,7 +203,7 @@ Display.show      ; method 'show' of trait 'Display'
 Num.+             ; operator '+' of trait 'Num'
 ```
 
-### 1.4.5 Colon-Prefixed Symbols [Uncovered S115 — was crates/cranelisp-frontend/src/reader.rs::test_parse_colon_prefix, tests/spec_08_modules.rs::annotation_binds_top_level_following_form, tests/spec_08_modules.rs::annotation_in_paren_is_application_of_annotated_element]
+### 1.4.5 Colon-Prefixed Symbols [Tested+Neg crates/cranelisp-frontend/src/reader/tests.rs::test_parse_colon_prefix, crates/cranelisp-frontend/src/reader/tests.rs::annotation_fold_rejects_dangling_delimiters_at_introducer]
 
 ```ebnf
 colon_prefix = ':' symbol_start symbol_char*

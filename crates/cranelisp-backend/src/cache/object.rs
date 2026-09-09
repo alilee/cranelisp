@@ -3,21 +3,19 @@
 //! Drives the object compilation path: `compile_to_module::<ObjectModule>`
 //! followed by the caller's `obj_module.finish().emit()` (the caller-finalize
 //! contract — there is no separate `compile_to_object` backend free function).
-//! The structs here ([`ObjectCompileInput`], [`CacheWritePacket`],
-//! [`IntrinsicTable`], …) cross the backend↔int boundary: the nice worker
-//! produces them, `int` writes the resulting `.o` + sidecar to disk.
+//! [`ObjectCompileInput`] and [`CacheWritePacket`] cross the backend↔int
+//! boundary: the nice worker produces them, `int` writes the resulting `.o` +
+//! sidecar to disk.
 //!
 //! [`build_isa`] is the **single ISA construction point** (re-exported at the
 //! crate root as `cranelisp_backend::build_isa`); `got_data_symbol_name`
 //! produces the `__cranelisp_got_{module}` data-symbol name (Decision 23).
 //!
 //! Key design decisions:
-//! - [`ObjectCompileInput`] groups the codegen input (replaces the sketch's 21
-//!   positional params).
+//! - [`ObjectCompileInput`] carries the module identity and exact semantic
+//!   callable targets selected for code generation.
 //! - `GotReference::DataSymbol` for `ObjectModule` GOT references.
 //! - Single `build_isa(is_pic: bool)` for ISA construction.
-//! - [`IntrinsicTable`] unifies all extern-symbol declarations (the three
-//!   buckets track Decision 43's three-crate split of relocation targets).
 //!
 //! See `design/backend/module-caching.md` §5 and §7.
 
@@ -27,11 +25,8 @@ use std::sync::Arc;
 
 use cranelift_object::ObjectModule;
 
-use serde::{Deserialize, Serialize};
-
 use cranelisp_types::{
-    CranelispError, Defn, ErrorLocation, MethodResolutions, ModuleFullPath, Scheme, Span, Symbol,
-    SymbolTable, Type,
+    CallableTarget, CranelispError, ErrorLocation, ModuleFullPath, Span, SymbolTable,
 };
 
 /// All inputs needed to compile a module to an ObjectModule.
@@ -39,67 +34,7 @@ use cranelisp_types::{
 #[derive(Debug, Clone)]
 pub struct ObjectCompileInput {
     pub module_path: ModuleFullPath,
-    pub defns: Vec<(Defn, Scheme)>,
-    pub method_resolutions: MethodResolutions,
-    pub fn_slot_assignments: HashMap<Symbol, FnSlotInfo>,
-    pub fn_to_module: HashMap<Symbol, ModuleFullPath>,
-    pub intrinsics: IntrinsicTable,
-    pub expr_types: HashMap<Span, Type>,
-    pub next_got_slot: usize,
-    /// Cross-module function references: (name, param_count) for functions
-    /// from dependency modules that this module's compiled code may call.
-    /// Includes both qualified names ("util/helper") and bare imported names ("helper").
-    pub cross_module_fns: Vec<(Symbol, usize)>,
-}
-
-/// Information about a function's GOT slot assignment.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FnSlotInfo {
-    pub slot: usize,
-    pub param_count: usize,
-}
-
-/// All extern symbols that compiled code may reference.
-/// Single source of truth -- shared between JIT setup and ObjectModule compilation.
-/// Addresses cache audit HIGH-1 (intrinsic coverage) and HIGH-3 (parameter explosion).
-#[derive(Debug, Clone)]
-pub struct IntrinsicTable {
-    /// Runtime infrastructure functions: alloc, free, panic, trace_*, rc_*.
-    pub runtime_fns: Vec<IntrinsicEntry>,
-    /// User-visible primitive functions: add-i64, str-concat, etc.
-    pub primitive_fns: Vec<IntrinsicEntry>,
-    /// Platform DLL functions (Ring 4).
-    pub platform_fns: Vec<IntrinsicEntry>,
-    /// Special forms + primitives names (for liveness analysis globals).
-    pub global_names: std::collections::HashSet<Symbol>,
-}
-
-impl IntrinsicTable {
-    pub fn new() -> Self {
-        IntrinsicTable {
-            runtime_fns: Vec::new(),
-            primitive_fns: Vec::new(),
-            platform_fns: Vec::new(),
-            global_names: std::collections::HashSet::new(),
-        }
-    }
-}
-
-impl Default for IntrinsicTable {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// A single extern function entry.
-#[derive(Debug, Clone)]
-pub struct IntrinsicEntry {
-    /// User-visible name (e.g., "+", "str-concat").
-    pub user_name: Symbol,
-    /// JIT symbol name (e.g., "runtime/alloc", "add-i64").
-    pub jit_name: String,
-    /// Number of parameters.
-    pub param_count: usize,
+    pub targets: Vec<CallableTarget>,
 }
 
 /// An owned snapshot for background cache writing. Fully Send-safe.
@@ -234,20 +169,11 @@ pub fn process_cache_packet(
     })?;
 
     // Compile ObjectModule and write .o (only if there are defns to compile)
-    if !packet.object_compile_input.defns.is_empty() {
+    if !packet.object_compile_input.targets.is_empty() {
         use cranelift_module::default_libcall_names;
         use cranelift_object::ObjectBuilder;
 
         let input = &packet.object_compile_input;
-
-        // Post-Phase-2: the backend reads defn bodies from `symbol_tables[module].get(name).ast`.
-        // The packet's `defns` field only supplies the name list here; the
-        // canonical AST already lives on the symbol table (Wave 0 invariant).
-        let names: Vec<Symbol> = input
-            .defns
-            .iter()
-            .map(|(defn, _scheme)| defn.name.clone())
-            .collect();
 
         let isa = build_isa(true)?;
         let obj_builder = ObjectBuilder::new(isa, "cranelisp_module", default_libcall_names())
@@ -267,7 +193,7 @@ pub fn process_cache_packet(
         // CLIF text is dropped unread, so skip rendering it (FIXME 0325).
         crate::compile_to_module(
             input.module_path.clone(),
-            &names,
+            &input.targets,
             symbol_tables,
             &mut obj_module,
             false,

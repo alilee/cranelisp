@@ -80,7 +80,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             self.finalize_check_result_inner(state, &mut accumulator, &working_program, strategy)?;
 
         // Populate display info
-        result.display = self.compute_display_info(state, program, &accumulator.defn_type_vars);
+        result.display = self.compute_display_info(state, program);
 
         Ok(result)
     }
@@ -127,7 +127,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         &self,
         state: &CheckState,
         original_program: &[TopLevel],
-        defn_type_vars: &HashMap<Symbol, (Vec<Type>, Type)>,
     ) -> Option<DisplayInfo> {
         if original_program.len() > 2 {
             return None;
@@ -137,7 +136,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         match last {
             TopLevel::Expr(_expr) => {
                 // The synthetic __expr defn was registered — look up its type.
-                if let Some((_param_tys, ret_ty)) = defn_type_vars.get(&Symbol::from("__expr")) {
+                let r = self.current_symbol_table(state);
+                if let Some(Type::Fn(_, ret_ty)) = r
+                    .view()
+                    .lookup(&Symbol::from("__expr"))
+                    .and_then(Binding::callable)
+                    .map(|callable| &callable.arm.scheme.ty)
+                {
                     let resolved = self.apply_subst(state, ret_ty);
                     Some(DisplayInfo {
                         ty: resolved,
@@ -150,7 +155,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             TopLevel::Defn(defn) => {
                 // Look up the defn's generalized scheme from the symbol table.
                 let r = self.current_symbol_table(state);
-                if let Some(ModuleEntry::Def { scheme, .. }) = r.view().lookup(&defn.name) {
+                if let Some(callable) = r.view().lookup(&defn.name).and_then(Binding::callable) {
+                    let scheme = &callable.arm.scheme;
                     Some(DisplayInfo {
                         ty: scheme.ty.clone(),
                         scheme: Some(scheme.clone()),

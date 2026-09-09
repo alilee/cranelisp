@@ -317,10 +317,10 @@ pub enum Expr {
     },
     /// ADT construction — a language-level operation. Synthesised by the
     /// deftype expander as the body of every constructor's Defn (see
-    /// `Expr` rustdoc in `ast.rs` and `bounded-contexts.md` §7
-    /// §"DefKind" for the ctor-as-Def shape). Not user syntax; users write
+    /// `Expr` rustdoc in `ast.rs` and `symbol-table-lifecycle.md` §5.8 for the
+    /// synthesized-constructor shape). Not user syntax; users write
     /// `(Some 42)` (an `Apply` against the constructor's name), which resolves
-    /// to a Def whose body is this node.
+    /// to a callable whose synthesized body contains this node.
     ///
     /// Backend lowers this however it chooses (inline alloc+tag+stores, libcall
     /// to a runtime helper, or hybrid). Backend choice; not visible to typecheck
@@ -656,15 +656,14 @@ pub struct TraitDecl {
 /// OR full path). Typecheck resolves aliases through the import graph,
 /// producing `FQTraitName` / `FQTypeName` at the resolved-stage boundary per
 /// Decision 47. The resolved-stage counterpart of this struct is
-/// `ModuleEntry::TraitImpl { trait_name: FQTraitName, impl_type: FQTypeName,
-/// methods, visibility }` stored on the trait's defining module per Decision
+/// `Decl::ImplShell` stored on the trait's defining module per Decision
 /// 45 — distinct type, FQ names throughout.
 ///
 /// `type_constraints: Vec<(Symbol, TraitRef)>` carries polymorphic-impl
 /// constraints — `(impl :(Display a) (Option a) …)` produces
 /// `[("a", TraitRef::new(None, "Display"))]`. Constraints can themselves be
 /// qualified (`:(fmt/Display a)`); `TraitRef`'s optional module captures that
-/// uniformly. `type_args` (Vec<Symbol>) is no longer a separate field — the
+/// uniformly. `type_args` (`Vec<Symbol>`) is no longer a separate field — the
 /// type-variable bindings live structurally inside `target` (any
 /// `TypeExpr::TypeVar` reachable from `target` is a polymorphic-impl
 /// type-var introduced by this impl).

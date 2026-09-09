@@ -1,4 +1,5 @@
 use super::*;
+use cranelisp_types::Scheme;
 
 /// FIXME 0653 — the ruled name-scan discipline (the Fix-1 template generalised).
 /// A name-scan mono collector's AST callee NAME is only a TRIGGER; the identity
@@ -270,22 +271,18 @@ pub(super) fn annotate_expr_from_maps(
 /// §3.0). Shared by the single-sig, multi-sig-mangled, and trait-impl-method
 /// concrete-defn population sites.
 ///
-/// Always returns `Some(view)` (S110 W0.b totalization,
-/// `design/arch/backend-keyed-consumer.md` §4 W0.b / §5): typecheck is the SOLE
-/// mono-view producer for every codegen-reached body, so this helper never
-/// yields `None` for a codegen-bound `Concrete` entry.
+/// Returns `Some(view)` for a codegen-bound concrete body. `None` remains the
+/// non-body/no-view spelling used by callers before lifecycle settlement.
 ///
-/// **Strict-first, lenient-fallback.** When `MonoExpr::from_expr` succeeds
-/// (every body node fully concrete — the universal real-program case) the strict
-/// view is returned. When it fails (a residual `Var` / un-annotated node reached
-/// a value position — a multi-sig variant with an unconstrained param mangled
-/// `f$Var`, or a body whose forward-reference `Apply` result var the backend
-/// resolves via the symbol table, not the node) it falls back to
-/// [`MonoExpr::lenient_from_expr`] — the SAME lenient walk the backend used to
-/// run on these bodies (`lib.rs:909`'s deleted arm), so codegen is byte-identical
-/// (the W0.b golden-CLIF gate `tests/golden_clif_w0b.rs`). The mono-instance seam
-/// stays hard-error (a minted instance MUST be concrete, §3.11.1); this
-/// best-effort/hard-error asymmetry is deliberate.
+/// **Strict construction with bounded defaulting.** When
+/// `MonoExpr::from_expr` succeeds, the strict view is returned unchanged. On
+/// `NotConcrete`, [`default_residual_parameters`] clones the checked variant and
+/// defaults only eligible residual positions below a preserved type constructor:
+/// never a residual root, a variable present in a declared parameter type, or a
+/// constrained variable. The helper then retries strict construction. A second
+/// `NotConcrete` returns the existing located ambiguity error; no non-concrete
+/// body reaches backend. The mono-instance seam remains independently strict (a
+/// minted instance MUST be concrete, §3.11.1).
 ///
 /// The backend no longer carries a lenient rebuild path: `compile_to_module`
 /// hard-errors on a `codegen_view: None` for a codegen-reached body (Principle
@@ -296,9 +293,9 @@ pub(super) fn annotate_expr_from_maps(
 /// **S114 carrier flip — the `ViewBuildError` fork (design §4.3).** The strict
 /// `from_expr` now returns `Result<_, ViewBuildError>`, and the two failure arms
 /// route DIFFERENTLY:
-/// - `NotConcrete` — legitimate TYPE incompleteness (multi-sig `f$Var` variants,
-///   forward-reference result vars) — falls back to `lenient_from_expr` exactly
-///   as pre-flip.
+/// - `NotConcrete` — eligible residual parameter positions are defaulted on a
+///   clone, then `from_expr` is retried. If strict construction still reports
+///   non-concreteness, the helper returns a located ambiguity error.
 /// - `Unresolved` — a real-span `Var`/`Apply` with no typed verdict: the
 ///   phase-boundary gate the carrier exists for. It MUST NOT be swallowed into
 ///   the lenient fallback (the lenient walk would seam-assert on the same miss);
@@ -307,24 +304,55 @@ pub(super) fn annotate_expr_from_maps(
 pub(crate) fn build_concrete_codegen_view(
     name: &Symbol,
     variant: &DefnVariant,
+    scheme: &Scheme,
     pattern_ctors: &HashMap<Span, cranelisp_types::FQSymbol>,
     var_refs: &HashMap<Span, cranelisp_types::VarRef>,
     apply_refs: &HashMap<Span, cranelisp_types::ApplyRef>,
 ) -> Result<Option<cranelisp_types::MonoDefnVariant>, CranelispError> {
+    // The settled callable scheme is authoritative for the body root. A
+    // forward-reference result can retain its pre-drain inference variable on
+    // the annotated node even after the frame's return type has settled; that
+    // is not L-2 defaulting and must not be treated as a residual-root frame.
+    let mut authoritative = variant.clone();
+    if let Type::Fn(_, ret) = &scheme.ty
+        && ret.is_concrete()
+    {
+        authoritative
+            .body
+            .set_inferred_type(Some(Box::new(ret.as_ref().clone())));
+    }
     let body = match cranelisp_types::MonoExpr::from_expr(
-        &variant.body,
+        &authoritative.body,
         pattern_ctors,
         var_refs,
         apply_refs,
     ) {
         Ok(mono_body) => mono_body,
         Err(cranelisp_types::ViewBuildError::NotConcrete(_)) => {
-            cranelisp_types::MonoExpr::lenient_from_expr(
-                &variant.body,
+            let defaulted = default_residual_parameters(&authoritative, scheme)?;
+            match cranelisp_types::MonoExpr::from_expr(
+                &defaulted.body,
                 pattern_ctors,
                 var_refs,
                 apply_refs,
-            )
+            ) {
+                Ok(mono_body) => mono_body,
+                Err(cranelisp_types::ViewBuildError::NotConcrete(reason)) => {
+                    return Err(CranelispError::TypeError {
+                        message: format!(
+                            "ambiguous type in codegen view of `{name}`: residual {reason:?} \
+                             remains after parameter defaulting"
+                        ),
+                        location: ErrorLocation::from_span(defaulted.span),
+                    });
+                }
+                Err(cranelisp_types::ViewBuildError::Unresolved {
+                    span,
+                    name: ref_name,
+                }) => {
+                    return Err(unresolved_codegen_view_error(name, ref_name, span));
+                }
+            }
         }
         Err(cranelisp_types::ViewBuildError::Unresolved {
             span,
@@ -333,24 +361,110 @@ pub(crate) fn build_concrete_codegen_view(
             // The located typecheck-phase gate error (design §4.2/§4.3): a
             // reference typecheck could not classify surfaces HERE, never a
             // codegen-time keyed miss (wrong phase).
-            return Err(CranelispError::TypeError {
-                message: format!(
-                    "unresolved reference `{ref_name}` in the codegen view of \
-                     `{name}` — typecheck recorded no local/global verdict for \
-                     this reference (in-process producer bug; \
-                     design/arch/typed-resolution-carrier.md §4.2)"
-                ),
-                location: cranelisp_types::ErrorLocation::from_span(span),
-            });
+            return Err(unresolved_codegen_view_error(name, ref_name, span));
         }
     };
     Ok(Some(cranelisp_types::MonoDefnVariant {
         name: name.clone(),
-        params: variant.params.iter().map(|(n, _)| n.clone()).collect(),
+        params: authoritative
+            .params
+            .iter()
+            .map(|(n, _)| n.clone())
+            .collect(),
         body,
-        span: variant.span,
+        span: authoritative.span,
         mode_summary: None,
     }))
+}
+
+fn unresolved_codegen_view_error(name: &Symbol, ref_name: Symbol, span: Span) -> CranelispError {
+    CranelispError::TypeError {
+        message: format!(
+            "unresolved reference `{ref_name}` in the codegen view of \
+             `{name}` — typecheck recorded no local/global verdict for \
+             this reference (in-process producer bug; \
+             design/arch/typed-resolution-carrier.md §4.2)"
+        ),
+        location: ErrorLocation::from_span(span),
+    }
+}
+
+/// Clone a checked body and default only residual variables which no declared
+/// parameter can carry. Constructor roots are retained recursively; a bare
+/// residual/HKT root is never replaced.
+pub(crate) fn default_residual_parameters(
+    variant: &DefnVariant,
+    scheme: &Scheme,
+) -> Result<DefnVariant, CranelispError> {
+    let parameter_vars: HashSet<TypeId> = match &scheme.ty {
+        Type::Fn(params, _) => params.iter().flat_map(cranelisp_types::free_vars).collect(),
+        _ => HashSet::new(),
+    };
+    let constrained: HashSet<TypeId> = scheme.constraints.keys().copied().collect();
+
+    fn default_below_root(
+        ty: &Type,
+        parameter_vars: &HashSet<TypeId>,
+        constrained: &HashSet<TypeId>,
+        below_root: bool,
+        span: Span,
+    ) -> Result<Type, CranelispError> {
+        match ty {
+            Type::Var(id) if below_root && !parameter_vars.contains(id) => {
+                if constrained.contains(id) {
+                    return Err(CranelispError::TypeError {
+                        message: format!("cannot default constrained residual type variable t{id}"),
+                        location: ErrorLocation::from_span(span),
+                    });
+                }
+                Ok(Type::Int)
+            }
+            Type::Var(_) | Type::TyConApp(_, _) => Ok(ty.clone()),
+            Type::Fn(params, ret) => Ok(Type::Fn(
+                params
+                    .iter()
+                    .map(|param| default_below_root(param, parameter_vars, constrained, true, span))
+                    .collect::<Result<Vec<_>, _>>()?,
+                Box::new(default_below_root(
+                    ret,
+                    parameter_vars,
+                    constrained,
+                    true,
+                    span,
+                )?),
+            )),
+            Type::ADT(name, args) => Ok(Type::ADT(
+                name.clone(),
+                args.iter()
+                    .map(|arg| default_below_root(arg, parameter_vars, constrained, true, span))
+                    .collect::<Result<Vec<_>, _>>()?,
+            )),
+            Type::Int | Type::Bool | Type::String | Type::Float => Ok(ty.clone()),
+        }
+    }
+
+    fn rewrite_expr(
+        expr: &mut Expr,
+        parameter_vars: &HashSet<TypeId>,
+        constrained: &HashSet<TypeId>,
+    ) -> Result<(), CranelispError> {
+        if let Some(ty) = expr.inferred_type().cloned() {
+            let defaulted =
+                default_below_root(&ty, parameter_vars, constrained, false, expr.span())?;
+            expr.set_inferred_type(Some(Box::new(defaulted)));
+        }
+        let mut result = Ok(());
+        for_each_child_expr_mut(expr, |child| {
+            if result.is_ok() {
+                result = rewrite_expr(child, parameter_vars, constrained);
+            }
+        });
+        result
+    }
+
+    let mut defaulted = variant.clone();
+    rewrite_expr(&mut defaulted.body, &parameter_vars, &constrained)?;
+    Ok(defaulted)
 }
 
 /// Annotate a `Defn` with types and resolved calls from side maps.
@@ -415,32 +529,6 @@ pub(crate) fn single_trait_bound_from_annotation(
         )),
         _ => None,
     }
-}
-
-/// Read the GOT slot of a prior **concrete callable** entry named `name` in
-/// the symbol table `st`, if one exists.
-///
-/// **The redefinition slot-reuse seam (S83, FIXME 0356/0357, Principle 20).**
-/// With deferred GOT-slot allocation, Pass-1 no longer carries a slot forward;
-/// the carry-forward moved here, to the Pass-2 determination point. When an
-/// unconstrained (concrete) defn is being redefined over a prior **concrete**
-/// entry, the determination arm must **REUSE** the prior slot rather than
-/// allocate a fresh one — orphaning the live GOT pointer the prior `Code::Jit`
-/// installed would be a use-after-free (the same guard the S82 `existing_slot`
-/// carry-forward provided in Pass-1). The read goes through
-/// `callable_got_slot()` (the single read-through point), so it returns `Some`
-/// only for the slot-bearing callable kinds (`Concrete` `UserFn`, `Primitive`,
-/// `Constructor`) and `None` for a prior `NotDetermined` / `Constrained` /
-/// non-`Def` entry — exactly the cases where there is no live pointer to
-/// preserve and a fresh slot is correct.
-pub(super) fn existing_callable_slot<
-    C: cranelisp_types::CodeStore,
-    L: cranelisp_types::LinkerStore,
->(
-    st: &SymbolTable<C, L>,
-    name: &str,
-) -> Option<usize> {
-    st.get(name).and_then(|e| e.callable_got_slot())
 }
 
 /// Returns true if `name` is a synthesised macro-clause defn — the

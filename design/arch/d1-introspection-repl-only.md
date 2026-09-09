@@ -252,7 +252,7 @@ All `src/` work. `crates/cranelisp-types` is already landed by this ruling.
 | `src/session_v4.rs` (~`RunMode`, `SharedState`) | Add `RunMode` enum (§4) + `run_mode: RunMode` field on `SharedState`. |
 | `src/main.rs` `Action` → session ctor | Derive `RunMode` from `Action::{Run, Repl, Link}`; thread into `CompilerSession::new` / `Settings` → `SharedState.run_mode`. The only legitimate place `Action` becomes `RunMode`. |
 | `src/cluster.rs:222` (`process_cluster`) | Gate `introspection:` field — `Some(&shared.introspection)` only when `shared.run_mode.populates_introspection()`, else `None`. (Removes the unconditional `Some`.) |
-| `src/worker.rs:2851` (platform hash gate) | Replace `let is_repl = ctx.introspection.is_some();` with `let is_repl = ctx.run_mode.is_repl();` (thread `run_mode` onto `ModuleCompiler`, or read via `ctx.shared_state`). `layout_hash_gate` call unchanged. |
+| `src/process_form/platform.rs::handle_platform` (platform hash gate) | Replace `let is_repl = ctx.introspection.is_some();` with `let is_repl = ctx.run_mode.is_repl();` (thread `run_mode` onto `ModuleCompiler`, or read via `ctx.shared_state`). `layout_hash_gate` call unchanged. |
 | `src/worker.rs:1547` `register_macro_in_module` | When building the `DefKind::Macro { clauses_meta }` entry, also set `macro_sexp: sexp.clone()` (the `sexp: &Sexp` arg is already in hand). This is **unconditional** (compile-path data). The existing `introspection`-write block (REPL `sexp`/`source` for display) stays, now no-op in batch via the §3 gate. |
 | `src/worker.rs:736` `resolve_macro_sexp_from` | Re-source from the **symbol table** instead of `introspection`: read the `DefKind::Macro .macro_sexp` off the entry for `(defining_module, name)` (via `read_macro_meta`-style lookup or a sibling accessor), returning `Some(sexp.clone())`. Drop the `shared.introspection.get(&fq)` read. This now works for **cache-restored** modules (the field round-trips), so the same-vs-cross-module guard at the call site (`worker.rs:675`) and the `handle_cached_codegen` Step 2a drive (`worker.rs:621`) remain correct but the introspection-absence failure mode is gone. |
 | `src/worker.rs:621` Step 2a + `:675` caller | No structural change required, but re-verify: with `macro_sexp` now available on cache-restored entries, the Step-3 recompile fallback (`resolve_macro_sexp_from`) can succeed where it previously returned `None`. Keep the cross-module guard (the §0.2 forward-reference rejection) intact. |
@@ -306,7 +306,7 @@ unpopulated — it does not *exist*, and the introspection-only codegen byproduc
 text) are not generated at all.
 
 **Scope:** int-internal only. `SharedState.introspection` and the int-internal
-`Introspection` record (`src/session_v4.rs:627`) are entirely below the crate boundary.
+`Introspection` record (`src/session_v4/types.rs::Introspection`) are entirely below the crate boundary.
 **No `cranelisp-types` change. No public-API / baseline change.** (Confirmed in §B5.)
 
 ---
@@ -566,17 +566,17 @@ All `src/` (int). No `cranelisp-types` change.
 
 | Site | Change |
 |---|---|
-| `src/session_v4.rs:885` (`SharedState.introspection` field) | Type → `Option<dashmap::DashMap<FQSymbol, Introspection>>`. Rustdoc → §B3 (store absent in batch, not merely unpopulated). |
-| `src/session_v4.rs:1201` (`CompilerSession::new` ctor) | Build from the threaded `run_mode`: `introspection: run_mode.populates_introspection().then(dashmap::DashMap::new)`. No allocation in batch. |
-| `src/session_v4.rs:2524` (REPL codegen-and-finalize producer) | `Some(&self.shared.introspection)` → `self.shared.introspection.as_ref()`. |
-| `src/worker.rs:4312` (`handle_typecheck_work_shared` — pool-worker batch producer) | `Some(&shared.introspection)` → `shared.introspection.as_ref()`. **The core leak fix** — yields `None` in batch, so `inline_jit_codegen_for_names` step-7 (`:3765`) short-circuits: no record, no CLIF retained. |
+| `src/session_v4.rs::SharedState` (`introspection` field) | Type → `Option<dashmap::DashMap<FQSymbol, Introspection>>`. Rustdoc → §B3 (store absent in batch, not merely unpopulated). |
+| `src/session_v4/lifecycle.rs::new` (`CompilerSession` ctor) | Build from the threaded `run_mode`: `introspection: run_mode.populates_introspection().then(dashmap::DashMap::new)`. No allocation in batch. |
+| `src/eval.rs::codegen_and_execute` (REPL codegen-and-finalize producer) | `Some(&self.shared.introspection)` → `self.shared.introspection.as_ref()`. |
+| `src/worker.rs::handle_typecheck_work_shared` (pool-worker batch producer) | `Some(&shared.introspection)` → `shared.introspection.as_ref()`. **The core leak fix** — yields `None` in batch, so `inline_jit_codegen_for_names` short-circuits: no record, no CLIF retained. |
 | `src/cluster.rs:283` (`insert_cluster` drain) | Wrap the drain loop in `if let Some(m) = shared.introspection.as_ref() { … m.insert(fq, intro) … }`. (Doubly a no-op in batch — records empty AND store absent.) |
-| `src/session_v4.rs:1524/1531/1539/1546` (reader accessors) | `self.shared.introspection.get(fq)` → `self.shared.introspection.as_ref().and_then(\|m\| m.get(fq))`. |
-| `src/session_v4.rs:1627` (`describe_symbol` source read) | same `.as_ref().and_then(...)` adaptor. |
-| `src/session_v4.rs:2336` (REPL eval source capture) | `self.shared.introspection.entry(fq)…` → `if let Some(m) = self.shared.introspection.as_ref() { m.entry(fq).or_default().source = … }`. REPL-only by path; compile-correctness under `Option`. |
-| `src/session_v4.rs:2912` (`get_introspection`) | `.get(&fq)` → `.as_ref().and_then(\|m\| m.get(&fq))`. |
-| `src/session_v4.rs:1916` + `src/save.rs:49/231–347` (`generate_module_source`) | Pass `self.shared.introspection.as_ref()`; make `generate_module_source` / `introspection_sexp` take `Option<&DashMap>`, falling through to the D1 §6 `DefKind::Macro.macro_sexp` symbol-table fallback when absent. (Or keep `&DashMap` + empty-borrow at the caller — `/dev`'s call; the `Option` form composes with the D1 §6 fallback and is preferred.) |
-| `src/worker.rs:4524/4611` (`#[cfg(test)]`) | These build their OWN local `DashMap` for the unit test — **NOT** `shared.introspection`. No change. |
+| `src/repl/format.rs::describe_symbol` and sibling readers | `self.shared.introspection.get(fq)` → `self.shared.introspection.as_ref().and_then(\|m\| m.get(fq))`. |
+| `src/repl/format.rs::describe_symbol` source read | same `.as_ref().and_then(...)` adaptor. |
+| `src/eval.rs::codegen_and_execute` (REPL eval source capture) | `self.shared.introspection.entry(fq)…` → `if let Some(m) = self.shared.introspection.as_ref() { m.entry(fq).or_default().source = … }`. REPL-only by path; compile-correctness under `Option`. |
+| `src/repl/mod.rs::get_introspection` | `.get(&fq)` → `.as_ref().and_then(\|m\| m.get(&fq))`. |
+| `src/save.rs::generate_module_source` and its caller | Pass `self.shared.introspection.as_ref()`; make `generate_module_source` / `introspection_sexp` take `Option<&DashMap>`, falling through to the D1 §6 `DefKind::Macro.macro_sexp` symbol-table fallback when absent. (Or keep `&DashMap` + empty-borrow at the caller — `/dev`'s call; the `Option` form composes with the D1 §6 fallback and is preferred.) |
+| historical `src/worker.rs:4524/4611` (`#[cfg(test)]`) | These built their OWN local `DashMap` for the unit test — **NOT** `shared.introspection`. No change. |
 
 **Sites confirmed already-gated (no D1b change — verify only):** `cluster.rs:227`,
 `session_v4.rs:2422`, `session_v4.rs:3494` already pass `Some(...)` conditionally on

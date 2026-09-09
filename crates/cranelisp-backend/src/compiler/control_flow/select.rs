@@ -3,11 +3,9 @@
 // Compiles the user-facing combinators `race`/`select` (name-matched at the
 // backend's `BuiltinFn` apply-dispatch arm — the `bind` inline-primitive
 // precedent, NOT an inferred AST marker) into the documented IO-tree structure:
-// a thin single-field `IO_TAG_SELECT` node whose field-0 carries a `Vec (IO a)`
-// of the N branch sub-trees. The surrounding `Bind(Select, cont)` is built by
-// the ordinary bind codegen — `compile_select` returns just the thin node, the
-// simplest IO-node construction of the family (no continuation, no move-out, no
-// null-guard).
+// an `IO_TAG_SELECT` node whose field 0 carries a `Vec (IO a)` of the N branch
+// sub-trees and whose field 1 carries the common result disposer. The
+// surrounding `Bind(Select, cont)` is built by the ordinary bind codegen.
 //
 // See `design/backend/io-trampoline.md §16` (the select node + bake + the
 // list-carrier RC contract) and `design/int/reactor.md §2.15` (the runtime race
@@ -46,11 +44,12 @@ where
     pub(crate) fn compile_select(
         &mut self,
         arg_vals: &[Value],
+        result_disposer: Value,
         span: Span,
     ) -> Result<Value, CranelispError> {
-        // arg_vals = [ branch_vec ] — the List (IO a) carrier.
+        // arg_vals = [ branch_vec ] — the Vec (IO a) carrier.
         let branches_val = arg_vals[0];
-        self.compile_select_node(branches_val, span)
+        self.compile_select_node(branches_val, result_disposer, span)
     }
 
     /// Compile a `(race a b)` call — the binary special case of `select`.
@@ -65,17 +64,19 @@ where
         args: &[MonoExpr],
         span: Span,
     ) -> Result<Value, CranelispError> {
+        let result_disposer = self.result_disposer_for_io_expr(&args[0], span)?;
         // Build the 2-element branch Vec (the carrier). `compile_vec_lit` compiles
         // each branch IO expression to a fresh sub-tree (rc=1 temporary) and stores
         // it into the Vec's data buffer with ownership transfer — exactly the
         // carrier `select` consumes.
         let branches_val = self.compile_vec_lit(args, span)?;
-        self.compile_select_node(branches_val, span)
+        self.compile_select_node(branches_val, result_disposer, span)
     }
 
-    /// Build the thin `IO_TAG_SELECT` node (`io-trampoline.md §16.4`):
-    /// `[header(16) | tag=6 | branch_vec]` — `HeapAdt::payload_size(1)` (32 bytes
-    /// total). The branch Vec (rc=1) moves into field 0 with **no `rc_inc`** — a
+    /// Build the `IO_TAG_SELECT` node (`io-trampoline.md §16.4`):
+    /// `[header(16) | tag=6 | branch_vec | result_disposer]` —
+    /// `HeapAdt::payload_size(2)` (40 bytes total). The branch Vec (rc=1) moves
+    /// into field 0 with **no `rc_inc`** — a
     /// plain ownership transfer (identical to how `compile_launch` stores its
     /// detached sub-tree and `compile_par_bind` stores its branch pointers,
     /// Decision 20/24). The node owns the Vec for the whole tree lifetime; there
@@ -85,6 +86,7 @@ where
     fn compile_select_node(
         &mut self,
         branches_val: Value,
+        result_disposer: Value,
         span: Span,
     ) -> Result<Value, CranelispError> {
         let alloc_id = self
@@ -95,9 +97,9 @@ where
                 location: ErrorLocation::from_span(span),
             })?;
 
-        // Allocate the thin node: tag + 1 field = HeapAdt::payload_size(1) = 16
-        // payload (32 total with the 16-byte header).
-        let payload_size = HeapAdt::payload_size(1) as i64;
+        // Allocate tag + one owning field + one scalar metadata word:
+        // HeapAdt::payload_size(2) = 24 payload bytes (40 total).
+        let payload_size = HeapAdt::payload_size(2) as i64;
         let node = heap::emit_alloc(&mut self.builder, self.module, alloc_id, payload_size);
 
         let tag = self.builder.ins().iconst(types::I64, IO_TAG_SELECT);
@@ -108,6 +110,12 @@ where
             branches_val,
             node,
             HeapAdt::field_offset(0),
+        );
+        heap::heap_store(
+            &mut self.builder,
+            result_disposer,
+            node,
+            HeapAdt::field_offset(1),
         );
 
         Ok(node)

@@ -15,7 +15,7 @@ This document covers the Phase 4 G9/G11 migration: priority workers become sessi
 - `design/arch/CLAUDE.md` Principle 11 (single pipeline, mode parameters), Decision 23 (uniform codegen).
 - `design/int/phase2-codegen-convergence.md` §9.1 (module-level exclusivity via scheduler).
 - `sprints/SPRINT.md` §Architecture Review condition 4 (descope triggers for G9).
-- Existing nice worker implementation (`src/session_v4.rs:665–693`) — reference pattern for persistent workers.
+- Existing nice worker implementation (historical `src/session_v4.rs:665–693`) — reference pattern for persistent workers.
 - `sketch/` — **no sketch antecedent for this subsystem**: the sketch was single-threaded (no scheduler, no workers). §3 below covers this.
 
 ## 2. Current state
@@ -24,33 +24,33 @@ This document covers the Phase 4 G9/G11 migration: priority workers become sessi
 
 Priority workers today are spawned inside a `thread::scope` *per call* to:
 
-- `register_module_with_source` (`src/session_v4.rs:1059–1136`, scope at line 1114)
-- `reload_module` (`src/session_v4.rs:1013–1024`, scope at line 1013)
+- `register_module_with_source` (historical `src/session_v4.rs:1059–1136`, scope at line 1114)
+- `reload_module` (historical `src/session_v4.rs:1013–1024`, scope at line 1013)
 
-Within the scope, N workers (`settings.priority_workers`) are spawned as scoped threads that each run `priority_worker_thread` (`src/worker.rs:2873`). Each worker parks on `scheduler.take_priority_work_blocking()` (condvar-based) when no work is available, and processes work items until the scheduler signals shutdown *or* the scheduler reports no more pending work.
+Within the scope, N workers (`settings.priority_workers`) are spawned as scoped threads that each run `priority_worker_thread` (historical `src/worker.rs:2873`). Each worker parks on `scheduler.take_priority_work_blocking()` (condvar-based) when no work is available, and processes work items until the scheduler signals shutdown *or* the scheduler reports no more pending work.
 
 When the scope exits, all workers join. The next call spawns a fresh cohort.
 
 Key state passed into the scoped worker:
-- `&Mutex<PlatformRegistry>` (swapped into and out of `CompilerSession.platform_registry` around the scope — see `src/session_v4.rs:993–1026, 1088–1128`).
+- `&Mutex<PlatformRegistry>` (swapped into and out of `CompilerSession.platform_registry` around the scope — see historical `src/session_v4.rs:993–1026, 1088–1128`).
 - `&DashMap<ModuleFullPath, TypecheckProduct>`, `&DashMap<ModuleFullPath, CodegenProduct>`, introspection, scheduler, module sexps, suspend states, dirs, project root, `&SharedState`.
 
 The `PriorityWorkerRefs` struct carries all of this via borrowed references (the scope guarantees they outlive the workers).
 
 ### 2.2 Scoped nice workers — **already persistent**
 
-Nice workers were migrated to persistent spawn in Sprint 46 (see `src/session_v4.rs:665–693`). They:
+Nice workers were migrated to persistent spawn in Sprint 46 (see historical `src/session_v4.rs:665–693`). They:
 - Spawn in `CompilerSession::new` via plain `std::thread::spawn` (not `spawn_scoped`).
 - Hold `Arc<SharedState>` (the only way to share owned state across non-scoped threads).
 - Park on `scheduler.take_object_codegen()` (condvar).
 - Join in `CompilerSession::shutdown()` (via the stored `nice_worker_handles: Vec<JoinHandle<()>>`).
-- There is a defensive `scheduler.shutdown()` call in `impl Drop for CompilerSession` (`src/session_v4.rs:3266–3274`) to wake workers on drop-without-shutdown (test teardown, panics).
+- There is a defensive `scheduler.shutdown()` call in `impl Drop for CompilerSession` (historical `src/session_v4.rs:3266–3274`) to wake workers on drop-without-shutdown (test teardown, panics).
 
 Nice workers are the **proven template** for G9. The priority-worker migration follows the same pattern.
 
 ### 2.3 Eval JIT — fresh per expression
 
-Today's REPL eval path in `codegen_and_execute` (`src/session_v4.rs:1450–1598`):
+The historical REPL eval path in `codegen_and_execute` (`src/session_v4.rs:1450–1598`):
 - Calls `inline_jit_codegen_for_module` to compile any new defns introduced by this eval. This creates a *fresh* `Jit::new_with_symbols` inside the worker's scope.
 - If the program contains a trailing expression, calls `pipeline::compile_and_execute_expr` (`src/pipeline.rs:55`), which creates **another** fresh `Jit` to compile and call the expression's `__expr` synthetic defn.
 
@@ -58,7 +58,7 @@ Two JIT instances per eval, both short-lived and discarded. This is gap G10 per 
 
 ### 2.4 Reload — scoped-worker re-spawn
 
-`CompilerSession.reload_module` (`src/session_v4.rs:964–1038`):
+`CompilerSession.reload_module` (historical `src/session_v4.rs:964–1038`):
 - Clears the module's `typecheck_products`, `codegen_programs`, `codegen_products` entries.
 - Re-parses the source, inserts into `module_sexps`.
 - Calls `scheduler.register_module(...)` for re-typecheck.
@@ -278,7 +278,7 @@ pub fn shutdown(&mut self) {
 }
 ```
 
-The `impl Drop for CompilerSession` (`src/session_v4.rs:3266–3274`) already calls `scheduler.shutdown()` defensively. After G9 it should also drain `priority_worker_handles` to ensure workers join on drop-without-shutdown. Alternatively, the `Drop` impl calls `self.shutdown()` directly — symmetric to today's nice-worker behaviour.
+The historical `impl Drop for CompilerSession` (`src/session_v4.rs:3266–3274`) already called `scheduler.shutdown()` defensively. After G9 it should also drain `priority_worker_handles` to ensure workers join on drop-without-shutdown. Alternatively, the `Drop` impl calls `self.shutdown()` directly — symmetric to today's nice-worker behaviour.
 
 **Shutdown-race edge case**: session dropped while a worker is mid-`compile_to_module`. The worker holds a JIT instance (thread-local, on its stack), a borrow of `SharedState`, and a DashMap read guard. When `shutdown()` is called:
 1. `scheduler.shutdown()` sets a flag and wakes all condvars. Workers parked on `take_priority_work_blocking` wake, see the flag, and return `None`, exit their loop.
@@ -336,12 +336,12 @@ Wave 4 does not change the nice-worker code; it only adds the priority-worker pe
 
 | # | Item | File:line (approx) |
 |---|------|--------------------|
-| 1 | `std::thread::scope` block in `register_module_with_source` | `src/session_v4.rs:1114` |
-| 2 | `std::thread::scope` block in `reload_module` | `src/session_v4.rs:1013` |
-| 3 | `PriorityWorkerRefs` struct | `src/worker.rs:2852` |
-| 4 | `priority_worker_thread(shared: &PriorityWorkerRefs, ...)` function | `src/worker.rs:2873` |
-| 5 | `PlatformRegistry` Mutex swap-in/out in `register_module_with_source` and `reload_module` | `src/session_v4.rs:993–1026, 1088–1128` (already going with G8) |
-| 6 | Per-call local `module_sexps: Mutex<HashMap<_>>` construction | `src/session_v4.rs:986–990, 1081–1086` |
+| 1 | `std::thread::scope` block in `register_module_with_source` | historical `src/session_v4.rs:1114` |
+| 2 | `std::thread::scope` block in `reload_module` | historical `src/session_v4.rs:1013` |
+| 3 | `PriorityWorkerRefs` struct | historical `src/worker.rs:2852` |
+| 4 | `priority_worker_thread(shared: &PriorityWorkerRefs, ...)` function | historical `src/worker.rs:2873` |
+| 5 | `PlatformRegistry` Mutex swap-in/out in `register_module_with_source` and `reload_module` | historical `src/session_v4.rs:993–1026, 1088–1128` (already going with G8) |
+| 6 | Per-call local `module_sexps: Mutex<HashMap<_>>` construction | historical `src/session_v4.rs:986–990, 1081–1086` |
 | 7 | Per-call local `suspend_states: Mutex<HashMap<_>>` construction | same as #6 |
 | 8 | `compile_and_execute_expr` in `src/pipeline.rs:55` | Retained with Decision 31 adjustment: `__expr` continues to be compiled inline on the eval path (not on a worker), but on a fresh `JITModule` wrapped in the custom-`Drop` `Jit` newtype. The body is unchanged in shape (create JIT → call `compile_to_module` for `["__expr"]` → finalise → call → return result → drop `Jit`); only the `Jit` wrapper changes, in `/backend`'s `jit.rs`. |
 

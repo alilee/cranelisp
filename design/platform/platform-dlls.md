@@ -1,51 +1,67 @@
-# Platform DLLs — Solution Design
+# Platform DLLs — authoring and loading mechanics
 
-Sprint 16 I4. This document defines the platform DLL system: the C-ABI contract between Cranelisp and platform shared libraries, the `cranelisp-stdio` reference platform, and the optional `cranelisp-test-capture` testing platform.
+Subordinate to `platform.md`, which carries the crate's shape and its
+invariants. This document carries the *mechanics*: the manifest, the wrapper
+types and the capture-RC protocol a DLL author works in, the discovery and load
+sequence, the error conditions, and the reference platforms.
 
-> **S96 refresh (FIXME 0461 drain).** The mechanics below (search path, manifest
-> format, capture-RC protocol, the reference + test platforms) are current and
-> load-bearing. Three things are kept reconciled here: (1) **ABI is at version 7**,
-> not 1 — see the version trail in `platform.md` §3 "ABI version history"; the
-> single-i64 calling convention + manifest shape this doc describes are unchanged
-> across the bumps. (2) The **capacity carrier** — the additive
-> `CLIO::effect_on_resource_with_capacity(token, capacity, f)` constructor +
-> `IO_EFFECT_CAPACITY_OFFSET = 32` (the `IO_TAG_EFFECT` payload widened 32 → 40,
-> append-only) + the `IO_EFFECT_FN_NAME_OFFSET = 24` (ABI v4) — is documented in the
-> `CLIO<CL>` + node-layout sections below. (3) Load-path errors are structured
-> `PlatformError` values (`cranelisp-types`, Decision 42), not bare `String` — the
-> "Error Conditions" tables list the user-facing messages those variants carry. The
-> canonical constructor/constant surface is the source rustdoc + `io-trampoline.md`
-> §13 + `effect-concurrency.md` §8.1; this doc carries the loading-mechanics
-> narrative.
+Canonical per-item truth is the source rustdoc. Where a constant or a constructor
+signature appears here, it is illustrative of the shape; the source is
+authoritative.
 
-## Architectural Context
+## Architectural context
 
-Platform DLLs are the mechanism by which Cranelisp programs perform side effects. The language's IO model (spec 10-io.md) defines IO as a deferred task tree; platform DLLs provide the leaf `Effect` nodes that actually do work when the trampoline forces them.
+Platform DLLs are how a Cranelisp program performs side effects. The IO model
+(`spec/10-io.md`) defines IO as a deferred task tree; platform DLLs supply the
+leaf nodes that do work when the trampoline forces them.
 
 The crate DAG for platform work:
 
 ```
-cranelisp (binary) ─┬─> cranelisp-backend ──> cranelisp-runtime
-                     │                          │
-                     │                          v
-                     │                      cranelisp-types
-                     │                          ^
-                     │                          │
-                     └─> cranelisp-platform <───┘
+cranelisp (binary) ─┬─> cranelisp-backend ──> cranelisp-intrinsics
+                    │                         cranelisp-primitives
+                    │                              │
+                    │                              v
+                    │                          cranelisp-types
+                    │                              ^
+                    │                              │
+                    └─> cranelisp-platform <───────┘
 
-platforms/stdio/     ──> cranelisp-platform
-platforms/test-capture/ ──> cranelisp-platform
+platforms/*/            ──> cranelisp-platform
+exemplar/platforms/web/ ──> cranelisp-platform
 ```
 
-`cranelisp-platform` is the shared ABI contract crate: both the host binary and every platform DLL depend on it. It contains only type definitions, wrapper types, and the `declare_platform!` macro. It has no runtime behavior of its own.
+`cranelisp-platform` is the shared ABI contract crate: both the host binary and
+every platform DLL depend on it. It holds type definitions, wrapper types, the
+schema parser and the `declare_platform!` macro, and has no runtime behaviour of
+its own. It depends only on `cranelisp-types` — notably not on `libloading`,
+which is int-side.
 
 ## C-ABI Contract
 
 ### ABI Version
 
-The reimplementation started at **ABI version 1**; it is now at **ABI version 9** (the bump trail is canonical in `platform.md` §3 "ABI version history" + the `ABI_VERSION` rustdoc: v2 ADT marshaling, v3 three-exports, v4 fn-name node widen, v5 EffectOutcome/fault-catch, v6 namespaced manifest export, v7 effect-concurrency cascade, v8 single-ABI cutover — one macro/manifest/loader, `concurrency` feature retired, v9 ctx-vtable handle-model cutover — `HostCtx` `acquire`/`retire`, `ConcurrencyDescriptor.role`, opaque resource-handle ADTs). The host (`int::load_platform_dll`) checks `manifest.abi_version == ABI_VERSION` at load time and rejects mismatches with `PlatformError::AbiVersionMismatch` (Decision 42).
+The bump trail is canonical in the `ABI_VERSION` rustdoc; the current stamp is
+**10** (the `Pure` payload-glue word). The host checks
+`manifest.abi_version == ABI_VERSION` at load and refuses a mismatch with
+`PlatformError::AbiVersionMismatch`. A refused DLL contributes nothing: the host
+calls no function in it.
 
-Future breaking changes (struct layout changes, new required fields) bump the version. Additive changes (new optional fields at the end of structs) may be handled without a version bump if backward compatibility is maintained, but a bump is preferred for clarity. The S95 capacity carrier (`IO_EFFECT_CAPACITY_OFFSET = 32`) and the S94 R1 poll-shape `drop_state` reserve were appended in place **without** a bump only because the v7 layout was not yet frozen (no out-of-tree cdylib had shipped against it); the same no-users latitude carried the v8/v9 cutovers. Once a platform ships externally against the current stamp, the append-in-place latitude ends.
+**What obliges a bump** is stated as a property rather than a list, in
+`platform.md` §4.3: any field added, removed, reordered or retyped in a
+`#[repr(C)]` boundary struct; any change to a constant a DLL reads by hard-coded
+offset; and any layout change to **a node a DLL constructs or reads** — which is
+`Pure` and `Effect`, not the host-built `EffectPoll`/`Launch`/`Select`.
+
+Two historical append-in-place changes did **not** bump, correctly: the fn-name
+and capacity fields were appended to the `Effect` node while no out-of-tree DLL
+had shipped against the then-current stamp, so host and DLLs rebuilt together.
+**That latitude ends the moment a platform ships externally against a stamp**,
+and it never applied to a change that moves an existing offset.
+
+`platforms/shapes-badabi` is the standing refusal fixture — it hand-rolls its
+manifest so it can bake a stale version, by convention the one immediately
+preceding the current. Re-pointing it is a standing obligation of every bump.
 
 ### IO Tag Constants
 
@@ -53,7 +69,7 @@ Shared between platform DLLs and the host trampoline:
 
 | Constant | Value | Node type |
 |----------|-------|-----------|
-| `IO_TAG_PURE` | 0 | Completed value |
+| `IO_TAG_PURE` | 0 | Completed value. Payload 24 bytes: `[tag, payload, payload_glue]`, the glue at `IO_PURE_GLUE_OFFSET`. A DLL writes the `0` sentinel there — it cannot name a host `drop<T>` address, and must not try; the host adopts the node with the real glue when it returns across the ABI (`platform.md` §4.1, §4.4) |
 | `IO_TAG_EFFECT` | 1 | Deferred effect (opaque closure) |
 | `IO_TAG_BIND` | 2 | Chain (internal) |
 | `IO_TAG_PAR` | 3 | Automatic IO scheduling (spec §10.12) |
@@ -61,7 +77,11 @@ Shared between platform DLLs and the host trampoline:
 | `IO_TAG_LAUNCH` | 5 | Launch-and-continue (S96 Chunk B; host-built/host-interpreted, never crosses the DLL ABI) |
 | `IO_TAG_SELECT` | 6 | Race/select combinator (S96 Chunk C; host-built/host-interpreted, never crosses the DLL ABI) |
 
-`IO_TAG_PAR` (tag 3) is now present (automatic IO scheduling landed). `IO_TAG_EFFECT_POLL` (tag 4) is the poll-shape async-leaf node, introduced with the v7 `concurrency` layout contracts and core/ungated since the v8 single-ABI cutover; it is built by the **backend** (a host-built state-closure), not the DLL — see `design/backend/io-trampoline.md` §12 and `design/platform/poll-support.md`.
+Tags 4–6 are **host-built and host-interpreted**: they never cross the DLL
+boundary, which is why adding them was no bump. `IO_TAG_EFFECT_POLL` in
+particular is a backend-built state-closure node, not a DLL allocation — the
+poll-leaf author receives it as an opaque `state` pointer. See
+`design/backend/io-trampoline.md` §12 and `poll-leaf-authoring.md`.
 
 ### `PlatformManifest`
 
@@ -121,7 +141,14 @@ pub struct HostCallbacks {
 }
 ```
 
-The `alloc` callback allocates heap memory using the runtime's allocator (`alloc_with_rc` in `cranelisp-runtime`). The returned pointer is the base pointer (offset 0 of the allocation, pointing at the `alloc_size` header field). Platform DLLs use this to allocate IO nodes and strings that integrate with the host's RC system.
+The `alloc` callback allocates heap memory through the runtime allocator in
+`cranelisp-intrinsics`. **The two callbacks do not agree on what they return**,
+and this is the crate's sharpest marshalling trap: `alloc` returns the **payload**
+pointer (base + header), so every scalar/string/IO constructor subtracts the
+header size to recover the base before storing it, while `alloc_with_tag` returns
+the **base** already and `CLAdt::construct` passes it straight through. All heap
+`CL*` wrappers store base pointers. The crate's own `CLAUDE.md` carries the
+citation-level detail.
 
 **Why only `alloc`?** Deallocation is handled by the RC system (when RC reaches zero). Platform code never explicitly frees Cranelisp heap values. The `alloc` callback is the only host service platforms need.
 
@@ -193,9 +220,37 @@ impl<CL: CLType> CLIO<CL> {
 }
 ```
 
-`CLIO::pure(val)` allocates a 2-field node `[tag=0, value]` (16 bytes) on the host heap.
+`CLIO::pure(val)` allocates a 3-field node `[tag=0, value, payload_glue]` (24
+bytes of payload) on the host heap. The glue word is written as the `0`
+sentinel and that is the **only** value a DLL may write there: it is an initial
+value, replaced by the host's tag-dispatched adoption stamp when the node
+crosses back as a platform call's return value (`platform.md` §4.1, §4.4). A DLL
+cannot name a host `drop<T>` address and must not try. The DLL and this crate do
+not implement the post-publication claim: after adoption, intrinsics alone
+atomically exchanges the word to `Claimed`, observing the prior `Scalar`,
+`Claimed` or `Owned(glue)` state as force and teardown contend for the one
+payload obligation.
 
-`CLIO::effect(f)` double-boxes the closure (`Box<Box<dyn FnOnce() -> i64>>`) and allocates an `IO_TAG_EFFECT` node. As of ABI v7 the node payload is **40 bytes** (was 24 at ABI v1): `[tag=1, thunk_ptr, resource_token, fn_name, capacity]` — `resource_token` @16, `fn_name` @24 (`IO_EFFECT_FN_NAME_OFFSET`, the ABI-v4 dispatch-funnel coordinate, reserved null by the constructor and stamped by the backend, §9a of `platform.md`), `capacity` @32 (`IO_EFFECT_CAPACITY_OFFSET`, the S95 slice-3 carrier; `effect`/`effect_on_resource` write capacity 1). Every widen was **append-only** — no existing offset moved. The double-boxing produces a thin pointer (one `i64`) from a trait object (two `i64`s). The trampoline calls `call_effect_thunk` to reclaim ownership and invoke the closure exactly once (returning an `EffectOutcome` under the DLL-local fault catch, ABI v5).
+`CLIO::effect(f)` double-boxes the closure and allocates an `IO_TAG_EFFECT`
+node, whose payload is **40 bytes**: `[tag, thunk_ptr, resource_token, fn_name,
+capacity]` at payload offsets 0/8/16/24/32. Two of those the constructor does
+not fill in with a meaningful value:
+
+- **`fn_name`** is reserved **null** by the DLL, which cannot know the
+  cranelisp-level name, and is stamped by the host after the call returns — under
+  the tag licence of `platform.md` §4.4, so the store lands only on a node whose
+  tag says it has that field. An unstamped node degrades to `"<unknown>"` in a
+  dispatch diagnostic, never a crash.
+- **`capacity`** is `1` for `effect`/`effect_on_resource` — today's
+  serial-within-token — and is supplied explicitly by
+  `effect_on_resource_with_capacity`, the additive sibling.
+
+Every widening of this node has been **append-only**; no existing offset has ever
+moved, and that is the discipline to preserve. The double-boxing produces a thin
+pointer (one `i64`) from a trait object (two). The trampoline calls
+`call_effect_thunk` to reclaim ownership and invoke the closure **exactly once**
+— single-shot by contract — returning an `EffectOutcome` under the DLL-local
+fault catch (`platform.md` §4.2).
 
 ### `call_effect_thunk`
 
@@ -207,7 +262,12 @@ Reclaims the double-boxed closure via `Box::from_raw` and invokes it. This **con
 
 ### `CLType` Trait
 
-Marker trait implemented by all `CL*` types. Provides `to_raw(self) -> i64` for conversion to the ABI-level representation. Prevents raw `i64` from being accidentally lifted into `CLIO`.
+Marker trait providing `to_raw(self) -> i64` for conversion to the ABI-level
+representation, so a raw `i64` cannot be accidentally lifted into `CLIO`.
+Conventionally sealed: the four primitive wrappers and `CLAdt<T>` implement it,
+and **`CLIO<T>` deliberately does not** — which is what makes `pure(pure(…))`
+unconstructable, so no IO node can be hidden inside another node's payload
+(`platform.md` §2, §4.4).
 
 ## Capture-RC Protocol
 
@@ -379,26 +439,23 @@ Key details:
 
 ## Test-leaf platforms (`test-capture`, `pool-demo`)
 
-Two in-tree test platforms exercise the ABI without touching real IO. **`cranelisp-test-capture`** (below) substitutes in-memory buffers for stdio. **`platforms/pool-demo`** (S95) is the capacity-carrier test leaf: `pool-read`/`pool-write`/`pool-log`, all declaring `(token, capacity)` via `CLIO::effect_on_resource_with_capacity` on **blocking** effects — the fixture that proved capacity-N pool sizing, first-writer-wins reconciliation, and parking on the blocking carrier (the poll-shape carrier is S96, `poll-support.md`). Both are workspace members rebuilt with the compiler.
+Two in-tree test platforms exercise the ABI without touching real IO. **`cranelisp-test-capture`** (below) substitutes in-memory buffers for stdio. **`platforms/pool-demo`** (S95) is the capacity-carrier test leaf: `pool-read`/`pool-write`/`pool-log`, all declaring `(token, capacity)` via `CLIO::effect_on_resource_with_capacity` on **blocking** effects — the fixture that proved capacity-N pool sizing, first-writer-wins reconciliation, and parking on the blocking carrier (the poll-shape leaves are `platforms/poll-pool` and `platforms/async-demo` — see `poll-leaf-authoring.md`). All are workspace members rebuilt with the compiler.
 
-## `cranelisp-test-capture` Design (Optional)
+## `cranelisp-test-capture` — the general-purpose behavioural fixture
 
-A testing platform that substitutes in-memory buffers for stdio. Optional for Sprint 16 -- /qa can use subprocess stdout capture as a simpler alternative (per /arch concern #6).
+The in-tree platform that substitutes in-memory buffers for stdio, and the one
+in-tree platform whose declared functions exist to be *observed* rather than to
+do work. `print` appends to a captured buffer instead of stdout and `read-line`
+pops a pre-configured queue, so its signatures make it a drop-in for
+`cranelisp-stdio`; beyond that pair it carries effects across all three
+scheduling classes and, from ABI 10, the `Pure`-returning pair that gives the
+platform-return adoption stamp (`platform.md` §4.4) its only in-tree traffic.
 
-### Purpose
-
-- `print` appends to an in-memory buffer instead of writing to stdout
-- `read-line` returns pre-configured input strings instead of reading from stdin
-- Test utility functions (not platform functions) allow setup/teardown from Rust test code
-
-### Platform Functions
-
-Same type signatures as `cranelisp-stdio` (drop-in replacement):
-
-| Function | Signature | Behavior |
-|----------|-----------|----------|
-| `print` | `(Fn [String] (IO Int))` | Append to captured output buffer |
-| `read-line` | `(Fn [] (IO String))` | Pop from pre-configured input queue |
+The declared set is the manifest in `platforms/test-capture/src/lib.rs`; it is not
+enumerated here, because a fixture's function list is exactly the kind of census
+that decays. What belongs here is the *shape*: a behavioural fixture grows a
+function when a boundary needs observing, and the additions are appended so no
+existing manifest index — and therefore no GOT slot — moves.
 
 ### Test Utility Functions
 
@@ -415,14 +472,14 @@ Exported from the cdylib for direct use by Rust test code via `libloading`. Thes
 
 Uses `Mutex`-protected `Vec<String>` (output) and `VecDeque<String>` (input) as process-global state. The `Mutex` provides thread safety, and poison recovery handles panics in `#[should_panic]` tests.
 
-### Alternative: Subprocess Capture
+### Rejected alternative: subprocess capture only
 
-If `cranelisp-test-capture` is deferred, /qa tests IO by:
-1. Writing a Cranelisp source file with `(platform stdio)` and `(print ...)` calls
-2. Running `cranelisp --run file.cl` as a subprocess
-3. Capturing stdout and comparing against expected output
-
-This is simpler (no extra crate) but slower and less flexible (cannot test `read-line` without stdin piping, cannot assert on individual print calls).
+Testing IO purely by running `cranelisp --run` as a subprocess and diffing stdout
+needs no extra crate, and it is still how some e2e lanes work. It was rejected as
+the *only* mechanism because it cannot drive `read-line` without piping stdin,
+cannot assert on individual effects, and — decisively — gives no way to exercise
+an ABI shape that produces no output at all, which is what the `Pure`-returning
+pair is for.
 
 ## DLL Loading
 
@@ -534,13 +591,22 @@ Considered looking up each platform function individually via `dlsym`. Rejected 
 
 ## References
 
-- `spec/10-io.md` -- IO model specification
-- `spec/12-runtime.md` -- Runtime value representation
-- `sketch/cranelisp-platform/src/lib.rs` -- Prototype C-ABI contract
-- `sketch/platforms/stdio/src/lib.rs` -- Prototype stdio platform
-- `sketch/platforms/test-capture/src/lib.rs` -- Prototype test-capture platform
-- `sketch/src/platform.rs` -- Prototype platform path resolution
-- `sketch/src/jit.rs` -- Prototype DLL loading (lines 612-750)
-- `design/arch/interfaces.md` -- `PlatformEffect`, `PlatformDecl`, `ModuleDecls.platforms`
-- `design/runtime/runtime.md` -- Runtime allocator, heap layout, base-pointer convention
-- `sprints/SPRINT.md` -- Architecture Review decisions and concerns #4, #6
+- `design/platform/platform.md` — the master design: the crate's shape, its ABI
+  and node layouts, and its bounded-context invariants
+- `design/platform/poll-leaf-authoring.md` — the poll-shape leaf contract
+- `design/platform/adt-marker-binding.md` — the marker-binding mechanism
+- `crates/cranelisp-platform/CLAUDE.md` — the code's own voice: marshalling
+  traps, layout invariants, the submodule seam map
+- `design/arch/bounded-contexts.md` §5 — the platform bounded context
+- `design/arch/platform-interface.md` — the three-exports model and the
+  generated schema
+- `design/arch/interfaces.md` — `PlatformEffect`, `PlatformDecl`, the IO tag
+  constants
+- `spec/10-io.md`, `spec/12-runtime.md` — the IO model and runtime value
+  representation
+- `src/platform.rs` — the integration-side load, path resolution and
+  type-signature parsing
+
+The prototype compiler this document originally cited was deleted at the close
+of Sprint 87; its sources are recoverable from git history and are not a live
+reference.

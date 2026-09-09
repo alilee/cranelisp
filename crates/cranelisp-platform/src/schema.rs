@@ -47,6 +47,11 @@
 //!   | `(module/Type <fieldtype>…)` (parameterised ADT)
 //!   | `(Vec <fieldtype>)`.
 //!
+//! [`crate::schema_declares_type`] is the compile-time reader of the bare-FQ
+//! entry subset used by `declare_platform!`'s `adts:` assertions. A grammar
+//! change here is therefore a named two-site change: update that scanner as
+//! well as this runtime parser.
+//!
 //! # Replication, not dependency
 //!
 //! The parser deliberately does NOT depend on `cranelisp-frontend` (the reader
@@ -340,6 +345,15 @@ impl Schema {
     /// (`shapes/Rectangle`, `(Option shapes/Rectangle)`).
     pub fn lookup_type(&self, key: &str) -> Option<&TypeShape> {
         self.by_key.get(key).map(|idx| &self.types[*idx])
+    }
+
+    /// Sorted type keys for crate-internal diagnostics. Keeping this projection
+    /// on the parsed schema avoids a second parser or access to map internals at
+    /// the field-resolution seam.
+    pub(crate) fn known_type_keys(&self) -> Vec<&str> {
+        let mut keys: Vec<_> = self.types.iter().map(|shape| shape.key.as_str()).collect();
+        keys.sort_unstable();
+        keys
     }
 
     /// Map a (type key, optional ctor name, field name) to the field's byte

@@ -2,19 +2,50 @@
 
 Owner: `/design`. Single source of design intent for the integration layer (`src/` + `crates/cranelisp-exe-bundle/`). Authored Sprint 63; refreshed Sprint 64 against the pinned Decision 40 / 41 / 42 + Principle 14 / 15 configuration.
 
+**Sprint 121 — the C6 binary / exe-bundle visit.** `s121-c6-visit.md` is the
+active subordinate design for the whole Binary/int surface this sprint, and it
+is the entry point: it states the ordered bundles, the per-FIXME dispositions,
+and the exact source and module-test reservations. Its thesis in one line: int
+stops carrying private copies of facts its neighbours now own — the symbol
+lifecycle, the result-root rule, the RC primitive, the instantiation trigger —
+and in the same visit makes the cache-restored world equal the freshly-built one
+for a module's declared children, written trait impls, module aliases and
+monomorphic instances. It consumes the S121 upstream contracts (the unified
+lifecycle machine and its single `CACHE_SCHEMA_VERSION` 24→25 window, the
+approved `instantiate_demands` reload seed, the written-trait-impl carrier with
+its C3 producer, the scoped module-alias walk and its one key mint, backend's
+canonical result-root glue, the runtime pair's typed handle vocabulary) and
+decides nothing they own.
+The subordinate docs it re-rules —
+`prelude-table-write-isolation.md`, `impl-redefinition-hot-reload.md`,
+`macro-turn-ownership.md`, `session-transaction.md` §10, `result-owner.md` —
+carry their own amendments in place.
+
+**S121 correction, approved 2026-09-04.** Committed publication outcomes leave
+processing in one stack-owned, move-only receipt and are settled once by eval,
+dependent recheck, or the pool route before that route handles `Done`, `Gap`,
+or `Err`; neither scheduler/session state nor source continuation stores them.
+Public exposure is guarded only at `NameCandidate` routes—the obsolete
+binding-shaped no-op closure gate deletes. Synthetic tables are constructed
+off-map through fallible lifecycle operations, so the public constructor is
+`pub fn CompilerSession::new(settings: SessionSettings, project_root: PathBuf,
+entry_module_name: &str) -> Result<CompilerSession, CranelispError>`; bootstrap
+failure is diagnosed rather than asserted.
+
 **Sprint 117 conformance and recovery.**
 `s117-conformance-recovery.md` is the active subordinate design for the
 Binary/int portion of Tracks A and B. One entered cluster now remains a
-prepared turn through expansion, ordinary Passes-2/3 staging, exact codegen
-batch derivation, and JIT completion; only successful codegen reaches the
-existing live commit and dependent-redefinition gates. The same design pins
+prepared turn through ordinary Passes-2/3 staging, exact codegen batch
+derivation, and JIT completion; only successful codegen reaches the live commit
+and dependent-redefinition gates. Source-ordered macros are the S121 exception:
+each complete macro publishes as its own checkpoint before expansion continues.
+The same design pins
 uniform macro-expanded declaration ordering, exact failing-unit attribution,
 the shared inverse impl relation for `/info <Type>`, fully-qualified
-constraint rendering, and generic zero-arg-macro presentation for `def`
-faces DF-1/DF-2. Its macro-clause refinement uses an int-owned shadow check
-world and an exact canonical-key delta/closure, so cross-module `$` mints
-remain uncommitted and unrelated concurrent mints cannot enter the turn.
-Pre-codegen clause descriptors are distinct from executable clauses, whose
+constraint rendering, and ordered multi-definition presentation for `def`
+faces DF-1/DF-2. Its macro-clause refinement uses an exact one-module staging
+and lets dependency modules publish independently; no cross-module shadow
+world or rollback remains. Pre-codegen clause descriptors are distinct from executable clauses, whose
 non-null entry pointer is inseparable from a required `Code` owner and ABI
 witness. `def` remains a stdlib macro and DF-3 is not included.
 
@@ -31,9 +62,11 @@ The S118 refresh reconciles that design against the S117 as-built: the
 fresh-JIT artifact routing **already landed** as
 `SharedState.fresh_jit_drop_glues`, a `(module, ConcreteType) → {artifact, owner}`
 map written pair-atomically by the two publish gates (`worker::
-publish_prepared_turn` and the macro-clause turn's `publish`), so 0745 consumes
-routing rather than building it, and attaches at the two *execution* seams —
-never inside the prepared-turn transaction. The former `worker::
+publish_prepared_turn` and the macro-clause turn's `publish`) in the S118
+as-built. S121 converges macro checkpoints onto the ordinary prepared
+publication and deletes the parallel macro writer. Result ownership continues
+to consume routing rather than build it and attaches at the two *execution*
+seams — never inside the prepared transaction. The former `worker::
 inline_jit_codegen_for_names` seam the S116 text named is production-dead.
 Disposition of a result is decided once, by backend's own
 `HeapCategory::classify`, before any keyed lookup — int grows no second
@@ -101,7 +134,7 @@ Per `design/arch/bounded-contexts.md` §6 — `int` is the *integration layer* s
 
 Three structural notes about the surface worth naming:
 
-1. **`CompilerSession` is the high-level facade.** A single object that `::main` constructs and drives. Wraps an `Arc<SharedState>` (the worker-shareable subset) plus initiator-thread-only state (watcher channel, REPL eval cursor, worker pool handles, accumulated warnings). Every CLI mode (`--run`, `--link`, REPL) constructs the same `CompilerSession`; the only difference is which methods are invoked after `register_module`. Per Principle 11 (single pipeline; mode parameters) — there is exactly one `process_form`, parameterised by mode (and the mode discriminator IS `shared.introspection.is_some()`, not a separate flag).
+1. **`CompilerSession` is the high-level facade.** A single object that `::main` constructs and drives. Construction is fallible and returns `Result<CompilerSession, CranelispError>` because bootstrap uses the same fallible lifecycle machine as every other birth route. It wraps an `Arc<SharedState>` (the worker-shareable subset) plus initiator-thread-only state (watcher channel, REPL eval cursor, worker pool handles, accumulated warnings). Every CLI mode (`--run`, `--link`, REPL) constructs the same `CompilerSession`; the only difference is which methods are invoked after `register_module`. Per Principle 11 (single pipeline; mode parameters) — there is exactly one `process_form`, parameterised by mode (and the mode discriminator IS `shared.introspection.is_some()`, not a separate flag).
 2. **No re-exports of `cranelisp-types` items in int's public surface beyond what facades elsewhere already publish.** Per Principle 15 (facade types live with their behavior) — int IMPORTS from each implementation crate directly; the int facade re-exports `cranelisp-types` symbols that are part of int's documented API surface (per `facades/int.md` §"Re-exports from cranelisp-types") only as a convenience to consumers of the binary, which is itself a small audience (no out-of-tree dependents on the `cranelisp` binary crate as a library). The Principle-15 external-audience exception applies to platform alone.
 3. **`Code` re-export per Decision 41.** `Code` lives in `cranelisp-backend/src/code.rs` (moved per Decision 41 from the previous `src/code.rs` location). int re-exports `pub use cranelisp_backend::Code;` for session-boundary `SymbolTable<Code, ()>` instantiation. Backend constructs `Code::Jit` directly inside `compile_to_module` and writes via `SymbolTable::write_code(&self, sym, code)`; int no longer wraps a backend return tuple. Principle 3 protection (no `cranelisp-types → cranelisp-backend` dep) survives intact.
 
@@ -143,7 +176,7 @@ The two structural facts that dominate the tree today:
 | Session lifecycle + shared state | `session_v4.rs` (facade) + `session_v4/{lifecycle,shared_state,nice_worker,types}.rs`; `session_setup.rs` (construction helpers independent of `CompilerSession`) |
 | Scheduling + workers | `scheduler.rs` (+ `scheduler/tests.rs`) — the single coordination authority; `worker.rs` (+ `worker/tests.rs`) priority/nice loops + codegen/cache subsystem; `worker_pool.rs`; `thread_util.rs` |
 | Gap-orchestration form chain | `process_form.rs` + `process_form/{form_dispatch,dependency,macro_clause,macro_resolution,platform,cache_restore,tests}.rs` — the sole crate-crossing where a `ResolutionGap` becomes a scheduler call (Principle 1/7) |
-| Cluster-atomic typecheck | `cluster.rs` (`ProcessedCluster` + `process_cluster`/`insert_cluster`) |
+| Cluster processing | `cluster.rs` (`PreparedCommit`; crate-private `ProcessAttempt` + move-only `PublicationReceipt`; `process_cluster` compatibility entry). `ProcessedCluster` carries no committed outcomes. |
 | REPL eval | `eval.rs` (form-chain eval, bare-symbol introspection, dep registration); `repl_input.rs` (the `ReplInput` TTY/non-TTY abstraction) |
 | REPL command/display surface | `repl/` — the five-file decomposition (S110): `repl/mod.rs` (slash dispatch + prompt/banner/editor + input classification + the shared resolution/referer toolbox), `repl/search.rs` (`/search` UI), `repl/format.rs` (value/echo formatter family), `repl/format_type.rs` (per-kind definition-display leaves), `repl/commands.rs` (`handle_*` battery). See §3.3 + `src/CLAUDE.md` §"Session/REPL module map" |
 | Dev-session transaction | `redefine.rs` — the S101 dependent-recompilation machinery (`session-transaction.md`): `AbiSurface` summary-diff, `RedefKind`, on-demand `ReverseIndex`, reverse-topo recompile, `mark_broken`/trap-stubs, `TransactionReport` |
@@ -165,28 +198,38 @@ The two structural facts that dominate the tree today:
 Sprint 117 refines the REPL-eval row through
 `s117-conformance-recovery.md`: `eval.rs` owns the prepared-turn terminal
 decision; `worker.rs` retains the single staging/commit and codegen-enrollment
-authorities; `repl/{commands,format,format_type}.rs` consume shared canonical
-introspection projections. W3c carries the outer expansion's resolved macro
-identity and exact emitted PUBLIC-subject set into crate-private
-`PreparedCommit::presentation`; it derives any zero-argument-macro projection
-against the settled candidate tables before backend entry, then atomically
-publishes the authored source and `presentation_scheme` on the subject's one
-`Introspection` record. A direct redefinition replaces that field with `None`
-unless it supplies a new projection; removal removes the record. There is no
-parallel `SharedState.presentation_schemes`, post-publication introspection
-scan, reader-side inference, runtime execution, or cache field. This changes
-no module or legitimate public-surface boundary.
+authorities; `repl/{commands,format,format_type}.rs` render canonical binding
+identities. W3c uses one eval-owned `TurnDefinitions` receipt to retain every
+emitted definition in order across macro checkpoints and dependency retries.
+Ordinary definitions become displayable only after HM/codegen publication;
+macros become displayable at their own successful checkpoints.
+`EvalResult::Definitions` carries the complete published list, and the
+formatter reads each binding's ordinary `ModuleEntry` classification. There is
+no selected subject, macro-result type projection, parallel presentation map,
+post-publication table scan, runtime execution, or cache field.
 
-The candidate tables begin at cluster entry, not after typecheck: the
-int-owned `TurnCheckWorld` is the write target for Pass-1 and
-expansion-emitted macro parents plus pending introspection. This preserves
-established same-cluster macro availability without exposing the macro live.
-A needed clause is compiled once by the existing
-`prepare_macro_clause_turn` mechanism and absorbed—with its exact closure,
-owners, and reserved-slot rollback guard—into the parent prepared turn. Final
-`TurnDelta` enrolls macros and ordinary staging rows together; success
-publishes them through one commit, while any later failure clears unreachable
-reserved cells and drops the candidate world.
+S121 replaces the candidate-table plan with source-ordered macro checkpoints.
+Each direct or expansion-produced `defmacro` becomes visible only after its
+parent, all active clauses and complete expansion-time dependency/generated-
+realization closure have typechecked and codegen has succeeded. It then
+publishes immediately through the ordinary one-module prepared transaction and
+remains live if a later form fails. Ordinary forms on both sides accumulate
+into one HM binding cluster and retain all-or-nothing publication.
+
+A `ResolutionGap` retains only the uncommitted source/emitted continuation and
+already-expanded ordinary prefix. It retries an uncommitted macro or resumes
+after a committed one, so a generated macro is neither re-expanded nor treated
+as a duplicate. `PreparedMacroTurn`, `TurnCheckWorld`, `TurnDelta`, candidate
+invocation, reserved unpublished slots and cross-module rollback do not survive.
+Macro readers snapshot parent metadata plus the selected clause pointer and
+owner under one module guard; invocation holds the cloned owner after the guard
+is released. A clause-set shrink derives exact surplus keys from the prior
+parent metadata and retires only validated private same-parent `MacroClause`
+rows through absent-key `ChangeAbi` decisions in that same checkpoint. Old
+owners are retained before guard release and old slots remain frozen and
+tombstoned; later growth mints fresh slots. Cache restore enforces a bijection
+between parent metadata and active clause rows. See
+`s117-conformance-recovery.md` §1.1.2/§2.1.
 
 ### 3.3 REPL decomposition (FIXME 0606, S110) — LANDED
 
@@ -423,7 +466,7 @@ process_form(shared: &SharedState, form: Sexp, scope: &ModuleFullPath) -> Result
 }
 ```
 
-**Macro-turn heap ownership** — the marshal/invoke boundary inside that `expand` step (`src/expander.rs::invoke_clause` + `src/marshal.rs`) has its own ownership protocol, ruled S119: `design/int/macro-turn-ownership.md`. In one line: the marshaller produces **single-owner** argument trees and **transfers** them by crossing the C ABI (nothing is protected, nothing is retained, nothing is released by int), and the expansion result is an **owned** word int observes via `runtime_to_sexp` and then discharges exactly once through `cranelisp_intrinsics::consume_sexp`. No marshal handle outlives its invocation frame — which is what keeps the protocol orthogonal to FIXME 0863's cluster-wide prepared transaction.
+**Macro-turn heap ownership** — the marshal/invoke boundary inside that `expand` step (`src/expander.rs::invoke_clause` + `src/marshal.rs`) has its own ownership protocol, ruled S119: `design/int/macro-turn-ownership.md`. In one line: the marshaller produces **single-owner** argument trees and **transfers** them by crossing the C ABI (nothing is protected, nothing is retained, nothing is released by int), and the expansion result is an **owned** word int observes via `runtime_to_sexp` and then discharges exactly once through `cranelisp_intrinsics::consume_sexp`. No marshal handle outlives its invocation frame, which keeps the protocol orthogonal to both the immediate macro publication checkpoint and its source-continuation retry.
 
 **Frontend and typecheck stay pure.** They surface dependencies as `Err(ExpansionError::Gap)` / `Err(CheckError::Gap)`. `int::process_form` is the *sole* crate-crossing where gap values become scheduler calls. Workers park inside `wait_for_*` calls — never inside frontend or typecheck library code (per Principle 3 — typecheck/frontend depend on `cranelisp-types` only). Per Principle 7 (single source of truth), `handle_gap` is the sole site that translates a `ResolutionGap` into a scheduler/dependency-service action.
 
@@ -791,7 +834,10 @@ introspects and `Bind` does not). It is recorded there and is not this rider.
 This section is an overview; the structural diagrams live in `design/int/concurrency/` (target-state, scheduler-lifecycle, dependency-protocol-target, symbol-publication-target, compilation-cadence-batch-run).
 
 **Shape** (from `facades/int.md` §"SharedState" + Decision 38):
-- Workers spawned at `CompilerSession::new`; each receives its own `Arc<SharedState>` clone (refcount bump). They live for the session — never per-call `thread::scope`. Joined on `Drop` via `WorkerPool`.
+- Workers spawn only after fallible bootstrap inside `CompilerSession::new` has
+  produced the complete seed world; each receives its own `Arc<SharedState>`
+  clone (refcount bump). They live for the session — never per-call
+  `thread::scope`. Joined on `Drop` via `WorkerPool`.
 - `take_priority_work_blocking` parks workers on a condvar inside `CompileScheduler`; wakeups come from `enqueue_jit` / `register_module` / `notify_*`.
 - `wait_for_*` parks workers (for orchestrator-driven dep waits) inside the scheduler's wait-table.
 - The IO trampoline forks Par nodes onto rayon (rayon pool size from `SessionSettings`).

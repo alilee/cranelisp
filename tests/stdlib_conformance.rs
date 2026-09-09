@@ -226,6 +226,505 @@ fn stdlib_repl(stdin: &str) -> helpers::e2e::CrOutput {
         .output()
 }
 
+const TIMEOUT_CODEGEN_BACKSTOP: &str =
+    "generic value reference 'Some' reached codegen without a mono instance";
+const TIMEOUT_LOSER_MARKER: &str = "S121_TIMEOUT_CANCELLED_LOSER_SHOULD_NOT_PRINT";
+
+/// Exercise one timeout program through the three user-visible execution faces.
+/// The vector is deliberately aggregated so the public subject and both
+/// controls remain observable together if any face regresses.
+fn timeout_mode_failures(label: &str, source: &str) -> Vec<String> {
+    let repl_input = format!("{source}(main)\n");
+    let repl = stdlib_repl(&repl_input);
+    let run = Cranelisp::new()
+        .use_workspace_stdlib_for_stdlib_conformance_only()
+        .run("user.cl")
+        .user(source)
+        .timeout(Duration::from_secs(90))
+        .output();
+    let link = Cranelisp::new()
+        .use_workspace_stdlib_for_stdlib_conformance_only()
+        .link_then_run("user.cl")
+        .user(source)
+        .timeout(Duration::from_secs(90))
+        .output();
+
+    let mut failures = Vec::new();
+    for (mode, expected_repl_value, out) in [
+        ("REPL", true, repl),
+        ("--run", false, run),
+        ("--link", false, link),
+    ] {
+        let combined = format!("{}\n{}", out.stdout, out.stderr);
+        let timer_outcome = if expected_repl_value {
+            combined.contains(":primitives/Int 0")
+        } else {
+            out.status.code() == Some(0)
+        };
+        if !out.status.success() || !timer_outcome || combined.contains(TIMEOUT_CODEGEN_BACKSTOP) {
+            failures.push(format!(
+                "{label} {mode}: expected the timer/None outcome (REPL Int 0 or batch exit 0) \\
+                 without `{TIMEOUT_CODEGEN_BACKSTOP}`; status={:?}\nstdout:\n{}\nstderr:\n{}",
+                out.status.code(), out.stdout, out.stderr
+            ));
+        }
+    }
+    failures
+}
+
+/// Keep the process alive after a timer win, so a non-cancelled losing action
+/// would have time to emit its marker rather than merely being cut off at exit.
+fn timeout_cancellation_mode_failures() -> Vec<String> {
+    const SOURCE: &str = "(platform stdio)\n(import [core.io [timeout]])\n(import [platform.stdio [print]])\n(import [primitives [Pure bind sleep Some None]])\n(defn losing-action [] (bind (sleep 50) (fn [_] (print \"S121_TIMEOUT_CANCELLED_LOSER_SHOULD_NOT_PRINT\"))))\n(defn main [] (bind (timeout 10 (losing-action)) (fn [r] (bind (sleep 100) (fn [_] (match r [None (Pure 0) (Some _) (Pure 1)]))))))\n";
+    let repl_input = format!("{SOURCE}(main)\n");
+    let repl = Cranelisp::new()
+        .use_workspace_stdlib_for_stdlib_conformance_only()
+        .use_workspace_platforms()
+        .repl()
+        .stdin(&repl_input)
+        .timeout(Duration::from_secs(90))
+        .output();
+    let run = Cranelisp::new()
+        .use_workspace_stdlib_for_stdlib_conformance_only()
+        .use_workspace_platforms()
+        .run("user.cl")
+        .user(SOURCE)
+        .timeout(Duration::from_secs(90))
+        .output();
+    let link = Cranelisp::new()
+        .use_workspace_stdlib_for_stdlib_conformance_only()
+        .use_workspace_platforms()
+        .link_then_run("user.cl")
+        .user(SOURCE)
+        .timeout(Duration::from_secs(90))
+        .output();
+
+    let mut failures = Vec::new();
+    for (mode, expected_repl_value, out) in [
+        ("REPL", true, repl),
+        ("--run", false, run),
+        ("--link", false, link),
+    ] {
+        let combined = format!("{}\n{}", out.stdout, out.stderr);
+        let timer_outcome = if expected_repl_value {
+            combined.contains(":primitives/Int 0")
+        } else {
+            out.status.code() == Some(0)
+        };
+        if !out.status.success() || !timer_outcome || combined.contains(TIMEOUT_LOSER_MARKER) {
+            failures.push(format!(
+                "timeout cancellation {mode}: expected timer/None (REPL Int 0 or batch exit 0) \\
+                 and no delayed loser marker `{TIMEOUT_LOSER_MARKER}`; status={:?}\nstdout:\n{}\nstderr:\n{}",
+                out.status.code(), out.stdout, out.stderr
+            ));
+        }
+    }
+    failures
+}
+
+fn copy_dir_recursive(source: &Path, destination: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(destination)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = destination.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else if entry.file_type()?.is_file() {
+            fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+/// Copy the public stdlib into a test-private lib root and make exactly the
+/// counterfactual replacement in its own `core/io.cl`.
+fn copied_stdlib_timeout_lambda_counterfactual(cr: &Cranelisp) {
+    // read-only on project_root: the workspace stdlib is copied into the
+    // harness TempDir; only that private copy is modified.
+    let copied_stdlib = cr.tmpdir_path().join("stdlib-counterfactual");
+    copy_dir_recursive(&stdlib_dir(), &copied_stdlib).expect("copy stdlib into test TempDir");
+    let core_io = copied_stdlib.join("core/io.cl");
+    let original = fs::read_to_string(&core_io).expect("read copied core/io.cl");
+    assert_eq!(
+        original.matches("map-io Some").count(),
+        1,
+        "the counterfactual requires exactly one workspace `map-io Some` occurrence"
+    );
+    let replacement = original.replacen("map-io Some", "map-io (fn [x] (Some x))", 1);
+    assert_eq!(
+        replacement.matches("map-io (fn [x] (Some x))").count(),
+        1,
+        "the counterfactual must contain exactly its one lambda replacement"
+    );
+    fs::write(&core_io, replacement).expect("write copied core/io.cl counterfactual");
+}
+
+/// Same public-import subject as `timeout_mode_failures`, but its lib root is a
+/// fresh copied stdlib in which the sole `map-io Some` form is lambda-wrapped.
+fn timeout_counterfactual_mode_failures(source: &str) -> Vec<String> {
+    let repl_input = format!("{source}(main)\n");
+    let repl = Cranelisp::new();
+    copied_stdlib_timeout_lambda_counterfactual(&repl);
+    let repl = repl
+        .lib_dir("stdlib-counterfactual")
+        .repl()
+        .stdin(&repl_input)
+        .timeout(Duration::from_secs(90))
+        .output();
+
+    let run = Cranelisp::new();
+    copied_stdlib_timeout_lambda_counterfactual(&run);
+    let run = run
+        .lib_dir("stdlib-counterfactual")
+        .run("user.cl")
+        .user(source)
+        .timeout(Duration::from_secs(90))
+        .output();
+
+    let link = Cranelisp::new();
+    copied_stdlib_timeout_lambda_counterfactual(&link);
+    let link = link
+        .lib_dir("stdlib-counterfactual")
+        .link_then_run("user.cl")
+        .user(source)
+        .timeout(Duration::from_secs(90))
+        .output();
+
+    let mut failures = Vec::new();
+    for (mode, expected_repl_value, out) in [
+        ("REPL", true, repl),
+        ("--run", false, run),
+        ("--link", false, link),
+    ] {
+        let combined = format!("{}\n{}", out.stdout, out.stderr);
+        let timer_outcome = if expected_repl_value {
+            combined.contains(":primitives/Int 0")
+        } else {
+            out.status.code() == Some(0)
+        };
+        if !out.status.success() || !timer_outcome || combined.contains(TIMEOUT_CODEGEN_BACKSTOP) {
+            failures.push(format!(
+                "copied-stdlib lambda counterfactual {mode}: expected the timer/None outcome \\
+                 (REPL Int 0 or batch exit 0) without `{TIMEOUT_CODEGEN_BACKSTOP}`; status={:?}\nstdout:\n{}\nstderr:\n{}",
+                out.status.code(), out.stdout, out.stderr
+            ));
+        }
+    }
+    failures
+}
+
+// Public `core.io/timeout` is a derived race: a 10 ms timer MUST beat the
+// 1000 ms action, returning `None` and therefore exit 0.  The local sibling
+// preserves the timeout/race/sleep/bind/Option/match shape, but makes the
+// winner arm's constructor reference a lambda.  It intentionally does not
+// import `core.io`. The S121 repair confirmed the private typecheck P4
+// successor-discovery seam for concrete function values; this e2e keeps the
+// public timeout behaviour and its value-reference controls pinned.
+// spec: spec/10-io.md §10.12.8 + §10.12.9 — derived `timeout` races an effect against a millisecond timer, returns `None` when the timer wins, and cancels the loser; spec/11-stdlib.md §11 — a public stdlib import remains usable.
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/traits/monomorphise.rs::monomorphise_inner_function_values found=S121 owner=/dev
+//   — fixed S121: P4 successor discovery now monomorphises concrete bare
+//   function values reached in a rechecked generic body.
+#[test]
+fn stdlib_timeout_public_concrete_call_and_lambda_control_across_modes() {
+    // Retained verbatim from docs' S121 timeout.cl artifact.
+    const PUBLIC_SUBJECT: &str = "(import [core.io [timeout]])\n(import [primitives [Pure bind sleep Some None]])\n(defn main [] (bind (timeout 10 (sleep 1000)) (fn [r] (match r [(Some v) (Pure 1) None (Pure 0)]))))\n";
+    const LAMBDA_CONTROL: &str = "(import [primitives [Pure bind race sleep Some None]])\n(defn map-io [f io-val] (bind io-val (fn [x] (Pure (f x)))))\n(defn timeout [d io] (race (map-io (fn [x] (Some x)) io) (map-io (fn [_] None) (sleep d))))\n(defn main [] (bind (timeout 10 (sleep 1000)) (fn [r] (match r [(Some v) (Pure 1) None (Pure 0)]))))\n";
+
+    let control_failures = timeout_mode_failures("lambda control", LAMBDA_CONTROL);
+    let counterfactual_failures = timeout_counterfactual_mode_failures(PUBLIC_SUBJECT);
+    let cancellation_failures = timeout_cancellation_mode_failures();
+    let subject_failures = timeout_mode_failures("public core.io/timeout subject", PUBLIC_SUBJECT);
+    assert!(
+        control_failures.is_empty()
+            && counterfactual_failures.is_empty()
+            && cancellation_failures.is_empty()
+            && subject_failures.is_empty(),
+        "`map-io (fn [x] (Some x))` lambda control failures (must be empty):\n{}\n\
+         copied-stdlib lambda counterfactual failures (must be empty):\n{}\n\
+         timeout cancellation failures (must be empty):\n{}\n\
+         public `core.io/timeout` failures (must be empty; fixed S121):\n{}",
+        control_failures.join("\n\n"),
+        counterfactual_failures.join("\n\n"),
+        cancellation_failures.join("\n\n"),
+        subject_failures.join("\n\n"),
+    );
+}
+
+// One public executable check for the six `core.io` families that cannot enter
+// the in-language discovery runner: its zero exit requires every scalar or
+// structural observation below to agree.
+// spec: spec/10-io.md §10.3 + §10.12.8 — `>>`/mapping/conditional/sequence IO composition and both derived-timeout outcomes execute through a public `core.io` import; spec/11-stdlib.md §11 — public stdlib imports remain usable.
+// defect: class=rc-miscount locus=public `core.io` composition boundary (internal source/locus unassigned) — the valid all-family program aborts with `STALE RC DEC` before its required zero result in REPL, `--run`, and `--link`.
+#[test]
+fn stdlib_core_io_public_scalar_driver_across_modes() {
+    const SOURCE: &str = r#"
+(import [core.io [>> map-io when-io unless-io sequence-io timeout]])
+(import [collections.list [List Nil Cons]])
+(import [primitives [IO Pure bind sleep Some None add-i64 eq-i64]])
+
+(defn all-zero [xs]
+  (match xs [Nil true
+             (Cons x rest) (if (eq-i64 x 0) (all-zero rest) false)]))
+
+(defn check-then []
+  (bind (>> (Pure 1) (Pure 2)) (fn [x] (Pure (if (eq-i64 x 2) 0 1)))))
+(defn check-map []
+  (bind (map-io (fn [x] (add-i64 x 1)) (Pure 2))
+        (fn [x] (Pure (if (eq-i64 x 3) 0 1)))))
+(defn check-when-true []
+  (bind (when-io true (Pure 4)) (fn [x] (Pure (if (eq-i64 x 4) 0 1)))))
+(defn check-when-false []
+  (bind (when-io false (Pure 99)) (fn [x] (Pure (if (eq-i64 x 0) 0 1)))))
+(defn check-unless-true []
+  (bind (unless-io true (Pure 99)) (fn [x] (Pure (if (eq-i64 x 0) 0 1)))))
+(defn check-unless-false []
+  (bind (unless-io false (Pure 5)) (fn [x] (Pure (if (eq-i64 x 5) 0 1)))))
+(defn check-empty-sequence []
+  (bind (sequence-io :(List (IO Int)) Nil)
+        (fn [xs] (match xs [Nil (Pure 0) _ (Pure 1)]))))
+(defn check-ordered-sequence []
+  (bind (sequence-io (Cons (Pure 1) (Cons (Pure 2) (Cons (Pure 3) Nil))))
+        (fn [xs] (match xs [(Cons a rest-a)
+                             (match rest-a [(Cons b rest-b)
+                                           (match rest-b [(Cons c rest-c)
+                                                         (match rest-c [Nil (Pure (if (eq-i64 a 1) (if (eq-i64 b 2) (if (eq-i64 c 3) 0 1) 1) 1))
+                                                                        _ (Pure 1)])
+                                                         _ (Pure 1)])
+                                           _ (Pure 1)])
+                             _ (Pure 1)]))))
+(defn check-fast-timeout []
+  (bind (timeout 100 (Pure 9))
+        (fn [r] (match r [(Some v) (Pure (if (eq-i64 v 9) 0 1)) None (Pure 1)]))))
+(defn check-timed-timeout []
+  (bind (timeout 10 (sleep 1000))
+        (fn [r] (match r [None (Pure 0) (Some _) (Pure 1)]))))
+
+(defn main []
+  (bind (sequence-io (Cons (check-then)
+                      (Cons (check-map)
+                      (Cons (check-when-true)
+                      (Cons (check-when-false)
+                      (Cons (check-unless-true)
+                      (Cons (check-unless-false)
+                      (Cons (check-empty-sequence)
+                      (Cons (check-ordered-sequence)
+                      (Cons (check-fast-timeout)
+                      (Cons (check-timed-timeout) Nil)))))))))))
+        (fn [results] (Pure (if (all-zero results) 0 1)))))
+"#;
+    let repl = stdlib_repl(&format!("{SOURCE}(main)\n"));
+    let run = Cranelisp::new()
+        .use_workspace_stdlib_for_stdlib_conformance_only()
+        .run("user.cl")
+        .user(SOURCE)
+        .timeout(Duration::from_secs(90))
+        .output();
+    let link = Cranelisp::new()
+        .use_workspace_stdlib_for_stdlib_conformance_only()
+        .link_then_run("user.cl")
+        .user(SOURCE)
+        .timeout(Duration::from_secs(90))
+        .output();
+
+    let mut failures = Vec::new();
+    for (mode, expected_repl_value, out) in [
+        ("REPL", true, repl),
+        ("--run", false, run),
+        ("--link", false, link),
+    ] {
+        let combined = format!("{}\n{}", out.stdout, out.stderr);
+        let mode_succeeds = if expected_repl_value {
+            out.status.success() && combined.contains(":primitives/Int 0")
+        } else {
+            out.status.code() == Some(0)
+        };
+        if !mode_succeeds {
+            failures.push(format!(
+                "public core.io scalar driver {mode}: expected REPL Int 0 or batch exit 0; \\
+                 status={:?}\nstdout:\n{}\nstderr:\n{}",
+                out.status.code(), out.stdout, out.stderr
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "public core.io scalar driver failures:\n{}",
+        failures.join("\n\n")
+    );
+}
+
+// This control preserves the public imports, actions, order, values, and final
+// zero observation above. It changes only the outer aggregation from
+// `sequence-io` to explicit nested `bind` calls.
+// spec: spec/10-io.md §10.3 + §10.12.8 — the same public IO composition executes through a public `core.io` import; spec/11-stdlib.md §11 — public stdlib imports remain usable.
+#[test]
+fn stdlib_core_io_nested_bind_outer_aggregation_control_across_modes() {
+    const SOURCE: &str = r#"
+(import [core.io [>> map-io when-io unless-io sequence-io timeout]])
+(import [collections.list [List Nil Cons]])
+(import [primitives [IO Pure bind sleep Some None add-i64 eq-i64]])
+
+(defn all-zero [xs]
+  (match xs [Nil true
+             (Cons x rest) (if (eq-i64 x 0) (all-zero rest) false)]))
+
+(defn check-then []
+  (bind (>> (Pure 1) (Pure 2)) (fn [x] (Pure (if (eq-i64 x 2) 0 1)))))
+(defn check-map []
+  (bind (map-io (fn [x] (add-i64 x 1)) (Pure 2))
+        (fn [x] (Pure (if (eq-i64 x 3) 0 1)))))
+(defn check-when-true []
+  (bind (when-io true (Pure 4)) (fn [x] (Pure (if (eq-i64 x 4) 0 1)))))
+(defn check-when-false []
+  (bind (when-io false (Pure 99)) (fn [x] (Pure (if (eq-i64 x 0) 0 1)))))
+(defn check-unless-true []
+  (bind (unless-io true (Pure 99)) (fn [x] (Pure (if (eq-i64 x 0) 0 1)))))
+(defn check-unless-false []
+  (bind (unless-io false (Pure 5)) (fn [x] (Pure (if (eq-i64 x 5) 0 1)))))
+(defn check-empty-sequence []
+  (bind (sequence-io :(List (IO Int)) Nil)
+        (fn [xs] (match xs [Nil (Pure 0) _ (Pure 1)]))))
+(defn check-ordered-sequence []
+  (bind (sequence-io (Cons (Pure 1) (Cons (Pure 2) (Cons (Pure 3) Nil))))
+        (fn [xs] (match xs [(Cons a rest-a)
+                             (match rest-a [(Cons b rest-b)
+                                           (match rest-b [(Cons c rest-c)
+                                                         (match rest-c [Nil (Pure (if (eq-i64 a 1) (if (eq-i64 b 2) (if (eq-i64 c 3) 0 1) 1) 1))
+                                                                        _ (Pure 1)])
+                                                         _ (Pure 1)])
+                                           _ (Pure 1)])
+                             _ (Pure 1)]))))
+(defn check-fast-timeout []
+  (bind (timeout 100 (Pure 9))
+        (fn [r] (match r [(Some v) (Pure (if (eq-i64 v 9) 0 1)) None (Pure 1)]))))
+(defn check-timed-timeout []
+  (bind (timeout 10 (sleep 1000))
+        (fn [r] (match r [None (Pure 0) (Some _) (Pure 1)]))))
+
+(defn main []
+  (bind (check-then)
+        (fn [then-result]
+          (bind (check-map)
+                (fn [map-result]
+                  (bind (check-when-true)
+                        (fn [when-true-result]
+                          (bind (check-when-false)
+                                (fn [when-false-result]
+                                  (bind (check-unless-true)
+                                        (fn [unless-true-result]
+                                          (bind (check-unless-false)
+                                                (fn [unless-false-result]
+                                                  (bind (check-empty-sequence)
+                                                        (fn [empty-sequence-result]
+                                                          (bind (check-ordered-sequence)
+                                                                (fn [ordered-sequence-result]
+                                                                  (bind (check-fast-timeout)
+                                                                        (fn [fast-timeout-result]
+                                                                          (bind (check-timed-timeout)
+                                                                                (fn [timed-timeout-result]
+                                                                                  (Pure (if (all-zero (Cons then-result
+                                                                                                            (Cons map-result
+                                                                                                            (Cons when-true-result
+                                                                                                            (Cons when-false-result
+                                                                                                            (Cons unless-true-result
+                                                                                                            (Cons unless-false-result
+                                                                                                            (Cons empty-sequence-result
+                                                                                                            (Cons ordered-sequence-result
+                                                                                                            (Cons fast-timeout-result
+                                                                                                            (Cons timed-timeout-result Nil))))))))))) 0 1)))))))))))))))))))))
+))
+"#;
+    let repl = stdlib_repl(&format!("{SOURCE}(main)\n"));
+    let run = Cranelisp::new()
+        .use_workspace_stdlib_for_stdlib_conformance_only()
+        .run("user.cl")
+        .user(SOURCE)
+        .timeout(Duration::from_secs(90))
+        .output();
+    let link = Cranelisp::new()
+        .use_workspace_stdlib_for_stdlib_conformance_only()
+        .link_then_run("user.cl")
+        .user(SOURCE)
+        .timeout(Duration::from_secs(90))
+        .output();
+
+    let mut failures = Vec::new();
+    for (mode, expected_repl_value, out) in [
+        ("REPL", true, repl),
+        ("--run", false, run),
+        ("--link", false, link),
+    ] {
+        let combined = format!("{}\n{}", out.stdout, out.stderr);
+        let mode_succeeds = if expected_repl_value {
+            out.status.success() && combined.contains(":primitives/Int 0")
+        } else {
+            out.status.code() == Some(0)
+        };
+        if !mode_succeeds {
+            failures.push(format!(
+                "public core.io nested-bind control {mode}: expected REPL Int 0 or batch exit 0; \\
+                 status={:?}\nstdout:\n{}\nstderr:\n{}",
+                out.status.code(), out.stdout, out.stderr
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "public core.io nested-bind control failures:\n{}",
+        failures.join("\n\n")
+    );
+}
+
+// The explicit `core.syntax` surface supplies macro authors with structural
+// access to reader-folded annotations: predicate, optional annotation half, and
+// one-layer subject-or-identity projection. The one macro below exercises a
+// reader-folded argument, an ordinary argument, and a raw constructor control.
+// spec: spec/09-macros.md §9.1.2 + §9.2 — macros receive `SexpAnnotated` for a reader-folded annotation and may return its subject as expansion output; spec/11-stdlib.md §11 — public stdlib helpers are reachable by explicit import.
+#[test]
+fn stdlib_core_syntax_annotated_helpers_macro_client_across_modes() {
+    const SOURCE: &str = "(import [core.syntax [annotated? annotation unannotate]])\n(import [macros [SexpAnnotated SexpSym SexpInt]])\n(import [primitives [Pure Some None add-i64]])\n(defmacro annotation-client [x] (if (annotated? x) (match (annotation x) [(Some _) (unannotate x) None (SexpInt 90)]) (match (annotation x) [None (unannotate x) (Some _) (SexpInt 91)])))\n(defmacro raw-annotation-control [] (let [raw (SexpAnnotated (SexpSym \"Int\") (SexpInt 4))] (if (annotated? raw) (match (annotation raw) [(Some _) (unannotate raw) None (SexpInt 92)]) (SexpInt 93))))\n(defn main [] (Pure (add-i64 (add-i64 (annotation-client :Int 7) (annotation-client 8)) (raw-annotation-control))))\n";
+    let repl = stdlib_repl(&format!("{SOURCE}(main)\n"));
+    let run = Cranelisp::new()
+        .use_workspace_stdlib_for_stdlib_conformance_only()
+        .run("user.cl")
+        .user(SOURCE)
+        .timeout(Duration::from_secs(90))
+        .output();
+    let link = Cranelisp::new()
+        .use_workspace_stdlib_for_stdlib_conformance_only()
+        .link_then_run("user.cl")
+        .user(SOURCE)
+        .timeout(Duration::from_secs(90))
+        .output();
+
+    let mut failures = Vec::new();
+    for (mode, expected_repl_value, out) in [
+        ("REPL", true, repl),
+        ("--run", false, run),
+        ("--link", false, link),
+    ] {
+        let combined = format!("{}\n{}", out.stdout, out.stderr);
+        let mode_succeeds = if expected_repl_value {
+            out.status.success() && combined.contains(":primitives/Int 19")
+        } else {
+            out.status.code() == Some(19)
+        };
+        if !mode_succeeds {
+            failures.push(format!(
+                "annotated-Sexp macro client {mode}: expected REPL Int 19 or batch exit 19; \\
+                 status={:?}\nstdout:\n{}\nstderr:\n{}",
+                out.status.code(), out.stdout, out.stderr
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "explicit core.syntax annotated-Sexp helper client failures:\n{}",
+        failures.join("\n\n")
+    );
+}
+
 // BD-M3 (reject cell) — `(def fmt/x 1)` via the stdlib `def` macro: a qualified
 // head reaches the binder reject after expansion. RED today (silent-accept /
 // incidental); flips at W3. The located span provenance shares the BD-M2 int

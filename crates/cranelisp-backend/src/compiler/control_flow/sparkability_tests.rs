@@ -7,6 +7,7 @@
 // `find_sparkable_bindings` analysis pass directly — no session, no
 // runtime, no env-var — per `memory/project_test_strategy.md`. =====
 
+use super::sparkability::binder_before;
 use super::{
     find_sparkable_args, find_sparkable_args_with, find_sparkable_bindings,
     find_sparkable_bindings_with, spark_density,
@@ -725,4 +726,105 @@ fn density_facts_absent_admits_like_pre_b4() {
         vec![0, 1],
         "facts-absent heap candidates admit exactly as pre-B4 (axis inert)"
     );
+}
+
+// ===== The positional-spark matrix (`design/backend/binding-scope.md` §3.4) ====
+//
+// Per-binding-vector lenient state is indexed by BINDING POSITION and read
+// through the one shared resolver [`super::binder_before`], so a rebinding
+// displaces an earlier binder's spark record by construction. The set was keyed
+// by NAME and insert-only, so `(let [a (ping n) a 5 c (ping a)] c)` admitted `c`
+// as "dependent on a sparked `a`" though the `a` it denotes is the non-sparked
+// literal — and read the displaced binding's value (21 instead of 15).
+
+// spec: spec/04-expressions.md §4.3 — a name denotes the latest PRECEDING binder
+#[test]
+fn binder_before_resolves_the_latest_preceding_binder() {
+    let bindings = vec![
+        (sym("a"), call("ping")),
+        (sym("a"), literal(5)),
+        (sym("c"), call_with_arg("ping", "a")),
+    ];
+    assert_eq!(binder_before(&bindings, 2, &sym("a")), Some(1));
+    assert_eq!(binder_before(&bindings, 1, &sym("a")), Some(0));
+    assert_eq!(
+        binder_before(&bindings, 0, &sym("a")),
+        None,
+        "a binder does not denote itself"
+    );
+    assert_eq!(
+        binder_before(&bindings, 2, &sym("z")),
+        None,
+        "a name this vector does not bind is free here"
+    );
+}
+
+// spec: spec/12-runtime.md §12.4.3 — independence is a property of a BINDER
+//
+// The RED's shape: sparked `a`, rebound to a cheap literal, then `c` depends on
+// it. `c` denotes the non-sparked binder, so it is NOT independent of it and
+// must not be admitted; `a`'s own admission is then below the ≥2 gate, so
+// nothing sparks and the site lowers sequentially — reading 5.
+#[test]
+fn a_non_sparked_rebinding_displaces_the_sparked_binder() {
+    let bindings = vec![
+        (sym("a"), call("ping")),
+        (sym("a"), literal(5)),
+        (sym("c"), call_with_arg("ping", "a")),
+    ];
+    let ctors = HashSet::new();
+    assert!(
+        find_sparkable_bindings(&bindings, &ctors).is_empty(),
+        "`c` depends on the non-sparked rebinding of `a`, so it is not admitted"
+    );
+}
+
+// spec: spec/12-runtime.md §12.4.3 — the refuter: rebinding a sparked name with
+// ANOTHER spark keeps the dependency resolvable, so `c` is still admitted. This
+// narrows the rule above from "a rebinding" to "a NON-SPARKED rebinding", and it
+// is what keeps the fix from being a blanket refusal to spark.
+#[test]
+fn a_sparked_rebinding_still_admits_the_dependent_binding() {
+    let bindings = vec![
+        (sym("a"), call("ping")),
+        (sym("a"), call("pong")),
+        (sym("c"), call_with_arg("ping", "a")),
+    ];
+    let ctors = HashSet::new();
+    assert_eq!(
+        find_sparkable_bindings(&bindings, &ctors),
+        vec![0, 1, 2],
+        "the rebinding is itself sparked, so `c`'s dependency resolves to an IVar"
+    );
+}
+
+// spec: spec/12-runtime.md §12.4.3 — the rename control: one identifier apart,
+// nothing is rebound, and the dependent binding is admitted exactly as before.
+// Without it, the displacement cell above could be green because the analysis
+// stopped admitting dependents at all.
+#[test]
+fn the_distinctly_named_control_admits_the_dependent_binding() {
+    let bindings = vec![
+        (sym("q"), call("ping")),
+        (sym("a"), literal(5)),
+        (sym("c"), call_with_arg("ping", "q")),
+    ];
+    let ctors = HashSet::new();
+    assert_eq!(
+        find_sparkable_bindings(&bindings, &ctors),
+        vec![0, 2],
+        "`c` depends on the still-live sparked `q`"
+    );
+}
+
+// spec: spec/12-runtime.md §12.4.3 — an independent dependent spark with no
+// rebinding at all: the plain §2.6 carve-out, unchanged by the positional key.
+#[test]
+fn a_dependent_spark_without_a_rebinding_is_admitted() {
+    let bindings = vec![
+        (sym("a"), call("ping")),
+        (sym("c"), call_with_arg("ping", "a")),
+    ];
+    let ctors = HashSet::new();
+    assert_eq!(find_sparkable_bindings(&bindings, &ctors), vec![0, 1]);
 }

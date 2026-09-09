@@ -42,7 +42,7 @@ fn test_compile_program_no_defns() {
     );
 
     let mut jit = Jit::new_with_symbols(&[]).unwrap();
-    let result = compile_to_module(
+    let result = compile_names_to_module(
         ModuleFullPath::from("user"),
         &names,
         &tables,
@@ -382,9 +382,7 @@ fn test_mono_defn_self_recursive_tco() {
     );
     check.method_resolutions.insert(
         recurse_span,
-        cranelisp_types::ResolvedCall::SigDispatch {
-            mangled_name: cranelisp_types::JitSymbol::from("countdown$Int"),
-        },
+        sig_binding("test", "countdown$Int"),
     );
 
     // Enrich the defn from CheckResult side maps (test bridge).
@@ -452,11 +450,11 @@ fn test_module_prefix_applied() {
     let tables = empty_tables();
     {
         let mut st = SymbolTable::new(mod_a.clone());
-        st.insert(val_a.name.clone(), make_def_entry(val_a.clone()));
+        install_def_entry(&mut st, val_a.clone());
         tables.insert(mod_a.clone(), st);
     }
     let mut jit_a = Jit::new_with_symbols(&[]).unwrap();
-    let _artifacts_a = compile_to_module(
+    let _artifacts_a = compile_names_to_module(
         mod_a.clone(),
         std::slice::from_ref(&val_a.name),
         &tables,
@@ -493,12 +491,12 @@ fn test_module_prefix_applied() {
     let mod_b = ModuleFullPath::from("mod_b");
     {
         let mut st = SymbolTable::new(mod_b.clone());
-        st.insert(val_b.name.clone(), make_def_entry(val_b.clone()));
+        install_def_entry(&mut st, val_b.clone());
         tables.insert(mod_b.clone(), st);
     }
 
     let mut jit_b = Jit::new_with_symbols(&[]).unwrap();
-    let _artifacts_b = compile_to_module(
+    let _artifacts_b = compile_names_to_module(
         mod_b.clone(),
         std::slice::from_ref(&val_b.name),
         &tables,
@@ -543,13 +541,12 @@ fn compile_to_module_writes_got_slot_after_finalize() {
     {
         let mut st = SymbolTable::new(module.clone());
         // Explicit GOT slot so the D41 #2 direct-write is exercised.
-        st.insert(defn.name.clone(), make_def_entry_slot(defn.clone(), 0));
-        st.next_got_slot = 1;
+        install_def_entry_at_slot(&mut st, defn.clone(), 0);
         tables.insert(module.clone(), st);
     }
 
     let mut jit = Jit::new_with_symbols(&[]).unwrap();
-    let _artifacts = compile_to_module(
+    let _artifacts = compile_names_to_module(
         module.clone(),
         std::slice::from_ref(&defn.name),
         &tables,
@@ -565,8 +562,11 @@ fn compile_to_module_writes_got_slot_after_finalize() {
     let slot = entry
         .callable_got_slot()
         .expect("test inserted a Def entry with a GOT slot");
-    match entry {
-        ModuleEntry::Def { code, .. } => {
+    match entry.callable().map(|callable| &callable.arm.life) {
+        Some(cranelisp_types::Life::Concrete {
+            realization: cranelisp_types::Realization::Body { code, .. },
+            ..
+        }) => {
             let ptr = guard.got.load_slot(slot);
             assert!(
                 !ptr.is_null(),
@@ -611,8 +611,7 @@ fn compile_to_module_object_mode_no_got_write() {
     {
         let mut st = SymbolTable::new(module.clone());
         // Explicit GOT slot so we can assert object mode leaves it null.
-        st.insert(defn.name.clone(), make_def_entry_slot(defn.clone(), 0));
-        st.next_got_slot = 1;
+        install_def_entry_at_slot(&mut st, defn.clone(), 0);
         tables.insert(module.clone(), st);
     }
 
@@ -620,7 +619,7 @@ fn compile_to_module_object_mode_no_got_write() {
     let obj_builder = ObjectBuilder::new(isa, "test_obj", default_libcall_names()).unwrap();
     let mut obj_module = ObjectModule::new(obj_builder);
 
-    let _artifacts = compile_to_module(
+    let _artifacts = compile_names_to_module(
         module.clone(),
         std::slice::from_ref(&defn.name),
         &tables,
@@ -637,8 +636,11 @@ fn compile_to_module_object_mode_no_got_write() {
     let slot = entry
         .callable_got_slot()
         .expect("test inserted a Def entry with a GOT slot");
-    match entry {
-        ModuleEntry::Def { code, .. } => {
+    match entry.callable().map(|callable| &callable.arm.life) {
+        Some(cranelisp_types::Life::Concrete {
+            realization: cranelisp_types::Realization::Body { code, .. },
+            ..
+        }) => {
             assert!(
                 guard.got.load_slot(slot).is_null(),
                 "object-mode compile must not populate the GOT slot"
@@ -730,14 +732,17 @@ fn test_compile_multi_sig_defn_end_to_end() {
         span: Span::new(95, 125),
     };
 
-    let program: Program = vec![TopLevel::Defn(multi_defn), TopLevel::Defn(main_defn)];
+    let program: Program = vec![
+        TopLevel::Defn(multi_defn.clone()),
+        TopLevel::Defn(main_defn),
+    ];
 
     let mut check = empty_check();
     // Register SigDispatch for the call site.
     check.method_resolutions.insert(
         call_span,
         cranelisp_types::ResolvedCall::SigDispatch {
-            mangled_name: cranelisp_types::JitSymbol::from("f$Int"),
+            target: overload_target(&ModuleFullPath::from("user"), "f", 0),
         },
     );
     // W1 (KC-W0-6): the SigDispatch arm keyed-reads the Apply-span carrier — the
@@ -747,47 +752,30 @@ fn test_compile_multi_sig_defn_end_to_end() {
         call_span,
         cranelisp_types::FQSymbol {
             module: ModuleFullPath::from("user"),
-            symbol: Symbol::from("f$Int"),
+            symbol: Symbol::from("f"),
         },
     );
 
-    // Set up symbol table with Overloaded entry for multi-sig expansion.
+    // Set up the checked declaration as one owned overload family.
     let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
     let module_path = ModuleFullPath::from("user");
     let mut table = SymbolTable::new(module_path.clone());
-    table.insert(
-        Symbol::from("f"),
-        cranelisp_types::ModuleEntry::Def {
-            scheme: cranelisp_types::Scheme {
+    install_overloaded_entry(
+        &mut table,
+        multi_defn,
+        vec![
+            cranelisp_types::Scheme {
                 type_vars: vec![],
                 constraints: Default::default(),
-                ty: Type::Int,
+                ty: Type::Fn(vec![Type::Int], Box::new(Type::Int)),
             },
-            visibility: cranelisp_types::Visibility::Public,
-            docstring: None,
-            param_names: vec![],
-            kind: Box::new(cranelisp_types::DefKind::Overloaded {
-                variants: vec![
-                    cranelisp_types::OverloadVariant {
-                        param_types: vec![Type::Int],
-                        ret_type: Type::Int,
-                        mangled_name: Symbol::from("f$Int"),
-                    },
-                    cranelisp_types::OverloadVariant {
-                        param_types: vec![Type::Int, Type::Int],
-                        ret_type: Type::Int,
-                        mangled_name: Symbol::from("f$Int+Int"),
-                    },
-                ],
-            }),
-            callees: vec![],
-            trait_origin: None,
-            seq: 0,
-            ast: None,
-            codegen_view: None,
-            code: None,
-            value_use: false,
-        },
+            cranelisp_types::Scheme {
+                type_vars: vec![],
+                constraints: Default::default(),
+                ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
+            },
+        ],
+        &check,
     );
     tables.insert(module_path, table);
 
@@ -868,13 +856,16 @@ fn test_compile_multi_sig_second_variant() {
         span: Span::new(95, 125),
     };
 
-    let program: Program = vec![TopLevel::Defn(multi_defn), TopLevel::Defn(main_defn)];
+    let program: Program = vec![
+        TopLevel::Defn(multi_defn.clone()),
+        TopLevel::Defn(main_defn),
+    ];
 
     let mut check = empty_check();
     check.method_resolutions.insert(
         call_span,
         cranelisp_types::ResolvedCall::SigDispatch {
-            mangled_name: cranelisp_types::JitSymbol::from("g$Int+Int"),
+            target: overload_target(&ModuleFullPath::from("user"), "g", 1),
         },
     );
     // W1 (KC-W0-6): SigDispatch keyed read of the Apply-span carrier — the
@@ -883,47 +874,30 @@ fn test_compile_multi_sig_second_variant() {
         call_span,
         cranelisp_types::FQSymbol {
             module: ModuleFullPath::from("user"),
-            symbol: Symbol::from("g$Int+Int"),
+            symbol: Symbol::from("g"),
         },
     );
 
-    // Set up symbol table with Overloaded entry for multi-sig expansion.
+    // Set up the checked declaration as one owned overload family.
     let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
     let module_path = ModuleFullPath::from("user");
     let mut table = SymbolTable::new(module_path.clone());
-    table.insert(
-        Symbol::from("g"),
-        cranelisp_types::ModuleEntry::Def {
-            scheme: cranelisp_types::Scheme {
+    install_overloaded_entry(
+        &mut table,
+        multi_defn,
+        vec![
+            cranelisp_types::Scheme {
                 type_vars: vec![],
                 constraints: Default::default(),
-                ty: Type::Int,
+                ty: Type::Fn(vec![Type::Int], Box::new(Type::Int)),
             },
-            visibility: cranelisp_types::Visibility::Public,
-            docstring: None,
-            param_names: vec![],
-            kind: Box::new(cranelisp_types::DefKind::Overloaded {
-                variants: vec![
-                    cranelisp_types::OverloadVariant {
-                        param_types: vec![Type::Int],
-                        ret_type: Type::Int,
-                        mangled_name: Symbol::from("g$Int"),
-                    },
-                    cranelisp_types::OverloadVariant {
-                        param_types: vec![Type::Int, Type::Int],
-                        ret_type: Type::Int,
-                        mangled_name: Symbol::from("g$Int+Int"),
-                    },
-                ],
-            }),
-            callees: vec![],
-            trait_origin: None,
-            seq: 0,
-            ast: None,
-            codegen_view: None,
-            code: None,
-            value_use: false,
-        },
+            cranelisp_types::Scheme {
+                type_vars: vec![],
+                constraints: Default::default(),
+                ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
+            },
+        ],
+        &check,
     );
     tables.insert(module_path, table);
 
@@ -949,7 +923,6 @@ fn test_compile_multi_sig_second_variant() {
 // carries the CLIF + code size.
 #[test]
 fn sprint56_compile_to_module_direct_call_writes_got_and_artifacts() {
-    use cranelisp_types::ModuleEntry;
     let defn = Defn {
         name: Symbol::from("answer"),
         docstring: None,
@@ -971,13 +944,12 @@ fn sprint56_compile_to_module_direct_call_writes_got_and_artifacts() {
     {
         let mut st = SymbolTable::new(module.clone());
         // Explicit GOT slot so the D41 #2 direct-write is exercised.
-        st.insert(defn.name.clone(), make_def_entry_slot(defn.clone(), 0));
-        st.next_got_slot = 1;
+        install_def_entry_at_slot(&mut st, defn.clone(), 0);
         tables.insert(module.clone(), st);
     }
 
     let mut jit = Jit::new_with_symbols(&[]).unwrap();
-    let artifacts = compile_to_module(
+    let artifacts = compile_names_to_module(
         module.clone(),
         std::slice::from_ref(&defn.name),
         &tables,
@@ -1000,8 +972,12 @@ fn sprint56_compile_to_module_direct_call_writes_got_and_artifacts() {
     // slot. Entry remains a Def with ast: Some(_) (regression guard).
     let guard = tables.get(&module).unwrap();
     match guard.get(defn.name.as_ref()) {
-        Some(entry @ ModuleEntry::Def { ast: Some(_), .. })
-            if entry.callable_got_slot().is_some() =>
+        Some(entry)
+            if entry.callable_got_slot().is_some()
+                && matches!(
+                    entry.callable().map(|callable| &callable.arm.life),
+                    Some(cranelisp_types::Life::Concrete { ast: Some(_), .. })
+                ) =>
         {
             let slot = entry.callable_got_slot().unwrap();
             assert!(
@@ -1021,40 +997,49 @@ fn sprint56_compile_to_module_direct_call_writes_got_and_artifacts() {
 // no panic, no silent skip.
 #[test]
 fn sprint56_compile_to_module_ast_none_errors() {
-    use cranelisp_types::{DefKind, ModuleEntry, Scheme, UserFnState, Visibility};
+    use cranelisp_types::{
+        CallableOrigin, ConcreteType, MonoDefnVariant, MonoExpr, Realization, Scheme, Visibility,
+    };
     let module = ModuleFullPath::from("user");
     let name = Symbol::from("stub");
     let tables = empty_tables();
     {
         let mut st = SymbolTable::new(module.clone());
-        st.insert(
+        st.install_concrete(
             name.clone(),
-            ModuleEntry::Def {
-                scheme: Scheme {
-                    type_vars: vec![],
-                    constraints: HashMap::new(),
-                    ty: Type::Fn(vec![], Box::new(Type::Int)),
-                },
-                visibility: Visibility::Public,
-                docstring: None,
-                param_names: vec![],
-                kind: Box::new(DefKind::UserFn {
-                    fn_state: UserFnState::NotDetermined,
-                }),
-                callees: vec![],
-                trait_origin: None,
-                seq: 0,
-                ast: None,
-                codegen_view: None,
-                code: None,
-                value_use: false,
+            Scheme {
+                type_vars: vec![],
+                constraints: HashMap::new(),
+                ty: Type::Fn(vec![], Box::new(Type::Int)),
             },
-        );
+            vec![],
+            None,
+            0,
+            CallableOrigin::Plain,
+            Realization::Body {
+                view: MonoDefnVariant {
+                    name: name.clone(),
+                    params: vec![],
+                    body: MonoExpr::IntLit {
+                        value: 0,
+                        span: Span::SYNTHETIC,
+                        ty: ConcreteType::Int,
+                    },
+                    span: Span::SYNTHETIC,
+                    mode_summary: None,
+                },
+                code: None,
+            },
+            None,
+            vec![],
+            Visibility::Public,
+        )
+        .expect("install ast-less concrete fixture");
         tables.insert(module.clone(), st);
     }
 
     let mut jit = Jit::new_with_symbols(&[]).unwrap();
-    let result = compile_to_module(
+    let result = compile_names_to_module(
         module,
         std::slice::from_ref(&name),
         &tables,
@@ -1109,16 +1094,16 @@ fn sprint56_compile_to_module_ast_none_errors() {
 // That this test compiles and passes IS the verification: Wave 1 deleted
 // `expand_multi_sig_defn` entirely from the source tree.
 #[test]
-fn sprint56_compile_to_module_mangled_variant_compiles_without_expansion() {
-    use cranelisp_types::{DefKind, ModuleEntry, OverloadVariant, Scheme, Visibility};
+fn sprint56_compile_to_module_owned_arm_compiles_without_expansion() {
+    use cranelisp_types::{Life, Scheme, Visibility};
 
     let module = ModuleFullPath::from("user");
     let base_name = Symbol::from("add");
-    let variant_name = Symbol::from("add$Int+Int");
 
-    // Mangled variant defn — what typecheck's Wave 0 materialises.
+    // One checked overload arm — typecheck publishes it beneath the authored
+    // declaration rather than as a generated language binding.
     let variant_defn = Defn {
-        name: variant_name.clone(),
+        name: base_name.clone(),
         docstring: None,
         variants: vec![DefnVariant {
             params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
@@ -1138,70 +1123,48 @@ fn sprint56_compile_to_module_mangled_variant_compiles_without_expansion() {
     let tables = empty_tables();
     {
         let mut st = SymbolTable::new(module.clone());
-        // Overloaded base entry: ast: None — compile_to_module must NOT
-        // try to compile this (the filter via `defined_symbols()` skips
-        // it; a caller passing it in `names` would hit the ast: None
-        // error path — which is the right behaviour).
-        st.insert(
-            base_name.clone(),
-            ModuleEntry::Def {
-                scheme: Scheme {
-                    type_vars: vec![],
-                    constraints: HashMap::new(),
-                    ty: Type::Int,
-                },
-                visibility: Visibility::Public,
-                docstring: None,
-                param_names: vec![],
-                kind: Box::new(DefKind::Overloaded {
-                    variants: vec![OverloadVariant {
-                        param_types: vec![Type::Int, Type::Int],
-                        ret_type: Type::Int,
-                        mangled_name: variant_name.clone(),
-                    }],
-                }),
-                callees: vec![],
-                trait_origin: None,
-                seq: 0,
-                ast: None,
-                codegen_view: None,
-                code: None,
-                value_use: false,
-            },
+        install_overloaded_entry(
+            &mut st,
+            variant_defn,
+            vec![Scheme {
+                type_vars: vec![],
+                constraints: HashMap::new(),
+                ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
+            }],
+            &empty_check(),
         );
-        // Mangled variant entry: ast: Some(variant_defn). Explicit GOT
-        // slot so the D41 #2 direct-write is exercised.
-        st.insert(variant_name.clone(), make_def_entry_slot(variant_defn, 0));
-        st.next_got_slot = 1;
         tables.insert(module.clone(), st);
     }
 
     let mut jit = Jit::new_with_symbols(&[]).unwrap();
+    let target = overload_target(&module, "add", 0);
     let artifacts = compile_to_module(
         module.clone(),
-        std::slice::from_ref(&variant_name),
+        std::slice::from_ref(&target),
         &tables,
         jit.jit_module(),
         true,
     )
     .expect("pre-mangled variant should compile without expansion");
 
-    // Compilation succeeding (no expand_multi_sig_defn path) is the
-    // verification; the mangled variant's GOT slot is populated.
+    // Compilation succeeding is the verification; the owned arm's GOT slot is
+    // populated without any backend family expansion.
     assert!(
         !artifacts.clif_ir.is_empty(),
         "variant body must be compiled"
     );
     let guard = tables.get(&module).unwrap();
-    match guard.get(variant_name.as_ref()) {
-        Some(entry) if entry.callable_got_slot().is_some() => {
-            let slot = entry.callable_got_slot().unwrap();
+    match guard.callable_target(&target) {
+        Some(arm) if matches!(arm.life, Life::Concrete { .. }) => {
+            let Life::Concrete { slot, .. } = &arm.life else {
+                unreachable!()
+            };
             assert!(
-                !guard.got.load_slot(slot).is_null(),
-                "mangled variant's GOT slot must be populated"
+                !guard.got.load_slot(slot.index()).is_null(),
+                "owned arm's GOT slot must be populated"
             );
         }
-        other => panic!("expected mangled-variant Def with got_slot, got {other:?}"),
+        other => panic!("expected concrete owned overload arm, got {other:?}"),
     }
 }
 
@@ -1216,7 +1179,9 @@ fn sprint56_compile_to_module_mangled_variant_compiles_without_expansion() {
 // backend's vantage point.
 #[test]
 fn sprint56_constrained_template_excluded_by_defined_symbols() {
-    use cranelisp_types::{DefKind, ModuleEntry, Scheme, UserFnState, Visibility};
+    use cranelisp_types::{
+        CallableOrigin, ConstrainedMeta, Scheme, TemplateBody, TemplateKind, Visibility,
+    };
 
     let module = ModuleFullPath::from("user");
     let template_name = Symbol::from("identity");
@@ -1261,54 +1226,39 @@ fn sprint56_constrained_template_excluded_by_defined_symbols() {
     let tables = empty_tables();
     {
         let mut st = SymbolTable::new(module.clone());
-        st.insert(normal_name.clone(), make_def_entry(normal_defn));
+        install_def_entry(&mut st, normal_defn);
         // Insert a UserFn template by hand — constrained_fn is Some.
-        st.insert(
+        st.install_template(
             template_name.clone(),
-            ModuleEntry::Def {
-                scheme: Scheme {
-                    type_vars: vec![],
-                    constraints: HashMap::new(),
-                    ty: Type::Fn(vec![Type::Var(0)], Box::new(Type::Var(0))),
-                },
-                visibility: Visibility::Public,
-                docstring: None,
-                param_names: vec![Symbol::from("x")],
-                kind: Box::new(DefKind::UserFn {
-                    // A constrained template is slot-less by construction
-                    // (S83 reshape) — only its mono variants carry slots.
-                    fn_state: UserFnState::Constrained(Box::new(cranelisp_types::ConstrainedFn {
-                        variant: template_defn.variants[0].clone(),
-                        scheme: Scheme {
-                            type_vars: vec![],
-                            constraints: HashMap::new(),
-                            ty: Type::Fn(vec![Type::Var(0)], Box::new(Type::Var(0))),
-                        },
-                    })),
-                }),
-                callees: vec![],
-                trait_origin: None,
-                seq: 0,
-                ast: Some(template_defn.variants[0].clone()),
-                codegen_view: None,
-                code: None,
-                value_use: false,
+            Scheme {
+                type_vars: vec![],
+                constraints: HashMap::new(),
+                ty: Type::Fn(vec![Type::Var(0)], Box::new(Type::Var(0))),
             },
-        );
+            vec![Symbol::from("x")],
+            None,
+            0,
+            CallableOrigin::Plain,
+            TemplateBody::Ast(template_defn.variants[0].clone()),
+            TemplateKind::Constrained(Box::new(ConstrainedMeta::new(HashMap::new()))),
+            vec![],
+            Visibility::Public,
+        )
+        .expect("install constrained-template fixture");
         tables.insert(module.clone(), st);
     }
 
     let guard = tables.get(&module).unwrap();
-    let defined: Vec<&Symbol> = guard.defined_symbols().map(|(n, _)| n).collect();
+    let defined: Vec<CallableTarget> = guard.codegen_targets().map(|(target, _)| target).collect();
 
     assert!(
-        defined.contains(&&normal_name),
-        "defined_symbols() must yield regular defns: got {:?}",
+        defined.contains(&binding_target(&module, &normal_name)),
+        "codegen_targets() must yield regular defns: got {:?}",
         defined
     );
     assert!(
-        !defined.contains(&&template_name),
-        "defined_symbols() must NOT yield constrained-fn templates: got {:?}",
+        !defined.contains(&binding_target(&module, &template_name)),
+        "codegen_targets() must NOT yield constrained-fn templates: got {:?}",
         defined
     );
 }
@@ -1325,7 +1275,7 @@ fn decision_36_function_naming_is_bare_for_every_module() {
         let tables = table_with_def_and_slot(&module, defn.clone(), 0);
 
         let mut jit = Jit::new_with_symbols(&[]).unwrap();
-        let _artifacts = compile_to_module(
+        let _artifacts = compile_names_to_module(
             module.clone(),
             std::slice::from_ref(&defn.name),
             &tables,
@@ -1362,7 +1312,7 @@ fn decision_36_function_linkage_is_local_uniformly() {
         let tables = table_with_def_and_slot(&module, defn.clone(), 0);
 
         let mut jit = Jit::new_with_symbols(&[]).unwrap();
-        let _result = compile_to_module(
+        let _result = compile_names_to_module(
             module.clone(),
             std::slice::from_ref(&defn.name),
             &tables,
@@ -1399,7 +1349,7 @@ fn decision_23_got_data_symbol_defined_as_export_in_object_path() {
     let tables = table_with_def_and_slot(&module, defn.clone(), 0);
 
     let mut obj = make_object_module();
-    let _result = compile_to_module(
+    let _result = compile_names_to_module(
         module.clone(),
         std::slice::from_ref(&defn.name),
         &tables,
@@ -1490,7 +1440,7 @@ fn decision_23_got_data_symbol_jit_path_is_noop() {
     let tables = table_with_def_and_slot(&module, defn.clone(), 0);
 
     let mut jit = Jit::new_with_symbols(&[]).unwrap();
-    let _result = compile_to_module(
+    let _result = compile_names_to_module(
         module.clone(),
         std::slice::from_ref(&defn.name),
         &tables,
@@ -1528,71 +1478,15 @@ fn decision_23_got_data_size_matches_slot_count() {
     let d2 = make_int_defn("two", 2);
 
     // Build symbol table with both defns at slots 0 and 1.
-    use cranelisp_types::{
-        DefKind, ModuleEntry, MonoDefnVariant, MonoExpr, Scheme, UserFnState, Visibility,
-    };
     let tables = DashMap::new();
     let mut st = SymbolTable::new(module.clone());
-    let _slot0 = st.allocate_got_slot().expect("fresh table has free slots");
-    let _slot1 = st.allocate_got_slot().expect("fresh table has free slots");
     for (defn, slot) in [(d1.clone(), 0usize), (d2.clone(), 1)] {
-        let variant = defn.variants.first().cloned().map(|mut v| {
-            concretize_test_body(&mut v.body);
-            v
-        });
-        let codegen_view = variant.as_ref().map(|v| {
-            // S114 carrier flip: build the TOTAL typed maps (empty carriers ⇒
-            // every Var Local, every Apply ViaCallee — this fixture's all-local
-            // body).
-            let (var_refs, apply_refs) = crate::test_support::resolved_targets_to_typed_maps(
-                &v.body,
-                &std::collections::HashMap::new(),
-            );
-            MonoDefnVariant {
-                name: defn.name.clone(),
-                params: vec![],
-                body: MonoExpr::from_expr(
-                    &v.body,
-                    &std::collections::HashMap::new(),
-                    &var_refs,
-                    &apply_refs,
-                )
-                .expect("concrete test body"),
-                span: v.span,
-                mode_summary: None,
-            }
-        });
-        st.insert(
-            defn.name.clone(),
-            ModuleEntry::Def {
-                scheme: Scheme {
-                    type_vars: vec![],
-                    constraints: HashMap::new(),
-                    ty: Type::Fn(vec![], Box::new(Type::Int)),
-                },
-                visibility: Visibility::Public,
-                docstring: None,
-                param_names: vec![],
-                kind: Box::new(DefKind::UserFn {
-                    fn_state: UserFnState::Concrete {
-                        got_slot: slot,
-                        mode_summary: None,
-                    },
-                }),
-                callees: vec![],
-                trait_origin: None,
-                seq: 0,
-                ast: variant,
-                codegen_view,
-                code: None,
-                value_use: false,
-            },
-        );
+        install_def_entry_at_slot(&mut st, defn, slot);
     }
     tables.insert(module.clone(), st);
 
     let mut obj = make_object_module();
-    let _result = compile_to_module(
+    let _result = compile_names_to_module(
         module.clone(),
         &[d1.name.clone(), d2.name.clone()],
         &tables,
@@ -1672,113 +1566,31 @@ fn decision_36_no_cross_module_function_imports() {
     // entry on user's table records the cross-module dependency.
     let caller = make_int_defn("caller", 7);
 
-    use cranelisp_types::{
-        DefKind, FQSymbol, ModuleEntry, MonoDefnVariant, MonoExpr, Scheme, UserFnState, Visibility,
-    };
+    use cranelisp_types::FQSymbol;
     let tables = DashMap::new();
-
-    // Build a concrete `codegen_view` for a zero-arg int-literal defn body
-    // (FIXME 0391 — Concrete{slot} UserFns carry the populated MonoExpr view).
-    let int_view = |d: &Defn| {
-        let mut v = d.variants.first().cloned().unwrap();
-        concretize_test_body(&mut v.body);
-        let (var_refs, apply_refs) = crate::test_support::resolved_targets_to_typed_maps(
-            &v.body,
-            &std::collections::HashMap::new(),
-        );
-        Some(MonoDefnVariant {
-            name: d.name.clone(),
-            params: vec![],
-            body: MonoExpr::from_expr(
-                &v.body,
-                &std::collections::HashMap::new(),
-                &var_refs,
-                &apply_refs,
-            )
-            .expect("concrete test body"),
-            span: v.span,
-            mode_summary: None,
-        })
-    };
 
     // util module: helper at slot 0.
     let mut util_st = SymbolTable::new(util_path.clone());
-    let _ = util_st
-        .allocate_got_slot()
-        .expect("fresh table has free slots");
-    util_st.insert(
-        Symbol::from("helper"),
-        ModuleEntry::Def {
-            scheme: Scheme {
-                type_vars: vec![],
-                constraints: HashMap::new(),
-                ty: Type::Fn(vec![], Box::new(Type::Int)),
-            },
-            visibility: Visibility::Public,
-            docstring: None,
-            param_names: vec![],
-            kind: Box::new(DefKind::UserFn {
-                fn_state: UserFnState::Concrete {
-                    got_slot: 0,
-                    mode_summary: None,
-                },
-            }),
-            callees: vec![],
-            trait_origin: None,
-            seq: 0,
-            ast: helper.variants.first().cloned(),
-            codegen_view: int_view(&helper),
-            code: None,
-            value_use: false,
-        },
-    );
+    install_def_entry_at_slot(&mut util_st, helper, 0);
     tables.insert(util_path.clone(), util_st);
 
     // user module: caller at slot 0, helper imported from util.
     let mut user_st = SymbolTable::new(user_path.clone());
-    let _ = user_st
-        .allocate_got_slot()
-        .expect("fresh table has free slots");
-    user_st.insert(
-        Symbol::from("caller"),
-        ModuleEntry::Def {
-            scheme: Scheme {
-                type_vars: vec![],
-                constraints: HashMap::new(),
-                ty: Type::Fn(vec![], Box::new(Type::Int)),
-            },
-            visibility: Visibility::Public,
-            docstring: None,
-            param_names: vec![],
-            kind: Box::new(DefKind::UserFn {
-                fn_state: UserFnState::Concrete {
-                    got_slot: 0,
-                    mode_summary: None,
-                },
-            }),
-            callees: vec![],
-            trait_origin: None,
-            seq: 0,
-            ast: caller.variants.first().cloned(),
-            codegen_view: int_view(&caller),
-            code: None,
-            value_use: false,
-        },
-    );
-    user_st.insert(
-        Symbol::from("helper"),
-        ModuleEntry::Import {
-            source: FQSymbol {
+    install_def_entry_at_slot(&mut user_st, caller, 0);
+    user_st
+        .expose_candidate(
+            Symbol::from("helper"),
+            FQSymbol {
                 module: util_path.clone(),
                 symbol: Symbol::from("helper"),
             },
-            visibility: Visibility::Private,
-        },
-    );
+            Visibility::Private,
+        )
+        .expect("expose imported helper fixture");
     tables.insert(user_path.clone(), user_st);
 
     let mut jit = Jit::new_with_symbols(&[]).unwrap();
-    let result = compile_to_module(
+    let result = compile_names_to_module(
         user_path.clone(),
         &[Symbol::from("caller")],
         &tables,
@@ -1827,7 +1639,7 @@ fn decision_23_got_data_symbol_not_in_bss() {
     let tables = table_with_def_and_slot(&module, defn.clone(), 0);
 
     let mut obj = make_object_module();
-    let _result = compile_to_module(
+    let _result = compile_names_to_module(
         module.clone(),
         std::slice::from_ref(&defn.name),
         &tables,
@@ -1916,9 +1728,8 @@ fn s117_assert_attributed_body_failure(
     let failing = s117_body_failure_defn("later", expected_span);
     let tables = empty_tables();
     let mut table = SymbolTable::new(module.clone());
-    table.insert(earlier.name.clone(), make_def_entry_slot(earlier, 0));
-    table.insert(failing.name.clone(), make_def_entry_slot(failing, 1));
-    table.next_got_slot = 2;
+    install_def_entry_at_slot(&mut table, earlier, 0);
+    install_def_entry_at_slot(&mut table, failing, 1);
     tables.insert(module.clone(), table);
 
     let before = {
@@ -1926,7 +1737,7 @@ fn s117_assert_attributed_body_failure(
         [table.got.load_slot(0), table.got.load_slot(1)]
     };
     let mut jit = Jit::new_with_symbols(&[]).expect("JIT");
-    let error = match compile_to_module(module.clone(), names, &tables, jit.jit_module(), true) {
+    let error = match compile_names_to_module(module.clone(), names, &tables, jit.jit_module(), true) {
         Ok(_) => panic!("missing local in a body must fail codegen"),
         Err(error) => error,
     };

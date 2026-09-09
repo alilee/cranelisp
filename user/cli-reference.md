@@ -8,7 +8,7 @@ the practical reference for the command line. The normative contract lives in
 ## Synopsis
 
 ```
-cranelisp [target] [--run | --link [-o <path>]] [--no-color] [--no-cache] [--priority-workers N] [--nice-workers N] [--agent | --no-agent] [--yes]
+cranelisp [target] [--run | --link [-o <path>]] [--no-color] [--no-cache] [--priority-workers N] [--nice-workers N] [--no-agent]
 ```
 
 - `[target]` is an optional positional argument naming the entry module / project
@@ -19,6 +19,9 @@ cranelisp [target] [--run | --link [-o <path>]] [--no-color] [--no-cache] [--pri
 - With no mode flag, `cranelisp` starts the **REPL**.
 - The target may appear before or after the flags: `cranelisp app --run` and
   `cranelisp --run app` are equivalent.
+- An agent-capable build additionally accepts `--agent` and `--yes` (or `-y`).
+  A binary built without that feature rejects both flags and does not advertise
+  them in its usage line.
 
 > **Note:** there is no working `--help` or `--version` yet. Passing them today
 > reports `unknown flag` and prints the usage line. They are specified as Future
@@ -45,12 +48,26 @@ display formats, commands, error presentation, cache and file-watch behaviour �
 specified in [`repl/spec.md`](../repl/spec.md); the slash-command catalogue is in
 [`repl/spec.md §3`](../repl/spec.md).
 
+#### Recall language syntax — `/syntax`
+
+Run bare `/syntax` to list the available core-language topics, then
+`/syntax <topic>` for a compact form-and-example reference. An unknown topic
+prints the topic list again rather than leaving you at a dead end. The command
+is a static REPL asset: it works without an agent and in a feature-off binary.
+
 #### Finding a function before importing it — `/search`
 
 `/list` and `/imports` show what is already in scope. `/search` answers the other
 question — *"is there already a function that does this, somewhere I could import
-from?"* — by searching every module reachable on the lib search path **and** the
-project root that you have **not yet imported**.
+from?"* — by searching public symbols reachable on the lib search path and the
+project root. An exact query can also show an eligible public callable already in
+scope.
+
+Search results are public, non-macro callable symbols. Macro declarations are
+intentionally outside this index. Source indexing does not expand macros, so it
+can omit ordinary definitions that require expansion; a successfully loaded
+module or cache entry can contribute eligible ordinary definitions. Importing a
+module remains the authority for its complete contents.
 
 Search by **name** or by **type signature**, exact or partial:
 
@@ -181,9 +198,9 @@ which mode is selected except `--run` / `--link` above.
 | `--no-cache` | Bypass the on-disk module cache (recompile from source). **Error if combined with `--link`.** | cache on |
 | `--priority-workers N` | Number of priority compilation workers. `N` must be numeric (non-numeric is an error). | `1` |
 | `--nice-workers N` | Number of background ("nice") compilation workers. `N` must be numeric. | `1` |
-| `--agent` | Enable the embedded LLM agent for the session (REPL only). Opt-in-twice: it only takes effect on a binary **built** with the agent feature *and* with a provider key configured at runtime — otherwise the agent stays dormant. Always accepted (a no-op, never `unknown flag`) on default builds and in `--run`/`--link`. See [`repl/spec.md §0.6.1`](../repl/spec.md). | agent off |
-| `--no-agent` | Force the embedded agent off for the session, even on an agent build with a key present. Wins when both `--agent` and `--no-agent` are given. Always accepted. | — |
-| `--yes` (short: `-y`) | Autonomous-submit: auto-accept the agent's write-consent `[y/N]` gates, so an active agent submits code and edits docs without per-action confirmation. Consent only — the agent's pre-flight validator still checks every submission. It does not itself enable the agent (pair it with `--agent`), and it is a no-op whenever no agent is active. See [`repl/spec.md §0.6.2`](../repl/spec.md). | off |
+| `--agent` | On an agent-capable binary, request the embedded agent for a REPL session. It still needs a configured provider at runtime; in `--run`/`--link` it is accepted but has no effect. A feature-off binary rejects this flag. See [`repl/spec.md §0.6.1`](../repl/spec.md). | agent off |
+| `--no-agent` | Force the embedded agent off; it wins when paired with `--agent`. It is accepted in both build variants and is a no-op in a feature-off binary. | — |
+| `--yes` (short: `-y`) | On an agent-capable binary, auto-answer the agent's write-consent prompts. It does not enable the agent and is inactive in `--run`/`--link`; a feature-off binary rejects it. See [`repl/spec.md §0.6.2`](../repl/spec.md). | off |
 
 Notes:
 
@@ -191,9 +208,9 @@ Notes:
   the two cannot be combined.
 - An unknown flag, or a second positional argument, prints an error plus the usage
   line and exits with status `1`.
-- The three agent flags are REPL-session knobs: in `--run`/`--link` they are
-  accepted and do nothing. The embedded agent experience itself is specified in
-  [`repl/spec.md §17`](../repl/spec.md).
+- On an agent-capable build, the agent flags are REPL-session knobs: in
+  `--run`/`--link` they are accepted and do nothing. The embedded agent experience
+  itself is specified in [`repl/spec.md §17`](../repl/spec.md).
 
 ## Choosing what to compile (the target)
 

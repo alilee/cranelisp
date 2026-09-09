@@ -41,7 +41,7 @@ fn repl(lines: &str) -> helpers::e2e::CrOutput {
 // FIXME 0150 — Num trait impls: Int (inline + mappable paths)
 // =============================================================================
 
-// spec: spec/appendix-a-builtins.md §"Num.Int" + spec/07-traits.md §"Trait dispatch"
+// spec: spec/07-traits.md §7.7.1
 // FIXME(/dev FIXME 0150 Phase 3 + 4) — fails if backend trait-knowledge
 // map deletion exposes empty/circular `(impl Num Int)` body.
 #[test]
@@ -58,7 +58,7 @@ fn stdlib_num_int_mappable_path() {
     repl("(let [f +] (f 1 2))\n").assert_stdout_contains(":primitives/Int 3");
 }
 
-// spec: spec/appendix-a-builtins.md §"Num.Float"
+// spec: spec/07-traits.md §7.7.1
 // FIXME(/dev FIXME 0150 Phase 3 + 4)
 #[test]
 fn stdlib_num_float_inline_path() {
@@ -86,7 +86,7 @@ fn stdlib_num_float_mappable_path() {
 // FIXME 0150 — Eq trait impls: Int / Float / Bool / String
 // =============================================================================
 
-// spec: spec/appendix-a-builtins.md §"Eq.Int" + spec/07-traits.md
+// spec: spec/07-traits.md §7.7.2
 // FIXME(/dev FIXME 0150 Phase 3 + 4)
 #[test]
 fn stdlib_eq_int_inline_path() {
@@ -139,7 +139,7 @@ fn stdlib_eq_string_mappable_path() {
 // FIXME 0150 — Ord trait impls: Int / Float
 // =============================================================================
 
-// spec: spec/appendix-a-builtins.md §"Ord.Int" + spec/07-traits.md
+// spec: spec/07-traits.md §7.7.3
 // FIXME(/dev FIXME 0150 Phase 3 + 4)
 #[test]
 fn stdlib_ord_int_inline_path() {
@@ -208,7 +208,7 @@ fn stdlib_ord_float_mappable_path() {
 // FIXME 0150 — Display trait impls: Int / Float
 // =============================================================================
 
-// spec: spec/appendix-a-builtins.md §"Display.Int" + spec/07-traits.md
+// spec: spec/07-traits.md §7.7.4
 // FIXME(/dev FIXME 0150 Phase 3 + 4) — must NOT regress to backend's
 // pre-D43 substitution path.
 #[test]
@@ -236,7 +236,7 @@ fn stdlib_display_float_inline_path() {
 // almost certainly fails today. The test surfaces this gap as failing at
 // Phase-5 Stage 1; closure requires symbol-table seeding for `not`.
 
-// spec: spec/appendix-a-builtins.md §"not"
+// spec: spec/appendix-a-builtins.md §A.3 — `not`
 // FIXME(/dev FIXME 0150 Phase 4 + a primitives-side seeding entry land)
 #[test]
 fn stdlib_not_inline_path() {
@@ -255,7 +255,7 @@ fn stdlib_not_mappable_path() {
 // FIXME 0150 — `--link` mode against intrinsics + primitives archives
 // =============================================================================
 
-// spec: structural — Phase 5 retirement: `--link` mode produces a runnable
+// spec: design/arch/decisions/0043-runtime-split-into-primitives-intrinsics.md §"Migration scope" — Phase 5 retirement: `--link` mode produces a runnable
 // binary that links against `cranelisp-intrinsics.a` + `cranelisp-primitives.a`
 // instead of `cranelisp-runtime.a`.
 // FIXME(/dev FIXME 0150 Phase 5 land — runtime crate retires, primitives +
@@ -295,7 +295,7 @@ impl CrOutputExt for helpers::e2e::CrOutput {
 // FIXME 0150 — Negative: cranelisp-runtime crate retired post-Phase 5
 // =============================================================================
 
-// spec: structural — D43 Phase 5 retirement.
+// spec: design/arch/decisions/0043-runtime-split-into-primitives-intrinsics.md §"Status pointer — Sprint 67 FULL CLOSE" — D43 Phase 5 retirement.
 // FIXME(/dev FIXME 0150 Phase 5 land) — fails until the runtime crate
 // directory is removed AND the workspace `Cargo.toml` no longer lists it.
 #[test]

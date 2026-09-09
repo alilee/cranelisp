@@ -15,32 +15,42 @@ use super::*;
 
 pub(crate) use crate::checker::TestFixture;
 pub(crate) use cranelisp_types::{
-    CompileContext, DefnVariant, Expr, FQSymbol, FQTypeName, ModuleEntry, ModuleFullPath,
-    MonoDefnVariant, MonoExpr, Symbol, TraitImpl, TraitName, TypeExpr, TypeName, Visibility,
+    Binding, CallableArmId, CallableTarget, CompileContext, DefnVariant, Expr, FQSymbol,
+    FQTypeName, Life, ModuleFullPath, MonoDefnVariant, MonoExpr, Symbol, TraitImpl, TraitName,
+    TypeExpr, TypeName, Visibility,
 };
+
+pub(crate) fn binding_target(module: &str, name: &str) -> CallableTarget {
+    CallableTarget::Binding(FQSymbol {
+        module: ModuleFullPath::from(module),
+        symbol: Symbol::from(name),
+    })
+}
+
+pub(crate) fn overload_target(module: &str, name: &str, ordinal: usize) -> CallableTarget {
+    CallableTarget::OverloadArm {
+        owner: FQSymbol {
+            module: ModuleFullPath::from(module),
+            symbol: Symbol::from(name),
+        },
+        arm: CallableArmId::from_ordinal(ordinal).expect("test overload ordinal"),
+    }
+}
 
 /// Seed glob-import edges from `source` into the fixture's CURRENT module,
 /// mirroring `(import [source [*]])`. Import registration is no longer a
 /// typecheck concern (facade `typecheck.md`); tests seed edges directly.
 pub(crate) fn seed_glob_import(tc: &mut TestFixture, source: &ModuleFullPath) {
-    let names: Vec<Symbol> = {
+    let candidates: Vec<(Symbol, cranelisp_types::NameCandidate)> = {
         let src = tc.modules.get(source).expect("source module exists");
-        src.all_symbols()
-            .filter(|(_, e)| e.is_public())
-            .map(|(n, _)| n.clone())
+        src.public_name_candidates()
+            .map(|(name, candidate)| (name.clone(), candidate))
             .collect()
     };
-    for name in names {
-        tc.symbol_table_mut().insert(
-            name.clone(),
-            ModuleEntry::Import {
-                source: FQSymbol {
-                    module: source.clone(),
-                    symbol: name,
-                },
-                visibility: Visibility::Public,
-            },
-        );
+    for (name, candidate) in candidates {
+        tc.symbol_table_mut()
+            .expose_candidate(name, candidate.source, Visibility::Public)
+            .expect("test import must install");
     }
 }
 
@@ -48,16 +58,16 @@ pub(crate) fn seed_glob_import(tc: &mut TestFixture, source: &ModuleFullPath) {
 /// CURRENT module, mirroring `(import [source [a b]])`. See `seed_glob_import`.
 pub(crate) fn seed_specific_import(tc: &mut TestFixture, source: &ModuleFullPath, names: &[&str]) {
     for name in names {
-        tc.symbol_table_mut().insert(
-            Symbol::from(*name),
-            ModuleEntry::Import {
-                source: FQSymbol {
-                    module: source.clone(),
-                    symbol: Symbol::from(*name),
-                },
-                visibility: Visibility::Public,
-            },
-        );
+        let candidates = tc
+            .modules
+            .get(source)
+            .expect("source module exists")
+            .name_candidates(&Symbol::from(*name));
+        for candidate in candidates {
+            tc.symbol_table_mut()
+                .expose_candidate(Symbol::from(*name), candidate.source, Visibility::Public)
+                .expect("test import must install");
+        }
     }
 }
 
@@ -328,12 +338,35 @@ pub(crate) fn collect_resolved_targets(e: &MonoExpr, out: &mut Vec<(String, Opti
 }
 
 pub(crate) fn main_codegen_view_of(tc: &TestFixture, name: &str) -> MonoDefnVariant {
-    match tc.symbol_table().get(name) {
-        Some(ModuleEntry::Def {
-            codegen_view: Some(v),
+    tc.symbol_table()
+        .get(name)
+        .and_then(Binding::codegen_view)
+        .cloned()
+        .unwrap_or_else(|| panic!("{name} has no codegen_view"))
+}
+
+pub(crate) fn overload_arm_codegen_view(
+    tc: &TestFixture,
+    name: &str,
+    ordinal: usize,
+) -> MonoDefnVariant {
+    let table = tc.symbol_table();
+    let binding = table
+        .get(name)
+        .unwrap_or_else(|| panic!("missing overload `{name}`"));
+    let Decl::Overloaded(declaration) = &binding.declaration else {
+        panic!("`{name}` is not an overloaded declaration")
+    };
+    let arm = declaration
+        .arms
+        .get(ordinal)
+        .unwrap_or_else(|| panic!("`{name}` has no arm {ordinal}"));
+    match &arm.callable.life {
+        Life::Concrete {
+            realization: cranelisp_types::Realization::Body { view, .. },
             ..
-        }) => v.clone(),
-        other => panic!("{name} has no codegen_view: {other:?}"),
+        } => view.clone(),
+        other => panic!("`{name}` arm {ordinal} has no codegen view: {other:?}"),
     }
 }
 
@@ -354,16 +387,7 @@ pub(crate) fn mono_instance_view_containing(tc: &TestFixture, substr: &str) -> M
     let key = tc
         .symbol_table()
         .all_symbols()
-        .find(|(n, e)| {
-            n.as_ref().contains(substr)
-                && matches!(
-                    e,
-                    ModuleEntry::Def {
-                        codegen_view: Some(_),
-                        ..
-                    }
-                )
-        })
+        .find(|(n, e)| n.as_ref().contains(substr) && e.codegen_view().is_some())
         .map(|(n, _)| n.as_ref().to_string())
         .unwrap_or_else(|| panic!("no mono instance with codegen_view contains `{substr}`"));
     main_codegen_view_of(tc, &key)
@@ -480,11 +504,7 @@ pub(crate) fn mono_match_arm_ctor(
         if !name.as_ref().contains(mangle_frag) {
             continue;
         }
-        if let ModuleEntry::Def {
-            codegen_view: Some(v),
-            ..
-        } = entry
-        {
+        if let Some(v) = entry.codegen_view() {
             let mut ctors = Vec::new();
             collect_resolved_ctors(&v.body, &mut ctors);
             if let Some(first) = ctors.into_iter().next() {
@@ -1066,8 +1086,8 @@ pub(crate) fn check_src(tc: &mut TestFixture, src: &str) {
         .unwrap_or_else(|e| panic!("check failed for:\n{src}\n error: {e:?}"));
 }
 
-/// Collect the first `SigDispatch` mangled name found on any Apply node in
-/// a body Expr tree (helper for the 0488 collection-shape tests).
+/// Collect the authored owner of the first `SigDispatch` target found on any
+/// Apply node in a body Expr tree.
 pub(crate) fn first_sig_dispatch(expr: &Expr) -> Option<String> {
     if let Expr::Apply {
         callee,
@@ -1076,8 +1096,14 @@ pub(crate) fn first_sig_dispatch(expr: &Expr) -> Option<String> {
         ..
     } = expr
     {
-        if let Some(ResolvedCall::SigDispatch { mangled_name }) = resolved_call.as_deref() {
-            return Some(mangled_name.as_ref().to_string());
+        if let Some(ResolvedCall::SigDispatch { target }) = resolved_call.as_deref() {
+            let owner = match target {
+                CallableTarget::Binding(owner)
+                | CallableTarget::OverloadArm { owner, .. }
+                | CallableTarget::MacroClause { owner, .. } => owner,
+                _ => return None,
+            };
+            return Some(owner.symbol.as_ref().to_string());
         }
         if let Some(m) = first_sig_dispatch(callee) {
             return Some(m);
@@ -1123,11 +1149,20 @@ pub(crate) fn body_has_var_named(expr: &Expr, target: &str) -> bool {
 
 /// The stored annotated body of `name` in the fixture's current module.
 pub(crate) fn stored_body(tc: &TestFixture, name: &str) -> Expr {
-    match tc.symbol_table().get(name) {
-        Some(ModuleEntry::Def {
+    let table = tc.symbol_table();
+    let callable = table
+        .get(name)
+        .and_then(Binding::callable)
+        .unwrap_or_else(|| panic!("`{name}` has no stored callable"));
+    match &callable.arm.life {
+        Life::Concrete {
             ast: Some(variant), ..
-        }) => variant.body.clone(),
-        other => panic!("`{name}` has no stored annotated body: {other:?}"),
+        }
+        | Life::Template {
+            body: TemplateBody::Ast(variant),
+            ..
+        } => variant.body.clone(),
+        _ => panic!("`{name}` has no stored annotated body"),
     }
 }
 

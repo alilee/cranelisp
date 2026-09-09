@@ -4,7 +4,7 @@ target: /int
 filed_by: /repl
 filed_at: 2026-05-01
 sprint_filed: 64
-refers_to: repl/spec.md:319
+refers_to: repl/spec/01-display-format.md §1.5
 status: deferred
 deferred_at: 2026-06-13
 deferred_reason: blocked on display-protocol design (does not yet exist); revisit in the Ring-4 polish sprint that builds the type-directed pretty-printer
@@ -20,7 +20,7 @@ When the type-directed pretty-printer or display-protocol mechanism is designed 
 
 ## Source location
 
-`repl/spec.md:319` (HTML-comment FIXME below the §1.5 aspirational paragraph).
+`repl/spec/01-display-format.md` §1.5 (HTML-comment FIXME below the aspirational paragraph).
 
 ## Context
 

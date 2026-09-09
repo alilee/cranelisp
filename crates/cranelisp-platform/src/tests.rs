@@ -300,14 +300,13 @@ fn decision24_capture_effect_pattern_balanced() {
 // `tests/plan/sprint71-platform.md`.
 // ---------------------------------------------------------------------
 
-// ABI_VERSION is 9 (Sprint 97, the ctx-vtable handle-model cutover — `HostCtx`
-// gains `acquire`/`retire` fn-ptrs, `ConcurrencyDescriptor` gains a `role` byte,
-// and the new `Acquire` result enum; `PollFn`/`Poll` unchanged). Was 8 (Sprint 96,
-// SINGLE-ABI CUTOVER), 7 (Sprint 93, ABI-v4 cascade), 6 (Sprint 86, DEF-5).
-// spec: design/arch/platform-interface.md §6.8.0b; effect-concurrency.md §4.1.1
+// ABI_VERSION is 10 because the DLL-constructed Pure node appends the payload
+// drop-glue witness word. A v9 DLL's shorter node must be rejected before the
+// host reads that word.
+// spec: design/platform/platform.md §4.3; total-concreteness.md §3.4
 #[test]
-fn abi_version_is_9() {
-    assert_eq!(ABI_VERSION, 9);
+fn abi_version_is_10() {
+    assert_eq!(ABI_VERSION, 10);
 }
 
 // The macro's `concat!("cranelisp_platform_manifest_", name)` export-name
@@ -738,7 +737,7 @@ unsafe fn peek(base: i64, offset: i64) -> i64 {
 fn def6_io_node_base_lands_on_real_allocation_header() {
     wire_alloc(payload_returning_alloc);
 
-    // Pure node: payload [tag | value] = 16 bytes.
+    // Pure node: payload [tag | value | payload glue] = 24 bytes.
     let pure: CLIO<CLInt> = CLIO::pure(CLInt::from(99i64));
     let pbase: i64 = pure.into();
     // SAFETY: pbase is the node's stored base; header reads are in-bounds iff
@@ -747,9 +746,9 @@ fn def6_io_node_base_lands_on_real_allocation_header() {
         let total = peek(pbase, 0);
         let rc = peek(pbase, 8);
         assert_eq!(
-            total, 32,
-            "Pure node total_size at base+0 must be 16 header + 16 payload \
-                 = 32; a wrong base reads garbage here (DEF-6 signature)"
+            total, 40,
+            "Pure node total_size at base+0 must be 16 header + 24 payload \
+                 = 40; a wrong base reads garbage here (DEF-6 signature)"
         );
         assert_eq!(
             rc, 1,
@@ -763,6 +762,11 @@ fn def6_io_node_base_lands_on_real_allocation_header() {
             IO_TAG_PURE,
             "Pure tag must be at payload offset 0 (base+16), not clobbering \
                  the header"
+        );
+        assert_eq!(
+            peek(pbase, HEAP_HEADER_SIZE + IO_PURE_GLUE_OFFSET),
+            0,
+            "a fresh platform Pure node must carry the unpublished glue sentinel"
         );
     }
 
@@ -790,14 +794,14 @@ fn def6_io_node_base_lands_on_real_allocation_header() {
 #[test]
 fn def6_violating_alloc_offsets_base_by_exactly_header_size() {
     // Honouring allocator: stored base == real allocation base, so total_size
-    // at base+0 is the sane 32 (16 header + 16 Pure payload).
+    // at base+0 is the sane 40 (16 header + 24 Pure payload).
     wire_alloc(payload_returning_alloc);
     let good: i64 = CLIO::<CLInt>::pure(CLInt::from(1i64)).into();
     // SAFETY: honouring base lands on the real header.
     let good_total = unsafe { peek(good, 0) };
     assert_eq!(
-        good_total, 32,
-        "honouring allocator: base+0 = total_size = 32"
+        good_total, 40,
+        "honouring allocator: base+0 = total_size = 40"
     );
 
     // Violating allocator: `alloc` returns the REAL allocation base. The
@@ -862,8 +866,8 @@ fn def6_repeated_node_construct_free_does_not_corrupt_heap() {
         unsafe {
             let total = peek(base, 0);
             assert!(
-                total == 32 || total == 56,
-                "iter {i}: node total_size must be 32 (Pure) or 56 (Effect), \
+                total == 40 || total == 56,
+                "iter {i}: node total_size must be 40 (Pure) or 56 (Effect), \
                      got {total} — a corrupted header would show here"
             );
             assert_eq!(peek(base, 8), 1, "iter {i}: rc=1 header intact");
@@ -894,7 +898,7 @@ fn extract_layout_hash_reads_header() {
 }
 
 // T24 — F2 source-move — HostContext does NOT impl Default
-// spec: design/platform/sprint71-redesign.md §8 row F2
+// design: design/platform/platform.md §4.2 — the intentionally narrow facade.
 //
 // We assert the no-impl-Default property at compile time using a
 // trait-bound check that succeeds only if HostContext is NOT Default.
@@ -936,7 +940,7 @@ fn t24_host_context_not_default_compile_fence() {
 }
 
 // T25 — R1 wired-or-panic — construction path panics with explicit message
-// spec: design/platform/sprint71-redesign.md §9 (R1 uninitialized-host gate)
+// design: design/platform/platform.md §4.2 — the uninitialized-host gate.
 //
 // We cannot use `#[should_panic]` directly: `null_alloc_with_tag` is
 // `extern "C" fn`, and modern Rust aborts on panics across the

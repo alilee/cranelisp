@@ -1,8 +1,8 @@
 # spec/
 
 The Cranelisp language specification — the authoritative record of what the
-language does. Owned by the `spec` role, which also owns `repl/spec.md`, the
-REPL experience specification (root `CLAUDE.md` §Roles).
+language does. Owned by the `spec` role, which also owns `repl/spec/`, the
+sectioned REPL experience specification (root `CLAUDE.md` §Roles).
 
 ## Role of `spec`
 
@@ -29,6 +29,20 @@ and spec disagree:
 The sketch oracle is **retired** (deleted at Sprint 87; language semantics are
 frozen — see root `CLAUDE.md` §"Sketch Oracle"). Ambiguity is resolved with the
 user, not by running a prototype.
+
+### Normative edit gate
+
+Before changing normative prose, present the exact semantic delta to the user
+and obtain explicit approval for that delta. A phase transition, general task
+approval, neighboring ruling, implementation behavior, test expectation, or
+the description “clarification” does not authorize an unstated normative
+change.
+
+Map every normative diff hunk to the approving user ruling. An unmatched hunk
+blocks the edit and returns to the user; there is no “entailed” or
+“matches implementation” exemption. After an approved edit, report each
+changed obligation and invalidate its coverage annotation as required below so
+`qa` can reassess the evidence.
 
 ## Scope boundary
 

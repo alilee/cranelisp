@@ -366,10 +366,10 @@ pub(crate) fn head_is_top_level_form(head: &str) -> bool {
 /// - bare expressions go through [`build_expr`].
 ///
 /// `build_form` rejects these head shapes directly with a diagnostic
-/// message to surface the missing orchestration step early. Macros must
-/// be expanded via `expand` before calling `build_form`
-/// — unexpanded macro calls become silent generic applications and fail
-/// later with confusing diagnostics.
+/// message to surface the missing orchestration step early. The integration
+/// layer must expand macros before calling `build_form`; an unexpanded macro
+/// call becomes a generic application and fails later with a confusing
+/// diagnostic.
 ///
 /// See `design/frontend/wave-3a-build-form.md` §2.3 for the detailed
 /// design.
@@ -709,13 +709,36 @@ fn build_defn_variant(sexp: &Sexp) -> Result<DefnVariant, CranelispError> {
 // deftype builder
 // ---------------------------------------------------------------------------
 
+enum TypeParamMode {
+    Omitted,
+    Written(Vec<Symbol>),
+}
+
+struct ParsedTypeHead {
+    name: TypeName,
+    mode: TypeParamMode,
+}
+
+struct ParsedFieldDef {
+    name: Symbol,
+    written_type: Option<TypeExpr>,
+    span: Span,
+}
+
+struct ParsedConstructorDef {
+    name: Symbol,
+    docstring: Option<String>,
+    fields: Vec<ParsedFieldDef>,
+    span: Span,
+}
+
 pub(crate) fn parse_deftype(
     children: &[Sexp],
     span: Span,
     visibility: Visibility,
 ) -> Result<Vec<ParsedEntry>, CranelispError> {
-    // (deftype Head "doc"? [fields])              -- product
-    // (deftype Head "doc"? Ctor1 (Ctor2 [f]) ...) -- sum/enum
+    // (deftype Head "doc"? [:Type field ...])                    -- product
+    // (deftype Head "doc"? Ctor1 (Ctor2 [:Type field ...]) ...) -- sum/enum
     //
     // Yields one ParsedEntry::TypeDef followed by one ParsedEntry::Constructor
     // per declared variant in source-declaration order.
@@ -723,7 +746,8 @@ pub(crate) fn parse_deftype(
         return Err(parse_err("deftype requires a type head", span));
     }
 
-    let (type_name, type_params) = build_type_head(&children[1])?;
+    let type_head = build_type_head(&children[1])?;
+    let type_name = &type_head.name;
     let (docstring, next) = extract_optional_docstring(children, 2);
 
     if next >= children.len() {
@@ -741,13 +765,13 @@ pub(crate) fn parse_deftype(
                 ));
             }
             let fields = build_field_list(&children[next])?;
-            let ctor = ConstructorDef {
+            let ctor = ParsedConstructorDef {
                 name: Symbol::from(type_name.as_ref()),
                 docstring: None,
                 fields,
                 span,
             };
-            desugar_type_def(type_name.as_ref(), &type_params, &[ctor])
+            resolve_type_def(&type_head.mode, vec![ctor])?
         }
         _ => {
             let mut seen = HashSet::new();
@@ -767,11 +791,10 @@ pub(crate) fn parse_deftype(
                 }
                 ctors.push(ctor);
             }
-            desugar_type_def(type_name.as_ref(), &type_params, &ctors)
+            resolve_type_def(&type_head.mode, ctors)?
         }
     };
 
-    let mut field_names = HashSet::new();
     for ctor in &constructors {
         if !is_product && ctor.fields.is_empty() && ctor.name.as_ref() == type_name.as_ref() {
             return Err(parse_err(
@@ -779,6 +802,10 @@ pub(crate) fn parse_deftype(
                 ctor.span,
             ));
         }
+        // Product field names mint accessors and must be unique. Sum payload
+        // labels are constructor-local metadata: they may repeat across arms,
+        // but a duplicate within one arm remains a malformed declaration.
+        let mut field_names = HashSet::new();
         for field in &ctor.fields {
             if !field_names.insert(field.name.clone()) {
                 return Err(parse_err(
@@ -811,13 +838,16 @@ pub(crate) fn parse_deftype(
     Ok(out)
 }
 
-fn build_type_head(sexp: &Sexp) -> Result<(TypeName, Vec<Symbol>), CranelispError> {
+fn build_type_head(sexp: &Sexp) -> Result<ParsedTypeHead, CranelispError> {
     match sexp {
         Sexp::Symbol(name, span) if is_uppercase_start(name) => {
             // A `deftype`/`deftype-` head is a binder (spec §5; S2, bare arm) —
             // a qualified spelling is a compile-time error.
             reject_qualified_binder_head(name, *span)?;
-            Ok((TypeName::from(name.as_str()), vec![]))
+            Ok(ParsedTypeHead {
+                name: TypeName::from(name.as_str()),
+                mode: TypeParamMode::Omitted,
+            })
         }
         Sexp::List(children, span) => {
             if children.is_empty() {
@@ -835,6 +865,15 @@ fn build_type_head(sexp: &Sexp) -> Result<(TypeName, Vec<Symbol>), CranelispErro
             // `(deftype point …)` was correctly rejected (audit S113 finding 2).
             if !is_uppercase_start(name) {
                 return Err(parse_err("type name must start with uppercase", name_span));
+            }
+            if children.len() == 1 {
+                return Err(parse_err(
+                    &format!(
+                        "parenthesized type head `({name})` must list at least one parameter; \
+                         write the bare head `{name}` to omit the parameter list"
+                    ),
+                    *span,
+                ));
             }
             let params: Vec<Symbol> = children[1..]
                 .iter()
@@ -874,7 +913,10 @@ fn build_type_head(sexp: &Sexp) -> Result<(TypeName, Vec<Symbol>), CranelispErro
                     Ok(n.into())
                 })
                 .collect::<Result<Vec<_>, CranelispError>>()?;
-            Ok((TypeName::from(name), params))
+            Ok(ParsedTypeHead {
+                name: TypeName::from(name),
+                mode: TypeParamMode::Written(params),
+            })
         }
         _ => Err(parse_err(
             "expected type name or (Name params...)",
@@ -883,7 +925,7 @@ fn build_type_head(sexp: &Sexp) -> Result<(TypeName, Vec<Symbol>), CranelispErro
     }
 }
 
-fn build_constructor_def(sexp: &Sexp) -> Result<ConstructorDef, CranelispError> {
+fn build_constructor_def(sexp: &Sexp) -> Result<ParsedConstructorDef, CranelispError> {
     match sexp {
         // Nullary: bare UpperName
         Sexp::Symbol(name, span) if is_uppercase_start(name) => {
@@ -893,7 +935,7 @@ fn build_constructor_def(sexp: &Sexp) -> Result<ConstructorDef, CranelispError> 
             // ctor name). `is_uppercase_start` keys on the after-slash segment, so
             // `fmt/Circle` reaches this arm; reject it here (0660 cell (b)).
             reject_qualified_binder_head(name, *span)?;
-            Ok(ConstructorDef {
+            Ok(ParsedConstructorDef {
                 name: name.as_str().into(),
                 docstring: None,
                 fields: vec![],
@@ -992,7 +1034,7 @@ fn build_constructor_def(sexp: &Sexp) -> Result<ConstructorDef, CranelispError> 
                 vec![]
             };
 
-            Ok(ConstructorDef {
+            Ok(ParsedConstructorDef {
                 name: name.into(),
                 docstring,
                 fields,
@@ -1003,7 +1045,7 @@ fn build_constructor_def(sexp: &Sexp) -> Result<ConstructorDef, CranelispError> 
     }
 }
 
-fn build_field_list(sexp: &Sexp) -> Result<Vec<FieldDef>, CranelispError> {
+fn build_field_list(sexp: &Sexp) -> Result<Vec<ParsedFieldDef>, CranelispError> {
     let (items, _) = expect_bracket(sexp)?;
     let mut fields = Vec::new();
     for item in items {
@@ -1015,24 +1057,24 @@ fn build_field_list(sexp: &Sexp) -> Result<Vec<FieldDef>, CranelispError> {
         {
             let te = build_type_expr(annotation)?;
             let (name, name_span) = expect_symbol(subject)?;
-            // A field name is a binder — it mints a module-level `Type.field`
-            // accessor (spec §5.2.6, user ruling 2026-07-19) — so a qualified
-            // field name `(deftype T [:Int fmt/r])` is a compile-time error, span
-            // at the field name (0660 field-cell).
+            // A product field later mints `Type.field`; a sum payload label is
+            // match-only metadata. Both declaration spellings require a bare
+            // local name, so qualification rejects at this span.
             reject_qualified_binder_head(name, name_span)?;
-            fields.push(FieldDef {
+            fields.push(ParsedFieldDef {
                 name: name.into(),
-                type_expr: te,
+                written_type: Some(te),
                 span: name_span,
             });
         } else {
-            // Bare name -- shortcut syntax (fresh type var)
+            // Preserve a missing type only long enough to issue the precise
+            // §5.2.4 error below.
             let (name, name_span) = expect_symbol(item)?;
-            // Field name is a binder (spec §5.2.6) — qualified rejects here too.
+            // Product field or sum label, either way the name must be bare.
             reject_qualified_binder_head(name, name_span)?;
-            fields.push(FieldDef {
+            fields.push(ParsedFieldDef {
                 name: name.into(),
-                type_expr: TypeExpr::TypeVar("".into()),
+                written_type: None,
                 span: name_span,
             });
         }
@@ -1041,86 +1083,82 @@ fn build_field_list(sexp: &Sexp) -> Result<Vec<FieldDef>, CranelispError> {
     Ok(fields)
 }
 
-/// Desugar type definitions: resolve bare field names to fresh type variables
-/// using sequential letters (a, b, c, ...), and collect type params if none
-/// were declared.
-fn desugar_type_def(
-    _type_name: &str,
-    declared_params: &[Symbol],
-    constructors: &[ConstructorDef],
-) -> (Vec<Symbol>, Vec<ConstructorDef>) {
-    // Collect all bare type vars (empty string vars) from field defs.
-    // Map each unique field position to a sequential letter variable.
-    let mut inferred_params: Vec<Symbol> = Vec::new();
-    // Map field name -> assigned type var name for consistency across constructors
-    let mut field_to_var: Vec<(String, Symbol)> = Vec::new();
-
-    let resolved_ctors: Vec<ConstructorDef> = constructors
-        .iter()
-        .map(|ctor| {
-            let resolved_fields: Vec<FieldDef> = ctor
-                .fields
-                .iter()
-                .map(|f| {
-                    if let TypeExpr::TypeVar(ref v) = f.type_expr {
-                        if v.is_empty() {
-                            // Check if this field name already has an assigned var
-                            let var_name = if let Some((_, var)) = field_to_var
-                                .iter()
-                                .find(|(fname, _)| fname.as_str() == f.name.as_ref())
-                            {
-                                var.clone()
-                            } else {
-                                // Assign next sequential letter
-                                let letter = sequential_type_var(inferred_params.len());
-                                let var: Symbol = letter.into();
-                                field_to_var.push((f.name.as_ref().to_string(), var.clone()));
-                                inferred_params.push(var.clone());
-                                var
-                            };
-                            FieldDef {
-                                name: f.name.clone(),
-                                type_expr: TypeExpr::TypeVar(var_name),
-                                span: f.span,
-                            }
-                        } else {
-                            f.clone()
-                        }
-                    } else {
-                        f.clone()
-                    }
-                })
-                .collect();
-            ConstructorDef {
-                name: ctor.name.clone(),
-                docstring: ctor.docstring.clone(),
-                fields: resolved_fields,
-                span: ctor.span,
-            }
-        })
-        .collect();
-
-    let final_params: Vec<Symbol> = if declared_params.is_empty() {
-        inferred_params
-    } else {
-        declared_params.to_vec()
+fn resolve_type_def(
+    mode: &TypeParamMode,
+    constructors: Vec<ParsedConstructorDef>,
+) -> Result<(Vec<Symbol>, Vec<ConstructorDef>), CranelispError> {
+    let type_params = match mode {
+        TypeParamMode::Omitted => Vec::new(),
+        TypeParamMode::Written(params) => params.clone(),
     };
 
-    (final_params, resolved_ctors)
+    let bound_params: HashSet<Symbol> = match mode {
+        TypeParamMode::Omitted => HashSet::new(),
+        TypeParamMode::Written(params) => params.iter().cloned().collect(),
+    };
+
+    let constructors = constructors
+        .into_iter()
+        .map(|ctor| {
+            let fields = ctor
+                .fields
+                .into_iter()
+                .map(|field| {
+                    let Some(type_expr) = field.written_type else {
+                        return Err(parse_err(
+                            &format!(
+                                "field `{}` requires a written type; write `:Type {}`",
+                                field.name, field.name
+                            ),
+                            field.span,
+                        ));
+                    };
+                    if let Some(variable) =
+                        first_unbound_type_variable(&type_expr, &bound_params)
+                    {
+                        return Err(parse_err(
+                            &format!(
+                                "type variable `{variable}` is not declared by the type head; add it to a parenthesized type head"
+                            ),
+                            field.span,
+                        ));
+                    };
+                    Ok(FieldDef {
+                        name: field.name,
+                        type_expr,
+                        span: field.span,
+                    })
+                })
+                .collect::<Result<Vec<_>, CranelispError>>()?;
+            Ok(ConstructorDef {
+                name: ctor.name,
+                docstring: ctor.docstring,
+                fields,
+                span: ctor.span,
+            })
+        })
+        .collect::<Result<Vec<_>, CranelispError>>()?;
+
+    Ok((type_params, constructors))
 }
 
-/// Generate sequential type variable names: a, b, c, ..., z, aa, ab, ...
-fn sequential_type_var(index: usize) -> String {
-    let mut result = String::new();
-    let mut n = index;
-    loop {
-        result.insert(0, (b'a' + (n % 26) as u8) as char);
-        if n < 26 {
-            break;
+fn first_unbound_type_variable<'a>(
+    type_expr: &'a TypeExpr,
+    bound: &HashSet<Symbol>,
+) -> Option<&'a Symbol> {
+    match type_expr {
+        TypeExpr::TypeVar(variable) if !bound.contains(variable) => Some(variable),
+        TypeExpr::TypeVar(_) | TypeExpr::Named(_) | TypeExpr::SelfType | TypeExpr::Bounds(_) => {
+            None
         }
-        n = n / 26 - 1;
+        TypeExpr::FnType(params, return_type) => params
+            .iter()
+            .find_map(|param| first_unbound_type_variable(param, bound))
+            .or_else(|| first_unbound_type_variable(return_type, bound)),
+        TypeExpr::Applied(_, args) => args
+            .iter()
+            .find_map(|arg| first_unbound_type_variable(arg, bound)),
     }
-    result
 }
 
 // ---------------------------------------------------------------------------
@@ -1191,9 +1229,9 @@ pub(crate) fn parse_deftrait(
 /// callers and stays single-sourced (design/frontend/trait-impl-head-parse.md §4
 /// note — the explicitly-sanctioned option). Every rejection is located and
 /// names the fix.
-fn parse_trait_head_shape(
-    sexp: &Sexp,
-) -> Result<(&str, Span, Option<(Symbol, Span)>), CranelispError> {
+type ParsedTraitHeadShape<'a> = (&'a str, Span, Option<(Symbol, Span)>);
+
+fn parse_trait_head_shape(sexp: &Sexp) -> Result<ParsedTraitHeadShape<'_>, CranelispError> {
     match sexp {
         Sexp::Symbol(name, span) => {
             if !is_uppercase_start(name) {

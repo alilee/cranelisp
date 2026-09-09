@@ -8,8 +8,8 @@
 use std::collections::HashMap;
 
 use cranelisp_types::{
-    ConcreteType, FQSymbol, FQTypeName, JitSymbol, Mode, ModeSummary, ModuleFullPath, MonoExpr,
-    MonoMatchArm, ParamFlow, Pattern, ResultMode, Span, Symbol, TypeName,
+    CallableTarget, ConcreteType, FQSymbol, FQTypeName, Mode, ModeSummary, ModuleFullPath,
+    MonoExpr, MonoMatchArm, ParamFlow, Pattern, ResultMode, Span, Symbol, TypeName,
 };
 
 use super::super::classify::TerminalKind;
@@ -71,7 +71,10 @@ fn call(name: &str, args: Vec<MonoExpr>) -> MonoExpr {
         args,
         span: s(),
         resolved_call: Some(Box::new(cranelisp_types::ResolvedCall::SigDispatch {
-            mangled_name: JitSymbol::from(name),
+            target: CallableTarget::Binding(FQSymbol {
+                module: ModuleFullPath::from("user"),
+                symbol: Symbol::from(name),
+            }),
         })),
         ty: ConcreteType::String,
         escapes: None,
@@ -123,7 +126,10 @@ fn call_sp(span: Span, name: &str, args: Vec<MonoExpr>) -> MonoExpr {
         args,
         span,
         resolved_call: Some(Box::new(cranelisp_types::ResolvedCall::SigDispatch {
-            mangled_name: JitSymbol::from(name),
+            target: CallableTarget::Binding(FQSymbol {
+                module: ModuleFullPath::from("user"),
+                symbol: Symbol::from(name),
+            }),
         })),
         ty: ConcreteType::String,
         escapes: None,
@@ -299,7 +305,7 @@ fn return_direct_param_is_alias() {
 #[test]
 fn return_embedded_in_constr_escapes_and_result_conditional() {
     // spec: §16.2 row 5 (0641 I-2) — a returned ADT carrying a param is the JOIN of
-    // its element origins (`Conditional{rep:x}`), NOT unconditional `Fresh`: the
+    // its element origins (`Conditional{params:[0]}`), NOT unconditional `Fresh`: the
     // param's reference escapes INSIDE the container, so the result publishes the
     // conservative `MayAliasOf(0)` (keeps the consumer's protect on the aliased
     // element path). Pre-§16 this returned `Fresh` — the I-2 anti-monotone rule
@@ -843,7 +849,7 @@ fn match_arm_binding_is_projection_of_scrutinee() {
 #[test]
 fn row5_container_carries_element_reach_not_fresh() {
     // §16.2 row 5 (0641 B-1/I-2) — a container `[v]` (here a ConstrADT holding the
-    // param `v`) has the JOIN of its element origins = `Conditional{rep:v}`, NOT
+    // param `v`) has the JOIN of its element origins = `Conditional{params:[0]}`, NOT
     // unconditional `Fresh`. The direct return publishes the conservative
     // `MayAliasOf(0)` (v's reference escapes inside the container). Pre-§16 this
     // laundered to `Fresh` (the anti-monotone rule).
@@ -977,7 +983,10 @@ fn cow_sp(span: Span) -> MonoExpr {
         args: vec![var("v")],
         span,
         resolved_call: Some(Box::new(cranelisp_types::ResolvedCall::SigDispatch {
-            mangled_name: JitSymbol::from("cow"),
+            target: CallableTarget::Binding(FQSymbol {
+                module: ModuleFullPath::from("user"),
+                symbol: Symbol::from("cow"),
+            }),
         })),
         ty: ConcreteType::String,
         escapes: None,
@@ -1430,6 +1439,81 @@ fn shadowed_root_emits_no_provenance() {
     assert!(r.facts.provenance.is_empty());
 }
 
+/// `(defn f [p] (match p [(Box <binder>) <binder>]))` — a single-field
+/// destructure whose arm body returns the bound field. `binder == "p"` makes
+/// the pattern binding shadow the scrutinee root; any other name is the
+/// alpha-equivalent control, one identifier apart.
+fn boxed_field_match_body(binder: &str) -> MonoExpr {
+    let arm = MonoMatchArm {
+        pattern: Pattern::Constructor {
+            name: cranelisp_types::SymbolRef {
+                module: None,
+                name: Symbol::from("Box"),
+            },
+            bindings: vec![Symbol::from(binder)],
+            span: s(),
+        },
+        body: var(binder),
+        span: s(),
+        provenance: None,
+        resolved_ctor: None,
+    };
+    MonoExpr::Match {
+        scrutinee: Box::new(var("p")),
+        arms: vec![arm],
+        span: s(),
+        compiler_generated: false,
+        ty: ConcreteType::String,
+    }
+}
+
+#[test]
+fn renamed_pattern_binder_projects_the_scrutinee_parameter() {
+    // spec: design/typecheck/ownership-inference.md §20.3 —
+    // `bind_pattern` inherit rule, CONTROL for
+    // `shadowing_pattern_binder_must_not_erase_the_scrutinee_reach`. The arm
+    // binder is one identifier away from the scrutinee root, so the reach is
+    // resolved by the ordinary inherit path and the arm provenance fact is
+    // emitted.
+    let r = run(
+        &[strparam("p")],
+        boxed_field_match_body("q"),
+        TestEnv::default(),
+    );
+    assert_eq!(r.summary.result, ResultMode::ProjectionOf(0));
+    assert_eq!(r.summary.param_modes, vec![Mode::Borrowed]);
+    assert_eq!(r.summary.param_flow, vec![ParamFlow::Consumed]);
+    assert!(
+        !r.facts.provenance.is_empty(),
+        "unshadowed arm must publish its projection root"
+    );
+}
+
+#[test]
+fn shadowing_pattern_binder_must_not_erase_the_scrutinee_reach() {
+    // spec: design/typecheck/ownership-inference.md §20.3 —
+    // "every mint inherits ... `bind_pattern` (inherits the
+    // scrutinee's)". The RESULT axis, which
+    // `shadowed_root_emits_no_provenance` does not discriminate: minting
+    // `Origin::Fresh` for the arm bindings under a shadow discards a reach the
+    // scrutinee origin already carries, and `Fresh` is the F-2 direction — a
+    // caller trusts "no parameter reaches this result" and elides the return
+    // protect. The reach is repaired; the symbol-keyed provenance suppression
+    // (§20.5(i)) is NOT — it stays the conservative Decision-24 materialize.
+    let r = run(
+        &[strparam("p")],
+        boxed_field_match_body("p"),
+        TestEnv::default(),
+    );
+    assert_eq!(r.summary.result, ResultMode::ProjectionOf(0));
+    assert_eq!(r.summary.param_modes, vec![Mode::Borrowed]);
+    assert_eq!(r.summary.param_flow, vec![ParamFlow::Consumed]);
+    assert!(
+        r.facts.provenance.is_empty(),
+        "§20.5(i): a shadowed root stays unnameable to the symbol-keyed backend"
+    );
+}
+
 // ============ Result-mode partial-param-return matrix (FIXME 0520) ============
 //
 // The ABI-half soundness cure: a param returned through a PARTIAL control-flow
@@ -1571,12 +1655,13 @@ fn partial_if_projection_arm_is_projection_not_fresh() {
 
 #[test]
 fn multi_distinct_param_return_is_not_fresh() {
-    // spec: §4.2 (FIXME 0520, multi-param sibling) — `(if c v w)` may return
-    // EITHER param. The existing lattice cannot name "may alias 0 or 1"; the
-    // sound conservative choice is a may-alias on the lowest reaching index
-    // (MayAliasOf(0)) — any not-`Fresh` value keeps the consumer's protect
-    // (binary read). Strictly more sound than the pre-cure `Fresh` (which elided
-    // protect on a returned param).
+    // spec: §4.2 (FIXME 0520, multi-param sibling); §19.2/§19.3 — `(if c v w)`
+    // may return EITHER param. The axis can now name exactly that: `MayAliasAny`,
+    // its ⊤. The pre-S121 answer was a may-alias on the LOWEST reaching index,
+    // which named a parameter the result need not reach and — worse — DISCARDED
+    // the other, which is what let a caller composing the discarded position
+    // publish `Fresh` (F-2). The `assert_ne!(…, Fresh)` leg is the part that must
+    // never move: any not-`Fresh` value keeps the consumer's protect.
     let body = if_(var("v"), var("w"));
     let r = run(&[strparam("v"), strparam("w")], body, TestEnv::default());
     assert_ne!(
@@ -1586,9 +1671,522 @@ fn multi_distinct_param_return_is_not_fresh() {
     );
     assert_eq!(
         r.summary.result,
-        ResultMode::MayAliasOf(0),
-        "conservative representative is the lowest reaching index"
+        ResultMode::MayAliasAny,
+        "two distinct reaching parameters ⇒ the result axis's ⊤, not a \
+         representative index"
     );
+}
+
+// ---- §19.3 reach set vs the §13.6(i) flat binding map ----
+//
+// `bindings` is a flat map with save/restore, not a lexical environment. Until
+// §20.3 an `Origin`'s reach was a SYMBOL resolved late, so a binder reusing a
+// parameter's name changed what an already-minted origin denoted. The cells
+// below are probe PAIRS: same body shape, differing only in whether the inner
+// binder reuses the name `a`. The renamed cell is the control; the shadowed cell
+// asserts that the rename changes nothing.
+
+/// `(let [<binder> (if a b)] (if <binder> (fresh)))` — the result may be `a`,
+/// `b` or a fresh value, so the truthful result is the axis's ⊤.
+fn shadow_result_body(binder: &str) -> MonoExpr {
+    MonoExpr::Let {
+        bindings: vec![(Symbol::from(binder), if_(var("a"), var("b")))],
+        body: Box::new(if_(var(binder), call("fresh", vec![]))),
+        span: s(),
+        ty: ConcreteType::String,
+    }
+}
+
+fn fresh_env() -> TestEnv {
+    TestEnv::default().summary("fresh", sm(vec![], ResultMode::Fresh, vec![]))
+}
+
+#[test]
+fn renamed_binder_reach_set_result_is_top() {
+    // spec: §19.3 — the CONTROL for `self_shadowed_reach_set_result_is_top`. A
+    // binder that does not reuse a parameter name keeps both reaching roots, so
+    // the result collapses at "two or more" to ⊤.
+    let r = run(
+        &[strparam("a"), strparam("b")],
+        shadow_result_body("z"),
+        fresh_env(),
+    );
+    assert_eq!(r.summary.result, ResultMode::MayAliasAny);
+}
+
+#[test]
+fn self_shadowed_reach_set_result_is_top() {
+    // spec: §19.3 — a conditional binding shadowing one of the parameters it
+    // reaches must still publish ⊤; naming ONE of the two reaching parameters is
+    // the F-2 discard, and a caller passing a fresh value at the named position
+    // composes it back to `Fresh`.
+    // Was RED until §20.3 (observed `MayAliasOf(0)`): the late name resolution
+    // walked a → {a,b}, dropped the repeated `a` on its visited set and answered
+    // [1], and after `restore_frame` that same name resolved to parameter 0 — so
+    // the published claim named one reaching parameter and dropped the other.
+    // The join now unions the indices the operands were minted with.
+    let r = run(
+        &[strparam("a"), strparam("b")],
+        shadow_result_body("a"),
+        fresh_env(),
+    );
+    assert_eq!(r.summary.result, ResultMode::MayAliasAny);
+}
+
+#[test]
+fn match_bound_conditional_widens_every_reaching_param() {
+    // spec: §19.3 — the ABI-bearing half: `walk_var` widens EVERY parameter the
+    // used binding roots in, not a representative. The retired single-root chase
+    // left the second reaching parameter `Borrowed` while its reference was
+    // stored into a returned aggregate — an elided retain on a value the caller
+    // still owns.
+    //
+    // The scrutinee is a MATCH, deliberately: a `let`-bound conditional is also
+    // covered by the §13.6(g) escaped-binding drain, which re-walks the RHS in
+    // its defining scope and widens both parameters whatever the chase does
+    // (`self_shadowed_widening_is_covered_by_the_drain`). A match arm has no
+    // drain, so here the chase is the only widener and the cell discriminates.
+    // (defn f [a b] (match (if a b) [(Box y) (Box y)]))
+    let arm = MonoMatchArm {
+        pattern: Pattern::Constructor {
+            name: cranelisp_types::SymbolRef {
+                module: None,
+                name: Symbol::from("Box"),
+            },
+            bindings: vec![Symbol::from("y")],
+            span: s(),
+        },
+        body: adt(vec![var("y")]),
+        span: Span::new(40, 41),
+        provenance: None,
+        resolved_ctor: None,
+    };
+    let body = MonoExpr::Match {
+        scrutinee: Box::new(if_(var("a"), var("b"))),
+        arms: vec![arm],
+        span: s(),
+        compiler_generated: false,
+        ty: ConcreteType::String,
+    };
+    let r = run(&[strparam("a"), strparam("b")], body, TestEnv::default());
+    assert_eq!(r.summary.param_mode(0), Mode::Owned);
+    assert_eq!(
+        r.summary.param_mode(1),
+        Mode::Owned,
+        "the SECOND reaching parameter widens too"
+    );
+    assert_eq!(r.summary.param_flow(1), ParamFlow::IntoResult);
+}
+
+#[test]
+fn self_shadowed_widening_is_covered_by_the_drain() {
+    // spec: §19.3, §13.6(g) — the ABI-bearing half under the same shadow. Until
+    // §20.3 this passed for a DIFFERENT reason: `walk_var` alone widened only
+    // parameter 1, and the escaped-binding drain re-walked the RHS `(if a b)` in
+    // its defining scope, where both names still resolved to their parameters —
+    // masking the chase rather than preventing the loss. The binding now carries
+    // both indices, so `walk_var` widens both directly and the drain is no longer
+    // load-bearing HERE. The cell is retained as the drain's own falsifier for
+    // this shape; whether a separate drain falsifier is wanted is `qa`'s
+    // (design §20.6).
+    // (defn f [a b] (let [a (if a b)] (Box a)))
+    let body = MonoExpr::Let {
+        bindings: vec![(Symbol::from("a"), if_(var("a"), var("b")))],
+        body: Box::new(adt(vec![var("a")])),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let r = run(&[strparam("a"), strparam("b")], body, TestEnv::default());
+    assert_eq!(
+        r.summary.param_mode(0),
+        Mode::Owned,
+        "the shadowed parameter still reaches the store and must widen"
+    );
+    assert_eq!(r.summary.param_mode(1), Mode::Owned);
+}
+
+#[test]
+fn escaping_capture_widens_every_reaching_param() {
+    // spec: §19.3, FIXME 0523 — the second ABI-bearing consumer of the reach set.
+    // `classify_capture_escape` widens every parameter a captured binding roots
+    // in. The capture is used as a BORROWED argument inside the closure, so the
+    // body walk contributes no widening (the B3.4 shape) and this cell isolates
+    // the capture chase; the match arm keeps the §13.6(g) drain out of it.
+    // (defn f [a b] (match (if a b) [(Box y) (fn [] (readonly y))]))
+    let env = TestEnv::default().summary(
+        "readonly",
+        sm(
+            vec![Mode::Borrowed],
+            ResultMode::Fresh,
+            vec![ParamFlow::Consumed],
+        ),
+    );
+    let arm = MonoMatchArm {
+        pattern: Pattern::Constructor {
+            name: cranelisp_types::SymbolRef {
+                module: None,
+                name: Symbol::from("Box"),
+            },
+            bindings: vec![Symbol::from("y")],
+            span: s(),
+        },
+        body: lambda_sp(Span::new(60, 61), vec![], call("readonly", vec![var("y")])),
+        span: Span::new(40, 41),
+        provenance: None,
+        resolved_ctor: None,
+    };
+    let body = MonoExpr::Match {
+        scrutinee: Box::new(if_(var("a"), var("b"))),
+        arms: vec![arm],
+        span: s(),
+        compiler_generated: false,
+        ty: ConcreteType::String,
+    };
+    let r = run(&[strparam("a"), strparam("b")], body, env);
+    assert_eq!(r.summary.param_mode(0), Mode::Owned);
+    assert_eq!(
+        r.summary.param_mode(1),
+        Mode::Owned,
+        "the SECOND reaching parameter escapes through the capture too"
+    );
+}
+
+// ---- §20 — the ABI half under a shadowing binder ----
+//
+// The cells above read the RESULT axis. `param_modes`/`param_flow` are the
+// ABI-bearing half, invisible end-to-end (a summary is not observable from a
+// program's output), and nothing discriminated them for the shadow shapes until
+// S121. Each subject differs from its control in ONE identifier — the inner
+// binder's name — so a harness fault takes the control down too.
+
+/// `(let [x a] (let [<binder> <rhs>] x))` — `x` IS parameter `a` and the inner
+/// binding never touches it, so the published summary must not depend on what
+/// that binder is called.
+fn abi_shadow_body(binder: &str, rhs: &str) -> MonoExpr {
+    MonoExpr::Let {
+        bindings: vec![(Symbol::from("x"), var("a"))],
+        body: Box::new(MonoExpr::Let {
+            bindings: vec![(Symbol::from(binder), var(rhs))],
+            body: Box::new(var("x")),
+            span: s(),
+            ty: ConcreteType::String,
+        }),
+        span: s(),
+        ty: ConcreteType::String,
+    }
+}
+
+#[test]
+fn renamed_binder_keeps_the_returned_parameter_owned() {
+    // spec: design/typecheck/ownership-inference.md §20.1 row C control —
+    // `(defn f [a n] (let [x a] (let [z n] x)))`.
+    let r = run(
+        &[strparam("a"), intparam("n")],
+        abi_shadow_body("z", "n"),
+        TestEnv::default(),
+    );
+    assert_eq!(r.summary.param_modes, vec![Mode::Owned, Mode::Copy]);
+    assert_eq!(
+        r.summary.param_flow,
+        vec![ParamFlow::IntoResult, ParamFlow::Consumed]
+    );
+    assert_eq!(r.summary.result, ResultMode::AliasOf(0));
+}
+
+#[test]
+fn shadowing_binder_must_not_narrow_the_returned_parameter() {
+    // spec: design/typecheck/ownership-inference.md §20.1 row C —
+    // `(defn f [a n] (let [x a] (let [a n] x)))`. The result
+    // IS parameter 0, so parameter 0 is Owned/IntoResult; the published
+    // `Borrowed`/`Consumed` is self-contradictory against the `AliasOf(0)` it
+    // publishes alongside, and elides the caller's return protect (the observed
+    // `STALE RC DEC`, `tests/shadowed_param_reach_stale_rc_dec.rs`).
+    let r = run(
+        &[strparam("a"), intparam("n")],
+        abi_shadow_body("a", "n"),
+        TestEnv::default(),
+    );
+    assert_eq!(r.summary.param_modes, vec![Mode::Owned, Mode::Copy]);
+    assert_eq!(
+        r.summary.param_flow,
+        vec![ParamFlow::IntoResult, ParamFlow::Consumed]
+    );
+    assert_eq!(r.summary.result, ResultMode::AliasOf(0));
+}
+
+#[test]
+fn renamed_binder_charges_the_obligation_to_the_returned_parameter() {
+    // spec: design/typecheck/ownership-inference.md §20.1 row C″ control —
+    // `(defn f [a b] (let [x a] (let [z b] x)))`,
+    // both parameters owned-capable. Only `a` reaches the result.
+    let r = run(
+        &[strparam("a"), strparam("b")],
+        abi_shadow_body("z", "b"),
+        TestEnv::default(),
+    );
+    assert_eq!(r.summary.param_modes, vec![Mode::Owned, Mode::Borrowed]);
+    assert_eq!(
+        r.summary.param_flow,
+        vec![ParamFlow::IntoResult, ParamFlow::Consumed]
+    );
+}
+
+#[test]
+fn shadowing_binder_must_not_permute_the_obligation() {
+    // spec: design/typecheck/ownership-inference.md §20.1 row C″ —
+    // `(defn f [a b] (let [x a] (let [a b] x)))`. The
+    // discriminator for the INDEX, not merely for its presence: the late
+    // re-resolution charges `Owned`/`IntoResult` to whichever parameter the
+    // shadow binder's RHS happens to reach, so the obligation MOVES to `b`
+    // while `a` — the parameter actually returned — is left `Borrowed`. A
+    // carried index that were merely present but wrong would still fail here.
+    let r = run(
+        &[strparam("a"), strparam("b")],
+        abi_shadow_body("a", "b"),
+        TestEnv::default(),
+    );
+    assert_eq!(r.summary.param_modes, vec![Mode::Owned, Mode::Borrowed]);
+    assert_eq!(
+        r.summary.param_flow,
+        vec![ParamFlow::IntoResult, ParamFlow::Consumed]
+    );
+}
+
+// ---- §20.3 — the capture chase without the name-following recursion ----
+
+/// `(let [r (gcells v)] (let [<binder> (fresh)] (fn [] (readonly r))))` — the
+/// escaping closure captures `r`, an unconditional PROJECTION of parameter `v`.
+/// Reaching `v` from `r` is exactly what `classify_capture_escape`'s recursion
+/// existed for.
+fn captured_projection_body(binder: &str) -> MonoExpr {
+    MonoExpr::Let {
+        bindings: vec![(Symbol::from("r"), call("gcells", vec![var("v")]))],
+        body: Box::new(MonoExpr::Let {
+            bindings: vec![(Symbol::from(binder), call("fresh", vec![]))],
+            body: Box::new(lambda_sp(
+                Span::new(60, 61),
+                vec![],
+                call("readonly", vec![var("r")]),
+            )),
+            span: s(),
+            ty: ConcreteType::String,
+        }),
+        span: s(),
+        ty: ConcreteType::String,
+    }
+}
+
+fn captured_projection_env() -> TestEnv {
+    TestEnv::default()
+        .summary(
+            "gcells",
+            sm(
+                vec![Mode::Borrowed],
+                ResultMode::ProjectionOf(0),
+                vec![ParamFlow::Consumed],
+            ),
+        )
+        .summary("fresh", sm(vec![], ResultMode::Fresh, vec![]))
+        .summary(
+            "readonly",
+            sm(
+                vec![Mode::Borrowed],
+                ResultMode::Fresh,
+                vec![ParamFlow::Consumed],
+            ),
+        )
+}
+
+#[test]
+fn captured_projection_widens_its_parameter() {
+    // spec: design/typecheck/ownership-inference.md §20.3, FIXME 0523 —
+    // the CONTROL, and the retained behaviour of the
+    // deleted recursion: a captured projection still widens the parameter it is
+    // a view of, reached from the capture itself rather than by re-resolving its
+    // root name.
+    let r = run(
+        &[strparam("v")],
+        captured_projection_body("w"),
+        captured_projection_env(),
+    );
+    assert_eq!(r.summary.param_mode(0), Mode::Owned);
+    assert_eq!(r.summary.param_flow(0), ParamFlow::Retained);
+}
+
+#[test]
+fn captured_projection_widens_its_parameter_under_a_shadowed_root() {
+    // spec: design/typecheck/ownership-inference.md §20.3, FIXME 0524 —
+    // the falsifier for the name-following recursion.
+    // The inner binder reuses the projection root's name `v`, so the recursion
+    // resolved it to the SHADOW and escaped that local instead: the parameter
+    // never widened, and its allocation kept `escapes = Some(false)` ⇒
+    // stack-allocated ⇒ dangling once the frame pops. Deleting the recursion is
+    // what removes the case; the widening is driven by the index the capture
+    // itself carries.
+    let r = run(
+        &[strparam("v")],
+        captured_projection_body("v"),
+        captured_projection_env(),
+    );
+    assert_eq!(r.summary.param_mode(0), Mode::Owned);
+    assert_eq!(r.summary.param_flow(0), ParamFlow::Retained);
+}
+
+// ---- §19.4: composing a may-alias result through the call site ----
+
+/// `pick2 [c a b] = (if c a b)` — a callee whose result may be EITHER of two
+/// distinct parameters. Its summary is DERIVED by running the transfer walk on
+/// it, so the composition cells below exercise the producer and the consumer of
+/// the same carrier rather than a hand-written expectation of one of them.
+fn pick2_summary() -> ModeSummary {
+    let body = if_(var("a"), var("b"));
+    run(
+        &[strparam("c"), strparam("a"), strparam("b")],
+        body,
+        TestEnv::default(),
+    )
+    .summary
+}
+
+/// `q [cnd p] = (<callee> arg0 arg1 arg2)` in tail position.
+fn compose(callee: ModeSummary, args: Vec<MonoExpr>) -> TransferResult {
+    let env = TestEnv::default().summary("callee", callee);
+    run(&[strparam("cnd"), strparam("p")], call("callee", args), env)
+}
+
+fn lit(text: &str) -> MonoExpr {
+    MonoExpr::StringLit {
+        value: text.to_string(),
+        span: s(),
+        ty: ConcreteType::String,
+        escapes: None,
+        confined: None,
+        unique_static: None,
+    }
+}
+
+// spec: design/typecheck/ownership-inference.md §19.2, §19.3 — the PRODUCER half
+// of the F-2 pair: a three-parameter body returning either of two of them
+// publishes the result ⊤, naming neither.
+#[test]
+fn a_body_returning_either_of_two_params_publishes_the_result_top() {
+    assert_eq!(pick2_summary().result, ResultMode::MayAliasAny);
+}
+
+// spec: design/typecheck/ownership-inference.md §19.1 F-2, §19.4 — the CONSUMER
+// half. A caller that passes a FRESH value in the callee's lowest reaching
+// position and its own parameter in the other still returns that parameter on
+// some path, so it must not publish `Fresh`. Measured 2026-09-07 as the
+// pre-correction defect: `pick2` published `MayAliasOf(1)` (the lowest reaching
+// index, the other reaching parameter DISCARDED), the caller read argument 1 —
+// a literal — and published `Fresh`.
+// spec: spec/12-runtime.md §12.3.1 — freed memory MUST NOT be accessed after
+// deallocation: `backend::compiler::fn_compiler::return_is_fresh_by_summary`
+// elides the callee return protect on a PRESENT `Fresh`.
+#[test]
+fn composing_a_two_param_returning_callee_keeps_the_caller_s_reaching_parameter() {
+    let callee = pick2_summary();
+    // `q [cnd p] = (pick2 "cond" "lit" p)`.
+    let r = compose(callee.clone(), vec![lit("cond"), lit("lit"), var("p")]);
+    assert_ne!(
+        r.summary.result,
+        ResultMode::Fresh,
+        "the caller returns its own param `p` whenever the callee takes its second \
+         reaching path, so `Fresh` elides the return protect (callee published {:?})",
+        callee.result
+    );
+    assert_eq!(
+        r.summary.result,
+        ResultMode::MayAliasOf(1),
+        "exactly one of the caller's parameters is reachable ⇒ name it"
+    );
+}
+
+// spec: design/typecheck/ownership-inference.md §19.4 — the discriminating
+// control, differing from the cell above ONLY in which argument position the
+// caller's parameter sits in. A callee that reaches its OWN lowest position and
+// a caller that passes its parameter THERE composed correctly before the
+// correction and composes identically after it, so this cell is green in both
+// states: a red above with a green here isolates the discarded reaching
+// parameter, not the composition rule.
+#[test]
+fn composing_a_may_alias_callee_in_its_lowest_position_is_unchanged() {
+    let callee = sm(
+        vec![Mode::Borrowed; 3],
+        ResultMode::MayAliasOf(1),
+        vec![ParamFlow::Consumed; 3],
+    );
+    let r = compose(callee, vec![lit("cond"), var("p"), lit("lit")]);
+    assert_eq!(r.summary.result, ResultMode::MayAliasOf(1));
+}
+
+// spec: design/typecheck/ownership-inference.md §19.4 — the callee's result may
+// reach a SET of argument positions, so a caller passing two of its OWN
+// parameters cannot name one: the composition publishes the result ⊤.
+#[test]
+fn composing_a_may_alias_any_callee_over_two_caller_parameters_is_the_result_top() {
+    let r = compose(pick2_summary(), vec![lit("cond"), var("cnd"), var("p")]);
+    assert_eq!(r.summary.result, ResultMode::MayAliasAny);
+}
+
+// spec: design/typecheck/ownership-inference.md §19.4 — a nullary callee has no
+// argument to reach, so a `MayAliasAny` result composes to `Fresh`. The negative
+// leg of the arm above: without it, "reaches every position" could be read as
+// "always conditional".
+#[test]
+fn a_nullary_may_alias_any_callee_composes_to_fresh() {
+    let env = TestEnv::default().summary("nothing", sm(vec![], ResultMode::MayAliasAny, vec![]));
+    let r = run(&[strparam("p")], call("nothing", vec![]), env);
+    assert_eq!(r.summary.result, ResultMode::Fresh);
+}
+
+// spec: design/typecheck/ownership-inference.md §18.3 O-3, §19.3 — a persisted
+// result index past the call's arity names no argument. The conservative answer
+// is the frame's WHOLE parameter set ⇒ the result ⊤, never a fabricated
+// lowest-index may-alias on a parameter the value need not reach.
+#[test]
+fn an_out_of_range_result_index_publishes_the_result_top() {
+    for out_of_range in [
+        ResultMode::AliasOf(7),
+        ResultMode::MayAliasOf(7),
+        ResultMode::ProjectionOf(7),
+    ] {
+        let env = TestEnv::default().summary(
+            "stale",
+            sm(
+                vec![Mode::Borrowed],
+                out_of_range,
+                vec![ParamFlow::Consumed],
+            ),
+        );
+        let r = run(
+            &[strparam("v"), strparam("w")],
+            call("stale", vec![lit("x")]),
+            env,
+        );
+        assert_eq!(
+            r.summary.result,
+            ResultMode::MayAliasAny,
+            "an out-of-range {out_of_range:?} may reach any of this frame's params"
+        );
+    }
+}
+
+// spec: design/typecheck/ownership-inference.md §19.3 — and a PARAMETERLESS frame
+// can still prove `Fresh` for the same stale index: there is no parameter for the
+// value to reach. The negative leg of the cell above.
+#[test]
+fn an_out_of_range_result_index_in_a_parameterless_frame_is_fresh() {
+    let env = TestEnv::default().summary(
+        "stale",
+        sm(
+            vec![Mode::Borrowed],
+            ResultMode::MayAliasOf(7),
+            vec![ParamFlow::Consumed],
+        ),
+    );
+    let r = run(&[], call("stale", vec![lit("x")]), env);
+    assert_eq!(r.summary.result, ResultMode::Fresh);
 }
 
 // ---- regression pins: the definite cases must stay precise (no OVER-widen) ----
@@ -1675,7 +2273,7 @@ fn apply_alias_of_fresh_arg_stays_fresh_no_over_widen() {
 // arm (the compiler-forced exhaustive match). `(defn f [v x] (vec-set v 0 x))`
 // where vec-set is summarised MayAliasOf(0): the result is EITHER fresh OR
 // param 0's vec, decided at runtime. Composing through the Apply must keep the
-// result NOT-Fresh (join Fresh with the param-reaching arg's origin ⇒ MayParam
+// result NOT-Fresh (join Fresh with the param-reaching arg's origin ⇒ Conditional
 // ⇒ MayAliasOf(0)) — so an enclosing fn returning it keeps its protect (the
 // vec-assoc COW-return-through-an-Apply-body soundness cure).
 #[test]
@@ -1799,9 +2397,10 @@ fn apply_may_alias_of_fresh_arg_stays_fresh() {
 fn branch_sibling_shadow_does_not_narrow_param_shadow_first() {
     // spec: §13.6(i) (F4) — the load-bearing ABI-soundness cell. A param `a`
     // shadowed by an inner `let` in the THEN branch (walked first) must NOT leak
-    // its inner `BindState` into the ELSE branch, where the bare `(consume a)`
+    // its inner origin into the ELSE branch, where the bare `(consume a)`
     // means the PARAM. Without scope discipline the walker reads the stale inner
-    // `Projection(g)` state, `param_root(a)` misses param 0, and `param_modes[0]`
+    // unconditional-`Projection(g)` state, `a` no longer reaches param 0 for an
+    // ordinary use, and `param_modes[0]`
     // narrows Owned→Borrowed (the UNSOUND direction on the ABI-bearing half).
     // `(defn f [a g] (if c (let [a (gcells g)] a) (consume a)))`.
     let env = accessor_env().summary(
@@ -1884,7 +2483,7 @@ fn match_arm_binding_does_not_leak_past_arm() {
     // param must NOT leak into a sibling arm. Arm 1 binds field `a` (a borrowed
     // projection of scrutinee `h`); arm 2's `(consume a)` means the PARAM `a`.
     // Without a per-arm scope frame the leaked arm-1 `Projection(h)` state makes
-    // `param_root(a)` miss param 0 ⇒ `param_modes[0]` narrows below truth.
+    // `a` reach param 0 no longer ⇒ `param_modes[0]` narrows below truth.
     // `(defn f [a h] (match h [(Box a) a] [_ (consume a)]))`.
     let env = TestEnv::default().summary(
         "consume",
@@ -2570,7 +3169,7 @@ fn deps_harvested_for_summarised_callee() {
 // (§13.6(i), F4 cure), not the specific bugs that motivated it. The existing
 // F4 cells above pin the branch-SIBLING shadow and the match-arm-leak found
 // bugs; the cells below fill the implied strategy matrix per
-// `feedback_dev_strategy_derived_unit_scenarios`: the `Option<BindState>`
+// `feedback_dev_strategy_derived_unit_scenarios`: the `Option<Origin>`
 // restore BOTH arms (reinstate / remove), ≥3-deep nesting, multi-arm same-name
 // independence, Lambda framing, and the scope-stack × F1-drain interaction.
 // Every assertion pins the SPECIFIC resolved fact (the ABI-bearing
@@ -2581,10 +3180,11 @@ fn sequential_shadow_scope_restores_param_reinstates() {
     // spec: §13.6(i) (F4) — restore-REINSTATES arm, SEQUENTIAL (not sibling).
     // An inner `let` shadows param `a` inside the RHS of an outer binding; after
     // that inner scope closes, a later `(consume a)` in the ENCLOSING scope means
-    // the PARAM. The scope frame must reinstate the param `BindState` so
-    // `param_root(a)` reaches param 0 and it widens Owned. Without the reinstate,
-    // `a` stays the inner `Projection(g)`, `param_root` misses, and `param_modes[0]`
-    // narrows Owned→Borrowed (the ABI-half unsound direction). Distinct from the
+    // the PARAM. The scope frame must reinstate the param's origin so `a`
+    // resolves to param 0 and it widens Owned. Without the reinstate, `a` stays
+    // the inner unconditional PROJECTION of `g`, which an ordinary use does not
+    // widen through, and `param_modes[0]` narrows Owned→Borrowed (the ABI-half
+    // unsound direction). Distinct from the
     // sibling-branch cells — here the shadow and the use are SEQUENTIAL, the inner
     // scope fully closing before the use.
     // `(defn f [a g] (let [x (let [a (gcells g)] a)] (consume a)))`.
@@ -2663,7 +3263,8 @@ fn triple_nested_shadow_unwinds_restore_param() {
     // shadow the same param `a` (each RHS a projection of `g`); after all three
     // close, a `(consume a)` in the enclosing scope must reach the PARAM. Each
     // level's frame must restore correctly on unwind — a miss at ANY level leaves
-    // `a` a leaked `Projection(g)`, `param_root` misses, and `param_modes[0]`
+    // `a` a leaked unconditional `Projection(g)`, which an ordinary use does not
+    // widen through, and `param_modes[0]`
     // narrows Owned→Borrowed. `g` is only read borrowed by the accessors, so it
     // must stay Borrowed throughout — the negative half (no nesting corruption).
     // `(defn f [a g] (let [x (let [a (gcells g)] (let [a (gcells g)]
@@ -2831,7 +3432,7 @@ fn fold_chain_in_shadowing_scope_drains_in_defining_scope() {
     // (the binding `p` is not in scope while its own RHS evaluates — sequential-let
     // semantics), resolving that `p` to the PARAM so the param flow widens
     // Consumed→IntoResult. If the drain re-walked without restoring the defining
-    // scope, `p` would resolve to the Fresh shadow (param_root None) and the param
+    // scope, `p` would resolve to the Fresh shadow (reaching nothing) and the param
     // would stay Consumed — the exact narrowing the defining-scope re-walk cures.
     let x_span = Span::new(80, 81);
     let b_span = Span::new(82, 83);
@@ -2883,104 +3484,69 @@ fn lsp(n: u32) -> Span {
     Span::new(n, n + 1)
 }
 
-/// A bare [`Walker`] over two non-`Copy` params `p` (index 0) and `q` (index 1),
-/// plus one non-param local `z`, for direct calls to [`Walker::join_origin`].
-/// Nothing is walked — only the `bindings` map matters, because that is all
-/// `reach`/`param_root` consult.
-fn lattice_walker(env: &TestEnv) -> Walker<'_, TestEnv> {
-    let mut bindings = HashMap::new();
-    for (i, n) in ["p", "q"].iter().enumerate() {
-        bindings.insert(
-            Symbol::from(*n),
-            BindState {
-                origin: Origin::unconditional(Symbol::from(*n), false),
-                param_idx: Some(i),
-            },
-        );
-    }
-    // A local that roots in NO param — the `reach == None` operand source.
-    bindings.insert(
-        Symbol::from("z"),
-        BindState {
-            origin: Origin::Fresh,
-            param_idx: None,
-        },
-    );
-    Walker {
-        env,
-        bindings,
-        param_modes: vec![Mode::Borrowed; 2],
-        param_flow: vec![ParamFlow::Consumed; 2],
-        param_copy: vec![false; 2],
-        facts: SiteFacts::default(),
-        deps: DepSet::new(),
-        value_uses: HashSet::new(),
-        escaped: Vec::new(),
-    }
-}
-
 /// The representative operand set: every `Origin` SHAPE the walk hands
-/// `join_origin`, crossed with {same param, different param} × {alias,
-/// projection} × {carries links, carries none}. Every element here either is
-/// `Fresh` or roots in a param — the documented no-param-reach exception (row 8:
-/// a container with no param reach joins to `Fresh` and records no link) is a
-/// deliberate asymmetry and is pinned by its own cell below, not folded in here.
+/// [`join_origin`], crossed with {same param, different param} × {alias,
+/// projection} × {carries links, carries none}. Parameter `p` is index 0 and `q`
+/// is index 1. Every element here either is `Fresh` or reaches a param — the
+/// documented no-param-reach exception (row 8: a container with no param reach
+/// joins to `Fresh` and records no link) is a deliberate asymmetry and is pinned
+/// by its own cell below, not folded in here.
 fn lattice_operands() -> Vec<(&'static str, Origin)> {
     vec![
         ("Fresh", Origin::Fresh),
         (
             "Uncond(p,alias)",
-            Origin::unconditional(Symbol::from("p"), false),
+            Origin::unconditional(Symbol::from("p"), 0, false),
         ),
         (
             "Uncond(p,proj)",
-            Origin::unconditional(Symbol::from("p"), true),
+            Origin::unconditional(Symbol::from("p"), 0, true),
         ),
         (
             "Uncond(q,alias)",
-            Origin::unconditional(Symbol::from("q"), false),
+            Origin::unconditional(Symbol::from("q"), 1, false),
         ),
         (
             "Cond(p,alias,[])",
-            Origin::conditional(Symbol::from("p"), false, vec![]),
+            Origin::conditional_set(vec![0], false, vec![]),
         ),
         (
             "Cond(p,alias,[1])",
-            Origin::conditional(Symbol::from("p"), false, vec![lsp(1)]),
+            Origin::conditional_set(vec![0], false, vec![lsp(1)]),
         ),
         (
             "Cond(p,proj,[2])",
-            Origin::conditional(Symbol::from("p"), true, vec![lsp(2)]),
+            Origin::conditional_set(vec![0], true, vec![lsp(2)]),
         ),
         (
             "Cond(q,alias,[3])",
-            Origin::conditional(Symbol::from("q"), false, vec![lsp(3)]),
+            Origin::conditional_set(vec![1], false, vec![lsp(3)]),
         ),
         (
             "Cond(p,alias,[1,4])",
-            Origin::conditional(Symbol::from("p"), false, vec![lsp(1), lsp(4)]),
+            Origin::conditional_set(vec![0], false, vec![lsp(1), lsp(4)]),
         ),
     ]
 }
 
 /// The observable content of an `Origin`, for equality across operand orders.
 ///
-/// Two axes are normalised away, and ONLY these two — both because the design
-/// says they carry no information:
-/// - the `rep`/`root` SYMBOL is a *representative* param-rooted binding (the
-///   `Origin` rustdoc's word); two operands reaching the same param may name it
-///   through different bindings, so the param INDEX is what is compared;
-/// - `cow` is a SET (`union_cow` is order-stable only for readability), so it is
-///   compared sorted.
+/// One axis is normalised away, and only this one: `cow` is a SET (`union_cow`
+/// is order-stable only for readability), so it is compared sorted. The
+/// `Unconditional` root symbol is NOT observable content — it names a live
+/// binding for the provenance fact, not a reach (§20.3).
 ///
-/// The variant, the reached param index, and the projection flag are compared
-/// exactly — those are the three facts a consumer acts on.
-fn lattice_norm(w: &Walker<'_, TestEnv>, o: &Origin) -> (bool, Option<(usize, bool)>, Vec<Span>) {
+/// The variant, the reached param index SET, and the projection flag are
+/// compared exactly — those are the facts a consumer acts on.
+fn lattice_norm(o: &Origin) -> (bool, Vec<usize>, bool, Vec<Span>) {
     let mut cow = o.cow_spans().to_vec();
     cow.sort_by_key(|s| (s.start, s.end));
     (
         matches!(o, Origin::Conditional { .. }),
-        w.reach(o).map(|(i, p, _)| (i, p)),
+        o.params().to_vec(),
+        // The projection flag is only meaningful when the origin reaches a param
+        // at all; a `Fresh` origin's flag is not a claim about anything.
+        o.reaches() && o.projection(),
         cow,
     )
 }
@@ -2992,15 +3558,13 @@ fn join_lattice_is_commutative_over_the_representative_operand_set() {
     // depend on which arm the programmer wrote the may-alias producer in. 0772
     // was precisely that: `match a { Conditional => …, other => other }` read the
     // joined variant off the FIRST operand alone.
-    let env = TestEnv::default();
-    let w = lattice_walker(&env);
     for (na, a) in lattice_operands() {
         for (nb, b) in lattice_operands() {
-            let ab = w.join_origin(a.clone(), b.clone());
-            let ba = w.join_origin(b.clone(), a.clone());
+            let ab = join_origin(a.clone(), b.clone());
+            let ba = join_origin(b.clone(), a.clone());
             assert_eq!(
-                lattice_norm(&w, &ab),
-                lattice_norm(&w, &ba),
+                lattice_norm(&ab),
+                lattice_norm(&ba),
                 "join_origin must be commutative: join({na}, {nb}) = {ab:?} but \
                  join({nb}, {na}) = {ba:?}"
             );
@@ -3014,8 +3578,6 @@ fn join_lattice_preserves_the_union_of_both_operands_link_sets() {
     // value carries every may-alias link either operand carried, so the terminal
     // projection-out (row 6) discharges whichever arm ran. Monotone — the set
     // only ever grows along a chain.
-    let env = TestEnv::default();
-    let w = lattice_walker(&env);
     for (na, a) in lattice_operands() {
         for (nb, b) in lattice_operands() {
             for (x, y, nx, ny) in [
@@ -3023,7 +3585,7 @@ fn join_lattice_preserves_the_union_of_both_operands_link_sets() {
                 (b.clone(), a.clone(), nb, na),
             ] {
                 let expected = union_cow(x.cow_spans(), y.cow_spans());
-                let joined = w.join_origin(x.clone(), y.clone());
+                let joined = join_origin(x.clone(), y.clone());
                 for link in &expected {
                     assert!(
                         joined.cow_spans().contains(link),
@@ -3044,8 +3606,6 @@ fn join_lattice_variant_is_the_top_ward_of_both_operands() {
     // `Conditional` operand in the SECOND position was silently discarded, so
     // `Cond(p,alias,[])` joined with `Uncond(p,alias)` produced a hard claim in
     // one order and a may-alias in the other.
-    let env = TestEnv::default();
-    let w = lattice_walker(&env);
     for (na, a) in lattice_operands() {
         for (nb, b) in lattice_operands() {
             let either_conditional =
@@ -3057,7 +3617,7 @@ fn join_lattice_variant_is_the_top_ward_of_both_operands() {
                 (a.clone(), b.clone(), na, nb),
                 (b.clone(), a.clone(), nb, na),
             ] {
-                let joined = w.join_origin(x, y);
+                let joined = join_origin(x, y);
                 // `Fresh` is the one legal weakening: when NEITHER operand reaches
                 // a param there is no aliased param to over-claim (row 8).
                 assert!(
@@ -3072,23 +3632,25 @@ fn join_lattice_variant_is_the_top_ward_of_both_operands() {
 
 #[test]
 fn join_lattice_no_param_reach_drops_the_link_set_by_design() {
-    // The documented asymmetry, pinned so it stays deliberate: a `Conditional`
-    // whose `rep` roots in NO param joins to `Fresh` and its links are NOT
+    // The documented asymmetry, pinned so it stays deliberate: a link-carrying
+    // origin that reaches NO param joins to `Fresh` and its links are NOT
     // carried. That is row 8's own rule (`walk_apply`'s `MayAliasOf` arm: "a
     // container with NO param reach joins to `Fresh` — no aliased param can be
     // double-dec'd, so no link is recorded"), not an oversight of the 0772 fix:
     // a link set exists to force a protect on a param the consumer would
     // otherwise double-dec, and there is no such param here.
-    let env = TestEnv::default();
-    let w = lattice_walker(&env);
-    // `z` is a non-param local ⇒ `reach` is `None` for both operands.
-    let orphan = Origin::conditional(Symbol::from("z"), false, vec![lsp(9)]);
+    //
+    // Since §20.3 the reach is an index set, so "reaches no param" is the EMPTY
+    // set — the walk never mints one (every `conditional_set` call site passes a
+    // non-empty set), which is why this is a seam cell on `join_origin`'s
+    // contract rather than a shape the walk can hand it.
+    let orphan = Origin::conditional_set(vec![], false, vec![lsp(9)]);
     for (x, y) in [
         (orphan.clone(), Origin::Fresh),
         (Origin::Fresh, orphan.clone()),
         (orphan.clone(), orphan.clone()),
     ] {
-        let joined = w.join_origin(x, y);
+        let joined = join_origin(x, y);
         assert!(
             matches!(joined, Origin::Fresh),
             "a join with no param reach is Fresh, links included: got {joined:?}"
@@ -3099,17 +3661,116 @@ fn join_lattice_no_param_reach_drops_the_link_set_by_design() {
     for (x, y) in [
         (
             orphan.clone(),
-            Origin::unconditional(Symbol::from("p"), false),
+            Origin::unconditional(Symbol::from("p"), 0, false),
         ),
         (
-            Origin::unconditional(Symbol::from("p"), false),
+            Origin::unconditional(Symbol::from("p"), 0, false),
             orphan.clone(),
         ),
     ] {
-        let joined = w.join_origin(x, y);
+        let joined = join_origin(x, y);
         assert!(
             joined.cow_spans().contains(&lsp(9)),
             "a param-reaching join carries the orphan operand's links: got {joined:?}"
         );
+    }
+}
+
+// spec: design/typecheck/ownership-inference.md §19.3 — the join is set UNION,
+// so it is IDEMPOTENT: joining a value with itself changes nothing a consumer
+// reads. Under the retired representative rule this held only accidentally (one
+// index in, one index out); with a set it is what makes repeated visits of the
+// same body stop changing the summary, which is the termination argument's
+// operative half.
+#[test]
+fn join_lattice_is_idempotent() {
+    for (na, a) in lattice_operands() {
+        let joined = join_origin(a.clone(), a.clone());
+        assert_eq!(
+            lattice_norm(&joined),
+            lattice_norm(&a),
+            "join({na}, {na}) = {joined:?} must observe as {a:?}"
+        );
+    }
+}
+
+// spec: design/typecheck/ownership-inference.md §19.3 — the join is ASSOCIATIVE,
+// so the order a multi-arm `Match` or a `VecLit` element fold accumulates in does
+// not change the answer. `walk` folds those left-to-right over an accumulator,
+// which is exactly the shape this property protects.
+#[test]
+fn join_lattice_is_associative() {
+    for (na, a) in lattice_operands() {
+        for (nb, b) in lattice_operands() {
+            for (nc, c) in lattice_operands() {
+                let left = join_origin(join_origin(a.clone(), b.clone()), c.clone());
+                let right = join_origin(a.clone(), join_origin(b.clone(), c.clone()));
+                assert_eq!(
+                    lattice_norm(&left),
+                    lattice_norm(&right),
+                    "join(join({na}, {nb}), {nc}) = {left:?} but \
+                     join({na}, join({nb}, {nc})) = {right:?}"
+                );
+            }
+        }
+    }
+}
+
+// spec: design/typecheck/ownership-inference.md §19.2, §19.3 — two DISTINCT
+// reaching parameters collapse to the axis's ⊤ at publication, and the reach set
+// is what carries both of them to that boundary. The retired rule kept the
+// lowest index and dropped the other; this is the cell that reddens if a
+// representative is reintroduced anywhere on the join path.
+#[test]
+fn join_lattice_two_distinct_reaching_params_publish_the_result_top() {
+    for (x, y) in [
+        (
+            Origin::unconditional(Symbol::from("p"), 0, false),
+            Origin::unconditional(Symbol::from("q"), 1, false),
+        ),
+        (
+            Origin::conditional_set(vec![0], false, vec![lsp(1)]),
+            Origin::unconditional(Symbol::from("q"), 1, false),
+        ),
+        (
+            Origin::unconditional(Symbol::from("p"), 0, true),
+            Origin::conditional_set(vec![1], false, vec![lsp(3)]),
+        ),
+    ] {
+        for (a, b) in [(x.clone(), y.clone()), (y.clone(), x.clone())] {
+            let joined = join_origin(a, b);
+            assert_eq!(
+                joined.params(),
+                [0, 1],
+                "the join must carry BOTH reaching params: got {joined:?}"
+            );
+            assert_eq!(
+                origin_to_result_mode(&joined),
+                ResultMode::MayAliasAny,
+                "and publish the axis ⊤ for them: got {joined:?}"
+            );
+        }
+    }
+}
+
+// spec: design/typecheck/ownership-inference.md §19.2 (regression pin) — the
+// DEFINITE cases stay exactly as precise as they were. Reaching ONE param
+// unconditionally publishes the hard claim; the reach set changes nothing here.
+#[test]
+fn join_lattice_single_reaching_param_keeps_its_definite_claim() {
+    for (projection, expected) in [
+        (false, ResultMode::AliasOf(0)),
+        (true, ResultMode::ProjectionOf(0)),
+    ] {
+        let joined = join_origin(
+            Origin::unconditional(Symbol::from("p"), 0, projection),
+            Origin::unconditional(Symbol::from("p"), 0, projection),
+        );
+        assert!(
+            matches!(joined, Origin::Unconditional { .. }),
+            "same param, same kind, neither operand conditional ⇒ still definite: \
+             got {joined:?}"
+        );
+        assert_eq!(origin_to_result_mode(&joined), expected);
     }
 }

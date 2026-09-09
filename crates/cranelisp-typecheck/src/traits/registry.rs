@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
 use cranelisp_types::{
-    CranelispError, ErrorLocation, FQTraitName, Scheme, Span, Symbol, TraitDecl, TraitMethodKind,
-    TraitMethodSig, TraitName, Type, TypeId, Visibility,
+    Binding, CranelispError, Decl, ErrorLocation, FQTraitName, Scheme, Span, Symbol, TraitDecl,
+    TraitMethodKind, TraitMethodRecord, TraitMethodSig, TraitName, TraitRecord, Type, TypeId,
+    Visibility,
 };
 
 use super::*;
@@ -98,8 +99,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // mirroring `deftype`; retry-from-top contract, S86 D3); a genuinely-
         // DIFFERENT same-module redeclaration of the name is rejected (spec
         // 07-traits §7.1 duplicate-trait rule, preserved for real conflicts).
-        if let Some(cranelisp_types::ModuleEntry::TraitDecl { info: existing, .. }) =
-            self.probe_module_entry_owned(&state.current_module, decl.name.as_ref())
+        if let Some(Binding {
+            declaration: Decl::Trait(TraitRecord { info: existing, .. }),
+            ..
+        }) = self.probe_module_entry_owned(&state.current_module, decl.name.as_ref())
         {
             if trait_decl_matches(&existing, decl) {
                 // Idempotent retry-from-top re-submission — already registered
@@ -250,26 +253,32 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     decl.visibility,
                     decl.span,
                 )
-                .map(|entry| (method.name.clone(), entry))
+                .map(|record| (method.name.clone(), record))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        for (name, entry) in method_entries {
-            self.current_symbol_table_mut(state).insert(name, entry);
+        for (name, record) in method_entries {
+            self.current_symbol_table_mut(state)
+                .install_trait_method(name, record, decl.visibility)
+                .map_err(crate::result::lifecycle_error)?;
         }
 
         // Register in symbol table as TraitDecl entry
-        self.current_symbol_table_mut(state).insert(
-            Symbol::from(decl.name.as_ref()),
-            cranelisp_types::ModuleEntry::TraitDecl {
-                info: cranelisp_types::TraitDeclInfo {
-                    name: decl.name.clone(),
-                    type_params: decl.type_params.clone(),
-                    methods,
-                },
-                visibility: decl.visibility,
-                docstring: decl.docstring.clone(),
-            },
-        );
+        self.current_symbol_table_mut(state)
+            .install_binding(
+                Symbol::from(decl.name.as_ref()),
+                Binding::new(
+                    Decl::Trait(TraitRecord::new(
+                        cranelisp_types::TraitDeclInfo {
+                            name: decl.name.clone(),
+                            type_params: decl.type_params.clone(),
+                            methods,
+                        },
+                        decl.docstring.clone(),
+                    )),
+                    decl.visibility,
+                ),
+            )
+            .map_err(crate::result::lifecycle_error)?;
 
         Ok(())
     }
@@ -351,41 +360,43 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
             // Register the method name as a symbol with trait_origin. The method
             // inherits the trait's visibility (I-1 — see `register_trait_decl`).
-            let mut builder = cranelisp_types::ModuleEntry::def(
-                method_scheme,
-                cranelisp_types::DefKind::UserFn {
-                    fn_state: cranelisp_types::UserFnState::NotDetermined,
-                },
-            )
-            .visibility(decl.visibility)
-            .param_names(method.params.iter().map(|(n, _)| n.clone()).collect())
-            .trait_origin(fq_trait_name.clone());
-            if let Some(doc) = method.docstring.clone() {
-                builder = builder.docstring(doc);
-            }
-            method_entries.push((method.name.clone(), builder.build()));
+            method_entries.push((
+                method.name.clone(),
+                TraitMethodRecord::new(
+                    method_scheme,
+                    method.params.iter().map(|(n, _)| n.clone()).collect(),
+                    method.docstring.clone(),
+                    fq_trait_name.clone(),
+                ),
+            ));
 
             // trait_origin is already set on the ModuleEntry::Def above,
             // so no separate reverse lookup registration is needed.
         }
 
-        for (name, entry) in method_entries {
-            self.current_symbol_table_mut(state).insert(name, entry);
+        for (name, record) in method_entries {
+            self.current_symbol_table_mut(state)
+                .install_trait_method(name, record, decl.visibility)
+                .map_err(crate::result::lifecycle_error)?;
         }
 
         // Register in symbol table as TraitDecl entry (with hkt_param_index)
-        self.current_symbol_table_mut(state).insert(
-            Symbol::from(decl.name.as_ref()),
-            cranelisp_types::ModuleEntry::TraitDecl {
-                info: cranelisp_types::TraitDeclInfo {
-                    name: decl.name.clone(),
-                    type_params: decl.type_params.clone(),
-                    methods,
-                },
-                visibility: decl.visibility,
-                docstring: decl.docstring.clone(),
-            },
-        );
+        self.current_symbol_table_mut(state)
+            .install_binding(
+                Symbol::from(decl.name.as_ref()),
+                Binding::new(
+                    Decl::Trait(TraitRecord::new(
+                        cranelisp_types::TraitDeclInfo {
+                            name: decl.name.clone(),
+                            type_params: decl.type_params.clone(),
+                            methods,
+                        },
+                        decl.docstring.clone(),
+                    )),
+                    decl.visibility,
+                ),
+            )
+            .map_err(crate::result::lifecycle_error)?;
 
         Ok(())
     }
@@ -399,9 +410,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         method: &TraitMethodSig,
         type_var_id: TypeId,
         trait_type_params: &[Symbol],
-        visibility: Visibility,
+        _visibility: Visibility,
         span: Span,
-    ) -> Result<cranelisp_types::ModuleEntry<C>, CranelispError> {
+    ) -> Result<TraitMethodRecord, CranelispError> {
         let method_type =
             self.build_method_type(state, method, type_var_id, trait_type_params, span)?;
 
@@ -410,34 +421,29 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         let mut constraints = HashMap::new();
         constraints.insert(type_var_id, vec![fq_trait_name.clone()]);
+        let mut type_vars: Vec<TypeId> = cranelisp_types::free_vars(&method_type)
+            .into_iter()
+            .collect();
+        type_vars.sort();
 
         let method_scheme = Scheme {
-            type_vars: vec![type_var_id],
+            type_vars,
             constraints,
             ty: method_type,
         };
 
         // Register the method name as a symbol with trait_origin. The method
         // inherits the trait's visibility (I-1 — see `register_trait_decl`).
-        let mut builder = cranelisp_types::ModuleEntry::def(
+        Ok(TraitMethodRecord::new(
             method_scheme,
-            cranelisp_types::DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::NotDetermined,
-            },
-        )
-        .visibility(visibility)
-        .param_names(
             method
                 .params
                 .iter()
                 .map(|(n, _)| n.clone())
                 .collect::<Vec<_>>(),
-        )
-        .trait_origin(fq_trait_name);
-        if let Some(doc) = method.docstring.clone() {
-            builder = builder.docstring(doc);
-        }
-        Ok(builder.build())
+            method.docstring.clone(),
+            fq_trait_name,
+        ))
     }
 
     /// Build the function type for a trait method.

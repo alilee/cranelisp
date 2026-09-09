@@ -4,9 +4,9 @@
 //!
 //! `ParsedEntry` and `DefmacroInfo` are NOT persisted to the cache and
 //! NEVER land in `SymbolTable`. The lifecycle is bounded by one orchestrator
-//! iteration: `parse → ParsedEntry → check_form → Vec<(Symbol,
-//! ModuleEntry)> → SymbolTable.insert`. The SymbolTable invariant ("if it's
-//! in the table, it's checked") is preserved.
+//! iteration: `parse → ParsedEntry → check_form → checked Binding recipes →
+//! SymbolTable funnels`. The SymbolTable invariant ("if it's in the table,
+//! it's checked") is preserved.
 //!
 //! Per FIXME 0156 resolution (Sprint 66 Phase 3).
 
@@ -17,7 +17,7 @@ use crate::{
 
 /// Parse-time-only transient. Carries only what the parser knows;
 /// resolved-stage fields (type, scheme, callees, code, got_slot) are
-/// populated by `check_form` downstream and end up on `ModuleEntry`.
+/// populated by `check_form` downstream and end up on a checked [`crate::Binding`].
 /// NEVER lands in `SymbolTable`.
 #[non_exhaustive]
 #[derive(Debug, Clone)]
@@ -60,21 +60,14 @@ pub enum ParsedEntry {
     TraitDecl { decl: TraitDecl },
     /// Parsed `(impl Trait Type method-defns…)` form.
     TraitImpl { impl_: TraitImpl },
-    /// Parsed `(defmacro name clauses…)` form. Each clause downstream becomes
-    /// a `Def { kind: UserFn }` body under the mangled name
-    /// `{macro-name}$clause-{N}` (via `synthesize_macro_clause_defn`), with a
-    /// parent `Def { kind: DefKind::Macro { clauses_meta } }` holding the
-    /// dispatcher's pattern-match metadata only. Per-symbol source / sexp /
-    /// expanded / clif_ir / disasm / code_size live on the integration-layer
-    /// `Introspection` record (Decision 41), symmetric with all other Def
-    /// variants. See `DefKind::Macro` rustdoc in `module.rs` for the unified
-    /// shape and the cache-hit residual-gap discussion; the prior sibling
-    /// `ModuleEntry::Macro` variant retires in the S69 concurrency-cluster
-    /// /dev brief.
+    /// Parsed `(defmacro name clauses…)` form. Downstream checking uses
+    /// temporary local names to reuse the ordinary body checker, then publishes
+    /// one `Decl::Macro` whose ordered clauses own those checked callable arms.
+    /// The temporary names never enter the module symbol table or cache.
     Macro { info: DefmacroInfo },
     /// Synthetic per-constructor entry — emitted by `build_form` for each
     /// constructor of a `TypeDef`. Pre-typecheck shape; `check_form` lifts
-    /// to a `ModuleEntry::Def` with primitive-kind constructor metadata.
+    /// to a callable with `CallableOrigin::Ctor` metadata.
     Constructor {
         name: Symbol,
         of_type: TypeName,
@@ -92,17 +85,11 @@ pub enum ParsedEntry {
 /// this canonical shape.
 ///
 /// Carries `body_sexp` per clause because the frontend's
-/// `synthesize_macro_clause_defn` consumes it after parsing to produce the
-/// per-clause `defn` Sexp. The canonical resolved-stage shape (after macro
-/// codegen) is `Def { kind: DefKind::Macro { clauses_meta: Vec<MacroClauseInfo> } }`
-/// parent + N `Def { kind: UserFn }` clause bodies under
-/// `{macro-name}$clause-{N}` names — `MacroClauseInfo` carries no body because
-/// each clause body lives as its own GOT-dispatched Def. Per-symbol source /
-/// sexp / clif_ir / disasm / code_size live on the integration-layer
-/// `Introspection` record per Decision 41 (NOT on the parent Def variant —
-/// symmetric across all DefKinds). See `design/arch/bounded-contexts.md` §7
-/// §"DefKind" `DefKind::Macro` for the unified shape; the prior sibling
-/// `ModuleEntry::Macro` variant retires in the S69 concurrency-cluster /dev brief.
+/// `synthesize_macro_clause_defn` consumes it after parsing to produce a
+/// temporary per-clause `defn` Sexp. After checking, the canonical resolved
+/// shape is one `Decl::Macro` with ordered `MacroClause` records, each owning
+/// its executable `CallableArm`; only the authored macro name is a module
+/// binding. See `design/arch/bounded-contexts.md` §7.
 #[non_exhaustive]
 #[derive(Clone, Debug)]
 pub struct DefmacroInfo {

@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use cranelisp_types::{
-    ConcreteType, FQSymbol, JitSymbol, Mode, ModeSummary, ModuleFullPath, MonoExpr, ParamFlow,
+    CallableTarget, ConcreteType, FQSymbol, Mode, ModeSummary, ModuleFullPath, MonoExpr, ParamFlow,
     ResultMode, Span, Symbol,
 };
 
@@ -62,7 +62,10 @@ fn call(name: &str, args: Vec<MonoExpr>) -> MonoExpr {
         args,
         span: s(),
         resolved_call: Some(Box::new(cranelisp_types::ResolvedCall::SigDispatch {
-            mangled_name: JitSymbol::from(name),
+            target: CallableTarget::Binding(FQSymbol {
+                module: ModuleFullPath::from("user"),
+                symbol: Symbol::from(name),
+            }),
         })),
         ty: ConcreteType::String,
         escapes: None,

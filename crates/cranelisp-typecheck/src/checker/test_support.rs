@@ -269,7 +269,17 @@ impl TestFixture {
             &self.module_aliases,
             &self.prelude_fallback,
         );
-        env.infer_expr(&mut self.state, expr)
+        let ty = env.infer_expr(&mut self.state, expr)?;
+        if let Err(error) = env.settle_body_work(
+            &mut self.state,
+            expr,
+            crate::candidate_selection::BodySettlementScope::TopLevel,
+        ) {
+            self.state.body_frame.pending_name_uses.clear();
+            self.state.body_frame.pending_pattern_uses.clear();
+            return Err(error);
+        }
+        Ok(env.apply_subst(&self.state, &ty))
     }
 
     /// Run the value-position trait-method resolution post-pass over an
@@ -331,11 +341,13 @@ impl TestFixture {
         module_path: &ModuleFullPath,
         name: &TypeName,
     ) -> Option<String> {
-        match self
+        let binding = self
             .env()
-            .resolve_entry_in_module(module_path, name.as_ref())?
-        {
-            ModuleEntry::TypeDef { docstring, .. } => docstring,
+            .resolve_entry_in_module(module_path, name.as_ref())?;
+        match &binding.declaration {
+            cranelisp_types::Decl::Type(cranelisp_types::TypeRecord::Defined {
+                docstring, ..
+            }) => docstring.clone(),
             _ => None,
         }
     }
@@ -544,7 +556,7 @@ impl TestFixture {
 
     /// Cluster-atomic resolution of a self-qualified type ref (FIXME 0362).
     ///
-    /// Registers `(deftype Box [:a v])` into an in-progress **staging** table
+    /// Registers `(deftype (Box a) [:a v])` into an in-progress **staging** table
     /// for module `t` — leaving the COMMITTED `self.modules["t"]` empty, exactly
     /// the mid-cluster state where `Box` is built but not yet committed. Then
     /// resolves `texpr` against `t` through a staging-aware `TypeCheckEnv`
@@ -707,9 +719,16 @@ impl TestFixture {
     ) -> std::collections::HashMap<Span, cranelisp_types::ResolvedCall> {
         let mut out = std::collections::HashMap::new();
         for (_name, entry) in self.symbol_table().all_symbols() {
-            if let cranelisp_types::ModuleEntry::Def {
-                ast: Some(variant), ..
-            } = entry
+            if let Some(variant) = entry
+                .callable()
+                .and_then(|callable| match &callable.arm.life {
+                    cranelisp_types::Life::Concrete { ast, .. } => ast.as_ref(),
+                    cranelisp_types::Life::Template {
+                        body: cranelisp_types::TemplateBody::Ast(variant),
+                        ..
+                    } => Some(variant),
+                    _ => None,
+                })
             {
                 collect_resolutions_from_expr(&variant.body, &mut out);
             }
@@ -734,16 +753,15 @@ impl TestFixture {
     pub fn constrained_fn_names_set(&self) -> std::collections::HashSet<Symbol> {
         self.symbol_table()
             .all_symbols()
-            .filter_map(|(name, entry)| {
-                if let cranelisp_types::ModuleEntry::Def { kind, .. } = entry
-                    && let cranelisp_types::DefKind::UserFn {
-                        fn_state: cranelisp_types::UserFnState::Constrained(_),
-                    } = kind.as_ref()
-                {
-                    return Some(name.clone());
-                }
-                None
-            })
+            .filter_map(
+                |(name, entry)| match entry.callable().map(|c| &c.arm.life) {
+                    Some(cranelisp_types::Life::Template {
+                        kind: cranelisp_types::TemplateKind::Constrained(_),
+                        ..
+                    }) => Some(name.clone()),
+                    _ => None,
+                },
+            )
             .collect()
     }
 
@@ -761,18 +779,13 @@ impl TestFixture {
         self.symbol_table()
             .all_symbols()
             .filter_map(|(name, entry)| {
-                if let cranelisp_types::ModuleEntry::Def { kind, .. } = entry
-                    && let cranelisp_types::DefKind::UserFn { fn_state } = kind.as_ref()
-                    && !matches!(fn_state, cranelisp_types::UserFnState::Constrained(_))
-                {
-                    let s = name.as_ref();
-                    if let Some(dollar) = s.find('$')
-                        && !s[..dollar].contains('.')
-                    {
-                        return Some(name.clone());
-                    }
+                let callable = entry.callable()?;
+                if !matches!(callable.arm.life, cranelisp_types::Life::Concrete { .. }) {
+                    return None;
                 }
-                None
+                let s = name.as_ref();
+                let dollar = s.find('$')?;
+                (!s[..dollar].contains('.')).then(|| name.clone())
             })
             .collect()
     }

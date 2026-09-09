@@ -15,7 +15,7 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 
 use cranelisp_types::{
-    CranelispError, DefKind, Defn, ErrorLocation, ModuleEntry, Span, Symbol, SymbolTables,
+    CallableOrigin, CranelispError, Defn, ErrorLocation, Span, Symbol, SymbolTables,
     got_data_symbol_name,
 };
 
@@ -60,41 +60,14 @@ fn register_platform_effect_symbols<C, L>(
 {
     for table in symbol_tables.iter() {
         for (name, entry) in table.value().all_symbols() {
-            match entry {
-                // Direct def: a PlatformEffect with a populated slot in this
-                // module's own GOT.
-                ModuleEntry::Def { kind, .. }
-                    if matches!(kind.as_ref(), DefKind::PlatformEffect { .. }) =>
-                {
-                    // The platform effect's GOT slot now rides on the
-                    // `DefKind::PlatformEffect` variant (S83 reshape, FIXME 0358).
-                    if let DefKind::PlatformEffect { got_slot, .. } = kind.as_ref() {
-                        let ptr = table.value().got.load_slot(*got_slot);
-                        if !ptr.is_null() {
-                            builder.symbol(name.as_ref().to_string(), ptr);
-                        }
-                    }
+            if entry.callable().is_some_and(|callable| {
+                matches!(callable.origin, CallableOrigin::PlatformEffect { .. })
+            }) && let Some(slot) = entry.callable_got_slot()
+            {
+                let ptr = table.value().got.load_slot(slot);
+                if !ptr.is_null() {
+                    builder.symbol(name.as_ref().to_string(), ptr);
                 }
-                // Imported def: follow the edge to the defining table and
-                // register the platform fn from the source module's GOT.
-                ModuleEntry::Import { source, .. } => {
-                    if let Some(source_table) = symbol_tables.get(&source.module)
-                        && let Some(ModuleEntry::Def { kind, .. }) =
-                            source_table.get(source.symbol.as_ref())
-                        && let DefKind::PlatformEffect { got_slot, .. } = kind.as_ref()
-                    {
-                        // The JIT linker name is the defining module's symbol
-                        // key (the canonical jit-name), not the importing
-                        // module's local alias — backend emits the `Import`
-                        // against the source name. The slot rides on the
-                        // `PlatformEffect` variant (S83 reshape, FIXME 0358).
-                        let ptr = source_table.got.load_slot(*got_slot);
-                        if !ptr.is_null() {
-                            builder.symbol(source.symbol.as_ref().to_string(), ptr);
-                        }
-                    }
-                }
-                _ => {}
             }
         }
     }

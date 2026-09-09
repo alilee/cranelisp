@@ -347,8 +347,8 @@ Static integrity:
 The exact **Sprint-117 in-scope expected failing-not-ignored set** for the full
 gate is:
 
-1. `tests/spec_11_stdlib.rs::def_definition_echo_names_user_binding_not_internal_thunk`;
-2. `tests/spec_11_stdlib.rs::def_info_and_sig_describe_bound_value_not_macro`.
+1. `tests/spec_11_stdlib.rs::def_definition_echo_lists_every_emitted_definition_in_order`;
+2. `tests/spec_11_stdlib.rs::def_info_and_sig_describe_macro_while_bare_use_expands_value`.
 
 FIXME 0859 adds no expected RED: its Projection production-artifact witness
 does not yet exist, while all committed R-2 witnesses must remain GREEN. The

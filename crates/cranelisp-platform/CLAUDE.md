@@ -27,15 +27,22 @@ All heap `CL*` wrappers store **base pointers** (address of the
 
 ## ABI_VERSION is the single layout-discipline gate (Principle 14)
 
-`ABI_VERSION` (currently **9**, `lib.rs:298`) is the only host↔DLL compatibility
+`ABI_VERSION` (currently **10**) is the only host↔DLL compatibility
 mechanism — there is no `#[non_exhaustive]` on any `#[repr(C)]`/`#[repr(transparent)]`
 boundary type (they are exempt; a field change IS a breaking change → bump). The
 bump-rule enumeration lives in the `ABI_VERSION` rustdoc; read it before touching any
-layout. **History caveat**: the numeric version and the doc "v4 async-leaf" label
-diverge — v7 (`lib.rs:252`) is "the ABI-v4 cascade, recorded numerically as 6→7."
+layout. A node layout is ABI-governed when a DLL constructs or reads it. Thus
+`Pure` and `Effect` changes require a bump; host-only `EffectPoll`, `Launch`, and
+`Select` changes do not. **History caveat**: the numeric version and the doc
+"v4 async-leaf" label diverge — v7 is "the ABI-v4 cascade, recorded numerically as 6→7."
 Do not read "v4" in effect-concurrency docs as a numeric ABI version.
 
-## Effect-node layout is append-only; offsets never move
+## DLL-visible IO-node layouts are append-only; offsets never move
+
+The IO Pure node payload is `[tag][payload][payload_glue]` = 24 bytes.
+`IO_PURE_GLUE_OFFSET` is payload-relative 16 (absolute base+32). A DLL writes
+only the unpublished `0` sentinel; the backend crossing adopts it as scalar `0`
+or canonical `drop<T>`, and the runtime claims it after publication.
 
 The IO Effect node payload is `[tag][thunk_ptr][resource_token][fn_name_handle][capacity]`
 = 40 bytes, built by `effect_on_resource_with_capacity` (`lib.rs:1028`). Offsets are
@@ -43,8 +50,8 @@ The IO Effect node payload is `[tag][thunk_ptr][resource_token][fn_name_handle][
 `IO_EFFECT_RESOURCE_OFFSET`=16, `IO_EFFECT_FN_NAME_OFFSET`=24 (backend stamps this
 post-call; DLL inits it **null** — a null handle degrades to `fn_name: "<unknown>"`,
 not a crash), `IO_EFFECT_CAPACITY_OFFSET`=32 all stay put. A new field appends; nothing
-reorders. Node layout is an **in-process** backend↔intrinsics convention — widening it
-is NOT an `ABI_VERSION` bump (host + DLLs rebuild together).
+reorders. Because DLLs construct `Pure` and `Effect`, widening either is an
+`ABI_VERSION` bump. Host-only nodes remain backend↔intrinsics conventions.
 
 **DLL-local fault catch (FIXME 0327 Option A, `lib.rs:975`).** The `catch_unwind` in
 the effect thunk runs INSIDE the DLL (monomorphised at the `CLIO::effect*` call site),
@@ -81,10 +88,15 @@ raw `name:` literal (§5.5.5): the GOT `__cranelisp_got_platform_<name>`, the ma
 - `extract_layout_hash` (`declare.rs:33`) is a `const fn` byte-scanner for the
   `;; layout-hash:` header — matches the EXACT marker (`;; layout-hash:` with the space,
   with the colon); near-misses return `""`, and `""` is tolerated (first-build).
+- With `schema:`, an optional `adts:` list emits documented marker types and
+  `CLAdtType` implementations. Its const `schema_declares_type` check accepts
+  bare fully-qualified keys only and proves each key is an entry in those exact
+  embedded bytes. The scanner and runtime parser cite each other; any artifact
+  grammar change must update both readers.
 
 ## Schema is a GENERATED artifact, read by name, callback-free
 
-Platforms **do not declare ADTs** (the Sprint 71 marker-type DSL is retired, FIXME 0286).
+Platforms do not declare ADT layouts (the Sprint 71 layout DSL is retired, FIXME 0286).
 A DLL embeds the `/platform-schema`-generated artifact via `include_str!`; the macro
 parses it once into a per-DLL `Schema` (`schema.rs`) installed as the process-global
 `GLOBAL_SCHEMA` (`adt.rs:90`, `OnceLock`). `CLAdt::read_field` (`adt.rs:185`) resolves
@@ -125,8 +137,8 @@ Don't relax it for "performance."
 | `declare.rs` | `declare_platform!` + `extract_layout_hash` | inline `#[cfg(test)] mod tests` (`declare.rs:465`) |
 | `schema.rs` | generated-artifact parser + lookups | `src/schema/tests.rs` |
 | `adt.rs` | `CLAdt<T>`, `CLTypeWitness`, field-by-name | `src/adt/tests.rs` |
-| `concurrency.rs` | host-reactor C-ABI (`HostCtx`/`Waker`/`PollFn`) — pure `#[repr(C)]` | inline `mod tests` (`concurrency.rs:133`) — LAYOUT-STABILITY pins (offset/size/align) |
-| `poll_support.rs` | poll-leaf ergonomics (`PollEnv`/`Reactor`/`PollState`) | inline `mod tests` (`poll_support.rs:254`) |
+| `concurrency.rs` | host-reactor C-ABI (`HostCtx`/`Waker`/`PollFn`) — pure `#[repr(C)]` | inline `mod tests` — LAYOUT-STABILITY pins (offset/size/align) |
+| `poll_support.rs` | poll-leaf ergonomics (`PollEnv`/`Reactor`/`PollState`) | inline `mod tests` |
 
 The crate-root `src/tests.rs` is intentionally a **single flat marshaling-boundary file**
 (audit-blessed one-concern, S106 — not split per the S101 reorg). Additionally,
@@ -139,9 +151,6 @@ this crate, distinct from the project-root `tests/` owned by `/qa`.
 - **`inc_rc`/`dec_rc`, not `rc_inc`/`rc_dec`** — intentional, matches the historical
   `cranelisp-intrinsics` name (audit F5, `lib.rs:1234`); renaming triggers a consumer
   cascade, deferred.
-- **`poll_support.rs` module doc still says "concurrency-gated"** (`poll_support.rs:1`)
-  — stale phrasing; the `concurrency` feature is RETIRED (single-ABI cutover, S96;
-  `Cargo.toml` has no `[features]`). The suite is CORE/ungated per `lib.rs:159`.
 - **`HostContext` has no `Default`, `CLOwned` no `into_inner`, `CLType` is `to_raw`-only**
   — deliberate deletions of speculative facade items (audits F1/F2/F7, S67/S71); source
   is authoritative, do not re-add.

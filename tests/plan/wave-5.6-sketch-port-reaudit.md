@@ -231,7 +231,7 @@ Of the 5 GAP-COVER findings, 2 are REGRESSION-GUARD (negative / boundary-shape r
 | 56 | `sketch_adt_match_wildcard` | spec/06 §6.2.3 — wildcard catch-all (batch) | `(is-red Red)+(is-red Blue)`=1 | COVERED | `spec_06_pattern_matching.rs::pattern_wildcard_catchall` covers the wildcard shape |
 | 57 | `sketch_adt_match_var_pattern` | spec/06 §6.2.4 — variable pattern bound (batch) | identity-via-var-pattern; outer match selects | COVERED | `spec_06_pattern_matching.rs::pattern_variable_binds_value` + `spec_06_pattern_matching.rs::pattern_int_match_with_wildcard` cover var-pattern semantics |
 | 58 | `sketch_adt_nested_match` | spec/06 §6.2 — nested match arms (match inside match arm body) | `(add-options (Some 10) (Some 32))`=42 | **GAP-COVER** | Nested-match (match inside another match's arm body) is a distinct integration angle from the flat patterns covered in `spec_06_pattern_matching.rs`. Match-arm-as-tail-position is partially covered by `spec_12_runtime.rs::tco_match_tail_position` (TCO-focused, ignored); the value-flow nesting angle is not carried. Recommended target: `tests/spec_06_pattern_matching.rs::nested_match_in_arm_body`. Cite spec/06 §6.2 |
-| 59 | `sketch_adt_shortcut_syntax` | spec/05 §5.2 — bare-field-name shortcut (`[first second]`) | `(deftype Pair [first second])` no `:Int` annotation | **GAP-COVER** | The shortcut-syntax angle (fresh type vars assigned to bare field names, in lieu of `:Int`/`:a`) is a distinct deftype shape from the explicitly-annotated forms covered in `spec_05_definitions.rs::deftype_product_construct_and_destructure`. Not carried forward. Recommended target: `tests/spec_05_definitions.rs::deftype_product_shortcut_field_names`. Cite spec/05 §5.2 |
+| 59 | `sketch_adt_shortcut_syntax` | spec/05 §5.2.4 — field types must be explicit | `(deftype Pair [first second])` no `:Int` annotation | **SUPERSEDED — REJECTED** | Current authority rejects omitted field types. `tests/spec_05_definitions.rs::deftype_omitted_field_types_rejected_without_partial_registration_neg` is the exact negative; `deftype_bare_head_rejects_undeclared_field_type_variable_neg` pins the related undeclared-type-variable case. |
 
 #### Cluster J — REPL ADT (tests 60-63, lines 870-912)
 
@@ -335,10 +335,9 @@ For each: name + target file + rationale.
    value-flow integration angle from flat patterns. Recommended target:
    `nested_match_in_arm_body`. Cite spec/06 §6.2.
 
-2. **`sketch_adt_shortcut_syntax` (#59)** → `tests/spec_05_definitions.rs` —
-   bare-field-name shortcut syntax `(deftype Pair [first second])` (without
-   `:Type` annotation) is a distinct deftype shape. Recommended target:
-   `deftype_product_shortcut_field_names`. Cite spec/05 §5.2.
+2. **`sketch_adt_shortcut_syntax` (#59)** is superseded. Current spec §5.2.4
+   requires explicit field types; the old form is rejected by
+   `deftype_omitted_field_types_rejected_without_partial_registration_neg`.
 
 3. **`sketch_adt_first_class_constructor` (#68)** →
    `tests/spec_05_definitions.rs` — constructor as first-class value
@@ -798,4 +797,3 @@ per-test audit is the right grain.
    `feedback_repros_join_suite.md`. The 33 GAP-COVER findings are the
    carry-forward authorship list; commit them as the durable record
    even if some don't make it into Wave 5.6 (carry into Wave 5.7).
-

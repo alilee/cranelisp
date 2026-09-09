@@ -28,8 +28,9 @@
 use cranelisp_backend::schema::generate_schema;
 use cranelisp_platform::{FieldType, Schema};
 use cranelisp_types::{
-    DefKind, FQTypeName, ModuleEntry, ModuleFullPath, Scheme, Symbol, SymbolTable, Type,
-    TypeDefInfo, Visibility,
+    Binding, CallableOrigin, ConcreteType, Decl, FQTypeName, ModuleFullPath, MonoDefnVariant,
+    MonoExpr, Realization, Scheme, Span, Symbol, SymbolTable, Type, TypeDefInfo, TypeRecord,
+    Visibility, member_key,
 };
 use dashmap::DashMap;
 use std::collections::HashMap;
@@ -40,11 +41,11 @@ fn fqtn(module: &str, name: &str) -> FQTypeName {
     FQTypeName::new(ModuleFullPath::from(module), name.into())
 }
 
-/// Register a sum/enum/product type: a `ModuleEntry::TypeDef` naming the
-/// constructors plus one got-slotted ctor `Def` per constructor (the S79
-/// Option 3a shape the generator's `ctors_of` walks). Each constructor carries
-/// declared field names (`param_names`) and field types (the scheme's `Fn`
-/// params); a nullary constructor has an empty field list (non-`Fn` scheme).
+/// Register a sum/enum/product type through the lifecycle facades. A sum has a
+/// `Decl::Type` naming its constructors plus one concrete `CallableOrigin::Ctor`
+/// per constructor; a product carries the type facet on its sole constructor.
+/// Each constructor carries declared field names (`param_names`) and field types
+/// (the scheme's `Fn` params); a nullary constructor has an empty field list.
 fn register_type(
     tables: &Tables,
     module: &str,
@@ -58,22 +59,26 @@ fn register_type(
         .unwrap_or_else(|| SymbolTable::new(m.clone()));
 
     let adt = Type::ADT(fqtn(module, type_name), vec![]);
+    let type_info = TypeDefInfo {
+        name: fqtn(module, type_name),
+        type_params: vec![],
+        constructors: ctors.iter().map(|(c, _, _)| Symbol::from(*c)).collect(),
+    };
+    let is_product = ctors.len() == 1 && ctors[0].0 == type_name;
 
-    // The TypeDef entry naming the constructors (sum/enum case; the product case
-    // would fold this onto the ctor `Def`'s type_def facet, but a uniform
-    // TypeDef entry exercises the same walk and keeps the corpus simple).
-    st.insert(
-        Symbol::from(type_name),
-        ModuleEntry::TypeDef {
-            info: TypeDefInfo {
-                name: fqtn(module, type_name),
-                type_params: vec![],
-                constructors: ctors.iter().map(|(c, _, _)| Symbol::from(*c)).collect(),
-            },
-            visibility: Visibility::Public,
-            docstring: None,
-        },
-    );
+    if !is_product {
+        st.install_binding(
+            Symbol::from(type_name),
+            Binding::new(
+                Decl::Type(TypeRecord::Defined {
+                    info: type_info.clone(),
+                    docstring: None,
+                }),
+                Visibility::Public,
+            ),
+        )
+        .expect("install sum type fixture");
+    }
 
     for (ctor_name, tag, fields) in ctors {
         let field_names: Vec<Symbol> = fields.iter().map(|(n, _)| Symbol::from(*n)).collect();
@@ -92,27 +97,43 @@ fn register_type(
                 ty: Type::Fn(field_types.clone(), Box::new(adt.clone())),
             }
         };
-        st.insert(
-            Symbol::from(*ctor_name),
-            ModuleEntry::def(
-                scheme,
-                DefKind::Constructor {
-                    got_slot: 0,
-                    type_name: fqtn(module, type_name),
-                    tag: *tag,
-                    field_count: field_types.len(),
-                    internal: false,
-                    type_def: Some(Box::new(TypeDefInfo {
-                        name: fqtn(module, type_name),
-                        type_params: vec![],
-                        constructors: ctors.iter().map(|(c, _, _)| Symbol::from(*c)).collect(),
-                    })),
+        let key = if is_product {
+            Symbol::from(*ctor_name)
+        } else {
+            member_key(type_name, ctor_name)
+        };
+        st.install_concrete(
+            key.clone(),
+            scheme,
+            field_names.clone(),
+            None,
+            *tag as u64,
+            CallableOrigin::Ctor {
+                type_name: fqtn(module, type_name),
+                tag: *tag,
+                field_count: field_types.len(),
+                internal: false,
+                type_def: is_product.then(|| Box::new(type_info.clone())),
+            },
+            Realization::Body {
+                view: MonoDefnVariant {
+                    name: key,
+                    params: field_names,
+                    body: MonoExpr::IntLit {
+                        value: *tag as i64,
+                        span: Span::SYNTHETIC,
+                        ty: ConcreteType::Int,
+                    },
+                    span: Span::SYNTHETIC,
                     mode_summary: None,
                 },
-            )
-            .param_names(field_names)
-            .build(),
-        );
+                code: None,
+            },
+            None,
+            vec![],
+            Visibility::Public,
+        )
+        .expect("install constructor fixture");
     }
 
     tables.insert(m, st);

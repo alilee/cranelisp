@@ -78,6 +78,25 @@ Delivery progress for the Cranelisp reimplementation. For technical scope per ri
 
 ## Forward Plan
 
+### Next sprint — S122 opening priorities
+
+At opening, adopt the latest shared role package through the normal convergence
+gate. S121 contributes its reviewed package changes at close but does not adopt
+other projects' updates during closure.
+
+First scope the live failing set, then prioritize the enabled generic-redefinition
+REDs in `tests/spec_11_stdlib.rs`: scalar replacement executes the old body,
+and the vector sibling crashes. Attribute the actual fault, establish a
+seam-level RED, then design and implement to GREEN; do not assume these symptoms
+share a cause. Coordinate the failed-turn coverage repair in
+[ACT-0958](actions/ACT-0958-rearm-failed-turn-recovery-coverage.md) with that work.
+
+The sequence-IO runtime RED remains deferred with its explicit-bind GREEN
+control. Review the `src/` audit recommendations in `audits/src-s121.md` and
+the accepted shared-role audit residuals in
+[ACT-0957](actions/ACT-0957-shared-role-audit-residuals.md). Other accepted
+carries retain their existing scope; none is silently closed or expanded.
+
 ### Pre-Phase-H consolidation arc — COMPLETE (S86 + S87) — Phase H scope decided
 
 **Arc outcome (S87 close, 2026-06-21):** both legs done. S86 rebaselined the user-facing surfaces; S87 (the deep audit, expanded into a full hygiene sprint) cleared the maintainability backlog in-sprint — 3 real defects fixed, ~32.5k LOC test extraction across all 8 crates, 5 module decompositions, 6 Principle-7 dedups, 11 FIXMEs resolved; `--workspace` 2870/0/0. **Scope-decision gate result:** the audit's findings were either fixed in-sprint or shown (by a repro pass) not to reproduce, so **no must-fix-first blocks Phase H beyond the standing carries**. **Host-callback (`0407`/`0419`) is reframed** (Model B = escape hatch, NOT the concurrency path — see `0407`'s reframing box); **the runtime-concurrency direction is now its OWN scheduled track *before* Phase H** (`design/arch/effect-concurrency.md`; S87 user direction 2026-06-21; `0424` spark apply-args / `par-map` feeds it) — see §"Phase H sequencing" below. `0408`/`0410`/`0416` deferred (concurrency-/spec-/feature-gated). **Next: the agentic-repl track, then the effect-concurrency track, then Phase H.**
@@ -471,6 +490,21 @@ carried non-0917 set. Shared-package, root-maintenance, role-wiring and citation
 gates pass. Carries are the three recorded refusal-coverage gaps, remaining
 undated-review lifecycle classification and ACT-0950. The Cranelisp remote was
 not pushed. Full record: `sprints/archive/sprint-120.md`.
+
+### Release rebaseline and FIXME closure — S121 CLOSED 2026-09-09
+
+The compiler waves and five user-facing streams are accepted with explicit
+residuals. The fresh full suite observed **5,905 run / 5,901 pass / 4 fail /
+1 skip**. Its citation failure was repaired; two failed-turn witnesses were
+classified as unarmed coverage, and sequence-IO remains an accepted runtime
+RED. Subsequent isolated redefinition evidence adds **3 RED / 1 GREEN**;
+these results are not an executed aggregate rerun or an all-green release.
+
+The generic-redefinition defect and associated coverage repair are the user's
+top next-sprint priority. The reviewed package contribution is retained at
+`1172631`; publication reconciles upstream separately from consumer adoption.
+Exact evidence, approvals and carries: [close record](s121-acceptance-and-close.md)
+and [Sprint 121 archive](archive/sprint-121.md).
 
 ### Pipeline v3 migration — COMPLETE (Sprints 29-38)
 

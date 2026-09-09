@@ -36,11 +36,13 @@ repair in `src/` after this design was written. The corrections:
    publish_prepared_turn`. §4.1 is rewritten onto that seam.
 2. **The fresh-JIT artifact routing already landed** (S117 W3a). `SharedState.
    fresh_jit_drop_glues: DashMap<(ModuleFullPath, ConcreteType),
-   FreshJitDropGlue>` (`src/session_v4.rs:352-358`) is populated by
-   `publish_prepared_turn` (`src/worker.rs:1748-1758`) and by the macro-clause
-   turn's `publish` (`src/process_form/macro_clause.rs:175-187`), always as an
-   `{artifact, owner}` **pair**. 0745 no longer has to build the routing — it
-   has to *consume* it. §3.1 and §4.1 are re-cut accordingly.
+   FreshJitDropGlue>` (`src/session_v4.rs:352-358`) is populated in the S118
+   as-built by `publish_prepared_turn` (`src/worker.rs:1748-1758`) and by the
+   macro-clause turn's `publish` (`src/process_form/macro_clause.rs:175-187`),
+   always as an `{artifact, owner}` **pair**. S121 deletes the parallel macro
+   writer and routes macro checkpoints through the ordinary prepared
+   publication. 0745 consumes the routing rather than building it. §3.1 and
+   §4.1 are re-cut accordingly.
 3. **§7's "no global address map is introduced" claim is STALE.** One was
    introduced, by S117, and it is the right shape. The invariant that carries
    the weight is restated in §7: rows are replaced *pair-atomically*, and an
@@ -208,23 +210,15 @@ Taking the key from the same read that produced the code pointer (§4.3) makes
 int's classification agree with backend's `request_if_owning` **by
 construction** instead of by agreement between two derivations.
 
-**Recorded limitation — the lenient-view placeholder gap.** Under this rule an
-unpinned `[]` (or a bare polymorphic `None`) at the REPL still **leaks its
-allocation**: backend keyed that result root through the `lenient_from_expr`
-`ConcreteType::Int` placeholder and therefore emitted no glue, and the owner
-cannot release what was never emitted. Its status:
-
-- it is **pre-existing** — exactly the pre-0745 behaviour for those inputs — so
-  W4 introduces no regression, and it is not a result-owner defect;
-- the owner is the **lenient view** (`MonoExpr::lenient_from_expr`, typecheck),
-  not this design. Closing it is a separate row against the lenient view and
-  wants `/qa` cover of its own; it is **out of int's bounded context** and
-  outside this sprint's zero-delta fence (§10);
-- the alternative — hard-erroring when the observed type is non-concrete, and
-  making the producer emit glue for such roots — is **not adopted here** because
-  it is a typecheck + backend change wearing an int-side error as its trigger.
-  Int must not force a producer change by refusing to release what the producer
-  published.
+**As-built closure — bare polymorphic values do not execute.** A bare unpinned
+`[]` or polymorphic nullary constructor such as `None` publishes a slot-less
+`Life::Template` `__expr`. `eval` recognizes only those two syntactic value
+forms and returns `EvalResult::DisplayValue { ty, form, warnings }`; the
+formatter renders from the inferred type plus syntax. No allocation, runtime
+word, GOT slot or `OwnedProgramResult` is fabricated. Calls and annotations do
+not take this path: they remain subject to ordinary evaluation and the
+return-directed ambiguity gate. This preserves both total slot⇔concrete and the
+REPL §1.5.1 introspection disposition.
 
 **Cross-reference — the strip rule's home is an open `/arch` question.** The
 `IO a ⇒ a` strip this rule applies (`strip_io_head`) currently has **two literal
@@ -292,8 +286,8 @@ transaction. The seams, by name and line:
 | prepare | `worker::prepare_cluster_commit` (`src/worker.rs:399`), invoked from `process_form::finalize_cluster` (`src/process_form.rs:508`), carrier stored by `ProcessedCluster::set_prepared` (`:626`, `src/cluster.rs:114/223`) | pure w.r.t. live state |
 | compile | `worker::compile_prepared_turn` (`src/worker.rs:1656`) → **one** `compile_to_module` for the whole batch (`:1702`); artifacts land on `PreparedCompilation` (`:36-44`, stored `:1728-1733`) | revalidates the slot cursor first (`:1661-1676`) |
 | publish | `worker::publish_prepared_turn` (`src/worker.rs:1737`) — infallible; installs glue owners FIRST (`:1748-1758`), then cursor, retention, entries, products | no `Result` arm |
-| drivers | eval: `src/eval.rs:384`; worker cadence: `src/worker.rs:2666`; redefinition transaction: `src/redefine.rs:1511`; all via `compile_and_publish_processed{,_without_notify}` (`src/worker.rs:1829/1844`) | one cadence, three callers |
-| macro clause | `PreparedMacroTurn` (`src/process_form/macro_clause.rs:110`), `compile_batch` (`:126`), `publish` (`:175`) | a second, parallel prepared transaction — see §3.1.1 |
+| drivers | `src/eval.rs::codegen_and_execute`; `src/worker.rs::handle_typecheck_work_shared`; redefinition transaction in `src/redefine.rs`; all via `src/worker.rs::compile_and_publish_processed` | one cadence, three callers |
+| macro checkpoint | the ordinary `PreparedCommit` compile/publication seam, applied to one owner-free module staging containing the parent and every active clause | no parallel prepared transaction; see §3.1.1 |
 
 **The result owner attaches at neither prepare nor publish.** It is constructed
 strictly *after* a published turn's code has been *executed* — at the two
@@ -345,14 +339,14 @@ The `(module, ConcreteType)` key is the **emitting** module — the module whose
 owns `main` / `__expr`. Int never derives a key from a source expression or from
 the most recently compiled function.
 
-#### 3.1.1 Two writers, one map
+#### 3.1.1 One publication seam, one paired row
 
-Both `publish_prepared_turn` and `PreparedMacroTurn::publish` write
-`fresh_jit_drop_glues`, each inserting `{artifact, owner}` as one value. That is
-sufficient and must stay so: **a row is replaced pair-atomically or not at all.**
-A shape that updated the artifact and the owner separately would let an old
-address pair with a new JIT. `/review` rejects any third writer, and any writer
-that does not carry its own owner.
+Ordinary HM clusters and immediate macro checkpoints both route their compiled
+products through the same prepared publication seam. That seam inserts each
+`fresh_jit_drop_glues` row as one `{artifact, owner}` value: **a row is replaced
+pair-atomically or not at all.** A macro-specific writer, or a shape that
+updates artifact and owner separately, could pair an old address with a new JIT
+and is rejected.
 
 ### 3.2 Cache-hit execution
 
@@ -508,7 +502,7 @@ The as-built chain is:
 eval.rs:534  execute_compiled_expr
   -> pipeline.rs:146  cranelisp_run_program(got_addr, ty.is_io())
   -> pipeline.rs:181  program_outcome_to_result  --(clean)-->  ExprOutcome::Value { value, ty }   (:228)
-  -> eval.rs:539      EvalResult::Val { value, ty, warnings }
+  -> eval.rs           EvalResult::Val { result, warnings }
   ~~~~ returns to the REPL driver ~~~~
   -> repl/format.rs:600  EvalResult::Val arm
   -> display.rs:73/78    result_value_doc(value, ty, symbol_tables)   [reads the value]
@@ -659,8 +653,30 @@ acquires the key the same way; a second lookup keyed on anything else is the
 drift this rule exists to prevent.
 
 The `IO a ⇒ a` strip applied to that key is the same rule backend applies to its
-result roots. **Where that rule's single statement should live is FIXME 0898's
-open `/arch` question**, not this design's (§1.1.1, last paragraph).
+result roots.
+
+> **RULED and part-landed; three encodings at HEAD, not two (S121, FIXME 0898).**
+> `/arch` ruled the single statement's home: `ConcreteType::result_root()`,
+> `crates/cranelisp-types/src/concrete.rs:131`, one hop on the `primitives/IO`
+> non-empty-args head, with the `drop_glue_symbol_name` cross-reference. It
+> **landed**, and **neither consumer migrated** — so the rule now has three
+> literal encodings, not the two the filing was raised against: the types
+> method (zero production call sites at HEAD), backend's inline `result_roots`
+> map (`crates/cranelisp-backend/src/lib.rs:672-684`, removed by C4 bundle B6),
+> and int's `strip_io_head` (`src/result_owner.rs:421`, sole caller
+> `release_key` at `:346`).
+>
+> **Int's obligation** is bundle N6b of `design/int/s121-c6-visit.md` §9.2:
+> re-express `release_key` over `result_root()` and delete `strip_io_head`.
+> Semantics are byte-identical; any semantic change is out of scope. The filing
+> deletes when *both* consumers are collapsed — neither stream discharges it
+> alone.
+>
+> Worth carrying past this instance: a shared helper published without migrating
+> its consumers **increases** the duplication it was meant to remove. The
+> falsifier is cheap and belongs at the introducing change-set — a helper that
+> collapses N encodings has at least N call sites when it lands, or the collapse
+> has not happened.
 
 ### 4.4 `Pure` and non-IO results
 
@@ -711,7 +727,7 @@ invocation; exe-bundle/link correctness remains e2e where relocation is the fact
 | owner constructor + classification (`src/pipeline.rs` or a new `src/result_owner.rs`) | `Int` no-op; `String` release; `IO String` selects `String`; nested ADT/Vec key; **the `codegen_view` key wins over the observed type** and its `IO` head is stripped (§1.1.1) | non-IO expression; `Pure` inner typing; value `0` as a valid owned word; `HeapCategory::Mixed` nullary tag | non-concrete `Type` **with no codegen view** (the fallback's hard error); owning type with no keyed target; **never** select `IO a` glue; scalar arm performs zero map reads |
 | fresh-JIT target resolution (`src/worker.rs` `FreshJitDropGlue` consumers) | keyed `String` and nested-type rows pair with `Code::Jit`; owner clone outlives the call | two types in one batch; repeat key; recompilation replaces address **and** owner together | the **four** hard-error polarities — absent key; `jit_address: None`; **null (`Some(0)`) address**; symbol/key mismatch — plus: raw address stored without its guard |
 | cache-hit resolution (`src/worker.rs:2274` neighbourhood) | canonical symbol resolves via the result-entry's `Code::Linker(Arc<Linker>)` | warm cache; two module-qualified copies of the same concrete type | missing symbol fails hard; no scan; no serialized/process-local address fallback; no `Code::Jit` row consulted on a Linker result |
-| REPL display (`src/eval.rs:539` → `src/repl/format.rs:600` → `src/display.rs:78`) | scalar, `String`, nested payload displayed before one release | formatter returns error / unwinds; warning envelope; result value `0` | no release before the final display read; no double release after formatting; display-only `Def`/bare-symbol path releases nothing; the `is_io` defensive branch constructs no second owner |
+| REPL display (`src/eval.rs` → `src/repl/format.rs` → `src/display.rs`) | scalar, `String`, nested payload displayed before one release | formatter returns error / unwinds; warning envelope; result value `0`; bare `None` and `[]` use `DisplayValue` | no release before the final display read; no double release after formatting; display-only `Def` and `DisplayValue` paths release nothing; the `is_io` defensive branch constructs no second owner |
 | run arm + lifecycle (`src/main.rs:323` / `lifecycle.rs:1535`) | `IO Int` converts then releases; `IO String` converts `0` then releases | nested payload; both JIT and cache-hit retention; shutdown after release | shutdown-before-release rejected; trap/fault invokes no result glue; glue never retried; `lookup_main_return_type`'s `Int` fallback never authoritative |
 | startup CLIF (`src/exe.rs:50/371`) | scalar omits the call entirely (byte-identical stub); owning `IO a` — conversion precedes the relocated call, which precedes `exit` | `Int` owning wrapper vs scalar `Int`; nested concrete type; module qualification in the symbol | error block emits no release; no call after `exit`; missing relocation is a link failure; no JIT/private helper; non-concrete inner type errors at `link_by_name` |
 | exe-bundle contract (`crates/cranelisp-exe-bundle`) | generated glue's intrinsic dependencies stay force-linked | no-platform program; release strictly before process exit | no exe-bundle generic releaser or result-type switch; missing dependency fails linked e2e |
@@ -889,22 +905,17 @@ change, that is a **STOP** and a FIXME `target: /arch`, not a widening.
 
 ---
 
-## 11. Sequencing against FIXME 0863 (arch ruling 11)
+## 11. Sequencing against the S121 macro checkpoint
 
-0863 (the cluster-wide prepared macro-presentation transaction) reopens the same
-`src/` publication seam this design attaches to. Arch ruling 11 serializes it as
-a **later wave**, after 0745. The constraint, from this side:
+The macro-checkpoint wave reuses the publication seam this design consumes. It
+must land after the result-owner work and preserve §3.1.1: the macro batch hands
+its drop-glue artifacts and owners to the ordinary prepared publication as
+pairs. The obsolete `PreparedMacroTurn::publish` writer is deleted, not adapted.
 
-- 0745 does **not** modify `prepare_cluster_commit`, `compile_prepared_turn`, or
-  `publish_prepared_turn`; it reads the map those seams already populate (§3.0).
-  It therefore leaves 0863's foundation exactly as 0863's design found it;
-- 0863's wave rebases its reading of the turn transaction on the **post-0745**
-  state, which for the transaction itself is unchanged;
-- the one point of contact is `PreparedMacroTurn::publish`'s write to
-  `fresh_jit_drop_glues` (`macro_clause.rs:182-187`). When 0863 makes the macro
-  clause turn **absorbable** by the parent rather than self-publishing, those
-  rows must move into the parent's publish gate **as pairs**, preserving §3.1.1.
-  This is recorded as a delta note in `s117-conformance-recovery.md` §6.
+Result ownership remains downstream of execution. No result `Owned` value,
+release target or marshalled handle enters macro preparation, source retry, or
+publication. The macro reader's cloned `Code` owner is a code-lifetime guard for
+invocation and does not create another drop-glue registry writer.
 
 ---
 
@@ -913,9 +924,15 @@ a **later wave**, after 0745. The constraint, from this side:
 **Implementation is complete** (§8's I0–I5 landed `fc3375f9..16a26408`; the four
 §9.1 cells flipped; W4 gate PASS; FIXME 0745 CLOSED). What remains:
 
-- `/arch` — FIXME 0898: rule where the `IO a ⇒ a` result-root strip rule's
-  single statement lives (§1.1.1's last paragraph). Int calls the shared helper
-  and deletes its copy the moment one exists; it does not keep a fork.
+- `/dev` (int) — **FIXME 0898's int half**: `result_root()` exists and int still
+  forks it. Re-express `release_key` over the shared method and delete
+  `strip_io_head` (§4.3's blockquote; bundle N6b of
+  `design/int/s121-c6-visit.md` §9.2). `/arch`'s ruling is settled — this is no
+  longer an open question, it is an unlanded consumer migration.
+- `/dev` (int) — **FIXME 0914**: `/mem`'s delta window closes before the
+  release, so every heap-valued expression reports a phantom leak. §4.2.1 rules
+  the seam (shape (a): render, release, *then* close the window, through the
+  same chokepoint); the same bundle carries it.
 - `/dev` (int/exe-bundle) — stale-citation sweep: `src/result_owner.rs`'s
   `release_key` rustdoc and `src/CLAUDE.md` §"Program-result ownership" both
   cite the retired number **0892**; the ruling is **0896** and now lives in

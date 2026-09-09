@@ -2,6 +2,37 @@ use serde::{Deserialize, Serialize};
 
 use crate::Span;
 
+/// Structural reader form introduced by one of the four quote heads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuoteHead {
+    /// Preserve the subject as literal structural data without evaluation.
+    Quote,
+    /// Build structural data while permitting nested unquote operations.
+    Quasiquote,
+    /// Evaluate one subject within the enclosing quasiquote.
+    Unquote,
+    /// Evaluate one subject and splice its elements into the enclosing
+    /// quasiquoted list.
+    UnquoteSplicing,
+}
+
+/// Classify an exact two-element reader quote form.
+///
+/// Qualification and any arity other than one subject are deliberately not
+/// quote syntax at this structural boundary.
+pub fn quote_head(children: &[Sexp]) -> Option<QuoteHead> {
+    let [Sexp::Symbol(head, _), _subject] = children else {
+        return None;
+    };
+    match head.as_str() {
+        "quote" => Some(QuoteHead::Quote),
+        "quasiquote" => Some(QuoteHead::Quasiquote),
+        "unquote" => Some(QuoteHead::Unquote),
+        "unquote-splicing" => Some(QuoteHead::UnquoteSplicing),
+        _ => None,
+    }
+}
+
 /// S-expression: the reader's structural output.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Sexp {
@@ -181,5 +212,30 @@ impl Sexp {
 impl std::fmt::Display for Sexp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.format_indented(0))
+    }
+}
+
+#[cfg(test)]
+mod quote_head_tests {
+    use super::*;
+
+    fn sym(name: &str) -> Sexp {
+        Sexp::Symbol(name.to_string(), Span::SYNTHETIC)
+    }
+
+    #[test]
+    fn exact_reader_quote_heads_are_closed_and_arity_checked() {
+        for (name, expected) in [
+            ("quote", QuoteHead::Quote),
+            ("quasiquote", QuoteHead::Quasiquote),
+            ("unquote", QuoteHead::Unquote),
+            ("unquote-splicing", QuoteHead::UnquoteSplicing),
+        ] {
+            assert_eq!(quote_head(&[sym(name), sym("x")]), Some(expected));
+        }
+        assert_eq!(quote_head(&[sym("macros/quote"), sym("x")]), None);
+        assert_eq!(quote_head(&[sym("quote")]), None);
+        assert_eq!(quote_head(&[sym("quote"), sym("x"), sym("y")]), None);
+        assert_eq!(quote_head(&[Sexp::Int(1, Span::SYNTHETIC), sym("x")]), None);
     }
 }

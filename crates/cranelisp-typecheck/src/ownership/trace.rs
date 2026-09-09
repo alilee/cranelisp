@@ -25,6 +25,18 @@ pub(crate) fn emit(state: &CheckState, cluster: &ClusterOwnership) {
     }
     let module = &state.current_module;
     eprintln!("=== OWNERSHIP {module} ===");
+    // §19.5 — the refusal's one observable. A refused cluster published nothing,
+    // so its cost is silent precision loss; this line is what makes it visible
+    // (and is the named refuter for §19.8's residual: a body shape that still
+    // does not converge under the set-union join).
+    if let Some(r) = &cluster.refusal {
+        eprintln!("{}", refusal_line(r));
+    }
+    if !cluster.residual_param_frames.is_empty() {
+        let mut residual: Vec<_> = cluster.residual_param_frames.iter().collect();
+        residual.sort();
+        eprintln!("  residual-parameter-refusals={residual:?}");
+    }
     // Deterministic order (sorted by callable key) for reproducible dumps.
     let mut keys: Vec<&cranelisp_types::Symbol> = cluster.summaries.keys().collect();
     keys.sort();
@@ -65,6 +77,47 @@ pub(crate) fn emit(state: &CheckState, cluster: &ClusterOwnership) {
                 prov.sort_by_key(|(s, _)| (s.start, s.end));
                 eprintln!("    provenance {prov:?}");
             }
+        }
+    }
+}
+
+/// The §19.5 refusal line. Factored out of [`emit`] so the ONE observable a
+/// refused cluster leaves behind is executed by a test rather than only by a
+/// developer with the env var set: §19.8 names this line as the refuter for its
+/// residual (a body shape that still does not converge under the set-union
+/// join), and a refuter nobody has ever seen produce output is not one.
+fn refusal_line(r: &super::fixpoint::Refusal) -> String {
+    format!(
+        "  REFUSED stratum={} visits={} cap={} universe={} \
+         (no summary, no site fact, no value-use mark published)",
+        r.stratum, r.visits, r.cap, r.universe
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::fixpoint::{Refusal, Stratum};
+    use super::*;
+
+    // spec: design/typecheck/ownership-inference.md §19.5, §19.8 — the refusal's
+    // trace line names the exhausted stratum and its budget, so a corpus compile
+    // can tell "burned on an oscillation" from "cluster too large".
+    #[test]
+    fn the_refusal_line_names_the_stratum_and_its_budget() {
+        for (stratum, name) in [
+            (Stratum::Modes, "modes"),
+            (Stratum::Confinement, "confinement"),
+            (Stratum::Uniqueness, "uniqueness"),
+        ] {
+            let line = refusal_line(&Refusal {
+                stratum,
+                visits: 44,
+                cap: 44,
+                universe: 2,
+            });
+            assert!(line.contains(&format!("stratum={name}")), "got {line}");
+            assert!(line.contains("visits=44 cap=44 universe=2"), "got {line}");
+            assert!(line.contains("REFUSED"), "got {line}");
         }
     }
 }

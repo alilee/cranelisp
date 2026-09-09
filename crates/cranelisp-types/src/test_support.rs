@@ -1,99 +1,78 @@
-//! Test-support symbol-table construction helpers (Tier 2).
-//!
-//! A **generic, content-agnostic** convenience for building a populated
-//! [`SymbolTable<C, L>`](crate::SymbolTable) from declared entries, for use by
-//! OTHER crates' tests — notably `cranelisp-typecheck`'s unit suite. It shares
-//! only the Tier-1 [`ModuleEntry::def`](crate::ModuleEntry::def) constructor
-//! with production code.
-//!
-//! # Delineation — feature-gated, NOT in the production baseline
-//!
-//! This module is compiled only under `#[cfg(any(test, feature =
-//! "test-support"))]`. Pure `#[cfg(test)]` is crate-local and would not be
-//! visible to a downstream crate's test build, so the `test-support` Cargo
-//! feature is the visibility mechanism. The `public-api.txt` baseline is
-//! generated WITHOUT `--features test-support`, so nothing here enters the
-//! production contract. See `design/arch/bounded-contexts.md` §7.
-//!
-//! # Boundary — per-SymbolTable construction only
-//!
-//! [`SymbolTableBuilder`] builds **one** `SymbolTable`. It deliberately does
-//! NOT orchestrate the multi-module `SymbolTables` DashMap, the session-level
-//! `AtomicU32` next-type-id allocator, or any bootstrap ordering between
-//! modules — that orchestration is typecheck's Tier-3 concern (per FIXME 0241
-//! / 0239) because it is content- and bootstrap-aware (e.g. `macros/Sexp`
-//! must resolve `primitives/Int` before the first `.cl` parses). Keeping this
-//! tier to per-table construction is minimum mechanism (Principle 6): only the
-//! genuinely generic, content-free piece lives here.
-//!
-//! # Content-agnostic
-//!
-//! There is no Option / IO / primitive scheme content here — those are
-//! typecheck-owned (Tier 3). This builder takes whatever entries a test hands
-//! it and assembles a table; it knows nothing about any specific module's
-//! meaning.
+//! Feature-gated helpers for constructing one symbol table in tests.
 
 use crate::{
-    CodeStore, DefBuilder, DefKind, LinkerStore, ModuleEntry, ModuleFullPath, Scheme, Symbol,
-    SymbolTable,
+    Binding, CallableOrigin, CodeStore, LinkerStore, ModuleFullPath, Scheme, Symbol, SymbolTable,
+    Visibility,
 };
 
-/// Generic, content-agnostic builder for a single
-/// [`SymbolTable<C, L>`](crate::SymbolTable).
-///
-/// Start with [`SymbolTableBuilder::new(path)`](Self::new), add entries with
-/// [`Self::entry`] (any [`ModuleEntry`]) or the [`Self::def`] convenience (a
-/// thin wrapper over [`ModuleEntry::def`]), and finish with [`Self::build`].
-///
-/// Generic over `C: CodeStore` and `L: LinkerStore` so a test can build a
-/// table at whichever instantiation it exercises (`<(), ()>` for typecheck's
-/// usual case, `<Code, ()>` if a test drives an integration-flavoured table).
-///
-/// # Example
-///
-/// ```ignore
-/// let table: SymbolTable = SymbolTableBuilder::new(ModuleFullPath::from("test"))
-///     .def("id", scheme, DefKind::UserFn { fn_state: UserFnState::NotDetermined })
-///     .entry(Symbol::from("Some"), ModuleEntry::def(ctor_scheme, ctor_kind).build())
-///     .build();
-/// assert!(table.get("id").is_some());
-/// ```
+#[allow(clippy::large_enum_variant)]
+enum Entry<C: CodeStore> {
+    Binding(Symbol, Binding<C>),
+    Declared {
+        name: Symbol,
+        scheme: Scheme,
+        origin: CallableOrigin,
+        visibility: Visibility,
+    },
+}
+
+/// Generic, content-agnostic builder for a single symbol table.
 pub struct SymbolTableBuilder<C: CodeStore = (), L: LinkerStore = ()> {
     path: ModuleFullPath,
-    entries: Vec<(Symbol, ModuleEntry<C>)>,
+    entries: Vec<Entry<C>>,
     _linker: std::marker::PhantomData<L>,
 }
 
 impl<C: CodeStore, L: LinkerStore> SymbolTableBuilder<C, L> {
-    /// Begin building a table for module `path`.
     pub fn new(path: ModuleFullPath) -> Self {
-        SymbolTableBuilder {
+        Self {
             path,
             entries: Vec::new(),
             _linker: std::marker::PhantomData,
         }
     }
 
-    /// Add an arbitrary [`ModuleEntry`] under `name`.
-    pub fn entry(mut self, name: impl Into<Symbol>, entry: ModuleEntry<C>) -> Self {
-        self.entries.push((name.into(), entry));
+    /// Add a non-callable binding.
+    pub fn entry(mut self, name: impl Into<Symbol>, binding: Binding<C>) -> Self {
+        self.entries.push(Entry::Binding(name.into(), binding));
         self
     }
 
-    /// Convenience: add a [`ModuleEntry::Def`] under `name` with the Tier-1
-    /// defaults (public visibility, no docstring/params/ast). For finer
-    /// control over the Def fields, build the entry with
-    /// [`ModuleEntry::def`] and pass it to [`Self::entry`].
-    pub fn def(self, name: impl Into<Symbol>, scheme: Scheme, kind: DefKind) -> Self {
-        let entry: ModuleEntry<C> = DefBuilder::new(scheme, kind).build();
-        self.entry(name, entry)
+    /// Add a callable in the Declared interstage.
+    pub fn declared(
+        mut self,
+        name: impl Into<Symbol>,
+        scheme: Scheme,
+        origin: CallableOrigin,
+        visibility: Visibility,
+    ) -> Self {
+        self.entries.push(Entry::Declared {
+            name: name.into(),
+            scheme,
+            origin,
+            visibility,
+        });
+        self
     }
 
-    /// Materialize the populated `SymbolTable<C, L>`.
     pub fn build(self) -> SymbolTable<C, L> {
         let mut table = SymbolTable::<C, L>::new_with_params(self.path);
-        for (name, entry) in self.entries {
-            table.insert(name, entry);
+        for entry in self.entries {
+            match entry {
+                Entry::Binding(name, binding) => {
+                    table
+                        .install_binding(name, binding)
+                        .expect("test builder accepts only non-callable bindings");
+                }
+                Entry::Declared {
+                    name,
+                    scheme,
+                    origin,
+                    visibility,
+                } => table
+                    .declare(name, scheme, Vec::new(), None, 0, origin, visibility)
+                    .expect("test declarations must not conflict"),
+            }
         }
         table
     }
@@ -102,47 +81,34 @@ impl<C: CodeStore, L: LinkerStore> SymbolTableBuilder<C, L> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Type, UserFnState};
+    use crate::{Decl, Type, TypeRecord};
     use std::collections::HashMap;
 
-    fn mono_scheme(ty: Type) -> Scheme {
-        Scheme {
+    #[test]
+    fn builder_populates_bindings_and_declarations() {
+        let scheme = Scheme {
             type_vars: vec![],
             constraints: HashMap::new(),
-            ty,
-        }
-    }
-
-    // spec: design/arch/fixmes/0241 — Tier-2 SymbolTableBuilder round-trip
-    #[test]
-    fn builder_populates_and_round_trips() {
+            ty: Type::Int,
+        };
         let table: SymbolTable = SymbolTableBuilder::new(ModuleFullPath::from("test"))
-            .def(
-                "id",
-                mono_scheme(Type::Int),
-                DefKind::UserFn {
-                    fn_state: UserFnState::NotDetermined,
-                },
-            )
+            .declared("id", scheme, CallableOrigin::Plain, Visibility::Public)
             .entry(
-                Symbol::from("k"),
-                ModuleEntry::def(mono_scheme(Type::Bool), DefKind::primitive(0))
-                    .docstring("constant")
-                    .build(),
+                "missing",
+                Binding::new(
+                    Decl::Type(TypeRecord::Intrinsic {
+                        ty: Type::Int,
+                        docstring: None,
+                    }),
+                    Visibility::Private,
+                ),
             )
             .build();
 
-        assert_eq!(&*table.path, "test");
-        assert!(
-            table.get("id").is_some(),
-            "def(...) entry must round-trip via lookup"
-        );
-        match table.get("k") {
-            Some(ModuleEntry::Def { docstring, .. }) => {
-                assert_eq!(docstring.as_deref(), Some("constant"));
-            }
-            other => panic!("expected Def for 'k', got {:?}", other),
-        }
-        assert!(table.get("absent").is_none());
+        assert!(table.get("id").and_then(Binding::callable).is_some());
+        assert!(matches!(
+            table.get("missing").map(|binding| &binding.declaration),
+            Some(Decl::Type(TypeRecord::Intrinsic { ty: Type::Int, .. }))
+        ));
     }
 }

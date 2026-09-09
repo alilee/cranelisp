@@ -30,8 +30,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use cranelisp_types::{
-    ConcreteType, DefKind, FQSymbol, Mode, ModeSummary, ModuleEntry, ModuleFullPath, MonoExpr,
-    PrimitiveBody, Symbol, Type, UserFnState,
+    Binding, CallableOrigin, ConcreteType, FQSymbol, Life, Mode, ModeSummary, ModuleFullPath,
+    MonoExpr, Symbol, Type,
 };
 
 use crate::checker::{CheckState, TypeCheckEnv};
@@ -44,10 +44,16 @@ use super::transfer::{SiteFacts, TransferEnv, transfer};
 struct Callable {
     key: Symbol,
     params: Vec<(Symbol, ConcreteType)>,
+    residual_params: bool,
     body: MonoExpr,
 }
 
 /// The pass output for one cluster — consumed by [`super::publish`].
+///
+/// Its default is the REFUSAL-shaped value: nothing analysed, nothing to
+/// publish. Every non-empty field here is the output of a transfer walk (§19.5)
+/// — no seeded or literal summary can reach it.
+#[derive(Default)]
 pub(crate) struct ClusterOwnership {
     /// Converged summary per callable key.
     pub summaries: HashMap<Symbol, ModeSummary>,
@@ -56,6 +62,50 @@ pub(crate) struct ClusterOwnership {
     pub facts: HashMap<Symbol, SiteFacts>,
     /// Callable names referenced in value position anywhere in the cluster (§8.3).
     pub value_used: HashSet<Symbol>,
+    /// Frames refused per-parameter seeding because their scheme still carried a
+    /// residual parameter type (§18.2 O-1). Such a frame is never walked, so it
+    /// publishes nothing (§19.6); this keyed set records which frames took that
+    /// path, for the trace.
+    pub residual_param_frames: HashSet<Symbol>,
+    /// Set when a stratum exhausted the shared visit cap: the whole cluster is
+    /// refused and publishes nothing (§19.5). Carried as a VALUE so both
+    /// detection legs are assertable at the seam without capturing stderr.
+    pub refusal: Option<Refusal>,
+}
+
+/// Which stratum exhausted the cap. Named rather than a bool so the trace line
+/// says which analysis ran out, and so adding a stratum has to answer the
+/// question.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Stratum {
+    Modes,
+    Confinement,
+    Uniqueness,
+}
+
+impl std::fmt::Display for Stratum {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Stratum::Modes => "modes",
+            Stratum::Confinement => "confinement",
+            Stratum::Uniqueness => "uniqueness",
+        })
+    }
+}
+
+/// A cluster whose analysis did not converge (§19.5). The whole universe is
+/// refused: no summary, no site fact, no value-use mark. That lands it on the
+/// `CRANELISP_NO_OWNERSHIP` shape, whose end-to-end safety the differential
+/// oracle already measures — rather than on a ⊤ literal, which is the
+/// construction that decayed (root `CLAUDE.md` §Assurance, R11 and I-CT).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Refusal {
+    pub stratum: Stratum,
+    /// Visits consumed before the refusal — equal to `cap`, and recorded so the
+    /// trace distinguishes "burned on an oscillation" from "cluster too large".
+    pub visits: usize,
+    pub cap: usize,
+    pub universe: usize,
 }
 
 /// The real callee-fact environment: working in-cluster summaries first, then
@@ -64,13 +114,18 @@ struct ClusterEnv<'e, 'a, C: cranelisp_types::CodeStore, L: cranelisp_types::Lin
     env: &'e TypeCheckEnv<'a, C, L>,
     current_module: ModuleFullPath,
     working: &'e HashMap<Symbol, ModeSummary>,
+    /// Every callable in this cluster's universe. A member with no `working`
+    /// entry has no summary THIS compile (§19.6: a residual-parameter frame is
+    /// never walked), and must read as ABSENT rather than fall through to the
+    /// summary a PREVIOUS compile persisted on its entry.
+    members: &'e HashSet<Symbol>,
 }
 
 impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TransferEnv
     for ClusterEnv<'_, '_, C, L>
 {
     fn terminal_kind(&self, name: &Symbol) -> Option<TerminalKind> {
-        if self.working.contains_key(name) {
+        if self.members.contains(name) {
             return Some(TerminalKind::UserFnConcrete);
         }
         let (entry, _home) = self
@@ -89,6 +144,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TransferEnv
                 s.clone(),
             ));
         }
+        if self.members.contains(name) {
+            return None;
+        }
         let (entry, home) = self
             .env
             .resolve_terminal_entry_and_home_scoped(&self.current_module, name.as_ref())?;
@@ -105,21 +163,19 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TransferEnv
 }
 
 /// Classify a chain-follow terminal entry into a [`TerminalKind`] (§2.1).
-fn kind_of_entry<C: cranelisp_types::CodeStore>(entry: &ModuleEntry<C>) -> Option<TerminalKind> {
-    match entry {
-        ModuleEntry::Def { kind, .. } => match kind.as_ref() {
-            DefKind::UserFn {
-                fn_state: UserFnState::Concrete { .. },
-            } => Some(TerminalKind::UserFnConcrete),
-            DefKind::Primitive {
-                body: PrimitiveBody::Inline | PrimitiveBody::Extern { .. },
-                ..
-            } => Some(TerminalKind::DeclaredLeaf),
-            DefKind::Constructor { .. } | DefKind::PlatformEffect { .. } => {
-                Some(TerminalKind::PinnedBoundary)
-            }
-            _ => None,
-        },
+fn kind_of_entry<C: cranelisp_types::CodeStore>(entry: &Binding<C>) -> Option<TerminalKind> {
+    let callable = entry.callable()?;
+    match (&callable.origin, &callable.arm.life) {
+        (CallableOrigin::Plain | CallableOrigin::TraitMethod { .. }, Life::Concrete { .. }) => {
+            Some(TerminalKind::UserFnConcrete)
+        }
+        (
+            CallableOrigin::RustPrimitive,
+            Life::Concrete { .. } | Life::Inline { .. } | Life::HostPromised,
+        ) => Some(TerminalKind::DeclaredLeaf),
+        (CallableOrigin::Ctor { .. } | CallableOrigin::PlatformEffect { .. }, _) => {
+            Some(TerminalKind::PinnedBoundary)
+        }
         _ => None,
     }
 }
@@ -187,11 +243,13 @@ where
         let Some(cv) = entry.codegen_view() else {
             continue;
         };
-        let ModuleEntry::Def {
-            scheme,
+        let Some(callable) = entry.callable() else {
+            continue;
+        };
+        let Life::Concrete {
             ast: Some(ast_variant),
             ..
-        } = entry
+        } = &callable.arm.life
         else {
             continue;
         };
@@ -200,10 +258,11 @@ where
         if !cranelisp_types::is_strict_type_concrete(&ast_variant.body) {
             continue;
         }
-        let params = param_types(&cv.params, Some(&scheme.ty));
+        let (params, residual_params) = param_types(&cv.params, Some(&callable.arm.scheme.ty));
         out.push(Callable {
             key: key.clone(),
             params,
+            residual_params,
             body: cv.body.clone(),
         });
     }
@@ -214,15 +273,42 @@ where
 /// param list. Any non-`Fn` scheme, arity mismatch, or non-concrete param type
 /// falls back to a non-scalar placeholder (`String`) — never mis-classified as
 /// `Copy` (sound: a non-`Copy` param seeds `Borrowed`).
-fn param_types(names: &[Symbol], scheme_ty: Option<&Type>) -> Vec<(Symbol, ConcreteType)> {
-    let concretes: Vec<ConcreteType> = match scheme_ty {
-        Some(Type::Fn(ps, _)) if ps.len() == names.len() => ps
-            .iter()
-            .map(|t| ConcreteType::from_type(t).unwrap_or(ConcreteType::String))
-            .collect(),
-        _ => vec![ConcreteType::String; names.len()],
+fn param_types(names: &[Symbol], scheme_ty: Option<&Type>) -> (Vec<(Symbol, ConcreteType)>, bool) {
+    let Some(Type::Fn(ps, _)) = scheme_ty else {
+        return (
+            names
+                .iter()
+                .cloned()
+                .map(|name| (name, ConcreteType::String))
+                .collect(),
+            true,
+        );
     };
-    names.iter().cloned().zip(concretes).collect()
+    if ps.len() != names.len() {
+        return (
+            names
+                .iter()
+                .cloned()
+                .map(|name| (name, ConcreteType::String))
+                .collect(),
+            true,
+        );
+    }
+    let concretes = ps
+        .iter()
+        .map(ConcreteType::from_type)
+        .collect::<Result<Vec<_>, _>>();
+    match concretes {
+        Ok(concretes) => (names.iter().cloned().zip(concretes).collect(), false),
+        Err(_) => (
+            names
+                .iter()
+                .cloned()
+                .map(|name| (name, ConcreteType::String))
+                .collect(),
+            true,
+        ),
+    }
 }
 
 /// The worklist fixpoint (modes/escape/flow) + the confinement stratum.
@@ -243,6 +329,19 @@ where
     compute_cluster_with_cap(env, current_module, universe, cap)
 }
 
+fn checked_value_layout<C, L>(
+    env: &TypeCheckEnv<C, L>,
+    ty: &ConcreteType,
+) -> Option<cranelisp_types::ValueLayout>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    cranelisp_types::value_layout_with_lookup(ty, &|module, key| {
+        env.probe_module_entry_owned(module, key.as_ref())
+    })
+}
+
 /// [`compute_cluster`] with an explicit visit cap (the cap is a test seam:
 /// `cap = 0` forces both strata to exhaust on the first visit, exercising the
 /// conservative-⊤ reset — blocker 4).
@@ -256,66 +355,74 @@ where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
-    // CS-II-3: the `Copy` predicate DELEGATES to the single-sourced
-    // `value_layout` carrier (never a local re-implementation) — the
-    // soundness-coupled predicate the backend's `HeapCategory::Value` arm also
-    // consumes (§14.5). **B3 CO-LAND (S103 Wave 3a):** the tables input is now
-    // **`Some(env.modules())`** — the REAL type defs, so value-eligible
-    // single-scalar single-ctor products classify `Copy` — landed in the SAME
-    // change-set as the backend `HeapCategory::Value` flattening arm. The two
-    // surfaces MUST grow precision together (the soundness couple): a `Copy`-moded
-    // param the backend flattens is a by-value word (no RC needed); flattening
-    // without the flip = dead flattening; flipping without flattening = a
-    // by-value bit-copy of a still-heap object with no `rc_inc` — a
-    // use-after-free (observed Wave-2: the web-poll reactor's poll-leaf handle
-    // freed early ⇒ "leaf never completed"). Both edits land here + in the
-    // backend, one commit. Under `CRANELISP_NO_OWNERSHIP` this pass does not run,
-    // so no `Copy` mode is emitted AND the backend does not flatten — the couple
-    // holds at both toggle polarities.
-    let copy =
-        CopyClassifier::new(|ty| cranelisp_types::value_layout(ty, Some(env.modules())).is_some());
+    // Copy and backend flattening must share the layout rule: a bit-copy of
+    // an unflattened heap object omits its required reference-count increment.
+    let copy = CopyClassifier::new(|ty| checked_value_layout(env, ty).is_some());
+
+    // Every universe key, walkable or not: what `ClusterEnv` reads as in-cluster.
+    let members: HashSet<Symbol> = universe.iter().map(|c| c.key.clone()).collect();
+    let residual_param_frames: HashSet<Symbol> = universe
+        .iter()
+        .filter(|callable| callable.residual_params)
+        .map(|callable| callable.key.clone())
+        .collect();
+    // §19.6 — a residual-parameter frame refuses per-parameter seeding (§18.2
+    // O-1) and is never walked, so it is not seeded, not queued, and publishes
+    // nothing. Its callers read it as absent, which is the Decision-24 lowering
+    // it actually gets.
+    let walkable: Vec<&Callable> = universe.iter().filter(|c| !c.residual_params).collect();
+    let refused = |stratum: Stratum, visits: usize| ClusterOwnership {
+        residual_param_frames: residual_param_frames.clone(),
+        refusal: Some(Refusal {
+            stratum,
+            visits,
+            cap,
+            universe: universe.len(),
+        }),
+        ..ClusterOwnership::default()
+    };
 
     // Optimistic init: every param Borrowed/Copy, Fresh, Consumed, spark clear.
-    let mut summaries: HashMap<Symbol, ModeSummary> = HashMap::new();
-    for c in universe {
-        summaries.insert(c.key.clone(), optimistic(&c.params, &copy));
-    }
+    // This seed is the WORKING environment the walk reads — a guess, and the
+    // pass's only `ModeSummary` construction besides a walk's own output.
+    let mut working: HashMap<Symbol, ModeSummary> = walkable
+        .iter()
+        .map(|c| (c.key.clone(), optimistic(&c.params, &copy)))
+        .collect();
+    // The PUBLISHABLE map (§19.5). Its one write site is a completed transfer
+    // walk's output below, so a seeded guess cannot reach a consumer even if a
+    // walkable member were queued and never walked — that member is simply
+    // absent, which is the conservative point. The seed map is dropped before
+    // publication, so the two are never interchangeable at the seam.
+    let mut walked: HashMap<Symbol, ModeSummary> = HashMap::new();
 
     let mut facts: HashMap<Symbol, SiteFacts> = HashMap::new();
     let mut deps: HashMap<Symbol, HashSet<FQSymbol>> = HashMap::new();
     let mut value_used: HashSet<Symbol> = HashSet::new();
 
     // Worklist — BFS, dedup via an in-queue set.
-    let mut queue: VecDeque<Symbol> = universe.iter().map(|c| c.key.clone()).collect();
+    let mut queue: VecDeque<Symbol> = walkable.iter().map(|c| c.key.clone()).collect();
     let mut queued: HashSet<Symbol> = queue.iter().cloned().collect();
-    let by_key: HashMap<&Symbol, &Callable> = universe.iter().map(|c| (&c.key, c)).collect();
+    let by_key: HashMap<&Symbol, &Callable> = walkable.iter().map(|c| (&c.key, *c)).collect();
 
     let mut visits = 0usize;
     while let Some(key) = queue.pop_front() {
         queued.remove(&key);
         visits += 1;
         if visits > cap {
-            // Cap exhausted (defensive; unreachable under monotone convergence).
-            // The partially-converged summaries are monotone-BELOW their true
-            // fixpoint ⇒ too precise ⇒ UNSOUND to publish. Reset the whole
-            // universe to the conservative ⊤ (all-Owned / Fresh / Retained /
-            // spark-set) — the sound failure direction (blocker 4, §13.6).
-            reset_to_top(&mut summaries, universe);
-            // F3: the SITE FACTS are unsound too — a callable un(fully)visited
-            // before the cap has no / too-low escape entries (an absent or
-            // `false` escape reads below truth). Force every callable's escape
-            // site-facts to ⊤ (true) and drop provenance (⇒ materialize).
-            for c in universe {
-                facts.insert(c.key.clone(), conservative_site_facts(&c.body));
-            }
-            break;
+            // Cap exhausted: the analysis did not converge, so there is no walk
+            // output to publish and no literal is allowed to stand in for one.
+            // REFUSE the whole cluster (§19.5) — it then compiles on exactly the
+            // `CRANELISP_NO_OWNERSHIP` shape.
+            return refused(Stratum::Modes, visits - 1);
         }
         let Some(c) = by_key.get(&key) else { continue };
 
         let cluster_env = ClusterEnv {
             env,
             current_module: current_module.clone(),
-            working: &summaries,
+            working: &working,
+            members: &members,
         };
         let r = transfer(&c.params, &c.body, &cluster_env, &copy);
 
@@ -323,22 +430,31 @@ where
         facts.insert(key.clone(), r.facts);
         value_used.extend(r.value_uses);
 
-        let changed = summaries.get(&key) != Some(&r.summary);
-        summaries.insert(key.clone(), r.summary);
+        let changed = working.get(&key) != Some(&r.summary);
+        #[cfg(test)]
+        visit_log::record(&key, &r.summary);
+        working.insert(key.clone(), r.summary.clone());
+        walked.insert(key.clone(), r.summary);
         if changed {
             // Re-enter intra-cluster callers: any callable whose harvested
-            // DepSet named this key (§13.3 self-describing re-entry).
+            // DepSet named this key (§13.3 self-describing re-entry), including
+            // itself: its site facts were computed against its prior summary.
             let this_fq = FQSymbol {
                 module: current_module.clone(),
                 symbol: key.clone(),
             };
             for (other, dset) in &deps {
-                if other != &key && dset.contains(&this_fq) && queued.insert(other.clone()) {
+                if dset.contains(&this_fq) && queued.insert(other.clone()) {
                     queue.push_back(other.clone());
                 }
             }
         }
     }
+
+    // The seed has served its purpose: every later stratum reads and refines
+    // walk outputs only, and nothing downstream can reach a guess.
+    drop(working);
+    let mut summaries = walked;
 
     // Confinement stratum (§5) over the converged summaries — a WORKLIST
     // FIXPOINT, not a single unordered pass (blocker 2). `spark_ops` is
@@ -349,22 +465,20 @@ where
     // callers (the same harvested `DepSet` edges the modes stratum uses) whenever
     // its `spark_ops` widens; monotone (bits only flip false→true) so it
     // converges in O(universe × maxp) visits.
-    let mut cqueue: VecDeque<Symbol> = universe.iter().map(|c| c.key.clone()).collect();
+    let mut cqueue: VecDeque<Symbol> = walkable.iter().map(|c| c.key.clone()).collect();
     let mut cqueued: HashSet<Symbol> = cqueue.iter().cloned().collect();
     let mut cvisits = 0usize;
     while let Some(key) = cqueue.pop_front() {
         cqueued.remove(&key);
         cvisits += 1;
         if cvisits > cap {
-            // Cap exhausted (defensive). Force every `spark_ops` to the
-            // conservative ⊤ (all `true` = Crossing/atomic) — the sound failure
-            // direction (blocker 4, mirroring the modes stratum).
-            for c in universe {
-                if let Some(s) = summaries.get_mut(&c.key) {
-                    s.spark_ops = vec![true; c.params.len()];
-                }
-            }
-            break;
+            // Cap exhausted: ONE refusal serves all three strata (§19.5). The
+            // per-stratum recovery this replaces forced `spark_ops` to ⊤ while
+            // leaving each site's already-written `confined` fact at whatever
+            // partial value the interrupted pass had reached — an asymmetry the
+            // single refusal removes without an argument about which partial
+            // facts are salvageable.
+            return refused(Stratum::Confinement, cvisits - 1);
         }
         let Some(c) = by_key.get(&key) else { continue };
 
@@ -386,6 +500,7 @@ where
             env,
             current_module: current_module.clone(),
             working: &summaries,
+            members: &members,
         };
         let cr = confine(&param_modes, &c.body, &cluster_env);
 
@@ -419,24 +534,29 @@ where
     // exact). A greatest fixpoint: `result_unique` is a MUST-property, init
     // optimistic-`true`, narrow to `false`. Conservative point = `false`
     // (degrades to the backend's dynamic rc==1 check). Toggle-off never reaches
-    // here (the driver returned at entry); the modes/confinement cap-reset above
-    // leaves `result_unique = false` on every summary (the `top`/optimistic
-    // init), which the stratum re-derives from the conservative bodies.
-    run_uniqueness_stratum(
+    // here (the driver returned at entry); an earlier stratum exhausting the cap
+    // refused the cluster outright, so this stratum only ever runs over converged
+    // modes and confinement.
+    if let Some(visits) = run_uniqueness_stratum(
         env,
         current_module,
-        universe,
+        &walkable,
+        &members,
         &by_key,
         &deps,
         &mut summaries,
         &mut facts,
         cap,
-    );
+    ) {
+        return refused(Stratum::Uniqueness, visits);
+    }
 
     ClusterOwnership {
         summaries,
         facts,
         value_used,
+        residual_param_frames,
+        refusal: None,
     }
 }
 
@@ -448,6 +568,8 @@ struct UniqClusterEnv<'e, 'a, C: cranelisp_types::CodeStore, L: cranelisp_types:
     current_module: ModuleFullPath,
     /// Converged modes summaries (param_modes / result / flow / spark_ops).
     summaries: &'e HashMap<Symbol, ModeSummary>,
+    /// Every callable in this cluster's universe — see [`ClusterEnv::members`].
+    members: &'e HashSet<Symbol>,
     /// The mid-fixpoint `result_unique` working map for in-cluster callables.
     working_unique: &'e HashMap<Symbol, bool>,
 }
@@ -456,7 +578,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> super::uniq
     for UniqClusterEnv<'_, '_, C, L>
 {
     fn terminal_kind(&self, name: &Symbol) -> Option<TerminalKind> {
-        if self.summaries.contains_key(name) {
+        if self.members.contains(name) {
             return Some(TerminalKind::UserFnConcrete);
         }
         let (entry, _home) = self
@@ -468,6 +590,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> super::uniq
     fn summary_of(&self, name: &Symbol) -> Option<ModeSummary> {
         if let Some(s) = self.summaries.get(name) {
             return Some(s.clone());
+        }
+        if self.members.contains(name) {
+            return None;
         }
         let (entry, _home) = self
             .env
@@ -481,6 +606,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> super::uniq
         if let Some(v) = self.working_unique.get(name) {
             return *v;
         }
+        if self.members.contains(name) {
+            // A cluster member with no working bit is a frame this compile never
+            // walked (§19.6) — the conservative point, not a stale persisted one.
+            return false;
+        }
         self.env
             .resolve_terminal_entry_and_home_scoped(&self.current_module, name.as_ref())
             .and_then(|(entry, _)| entry.mode_summary().map(|s| s.result_unique))
@@ -493,23 +623,30 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> super::uniq
         // heap slot; a `String`/heap-ADT/`Vec` keeps its heap representation
         // (`value_layout` returns `None`) and IS reuse-eligible (§14.2 clause 3).
         matches!(ty, ConcreteType::String | ConcreteType::ADT(..))
-            && cranelisp_types::value_layout(ty, Some(self.env.modules())).is_none()
+            && checked_value_layout(self.env, ty).is_none()
     }
 }
 
 /// Run the uniqueness stratum's greatest-fixpoint (§14.2). Updates each
 /// summary's `result_unique` bit and each callable's `unique` site facts.
+///
+/// Returns `Some(visits consumed)` when the stratum exhausted the cap — the
+/// caller then refuses the whole cluster (§19.5, one refusal for all three
+/// strata), rather than this stratum recovering on its own conservative point.
 #[allow(clippy::too_many_arguments)]
+#[must_use]
 fn run_uniqueness_stratum<C, L>(
     env: &TypeCheckEnv<C, L>,
     current_module: &ModuleFullPath,
-    universe: &[Callable],
+    universe: &[&Callable],
+    members: &HashSet<Symbol>,
     by_key: &HashMap<&Symbol, &Callable>,
     deps: &HashMap<Symbol, HashSet<FQSymbol>>,
     summaries: &mut HashMap<Symbol, ModeSummary>,
     facts: &mut HashMap<Symbol, SiteFacts>,
     cap: usize,
-) where
+) -> Option<usize>
+where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
@@ -521,23 +658,15 @@ fn run_uniqueness_stratum<C, L>(
     let mut queue: VecDeque<Symbol> = universe.iter().map(|c| c.key.clone()).collect();
     let mut queued: HashSet<Symbol> = queue.iter().cloned().collect();
     let mut visits = 0usize;
-    let mut exhausted = false;
     while let Some(key) = queue.pop_front() {
         queued.remove(&key);
         visits += 1;
         if visits > cap {
             // Cap exhausted: a partially-converged greatest-fixpoint sits ABOVE
-            // its true fixpoint (too many `true`s) ⇒ unsound to publish. Reset
-            // result_unique to `false` everywhere and drop every `unique_static`
-            // site fact to `None` — the write-path analog of the modes ⊤-reset
-            // (§14.2 cap-reset; §13.6(h)). The site-fact emission is SKIPPED
-            // entirely below (a directly-fresh allocation would otherwise still
-            // read `true` from `is_direct_fresh`), so `unique` stays empty.
-            for c in universe {
-                working_unique.insert(c.key.clone(), false);
-            }
-            exhausted = true;
-            break;
+            // its true fixpoint (too many `true`s) ⇒ unsound to publish, and no
+            // literal may stand in for the walk that did not finish. Refuse the
+            // cluster (§19.5).
+            return Some(visits - 1);
         }
         let Some(c) = by_key.get(&key) else { continue };
 
@@ -545,6 +674,7 @@ fn run_uniqueness_stratum<C, L>(
             env,
             current_module: current_module.clone(),
             summaries,
+            members,
             working_unique: &working_unique,
         };
         let r = super::uniqueness::analyze_uniqueness(&c.params, &c.body, &uenv);
@@ -573,16 +703,14 @@ fn run_uniqueness_stratum<C, L>(
     }
 
     // Site facts (§13.6(b)): computed ONCE, post-convergence, with the converged
-    // working_unique in hand — UNLESS the fixpoint exhausted its cap, in which
-    // case every `unique_static` fact drops to `None` (skip emission entirely).
-    if exhausted {
-        return;
-    }
+    // working_unique in hand. A cap exhaustion returned above, refusing the
+    // cluster, so there is no partial-emission case left to guard.
     for c in universe {
         let uenv = UniqClusterEnv {
             env,
             current_module: current_module.clone(),
             summaries,
+            members,
             working_unique: &working_unique,
         };
         let r = super::uniqueness::analyze_uniqueness(&c.params, &c.body, &uenv);
@@ -590,6 +718,7 @@ fn run_uniqueness_stratum<C, L>(
             f.unique = r.unique_sites;
         }
     }
+    None
 }
 
 /// The optimistic ⊥ summary for the fixpoint init: params `Copy`/`Borrowed`,
@@ -614,114 +743,42 @@ fn optimistic(params: &[(Symbol, ConcreteType)], copy: &CopyClassifier<'_>) -> M
     }
 }
 
-/// The conservative ⊤ summary — the Decision-24 point widened on every axis:
-/// params `Owned`, result `Fresh`, flow `Retained`, spark `true` (Crossing).
-/// The sound value to publish for an unconverged callable on cap exhaustion
-/// (blocker 4); `⊤ ⊒ true-fixpoint ⊒ any partial`.
-fn top(params: &[(Symbol, ConcreteType)]) -> ModeSummary {
-    let n = params.len();
-    ModeSummary {
-        param_modes: vec![Mode::Owned; n],
-        result: cranelisp_types::ResultMode::Fresh,
-        param_flow: vec![cranelisp_types::ParamFlow::Retained; n],
-        spark_ops: vec![true; n],
-        result_unique: false,
-    }
-}
-
-/// Reset every callable in the universe to the conservative ⊤ ([`top`]). Called
-/// when the modes worklist exhausts its cap: a partially-converged summary set is
-/// monotone-below its true fixpoint, so ANY entry may be too precise — the only
-/// sound recovery is to jump the whole universe to ⊤.
-fn reset_to_top(summaries: &mut HashMap<Symbol, ModeSummary>, universe: &[Callable]) {
-    for c in universe {
-        summaries.insert(c.key.clone(), top(&c.params));
-    }
-}
-
-/// The conservative ⊤ [`SiteFacts`] for a body: every escape-bearing node's span
-/// marked `escapes=true`, provenance empty (⇒ Decision-24 materialize). The sound
-/// facts to publish on cap exhaustion (F3): a partial transfer walk can leave a
-/// node `escapes=false` (or absent) below its true `true`, which the backend
-/// would trust to elide a retain ⇒ UAF. `true` everywhere is the safe ⊤. The
-/// confined axis is left absent (⊤ = Crossing/atomic through the accessor).
-fn conservative_site_facts(body: &MonoExpr) -> SiteFacts {
-    let mut f = SiteFacts::default();
-    collect_escape_spans(body, &mut f);
-    f
-}
-
-/// Mark every escape-bearing node's span `escapes=true` (mirrors the node set
-/// the transfer walk and `sites::annotate` touch), recursing into all children.
-fn collect_escape_spans(expr: &MonoExpr, f: &mut SiteFacts) {
-    match expr {
-        MonoExpr::StringLit { span, .. } => {
-            f.escapes.insert(*span, true);
-        }
-        MonoExpr::Lambda { span, body, .. } => {
-            f.escapes.insert(*span, true);
-            collect_escape_spans(body, f);
-        }
-        MonoExpr::Apply {
-            span, callee, args, ..
-        } => {
-            f.escapes.insert(*span, true);
-            collect_escape_spans(callee, f);
-            for a in args {
-                collect_escape_spans(a, f);
-            }
-        }
-        MonoExpr::VecLit { span, elements, .. } => {
-            f.escapes.insert(*span, true);
-            for e in elements {
-                collect_escape_spans(e, f);
-            }
-        }
-        MonoExpr::ConstrADT { span, fields, .. } => {
-            f.escapes.insert(*span, true);
-            for x in fields {
-                collect_escape_spans(x, f);
-            }
-        }
-        MonoExpr::Let { bindings, body, .. } | MonoExpr::ParBind { bindings, body, .. } => {
-            for (_, rhs) in bindings {
-                collect_escape_spans(rhs, f);
-            }
-            collect_escape_spans(body, f);
-        }
-        MonoExpr::If {
-            cond,
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            collect_escape_spans(cond, f);
-            collect_escape_spans(then_branch, f);
-            collect_escape_spans(else_branch, f);
-        }
-        MonoExpr::Match {
-            scrutinee, arms, ..
-        } => {
-            collect_escape_spans(scrutinee, f);
-            for arm in arms {
-                collect_escape_spans(&arm.body, f);
-            }
-        }
-        MonoExpr::Trace { body, .. } => collect_escape_spans(body, f),
-        MonoExpr::LaunchContinue {
-            launched,
-            continuation,
-            ..
-        } => {
-            collect_escape_spans(launched, f);
-            collect_escape_spans(continuation, f);
-        }
-        MonoExpr::IntLit { .. }
-        | MonoExpr::FloatLit { .. }
-        | MonoExpr::BoolLit { .. }
-        | MonoExpr::Var { .. } => {}
-    }
-}
-
 #[cfg(test)]
 mod tests;
+
+/// Test-only observation of the modes worklist's per-visit sequence.
+///
+/// The worklist hands back only its *final* state — a converged summary map, or
+/// a refusal (§19.5) recording that the cap was exhausted but not what burned
+/// it. The recorded sequence shows whether the visits went on an oscillation and
+/// how many each callable consumed, which is the observation the S121
+/// cap-exhaustion hypothesis is refutable by. Compiled only under `cfg(test)`; production builds contain
+/// neither the buffer nor the call site.
+#[cfg(test)]
+pub(super) mod visit_log {
+    use super::{ModeSummary, Symbol};
+    use std::cell::RefCell;
+
+    thread_local! {
+        static LOG: RefCell<Option<Vec<(Symbol, ModeSummary)>>> = const { RefCell::new(None) };
+    }
+
+    /// Append one completed modes visit. A no-op unless [`capture`] armed the
+    /// buffer on this thread.
+    pub(super) fn record(key: &Symbol, summary: &ModeSummary) {
+        LOG.with(|l| {
+            if let Some(log) = l.borrow_mut().as_mut() {
+                log.push((key.clone(), summary.clone()));
+            }
+        });
+    }
+
+    /// Run `f` with the visit log armed, returning its value and the ordered
+    /// `(callable, published summary)` sequence the modes worklist produced.
+    pub(crate) fn capture<R>(f: impl FnOnce() -> R) -> (R, Vec<(Symbol, ModeSummary)>) {
+        LOG.with(|l| *l.borrow_mut() = Some(Vec::new()));
+        let value = f();
+        let log = LOG.with(|l| l.borrow_mut().take()).unwrap_or_default();
+        (value, log)
+    }
+}

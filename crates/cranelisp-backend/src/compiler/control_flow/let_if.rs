@@ -14,7 +14,7 @@ use cranelisp_types::{ConcreteType, CranelispError, MonoExpr, Span, Symbol};
 
 use super::FnCompiler;
 use super::sparkability::{
-    LENIENT_DISABLED, SPARK_ADMIT, SparkAdmit, find_sparkable_bindings,
+    LENIENT_DISABLED, SPARK_ADMIT, SparkAdmit, binder_before, find_sparkable_bindings,
     find_sparkable_bindings_with,
 };
 
@@ -35,16 +35,11 @@ where
             .get(&self.ctx.current_module)
             .map(|table| {
                 table
-                    .symbols
-                    .iter()
+                    .all_symbols()
                     .filter(|(_, entry)| {
                         matches!(
-                            entry,
-                            cranelisp_types::ModuleEntry::Def { kind, .. }
-                                if matches!(
-                                    **kind,
-                                    cranelisp_types::DefKind::Constructor { .. }
-                                )
+                            entry.callable().map(|callable| &callable.origin),
+                            Some(cranelisp_types::CallableOrigin::Ctor { .. })
                         )
                     })
                     // I-1 (S109 W1.2 §10.4): the storage key is canonical
@@ -131,26 +126,12 @@ where
         self.in_tail_position = false;
 
         for (name, val_expr) in bindings {
-            // Record the binding's concrete type (embedded as a `Type` for the
-            // `Type`-keyed RC machinery).
-            self.variable_types
-                .insert(name.clone(), val_expr.ty().to_type());
-
+            // §4.3: a repeated name's initializer sees the PRECEDING binder, so
+            // nothing about this binder is published until its value exists.
+            // `bind_local` then publishes its variable and type together
+            // (`binding-scope.md` §3.3), as one binder's fact set.
             let val = self.compile_expr(val_expr)?;
-
-            // If compile_expr produced a closure with drop glue, record it.
-            if let Some(glue_id) = self.pending_closure_drop_glue.take() {
-                self.closure_drop_glue.insert(name.clone(), glue_id);
-            }
-
-            let var = self.fresh_variable();
-            self.builder.declare_var(var, types::I64);
-            self.builder.def_var(var, val);
-            self.variables.insert(name.clone(), var);
-            self.scope_stack
-                .last_mut()
-                .unwrap_or_else(|| unreachable!("invariant: scope_stack non-empty"))
-                .push(name.clone());
+            self.bind_local(name, val, Some(val_expr.ty().to_type()));
 
             // R1 — alias-binding recognition (0668 §3, W-B2). A `let` binding whose
             // value FORWARDS a live-binding alias (a bare `Var`, or a `Var`
@@ -173,19 +154,19 @@ where
         // Body inherits tail position.
         self.in_tail_position = saved_tail;
 
-        // Determine which variable (if any) is the return value — its
-        // ownership transfers to the caller, so skip dec for it.
-        let skip_var = Self::return_var_in_scope(body, self.scope_stack.last());
+        // Determine which BINDER (if any) is the return value — its ownership
+        // transfers to the caller, so skip dec for that slot.
+        let skip_var = self.return_var_in_scope(body);
 
         let result = self.compile_expr(body)?;
 
         // Protect the return value from scope cleanup if skip_var didn't
-        // identify a specific variable to preserve (non-trivial body).
+        // identify a specific binder to preserve (non-trivial body).
         self.protect_return_value(&skip_var, result, body);
 
         // Pop the scope frame, emitting rc_dec for heap-typed bindings
-        // except the return value.
-        self.pop_scope_with_cleanup(skip_var.as_ref())?;
+        // except the return value's binder.
+        self.pop_scope_with_cleanup(skip_var)?;
 
         Ok(result)
     }
@@ -212,15 +193,16 @@ where
         // order, lenient-eval.md §2.6.1), so when a *dependent* binding's thunk
         // is built every IVar it depends on has already been created and recorded
         // in `sparked_name_to_ivar`.
-        let mut ivar_map: std::collections::HashMap<usize, Value> =
-            std::collections::HashMap::new();
-        // Earlier sparked bindings: name -> (IVar pointer, value type). Used to
-        // resolve a dependent binding's dependencies to their IVars (§4.5).
-        let mut sparked_name_to_ivar: std::collections::HashMap<Symbol, (Value, ConcreteType)> =
+        // Per-binding-vector state, indexed by BINDING POSITION
+        // (`design/backend/binding-scope.md` §3.4) and read through the one
+        // shared resolver `binder_before`. Keying it by name let a non-sparked
+        // rebinding leave the displaced binder's IVar visible to a later
+        // binding's dependency resolution, which then read the wrong value.
+        let mut ivar_map: std::collections::HashMap<usize, (Value, ConcreteType)> =
             std::collections::HashMap::new();
 
         for &idx in sparkable {
-            let (name, val_expr) = &bindings[idx];
+            let (_, val_expr) = &bindings[idx];
 
             // A dependent binding references one or more EARLIER sparked
             // bindings. The relaxed admission rule (sparkability.rs §2.6)
@@ -232,9 +214,9 @@ where
                 super::find_free_vars(val_expr, &[])
                     .into_iter()
                     .filter_map(|v| {
-                        sparked_name_to_ivar
-                            .get(&v)
-                            .map(|(ivar, ty)| (v.clone(), *ivar, ty.to_type()))
+                        let at = binder_before(bindings, idx, &v)?;
+                        let (ivar, ty) = ivar_map.get(&at)?;
+                        Some((v.clone(), *ivar, ty.to_type()))
                     })
                     .collect();
             deps.sort_by(|a, b| a.0.cmp(&b.0));
@@ -281,18 +263,14 @@ where
             // Call cranelisp_ivar_spark(ivar_ptr)
             let _spark_result = self.emit_extern_call("cranelisp_ivar_spark", &[ivar_val], span)?;
 
-            ivar_map.insert(idx, ivar_val);
-            sparked_name_to_ivar.insert(name.clone(), (ivar_val, val_expr.ty().clone()));
+            ivar_map.insert(idx, (ivar_val, val_expr.ty().clone()));
         }
 
         // Phase 2: Process all bindings in order.
         for (i, (name, val_expr)) in bindings.iter().enumerate() {
-            self.variable_types
-                .insert(name.clone(), val_expr.ty().to_type());
-
             let val = if sparkable_set.contains(&i) {
                 // Force the IVar and dec our reference.
-                let ivar_val = ivar_map[&i];
+                let (ivar_val, _) = ivar_map[&i];
                 let forced_val =
                     self.emit_extern_call("cranelisp_ivar_force", &[ivar_val], span)?;
 
@@ -306,18 +284,7 @@ where
                 self.compile_expr(val_expr)?
             };
 
-            if let Some(glue_id) = self.pending_closure_drop_glue.take() {
-                self.closure_drop_glue.insert(name.clone(), glue_id);
-            }
-
-            let var = self.fresh_variable();
-            self.builder.declare_var(var, types::I64);
-            self.builder.def_var(var, val);
-            self.variables.insert(name.clone(), var);
-            self.scope_stack
-                .last_mut()
-                .unwrap_or_else(|| unreachable!("invariant: scope_stack non-empty"))
-                .push(name.clone());
+            self.bind_local(name, val, Some(val_expr.ty().to_type()));
 
             // R1 — alias-binding recognition (0668 §3, W-B2); see the sequential
             // path. A sparked binding's `val_expr` is never a bare-`Var` alias (a
@@ -330,10 +297,10 @@ where
 
         // Phase 3: Compile body.
         self.in_tail_position = saved_tail;
-        let skip_var = Self::return_var_in_scope(body, self.scope_stack.last());
+        let skip_var = self.return_var_in_scope(body);
         let result = self.compile_expr(body)?;
         self.protect_return_value(&skip_var, result, body);
-        self.pop_scope_with_cleanup(skip_var.as_ref())?;
+        self.pop_scope_with_cleanup(skip_var)?;
 
         Ok(result)
     }
@@ -548,3 +515,6 @@ where
         Ok(self.builder.block_params(merge_block)[0])
     }
 }
+
+#[cfg(test)]
+mod binder_publication_tests;

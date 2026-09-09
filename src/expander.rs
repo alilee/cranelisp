@@ -29,9 +29,9 @@
 //! [`View`]: cranelisp_types::View
 
 use cranelisp_types::{
-    CranelispError, DefKind, ErrorLocation, FQSymbol, MacroExpander, MacroInvokeError, MacroParam,
-    ModuleAliases, ModuleEntry, ModuleFullPath, NULLARY_TAG_THRESHOLD, ResolutionScope, Sexp, Span,
-    Symbol, View,
+    CranelispError, Decl, ErrorLocation, FQSymbol, Life, MacroExpander, MacroInvokeError,
+    MacroParam, ModuleAliases, ModuleFullPath, NULLARY_TAG_THRESHOLD, Realization,
+    ResolutionScope, Sexp, Span, Symbol, View,
 };
 
 use std::collections::HashSet;
@@ -107,62 +107,33 @@ impl MacroExpander for JitMacroExpander<'_> {
         args: &[Sexp],
         call_span: Span,
     ) -> Result<Sexp, MacroInvokeError> {
-        // 1. Read the macro entry's clause metadata from its home module.
-        let clauses_meta = self
-            .macro_clauses(fq)
-            .ok_or_else(|| MacroInvokeError::Aborted {
-                fq: fq.clone(),
-                message: format!(
-                    "macro `{}/{}` has no compiled clauses in its home module \
+        // Read parent metadata, select the exact clause, and lease its pointer
+        // plus owner from one coherent module snapshot. The read guard is
+        // released before any macro code executes.
+        let (descriptors, selected) =
+            self.macro_execution_snapshot(fq, args)
+                .ok_or_else(|| MacroInvokeError::Aborted {
+                    fq: fq.clone(),
+                    message: format!(
+                        "macro `{}/{}` has no compiled clauses in its home module \
                      (orchestrator-sequencing bug — clause not in memory)",
-                    fq.module, fq.symbol
-                ),
-                span: call_span,
-            })?;
+                        fq.module, fq.symbol
+                    ),
+                    span: call_span,
+                })?;
 
-        // 2. Build pointer-free descriptors and select by source shape.
-        let descriptors: Vec<MacroClauseDescriptor> = clauses_meta
-            .iter()
-            .enumerate()
-            .map(|(clause_index, meta)| MacroClauseDescriptor {
-                clause_index,
-                params: meta.params.clone(),
-                rest_param: meta.rest_param.clone(),
-            })
-            .collect();
-
-        let descriptor = find_matching_clause(&descriptors, args)
-            .ok_or_else(|| no_matching_clause_error(fq, &descriptors, args, call_span))?;
-        let clause_name = Symbol::from(format!(
-            "__macro_{}_clause_{}",
-            fq.symbol, descriptor.clause_index
-        ));
-        let (func_ptr, owner) = self
-            .clause_code_lease(&fq.module, &clause_name)
-            .ok_or_else(|| MacroInvokeError::Aborted {
-                fq: fq.clone(),
-                message: format!(
-                    "macro `{}/{}` clause {} is not in memory \
+        let selected =
+            selected.ok_or_else(|| no_matching_clause_error(fq, &descriptors, args, call_span))?;
+        let clause_index = selected.0;
+        let executable = selected.1.ok_or_else(|| MacroInvokeError::Aborted {
+            fq: fq.clone(),
+            message: format!(
+                "macro `{}/{}` clause {} is not in memory \
                      (orchestrator-sequencing bug)",
-                    fq.module, fq.symbol, descriptor.clause_index
-                ),
-                span: call_span,
-            })?;
-        let entry = std::ptr::NonNull::new(func_ptr.cast_mut()).ok_or_else(|| {
-            MacroInvokeError::Aborted {
-                fq: fq.clone(),
-                message: format!(
-                    "macro `{}/{}` clause {} has a null entry point",
-                    fq.module, fq.symbol, descriptor.clause_index
-                ),
-                span: call_span,
-            }
+                fq.module, fq.symbol, clause_index
+            ),
+            span: call_span,
         })?;
-        let executable = ExecutableMacroClause {
-            entry,
-            owner,
-            abi: MacroClauseAbi::SexpListToSexpI64V1,
-        };
 
         // 4. Marshal + signal-protected invoke + unmarshal + span-rewrite.
         execute_matched_clause(&executable, args, call_span)
@@ -246,44 +217,62 @@ fn describe_clause_arities(clauses: &[MacroClauseDescriptor]) -> String {
 }
 
 impl JitMacroExpander<'_> {
-    /// Read the `clauses_meta` from the macro's home-module `DefKind::Macro`
-    /// entry. The `fq` is expected to address the canonical entry directly
-    /// (the orchestrator resolved it via `resolve_macro_head`, which
-    /// chain-follows to the home module), so a single direct lookup suffices.
-    fn macro_clauses(&self, fq: &FQSymbol) -> Option<Vec<cranelisp_types::MacroClauseInfo>> {
-        let table = self.symbol_tables.get(&fq.module)?;
-        match table.get(fq.symbol.as_ref())? {
-            ModuleEntry::Def { kind, .. } => match kind.as_ref() {
-                DefKind::Macro { clauses_meta, .. } => Some(clauses_meta.clone()),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    /// Load a clause function's compiled code pointer from its per-module GOT
-    /// slot. Returns `None` if the entry is absent or its GOT slot is empty.
-    fn clause_code_lease(
+    /// Snapshot parent metadata, exact clause identity, ABI, pointer, and code
+    /// owner under one module read guard. The returned owner keeps the emitted
+    /// code alive after the guard is dropped and during invocation.
+    fn macro_execution_snapshot(
         &self,
-        module: &ModuleFullPath,
-        clause_name: &Symbol,
-    ) -> Option<(*const u8, Code)> {
-        let table = self.symbol_tables.get(module)?;
-        let entry = table.get(clause_name.as_ref())?;
-        let ModuleEntry::Def {
-            code: Some(code), ..
-        } = entry
-        else {
+        fq: &FQSymbol,
+        args: &[Sexp],
+    ) -> Option<(
+        Vec<MacroClauseDescriptor>,
+        Option<(usize, Option<ExecutableMacroClause>)>,
+    )> {
+        let table = self.symbol_tables.get(&fq.module)?;
+        let Decl::Macro(declaration) = &table.get(fq.symbol.as_ref())?.declaration else {
             return None;
         };
-        // The callable slot rides on the `DefKind` variant (S83 reshape,
-        // FIXME 0356/0357) — read it via the `callable_got_slot()` chokepoint.
-        let slot = entry.callable_got_slot()?;
-        let ptr = table.got.load_slot(slot);
+        let descriptors: Vec<MacroClauseDescriptor> = declaration
+            .clauses
+            .iter()
+            .enumerate()
+            .map(|(clause_index, clause)| MacroClauseDescriptor {
+                clause_index,
+                params: clause.params.clone(),
+                rest_param: clause.rest_param.clone(),
+            })
+            .collect();
+        let Some(descriptor) = find_matching_clause(&descriptors, args) else {
+            return Some((descriptors, None));
+        };
+        let clause_index = descriptor.clause_index;
+        let clause = declaration.clauses.get(clause_index)?;
+        let Life::Concrete {
+            slot,
+            realization: Realization::Body {
+                code: Some(code), ..
+            },
+            ..
+        } = &clause.callable.life
+        else {
+            return Some((descriptors, Some((clause_index, None))));
+        };
+        let ptr = table.got.load_slot(slot.index());
         if ptr.is_null() {
-            None
+            Some((descriptors, Some((clause_index, None))))
         } else {
-            Some((ptr, code.clone()))
+            let entry = std::ptr::NonNull::new(ptr.cast_mut())?;
+            Some((
+                descriptors,
+                Some((
+                    clause_index,
+                    Some(ExecutableMacroClause {
+                        entry,
+                        owner: code.clone(),
+                        abi: MacroClauseAbi::SexpListToSexpI64V1,
+                    }),
+                )),
+            ))
         }
     }
 }
@@ -1475,16 +1464,7 @@ fn expand_recognized_macro(
 mod tests {
     use super::*;
     use cranelisp_types::Span;
-    use cranelisp_types::{DefKind, MacroClauseInfo, ModuleAliases, Scheme, Type, Visibility};
-    use std::collections::HashMap;
-
-    fn empty_scheme() -> Scheme {
-        Scheme {
-            type_vars: vec![],
-            constraints: HashMap::new(),
-            ty: Type::Int,
-        }
-    }
+    use cranelisp_types::{MacroParam, ModuleAliases, Visibility};
 
     /// Build a one-module symbol table set with `name` registered as a macro
     /// (a `DefKind::Macro` entry with `clause_count` clauses).
@@ -1496,22 +1476,15 @@ mod tests {
         let path = ModuleFullPath::from(module);
         let tables = dashmap::DashMap::new();
         let mut st = crate::code::SessionSymbolTable::new_with_params(path.clone());
-        let clauses_meta: Vec<MacroClauseInfo> = (0..clause_count)
-            .map(|_| MacroClauseInfo {
-                params: vec![],
-                rest_param: None,
-            })
-            .collect();
-        let entry = ModuleEntry::def(
-            empty_scheme(),
-            DefKind::Macro {
-                clauses_meta,
-                macro_sexp: cranelisp_types::Sexp::List(vec![], Span::SYNTHETIC),
-            },
-        )
-        .visibility(Visibility::Public)
-        .build();
-        st.insert(Symbol::from(name), entry);
+        crate::repl::test_support::install_macro_fixture(
+            &mut st,
+            name,
+            cranelisp_types::Sexp::List(vec![], Span::SYNTHETIC),
+            (0..clause_count)
+                .map(|_| Vec::<MacroParam>::new())
+                .collect(),
+            Visibility::Public,
+        );
         tables.insert(path, st);
         tables
     }
@@ -2054,18 +2027,12 @@ mod tests {
         let tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
             dashmap::DashMap::new();
         let mut st = crate::code::SessionSymbolTable::new_with_params(path.clone());
-        let entry = ModuleEntry::def(
-            empty_scheme(),
-            DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Concrete {
-                    got_slot: 0,
-                    mode_summary: None,
-                },
-            },
-        )
-        .visibility(Visibility::Public)
-        .build();
-        st.insert(Symbol::from("plain-fn"), entry);
+        let _ = crate::repl::test_support::install_userfn(
+            &mut st,
+            "plain-fn",
+            None,
+            Visibility::Public,
+        );
         tables.insert(path, st);
         let aliases = ModuleAliases::default();
         let pf = cranelisp_typecheck::PreludeFallback::default();
@@ -2082,24 +2049,16 @@ mod tests {
         name: &str,
         visibility: cranelisp_types::Visibility,
     ) -> dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> {
-        use cranelisp_types::MacroClauseInfo;
         let path = ModuleFullPath::from(module);
         let tables = dashmap::DashMap::new();
         let mut st = crate::code::SessionSymbolTable::new_with_params(path.clone());
-        let clauses_meta = vec![MacroClauseInfo {
-            params: vec![],
-            rest_param: None,
-        }];
-        let entry = ModuleEntry::def(
-            empty_scheme(),
-            DefKind::Macro {
-                clauses_meta,
-                macro_sexp: cranelisp_types::Sexp::List(vec![], Span::SYNTHETIC),
-            },
-        )
-        .visibility(visibility)
-        .build();
-        st.insert(Symbol::from(name), entry);
+        crate::repl::test_support::install_macro_fixture(
+            &mut st,
+            name,
+            cranelisp_types::Sexp::List(vec![], Span::SYNTHETIC),
+            vec![Vec::new()],
+            visibility,
+        );
         tables.insert(path, st);
         tables
     }

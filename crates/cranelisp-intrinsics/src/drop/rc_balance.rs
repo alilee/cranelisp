@@ -2,7 +2,7 @@ use super::*;
 use crate::alloc::{alloc_count, alloc_with_rc, dealloc_count};
 use crate::heap_string::alloc_string;
 use crate::vec_runtime::{vec_drop, vec_new, vec_set_copy};
-use cranelisp_types::{TAG_SCONS, TAG_SEXP_LIST, TAG_SEXP_STR};
+use cranelisp_types::{TAG_SCONS, TAG_SEXP_ANNOTATED, TAG_SEXP_LIST, TAG_SEXP_STR};
 
 const TAG_OFF: isize = TAG_OFFSET;
 const F0_OFF: isize = FIELD0_OFFSET;
@@ -57,6 +57,14 @@ fn make_scons(head: i64, tail: i64) -> i64 {
     base
 }
 
+fn make_sexp_annotated(stype: i64, sform: i64) -> i64 {
+    let base = alloc_with_rc(24) as i64; // tag + stype + sform
+    write_field(base, TAG_OFF, TAG_SEXP_ANNOTATED);
+    write_field(base, F0_OFF, stype);
+    write_field(base, F1_OFF, sform);
+    base
+}
+
 // spec: spec/12-runtime.md §12.3 — ADT sum (Some "x") frees its String
 // field with the container. Legacy `rc_mixed_adt_some_drop_balanced`.
 #[test]
@@ -82,6 +90,22 @@ fn rc_balance_adt_product_two_string_fields() {
             write_field(base, TAG_OFF, TAG_SEXP_LIST);
             write_field(base, F0_OFF, list);
             base
+        },
+        consume_sexp,
+    );
+}
+
+// spec: design/intrinsics/s121-c5-intrinsics-visit.md §5 — the two owned
+// Sexp fields of an Annotated node are included in the structural RC walk.
+#[test]
+fn rc_balance_nested_sexp_annotated_tree() {
+    assert_balanced(
+        || {
+            let stype = make_sexp_str(alloc_string(b"Int") as i64);
+            let sform = make_sexp_str(alloc_string(b"value") as i64);
+            let inner = make_sexp_annotated(stype, sform);
+            let outer_form = make_sexp_str(alloc_string(b"body") as i64);
+            make_sexp_annotated(inner, outer_form)
         },
         consume_sexp,
     );

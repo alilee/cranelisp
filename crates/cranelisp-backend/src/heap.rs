@@ -34,7 +34,7 @@ use cranelift_module::{FuncId, Module};
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    ConcreteType, FQTypeName, HeapHeader, ModuleEntry, ModuleFullPath, Symbol, SymbolTable,
+    CallableOrigin, ConcreteType, FQTypeName, HeapHeader, ModuleFullPath, Symbol, SymbolTable,
 };
 
 use cranelisp_types::NULLARY_TAG_THRESHOLD;
@@ -318,7 +318,9 @@ fn emit_nullary_skip_guard(builder: &mut FunctionBuilder, ptr: Value, cont_block
     let guarded_block = builder.create_block();
     let threshold = builder.ins().iconst(types::I64, NULLARY_THRESHOLD_I64);
     let is_tag = builder.ins().icmp(IntCC::UnsignedLessThan, ptr, threshold);
-    builder.ins().brif(is_tag, cont_block, &[], guarded_block, &[]);
+    builder
+        .ins()
+        .brif(is_tag, cont_block, &[], guarded_block, &[]);
     builder.switch_to_block(guarded_block);
     builder.seal_block(guarded_block);
 }
@@ -760,13 +762,13 @@ where
     // ctors (with a `type_def: Some(..)` facet), so the one `Def` arm covers
     // both — its `field_count` is the arity. The prior `TypeDef`-with-
     // `constructor_scheme` product leg is retired.
-    match table.get(ctor_name.as_ref()) {
-        Some(ModuleEntry::Def { kind, .. }) => match &**kind {
-            cranelisp_types::DefKind::Constructor { field_count, .. } => Some(*field_count),
+    table
+        .get(ctor_name.as_ref())
+        .and_then(cranelisp_types::Binding::callable)
+        .and_then(|callable| match &callable.origin {
+            CallableOrigin::Ctor { field_count, .. } => Some(*field_count),
             _ => None,
-        },
-        _ => None,
-    }
+        })
 }
 
 /// Threshold constant for discriminating nullary tags from heap pointers.

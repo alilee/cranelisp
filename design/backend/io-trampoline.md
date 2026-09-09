@@ -2,6 +2,30 @@
 
 Sprint 16 I2 — codegen and runtime for deferred IO execution.
 
+## Current result-handoff layout (Sprint 121)
+
+The runtime must be able to dispose a produced `a` when cancellation prevents
+its handoff. The backend therefore emits the canonical `drop<a>` address on the
+ownership edge that receives the result; zero denotes a non-owning
+representation. These are private backend↔intrinsics layouts:
+
+| Node | Payload after the 16-byte header |
+|---|---|
+| Bind | `tag, inner_io, continuation, input_disposer` |
+| Par | `tag, count, (branch_io, branch_disposer) × count` |
+| Select | `tag, branch_vec, common_result_disposer` |
+| Launch | `tag, launched_subtree, detached_result_disposer` |
+
+The disposer words are scalar function addresses and are never traversed by IO
+tree teardown. A produced value owns its disposer until the runtime explicitly
+transfers the value to a continuation, Par buffer, supervisor, or top-level
+caller. Cancellation and fault exits produce no value. This amendment changes
+no platform node constructor, `CLIO`/`Effect` layout, public Rust API,
+`ABI_VERSION = 10`, or `cranelisp_run_io(i64) -> i64`.
+
+Older sections retain their historical rationale, but any statement that these
+four nodes carry only their authored heap fields is superseded by this layout.
+
 ## Overview
 
 The IO model is a deferred-execution system. When user code calls `(print "hello")`, no side effect occurs. Instead, an `Effect` node is allocated on the heap. When user code calls `(bind io cont)`, a `Bind` node links the IO computation with a continuation closure. The resulting IO tree is forced by the runtime trampoline, which walks the tree iteratively with an explicit continuation stack.
@@ -28,16 +52,26 @@ Three node types, discriminated by tag at offset 16:
 
 A completed value. Created by `(Pure x)` — the `Pure` constructor, which is an ordinary ADT data constructor.
 
+**S121 (FIXME 0934): `Pure` is a TWO-field allocation.** Layout ruled by `/arch` at `design/arch/total-concreteness.md` §3.4 and `design/arch/interfaces.md` §"IO Tag Constants"; the C4 half is `s121-c4-visit.md` §6. `ABI_VERSION` 9→10 gates it (C7's visit). The separate private result-handoff amendment above also widens Bind, Par, Select, and Launch; it does not change a platform-authored node or the ABI.
+
 ```
-[header(16) | tag=0 (8) | value (8)]
- offset 0     offset 16   offset 24
- total: 32 bytes (header) + 16 bytes (payload) = 32 bytes
- alloc_size = 32
+[header(16) | tag=0 (8) | payload (8) | payload_glue (8)]
+ offset 0     offset 16   offset 24     offset 32
+ alloc_size = 40
 ```
 
-- `value` (offset 24): the completed value, any Cranelisp type as i64.
+- `payload` (offset 24): the completed value, any Cranelisp type as i64. **Unmoved** — every existing *read* (`FIELD_0_OFFSET` in the trampoline, `consume_io_tree`, `io_observer`) and every pattern match binding field 0 is untouched. Unchanged reads do not make the run lane byte-identical: it gains one word store per transferring seam (§3.1).
+- `payload_glue` (offset 32): a **hidden** self-description word, never a language-visible field (IO mints no accessors). It is the closure `DROP_GLUE_PTR` precedent (Decision 0011), not a header type-word — R15 stands.
 
-Allocation: standard ADT data constructor path. `(Pure 42)` allocates 16 bytes of payload via `emit_alloc(16)` (which adds the 16-byte header to get 32 total), stores tag 0 at offset 16, stores the value at offset 24. Uses the data constructor calling convention (see `ring2-rc.md` §3.3): no RC adjustments at the call site; drop glue handles field cleanup.
+**What the word means, exactly.** *This node still owns its payload, and this is how to discharge it.* Zero means there is nothing here to discharge, and zero has exactly two sources with the same meaning: a non-heap payload (known at the stamp site, which also closes the wild-write-on-scalar hazard by construction), or a payload whose ownership has already left the node on the run lane. It is an **ownership witness**, not a type description: reading it as "the payload's type" would force a run-lane/teardown-lane coordination rule, whereas a witness answers per node. The witness must be *maintained*, so the run lane clears it on transfer (§3.1) — required by Decision-24 sequencing, not by reference sharing.
+
+**Stamp (produce side) — four sanctioned sites, three construction plus one adoption.** Every `Pure` *construction* site is concrete post-mono (I-FRAME) and every one is compiled code — the in-tree runtime only reads `Pure` nodes, never allocates them. The three construction sites are the inline concrete `ConstrADT` lowering, the resolved-constructor `Apply` path, and the value-position constructor wrapper body. Each holds the constructed value's concrete type, asks the drop-glue registry for the payload's glue exactly as a release site would, and appends `func_addr` of that same `FuncId` — or `iconst 0` when the registry declines — as one additional field value. The tag-and-fields emitter is unchanged and is never given a type; `payload_size(2)` follows. No new release identity is minted. A stack-placed `Pure` (`NoEscape` ∧ scalar payload) always carries the sentinel `0`.
+
+The **fourth** site is the platform-return adoption stamp (`/arch`, `design/arch/total-concreteness.md` §3.4 "the platform-return seam", 2026-09-01; C4 half at `s121-c4-visit.md` §6.7). A platform DLL constructs `Pure` through `CLIO::pure` and structurally cannot name a glue address, so it writes the sentinel `0`; the backend overwrites it at the ABI crossing with the same canonical `drop<T>` for the `T` of the callee's `(Fn […] (IO T))` scheme. It is a *store* rather than a field value because the node already exists, and it is licensed by the returned node's **tag**, not by the callee's kind — see §7.
+
+
+
+Allocation otherwise unchanged: standard ADT data constructor path, data constructor calling convention (see `ring2-rc.md` §3.3) — no RC adjustments at the call site.
 
 ### 1.2 Effect Node (tag = 1)
 
@@ -62,14 +96,16 @@ Allocation: Effect nodes are allocated by platform DLL code using the host alloc
 A chain linking an inner IO computation with a continuation closure. Created by the `bind` inline primitive.
 
 ```
-[header(16) | tag=2 (8) | inner_io (8) | cont (8)]
- offset 0     offset 16   offset 24      offset 32
- total: 40 bytes
- alloc_size = 40
+[header(16) | tag=2 (8) | inner_io (8) | cont (8) | input_disposer (8)]
+ offset 0     offset 16   offset 24      offset 32  offset 40
+ total: 48 bytes
+ alloc_size = 48
 ```
 
 - `inner_io` (offset 24): pointer to another IO node (Pure, Effect, or Bind).
 - `cont` (offset 32): pointer to a Cranelisp closure `(Fn [a] (IO b))`.
+- `input_disposer` (offset 40): canonical `drop<a>` address, or zero when `a`
+  owns no heap value. The runtime arms it only after the inner IO produces.
 
 Allocation: inline by the `bind` primitive codegen (see §2).
 
@@ -97,29 +133,28 @@ These match the ADT constructor definition order in the compiler-seeded IO type.
 Given compiled argument values `l` (inner IO) and `r` (continuation closure):
 
 ```
-// 1. Allocate Bind node: 24 bytes payload (tag + inner_io + cont)
-ptr = call emit_alloc(24)
+// 1. Allocate Bind node: 32 bytes payload
+ptr = call emit_alloc(32)
 
 // 2. Store fields
 store tag=2    at ptr + 16    // TAG_OFFSET
 store l        at ptr + 24    // inner_io field
 store r        at ptr + 32    // cont field
+store drop<a>  at ptr + 40    // input disposer, or 0
 
-// 3. RC: inc both arguments
-emit_rc_inc(l)    // inner IO tree gains a new reference from the Bind node
-emit_rc_inc(r)    // continuation closure gains a new reference from the Bind node
+// 3. RC: consuming arguments transfer into the Bind node. Variable arguments
+// were already incremented by argument compilation; temporaries move at rc=1.
 
 // 4. Return ptr
 ```
 
-### 2.2 Why Both Arguments Are Inc'd
+### 2.2 Consuming ownership transfer
 
-The Bind node holds references to both `l` (inner IO) and `r` (continuation). These are independent of whatever references the caller already holds. Without inc:
-
-- If `l` was a temporary (rc=1 from its allocation), and the caller drops it at scope exit, the inner IO tree could be freed while the Bind node still references it.
-- If `r` was a named variable (rc=1 from its scope binding), and scope cleanup dec's it, the continuation closure could be freed while the Bind node still holds a pointer.
-
-Both incs ensure the Bind node's references are accounted for. The Bind node's drop glue (§3) will dec both fields when the Bind node itself is freed.
+The Bind node takes ownership of both `l` (inner IO) and `r` (continuation).
+Consuming argument compilation increments a variable before the store and lets a
+fresh temporary transfer its existing reference. The node therefore owns one
+reference to each field without an unconditional second increment. Its drop
+path discharges both owning fields; `input_disposer` is scalar metadata.
 
 ### 2.3 Calling Convention
 
@@ -137,6 +172,57 @@ The same reasoning applies symmetrically to `r`.
 IO nodes are ADTs, so their drop glue follows the standard ADT drop glue mechanism (see `ring2-rc.md` §4.2). However, each constructor has different field cleanup requirements.
 
 ### 3.1 Pure Drop Glue
+
+> **S121: IO teardown is RUNTIME-DIRECTED and this section is superseded.**
+> The paragraph below describes deriving `Pure`'s field discharge from the IO
+> type parameter at the dec site — which is exactly what could not be done
+> (`non-concrete-release-contract.md` §4 face 4: `Bind`'s existential defeats
+> per-concrete glue derivation, and every release of a concrete `IO T` hard-
+> refused). Retained as the record of the pre-S121 model.
+>
+> **The live shape** (`s121-c4-visit.md` §6.4): the registry classifies
+> `ADT(primitives/IO, [T])` as runtime-owned, and `drop<IO T>` is a fixed body,
+> the same for every `T` —
+>
+> ```
+> if p < NULLARY_TAG_THRESHOLD: return
+> old = atomic_rmw sub [p+RC_OFFSET], 1
+> if old != 1: return
+> fence
+> call runtime/free_io_node(p)
+> ```
+>
+> — no tag test, no `drop<T>` call, no per-`T` specialisation. `free_io_node`
+> (the intrinsics tail half of `consume_io_tree`, split at the dec) walks the
+> tags and discharges **every** `Pure` in the tree, nested ones included: it
+> reads the stamped `payload_glue` word at field 1 / offset 32 (§1.1) and, when
+> that is non-zero, calls through it with the field-0 payload value (offset 24).
+> `ctor_shapes` is not reached for `primitives/IO`, so its identity check stays
+> exactly as it is. The per-concrete-type glue *name* is retained even though
+> the bodies coincide across `T`: `drop_glue_symbol_name` stays the sole
+> identity authority.
+>
+> **Run lane — reads unchanged, but NOT byte-identical.** The trampoline
+> extracts the payload (ownership transfers onward) and releases the node
+> shallowly; it never calls the glue. Its field-0 reads are untouched, and what
+> it gains is one plain aligned word store: it **clears the glue word before
+> transferring**, at that seam and no other. The teardown reader observes the
+> clear over whichever of three happens-before edges the path supplies —
+> same-strand program order; the clear sequenced before the clearing strand's
+> own Release dec, with teardown behind the zero-observing dec's Acquire fence;
+> or, for a `Par` worker that clears a caller-owned node it never decs, the
+> `oneshot`/rayon join the branch result already rides. The Release-dec edge
+> alone is the fresh path's argument and does not reach the branch clear.
+>
+> **The clear is required, not defensive, and the reason is Decision 24 rather
+> than sharing.** `cranelisp_run_io` forces the caller's tree non-consumingly and
+> then hands the *same* tree to `consume_io_tree`
+> (`crates/cranelisp-intrinsics/src/io.rs:84-94`), so one teardown walk covers
+> both the `Pure` nodes the run lane extracted and the ones it never reached —
+> one tree, one reference, no sharing needed. Per-node lane exclusivity is false
+> here; discharge-exactly-once holds per witnessed *obligation*. That is the
+> Launch §15.5 field-0 sentinel mechanism applied to field 1, and its site is
+> `/design`(intrinsics)'s. Full statement: `s121-c4-visit.md` §6.2.
 
 When a Pure node reaches rc=0:
 1. Load `value` from offset 24.
@@ -363,6 +449,7 @@ When user code calls `(print "hello")`:
 3. The platform function (`print_string` in `cranelisp-stdio`) receives the arguments, creates a `CLOwned` handle for any heap captures, and returns `CLIO::effect(closure)`.
 4. `CLIO::effect()` double-boxes the closure, allocates an Effect node via the host allocator, stores tag=1, thunk_ptr, and resource_token=0.
 5. The Effect node pointer (as i64) is returned to the JIT-compiled code.
+6. The backend stamps the returned node — **dispatched on the node's tag, not on the callee's kind** (`/arch`, `design/arch/total-concreteness.md` §3.4, S121; C4 half at `s121-c4-visit.md` §6.7). `IO_TAG_EFFECT` ⇒ the fn-name handle at payload offset 24 (abs 40), value-identical to the pre-S121 unconditional store; `IO_TAG_PURE` ⇒ the payload-glue adoption stamp at abs 32 (§1.1), in-bounds at `ABI_VERSION` ≥ 10; any other tag ⇒ no write. Before S121 the store fired on `DefKind::PlatformEffect` alone and was out of bounds for a `Pure` return at every ABI version — latent, since no in-tree platform fn returns `Pure`, but `CLIO::pure` is published author surface. Register row R19, `design/arch/safety-invariants.md` §4.
 
 ### 7.2 How Effects Are Executed
 
@@ -483,6 +570,7 @@ consequence in `design/arch/platform-interface.md` §6.8) — that seam is the c
 this section is the codegen that realizes it. It reuses the closure-construction
 codegen of `design/backend/ring2-rc.md` / `lambda.rs` (Principle 7 reuse) and the
 GOT-indirect dispatch mechanism of §7 here + `apply.rs::emit_got_indirect_call_via_data_id`.
+(The S6 poll arm returns before §7's stamp block, so the S121 tag dispatch leaves it untouched.)
 
 ### 12.1 What is new vs. the blocking path (and what is byte-identical)
 
@@ -490,7 +578,7 @@ The blocking `IO_TAG_EFFECT` path (§1.2, §7) is **untouched** (arch R3,
 byte-identical-when-off). It works by *calling* the platform DLL fn at the effect
 site (`compile_direct_call` → `emit_got_indirect_call_via_data_id`); the DLL fn
 allocates the Effect node, double-boxes its thunk, and returns the node pointer,
-which the backend then fn-name-stamps (§7 / `apply.rs::stamp_platform_fn_name`). Every
+which the backend then fn-name-stamps (§7 / `apply.rs::stamp_platform_return`). Every
 real platform today is blocking, so this is every effect node constructed today.
 
 The poll-shape arm is structurally different — it **does not call the platform fn**:
@@ -876,10 +964,12 @@ the effect site.
 
 **The backend's blocking-path codegen is UNCHANGED.** The constructor is platform-crate
 code called *inside* the DLL, not emitted by the backend. The backend's only blocking-path
-write is the fn-name stamp (`stamp_platform_fn_name`, §7) at payload offset 24
+write **into an `Effect` node** is the fn-name stamp (`stamp_platform_fn_name`, §7) at payload offset 24
 (`IO_EFFECT_FN_NAME_OFFSET`, abs offset 40); the capacity append sits *after* it at payload
 offset 32 (abs 48), so the stamp is **unaffected** — append-only is precisely what keeps the
-backend's existing store correct. The capacity carrier on the blocking node is `/platform`'s
+backend's existing store correct. (S121 puts that store behind a tag compare and adds a
+`Pure` arm at abs 32 of a *`Pure`* node — §7 step 6. Neither the offset nor the value of the
+`Effect` arm moves, so this paragraph's conclusion is unchanged.) The capacity carrier on the blocking node is `/platform`'s
 deliverable, recorded here only to pin the boundary; the backend touches none of it.
 
 `capacity` is a plain `NeverHeap` i64 — the blocking node's DLL-side drop glue (which never
@@ -1392,8 +1482,8 @@ strand-side sub-tree consumption are intrinsics-side (referenced, not duplicated
 ### 15.1 What the node is, where it sits in the IO tree
 
 `IO_TAG_LAUNCH` is the **next free IO tag after `IO_TAG_EFFECT_POLL = 4`**, so **`5`**. It is a
-**thin, single-field** node — even thinner than the poll node — holding only a pointer to the
-launched IO sub-tree (the detached arm). It carries **no `(token, capacity)`**: the launch-and-
+**one-heap-field node with one scalar disposer word**, holding a pointer to the
+launched IO sub-tree and the canonical disposer for its eventual result. It carries **no `(token, capacity)`**: the launch-and-
 continue backpressure is the **global** reactor-thread admission budget (`GLOBAL_BUDGET_TOKEN`
 sentinel + `global_degree`, §2.13), which is a reactor constant/construction-knob, **not**
 node-baked. A launched leaf that itself needs per-token admission carries that on its own
@@ -1402,12 +1492,13 @@ node-baked. A launched leaf that itself needs per-token admission carries that o
 ```
 IO_TAG_LAUNCH node (backend-built):
 Base pointer →
-  +0   alloc_size: i64       (= 32)
+  +0   alloc_size: i64       (= 40)
   +8   rc: i64               (atomic)
   +16  tag: i64             (= IO_TAG_LAUNCH = 5)            HeapAdt::TAG_OFFSET
   +24  launched_subtree: i64 (field 0 — the detached IO sub-tree, AlwaysHeap)  field_offset(0)
+  +32  result_disposer: i64  (field 1 — canonical drop<a>, or 0)               field_offset(1)
 
-Total allocation: 32 bytes (16 header + 16 payload = HeapAdt::payload_size(1))
+Total allocation: 40 bytes (16 header + 24 payload = HeapAdt::payload_size(2))
 ```
 
 **Where it sits.** The launch site `(do (handle-conn conn) (serve listener))` macro-expands to
@@ -1497,14 +1588,16 @@ rc=1):
 ;; compile_launch(launched: &MonoExpr) -> Value
 launched_val = self.compile_expr(launched)              ; the detached sub-tree, rc=1 (temporary)
 
-node = emit_alloc(HeapAdt::payload_size(1))             ; 32 bytes (header + tag + 1 field)
+result_disposer = canonical_drop_glue(result type of launched)
+node = emit_alloc(HeapAdt::payload_size(2))             ; 40 bytes (header + tag + 2 fields)
 store iconst(IO_TAG_LAUNCH=5) at node + HeapAdt::TAG_OFFSET
 store launched_val            at node + HeapAdt::field_offset(0)   ; ownership transfer, NO inc
+store result_disposer         at node + HeapAdt::field_offset(1)   ; scalar metadata
 return node
 ```
 
-The surrounding `Bind(Launch, cont)` is built by the **existing** bind codegen — the backend's new
-code is only the thin `Launch` node. The `field_offset(0)` store is a **plain ownership transfer
+The surrounding `Bind(Launch, cont)` uses the shared Bind emitter with a zero
+input disposer because Launch itself yields scalar Unit. The `field_offset(0)` store is a **plain ownership transfer
 with no `rc_inc`**: the sub-tree arrives at rc=1 (a fresh temporary) and that single reference
 moves into the node's field — **identical to how `compile_par_bind` stores its branch pointers**
 (`par_bind.rs:89` "No RC inc — ownership transfer (constructor convention, Decision 20)") and how
@@ -1665,8 +1758,9 @@ Per the unit-test-per-fix discipline — inspect via CLIF (`CRANELISP_CODEGEN_TR
 single-launch site (small repro → small CLIF readable by eye):
 
 - **Launch-node shape.** A launch-marked site constructs an `IO_TAG_LAUNCH` node of
-  `payload_size(1)` (32 bytes) storing the literal tag `5` at `TAG_OFFSET` and the compiled
-  launched sub-tree pointer at `field_offset(0)`. Assert the alloc size + the two stores.
+  `payload_size(2)` (40 bytes) storing the literal tag `5` at `TAG_OFFSET`, the compiled
+  launched sub-tree pointer at `field_offset(0)`, and its result disposer at
+  `field_offset(1)`. Assert the allocation size and all three stores.
 - **Wrapped by a `Bind`.** The launch site emits `Bind(Launch, cont)` — an `IO_TAG_BIND` node whose
   `inner_io` (field 0) is the `IO_TAG_LAUNCH` node and whose `cont` (field 1) is the continuation
   closure. Assert both tags appear and the nesting (the structural slot `Par` also occupies).
@@ -1694,9 +1788,10 @@ they are listed in `design/intrinsics/reactor.md §2.10` and are not backend-uni
 2. **Consume the launch marker** (blocked on FIXME 0466 — the `Expr`/`MonoExpr::LaunchContinue`
    variant + the `/int` analysis extension; §15.3). Add the dispatch arm in `compile_expr`/the
    mono lowering that recognizes the marker and routes to `compile_launch`.
-3. **Implement `compile_launch`** (§15.4): compile the launched sub-tree, `emit_alloc(payload_size(1))`,
-   store tag `5` + the sub-tree pointer (ownership transfer, no inc). The surrounding `Bind(Launch,
-   cont)` reuses the existing bind codegen.
+3. **Implement `compile_launch`** (§15.4): derive the launched result disposer, compile the
+   launched sub-tree, `emit_alloc(payload_size(2))`, then store tag `5`, the sub-tree pointer
+   (ownership transfer, no inc), and the disposer. The surrounding `Bind(Launch, cont)` uses
+   the shared Bind emitter with a zero disposer because Launch yields Unit.
 4. **Generate the `Launch` drop glue with a null-guarded field-0 dec** (§15.5/§15.6) — the one
    deviation from a plain `AlwaysHeap` ADT field; pin the `0`-sentinel move-out contract with
    `/design int` (§15.5 cross-crate seam).
@@ -1705,8 +1800,8 @@ they are listed in `design/intrinsics/reactor.md §2.10` and are not backend-uni
 
 ### 15.11 Quality attributes touched
 
-- **Simplicity / complexity budget (Principle 6).** The slice adds **one tag, one thin single-field
-  node, one bake arm, and one drop-glue guard** — the simplest IO-node construction (no GOT load, no
+- **Simplicity / complexity budget (Principle 6).** The slice adds **one tag, one
+  single-owning-field node, one bake arm, and one drop-glue guard** — the simplest IO-node construction (no GOT load, no
   state-closure, no operand peel). It reuses `emit_alloc`/`heap_store`/the bind codegen wholesale.
 - **Maintainability / single source of truth (Principle 7).** Independence detection is **not
   forked** — the launch eligibility rides the existing `/int` `Par` token-disjointness analysis
@@ -1747,43 +1842,44 @@ loser futures — `effect-concurrency.md §8` gate (a), `reactor.md §2.9`).
 ### 16.1 What the node is, where it sits — one thin list-carrier node for BOTH race and select
 
 `IO_TAG_SELECT` is the **next free IO tag after `IO_TAG_LAUNCH = 5`**, so **`6`**. It is a
-**thin, single-field** node — the same shape as the launch node (§15.1) — holding only a
-pointer to the **branch list** (`List (IO a)`, the N candidate sub-trees):
+**one-heap-field node with one scalar disposer word** — the same shape as the launch node
+(§15.1) — holding the **branch Vec** (`Vec (IO a)`) and the common result disposer:
 
 ```
 IO_TAG_SELECT node (backend-built):
 Base pointer →
-  +0   alloc_size: i64       (= 32)
+  +0   alloc_size: i64       (= 40)
   +8   rc: i64               (atomic)
   +16  tag: i64             (= IO_TAG_SELECT = 6)              HeapAdt::TAG_OFFSET
-  +24  branches: i64         (field 0 — the List (IO a) of N branch sub-trees, AlwaysHeap)  field_offset(0)
+  +24  branches: i64         (field 0 — the Vec (IO a) of N branch sub-trees, AlwaysHeap)  field_offset(0)
+  +32  result_disposer: i64  (field 1 — canonical drop<a>, or 0)                           field_offset(1)
 
-Total allocation: 32 bytes (16 header + 16 payload = HeapAdt::payload_size(1))
+Total allocation: 40 bytes (16 header + 24 payload = HeapAdt::payload_size(2))
 ```
 
 **ONE tag, no mode field — the verdict.** `race` and `select` have **identical runtime
 semantics** (poll all branches, first-ready wins, drop the losers) and **identical winner
 typing** (`IO a` — the winner's value; §16.6). The only surface difference is **how the
 branches are supplied** — `race : IO a → IO a → IO a` (two static branches) vs
-`select : List (IO a) → IO a` (a runtime list) — and that difference is resolved **at
-construction**, both producing the same list-carrier node. So a second tag, or a mode field
+`select : Vec (IO a) → IO a` (a runtime Vec) — and that difference is resolved **at
+construction**, both producing the same Vec-carrier node. So a second tag, or a mode field
 on one tag, would be redundant machinery for a distinction the runtime does not make
 (Principle 6 — complexity has a budget). `timeout` is the same node again (`timeout d io =
 race io (sleep d)`, stdlib). `race` is the binary special case of `select`; the trampoline
 sees one node kind.
 
-**Why a list-carrier field, NOT a Par-style inline `count + branch_0..branch_{N-1}` array.**
+**Why a Vec-carrier field, NOT a Par-style inline `count + branch_0..branch_{N-1}` array.**
 The `Par` node (`par_bind.rs`) inlines its N branches because `Expr::ParBind` has **static
 arity** (the bindings vec is known at lowering). `select`'s argument is a **runtime
-`List (IO a)`** — N is dynamic, unknowable at codegen — so the branches **cannot** be inlined
-as static slots. The list **is** the N-branch carrier, and it carries two further advantages
+`Vec (IO a)`** — N is dynamic, unknowable at codegen — so the branches **cannot** be inlined
+as static slots. The Vec **is** the N-branch carrier, and it carries two further advantages
 over an inline array: (1) it already provides **per-element drop glue**, so the Select node
-stays a clean **one-heap-field ADT** (field 0 = the list) with a single unconditional dec
+stays a clean **one-owning-field node** (field 0 = the Vec) with a single unconditional dec
 (§16.7) — simpler than `Par`'s custom N-slot drop walk; (2) it is robust to whatever surface
 `/spec` lands (a `List`-typed `select`, a variadic `(select io1 io2 …)` that desugars to a
-list, or a binary `race`) — every form reduces to "a list of branch sub-trees in field 0".
-This list-carrier shape is the correct realization of `effect-concurrency.md §9`'s
-`select : List (IO a) → IO a`; the task-brief's "N inline slots" framing is set aside
+Vec, or a binary `race`) — every form reduces to "a Vec of branch sub-trees in field 0".
+This Vec-carrier shape is the correct realization of the implemented
+`select : Vec (IO a) → IO a`; the task-brief's "N inline slots" framing is set aside
 deliberately because the dynamic arity forbids it.
 
 **Where it sits.** Like `Par` and `Launch`, the Select node is the **`inner_io` of a
@@ -1791,7 +1887,7 @@ surrounding `Bind`**. `(bind! [x (select branches)] body)` macro-expands to
 `(bind (select branches) (fn [x] body))`:
 
 ```
-Bind( Select( <branch list> ), cont = (fn [x] body) )
+Bind( Select( <branch Vec> ), cont = (fn [x] body) )
 └ tag=2        └ tag=6              └ ordinary continuation closure
 ```
 
@@ -1851,65 +1947,55 @@ is encoded per-call-site by the backend recognizing the operator name, `module.r
 > the inline-builtin path cannot express (e.g. a row/sum result, §16.6), THAT would be the
 > trigger for a FIXME — but the node design below is typing-agnostic and needs none.
 
-### 16.3 Recognition + lowering — `select` the sole backend node primitive; `race`/`timeout` are stdlib sugar
+### 16.3 Recognition + lowering — `select` and `race` share one node kind
 
 `effect-concurrency.md §9`: "**Minimize the irreducible primitive set.** The trampoline needs
 to interpret only `race`/`select` + structured cancellation. Everything else is derived." The
-backend takes this one step further at the *node* level: **`select` is the sole
-backend-built node primitive**, and `race` (binary) + `timeout` (Duration) are **derived
-`.cl` stdlib** over it:
+The backend preserves one runtime node kind. `select` consumes a runtime Vec;
+`race` is a name-matched binary construction fast path that builds a two-element Vec and
+then uses the identical Select-node builder. `timeout` remains derived above that surface.
 
-- `race a b` = `(select (list a b))` — a 2-element branch list, then `select`. No backend
-  code; `race` never reaches `compile_select` directly, it reaches it *through* its stdlib
-  body's `(select …)`.
-- `timeout d io` = `(select (list (map Some io) (do (sleep d) (pure None))))` — both branches
+- `race a b` builds the same node as `(select [a b])`; there is no Race tag or mode word.
+- `timeout d io` = `(select [(map Some io) (do (sleep d) (pure None))])` — both branches
   `IO (Option a)`; the `Some`/`None` wrapping is stdlib `map`/`pure`. Derived; no backend.
 
-So the backend's whole Chunk-C codegen surface is **one recognition arm + one thin-node
-builder** (`compile_select`). This is the leanest realization of the §9 minimization.
-
-> **Optional binary fast-path (documented alternative, not the recommendation).** If
-> `/stdlib`/`/spec` find the 2-element `(list a b)` allocation on the per-request-`timeout`
-> hot path measurably costly, `race` MAY instead be a **second name-matched backend
-> primitive** `compile_race(a, b)` that builds the 2-element list inline and reuses the
-> **identical** `IO_TAG_SELECT` construction — **same tag, same trampoline arm, same RC**.
-> This keeps the §16.1 one-tag/no-mode verdict intact (it only adds a second *recognition*
-> arm, not a second node kind). Default to stdlib `race`; promote to `compile_race` only on
-> evidence (Principle 6 — no premature machinery).
+Thus two recognition arms converge on one builder, one layout, and one trampoline arm.
 
 ### 16.4 The bake — `compile_select`, the simplest IO-node construction
 
 Recognized in `compile_resolved_call`'s `BuiltinFn` arm (the `bind` precedent, `apply.rs:259`),
 the combinator takes the **consuming convention** (like `bind`): `compile_consuming_arg_list`
 incs heap-typed `Var` args and transfers temporaries, so the node owns the one reference it
-stores. Given the compiled branch-list value `branches_val` (the `List (IO a)`):
+stores. Given the compiled branch-Vec value `branches_val` (the `Vec (IO a)`):
 
 ```
-;; compile_select(arg_vals) -> Value      (arg_vals = [ branch_list ])
-branches_val = arg_vals[0]                 ; the List (IO a) — rc owned via the consuming list
+;; compile_select(arg_vals) -> Value      (arg_vals = [ branch_vec ])
+branches_val = arg_vals[0]                 ; the Vec (IO a) — rc owned via consuming args
 
-node = emit_alloc(HeapAdt::payload_size(1))                  ; 32 bytes (header + tag + 1 field)
+result_disposer = canonical_drop_glue(a)
+node = emit_alloc(HeapAdt::payload_size(2))                  ; 40 bytes (header + tag + 2 fields)
 store iconst(IO_TAG_SELECT=6) at node + HeapAdt::TAG_OFFSET
 store branches_val            at node + HeapAdt::field_offset(0)   ; ownership transfer, NO extra inc
+store result_disposer         at node + HeapAdt::field_offset(1)   ; scalar metadata
 return node
 ```
 
-This is **byte-for-byte the launch-node bake shape** (§15.4) minus the null-guard concern —
-`emit_alloc(payload_size(1))` + store tag + store the one field. No GOT load, no
+This is the launch-node bake shape (§15.4) minus the null-guard concern —
+`emit_alloc(payload_size(2))` + stores for the tag, branch carrier and disposer. No GOT load, no
 state-closure, no operand peel, no continuation. The `field_offset(0)` store is a **plain
 ownership transfer with no `rc_inc`** (the Decision-24 single-consuming convention — a `Var`
-branch-list arg was already inc'd by `compile_consuming_arg_list`; a temporary transfers its
-rc=1): the node owns exactly the one list reference handed to it, identical to how
+branch-Vec arg was already inc'd by `compile_consuming_arg_list`; a temporary transfers its
+rc=1): the node owns exactly the one Vec reference handed to it, identical to how
 `compile_bind_inline` (`apply.rs:1478`) and `compile_par_bind` (`par_bind.rs:89`) take
 ownership of their stored fields. `compile_select` reuses `heap::emit_alloc` +
 `heap::heap_store` and adds **no** new helper.
 
-### 16.5 RC — list-carrier ownership; NO null-guard, NO per-branch backend RC (the cancellation=drop seam)
+### 16.5 RC — Vec-carrier ownership; NO null-guard, NO per-branch backend RC (the cancellation=drop seam)
 
 The Select node's RC is the **simplest of the IO-node family** — simpler than both `Par`
 (custom N-slot drop) and `Launch` (move-out + null-guard):
 
-**The node owns the branch list for the whole tree lifetime.** Unlike `Launch`, the Select
+**The node owns the branch Vec for the whole tree lifetime.** Unlike `Launch`, the Select
 node does **not detach** anything: every branch is polled, won, or cancelled **within** the
 trampoline's processing of the Select node — there is **no sub-tree that outlives the node**.
 So there is **no move-out and NO null-guarded drop glue** (the §15.5 null-guard is the
@@ -1917,10 +2003,10 @@ So there is **no move-out and NO null-guarded drop glue** (the §15.5 null-guard
 **whole launching tree** is freed (REPL cleanup / process exit, §6), exactly as `Par` retains
 its branch references.
 
-**The backend does NO per-branch RC.** Because the branches live inside the `List (IO a)`,
-the list — not the backend — owns the N branch references and provides the per-element drop
-glue. The backend stores **one** field (the list); it never iterates the branches. This is
-the payoff of the list-carrier shape over a `Par`-style inline array (where the backend's
+**The backend does NO per-branch RC.** Because the branches live inside the `Vec (IO a)`,
+the Vec — not the backend — owns the N branch references and provides the per-element drop
+glue. The backend stores **one owning field** plus scalar disposer metadata; it never iterates
+the branches. This is the payoff of the Vec-carrier shape over a `Par`-style inline array (where the backend's
 drop glue must dec each of N inline slots).
 
 **Cancellation = drop is a *futures* concern, not a *heap-RC* concern — the load-bearing
@@ -1947,7 +2033,7 @@ RC; the tree stays live via the top reference).
 > subtlety on the backend side** (the opposite of §15.5). This is the clean contrast to
 > launch's detach.
 
-### 16.6 How the winner's value threads back — via the surrounding `Bind`, NO result slot on the node
+### 16.6 How the winner's value threads back — via the surrounding `Bind`, no stored result
 
 The winner's value becomes the Select node's result and threads back through the **existing
 "inner yields a value, pop the continuation" contract** (§5.1) — the *same* path `Pure`,
@@ -1955,42 +2041,40 @@ The winner's value becomes the Select node's result and threads back through the
 forces the winning branch's sub-tree to its `Pure`/`Effect` value and yields that value; the
 continuation popped from the surrounding `Bind` (§16.1) runs with it. So:
 
-- **The Select node carries NO result slot.** The §14 poll node has a `state+0` result slot
+- **The Select node carries no stored result.** Its appended word is disposal
+  authority for cancelled branch results, not a value slot. The §14 poll node has a `state+0` result slot
   **because the platform poll-fn writes its i64 result into the env** for `EffectPoll` to read
   generically — that is a *leaf* concern. A combinator's "result" is not produced by the node;
   it is whichever **branch's own forced value** the trampoline selects. The branch's value
   comes from that branch's `Pure`/`Effect` leaf the ordinary way, so no result slot is
   reserved on the Select node (the result-slot convention is the poll-leaf's, not the
   combinator's — an important contrast to model on §14 only by *negation*).
-- **Winner-value RC needs no special handling.** The winner's `Pure` value lives in the
-  winner branch sub-tree, which lives in the list, which the Select node owns, which the top
-  tree holds live (§6) — so the value stays live for the continuation, and is freed with the
-  tree at the end like every other heap value the trampoline threads. No inc, no move.
+- **Winner-value ownership transfers explicitly.** Each branch future is armed
+  with the common disposer. The winner transfers its value to the surrounding
+  Bind or top-level caller; dropping a loser invokes the disposer exactly once.
 - **Typing = `IO a` (the winner's value), per `effect-concurrency.md §9`.** `race`/`select`
   both yield the winner's `a` — **no index, no `(Which, a)` sum**. The node design is
   **typing-agnostic**: it threads back whatever the winning branch produced. IF `/spec`/`/typecheck`
-  later land an index-carrying surface (e.g. `select : List (IO a) → IO (Nat, a)`), that is a
-  **runtime** concern — the trampoline would pair the winning index with the value — and it
-  changes **no node shape and no backend codegen** (the backend never inspects the result). 
-  Coordinate the final typing with `/spec` (FIXME 0447 second half) and the runtime
-  index-pairing with `/design int`; neither touches §16.4/§16.5.
+  later land an index-carrying surface (e.g. `select : Vec (IO a) → IO (Nat, a)`), that would
+  require a separately reviewed result-carrier design; it is not provided by this node.
 
-### 16.7 Drop glue — standard one-heap-field ADT
+### 16.7 Drop glue — one heap field plus non-owning metadata
 
-The Select node is a standard **one-heap-field ADT** (field 0, the `List (IO a)`). Its drop
+The Select node has one heap field (field 0, the `Vec (IO a)`) and one scalar
+function-address field (field 1, the common result disposer). Its drop
 glue is generated by the existing `emit_inline_drop_glue` path (§3.4): field 0 is a plain
-**unconditional `AlwaysHeap` dec** (the list is always a heap pointer) — **no null-guard**
-(§16.5, contrast §15.5/§15.6), no per-branch walk. The list's own element drop glue cascades
+**unconditional `AlwaysHeap` dec** (the Vec is always a heap pointer) — **no null-guard**
+(§16.5, contrast §15.5/§15.6), no per-branch walk. The Vec's own element drop glue cascades
 to dec each branch IO sub-tree. The node itself participates in RC normally: it is the
 `inner_io` of a `Bind`, transferred into that `Bind` like any inner IO (§2.1), and freed when
 the launching tree is freed (§6). No `drop_state` hook, no state-closure — the Select node
-carries only the list pointer.
+carries no state closure or result slot; the disposer is non-owning metadata.
 
 ### 16.8 Trampoline interaction (intrinsics-owned — stated for the seam)
 
 The node construction is the backend's whole job; the **interpretation** is the trampoline's
 (`run_io_trampoline_inner_async`, `cranelisp-intrinsics`; authoritative design `/design int`,
-`reactor.md`). Stated here only to pin the seam: the `IO_TAG_SELECT` arm reads the branch list
+`reactor.md`). Stated here only to pin the seam: the `IO_TAG_SELECT` arm reads the branch Vec
 off field 0, **partitions the branches by reachable leaf tag** (poll-shape → reactor,
 blocking → rayon — the **same two-pool partition `Par` already uses**, §13.5, no new backend
 codegen), polls them **first-ready-wins** (`futures` `select`/`select_all` over the poll
@@ -2008,8 +2092,9 @@ Per the unit-test-per-fix discipline — inspect via CLIF (`CRANELISP_CODEGEN_TR
 shrunk `(bind! [x (select branches)] x)` repro (small repro → small CLIF readable by eye):
 
 - **Select-node shape.** A `select` call constructs an `IO_TAG_SELECT` node of
-  `payload_size(1)` (32 bytes) storing the literal tag `6` at `TAG_OFFSET` and the compiled
-  branch-list pointer at `field_offset(0)`. Assert the alloc size + the two stores.
+  `payload_size(2)` (40 bytes) storing the literal tag `6` at `TAG_OFFSET`, the compiled
+  branch-Vec pointer at `field_offset(0)`, and the common result disposer at
+  `field_offset(1)`. Assert the allocation size and all three stores.
 - **Wrapped by a `Bind`.** A `(bind! [x (select …)] …)` site emits `Bind(Select, cont)` — an
   `IO_TAG_BIND` node whose `inner_io` (field 0) is the `IO_TAG_SELECT` node and whose `cont`
   (field 1) is the ordinary continuation closure (built by `compile_bind_inline`, not by
@@ -2046,10 +2131,10 @@ and are **not** backend-unit-tier.
    `Expr`/`MonoExpr` variant, **no** `PrimitiveKind` (§16.2). (Depends on `/int` bootstrap +
    `/typecheck` seeding `select`/`race`/`timeout` as inline builtins with their `§9`
    signatures — that is their work, not the backend's; the backend only name-matches.)
-3. **Implement `compile_select`** (§16.4): `emit_alloc(payload_size(1))`, store tag `6` +
-   the branch-list pointer (ownership transfer, no inc). The simplest IO-node builder — reuse
-   `heap::emit_alloc`/`heap::heap_store`; add no helper. The surrounding `Bind(Select, cont)`
-   reuses the existing `compile_bind_inline`.
+3. **Implement `compile_select`** (§16.4): derive the common result disposer, then
+   `emit_alloc(payload_size(2))` and store tag `6`, the branch-Vec pointer (ownership
+   transfer, no inc), and the disposer. The surrounding `Bind(Select, cont)` reuses the
+   shared Bind emitter.
 4. **Generate the Select drop glue as a standard unconditional one-heap-field ADT dec**
    (§16.7) — the existing `emit_inline_drop_glue` path, field 0 `AlwaysHeap`, **no**
    null-guard (the explicit contrast with launch). Pin the §16.5 cross-crate seam with
@@ -2060,8 +2145,8 @@ and are **not** backend-unit-tier.
 
 ### 16.11 Quality attributes touched
 
-- **Simplicity / complexity budget (Principle 6).** The slice adds **one tag, one thin
-  single-field node, one recognition arm, one bake, and one standard drop-glue field** — the
+- **Simplicity / complexity budget (Principle 6).** The slice adds **one tag, one
+  single-owning-field node, one recognition arm, one bake, and one standard drop-glue field** — the
   simplest IO-node construction (simpler than `Par`'s N-slot drop and `Launch`'s move-out).
   **One tag, no mode field, no second node kind** for race+select+timeout; `race`/`timeout`
   are derived stdlib (the §9 minimization). No `#[cfg]`, no new AST variant.
@@ -2071,15 +2156,14 @@ and are **not** backend-unit-tier.
   `Par`'s (§13.5, no new dispatcher). One node kind serves all three combinators.
 - **Concurrency-safety (Principle 1).** The backend emits **no concurrency primitive** — it
   constructs a value (the Select node) and a standard drop path. All poll/first-ready/
-  cancel-drop/permit-release lives in the reactor. The RC division (node owns the heap list;
-  cancellation drops only the futures) means the combinators introduce **no new backend RC
-  subtlety** — the cleanest member of the family.
-- **Testability (Principle 5).** The arm emits an inspectable node shape (tag + one field +
-  an unconditional dec), unit-testable at the CLIF seam without a running reactor; the
+  cancel-drop/permit-release lives in the reactor. The backend supplies the common disposer;
+  the runtime owns it while a produced winner or loser has not transferred.
+- **Testability (Principle 5).** The arm emits an inspectable node shape (tag + one owning
+  field + one scalar disposer word), unit-testable at the CLIF seam without a running reactor; the
   first-ready/cancel/timeout behaviour is cleanly the reactor's, tested separately by `/qa`.
 
 > **§16.12 — Fresh-continuation-produced `select`/`par` node leak (S97, FIXME 0474).** The
-> §16.5/§16.7 RC model (node owns the branch list; drop glue cascades to free every branch
+> §16.5/§16.7 RC model (node owns the branch Vec; drop glue cascades to free every branch
 > exactly once) is correct for **caller-tree** select/par nodes — `consume_io_tree`'s
 > `IO_TAG_SELECT`/`IO_TAG_PAR` arms walk the branch container. A node produced **fresh by a
 > bind continuation** (`(bind X (fn [_] (select […])))`) is instead released by the

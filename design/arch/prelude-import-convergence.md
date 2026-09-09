@@ -558,7 +558,7 @@ fresh checks, which is what the mode-parity RED (R3) exercises.
 
 **Change-set 2 — `/dev` narrow (src/int):**
 
-1. `src/process_form/form_dispatch.rs::register_macro_in_module`: the
+1. Historical `src/process_form/form_dispatch.rs::register_macro_in_module`: the
    defmacro gate (§4.2) — construct the int scope (committed view;
    `SharedState.prelude_fallback`-derived `prelude` arg; aliases) →
    `cranelisp_types::reject_def_over_binding`; rejected form has no

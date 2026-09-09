@@ -1,16 +1,37 @@
 # ADT marker binding — mechanism selection
 
-**Status:** DESIGN, Sprint 118 Phase 3 (`/design` narrow-deployed to
-`cranelisp-platform`). Design-only; no implementation this sprint.
-**Selection is PROVISIONAL** — the recommended mechanism touches the crate's
-public surface, so per S118 arch ruling 5 it **returns to `/arch` before
-selection is final** (§10).
+**Status:** **APPROVED.** Option 3 (§5) was selected at S118 Phase 3 and
+approved by `arch` at the S118 Phase-3 exit, unchanged as designed. It is
+scheduled for implementation in the **Sprint 121 C7 platform visit**
+(`s121-c7-platform-visit.md` §5, bundle P1), riding the `ABI_VERSION` 9→10
+change-set because it migrates the same five call sites that bump rebuilds.
 
 Answers FIXME 0873 / `audits/cranelisp-platform-s117.md` §R4 ("decide marker
 binding ergonomics now that the deferred trigger has fired"). Scope is exactly
 that question: how a platform DLL binds a Rust marker type to a cranelisp FQ
-type name. It is not a canon rewrite of `design/platform/platform.md` (that is
-FIXME 0871 / R2, S119) and it reopens no settled platform architecture.
+type name. It reopens no settled platform architecture.
+
+### The `arch` gate's three conditions on the implementing change-set
+
+Approval was granted with conditions; they bind `dev`, not this design.
+
+1. **The grammar coupling is named at both sites.** `schema_declares_type` is a
+   second reader of the schema-artifact text, beside the runtime parser. That is
+   acceptable on the `extract_layout_hash` precedent — a const context cannot
+   reach the runtime parser — but the rustdoc of `schema_declares_type` **and**
+   of the runtime parser's grammar home must each cite the other, so an
+   artifact-grammar change is a named two-site change rather than silent drift.
+2. **Baseline regeneration, the source-rustdoc surface record and the
+   bounded-context note ride the same change-set.** No pre-implementation
+   architecture edit: this design is the record until then.
+3. **The adjacent `resolve_field` type-key-miss diagnostic fix rides the
+   implementation** as designed in §6 (crate-internal, no gate).
+
+To these the S121 visit adds one obligation the audit's bar implies and the
+repository's assurance doctrine requires: the const assertion is an instrument,
+so it lands with **both legs of its detection proof** — a deliberately
+misspelled key fails the build with the intended message, and the correct
+spelling builds (§8 row 2).
 
 ---
 
@@ -102,7 +123,7 @@ making the name agreement structural.
 | `exemplar/platforms/web/src/lib.rs:85-115` | 4 (`Listener`, `Connection`, `Request`, `Response`) | poll leaves (3) + construct-only (`Request`) | the S87 deferral trigger; each marker carries substantial rustdoc |
 | `platforms/shapes/src/lib.rs:39-45` | 1 (`Rectangle`) | blocking effect thunk | the reference ADT platform |
 | `platforms/shapes-badabi/src/lib.rs:64-67` | 1 (`Rectangle`) | never dispatched | hand-rolled manifest, **no `schema:` arm**; a deliberately-broken ABI-gate fixture |
-| `crates/cranelisp-platform/tests/*.rs`, `src/adt/tests.rs` | 8 across 5 files | test fixtures | synthetic schemas, per-binary `GLOBAL_SCHEMA` isolation (FIXME 0874's subject) |
+| the crate's own integration tests plus `crates/cranelisp-platform/src/adt/tests.rs` | 8 across 5 files | test fixtures | synthetic schemas, per-binary `GLOBAL_SCHEMA` isolation (FIXME 0874's subject) |
 
 Five production markers, four of them added in one platform. The S87
 deferral condition ("wait for a real multi-ADT platform") is satisfied.
@@ -364,11 +385,23 @@ design's implications, not as obligations levied on this sprint.
 
 ---
 
-## 9. `/arch` return gate (S118 ruling 5)
+## 9. The `arch` gate — APPROVED as designed (S118 Phase-3 exit)
 
-The recommendation **touches `cranelisp-platform`'s public surface**, so per
-arch ruling 5 the selection is **not final** until `/arch` reviews. The exact
-delta to approve:
+The recommendation touches `cranelisp-platform`'s public surface, so the
+selection returned to `arch`, which **approved Option 3 unchanged**. Grounds, as
+ruled: it is Principle 18's structural form — schema-name agreement becomes a
+build error across every marker, including construct-only markers runtime never
+checks — at Principle 6's minimum cost. Both rejections were found sound: the
+derive adds a build dependency and a second public surface on the external
+facade and still needs a second, non-compiler-tracked source of truth for the
+artifact path (a Principle 7 violation by construction); keeping explicit impls
+founders on the call-path asymmetry §2 isolates.
+
+The three conditions the approval carries are at the head of this document.
+Option 1 stands as the documented fallback (§4, §10) **only if implementation
+falsifies the const-scanner premise** — not as a live alternative.
+
+The approved public-surface delta:
 
 | Item | Kind | `public-api.txt` impact |
 |---|---|---|
@@ -381,21 +414,22 @@ No cross-crate interface is involved: `cranelisp-types` is untouched, no cache
 schema version moves, the backend generator and the artifact grammar are
 unchanged, and the host load path is unchanged.
 
-## 10. Reconsideration trigger
+## 10. Reconsideration triggers
 
-- **If `/arch` approves:** implementation is a follow-on `/dev`(platform) wave
-  (S119 or later), landing the predicate, the arm, the five call-site
-  migrations, and the §6 diagnostic in one change-set.
-- **If `/arch` rejects Option 3:** the fallback is Option 1 with its full
-  compensation package — the §6 diagnostic repair **plus** poll-boundary fault
-  containment (so the production-path failure is diagnosable rather than an
-  abort) **plus** the negative witness against that contained path. The
-  rationale for staying with explicit impls must be recorded here, and the
-  reconsideration trigger becomes: *any* new platform that marshals an ADT on a
-  poll leaf, or the first field-name-axis mismatch reaching a user.
-- **Independent of the choice**, the trigger for revisiting the field-name axis
-  is a reported mismatch on a field string, or a platform exceeding roughly a
-  dozen distinct `read_field` names.
+- **Implementation** lands the predicate, the arm, the five call-site
+  migrations and the §6 diagnostic in one change-set, in the S121 C7 visit
+  (`s121-c7-platform-visit.md` bundle P1).
+- **The Option-1 fallback revives only if implementation falsifies the
+  const-scanner premise** — that a paren-depth byte scan over the embedded
+  artifact is const-evaluable and exact. Its full compensation package would then
+  be owed: the §6 diagnostic repair, **plus** poll-boundary fault containment so
+  the production-path failure is diagnosable rather than an abort, **plus** the
+  negative witness against that contained path.
+- **The field-name axis** is revisited on a reported mismatch on a field string,
+  or a platform exceeding roughly a dozen distinct `read_field` names.
+- **Applied instantiation keys** (`(primitives/IO primitives/Int)`) are out of
+  scope by §5.2 and stay so until a production marker needs one; such an author
+  writes an explicit `impl CLAdtType`, which remains legal.
 
 ## 11. Cross-references
 

@@ -157,8 +157,8 @@ fn expected_exits() -> Vec<(&'static str, &'static [i32])> {
         // 42 + 42 + 42 + 10 + 35 + 203 + 13 + 8 = 395; the exit code is the LOW
         // BYTE, 395 mod 256 = 139 (was 374 → 118).
         //
-        // 139 is also what `128 + SIGSEGV(11)` would render as, so this row and
-        // 33's are the two places the table could accidentally accept a crash.
+        // 139 is also what `128 + SIGSEGV(11)` would render as, so this row
+        // could accidentally accept a crash.
         // It cannot: a signal-killed child is reported by
         // `every_example_runs_with_documented_exit` as `signal N` and never
         // matches an allowed *exit* code (see the `Outcome` split below).
@@ -182,16 +182,9 @@ fn expected_exits() -> Vec<(&'static str, &'static [i32])> {
         // the inline timeout pattern). main returns the sum of 6 sub-test pass
         // counts = 6 → exit 6.
         ("32-concurrency-combinators.cl", &[6]),
-        // 33: redefinition (batch-observable rebind semantics; S101 6b).
-        // S115 6b added three pass=1 sub-tests for IMPL redefinition (a later
-        // `impl` replaces the earlier one; a dispatch site written before it
-        // rebinds; the rebind cascades a second layer): 6 + 18 + 112 + 1 + 1 + 1
-        // = 139 (was 136). No mod-256 wrap — the sum is already the exit code.
-        // A normal exit(139), NOT a 128+signal encoding: `ExitStatus::code()`
-        // returns Some(139) for a normal exit and `None` for a signal death, and
-        // the umbrella keeps the two in separate `Outcome` variants so a
-        // SIGSEGV can never satisfy this row (re-verified 2026-07-21).
-        ("33-redefinition.cl", &[139]),
+        // 33: direct calls, forward references, and dependency chains within
+        // one compilation cluster, including trait dispatch: six pass counts.
+        ("33-definition-ordering.cl", &[6]),
         // 34: async-io platform-leaf demo (poll-shape reactor via the
         // `async-demo` DLL, built suite-wide by build-link-prereqs.sh; the
         // harness sets CRANELISP_PLATFORM_PATH=target/debug). main returns the
@@ -229,13 +222,10 @@ fn collect_example_files() -> Vec<PathBuf> {
 //
 // (carry: legacy/examples.rs::example_NN_* x15 + legacy/examples_run.rs::every_example_file_runs_under_examples_prelude)
 // defect: class=wrong-reject locus=crates/cranelisp-backend/src/drop_glue.rs::ctor_shapes found=S118 owner=/dev
-//   — RED at S118 close on exactly TWO rows, `21-hello-io.cl` and
-//   `23-io-sequence.cl`: FIXME 0907 hard-refuses their concrete-`IO T`
-//   releases with `constructor 'Bind' disagrees on declared parameter identity
-//   for 'primitives/IO'`. Spec-conforming programs, rejected — the umbrella
-//   names the offending rows in its own report, so a THIRD failing row here is
-//   a new finding and not this defect. Census: tests/plan/s118-test-plan.md
-//   §11.1; minimal repro: spec_10_io::pure_pattern_accepted.
+//   At S118 close, `21-hello-io.cl` and `23-io-sequence.cl` were rejected
+//   because concrete IO releases disagreed on Bind's declared parameter
+//   identity. Historical census: tests/plan/s118-test-plan.md §11.1;
+//   minimal repro: spec_10_io::pure_pattern_accepted.
 #[test]
 fn every_example_runs_with_documented_exit() {
     let files = collect_example_files();
@@ -292,7 +282,7 @@ fn every_example_runs_with_documented_exit() {
 /// The exit code an example produces is `main`'s sum-of-pass-counts taken
 /// mod 256 (`spec/10-io.md §10`), so legitimate values reach into the
 /// `128..=255` band that a `128 + signal` normalisation also occupies —
-/// `25-curry` and `33-redefinition` both legitimately exit **139**, which is
+/// `25-curry` legitimately exits **139**, which is
 /// exactly what SIGSEGV would render as. Folding both into one `i32` (the
 /// pre-S115 shape) would have let a real segfault silently satisfy the table.
 /// `ExitStatus::code()` is `Some` only for a normal exit, so the distinction is

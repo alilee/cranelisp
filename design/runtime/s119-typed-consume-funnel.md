@@ -1,8 +1,41 @@
-# Sprint 119 — the typed consume funnel (option 1, tranche A)
+# The typed consume funnel (option 1, tranche A)
 
-**Status:** DESIGN — pre-implementation. Phase-3 deliverable for Spine 2,
-tranche A. Binding on the `/dev`(runtime pair) wave; the `public-api.txt` delta
-in §8 goes to `/arch` at the Phase-3 exit gate.
+> ## S121 reconciliation (2026-09-01, `/design`(intrinsics), C5)
+>
+> **This document is still live and still pre-implementation.** Verified at HEAD
+> `18bca20d`: `crates/cranelisp-intrinsics/src/handle.rs` does not exist, no
+> `Owned`/`Borrowed` type exists in either crate, and no `from_abi` call site
+> exists anywhere. Nothing in tranche A has landed. The design below is adopted
+> unchanged in substance and lands as Sprint 121's **C5 bundle I2**.
+>
+> **What this pass changed, and why.** Four things had drifted or were settled
+> elsewhere; each is marked `[S121]` in place rather than restated at the end:
+>
+> 1. **The three `/arch` rulings §13 requested are settled** (FIXME 0928 items
+>    1–3): `ElemConsumeFn` is spelled `fn(Owned)` inline and never becomes
+>    `pub`; the debug-profile-conditional `Drop` is accepted in the committed
+>    baseline; the `launch.rs:452` dispensation is **granted** and the cited
+>    call site is still exact at HEAD. §8's open questions close accordingly.
+> 2. **`free_io_node` joins §6.3's deliberately-not-flipped residue,
+>    permanently** (0928 item 4), and the semantic count becomes **62**, not 61,
+>    with the exclusion named rather than left as an unexplained delta.
+> 3. **§3's `mem::forget` structural gate was false at HEAD** and is corrected
+>    to an enumerated allow-list; §3 also gains the two field-mint sites the
+>    teardown walk genuinely needs, which the original count did not allow for.
+> 4. **§10.4's FIXME 0859 is now dispositioned** (user, 2026-09-01) and the
+>    paragraph records the outcome instead of an open obligation.
+>
+> **Ownership while both C5 passes run.** This is the one cross-pair standing
+> file. The **intrinsics** invocation holds it, so the two crate passes cannot
+> both rewrite the same contract; the **primitives** invocation *consumes it
+> without editing*. The intrinsics-half implementation design — the funnel's
+> ordering against the IO slice and the `Sexp` walk, its reservations and its
+> test rows — is `design/intrinsics/s121-c5-intrinsics-visit.md` §6.
+
+**Status:** DESIGN — pre-implementation, at S121 as at S119. Originally the
+Phase-3 deliverable for Spine 2, tranche A. Binding on the `/dev`(runtime pair)
+wave; the `public-api.txt` delta in §8 went to `/arch` at the S119 Phase-3 exit
+gate and returned settled (FIXME 0928).
 **Scope:** the runtime pair — `cranelisp-intrinsics` (the discharge funnel and
 the new handle vocabulary) + `cranelisp-primitives` (the extern shim generator
 and the implementation bodies it reaches).
@@ -75,7 +108,7 @@ list is an `/arch`-visible change to the trusted base, not a convenience edit.
 | Operation | Signature | Role |
 |---|---|---|
 | `from_abi` | `unsafe fn from_abi(raw: i64) -> Owned` | **The one raw entry.** The shim's assertion that the ABI transferred a reference. Nullary-tag-safe (the guard stays inside the consume fns, unchanged). |
-| `into_raw` | `#[must_use] fn into_raw(self) -> i64` | **The one raw exit.** Returning across the ABI shim. Disarms the bomb; contains the crate's only `mem::forget`. |
+| `into_raw` | `#[must_use] fn into_raw(self) -> i64` | **The one raw exit**, with **two** uses: returning across the ABI shim, and the typed→raw destructure every `consume_*` performs before handing the raw to `atomic_dec_rc` (§3, `[S121]`). Disarms the bomb; it is the only handle-related `mem::forget` in the crate (`reactor.rs`'s waker carries a pre-existing, unrelated one — §3's enumerated allow-list). |
 | `as_borrowed` | `fn as_borrowed(&self) -> Borrowed<'_>` | Read access without discharging. The brand ties the borrow to this frame's `Owned`. |
 | `raw_for_read` | `fn raw_for_read(&self) -> i64` | Feed the raw layout accessors (`heap_access::read_i64`, `HeapString` reads). Takes `&self`, so it cannot discharge. |
 | `is_nullary_tag` | `fn is_nullary_tag(&self) -> bool` | The `< NULLARY_TAG_THRESHOLD` predicate, single-sourced. |
@@ -153,22 +186,48 @@ that set countable, and countable means checkable:
 | `impl Drop for Owned` | `handle.rs` | 1 definition |
 | Shim wrapping (derived, §4) | `declaration_macro.rs` | 1 generator |
 | Hand-written intrinsics extern shims that wrap (§10.3) | `trace.rs`, `io.rs` | 6 call sites |
+| **`[S121]`** Field-mint sites on the teardown path (below) | `drop.rs` | 2 call sites |
+
+**`[S121]` The two field-mint sites, and why the original count missed them.**
+The discharge walk reads `i64` field words off a node whose last reference it is
+discharging, and must hand them to a `consume_*` that now takes `Owned`. That is
+a genuine transfer — the node is being destroyed, so its fields' references
+transfer to this frame — but it is neither an ABI entry nor one of the six
+enumerated shims, and §4's derivation does not reach it. Left unnamed, it would
+have arrived as ~15 scattered `from_abi` calls and quietly emptied the third
+grep row below of meaning. It is confined to **two** sites, both in `drop.rs`:
+the per-tag field dispatcher (`design/intrinsics/s121-c5-intrinsics-visit.md`
+§3), and `consume_vec_with`'s element loop, which mints one `Owned` per element
+for its `fn(Owned)` callback. A third is a `/review` reject.
 
 **Structural guard (a `/review` reject criterion, and a unit row).** The
 crate's established grep-gate pattern applies:
 
 - `impl Clone for Owned` / `impl Copy for Owned` / `derive(Clone` on `Owned`
   — must not appear.
-- `mem::forget` must appear exactly once in `crates/cranelisp-intrinsics/src`
-  outside `*/tests.rs`, and that occurrence must be inside `Owned::into_raw`.
+- **`[S121, corrected]`** `mem::forget` occurrences in
+  `crates/cranelisp-intrinsics/src` outside `*/tests.rs` must be exactly the
+  **enumerated two**: `reactor.rs`'s `OwnedCWaker` wake path (pre-existing at
+  `reactor.rs:195`, unrelated to heap handles — the payload is consumed by
+  `wake`, so its `Drop` free is skipped), and `Owned::into_raw`. *The original
+  wording — "exactly once … inside `Owned::into_raw`" — was false at HEAD
+  before the type existed.* A gate that is red before its subject exists teaches
+  the implementer to relax it, which is precisely how a structural guard becomes
+  decoration; the allow-list form is the §4.4 pattern and keeps the guard honest.
 - `Owned::from_abi` / `Borrowed::from_abi` call sites outside `handle.rs`,
-  `declaration_macro.rs`, and the six enumerated intrinsics shims must be zero
-  in non-test code.
+  `declaration_macro.rs`, the six enumerated intrinsics shims **and the two
+  enumerated field-mint sites** must be zero in non-test code.
 
-The third row is the one that keeps the base from silently widening: without
+The last row is the one that keeps the base from silently widening: without
 it, "just wrap it here too" is a one-line edit that re-opens the class. This is
 the same shape as the S110 `resolve_driven` grep gate — the count *is* the
 contract (Principle 13, interfaces are auditable).
+
+**`[S121]` `into_raw` has two uses, and the table above names one.** It is the
+ABI return path *and* the typed→raw destructure every `consume_*` performs
+before handing the raw to `atomic_dec_rc` (which stays raw — §6.3). Both are the
+same operation, the end of the handle's obligation, but the second is by far the
+more common and a reader of the one-line description will not expect it.
 
 ---
 
@@ -380,7 +439,7 @@ must record the before/after pair from it verbatim:
 P="crates/cranelisp-primitives/src crates/cranelisp-intrinsics/src"
 grep -rnE '^\s*(pub(\(crate\))?\s+)?(unsafe\s+)?fn\s+\w+\(.*i64' $P \
   | grep -v 'extern "C"' | grep -v '/tests.rs:' | grep -v 'rc_balance.rs:' | wc -l
-# 136 at 5520186d
+# 136 at 5520186d — and 136 again at 18bca20d (re-derived S121, unchanged)
 ```
 
 **Finding, and it changes how G3 must be read.** That number is *syntactic* —
@@ -413,17 +472,29 @@ not the arithmetic, is the auditable artifact.
 
 | Slice | Declarations | Flip to |
 |---|---|---|
-| **A1 — the intrinsics discharge funnel** | `rc::consume_shallow`, `drop::{consume_slist, consume_sexp, consume_vec_with, consume_vec_of_string, consume_io_tree, consume_closure, dec_shallow_io, free_io_branches}`, `trace::consume_trace_call` | 10 |
+| **A1 — the intrinsics discharge funnel** | `rc::consume_shallow`, `drop::{consume_slist, consume_sexp, consume_vec_with, consume_vec_of_string, consume_io_tree, consume_closure, dec_shallow_io}`, `trace::consume_trace_call`, **`[S121]`** plus the private field dispatcher that replaces `free_io_branches` | 10 |
 | **A2 — primitives implementation fns reached by an extern shim** | `string.rs` ×16, `int.rs` ×2 (`int_to_string`, `parse_int`), `marshal.rs` ×2 (`sconcat`, `quote_sexp`), `vec.rs` ×1 (`vec_len`), `float.rs` ×1, `bool.rs` ×1 | 23 |
 | **A3 — the marshal interior forced by A2** | `alloc_adt_2`, `alloc_adt_3`, `build_runtime_list`, `read_slist`, `alloc_runtime_string`, `make_sexp_sym`, `shallow_rc_inc`, `quote_sexp_build`, `quote_slist` | 9 |
 | **Total** | | **42** |
 
-**N_heap: 103 → 61.** Syntactic 136 → ~100 (the 3 scalar-param/heap-result rows
-and the `tag: i64` parameters of `alloc_adt_*` keep their lines counted).
+**`[S121]` N_heap: 103 + 1 − 42 = 62.** Not 61. The pair gains **one** raw
+heap-handle declaration between the §6.1 baseline measurement and tranche A's
+landing — `drop::free_io_node`, introduced by C5's IO slice *before* this
+tranche (FIXME 0928 item 4). The change-set's count record enumerates it as a
+named exclusion so the semantic count does not silently drift by one; an
+unexplained delta of one is exactly the shape that makes a gate unfalsifiable.
+Syntactic 136 → ~100 (the 3 scalar-param/heap-result rows and the `tag: i64`
+parameters of `alloc_adt_*` keep their lines counted).
 
 **Deliberately NOT flipped, with reasons** — these are the residue G3 must not
 be read as covering:
 
+- **`[S121]` `drop::free_io_node(ptr: i64)`** — the structural teardown tail,
+  split out of `consume_io_tree` at the dec, and the target of the backend's
+  emitted `drop<IO T>`. Its precondition is a count *already dec'd to zero*,
+  while an `Owned` models a live counted reference: it is beneath the
+  abstraction and is classified with `atomic_dec_rc`. It keeps a raw `i64` Rust
+  signature plus its C-ABI export. Permanent, not deferred.
 - `drop::atomic_dec_rc(ptr: i64) -> i64` and `rc::nonatomic_rc_rmw` — *beneath*
   the abstraction. Each `consume_*` destructures its `Owned` into a raw at the
   top and hands the raw to the RMW; typing the RMW would require an `Owned` to
@@ -457,6 +528,11 @@ all of which the flip reaches. G3's "36 call sites flipped" is satisfied by 29
 production + the test tier; the number to report is the pair of counts, not the
 grep token.
 
+> **`[S121]` Re-derived at HEAD `18bca20d`:** the grep-token counts are
+> unchanged (`string.rs` 27, `marshal.rs` 8, `int.rs` 1), as is the
+> `extern "C" fn` population of `cranelisp-intrinsics/src` (81, §10.3). The
+> primitives sources this section measures have not moved since `5520186d`.
+
 ---
 
 ## 7. Churn safety — how "byte-identical instrument re-run" is made checkable
@@ -477,16 +553,19 @@ through the ABI and must not be touched at all:
 is the one that actually proves the ABI is byte-identical — an ABI change would
 surface here or nowhere.
 
-> One known out-of-pair exception, flagged for `/sprint` because it is *not* in
-> the pair and therefore not this tranche's to edit under the narrow-deployment
-> rule: `crates/cranelisp-backend/src/compiler/control_flow/launch.rs:452`
-> (inside that file's `#[cfg(test)] mod tests`) calls
-> `cranelisp_intrinsics::drop::consume_closure(cont_ptr)` with a raw `i64`. It
-> will not compile after A1. It needs a one-line `unsafe { Owned::from_abi(…) }`
-> wrap by `/dev`(backend), or an explicit dispensation for `/dev`(runtime pair)
-> to touch that one line. **This is the only known out-of-pair source impact of
-> tranche A** (verified workspace-wide; `src/` has no `consume_*` call, matching
-> `/arch`'s Phase-2 finding).
+> **`[S121]` The one out-of-pair exception, and its dispensation is GRANTED**
+> (FIXME 0928 item 3):
+> `crates/cranelisp-backend/src/compiler/control_flow/launch.rs:452` — still
+> exactly that line at HEAD `18bca20d` — calls
+> `cranelisp_intrinsics::drop::consume_closure(cont_ptr)` with a raw `i64`
+> inside that file's `#[cfg(test)] mod tests`. It will not compile after A1.
+> `/dev`(runtime pair) **may** wrap it as `unsafe { Owned::from_abi(cont_ptr) }`
+> inside the A1 change-set: **that call expression only**, no other backend
+> edit, the test's assertions and logic byte-identical (the Class-2 rule applies
+> to the hunk). A separate one-line `/dev`(backend) wave would split an atomic
+> change-set, which is the rationale of record. **This is the only known
+> out-of-pair source impact of tranche A** (verified workspace-wide; `src/` has
+> no `consume_*` call).
 
 **Class 2 — types-only diff.** The in-pair instruments whose *assertions* must
 be unchanged: `crates/cranelisp-primitives/src/marshal/tests.rs` (the RE-1
@@ -504,6 +583,15 @@ flipping the fixtures' return types, not the call expressions. When
 `make_scons(...)` returns `Owned`, the line `consume_slist(result);` is
 unchanged text. Most of the 30 primitives-side and ~110 intrinsics-side test
 call sites survive verbatim on this basis.
+
+> **`[S121]` The line citations in Class 2 and Class 3 are NOT re-verified.**
+> The *files* were checked at HEAD and are all still present; the offsets
+> (`marshal/tests.rs:456-458`, `rc/tests.rs:52/61-64/77-80`,
+> `drop/tests.rs:438-440,536-540`) date from `5520186d` and must be
+> **re-derived by `/dev`, not trusted**. What binds is the row's description —
+> "the double-inc/double-consume pair", "the stale-pointer plant", "the bare
+> nullary-tag calls" — and the count of Class-3 rows, which `/review` checks did
+> not grow.
 
 **Class 3 — the enumerated deliberately-illegal rows.** Instruments that assert
 a *double* discharge or discharge a *stale* pointer cannot compile as written.
@@ -547,16 +635,19 @@ impl core::clone::Clone for cranelisp_intrinsics::handle::Borrowed<'a>
 impl core::ops::Drop for cranelisp_intrinsics::handle::Owned     // debug profile only
 ```
 
-Note for the baseline diff: the `Drop` impl is `#[cfg(debug_assertions)]`, so
-`cargo public-api` output differs between profiles. **Ruled: the committed
-baseline is generated in the default (debug) profile, as today**, and a comment
-in `public-api.txt`'s companion rustdoc names the conditionality. `/arch` should
-confirm; if a profile-invariant baseline is required, the alternative is a
+**`[S121]` SETTLED (FIXME 0928 item 2).** The `Drop` impl is
+`#[cfg(debug_assertions)]`, so `cargo public-api` output differs between
+profiles. **The committed baseline is generated in the default (debug) profile,
+as today**, and a companion rustdoc comment names the conditionality. The
 `#[cfg(not(debug_assertions))] impl Drop for Owned { fn drop(&mut self) {} }`
-so the item exists in both — additional code for a documentation property, which
-this design does not recommend.
+alternative is **REJECTED** — code written for a documentation property.
 
-### `cranelisp-intrinsics` — changed signatures (10)
+**`[S121]` Baseline regeneration** uses the one canonical command settled this
+sprint (`design/arch/CLAUDE.md` §"Baseline-diff discipline", the FIXME-0945
+reconciliation), and no baseline in either crate is regenerated before Sprint
+121's G0 stream has landed that procedure repair.
+
+### `cranelisp-intrinsics` — changed public signatures (9)
 
 ```
 - pub fn cranelisp_intrinsics::rc::consume_shallow(ptr: i64)
@@ -580,11 +671,11 @@ this design does not recommend.
   (private: drop::free_io_branches(ptr: i64, tag) → (h: Borrowed<'_>, tag))
 ```
 
-`ElemConsumeFn` is `pub(crate)` today (a private type alias over `fn(i64)`); it
-becomes `fn(Owned)`, which appears in `consume_vec_with`'s public signature.
-`/arch` should rule whether the alias is promoted to `pub` for readability or
-the signature spells the fn-pointer type inline. **Recommendation: spell it
-inline** — a `pub` alias adds a name to the surface for no consumer.
+**`[S121]` SETTLED (FIXME 0928 item 1).** `ElemConsumeFn` is a private alias
+over `fn(i64)` today (`drop.rs:269`). `consume_vec_with`'s **public signature
+spells the fn-pointer type inline** — `fn(Owned)` — and the alias **must not
+become `pub`** (a name on the surface with no consumer). Keeping or deleting the
+private alias crate-internally is `/dev`'s discretion.
 
 ### `cranelisp-primitives` — zero delta
 
@@ -617,7 +708,8 @@ here, before any consumer exists, so the instrument is proven before it is
 relied on. *This is the change-set that answers "landed with zero consumers is
 not landed" — it does not land alone; CS-2 is in the same wave.*
 
-**CS-2 — A1, the intrinsics discharge funnel.** The 10 signatures. `cargo check`
+**CS-2 — A1, the intrinsics discharge funnel.** The nine public signatures and
+one private dispatcher signature. `cargo check`
 then enumerates every in-crate caller (io.rs 9, trace.rs 12, panic.rs 2,
 reactor.rs 2, vec_runtime.rs 1, drop.rs 20 internal, plus ~110 test sites) and
 the 6 hand-written extern shims that must wrap. Class-2/Class-3 rules from §7
@@ -647,6 +739,17 @@ Spine-1 backend implementation and this signature churn **never share a wave**.
 Each needs its own byte-identical instrument re-run for drift to stay
 attributable.
 
+> **`[S121]` Position in the C5 stream — CS-1…CS-5 do not open the stream.**
+> Sprint 121's C5 visits `cranelisp-intrinsics` once, and this tranche is its
+> **fourth** bundle, not its first. The IO teardown slice (`free_io_node`, R1's
+> `Pure` atomic claim/discharge and R2's bridge join) and the `Sexp` discharge walk land
+> **before** CS-1, because they rewrite the exact bodies CS-2 and CS-3 retype;
+> retyping first would churn `drop.rs` twice and destroy this section's own
+> Class-2 "types-only diff" acceptance property for that file. The full ordered
+> bundle list, with the C4 wave collision resolved, is
+> `design/intrinsics/s121-c5-intrinsics-visit.md` §10; CS-1…CS-5 are its
+> bundle **I2** and their internal order below is unchanged.
+
 ---
 
 ## 10. Honest limits
@@ -671,13 +774,25 @@ natural second derivation home is `intrinsics_table()`
 authorized here, and **not** claimed under G4, whose text scopes the derivation
 to the declaration table.
 
-**10.4 FIXME 0859 is not discharged.** 0859's undischarged residual is a
-*production-artifact* witness for `ProjectionOf(0)` on the **inline** `vec-get`
-row — inline rows have no shim, so the derivation never touches them. What §4.3
-does add is a declaration-sensitive check for a different class: a false
-`ParamFlow` on any extern row now breaks a unit row. That narrows 0859's surface
-by one class and is worth recording in its file; it does not close it, and the
-`ProjectionOf` question is untouched. `/qa` retains the disposition.
+**10.4 FIXME 0859 — `[S121]` DISPOSITIONED, and this tranche was never its
+carrier.** 0859's residual was a *production-artifact* witness for
+`ProjectionOf(0)` on the **inline** `vec-get` row; inline rows have no shim, so
+§4's derivation structurally never touches them. What §4.3 adds is a
+declaration-sensitive check for a *different* class — a false `ParamFlow` on any
+extern row now breaks a unit row — which narrows 0859's surface by one class
+without touching the `ProjectionOf` question.
+
+The user accepted `/qa`'s disposition 2 on **2026-09-01**: accept R-2 on the
+existing evidence — the typecheck transfer units distinguishing Projection
+provenance, the direct inline-body guards, and the nine committed production
+witnesses in `tests/s117_ownership_witnesses.rs` — **with a named revival
+trigger**: the obligation revives automatically, as a plan row of the sprint
+concerned, the moment projection provenance becomes emission-live (ownership
+inference increment II's uniqueness/reuse tokens, or option-2 re-staging elision
+into `--release` under the differential lane). Recording the trigger in
+`tests/plan/PLAN.md` and deleting the FIXME are `/qa`'s; no source work remains
+in either crate, and the conditional detector-oracle protocol
+(`design/intrinsics/diagnostic-modes.md` §9a) is retired unexecuted.
 
 **10.5 A parameter's *storage* obligation is still prose.** The type says
 consumed-or-borrowed. It does not say "this handle is stored into a structure
@@ -713,6 +828,12 @@ not this tranche's.
 
 ## 12. References
 
+- **`[S121]`** `design/intrinsics/s121-c5-intrinsics-visit.md` — the C5
+  intrinsics visit this tranche is bundle I2 of: the IO teardown slice it must
+  follow, the structural discharge mechanism it inherits, its reservations,
+  reject criteria and test rows
+- **`[S121]`** FIXME 0928 — the three settled rulings and `free_io_node`'s
+  residue classification, absorbed at §6.3, §7 and §8
 - `design/arch/ownership-stratum-options.md` §1.5, §2.1–§2.4 (as amended `3232a061`)
 - `sprints/SPRINT.md` §Architecture review — gates G3, G4, and the wave constraint
 - `design/runtime/s118-structural-embedding-ownership.md` — RE-1/RE-2/RE-3; the
@@ -727,13 +848,22 @@ not this tranche's.
 
 ## 13. Next skills
 
-- `/arch` — the §8 `public-api.txt` delta at the Phase-3 exit gate; three
-  specific rulings requested: the `ElemConsumeFn` spelling, the
-  debug-profile-conditional `Drop` impl in the baseline, and the
-  `launch.rs:452` cross-crate dispensation (§7 Class 1).
-- `/dev` (runtime pair) — CS-1..CS-5 per §9, after the Spine-1 backend wave.
-- `/qa` — the §5 triplet and the §7 three-class churn check want plan rows;
-  §10.4 is a note for 0859's file, not a resolution.
+**`[S121]` The three rulings this section requested of `/arch` have returned
+settled** (FIXME 0928 items 1–3, absorbed in place at §8 and §7). Current
+routing:
+
+- `/design`(primitives) — the next C5 invocation. **Consume this document; do
+  not edit it.** Its half is §4's derivation (`abi_facts`, the `AbiHandle`
+  trait, the `declaration_macro.rs` generator, the
+  `shim_abi_kinds_match_declared_facts` row with its one-name `sconcat`
+  allow-list) plus the A2/A3 body flips of §6.3.
+- `/dev` (runtime pair) — CS-1…CS-5 per §9, as bundle **I2** of the C5 order,
+  after the IO and `Sexp` bundles and in a wave with neither C4's bundles nor
+  the Spine-1 backend work.
+- `/qa` — the §5 drop-bomb triplet and the §7 three-class churn check want plan
+  rows. §10.4 is now a **disposition**, not an open note: the revival trigger
+  goes to `tests/plan/PLAN.md` and FIXME 0859 deletes.
 - `/design` (int) — tranche B-int consumes this vocabulary; note that
   `src/marshal.rs:316` carries its own **non-atomic** `rc_inc` copy
-  (`*rc_ptr += 1`), which the typed mint would replace.
+  (`*rc_ptr += 1`), which the typed mint would replace. Re-verify that citation
+  before acting on it; it has not been checked since S119.

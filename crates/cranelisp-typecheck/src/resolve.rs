@@ -14,7 +14,8 @@
 use std::collections::HashMap;
 
 use cranelisp_types::{
-    CodeStore, FQTypeName, ModuleEntry, ResolveError, Span, Symbol, Type, TypeExpr, TypeId, TypeRef,
+    Binding, CodeStore, Decl, FQSymbol, FQTypeName, ResolveError, Span, Symbol, Type, TypeExpr,
+    TypeId, TypeRecord, TypeRef,
 };
 
 use crate::checker::type_def_view_of;
@@ -31,10 +32,10 @@ use crate::checker::type_def_view_of;
 /// new resolution context is a new `TypeExprCtx` construction, never a second
 /// `TypeExpr`-matching walk (the §5 fifth-mirror invariant).
 pub(crate) struct TypeExprCtx<'a, C: CodeStore> {
-    /// Resolve a [`TypeRef`] to its terminal [`ModuleEntry`] via the caller's
-    /// symbol table (current-module lookup + import chain-follow), `None` when
-    /// unreachable.
-    pub resolve_terminal: &'a dyn Fn(&TypeRef) -> Option<ModuleEntry<C>>,
+    /// Resolve every terminal declaration exposed under this spelling. The
+    /// resolver filters to type declarations before applying cardinality.
+    pub resolve_candidates:
+        &'a dyn Fn(&TypeRef) -> Result<Vec<(Binding<C>, FQSymbol)>, ResolveError>,
     /// Mint a fresh unification var for a `TypeVar` name that misses `var_map`.
     /// `Some` in annotation / trait-sig / HKT-sig contexts; `None` in the
     /// `deftype`-field / platform-sig contexts (a free-var miss there is
@@ -208,6 +209,38 @@ fn type_not_found(name: &TypeRef, span: Span) -> ResolveError {
     }
 }
 
+fn resolve_type_candidate<C: CodeStore>(
+    name: &TypeRef,
+    ctx: &TypeExprCtx<C>,
+    span: Span,
+) -> Result<Binding<C>, ResolveError> {
+    let candidates = (ctx.resolve_candidates)(name)?;
+    let mut type_candidates = candidates
+        .into_iter()
+        .filter(|(entry, _)| {
+            matches!(entry.declaration, Decl::Type(_)) || type_def_view_of(entry).is_some()
+        })
+        .collect::<Vec<_>>();
+    type_candidates.sort_by_key(|(_, canonical)| canonical.to_string());
+    type_candidates.dedup_by(|(_, left), (_, right)| left == right);
+    match type_candidates.len() {
+        0 => Err(type_not_found(name, span)),
+        1 => Ok(type_candidates.pop().expect("one candidate").0),
+        _ => Err(ResolveError::Ambiguous {
+            name: Symbol::from(name.name.as_ref()),
+            from_module: name
+                .module
+                .clone()
+                .unwrap_or_else(|| cranelisp_types::ModuleFullPath::from("")),
+            candidates: type_candidates
+                .into_iter()
+                .map(|(_, canonical)| canonical)
+                .collect(),
+            span,
+        }),
+    }
+}
+
 /// Resolve a `TypeVar` name to a `Type`, dispatching the head-binding policy.
 ///
 /// Order: (1) an HKT-decl constructor variable → `Type::Var(con_id)`;
@@ -275,13 +308,16 @@ fn resolve_named<C: CodeStore>(
     {
         return Ok(ty);
     }
-    match (ctx.resolve_terminal)(name) {
-        Some(ModuleEntry::IntrinsicType { ty, .. }) => Ok(ty),
-        Some(entry) => match type_def_view_of(&entry) {
+    match resolve_type_candidate(name, ctx, span) {
+        Ok(Binding {
+            declaration: Decl::Type(TypeRecord::Intrinsic { ty, .. }),
+            ..
+        }) => Ok(ty),
+        Ok(entry) => match type_def_view_of(&entry) {
             Some(info) => Ok(Type::ADT(info.name.clone(), vec![])),
             None => Err(type_not_found(name, span)),
         },
-        None => Err(type_not_found(name, span)),
+        Err(error) => Err(error),
     }
 }
 
@@ -321,13 +357,16 @@ fn resolve_applied<C: CodeStore>(
         }
         _ => {}
     }
-    match (ctx.resolve_terminal)(name) {
+    match resolve_type_candidate(name, ctx, span) {
         // Intrinsics are zero-arity; applied form short-circuits to the bare
         // `Type` (the parser can emit `Applied` with empty args).
-        Some(ModuleEntry::IntrinsicType { ty, .. }) => Ok(ty),
+        Ok(Binding {
+            declaration: Decl::Type(TypeRecord::Intrinsic { ty, .. }),
+            ..
+        }) => Ok(ty),
         // `TypeDef` (sum/enum) OR a product ctor's type facet (S79 dual facet)
         // both answer as a type via `type_def_view_of`.
-        Some(entry) => match type_def_view_of(&entry) {
+        Ok(entry) => match type_def_view_of(&entry) {
             Some(info) => {
                 // FIXME 0385: the builtin `Vec` (`primitives/Vec`) is genuinely
                 // arity-1 (`(Vec a)`, spec §3.2.7) but is seeded with empty
@@ -376,7 +415,7 @@ fn resolve_applied<C: CodeStore>(
             }
             None => Err(type_not_found(name, span)),
         },
-        None => Err(type_not_found(name, span)),
+        Err(error) => Err(error),
     }
 }
 

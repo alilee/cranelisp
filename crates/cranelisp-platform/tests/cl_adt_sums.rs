@@ -9,6 +9,9 @@
 use cranelisp_platform::{CLAdt, CLAdtType, CLInt, CLOwned, Schema, set_global_schema};
 use std::sync::Once;
 
+mod common;
+use common::{alloc_full_heap_adt, dealloc_heap_adt};
+
 struct OptionInt;
 impl CLAdtType for OptionInt {
     const TYPE_NAME: &'static str = "data/OptionInt";
@@ -34,32 +37,6 @@ fn install_schema() {
     (Cons 1 ((head primitives/Int) (tail data/ListInt)))))";
         set_global_schema(Schema::parse(artifact).expect("artifact parses"));
     });
-}
-
-fn alloc_full_heap_adt(tag: u32, fields: &[i64]) -> i64 {
-    let payload_size = 8 + fields.len() * 8;
-    let total_size = 16 + payload_size;
-    unsafe {
-        let layout = std::alloc::Layout::from_size_align_unchecked(total_size, 8);
-        let alloc_base = std::alloc::alloc_zeroed(layout);
-        *(alloc_base as *mut i64) = total_size as i64;
-        *((alloc_base as *mut i64).add(1)) = 1;
-        let payload = alloc_base.add(16);
-        *(payload as *mut u32) = tag;
-        *(payload.add(4) as *mut u32) = 0;
-        for (i, val) in fields.iter().enumerate() {
-            *(payload.add(8 + i * 8) as *mut i64) = *val;
-        }
-        alloc_base as i64
-    }
-}
-
-fn dealloc_heap_adt(base: i64) {
-    unsafe {
-        let total_size = *(base as *const i64) as usize;
-        let layout = std::alloc::Layout::from_size_align_unchecked(total_size, 8);
-        std::alloc::dealloc(base as *mut u8, layout);
-    }
 }
 
 // spec: design/arch/platform-interface.md §5.5 — None (nullary) variant tag.

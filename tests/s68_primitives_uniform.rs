@@ -87,7 +87,7 @@ fn repl_prims(lines: &str) -> helpers::e2e::CrOutput {
 // =============================================================================
 
 // spec: spec/appendix-a-builtins.md §A.3 (not) +
-//       design/arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md
+// spec: design/arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md
 //       §"The invariant" — primitives dispatch must remain functional
 //       through the Wave 3/4 cutover. Sentinel; not failing-now.
 #[test]
@@ -231,8 +231,8 @@ fn s68_facade_compliance_test_exists_for_s68_touched_crates() {
 // free fn; Wave 4 (backend side) stops consuming it.
 // =============================================================================
 
-// spec: design/arch/fixmes/0182-*.md — `ring0_jit_symbols()` retirement;
-//       Decision 0048 §Consequences — "ring0_jit_symbols() retires".
+// spec: design/arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md §"Consequences"
+//       — `ring0_jit_symbols()` retires.
 #[test]
 fn s68_ring0_jit_symbols_free_fn_is_retired() {
     let primitives_lib = read_source("crates/cranelisp-primitives/src/lib.rs");
@@ -266,7 +266,7 @@ fn s68_ring0_jit_symbols_free_fn_is_retired() {
 // from `cranelisp_init_platform`. Replaces the implicit `pub use` force-link.
 // =============================================================================
 
-// spec: Decision 0048 §Cascade — "cranelisp-exe-bundle's force-link `pub use`
+// spec: design/arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md §"Cascade" — "cranelisp-exe-bundle's force-link `pub use`
 //       lines retire; replaced by an explicit `cranelisp_init_primitives()`
 //       no-op that forces `LazyLock::force(&PRIMITIVES_TABLE)` at startup".
 //       /arch recommendation in `sprints/SPRINT.md` Phase 2 outcomes.

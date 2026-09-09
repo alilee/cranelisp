@@ -38,7 +38,7 @@ The pre-S70 `ModuleEntry` enum had `Macro`, `Reexport`, `Constructor`, `SpecialF
 
 | Old int match | New shape (target) | Sites |
 |---|---|---|
-| `ModuleEntry::Macro { clauses, .. }` | `ModuleEntry::Def { kind: DefKind::Macro { clauses_meta, sexp, source }, .. }` | 15 — `worker.rs::separate_macros`, `SymbolTableMacroResolver`, `/list`/`/info` describe paths in `session_v4.rs` |
+| `ModuleEntry::Macro { clauses, .. }` | `ModuleEntry::Def { kind: DefKind::Macro { clauses_meta, sexp, source }, .. }` | 15 — historical `worker.rs::separate_macros`, `SymbolTableMacroResolver`, `/list`/`/info` describe paths in `session_v4.rs` |
 | `ModuleEntry::Reexport { .. }` | per-symbol `ModuleEntry::Import { source, visibility: Public }` (BC §7 "Visibility is per-entry"; Reexport retired) | 11 — import/export display + `module_exports` |
 | `ModuleEntry::Constructor { .. }` | `ModuleEntry::Def { kind: DefKind::Constructor, ast, code, got_slot, .. }` (+ `CtorMeta` for metadata) | 9 — ADT introspection in `pretty.rs`/`display.rs`/`session_v4.rs` |
 | `DefKind::SpecialForm` | retired variant — special forms are `ModuleEntry::SpecialForm` (entry-level, not a `DefKind`); read description from there | 11 — `/imports` special-form category, `describe_symbol` |

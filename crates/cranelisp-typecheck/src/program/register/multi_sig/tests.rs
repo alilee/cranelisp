@@ -72,41 +72,23 @@ fn test_multi_sig_different_arities() {
         )
         .unwrap();
 
-    // The base name "add" should be registered as Overloaded
+    // The authored name owns both executable arms; temporary clause keys are
+    // gone after final publication.
     let table_guard = tc.symbol_table();
     let entry = table_guard.get("add");
     assert!(entry.is_some(), "base name 'add' should be registered");
-    if let Some(ModuleEntry::Def { kind, .. }) = entry {
-        assert!(
-            matches!(kind.as_ref(), DefKind::Overloaded { variants } if variants.len() == 2),
-            "add should be Overloaded with 2 variants"
-        );
+    if let Some(Binding {
+        declaration: Decl::Overloaded(declaration),
+        ..
+    }) = entry
+    {
+        assert_eq!(declaration.arms.len(), 2, "add should own 2 variants");
     } else {
         panic!("add should be a Def entry");
     }
 
-    // Mangled names should be registered: add$Int+Int and add$Int+Int+Int
-    assert!(
-        tc.symbol_table().get("add$Int+Int").is_some(),
-        "add$Int+Int should be registered"
-    );
-    assert!(
-        tc.symbol_table().get("add$Int+Int+Int").is_some(),
-        "add$Int+Int+Int should be registered"
-    );
-
-    // The multi-sig defns live on SymbolTable post-slim (Wave 2 step 4).
-    // The `default_method_defns` CheckResult field was retired; the mangled
-    // entries are directly observable on the symbol table instead.
-    let mangled_count = tc
-        .symbol_table()
-        .all_symbols()
-        .filter(|(name, _)| name.as_ref().starts_with("add$"))
-        .count();
-    assert_eq!(
-        mangled_count, 2,
-        "should produce 2 mangled defns for the backend"
-    );
+    assert!(tc.symbol_table().get("add$Int+Int").is_none());
+    assert!(tc.symbol_table().get("add$Int+Int+Int").is_none());
 }
 
 // spec: 05-definitions §5.1.2 — multi-sig with same arity but different types
@@ -181,23 +163,20 @@ fn test_multi_sig_same_arity_different_types() {
         )
         .unwrap();
 
-    // Mangled names should be different: process$Int vs process$Bool
-    assert!(
-        tc.symbol_table().get("process$Int").is_some(),
-        "process$Int should be registered"
+    let table = tc.symbol_table();
+    let declaration = match &table.get("process").expect("process family").declaration {
+        Decl::Overloaded(declaration) => declaration,
+        other => panic!("expected owned process overload, got {other:?}"),
+    };
+    assert_eq!(declaration.arms.len(), 2);
+    assert_eq!(
+        declaration.arms[0].callable.scheme.ty,
+        Type::Fn(vec![Type::Int], Box::new(Type::Int))
     );
-    assert!(
-        tc.symbol_table().get("process$Bool").is_some(),
-        "process$Bool should be registered"
+    assert_eq!(
+        declaration.arms[1].callable.scheme.ty,
+        Type::Fn(vec![Type::Bool], Box::new(Type::Int))
     );
-
-    // 2 mangled defns produced (observable on SymbolTable post-slim).
-    let mangled_count = tc
-        .symbol_table()
-        .all_symbols()
-        .filter(|(name, _)| name.as_ref().starts_with("process$"))
-        .count();
-    assert_eq!(mangled_count, 2);
 }
 
 // spec: 05-definitions §5.1.2 — duplicate signatures produce an error
@@ -368,18 +347,14 @@ fn test_multi_sig_call_site_resolution() {
         )
         .unwrap();
 
-    // The call site should have a SigDispatch resolution to "add$Int+Int".
+    // The call site should select the first arm of the authored `add` family.
     // Post-slim (Wave 2 step 4): resolutions live on annotated AST nodes.
     let resolutions = tc.annotated_resolutions();
     let resolution = resolutions.get(&call_span);
     assert!(resolution.is_some(), "call site should have a resolution");
     match resolution.unwrap() {
-        ResolvedCall::SigDispatch { mangled_name } => {
-            assert_eq!(
-                mangled_name.as_ref(),
-                "add$Int+Int",
-                "should dispatch to add$Int+Int"
-            );
+        ResolvedCall::SigDispatch { target } => {
+            assert_eq!(target, &overload_target("test", "add", 0));
         }
         other => {
             panic!("expected SigDispatch, got {:?}", other);
@@ -454,29 +429,32 @@ fn test_check_form_defn_multi_register() {
         .unwrap();
     tc.merge_form_result(&module, &mut accumulator, result);
 
-    // Internal variant defns should be in defn_type_vars
+    // Each source clause has one registered ledger record.
     assert!(
         accumulator
-            .defn_type_vars
-            .contains_key(&Symbol::from("add__v0")),
-        "add__v0 should be in defn_type_vars"
+            .bodies
+            .registration_for_target(&BodyTarget::MultiSignatureClause {
+                group: Symbol::from("add"),
+                clause: 0,
+            })
+            .is_some(),
+        "add clause 0 should be registered"
     );
     assert!(
         accumulator
-            .defn_type_vars
-            .contains_key(&Symbol::from("add__v1")),
-        "add__v1 should be in defn_type_vars"
+            .bodies
+            .registration_for_target(&BodyTarget::MultiSignatureClause {
+                group: Symbol::from("add"),
+                clause: 1,
+            })
+            .is_some(),
+        "add clause 1 should be registered"
     );
 
-    // Base name should be in symbol table as Overloaded placeholder
-    if let Some(ModuleEntry::Def { kind, .. }) = tc.symbol_table().get("add") {
-        match kind.as_ref() {
-            DefKind::Overloaded { .. } => {} // expected
-            other => panic!("expected Overloaded placeholder, got {:?}", other),
-        }
-    } else {
-        panic!("add base name not found in symbol table");
-    }
+    // The authored family is installed only after every clause checks.
+    assert!(tc.symbol_table().get("add").is_none());
+    assert!(tc.symbol_table().get("add__v0").is_some());
+    assert!(tc.symbol_table().get("add__v1").is_some());
 }
 
 // spec: design/typecheck/ast-annotation.md §9.3 — mangled multi-sig variant ast pre-materialisation
@@ -489,51 +467,24 @@ fn wave0_mangled_variant_carries_ast() {
 
     let st = tc.symbol_table();
 
-    // add$Int+Int: Def entry with ast: Some(DefnVariant). Per S69 Submission 35,
-    // `ast` is now `Option<DefnVariant>` (the single meaningful payload), so the
-    // name lives on the symbol-table key and "single variant" is enforced by the
-    // type itself — no `.variants` to assert against.
-    match st.get("add$Int+Int") {
-        Some(ModuleEntry::Def {
-            ast: Some(_defn),
-            kind,
-            ..
-        }) => {
+    let declaration = match &st.get("add").expect("add family").declaration {
+        Decl::Overloaded(declaration) => declaration,
+        other => panic!("expected owned overload family, got {other:?}"),
+    };
+    match declaration.arms.first().map(|arm| &arm.callable) {
+        Some(callable) if matches!(callable.life, Life::Concrete { ast: Some(_), .. }) => {
             assert!(
-                matches!(
-                    kind.as_ref(),
-                    DefKind::UserFn {
-                        fn_state: UserFnState::Concrete { .. }
-                    }
-                ),
-                "mangled variant kind should be UserFn(Concrete), got {:?}",
-                kind
+                matches!(callable.life, Life::Concrete { .. }),
+                "owned arm must be concrete, got {:?}",
+                callable.life,
             );
         }
-        other => panic!(
-            "add$Int+Int should be Def {{ ast: Some(..), .. }}, got {:?}",
-            other
-        ),
+        other => panic!("first add arm should carry an AST, got {other:?}"),
     }
 
-    // add$Float+Float: same shape.
-    match st.get("add$Float+Float") {
-        Some(ModuleEntry::Def {
-            ast: Some(_defn),
-            kind,
-            ..
-        }) => {
-            assert!(matches!(
-                kind.as_ref(),
-                DefKind::UserFn {
-                    fn_state: UserFnState::Concrete { .. }
-                }
-            ));
-        }
-        other => panic!(
-            "add$Float+Float should be Def {{ ast: Some(..), .. }}, got {:?}",
-            other
-        ),
+    match declaration.arms.get(1).map(|arm| &arm.callable) {
+        Some(callable) if matches!(callable.life, Life::Concrete { ast: Some(_), .. }) => {}
+        other => panic!("second add arm should carry an AST, got {other:?}"),
     }
 }
 
@@ -546,11 +497,12 @@ fn wave0_mangled_variant_ast_is_annotated() {
         .unwrap();
 
     let st = tc.symbol_table();
-    let entry = st
-        .get("add$Int+Int")
-        .expect("add$Int+Int must be registered");
-    let defn = match entry {
-        ModuleEntry::Def { ast: Some(d), .. } => d,
+    let declaration = match &st.get("add").expect("add family").declaration {
+        Decl::Overloaded(declaration) => declaration,
+        other => panic!("expected owned overload family, got {other:?}"),
+    };
+    let defn = match declaration.arms.first().map(|arm| &arm.callable.life) {
+        Some(Life::Concrete { ast: Some(d), .. }) => d,
         other => panic!("expected ast: Some(..), got {:?}", other),
     };
 
@@ -590,16 +542,11 @@ fn wave0_overloaded_base_has_no_ast() {
 
     let st = tc.symbol_table();
     match st.get("add") {
-        Some(ModuleEntry::Def { ast, kind, .. }) => {
-            assert!(
-                ast.is_none(),
-                "overloaded base 'add' must have ast: None (bodies live on mangled variants)"
-            );
-            assert!(
-                matches!(kind.as_ref(), DefKind::Overloaded { variants } if variants.len() == 2),
-                "overloaded base kind should be Overloaded with 2 variants, got {:?}",
-                kind
-            );
+        Some(Binding {
+            declaration: Decl::Overloaded(declaration),
+            ..
+        }) => {
+            assert_eq!(declaration.arms.len(), 2);
         }
         other => panic!(
             "'add' base should be Def {{ Overloaded, ast: None }}, got {:?}",
@@ -654,13 +601,13 @@ fn multi_sig_same_arity_unifiable_clauses_rejected_at_definition() {
 // spec: spec/05-definitions.md §5.1.2 — a multi-sig defn type-checks identically
 // to the equivalent two-function form. The WRAPPER-indirection shape
 // (`(defn run-elim [idx] (vec-len (peers idx)))` over a multi-sig `peers`) is the
-// S115 0719 face. Inside the minted instance of the `$Var` template clause the
+// S115 0719 face. Inside the minted instance of the owned template clause the
 // overloaded base is no longer the enclosing defn, so the sibling call drains as
 // an EXTERNAL call to the concrete clause — and the DEFERRED arm, unlike the
 // inline arm in `infer_apply`, left the callee `Var` carrying the base's
 // PRE-DISPATCH instantiation. Its element var never settled, so `from_expr`
 // rejected the instance:
-//   `ambiguous type … monomorphised in \`user/peers$Var$Int\``.
+//   `ambiguous type … monomorphised in \`user/peers__arm0$Int\``.
 // The drain now records the callee's type from the settled dispatch DECISION
 // (P26). `check_src` panics on any check error, so a clean return IS the
 // assertion — this cell goes RED the moment the retype is reverted (verified by
@@ -680,13 +627,19 @@ fn wrapper_indirected_multi_sig_return_monomorphises_from_settled_state() {
     // The template clause's instance exists and carries a concrete-boundary view
     // — a view cannot be built while any node retains a residual `Var`, so its
     // presence IS the settled-state evidence.
-    let minted = symbol_names_containing(&tc, "peers$");
+    let minted = symbol_names_containing(&tc, "peers__arm0$");
     assert!(
-        minted.iter().any(|n| n.contains("$Int")),
+        minted == ["test/peers__arm0$"],
         "the wrapper-indirected multi-sig call MUST mint a concrete instance; \
          got {minted:?}"
     );
-    let _view = mono_instance_view_containing(&tc, "peers$Var$");
+    let _view = mono_instance_view_containing(&tc, "peers__arm0$");
+    let table = tc.symbol_table();
+    let arm = table.get("test/peers__arm0$").unwrap().callable().unwrap();
+    assert!(arm.arm.scheme.ty.is_concrete());
+    assert!(
+        matches!(&arm.arm.life, Life::Concrete { minted_from: Some(link), .. } if link.type_args.is_empty())
+    );
 }
 
 // spec: spec/05-definitions.md §5.1.2 — a multi-sig defn type-checks identically
@@ -713,8 +666,8 @@ fn self_call_drain_retypes_the_callee_node_from_settled_state() {
          (defn top [] (cnt 3))",
     );
     // Both clauses self-call `cnt`; both drained through the pass-1 self-call arm.
-    for variant in ["cnt$Int", "cnt$Int+Int"] {
-        let view = main_codegen_view_of(&tc, variant);
+    for (ordinal, variant) in ["cnt arm 0", "cnt arm 1"].into_iter().enumerate() {
+        let view = overload_arm_codegen_view(&tc, "cnt", ordinal);
         let mut callees = Vec::new();
         collect_callee_types_named(&view.body, "cnt", &mut callees);
         assert!(

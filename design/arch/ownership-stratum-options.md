@@ -113,11 +113,11 @@ Three findings share one structure:
 - `decision24_sconcat_rc_balanced` — the seam's ONE unit row used a one-cell
   tail with bare-tag elements: `over-incs = (1−1) + 0 = 0`. The single sampled
   point sat exactly where the defect is arithmetically invisible.
-- **0867** — field accessors are minted for products only; every prior guard
-  used the one spelling that works (same-name constructor arm), so every sum
-  type and distinct-name product silently lacked accessors. A
-  coverage-by-definition-variants miss: the corpus exercised the author's
-  spelling.
+- **0867 (superseded S121)** — the observation that differently named
+  constructor arms mint no accessors was correct, but the defect attribution
+  was not: those arms are sum variants, not alternate products. The S121 ruling
+  retains product-only total accessors and requires sum payload extraction by
+  `match`.
 - **0885 (delegated review finding)** — the W2b inc-count fence, as first
   committed, was verified *by arithmetic* to pass under the §3-**rejected**
   move-variant: the fence pinned the balance but not the ruling. The fix was
@@ -638,7 +638,7 @@ documented-residual to zero; the marginal instrument stays valid unchanged.
 - `tests/helpers/marginal.rs` + `tests/CLAUDE.md` §"Allocator balance…" —
   option 3's landed first instance and its e2e-tier rule.
 - FIXMEs 0889 (leak recovery — §6.3), 0890 (threshold re-derivation),
-  0867 (the variant-coverage miss).
+  0867 (historical variant-coverage hypothesis; retired by the S121 ruling).
 - `audits/cranelisp-primitives-s116.md`, `audits/cranelisp-platform-s117.md`
   — the prose-contract evidence.
 

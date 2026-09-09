@@ -38,6 +38,47 @@ class ClearedCoverageTests(unittest.TestCase):
             self.assertEqual(scan.cleared[0].anchor, "1.2")
             self.assertEqual(scan.pending, [])
 
+    def test_split_repl_leaf_uses_stable_compatibility_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            leaf = root / "repl" / "spec" / "18-redefinition.md"
+            leaf.parent.mkdir(parents=True)
+            leaf.write_text("## 18. Redefinition\n")
+            self.assertEqual(
+                reconcile.spec_md_for(leaf, root),
+                "repl/spec/18-redefinition.md",
+            )
+            self.assertEqual(
+                reconcile.logical_spec_md_for(leaf, root),
+                "repl/spec.md",
+            )
+            self.assertEqual(
+                reconcile.normalize_spec_path(
+                    "repl/spec/18-redefinition.md §18.1"
+                ),
+                "repl/spec.md",
+            )
+
+    def test_split_leaf_scan_preserves_physical_location_and_cleared_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            leaf = root / "repl" / "spec" / "18-redefinition.md"
+            leaf.parent.mkdir(parents=True)
+            leaf.write_text(
+                "## 18. Redefinition\n"
+                "[Tested tests/sample::present]\n"
+                "[Uncovered S121 — was tests/sample::old]\n"
+            )
+            (root / "tests").mkdir()
+            (root / "tests" / "sample.rs").write_text("fn present() {}\n")
+            scan = reconcile.scan_spec(leaf, root)
+            self.assertEqual(len(scan.live), 1)
+            self.assertEqual(len(scan.cleared), 1)
+            self.assertEqual(
+                reconcile.spec_md_for(scan.cleared[0].md, root),
+                "repl/spec/18-redefinition.md",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

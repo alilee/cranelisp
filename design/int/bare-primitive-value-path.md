@@ -69,10 +69,10 @@ Each path is a separate code route inside `CompilerSession`:
 1. **Bare-value path** (bare symbol typed at the prompt, expecting a
    REPL echo of the value or an introspection card).
    Entry: `eval_one_form` → `check_bare_symbol_introspection`
-   (`src/session_v4.rs:2179`). Falls through to `process_single_form`
+   (`src/eval.rs::check_bare_symbol_introspection`). Falls through to `process_single_form`
    if the bare-symbol introspection check returns `None`.
 2. **Introspection path** (slash command, e.g., `/sig add-i64`).
-   Entry: `handle_sig` (`src/session_v4.rs:2268`) → direct
+   Entry: `handle_sig` (`src/repl/commands.rs::handle_sig`) → direct
    `current_symbol_table().get(name)` lookup → `format_entry_sig`.
 3. **Call path** (bare symbol in head position, e.g., `(add-i64 2 3)`).
    Entry: `process_single_form` → typechecker + codegen, which goes
@@ -85,8 +85,8 @@ current module's symbol table, which after prelude-load contains
 re-exported `primitives` names like `add-i64` (per `spec/08-modules.md
 §8.9` and §8.8.1 — implicit prelude import seeds the user module).
 
-The bare-value path (1) also reads `current_symbol_table()` at
-`src/session_v4.rs:2202`:
+The bare-value path (1) also reads the current resolution scope in
+`src/eval.rs::check_bare_symbol_introspection`:
 
 ```rust
 let entry = {

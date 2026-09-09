@@ -3,14 +3,27 @@
 This subordinate design elaborates the Binary/int master for Sprint 117 Tracks
 A and B. It covers FIXME 0816 (macro-expanded declaration staging), 0817
 (failed-codegen recovery and diagnostic attribution), 0839 (`/info <Type>`
-inverse impl enumeration), 0802 (constraint rendering), and FIXME 0800 faces
-DF-1/DF-2 only. `def` remains the zero-argument stdlib macro specified in
-`stdlib/defs.cl`; function-valued `def` behaviour (DF-3) is a later
+inverse impl enumeration), 0802 (constraint rendering), and FIXME 0800's
+multi-definition REPL result. `def` remains the zero-argument stdlib macro
+specified in `stdlib/defs.cl`; function-valued `def` behaviour (DF-3) is a later
 stdlib/REPL API choice, not a core-form or language-spec decision.
 
 The design stays inside the one v4 pipeline (Principle 11 — Single pipeline,
-mode parameters), adds no instrumentation or memory mechanism, and changes no
-public crate interface.
+mode parameters) and adds no instrumentation or memory mechanism. S117 changed
+no public crate interface; the S121 amendment consumes the separately approved
+and baseline-confirmed `publish_compiled_staged` types boundary plus the
+separately user-approved absent-key `ChangeAbi` semantic extension. The latter
+changes no generated Rust surface line; int adds no further public delta.
+
+> **S121 macro-checkpoint amendment (user-approved 2026-09-03).** The original
+> cluster-wide macro staging in §§1.1.2 and 2.1 is superseded. A complete
+> authored or expansion-produced `defmacro` is an immediate, one-module
+> publication checkpoint. A later form failure retains that macro. Ordinary
+> definitions still form one HM binding cluster and retain the prepared
+> all-or-nothing publication described by §1. `PreparedMacroTurn`,
+> `TurnCheckWorld`, `TurnDelta`, candidate invocation, reserved unpublished GOT
+> cells, and cross-module rollback are deleted rather than adapted. The current
+> design is stated in the amended sections below.
 
 ## 0. Phase-5 refinement against the W1 guards
 
@@ -18,7 +31,9 @@ The W1 results narrow W3:
 
 - **MB-1 through MB-4 are green.** The existing expansion → structural peel →
   one `check_forms` path already satisfies §2. W3 must preserve it and must not
-  add a macro-staging implementation.
+  add a trait-specific or per-expanded-form staging path. S121's macro-local
+  owner-free staging is the executable `defmacro` checkpoint, not an alternate
+  route for the ordinary declarations emitted by expansion.
 - **IN-1 and IN-2 are green; IN-3 is red.** The inverse relation is already
   complete enough for local/re-impl and inverse-twin coverage. The remaining
   defect is mixed local/imported presentation order, not a missing canonical
@@ -27,55 +42,63 @@ The W1 results narrow W3:
   codegen boundary, so a backend failure leaves live residue.
 - **TD-1 and TD-2 are red.** The scheme renderer discards the module component
   of each `FQTraitName`.
-- **DF-1 and DF-2 are red.** The expanded-program `Defn` heuristic selects the
-  generated helper because no entered-form presentation subject survives.
+- **DF-1 and DF-2 are red.** The singular definition result selects one emitted
+  definition and cannot report a statement's complete definition set.
 
 Use three serial dev/review sub-rounds:
 
 1. **W3a — transaction and diagnostic identity (TX-1..TX-4).**
 2. **W3b — scheme and impl-drawer presentation (TD-1, TD-2, IN-3, with IN-1
    and IN-2 as controls).**
-3. **W3c — generic zero-argument-macro presentation (DF-1, DF-2).**
+3. **W3c — ordered multi-definition result presentation (DF-1, DF-2).**
 
-W3a is the stateful/high-risk change and establishes the prepared-turn carrier.
-W3b is pure/read-only formatting. W3c consumes origin/prepared-turn metadata
-but changes no compilation semantics. Each sub-round receives its own
+W3a is the stateful/high-risk change and establishes the ordinary prepared
+carrier. W3b is pure/read-only formatting. W3c consumes exact publication
+identities; S121 records macros at their checkpoint while ordinary definitions
+remain pending until W3a publication. Each sub-round receives its own
 `/review`; combining them would obscure attribution (Principles 5 and 6).
 
-## 1. One entered turn, one transaction
+## 1. One ordinary HM cluster, with source-ordered macro checkpoints
 
-The REPL actor submits one source cluster. The compilation actor expands,
-builds, typechecks, derives the exact codegen batch, compiles it, and returns a
-terminal result. The REPL displays only after that terminal result.
+The REPL actor submits one source cluster. Int walks it in source order,
+committing each complete `defmacro` as a checkpoint while accumulating the
+expanded non-macro forms into one ordinary HM binding cluster. The REPL reports
+the terminal result after processing stops, but publication may already have
+crossed one or more macro checkpoints.
 
 ```text
 entered cluster
-  -> expand to fixpoint
-  -> flatten structural `begin`
-  -> build one ordered ParsedEntry sequence
-  -> typecheck into fresh staging
-  -> prepare live commit + exact codegen batch
+  -> walk authored and emitted forms in source order
+       defmacro -> check all clauses and expansion-time closure
+                -> codegen all clauses
+                -> publish parent + clauses in one module transaction
+                -> checkpoint the remaining work
+       ordinary -> expand and accumulate
+  -> typecheck the complete ordinary HM binding cluster into fresh staging
+  -> prepare exact codegen batch
   -> codegen
-       success -> publish turn + dependent-redefinition handling + display
-       failure -> discard turn products + display the located failure
+       success -> publish ordinary cluster + dependent-redefinition handling
+       failure -> discard ordinary products; keep earlier macro checkpoints
 ```
 
-The transaction owns all products created for the turn:
+The ordinary-cluster transaction owns all non-macro products created after
+expansion:
 
 - staged symbol-table entries and their staged slots;
 - the exact codegen enrollment derived from the turn's finalised program;
 - turn-local typecheck-product and introspection updates;
 - redefinition outcomes, which remain pending until codegen succeeds.
 
-An error before publication drops these products. Earlier live definitions,
-compiled code, introspection, and scheduler terminal state remain unchanged.
-The next prompt therefore starts from the last successful turn. This extends
-the existing type-error discard rule through codegen; it does not introduce a
-second transaction system.
+An error before ordinary publication drops these products. Earlier live
+definitions and every successful macro checkpoint remain unchanged. The next
+prompt therefore starts from the last successful publication boundary. This
+extends the existing type-error discard rule through ordinary codegen while
+making macro availability match its source-ordered compile-time semantics.
 
 ### 1.1 Implementation shape
 
-`process_cluster_with_staging` must stop treating successful `check_forms` as
+For the accumulated ordinary HM cluster, `process_cluster_with_staging` must
+stop treating successful `check_forms` as
 the publication point. It returns an int-private `PreparedTurn`; it does not
 drain staging, replace the caller's `CheckState`, update
 `typecheck_products`, or write introspection. The carrier owns:
@@ -97,8 +120,9 @@ fits `GOT_TABLE_SIZE`. It does **not** call `allocate_got_slot`, advance
 `next_got_slot`, push retention owners, patch a GOT cell, or install an entry.
 It also runs `check_terminal_closure`, computes slot-less displacement
 retention, derives the dependent-redefinition outcomes, and checks that every
-batch member has a callable prepared entry. No `Result`-returning validation
-is allowed after this phase.
+batch member has a callable prepared entry. The final types-owned publication
+still revalidates the submitted staging and owner set against the live table;
+its refusal is an expected internal error path, not an unreachable state.
 
 The module cadence is the isolation lock for this optimistic plan: no second
 turn for the same module may prepare or publish between snapshot and commit.
@@ -109,23 +133,23 @@ codegen and publish, making a post-codegen mismatch unrepresentable. Other
 modules may progress concurrently because their tables and GOT slabs are
 disjoint.
 
-`process_form::finalize_cluster` and `ClusterOnce::Done` carry the owned
-`PreparedTurn`; they do not first manufacture a committed
-`ProcessedCluster`. Both the eval driver and the worker/batch cadence invoke
-the same three operations:
+`process_form::finalize_cluster` carries the owned `PreparedTurn`; it does not
+first manufacture a committed `ProcessedCluster`. Both the eval driver and the
+worker/batch cadence invoke the same three operations:
 
 1. `prepare` — typecheck into staging, derive the exact batch, and construct
    the complete commit plan without live mutation;
 2. `compile_prepared` — codegen that exact batch against the prepared view;
-3. `publish` — consume prepared+compiled state through the infallible commit
-   gate, then issue cadence notifications.
+3. `publish` — consume prepared+compiled state through
+   `publish_compiled_staged`, then issue cadence notifications.
 
 On any error from steps 1 or 2, dropping the carrier drops its staging table,
-candidate `Code` owners, and pending metadata. The caller retains its prior
-`CheckState`; live entries, `next_got_slot`, GOT cells, retention pools,
-typecheck products, introspection, and redefinition state are byte-for-byte
-unchanged. The dependent-redefinition transaction is invoked only after
-publication.
+candidate `Code` owners, and pending metadata. A step-3 refusal returns every
+submitted owner; int keeps those owners alive while restoring every touched
+GOT cell, then releases them. The caller retains its prior `CheckState`; live
+entries, slot authority, retention pools, typecheck products, introspection,
+and redefinition state remain unchanged. The dependent-redefinition
+transaction is invoked only after publication.
 
 The batch is explicit and closed over the prepared turn. A later prompt must
 never discover an earlier failed definition through a module-wide
@@ -146,8 +170,7 @@ already been rewritten to their final planned live slots. Its `got` is
 generated calls and `Jit::new`'s `__cranelisp_got_{module}` data symbol must
 embed the session's long-lived slab base.
 
-Sharing that slab is safe only because the existing backend call has a
-transactional tail:
+The existing backend call has a batch-finalization tail:
 
 1. `compile_to_module(module, exact_names, prepared_map, jit, ...)` collects
    and compiles **all** names in the supplied slice;
@@ -156,124 +179,190 @@ transactional tail:
    `write_finalized_got_slots` perform the infallible per-symbol stores.
 
 Therefore a body-compile or JIT-finalise error occurs before the first shared
-GOT write. W3a must preserve one `compile_to_module` call for the entire exact
+GOT write. W3a preserves one `compile_to_module` call for the entire exact
 batch. A loop of per-name calls is a transaction violation: an early name
 could patch the shared slab before a later name fails.
 
 There is no existing isolated GOT that can replace this arrangement. A fresh
 table would make final machine code embed the wrong slab base; copying its
 pointers later would not repair baked indirect-call addresses and would
-disconnect future hot reloads. Likewise, save-and-restore of live cells would
-be transient publication visible to concurrent callers. Both shapes are
-rejected.
+disconnect future hot reloads. The canonical cells are therefore used, but
+the module writer guard is acquired before backend finalization can touch them
+and retained through publication or restoration. A reader cannot observe the
+intermediate cell values.
 
-The shared-GOT call establishes the commit point: after it succeeds, planned
-slots contain the new pointers. Everything following it must therefore be
-infallible and ownership-only. `compile_prepared` retains the `Arc<Jit>` and
-attaches `Code::Jit` plus returned artifacts to the **owned prepared entries**,
-not the live map; every lookup it needs was proven during preparation. Then
-`publish`:
-
-1. advances `next_got_slot` directly to the precomputed final value;
-2. moves (does not recompute) frozen-code owners into `retained_code`;
-3. moves the exact prepared entries into live;
-4. installs the prepared typecheck product and introspection records;
-5. returns the already-computed redefinition outcomes and scheduler products.
-
-These operations use pre-owned values and infallible map replacement under the
-module guard. No allocation, slot classification, closure check, batch
-derivation, symbol lookup, or backend call occurs in this gate. Retention
-owners are placed before the corresponding old live entries are dropped
-(Principle 22 — Published pointers have retention owners).
+The shared-GOT call is not the live table commit point. `compile_prepared`
+retains the returned owners and snapshots every touched cell before backend
+entry. It then submits the original owner-free staging, decisions and exact
+per-symbol owner map to `publish_compiled_staged`. Success atomically installs
+the final lifecycle bindings and owners and returns displaced owners for int to
+retain before release. Refusal leaves the table unchanged and returns all
+candidate owners; int restores reused cells to their prior pointers and fresh
+cells to null while those owners are still alive. No ownerless body becomes
+visible and no pointer outlives its owner.
 
 An ABI-preserving redefinition deliberately compiles against its existing live
-slot, so backend success patches that slot immediately before the prepared
-entry is installed. This is sound precisely because success has crossed the
-infallible commit gate. An ABI-changing or new definition writes its
-precomputed fresh slot, which is not reachable by a live entry until publish.
+slot. The module writer guard prevents readers from pairing that temporary new
+pointer with the old binding; publication installs the new binding and owner,
+while refusal restores the old pointer before releasing the guard. An
+ABI-changing or new definition writes its precomputed fresh slot, which is not
+reachable by a live entry until publication.
 
-This needs only int-private carriers and refactoring of the existing
-`commit_staging_to_live` / `inline_jit_codegen_for_names` internals. It adds no
-backend entry point, `cranelisp-types` carrier, cache schema, or public API
-(Principles 1, 2, and 6).
+This consumes the approved `publish_compiled_staged` types boundary and needs
+only int-private orchestration around it. It adds no further backend entry
+point, types carrier, cache schema, or public API (Principles 1, 2, and 6).
 
 Batch `--run`/`--link` and worker compilation use these same operations at
 their existing cadence boundary. Their notification timing changes to
 post-publish; there is no REPL-only typecheck or codegen path (Principle 11).
 
-#### 1.1.2 Macro registration belongs to the prepared world
+#### 1.1.2 A complete `defmacro` is its own publication checkpoint
 
-The current `process_form::form_dispatch::register_macro_in_module` is an
-additional pre-commit writer: Pass 1 and
-`process_form::process_regular_form` insert macro parents directly into
-`ctx.symbol_tables` and write `ctx.introspection` immediately. Such a macro is
-absent from typecheck's later staging table and therefore absent from
-`PreparedCommit.published_names`. W3c cannot be repaired by carrying
-provenance alone; macro registration itself must join the W3a transaction.
+Macro registration does not join the later ordinary `PreparedCommit`. Int
+processes direct and expansion-produced `defmacro` forms at their source-order
+position. For one macro it constructs an owner-free staging table containing
+the parent group and every active synthesized clause, checks all clauses as one
+definition unit, compiles the complete clause batch, and publishes that table
+through the ordinary one-module `publish_compiled_staged` path. A failed
+clause check, dependency resolution, codegen, or publication publishes neither
+the parent nor any clause. Once publication succeeds, a later form cannot roll
+it back.
 
-The existing int-owned `TurnCheckWorld` from §2.1 is therefore the one
-candidate world for the whole entered cluster, not a macro-clause-only
-adapter. It is created at the beginning of `process_cluster_once` under the
-module's existing cadence ownership:
+This ordering is the availability rule:
 
-- `baseline` is the immutable live-table snapshot used for final delta and
-  redefinition classification;
-- `settled` is the mutable candidate table map used by Pass 0/1/2 macro
-  recognition, registration, clause compilation, and final typecheck;
-- `pending_introspection` is an FQ-keyed map of complete candidate
-  `Introspection` records;
-- reserved-slot/JIT owners and cleanup guards hold compiler-time macro clauses
-  made executable during the turn.
+```text
+ordinary form before macro -> expands without seeing that macro
+defmacro                  -> complete check + codegen + publication
+ordinary form after macro -> may invoke the committed macro
+```
 
-`process_cluster_once` builds its working `ModuleCompiler` over
-`TurnCheckWorld.settled` and `pending_introspection`; scheduler/dependency
-readiness remains connected to `SharedState`. A dependency gap discards this
-world and retry-from-top creates a fresh one after the dependency is live,
-preserving the existing cadence and avoiding parked in-progress state.
+Ordinary forms on either side remain members of the same eventual HM binding
+cluster. They are accumulated, not published at the macro boundary, and cannot
+be expansion-time helpers for the macro. A macro may use only already-committed
+same-module macros and already-available dependency-module functions or
+realizations. This is why a macro checkpoint is independently valid while an
+arbitrary locally successful ordinary form is not.
 
-`register_macro_in_module` remains the single macro-entry constructor, but its
-write target becomes this candidate world. Its binding-conflict query,
-`assert_prelude_closure`, and `check_terminal_closure` all read the same
-candidate view. It inserts the macro parent and complete authored
-introspection record immediately. Existing macro availability order is
-therefore preserved: macros registered in Pass 1 remain visible to Pass 2
-exactly as today, and an expansion-emitted macro becomes visible to subsequent
-forms after its registration point; no earlier form can observe it, and no
-same-module non-macro definition becomes newly available during macro
-execution.
+The source-order driver checkpoints its **remaining work**, not compiled
+candidate state. The retry carrier retains the already-expanded ordinary forms
+that precede the checkpoint, the unprocessed source/emitted suffix, and the
+entered-form provenance needed for presentation. After a `ResolutionGap`:
 
-When subsequent expansion needs clause code, `compile_macro_if_needed` calls
-the **same** `process_form::macro_clause::prepare_macro_clause_turn` mechanism
-defined in §2.1. In a parent turn it consumes the candidate world, returns the
-one `OwnedCompiledMacroTurn`, and **absorbs** its settled entries, exact
-closure, JIT/drop-glue owners, and reserved-slot cleanup guard into the parent
-prepared turn. It does not publish to `SharedState`, notify the scheduler, or
-invoke a second clause compiler. The candidate macro entry therefore sees its
-compiled clause through its reserved canonical GOT slot and can be invoked by
-later expansion in this cluster.
+- a gap before or during a macro leaves that macro uncommitted and retries it;
+- a gap after a committed macro retries only the uncommitted suffix;
+- ordinary forms accumulated before the macro remain in the eventual HM
+  cluster; and
+- a generated macro is never recreated by re-expanding its originating form.
 
-Those reserved cells are not live publication: the live slot cursor does not
-include them and no live entry names them. The parent cadence token prevents a
-competing turn from allocating across the reservation. On any later
-expansion, projection, typecheck, or backend failure, the parent guard clears
-every written reserved cell while its owner is still retained, then drops the
-candidate world. No reachable live entry, live cursor, introspection record,
-typecheck product, or scheduler state changed. On success,
-`publish_prepared_turn` installs owners first, moves candidate macro entries
-and introspection, advances the cursor, and only then exposes the cells.
+Thus retry does not interpret a committed checkpoint as a duplicate source
+definition. A second same-named `defmacro` occurrence in the original work
+packet is still an illegal same-cluster redefinition; only a later REPL turn or
+reload generation may request redefinition. The scheduler continues to own the
+sole `ResolutionGap` wait/requeue crossing. The retained continuation is source
+work, not a typecheck world, compiled-owner stack, or reserved-GOT rollback
+carrier.
 
-Final preparation computes one canonical `TurnDelta` from `baseline` to the
-settled candidate overlay, including typecheck staging. Macro parents and
-their synthesized clauses therefore enter `PreparedCommit.published_names`,
-the exact codegen/retention plan, and W3c's emitted-subject intersection by
-the same canonical FQ keys as ordinary definitions. There is no
-macro-specific live commit, before/after scan, or second source of published
-names.
+An allowed dependency gap is handled independently: the macro transaction is
+discarded, the dependency module finishes its ordinary publication, and the
+same macro is retried against that larger live world. A successfully published
+dependency remains even if the macro or a later form fails. Any concrete
+realization required from a dependency follows that module's normal scheduler
+and publication path; it is not copied into or rolled back with the macro.
 
-This is an int-only refactor of existing `SessionSymbolTable`,
-`Introspection`, `TurnCheckWorld`, `PreparedCommit`, and macro-clause
-preparation. It requires no frontend/typecheck/backend public API or cache
-change. The result is technically **READY**, not blocked on `/arch`.
+Macro redefinition and reload use the same checkpoint. The prior macro remains
+fully executable until all replacement clauses have checked and compiled. The
+module writer guard then publishes the new parent metadata and every active
+clause owner together. Shared clause indices preserve their ABI-compatible
+slots; new indices receive new slots. When a prior parent has `N` clauses and
+its replacement has `M < N`, int derives the exact surplus keys for the
+half-open index range `M..N` from that prior parent's clause metadata. It does
+not scan the symbol table by spelling or prefix. Every selected live row must
+be private and have `CallableOrigin::MacroClause { group }` naming that same
+parent; a missing row, a foreign group, or any other origin is a transaction
+refusal.
+
+The replacement staging deliberately omits those surplus keys and supplies one
+explicit absent-key `StagedPublicationDecision::ChangeAbi` for each of them in
+both the isolated plan and the final `publish_compiled_staged` call. This uses
+the approved absent-key meaning of `ChangeAbi`: retire this exact prior
+callable, retain its slot as an `AbiChanging` tombstone, and publish no binding
+at the key. Int never emits an absent-key decision for `Plain`, `Clause`,
+trait-method, platform, primitive, constructor, accessor, or any other
+ordinary callable removal; only the validated surplus `MacroClause` set is
+eligible. The decision list for plan and final publication is identical.
+
+The publication record for each retired clause returns its displaced owner.
+Int moves all such owners into session retention before releasing the writer
+guard. Their old GOT slots remain frozen at the old pointer and permanently
+unallocatable through the table's tombstones; neither publication nor rollback
+clears or reuses them. Thus a 3-clause macro redefined to 1 preserves index 0
+and retires indices 1 and 2, while a later 1-to-3 redefinition preserves the
+current index 0 and mints fresh slots for new indices 1 and 2 rather than
+reclaiming either tombstoned slot. A successful replacement remains after a
+later reload form fails. A failed replacement leaves the prior parent,
+clauses, pointers, owners, tombstones, and introspection unchanged.
+
+Dependent-recompilation handling begins only after the checkpoint has
+published. It is not part of macro success and must not keep a checked macro in
+candidate state. If the §18 redefinition/reload cure later reports or blocks,
+its own rules govern dependants, but it does not roll the committed macro back.
+
+A Replace/reload continuation also records that generation setup has already
+run. Retrying after a gap must not clear or reconstruct the module a second
+time, because that would erase the macro checkpoint just committed by the same
+reload. A new watcher event or explicit reload starts a new generation against
+the then-current live table and may redefine the macro normally. Consequently,
+a successful macro replacement followed by an ordinary-form failure leaves the
+new macro alongside the last successfully published ordinary definitions; the
+reload still reports the later error.
+
+This deletes `TurnCheckWorld`, `TurnDelta`, `PreparedMacroTurn`, candidate
+invocation, reserved unpublished slots, and cross-module rollback. It changes
+no public crate interface, cache schema, platform contract, backend contract,
+or trait-implementation behavior.
+
+#### 1.1.3 Post-publication outcomes are stack-owned receipts
+
+A successful publication returns one int-private, move-only
+`PublicationReceipt` containing its already-committed
+`RedefinitionOutcome`s. It contains no staging table, `CheckState`, generated
+program, code owner, GOT reservation, or resume position. `ProcessedCluster`
+does not own or copy these outcomes.
+
+`process_cluster_once` is an outer `ProcessAttempt` wrapper around a fallible
+core. The wrapper owns the receipt while the core receives a mutable sink. A
+successful macro or ordinary publication moves its outcomes into that sink;
+Rust `?` may leave the core, but the wrapper still returns both the terminal
+`Result` and the receipt. Thus a later error cannot discard a successful
+checkpoint's §18 work.
+
+```text
+process attempt
+  core publishes -> append committed outcomes to route receipt
+  core then returns Done, Gap, or Err
+  wrapper returns { terminal result, receipt }
+  cadence consumes receipt once before handling the terminal result
+```
+
+The route owner settles the receipt as follows:
+
+- REPL eval applies §18 after `Done`, before waiting on `Gap`, and before
+  returning a later `Err`;
+- dependent recheck retains one receipt across source retries and settles it
+  before interpreting either terminal success or failure; and
+- a pool worker consumes the receipt on its own stack on `Done`, `Gap`, and
+  `Err`. Pool work uses a complete `Replace` generation: success has recompiled
+  the module and watcher/T1 orchestration already owns dependent reload;
+  failure is handled by the existing module error block. Its decision does not
+  depend on the individual outcome rows; and
+- the retained `New`-only batch compatibility route consumes an empty receipt
+  and treats an effectful one as an internal contract failure.
+
+No receipt is stored in `SharedState`, `ModuleState`, the scheduler, a parking
+map, or a source continuation. In particular, a scheduler receipt mailbox is
+rejected: it would duplicate an already-settled fact, add reset/drain ordering,
+and buy no observable behavior. Retry continues to store only the uncommitted
+source/emitted suffix and the generation-started bit.
 
 ### 1.2 Recovery scenario matrix
 
@@ -284,15 +373,20 @@ The implementation-strategy unit matrix is:
 | no same-named entry | new def fails codegen | name absent; independent literal succeeds |
 | compiled same-named entry | ABI-preserving redefinition fails | prior entry, slot, code, and display remain |
 | compiled same-named entry | ABI-changing redefinition fails | prior entry remains current; no dependent transaction runs |
-| several generated entries | one generated unit fails | none of that entered cluster publishes |
+| several ordinary generated entries | one generated unit fails | none of the ordinary HM cluster publishes; earlier macro checkpoints remain |
 | no generated code | type/build failure | existing typecheck discard behaviour is unchanged |
 | near-full live GOT | plan needs too many fresh slots | preparation fails; `next_got_slot` and all cells are unchanged |
 | compiled batch | second name fails before finalise | first name has not patched its prior live slot |
 | successful ABI-preserving redefinition | backend returns success | GOT patch, entry replacement, `Code` owner, metadata, and outcome all publish as one terminal transition |
 | successful ABI-changing redefinition | backend returns success | fresh slot publishes; old slot and code owner remain frozen before prior entry drops |
 | cadence interference (unit seam) | live slot cursor differs before codegen | preparation is discarded before any GOT write |
-| expansion emits macro, later form invokes it, final projection fails | candidate clause was usable inside turn; macro parent, clause, reserved cell, owner, and introspection all roll back |
-| expansion emits macro, later form invokes it, turn succeeds | macro parent and clause publish through one prepared commit; no second compilation or notification path |
+| expansion emits macro, macro compilation fails | no parent, active clause, owner, GOT pointer, or introspection from that macro publishes |
+| expansion emits macro, later form invokes it, later typecheck/codegen fails | the committed parent, all active clauses, owners, and introspection remain; the later ordinary cluster does not publish |
+| macro replacement succeeds, later reload form fails | the new macro generation remains current; the prior macro is not restored |
+| gap after a committed macro | retry begins from the retained uncommitted continuation; the macro is neither rebuilt nor diagnosed as a duplicate |
+| 3-clause macro successfully becomes 1 clause | exact old indices `1..3` are absent-key `ChangeAbi` retirements; both old slots remain frozen and tombstoned; no surplus binding remains |
+| 3→1 macro later becomes 3 clauses | active index 0 preserves its current slot; indices 1 and 2 receive fresh slots distinct from both retired slots |
+| macro shrink plan/publication refuses | prior parent, all prior clauses, pointers, owners, tombstones, candidates, and source continuation remain unchanged; no partial retirement occurs |
 
 Unit strategy splits by seam:
 
@@ -304,16 +398,24 @@ Unit strategy splits by seam:
   held module-cadence token admits no second same-module prepare/publish;
 - **compile:** a two-name batch whose second member fails proves zero GOT
   writes and zero `Code`/introspection installation; success returns owned
-  compiled entries without installing them;
 - **publish:** success moves exactly the planned entries, advances the cursor
   once, retains old owners before replacement, installs products, and returns
   the prepared outcomes; no branch returns `Err`;
-- **candidate macro registration:** Pass-1 and expansion-emitted macros write
-  only `TurnCheckWorld`; candidate recognition sees them in the established
-  order while live symbol/introspection maps remain unchanged;
-- **candidate clause absorption:** a later form can invoke the emitted macro
-  from its one compiled clause; an injected later failure clears its reserved
-  cell and drops all owners, while success publishes without recompilation;
+- **macro checkpoint:** direct and expansion-emitted macros remain invisible
+  until every clause has checked and compiled, then parent, active clauses,
+  owners, metadata and introspection publish through one module gate;
+- **checkpoint continuation:** a later invocation sees the committed macro; an
+  injected later failure retains it, and a gap retry resumes the uncommitted
+  source/emitted suffix without rebuilding or duplicate-registering it;
+- **clause-set replacement:** 3→1 derives only exact prior indices `1..3`,
+  publishes their absent-key `ChangeAbi` decisions with the parent and active
+  clause, retains displaced owners before guard release, and leaves their old
+  slots frozen and tombstoned; the following 1→3 mints fresh slots for indices
+  1 and 2; an injected late refusal leaves the complete prior generation and
+  tombstone set byte-identical;
+- **cache bijection:** restore accepts exactly one private same-group
+  `MacroClause` row per active parent index and no surplus owned row; both
+  missing and surplus directions regenerate;
 - **cadence parity:** eval and worker drivers both call the same
   prepare/compile/publish helpers and notify only after publish.
 
@@ -321,10 +423,11 @@ The sprint QA plan owns the e2e recovery and subsequent-literal guards.
 
 ## 2. Macro-expanded declaration staging (0816)
 
-Macro output is not a special registration class. After Pass 1 reaches its
-expansion fixpoint, int flattens structural `begin` exactly once, preserves
-the emitted order, builds the whole result, and submits one `ParsedEntry`
-sequence to the ordinary `check_forms` Passes 2/3.
+Macro output is not a special ordinary-declaration registration class. Int
+flattens structural `begin` once at the expansion site and preserves emitted
+order. Expansion-produced `defmacro` forms cross the checkpoint in §1.1.2 at
+their emitted position; all remaining declarations accumulate into one
+`ParsedEntry` sequence for the ordinary `check_forms` Passes 2/3.
 
 Pass 2 registers every declaration head in that sequence before Pass 3 checks
 dependent bodies and impl conformance. Consequently, in:
@@ -348,7 +451,94 @@ cluster has entered staging. It must not alter defmacro-before-use or make
 same-module non-macro definitions available during macro execution; this
 ordering applies after expansion has completed.
 
-### 2.1 On-demand macro clauses: owned check world and exact provenance
+### 2.1 Macro checkpoint: exact clause identity and one-module publication
+
+Int prepares one macro from its parsed `DefmacroInfo`; it never discovers a
+macro or its clauses by scanning live names. For every clause index it derives
+the exact synthesized FQ identity from the parent macro identity and index.
+Before `check_forms`, the private target staging table declares that exact key
+as `Private` with `CallableOrigin::MacroClause { group }` and the canonical
+one-argument macro ABI scheme:
+
+```text
+(Fn [(macros/SList macros/Sexp)] macros/Sexp)
+```
+
+This prebirth is the authority for clause identity. A matching existing live
+`MacroClause` may be replaced across turns; a `Plain` callable or clause owned
+by another macro at that exact key is a collision. A name prefix is never
+evidence of clause origin. Typecheck may preserve `MacroClause` only from this
+exact staging-local prebirth; it must not inherit the origin from the live
+table during an ordinary user definition or redefinition.
+
+After the single macro-unit check returns, int validates every active clause:
+exact FQ and parent group, private visibility, the synthesized one-parameter
+shape, canonical ABI scheme, and concrete body state. It also validates that
+the staging table contains no trait-implementation mutation. This is a
+defn-only path; existing `TraitImpl` registration, conformance, publication,
+and cache behavior do not change.
+
+The macro unit then uses the ordinary one-module prepared path:
+
+```text
+parent + every active clause in owner-free staging
+  -> derive one module slot/redefinition plan
+  -> compile all active clauses in one backend batch
+  -> retain every returned owner and drop-glue pair
+  -> publish_compiled_staged under the module writer guard
+```
+
+All lookups, capacity checks, lifecycle validation, owner-key validation, and
+introspection construction occur before backend entry. Backend failure leaves
+the live table untouched. Compiled-publication refusal returns every owner;
+int restores all touched canonical GOT cells while those owners remain alive,
+then releases them. On success every active clause has an owner at the same
+publication that exposes its parent metadata. `PreparedCommit` is the only
+prepared publication carrier; it may carry several exact per-symbol owners
+from the one macro batch but does not acquire a cross-module form.
+
+The macro reader and replacement writer use the same module-table guard. A
+reader snapshots parent clause metadata and, for the selected clause, its
+validated `MacroClause` origin, ABI, GOT pointer, and cloned `Code` owner while
+holding one read guard. It releases the guard before invoking JIT code; the
+owner clone keeps the pointer alive. A replacement holds the write guard from
+before backend finalization first touches a reusable canonical GOT slot through
+the table publication. Thus a reader sees the complete old generation or the
+complete new generation, never old metadata with a new pointer.
+
+Macro parents and generated clauses are not language values. Typecheck's
+language-value candidate projection and unique-scheme extraction exclude
+`CallableOrigin::MacroClause`; the backend's private checked carrier rejects an
+ordinary value/call reference to one before emission. The macro executor still
+uses the exact internal binding directly. `Binding::is_callable_target` and
+module codegen enumeration remain broad enough to compile that internal
+binding.
+
+Cache restoration validates each active parent-metadata index against the
+exact expected clause key, `MacroClause` origin and group, private visibility,
+canonical ABI and concrete body state. It also validates the converse: every
+persisted `MacroClause` row owned by that parent is named by exactly one active
+parent-metadata index. Parent metadata and its active clause rows therefore
+form a bijection; an orphan, duplicate, missing, surplus, wrong-group, or
+formerly-`Plain` clause makes the cache stale and triggers regeneration rather
+than repair or retagging. Runtime owners and GOT pointers remain non-persisted
+and follow the ordinary cache load path.
+
+Dependency work is not part of this staging table. A missing dependency or
+generated realization produces the ordinary `ResolutionGap`; the dependency
+module publishes independently and the macro retries. Only when the complete
+expansion-time closure is live and codegenable does the target macro batch
+compile and publish. This is the exact provenance boundary without an owned
+clone of every module.
+
+<details>
+<summary>Superseded S117 owned-world design (retained as decision history)</summary>
+
+The following S117 design is not an implementation instruction. S121 rejected
+the temporary cross-module check world and rollback mechanism in favor of the
+checkpoint above.
+
+### Retired: on-demand macro clauses through an owned check world
 
 The on-demand clause compiler is a smaller transaction with a harder
 provenance requirement. Checking a clause can mint concrete `$`
@@ -601,6 +791,8 @@ lookup, validation, and notification payload construction happened during
 preparation or compilation; publication consists only of moves, atomic stores,
 and infallible replacements under the retained cadence tokens.
 
+</details>
+
 ### 2.2 Descriptor and executable clause are distinct states
 
 The pre-codegen clause descriptor carries syntax and matching data only:
@@ -641,30 +833,39 @@ returned word is interpreted under the same ABI. No `Option<Code>`, raw
 pointer plus separately looked-up lease, or descriptor-with-late-pointer state
 survives this split (Principles 20 and 22).
 
-### 2.3 Macro-turn test strategy
+### 2.3 Macro-checkpoint test strategy
 
 The strategy-bearing seams live with focused unit scenarios:
 
-- **owned-world isolation:** a check that mints a dependency `$` writes only
-  the turn world; live tables, live slots, and typecheck products are unchanged
-  before publish;
-- **concurrent unrelated exclusion:** after the turn snapshot, another worker
-  publishes an unrelated `$` definition in the same or another module; the
-  prepared closure is byte-for-byte unchanged and excludes it;
-- **reachable typed-carrier closure:** a clause calling polymorphic
-  `helper/bump` carries `ApplyRef::Dispatch(helper/bump$Int)`; the concrete
-  delta row is enrolled, the slot-less `helper/bump` template is not.
-  Direct, transitive, function-valued, duplicate, and cyclic typed references
-  include exactly the canonical reachable changed rows;
-- **already-live dependency:** an explicitly referenced callable live callee is
-  leased but not recompiled; a referenced concrete `TurnDelta` row joins the
-  prepared batch; an explicitly selected baseline template is rejected; an
-  unreferenced live row never joins;
-- **keyed-miss negative:** a missing dispatch/global key, selected template,
-  or absent typed carrier fails preparation at the recorded call site and
-  never falls back to `callees`, mangle reconstruction, or enumeration;
-- **all-or-nothing backend:** a later module/member failure publishes no
-  earlier compiled pointer or owner;
+- **checkpoint isolation:** parent and all active clauses remain absent until
+  the one macro batch has checked, compiled and published; any failure retains
+  the complete prior macro generation;
+- **dependency independence:** a required dependency realization publishes
+  through its own module; later macro failure does not remove it, and unrelated
+  concurrent realizations never enter the target macro staging table;
+- **source-order visibility:** an earlier form cannot call a later macro, a
+  later form can call a committed macro, and ordinary forms on both sides
+  still typecheck as one HM binding cluster;
+- **retry continuation:** gaps before/during a macro retry that macro, while a
+  gap after it resumes the uncommitted suffix with the checkpoint present and
+  without a duplicate-definition path; include an expansion-produced macro;
+- **receipt settlement:** direct and expansion-produced redefinitions followed
+  by `Done`, `Gap` then success, `Gap` then dependency failure, and a later
+  internal error each apply every already-committed outcome exactly once;
+  dependent recheck covers success and failure, while initial-load and
+  watcher/reload workers acknowledge receipts on every terminal path without
+  scheduler or session receipt state; the `New`-only batch route proves its
+  receipt inert;
+- **multi-clause atomicity:** a failure in any clause exposes neither parent nor
+  siblings; success exposes the parent metadata and every active owner in one
+  module publication;
+- **origin authority:** fresh birth and replacement preserve exact
+  `MacroClause` group identity; a same-spelling `Plain` callable collides, and
+  bare, self-qualified and child-qualified user references to a real clause
+  are rejected before backend emission;
+- **reader generation:** concurrent replacement snapshots either all-old or
+  all-new metadata/pointer/owner under one guard, and the cloned owner survives
+  invocation after the guard is released;
 - **owner-before-pointer:** executable publication installs JIT/drop-glue and
   displaced-code owners before any pointer/entry replacement;
 - **state split:** a `MacroClauseDescriptor` cannot enter invocation;
@@ -672,13 +873,12 @@ The strategy-bearing seams live with focused unit scenarios:
   inputs, and invocation retains the owner for the complete unsafe call
   window.
 
-The production-path e2e guard uses two independently scheduled modules: one
-macro clause forces a concrete specialization while another turn mints an
-unrelated `$` specialization. Repeated runs must invoke the macro correctly,
-must never compile or publish the unrelated symbol as part of the macro turn,
-and must leave the unrelated turn under its own scheduler notification. This
-is an ordinary behavior/production-path guard; it requires no allocator,
-fault-injection, or cyber-sensitive instrumentation.
+The production path must cover fresh, cache-restored, redefinition and reload
+faces. A later failing form must leave an earlier successful macro callable in
+all modes; a failed replacement must leave the old macro callable. Cache rows
+with `Plain` generated clauses must regenerate. These are ordinary production
+guards and require no allocator, fault injection, or cross-module rollback
+instrument.
 
 ## 3. Failed-unit diagnostic attribution (0817, separate cell)
 
@@ -758,265 +958,168 @@ This is an int-local formatting correction: no stored type or public API
 changes. It applies Principle 7 and preserves the typecheck-produced settled
 constraint identity (Principle 26).
 
-## 6. `def` presentation, faces DF-1 and DF-2 (0800)
+## 6. Multi-definition REPL presentation (0800)
 
 `def` is not recognised by the parser or compiler as a core form. Int must not
 branch on the literal spelling `def`, on `-def`, or on the stdlib module
 (Principles 10 and 19).
 
-### 6.1 Carriers and single record
+### 6.1 Binding identity remains visible
 
-Expansion returns int-private provenance with the expanded form:
+The REPL does not reinterpret a zero-argument macro as the type of the form it
+would emit. A `defmacro` binding remains a `defmacro` in its definition echo,
+bare-symbol introspection, `/info`, and `/sig`. Its expansion result is visible
+only when the macro is invoked. This follows `spec/09-macros.md` §§9.5, 9.10.2,
+9.13 and `repl/spec/11-macro-introspection.md` §11.2.
+
+Consequently there is no `PreparedPresentation`, `presentation_scheme`, dry
+typecheck of a nullary macro, selected presentation subject, or parallel
+presentation store. The REPL reads each published binding's ordinary
+`ModuleEntry` classification.
+
+The result carrier is instead an ordered publication receipt:
 
 ```rust
-struct EnteredMacroProvenance {
-    origin: Sexp,
-    macro_id: FQSymbol,
-    emitted_public_subjects: Vec<FQSymbol>,
-}
-
-struct PreparedPresentation {
-    subject: FQSymbol,
-    scheme: Scheme,
-    source: String,
+EvalResult::Definitions {
+    symbols: Vec<FQSymbol>,
+    warnings: Vec<Warning>,
 }
 ```
 
-`macro_id` is the exact identity returned by
-`cranelisp_types::resolve_macro_head` at the outer entered form's recognition
-site. It is not reconstructed from the written head and is not recovered by
-scanning introspection after expansion. `emitted_public_subjects` is collected
-from the definitions emitted by that invocation and accepted by the ordinary
-Pass-1/build path. It is an ordered, canonical-FQ set; visibility is read from
-those emitted definitions, so private definitions and generated helpers never
-enter it. Nested expansion may add emitted forms, but it does not replace the
-outer entered form's `macro_id`.
+`TurnDefinitions` is int-private and stack-owned by one eval. It records each
+definition's canonical `FQSymbol`, emitted position, and whether that
+definition crossed its publication boundary. It is never stored in
+`SharedState`, the scheduler, a symbol table, or introspection. Compiler-only
+generated realizations are absent because rows arise from typed `TopLevel`
+definitions and parsed `defmacro` checkpoints, not a table scan.
 
-`PreparedCommit` gains
-`presentation: Option<PreparedPresentation>`. The surviving canonical record
-is the selected subject's existing `Introspection`, with one crate-private
-`presentation_scheme: Option<Scheme>`. Its existing `source` remains the only
-authored-source field. There is no `SharedState.presentation_schemes`, no
-second source field, and no reader-side inference. The accidental public
-exposure of `Introspection` is narrowed as directed by BC §6; the established
-public read views `SymbolInfo` and `SymbolDescription` are unchanged.
+### 6.2 Collection is total and structural
 
-### 6.2 Selection is total and structural
+Every definition emitted by the entered statement and successfully published
+is listed, in emitted order. Visibility does not select a subject: a private
+definition entered or emitted at the REPL is still a definition produced by
+that statement. An arbitrary expression or structural form contributes no
+definition row. A mixed definition-plus-expression statement retains its
+ordinary value-result behavior; this section changes definition-only results.
 
-Selection runs only when the entered outer form was actually recognised and
-expanded as a macro. The exact cases are:
+Ordinary definitions enter the receipt as pending and become displayable only
+after the complete HM/codegen publication succeeds. A `defmacro` enters as
+published at its immediate checkpoint. On a dependency retry, exact canonical
+identities already present in the stack receipt are reused, so neither an
+earlier pending definition nor a durable macro checkpoint is duplicated or
+reordered. A later error returns the error rather than a successful definition
+result, while the macro checkpoint remains live under §1.1.2.
 
-| Expansion result | Presentation result |
-|---|---|
-| no emitted PUBLIC subject | `None`; the turn follows its ordinary expression/side-effect display |
-| exactly one emitted PUBLIC subject, and it is a zero-argument macro in the settled candidate table | project it and store `Some(PreparedPresentation)` |
-| exactly one emitted PUBLIC subject of any other kind, including a non-zero-argument macro | `None`; retain its ordinary symbol-table classification and display |
-| more than one emitted PUBLIC subject | located pre-commit error; do not guess which subject represents the entered form |
-| any number of PRIVATE emitted definitions, with zero/one public subject | private definitions are excluded; apply the corresponding public-subject row |
-| arbitrary expression output with no public definition | no subject and no projection; ordinary expression handling |
-| direct `defmacro` or another ordinary non-invocation definition | no `EnteredMacroProvenance`; ordinary `defmacro` presentation |
+### 6.3 Source sequence
 
-The zero-argument test reads the selected candidate `ModuleEntry::Def {
-kind: DefKind::Macro { clauses_meta, .. } }` and requires a clause with no
-fixed or rest parameters. It does not test the names `def`, `-def`, a generated
-`*-def` suffix, or any module identity. A multiple-public-subject expansion is
-an error even if only one member happens to be a zero-argument macro: the
-language-visible subject relationship would otherwise depend on a
-presentation-specific heuristic.
+1. The source-order walk records each typed ordinary definition as pending and
+   each successfully published macro checkpoint as published. Expansion
+   products are consumed from their actual flattened order.
+2. A gap returns only the established source continuation. The eval-owned
+   receipt remains on its caller's stack; the retry merges repeated pending
+   identities without rescanning live tables.
+3. Successful ordinary codegen/publication marks the exact typed definition
+   identities published. Structural forms leave the receipt unchanged.
+4. A definition-only turn constructs one `EvalResult::Definitions` from every
+   published row. `format_eval_result` renders each symbol through the existing
+   single-symbol `ModuleEntry` formatter, separated by newlines. Warnings are
+   attached once to the batch.
+5. Persistence and failed-form repair consume the same complete symbol list;
+   they do not infer a primary definition.
 
-### 6.3 READY source sequence
+For the current stdlib expansion:
 
-The exact implementation sequence is:
+```clojure
+(def n 42)
+```
 
-1. `process_form::macro_resolution::SymbolTableMacroResolver::recognize`
-   already receives the canonical `FQSymbol`; the outermost call through
-   `try_expand_sexp` must return that identity alongside its expanded `Sexp`.
-   `process_cluster_once` retains it with the entered origin. Ordinary nested
-   recognition continues to drive expansion but cannot overwrite it.
-2. `process_form::form_dispatch` / Pass 1 inserts definitions built from that
-   expansion into the cluster's `TurnCheckWorld`, never the live map.
-   `register_macro_in_module` returns the emitted macro's FQ name and declared
-   visibility while using the same candidate table as recognition. The
-   cluster spine records only PUBLIC names attributable to this entered
-   expansion on `EnteredMacroProvenance`; it does not diff or enumerate the
-   ambient table. Any clause compiled for later same-cluster expansion is
-   absorbed into the parent turn per §1.1.2.
-3. `finalize_cluster` passes the world and provenance into
-   `worker::prepare_cluster_commit`. After `check_cluster_to_staging` has
-   settled into the candidate overlay and the canonical `TurnDelta`,
-   `PreparedCommit.tables`, `published_names`, and final slots are complete,
-   preparation intersects the carried subject set with the exact prepared
-   publication plan and applies §6.2. A mismatch is an invariant error, never
-   a fallback scan.
-4. For the one eligible subject, construct its nullary subject `Sexp` and call
-   the existing `process_form::macro_resolution::try_expand_sexp` through a
-   `ModuleCompiler` whose `symbol_tables` is `PreparedCommit.tables`. Then call
-   `worker::infer_presentation_scheme` with those same candidate tables. This
-   is the ordinary depth-one expansion plus build/`__expr` dry-typecheck path:
-   no runtime value is invoked, no codegen runs, and the dry staging is
-   discarded.
-5. Store the settled `Scheme`, selected `FQSymbol`, and authored source in
-   `PreparedPresentation`. Expansion, build, dependency, or typecheck failure
-   returns from preparation; dropping the prepared turn leaves live symbol
-   tables, GOT reachability, introspection, scheduler state, and prior
-   presentation unchanged. Only after this step may
-   `worker::compile_prepared_turn` enter the backend.
-6. `worker::publish_prepared_turn` consumes the prepared presentation at the
-   existing eval-cadence publication gate. For each published subject it
-   installs one complete `Introspection` record: the turn's normal
-   source/sexp/expanded/AST/CLIF fields plus
-   `presentation_scheme = Some(scheme)` only for the selected subject and
-   `None` otherwise. Record replacement is the atomic publication unit; a
-   successful direct redefinition therefore clears a stale projection by
-   replacement with `None`, and symbol removal removes its introspection
-   record. No fallible projection work occurs here.
-7. `eval.rs` chooses the definition echo from the carried selected subject,
-   not from an expanded-program helper heuristic.
-   `repl::format::format_def_entry_doc`, `/sig`, and `/info` all call one
-   crate-private accessor over the subject's `Introspection`: projected
-   scheme when present, ordinary `ModuleEntry` scheme otherwise. `/source`
-   and `/info` read that same record's existing authored `source`.
+the definition result is:
 
-For today's stdlib expansion this projects `n` through the emitted public
-zero-argument macro `n` to `Int`, yielding an `n` definition echo and
-value-shaped `/sig`/`/info`; generated `n-def` remains ordinarily
-introspectable when named directly. Supporting application/currying of a
-function-valued `def` is DF-3 and remains out of scope.
+```text
+:(Fn [] primitives/Int) user/n-def ; defn
+:user/n ; defmacro
+; [] -> Sexp
+```
 
-This sequence applies Principle 7 (Single source of truth), Principle 24
-(Resolve once), and Principle 26 (Record from settled state). The projection
-is REPL metadata only: it never changes resolution, macro arity, runtime
-invocation, codegen enrollment, or symbol-table classification.
+`/info n` and `/sig n` continue to describe `user/n` as `defmacro`. Entering
+bare `n` invokes the zero-argument macro, expands to `(n-def)`, and evaluates
+to `:primitives/Int 42`. No binding changes classification between those
+surfaces.
 
 ### 6.4 Production-test contract
 
-`/dev` must add private unit tests for the carrier/selection/publish seams and
+`/dev` must add private unit tests for the carrier/publish seams and
 `/testing` must retain production REPL tests for user-visible behavior:
 
-- resolved alias/import/re-export macro identity survives expansion; a same
-  spelling in another module cannot capture attribution;
-- zero public subject and arbitrary-expression output take the ordinary path;
-- one public zero-argument macro projects, while one public non-zero-argument
-  macro remains `defmacro`;
-- private helpers are excluded, including private-helper plus one-public-subject;
+- one and several direct definitions render in source order;
+- an expansion emitting both an ordinary definition and `defmacro` lists both
+  in emitted order, with their ordinary classifications;
+- private emitted definitions are included without becoming public;
+- arbitrary-expression and structural-only output take the ordinary path;
 - an expansion-emitted macro is visible to the next form in the same cluster
   at the established availability point, while an earlier form cannot see it;
-- before final commit, emitted macro parents and their introspection exist only
-  in `TurnCheckWorld`; `PreparedCommit.published_names` nevertheless includes
-  them by canonical FQ identity;
-- later-form invocation uses one absorbed clause compilation; owner/closure
-  assertions prove there is no compile-again publication path;
-- two public subjects fail before backend entry and publish no symbol,
-  introspection, GOT reachability, or scheduler completion;
-- projection expansion failure and dry-typecheck failure preserve the prior
-  live definition and prior canonical introspection record, and clear any
-  reserved clause cells created for same-cluster expansion;
-- a successful projected definition makes echo, `/sig`, and `/info` render the
-  identical projected scheme, while `/source` and `/info` retain the authored
-  origin;
-- a generated helper queried explicitly keeps its ordinary definition scheme;
-- direct successful redefinition clears `presentation_scheme`; removal removes
-  the record; redefining with another projection replaces it rather than
-  retaining the old one;
-- a direct ordinary `defmacro` remains a macro and never acquires projection;
-- the test macro uses an unrelated name and module so no implementation can
-  pass by recognising `def`, `-def`, `stdlib`, or a `*-def` helper convention;
-- Run/Link controls compile the same macro expansion without allocating or
-  consulting REPL introspection, and no test executes the projected runtime
-  value merely to learn its scheme.
+- before its checkpoint, an emitted macro parent, clauses and introspection
+  exist only in that macro's owner-free staging; after it, a later-form
+  invocation reads the live generation without compile-again publication;
+- dependency retry neither duplicates nor reorders receipt rows;
+- a failed ordinary cluster exposes no successful definition result, while an
+  earlier successful macro checkpoint remains live;
+- `/info` and `/sig` keep a zero-argument macro classified as `defmacro`, while
+  entering its bare name exercises expansion and displays the evaluated type;
+- Run/Link controls compile the same expansion without allocating a REPL
+  receipt or consulting introspection for result selection.
 
-### 6.5 S118 delta note — preconditions re-verified at HEAD (`d1c34699`)
+### 6.5 S121 checkpoint reconciliation
 
-FIXME 0863 carries this §6 (with §1.1.2) into Sprint 118 as the deferred `/dev`
-handoff. `/arch` confirmed it **READY** (S118 ruling 11) and serialized it as a
-late wave **after** FIXME 0745, because both touch the `src/` publication /
-result-owner seams and must not interleave. This design predates the W7
-cached-macro clause repair (§2.1.1), so its preconditions were re-read at HEAD.
-**No redesign follows; this is a reconciliation record.**
+The S118 plan to move `TurnCheckWorld` ahead of Pass 1 and absorb
+`PreparedMacroTurn` into the ordinary cluster is retired. Result presentation
+does not participate in macro publication: the macro checkpoint publishes its
+ordinary binding and introspection, then records the canonical identity on the
+eval-owned receipt. A later failure does not erase the checkpoint. Ordinary
+emitted definitions remain pending until the ordinary HM cluster publishes.
 
-**Unchanged — the §6/§1.1.2 premises all still hold, unmet, at HEAD:**
-
-- `TurnCheckWorld` is still constructed *inside* `prepare_macro_clause_turn`
-  (`src/process_form/macro_clause.rs:479`), not at `process_cluster_once`. §1.1.2
-  step 1 (move the ownership boundary before Pass 1) is untouched work.
-- `prepare_macro_clause_turn` still **self-publishes**: `compile_macro_clause_core`
-  calls `turn.publish(env)` directly (`macro_clause.rs:105`, `:175`). §1.1.2 step 3
-  (return an owned prepared result the parent absorbs) is untouched work.
-- `register_macro_in_module` is still an additional pre-commit writer — it writes
-  `env.introspection` (`src/process_form/form_dispatch.rs:348-368`) and the live
-  `env.symbol_tables` (`:369+`) immediately. §1.1.2's diagnosis is exact.
-- No `EnteredMacroProvenance`, `PreparedPresentation`, or `presentation_scheme`
-  exists anywhere in `src/` or `crates/`, and `worker::PreparedCommit`
-  (`src/worker.rs:21-34`) has no `presentation` field. The W3c removal was clean;
-  nothing half-landed.
-- `Introspection` is int-private (`src/session_v4/types.rs:311`), so §6.1's
-  "one crate-private `presentation_scheme`" remains a zero-public-API,
-  zero-cache-schema change — consistent with S118's single-schema-window fence.
-
-**Two deltas the implementing wave must absorb:**
-
-1. **The W7 seed classification must follow the ownership boundary.** §2.1.1
-   landed `enroll_non_executable_seed` + the shared `baseline_entry_is_executable`
-   predicate (`macro_clause.rs:376-443`), which classify the clause seed against
-   `TurnCheckWorld.baseline` — a snapshot of the **live** tables. Once §1.1.2
-   makes the clause turn absorbable, the parent's candidate world becomes the
-   relevant prior state, and both the seed classification and the shared
-   executable predicate must read it. In particular, a clause already compiled
-   into a **reserved-but-unpublished** cell by an earlier absorbed clause turn in
-   the same cluster must classify as *executable*, or a second expansion in that
-   cluster re-enrolls and recompiles it — contradicting §6.4's "later-form
-   invocation uses one absorbed clause compilation … no compile-again publication
-   path". The §2.1.1 five-row matrix keeps its rows; its "baseline" column is
-   re-read as "the world the parent turn owns".
-2. **Absorbed drop-glue rows move as pairs.** `PreparedMacroTurn` accumulates
-   `compiled_drop_glues` (`macro_clause.rs:117-122`, `:158-163`) and its `publish`
-   installs them into `SharedState.fresh_jit_drop_glues` as `{artifact, owner}`
-   values (`:182-187`). When absorption folds that publish into the parent gate,
-   those rows must move **as pairs**, preserving the invariant
-   `design/int/result-owner.md` §3.1.1 pins: a row is replaced atomically with its
-   retention owner, and no third writer of that map exists. This is a coupling
-   0745 introduces on the consumption side and 0863 must not break.
-
-**Handoff order (binding, arch ruling 11).** 0745 lands *and reviews* first. The
-0863 wave then rebases its reading of the turn transaction on the post-0745
-state — which, for the transaction itself, is unchanged: 0745 modifies neither
-`prepare_cluster_commit`, `compile_prepared_turn`, nor `publish_prepared_turn`
-(`result-owner.md` §3.0/§11); it only consumes the map those seams populate.
+No drop-glue row moves between prepared carriers: the macro checkpoint and the
+ordinary cluster each publish their own `{artifact, owner}` pairs through the
+same ordinary publication machinery. No candidate-world seed classification
+survives. A cache-restored macro whose active clauses lack runtime owners is
+recompiled as one macro checkpoint before use.
 
 ## 7. Quality attributes and interface assessment
 
-- **Simplicity / maintainability:** one prepared-turn boundary, one existing
-  impl-view reader, one scheme renderer; no trait-specific macro path or reverse
-  index.
+- **Simplicity / maintainability:** one ordinary `PreparedCommit` shape serves
+  both a macro checkpoint and the later HM cluster. The cloned multi-module
+  world, semantic-delta scanner, candidate invocation and reserved-slot stack
+  delete; there is no trait-specific macro path or reverse index.
 - **Observability:** ordinary located compiler errors remain; only their owner
   identity is corrected. No new trace, allocator/RC diagnostic, fault
   injection, or cyber-sensitive instrumentation is introduced.
-- **Concurrency:** a prepared turn remains owned by its existing cadence
-  driver and is not parked in shared maps. Publication remains at the existing
-  commit gate.
+- **Concurrency:** source continuations may be requeued, but no partially
+  checked or compiled world is parked. Macro readers and replacement writers
+  share one module guard; publication remains at the existing module gate.
 - **Performance:** only explicit `/info` performs complete impl enumeration.
   Codegen batch derivation is bounded to the entered turn.
-- **Testability:** prepared-turn commit/discard, provenance selection,
-  complete-record replacement, and impl-pair collection are int-private
-  pure/owned seams with the matrices above; production REPL tests pin the
-  shared reader and stale-metadata lifecycle. W7 additionally pins the
-  semantic-equal/cache-restored macro-clause carrier at the private seed
-  enrollment seam and through the six-permutation production guard.
-- **Public API:** none. `src/` gains only private types/helpers;
-  `cranelisp-exe-bundle` is untouched; no `public-api.txt`,
-  `cranelisp-types`, frontend, typecheck, or backend public change is required.
-  BC §6 explicitly narrows the accidental `Introspection` exposure; no new
-  public DTO or cache-schema field is introduced.
+- **Testability:** macro-checkpoint commit/discard, retry continuation,
+  provenance selection, reader generation, complete-record replacement, and
+  impl-pair collection are int-private seams with the matrices above;
+  production REPL tests pin fresh/cache/redefinition/reload parity.
+- **Public API:** the S121 implementation consumes the already approved and
+  baseline-confirmed `publish_compiled_staged` types operation and the approved
+  absent-key meaning of its existing `ChangeAbi` decision. `src/` gains only
+  private types/helpers; `cranelisp-exe-bundle` is untouched; no further types,
+  frontend, typecheck or backend public change is required. BC §6
+  explicitly narrows the accidental `Introspection` exposure; no new public
+  DTO or cache-schema field is introduced.
 
 ## Next skills
 
-- `/dev` — narrow to Binary/int for the W7 seed-enrollment helper, shared
-  executable predicate, and focused unit matrix in §2.1.1.
+- `/dev` — narrow to Binary/int for §1.1.2 and §2.1: source continuations,
+  one-module macro preparation/publication, exact `MacroClause` birth and
+  language-value exclusion, then deletion of the retired temporary machinery.
 - `/testing` — retain
   `build_confidence::mode_equiv_macro_user_defined` as the production
   mode×cache defect guard; no new e2e mechanism is required.
-- `/review` — verify seed-narrow enrollment, unchanged W3a
-  prepare→whole-batch-codegen→publish atomicity, and zero interface/cache
-  schema drift.
-- `/sprint` — record the W7 regression disposition after `/dev` and `/review`
-  complete; W3c presentation expansion remains deferred and untouched.
+- `/review` — verify source-order checkpoint semantics, macro-local atomicity,
+  ordinary HM-cluster atomicity, exact retry behavior, one-guard reader
+  generation, and zero interface/cache-schema drift.
+- `/sprint` — sequence the checkpoint implementation before the remaining C6
+  reader migration and retain the independent public-API gate already closed.

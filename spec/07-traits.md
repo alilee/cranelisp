@@ -2,7 +2,7 @@
 
 This section defines the trait system of Cranelisp -- the mechanism for ad-hoc polymorphism. Traits declare method signatures parameterized over a type (or type constructor). Implementations provide concrete method bodies for specific types. All trait method calls are resolved at compile time via static dispatch.
 
-## 7.1 Trait Declaration [Uncovered S115 — was Tested]
+## 7.1 Trait Declaration [Tested+Neg tests/spec_07_traits::deftrait_declaration_succeeds, tests/nondispatchable_trait_method_0709::nondispatchable_method_rejected_at_declaration_with_occurrence_reason]
 
 A trait declares one or more method signatures parameterized over an implementing type.
 
@@ -93,11 +93,11 @@ A trait MUST contain at least one method signature. Each method signature MUST c
 
 **The occurrence rule is broad, not a nullary corner. [S115]** The rule above is scoped by **occurrence**, not by parameter count. A method of a conventional (bare-head) trait that mentions the implementing type **nowhere** MUST be rejected **whatever its arity** — a parameter list that is non-empty does not rescue it if every parameter is annotated with a type other than the implementing type. Thus `(deftrait Convertible (convert [:String s] Int))` is **rejected** on exactly the same ground as `(deftrait Zeroable (zed [] Int))`: neither signature contains a bare parameter, a `:self` annotation, or a `self` return. The diagnostic reason string is **"no occurrence of the implementing type"** (§7.1.1, above). Ruled by the user 2026-07-21.
 
-*Rationale.* A conventional trait carries **no trait-level type variable** — the implementing type is `self`, and §7.1 already rejects the parenthesized-head spelling of the same mistake (`(deftrait (Sizeable a) (size [:a x] Int))`, whose `a` is never applied). Cranelisp has **no explicit-qualification syntax** for trait-method calls — there is no analogue of Rust's `<Foo as Trait>::method` — so a method whose signature never mentions the implementing type is **undispatchable by construction**: there is no argument position to dispatch on, and no annotation the caller can write that names the impl. Even §7.1.1's own escape hatch — the `self` **return** type, selected by ascription per §3.3.3 — is unavailable to such a method, because it has no `self` anywhere. A trait method that cannot be reached from any call site has no meaning to give it.
+*Rationale.* A conventional trait carries **no trait-level type variable** — the implementing type is `self`, and §7.1 already rejects the parenthesized-head spelling of the same mistake (`(deftrait (Sizeable a) (size [:a x] Int))`, whose `a` is never applied). `Trait.method` qualification selects the method declaration, not an implementation. A method whose signature never mentions the implementing type remains undispatchable because no argument or result constraint can select an impl. Even §7.1.1's return-type escape hatch — `self` selected by ascription per §3.3.3 — is unavailable when `self` occurs nowhere. A trait method that cannot select an implementation has no meaning to give it.
 
 **Method-level type variables are unaffected.** The rule bites only on the **absence of the implementing type**; it places no restriction on other type variables. A method MAY introduce its own type variables anywhere in its signature so long as the implementing type also occurs — `(deftrait Mappable (map-val [:(Fn [a] b) f x] self))` is well-formed (`x` is bare, and the return is `self`). Together with the occurrence rule this is the settled answer recorded at [§7.3.6](#736-inline-constraints-on-type-arguments): **method-level type variables only**, subject to the implementing type also occurring. See §7.1.4 for the type-expression forms a signature may use, and §7.2 for the higher-kinded exemption — an HKT method dispatches on its applied constructor variable `(f a)`, so the occurrence rule does not apply to it.
 
-**Zero-method (marker) traits are not currently specified. [Uncovered S115 — was no prior coverage]** A **marker trait** — a trait declaring **no** methods at all, whose only role is to be asserted by an impl and consumed as a bound, as with other languages' `Send`/`Sync`/`Sized` — has **no specified form in Cranelisp**. §7.1's requirement of **at least one method signature** stands, so there is no way to declare one today, and this section specifies no dispatch, bound-checking, or syntax for such a trait.
+**Zero-method (marker) traits are not currently specified. [Uncovered S121]** A **marker trait** — a trait declaring **no** methods at all, whose only role is to be asserted by an impl and consumed as a bound, as with other languages' `Send`/`Sync`/`Sized` — has **no specified form in Cranelisp**. §7.1's requirement of **at least one method signature** stands, so there is no way to declare one today, and this section specifies no dispatch, bound-checking, or syntax for such a trait.
 
 The boundary is **movable, not principled**: nothing in the design forecloses marker traits — the language already has inline trait constraints ([§7.3.6](#736-inline-constraints-on-type-arguments)), which is the machinery a marker trait would be consumed by — and the capability **MAY be specified in a future language revision** if a concrete scenario shows its absence limiting real programs. Until such a scenario arises the question is deliberately **parked**: the spec is unambiguous today (marker traits are not specified) rather than hedged as a temporary implementation limitation.
 
@@ -219,6 +219,16 @@ An annotated parameter's type is unconstrained — it may be any type expression
 ```
 
 In `map-val` the implementing type occurs twice (the bare parameter `x` and the `self` return) and the method also introduces its own type variables `a` and `b` — method-level type variables are permitted wherever the implementing type also occurs. In `convert` the sole parameter is annotated `String`, and the **return** type carries the occurrence; `(convert [:String s] Int)` — annotated parameter *and* concrete return, no `self` anywhere — would be malformed.
+
+### 7.1.6 Trait Declaration Redefinition [Uncovered S121]
+
+A committed trait interface is immutable. A same-name `deftrait` must preserve
+visibility, conventional/HKT shape, the method set, required/default
+classification, arities, types and constraints, modulo alpha-renaming of bound
+type variables. Documentation may change. A same-interface default-body edit
+is a future-realization template change and does not rebuild existing impl
+methods. See
+[`repl/spec/18-redefinition.md` §18.6](../repl/spec/18-redefinition.md#186-trait-declaration-re-establishment).
 
 ## 7.2 Higher-Kinded Traits [Tested+Neg tests/spec_07_traits::hkt_deftrait_declaration_with_type_constructor_parameter_succeeds, tests/spec_07_traits::deftrait_bare_return_convar_never_applied_rejected_neg, tests/spec_07_traits::bare_convar_full_0628_repro_no_leak_and_no_unresolved_var_display_neg]
 
@@ -351,7 +361,13 @@ not a `trait_ref`, and remains bare-only (§7.1, §5). Accepting a qualified
 `impl` reference MUST NOT make `(deftrait fmt/Display …)` or
 `(deftrait (fmt/Functor f) …)` legal.
 
-**Redefinition (hot-reload). [S115]** Re-entering an `impl` for a (trait, type) pair that already has an implementation **replaces** the previous one; subsequent dispatch (§7.4) uses the **new** method bodies, under the same-type constraint that governs `defn` redefinition. Silently ignoring a re-`impl` — confirming the form yet still dispatching to the first implementation — is a defect. The user-facing normative statement and its cross-links to the redefinition runtime machinery (`repl/spec.md` §18) are in [§5.4.5](05-definitions.md#545-implementation-semantics).
+**Redefinition (hot-reload). [S115]** Re-entering an `impl` for a
+`(trait, type)` pair replaces the whole previous implementation after the whole
+candidate conforms; subsequent dispatch (§7.4) uses the new method bodies.
+Omitted defaults use the current trait template. A rejected candidate leaves
+the prior implementation intact. Silently ignoring a successful re-`impl` is a
+defect. The complete rule is [§5.4.5](05-definitions.md#545-implementation-semantics)
+and [`repl/spec/18-redefinition.md` §18.7](../repl/spec/18-redefinition.md#187-impl-redefinition--re-entering-an-impl).
 
 There are three forms of trait implementation, presented below.
 
@@ -383,7 +399,7 @@ The simplest form targets a specific concrete type.
 
 Each `defn` in the impl block MUST correspond to a method declared in the trait. The parameter count MUST match the number of parameters in the trait's method signature. An impl block MUST provide definitions for all methods in the trait that do not have default implementations (see 7.1.5). Methods with defaults are automatically synthesized if not explicitly provided.
 
-**Method-name vs field-accessor collision (FIXME 0365/0439, settled S91).** [Tested+Neg tests/spec_05_definitions::impl_method_colliding_with_field_accessor_rejected_neg] An `impl` whose method name equals an existing **field-accessor** name of the impl target type MUST be **rejected at impl time**, with a diagnostic naming the colliding name and both definition sites (the `deftype` field and the `impl` method). For example, given `(deftype Box [:Int v])` (whose canonical accessor is `Box.v`, §5.2.6), an `(impl SomeTrait Box (defn v [x] …))` is a compile-time error. This is the no-silent-overload-consistent resolution: it prevents the target type from having two distinct `(Fn [Box] …)` denotations for the same dotted name, so the canonical accessor `Box.v` (§8.5.2) always names exactly one thing and never has to disambiguate field-accessor-vs-trait-method. Casing makes the rule's scope exact and complete: constructors are uppercase (§1.4), while field accessors and trait methods are both lowercase, so a field-accessor name can collide *only* with a trait-method name — precisely the case this check covers; a constructor name can never collide with either.
+**Method-name vs field-accessor overlap. [Uncovered S121]** An `impl` whose method name equals a field-accessor name of its target type is permitted. Given `(deftype Box [:Int v])`, `(impl HasV Box (defn v [x] …))` realizes the canonical method `HasV.v` for `Box`; it does not redefine the canonical accessor `Box.v`. Both declarations may project the unqualified spelling `v`. A use resolves under §8.6.5: if ordinary type constraints select one declaration it is valid, while a use compatible with both MUST write `Box.v` or `HasV.v`. Impl coherence continues to govern competing implementations of the same trait method for the same target; this permission creates no second `HasV.v` implementation.
 
 ### 7.3.2 Concrete Parameterized Implementation
 
@@ -494,9 +510,9 @@ Anchor on `(deftrait (Functor f) (fmap [:(Fn [a] b) g :(f a) x] (f b)))` — `f`
 
 An inline trait constraint `:Trait` **attaches to the type variable it immediately precedes, at the position where that variable is introduced**. In `(Option :Display a)`, the constraint reads "**`Option` of `a`, where `a` is `Display`**": `a` is the constructor argument, and `:Display` requires that whatever `a` resolves to at a call site implements `Display`. The constraint is discharged by monomorphisation (§7.3.3): `(show (Some 42))` resolves `a` to `Int`, checks `Int : Display`, and specializes `show$Option$Int`.
 
-**Type parameters in a conventional trait are method-level only. [Uncovered S115 — was no prior coverage]** A conventional (kind-`*`) trait carries **no trait-level type variable** — its head is bare and the implementing type is `self` ([§7.1](#71-trait-declaration)). Genericity over a type that is neither `self` nor concrete is expressed **per method**: a method MAY introduce its own type variables freely, anywhere in its signature ([§7.1.4](#714-type-expressions-in-signatures) — `a` and `b` in `(map-val [:(Fn [a] b) f x] self)` are bound by that method alone). **And** every method MUST carry the implementing type in at least one parameter or in the return type — the occurrence rule of [§7.1.1](#711-the-self-type). Those two rules are together the complete answer: method-level type variables, subject to the occurrence rule; there is no trait-level non-`self` parameter and no further mechanism. (User ruling 2026-07-21.)
+**Type parameters in a conventional trait are method-level only. [Uncovered S121]** A conventional (kind-`*`) trait carries **no trait-level type variable** — its head is bare and the implementing type is `self` ([§7.1](#71-trait-declaration)). Genericity over a type that is neither `self` nor concrete is expressed **per method**: a method MAY introduce its own type variables freely, anywhere in its signature ([§7.1.4](#714-type-expressions-in-signatures) — `a` and `b` in `(map-val [:(Fn [a] b) f x] self)` are bound by that method alone). **And** every method MUST carry the implementing type in at least one parameter or in the return type — the occurrence rule of [§7.1.1](#711-the-self-type). Those two rules are together the complete answer: method-level type variables, subject to the occurrence rule; there is no trait-level non-`self` parameter and no further mechanism. (User ruling 2026-07-21.)
 
-*Rationale.* Method-level variables already give a method all the genericity it needs over types unrelated to the implementing type, so a trait-level parameter would add no expressive power — and it would collide with §7.1's one-bit head rule, under which a parenthesized head means *higher-kinded* and nothing else. The occurrence requirement is the other half: Cranelisp has no explicit-qualification syntax for a method call (no analogue of `<Foo as Trait>::method`), so the implementing type must occur in the signature for any call site to select an impl. A trait-level variable would let a method be written with no `self` at all, which is exactly the undispatchable shape §7.1.1 rejects.
+*Rationale.* Method-level variables already give a method all the genericity it needs over types unrelated to the implementing type, so a trait-level parameter would add no expressive power — and it would collide with §7.1's one-bit head rule, under which a parenthesized head means *higher-kinded* and nothing else. The occurrence requirement is the other half: `Trait.method` can select a declaration, but the implementing type must occur in the signature for a call site to select an impl. A trait-level variable would let a method be written with no `self` at all, which is exactly the undispatchable shape §7.1.1 rejects.
 
 *(The former sub-question 2 — precise kind-checking rules for impl targets, including the fully-applied HK slot-2 case `(Functor (Option Int))` and the under-applied conventional target `(impl Display Option)` — is settled: see the impl-target kind-matching table in [§7.3.5](#735-kind-checking-of-impl-targets). The former sub-question 3 — whether a higher-kinded impl's slot 1 is verbatim-as-declared or inferable — is settled too: its head shape and constructor-variable binder are echoed, while its trait name is an ordinary bare-or-qualified reference; a conventional slot 1 is likewise a bare-or-qualified trait reference. See [§7.3](#73-trait-implementation), “Slot 1 is fixed by identity and shape, not inferable.” No sub-question of §7.3.6 remains open.)*
 
@@ -506,9 +522,9 @@ ALL trait method calls MUST be resolved at compile time. There is no runtime dis
 
 ### 7.4.1 Resolution Process
 
-When the typechecker encounters a trait method call:
+After ordinary name and type constraints select a trait method declaration under §8.6.5, the typechecker resolves its implementation as follows:
 
-1. Look up the method name in the type environment to obtain its polymorphic type from the trait declaration.
+1. Obtain the selected method's canonical identity and polymorphic type from its trait declaration.
 2. Instantiate the scheme with fresh type variables.
 3. Infer the types of the call's arguments and unify with the instantiated parameter types.
 4. Record a **pending resolution**: the call site, method name, and the (possibly still-unresolved) dispatch type.
@@ -540,9 +556,9 @@ For HKT methods, the mangled name uses the bare constructor name (e.g., `Functor
 
 For polymorphic impl specializations, the mangled name includes the concrete inner types (e.g., `Display.show$Option$Int`).
 
-### 7.4.2a Same-Named Methods and Disambiguation
+### 7.4.2a Same-Named Methods and Disambiguation [Uncovered S121]
 
-Different traits MAY define methods with the same name. When only one such trait is imported into a module's scope, the bare name resolves unambiguously. When multiple traits with the same method name are visible, the bare name becomes ambiguous and the compiler reports an error suggesting qualified forms.
+Different traits MAY define methods with the same name, and multiple such methods MAY be visible under one unqualified spelling. Ordinary argument, result, annotation, and surrounding expected-type constraints select the declaration when exactly one candidate remains (§8.6.5). If several same-named methods remain compatible, the use is ambiguous and MUST be qualified.
 
 **Disambiguation syntax:** Use `Trait.method` to specify which trait's method to call:
 
@@ -551,7 +567,7 @@ Different traits MAY define methods with the same name. When only one such trait
 (Unchecked.+ x y)  ; explicitly calls Unchecked's +
 ```
 
-The `Unchecked` trait is NOT exported from the prelude. Users who need it MUST explicitly import it: `(import [core/unchecked [Unchecked]])`. If both `Num` and `Unchecked` are in scope, bare `+` is ambiguous and requires qualification.
+The `Unchecked` trait is NOT exported from the prelude. Users who need it MUST explicitly import it: `(import [core/unchecked [Unchecked]])`. If both `Num.+` and `Unchecked.+` are compatible with a bare use, that use requires qualification; merely making both declarations visible is permitted.
 
 ### 7.4.3 Impl Search Order
 
@@ -945,9 +961,12 @@ Trait declarations and implementations participate in the module system (see sec
 - A `deftrait` form registers the trait and all its method names in the declaring module.
 - An `impl` form's method implementations are visible per the rule in [§5.11.1](05-definitions.md#5111-impl-visibility--transitive-import-closure) (visibility = reachability of the trait + type names). Where the implementation internally records the impl entry — which module's symbol table holds it — is **implementation-defined**, not pinned by this spec.
 - Trait methods are accessible via import like any other symbol. Importing a method **without** its trait is sufficient to dispatch it — see [§7.11.2](#7112-method-import-dispatch--a-method-reference-suffices).
-- Method names from different traits MAY collide. If two traits declare methods with the same name and both are in scope, the result is an ambiguous name error at the call site; and importing the same method name directly from two modules is a duplicate-import conflict (§8.6.4, §7.11.2 edge (b)).
+- Method names from different traits MAY share an unqualified spelling. Importing or otherwise exposing both is permitted; each use resolves under §8.6.5. [Uncovered S121]
 
-Note: There is no mechanism for disambiguating same-named methods from different traits at a call site. Users SHOULD choose distinct method names across traits, or use qualified references (`module/method`) to avoid ambiguity.
+Same-named trait methods are selected explicitly with `Trait.method` (§7.4.2a;
+§8.5.2). A bare method name is valid when ordinary constraints leave one
+candidate; otherwise the compiler reports the surviving canonical alternatives
+and the caller uses a form such as `Display.show` or `Debug.show`.
 
 ### 7.11.1 Impl Visibility — Transitive Import Closure [S66]
 
@@ -967,11 +986,11 @@ The full normative statement and worked example live in [§5.11.1](05-definition
 
 The reason is identity, not search. A method reference carries the method's **fully-qualified identity**, which names the one trait that declares it and hence that trait's **canonical (home) module**. Resolution roots at that home — a bounded keyed-lookup chain, never a scan (consistent with the resolve-once principle) — where the trait's impls are found by key on the method's identity together with the concrete dispatch type (§7.4). Reaching the method therefore reaches everything dispatch needs.
 
-The following edge cells are normative [Tested+Neg tests/nullary_return_dispatch_method_only_import.rs::method_import_single_of_two_dispatches, tests/nullary_return_dispatch_method_only_import.rs::method_import_same_name_two_modules_conflict_neg, tests/nullary_return_dispatch_method_only_import.rs::method_only_import_no_impl_diagnostic_names_owning_trait, tests/nullary_return_dispatch_method_only_import.rs::nullary_return_dispatch_no_impl_method_only_import_rejects_naming_trait]:
+The following edge cells are normative [Uncovered S121]:
 
 **(a) Impl coherence is global.** Dispatch never depends on an impl being *separately* visible at the call site. Once the method is in scope and the dispatch type is concrete, the matching impl is found by keyed lookup on (method identity, dispatch type); the impl's declaring module need not be named at the call site, and the trait name need not be in scope. (This refines §5.11.1/§7.11.1: a method reference is itself a sufficient trait-side entry point — it brings the trait's canonical home, where impl reach is anchored, into the current module's import closure — so the "reach the trait" leg of the visibility rule is satisfied by reaching *any of its methods*.)
 
-**(b) Two same-named method imports are an import conflict, not a shadow.** Importing a method named `m` from two different modules — two different traits' `m` — is a duplicate-bare-name **conflict** per [§8.6.4](08-modules.md#864-conflict-rules) (conflict-not-shadow), rejected at compile time, exactly as for any other symbol (§7.11: trait methods "are accessible via import like any other symbol"). **The method import is itself the disambiguator**: a program selects which trait's `m` it dispatches by choosing which module's `m` it imports (or by a fully-qualified reference, §8.6.6). This is the method-import analogue of importing only one of two same-method traits to disambiguate (§7.4.2a) — under this ruling the choice is expressed on the method rather than on the trait.
+**(b) Two same-named method imports form a candidate set.** Importing a method named `m` from two different modules — two different traits' `m` — is permitted on the same terms as any other distinct canonical declarations (§8.6.4). Each bare use may resolve by ordinary type constraints; a use compatible with both methods MUST qualify the intended trait or canonical home (§8.6.5). Import order never selects a method.
 
 **(c) Diagnostics name the owning trait even when the trait is not in scope.** A resolution or dispatch error on `m` — no impl for the concrete dispatch type, ambiguity, and so on — MUST name the **owning trait** (`m` belongs to trait `T`), even though `T` was never brought into the module's scope. The method's identity is known at the point of error, so the diagnostic MUST surface the trait it belongs to.
 

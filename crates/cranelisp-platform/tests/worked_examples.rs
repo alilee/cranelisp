@@ -14,6 +14,9 @@ use cranelisp_platform::{
 };
 use std::sync::Once;
 
+mod common;
+use common::{alloc_full_heap_adt, dealloc_heap_adt};
+
 static HOST: HostContext = HostContext::new();
 
 // Author-defined marker types, FQ-keyed (the macro no longer auto-emits these).
@@ -28,32 +31,6 @@ impl CLAdtType for OptionInt {
 pub struct ListInt;
 impl CLAdtType for ListInt {
     const TYPE_NAME: &'static str = "shapes/ListInt";
-}
-
-fn alloc_full_heap_adt(tag: u32, fields: &[i64]) -> i64 {
-    let payload_size = 8 + fields.len() * 8;
-    let total_size = 16 + payload_size;
-    unsafe {
-        let layout = std::alloc::Layout::from_size_align_unchecked(total_size, 8);
-        let alloc_base = std::alloc::alloc_zeroed(layout);
-        *(alloc_base as *mut i64) = total_size as i64;
-        *((alloc_base as *mut i64).add(1)) = 1;
-        let payload = alloc_base.add(16);
-        *(payload as *mut u32) = tag;
-        *(payload.add(4) as *mut u32) = 0;
-        for (i, val) in fields.iter().enumerate() {
-            *(payload.add(8 + i * 8) as *mut i64) = *val;
-        }
-        alloc_base as i64
-    }
-}
-
-fn dealloc_heap_adt(base: i64) {
-    unsafe {
-        let total_size = *(base as *const i64) as usize;
-        let layout = std::alloc::Layout::from_size_align_unchecked(total_size, 8);
-        std::alloc::dealloc(base as *mut u8, layout);
-    }
 }
 
 // -----------------------------------------------------------------

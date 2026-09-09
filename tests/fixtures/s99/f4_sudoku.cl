@@ -27,8 +27,8 @@
 ;; a second, distinct ADT (which would author a define-over-glob-import
 ;; collision forbidden by §8.6.4). Cell/Grid/SolveResult are this fixture's own.
 (deftype Cell (Given [:Int given-value]) (Solved [:Int solved-value]) (Candidates [:Int bitmask]))
-(deftype Grid [cells])
-(deftype SolveResult (Success [grid]) Unsolvable)
+(deftype (Grid a) [:a cells])
+(deftype (SolveResult a) (Success [:a grid]) Unsolvable)
 
 ;; ── Arithmetic / bit helpers (native primitives) ────────────────────────
 (defn rem-i64 [a b] (sub-i64 a (mul-i64 (div-i64 a b) b)))

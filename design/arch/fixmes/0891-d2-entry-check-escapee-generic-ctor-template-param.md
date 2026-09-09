@@ -63,10 +63,10 @@ release, and §10 gains its positive/edge/negative unit row.
 
 Grounds, in brief (§4.1 carries the full statement):
 
-- The class is **not** about generics and **not** about undeclared fields — it is
-  intrinsic to compiling a constructor `Def` **once per declaration**. Both
-  `(deftype (Option a) (Some [:a v]))` and `(deftype B (Mk [v]))` hand the ctor's
-  scheme a non-concrete field parameter, and both are legal source.
+- The class is intrinsic to compiling a generic constructor `Def` **once per
+  declaration**. `(deftype (Option a) (Some [:a v]))` hands the ctor scheme a
+  non-concrete declared parameter. Missing field types are not a second legal
+  route; the frontend rejects them under spec §5.2.4.
 - Soundness is invariant **I-CT**: every value this branch releases was, earlier
   in the same frame, incremented by the paired guarded inc and published into the
   box the frame returns. It can never be the last reference. Both halves share ONE
@@ -131,5 +131,5 @@ it back to §4.1.
   §3.1.1 point 2 (and BC §3 invariant 9) assert this `from_type` "must succeed".
   **RESOLVED S118 W8 (`/arch`): both texts amended — the template path's `Err`
   arm classifies `Mixed` (ratified as-built), the template/use-site distinction
-  is canonical at §3.1.1 point 2, and the declaration-time question is routed
-  to `/spec` as FIXME 0912.**
+  is canonical at §3.1.1 point 2. FIXME 0912 later resolved the declaration-time
+  question by requiring explicit field types and parameters.**

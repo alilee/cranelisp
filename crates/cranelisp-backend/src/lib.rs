@@ -144,7 +144,7 @@ pub mod cache;
 // Re-export build_isa at the crate root for convenient access.
 // This is the single ISA construction point (architecture decision 7).
 pub use cache::object::build_isa;
-use cranelisp_types::ModuleEntry;
+use cranelisp_types::{Life, Realization};
 // Re-export TargetIsa for shared ISA in N-core codegen (pipeline-v3.md §6).
 pub use cranelift::codegen::isa::TargetIsa;
 // Re-export Cranelift module types for callers of compile_to_module.
@@ -202,8 +202,8 @@ use cranelift_module::FuncId;
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    ConcreteType, CranelispError, Defn, ErrorLocation, LinkerSymbol, ModuleFullPath, Span, Symbol,
-    SymbolTable,
+    CallableTarget, ConcreteType, CranelispError, Decl, Defn, ErrorLocation, FQSymbol, JitSymbol,
+    LinkerSymbol, ModuleFullPath, Span, Symbol, SymbolTable,
 };
 
 use cranelift::prelude::*;
@@ -211,6 +211,41 @@ use cranelift_module::Module;
 
 use crate::compiler::{CompileContext, FnCompiler};
 use crate::jit::declare_intrinsics_generic;
+
+pub(crate) fn callable_target_owner(target: &CallableTarget) -> Option<&FQSymbol> {
+    match target {
+        CallableTarget::Binding(owner)
+        | CallableTarget::OverloadArm { owner, .. }
+        | CallableTarget::MacroClause { owner, .. } => Some(owner),
+        _ => None,
+    }
+}
+
+pub(crate) fn callable_target_label(target: &CallableTarget) -> Option<JitSymbol> {
+    match target {
+        CallableTarget::Binding(owner) => Some(JitSymbol::from(owner.symbol.as_ref())),
+        CallableTarget::OverloadArm { owner, arm } => Some(JitSymbol::from(format!(
+            "{}$overload-arm${}",
+            owner.symbol,
+            arm.ordinal()
+        ))),
+        CallableTarget::MacroClause { owner, clause } => Some(JitSymbol::from(format!(
+            "{}$macro-clause${}",
+            owner.symbol,
+            clause.ordinal()
+        ))),
+        _ => None,
+    }
+}
+
+pub(crate) fn callable_arm_slot<C: cranelisp_types::CodeStore>(
+    arm: &cranelisp_types::CallableArm<C>,
+) -> Option<usize> {
+    match &arm.life {
+        Life::Concrete { slot, .. } | Life::Broken { slot, .. } => Some(slot.index()),
+        _ => None,
+    }
+}
 
 // --- CLIF dump observability (Sprint 60 Workstream B) --------------------
 //
@@ -612,7 +647,7 @@ impl CodeFinalizer for cranelift_object::ObjectModule {
 ///   after cache-hit) resolve the relocations at load time.
 pub fn compile_to_module<M, C, L>(
     module_path: ModuleFullPath,
-    names: &[Symbol],
+    targets: &[CallableTarget],
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
     module: &mut M,
     capture_clif: bool,
@@ -622,12 +657,12 @@ where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
-    compile_to_module_impl::<M, C, L>(module_path, names, symbol_tables, module, capture_clif)
+    compile_to_module_impl::<M, C, L>(module_path, targets, symbol_tables, module, capture_clif)
 }
 
 fn compile_to_module_impl<M, C, L>(
     module_path: ModuleFullPath,
-    names: &[Symbol],
+    targets: &[CallableTarget],
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
     module: &mut M,
     capture_clif: bool,
@@ -645,7 +680,7 @@ where
     // ownership summary. The three lockstep vectors + the hard `codegen_view`-
     // None producer-gap error live in `collect_compile_targets`.
     let (defns, bodies, summaries) =
-        collect_compile_targets::<C, L>(&module_path, names, symbol_tables)?;
+        collect_compile_targets::<C, L>(&module_path, targets, symbol_tables)?;
 
     // v9 ctx-vtable (`io-trampoline.md §17.3`): the S96 `inject_poll_leading_pair`
     // poll-shape operand-injection pass is DELETED. Under the ctx-vtable handle model
@@ -733,7 +768,14 @@ where
     let glue_ids = glue_registry.finish()?;
 
     // Step 4a (§3.1): emit the per-module `__cranelisp_got_{M}` data symbol.
-    emit_module_got_data::<M, C, L>(module, &module_path, symbol_tables, &defns, &func_ids)?;
+    emit_module_got_data::<M, C, L>(
+        module,
+        &module_path,
+        symbol_tables,
+        targets,
+        &defns,
+        &func_ids,
+    )?;
 
     // Step 4: Finalize definitions.
     // For JITModule: patches relocations, makes code pages executable.
@@ -743,7 +785,14 @@ where
     let drop_glues = project_drop_glues(module, glue_ids);
 
     // Step 5 (§3.1): per-symbol finalized-ptr → GOT-slot direct-write + GotEvent.
-    write_finalized_got_slots::<M, C, L>(module, &module_path, symbol_tables, &defns, &func_ids);
+    write_finalized_got_slots::<M, C, L>(
+        module,
+        &module_path,
+        symbol_tables,
+        targets,
+        &defns,
+        &func_ids,
+    );
 
     Ok(CompilationArtifacts {
         clif_ir: clif_ir_agg,
@@ -782,7 +831,7 @@ fn project_drop_glues<M: CodeFinalizer>(
 #[allow(clippy::type_complexity)]
 fn collect_compile_targets<C, L>(
     module_path: &ModuleFullPath,
-    names: &[Symbol],
+    targets: &[CallableTarget],
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
 ) -> Result<
     (
@@ -801,19 +850,20 @@ where
     // Wave 0 invariant: each entry in `names` carries `ast: Some(_)`. If not,
     // surface a codegen error naming the offending symbol — see
     // design/backend/compile-to-module.md §16.4.
-    let mut defns: Vec<Defn> = Vec::with_capacity(names.len());
+    let mut defns: Vec<Defn> = Vec::with_capacity(targets.len());
     // S84 Phase 3 (concrete-boundary-type.md §3.1, FIXME 0391): the codegen walk
     // is over `MonoExpr`. For each `UserFn { Concrete{slot} }` entry the body
     // comes from the typecheck-populated `codegen_view` (every node already a
     // `ConcreteType`), NOT reconstructed from `ast`. Carried in lockstep with
     // `defns`.
-    let mut bodies: Vec<cranelisp_types::MonoExpr> = Vec::with_capacity(names.len());
+    let mut bodies: Vec<cranelisp_types::MonoExpr> = Vec::with_capacity(targets.len());
     // The compile-in-hand ownership summary for each body (B3.2), read from the
     // same `codegen_view` the body comes from. `None` on the lenient fallback
     // (no view) and whenever the ownership analysis did not run
     // (`CRANELISP_NO_OWNERSHIP` ⇒ typecheck emits no summaries). Carried in
     // lockstep with `bodies`.
-    let mut summaries: Vec<Option<cranelisp_types::ModeSummary>> = Vec::with_capacity(names.len());
+    let mut summaries: Vec<Option<cranelisp_types::ModeSummary>> =
+        Vec::with_capacity(targets.len());
     {
         let table = symbol_tables
             .get(module_path)
@@ -821,33 +871,55 @@ where
                 message: format!("compile_to_module: no symbol table for module '{module_path}'"),
                 location: ErrorLocation::from_span(Span::SYNTHETIC),
             })?;
-        for name in names {
+        for target in targets {
+            let Some(owner) = callable_target_owner(target) else {
+                return Err(CranelispError::CodegenError {
+                    message: format!("compile_to_module: unsupported target '{target:?}'"),
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
+                });
+            };
+            if owner.module != *module_path {
+                return Err(CranelispError::CodegenError {
+                    message: format!(
+                        "compile_to_module: target '{target:?}' belongs to module '{}', not '{module_path}'",
+                        owner.module
+                    ),
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
+                });
+            }
             let entry = table
-                .get(name.as_ref())
+                .get(owner.symbol.as_ref())
                 .ok_or_else(|| CranelispError::CodegenError {
                     message: format!(
-                        "compile_to_module: symbol '{name}' not found in module '{module_path}'"
+                        "compile_to_module: owner '{}' not found in module '{module_path}'",
+                        owner.symbol
                     ),
                     location: ErrorLocation::from_span(Span::SYNTHETIC),
                 })?;
-            let ModuleEntry::Def {
+            let Some(arm) = table.callable_target(target) else {
+                return Err(CranelispError::CodegenError {
+                    message: format!(
+                        "compile_to_module: target '{target:?}' is not an executable arm in module '{module_path}'"
+                    ),
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
+                });
+            };
+            let Life::Concrete {
+                realization: Realization::Body { view, .. },
                 ast,
-                visibility,
-                docstring,
-                codegen_view,
                 ..
-            } = entry
+            } = &arm.life
             else {
                 return Err(CranelispError::CodegenError {
                     message: format!(
-                        "compile_to_module: symbol '{name}' in module '{module_path}' is not a compilable Def (wrong ModuleEntry variant)"
+                        "compile_to_module: target '{target:?}' in module '{module_path}' is not a concrete body realization"
                     ),
                     location: ErrorLocation::from_span(Span::SYNTHETIC),
                 });
             };
             let variant = ast.as_ref().ok_or_else(|| CranelispError::CodegenError {
                 message: format!(
-                    "compile_to_module: symbol '{name}' in module '{module_path}' has ast: None — Wave 0 invariant violated (see design/typecheck/ast-annotation.md for the categories of entries that must carry ast: Some(_))"
+                    "compile_to_module: target '{target:?}' in module '{module_path}' has ast: None — Wave 0 invariant violated (see design/typecheck/ast-annotation.md for the categories of entries that must carry ast: Some(_))"
                 ),
                 location: ErrorLocation::from_span(Span::SYNTHETIC),
             })?;
@@ -858,11 +930,22 @@ where
             // sources for that metadata post-narrowing). The `Defn` supplies the
             // signature (params / name / span) for declaration + binding; the
             // body walk uses the `MonoExpr` below.
+            let label = callable_target_label(target).ok_or_else(|| {
+                CranelispError::CodegenError {
+                    message: format!("compile_to_module: unsupported target '{target:?}'"),
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
+                }
+            })?;
             let defn = Defn {
-                name: name.clone(),
-                docstring: docstring.clone(),
+                name: Symbol::from(label.as_ref()),
+                docstring: match &entry.declaration {
+                    Decl::Callable(callable) => callable.docstring.clone(),
+                    Decl::Overloaded(declaration) => declaration.docstring.clone(),
+                    Decl::Macro(declaration) => declaration.docstring.clone(),
+                    _ => None,
+                },
                 variants: vec![variant.clone()],
-                visibility: *visibility,
+                visibility: entry.visibility,
                 span: variant.span,
             };
 
@@ -911,21 +994,7 @@ where
             // codegen-reached entry with NO typecheck-populated `codegen_view` is
             // a producer gap and a HARD error, never a silent lenient rebuild
             // (Rev-2: no soft fallback).
-            let (body, mode_summary) = match codegen_view {
-                Some(view) => (view.body.clone(), view.mode_summary.clone()),
-                None => {
-                    return Err(CranelispError::CodegenError {
-                        message: format!(
-                            "compile_to_module: codegen-reached body '{name}' in module \
-                             '{module_path}' has no typecheck-populated codegen_view. Post-W0.b \
-                             typecheck is the sole mono-view producer (design/arch/\
-                             backend-keyed-consumer.md §4 W0.b/§5); a None here is a producer \
-                             gap (Principle 18), never a silent lenient rebuild."
-                        ),
-                        location: ErrorLocation::from_span(variant.span),
-                    });
-                }
-            };
+            let (body, mode_summary) = (view.body.clone(), view.mode_summary.clone());
 
             defns.push(defn);
             bodies.push(body);
@@ -1104,6 +1173,7 @@ fn emit_module_got_data<M, C, L>(
     module: &mut M,
     module_path: &ModuleFullPath,
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    targets: &[CallableTarget],
     defns: &[Defn],
     func_ids: &HashMap<Symbol, FuncId>,
 ) -> Result<(), CranelispError>
@@ -1121,19 +1191,11 @@ where
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
     let mut slot_funcs: Vec<(usize, FuncId)> = Vec::with_capacity(defns.len());
-    for defn in defns {
-        let entry = table.get(defn.name.as_ref()).ok_or_else(|| {
-            CranelispError::CodegenError {
-                message: format!(
-                    "compile_to_module: symbol '{}' missing from module '{module_path}' at GOT-data emission",
-                    defn.name
-                ),
-                location: ErrorLocation::from_span(defn.span),
-            }
-        })?;
-        // The GOT slot now rides on the callable `DefKind` variant
-        // (S83 Option-A reshape); read it through the SSOT accessor.
-        let Some(slot) = entry.callable_got_slot() else {
+    for (target, defn) in targets.iter().zip(defns) {
+        let Some(slot) = table
+            .callable_target(target)
+            .and_then(callable_arm_slot)
+        else {
             continue; // Non-Def / slot-less Def (primitive-shaped, etc.)
         };
         let Some(&func_id) = func_ids.get(&defn.name) else {
@@ -1141,7 +1203,22 @@ where
         };
         slot_funcs.push((slot, func_id));
     }
-    let slot_count = table.next_got_slot;
+    let slot_count = table
+        .all_symbols()
+        .filter_map(|(_, binding)| binding.callable_got_slot())
+        .chain(
+            table
+                .codegen_targets()
+                .filter_map(|(_, arm)| callable_arm_slot(arm)),
+        )
+        .chain(
+            table
+                .retired_slots()
+                .iter()
+                .map(|retired| retired.slot.index()),
+        )
+        .max()
+        .map_or(0, |slot| slot + 1);
     // Drop the read guard before potentially mutating other tables.
     drop(table);
 
@@ -1167,6 +1244,7 @@ fn write_finalized_got_slots<M, C, L>(
     module: &M,
     module_path: &ModuleFullPath,
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    targets: &[CallableTarget],
     defns: &[Defn],
     func_ids: &HashMap<Symbol, FuncId>,
 ) where
@@ -1174,7 +1252,7 @@ fn write_finalized_got_slots<M, C, L>(
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
-    for defn in defns {
+    for (target, defn) in targets.iter().zip(defns) {
         let Some(&func_id) = func_ids.get(&defn.name) else {
             continue;
         };
@@ -1187,8 +1265,8 @@ fn write_finalized_got_slots<M, C, L>(
         // Resolve the entry's GOT slot and write the finalised ptr.
         let slot_opt = symbol_tables.get(module_path).and_then(|table| {
             table
-                .get(defn.name.as_ref())
-                .and_then(|entry| entry.callable_got_slot())
+                .callable_target(target)
+                .and_then(callable_arm_slot)
         });
         if let Some(slot) = slot_opt {
             if let Some(table) = symbol_tables.get(module_path) {

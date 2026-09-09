@@ -49,7 +49,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Mutex;
 
-use cranelisp_types::{DefKind, ModuleEntry, ModuleFullPath, Symbol, Type};
+use cranelisp_types::{Binding, Decl, ModuleFullPath, Symbol, Type};
 
 use super::SharedState;
 use crate::scheduler::ModulePool;
@@ -142,26 +142,23 @@ struct IndexedEntry {
     /// The symbol's docstring text (the same text `/doc` shows), for the
     /// docstring axis (§17.19.1, S106) and the excerpt facet (§17.19.2 facet 5).
     docstring: Option<String>,
-    /// Whether the entry is a macro (`DefKind::Macro`) — carries the §1.1
-    /// classification through the index so a `/search` row renders the canonical
-    /// macro envelope (`; defmacro`), never a placeholder scalar `:Type`
-    /// (§17.19.2a, 0569). The index is the authority; the renderer never
-    /// re-probes the live table (an importable-but-unloaded module has no live
-    /// entry to consult).
-    is_macro: bool,
 }
 
 /// One importable symbol's index payload — the projection
 /// `public_entries_from_table` (and the branch-c `record_triples`) hand the
-/// recorders. A named row (not a bare tuple, `src/CLAUDE.md`) so the §1.1
-/// classification (`is_macro`) rides alongside the scheme/docstring rather than
-/// being re-derived at render time.
+/// recorders. A named row (not a bare tuple, `src/CLAUDE.md`) keeps the scheme
+/// and docstring axes explicit. Macro groups are excluded before this boundary.
 #[derive(Debug, Clone)]
 struct ImportableRow {
     name: Symbol,
     scheme: Type,
     docstring: Option<String>,
-    is_macro: bool,
+}
+
+struct CheckedIndexModule {
+    table: crate::code::SessionSymbolTable,
+    entries: Vec<(Symbol, Type, Binding<crate::code::Code>)>,
+    source_had_macro: bool,
 }
 
 /// Relevance tier of a `/search` hit — the §17.19.1a total order, strongest
@@ -195,9 +192,6 @@ pub(crate) struct SearchHit {
     pub docstring: Option<String>,
     /// Which axis/strength this hit matched on (§17.19.1a).
     pub tier: MatchTier,
-    /// Whether the hit is a macro — drives the `; defmacro` canonical envelope
-    /// on the row's primary line (§17.19.2a, 0569).
-    pub is_macro: bool,
 }
 
 impl ImportableIndices {
@@ -325,7 +319,6 @@ impl ImportableIndices {
             name,
             scheme,
             docstring,
-            is_macro,
         } in entries
         {
             g.entries.push(IndexedEntry {
@@ -333,7 +326,6 @@ impl ImportableIndices {
                 module: module.clone(),
                 scheme,
                 docstring,
-                is_macro,
             });
         }
         g.indexed.insert(module.clone());
@@ -360,7 +352,6 @@ impl ImportableIndices {
             name,
             scheme,
             docstring,
-            is_macro,
         } in entries
         {
             g.entries.push(IndexedEntry {
@@ -368,7 +359,6 @@ impl ImportableIndices {
                 module: module.clone(),
                 scheme,
                 docstring,
-                is_macro,
             });
         }
     }
@@ -402,7 +392,6 @@ impl ImportableIndices {
             name,
             scheme,
             docstring,
-            is_macro,
         } in entries
         {
             g.entries.push(IndexedEntry {
@@ -410,7 +399,6 @@ impl ImportableIndices {
                 module: module.clone(),
                 scheme,
                 docstring,
-                is_macro,
             });
         }
         // Tally the module EXACTLY once. A first-time record of a module outside
@@ -430,26 +418,21 @@ impl ImportableIndices {
     fn record_triples(
         &self,
         module: &ModuleFullPath,
-        entries: Vec<(Symbol, Type, ModuleEntry<crate::code::Code>)>,
+        entries: Vec<(Symbol, Type, Binding<crate::code::Code>)>,
     ) {
         let rows: Vec<ImportableRow> = entries
             .into_iter()
-            .map(|(name, scheme, e)| {
-                let (docstring, is_macro) = match &e {
-                    ModuleEntry::Def {
-                        docstring, kind, ..
-                    } => (
-                        docstring.clone(),
-                        matches!(kind.as_ref(), DefKind::Macro { .. }),
-                    ),
-                    _ => (None, false),
+            .filter_map(|(name, scheme, e)| {
+                let docstring = match &e.declaration {
+                    Decl::Callable(callable) => callable.docstring.clone(),
+                    Decl::Overloaded(declaration) => declaration.docstring.clone(),
+                    _ => return None,
                 };
-                ImportableRow {
+                Some(ImportableRow {
                     name,
                     scheme,
                     docstring,
-                    is_macro,
-                }
+                })
             })
             .collect();
         self.record_entries(module, rows);
@@ -519,7 +502,6 @@ impl IndexedEntry {
             scheme: self.scheme.clone(),
             docstring: self.docstring.clone(),
             tier,
-            is_macro: self.is_macro,
         }
     }
 }
@@ -1004,32 +986,19 @@ fn index_branch_c(
     cache_dir: Option<std::path::PathBuf>,
 ) {
     match checked_typecheck_module(shared, module, file) {
-        Ok(Some(entries)) => {
+        Ok(Some(checked)) => {
             // Clean check. Write a benign `.meta` (no `.o`, no register_module)
             // so a later real `/import` of this module is a cache-hit (§25.5),
             // built from the typed entries we read out of the private snapshot.
             //
-            // EXCEPT for a MACRO-carrying module (0569 regression fence): its
-            // index `.meta` is INCOMPLETE for a real import — it holds the macro's
-            // classified entry (searchable) but NOT the compiled clause code, and
-            // the indexer writes no `.o`. A macro-only module has no
-            // `defined_symbols()` codegen targets, so `cache_validity_check` would
-            // ACCEPT that `.meta` as a valid cache-hit and INSTALL the macro
-            // without ever compiling its clauses — a later `(my-double 21)` then
-            // has no clause code. So we index the entries for `/search`
-            // (`record_triples`) but do NOT write the import cache `.meta` when any
-            // entry is a macro; the import then fully compiles (clauses included).
-            // Non-macro modules keep the index→import cache-hit optimization.
-            let has_macro = entries.iter().any(|(_, _, e)| {
-                matches!(e, ModuleEntry::Def { kind, .. }
-                    if matches!(kind.as_ref(), DefKind::Macro { .. }))
-            });
             if let Some(dir) = cache_dir.as_deref()
-                && !has_macro
+                && !checked.source_had_macro
             {
-                write_index_meta(shared, module, dir, &entries);
+                write_index_meta(shared, module, dir, &checked.table);
             }
-            shared.importable_indices.record_triples(module, entries);
+            shared
+                .importable_indices
+                .record_triples(module, checked.entries);
         }
         Ok(None) => {
             // No checkable forms (empty module) — mark indexed, nothing to add.
@@ -1062,25 +1031,15 @@ fn write_index_meta(
     shared: &SharedState,
     module: &ModuleFullPath,
     cache_dir: &std::path::Path,
-    entries: &[(Symbol, Type, ModuleEntry<crate::code::Code>)],
+    table: &crate::code::SessionSymbolTable,
 ) {
     use cranelisp_backend::cache;
-    use cranelisp_types::SymbolTable;
-
-    // Build a fresh SymbolTable carrying the typed entries (the importable
-    // public defs). This mirrors what the real path's Phase-1 writer would
-    // serialise for this module.
-    let mut table: crate::code::SessionSymbolTable =
-        SymbolTable::<crate::code::Code, ()>::new_with_params(module.clone());
-    for (name, _ty, entry) in entries {
-        table.insert(name.clone(), entry.clone());
-    }
 
     let (meta_path, _o) = cache::module_cache_path(cache_dir, module);
     if let Some(parent) = meta_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if let Err(e) = cache::serialize::write_meta(&meta_path, &table, cache::CACHE_SCHEMA_VERSION)
+    if let Err(e) = cache::serialize::write_meta(&meta_path, table, cache::CACHE_SCHEMA_VERSION)
         && std::env::var("CRANELISP_MODULE_TRACE").is_ok()
     {
         eprintln!("index: .meta write failed for {module}: {}", e.message());
@@ -1125,7 +1084,7 @@ fn checked_typecheck_module(
     shared: &SharedState,
     module: &ModuleFullPath,
     file: &std::path::Path,
-) -> Result<Option<Vec<(Symbol, Type, ModuleEntry<crate::code::Code>)>>, String> {
+) -> Result<Option<CheckedIndexModule>, String> {
     let source = std::fs::read_to_string(file).map_err(|e| format!("read error: {e}"))?;
     let sexps = cranelisp_frontend::parse(&source).map_err(|e| format!("parse error: {e}"))?;
 
@@ -1178,12 +1137,20 @@ fn checked_typecheck_module(
     }));
 
     match outcome {
-        Ok(Ok(())) => {
+        Ok(Ok(source_had_macro)) => {
             // Read the typed public entries OUT of the PRIVATE module table.
             match private_tables.get(module) {
                 Some(t) => {
-                    let e = public_entries_with_entry(&t);
-                    if e.is_empty() { Ok(None) } else { Ok(Some(e)) }
+                    let entries = public_entries_with_entry(&t);
+                    if entries.is_empty() {
+                        Ok(None)
+                    } else {
+                        Ok(Some(CheckedIndexModule {
+                            table: t.clone(),
+                            entries,
+                            source_had_macro,
+                        }))
+                    }
                 }
                 None => Ok(None),
             }
@@ -1203,7 +1170,7 @@ fn index_typecheck_into_private(
     prelude_fallback: &cranelisp_typecheck::PreludeFallback,
     module: &ModuleFullPath,
     sexps: &[cranelisp_types::Sexp],
-) -> Result<(), String> {
+) -> Result<bool, String> {
     use cranelisp_typecheck::SymbolTableAccess;
 
     // Pass-0 structural peel: extract the module's own import/export decls and
@@ -1233,38 +1200,21 @@ fn index_typecheck_into_private(
     )
     .map_err(|e| format!("export install error: {e}"))?;
 
-    // Register `defmacro` entries so user macros are SEARCHABLE (0569). Macro
-    // registration is int-orchestrated (`register_macro_in_module`) and is NOT
-    // run by `check_forms`; moreover `build_forms` DROPS `ParsedEntry::Macro`
-    // (frontend contract). An index typecheck that only ran `check_forms`
-    // therefore omitted every user macro from the index. Route each defmacro
-    // through the SAME registration seam the eval/worker path uses (reuse, not a
-    // mirror — Principle 7) into the PRIVATE module table, with NO introspection
-    // (REPL-only) and NO clause compilation (indexing needs only the classified
-    // `DefKind::Macro` entry, from which `public_entries_with_entry` reads the
-    // name + `is_macro`). The non-macro forms fall through to `check_forms`.
+    // Sprint 121 interim index rule: macros are not an index subject. Drop each
+    // direct `defmacro` from the isolated source before build/typecheck; do not
+    // construct a parent/prototype binding and do not expand it. Ordinary forms
+    // are indexed only if this isolated non-macro cluster succeeds. Remember the
+    // omission so branch (c) never writes a cache metadata file that a later real
+    // import could mistake for the complete macro-bearing module.
     let mut regular: Vec<cranelisp_types::Sexp> = Vec::with_capacity(remaining.len());
+    let mut source_had_macro = false;
     for form in remaining {
-        if cranelisp_frontend::is_defmacro(&form) {
-            let info = cranelisp_frontend::parse_defmacro(&form)
-                .map_err(|e| format!("defmacro parse error: {e}"))?;
-            crate::process_form::form_dispatch::register_macro_in_module(
-                &crate::process_form::form_dispatch::MacroRegisterEnv {
-                    symbol_tables: priv_tables,
-                    introspection: None,
-                    module_aliases: priv_aliases,
-                    prelude_fallback,
-                },
-                module,
-                &info.name,
-                &info,
-                &form,
-                &form,
-                None,
-            )
-            .map_err(|e| format!("macro register error: {}", e.message()))?;
-        } else {
-            regular.push(form);
+        for flattened in cranelisp_frontend::flatten_begin(form) {
+            if cranelisp_frontend::is_defmacro(&flattened) {
+                source_had_macro = true;
+            } else {
+                regular.push(flattened);
+            }
         }
     }
 
@@ -1272,9 +1222,7 @@ fn index_typecheck_into_private(
         crate::worker::build_program_compat(&regular).map_err(|e| format!("build error: {e}"))?;
     let parsed = crate::worker::top_level_to_parsed_entries(&program);
     if parsed.is_empty() {
-        // Regular-defn typecheck is a no-op, but any macros registered above are
-        // already in the private table — the caller reads them out (0569).
-        return Ok(());
+        return Ok(source_had_macro);
     }
 
     // Staging-mode `check_forms`: typed entries land in the private module table
@@ -1296,11 +1244,10 @@ fn index_typecheck_into_private(
             // Commit the staged typed entries into the private module table so
             // the caller reads them out (the private table is discarded after).
             if let Some(mut live) = priv_tables.get_mut(module) {
-                for (name, entry) in staging.symbols.into_iter() {
-                    live.insert(name, entry);
-                }
+                live.publish_staged(staging, &[])
+                    .map_err(|error| format!("private index publication error: {error}"))?;
             }
-            Ok(())
+            Ok(source_had_macro)
         }
         Err(e) => Err(format!("typecheck error: {e:?}")),
     }
@@ -1312,21 +1259,23 @@ fn index_typecheck_into_private(
 /// `public_entries_from_table` but also clones the entry.
 fn public_entries_with_entry(
     table: &crate::code::SessionSymbolTable,
-) -> Vec<(Symbol, Type, ModuleEntry<crate::code::Code>)> {
+) -> Vec<(Symbol, Type, Binding<crate::code::Code>)> {
     let mut out = Vec::new();
-    for (sym, entry) in table.all_symbols() {
-        if matches!(entry, ModuleEntry::Import { .. }) {
-            continue;
-        }
-        if !entry.is_public() {
-            continue;
-        }
+    for (sym, entry) in table.public_symbols() {
         let name = sym.as_ref();
         if name.contains('$') || name.starts_with("__") {
             continue;
         }
-        if let ModuleEntry::Def { scheme, .. } = entry {
-            out.push((sym.clone(), scheme.ty.clone(), entry.clone()));
+        match &entry.declaration {
+            Decl::Callable(callable) => {
+                out.push((sym.clone(), callable.arm.scheme.ty.clone(), entry.clone()));
+            }
+            Decl::Overloaded(declaration) => {
+                if let Some(arm) = declaration.arms.first() {
+                    out.push((sym.clone(), arm.callable.scheme.ty.clone(), entry.clone()));
+                }
+            }
+            _ => {}
         }
     }
     out
@@ -1343,33 +1292,28 @@ fn public_entries_from_table(
     >,
 ) -> Vec<ImportableRow> {
     let mut out = Vec::new();
-    for (sym, entry) in table.all_symbols() {
-        if matches!(entry, ModuleEntry::Import { .. }) {
-            continue;
-        }
-        if !entry.is_public() {
-            continue;
-        }
+    for (sym, entry) in table.public_symbols() {
         let name = sym.as_ref();
         if name.contains('$') || name.starts_with("__") {
             continue;
         }
-        // Only function/value/macro defs carry a usable index row. A macro's
-        // `scheme.ty` is a placeholder scalar (§17.19.2a); `is_macro` carries the
-        // §1.1 classification so the row renders `; defmacro` instead of it (0569).
-        if let ModuleEntry::Def {
-            scheme,
-            docstring,
-            kind,
-            ..
-        } = entry
-        {
-            out.push(ImportableRow {
+        // Macros are deliberately absent from all Sprint-121 search feeds. An
+        // overload group remains a valid callable row; a macro group is skipped.
+        let row = match &entry.declaration {
+            Decl::Callable(callable) => Some(ImportableRow {
                 name: sym.clone(),
-                scheme: scheme.ty.clone(),
-                docstring: docstring.clone(),
-                is_macro: matches!(kind.as_ref(), DefKind::Macro { .. }),
-            });
+                scheme: callable.arm.scheme.ty.clone(),
+                docstring: callable.docstring.clone(),
+            }),
+            Decl::Overloaded(declaration) => declaration.arms.first().map(|arm| ImportableRow {
+                name: sym.clone(),
+                scheme: arm.callable.scheme.ty.clone(),
+                docstring: declaration.docstring.clone(),
+            }),
+            _ => None,
+        };
+        if let Some(row) = row {
+            out.push(row);
         }
     }
     out
@@ -1402,7 +1346,6 @@ mod tests {
             name: sym(name),
             scheme: ty,
             docstring: None,
-            is_macro: false,
         }
     }
     /// A `(name, scheme, docstring)` row for the docstring-axis tests.
@@ -1411,41 +1354,27 @@ mod tests {
             name: sym(name),
             scheme: ty,
             docstring: Some(doc.to_string()),
-            is_macro: false,
-        }
-    }
-    /// A macro index row (`is_macro = true`) for the §17.19.2a classification test.
-    fn row_macro(name: &str, ty: Type) -> ImportableRow {
-        ImportableRow {
-            name: sym(name),
-            scheme: ty,
-            docstring: None,
-            is_macro: true,
         }
     }
 
-    // spec: repl/spec.md §17.19.2a (0569) — the `is_macro` classification rides
-    // the index from record to `SearchHit`, so the row renderer can emit the
-    // `; defmacro` envelope rather than the macro's placeholder scalar scheme.
+    // Sprint 121 interim rule: live and cached table projections omit macros;
+    // `/search` does not construct a prototype parent or advertise one.
     #[test]
-    fn search_hit_carries_is_macro_classification() {
-        let idx = ImportableIndices::default();
-        idx.record_entries(
-            &m("macx"),
-            vec![row_macro("twice", Type::Int), row("gcd2", int_arrow_int())],
+    fn public_table_projections_omit_macro_groups() {
+        use cranelisp_types::{Sexp, Visibility};
+
+        let module = m("macx");
+        let mut table = crate::code::SessionSymbolTable::new_with_params(module);
+        crate::repl::test_support::install_macro_fixture(
+            &mut table,
+            "twice",
+            Sexp::List(Vec::new(), cranelisp_types::Span::SYNTHETIC),
+            Vec::new(),
+            Visibility::Public,
         );
-        let macro_hit = idx.search_by_name("twice");
-        assert_eq!(macro_hit.len(), 1);
-        assert!(
-            macro_hit[0].is_macro,
-            "a macro entry's hit must carry is_macro"
-        );
-        let fn_hit = idx.search_by_name("gcd2");
-        assert_eq!(fn_hit.len(), 1);
-        assert!(
-            !fn_hit[0].is_macro,
-            "a fn entry's hit must NOT carry is_macro"
-        );
+
+        assert!(public_entries_with_entry(&table).is_empty());
+        assert!(public_entries_from_table(&table).is_empty());
     }
 
     // spec: spec/08-modules.md §8.2.3 (0570) — `private_submodule_paths` reads the
@@ -1696,7 +1625,7 @@ mod tests {
     // hold the burn-down open (tests/search.rs FIXME(/testing)), so E2 is pinned
     // HERE at the `IndicesInner` seam, where it IS deterministic.
     // =======================================================================
-    use cranelisp_types::{DefKind, Scheme, Visibility};
+    use cranelisp_types::{Scheme, Visibility};
 
     /// A live symbol table for `module` carrying one PUBLIC `Def` named `name`
     /// with scheme `ty` — the seeded-module shape `arm_burndown` direct-reads.
@@ -1707,12 +1636,9 @@ mod tests {
             constraints: HashMap::new(),
             ty,
         };
-        table.insert(
-            sym(name),
-            ModuleEntry::def(scheme, DefKind::PrimitiveExtern)
-                .visibility(Visibility::Public)
-                .build(),
-        );
+        table
+            .install_host_promised(sym(name), scheme, Vec::new(), None, 0, Visibility::Public)
+            .expect("public callable fixture installs");
         table
     }
 
@@ -2102,7 +2028,6 @@ mod tests {
             kept_dlls: Mutex::new(Vec::new()),
             introspection: Some(dashmap::DashMap::new()),
             importable_indices: ImportableIndices::default(),
-            broken: dashmap::DashMap::new(),
             retained_code: Mutex::new(Vec::new()),
             fresh_jit_drop_glues: dashmap::DashMap::new(),
             run_mode: crate::session_v4::RunMode::Repl,

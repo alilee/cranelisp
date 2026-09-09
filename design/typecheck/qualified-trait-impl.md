@@ -1,8 +1,10 @@
 # Qualified trait references in `impl`
 
-Phase-3 design for Sprint 117 Track A. This document is subordinate to
-`typecheck.md` and `traits.md`; it elaborates the conventional and
-higher-kinded `impl` registration seam only.
+**Status: LANDED** (authored S117 Track A; as-built confirmed against source
+2026-09-01, S121 C3). This document is subordinate to `typecheck.md` and
+`traits.md`; it elaborates the conventional and higher-kinded `impl` registration
+seam only. §§1–6 describe the delivered shape in the present tense; §7 records the
+as-built confirmation and FIXME 0794's disposition.
 
 ## 1. Requirement and boundary
 
@@ -217,13 +219,62 @@ removes duplicate work rather than adding it. Observability improves because
 all misses retain the written spelling while successful state exposes one
 canonical identity.
 
-## Next skills
+## 7. As-built confirmation, and FIXME 0794's disposition (S121 C3)
 
-- `/dev` — narrow to `cranelisp-typecheck`; implement the sequence and unit
-  matrix after `/testing` lands QT-1/QT-2.
-- `/review` — verify every identity-bearing impl consumer takes the canonical
-  carrier and that declaration-binder negatives remain separate.
-- `/qa` — re-evaluate the invalidated conventional and HKT coverage bands
-  after the implementation and e2e evidence land.
-- `/arch` — Phase-3 confirmation only; no public API or shared-interface
-  change is requested by this design.
+FIXME 0794 reports that `(impl mod/Trait Type …)` — a **qualified** trait head —
+mints a mangled method nobody can call, because `check_impl_method` composes the
+method symbol from `impl_.trait_name.to_string()`, and `TraitRef`'s `Display`
+emits the as-written qualification. Its repro ends in a backend entry-miss:
+`resolved_target 'user/Show.sh$user/Widget' for call 'Show.sh$user/Widget'
+fetched no symbol-table entry`.
+
+**Verified against source 2026-09-01: the central claim is falsified. The S117
+design in §§1–6 landed, and the defect it fixes is the one 0794 describes.**
+
+| Claim | At source now |
+|---|---|
+| the resolved carrier does not exist | `ResolvedImplTrait` at `impl_check.rs:19`; `resolve_impl_trait_ref` at `:63`, called once from `register_trait_impl` at `:106` |
+| `mangle_trait_method(&impl_.trait_name.to_string(), …)` at `:1029` | **gone.** The explicit-method mint (`:945-949`) and the default-method mint (`:1309-1313`) both pass `fq_trait_name.name.as_ref()` |
+| the two typecheck mints disagree on the qualification axis | they take the same input; `:728`'s rustdoc states the invariant — *"the as-written `impl_.trait_name` is never a mangle input"* |
+| the HKT pairing head compares spelling | `:209-217` composes the written pairing head only to feed `resolve_impl_trait_ref`, then compares resolved `FQTraitName`s (`pairing_fq.as_ref() != Some(&fq_trait_name)`). It is a resolve input, never a mangle input |
+
+**Disposition: filing retirement, with an evidence tail.** The implementation is
+`dev`'s and is done; nothing in the C3 visit re-opens it. Two residuals, neither
+belonging to this crate's source:
+
+1. **Evidence.** The S117 W1 acceptance guards in §6 are the durable record, and
+   0794's own repro shape — a *qualified* head in a REPL turn, dispatching and
+   re-impl'ing cleanly — is covered by
+   `qualified_impl_trait_reference_resolves_canonical_home_and_dispatches` and its
+   `_neg_does_not_mint_written_qualifier_into_method_name` twin. `qa` re-evaluates
+   the conventional and HKT coverage bands §6 invalidated; that is the "documentary
+   or evidence tail" the sprint's source-verification pass recorded against this
+   record, and it is `qa`'s, not C3's.
+2. **A correction owed to a neighbouring design.** `non-concrete-producer-obligations.md`
+   §1.2 (S119) cited `impl_check.rs:1029`'s as-written mint as part of F2's
+   evidence. That citation was already stale when it was written down; it is
+   corrected in that document's §1.3, and F2's live defect — `scheme::mono` over a
+   `fn_type` carrying `Type::Var` at `:1039-1043`, and the hand-allocated slot at
+   `:1078-1089` — is unaffected by 0794's resolution. The two are different defects
+   in the same function, and only one of them is still there.
+
+**One design item this confirmation does not close.** §3's table requires the
+explicit-method mint and the default-method mint to share one canonical operation.
+They share the mangled *name* input, and `:1321-1322`'s builtin fallback body
+still takes `decl.name.as_ref()` — the bare declaration name — as a *body-building*
+input rather than a naming one. That is correct as far as it goes, and the loop
+guard at `:1299-1301` plus the `method_default_body` test at `:1316` make the arm
+effectively unreachable. It is recorded here because "effectively unreachable by
+local construction" is an inspection grade, not a structural one, and the honest
+statement is that the arm is dead by convention rather than by type. Low severity;
+no C3 change; noted for the next `audit` pass over this context.
+
+## Next roles
+
+- `qa` — re-evaluate the conventional and HKT coverage bands §6 invalidated, and
+  close 0794's evidence tail; the implementation half is done (§7).
+- `review` — for any future change here, verify every identity-bearing impl
+  consumer takes the canonical carrier and that declaration-binder negatives remain
+  separate.
+- `arch` — nothing outstanding; no public API or shared-interface change is
+  requested or was made by this design.

@@ -1,11 +1,39 @@
 # Memory-safety diagnostic modes (tier-5) + RC/alloc seam asserts (tier-3)
 
 Subordinate topic doc for `cranelisp-intrinsics`. **MODES IMPLEMENTED (S113
-W5a); DETECTION-PROOF PROTOCOL DESIGNED S116, IMPLEMENTATION-READY S118 Phase
-3.** Owner: `/design`(intrinsics); implementation is `/dev`(intrinsics), while
+W5a); DETECTION-PROOF PROTOCOL IMPLEMENTED (S118 W2a).** Owner:
+`/design`(intrinsics); implementation is `/dev`(intrinsics), while
 subprocess and lane wiring is `/qa`/`/testing`
 (`tests/plan/memory-safety-coverage.md`, `tests/plan/s118-test-plan.md` §1/§3).
-The M1/M2/M3 mechanisms and A1--A4 release faces exist; §7 adds the missing
+
+> ## Current state (S121 C5, verified against HEAD `18bca20d`)
+>
+> **§7's protocol is LANDED, and FIXME 0848 has no source work left.** All four
+> of 0848's clauses are in committed source: the inert-unless-armed hook
+> (`diagnostics.rs::test_fault_event`) at the two production funnels
+> (`alloc.rs`'s `alloc_with_rc` `PostAlloc`, and `dealloc`'s `PreFree`/
+> `PostFree`); the eight plant spellings; eight **positive-detection triplets**
+> in `diagnostics/tests.rs` (M1, M2, both M3 polarities, A1–A4), each with a
+> clean control and a detector-off negative leg; recorded fail-on-revert
+> experiments, including two proving the §7.5 *ordering* is load-bearing
+> independently of the checks; and the `/testing` end-to-end M3
+> counter→atexit→abort cell with its clean control
+> (`tests/intrinsics_m3_detection_s116.rs`). None is `#[ignore]`d.
+>
+> What remains is **not** this crate's: FIXME 0857's regrade of safety-register
+> row R8 (arch-owned) and the repair of two dead citations in
+> `tests/plan/s115-instrumentation-matrix.md` (qa-owned). §7.7 and §10 below are
+> the evidence index that regrade consumes. Two honesty limits the source itself
+> records must survive into any grade: the **M3 over-free row proves report
+> polarity and atexit wiring, not a real double-free** (the real double-free
+> face remains the debug `LIVE_ALLOCS` assert), and **A2/A3/A4's release face
+> grades as header *plausibility*, not proof of basehood** (§7.5).
+>
+> §9a is retired (below). The S118-era "nothing of §7 exists in source"
+> statements and §5's A1 "GAP" row were true when written and are corrected in
+> place.
+
+The M1/M2/M3 mechanisms and A1--A4 release faces exist; §7 added the missing
 positive proof that each detects the fault it claims to detect, and §9 lands the
 owed single-owner convergence plus the approved subtractive API change.
 
@@ -243,11 +271,12 @@ opt in without a new flag).
 
 | # | Seam | Invariant asserted | Status today |
 |---|---|---|---|
-| A1 | `rc::rc_inc` | inc target is live + `rc > 0` (an inc of a freed/poisoned ptr is a defect) | **GAP — no check today**; add `is_live` + `rc > 0`, mirroring `consume_shallow`'s dec-half. The inc-half of FIXME 0494's dec-half check |
+| A1 | `rc::rc_inc` | inc target is live + `rc > 0` (an inc of a freed/poisoned ptr is a defect) | **LANDED (S113; gate-hoisted S118 W2a)** — the `is_live` + `rc > 0` inc-half of FIXME 0494's dec-half check, running as a §7.5 precheck at the top of `rc_inc`. Proven by its detection triplet. *(This row read "GAP — no check today" until S121; it was stale from S113.)* |
 | A2 | `rc::consume_shallow` | dec target is live + `old_rc > 0` | present (`is_live` debug_assert + underflow); formalize the `RC_DEC_CHECK`-gated release variant |
 | A3 | `drop::atomic_dec_rc` | dec target is live + `old_rc > 0` | present; it is the funnel every recursive drop-glue leaf (`consume_{slist,sexp,vec_with,io_tree,closure}`) routes through — the 0633/0638 recursive-free seams inherit it |
 | A4 | `alloc::dealloc` | not a double-free (`LIVE_ALLOCS.remove` is `Some`) + header-integrity (`recorded == total_size`) | present (FIXME 0494); M3 promotes double-free to the hard-check family; add the `RC_DEC_CHECK`-gated release variant |
 | A5 | `alloc_with_rc` | header written correctly; `total_size >= HeapHeader::SIZE` | present (`scan_live_headers` under `HEAP_SCAN`); no change — noted for completeness |
+| **A6** | `drop::dec_shallow_io`'s last-ref path, `Pure` arm | **`[S121, designed]`** a `Pure` node reaching the *spine-transferred* teardown disposition must carry `Claimed` (`1`) — the run lane won `AtomicI64::swap(1, AcqRel)` before transferring field 0. Observing `Scalar` (`0`) or `Owned(glue)` means ownership moved without the claim. Disposition: located hard-fail under the existing `RC_DEC_CHECK` gate plus the always-on debug twin, then **discharge nothing** (leak, the monotone-safe direction) | **NEW with the C5 IO slice** (`s121-c5-intrinsics-visit.md` §4.2/§4.3). It converts `dec_shallow_io`'s rustdoc assertion — "every heap-typed field has already been re-owned elsewhere" — into an executing check for the one field the runtime can now see. Lands with its own plant-and-detect triplet in I0b, beside the R1 claim observer |
 
 A1 was the only genuinely-new assert at S113; A2–A4 release-gate existing
 debug-only checks so the release/`--link` lane earns the same signal. None
@@ -333,18 +362,24 @@ but cannot satisfy a detector row by themselves.
 
 ---
 
-## §7. Test-only fault-plant protocol (S116 design, S118 implementation-ready)
+## §7. Test-only fault-plant protocol (S116 design, S118 implemented)
 
-**Status (S118 Phase 3): implementation-ready.** Nothing of §7 exists in source
-at HEAD — `grep FaultPlant|test_fault crates/` is empty — so the two committed
-M3 e2e cells (`tests/intrinsics_m3_detection_s116.rs`) are RED for absence of
-mechanism, not for a wrong mechanism. This refresh fixes the four things the
-S116 text left to implementation invention: the seam-check *ordering*
-prerequisite (§7.5) without which the four A rows are unprovable in the debug
-profile (and M1/M2's stale-RC legs lose their rejection), the hook's exact
-event/action closure (§7.2), the child-process
-harness shape (§7.6), and the per-row armed sets, faces, and UB-containment
-(§7.3).
+**Status (S121, verified against HEAD): LANDED.** The protocol, the precheck
+hoist, the eight plants, the eight triplets and the two e2e cells are all in
+committed source (see the current-state box at the head of this document). The
+two M3 e2e cells that were RED for absence of mechanism are green.
+
+*The paragraph this replaces read: "Nothing of §7 exists in source at HEAD —
+`grep FaultPlant|test_fault crates/` is empty."* True at S118 Phase 3, false
+since S118 W2a; recorded so a reader who met the old sentence knows it moved
+rather than wondering which is current. The section below stays as the **design
+of record** for what landed — it is the contract `/review` checks the source
+against, and the four things the S116 text left to implementation invention are
+still where they were: the seam-check *ordering* prerequisite (§7.5) without
+which the four A rows are unprovable in the debug profile (and M1/M2's stale-RC
+legs lose their rejection), the hook's exact event/action closure (§7.2), the
+child-process harness shape (§7.6), and the per-row armed sets, faces, and
+UB-containment (§7.3).
 
 ### 7.1 Boundary, activation, and the arming discipline
 
@@ -887,30 +922,45 @@ convergence deletes duplicate spellings of the same reads; it cannot fix an
 ownership defect. Unit-tier pins are the `heap_access`/`vec_runtime` rows of
 §10, including the grep-zero "no local reader or offset copy in `drop.rs`".
 
-## §9a. 0859 — the detector surface as oracle (cross-reference only)
+## §9a. 0859 — the detector-as-oracle protocol, RETIRED UNEXECUTED (S121)
 
-Per arch ruling 2, the instrument for the ProjectionOf production-artifact
-witness is the **existing env-gated detector surface** — M1/M2/M3 plus the
-RC/parity counters — used as an oracle over isolated-declaration-mutation
-experiments (`ownership_facts.rs`: `ProjectionOf(0) → Fresh`, applied singly,
-restored after each experiment) in fresh subprocesses.
+**Closed record. No obligation on this crate, now or on a trigger.**
 
-Three statements bind this crate, and nothing more:
+This section defined the intrinsics half of FIXME 0859 as a *use protocol*, not
+an artifact: the existing env-gated detector surface (M1/M2/M3 plus the
+RC/parity counters) used as an oracle over isolated single-declaration mutations
+in `ownership_facts.rs` (`ProjectionOf(0) → Fresh`, applied singly, restored
+after each experiment) in fresh subprocesses. Three constraints bound it —
+the §7 fault-plant protocol was explicitly **not** the instrument and no plant
+spelling, hook event, seam, carrier or observation surface was to be added for
+it; the oracle could not run before §7's detection proofs landed (the 0768 rule:
+an unproven detector cannot serve as an oracle); and the experiment protocol was
+`/qa`'s.
 
-1. **The §7 fault-plant protocol is NOT the instrument.** Plants prove
-   detectors; they cannot witness a declaration. No plant spelling, hook event,
-   or action is added for 0859, and no new seam, carrier, or observation
-   surface is designed for it here.
-2. **The oracle may only be used after the §7 detection proofs land** (the
-   0768 rule: an unproven detector cannot serve as an oracle). This is the
-   ordering dependency Track A's internal sequencing must respect.
-3. **The experiment protocol is `/qa`-owned** (`tests/plan/s118-test-plan.md`
-   §3.5). If every surveyed production shape stays emission-inert under armed
-   detectors, that is the FIXME's disposition 2 — returned to the user, not
-   overridden with test-only facts.
+It never ran, and it never will. `/qa` returned disposition 2 at S119 — the
+S117 survey was bounded-complete and its structural finding stands: at the
+current language boundary, materialisation erases every production RC
+distinction for projected provenance, so no declaration-sensitive witness can
+exist without manufacturing an observation surface, which the FIXME itself ruled
+out. The user accepted that on **2026-09-01**: R-2 closes on the existing
+evidence — typecheck transfer units distinguishing Projection provenance, the
+direct inline-body guards, and the nine committed production witnesses in
+`tests/s117_ownership_witnesses.rs` — **with a named revival trigger**, which
+fires when projection provenance becomes emission-live (ownership inference
+increment II's uniqueness/reuse tokens, or option-2 re-staging elision into
+`--release` under the differential lane).
 
-Arming for these experiments obeys §7.1 exactly: child `.env`/`env_clear`,
-never suite-global, never `set_var`.
+Consequences, stated so nothing is left looking scheduled:
+
+- **Nothing was ever built here for 0859**, and source confirms it: no 0859
+  reference exists anywhere in `crates/cranelisp-intrinsics/` or `tests/*.rs`.
+- **The revival trigger's home is `tests/plan/PLAN.md`, and it is `/qa`'s.** If
+  it fires, the obligation returns as a plan row of *that* sprint and is
+  redesigned against whatever the emission surface then is — not by reviving
+  this protocol, whose premise (no production consumer of the distinction) is
+  what the trigger's firing would falsify.
+- The sibling conditional in `tests/plan/s118-test-plan.md` §3.5 describes the
+  same retired experiment and is `/qa`'s to retire.
 
 ---
 
@@ -932,7 +982,15 @@ externalized-`tests.rs` convention). The subprocess/e2e row is `/testing`'s.
 | subprocess / e2e (`/testing`) | clean M3 compiler child exits normally | `env_clear` + enumerated allow-list; unique tempdir; `--no-cache` | M3 leak child reports **then** aborts non-zero; parity-off child has no report line |
 
 **Serial implementation order.** Each step is a separate change-set; the order
-is a dependency order, not a preference:
+is a dependency order, not a preference.
+
+> **`[S121]` Steps 1–4 are LANDED (S118 W2a).** They are retained as the record
+> of what shipped and the order it shipped in — the evidence index FIXME 0857's
+> regrade consumes. Steps 5 and 6 keep their state. **Added by the C5 IO slice:
+> a step 7** — the A6 seam check (§5) and the R1 successful-claim observer
+> (`s121-c5-intrinsics-visit.md` §9.1), each landing with its own
+> plant-and-detect triplet in the same change-set, both legs, per the rule
+> steps 1–4 established.
 
 1. **§7.5 precheck hoist + the shared `seam_precheck`** — the mechanism
    prerequisite. Lands with its own `diagnostics` precheck unit rows and the
@@ -950,14 +1008,19 @@ is a dependency order, not a preference:
    records, baseline diff, grep-zero proofs, and no detector armed outside a
    child `.env`/`env_clear`.
 
-Steps 1–4 are Track A's must-ship core (FIXME 0848); step 5 is FIXME 0850 +
-arch ruling 7. `/qa`'s 0857 regrade consumes step 6's records and must not
-begin before they exist.
+Steps 1–4 were Track A's must-ship core (FIXME 0848) and are landed; step 5 is
+FIXME 0850 + arch ruling 7. `/qa`'s 0857 regrade consumes step 6's records —
+**its precondition is now met**, and the regrade is the outstanding half of
+0848/0857, owned by `/qa` and `/arch`, not by this crate.
 
 ---
 
 ## §11. Cross-references
 
+- **`[S121]`** `design/intrinsics/s121-c5-intrinsics-visit.md` — the C5 visit
+  that adds §5's A6 row and §10's step 7, and that carries R1's atomic claim
+  observer and evidence (§9.1). It is also where this document's
+  landed-state evidence index is consumed.
 - `design/arch/safety-invariants.md` §2 (ladder tiers 3/5), §4 R8 — the owning
   register row (arch-owned; FIXME `target: /arch` to change it).
 - `design/runtime/s118-structural-embedding-ownership.md` §4.1 — the FIXME-0835
@@ -990,18 +1053,31 @@ begin before they exist.
 
 ## Next skills
 
-- `/dev`(intrinsics) — implement §10's six serial steps in order; step 1
-  (precheck hoist) gates steps 3–4. Record per-row fail-on-revert evidence in
-  the change-set.
+**`[S121]` updated routing.** Steps 1–4 are landed; the outstanding work in this
+document's scope is the §9 convergence batch (step 5), its review (step 6), and
+the new step 7 riding the C5 IO slice.
+
+- `/dev`(intrinsics) — §10 steps 5 and 7. Step 7's A6 check and R1 claim
+  observer each land with their plant-and-detect triplet, both legs, in the same
+  change-set; record per-row fail-on-revert evidence, as steps 1–4 did.
 - `/arch` — action FIXME 0876 (BC §4b invariant 8 cites the removed
-  `reset_counts`); confirm §9.4's subtractive baseline is the only public-API
-  delta and that §7.5's precheck adds no cross-crate surface.
-- `/qa` — regrade R8 only from landed detector evidence (0857), grading the M3
-  over-free row and the A2/A3 header-plausibility face at the tiers §7.2/§7.5
-  state honestly; 0859's oracle may not begin before step 4 lands.
-- `/testing` — the two M3 e2e cells already exist and flip at step 4; the W1
-  static arming gate enforces §7.1.
+  `reset_counts`); regrade safety-register row **R8** against the landed
+  evidence (FIXME 0857), grading the M3 over-free row as report-polarity plus
+  atexit wiring rather than double-free, and A2/A3/A4's release face as header
+  *plausibility* rather than proof of basehood — both limits are recorded in
+  source, not inferred; confirm §9.4's subtractive baseline is the only
+  public-API delta from this document and that §7.5's precheck adds no
+  cross-crate surface.
+- `/qa` — 0857's citation repair in `tests/plan/s115-instrumentation-matrix.md`
+  (the dead `ms_p6_mode_self_tests` line citations; the live replacement is the
+  committed M3 e2e cell), and the `tests/plan/PLAN.md` rows that still mark the
+  two M3 e2e cells as baseline REDs. **0859's oracle is retired unexecuted
+  (§9a)** — do not schedule it; record its revival trigger instead, and retire
+  the sibling conditional at `tests/plan/s118-test-plan.md` §3.5.
+- `/testing` — the two M3 e2e cells are green; the static arming gate
+  (`tests/detector_arming_discipline_guard.rs`) continues to enforce §7.1.
 - `/review`(intrinsics) — reject bypass tests, UB-dependent controls,
   open-ended fault APIs, nonzero unarmed behaviour, any detector armed outside
-  a child `.env`/`env_clear`, and any RED that flips inside the §9
+  a child `.env`/`env_clear`, any instrument landed without its detection proof
+  in the same change-set, and any RED that flips inside the §9
   change-set (§9.6).

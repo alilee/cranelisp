@@ -325,12 +325,6 @@ trait-level obligation
 ([spec §7.12.1](../../spec/07-traits.md#7121-current-restrictions),
 [§7.1.5](../../spec/07-traits.md#715-default-method-implementations)).
 
-> **One combination is broken today.** A default method whose body calls a
-> sibling method does **not** survive re-`impl`ing that trait for the type: the
-> sibling call fails to link, and the error points inside the `deftrait` — a
-> place you did not edit. Each half works alone; only the combination fails. See
-> [Redefining an impl](live-development.md#redefining-an-impl) and FIXME 0832.
-
 ## Return-type dispatch and the `:Type` remedy
 
 A method can be dispatched purely on its **return** type — an empty parameter

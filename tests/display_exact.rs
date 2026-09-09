@@ -12,9 +12,8 @@
 //!     is stripped of the banner and prompt fragments, and a whole line must
 //!     equal the pinned bytes (garbling, prefix noise, and unbalanced parens
 //!     all fail where substring needles passed);
-//!   - **transcript-block exactness** — `assert_golden_masked` (first real
-//!     adoption) with the timing mask, for the §18.3 cascade report as a
-//!     whole block;
+//!   - **redefinition diagnostics** — normative information order without
+//!     pinning implementation-defined punctuation or layout;
 //!   - **the L-N2 negative vocabulary** — `assert_no_internal_artifacts`
 //!     (new harness helper, first adoption here + retrofits in
 //!     `tests/repl_negative.rs`), banning Debug reprs, internal spans,
@@ -29,7 +28,7 @@
 //!     display_exact_vec_of_parameterized_adt_value_line        (0493)
 //!     display_exact_user_list_recursive_form_whole_line        (0493)
 //!     sig_info_bare_lookup_primary_line_agreement_healthy      (0492/§3.8)
-//!     trap_answer_line_exact_normative_format                  (§18.5)
+//!     rejected_redefinition_retains_exact_caller_answer_line   (§18.1)
 //!     macro_arity_diagnostic_carries_no_internal_artifacts     (0485)
 //!     macro_arity_diagnostic_plain_call_no_debug_repr          (0485)
 //!     qualified_ref_missing_member_diagnostic_names_real_module (0490)
@@ -161,21 +160,35 @@ fn display_exact_unbound_symbol_error_line() {
     );
 }
 
-// spec: repl/spec.md §18.3 — the cascade report as a WHOLE BLOCK: golden
-// transcript (first real `assert_golden_masked` adoption; timing stamps are
-// the only masked bytes). Confirmation line + `recompiled:` + `broken:`
-// sections, layout and ordering byte-pinned. GREEN (the report is
-// spec-conformant today; the golden freezes it).
+// spec: repl/spec/18-redefinition.md §18.1 — rejection diagnostics preserve
+// normative information order, without pinning implementation-defined layout.
 #[test]
-fn display_exact_cascade_report_block_golden() {
-    repl_prims(
+fn redefinition_rejection_render_preserves_information_order() {
+    let out = repl_prims(
         "(defn callee [:Int x] (add-i64 x 1))\n\
          (defn caller-a [:Int x] (callee x))\n\
          (defn caller-p [x] (callee x))\n\
          (defn callee [:String s] (str-len s))\n",
     )
     .assert_ok()
-    .assert_golden_masked("cascade_report_block", &[compiler::prompt_timing()]);
+    .assert_stdout_does_not_contain("; recompiled:")
+    .assert_stdout_does_not_contain("; broken:");
+    let rendered = answer_lines(&out.stdout).join("\n");
+    let diagnostic = &rendered[rendered.find("cannot redefine").expect(&rendered)..];
+    let mut remaining = diagnostic;
+    for information in [
+        "user/callee",
+        "(Fn [primitives/Int] primitives/Int)",
+        "(Fn [primitives/String] primitives/Int)",
+        "user/caller-a",
+        "user/caller-p",
+        "retain the old type or introduce a new name",
+    ] {
+        let offset = remaining.find(information).unwrap_or_else(|| {
+            panic!("missing ordered information {information:?}:\n{diagnostic}")
+        });
+        remaining = &remaining[offset + information.len()..];
+    }
 }
 
 // =============================================================================
@@ -268,26 +281,21 @@ fn sig_info_bare_lookup_primary_line_agreement_healthy() {
     );
 }
 
-// spec: repl/spec.md §18.5 — the trap as ONE exact answer line: the
-// `runtime error: ` category prefix directly followed by the trap message,
-// no wrapper chain, no synthetic span. RED on HEAD (the §18.5 [S102] MUST;
-// the substring-level record is tests/repl_redefinition.rs::
-// trap_presented_in_normative_runtime_error_format). The embedded span
-// (24..34) is the original error's — deterministic for this fixed source.
+// spec: repl/spec/18-redefinition.md §18.1 — refusal retains the caller's
+// ordinary result display; no runtime trap or broken-symbol report is created.
 #[test]
-fn trap_answer_line_exact_normative_format() {
+fn rejected_redefinition_retains_exact_caller_answer_line() {
     let out = repl_prims(
         "(defn callee [:Int x] (add-i64 x 1))\n\
          (defn caller-a [:Int x] (callee x))\n\
          (defn callee [:String s] (str-len s))\n\
          (caller-a 1)\n",
     )
-    .assert_ok();
-    assert_answer_line(
-        &out,
-        "runtime error: user/caller-a is broken by the redefinition of user/callee: \
-         type error at 24..34: type mismatch: expected primitives/String, got primitives/Int",
-    );
+    .assert_ok()
+    .assert_stdout_contains("cannot redefine user/callee")
+    .assert_stdout_does_not_contain("runtime error:")
+    .assert_stdout_does_not_contain("broken by");
+    assert_answer_line(&out, ":primitives/Int 2");
 }
 
 // =============================================================================
@@ -748,27 +756,29 @@ fn source_comment_colour_off_carries_no_sgr_neg() {
     );
 }
 
-/// K9 — the byte-exact colour-OFF `; warning:` line for a field-accessor / bound-
-/// name collision (`ShadowedName`), the §10.3 warning kind (R6 `; warning:` prefix
-/// + R10/R11). Colour-OFF it is plain bytes. Whole-line byte-exact via
-/// `assert_answer_line` (prompt-stripped).
-const WARNING_LINE: &str = "; warning: field accessor `p` for type `Point` conflicts with a name already bound to `p`; the accessor is suppressed and the existing binding is kept";
-
-// spec: repl/spec.md §10.3 (requirement 2) + §1.1 (`; warning:` comment style) —
-// K9: a warning-producing form (a deftype field accessor colliding with an
-// existing binding) MUST emit the `; warning:` line byte-for-byte (colour-off).
-// GREEN regression guard: pins the plain bytes before Wave D adds the R6/R10/R11
-// roles (which must NOT perturb the colour-off bytes). Whole-line byte-exact.
+// spec: spec/05-definitions.md §5.2.6 + spec/08-modules.md §8.6.5 — a local
+// callable and a generated accessor may expose one bare spelling. Creation is
+// not a collision: both canonical declarations survive and no obsolete
+// suppress-and-warn diagnostic is emitted.
 #[test]
-fn warning_line_colour_off_byte_exact() {
+fn callable_and_accessor_coexist_without_collision_warning() {
     let out = repl_prims("(defn p [] 1)\n(deftype Point [:Int p])\n");
-    assert_answer_line(&out, WARNING_LINE);
+    assert_answer_line(&out, ":(Fn [] primitives/Int) user/p ; defn");
+    assert_answer_line(
+        &out,
+        ":(Fn [primitives/Int] user/Point) user/Point ; deftype",
+    );
+    assert!(
+        !out.stdout.contains("; warning:"),
+        "coexisting candidates must not emit a collision warning:\n{}",
+        out.stdout
+    );
 }
 
-// spec: repl/spec.md §10.3 (requirement 2) — K9 no-SGR negative: in non-TTY mode
-// the warning output carries NO SGR escape (`\x1b[`) byte anywhere.
+// spec: repl/spec.md §10.3 (requirement 2) — the same coexistence transcript is
+// byte-plain in non-TTY mode.
 #[test]
-fn warning_line_colour_off_carries_no_sgr_neg() {
+fn callable_and_accessor_coexistence_colour_off_carries_no_sgr_neg() {
     let out = repl_prims("(defn p [] 1)\n(deftype Point [:Int p])\n");
     assert!(
         !out.stdout.contains("\u{1b}["),

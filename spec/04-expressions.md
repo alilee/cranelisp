@@ -88,7 +88,7 @@ E |- x => error         when x is not bound
 (let [x 42] x)         ; => 42, x resolves to the let binding
 ```
 
-### 4.2.1 Constructor References [Uncovered S115 — was tests/spec_04_expressions::data_constructor_undefined_error_names_constructor_strict]
+### 4.2.1 Constructor References [Tested+Neg tests/spec_05_definitions::single_ctor_product_constructor_as_first_class_value, tests/spec_04_expressions::data_constructor_undefined_error_names_constructor_strict]
 
 Constructor names are resolved through the module system like any other name.
 
@@ -130,7 +130,7 @@ Display.show        ; => trait method (resolved at call site)
 math/sin            ; => function from the math module
 ```
 
-## 4.3 Let Expression [Tested+Neg tests/spec_04_expressions::let_single_binding, tests/dotted_binder_reject_0702.rs::let_dotted_binder_rejected_binder_neg, tests/dotted_binder_reject_0702.rs::let_bare_binder_accepts_twin_green]
+## 4.3 Let Expression [Tested+Neg tests/spec_04_expressions::let_single_binding, tests/dotted_binder_reject_0702.rs::let_dotted_binder_rejected_binder_neg, tests/dotted_binder_reject_0702.rs::let_bare_binder_accepts_twin_green, tests/same_form_rebinding::user_example_same_form_rebinding_evaluates_to_two_in_repl, tests/same_form_rebinding::tail_transfer_releases_the_displaced_same_name_binder_run_and_link]
 
 ```clojure
 (let [x1 e1 x2 e2 ... xn en] body)
@@ -155,7 +155,13 @@ Bindings go out of scope after `body` is evaluated. Any heap-allocated values bo
 (let [x 1 y (+ x 1)] y)    ; => 2, y's binding sees x
 ```
 
-**Shadowing**: A binding MAY shadow an outer binding of the same name. The inner binding takes precedence within its scope:
+**Repeated names**: A binding name MAY appear more than once in one binding vector. Each occurrence is an ordinary sequential binding that shadows the preceding binding of that name. A binding becomes visible only after its own value has been computed, so a repeated binding's expression sees the preceding binding of that name, while every later expression and the body see the most recent one. The environment extension in the judgment above is left-to-right: for a repeated name, the later binding takes precedence over the earlier one. [Tested+Neg tests/same_form_rebinding::same_form_rebinding_initializer_reads_preceding_binding_run_and_link, tests/same_form_rebinding::lenient_spark_reads_the_rebound_value_not_the_displaced_one, tests/same_form_rebinding::displaced_same_form_binding_heap_value_is_not_leaked, tests/same_form_rebinding::distinctly_named_displaced_binder_control_reads_the_rebound_value]
+
+```clojure
+(let [a 1 a (+ a 1)] a)    ; => 2, the second a's expression sees a = 1
+```
+
+**Shadowing**: A binding MAY shadow an outer binding of the same name. The inner binding takes precedence within its scope: [Tested tests/spec_04_expressions::let_nested_shadowing, tests/shadowed_param_reach_stale_rc_dec::shadowed_param_binder_run_does_not_abort_with_stale_rc_dec, tests/shadowed_param_reach_stale_rc_dec::renamed_binder_control_run_exits_clean]
 
 ```clojure
 (let [x 10]
@@ -179,7 +185,7 @@ Bindings go out of scope after `body` is evaluated. Any heap-allocated values bo
 
 The binding list MUST contain an even number of forms -- alternating names and expressions. An odd number is a compile-time error.
 
-Each binding name is a **local binder** — it introduces a fresh name into the `let`'s lexical scope. It MUST be a **bare (unqualified) symbol**; a qualified **or dotted** spelling (`(let [m/x 1] …)`, `(let [a.x 1] …)`) is a compile-time error, span at the binder. [S115] A lexical scope has no cross-module addressing, so a module qualifier is meaningless on a binder — and `.` is type/trait qualification syntax, never a name-introducing device — only *references* carry qualifiers (§5, *Binder positions*; §8.5). [S113]
+Each binding name is a **local binder** — it introduces a fresh binding into the `let`'s lexical scope. It MUST be a **bare (unqualified) symbol**; a qualified **or dotted** spelling (`(let [m/x 1] …)`, `(let [a.x 1] …)`) is a compile-time error, span at the binder. [S115] A lexical scope has no cross-module addressing, so a module qualifier is meaningless on a binder — and `.` is type/trait qualification syntax, never a name-introducing device — only *references* carry qualifiers (§5, *Binder positions*; §8.5). [S113]
 
 ## 4.4 If Expression [Tested+Neg tests/spec_04_expressions::if_true_branch]
 
@@ -266,7 +272,7 @@ A lambda captures the values of all free variables referenced in its body -- var
 
 Top-level function names and builtins are NOT captured -- they are accessed via direct calls or the global function table.
 
-### 4.5.2 Parameter Type Annotations [Uncovered S115 — was tests/spec_03_types::annotated_params_int]
+### 4.5.2 Parameter Type Annotations [Tested+Neg tests/spec_03_types::annotated_params_int, tests/qualified_binder_expansion_0670::fn_param_qualified_binder_rejected_neg]
 
 Lambda parameters support optional type annotations using the `:Type name` syntax:
 
@@ -392,6 +398,8 @@ A constrained polymorphic function that returns a curried closure inherits the c
 ```
 
 The monomorphisation rules for constrained polymorphic functions are defined in [section 3.6: Constrained Polymorphism](03-types.md#36-constrained-polymorphism). Auto-currying does not change the monomorphisation process -- it produces a closure whose captured values and remaining parameter types are specialised to the concrete types at the call site.
+
+**Free variables in residual closures. [Tested+Neg tests/spec_04_expressions::make_adder_constrained_auto_curry_monomorphises_for_int, tests/spec_04_expressions::make_adder_constrained_auto_curry_monomorphises_for_float, tests/spec_04_expressions::auto_curry_wrong_type_error_neg]** During inference of one expression or definition, partial application may produce a residual closure containing unresolved monotype variables. Those variables remain in the same inference context and may be constrained by a use of that closure. Auto-currying does not generalize them. After inference, the ordinary [§3.11](03-types.md#311-ambiguous-types) ambiguity rules apply.
 
 **Multi-signature disambiguation**: For multi-signature functions (see section 4.7), auto-currying uses the expected return type arity to select the correct variant. If the call site expects a function of arity m, only variants with exactly k + m parameters are candidates.
 

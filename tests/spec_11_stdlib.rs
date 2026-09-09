@@ -86,48 +86,47 @@ fn prelude_loads_without_errors() {
     assert_repl_eval_contains("(+ 0 0)", ":primitives/Int 0");
 }
 
-// spec: repl/spec.md §1.3 — a stdlib `def` definition confirmation presents
-// the user binding and bound value, not the macro's synthesized thunk.
+// spec: spec/09-macros.md §9.6 + §9.10.2 and repl/spec.md §1.3 — a statement
+// that emits several definitions confirms every emitted binding in order.
 // defect: class=display-envelope-mirror locus=src/repl.rs::definition-result found=S115 owner=/dev
 #[test]
-fn def_definition_echo_names_user_binding_not_internal_thunk() {
+fn def_definition_echo_lists_every_emitted_definition_in_order() {
     let out = Cranelisp::new()
         .use_workspace_stdlib_for_stdlib_conformance_only()
         .repl()
         .stdin("(def n 42)\n")
         .output();
+    let backing = out.stdout.find("user/n-def ; defn");
+    let macro_binding = out.stdout.find(":(Fn [] macros/Sexp) user/n ; defmacro");
     assert!(
-        out.stdout.contains("user/n") && out.stdout.contains("primitives/Int"),
-        "`def` echo MUST describe the user binding `n` with value type Int; got:\n{}",
-        out.stdout
-    );
-    assert!(
-        !out.stdout.contains("n-def"),
-        "`def` echo MUST NOT leak the synthesized `n-def` thunk; got:\n{}",
+        matches!((backing, macro_binding), (Some(left), Some(right)) if left < right),
+        "`def` MUST list its backing function then its macro binding; got:\n{}",
         out.stdout
     );
 }
 
-// spec: repl/spec.md §1.3 + §4.1 — `/info`, `/sig`, and bare lookup of a
-// stdlib `def` binding describe the same bound value, not its macro carrier.
+// spec: spec/09-macros.md §9.5 + §9.10.2 and repl/spec.md §11.2 — `def`
+// introduces a zero-argument macro binding. Introspection describes that
+// binding; evaluating the bare name expands it and produces the runtime value.
 // defect: class=display-envelope-mirror locus=src/repl.rs::symbol_introspection found=S115 owner=/dev
 #[test]
-fn def_info_and_sig_describe_bound_value_not_macro() {
+fn def_info_and_sig_describe_macro_while_bare_use_expands_value() {
     let out = Cranelisp::new()
         .use_workspace_stdlib_for_stdlib_conformance_only()
         .repl()
         .stdin("(def n 42)\n/info n\n/sig n\nn\n")
         .output();
     assert!(
-        out.stdout.matches(":primitives/Int").count() >= 3,
-        "definition/introspection/bare lookup MUST agree that `n` is an Int value; got:\n{}",
+        out.stdout
+            .matches(":(Fn [] macros/Sexp) user/n ; defmacro")
+            .count()
+            >= 3,
+        "definition echo, `/info`, and `/sig` MUST describe `n` as a macro; got:\n{}",
         out.stdout
     );
     assert!(
-        !out.stdout.contains("n-def")
-            && !out.stdout.contains("; defmacro")
-            && !out.stdout.contains("Sexp"),
-        "`def` introspection MUST NOT expose its zero-arg macro implementation; got:\n{}",
+        out.stdout.contains(":primitives/Int 42"),
+        "evaluating bare `n` MUST expand the macro and run its backing function; got:\n{}",
         out.stdout
     );
 }
@@ -183,6 +182,179 @@ fn failed_codegen_turn_does_not_poison_following_definition_and_call() {
         "definition and call after failed codegen MUST publish and evaluate; stdout:\n{}\nstderr:\n{}",
         out.stdout,
         out.stderr
+    );
+}
+
+// spec: repl/spec/18-redefinition.md §18.1 — a caller-free generic callable
+// may atomically replace a different language type; later lookup sees only the
+// replacement body and type.
+// The scalar sibling below separately exposes an exit-success/prior-value
+// outcome; this subject keeps unexpected signal termination visible.
+#[test]
+fn successful_vec_flatten_then_same_name_generic_redefinition_completes_session() {
+    let out = Cranelisp::new()
+        .use_workspace_stdlib_for_stdlib_conformance_only()
+        .repl()
+        .stdin(
+            "(import [collections.vec [vec-flatten]])\n\
+             (defn redefinition-subject [v] (vec-flatten v))\n\
+             (redefinition-subject [[1 2] [3 4]])\n\
+             (defn redefinition-subject [_] 42)\n\
+             (redefinition-subject 0)\n\
+             /info redefinition-subject\n",
+        )
+        .output();
+    let details = format!(
+        "status={:?}\nstdout:\n{}\nstderr:\n{}",
+        out.status, out.stdout, out.stderr
+    );
+    assert!(
+        out.status.success(),
+        "same-session successful redefinition must leave the REPL child successful; {details}"
+    );
+    assert!(
+        out.stdout
+            .contains(":(primitives/Vec primitives/Int) [1 2 3 4]"),
+        "the initial vec-flatten realization must complete before replacement; {details}"
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 42"),
+        "the replacement call must evaluate after the successful first realization; {details}"
+    );
+    assert!(
+        out.stdout
+            .matches(":(Fn [a] primitives/Int) user/redefinition-subject ; defn")
+            .count()
+            >= 2,
+        "the replacement confirmation and /info must both expose its generic Int type; {details}"
+    );
+}
+
+// spec: repl/spec/18-redefinition.md §18.1 — control for the same-session
+// generic-to-generic/Int redefinition shape, without the vec-flatten first
+// body used by the subject above.
+// It is intentionally separate from the monomorphic GREEN control: its
+// assertions distinguish an exit-success stale-value result from a crash.
+#[test]
+fn same_session_generic_redefinition_identity_first_body_control() {
+    let out = Cranelisp::new()
+        .use_workspace_stdlib_for_stdlib_conformance_only()
+        .repl()
+        .stdin(
+            "(import [collections.vec [vec-flatten]])\n\
+             (defn redefinition-control [v] v)\n\
+             (redefinition-control 7)\n\
+             (defn redefinition-control [_] 42)\n\
+             (redefinition-control 0)\n\
+             /info redefinition-control\n",
+        )
+        .output();
+    let details = format!(
+        "status={:?}\nstdout:\n{}\nstderr:\n{}",
+        out.status, out.stdout, out.stderr
+    );
+    assert!(
+        out.status.success(),
+        "same-session redefinition control must leave the REPL child successful; {details}"
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 7"),
+        "the control's initial generic call must complete before replacement; {details}"
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 42"),
+        "the control replacement call must evaluate; {details}"
+    );
+    assert!(
+        out.stdout
+            .matches(":(Fn [a] primitives/Int) user/redefinition-control ; defn")
+            .count()
+            >= 2,
+        "the control replacement confirmation and /info must both expose its generic Int type; {details}"
+    );
+}
+
+// spec: repl/spec/18-redefinition.md §18.1 — the reduced same-session
+// caller-free generic-to-generic/Int redefinition remains observable without
+// the workspace vec import.
+// This removes both vec-flatten and its import while retaining the scalar
+// exit-success/prior-value observation boundary.
+#[test]
+fn same_session_generic_redefinition_without_vec_import() {
+    let out = Cranelisp::new()
+        .use_workspace_stdlib_for_stdlib_conformance_only()
+        .repl()
+        .stdin(
+            "(defn redefinition-no-import [v] v)\n\
+             (redefinition-no-import 7)\n\
+             (defn redefinition-no-import [_] 42)\n\
+             (redefinition-no-import 0)\n\
+             /info redefinition-no-import\n",
+        )
+        .output();
+    let details = format!(
+        "status={:?}\nstdout:\n{}\nstderr:\n{}",
+        out.status, out.stdout, out.stderr
+    );
+    assert!(
+        out.status.success(),
+        "no-import generic redefinition must leave the REPL child successful; {details}"
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 7"),
+        "the no-import initial generic call must complete before replacement; {details}"
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 42"),
+        "the no-import replacement call must evaluate; {details}"
+    );
+    assert!(
+        out.stdout
+            .matches(":(Fn [a] primitives/Int) user/redefinition-no-import ; defn")
+            .count()
+            >= 2,
+        "the no-import replacement confirmation and /info must expose its generic Int type; {details}"
+    );
+}
+
+// spec: repl/spec/18-redefinition.md §18.1 — control: an ordinary
+// same-session, same-name monomorphic redefinition publishes the replacement
+// body and is available to later lookup and `/info`.
+#[test]
+fn same_session_monomorphic_redefinition_control_publishes_replacement() {
+    let out = Cranelisp::new()
+        .use_workspace_stdlib_for_stdlib_conformance_only()
+        .repl()
+        .stdin(
+            "(defn redefinition-monomorphic [] 7)\n\
+             (redefinition-monomorphic)\n\
+             (defn redefinition-monomorphic [] 42)\n\
+             (redefinition-monomorphic)\n\
+             /info redefinition-monomorphic\n",
+        )
+        .output();
+    let details = format!(
+        "status={:?}\nstdout:\n{}\nstderr:\n{}",
+        out.status, out.stdout, out.stderr
+    );
+    assert!(
+        out.status.success(),
+        "monomorphic redefinition control must leave the REPL child successful; {details}"
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 7"),
+        "the monomorphic initial call must evaluate; {details}"
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 42"),
+        "the monomorphic replacement call must observe the new body; {details}"
+    );
+    assert!(
+        out.stdout
+            .matches(":(Fn [] primitives/Int) user/redefinition-monomorphic ; defn")
+            .count()
+            >= 2,
+        "the monomorphic replacement confirmation and /info must expose its current type; {details}"
     );
 }
 
@@ -599,12 +771,10 @@ fn macro_do_multi() {
 // shape), the None branch, and an Option body (the wrap is not special-cased —
 // an already-`Some` body nests).
 //
-// Spec note: `when`/`unless` have no §9.10 entry of their own (§9.4.3's `when`
-// is a pedagogical `(if ~cond ~body 0)` example, NOT this macro), so these
-// tests cite §9.10 "Example Prelude Macros" as the nearest normative home.
-// FIXME 0841 (/qa) tracks the resulting traceability gap.
+// `when`/`unless` are specified directly by §9.10.12. The §5.5, §9.4.3, and
+// Appendix B examples use the same unconditional `Some`/`None` expansion.
 
-// spec: spec/09-macros.md §9.10 — `when` with a true test wraps a non-Option
+// spec: spec/09-macros.md §9.10.12 — `when` with a true test wraps a non-Option
 // body in `Some` (the S115 regression shape).
 #[test]
 fn macro_when_true() {
@@ -614,7 +784,7 @@ fn macro_when_true() {
     );
 }
 
-// spec: spec/09-macros.md §9.10 — `when` with a false test yields `None`.
+// spec: spec/09-macros.md §9.10.12 — `when` with a false test yields `None`.
 #[test]
 fn macro_when_false_none() {
     assert_repl_eval_contains(
@@ -623,7 +793,7 @@ fn macro_when_false_none() {
     );
 }
 
-// spec: spec/09-macros.md §9.10 — the `Some` wrap is unconditional: a body that
+// spec: spec/09-macros.md §9.10.12 — the `Some` wrap is unconditional: a body that
 // is already an `Option` nests, giving `(Some (Some 42))`. (This is precisely
 // what the pre-S115 duplicate pair asserted the WRONG way round — it read the
 // outer `Some` as the body's own and expected `x : Int`.)

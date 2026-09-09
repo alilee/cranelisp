@@ -38,6 +38,58 @@ mod helpers;
 use helpers::e2e::{CrError, Cranelisp, PreludeVariant};
 use std::time::Duration;
 
+// spec: spec/03-types.md §3.11.3 — result context specializes a callable whose
+// generic variable occurs only in its returned closure, at both Int and String.
+// No module-level h exists: this reduction does not depend on name shadowing.
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck/src/program/mono_collect.rs::local_parametric_call_triggers found=S121 owner=/dev
+#[test]
+fn result_only_returned_closure_specializes_at_int_and_string() {
+    let program = "(defn g [] (fn [y] 100))\n\
+                   (defn main [] (Pure (add-i64 ((g) 5) ((g) \"heap\"))))\n";
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .stdin(&format!("{program}(main)\n"))
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 200");
+    for mode in ["run", "link"] {
+        let cl = Cranelisp::new()
+            .with_prelude(PreludeVariant::PrimitivesOnly)
+            .user(program);
+        let cl = if mode == "run" {
+            cl.run("user.cl")
+        } else {
+            cl.link_then_run("user.cl")
+        };
+        cl.output().assert_exit(200);
+    }
+}
+
+// spec: spec/03-types.md §3.11.3 — a concrete returned closure needs no
+// result-only specialization; the lambda annotation is the reduction's control.
+#[test]
+fn concrete_returned_closure_annotation_control() {
+    let program = "(defn g [] (fn [:Int y] 100))\n\
+                   (defn main [] (Pure ((g) 5)))\n";
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .stdin(&format!("{program}(main)\n"))
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 100");
+    for mode in ["run", "link"] {
+        let cl = Cranelisp::new()
+            .with_prelude(PreludeVariant::PrimitivesOnly)
+            .user(program);
+        let cl = if mode == "run" {
+            cl.run("user.cl")
+        } else {
+            cl.link_then_run("user.cl")
+        };
+        cl.output().assert_exit(100);
+    }
+}
+
 // Short bound for the hanging cell — long enough to distinguish a genuine loop
 // from a slow-but-terminating run, short enough to not blow the suite budget.
 const HANG_BOUND: Duration = Duration::from_secs(8);

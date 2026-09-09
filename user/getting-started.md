@@ -44,8 +44,8 @@ this repository's root, as above, and the prelude is found in `stdlib/`.
 
 The REPL is a live development environment: redefine a function and the change
 takes effect immediately — body edits are picked up by every caller on the next
-call, and signature changes recompile the functions that depend on the changed
-one and report exactly which survived. See the
+call. A different type with a direct blocking dependent is rejected before it
+replaces the old definition. See the
 [live development guide](guide/live-development.md).
 
 ### A REPL session resumes prior state — a sharp edge for piped input
@@ -111,20 +111,9 @@ $ CRANELISP_PLATFORM_PATH=target/debug cranelisp hello.cl --run
 hello world
 ```
 
-> **Known limitation (current build).** The worked IO chapter of the learning
-> sequence — [`examples/21-hello-io.cl`](../examples/21-hello-io.cl) and
-> `examples/23-io-sequence.cl` — does **not** compile today. Each defines its own
-> IO combinator (`then`, `map-io`) over `(IO a)`, and any user-written combinator
-> over IO values is currently refused by the compiler with
-> `constructor 'Bind' disagrees on declared parameter identity for 'primitives/IO'`.
-> Everything else about IO works: `Pure`, `bind`, `do`, `bind!`, `if` between two
-> freshly built IO branches, IO-returning functions, and real console output as
-> above. This is compiler defect
-> [FIXME 0907](../design/arch/fixmes/0907-io-bind-existential-ctor-defeats-canonical-glue-derivation.md),
-> under active ruling; there is no workaround — re-spelling the combinator
-> polymorphically or as a trait method does not restore it. Until it is fixed,
-> write effect sequences with `bind`/`do` directly rather than factoring your own
-> combinator out of them. `examples/22-*` and `examples/24-*` remain runnable.
+The worked IO examples [`examples/21-hello-io.cl`](../examples/21-hello-io.cl)
+and [`examples/23-io-sequence.cl`](../examples/23-io-sequence.cl) are part of the
+learning sequence and run with the platform setup above.
 
 IO requires a **platform** — a small native library that provides the host's
 side-effecting operations (here, `print`). The `examples/` directory ships a
@@ -238,8 +227,8 @@ in [`spec/12-runtime.md §12.4.3`](../spec/12-runtime.md) (lenient evaluation) a
   works, and the `/search` command for finding an importable function.
 - **Guide** — feature-by-feature pages:
   [`guide/live-development.md`](guide/live-development.md) (redefining functions
-  in a live session: late binding, the cascade report, broken symbols and
-  recovery), [`guide/bitwise.md`](guide/bitwise.md)
+  in a live session: late binding and guarded type changes),
+  [`guide/bitwise.md`](guide/bitwise.md)
   (bit-level arithmetic and the `num.bits` module),
   [`guide/field-accessors.md`](guide/field-accessors.md) (`Type.field` accessors and
   the bare-name alias),

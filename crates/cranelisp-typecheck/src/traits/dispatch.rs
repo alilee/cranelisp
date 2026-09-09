@@ -1,6 +1,6 @@
 use cranelisp_types::{
-    CranelispError, ErrorLocation, FQTraitName, JitSymbol, ModuleEntry, ModuleFullPath,
-    ResolvedCall, Span, Symbol, TraitMethodSig, TraitName, Type, TypeName,
+    CranelispError, Decl, ErrorLocation, FQTraitName, JitSymbol, ModuleFullPath, ResolvedCall,
+    Span, Symbol, TraitMethodSig, TraitName, TraitRecord, Type, TypeName, trait_impl_key,
 };
 
 use super::*;
@@ -37,8 +37,75 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 None => return Ok(None),
             };
 
+        self.try_resolve_trait_method_for_trait(
+            state,
+            callee_name,
+            arg_types,
+            span,
+            &trait_name,
+            &trait_defining_module,
+        )
+    }
+
+    /// Resolve an already-selected canonical trait-method declaration without
+    /// re-running cardinality on its contested source spelling.
+    pub(crate) fn try_resolve_selected_trait_method(
+        &self,
+        state: &mut CheckState,
+        selected: &cranelisp_types::FQSymbol,
+        arg_types: &[Type],
+        span: Span,
+    ) -> Result<Option<PendingDispatch>, CranelispError> {
+        let Some(binding) =
+            self.probe_module_entry_owned(&selected.module, selected.symbol.as_ref())
+        else {
+            return Ok(None);
+        };
+        let Decl::TraitMethod(record) = binding.declaration else {
+            return Ok(None);
+        };
+        let method_name = Symbol::from(
+            selected
+                .symbol
+                .as_ref()
+                .rsplit('.')
+                .next()
+                .unwrap_or(selected.symbol.as_ref()),
+        );
+        self.try_resolve_trait_method_for_trait(
+            state,
+            &method_name,
+            arg_types,
+            span,
+            &record.trait_name.name,
+            &record.trait_name.module,
+        )
+    }
+
+    fn try_resolve_trait_method_for_trait(
+        &self,
+        state: &mut CheckState,
+        callee_name: &Symbol,
+        arg_types: &[Type],
+        span: Span,
+        trait_name: &TraitName,
+        trait_defining_module: &ModuleFullPath,
+    ) -> Result<Option<PendingDispatch>, CranelispError> {
         // Use hkt_param_index for dispatch argument selection (defaults to 0)
-        let param_idx = self.hkt_param_idx_for_method(state, callee_name);
+        let method_sig = self
+            .probe_module_entry_owned(trait_defining_module, trait_name.as_ref())
+            .and_then(|binding| match binding.declaration {
+                Decl::Trait(record) => record
+                    .info
+                    .methods
+                    .into_iter()
+                    .find(|method| method.name == *callee_name),
+                _ => None,
+            });
+        let param_idx = method_sig
+            .as_ref()
+            .and_then(|method| method.hkt_param_index)
+            .unwrap_or_else(|| self.hkt_param_idx_for_method(state, callee_name));
         let resolved_arg = match arg_types.get(param_idx) {
             Some(a) => self.apply_subst(state, a),
             // No dispatch argument at this position. This is the nullary
@@ -48,10 +115,20 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // (`(add-i64 (z) 5)` fixes `(z)` to Int). Only valid when the
             // method's signature actually puts `Self` in return position —
             // otherwise return-type dispatch would be unsound.
-            None => match self.method_return_dispatch_type(state, callee_name, span) {
-                Some(ret_ty) => ret_ty,
-                None => return Ok(None),
-            },
+            None => {
+                let self_in_return = method_sig
+                    .as_ref()
+                    .and_then(method_result_constraint)
+                    .is_some_and(type_expr_references_self);
+                let Some(recorded) = state.expr_types.get(&span) else {
+                    return Ok(None);
+                };
+                let ret_ty = self.apply_subst(state, recorded);
+                if !self_in_return || concrete_type_name(&ret_ty).is_none() {
+                    return Ok(None);
+                }
+                ret_ty
+            }
         };
 
         let impl_type_name = match concrete_type_name(&resolved_arg) {
@@ -70,7 +147,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // imported, `has_impl_with_state`'s bare re-resolution missed and this
         // wrong-rejected a spec-valid dispatch (§7.11.2(e)); `has_impl_in_home`
         // succeeds.
-        if !self.has_impl_in_home(&trait_defining_module, &trait_name, &impl_type_name) {
+        if !self.has_impl_in_home(trait_defining_module, trait_name, &impl_type_name) {
             // Render both halves fully-qualified so the message disambiguates
             // a missing impl under two same-named ADTs from different modules
             // (S87-1). The trait name is on `trait_origin` and thus available
@@ -140,11 +217,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // above, so the shell exists; degrade to `current_module` only on a
         // pathological miss. Consumers (`dispatch_target_fq`,
         // `resolved_call_to_fqsymbol`) READ this — never re-derive.
-        let impl_key = format!("impl${}${}", fq_for_mangle, fq_trait_name);
+        let impl_key = trait_impl_key(&fq_for_mangle, &fq_trait_name);
         let impl_module = self
             .impl_module_in_home(
                 &trait_defining_module,
-                &impl_key,
+                impl_key.as_ref(),
                 &trait_name,
                 &impl_type_name,
             )
@@ -537,7 +614,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             if let Some(terminal) = self
                 .resolve_terminal_entry_and_home(module_path, name.as_ref())
                 .map(|(e, _home)| e)
-                && let ModuleEntry::TraitDecl { info, .. } = terminal
+                && let Decl::Trait(TraitRecord { info, .. }) = terminal.declaration
                 && trait_filter.is_none_or(|tn| &info.name == tn)
             {
                 for method in &info.methods {

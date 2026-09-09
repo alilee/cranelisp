@@ -104,11 +104,12 @@ oracle (§12.4.3 transparency).
 
 | Test name | Tier | Asserts | Trace | P/N | Posture |
 |---|---|---|---|---|---|
-| `apply_arg_single_expensive_stays_serial` | e2e | `(add-i64 (work big) cheap)` — only ONE expensive arg → NOT sparked → majority-of-N **no** speedup (ON ≥ 0.7·OFF) + same result. The ≥2 gate at the apply site (apply analogue of `lenient_vec_map_reduce_prior_binding_stays_serial`) | §12.4.3 | N | RED-first |
+| `apply_arg_single_expensive_preserves_result_parity` | e2e | `(add-i64 (work big) cheap)` — only ONE expensive arg: lenient-ON and lenient-OFF produce the same known result. The exact no-spark arm is independently pinned by the paired emitted-code module witness. | §12.4.3 | N | RED-first; reframed S121 maintenance |
 | `apply_arg_all_cheap_stays_serial` | e2e | an apply with all-cheap args (e.g. `(add-i64 (add-i64 a b) (mul-i64 c d))`) is unchanged + correct (cost-heuristic floor; never-slower-than-serial) | §12.4.3 | N | RED-first |
 
-> The runtime-observable ≥2-gate + cost-heuristic are *also* pinned at the analysis seam
-> by the unit rows above; these e2e rows prove the gate survives into codegen/runtime.
+> The analysis-seam unit rows and the paired emitted-code module witness pin the ≥2 gate
+> directly. These e2e rows establish semantic transparency; result parity alone is not a
+> direct observation of whether a spark was emitted.
 
 ---
 
@@ -140,7 +141,12 @@ are the apply-site analogues, modelled on `CATCH_ERR_PROGRAM`.
 | Test name | Tier | Asserts | Trace | P/N | Posture |
 |---|---|---|---|---|---|
 | `apply_arg_par_map_parallelizes` | e2e | best-of-N wall-clock: ON < 0.7·OFF in ≥1 of N attempts over the D&C apply-arg map-reduce with the **non-over-sparking `work` leaf** (Risk-callout pt.2); semantic-transparency (ON exit == OFF exit) asserted on EVERY attempt. Reuses the `pmr_run_elapsed_ms` + best-of-N harness verbatim | §12.4.3 | P | RED-first |
-| `apply_arg_single_expensive_stays_serial` | e2e | (negative control above) majority-of-N no-speedup — the never-slower-than-serial / overhead-bounded floor | §12.4.3 | N | RED-first |
+
+> **Historical timing evidence, not a current carrier.**
+> `apply_arg_single_expensive_stays_serial` formerly used a majority-of-N timing ratio.
+> One full-suite failure and focused passes made that ratio an inadequate no-spark witness;
+> S121 maintenance replaced it with deterministic
+> `apply_arg_single_expensive_preserves_result_parity` and the direct emitted-code pair.
 
 ### Perf-evidence recommendation — (c) BOTH, with a clear CI/demo split
 
@@ -153,10 +159,8 @@ Wall-clock perf is genuinely flaky under the saturated `cargo nextest` harness (
     required vs the ~2.8–3.1× observed for the `let` analogue; a purely-sequential impl
     can never qualify in *any* attempt, so one qualifying attempt is a sound parallelism
     proof). This is the *only* speedup assertion in CI, and it is generous by design.
-  - `apply_arg_single_expensive_stays_serial` — **majority-of-N no-speedup** floor (the
-    never-slower-than-serial guard). Contention-tolerant by the same best-of-N logic.
-  - Semantic-transparency equality (ON == OFF) is asserted on **every** attempt of both —
-    it is contention-immune and never relaxed.
+  - Semantic-transparency equality (ON == OFF) is asserted on every attempt of the
+    performance witness; it is contention-immune and never relaxed.
 - **NOT in CI — handed to Phase-6 `/repl` + `/port` as a witnessed demo corpus:**
   - The **near-linear-speedup-to-N-cores** claim (SPRINT.md acceptance). Core-count- and
     hardware-dependent; too fragile for a fixed CI ratio. Target: the **0408 parallel
@@ -220,8 +224,8 @@ the budget is *never* allowed to change the answer.
 ### Perf-treatment call — `budget_naive_fib_floor_not_slower_than_serial`
 
 **Loose CI witness, NOT a demo.** The floor is the budget's entire reason to exist, so it MUST be
-a durable CI regression guard — the same posture as the existing `apply_arg_single_expensive_stays_serial`
-floor row. Treatment:
+a durable CI regression guard. It is independent of the retired single-expensive timing
+ratio; that case now uses deterministic result parity plus emitted-code evidence. Treatment:
 
 - **In CI:** majority-of-N **never-slower bound** `ON < 1.3·OFF` (generous — the assertion is
   "the budget kept the explosion bounded," not "it sped up"; naive fib is *not* expected to
@@ -254,7 +258,7 @@ pre-budget behaviour these tests were written against.
 
 | Spec row (current) | Flips to | Driven by |
 |---|---|---|
-| `spec/12-runtime.md §12.4.3` para 1 + 2 `[S92]` | `[Tested+Neg tests/spec_12_runtime::apply_arg_pair_equiv_run, …::apply_arg_dc_map_reduce_equiv_run, …::apply_arg_single_expensive_stays_serial]` | positive equiv + par-map (P) and ≥2-gate/cheap floor (N) |
+| `spec/12-runtime.md §12.4.3` para 1 + 2 `[S92]` | `[Tested+Neg tests/spec_12_runtime::apply_arg_pair_equiv_run, …::apply_arg_dc_map_reduce_equiv_run, …::apply_arg_single_expensive_preserves_result_parity]` | positive equiv + par-map (P), deterministic one-candidate parity (N), and the paired emitted-code module witness for the exact ≥2 gate |
 | `spec/12-runtime.md §12.4.3` error-propagation para `[S77 … S92 — apply-arg extension]` | append `, tests/spec_12_runtime::apply_arg_panic_ferried_caught_run, …::apply_arg_panic_not_swallowed_neg, …::apply_arg_dual_panic_first_error_wins` | apply-site ferry + first-error-wins |
 | `spec/12-runtime.md §12.4.1` (Strict Evaluation) `[S92]` | `[Tested tests/spec_12_runtime::apply_arg_pair_equiv_run]` | observable-as-if L-to-R for arguments |
 | `spec/04-expressions.md §4.11` (Evaluation Order Summary) closing note `[S92]` | `[Tested tests/spec_12_runtime::apply_arg_pair_equiv_run]` | apply-arg concurrency permitted under observable L-to-R |

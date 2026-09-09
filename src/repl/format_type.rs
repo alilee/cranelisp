@@ -7,6 +7,10 @@
 //! per `design/int/repl-decomposition.md` §1.6.1 (FIXME 0627); pure relocation,
 //! behaviour-invariant.
 
+use super::format::{
+    append_docstring_comment, classification_metadata, format_symbol_layout, push_fq_name,
+    push_metadata, push_type_annotation,
+};
 use super::*;
 
 /// Format an overloaded (multi-sig) function as one line per variant, with
@@ -17,35 +21,32 @@ use super::*;
 /// variant lines carry only the type and qualified name. See repl/spec.md §1.3
 /// + §4.1.1 and design/int/multi-sig-introspection.md.
 #[cfg(test)]
-pub(crate) fn format_overloaded_variants(
+pub(crate) fn format_overloaded_variants<C: cranelisp_types::CodeStore>(
     name: &str,
     module: &ModuleFullPath,
-    variants: &[OverloadVariant],
+    variants: &[OverloadArm<C>],
     docstring: Option<&str>,
-    module_table: Option<&crate::code::SessionSymbolTable>,
 ) -> String {
     render(&format_overloaded_variants_doc(
         name,
         module,
         variants,
         docstring,
-        module_table,
     ))
 }
 
-pub(crate) fn format_overloaded_variants_doc(
+pub(crate) fn format_overloaded_variants_doc<C: cranelisp_types::CodeStore>(
     name: &str,
     module: &ModuleFullPath,
-    variants: &[OverloadVariant],
+    variants: &[OverloadArm<C>],
     docstring: Option<&str>,
-    module_table: Option<&crate::code::SessionSymbolTable>,
 ) -> StyledDoc {
     let mut doc = StyledDoc::new();
     for (i, v) in variants.iter().enumerate() {
         if i > 0 {
             doc.plain("\n");
         }
-        let type_str = variant_type_str(v, module_table);
+        let type_str = variant_type_str(v);
         push_type_annotation(&mut doc, &type_str);
         doc.plain(" ");
         push_fq_name(&mut doc, module, name);
@@ -59,43 +60,10 @@ pub(crate) fn format_overloaded_variants_doc(
 
 /// Render ONE multi-sig variant's type string (D1, `traits.md` §7.0.2).
 ///
-/// The bare `OverloadVariant { param_types, ret_type }` cannot encode a trait
-/// bound — constraints live only on a `Scheme`. So a genuinely-constrained clause
-/// (`([a b] (+ a b))` infers `Num a`) rendered from the bare `Type::Fn` DROPS its
-/// constraint (`(Fn [a a] a)` instead of `(Fn [:Num a :Num a] a)`) — a §1.4
-/// non-conformance. The fix READS the recorded settled state: follow
-/// `v.mangled_name` to the clause's template entry in the module's OWN table and
-/// render its `Scheme` (constraints intact) via `format_scheme_type`. This is NOT
-/// the forbidden echo-re-derive shape — it re-derives nothing, it reads the
-/// constraint typecheck already recorded (arch revision 9 principle preserved,
-/// placement corrected to int).
-///
-/// **Binding arch pin:** a fetch miss with a table present is an invariant breach
-/// (the base `Overloaded` entry always co-registers its per-clause template) —
-/// `debug_assert!` + the bare-`Type::Fn` render as the RELEASE fallback ONLY.
-/// Never silent-strip-as-normal, never re-derive from surface syntax. The
-/// no-table path (unit tests without a session) is a distinct benign case that
-/// does not assert.
-fn variant_type_str(
-    v: &OverloadVariant,
-    module_table: Option<&crate::code::SessionSymbolTable>,
-) -> String {
-    if let Some(table) = module_table {
-        if let Some(ModuleEntry::Def { scheme, .. }) = table.get(v.mangled_name.as_ref()) {
-            return crate::display::format_scheme_type(scheme);
-        }
-        debug_assert!(
-            false,
-            "D1 invariant breach: multi-sig variant template `{}` absent from the \
-             module table — its constraint-carrying scheme is unreachable \
-             (traits.md §7.0.2). Rendering the bare `Type::Fn` as the release \
-             fallback (constraint would be silently dropped).",
-            v.mangled_name
-        );
-    }
-    // Release fallback (fetch miss) / no session table (unit tests): bare render.
-    let fn_ty = Type::Fn(v.param_types.clone(), Box::new(v.ret_type.clone()));
-    format_type_qualified(&fn_ty)
+/// Render the arm's authoritative scheme. Aggregation removes the former
+/// parent-to-generated-child lookup and its constraint-dropping fallback.
+fn variant_type_str<C: cranelisp_types::CodeStore>(v: &OverloadArm<C>) -> String {
+    crate::display::format_scheme_type(&v.callable.scheme)
 }
 
 // =============================================================================
@@ -137,32 +105,43 @@ pub(crate) fn format_special_form_display_doc(
 
 /// Format a macro for display (spec §4.1.6).
 #[cfg(test)]
-pub(crate) fn format_macro_display(
+pub(crate) fn format_macro_display<C: cranelisp_types::CodeStore>(
     name: &str,
-    clauses: &[MacroClauseInfo],
+    clauses: &[MacroClause<C>],
     docstring: Option<&str>,
     module: &ModuleFullPath,
 ) -> String {
     render(&format_macro_display_doc(name, clauses, docstring, module))
 }
 
-pub(crate) fn format_macro_display_doc(
+pub(crate) fn format_macro_display_doc<C: cranelisp_types::CodeStore>(
     name: &str,
-    clauses: &[MacroClauseInfo],
+    clauses: &[MacroClause<C>],
     docstring: Option<&str>,
     module: &ModuleFullPath,
 ) -> StyledDoc {
     let mut doc = StyledDoc::new();
-    push_type_annotation(&mut doc, &format!("{module}/{name}"));
-    doc.plain(" ");
-    push_metadata(
-        &mut doc,
-        append_docstring_comment("; defmacro".to_string(), docstring),
-    );
-    for clause in clauses {
-        let params = format_macro_clause_params(clause);
-        doc.plain("\n");
-        push_metadata(&mut doc, format!("; {params} -> Sexp"));
+    for (index, clause) in clauses.iter().enumerate() {
+        if index > 0 {
+            doc.plain("\n");
+        }
+        push_type_annotation(&mut doc, &macro_transform_type(clause));
+        doc.plain(" ");
+        push_fq_name(&mut doc, module, name);
+        if index == 0 {
+            doc.plain(" ");
+            push_metadata(
+                &mut doc,
+                append_docstring_comment("; defmacro".to_string(), docstring),
+            );
+        }
+        if macro_clause_needs_pattern(clause) {
+            doc.plain("\n");
+            push_metadata(
+                &mut doc,
+                format!("; pattern: {}", format_macro_clause_params(clause)),
+            );
+        }
     }
     // repl/spec.md §11.2.2: a multi-clause macro card ends with a clause-count
     // summary line (two leading spaces, no `;`). The single-clause worked
@@ -174,8 +153,38 @@ pub(crate) fn format_macro_display_doc(
     doc
 }
 
+/// The compile-time transformation signature exposed by macro introspection.
+/// Fixed source arguments bind `Sexp`; a rest binding receives the remaining
+/// forms as `SList Sexp`. This is deliberately not the generated clause
+/// helper's private one-list ABI.
+fn macro_transform_type<C: cranelisp_types::CodeStore>(clause: &MacroClause<C>) -> String {
+    let macros = ModuleFullPath::from("macros");
+    let sexp = Type::ADT(
+        FQTypeName::new(macros.clone(), TypeName::from("Sexp")),
+        Vec::new(),
+    );
+    let mut params = vec![sexp.clone(); clause.params.len()];
+    if clause.rest_param.is_some() {
+        params.push(Type::ADT(
+            FQTypeName::new(macros, TypeName::from("SList")),
+            vec![sexp.clone()],
+        ));
+    }
+    format_type_qualified(&Type::Fn(params, Box::new(sexp)))
+}
+
+fn macro_clause_needs_pattern<C: cranelisp_types::CodeStore>(clause: &MacroClause<C>) -> bool {
+    clause.rest_param.is_some()
+        || clause
+            .params
+            .iter()
+            .any(|param| matches!(param, MacroParam::Bracket { .. }))
+}
+
 /// Format macro clause parameters as `[param1 param2 ...]`.
-pub(crate) fn format_macro_clause_params(clause: &MacroClauseInfo) -> String {
+pub(crate) fn format_macro_clause_params<C: cranelisp_types::CodeStore>(
+    clause: &MacroClause<C>,
+) -> String {
     let mut parts = Vec::new();
     for param in &clause.params {
         match param {
@@ -494,8 +503,7 @@ impl CompilerSession {
             ) else {
                 continue;
             };
-            if !matches!(head, ModuleEntry::TraitDecl { .. })
-                || public_heads_only && !head.is_public()
+            if !matches!(head.declaration, Decl::Trait(_)) || public_heads_only && !head.is_public()
             {
                 continue;
             }
@@ -521,15 +529,10 @@ impl CompilerSession {
     fn impl_pairs_in_trait_home(&self, home: &ModuleFullPath) -> Vec<ImplPair> {
         let mut pairs = Vec::new();
         cranelisp_types::for_each_in_module(&self.shared.symbol_tables, home, |_name, entry| {
-            if let ModuleEntry::TraitImpl {
-                trait_name,
-                impl_type,
-                ..
-            } = entry
-            {
+            if let Decl::ImplShell(shell) = &entry.declaration {
                 pairs.push(ImplPair {
-                    trait_name: trait_name.clone(),
-                    impl_type: impl_type.clone(),
+                    trait_name: shell.trait_name.clone(),
+                    impl_type: shell.impl_type.clone(),
                 });
             }
         });
@@ -575,13 +578,25 @@ impl VisibleImplTraits {
 #[cfg(test)]
 mod overloaded_display_tests {
     use super::*;
+    use cranelisp_types::Life;
 
-    fn variant(params: Vec<Type>, ret: Type, mangled: &str) -> OverloadVariant {
-        OverloadVariant {
-            param_types: params,
-            ret_type: ret,
-            mangled_name: Symbol::from(mangled),
-        }
+    fn variant(params: Vec<Type>, ret: Type) -> OverloadArm<()> {
+        cranelisp_types::OverloadedCallable::new(
+            None,
+            0,
+            vec![cranelisp_types::CallableArm::new(
+                Scheme {
+                    type_vars: Vec::new(),
+                    constraints: std::collections::HashMap::new(),
+                    ty: Type::Fn(params, Box::new(ret)),
+                },
+                Vec::new(),
+                Life::Declared { prior: None },
+            )],
+        )
+        .expect("single display arm is valid")
+        .arms
+        .remove(0)
     }
 
     // spec: repl/spec.md §1.3 + §4.1.1 — multi-sig display emits ≥2 lines.
@@ -589,10 +604,10 @@ mod overloaded_display_tests {
     fn overloaded_display_emits_one_line_per_variant() {
         let module = ModuleFullPath::from("user");
         let variants = vec![
-            variant(vec![Type::Int], Type::Int, "pick$Int"),
-            variant(vec![Type::Int, Type::Int], Type::Int, "pick$Int+Int"),
+            variant(vec![Type::Int], Type::Int),
+            variant(vec![Type::Int, Type::Int], Type::Int),
         ];
-        let out = format_overloaded_variants("pick", &module, &variants, None, None);
+        let out = format_overloaded_variants("pick", &module, &variants, None);
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(
             lines.len(),
@@ -637,15 +652,14 @@ mod overloaded_display_tests {
     fn overloaded_display_attaches_docstring_to_first_variant_only() {
         let module = ModuleFullPath::from("user");
         let variants = vec![
-            variant(vec![Type::Int], Type::Int, "pick$Int"),
-            variant(vec![Type::Int, Type::Int], Type::Int, "pick$Int+Int"),
+            variant(vec![Type::Int], Type::Int),
+            variant(vec![Type::Int, Type::Int], Type::Int),
         ];
         let out = format_overloaded_variants(
             "pick",
             &module,
             &variants,
             Some("Pick one or sum two"),
-            None,
         );
         let lines: Vec<&str> = out.lines().collect();
         assert!(
@@ -665,8 +679,8 @@ mod overloaded_display_tests {
     #[test]
     fn overloaded_display_single_variant_emits_one_line() {
         let module = ModuleFullPath::from("user");
-        let variants = vec![variant(vec![Type::Int], Type::Int, "id$Int")];
-        let out = format_overloaded_variants("id", &module, &variants, None, None);
+        let variants = vec![variant(vec![Type::Int], Type::Int)];
+        let out = format_overloaded_variants("id", &module, &variants, None);
         assert_eq!(
             out.lines().count(),
             1,
@@ -675,19 +689,19 @@ mod overloaded_display_tests {
     }
 
     // D1 (traits.md §7.0.2): a constrained multi-sig clause renders its INFERRED
-    // trait bound inline — the renderer follows `mangled_name` to the clause's
-    // template entry and reads its `Scheme` (constraints intact), NOT the bare
-    // `OverloadVariant` `Type::Fn` (which cannot encode a bound). The load-bearing
+    // trait bound inline — the renderer reads the owned arm's authoritative
+    // `Scheme` (constraints intact). The load-bearing
     // seam behind the `multi_sig_variant_display_carries_inferred_num_constraint`
     // e2e pin.
     // spec: repl/spec.md §4.1.1 — a multi-sig variant that infers a bound displays it.
     #[test]
     fn overloaded_variant_reads_constrained_template_scheme() {
-        use cranelisp_types::{DefKind, FQTraitName, Scheme, TypeId, UserFnState};
+        use cranelisp_types::{
+            FQTraitName, TypeId,
+        };
         use std::collections::HashMap;
         let module = ModuleFullPath::from("user");
-        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
-        // The 2-arg clause's template: `Num a => (Fn [a a] a)`, keyed `h$Var`.
+        // The 2-arg owned clause's template: `Num a => (Fn [a a] a)`.
         let vid: TypeId = 7;
         let mut constraints: HashMap<TypeId, Vec<FQTraitName>> = HashMap::new();
         constraints.insert(vid, vec![FQTraitName::new(module.clone(), "Num".into())]);
@@ -699,25 +713,18 @@ mod overloaded_display_tests {
                 Box::new(Type::Var(vid)),
             ),
         };
-        st.insert(
-            "h$Var".into(),
-            ModuleEntry::def(
+        let declaration: cranelisp_types::OverloadedCallable<()> =
+            cranelisp_types::OverloadedCallable::new(
+            None,
+            0,
+            vec![cranelisp_types::CallableArm::new(
                 scheme,
-                DefKind::UserFn {
-                    fn_state: UserFnState::Concrete {
-                        got_slot: 0,
-                        mode_summary: None,
-                    },
-                },
+                vec!["a".into(), "b".into()],
+                Life::Declared { prior: None },
+            )],
             )
-            .build(),
-        );
-        let variants = vec![variant(
-            vec![Type::Var(vid), Type::Var(vid)],
-            Type::Var(vid),
-            "h$Var",
-        )];
-        let out = format_overloaded_variants("h", &module, &variants, None, Some(&st));
+            .expect("constrained display family is valid");
+        let out = format_overloaded_variants("h", &module, &declaration.arms, None);
         assert!(
             out.contains("(Fn [:user/Num a :user/Num a] a) user/h"),
             "the constrained variant MUST render its inferred `Num` bound inline \
@@ -726,19 +733,6 @@ mod overloaded_display_tests {
         );
     }
 
-    // D1 miss-fallback (binding arch pin): a fetch miss WITH a table present is an
-    // invariant breach — `debug_assert!` fires (this test, debug build) and the
-    // release fallback is the bare `Type::Fn` render, never a silent strip.
-    // spec: traits.md §7.0.2 — the fetch-miss invariant.
-    #[test]
-    #[should_panic(expected = "D1 invariant breach")]
-    fn overloaded_variant_fetch_miss_with_table_trips_debug_assert() {
-        let module = ModuleFullPath::from("user");
-        // Empty table: the variant's template mangle is absent → breach.
-        let st = crate::code::SessionSymbolTable::new_with_params(module.clone());
-        let variants = vec![variant(vec![Type::Int], Type::Int, "gone$Int")];
-        let _ = format_overloaded_variants("g", &module, &variants, None, Some(&st));
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -799,7 +793,7 @@ mod fq_arg_format_type_tests {
 
     use crate::repl::test_support::*;
 
-    use cranelisp_types::{ModuleEntry, ModuleFullPath, Span, Symbol, Visibility};
+    use cranelisp_types::{Binding, Decl, ModuleFullPath, Span, Symbol, TraitRecord, Visibility};
 
     // spec: repl/spec.md §4.1.2/§1.5 (0570-sibling display-envelope-mirror) — the
     // constructor display authority renders the ONE canonical `user/Color.Red`
@@ -868,28 +862,32 @@ mod fq_arg_format_type_tests {
         let s = session();
         let home = ModuleFullPath::from("home");
         let mut table = SessionSymbolTable::new_with_params(home.clone());
-        table.insert(
-            Symbol::from("T"),
-            ModuleEntry::TraitDecl {
-                info: TraitDeclInfo {
-                    name: TraitName::from("T"),
-                    type_params: vec![],
-                    methods: vec![TraitMethodSig {
-                        name: Symbol::from("mm"),
-                        docstring: None,
-                        params: vec![],
-                        kind: TraitMethodKind::Required {
-                            ret_type: TypeExpr::SelfType,
+        table
+            .install_binding(
+                Symbol::from("T"),
+                Binding::new(
+                    Decl::Trait(TraitRecord::new(
+                        TraitDeclInfo {
+                            name: TraitName::from("T"),
+                            type_params: vec![],
+                            methods: vec![TraitMethodSig {
+                                name: Symbol::from("mm"),
+                                docstring: None,
+                                params: vec![],
+                                kind: TraitMethodKind::Required {
+                                    ret_type: TypeExpr::SelfType,
+                                },
+                                span: Span::SYNTHETIC,
+                                hkt_param_index: None,
+                            }],
                         },
-                        span: Span::SYNTHETIC,
-                        hkt_param_index: None,
-                    }],
-                },
-                visibility: Visibility::Public,
-                docstring: None,
-            },
-        );
-        table.insert(Symbol::from("T.Widget"), impl_entry(&home, "T", "Widget"));
+                        None,
+                    )),
+                    Visibility::Public,
+                ),
+            )
+            .expect("trait fixture installs");
+        install_impl(&mut table, &home, "T", "Widget");
         s.shared.symbol_tables.insert(home.clone(), table);
 
         // The current scope is `user`, where `T` is NOT reachable — a scope-rooted
@@ -924,14 +922,12 @@ mod fq_arg_format_type_tests {
         let prelude = ModuleFullPath::from("prelude");
         let scope = s.current_module_path();
         let mut ptbl = SessionSymbolTable::new_with_params(prelude.clone());
-        ptbl.insert(
+        ptbl.install_binding(
             Symbol::from("Disp"),
             trait_decl_entry("Disp", Visibility::Public),
-        );
-        ptbl.insert(
-            Symbol::from("Disp.Int"),
-            impl_entry(&prelude, "Disp", "Int"),
-        );
+        )
+        .expect("trait fixture installs");
+        install_impl(&mut ptbl, &prelude, "Disp", "Int");
         s.shared.symbol_tables.insert(prelude.clone(), ptbl);
         s.shared.prelude_fallback.insert(scope, true);
 
@@ -951,14 +947,12 @@ mod fq_arg_format_type_tests {
         let s = session();
         let prelude = ModuleFullPath::from("prelude");
         let mut ptbl = SessionSymbolTable::new_with_params(prelude.clone());
-        ptbl.insert(
+        ptbl.install_binding(
             Symbol::from("Disp"),
             trait_decl_entry("Disp", Visibility::Public),
-        );
-        ptbl.insert(
-            Symbol::from("Disp.Int"),
-            impl_entry(&prelude, "Disp", "Int"),
-        );
+        )
+        .expect("trait fixture installs");
+        install_impl(&mut ptbl, &prelude, "Disp", "Int");
         s.shared.symbol_tables.insert(prelude.clone(), ptbl);
         // Bit deliberately NOT set (absence-is-OFF) — the suppressed-prelude case.
 
@@ -978,14 +972,12 @@ mod fq_arg_format_type_tests {
         let prelude = ModuleFullPath::from("prelude");
         let scope = s.current_module_path();
         let mut ptbl = SessionSymbolTable::new_with_params(prelude.clone());
-        ptbl.insert(
+        ptbl.install_binding(
             Symbol::from("Secret"),
             trait_decl_entry("Secret", Visibility::Private),
-        );
-        ptbl.insert(
-            Symbol::from("Secret.Int"),
-            impl_entry(&prelude, "Secret", "Int"),
-        );
+        )
+        .expect("trait fixture installs");
+        install_impl(&mut ptbl, &prelude, "Secret", "Int");
         s.shared.symbol_tables.insert(prelude.clone(), ptbl);
         s.shared.prelude_fallback.insert(scope, true);
 
@@ -1004,24 +996,20 @@ mod fq_arg_format_type_tests {
         let s = session();
         let scope = s.current_module_path();
         if let Some(mut tbl) = s.shared.symbol_tables.get_mut(&scope) {
-            tbl.insert(
+            tbl.install_binding(
                 Symbol::from("Loc"),
                 trait_decl_entry("Loc", Visibility::Public),
-            );
-            tbl.insert(
-                Symbol::from("Loc.Gadget"),
-                impl_entry(&scope, "Loc", "Gadget"),
-            );
+            )
+            .expect("trait fixture installs");
+            install_impl(&mut tbl, &scope, "Loc", "Gadget");
         } else {
             let mut tbl = SessionSymbolTable::new_with_params(scope.clone());
-            tbl.insert(
+            tbl.install_binding(
                 Symbol::from("Loc"),
                 trait_decl_entry("Loc", Visibility::Public),
-            );
-            tbl.insert(
-                Symbol::from("Loc.Gadget"),
-                impl_entry(&scope, "Loc", "Gadget"),
-            );
+            )
+            .expect("trait fixture installs");
+            install_impl(&mut tbl, &scope, "Loc", "Gadget");
             s.shared.symbol_tables.insert(scope.clone(), tbl);
         }
 
@@ -1041,14 +1029,13 @@ mod fq_arg_format_type_tests {
         let scope = s.current_module_path();
         let foreign = ModuleFullPath::from("foreign");
         let mut foreign_table = SessionSymbolTable::new_with_params(foreign.clone());
-        foreign_table.insert(
-            Symbol::from("ForeignTrait"),
-            trait_decl_entry("ForeignTrait", Visibility::Public),
-        );
-        foreign_table.insert(
-            Symbol::from("ForeignTrait.Gadget"),
-            impl_entry(&foreign, "ForeignTrait", "Gadget"),
-        );
+        foreign_table
+            .install_binding(
+                Symbol::from("ForeignTrait"),
+                trait_decl_entry("ForeignTrait", Visibility::Public),
+            )
+            .expect("trait fixture installs");
+        install_impl(&mut foreign_table, &foreign, "ForeignTrait", "Gadget");
         s.shared
             .symbol_tables
             .insert(foreign.clone(), foreign_table);
@@ -1056,16 +1043,15 @@ mod fq_arg_format_type_tests {
             .symbol_tables
             .get_mut(&scope)
             .expect("session scope exists")
-            .insert(
+            .expose_candidate(
                 Symbol::from("ForeignTrait"),
-                ModuleEntry::Import {
-                    source: FQSymbol {
-                        module: foreign,
-                        symbol: Symbol::from("ForeignTrait"),
-                    },
-                    visibility: Visibility::Private,
+                FQSymbol {
+                    module: foreign,
+                    symbol: Symbol::from("ForeignTrait"),
                 },
-            );
+                Visibility::Private,
+            )
+            .expect("trait import fixture installs");
 
         let traits = s.impls_for_type_in_view(&FQTypeName::new(scope, TypeName::from("Gadget")));
         assert!(

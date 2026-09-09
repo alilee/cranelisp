@@ -57,7 +57,8 @@ use std::future::Future;
 use std::os::fd::RawFd;
 use std::pin::Pin;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Weak};
 use std::task::{Context, Poll as TaskPoll, Wake, Waker};
 use std::time::Duration;
 
@@ -1549,12 +1550,13 @@ impl<'h> Supervisor<'h> {
     pub(crate) fn spawn(
         &self,
         sub_tree: i64,
+        result_disposer: crate::io::ResultDisposer,
         env: ReactorEnv<'h>,
         strand: StrandId,
         permit: Permit,
     ) {
         let policy = self.policy;
-        let fut = supervised(sub_tree, env, strand, permit, policy);
+        let fut = supervised(sub_tree, result_disposer, env, strand, permit, policy);
         self.strands.borrow_mut().push(Box::pin(fut));
     }
 
@@ -1596,6 +1598,7 @@ impl<'h> Supervisor<'h> {
 /// frees a global slot → wakes a parked launch, §2.13).
 async fn supervised(
     sub_tree: i64,
+    result_disposer: crate::io::ResultDisposer,
     env: ReactorEnv<'_>,
     strand: StrandId,
     global_permit: Permit,
@@ -1606,14 +1609,21 @@ async fn supervised(
     // executor. The `take_runtime_error` capture is SYNCHRONOUS with the resolve
     // (no `.await` between), so no other strand interposes on the shared slot.
     let body = std::panic::AssertUnwindSafe(async {
-        let r = crate::io::run_io_trampoline_inner_async(sub_tree, &env, strand).await;
+        let r =
+            crate::io::run_io_trampoline_inner_async(sub_tree, &env, strand, result_disposer).await;
         let err = crate::panic::take_runtime_error();
         (r, err)
     });
     let outcome = body.catch_unwind().await;
 
     match outcome {
-        Ok((_r, None)) => emit_strand_event(StrandEvent::StrandCompleted { strand }),
+        Ok((crate::io::TrampolineOutcome::Completed(result), None)) => {
+            result_disposer.dispose(result);
+            emit_strand_event(StrandEvent::StrandCompleted { strand });
+        }
+        Ok((crate::io::TrampolineOutcome::Stopped, None)) => {
+            emit_strand_event(StrandEvent::StrandCompleted { strand });
+        }
         Ok((_r, Some(msg))) => apply_policy(policy, strand, msg), // runtime error
         Err(_panic) => apply_policy(policy, strand, "<panicked>".to_string()),
     }
@@ -1682,17 +1692,131 @@ impl Wake for ExecutorWaker {
     }
 }
 
+/// Shared acknowledgement state for every blocking rayon bridge in one drive.
+/// The worker-owned lease is the only authority that decrements the count.
+pub(crate) struct BridgeJoinState {
+    live: AtomicUsize,
+    waker: Arc<mio::Waker>,
+}
+
+#[cfg(test)]
+type BridgeGateObserver = fn(bool, bool, usize, bool);
+
+#[cfg(test)]
+thread_local! {
+    static BRIDGE_GATE_OBSERVER: Cell<Option<BridgeGateObserver>> = const { Cell::new(None) };
+}
+
+#[cfg(test)]
+fn set_bridge_gate_observer(observer: Option<BridgeGateObserver>) {
+    BRIDGE_GATE_OBSERVER.set(observer);
+}
+
+#[cfg(test)]
+fn observe_bridge_gate(
+    top_ready: bool,
+    supervisor_empty: bool,
+    live_bridges: usize,
+    returning: bool,
+) {
+    if let Some(observer) = BRIDGE_GATE_OBSERVER.get() {
+        observer(top_ready, supervisor_empty, live_bridges, returning);
+    }
+}
+
+impl BridgeJoinState {
+    fn new(waker: Arc<mio::Waker>) -> Self {
+        Self {
+            live: AtomicUsize::new(0),
+            waker,
+        }
+    }
+
+    pub(crate) fn live_count(&self) -> usize {
+        self.live.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn start_bridge(self: &Arc<Self>) -> (WorkerBridgeLease, Weak<BridgeTicket>) {
+        self.live.fetch_add(1, Ordering::Release);
+        let ticket = Arc::new(BridgeTicket {
+            cancelled: AtomicBool::new(false),
+            join: Arc::clone(self),
+        });
+        let cancellation = Arc::downgrade(&ticket);
+        (WorkerBridgeLease { ticket }, cancellation)
+    }
+}
+
+pub(crate) struct BridgeTicket {
+    cancelled: AtomicBool,
+    join: Arc<BridgeJoinState>,
+}
+
+/// The worker's structured-lifetime acknowledgement. Dropping the receiving
+/// future never drops this lease; only worker return or unwind does.
+pub(crate) struct WorkerBridgeLease {
+    ticket: Arc<BridgeTicket>,
+}
+
+impl WorkerBridgeLease {
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.ticket.cancelled.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for WorkerBridgeLease {
+    fn drop(&mut self) {
+        let old = self.ticket.join.live.fetch_sub(1, Ordering::AcqRel);
+        assert!(old > 0, "blocking bridge join count underflow");
+        let _ = self.ticket.join.waker.wake();
+    }
+}
+
+/// Reactor-side cancellation owner for an admitted blocking branch. It holds
+/// the permit but only a weak ticket reference, so it cannot retain a worker.
+pub(crate) struct CancelBridgeGuard {
+    ticket: Weak<BridgeTicket>,
+    permit: Option<Permit>,
+    armed: bool,
+}
+
+impl CancelBridgeGuard {
+    pub(crate) fn new(ticket: Weak<BridgeTicket>, permit: Option<Permit>) -> Self {
+        Self {
+            ticket,
+            permit,
+            armed: true,
+        }
+    }
+
+    pub(crate) fn complete(&mut self) {
+        self.armed = false;
+        self.permit.take();
+    }
+}
+
+impl Drop for CancelBridgeGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            if let Some(ticket) = self.ticket.upgrade() {
+                ticket.cancelled.store(true, Ordering::Release);
+            }
+        }
+        self.permit.take();
+    }
+}
+
 /// The host-side context threaded through the async trampoline: the reactor's
 /// [`HostCtx`] (for poll-fns), the token-capacity [`TokenPool`] (for the
-/// per-branch permit acquire), and the in-flight blocking-bridge counter (so the
+/// per-branch permit acquire), and the blocking-bridge join state (so the
 /// executor knows a `rayon`-offloaded branch is outstanding even when no fd/timer
 /// waiter is registered). Constructed single-sited in [`block_on_reactor`].
 ///
 /// **Clone (§2.11/§2.12).** A supervised detached strand OWNS its own
 /// `ReactorEnv` clone (rather than borrowing the launching frame's), so the
 /// supervisor's futures do not self-borrow the env that reaches the supervisor.
-/// The clone is cheap — the `host`/`pool`/`pending_bridges` fields are copied
-/// borrows and `supervisor` is one `Rc` clone. (The `Rc<Supervisor>` makes the
+/// The clone is cheap — the `host`/`pool` fields are copied borrows and the join
+/// state and `supervisor` are one `Arc`/`Rc` clone each. (The `Rc<Supervisor>` makes the
 /// supervised future + supervisor an `Rc` cycle while a strand is in flight;
 /// completed strands self-remove and drive-end [`Supervisor::clear`] breaks it.)
 #[derive(Clone)]
@@ -1701,12 +1825,8 @@ pub(crate) struct ReactorEnv<'h> {
     pub host: &'h HostCtx,
     /// The shared token-capacity pool (§2.8).
     pub pool: &'h Rc<TokenPool>,
-    /// Count of `rayon`-offloaded blocking branches currently in flight. The
-    /// async `Par` arm bumps it before `rayon::spawn` and drops it on completion
-    /// (see `io::run_par_node_async`); [`block_on_reactor`] treats a positive
-    /// count as "keep turning" so a blocking-only `Par` is not mistaken for a
-    /// hung future with no waiters.
-    pub pending_bridges: &'h Rc<Cell<usize>>,
+    /// Worker-owned acknowledgement state for admitted blocking branches.
+    pub bridge_join: Arc<BridgeJoinState>,
     /// The supervisor that owns each detached strand (§2.12). An `Rc` (not a
     /// borrow) so a supervised future can own a cloned `ReactorEnv` to reach it
     /// for a nested launch without the env self-borrowing the supervisor.
@@ -1774,12 +1894,12 @@ pub(crate) enum DriveMode {
 /// predicate (Principle 7 — one liveness rule).
 fn reactor_is_armed(
     reactor: &Reactor,
-    pending_bridges: &Rc<Cell<usize>>,
+    bridge_join: &BridgeJoinState,
     supervisor: &Supervisor<'_>,
     pool: &TokenPool,
 ) -> bool {
     reactor.has_waiters()
-        || pending_bridges.get() > 0
+        || bridge_join.live_count() > 0
         || !supervisor.is_empty()
         || pool.any_waiter_parked()
 }
@@ -1932,11 +2052,13 @@ where
     // just woken by a Permit release but not yet re-polled (§2.13). Shared between
     // the waker (sets it) and the loop (clears it before each top poll).
     let woken = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let bridge_waker = reactor.bridge_waker();
     let task_waker: Waker = Arc::new(ExecutorWaker {
-        mio: reactor.bridge_waker(),
+        mio: Arc::clone(&bridge_waker),
         woken: Arc::clone(&woken),
     })
     .into();
+    let bridge_join = Arc::new(BridgeJoinState::new(bridge_waker));
 
     // The program degree throttle (§2.13). Provisional reactor-construction
     // surface: the `CRANELISP_DEGREE` env var (the carrier the Chunk-B acceptance
@@ -1945,9 +2067,8 @@ where
     // / zero ⇒ `u32::MAX` (no throttle), preserving the pre-slice-4 behaviour.
     let degree = read_degree_env();
 
-    // The token-capacity pool + the in-flight blocking-bridge counter, single-
-    // sited here alongside the reactor (§2.8 / §6.2). Single-threaded: every
-    // mutation runs on THIS reactor thread. (The supervisor is declared AFTER
+    // The token-capacity pool is single-sited here alongside the reactor
+    // (§2.8 / §6.2). (The supervisor is declared AFTER
     // `host_ctx` below so it — and the detached strands it owns, which borrow
     // `host_ctx` through their cloned `ReactorEnv` — drops BEFORE `host_ctx`.)
     let pool = TokenPool::with_degree(degree);
@@ -1957,8 +2078,6 @@ where
     // `ctx.acquire`); the blocking-branch / global-budget paths acquire the SAME
     // pool directly through `ReactorEnv` (the `Future`-based `AcquirePermit`).
     reactor.set_pool(Rc::clone(&pool));
-    let pending_bridges: Rc<Cell<usize>> = Rc::new(Cell::new(0));
-
     // Raw self pointer for the poll-fns. Discipline: after this we touch the
     // reactor ONLY through `reactor_ptr` (in `turn`) or through the `HostCtx`
     // host handle (in the poll-fns) — never as a live `&mut reactor` across a
@@ -1971,21 +2090,21 @@ where
     let host_ctx = make_host_ctx(reactor_ptr);
 
     // The supervisor (§2.12) — declared AFTER `host_ctx` so it (and the detached
-    // strands it owns, which borrow `host_ctx`/`pool`/`pending_bridges` through
+    // strands it owns, which borrow `host_ctx`/`pool` through
     // their cloned `ReactorEnv`) drops before those borrowed locals.
     let supervisor = Supervisor::new(SupervisorPolicy::default());
 
     let env = ReactorEnv {
         host: &host_ctx,
         pool: &pool,
-        pending_bridges: &pending_bridges,
+        bridge_join: Arc::clone(&bridge_join),
         supervisor: Rc::clone(&supervisor),
     };
     let mut future = Box::pin(make_future(&env));
     let mut cx = Context::from_waker(&task_waker);
 
     // The no-progress deadline anchor. It is RESET to "now" on every iteration in
-    // which a blocking branch is in flight (`pending_bridges > 0`), so the cap
+    // which a blocking branch is in flight (`bridge_join.live_count() > 0`), so the cap
     // never accumulates time against a legitimately-slow blocking I/O branch on
     // rayon — blocking I/O is uncapped by design (matching feature-off). The cap
     // therefore measures only contiguous no-bridge time and fires solely for a
@@ -2017,11 +2136,19 @@ where
         // has already run its policy + released its permit + freed its sub-tree).
         supervisor.drive(&mut cx);
 
-        // Return only when the top future is done AND every detached strand has
-        // drained — so launched effects genuinely run before exit (§2.12 / §B4).
-        if supervisor.is_empty()
+        // Return only when the top future is done, every detached strand has
+        // drained, and every blocking worker has acknowledged exit. The last
+        // condition retains the caller tree across a cancelled bridge.
+        let supervisor_empty = supervisor.is_empty();
+        let live_bridges = bridge_join.live_count();
+        #[cfg(test)]
+        observe_bridge_gate(top_result.is_some(), supervisor_empty, live_bridges, false);
+        if supervisor_empty
+            && live_bridges == 0
             && let Some(v) = top_result
         {
+            #[cfg(test)]
+            observe_bridge_gate(true, true, 0, true);
             return Ok(v);
         }
 
@@ -2043,7 +2170,7 @@ where
         // PRIMARY liveness rule is the armed-ness detector below.
         match oneshot_backstop_action(
             drive_mode,
-            pending_bridges.get(),
+            bridge_join.live_count(),
             no_progress_since.elapsed(),
             max_total_block,
         ) {
@@ -2094,7 +2221,7 @@ where
         // — it must re-poll, not panic).
         if top_result.is_none()
             && !woken.load(std::sync::atomic::Ordering::SeqCst)
-            && !reactor_is_armed(r, &pending_bridges, &supervisor, &pool)
+            && !reactor_is_armed(r, &bridge_join, &supervisor, &pool)
         {
             supervisor.clear();
             panic!(

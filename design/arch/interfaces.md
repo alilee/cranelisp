@@ -158,6 +158,44 @@ The complete folding, printing, quasiquote, and persistence consequences are
 elaborated in `annotated-sexp-node.md`; that document does not define a second
 carrier.
 
+### Reader-quote structural predicate (S121, user-approved 2026-09-01; resolves FIXME 0789's home question)
+
+The ONE structural classifier for the reader-quote family lives beside `Sexp`
+— a purely syntactic shape test (bare-symbol head + `len() == 2`, consulting
+neither shadow sets nor any resolver), which is exactly why it belongs with
+the datum rather than in either consumer (Principle 15; Principle 7):
+
+```rust
+// cranelisp-types, `crates/cranelisp-types/src/sexp.rs` — additive; no
+// serde presence (a classification, never persisted).
+//
+/// The reader-quote family head of a `Sexp::List`'s children, or `None`.
+/// CLOSED sum — exhaustive consumer matches are the safety feature (the
+/// `crates/cranelisp-types/CLAUDE.md` §Public-surface-mechanics exception
+/// class): a new quote head is a language change, and every walker must
+/// take an arm for it.
+pub enum QuoteHead { Quote, Quasiquote, Unquote, UnquoteSplicing }
+
+/// Structural recognition: `children.len() == 2` and `children[0]` is the
+/// bare symbol `quote` / `quasiquote` / `unquote` / `unquote-splicing`.
+pub fn quote_head(children: &[Sexp]) -> Option<QuoteHead>;
+```
+
+**Consumers (the three copies collapse to one):** the frontend quasiquote
+fold (`quasiquote.rs` — its crate-private `is_*` predicates delegate or
+retire), and int's two scope-aware walks through `src/expander.rs::quote_head`
+(the expander shield + the qualify shield, S115/FIXME 0718), which becomes a
+thin projection (int's local three-arm `QuoteHead` may merge
+`Unquote`/`UnquoteSplicing`; the types-level sum distinguishes them because
+the fold does). If the fold's and the shields' notion of "is a quote" ever
+diverge, a quoted subtree is double-desugared or mis-qualified
+(`design/int/quote-shield.md` §5) — single-sourcing the shape test is the
+structural close. **No parser redesign**: the reader still lowers `'x`/`` `x ``
+/`~x`/`~@x` to the list forms; this predicate only classifies them.
+`public-api.txt` delta: `cranelisp-types` +2 items, riding the one S121
+C1 regeneration (`symbol-table-lifecycle.md` §9); no frontend baseline delta
+(the predicates were never frontend surface).
+
 ---
 
 ## Module Declarations (Stage 2: extraction)
@@ -755,9 +793,9 @@ The codegen payload the backend used to consume from `CheckResult` has been redi
 
 **S84 generalisation (user-ratified 2026-06-16; FIXME 0374; BC §7 + Principle 20).** The S83 statement above — "a constrained template has no slot" — is the constrained-template *species* of the general invariant **"a def has a GOT slot ⟺ its type is fully concrete (`Type::is_concrete()`, no `Type::Var`)."** A *plain parametric/generic* def (`id : ∀a. a→a`, a `(Box a)`-result HOF) carries **no trait constraints** yet is **not** concrete, so it too must be slot-less; only its monomorphised instances (`id$Int`, `(Box Int)`) are slotted. The slot-allocation gate therefore tests **`is_concrete()`, not `constraints.is_empty()`** — the as-built S83 gate (`program.rs:947` single-sig / `:1143` multi-sig, with the reuse legs at `:919`/`:1129`/`:1312`) tested the latter and leaked a `Concrete { got_slot }` for a generic-unconstrained def carrying a `Type::Var`, which reached `classify(Type::Var)` → SIGSEGV (S84 Wave-0 `mono_tier2_generic_adt_field_through_hof_no_crash`). `Concrete { got_slot }` is constructed only when `is_concrete()`; the determined-but-non-concrete unconstrained generic def gets a slot-less `fn_state` sibling to `Constrained`. `Type::is_concrete()` is a `cranelisp-types` public item (the GOT-slot-eligibility predicate; one additive `public-api.txt` line). This is the typecheck-side structural complement of monomorphisation-from-roots (FIXME 0374) and 0375's codegen-side backstop. **The slot-less arm landed (S84 Wave 1, FIXME 0377):** a distinct `UserFnState::Polymorphic(Box<ParametricFn>)` variant, sibling to `Constrained`, carrying `ParametricFn { variant: DefnVariant, scheme: Scheme }` (the body `monomorphise_call` re-checks at concrete types — the same payload `ConstrainedFn` carries, minus the trait-dictionary semantics; a dedicated struct rather than a `ConstrainedFn` reuse so the *why*-distinction stays legible at every exhaustive matcher). `callable_got_slot()` answers `None` structurally; `defined_symbols()` includes it as a mono target (unlike `Constrained`, which is skipped). Both are additive `public-api.txt` lines; `UserFnState`/`DefKind`'s serde shape changing forces a `CACHE_SCHEMA_VERSION` 5→6 bump (`cranelisp-backend/src/cache/mod.rs`) in the same change-set.
 
-**S119 scoping of the S84 ⟺, re-ruled to target-universal (`/arch`, 2026-07-27; re-ruled 2026-07-28, user-directed).** At HEAD the biconditional holds only for **`DefKind::UserFn`**: generic-ADT `Constructor` entries (incl. the `IO.Bind` existential) and the one polymorphic `Primitive{Extern}` (`vec-len`) hold slots over non-concrete schemes under transitional licences (ctor representation-parametricity per I-CT′; the hand-written body's declared contract), and phrasing the invariant universally while those exceptions stood left it unassertable — the shadow in which the S119-censused `adt.rs`/`impl_check.rs` hand-mints hid. (Factual correction of the first ruling's text: `bind` and `catch-runtime-error` are slot-less `DefKind::PrimitiveExtern`, not slotted primitives.) **The target state eliminates the exceptions rather than partitioning the invariant**: the S84 ⟺ becomes universal and kind-free (`slot ⇒ is_concrete()`, whole-table) once the S120 ctor tranche retires the non-concrete ctor template slot (instances mint per instantiation under the ONE canonical mangler) and `vec-len` de-slots; the surviving polymorphic callables are the closed slot-less by-name ABI roster. Canonical statement + census + route: `design/arch/total-concreteness.md`; transitional record: BC §7 "S119 step-back ruling" + its re-ruling paragraph; register: `safety-invariants.md` §4 R11.
+**S119 scoping of the S84 ⟺, re-ruled to target-universal (`/arch`, 2026-07-27; re-ruled 2026-07-28, user-directed).** At HEAD the biconditional holds only for **`DefKind::UserFn`**: generic-ADT `Constructor` entries (incl. the `IO.Bind` existential) and the one polymorphic `Primitive{Extern}` (`vec-len`) hold slots over non-concrete schemes under transitional licences (ctor representation-parametricity per I-CT′; the hand-written body's declared contract), and phrasing the invariant universally while those exceptions stood left it unassertable — the shadow in which the S119-censused `adt.rs`/`impl_check.rs` hand-mints hid. (Factual correction of the first ruling's text: `bind` and `catch-runtime-error` are slot-less `DefKind::PrimitiveExtern`, not slotted primitives.) **The target state eliminates the exceptions rather than partitioning the invariant**: the S84 ⟺ becomes universal and kind-free (`slot ⇒ is_concrete()`, whole-table) once the ctor tranche — re-staged 2026-09-01 as an arm of the S121 C1-led unified-lifecycle wash — retires the non-concrete ctor template slot (instances mint per instantiation under the ONE canonical mangler) and `vec-len` de-slots; the surviving polymorphic callables are the closed slot-less by-name ABI roster. Canonical statement + census + route: `design/arch/total-concreteness.md`; transitional record: BC §7 "S119 step-back ruling" + its re-ruling paragraph; register: `safety-invariants.md` §4 R11.
 
-**Mono-instance linker identity is lossless by construction — a single-sourced, total mangler (S102, FIXME 0516; Principle 7 + Principle 20).** A monomorphic instance's slot (above) is one of its two structural identities; the other is its **mangled name** — the symbol-table key under which `register_mono_entry` inserts it and the `LinkerSymbol` the backend emits. That name MUST be a **total, collision-free function of the three distinguishing facts: the DEFINING module (`ModuleFullPath` — `home` when the fn is imported per FIXME 0355, else the current module), the bare fn name, and the recursively-mangled fully-concrete param signature.** The grammar is `{home}/{bare}${recursive-concrete-sig}` where the sig mangler recurses into every concrete `Type` variant (ADT type-args, `Fn` arg+return, `TyConApp`) so no distinguishing type-structure is dropped. **Collision-freedom is by representation (Principle 20): two instantiations that differ in any of the three facts mint different names; the illegal "two distinct instantiations, one name" state is unrepresentable.** The invariant was VIOLATED as-built along two axes — ADT type-args erased (`apply2@(Vec Int)` and `apply2@(Vec String)` both `apply2$Vec+Int` → the 0483 SIGBUS: two instantiations collapse to one body/slot, the surviving String-typed heap elem-dec runs on Int payloads) and home erased (two same-named imported generics `a/iden2`, `b/iden2` both `iden2$Int` → 0508 silent wrong-dispatch). Both are one bug: `build_mangled_name`/`concrete_type_name` dropping distinguishing information. The cure is **one canonical mangler, single-sourced (Principle 7)** — the three as-built stringly sites (`monomorphise.rs::build_mangled_name`/`concrete_type_name`, `program.rs::mangle_type`/`mangle_sig`, and the hand-rolled `seen`-dedup key at `program.rs:~3469`) unify onto it; `mangle_type` already recurses ADT args correctly and is the closer-to-canonical mirror. The name is an **opaque `String`/`LinkerSymbol` at every crate boundary** (produced in typecheck, consumed by name only through GOT-slot dispatch and the linker), so the grammar change is NOT a `public-api.txt` move — but the mangled name is the on-disk `.meta.json` entry identity, so it IS a `CACHE_SCHEMA_VERSION` bump in the same change-set. Any backend-side name that embeds a concrete signature (the `__inlwrap_{bare}_{sig}__` wrapper family, `ownership-codegen.md` §13.3 Ruling 1) MUST mangle that sig by the same total grammar, else it re-opens the mirror one level down.
+**Mono-instance linker identity is lossless by construction — a single-sourced, total mangler (S102, FIXME 0516; Principle 7 + Principle 20).** A monomorphic instance's slot (above) is one of its two structural identities; the other is its **mangled name** — the symbol-table key under which `register_mono_entry` inserts it and the `LinkerSymbol` the backend emits. That name MUST be a **total, collision-free function of the three distinguishing facts: the DEFINING module (`ModuleFullPath` — `home` when the fn is imported per FIXME 0355, else the current module), the bare fn name, and the recursively-mangled fully-concrete param signature.** The grammar is `{home}/{bare}${recursive-concrete-sig}` where the sig mangler recurses into every concrete `Type` variant (ADT type-args, `Fn` arg+return, `TyConApp`) so no distinguishing type-structure is dropped. **Collision-freedom is by representation (Principle 20): two instantiations that differ in any of the three facts mint different names; the illegal "two distinct instantiations, one name" state is unrepresentable.** The invariant was VIOLATED as-built along two axes — ADT type-args erased (`apply2@(Vec Int)` and `apply2@(Vec String)` both `apply2$Vec+Int` → the 0483 SIGBUS: two instantiations collapse to one body/slot, the surviving String-typed heap elem-dec runs on Int payloads) and home erased (two same-named imported generics `a/iden2`, `b/iden2` both `iden2$Int` → 0508 silent wrong-dispatch). Both are one bug: `build_mangled_name`/`concrete_type_name` dropping distinguishing information. The cure is **one canonical mangler, single-sourced (Principle 7)** — the three as-built stringly sites (`monomorphise.rs::build_mangled_name`/`concrete_type_name`, `program.rs::mangle_type`/`mangle_sig`, and the hand-rolled `seen`-dedup key at `program.rs:~3469`) unify onto it; `mangle_type` already recurses ADT args correctly and is the closer-to-canonical mirror. The name is an **opaque `String`/`LinkerSymbol` at every crate boundary** (produced in typecheck, consumed by name only through GOT-slot dispatch and the linker), so the grammar change is NOT a `public-api.txt` move — but the mangled name is the on-disk `.meta.json` entry identity, so it IS a `CACHE_SCHEMA_VERSION` bump in the same change-set. Any backend-side name that embeds a concrete signature MUST mangle that sig by the same total grammar, else it re-opens the mirror one level down. *(Corrected 2026-09-01: the `__inlwrap_{bare}_{sig}__` family previously cited here as the instance never existed in source — the live fn-as-value wrapper family is the span-keyed `__wrap_{name}_{disc}{start}_{end}__`, which embeds no signature, so the obligation currently binds zero backend names; it binds any future sig-keyed wrapper identity — e.g. `ownership-codegen.md` §13.3 Ruling 1's planned scheme — the moment one is introduced. `total-concreteness.md` §3.2.)*
 
 **The gate is TOTAL — no `monomorphisable-from-params` carve-out; test fns are mono roots (S84 Wave 1b, user-ratified 2026-06-16; FIXME 0378 issue 3; /arch + /int).** The slot⟺`is_concrete()` invariant is *unconditional*. The Wave-1 landing carried a pragmatic carve-out (`fn_type_is_monomorphisable_from_params`, `program.rs:181`) that kept a **result-only-polymorphic** def (`test-* : (Fn [] (Option a))`) `Concrete`-with-a-slot — because such a def has no call-site parameter to monomorphise *from*, and the `/run-tests` names-only discovery reader (`discover_test_names`, `src/session_v4.rs:2533`) found tests via `callable_got_slot()`, so a slot-less test fn would be stranded. The ruling retires this carve-out by making **discovery-driven entry points (test functions) explicit monomorphisation ROOTS**, the same way `main` is the program root: the root carries the discovery contract's expected entry type `(Fn [] (Option String))` (`test_scheme_is_eligible`, `src/session_v4.rs:2816`), and `pass4_monomorphise` mints a concrete `Concrete{slot}` instance from the polymorphic original at that type. This is no new boundary type — the minted instance is an ordinary `MonoDefn`/`Defn` `Concrete` `UserFn` entry, found through the existing symbol-table lookup + `callable_got_slot()` chokepoint. The cross-crate seam is **mechanism-only** (typecheck registers the root; int's names-only reader resolves to the concrete instance's name instead of the original's now-absent slot — preferred shape: the concretised entry registers under the bare name so the reader stays byte-identical). **No `cranelisp-types` change, no `public-api.txt` move, no cache bump** — the `Polymorphic` variant from FIXME 0377 already supplies the slot-less state the now-slot-less result-only-polymorphic def lands in. Full statement: BC §2 "The slot gate is TOTAL" + the mono-root rule + the discovery-seam paragraphs.
 
@@ -771,9 +809,9 @@ The codegen payload the backend used to consume from `CheckResult` has been redi
 
 **`ModuleEntry::Def.codegen_view` — the concrete-boundary threading field (S84 concrete-boundary arc Phase 3, threading shape LANDED; `design/arch/concrete-boundary-type.md` §3.0/§4 Phase 3).** The threading decision — how `MonoExpr` reaches the backend per codegen-bound entry — is ruled **option (a), additive field**: `ModuleEntry::Def` gains `codegen_view: Option<MonoDefnVariant>` (`crates/cranelisp-types/src/module.rs`) **alongside** the existing `ast: Option<DefnVariant>`. The backend's Phase-3 read path consumes `codegen_view`'s `MonoDefnVariant.body: MonoExpr` — `ty: ConcreteType` on every node, so **no `Type`/`Var` on the read path by construction** (Principle 18/20). Read through `ModuleEntry::codegen_view(&self) -> Option<&MonoDefnVariant>` (`None` for non-`Def` and non-codegen entries); populated via `DefBuilder::codegen_view(self, MonoDefnVariant) -> Self`. **NOT a type-swap of `ast`** (`Option<DefnVariant>` → `Option<MonoDefnVariant>` would break ~26 literal-construction sites + the `Defn`-reconstruction path at once — a non-green cascade); the additive field defaults `None`, keeping the build green and letting /dev migrate the read path incrementally. **NOT a separate structure `compile_to_module` takes** (rejected — that re-introduces the transitional parallel-`Vec` shape at the crate boundary; the view belongs ON the entry, the symbol table being the per-symbol codegen-input carrier, Principle 7). **Populated for BOTH codegen-bound cases:** monomorphised instances (the mono-population seam moves the already-built `MonoDefnVariant` off the transitional `CheckState.mono_variants` parallel `Vec` onto the entry — `register_mono_entry`), AND ordinary concrete (`UserFnState::Concrete`) defns (the same `MonoExpr::from_expr` over the annotated body at the body-check `.ast(...)` sites). Template kinds / primitives / special forms get `None` — correctly not codegen targets. **Landed:** the field + accessor + setter (+3 additive `public-api.txt` lines), `CACHE_SCHEMA_VERSION` **7 → 8** (the serialized `ModuleEntry::Def` shape changed; `#[serde(default)]` field, no pointer/`C` state). The backend's consumption (classify-becomes-total, the ~13 `inferred_type` read sites → `MonoExpr.ty()`, `compile_to_module` reads `codegen_view`, the single relocated `expect` backstop) is /dev(backend) — FIXME 0391; the typecheck population move is /dev(typecheck) — FIXME 0392.
 
-**The callable-slot witness — `CallableSlot` + `SymbolTable::mint_callable_slot` (S119 types-first slice, landed; `design/arch/concreteness-types-first.md` §3).** The slot⟺concrete invariant's mint side becomes vocabulary: `CallableSlot` is an opaque `#[serde(transparent)]` newtype whose field is private — outside `cranelisp-types` a value is obtainable ONLY from the fallible `SymbolTable::mint_callable_slot(scheme)` (checks `scheme.ty.is_concrete()` via the witness-producing `ConcreteType::from_type` AND allocates from `next_got_slot` in one act; refusals are cursor-stable), from `CallableSlot::rebind(scheme)` (the Decision-31 REPL slot-reuse path, re-checked), or from deserialization (which is why the cache load boundary re-checks restored slot-carrying entries — the backend-wash `CacheStale::NonConcreteSlot` arm). `SlotMintError { NotConcrete, Exhausted }` carries the located refusal. The kind-field retypes onto `CallableSlot` — and `DefKind::Constructor`'s flip onto the landed-DORMANT `CtorState { Template, Concrete { got_slot: CallableSlot } }` sum (wire shape pinned by `module/tests.rs::ctor_state_serde_shape_pin`) — are the S120 wash (FIXME 0931); `allocate_got_slot` stays transitionally public until those callers re-route, then demotes. Companion projections landed with it: `heap::ctor_field_types_at(table, ctor_key, args)` (the instantiation-substituting ctor-field derivation — concrete-or-refuse via `CtorFieldsAtError`, never fabricating; the backend's `unwrap_or(Type::Int)` walk retires onto it, R-13) and `ConcreteType::result_root()` (the ONE single-hop IO-head-strip rule, FIXME 0898 — backend `result_roots` and int `release_key` re-express over it in the wash).
+**The callable-slot witness — `CallableSlot` + `SymbolTable::mint_callable_slot` (S119 types-first slice, landed; `design/arch/concreteness-types-first.md` §3).** The slot⟺concrete invariant's mint side becomes vocabulary: `CallableSlot` is an opaque `#[serde(transparent)]` newtype whose field is private — outside `cranelisp-types` a value is obtainable ONLY from the fallible `SymbolTable::mint_callable_slot(scheme)` (checks `scheme.ty.is_concrete()` via the witness-producing `ConcreteType::from_type` AND allocates from `next_got_slot` in one act; refusals are cursor-stable), from `CallableSlot::rebind(scheme)` (the Decision-31 REPL slot-reuse path, re-checked), or from deserialization (which is why the cache load boundary re-checks restored slot-carrying entries — the backend-wash `CacheStale::NonConcreteSlot` arm). `SlotMintError { NotConcrete, Exhausted }` carries the located refusal. The kind-field retypes onto `CallableSlot` — and `DefKind::Constructor`'s flip onto the landed-DORMANT `CtorState { Template, Concrete { got_slot: CallableSlot } }` sum (wire shape pinned by `module/tests.rs::ctor_state_serde_shape_pin`) — were the pinned per-kind wash (FIXME 0931), **superseded 2026-09-01 by the adopted unified lifecycle machine** (`symbol-table-lifecycle.md`; §"Module System" banner above): the slot lands on `Life::Concrete` via the same witness mint, the dormant `CtorState` deletes unwired, and `allocate_got_slot` retires into the settlement funnel in the S121 C1-led wash. Companion projections landed with it: `heap::ctor_field_types_at(table, ctor_key, args)` (the instantiation-substituting ctor-field derivation — concrete-or-refuse via `CtorFieldsAtError`, never fabricating; the backend's `unwrap_or(Type::Int)` walk retires onto it, R-13) and `ConcreteType::result_root()` (the ONE single-hop IO-head-strip rule, FIXME 0898 — at HEAD the rule has **three** encodings, not two: the method itself, which has zero production callers until the collapse, plus the two literal twins — backend `compile_to_module`'s `result_roots` map (S121 C4 bundle B6) and int's `src/result_owner.rs::strip_io_head`, sole caller `release_key` (S121 C6 bundle N6b) — both re-express over the method and delete; the filing deletes only when both are collapsed).
 
-**Written-impl cache carrier — `WrittenTraitImpl` + `enrol_written_trait_impl` + `trait_impl_key` (S119, FIXME 0869; canonical: `design/arch/trait-impl-cache-carrier.md`).** The writer-side persistence projection of the Decision-45 discovery shell: `SymbolTable.written_trait_impls: Vec<WrittenTraitImpl>` (serde-visible, **no `#[serde(default)]`** — a pre-carrier sidecar is a hard parse error, wholesale invalidation), appended by typecheck at the `check_trait_impl` success point, consumed at restore through the ONE idempotent enrolment primitive `enrol_written_trait_impl` (Enrolled / AlreadyEnrolled / hard-error-on-divergence — never a silent pick) over the trait home's table. `trait_impl_key(&FQTypeName, &FQTraitName)` is the hoisted ONE mint of the `impl$` storage key (the `member_key` pattern; the two hand-rolled typecheck format sites re-point in the wash), discharging the R4 census for that family. The `CACHE_SCHEMA_VERSION` 23→24 window rides the introducing change-set — the ONE S119 bump, which the injective `got_data_symbol_name` escape (FIXME 0748 — cached `.o` relocation names change) and the in-sprint downstream waves share.
+**Written-impl cache carrier — `WrittenTraitImpl` + `enrol_written_trait_impl` + `trait_impl_key` (S119, FIXME 0869; canonical: `design/arch/trait-impl-cache-carrier.md`).** The writer-side persistence projection of the Decision-45 discovery shell: `SymbolTable.written_trait_impls: Vec<WrittenTraitImpl>` (serde-visible, **no `#[serde(default)]`** — a pre-carrier sidecar is a hard parse error, wholesale invalidation), upserted by typecheck at the successful `register_trait_impl` registration seam (`traits/impl_check.rs:94`, invoked from `program/register.rs:66`; the formerly-cited `check_trait_impl` was a phantom — no such symbol exists; corrected S121 Phase 3), consumed at restore through the ONE idempotent enrolment primitive `enrol_written_trait_impl` (Enrolled / AlreadyEnrolled / hard-error-on-divergence — never a silent pick) over the trait home's table. Fresh registration stages the shell with an opaque retain-prior token, rolls it back with method entries on failure, and upserts the writer record only after every method settles; restore never uses that provisional path. `trait_impl_key(&FQTypeName, &FQTraitName)` is the hoisted ONE mint of the `impl$` storage key (the `member_key` pattern; the two hand-rolled typecheck format sites re-point in the wash), discharging the R4 census for that family. The `CACHE_SCHEMA_VERSION` 23→24 window rode the introducing change-set — the ONE S119 bump, which the injective `got_data_symbol_name` escape (FIXME 0748 — cached `.o` relocation names change) and the in-sprint downstream waves shared. **S121 status:** C3 owns the producer/transaction completion and C6 N3 the restore enrolment, with no further schema increment (`trait-impl-cache-carrier.md` §9 — the C6 H1 blocker's discharge).
 
 **Ownership-inference carriers — `Mode`/`ModeSummary` + the `PrimitiveBody` reshape (S102 CS-A, landed; `design/arch/ownership-inference.md` §3.3; typecheck needs-list `design/typecheck/ownership-inference.md` §13.1; FIXME 0476).** The single increment-I `cranelisp-types` change-set (one `CACHE_SCHEMA_VERSION` bump, 11 → 12). New module `crates/cranelisp-types/src/ownership.rs`: the mode lattice **`Mode { Copy, Borrowed, Owned }`** (Owned = default = the Decision-24 ⊤ point), **`ResultMode { Fresh, ProjectionOf(i), AliasOf(i) }`**, **`ParamFlow { Consumed, IntoResult, Retained }`**, and the per-callable **`ModeSummary`** — ABI-bearing half (`param_modes`, `result`; compared by `abi_eq`/`abi_eq_opt`, the ONE definition serving the R3 summary-diff gate) + advisory half (`param_flow`, `spark_ops`, `result_unique`; sound to ignore). Full `Eq` (fixpoint change detection); every field `#[serde(default)]`; **⊤-on-absence lives in ONE home** — the conservative-read accessors `param_mode(i)`→`Owned`, `param_flow(i)`→`Retained`, `spark_op(i)`→`true`; no consumer indexes the vectors directly. The summary rides the **callable `DefKind` variants** (the S83 slot precedent: `UserFnState::Concrete`, `Primitive`, `Constructor`, `PlatformEffect` — non-callable kinds carry no summary field by construction) read/written via `ModuleEntry::mode_summary()` / `set_mode_summary()` (did-write bool), plus `MonoDefnVariant.mode_summary` as the compile-in-hand carrier; `DefKind::Primitive`'s slot doubles as the **hand-declared fact table** (spine §3.1(a), Principle 19 — same carrier, no separate type). Advisory **site facts** ride `MonoExpr` alloc/capture nodes (`escapes`/`confined`/`unique_static` on `StringLit`/`Lambda`/`Apply`/`VecLit`/`ConstrADT`, `provenance: Option<Symbol>` on `Apply` + `MonoMatchArm`; all `#[serde(default)]` = `None` = conservative); the per-entry **`value_use: bool` mark** rides `ModuleEntry::Def` (accessors `value_use()`/`set_value_use()`). The **FIXME-0476 representation cure rides the same bump**: `DefKind::Primitive { got_slot }` reshapes to `Primitive { body: PrimitiveBody, mode_summary }` with `PrimitiveBody::Extern { got_slot, borrowed_sibling_slot: Option<usize> }` (the §3.1(b) borrowed-convention sibling carrier — Extern-arm-only, so inline-with-sibling is unrepresentable) vs `PrimitiveBody::Inline` (slot-less **by construction** — `callable_got_slot()` answers `None` structurally; the allocated-but-NULL phantom-slot class is unrepresentable one level down from S83); the new **`ModuleEntry::is_callable_target()`** (slot-dispatched ∪ inline-dispatched) is the resolution stop condition replacing `callable_got_slot().is_some()`, with `DefKind::primitive(slot)` as the common-shape convenience ctor. The read-once **`CRANELISP_NO_OWNERSHIP`** gate relocated here as `ownership_analysis_off()` (needs-list item 12: typecheck's pass entry and backend's manifest key + emission gates read ONE polarity through ONE function — Principle 7; `cranelisp-backend::cache::manifest::no_ownership_enabled` now delegates). CS-A is **carrier-only**: as of the landing, `PrimitiveBody::Inline` has zero constructors and `mode_summary`/site facts are written by nothing — the S102 B1-be change-set (backend+primitives) flips the vec trio to `Inline` and retires the S101 name-list resolver; typecheck CS-1..4 produce summaries. `public-api.txt` regenerated (cranelisp-types only; the six consumer baselines verified unchanged).
 
@@ -797,6 +835,30 @@ pub enum ResultMode {
 ```
 
 Same-change-set cascade (why it does NOT land at Phase 3): the variant is serde-visible on persisted summaries ⇒ **`CACHE_SCHEMA_VERSION` 19→20** in `cranelisp-backend/src/cache/mod.rs`; the **0621 `callees` → `storage_fq()` rider shares the ONE bump window** (two persisted-meaning changes, one schema flip — a cache written between two separate bumps would carry schema-20 with alias `callees`); types `public-api.txt` +1 line; the truthful `ownership_facts.rs` declarations (`vec-set`/`vec-push` → `MayAliasOf(0)`) and the prelude-fallback-aware ownership envs land with it (a1 without a2 has no producer; a2 without a3 is dead code — §3.7). Consumer census, pinned 2026-07-17: **one compiler-forced exhaustive match** — `cranelisp-typecheck/src/ownership/transfer.rs:592–609` gains the `MayAliasOf(k)` arm (join of `Fresh` with `arg_origins[k]`; a param-reaching arg yields `Origin::MayParam`, never collapses to `Fresh` — the 0520 rule) — and **exactly two grep escapes** that compile silently and are each safe-direction for the new variant: backend `return_is_fresh_by_summary` (`fn_compiler.rs:1722`, `== Fresh` ⇒ `protect_return_value` KEPT) and `ModeSummary::is_abi_conservative` (`ownership.rs:201`, `== Fresh` ⇒ `MayAliasOf` classifies non-conservative). `abi_eq` (`ownership.rs:194`) compares two carried values variant-agnostically — safe by construction (`MayAliasOf(0) ≠ Fresh` is an R3 ABI-changing redefinition, which is correct). Sweep confirmed **no third escape** (`uniqueness.rs` hits are comments; `transfer.rs:546` matches `Origin`, not `ResultMode`); `/review` re-runs the grep on the landing change-set. The producer flip rides the same wave: `origin_to_result_mode` (`transfer.rs:237–252`) publishes `MayAliasOf(idx)` for **BOTH** `MayParam` body origins — `projection:false` (was hard `AliasOf`) **and** `projection:true` (was hard `ProjectionOf`; S111 Phase-3 `/arch` ruling on the `/design`(typecheck) proposal — a may-projection is a conditional claim, and §3.7's reservation clause already restricts `AliasOf`/`ProjectionOf` to provable unconditional claims). The unconditional arms stay: `Origin::Root → AliasOf`, `Origin::Projection → ProjectionOf` (the flagship bare-accessor precision is untouched). The collapse is honest under the variant claim above (identity-or-view) and retain-side-only: both consumer reads are indifferent to the identity-vs-view distinction at the May point (the transfer join yields a protected `MayParam` origin; the backend read is binary `== Fresh` ⇒ protect kept). The mode enums' deliberate **no-`#[non_exhaustive]` exception** is recorded in `ownership.rs`'s module rustdoc §"Exhaustiveness discipline" + the types `CLAUDE.md` exception list (S111 Phase 3).
+
+**`ResultMode::MayAliasAny` — the result axis's ⊤; types half LANDED S121, consumers pending in the same wave (`design/arch/ownership-inference.md` §6.1; interior design `design/typecheck/ownership-inference.md` §19).** The variant FIXME 0521 deferred "until a reader arrives" — the reader turned out to be the producer itself. Before it, "the result reaches SOME parameter, which one undetermined" had no representation, so `origin_to_result_mode`'s lowest-index representative had no join target: a parameter-permuting self-call (`(defn f [i b] (if (eq-i64 i 0) b (f b i)))`) walked the involution `r ↦ 1 − r` forever, hit the visit cap, and "recovered" by publishing `fixpoint::top()` — whose `result: Fresh` is the axis's STRONGEST claim, not its ⊤ — for every callable in the module. The callee then elided its return protect on a body that returns a parameter (`return_is_fresh_by_summary`), releasing the accumulator at scope exit and returning a freed pointer: the S121 f4 SIGSEGV and the v23 garbage values. The exact enum diff, one added variant, nothing else moved:
+
+```rust
+// crates/cranelisp-types/src/ownership.rs — ONE added variant
+pub enum ResultMode {
+    #[default]
+    Fresh,
+    ProjectionOf(usize),
+    AliasOf(usize),
+    MayAliasOf(usize),
+    /// The result EITHER is a fresh value OR reaches into SOME parameter —
+    /// which one is not determined (the join of may-alias claims on distinct
+    /// parameters). The ⊤ of the result axis: the consumer must keep
+    /// protection and must not assume any particular parameter is reached.
+    /// Carries no index, so the cache's persisted-index (`k < arity`) check
+    /// does not apply to it. (§19.2; S121.)
+    MayAliasAny,
+}
+```
+
+Named `MayAliasAny` rather than 0521's recorded `AliasOfAny` because it is the join of *conditional* claims, and the `AliasOf` prefix is reserved for provable unconditional ones (§3.7's reservation clause). **`Default`, `abi_eq`, `abi_eq_opt` and `is_abi_conservative` are unchanged** — `MayAliasAny ≠ Fresh` makes it non-conservative and ABI-distinct by construction, exactly as `MayAliasOf` landed, so a `MayAliasOf(k) → MayAliasAny` redefinition is correctly an R3 ABI change. Generated baseline effect: **exactly +1 line, 0 removals**, `pub cranelisp_types::ResultMode::MayAliasAny`, sorted between `Fresh` and `MayAliasOf(usize)`; no other crate's baseline moves (`result_mode_param_index` is `pub(crate)`, typecheck's readers are private). Types unit pin: `ownership/tests.rs::may_alias_any_is_top_indexless_non_conservative_and_serde_stable` (⊤-ness, index-lessness, non-conservative at both `== Fresh` reads, persisted unit-variant spelling, ABI-distinctness from `Fresh` and from every `MayAliasOf(k)`), proven to detect against two planted faults — `is_abi_conservative` admitting `MayAliasAny`, and a serde rename — with the negative leg green.
+
+**Consumer census, verified at source 2026-09-07 — the wave is types → typecheck → backend cache, and the tree does NOT compile between the reservations by design** (`ResultMode` carries no `#[non_exhaustive]`, so the variant is what forces each consumer match to be revisited). **Two compiler-forced exhaustive matches**, both outside this reservation: `cranelisp-typecheck/src/ownership/transfer.rs` (`walk_apply`'s conditional-result arm + `origin_to_result_mode`/`join_origin`'s reach-set join — §19.3/§19.4) and `cranelisp-backend/src/cache/serialize.rs::result_mode_param_index` (`MayAliasAny => None`, no index ⇒ no arity check, plus its R6 negative cell). One further forced match is a backend **test** helper, `compiler/rc_emission/return_ownership_tests.rs::forwarded_result_clif` (arms `Fresh` / `ProjectionOf(_)` / `AliasOf(_) | MayAliasOf(_)`, no `_` arm). **Exactly two silent grep escapes**, both safe-direction and unchanged: backend `return_is_fresh_by_summary` (`fn_compiler.rs:3353`, `== Fresh` ⇒ `protect_return_value` KEPT) and `ModeSummary::is_abi_conservative` (`ownership.rs`, `== Fresh` ⇒ `MayAliasAny` classifies non-conservative). The S121 re-run of the standing `_ =>`/`== Fresh` escape grep confirmed **no third binary read** (`src/redefine.rs::format_ownership_abi` uses `{:?}` — a display, not a decision; `cranelisp-primitives/src/ownership_facts.rs` only constructs, and no leaf declares the new point). Platform ABI, DLL manifest and `ABI_VERSION` have no `ModeSummary` contact at all. **Schema:** the variant is serde-visible on persisted summaries ⇒ **`CACHE_SCHEMA_VERSION` 26→27** with its version-log entry, owned by the backend-cache reservation — also a soundness invalidation, because a sidecar written by the pre-fix tree may carry the unsafe present-`Fresh` ⊤ for a permuting body.
 
 ### Residual `CheckResult` — typecheck-internal only
 
@@ -975,7 +1037,26 @@ post-`build_form` consumption path can name the type uniformly.
 `build_form` returning `Vec<ParsedEntry>` carrying
 `ParsedEntry::Macro { info: DefmacroInfo, .. }`.
 
-### `check_forms` (Sprint 66, FIXME 0160 + Decision 44 amended FIXME 0167 + 2026-05-13 third amendment)
+### `check_forms` (Sprint 66; Decision 44 amended 2026-05-13 and 2026-09-03)
+
+The 2026-09-03 macro-checkpoint amendment narrows “cluster” in this section to
+the fully expanded **non-macro** HM entry set. A source-ordered `defmacro`
+publishes its parent, clauses, and defining-module generated-realization rows
+as a complete module-local checkpoint after the full expansion-time dependency
+and generated-realization closure has typechecked and codegenerated
+successfully. A later failure, including the §18 dependent cure, does not roll
+it back.
+Dependency modules publish independently. This does not split the non-macro
+forward-reference scope and adds no typecheck or types facade item. A macro
+replacement with fewer clauses supplies explicit absent-key `ChangeAbi`
+decisions in that same publication. The existing decision means retirement of
+the live prior ABI generation: a staged slotted replacement receives a fresh
+slot, while a key wholly absent from staging removes the binding with no
+replacement. Omission alone never deletes. The removed row returns its owner
+and prior slot through the existing `PublicationRecord`, keeps the old GOT
+pointer frozen behind an ABI-changing tombstone, and is excluded from the new
+compiled-owner set. This is a semantic extension of the existing facade with
+no new item, signature, re-export, baseline line or serialized shape.
 
 The pre-S66 `check_form` mutated the symbol table in-place and was
 merged via a typecheck-internal `merge_form_result()` helper. FIXME
@@ -1033,11 +1114,13 @@ same shape as the canonical store, used to absorb cross-pass write-side
 intent before atomic commit. `ReplSnapshot` covers type-var-pool
 rollback inside `CheckState` between calls.
 
-**Cluster atomicity**. The orchestrator drives Pass 1 across every
+**Cluster atomicity**. The orchestrator drives Pass 1 across every non-macro
 `ParsedEntry` in a cluster, then Pass 2 across every `ParsedEntry` in
 the cluster, then commits staging into live on success. A cluster is one
-form (non-`begin` REPL input), the contents of `(begin form₁ … formN)`
-(REPL explicit cluster), or a file's non-structural forms (batch). See
+non-macro form (non-`begin` REPL input), the non-macro contents of
+`(begin form₁ … formN)` (REPL explicit cluster), or a file's fully expanded
+non-structural, non-macro forms (batch). Macro checkpoints encountered while
+forming that set are outside its rollback domain. See
 `bounded-contexts.md` §6 (int) + `design/int/s78-entry-module.md` +
 `src/cluster.rs` rustdoc for the orchestrator side (the `facades/int.md`
 facade retired S81 W-Retire → BC §6 + `design/int/` + source rustdoc),
@@ -1135,34 +1218,38 @@ pub struct FieldInfo {
 
 No changes from v1.
 
-### ADT-entry builder — `AdtCtorSpec` + `build_adt_entries` (S110 R-2)
+### ADT recipes — `AdtCtorSpec` + `build_adt_entries`
 
-The ONE derivation of the symbol-table entry set an ADT registration produces
-(`crates/cranelisp-types/src/adt_build.rs`; Principle 24 "Resolve once" —
-instance R-2 of the registration-mirror class). Two writers previously
-maintained the shape as a near-line-for-line mirror — typecheck
-`adt.rs::register_type_def_with_ctor_infos` (user `deftype`) and int
-`src/bootstrap.rs::register_synth_adt` (synthetic seeds: `Option`, `Pair`,
-`Result`, `IO`, `SList`/`Sexp`, `Trace`) — and S109's canonical-key change had
-to be hand-applied to BOTH (the `src/` audit R-2 finding). Now both are thin
-callers.
+`build_adt_entries` is the ONE pure derivation shared by user `deftype`
+registration and synthetic bootstrap seeds
+(`crates/cranelisp-types/src/adt_build.rs`; Principle 24). It returns slotless
+recipes: allocation and callable publication belong exclusively to the
+`SymbolTable` settlement funnels defined by `symbol-table-lifecycle.md` §4.4.
 
 ```rust
-/// One constructor of an ADT registration: caller-RESOLVED field types
-/// (FieldInfo), pre-allocated got_slot (the builder is pure — slot
-/// allocation is table state), ctor docstring, internal flag. Tag is
-/// positional, assigned by build_adt_entries.
 #[non_exhaustive]
 pub struct AdtCtorSpec {
     pub name: Symbol,
     pub fields: Vec<FieldInfo>,
     pub docstring: Option<String>,
     pub internal: bool,
-    pub got_slot: usize,
 }
-impl AdtCtorSpec { pub fn new(..) -> Self }
 
-/// Pure: ADT description → ordered (key, entry) list.
+#[non_exhaustive]
+pub struct AdtCallableSpec {
+    pub scheme: Scheme,
+    pub param_names: Vec<Symbol>,
+    pub docstring: Option<String>,
+    pub origin: CallableOrigin,
+    pub synth: SynthSpec,
+    pub visibility: Visibility,
+}
+
+pub enum AdtEntrySpec<C: CodeStore = ()> {
+    Callable(AdtCallableSpec),
+    Binding(Binding<C>),
+}
+
 pub fn build_adt_entries<C: CodeStore>(
     fqtn: &FQTypeName,
     type_params: &[Symbol],
@@ -1170,569 +1257,383 @@ pub fn build_adt_entries<C: CodeStore>(
     adt_docstring: Option<&str>,
     ctors: &[AdtCtorSpec],
     visibility: Visibility,
-) -> Vec<(Symbol, ModuleEntry<C>)>
+) -> Vec<(Symbol, AdtEntrySpec<C>)>
 ```
 
-The builder owns: the product/sum split (S79 Option 3a — single ctor named as
-the type ⇒ one dual-facet `Def` with `type_def: Some(..)`, no alias, no
-`TypeDef`), ctor schemes (`forall vars. (Fn [fields] ADT)` / bare `ADT` for
-nullary), the synthesised `DefnVariant` body wrapping `Expr::ConstrADT`,
-canonical `member_key(Type, Ctor)` keying + the bare-name `Import` alias edge
-per sum ctor (S109 dotted-ctor keying), the product docstring fallback, and
-the `TypeDefInfo` computed ONCE. Callers keep: GOT-slot allocation (rides in
-on the spec), insertion policy (bootstrap inserts verbatim; typecheck runs its
-§8.6.5 contest classification on the returned `Import` alias pairs — the only
-`Import` shape the builder emits, so structurally discriminable), the
-recursive-field pre-seed, and product field-accessor synthesis
-(typecheck-only). Ordering contract: per ctor in tag order, canonical `Def`
-before its bare alias; sum `TypeDef` last — a sequential inserter preserves
-as-built semantics. No serde-shape change (existing entry shapes only; no
-`CACHE_SCHEMA_VERSION` impact). Caller wiring is the S110 Phase-5 coordinated
-`/dev` change-set (`design/arch/backend-keyed-consumer.md` §6).
+The builder owns the product/sum split, constructor schemes, synthesised
+`DefnVariant` bodies, positional tags, `CallableOrigin::Ctor`, canonical
+`member_key(Type, Ctor)` keys, bare-name `NameCandidate` exposures, product
+docstring fallback, and the single `TypeDefInfo` derivation. A product yields
+one callable recipe whose origin carries the type facet; a sum yields each
+canonical callable recipe followed by its bare alias and ends with its
+`Decl::Type` binding.
+
+Callers keep only stateful policy: resolve field types before building specs,
+submit each `Callable` recipe to `install_template` or `install_concrete`, run
+the §8.6.5 contest policy for bare aliases, and perform typecheck-only
+recursive pre-seeding and product-accessor synthesis. No raw slot crosses this
+boundary, and the builder never constructs a callable `Binding`. The generic
+constructor control is
+`adt_build/tests.rs::generic_constructor_recipe_has_no_slot_or_lifecycle_state`.
+The result envelope is generic over the target table's `CodeStore`, so its
+non-callable `Binding<C>` values install directly; consumers must not unwrap
+and reconstruct bindings or depend on a types-private conversion. This is a
+public-signature correction within C1's existing `cranelisp-types` baseline
+regeneration, with no cache-schema or platform-ABI effect.
 
 ---
 
 ## Module System
 
-### Symbol Table
+> **S121 unified lifecycle boundary (architecture, candidate facade and A1 publication approved).**
+> The user approved the `Binding -> Decl -> Callable -> Life` representation,
+> table-owned enforcement of lifecycle/slot transitions, and module-atomic
+> staged/live publication on 2026-09-02. The user also approved one symbol map
+> whose per-spelling entry contains its canonical binding and visible candidate
+> references; the parallel trait-method map is rejected. Integration chooses
+> semantic commit policy; the table validates and applies all binding/slot moves
+> together and returns displaced compiled-code owners. Packet B's exact
+> per-spelling candidate carriers and resolution facade were approved on
+> 2026-09-02. The same-day realization correction explicitly approved
+> `all_name_candidates`, primitive installer ownership arguments, and
+> `Life::Inline { mode_summary }`. Packet A1's exact publication methods and
+> owner-conservation carriers were accepted and baselined on 2026-09-02.
+
+### Symbol table and binding tree
 
 ```rust
-/// Per-module symbol table. Pure data. Generic over the per-function code
-/// store `C` and per-module linker store `L` per `pipeline-v4.md` §9.1.
-///
-/// Both `C` and `L` default to `()` so that crates that do not handle
-/// compiled code (typecheck, frontend, the bulk of backend) work with
-/// `SymbolTable` (i.e. `SymbolTable<(), ()>`) and never see the parameters
-/// in their signatures. The integration layer instantiates
-/// `SymbolTable<Code, Linker>` where `Code` and `Linker` are concrete types
-/// chosen in `src/session_v4.rs`. See Decision 32 for the trait shape.
-///
-/// Structural declarations (`imports`, `exports`, `platforms`, `submodules`)
-/// retain the *original specification* of the module's `(import …)` /
-/// `(export …)` / `(platform …)` / `(mod …)` forms — the per-symbol
-/// `ModuleEntry::Import` entries are the *resolved effects* of imports.
-/// See Decision 33 (Step 5a). The `ModuleStructure` parallel store in
-/// `src/save.rs` (Sprint-57 transitional shape) dissolves at Step 5a.
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymbolTable<C: CodeStore = (), L: LinkerStore = ()> {
     pub path: ModuleFullPath,
-    pub symbols: HashMap<Symbol, ModuleEntry<C>>,
-
-    // --- GOT (runtime memory for code pointers) ---
-    /// Next available GOT slot index for this module (module-local).
-    pub next_got_slot: usize,
-    /// Per-module Global Offset Table. Created at module registration;
-    /// base address stable for the module's lifetime. `Arc` for cheap
-    /// codegen-worker handles.
-    #[serde(skip, default = "default_got_arc")]
-    pub got: std::sync::Arc<GotTable>,
-
-    // --- Structural declarations (Step 5a; Decision 33) ---
-    /// Original `(import [module [names...]])` declarations in source order.
-    /// Used by `src/save.rs` for `.cl` regeneration (§6.4) and by the
-    /// import-resolver. Cf. per-symbol `ModuleEntry::Import` entries which
-    /// are the *resolved* effects.
+    pub module_preamble: Option<String>,
+    symbols: HashMap<Symbol, SymbolEntry<C>>, // private; writes use funnels
+    retired_slots: Vec<RetiredSlot>,       // private persistent tombstones
+    pub next_seq: u64,
+    pub got: Arc<GotTable>,                // serde-skip runtime slab
     pub imports: Vec<ImportSpec>,
-    /// Original `(export [names...])` declarations in source order.
     pub exports: Vec<ExportSpec>,
-    /// Original `(platform "name")` declarations in source order.
     pub platforms: Vec<PlatformSpec>,
-    /// Original `(mod child)` declarations in source order; `is_private`
-    /// distinguishes `(mod- child)`.
     pub submodules: Vec<ModDecl>,
-
-    // --- Cache schema version (Step 5b; Decision 34) ---
-    /// Schema version of the serialised symbol table. Bumped on every
-    /// shape-changing field addition / deletion / type change.
-    /// Defaults to 0 on legacy caches (no field) → triggers cache-stale.
-    #[serde(default)]
+    pub written_trait_impls: Vec<WrittenTraitImpl>,
     pub schema_version: u32,
-
-    // --- Cached object code (module-level .o loading) ---
-    /// Mapped `.o` code for cache-hit modules. `#[serde(skip)]` — runtime
-    /// state, re-derived on cache-hit load. `L = ()` for crates that don't
-    /// handle linker state.
-    #[serde(skip)]
-    pub linker: Option<L>,
+    pub linker: Option<L>,                 // serde-skip
 }
 
-/// Empty marker trait for the per-function code store. Defined in
-/// `cranelisp-types` so `SymbolTable` can be generic without pulling
-/// Cranelift types into the contract surface (Decision 32).
-///
-/// `()` implements both `CodeStore` and `LinkerStore` via the blanket
-/// `impl<T: Send + Sync + 'static>`. Concrete types live in the
-/// integration layer or `cranelisp-backend` — methods that compile,
-/// evict, or reclaim code go on those types, not on the trait.
-pub trait CodeStore: Send + Sync + 'static {}
-impl<T: Send + Sync + 'static> CodeStore for T {}
-
-/// Empty marker trait for the per-module linker store. Same shape as
-/// `CodeStore` but kept distinct so `SymbolTable<C, L>` has two
-/// independent type parameters (per-function reclaim and per-module
-/// reclaim are separate concerns; cache-restore can supply a `Linker`
-/// without supplying a `Code` shape).
-pub trait LinkerStore: Send + Sync + 'static {}
-impl<T: Send + Sync + 'static> LinkerStore for T {}
-
-fn default_got_arc() -> std::sync::Arc<GotTable> {
-    std::sync::Arc::new(GotTable::new())
+// Private implementation shape; approved 2026-09-02.
+struct SymbolEntry<C = ()> {
+    binding: Option<Binding<C>>,
+    references: Vec<NameCandidate>,
 }
 
-impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
-    pub fn get(&self, name: &str) -> Option<&ModuleEntry<C>> { ... }
-    pub fn insert(&mut self, name: Symbol, entry: ModuleEntry<C>) { ... }
-    pub fn public_symbols(&self) -> impl Iterator<Item = (&Symbol, &ModuleEntry<C>)> { ... }
-    // Fallible since S111 (GotExhausted); TRANSITIONAL since S119 — the
-    // checked mint below is the sanctioned fresh-slot path, and this raw
-    // allocator demotes to pub(crate) at the S120 wash (FIXME 0931).
-    pub fn allocate_got_slot(&mut self) -> Result<usize, GotExhausted> { ... }
-    // S119: the ONE way to obtain a fresh CallableSlot (checks is_concrete()
-    // + allocates in one act). See §"The callable-slot witness".
-    pub fn mint_callable_slot(&mut self, scheme: &Scheme) -> Result<CallableSlot, SlotMintError> { ... }
-    pub fn defined_symbols(&self) -> impl Iterator<Item = (&Symbol, &ModuleEntry<C>)> { ... }
-}
-```
-
-The Sprint-57 `ModuleStructure` struct in `src/save.rs` is **deleted** at Step 5a — its `import_specs` / `export_specs` / `mod_decls` / `platform_specs` fields move 1:1 to the corresponding `SymbolTable` fields above. `SharedState.module_structures: DashMap<ModuleFullPath, ModuleStructure>` dissolves; `src/save.rs::generate_module_source` reads from the `SymbolTable` it already holds. See Decision 33.
-
-**`allocate_got_slot` becomes fallible — PINNED S111 Phase 3 (backend-audit R7: s107 R7 + s110 R7, 4th consecutive naming; release-mode UB today); lands early on the S111 backend-drain track.** As-built, `allocate_got_slot` (`module.rs:609`) is an unchecked monotone bump over a fixed `GOT_TABLE_SIZE = 1024` slot slab whose `store_slot`/`load_slot` only `debug_assert!` the bound — in release, slot 1024 is UB. One session-side guard exists (`src/redefine.rs::allocate_live_got_slot`, S101) but covers only the redefinition chokepoint; every other allocation path is unguarded. The pinned diff moves the check to the seam itself:
-
-```rust
-// crates/cranelisp-types/src/module.rs — beside the allocator
-/// Module-local GOT exhaustion: `next_got_slot` reached `GOT_TABLE_SIZE`.
-/// Constructed only by `allocate_got_slot`; callers map it into their own
-/// error carrier (a located compile error — never a panic on user input).
-#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct GotExhausted {
-    /// The module whose GOT has no free slot.
-    pub module: ModuleFullPath,
+pub struct NameCandidate {
+    pub source: FQSymbol,
+    pub visibility: Visibility,
 }
-// + impl Display (names the module and GOT_TABLE_SIZE) + impl std::error::Error
 
-pub fn allocate_got_slot(&mut self) -> Result<usize, GotExhausted> {
-    if self.next_got_slot >= GOT_TABLE_SIZE {
-        return Err(GotExhausted { module: self.path.clone() });
-    }
-    let slot = self.next_got_slot;
-    self.next_got_slot += 1;
-    Ok(slot)
-}
-```
-
-`next_got_slot` is NOT bumped on failure — exhaustion is stable and repeatable. **Schema-INDEPENDENT, say it plainly: no serde shape or meaning changes (`next_got_slot: usize` untouched; `GotExhausted` is never persisted), so NO `CACHE_SCHEMA_VERSION` bump** — this change-set is deliberately decoupled from the schema-20 ownership wave and can land any time on the backend-drain track (S111 ordering constraint 3). Cascade: types `public-api.txt` (one changed signature line + the `GotExhausted` lines); typecheck/backend baselines unchanged (all callers internal). Caller census (verified 2026-07-17; **corrects the Phase-2 table, which missed `program/register.rs` ×2**, under-scoped the builtins bootstrap set, and mis-classed `extern_call.rs:151` as a production backend site — it is a `#[cfg(test)]` fixture):
-
-- **typecheck, fallible → `CheckError` (10 production sites):** `adt.rs:173`, `adt.rs:614`, `traits/impl_check.rs:667`, `program/register.rs:376`, `program/register.rs:948`, `program/body.rs:278`, `program/body.rs:517`, `program/finalize.rs:233`, `program/finalize.rs:328`, `traits/monomorphise.rs:611`. **ONE typecheck-side mapping helper** (Principle 7 — a located compile error naming the module; variant choice is `/design`(typecheck)'s), never ten hand-rolled `map_err`s. The five `reuse.unwrap_or_else(|| st.allocate_got_slot())` shapes become `match reuse { Some(s) => s, None => helper(...)? }`.
-- **typecheck, fresh-table bootstrap (3 sites, `unreachable!` convention):** `builtins.rs:694`, `builtins.rs:1021`, `builtins.rs:1098` — all seed a fresh primitives table; a fresh table cannot exhaust (`unreachable!("invariant: bootstrap seeding cannot exhaust a fresh GOT")`).
-- **backend: ZERO production allocation sites** (verified S111 Phase 3, correcting BOTH the Phase-2 table and this census's first draft: `compiler/extern_call.rs:151` sits under `#[cfg(test)]` — a fixture). Allocation is entirely typecheck's + the bootstrap seeds; the backend only READS/WRITES already-allocated slots (`store_slot`, e.g. `lib.rs:994`) with indices carried on entries.
-- **primitives, static bootstrap (2, `unreachable!` convention):** `lib.rs:230`, `lib.rs:348` — the statically-constructed primitives table.
-- **int (3):** `src/redefine.rs:254` — the existing `allocate_live_got_slot` guard **collapses onto the `Result`** (delete the manual `next_got_slot >= GOT_TABLE_SIZE` pre-check; map `Err(GotExhausted)` into the existing `CranelispError::CodegenError` message, whose "restart the session to reclaim frozen slots" remedy text stays int-side); `src/bootstrap.rs:155` + `src/bootstrap.rs:773` — fresh synthetic-module tables, `unreachable!` convention.
-- **test code (mechanical `.unwrap()`):** backend `got.rs` unit tests, backend `test_support.rs:938`, backend `compiler/extern_call.rs:151` (`#[cfg(test)]` fixture), `src/redefine.rs:1896` (`#[cfg(test)]`), types `module/tests.rs`.
-
-**`store_slot`/`load_slot` backstop — RULED S111 Phase 3 (on the `/design`(backend) question; same change-set as the fallible allocator):** the bounds checks in `GotTable::store_slot`/`load_slot` (`got.rs:135/:146`) are promoted **`debug_assert!` → always-on `assert!`** — signatures UNCHANGED. With the allocation seam fallible, an out-of-bounds index in-process is an invariant breach (a compiler defect), and the honest Phase-H posture for an invariant breach is a located hard-fail, not release UB — `/design`(backend)'s "debug_assert is the wrong Phase-H final state" read is confirmed. The **`Result<_, CodegenError>`-shaped `store_slot` is REJECTED**: it would launder an invariant violation into a routine recoverable error and force a caller sweep with no user-reachable trigger (Principles 18/20; P6 budget). The check is per-definition-frequency (JIT-emitted code reads GOT memory via the base pointer, never through `load_slot`), so always-on costs nothing measurable. **The one genuine untrusted index source gets the diagnosed error instead: cache deserialization** — `.meta.json` `got_slot` values enter from disk unvalidated, and a corrupted/hand-edited cache is the only path to an out-of-range index once allocation is checked. The companion obligation (routed `/design`(backend), same R7 track): the cache-load seam validates each restored entry's `got_slot < GOT_TABLE_SIZE` and treats a violation as **cache-stale → recompile** (a diagnosed recovery, never a panic on disk content).
-
-**Boundary-test obligation (types tier, `crates/cranelisp-types/src/module/tests.rs`):** 1024 consecutive allocations return `Ok(0)..=Ok(1023)`; the next call returns `Err(GotExhausted)` carrying the module path; `next_got_slot` is unchanged by the failure (a second call fails identically). Plus one session-surfaced caller test (e2e-or-unit — `/qa`'s row) proving exhaustion is a diagnosed error, not UB, on a real path. Currency sweep in the same change-set: the "UNCHECKED" prose at backend `got.rs:22–27`, the `src/worker.rs:419` doc-table row, and `src/redefine.rs:230–237` rustdoc all describe the pre-fix state and are updated. `GotTable`'s `debug_assert!` bounds checks stay as defence-in-depth. Sequence-diagram lockstep: `sequences/exec-flow-redefine.mmd:31` names the current infallible arrow (`SymbolTable::allocate_got_slot() -> fresh slot for f`) — the implementing change-set updates it to the `Result` shape and regenerates the `.svg` (`/arch` executes; the diagram is `/arch`-owned).
-
-#### Two-GOT model — SymbolTable GOT vs `.o` data section GOT
-
-Decision 23 (updated Sprint 58 Wave 2) records that every CLIF reference to `__cranelisp_got_{M}` resolves to a base address; the runtime memory the base addresses depends on the `Module` implementation used at finalize time. The two GOTs are distinct artefacts with different owners, lifetimes, mutability, and purposes — but they share the same name and the same per-slot semantics so that the backend can emit byte-identical CLIF in both modes.
-
-| GOT | Backing | Owner / location | Lifetime | When read | Mutable? |
-|---|---|---|---|---|---|
-| **SymbolTable GOT** | `pub got: Arc<GotTable>` field on `SymbolTable` (above, line 870) — in-process memory | runtime / `cranelisp-types` | session — created at module registration, lives until session teardown | JIT (`--run`, REPL) — `JITBuilder::symbol_lookup_fn` (registered by the integration layer in `src/session_v4.rs`) returns `symbol_tables[M].got.base_ptr()` when Cranelift resolves the `Linkage::Import` data symbol at finalize | YES — REPL redefinition writes a new fn ptr into the existing slot via the Decision-31 atomic swap; the swap is the redefinition mechanism that makes existing callers see the new code |
-| **`.o` data section GOT** | `Linkage::Export` data symbol named `__cranelisp_got_{M}` defined inside `M`'s own `.o`, with relocation initializers against the local function symbols (Decision 36) | object-file artefact emitted by `compile_to_module<ObjectModule>` | one per `.o` file on disk; in-memory only after `Linker::load_object` mmaps the `.o` | `--link` mode — system linker (`ld`) patches relocations against the defined data symbol when producing the executable; or our cache `Linker` in `--run`/REPL after cache-hit, when reading the `.o` to resolve cross-`.o` references | NO — initialised by the linker / loader once at load time, never mutated thereafter |
-
-**Why two GOTs.** The SymbolTable GOT is for runtime — JIT calls index into it; REPL redefinition mutates it; it is the live store that user code reaches through. The `.o` data section GOT is for the on-disk artefact — the system linker in `--link` mode needs a defined data symbol to patch relocations against; without it, the system linker reports `__cranelisp_got_{M}` undefined (Bug B in `design/int/symbol-table-cache.md` §"Investigation findings"). The two are not stepping stones for each other — they serve different masters at different lifecycle phases.
-
-**Same data symbol, different resolvers.** The CLIF emitted by `compile_to_module` declares `__cranelisp_got_{M}` as `Linkage::Import` from the caller's POV uniformly (the FnCompiler does not know which Module impl resolves it). The `.o` definition (`Linkage::Export`) appears only in the *defining* module's own `.o`, emitted via `compile_to_module<ObjectModule>`'s data-section emission step. JIT mode never reads the `.o` definition — `JITBuilder::symbol_lookup_fn` short-circuits the import resolution to the SymbolTable GOT base. `--link` mode never touches the SymbolTable GOT (the binary runs standalone and never instantiates a session).
-
-**Mode dispatch is the Module impl, not the CLIF.** This is the canonical illustration of Principle 11 (single pipeline, mode parameters): one CLIF, two resolvers. Adding a third mode (e.g. AOT to a static archive) would add a third resolver behind a third Module impl — the CLIF would not change.
-
-**Single-source GOT data-symbol name.** The `__cranelisp_got_{M}` naming scheme is produced by one function — `cranelisp_types::got_data_symbol_name(module_path) -> String` (`crates/cranelisp-types/src/module.rs`). It lives in `cranelisp-types` because **two** crates consume it: `cranelisp-backend` (emits the `Linkage::Import`/`Export` relocation symbol during codegen) and `int` (registers the SymbolTable-GOT slab base under this name for the JIT `symbol_lookup_fn`, the cache-hit `Linker::register_symbol`, and the `--link` startup `.o`). It was relocated DOWN from backend's former `pub(crate) compiler::got_data_symbol_name` at S76 (per the /arch S76 Phase 2 review) so the scheme is single-source rather than reached-into across the backend boundary or duplicated in int. It is pure string formatting over `ModuleFullPath`, a peer of `ensure_module_exists`.
-
-**Type-drop glue identity and address boundary (S116 Phase 3; R15/0745).** One pure cross-crate naming function is added beside `got_data_symbol_name`:
-
-```rust
-pub fn drop_glue_symbol_name(
-    module: &ModuleFullPath,
-    ty: &ConcreteType,
-) -> LinkerSymbol;
-```
-
-The result is an injective, linker-safe, **module-qualified** encoding of the complete `ConcreteType` (enum discriminator, fully-qualified ADT name, and recursively encoded arguments/parameter/result types). The module component is an emission namespace, not part of type identity: each `compile_to_module` registry remains keyed only by `ConcreteType`, while two module objects that both require `String` glue receive distinct exported symbol names and cannot collide at final link. No span, source spelling, traversal depth, requesting function, or process address enters the name. This function lives in `cranelisp-types` because backend emits the definition and int/exe-bundle independently names the keyed JIT/cache/link consumer; duplicating the grammar would recreate the drop-glue-underkey class. It is a pure naming primitive, not release behavior and not a generic releaser.
-
-Backend extends its existing behavior-owned return DTO rather than `cranelisp-types`:
-
-```rust
 #[non_exhaustive]
-pub struct DropGlueArtifact {
-    pub symbol: LinkerSymbol,
-    pub jit_address: Option<usize>,
+pub struct Binding<C = ()> {
+    pub visibility: Visibility,
+    pub declaration: Decl<C>,
 }
 
-pub struct CompilationArtifacts {
-    // existing fields unchanged
-    pub drop_glues: HashMap<ConcreteType, DropGlueArtifact>,
-}
-```
-
-`compile_to_module`'s signature and single entry remain unchanged. During its normal declaration-first registry walk it requests glue for every concrete owning return type reachable from the compiled targets (including the `a` inside entry `IO a`), marks those type-glue definitions `Linkage::Export`, and returns the registry projection keyed by `ConcreteType`. `jit_address` is `Some(finalized address)` only when `CodeFinalizer` exposes runtime pointers; object mode returns `None`. The address is valid only while the caller retains the existing `Code::Jit(Arc<Jit>)`; the artifact is not a retention owner. Int converts its carried result `Type` once to `ConcreteType`, performs one direct map lookup, and invokes that address after the last observation. A missing owning-type row is a hard internal error, never ambient symbol search or shallow release.
-
-Cache-hit int and linked startup do not consume a process address. They call the same types-owned naming function with the entry module + concrete inner result type, then use their existing keyed mechanisms: `Linker::get_symbol(symbol)` for a loaded object, or an ordinary system-linker relocation from the startup object. Thus fresh JIT, cache-hit JIT execution, and standalone link invoke the same module-qualified backend-emitted body from the same object/JIT compilation. No GOT slot is allocated: glue is not a language-callable or redefinable value. No serialized carrier, heap-layout field, C ABI, cache-schema bump, second compile entry, generic type-erased release, or public arbitrary-JIT-symbol lookup is introduced.
-
-Cross-references: Decision 23 (two-GOT framing); Decision 31 (the SymbolTable GOT slot is the redefinition atomic-swap target — the `--run` GOT MUST be mutable for redefinition to work); Decision 36 (function symbol naming + linkage policy — bare-Local is correct because the `.o` data section GOT's relocation initializers are intra-`.o`); Decision 37 (cache-hit codegen-phase order independence is established by the SymbolTable GOT slot LAYOUT being pinned at typecheck time).
-
-### Module Entries
-
-```rust
-/// An entry in a module's symbol table.
-///
-/// Generic over `C: CodeStore` per the parameterised `SymbolTable<C, L>`
-/// shape (Decision 32). `C` defaults to `()` so crates that don't handle
-/// compiled code work with `ModuleEntry` (i.e. `ModuleEntry<()>`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ModuleEntry<C: CodeStore = ()> {
-    Def {
-        scheme: Scheme,
-        visibility: Visibility,
-        docstring: Option<String>,
-        param_names: Vec<Symbol>,
-        kind: Box<DefKind>,
-        /// Fully qualified callees, populated by finalize_check_result()
-        /// from TC-sourced call graph edges. Used by scheduler for
-        /// transitive macro dep discovery. See Decision 21.
-        callees: Vec<FQSymbol>,
-        /// Module-local GOT slot index — **single source of truth** for the
-        /// entry's runtime call address (Sprint 56 Wave 0 §9.8 G7; reaffirmed
-        /// Sprint 66 post-rollback per `1dc57ae`). Assigned at registration
-        /// time for any **addressable callable** — user fns (JIT-built or
-        /// linker-loaded), primitives (when used as values), and platform
-        /// DLL fns. The address lives in `SymbolTable.got()` (a `GotTable`
-        /// per module) and is read/written via
-        /// `got().load_slot(slot)` / `got().store_slot(slot, ptr)`. No
-        /// sibling `fn_ptr` / `platform_fn_ptr` / `primitive_fn_ptr` field
-        /// exists — those workarounds were considered (Wave B
-        /// `primitive_fn_ptr`; commit `b09ec76`'s unified `fn_ptr`) and
-        /// rejected/rolled back as redundant with the GOT.
-        ///
-        /// `got_slot: None` indicates non-callable, non-addressable entries
-        /// (special forms, `Overloaded` base entries, `TypeDef` /
-        /// `TraitDecl` / `Macro`, constrained-fn templates, and
-        /// `DefKind::PrimitiveExtern` host-promised externs — the key IS the
-        /// ABI name a host promises at JIT-finalize via `Jit::define_symbol`;
-        /// a call resolves `Linkage::Import`, never GOT-indirect).
-        ///
-        /// **S83 target (FIXME 0356/0357, Principle 20; amends Decision 35):**
-        /// this flat field RELOCATES onto the callable `DefKind` variants
-        /// (`UserFn` concrete-callable / `Primitive` / `Constructor`); the
-        /// non-callable kinds carry no slot field, making `Def{slot}+template`
-        /// unconstructable. The list of `None` cases above becomes the set of
-        /// kinds with no slot field at all. See BC §7 "Callability is
-        /// structural" + the callable-address paragraph above. (This
-        /// illustrative block predates the reshape; the authoritative surface
-        /// is BC §7 + `module.rs` source rustdoc.)
-        got_slot: Option<usize>,
-        /// Trait-method origin (Sprint 56 Decision 21). `Some(trait)` when
-        /// this `Def` is a trait-method impl — replaces the
-        /// `method_to_trait` reverse index on `TraitRegistry`. `None` for
-        /// regular user functions.
-        trait_origin: Option<FQTraitName>,
-        /// Typechecked function body. Written by typecheck after
-        /// `check_form(CheckBody)`, read by codegen. `None` for
-        /// primitives, special forms, `Overloaded` base entries (their
-        /// variants carry the bodies), constrained-fn templates (their
-        /// mono specialisations carry the bodies), and pre-body-check
-        /// entries. Authoritative per-category table:
-        /// `design/typecheck/ast-annotation.md` §6. (Phase 1.)
-        ast: Option<Defn>,
-        /// Lifecycle owner for compiled code (Phase 3 Step 3b — G6;
-        /// parameterised over `C` at Phase 5 Step 5c; **slimmed in Sprint 66
-        /// — variants now carry lifecycle ownership only**).
-        /// Written by the priority worker after `compile_to_module` returns
-        /// (or by `load_object` on cache-hit). `None` until codegen completes,
-        /// and `None` for entries whose lifecycle owner lives elsewhere
-        /// (primitives — process-static `LazyLock<SymbolTable>` in
-        /// `cranelisp-primitives`; platform DLL fns — DLL handle held in
-        /// `SharedState.kept_dlls`). The integration layer chooses
-        /// `C = Code` (re-exported from `cranelisp-backend`); the variants
-        /// carry **lifecycle ownership only** — the call address lives in
-        /// the per-module `GotTable` (the post-rollback single source of
-        /// truth — see `got_slot` doc below and
-        /// `crates/cranelisp-types/src/got.rs`), not inside the variant.
-        ///
-        /// **Variant shape post-Sprint 66 (slimmed)**:
-        /// `Code::Jit(Arc<Jit>)` for JIT-built user fns;
-        /// `Code::Linker(Arc<Linker>)` for cache-hit user fns. The previous
-        /// `Code::Jit { jit, ptr }` / `Code::Linker { linker, ptr }` shapes
-        /// are retired — the per-entry ptr is in the GOT (commit `b09ec76`
-        /// briefly placed it on a sibling `fn_ptr` field; commit `1dc57ae`
-        /// rolled that back as redundant with the GOT). The
-        /// variant-uniform `Code::ptr()` accessor is retired with the
-        /// embedded ptr; consumers read the address via
-        /// `symbol_table.got().load_slot(entry.got_slot.unwrap())`.
-        ///
-        /// **Lifetime / reclaim (Decision 31, Scenario 2 — preserved
-        /// post-S66)**: the `Arc<Jit>` *living directly on this field* is
-        /// the reachability primitive that fires per-redefinition reclaim.
-        /// While any entry holds an `Arc<Jit>` clone alive, the JIT's
-        /// executable pages stay mapped. When every entry referencing the
-        /// JIT is evicted or redefined, the Arc refcount reaches zero and
-        /// the custom `Drop` on our `Jit` wrapper calls
-        /// `unsafe JITModule::free_memory()` — this is the ONLY way to
-        /// reclaim JIT pages in Cranelift 0.116 (the default drop path
-        /// leaks on purpose; see archived `pipeline-v4.md` §9.4 for
-        /// evidence). The safety invariant is maintained by: (a) the GOT
-        /// slot's stored ptr becomes invalid the instant
-        /// `JITModule::free_memory()` runs; (b) GOT slots are atomically
-        /// swapped to new code before the old Arc can drop (Decision 41
-        /// per-symbol JIT cardinality means redefine → new
-        /// `Code::Jit(Arc<Jit>)` written to entry → old Arc clone drops
-        /// as the entry is replaced); (c) user-returned `fn` values are
-        /// heap closures calling through the GOT, not raw code pointers.
-        ///
-        /// **Pre-Phase-5 transitional shape (Sprint 57; superseded at
-        /// Step 5c)**: `Arc<Jit>` lived in `SharedState.kept_jits` rather
-        /// than directly on this field, because `SymbolTable<C, L>` was
-        /// not yet activated. Per-redefinition reclaim therefore deferred
-        /// to session teardown. Step 5c activates the generics and
-        /// dissolves `kept_jits`.
-        ///
-        /// `#[serde(skip)]` — runtime state. Cache re-derives it from
-        /// `ast` on cache-hit load (constructs `Code::Linker(Arc<Linker>)`
-        /// per `load_object`). See Decision 25 (canonical placement)
-        /// + Decision 31 (reclaim primitive; S66 amendment preserves
-        /// semantics) + Decision 32 (`CodeStore` trait shape) + Decision
-        /// 41 (per-symbol JIT cardinality + S66 amendment + rollback —
-        /// call address lives in the GOT, not on a sibling field).
-        #[serde(skip)]
-        code: Option<C>,
-        // Note: there is **no** `fn_ptr` / `platform_fn_ptr` /
-        // `primitive_fn_ptr` field on `ModuleEntry::Def`. The S66 work
-        // briefly added a unified `fn_ptr: Option<*const u8>` (commit
-        // `b09ec76`) as the relocation target for the per-entry call
-        // address removed from the `Code` variants; `1dc57ae` rolled
-        // that back the same day after identifying it as redundant with
-        // the per-module `GotTable`. The runtime call address lives at
-        // `symbol_table.got().load_slot(slot)`, indexed by `got_slot`
-        // (above). Origin (JIT / linker / primitive / platform DLL) is
-        // encoded by `kind: DefKind`. See `got_slot` doc above and
-        // `crates/cranelisp-types/src/got.rs`.
-    },
-    Import { source: FQSymbol },
-    Reexport { source: FQSymbol },
-    TypeDef {
-        info: TypeDefInfo,
-        visibility: Visibility,
-        docstring: Option<String>,   // S72 Phase B — direct field; un-nested from TypeDefInfo
-        // S79 Option 3a (FIXME 0319): `constructor_scheme: Option<Scheme>` RETIRED.
-        // A single-ctor product type (type-name == ctor-name) no longer survives
-        // as a TypeDef that smuggled the ctor's Scheme here; it survives as a
-        // got-slotted ctor Def carrying a type facet
-        // (DefKind::Constructor { type_def: Some(TypeDefInfo) }), and the ctor
-        // scheme lives on that Def's own `scheme`. TypeDef entries are now only
-        // ever the sum/enum case.
-    },
-    TraitDecl {
-        info: TraitDeclInfo,         // S72 Phase B — slimmed payload; no longer embeds AST TraitDecl
-        visibility: Visibility,
-        docstring: Option<String>,   // S72 Phase B — direct field; un-nested from embedded decl
-    },
-    Constructor {
-        type_name: Symbol,
-        info: ConstructorInfo,
-        scheme: Scheme,
-        visibility: Visibility,
-    },
-    Macro {
-        name: Symbol,
-        clauses: Vec<MacroClauseInfo>,
-        docstring: Option<String>,
-        visibility: Visibility,
-        sexp: Option<Sexp>,
-        source: Option<String>,
-        /// Fully qualified callees, populated by finalize_check_result()
-        /// from TC-sourced call graph edges. Used by scheduler for
-        /// transitive macro dep discovery. See Decision 21.
-        callees: Vec<FQSymbol>,
-    },
-    PlatformDecl {
-        dll_path: PathBuf,
-        platform_module: ModuleFullPath,
-    },
-    /// A trait implementation — the DISCOVERY shell, keyed
-    /// `impl$FQTypeName$FQTraitName` in the TRAIT's defining module
-    /// (Decision 45 pattern (b), as amended S110 W0.1 — see narrative below).
-    TraitImpl {
-        trait_name: FQTraitName,
-        impl_type: FQTypeName,
-        /// The module whose table holds this impl's mangled method `Def`s and
-        /// their GOT slots (the impl-writer's module) — the discovery→storage
-        /// pointer. REQUIRED (no `#[serde(default)]`, Principles 18/20).
-        impl_module: ModuleFullPath,
-        /// Method names defined in this impl (local names, not mangled).
-        methods: Vec<Symbol>,
-        /// Always `Public` (spec §5.11.1); present for variant uniformity.
-        visibility: Visibility,
-    },
-    Ambiguous,
+pub enum Decl<C = ()> {
+    Callable(Callable<C>),
+    TraitMethod(TraitMethodRecord),
+    Group(Group),
+    Type(TypeRecord),
+    Trait(TraitRecord),
+    ImplShell(ImplShell),
+    SpecialForm(SpecialFormRecord),
 }
 
-impl ModuleEntry {
-    pub fn is_public(&self) -> bool { ... }
-}
-```
-
-**`ModuleEntry::type_def_info() -> Option<&TypeDefInfo>` — the single "answers as a type" reader (S109 Phase 3, additive).** A type name survives in the table as one of two shapes (S79 Option 3a dual facet): a `ModuleEntry::TypeDef` (sum/enum) or a got-slotted product ctor `Def` carrying `DefKind::Constructor { type_def: Some(..) }` (type-name == ctor-name). Every consumer that needs an entry *as a type* — resolution, arity/exhaustiveness checks, introspection, **persistence** — reads this accessor instead of matching `ModuleEntry::TypeDef` directly; a bare `TypeDef` match is exactly the FIXME-0573 defect class (int's `save.rs generate_types` skipped product `deftype`s from backing-file persistence — silent data loss). Follows the `callable_got_slot()` read-through precedent (one accessor, no per-site re-patterning of the kind set); `type_ctor_names` (heap.rs) is the ctor-name projection over the same two-shape switch. Delegating consumers land in the S109 Phase-5 waves: typecheck's `type_def_view_of` (checker.rs) reduces to it; `save.rs` type emission keys on it. Read-side only — **no serde/cache impact**; +1 `public-api.txt` line.
-
-**`ModuleEntry::TraitImpl.impl_module` — the amended-D45 discovery→storage pointer (S110 W0.1b `144828d1`, landed; `design/arch/backend-keyed-consumer.md` §1.1.1; amends `design/arch/decisions/0045-traitimpl-storage-in-trait-defining-module.md`).** An `(impl Trait Type …)` form written in module M splits across two placements. The `TraitImpl` **shell — the discovery record — lands in the TRAIT's defining module** (D45 pattern (b): importers chain-follow the trait reference back to its home and probe `impl$FQTypeName$FQTraitName` in O(1) — no closure walk, no cycle detection). The **mangled method `Def`s — the compilation record (`Trait.method$m/Type`) — land in M**, the impl-writer's module. This split is structurally forced, which is why D45's original method-co-location clause ("the method entries live in the same module that holds the `TraitImpl` entry") is AMENDED rather than the bodies moved: the bodies compile in M's codegen batch, and `compile_to_module` requires every compiled defn's entry + GOT slot in the compiling module's OWN table (relocating them would also push per-impl GOT-slot writes into shared tables — the 0604 write-race surface). `impl_module` is the pointer from the discovery record to the storage module, written from `state.current_module` at shell construction (`impl_check.rs`), so trait-method dispatch derives the selected entry's true home with one keyed probe — never a scan, never `current_module` (this resolves the callees.rs "Step 5" pending note and repairs the S101 session-transaction reverse index for cross-module trait calls). Its consumer twin is `ResolvedCall::TraitMethod.impl_module` (§Method Resolutions above), populated from this shell at resolution time. REQUIRED field — a defaulted `""` module is a representable-invalid state (Principle 20), and construction sites are forced to supply it (Principle 18). Landed inside the schema-19 window — no new `CACHE_SCHEMA_VERSION` bump. Per-field authority: the `module.rs` variant rustdoc.
-
-### Definition Classification
-
-```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum DefKind {
-    /// A built-in primitive bundled in `cranelisp-primitives`. Payload-free
-    /// unit variant (S69 Submission 36 retired the prior
-    /// `Primitive { primitive_kind, jit_name }` payload). The discriminator
-    /// alone signals "bundled compiler-provided body". The JIT linker name IS
-    /// the symbol-table key uniformly (`src/CLAUDE.md` §"JIT Symbol Names");
-    /// inline-eligibility is encoded per-call-site in
-    /// `ResolvedCall::BuiltinFn { name }` (set by typecheck), not on this
-    /// discriminator.
-    Primitive,
-    /// A DLL-routed platform effect. Promoted from a sub-variant of the
-    /// retired `PrimitiveKind` to a `DefKind` sibling (S69 Submission 36).
-    /// `scheduling_class` is a variant field (not a sibling on
-    /// `ModuleEntry::Def`) so that only entries that actually carry a
-    /// scheduling class can have one — see Decision 26. Written during
-    /// `(platform ...)` form processing from the DLL manifest; read by
-    /// `bind_chain_analysis.rs::classify_expr` via an Import-chain walk.
-    PlatformEffect {
-        scheduling_class: cranelisp_platform::SchedulingClass,
-    },
-    /// A host-promised extern primitive (test-discovery design, 2026-06-06).
-    /// Payload-free unit variant — a `primitives`-module callable whose body
-    /// lives in the integration layer (`int`) and is promised at JIT-finalize
-    /// via `Jit::define_symbol`, not bundled (`Primitive`) or DLL-loaded
-    /// (`PlatformEffect`). The symbol-table key IS the ABI name; `got_slot:
-    /// None`, `code: None`; a call lowers `Linkage::Import` against the key
-    /// (the `PlatformEffect` import shape) and is structurally untraceable.
-    /// Motivating member: `discover-tests` (its body reads int's live session
-    /// state — which `cranelisp-intrinsics` cannot, per Principle 18 / D0048).
-    /// `PlatformEffect` is the direct structural precedent. See
-    /// `bounded-contexts.md` §7 + `design/arch/test-discovery.md` §6/§7.
-    PrimitiveExtern,
-    UserFn {
-        constrained_fn: Option<ConstrainedFn>,
-    },
-    Overloaded {
-        variants: Vec<OverloadVariant>,
-    },
-    /// An ADT constructor. `type_def` is the **product-type dual facet**
-    /// (S79 Option 3a, FIXME 0319): `Some(Box<TypeDefInfo>)` iff this ctor IS
-    /// its own type (single-ctor product, type-name == ctor-name) — the entry
-    /// answers both as a got-slotted ctor `Def` AND as its type; `None` for
-    /// ordinary sum/enum ctors whose type is a separate `ModuleEntry::TypeDef`.
-    /// Field names live on the Def's `param_names`, NOT in `TypeDefInfo`
-    /// (single source, Principle 7). Replaces the retired
-    /// `ModuleEntry::TypeDef.constructor_scheme` smuggling field.
-    Constructor {
-        type_name: FQTypeName,
-        tag: usize,
-        field_count: usize,
-        internal: bool,
-        type_def: Option<Box<TypeDefInfo>>,
-    },
-    Macro {
-        clauses_meta: Vec<MacroClauseInfo>,
-    },
-    // SpecialForm retired from DefKind (S69 Submission 36) — promoted to its
-    // own `ModuleEntry::SpecialForm` variant. PrimitiveKind enum retired
-    // entirely (Inline/Extern were vestigial; PlatformEffect promoted to the
-    // DefKind sibling above).
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OverloadVariant {
-    pub param_types: Vec<Type>,
-    pub ret_type: Type,
-    pub mangled_name: Symbol,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConstrainedFn {
-    // S70 narrowing: `defn: Defn` → `variant: DefnVariant` (symmetry with
-    // `ModuleEntry::Def.ast`; the outer `Defn` metadata is canonical on the
-    // parent `Def`). Single-variant ALWAYS — since S112 (multi-sig ×
-    // constrained SUPPORTED) each constrained clause is its OWN one-variant
-    // template referenced from `OverloadVariant.mangled_name`; dispatch
-    // routes on the referenced entry's kind. Canonical statement: the
-    // `ConstrainedFn` rustdoc in `module.rs` + monomorphisation.md §11.4.
-    pub variant: DefnVariant,
+pub struct Callable<C = ()> {
     pub scheme: Scheme,
+    pub param_names: Vec<Symbol>,
+    pub docstring: Option<String>,
+    pub seq: u64,
+    pub origin: CallableOrigin,
+    pub life: Life<C>,
 }
 ```
 
-### Backend-hosted `Code` Enum (in `cranelisp-backend`)
+`SymbolTables<C, L>` remains
+`DashMap<ModuleFullPath, SymbolTable<C, L>>`: the session collection uses
+concurrent keyed access, while each shard value owns a private ordinary
+`HashMap<Symbol, Binding<C>>` mutated under its `&mut SymbolTable` guard.
+This distinction is load-bearing; there is no per-symbol `DashMap` and no
+`Arc<SymbolTable>` wrapper.
 
-The integration layer's concrete `C` for `SymbolTable<C, L>` is the `Code`
-enum defined below. **Lives in `cranelisp-backend/src/code.rs` per
-Decision 41 (Sprint 64 — Layer 2 Option B retracts in the sense that
-backend *names* `Code` in its own signatures).** Originally placed in
-`src/code.rs` per Decision 35; the move to backend keeps `cranelisp-types
-→ cranelisp-backend` forbidden (the dep direction Principle 3 protects),
-hosting `Code` where its variants' backend types (`Jit`, `Linker`) live.
-**Backend does NOT *construct* `Code` (S75 W2 Finding-A correction):**
-`compile_to_module<M>` only borrows `&mut M` and never owns the `Arc<Jit>`,
-so it cannot build `Code::Jit`; the integration layer composes both
-variants — `Code::Jit` from the `Arc<Jit>` it owns after the call,
-`Code::Linker` from the `LinkerArtefact` `load_object` returns — and
-installs them via Decision 38's `write_code(&self, …)`. Backend's own
-write is the GOT slot (`got().store_slot`); the `write_code` call is the
-caller's. The integration layer names `Code` at the session boundary's
-`SymbolTable<Code, ()>` instantiation, re-exporting from backend. See
-`bounded-contexts.md` §3 (backend — invariant 3 + "Who composes `Code`")
-and the `crates/cranelisp-backend/src/{code,lib}.rs` rustdoc for the
-authoritative statement (`facades/backend.md` retired S75 W5b → BC §3 +
-source rustdoc).
+Visibility is stored once on `Binding`. Declaration metadata lives on the
+facet which owns it: executable callable metadata on `Callable`, unslotted
+trait-method dispatch metadata on `TraitMethodRecord`, group metadata on
+`Group`, type metadata on `TypeRecord`, trait metadata on `TraitRecord`, and
+special-form metadata on `SpecialFormRecord`. A product constructor's
+type facet remains `CallableOrigin::Ctor { type_def: Some(..) }`;
+`Binding::type_def_info()` is the single read-through over that facet and
+`Decl::Type(TypeRecord::Defined)`.
+
+The readable surface is `get`, `public_symbols`, `all_symbols`,
+`defined_symbols`, and the typed `Binding` projections. There is no public
+raw-map iterator with write capability. `defined_symbols` is exactly the
+`Life::Concrete { realization: Realization::Body { .. }, .. }` projection.
+`Binding::is_callable_target` includes executable callable states and
+`Decl::TraitMethod`; `callable_got_slot` remains executable-slot-only.
+
+### Lifecycle authoring facade — proposal, exact API unapproved
+
+The production-consumer census retains checked source settlement but finds no
+cross-crate production consumer for the lower-level `settle_template` and
+`settle_concrete`; that pair becomes types-private in the next API proposal.
+Born-settled ordinary callables currently use
+`install_template`, `install_concrete`, `install_extern`,
+`install_inline`, `install_host_promised`, and `install_platform`.
+`mark_broken` owns the concrete-to-broken transition and must return any
+displaced compiled owner for integration retention. `install_binding`
+accepts aliases, ambiguity sentinels, and non-callable declarations only.
+All callable installation, slot mint/rebind, displacement, and retirement
+stays inside `SymbolTable`; no public raw allocator or callable insertion
+surface exists.
+
+Live publication is a separate module-atomic capability. Integration supplies
+the complete semantic decision set for an owned staging table; `SymbolTable`
+validates the candidate, publishes every binding and slot move or none, records
+retired slots, and returns displaced runtime-only `C` owners. Integration
+retains those owners and consumes the publication report for redefinition
+processing. The exact decision/report carriers and method signature remain at
+the user public-API gate.
+
+The executing C3 consumer adds no raw mutation escape. Pass 2 and finalize use
+the controlling contract's narrow facade:
 
 ```rust
-// crates/cranelisp-backend/src/code.rs; owned by /backend.
-//
-// Concrete `C: CodeStore` for SymbolTable<Code, ()>. Carries lifecycle
-// ownership only — the per-entry call address lives on the sibling
-// the per-module `GotTable` (S66 fn_ptr unification → rollback `1dc57ae`,
-// 2026-05-09 — GOT is the single source of truth for callable addresses).
-//
-// See Decisions 35 (original location + L=() choice + mixed-lineage
-// modules) + 41 (S64 location move + direct-write pattern; S66
-// amendment slimming the variants).
-#[non_exhaustive]
-pub enum Code {
-    Jit(Arc<Jit>),
-    Linker(Arc<Linker>),
-}
-
-// SAFETY: lifecycle owners are Send + Sync via Arc; no raw pointers
-// inside the variants post-S66.
+pub fn update_declared_scheme(
+    &mut self, name: &Symbol, scheme: Scheme,
+) -> Result<(), LifecycleError>
+pub fn settle_checked_template(
+    &mut self, name: &Symbol, scheme: Scheme, ast: DefnVariant,
+    kind: TemplateKind, callees: Vec<FQSymbol>,
+) -> Result<(), LifecycleError>
+pub fn settle_checked_concrete(
+    &mut self, name: &Symbol, scheme: Scheme, ast: DefnVariant,
+    view: MonoDefnVariant, callees: Vec<FQSymbol>,
+) -> Result<CallableSlot, LifecycleError>
+pub fn replace_callees(
+    &mut self, name: &Symbol, callees: Vec<FQSymbol>,
+) -> Result<(), LifecycleError>
+pub fn publish_body_ownership(
+    &mut self, name: &Symbol, summary: ModeSummary, view: MonoDefnVariant,
+) -> Result<(), LifecycleError>
+pub fn set_value_use(
+    &mut self, name: &Symbol, mark: bool,
+) -> Result<(), LifecycleError>
+pub fn remove_non_callable(
+    &mut self, name: &Symbol,
+) -> Result<Option<Binding<C>>, LifecycleError>
+pub fn discard_declared(
+    &mut self, name: &Symbol,
+) -> Result<(), LifecycleError>
 ```
 
-**S66 amendment — variant slimming + GOT-as-single-source-of-truth (2026-05-09)**. The previous variant shapes `Code::Jit { jit, ptr }` and `Code::Linker { linker, ptr }` retire. The variants are now tuple-shaped, carrying lifecycle ownership only.
+Checked settlement is atomic across final scheme, AST, view, callees and slot
+transition; it accepts only checked AST-backed ordinary bodies. Callee
+replacement canonicalizes its input. Ownership publication accepts an
+annotated complete view and stamps its summary together with the lifecycle
+summary; the one-sided public `set_mode_summary` is retired. Non-callable
+removal and prior-free Declared discard are the only cleanup surfaces.
+Multi-sig bodies stay local until their canonical key is known; no callable
+rename/removal or caller-side provisional slot mint is published.
 
-Two-step history of the per-entry ptr:
+Trait-method declarations use a separate non-executable facet:
 
-1. **`b09ec76` (S66 Wave 0):** the per-entry ptr was relocated to a unified `fn_ptr: Option<*const u8>` field on `ModuleEntry::Def` (subsuming the previously-separate `platform_fn_ptr`; superseding the briefly-planned `primitive_fn_ptr`).
-2. **`1dc57ae` (same day, rollback):** the unified `fn_ptr` field was removed once /arch identified that it duplicated state already in the per-module `GotTable` — every callable entry already had a `got_slot`, and JIT-emitted code reads addresses from `got_base + slot * 8`. Stashing the same address on a sibling field was a Principle 7 violation.
+```rust
+#[non_exhaustive]
+pub struct TraitMethodRecord {
+    pub scheme: Scheme,
+    pub param_names: Vec<Symbol>,
+    pub docstring: Option<String>,
+    pub trait_name: FQTraitName,
+}
 
-**Canonical post-rollback statement.** GOT is the single source of truth for callable addresses. The variant-uniform `Code::ptr()` accessor retires with the embedded ptr; consumers read the address via `symbol_table.got().load_slot(entry.got_slot.unwrap())`. Decision 31 Scenario 2 reclaim semantics are preserved (lifecycle ownership stays inside `Code::Jit(Arc<Jit>)`; `Drop` chain unchanged; the GOT slot's stored ptr becomes invalid the instant `JITModule::free_memory()` runs). See `crates/cranelisp-types/src/module.rs` `ModuleEntry::Def.got_slot` rustdoc + `bounded-contexts.md` §7 + `bounded-contexts.md` §3 (backend — invariant 3) + the `crates/cranelisp-backend/src/code.rs` rustdoc for the authoritative shape (`facades/backend.md` retired S75 W5b → BC §3 + source rustdoc), and Decision 41's "S66 amendment + rollback" for the amendment record.
+TraitMethodRecord::new(scheme, param_names, docstring, trait_name)
+    -> TraitMethodRecord
+Binding::trait_method(&self) -> Option<&TraitMethodRecord>
+SymbolTable::install_trait_method(method, record, visibility)
+    -> Result<(), LifecycleError>
+// General candidate projection/read operations remain at the API gate.
+```
 
-The session boundary types in `src/session_v4.rs` instantiate
-`SymbolTable<Code, ()>` and `ModuleEntry<Code>`; backend signatures
-continue to read `SymbolTable` (i.e. `SymbolTable<(), ()>`) per Decision
-32 and `compile-to-module.md` §17.
+`install_trait_method` stores the record only at canonical
+`member_key(Trait, method)` and adds a general candidate reference under the
+bare spelling in the same `symbols` map. An accessor reference and method
+reference can therefore coexist in one per-spelling entry without giving
+either declaration two storage identities. The record remains a callable
+resolution/type-inference terminal carrying canonical reverse trait identity;
+it never enters `Life`, owns a slot/view, or appears in `defined_symbols`.
 
-Per Decision 41 (S66 amendment + rollback; S70 Phase B amendment; S75 W2 Finding-A correction), `compile_to_module<M: Module>` writes the resulting fn pointer **to the entry's GOT slot** via `symbol_table.got().store_slot(entry.got_slot.unwrap(), ptr)` (D41 #2) and returns the always-created introspection by value as `Result<CompilationArtifacts, CompilationError>`. It does **not** construct `Code`: the **caller** composes `Code::Jit(Arc<Jit>)` (from the `Arc<Jit>` it owns after the call — backend only borrows `&mut M`) and `Code::Linker(Arc<Linker>)` (from the `LinkerArtefact`) and installs it via `SymbolTable::write_code(&self, sym, code)` (Decision 38's interior-mutable signature; the call is the caller's, not backend's). There is no paired `fn_ptr`-field write — the GOT is the single source of truth for callable addresses. The historical CP1 Layer-2 Option-B return-tuple shape (`compile_to_module` returning `(Arc<Jit>, HashMap<Symbol, *const u8>)` for the integration layer to wrap into `Code::Jit { jit, ptr }`) is retracted by Decision 41. See `bounded-contexts.md` §3 (backend — invariant 3 + "Who composes `Code`") + the `crates/cranelisp-backend/src/lib.rs` rustdoc for the authoritative shape (`facades/backend.md` retired S75 W5b → BC §3 + source rustdoc).
+Candidate references are canonical-source deduplicated and deterministic for
+diagnostics; same-source public visibility wins. `View` unions staging/live
+entries using the same general carrier. Load validation direct-probes every
+candidate's canonical terminal after dependencies are restored. There is no
+trait-specific candidate DTO, read path, serialized map or cleanup API. The
+Packet B removes `BindingBody`: import/re-export edges become terminal
+`NameCandidate` exposures and ambiguity becomes a use-site
+`ResolveError::Ambiguous` carrying the surviving canonical identities.
+The approved read surface includes `all_name_candidates` for private+public
+cache dependency discovery; `public_name_candidates` filters that iterator for
+import/export exposure. Primitive birth funnels accept an optional declared
+ownership summary immediately before visibility. Extern stores it in
+`Life::Concrete`; inline stores it in `Life::Inline { mode_summary }`, and the
+one `Binding::mode_summary` projection reads both.
+
+The public declaration records remain `#[non_exhaustive]` and are authored
+cross-crate only through the role-specific constructors:
+
+```rust
+Group::overload(scheme, param_names, docstring, seq, members) -> Group
+Group::macro_group(scheme, param_names, docstring, seq,
+                   clauses_meta, macro_sexp) -> Group
+TraitRecord::new(info, docstring) -> TraitRecord
+TraitMethodRecord::new(scheme, param_names, docstring, trait_name)
+    -> TraitMethodRecord
+SpecialFormRecord::new(scheme, param_names, docstring, description)
+    -> SpecialFormRecord
+SynthSpec::new(variant) -> SynthSpec
+ConstrainedMeta::new(constraints) -> ConstrainedMeta
+BrokenProvenance::new(broken_by, message) -> BrokenProvenance
+```
+
+Typecheck authors the lifecycle recipe/metadata families (`Group`,
+`TraitRecord`, `TraitMethodRecord`, `SynthSpec`, `ConstrainedMeta`), primitives
+authors `SpecialFormRecord`, and int authors `BrokenProvenance`. There is
+no general `Group::new`, public `Callable` constructor, or public
+`RetiredSlot` constructor. `ImplShell` is authored inside types by
+`enrol_written_trait_impl`.
+
+An external-consumer integration test in `cranelisp-types/tests/` must
+exercise all eight construction paths above and the enclosing
+`Decl`, `TemplateBody`, `TemplateKind`, and broken-state paths. This
+compile-pass is required because an in-crate test cannot detect E0639 from a
+missing constructor on a public `#[non_exhaustive]` record.
+
+### Checked-registration transaction facade — proposal, exact API unapproved
+
+```rust
+#[must_use]
+pub struct RetainedCallables<C: CodeStore = ()> { /* private */ }
+SymbolTable::retain_callables(&self, names: &[Symbol])
+    -> Result<RetainedCallables<C>, LifecycleError>
+SymbolTable::rollback_callables(&mut self, retained: RetainedCallables<C>)
+    -> Result<(), LifecycleError>
+RetainedCallables::commit(self)
+
+#[must_use]
+pub struct StagedImplShell<C: CodeStore = ()> { /* private */ }
+SymbolTable::stage_trait_impl_shell(&mut self, record: &WrittenTraitImpl)
+    -> Result<StagedImplShell<C>, CranelispError>
+SymbolTable::rollback_trait_impl_shell(&mut self, staged: StagedImplShell<C>)
+    -> Result<(), CranelispError>
+StagedImplShell::commit(self)
+
+SymbolTable::upsert_written_trait_impl(&mut self, record: WrittenTraitImpl)
+    -> Result<(), CranelispError>
+```
+
+Both tokens are opaque, non-`Clone` and non-serde. Callable rollback restores
+or removes the named unpublished method entries and their prior claim/
+tombstone state atomically; it refuses to reclaim a fresh non-null GOT row or
+code-bearing body. Shell rollback verifies the staged occupant before
+restoring/removing it. Fresh registration may stage a divergent same-key
+re-impl; cache restore still uses `enrol_written_trait_impl`, whose divergent
+case is a hard error.
+
+C3 constructs one `WrittenTraitImpl`, retains method entries, stages the
+trait-home shell, and checks methods. A failure rolls back methods then shell.
+After all methods settle, the writer record is upserted as the final fallible
+table act and the tokens commit. The previous writer record therefore remains
+untouched until success; there is no record to remove on failure, while every
+cluster commit still has exactly one matching record and shell per key.
+
+### Instance identity funnel
+
+`InstanceLink` and `MonoDemand` carry `template: CallableTarget` and
+`type_args: Vec<ConcreteType>`. The target identifies the selected binding,
+overload arm or macro clause. The vector records one concrete substitution per
+generalized variable, including result-only variables, in first structural
+occurrence order in the template scheme (parameters before result, repeated
+variables once, higher-kinded heads before their arguments). This is neither
+value-parameter order nor numeric inference-variable order. Derivation and
+replay use the same authoritative scheme, including the exact checked-body
+scheme while a cluster is unpublished.
+
+The public constructors are `InstanceLink::from_type_args(template, type_args)`
+and `MonoDemand::from_type_args(template, type_args, site)`. `site` is diagnostic;
+`MonoDemand::instance_link()` projects it away. `InstanceLink::instance_key()`
+is the sole key encoder, and collection, deduplication, minting and installation
+preserve that same link. Typecheck derives it only after the full use type
+settles, reconstructs the concrete signature from it and checks constraints.
+Replay requires no expression map and checks vector length against the selected
+scheme's generalized variables. The producer and replay contract lives in
+[bounded-contexts.md](bounded-contexts.md) §2.
+
+The ordinary `settle_concrete` and `install_concrete` surfaces do not take
+`minted_from`; they always create non-instance concrete callables. A
+concrete monomorphised instance uses the dedicated surface:
+
+```rust
+pub fn install_instance(
+    &mut self,
+    link: InstanceLink,
+    scheme: Scheme,
+    param_names: Vec<Symbol>,
+    docstring: Option<String>,
+    seq: u64,
+    origin: CallableOrigin,
+    realization: Realization<C>,
+    ast: Option<DefnVariant>,
+    callees: Vec<FQSymbol>,
+    visibility: Visibility,
+) -> Result<(Symbol, CallableSlot), LifecycleError>
+```
+
+The table derives the storage key once from `link.instance_key()`, stores
+`minted_from: Some(link)`, and returns the derived key and slot. A single
+private validator compares every concrete binding's actual key with its
+`InstanceLink::instance_key()`; it runs before install mutation and from
+`validate_lifecycle()` after clone/deserialisation. A mismatch is
+`LifecycleError::InstanceKeyMismatch { symbol, expected }`, and cache load
+maps it to cache-stale. Required evidence is: a positive instance-funnel pin;
+an install-time mismatch plant proving no mutation; a tampered restored-key
+plant; and an external-consumer compile-pass using `install_instance`.
+The substitution-based carrier and key semantics use cache schema 26. Schema-25
+cache pairs are stale and rebuilt; there is no argument-only compatibility
+constructor or serde alias. Platform ABI and calling conventions are unchanged.
+
+### Slot and cache authority
+
+Slots occur only in `Life::Concrete`, `Life::Broken`,
+`Life::Declared.prior`, and private `retired_slots`. Allocation derives
+its unavailable set from live claims plus tombstones; `next_got_slot` is not
+stored. The per-module `GotTable` remains the runtime pointer source of
+truth and is reconstructed on restore. `validate_lifecycle()` checks slot
+range/uniqueness, concrete schemes, legal origin/state and realization
+pairings, and instance-key identity.
+
+The `Binding`/`Decl`/`Callable`/`Life` serde reshape is cache schema
+24→25: pre-25 sidecars are rejected and rebuilt. The constructor and instance
+facade completion above changes APIs and validation but not the persisted
+shape, so it does not take another schema bump. `CodeStore` and
+`LinkerStore` remain `Clone + Send + Sync + 'static` boundary traits; the
+backend-owned concrete code carrier and platform ABI are unchanged.
+
+### Module aliases
+
+`ModuleAliases = DashMap<ModuleFullPath, ModuleAliasEntry>` is a separate
+session-level namespace. Keys are minted only by
+`module_alias_key(owner, alias)`. `substitute_module_alias` performs the
+referring-module-scoped segment walk: the leading segment may use the
+referring module's private alias; later segments require public mounts.
+Every step is a keyed probe, never a global scan or longest-prefix iteration.
+See `module-alias-scoped-lookup.md` for conflict and visibility rules.
 
 ### Macro Support Types
 
@@ -1761,23 +1662,19 @@ No changes from v1.
 
 `ReplSnapshot` was deleted as dead code in S73 (purge Wave 3) — superseded by the cluster-atomic staging-drop rollback mechanism (BC §2 invariant 7). The v1 sketch that lived here is retired; there is no `ReplSnapshot` type.
 
----
+## Resolution primitive — `ResolutionScope`
 
-## Resolution primitive — `resolve` / `resolve_macro_head` (S76 W-Macro fold-in)
-
-> **S108 Wave G**: the free-fn entry points below are the landed S76/S81 state.
-> The approved target reshapes them onto `ResolutionScope` — one lookup with
-> the prelude fallback intrinsic, no public fallback-less entry point — per
-> §"`ResolutionScope`" below and `design/arch/prelude-import-convergence.md`.
-> `Resolved`, `ResolveError`, and everything in this section about the
-> view-vs-primitive line, the Principle-16 split guards, and
-> `substitute_module_alias` carries over unchanged.
+`ResolutionScope` is the landed public query boundary: one lookup with the
+prelude decision fixed at scope construction and no public fallback-less
+free function. It owns the referring-module context required by the scoped
+module-alias walk. See `design/arch/prelude-import-convergence.md` and
+`design/arch/module-alias-scoped-lookup.md`.
 
 ```rust
 // crates/cranelisp-types/src/resolve.rs
 #[non_exhaustive]
 pub struct Resolved<C: CodeStore = ()> {
-    pub entry: ModuleEntry<C>,
+    pub entry: Binding<C>,
     pub home: ModuleFullPath,
     pub fq: FQSymbol,          // reference identity: home + canonical WRITTEN spelling
     pub storage_key: Symbol,   // storage identity: the terminal table key (S110 W1.1, FIXME 0620)
@@ -1786,23 +1683,21 @@ impl<C: CodeStore> Resolved<C> {
     pub fn storage_fq(&self) -> FQSymbol;   // { home, storage_key } — the keyed-consumer carrier value
 }
 
-pub fn resolve<C, L>(
-    symbol_tables: &SymbolTables<C, L>,
-    module_aliases: &ModuleAliases,
-    first_hop: &View<'_, C, L>,        // caller-chosen current-module view
-    current_module: &ModuleFullPath,
-    name: &str,
-    span: Span,
-) -> Result<Resolved<C>, ResolveError>;
+pub struct ResolutionScope<'a, C: CodeStore = (), L: LinkerStore = ()> { /* private */ }
 
-pub fn resolve_macro_head<C, L>(
-    symbol_tables: &SymbolTables<C, L>,
-    module_aliases: &ModuleAliases,
-    first_hop: &View<'_, C, L>,
-    current_module: &ModuleFullPath,
-    name: &str,
-    span: Span,
-) -> Result<Option<FQSymbol>, ResolveError>;   // Ok(None) = head is not a macro
+impl<'a, C: CodeStore, L: LinkerStore> ResolutionScope<'a, C, L> {
+    pub fn new(
+        symbol_tables: &'a SymbolTables<C, L>,
+        module_aliases: &'a ModuleAliases,
+        first_hop: &'a View<'a, C, L>,
+        current_module: &'a ModuleFullPath,
+        prelude: Option<&'a ModuleFullPath>,
+    ) -> Self;
+    pub fn resolve(&self, name: &str, span: Span)
+        -> Result<Resolved<C>, ResolveError>;
+    pub fn resolve_macro_head(&self, name: &str, span: Span)
+        -> Result<Option<FQSymbol>, ResolveError>;
+}
 
 #[non_exhaustive]
 pub enum ResolveError {
@@ -1814,7 +1709,7 @@ pub enum ResolveError {
 }
 ```
 
-**The two identities on `Resolved` (S110 W1.1, FIXME 0620).** `fq` is the *reference* identity — `home` + the canonical **written** spelling — consumed by display, error attribution, macro-head dispatch, §8.6.4 remedies, and `callees`. It does NOT in general address the entry: across a member alias (`v` → `Box.v`, `Pure` → `IO.Pure`), a renamed import/export (`[(foo bar)]`), or a renaming re-export, the written spelling is an `Import`-edge alias, not the table key. `storage_key` / `storage_fq()` is the *storage* identity — the exact key the chain-follow terminated at, captured by the walk itself (the only actor that knows it; a `ModuleEntry` does not carry its own key). Keyed consumers — the `var_refs`/`apply_refs` carrier (`VarRef::Global` / `ApplyRef::Dispatch` values) feeding the backend's `entry_at` direct read (`design/arch/backend-keyed-consumer.md` §1.1) — record `storage_fq()`, never `fq`. Composing a storage identity from a written spelling is the 0620 defect class.
+**The two identities on `Resolved` (S110 W1.1, FIXME 0620).** `fq` is the *reference* identity — `home` + the canonical **written** spelling — consumed by display, error attribution, macro-head dispatch, §8.6.4 remedies, and `callees`. It does NOT in general address the entry: across a member alias (`v` → `Box.v`, `Pure` → `IO.Pure`), a renamed import/export (`[(foo bar)]`), or a renaming re-export, the written spelling is an `Alias`-edge name, not the table key. `storage_key` / `storage_fq()` is the *storage* identity — the exact key the chain-follow terminated at, captured by the walk itself (the only actor that knows it; a `Binding` does not carry its own key). Keyed consumers — the `var_refs`/`apply_refs` carrier (`VarRef::Global` / `ApplyRef::Dispatch` values) feeding the backend's `entry_at` direct read (`design/arch/backend-keyed-consumer.md` §1.1) — record `storage_fq()`, never `fq`. Composing a storage identity from a written spelling is the 0620 defect class.
 
 The single types-owned query that turns a name into a resolved symbol-table entry — following imports/reexports, §8.6.6 module-path aliases, visibility, and Principle-17 chain-following. **Resolving a name is a query over the symbol-table data structure** (no inference, no unification, no substitution), so by Principle 15 (behaviour lives with the type) and Principle 7 (single source) it belongs in `cranelisp-types`, extending the `ensure_module_exists` + `got_data_symbol_name` + chain-follow precedent. It is pure over `symbol_tables` + `module_aliases` (both types-owned), generic over `<C, L>`, and carries **no `CheckState`** — which is what keeps it in the data-only crate.
 
@@ -1827,9 +1722,20 @@ Same primitive, different first-hop view. Cross-module hops (chain-following an 
 
 **Consolidation (retires two scattered copies).** `resolve_macro_head` replaces int's `SymbolTableMacroResolver::resolve_macro` chain-walk (`src/worker.rs`) — recognition is now a `cranelisp-types` query with **zero int→typecheck dependency**. typecheck's `resolve_trait` / `resolve_type` / `resolve_constructor` / `resolve_qualified` family (`crates/cranelisp-typecheck/src/checker.rs`, S72) becomes a set of thin callers of `resolve`, each projecting the generic `Resolved` / `ResolveError` to its kind-specific success/error. `ResolveError` moved here with the primitive (it was typecheck-local only because the resolver was); its `From<ResolveError> for CheckError` projection stays in `cranelisp-typecheck` because `CheckError` is typecheck-owned (the types-side projection target is the neutral `CranelispError`). **No DAG impact** — `cranelisp-types` has no dependencies; the primitive adds none.
 
-Per Principle 6 (minimum surface), there is one general primitive (`resolve`) plus thin typed wrappers (`resolve_macro_head` is the first; typecheck's `resolve_*` family are the rest, kept crate-side as projections). See `bounded-contexts.md` §7 (types — the resolution-primitive responsibility), §2 (typecheck — caller), §6 (int — Pass-1 recognition via the primitive).
-
-**`substitute_module_alias` is also public (S81 W-G item 0303, Principle 7).** The §8.6.6 step-5 longest-prefix dot-segment module-alias substitution — used internally by `resolve_qualified` — is promoted to `pub fn substitute_module_alias(module_aliases: &ModuleAliases, module_path: &ModuleFullPath) -> ModuleFullPath` because int's FQ-autoload boundary (`SymbolTableMacroResolver::recognize`, `src/process_form.rs`) computes the dependency module to load from a raw `mod/sym` reference *before* typecheck runs, so it must apply the same alias resolution. It now calls this primitive directly; the former byte-identical int-side `resolve_module_alias` re-implementation (which aged independently — two copies of the same §8.6.6 walk) is deleted. Baseline delta: **+1 line** (`pub fn substitute_module_alias`), additive/non-breaking.
+Per Principle 6 (minimum surface), `ResolutionScope::resolve` is the one
+general public query and `ResolutionScope::resolve_macro_head` is its typed
+macro projection; typecheck's kind-specific resolvers remain crate-side
+projections. See `bounded-contexts.md` §§2, 6, and 7.
+**`substitute_module_alias` is public (FIXME 0798 ruling; canonical:
+`design/arch/module-alias-scoped-lookup.md`).** Its landed signature is
+`substitute_module_alias(module_aliases, referring_module, module_path)`.
+It walks dot segments with keyed `module_alias_key(owner, alias)` probes: the
+leading segment uses the referring module's namespace at either visibility;
+later segments traverse Public mounts only; the shared chain-depth cap bounds
+the walk. The int FQ-autoload boundary and qualified resolution call this one
+primitive. No caller scans the alias map or performs longest-prefix matching.
+`ModuleAliases` is session-live and unserialized, so the signature change has
+no cache-schema effect.
 
 **Qualified-split guard — a bare `/` operator is not a qualified name (S81 / FIXME 0331, ratified).** The two private split helpers inside `resolve.rs` — `split_qualified(name)` (resolve.rs:493, the `module/symbol` splitter) and `canonical_symbol(name)` (resolve.rs:591, the post-last-`/` local-symbol extractor) — both require a **non-empty remainder** before splitting on `/`. `split_qualified` filters `split_once('/')` on `!m.is_empty() && !s.is_empty()`; `canonical_symbol` filters `rsplit_once('/')` on a non-empty symbol part. A name whose split would yield an empty part — a bare punctuation operator (`/`, `//`) or a leading/trailing `foo/` / `/bar` — is treated as a literal bare name routed to the unqualified short-name path, never to `resolve_qualified` against an empty root module. This is the structural realization of **Principle 16** (a bare punctuation operator is not special) at the resolution layer: `/` resolves identically to `+` or any other operator. The guard fixes the FIXME-0328 regression (the `resolve_with_fallback` migration made bare `/` resolve as "undefined variable: /") and matches pre-S81-migration literal-lookup behaviour; both helpers are PRIVATE (`fn`, not `pub`) so the fix carries **zero `public-api.txt` delta** (verified — not present in the baseline; `public_api_relocations` passes unchanged).
 
@@ -1931,7 +1837,6 @@ methods) + `pub fn reject_def_over_binding`; − `pub fn resolve`,
 `resolve_terminal_entry_and_home` stays `pub` (module.rs; consumed by
 `resolve.rs` internals and int's §8.6.5 install-time comparator). No serde
 shape change ⇒ no `CACHE_SCHEMA_VERSION` bump.
-
 **S109 Phase-3 amendments (landed, one `/arch` change-set).**
 
 - **I-1 filter corrected to the prelude HEAD (FIXME 0567, closed).** The
@@ -1944,9 +1849,12 @@ shape change ⇒ no `CACHE_SCHEMA_VERSION` bump.
   prelude head entry `is_public()` (the terminal check stays as defence in
   depth), aligning resolution with the head-side precedents
   (`find_trait_method_decl`, `prelude_implicit_names`, the §3.5.2 display
-  gate). Unit pins: `resolve/tests.rs::scope_i1_filter_gates_on_prelude_head_
-  not_terminal` (+ the public-reexport-edge complement). Internal walk body
-  only — **zero `public-api.txt` delta, no cache impact**.
+  gate). The current direct types control
+  `resolve/tests.rs::prelude_fallback_remains_public_head_only` is the public
+  leg; consumer tests cover private terminal bindings and public re-exports,
+  but no C1 types test preserves the discriminating private-head →
+  public-terminal chain. Internal walk body only — **zero `public-api.txt`
+  delta, no cache impact**.
 - **`pub fn member_key(&TypeName, &str) -> Symbol` (+1 baseline line,
   additive).** The ONE mint point for the canonical `Type.member`
   symbol-table key of the §8.5.2 inverted member model — `Box.v` field
@@ -1974,8 +1882,10 @@ shape change ⇒ no `CACHE_SCHEMA_VERSION` bump.
   delta).** `chain_follow_committed`'s same-module VIEW hop (the S109
   staging-aware arm) now bottoms out at `CHAIN_FOLLOW_DEPTH_LIMIT`, mirroring
   `resolve_terminal_entry_and_home`'s cap — a degenerate same-module alias
-  cycle reads as a not-found miss, never a stack overflow. Pin:
-  `resolve/tests.rs::same_module_alias_cycle_is_a_miss_not_a_stack_overflow`.
+  cycle reads as a not-found miss, never a stack overflow. The scoped
+  module-alias walker shares the cap and is pinned by
+  `resolve/tests.rs::alias_walk_refuses_more_than_the_shared_depth_limit`; the
+  same-module chain-follow arm has no dedicated C1 unit pin.
 
 ---
 
@@ -2202,9 +2112,27 @@ pub fn value_layout<C, L>(
     type_defs: Option<&SymbolTables<C, L>>,          // the same view HeapCategory::classify takes
 ) -> Option<ValueLayout>
 where C: CodeStore, L: LinkerStore;
+
+pub fn value_layout_with_lookup<C, F>(
+    ty: &ConcreteType,
+    lookup: &F,
+) -> Option<ValueLayout>
+where
+    C: CodeStore,
+    F: Fn(&ModuleFullPath, &Symbol) -> Option<Binding<C>>;
 ```
 
-`Some(ValueLayout { words })` ⟺ **Copy-eligible** (a scalar, or a single-constructor ADT whose fields are all transitively value-eligible) **∧** the fully-flattened representation is `≤ VALUE_LAYOUT_MAX_WORDS` words; `None` ⟺ today's heap/scalar representation verbatim. **Soundness-coupled single-sourcing (Principle 7, resolving FIXME 0468):** typecheck's `Copy` mode classifier and the backend's `HeapCategory::Value` arm are two consumers that MUST agree — a param moded `Copy` whose representation the backend did *not* flatten is a pointer bit-copied with no `rc_inc` (a missing-inc UAF) — so ONE predicate lives here and both delegate; neither derives its own. **Monotone-sound conservatism** (first landing): `None` is always sound (keeps today's lowering), so multi-constructor ADTs, `Vec`/heap collections, and generic ctor fields whose stored scheme type is not already concrete (no per-instantiation substitution) all return `None`. The `HeapCategory::Value` consuming arm + the F2v single-ctor witness are the Wave-3 backend work; the carrier lands with the mechanism, never ahead (Principle 8) — Wave 1 is carrier + tests only.
+The table entry point delegates to the lookup entry point. A lookup returns an
+owned binding at the exact module/storage key and releases its guard before
+returning; it supplies a coherent declaration view without name resolution or
+publication. The layout walk and `type_ctor_names` share one private constructor
+projection, preserving canonical-key preference and the product facet. The S121
+implemented typecheck consumer supplies staging-first lookup to both Copy
+and uniqueness eligibility through its shared private adapter. This
+additive API changes no eligibility rule, persisted field meaning or platform
+ABI. See [the exact review packet](s121-staged-value-layout-api.md).
+
+`Some(ValueLayout { words })` ⟺ **Copy-eligible** (a scalar, or a single-constructor ADT with exactly one field that is transitively value-eligible) **∧** the fully-flattened representation is `≤ VALUE_LAYOUT_MAX_WORDS` words; `None` ⟺ today's heap/scalar representation verbatim. **Soundness-coupled single-sourcing (Principle 7, resolving FIXME 0468):** typecheck's `Copy` mode classifier and the backend's `HeapCategory::Value` arm are two consumers that MUST agree — a param moded `Copy` whose representation the backend did *not* flatten is a pointer bit-copied with no `rc_inc` (a missing-inc UAF) — so ONE predicate lives here and both delegate; neither derives its own. **Monotone-sound conservatism** (first landing): `None` is always sound (keeps today's lowering), so multi-constructor ADTs, `Vec`/heap collections, and generic ctor fields whose stored scheme type is not already concrete (no per-instantiation substitution) all return `None`. The `HeapCategory::Value` consuming arm + the F2v single-ctor witness are the Wave-3 backend work; the carrier lands with the mechanism, never ahead (Principle 8) — Wave 1 is carrier + tests only.
 
 ### Resource scheduling — the `ctx` vtable handle model (ABI v9, S97, supersedes FIXME 0482)
 
@@ -2342,9 +2270,45 @@ pub const IO_TAG_PURE: i64 = 0;
 pub const IO_TAG_EFFECT: i64 = 1;
 pub const IO_TAG_BIND: i64 = 2;
 pub const IO_TAG_PAR: i64 = 3;
+// + IO_TAG_EFFECT_POLL = 4, IO_TAG_LAUNCH = 5, IO_TAG_SELECT = 6 (S94–S96).
 ```
 
-No changes from v1.
+**S121 — the `Pure` payload-glue word (FIXME 0934, ruled; canonical:
+`total-concreteness.md` §3.4, as amended by the S121 Phase-3 ownership-witness
+re-ruling).** The `Pure` node gains a hidden second field:
+`[header | tag@16 | payload@24 | payload_glue@32]` — the canonical `drop<T>`
+glue address for the payload's concrete type, stamped by the backend at every
+(post-mono concrete) construction site, or the sentinel `0` for a non-heap
+payload. The word is the **single ownership/force state** after publication:
+`0 = Scalar`, `1 = Claimed`, every other value = `Owned(glue)`. The run lane
+and `free_io_node` both atomically exchange it to `Claimed` with `AcqRel`;
+only the claimant that observes `Scalar` or `Owned(glue)` may read/transfer
+field 0, and teardown calls through only an observed `Owned(glue)`. A second
+force observes `Claimed`, raises the standard runtime-error outcome before
+reading the payload, and creates no second owner. `1` is reserved and is never
+a backend/platform stamp or a call target. Construction and platform adoption
+initialise the fresh unpublished node non-atomically; every intrinsics access
+after publication is atomic. Existing node-publication, RC and structured-join
+edges remain the lifetime boundary (complete rule and evidence:
+`total-concreteness.md` §3.4). Every other IO node's layout is unchanged. The IO-node family is a layout contract governed
+by `cranelisp_platform::ABI_VERSION` (Principle 14): this change bumps
+**9 → 10**, executed in the S121 platform stream together with the platform
+test-fixture rebuilds.
+
+**S121 — platform-return stamps are tag-dispatched (`/arch`, 2026-09-01;
+canonical: `total-concreteness.md` §3.4 "the platform-return seam").** At the
+backend's one platform-call chokepoint, the post-call stamp is selected by the
+**returned node's tag**, never by the callee's kind alone: `IO_TAG_EFFECT` ⇒
+the FQ fn-name pointer into the Effect node's field-3 (base+40);
+`IO_TAG_PURE` ⇒ the payload's canonical `drop<T>` (or the sentinel `0`) into
+the payload-glue word (base+32, valid at ABI ≥ 10 only); any other tag ⇒ **no
+write** (degrades exactly as a null fn-name handle does). The pre-S121
+kind-keyed unconditional field-3 store was an out-of-bounds heap write for a
+`Pure`-returning platform fn at both v9 and v10 (latent — no shipped platform
+fn returns `Pure`). Authority split at the crossing: the DLL's only legal
+glue-word write is the sentinel `0`; the backend is the sole stamp authority;
+intrinsics is the sole post-publication state owner (run-lane claim plus
+teardown claim). Lands in C4 bundle B5 and C5 I0b; register rows R19/R20.
 
 ---
 
@@ -2466,37 +2430,30 @@ pub struct FunctionArtifacts {
 
 ### `SymbolTable::defined_symbols()` — shared codegen-compilable predicate
 
-Both the priority worker in `src/` (preparing `names` for a `compile_to_module` call) and the backend's internal compile loop (when it re-enumerates) consume the same predicate. Defining it on `SymbolTable` ensures they cannot diverge (Principle 7 — single source of truth). See Key Decision 22 and `design/typecheck/ast-annotation.md` §9.5.
+Both int's priority worker and the backend compile loop consume the one
+types-owned predicate. In the unified lifecycle it is structural:
 
 ```rust
-impl SymbolTable {
-    /// Iterate over codegen-compilable entries: those with `ast: Some(_)`
-    /// whose kind is NOT `Overloaded` (dispatch index — its mangled
-    /// variants are compiled instead) and NOT `UserFn { constrained_fn:
-    /// Some(_) }` (template — mono specializations are compiled instead).
-    ///
-    /// Canonical location: `crates/cranelisp-types/src/module.rs`.
-    /// Consumed by:
-    /// - Priority worker in `/int`: collects `names` for `compile_to_module`.
-    /// - `compile_to_module` in `/backend`: internal compile loop.
-    /// - `constrained_fn_names` derivations: negation of the second filter
-    ///   clause within `UserFn`.
-    pub fn defined_symbols(&self) -> impl Iterator<Item = (&Symbol, &ModuleEntry)> {
-        self.symbols.iter().filter(|(_, entry)| match entry {
-            ModuleEntry::Def { ast: Some(_), kind, .. } => match kind.as_ref() {
-                DefKind::Overloaded { .. } => false,
-                DefKind::UserFn { constrained_fn: Some(_) } => false,
-                _ => true,
-            },
-            _ => false,
-        })
-    }
+pub fn defined_symbols(&self)
+    -> impl Iterator<Item = (&Symbol, &Binding<C>)>
+{
+    self.symbols.iter().filter(|(_, binding)| {
+        matches!(
+            binding.callable().map(|callable| &callable.life),
+            Some(Life::Concrete {
+                realization: Realization::Body { .. },
+                ..
+            })
+        )
+    })
 }
 ```
 
-The filter is deliberately strict: any `ModuleEntry::Def` with `ast: None` is excluded — whether pre-body-check, primitive, special form, `Overloaded` base, or constrained-fn template. Adding new non-compilable categories never silently breaks codegen, because the `ast.is_some()` clause comes first.
-
-> Note on `ModuleEntry::Def.ast` / `code` / `got_slot`: the full set of typecheck- and codegen-populated fields on `ModuleEntry::Def` (`ast`, `code`, `got_slot`, `callees`, `trait_origin`) is now shown in the variant definition above. `ast` arrived in Sprint 55 (Phase 1); `code` shape landed in Sprint 57 Phase 3 G6 (concrete `Code` placeholder); the previously-separate `platform_fn_ptr` landed in Sprint 57 Phase 4 G8 (later removed in S66 — see below); `code` is parameterised to `Option<C>` in Sprint 58 Phase 5 Step 5c (G12) per Decision 32 — the integration layer chooses the concrete `C = Code` (re-exported from `cranelisp-backend` per Decision 41) so per-redefinition reclaim fires (Decision 31 Scenario 2). **Sprint 66 (2026-05-09 — fn_ptr unification + rollback)** worked in two steps: (1) commit `b09ec76` removed `platform_fn_ptr` and added a unified `fn_ptr: Option<*const u8>` covering all four ptr origins (JIT user fn, linker-loaded user fn, primitive, platform DLL fn); (2) commit `1dc57ae` (same day) **rolled back** the unified `fn_ptr` field as redundant with the per-module `GotTable` already in place. Post-rollback canonical statement: **GOT is the single source of truth for callable addresses** — `got_slot: Some(slot)` indexes into `SymbolTable.got()` (a `GotTable` per module — `crates/cranelisp-types/src/got.rs`); the runtime address lives at `symbol_table.got().load_slot(slot)`. The `Code` variant slim survived the rollback: `Code` carries only the two lifecycle-owning variants `Code::Jit(Arc<Jit>)` / `Code::Linker(Arc<Linker>)`. (A `Code::Primitive` marker variant was briefly added in S68 Phase 3 per Decision 0048 A2, then **reversed in S73 Phase 2 per FIXME 0244** — primitive-ness is read from `kind: DefKind::Primitive`, not from a `code` marker.) The `code` field is `#[serde(skip)]` — runtime-only, re-derivable from the AST + cache `.o` (constructs `Code::Linker(Arc<Linker>)` per `load_object` for user fns; primitives have process lifetime and carry `code = None` — the GOT holds the `*const u8`; platform DLL fns are also `code = None`, DLL handle held in `SharedState.kept_dlls`). See `design/typecheck/ast-annotation.md` §6 for the authoritative per-category table of which entries carry `ast: Some(_)`, and `crates/cranelisp-types/src/module.rs` `ModuleEntry::Def` rustdoc for the canonical post-rollback field shape.
+A codegen-enumerated binding therefore has a slot and concrete body view by
+construction. Groups, templates, inline/by-name callables, extern/DLL/facade
+realizations, and broken entries are excluded by their lifecycle shape rather
+than an `ast.is_some()` plus kind-exclusion list. The GOT remains the runtime
+address source; `Realization::Body.code` is the serde-skipped lifecycle owner.
 
 ---
 
@@ -2522,11 +2479,11 @@ The filter is deliberately strict: any `ModuleEntry::Def` with `ast: None` is ex
 - `FnSlotEntry { module: ModuleFullPath, slot_index: usize }` — identifies a function's GOT location (which module's GOT, which slot). See `design/backend/per-module-got.md`.
 - `ModuleGotRegistry` — per-module GOT table registry, replaces flat `InMemWorkerState.got_state`. Lives in `cranelisp-backend`.
 - `CompilationResult` + `FunctionArtifacts` — backend output of `compile_to_module` (Sprint 56 Phase 2). Replaces `CompiledProgram` and `CompiledModuleInfo`.
-- `CodeStore` + `LinkerStore` empty marker traits (Sprint 58 Step 5c, Decision 32) — generic boundary on `SymbolTable<C, L>` and `ModuleEntry<C>`. Both default to `()`. See `pipeline-v4.md` §9.1.
+- `CodeStore` + `LinkerStore` marker traits (Sprint 58 Step 5c, Decision 32) — generic boundary on `SymbolTable<C, L>` and the `Binding<C>` lifecycle tree. Both default to `()`. See `pipeline-v4.md` §9.1.
 - `SymbolTable.imports`, `.exports`, `.platforms`, `.submodules` (Sprint 58 Step 5a, Decision 33) — structural declarations as fields, not a parallel store. Reuse existing `cranelisp-types::{ImportSpec, ExportSpec, PlatformSpec, ModDecl}`.
 - `SymbolTable.linker: Option<L>` (Sprint 58 Step 5c) — per-module linker store for cache-hit `.o` mapping. `#[serde(skip)]`.
 - `SymbolTable.schema_version: u32` (Sprint 58 Step 5b, Decision 34) — explicit cache schema version; mismatch invalidates the cache as if dependencies changed.
-- `Code` enum (Sprint 58 Phase 3a, Decision 35; Sprint 64 location move per Decision 41; **Sprint 66 variant slimming preserved through the same-day fn_ptr-unification rollback**) — concrete `C` for `SymbolTable<Code, ()>`. Variants `Code::Jit(Arc<Jit>)` + `Code::Linker(Arc<Linker>)` — lifecycle owner ONLY post-S66; the per-entry call address lives in `SymbolTable.got()` (the post-rollback single source of truth — see `crates/cranelisp-types/src/got.rs`), indexed by `ModuleEntry::Def.got_slot`. Lives in `cranelisp-backend/src/code.rs` (moved from `src/code.rs` per Decision 41), NOT in `cranelisp-types` (Principle 3). The CP1 Layer-2-Option-B return-tuple pattern retracts: `compile_to_module` writes the resulting fn pointer to the entry's GOT slot via `symbol_table.got().store_slot(slot, ptr)` (D41 #2) and returns `Result<CompilationArtifacts, CompilationError>` (S70 Phase B). The **caller** composes `Code::Jit(Arc<Jit>)` / `Code::Linker(Arc<Linker>)` and installs it via Decision 38's `write_code` (D41 #1 — the caller's, not backend's, per S75 W2 Finding-A; backend only borrows `&mut M`). Documented at this boundary so every consumer of `SymbolTable<Code, ()>` references the same shape.
+- `Code` enum (Sprint 58 Phase 3a, Decision 35; Sprint 64 location move per Decision 41; **Sprint 66 variant slimming preserved through the same-day fn_ptr-unification rollback**) — concrete `C` for `SymbolTable<Code, ()>`. Variants `Code::Jit(Arc<Jit>)` + `Code::Linker(Arc<Linker>)` — lifecycle owner ONLY post-S66; the per-entry call address lives in `SymbolTable.got()` (the post-rollback single source of truth — see `crates/cranelisp-types/src/got.rs`), indexed by `ModuleEntry::Def.got_slot`. Lives in `cranelisp-backend/src/code.rs` (moved from `src/code.rs` per Decision 41), NOT in `cranelisp-types` (Principle 3). The CP1 Layer-2-Option-B return-tuple pattern retracts: `compile_to_module` writes the resulting fn pointer to the entry's GOT slot via `symbol_table.got().store_slot(slot, ptr)` (D41 #2) and returns `Result<CompilationArtifacts, CompilationError>` (S70 Phase B). The **caller** composes `Code::Jit(Arc<Jit>)` / `Code::Linker(Arc<Linker>)` and submits it through the accepted types-owned `SymbolTable::publish_compiled_owner` capability (D41 #1 — the caller's, not backend's, per S75 W2 Finding-A; backend only borrows `&mut M`). `write_code` was an unimplemented design spelling, not an approved API. Documented at this boundary so every consumer of `SymbolTable<Code, ()>` references the same ownership split.
 - `ModuleEntry` callable slot (HISTORICAL flat-field framing — since S83 the slot rides the callable `DefKind` variants, read via `callable_got_slot()`; this row records the pre-S83 shape) — single source of truth for "where to call to invoke this entry" (Sprint 56 G7; reaffirmed Sprint 66 post-rollback per `1dc57ae`). Indexes into `SymbolTable.got()`; the runtime address is `got().load_slot(slot)`. The S66 unification briefly placed the address on a sibling `ModuleEntry::Def.fn_ptr` field (commit `b09ec76`); the same-day rollback `1dc57ae` removed that field as redundant with the GOT. No per-entry pointer field exists post-rollback. Origin encoded by `kind: DefKind` (UserFn → JIT/linker; Primitive { Inline | Extern } → primitive; Primitive { PlatformEffect } → platform DLL). See `crates/cranelisp-types/src/module.rs` `ModuleEntry::Def.got_slot` rustdoc + Decision 41 S66 amendment + rollback.
 - `ParsedEntry` enum (Sprint 66, FIXME 0156) — parse-time-only transient produced by `cranelisp_frontend::build_form` and consumed (as `Vec<ParsedEntry>`) by `cranelisp_typecheck::check_forms`'s single-call cluster surface (per Decision 44's 2026-05-13 third amendment; internal two-pass discipline). NEVER lands in `SymbolTable`. Orchestrator accumulates the vector across the cluster's forms and hands it to one `check_forms` call. `#[non_exhaustive]`; not `Serialize/Deserialize`; derives `Clone` so the orchestrator can rebuild the vector for Gap-retry. See `crates/cranelisp-types/src/parsed.rs` rustdoc + `crates/cranelisp-frontend/src/lib.rs` //! preamble (post-S70 B3-C frontend canonical) + `crates/cranelisp-typecheck/src/lib.rs` rustdoc (post-S72 W5 typecheck canonical; `facades/typecheck.md` retired).
 - `DefmacroInfo` struct (Sprint 66, FIXME 0156) — moved from `cranelisp-frontend/src/defmacro.rs` to `cranelisp-types` so `int`'s post-`build_form` consumption path can name the type uniformly. Frontend's `parse_defmacro` becomes `pub(crate)` inside the `build_form` dispatcher.
@@ -2546,13 +2503,13 @@ The filter is deliberately strict: any `ModuleEntry::Def` with `ast: None` is ex
 
 ### Functions changed
 - `TypeChecker::check(&mut self, ctx: &CompileContext, program: &[TopLevel])` — single typecheck entry point, now takes explicit context; `CheckResult` is no longer a backend input.
-- `compile_to_module<M: Module>(scope, names, symbol_tables, module_aliases, module)` — normative signature (Sprint 56 Phase 2; `module_aliases` added S75 W2). No `CheckResult`, no `Program`, no intrinsic IDs, no GOT map, no arities parameter. **Per Decision 41 (Sprint 64) + S66 amendment + rollback + S70 Phase B amendment + S75 W2 Finding-A correction**: returns `Result<CompilationArtifacts, CompilationError>`; backend writes the resulting fn pointer to the entry's GOT slot via `symbol_table.got().store_slot(entry.got_slot.unwrap(), ptr)` directly (D41 #2 — the GOT is the post-rollback single source of truth for callable addresses; the briefly-considered sibling `fn_ptr` field landed in `b09ec76` and was rolled back the same day in `1dc57ae`). The **caller** composes `Code::Jit(Arc<Jit>)` / `Code::Linker(Arc<Linker>)` and installs it via `SymbolTable::write_code` (D41 #1 — the caller's; backend only borrows `&mut M`, never owns the `Arc<Jit>`). On-demand disassembly is the separate `produce_disasm(fq, code_size, symbol_tables)` (caller-supplied `code_size` + capstone; S75 W2 Finding-C). See `bounded-contexts.md` §3 (backend) + the `crates/cranelisp-backend/src/lib.rs` rustdoc (`facades/backend.md` retired S75 W5b → BC §3 + source rustdoc) and `design/backend/compile-to-module.md`.
+- `compile_to_module<M: Module>(scope, names, symbol_tables, module_aliases, module)` — normative signature (Sprint 56 Phase 2; `module_aliases` added S75 W2). No `CheckResult`, no `Program`, no intrinsic IDs, no GOT map, no arities parameter. **Per Decision 41 (Sprint 64) + S66 amendment + rollback + S70 Phase B amendment + S75 W2 Finding-A correction**: returns `Result<CompilationArtifacts, CompilationError>`; backend writes the resulting fn pointer to the entry's GOT slot via `symbol_table.got().store_slot(entry.got_slot.unwrap(), ptr)` directly (D41 #2 — the GOT is the post-rollback single source of truth for callable addresses; the briefly-considered sibling `fn_ptr` field landed in `b09ec76` and was rolled back the same day in `1dc57ae`). The **caller** composes `Code::Jit(Arc<Jit>)` / `Code::Linker(Arc<Linker>)` and submits it through the accepted `SymbolTable::publish_compiled_owner` capability (D41 #1 — the caller's; backend only borrows `&mut M`, never owns the `Arc<Jit>`). On-demand disassembly is the separate `produce_disasm(fq, code_size, symbol_tables)` (caller-supplied `code_size` + capstone; S75 W2 Finding-C). See `bounded-contexts.md` §3 (backend) + the `crates/cranelisp-backend/src/lib.rs` rustdoc (`facades/backend.md` retired S75 W5b → BC §3 + source rustdoc) and `design/backend/compile-to-module.md`.
 - `cranelisp_frontend::build_form(sexp: &Sexp) -> Result<Vec<ParsedEntry>, CranelispError>` (Sprint 66, FIXME 0156) — replaces the prior `build_ast` shape at the frontend's per-form boundary. Returns a `Vec` because some shapes yield more than one entry per source form (multi-clause `defmacro`, `deftype` with constructors). See `crates/cranelisp-frontend/src/lib.rs` //! preamble (post-S70 B3-C the frontend canonical surface contract).
 - `cranelisp_typecheck::check_form` collapses to a **single `check_forms` free function** (Sprint 66, FIXME 0160 + Decision 44 amended FIXME 0167 + 2026-05-13 third amendment): `check_forms(parsed: Vec<ParsedEntry>, ctx: &mut SymbolTableAccess<'_, C, L>, symbol_tables: &SymbolTables<C, L>) -> Result<(), CheckError>`. Pre-S66 the legacy `check_form` mutated the table in-place via a typecheck-internal `merge_form_result()`; FIXME 0160 first purified it to a single-call pure function; Decision 44 then split that single call into a two-function Pass 1 (signatures) + Pass 2 (bodies) shape so spec §5.13.1's two-pass mandate (forward references / mutual recursion) survives the orchestrator-side cluster. The two-function shape exposed implementation phasing across the facade and created a state-threading hole; the third amendment collapses it back into a single `check_forms` call that runs both passes internally. Pass-1-to-Pass-2 working state lives inside `check_forms`'s frame and never crosses the facade. FIXME 0167's Approach B + SymbolTableAccess discipline is preserved: staging is empty at cluster start; reads via `View::union(staging, live)`; writes go to staging via the same `current_symbol_table_mut` accessor used in committed-mode. `check_forms` is pure with respect to live state; it does not mutate the live `SymbolTable`. The 91 register-call sites in `program.rs` do not change individually — staging-vs-live is absorbed inside `SymbolTableAccess::current_symbol_table{,_mut}` accessors. The caller (`int::process_cluster`) constructs `SymbolTableAccess::Cluster` with a transient orchestrator-local staging table and commits staging into the live table atomically via `int::insert_cluster` only on whole-cluster success; on `Err(Gap)`, the orchestrator drops the staging frame and retries the whole `check_forms` call against a fresh staging frame; on `Err(TypeError)`, staging dissolves with the function frame (live table byte-identical). See `crates/cranelisp-typecheck/src/lib.rs` rustdoc (post-S72 W5 canonical; `facades/typecheck.md` retired — cross-surface narrative in `bounded-contexts.md` §2), `bounded-contexts.md` §6 (int) + `src/cluster.rs` rustdoc for the `process_cluster` orchestrator side (`facades/int.md` retired S81 W-Retire → BC §6 + `design/int/` + source rustdoc), and the `check_forms` section above.
 
 ### Functions added
 - `CallGraph::add_edge()`, `reverse_index()`, `sccs()`, `non_tail_self_recursion()` *(DELETED S119 with the type, FIXME 0918)*
-- `SymbolTable::defined_symbols() -> impl Iterator<Item = (&Symbol, &ModuleEntry)>` — shared codegen-compilable predicate (Decision 22, Sprint 56).
+- `SymbolTable::defined_symbols() -> impl Iterator<Item = (&Symbol, &Binding<C>)>` — shared `Concrete × Realization::Body` codegen predicate (Decision 22, reshaped S121 C1).
 - ~~`declare_all_got_slots()`~~ — removed. GOT slots are assigned incrementally by `ModuleCodegenState::ensure_slot_for()` during function registration, not in a separate phase. See `pipeline-v2.md` §12.5.
 
 ### Coherence checklist

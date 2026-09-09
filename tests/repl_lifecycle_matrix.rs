@@ -1,38 +1,6 @@
-//! S102 Phase-5 Stage-1 — lane L-S2: the session-lifecycle grid
-//! (`tests/plan/s102-test-plan.md` §1.2; `tests/plan/coverage-audit-s101.md`
-//! §2.4 L-S2, curing miss-pattern P3 "never-exercised state combination").
-//!
-//! Restart × session-end-state grid. The audit found the restart lane was a
-//! *line*, not a *grid*: `run_again` existed only over simple healthy states,
-//! and every compound persisted state (broken backing file, macro-defining-
-//! macro artifact, hand-authored file, `/mod`-touched module) was a 6a
-//! first-visit. This file populates the grid judiciously: cells that
-//! reproduce a 6a/6b defect are RED guards; healthy neighbours are one-line
-//! GREEN controls. The already-guarded cells are NOT duplicated — they stay
-//! in their home files (spec citations must not rot) and are cross-referenced
-//! as the grid's pre-populated cells:
-//!
-//!   - broken-symbol × clean restart → FIXME 0489 guard,
-//!     `tests/repl_persist_redefine.rs::restart_with_broken_backing_file_reaches_prompt_and_accepts_repair`
-//!   - macro-defining-macro × clean restart → /port D1 guard,
-//!     `tests/repl_persist.rs::persist_macro_defining_macro_use_survives_restart`
-//!   - hand-authored `user.cl` authorship fidelity (text bytes) → /port D2
-//!     guard, `tests/repl_persist.rs::persist_defining_turn_preserves_hand_authored_macro_source_text`
-//!   - redefined-with-frozen-slot × clean restart → L-R5(a),
-//!     `tests/repl_persist_redefine.rs::persist_abi_change_redefinition_restart_runs_correctly_from_cache`
-//!
-//! Dirty-world cells stage their fixtures INSIDE fresh tmpdirs (audit §2.4:
-//! the tmpdir is fresh, its *contents* are staged) — the isolation discipline
-//! of `tests/CLAUDE.md` §"Fresh Temp Directory per Test" is preserved.
-//!
-//! Draft-time polarity (probed 2026-07-03 on the CS-A binary):
-//!   RED ×3 (extend the 0489/D1 defect classes to their restart-mode
-//!   neighbours; flip with Block A2):
-//!     broken_symbol_restart_no_cache_reaches_prompt_and_accepts_repair
-//!     broken_symbol_restart_cache_wiped_reaches_prompt_and_accepts_repair
-//!     macro_defining_macro_restart_no_cache_recovers
-//!   GREEN ×10 controls/pins.
-//! Ledger: tests/plan/ledger.md §"Sprint 102 Phase-5 Stage-1 QA-first RED set".
+//! Restart × session-end-state evidence. Each case owns a fresh temporary
+//! project and varies only the restart or persisted-state condition named by
+//! the test.
 
 #[path = "helpers/mod.rs"]
 mod helpers;
@@ -50,17 +18,14 @@ fn prims_session(stdin: &str) -> helpers::e2e::CrOutput {
 /// End state A: a healthy session — one defn + one call, then `/quit`.
 const HEALTHY: &str = "(defn keep [:Int x] (add-i64 x 3))\n(keep 1)\n/quit\n";
 
-/// End state B: a broken symbol — `k` breaks under `f`'s signature change
-/// (ordinary recoverable session state per repl/spec.md §18.4; the backing
-/// file as a whole no longer typechecks, §18.8).
-const BROKEN: &str = "(defn f [:Int x] (add-i64 x 1))\n\
-                      (defn k [:Int y] (f y))\n\
-                      (defn f [:String s] (str-len s))\n\
-                      /quit\n";
+/// End state B: an incompatible replacement was rejected, so the prior
+/// coherent `f`/`k` definitions are the only source that may be restored.
+const REJECTED_CHANGE: &str = "(defn f [:Int x] (add-i64 x 1))\n\
+                               (defn k [:Int y] (f y))\n\
+                               (defn f [:String s] (str-len s))\n\
+                               /quit\n";
 
-/// The repair script for end state B (per §18.8: the restart MUST reach a
-/// prompt and accept the redefinition repair).
-const REPAIR: &str = "(defn k [:String y] (f y))\n(k \"abcd\")\n";
+const VERIFY_RETAINED: &str = "(k 3)\n";
 
 // =============================================================================
 // Row E1 — healthy definitions × {clean, --no-cache, cache-wiped}
@@ -113,38 +78,33 @@ fn healthy_defns_restart_cache_wiped_restores() {
 }
 
 // =============================================================================
-// Row E2 — broken symbol × {--no-cache, cache-wiped} (clean cell = the 0489
-// guard in tests/repl_persist_redefine.rs; these are its restart-mode
-// neighbours — same §18.8 floor, same resolver, flip with Block A2)
+// Row E2 — rejected replacement × {--no-cache, cache-wiped}
 // =============================================================================
 
-// spec: repl/spec.md §18.8 — the restart MUST reach a prompt regardless of
-// cache mode: `--no-cache` must not turn a recoverable broken symbol into a
-// lockout. RED on HEAD (FIXME 0489 class; probed: exit 1 before the first
-// prompt, repair turn never read).
+// spec: repl/spec/18-redefinition.md §18.2, §18.8 — rejection does not write
+// the candidate source; a no-cache restart restores the prior coherent world.
 #[test]
-fn broken_symbol_restart_no_cache_reaches_prompt_and_accepts_repair() {
-    prims_session(BROKEN)
+fn rejected_change_restart_no_cache_restores_prior_source() {
+    prims_session(REJECTED_CHANGE)
         .assert_ok()
+        .assert_stdout_contains("cannot redefine user/f")
         .run_again()
         .repl()
         .cli_flag("--no-cache")
-        .stdin(REPAIR)
+        .stdin(VERIFY_RETAINED)
         .output()
         .assert_ok()
-        .assert_stdout_contains("user>") // the prompt is reached
-        .assert_stdout_contains(":primitives/Int 4"); // the repair path works
+        .assert_stdout_contains(":primitives/Int 4")
+        .assert_stdout_does_not_contain("has errors");
 }
 
-// spec: repl/spec.md §18.8 — same floor for the cache-wiped restart: the
-// §18.8 skip-broken-cache rule means the cache may legitimately be absent for
-// exactly this end state, so the wiped cell IS the floor's canonical shape.
-// RED on HEAD (FIXME 0489 class).
+// spec: repl/spec/18-redefinition.md §18.2, §18.8 — the same prior-source
+// reconstruction holds when the cache directory is absent.
 #[test]
-fn broken_symbol_restart_cache_wiped_reaches_prompt_and_accepts_repair() {
-    let first = prims_session(BROKEN).assert_ok();
-    // The cache dir may or may not exist for a broken end state (§18.8 says
-    // it must not capture a trap stub); wipe whatever is there.
+fn rejected_change_restart_cache_wiped_restores_prior_source() {
+    let first = prims_session(REJECTED_CHANGE)
+        .assert_ok()
+        .assert_stdout_contains("cannot redefine user/f");
     let cache = first.tmpdir.join(".cranelisp-cache");
     if cache.exists() {
         std::fs::remove_dir_all(&cache).expect("wipe .cranelisp-cache");
@@ -152,11 +112,11 @@ fn broken_symbol_restart_cache_wiped_reaches_prompt_and_accepts_repair() {
     first
         .run_again()
         .repl()
-        .stdin(REPAIR)
+        .stdin(VERIFY_RETAINED)
         .output()
         .assert_ok()
-        .assert_stdout_contains("user>")
-        .assert_stdout_contains(":primitives/Int 4");
+        .assert_stdout_contains(":primitives/Int 4")
+        .assert_stdout_does_not_contain("has errors");
 }
 
 // =============================================================================
@@ -209,22 +169,17 @@ fn macro_defining_macro_restart_no_cache_recovers() {
 }
 
 // =============================================================================
-// Row E4 — redefined-with-frozen-slot end state × cache-wiped (clean cell =
-// L-R5(a) in tests/repl_persist_redefine.rs)
+// Row E4 — accepted caller-free type change × cache-wiped
 // =============================================================================
 
-// spec: repl/spec.md §18.8 — definitions redefined across signature changes
-// restore correctly WITHOUT the cache too: the wiped-cache restart recompiles
-// the coherent regenerated source from scratch (frozen slots are session
-// state, never persisted truth). GREEN pin.
+// spec: repl/spec/18-redefinition.md §18.1, §18.8 — an accepted caller-free
+// type change restores correctly from source without its cache.
 #[test]
-fn abi_redefined_end_state_restart_cache_wiped_recompiles_from_source() {
+fn caller_free_type_change_restart_cache_wiped_recompiles_from_source() {
     let first = prims_session(
         "(defn f [:Int x] (add-i64 x 1))\n\
-         (defn g [:Int y] (f y))\n\
          (defn f [:String s] (str-len s))\n\
-         (defn g [:String s] (f s))\n\
-         (g \"hi\")\n\
+         (f \"hi\")\n\
          /quit\n",
     )
     .assert_ok()
@@ -236,7 +191,7 @@ fn abi_redefined_end_state_restart_cache_wiped_recompiles_from_source() {
     first
         .run_again()
         .repl()
-        .stdin("(g \"abc\")\n/quit\n")
+        .stdin("(f \"abc\")\n/quit\n")
         .output()
         .assert_ok()
         .assert_stdout_contains(":primitives/Int 3");

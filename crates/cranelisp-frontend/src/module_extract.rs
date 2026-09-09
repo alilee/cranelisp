@@ -44,9 +44,10 @@ use cranelisp_types::{
 /// imports it from the root. Single-import readability is the
 /// Principle 15 narrowness argument.
 ///
-/// Fed directly into `SymbolTable::write_structural_decls` per Decision 33
-/// — single source of truth for structural decls on `SymbolTable`, no
-/// parallel `ModuleStructure` store.
+/// Written onto the per-module `SymbolTable` by appending directly to its
+/// public structural vectors in source order. There is no bulk-load method;
+/// the `SymbolTable` remains the single structural-declaration store, with no
+/// parallel `ModuleStructure`.
 ///
 /// `#[non_exhaustive]` so adding new declaration categories is
 /// non-breaking.

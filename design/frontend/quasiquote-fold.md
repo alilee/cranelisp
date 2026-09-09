@@ -88,13 +88,13 @@ Why it holds (each grounds a `/testing` assertion):
 1. `expand_quasiquotes` rewrites exactly the arity-2 list forms whose head
    `Sexp::Symbol` is `quote` or `quasiquote`, replacing them with
    `macros/Sexp*` constructor-call trees; every other node is structurally
-   rebuilt by recursing into its children (`quasiquote.rs:193–226`).
+   rebuilt by recursing into its children.
 2. Output constructor heads are `macros/SexpSym`, `macros/SexpList`,
    `macros/SexpInt`, `macros/SexpBracket`, `macros/SCons`, `sconcat`, … — none
    equal to `quote`/`quasiquote`. A quoted occurrence of the *word* becomes a
    **string literal**: `'quote` → `(macros/SexpSym "quote")` — the token is now
-   inside a `Sexp::Str`, never a head `Sexp::Symbol`. So `is_quote`/`is_quasiquote`
-   (which match a `Symbol` head) never fire on a second pass.
+   inside a `Sexp::Str`, never a head `Sexp::Symbol`. So the classifier (§4.1),
+   which requires a bare `Symbol` head, returns `None` on a second pass.
 3. Auto-gensym (`x#`) and synthetic spans are minted **only** while rewriting a
    quasiquote template. A second pass finds no templates → mints nothing → the
    tree is bit-identical (span-stable, gensym-stable). This is what makes the
@@ -155,6 +155,59 @@ The fold is the family, not a subset — the mandate is uniform coverage
 (`/qa`/`testing`'s 0613 matrix: forms {quote / quasiquote+unquote /
 unquote-splicing} × positions {defmacro clause body [green control], `defn`/`defn-`
 body, top-level expr} × modes {REPL, `--run`}).
+
+### 4.1 One classifier decides membership (FIXME 0789)
+
+Membership in the family is decided **once**, by `cranelisp_types::quote_head`
+(`design/arch/interfaces.md` §"Reader-quote structural predicate", user-approved
+2026-09-01). The fold does not carry its own notion of what a quote is: the
+frontend's four crate-private `is_quasiquote` / `is_quote` / `is_unquote` /
+`is_unquote_splicing` predicates are **deleted**, and every site that asked one
+of them asks the shared classifier instead. Int's two scope-aware shields
+(`design/int/quote-shield.md` §5) consume the same function, so the fold and the
+shields cannot disagree about which subtree is data — the divergence that
+double-desugars or mis-qualifies a quoted subtree becomes unrepresentable rather
+than merely tested for.
+
+**Delegation is exact, not approximate.** Each deleted predicate is pointwise
+`quote_head(children) == Some(<its variant>)`: both tests are *bare-symbol head
+plus `children.len() == 2`*, with the head name compared for full string
+equality, so a qualified spelling such as `macros/quote` is not a quote head in
+either. Frontend's behaviour is therefore byte-identical across the swap —
+including the synthetic-span rules, which the classifier never touches
+(`next_synthetic_span` remains the sole allocator, and no classification decision
+reads or writes a span). **The exactness is a condition on the classifier, not an
+assumption about it:** if `cranelisp-types` were to widen recognition — a
+qualified head, a suffix match, an arity other than 2 — the fold would silently
+change meaning. That is the standing falsifier for this section, and it is why
+the frontend unit tier keeps the equivalence pins named in §9.
+
+**Sites, and what each must preserve.** There are four, and two of them are
+load-bearing *negative* facts that a careless rewrite loses:
+
+| Site | Decision | Must preserve |
+|---|---|---|
+| `expand_quasiquotes` list arm | `Quasiquote` → `expand_qq_template`; `Quote` → `expand_quote_template` | `Unquote` and `UnquoteSplicing` **fall through to the ordinary child recursion**, exactly as they do today when they appear outside any quasiquote; §3's backstop, not this arm, is what reports them |
+| `expand_qq_list`, `macros/SexpList` branch | `Unquote` → depth-0 splice-in / depth-n re-quote; `UnquoteSplicing` → depth-0 top-level error / depth-n re-quote; `Quasiquote` → depth increment | `Quote` is **not** tested in this branch today and must not become tested: a `(quote …)` inside a template falls through to `expand_qq_children` and is re-quoted structurally like any other list |
+| `expand_qq_children` splice detection | `UnquoteSplicing` at depth 0 | the depth-0 guard stays outside the classifier |
+| `expand_qq_spliced` segment loop | `UnquoteSplicing` at depth 0 | same |
+
+The bracket branch keeps its existing guard: special heads are recognised only
+when `ctor == "macros/SexpList"`, because a bracket cannot carry one. That guard
+is a *position* rule and stays in the fold; the classifier answers only "what
+head is this".
+
+**Exhaustiveness is the safety feature, so the frontend spends it.** `QuoteHead`
+is a closed sum precisely so that a new quote head fails to compile at every
+walker. Frontend matches on it **without a `_` arm**: each site names all four
+variants and `None`, grouping the ones it treats alike (`Some(QuoteHead::Quote) |
+None => {}`) so the grouping is a visible decision rather than an accident. A
+wildcard arm anywhere in `quasiquote.rs` forfeits the whole point of the closed
+sum and is a review reject.
+
+`quote_head` returns `Option<QuoteHead>`; the fold compares with `matches!`
+rather than `==`, so nothing here obliges the arch-owned type to carry
+`PartialEq`.
 
 ## 5. Currency fix — `lib.rs:48`
 
@@ -222,6 +275,14 @@ designed here. **Ordering constraint (SPRINT.md §3):** the int shield lands ≤
 frontend fold — shield-only is inert-safe (quote still dies at `build_form`);
 fold-without-shield opens the new data-corruption surface.
 
+Both halves now recognise the family through the one `cranelisp_types` classifier
+(§4.1), so "shield and fold stay in lockstep" is a property of the code rather
+than a discipline. Int's local `src/expander.rs::quote_head` becomes a thin
+projection of the shared one; its three-arm shape may keep merging
+`Unquote`/`UnquoteSplicing`, which the shields treat alike, while the types-level
+sum distinguishes them because the fold does. That projection is int's to write
+(`design/int/quote-shield.md`), not frontend's.
+
 `/testing`'s 0613 matrix gains the interaction rows (per §3): {macro-call shape
 inside quote / inside quasiquote outside unquote / under unquote / under
 unquote-splicing} × {defn body, top level} — the first two must NOT expand, the
@@ -232,10 +293,18 @@ last two MUST.
 **Zero public-API diff** for the frontend crate:
 `build_form`/`build_forms`/`build_expr` signatures are unchanged;
 `expand_quasiquotes`/`expand_quote_template`/`next_synthetic_span` stay `pub`
-(the standing quasiquote API — REPL `/expand`, user macros). No
-`cranelisp-types` edit; no cache/schema impact (the fold is a pure Sexp→Sexp
-rewrite before AST). No baseline regeneration is required by the frontend change
-on its own; `/dev` confirms `public-api.txt` is unchanged at PR time.
+(the standing quasiquote API — REPL `/expand`, user macros). No cache/schema
+impact (the fold is a pure Sexp→Sexp rewrite before AST). No baseline
+regeneration is required by the frontend change on its own; `/dev` confirms
+`public-api.txt` is unchanged at PR time.
+
+The §4.1 consolidation does not change that. The four deleted predicates were
+never frontend surface (crate-private `fn`s, absent from `public-api.txt`), so
+their removal is invisible at the boundary; the added `use` of
+`cranelisp_types::{QuoteHead, quote_head}` consumes a dependency the crate
+already has. The **+2-item delta is `cranelisp-types`'**, and it rides that
+crate's single S121 regeneration window — frontend does not open a baseline
+window of its own, and must not land before the classifier exists.
 
 ## 9. Testability (Principle 5)
 
@@ -253,6 +322,14 @@ The fold is unit-testable at the frontend boundary with no session:
   (build_expr does not fold).
 - **Matrix**: the form × position × mode matrix (§4) is `/qa`/`testing`-owned
   e2e; the frontend unit tier pins the boundary behaviour.
+- **Classifier equivalence (§4.1)**: the two negative facts the swap can lose get
+  their own pins, because "the suite still passes" does not discriminate them —
+  a `(quote x)` **inside** a quasiquote template is re-quoted structurally (not
+  routed to `expand_quote_template`), and a standalone `(unquote x)` /
+  `(unquote-splicing x)` outside any quasiquote still reaches the §3 backstop
+  rather than being consumed by the list arm. Add a non-head control
+  (`(quote a b)`, arity ≠ 2) and a qualified-head control (`(macros/quote x)`),
+  both of which must remain ordinary lists.
 
 Unit tests are `/dev`'s; e2e/matrix is `/qa`+`/testing`'s. This design authors no
 tests.
@@ -263,8 +340,13 @@ tests.
   fold is named there in the chain).
 - `crates/cranelisp-frontend/src/ast_builder.rs` :180 (`build_form`), :287
   (`build_forms`), :1167 (backstop) — fold + backstop sites.
-- `crates/cranelisp-frontend/src/quasiquote.rs` — `expand_quasiquotes` (:193),
-  `expand_quote_template` (:239), `expand_qq_template` (:268).
+- `crates/cranelisp-frontend/src/quasiquote.rs` — `expand_quasiquotes`,
+  `expand_quote_template`, `expand_qq_template`, `expand_qq_list`,
+  `expand_qq_children`, `expand_qq_spliced` (the §4.1 classifier sites).
+- `design/arch/interfaces.md` §"Reader-quote structural predicate" — the
+  `cranelisp_types::{QuoteHead, quote_head}` contract this fold consumes.
+- `design/arch/fixmes/0789-export-reader-quote-predicates-from-frontend.md` —
+  the three-copy record; frontend's arm is §4.1.
 - `src/process_form/macro_clause.rs:67` — the pre-existing (now redundant/idempotent)
   caller, retained.
 - `crates/cranelisp-frontend/src/lib.rs:48` — currency fix (§5).

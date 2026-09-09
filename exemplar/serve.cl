@@ -1,6 +1,7 @@
 ;; serve -- the web connection-lifecycle convenience wrappers.
 ;;
-;; S97 ABI v9 (ctx-vtable handle model; design/platform/poll-support.md §3.5.3).
+;; S97 ABI v9 (ctx-vtable handle model; design/platform/poll-leaf-authoring.md
+;; §4).
 ;; Under v9 the wrappers are near-trivial pass-throughs: there is NO leading
 ;; (token, capacity) pair to thread and NO descriptor to read/write -- the handle
 ;; is opaque (carries only its `fd`), and the platform poll-fn projects the token
@@ -9,7 +10,8 @@
 ;;
 ;; This module (not `web`) holds the wrappers because it imports `platform.web`,
 ;; and the platform load pre-resolves the `web` type-module but NOT `serve` (see
-;; web.cl's header + poll-support.md §3.6.3 for the load-order rule this avoids).
+;; web.cl's header and poll-leaf-authoring.md §6 for the load-order rule this
+;; avoids).
 ;; `serve` is loaded AFTER `(platform web)` via main.cl's import.
 
 (import [web [Listener Connection]])

@@ -1,15 +1,18 @@
 # `cranelisp-primitives` — master design
 
-**Status.** ACTIVE — current target design, refreshed in Sprint 117 after the
-primitive declaration, ownership-evidence, and Vec-of-String work. This
-document describes the maintained interior of the primitives surface. The
-canonical cross-surface contract is
-`design/arch/bounded-contexts.md` §4a; the as-designed Rust surface is the
-crate-root and per-item rustdoc plus
+**Status.** ACTIVE — the maintained interior of the primitives surface. The
+canonical cross-surface contract is `design/arch/bounded-contexts.md` §4a; the
+as-designed Rust surface is the crate-root and per-item rustdoc plus
 `crates/cranelisp-primitives/public-api.txt`. The completed S66 migration plan
 remains historical in `design/primitives/implementation-slice-s66.md`.
 
-Detailed Sprint 117 option analysis and evidence live in
+**Sprint 121's design delta is `design/primitives/s121-c5-primitives-visit.md`**
+— the `vec-len` de-slot, the typed consume funnel's primitives half, and the
+per-filing dispositions. Where this master states a target that has not yet
+landed, it names the bundle that lands it; a clause asserting landed state it
+does not have is a defect in this document.
+
+Sprint 117's option analysis and evidence live in
 `design/runtime/s117-primitives-integrity.md`. This master records the settled
 state rather than repeating the delivery log.
 
@@ -91,8 +94,14 @@ shared, not reconstructed per session.
 
 Extern declarations get a callable slot populated with their wrapper
 address. Inline declarations are callable targets for known direct lowering
-but have no slot. The distinction is represented by `PrimitiveBody`, not by a
-null pointer convention.
+but have no slot. The distinction is carried by the entry's own callable state,
+never by a null pointer convention; the representation of that state is
+`cranelisp-types`', and its target form is the unified lifecycle
+(`design/arch/symbol-table-lifecycle.md` §4.2/§4.6), under which a concrete
+extern is a slotted entry realized by its extern shim and an inline operation
+is a settled slot-less state. **A polymorphic extern cannot hold a slot**: the
+settlement funnel mints against the declared scheme, so the construction does
+not compile. Primitives selects no second lifecycle vocabulary.
 
 Exported shim survival in linked binaries relies on the export-name linker
 symbol, the declaration-derived address harvest, and the executable bundle's
@@ -111,11 +120,18 @@ heap-typed argument that is not returned is decremented at the wrapper
 boundary. Internal Rust helpers may use narrower local borrowing conventions,
 but they do not change that uniform language-call ABI.
 
-Backend inline substitutions are optional optimisations. They must preserve
-the named operation's semantics, and indirect calls must remain valid through
-the table/GOT fallback. The three inline Vec operations intentionally have no
-extern fallback slot; their `PrimitiveBody::Inline` representation makes that
-exception explicit.
+Backend inline substitutions are optional optimisations for rows that keep an
+extern fallback. They must preserve the named operation's semantics, and
+indirect calls must remain valid through the table/GOT fallback.
+
+The **inline Vec operations are not that shape**: they intentionally have no
+extern fallback at all, and their slot-less state makes the absence explicit
+rather than representing it as a null slot. `vec-get`, `vec-set` and `vec-push`
+are inline today; `vec-len` joins them in Sprint 121 C5 bundle P0, which retires
+the last slotted polymorphic entry in the system. Its applied-call emission is
+already the inline one and does not change; its value-position use moves from
+the GOT fallback to the inline wrapper arm, which carries the release the extern
+convention would otherwise owe.
 
 ## 3. Data flows
 
@@ -150,9 +166,9 @@ Absence is the conservative default only outside the classified
 heap-primitive set; user-callable heap declarations are required to carry a
 summary.
 
-**The declaration row is also the ABI ownership fact (S119 tranche A).** The
-generated extern shim wraps each parameter in a typed handle
-(`cranelisp_intrinsics::handle::{Owned, Borrowed}`) derived from the row's own
+**The declaration row is also the ABI ownership fact — ratified, landing in
+Sprint 121 C5 bundle P2; no handle type exists in source yet.** The generated
+extern shim wraps each parameter in a typed handle derived from the row's own
 declared type and `ParamFlow` — one derivation, no second hand-written
 assertion — and a unit row checks the derived kinds against the row's facts.
 The derivation axis is **`ParamFlow`, never `Mode`**: the S102 CS-B split is
@@ -180,7 +196,8 @@ return-protect elision; non-`Fresh` retains the conservative protect.
 Direct inline Vec CLIF is body semantics, not a generic declaration-result
 consumer. `vec-get` materialises an element according to layout and local
 consumer facts; `vec-set` and `vec-push` implement their unique/shared COW
-branches. Changing declaration metadata must not rewrite those mechanics.
+branches; `vec-len` reads the length word and releases the Vec it consumed.
+Changing declaration metadata must not rewrite those mechanics.
 
 ### 3.3 String/Vec representation boundary
 
@@ -210,7 +227,11 @@ arithmetic.
    declaration row; only `HarvestExtern` rows are harvested without a table
    entry.
 3. Extern rows have one populated GOT slot; inline rows have none. A null
-   phantom slot is not a legal representation.
+   phantom slot is not a legal representation. **No slotted entry carries a
+   polymorphic scheme** — `vec-len` was the one exception and its de-slot
+   (Sprint 121 C5 bundle P0) is what discharges the clause, after which the
+   whole-table property is asserted by a negative row rather than by the absence
+   of a counterexample.
 4. Every user-callable heap-parameter primitive carries an explicit,
    declaration-local ownership summary.
 5. `PRIMITIVES_TABLE` and its statically backed GOT have process lifetime and
@@ -218,12 +239,16 @@ arithmetic.
 6. Every primitive entry has `kind: DefKind::Primitive` and `code: None`;
    callable addresses live only in the GOT.
 7. The extern language-call boundary consumes heap arguments it does not
-   return. **After S119 tranche A this is a type, not a convention**: the
-   implementation function behind each shim takes `Owned` for a consumed heap
-   parameter and `Borrowed<'_>` for a retained one, so a missing dec is a
-   `#[must_use]` warning plus a debug drop bomb and a double dec does not
-   compile. `string-identity` is the one extern row whose parameter is retained
-   (`ParamFlow::IntoResult`) and therefore the one spelled `Borrowed`.
+   return. `string-identity` is the one extern row whose parameter is retained
+   (`ParamFlow::IntoResult`) rather than consumed. **Target, landing in Sprint
+   121 C5 bundle P1/P2: this becomes a type rather than a convention** — the
+   implementation function behind each shim takes an owned handle for a consumed
+   heap parameter and a borrowed one for a retained parameter, so a missing dec
+   is a `#[must_use]` warning plus a debug drop bomb and a double dec does not
+   compile. Until then it is enforced by review and by the module balance rows,
+   and `vec-len` is the one row whose body does not honour it
+   (`s121-c5-primitives-visit.md` §2.2), which is among the reasons its de-slot
+   is ordered first.
 8. Backend substitution is optional and trait-ignorant; the named primitive
    remains the semantic authority.
 9. Intrinsics is the sole Vec representation owner. Primitive String code
@@ -232,7 +257,10 @@ arithmetic.
     ownership exactly once; the read view validates metadata, cannot outlive
     its callback, and neither retains nor consumes elements.
 11. Adding a primitive changes one declaration row plus its implementation
-    and tests; it does not require another production registry.
+    and tests; it does not require another production registry. **Re-kinding an
+    existing primitive is not that shape**: a row's kind is also mirrored in the
+    typecheck fixture seed and in the types crate's rustdoc, both owned
+    elsewhere, so a re-kind carries filings those owners resolve.
 12. No allocator/RC tracing, fault injection, detector mode, or diagnostic
     hook is part of this design.
 13. **Structural embedding takes exactly one reference.** A primitive that
@@ -248,18 +276,20 @@ arithmetic.
     reference no owner holds — is why this is an invariant and not a
     preference. Ruled S118 W2b (FIXME 0835);
     `design/runtime/s118-structural-embedding-ownership.md` §2 is the full
-    statement. **S119 tranche A spells invariant 13 in types**: `read_slist`
-    returns `Vec<Borrowed<'_>>` (elements are owned by the chain), copied items
-    each take one `.to_owned()`, and the structural embed takes exactly one —
-    so a walk minting references no owner holds produces one drop bomb per
-    surplus reference at the frame that minted it.
-14. **The pair has exactly one raw entry and one raw exit for heap handles.**
-    `Owned::from_abi` (the shim's ownership assertion) and `Owned::into_raw`
-    (the ABI return, and the only `mem::forget` in the pair's non-test code).
-    `Owned` is never `Copy` or `Clone`; `Borrowed` has no discharge operation.
-    Widening this set is an `/arch`-visible change to the trusted base, guarded
-    by a structural grep gate — `design/runtime/s119-typed-consume-funnel.md`
-    §2.1 and §3.
+    statement, and `marshal.rs::sconcat` implements it. **Target, landing with
+    invariant 7: the contract becomes signatures** — the chain read returns
+    borrowed elements (they are owned by the chain), copied items each take one
+    mint, and the structural embed takes exactly one — so a walk minting
+    references no owner holds produces one drop bomb per surplus reference at
+    the frame that minted it.
+14. **Target, landing with invariant 7 — not yet in source. The pair has
+    exactly one raw entry and one raw exit for heap handles**: the shim's
+    ownership assertion on the way in, and the ABI return on the way out, which
+    is also the only `mem::forget` the pair's non-test code performs on a
+    handle. The owned handle is never `Copy` or `Clone`; the borrowed handle has
+    no discharge operation. Widening that set is an `arch`-visible change to the
+    trusted base, guarded by a structural gate —
+    `design/runtime/s119-typed-consume-funnel.md` §2.1 and §3.
 
 ## 5. Test strategy
 
@@ -267,7 +297,10 @@ Tests mirror the module composition (Principles 5 and 23):
 
 - declaration tests cover all legal variants, compile-fail illegal macro
   shapes, duplicates, missing heap ownership, and exact inventory projection
-  into table, GOT, harvest, metadata, and ownership;
+  into table, GOT, harvest, metadata, and ownership. Each carries its negative
+  direction as a whole-table property rather than a per-row spot check — no
+  slotted polymorphic entry, no harvested inline row, no unsummarised heap
+  parameter — so a new counterexample REDs instead of arriving unobserved;
 - a source-structure guard keeps primitive function exports inside the
   declaration macro;
 - table/GOT tests call through loaded slots and verify static backing,
@@ -289,23 +322,28 @@ Mutation experiments are evidence records, not a product feature. They change
 one declaration at a time, observe existing artifacts, and restore the
 truthful declaration. They add no persistent override or observation seam.
 
-### R-2 evidence limitation
+### R-2 evidence boundary — accepted, with a revival trigger
 
-The current compiler exposes stable production differences for
-Borrowed→Owned and for non-`Fresh`→`Fresh`, including
-MayAliasOf→Fresh. Bounded Sprint 117 attempts did not find a production
-artifact whose emitted ownership behavior changes for
-`vec-get: ProjectionOf(0) → Fresh`; escaping heap elements are materialised as
-owned values in the attempted shapes. The declaration still demonstrably
-reaches the typecheck transfer/fixpoint, where Projection, Alias, and Fresh
-remain distinct.
+The compiler exposes stable production differences for Borrowed→Owned and for
+non-`Fresh`→`Fresh`, including MayAliasOf→Fresh. It exposes none for
+`vec-get: ProjectionOf(0) → Fresh`: an escaping heap element is materialised as
+an owned reference under either declaration, so no production artifact's emitted
+ownership behavior changes. The declaration still demonstrably reaches the
+typecheck transfer and fixpoint, where Projection, Alias and Fresh remain
+distinct.
 
-Therefore this master does not claim complete production mutation sensitivity
-for every ownership variant. FIXME 0859 is deferred to Sprint 118 to either
-find an existing stable production consumer or return the evidence-backed
-materialisation boundary to the user for disposition. Inventing a test-only
-override, cross-crate carrier, or diagnostic hook is not an acceptable way to
-make the test turn red.
+**The user accepted R-2 on the existing evidence on 2026-09-01** — the typecheck
+transfer units distinguishing projection provenance, the direct inline-body
+guards, and the nine committed production witnesses — **with a named revival
+trigger**: the declaration-sensitive witness obligation revives automatically,
+as a plan row of the sprint concerned, the moment projection provenance becomes
+emission-live. No source work remains in this crate, and the trigger's record is
+`qa`'s.
+
+So this design does not claim complete production mutation sensitivity for every
+ownership variant, and states the gap rather than borrowing the language of a
+grade. Inventing a test-only override, a cross-crate carrier or a diagnostic
+hook to make a test turn red remains excluded.
 
 ## 6. Risks and controls
 
@@ -321,11 +359,10 @@ make the test turn red.
 | Scoped Vec read escapes or races mutation | callback lifetime plus caller safety contract |
 | Documentation becomes a numeric snapshot | rustdoc and `public-api.txt` are surface authority; no volatile counts here |
 
-This sprint did not introduce shared runtime state. The declaration inventory
-is immutable after `LazyLock` construction, and Vec construction remains
-unpublished until complete. Runtime diagnostics are deliberately unchanged.
-The selected boundary has linear construction and in-place read costs without
-an additional element clone.
+The surface holds no mutable shared runtime state: the declaration inventory is
+immutable after construction, and Vec-of-String construction stays unpublished
+until complete. The Vec-of-String boundary has linear construction and in-place
+read costs and clones no element.
 
 ## 7. Rejected alternatives
 
@@ -348,10 +385,14 @@ an additional element clone.
   shared constants do not centralise allocation, initialisation, publication,
   validation, or cleanup.
 - **Persistent mutation overrides, tracing, fault injection, or detector
-  modes.** Rejected as unnecessary product surface and outside the Sprint 117
-  cyber boundary.
-- **Fold intrinsics-internal raw-read cleanup into R-3.** Rejected as a scope
-  expansion. FIXME 0850 remains open and untouched.
+  modes.** Rejected as unnecessary product surface: the diagnostic surface is
+  intrinsics-owned (invariant 12), and a primitives-local observer would be a
+  second one.
+- **A slot-less by-name `vec-len`** (the alternative de-slot spelling).
+  Rejected: it needs a fourth declaration variant for one row, keeps a type
+  variable inside the ABI derivation's domain, and adds a member to the backend
+  uniform-realization roster that the inline spelling avoids —
+  `s121-c5-primitives-visit.md` §3.1.
 
 ## 8. Quality attributes
 
@@ -377,19 +418,24 @@ an additional element clone.
 - `design/runtime/s117-primitives-integrity.md`
 - `design/runtime/s118-structural-embedding-ownership.md` (invariant 13 — the
   FIXME-0835 consume-owner contract; `marshal.rs` producer seams S1–S4)
-- `design/runtime/s119-typed-consume-funnel.md` (invariant 14 — the typed
+- `design/runtime/s119-typed-consume-funnel.md` (invariants 7 and 14 — the typed
   handle vocabulary, the shim-fact derivation, the drop-bomb detection proof,
-  and the churn-safety classes)
+  and the churn-safety classes). Held by the intrinsics pass while Sprint 121's
+  C5 stream runs; this surface consumes it without editing it
+- `design/primitives/s121-c5-primitives-visit.md` (the Sprint 121 design delta)
+- `design/arch/symbol-table-lifecycle.md` §4.2/§4.6/§5.5 (the callable
+  lifecycle this crate's rows are born settled into)
 - `design/primitives/implementation-slice-s66.md` (historical)
-- `design/arch/fixmes/0859-*.md` (deferred R-2 evidence boundary)
-- `design/arch/fixmes/0850-*.md` (excluded intrinsics raw-read convergence)
 
-## 10. Next skills
+## 10. Next roles
 
-- `/review` — check the maintained master against the settled W4/W5
-  implementation and current source rustdoc.
-- `/qa` — carry FIXME 0859's bounded Projection evidence question into Sprint
-  118 without introducing a product observation seam.
-- `/dev` — use this master for future primitive changes; do not reopen the
-  retired registries or primitive-side Vec layout access.
-- `/sprint` — record FIXME 0861 resolved and continue Sprint 117 W6.
+- `sprint` — the one open gate is the de-slot's backend arm
+  (`s121-c5-primitives-visit.md` §3.8); the wave shape is its §6.
+- `qa` — the value-position ownership finding at that visit's §2.3, for
+  attribution with the falsifier it names; and the acceptance cells for the
+  de-slot.
+- `dev` — use this master and the S121 visit for primitive changes; do not
+  reopen the retired registries or primitive-side Vec layout access.
+- `review` — check the delivered change-sets against the visit's reject
+  criteria and this master's invariants, and read the `public-api.txt` diff
+  beside the source diff.

@@ -1,10 +1,36 @@
-# `INTRINSICS_TABLE` — the published flat Import-catalog (S76 W-Enablement)
+# The published flat Import-catalog (S76 W-Enablement)
 
-**Status.** Phase 3 design — DESIGN ONLY (no source edits). Feeds /dev (intrinsics) Phase 4/5.
+**Status.** **LANDED.** Originally Phase-3 design (S76), target-stating a
+`pub static INTRINSICS_TABLE`.
 
-**Author.** `/design (intrinsics)`, 2026-06-03.
+> ## As-built correction (S121 C5, verified against HEAD `18bca20d`)
+>
+> **The catalog shipped as a function, not a static.** Source carries
+> `pub fn intrinsics_table() -> &'static [IntrinsicEntry]`
+> (`crates/cranelisp-intrinsics/src/catalog.rs`), a flat slice literal — not the
+> `pub static INTRINSICS_TABLE` this document target-states throughout. The
+> reason is recorded in source at `catalog.rs:24-32`: the S76 seam-3 `!Sync`
+> ruling. `IntrinsicEntry` carries a raw `*const u8`, so a `pub static` of them
+> would have required an `unsafe impl Sync`; a function returning a
+> `&'static` slice built at each call carries no such obligation. Everything
+> else in this document — the record shape, the `(param_count, has_return)`
+> reading of "signature", the ABI-name guardrail, the consumer contract, the
+> deliberate exclusions — landed as designed. **Read every `INTRINSICS_TABLE`
+> below as `intrinsics_table()`.**
+>
+> **Current contents: 38 entries**, pinned by the closed-set guard
+> `catalog/tests.rs::name_set_is_exactly_the_expected_38`.
+>
+> **Two S121 changes, both in `design/intrinsics/s121-c5-intrinsics-visit.md`:**
+> the catalog goes to **38** with `runtime/free_io_node` (arity 1, no return,
+> `is_runtime`), the emitted target of the backend's `drop<IO T>`; and **§6a**
+> below is new — this catalog's half of the backend import roster, its declared
+> representation dependencies, and why `vec-len` joins neither half under either
+> de-slot spelling.
 
-**Reads.** `design/arch/bounded-contexts.md` §4b (esp. invariant 11, invariant 9, the §"What crosses the boundary" Outward clause); `sprints/SPRINT.md` §"W-Enablement" + the Phase-2 Architecture review Q1/Q2 + Public-API impact §; `crates/cranelisp-intrinsics/src/lib.rs` crate-root `//!`; `crates/cranelisp-backend/src/jit.rs` (`IntrinsicSymbol`, `intrinsic_symbols()`, `register_intrinsics`, `declare_intrinsics_generic`); `src/worker.rs:3545` (cache-hit reader); `src/session_v4.rs::int_intrinsics()`; `design/arch/CLAUDE.md` Decision 0048 + baseline-diff discipline.
+**Author.** `/design (intrinsics)`, 2026-06-03; as-built corrected 2026-09-01.
+
+**Reads.** `design/arch/bounded-contexts.md` §4b (esp. invariant 11, invariant 9, the §"What crosses the boundary" Outward clause); `sprints/SPRINT.md` §"W-Enablement" + the Phase-2 Architecture review Q1/Q2 + Public-API impact §; `crates/cranelisp-intrinsics/src/lib.rs` crate-root `//!`; `crates/cranelisp-backend/src/jit.rs` (`IntrinsicSymbol`, `intrinsic_symbols()`, `register_intrinsics`, `declare_intrinsics_generic`); `src/worker.rs::load_cached_module_via_linker` (cache-hit reader); `src/session_v4.rs::int_intrinsics()`; `design/arch/CLAUDE.md` Decision 0048 + baseline-diff discipline.
 
 > **Scope note.** This is a subordinate topic doc, not the intrinsics master. The crate has no `design/intrinsics/intrinsics.md` master today — the canonical surface is the crate-root `//!` rustdoc (facade retired S74 W3 per BC §4b §"Per-surface documentation"). This doc elaborates the **one** S76 W-Enablement addition to that surface: `pub static INTRINSICS_TABLE`. It does not restate the whole crate; it pins the table's shape, contents source, consumer contract, ABI guardrail, and test placement so /dev can implement against acceptance criteria.
 
@@ -141,7 +167,7 @@ Three resolution points (BC §4b invariant 11 (a)/(b)/(c)). The table publishes;
 - **`declare_intrinsics_generic<M: Module>`** (jit.rs:733) builds the Cranelift `Import` declaration from each entry's `param_count` + `has_return` (the loop already shown at jit.rs:738-766). It switches from `intrinsic_symbols()` to `cranelisp_intrinsics::intrinsics_table()` / `INTRINSICS_TABLE`. The 6 convenience-accessor `match sym.name` arms (jit.rs:757-764) are unaffected — they key on `e.name`.
 - **Backend reads, does not own.** `backend::IntrinsicSymbol` + `intrinsic_symbols()` are deleted (or kept only as a thin `pub(crate)` shim during the same wave, then removed). This is a backend `/dev` edit, not intrinsics'; the intrinsics deliverable is *publishing the table backend reads*. **Contract from intrinsics' side:** the table is iterable, every entry's `name` is the exact emitted-call ABI string, every `ptr` is a valid live fn address for the process lifetime, `param_count`/`has_return` exactly describe the extern's `i64` ABI.
 
-### 4b. int cache-hit — `Linker::register_symbol` (`src/worker.rs:3545`)
+### 4b. int cache-hit — `Linker::register_symbol` (`src/worker.rs::load_cached_module_via_linker`)
 
 Today: `for sym in cranelisp_backend::jit::intrinsic_symbols() { linker.register_symbol(sym.name, sym.ptr); }`. Migrates to: `for e in cranelisp_intrinsics::INTRINSICS_TABLE { linker.register_symbol(e.name, e.ptr); }` (or the `intrinsics_table()` fn form). Same iterate-and-register contract; int now depends on the **intrinsics** crate for this (int already depends on intrinsics — BC §4b dep-edges para — so no new dep edge). This is an int `/dev` edit; the intrinsics deliverable is the readable table.
 
@@ -180,9 +206,54 @@ This is the load-bearing invariant the change must not break (SPRINT W-Enablemen
 
 **Guardrail check for /dev + /qa.** A unit test asserting the table's names exactly match the historically-registered set is the durable guard (see §8). Because the names are the ABI, a typo in a table `name` is an unresolved-symbol crash at JIT finalize or `--link`, not a compile error — so the test must compare the literal strings, and ideally cross-check that each `name` resolves (the `ptr` is non-null and the fn is the expected one). The forbidden-patterns clause 1 (no conditional registration) reinforces: every entry registers unconditionally; the test asserts the **full** set is present.
 
+### 6a. `[S121]` This catalog is one half of the backend import roster — and its closure is what it contributes
+
+The compiler's by-name import surface has **two** halves, and conflating them is
+the recurring error the `vec-len` de-slot work has to avoid:
+
+| Half | What it holds | Home | Closure discipline |
+|---|---|---|---|
+| **Runtime targets** | this catalog's 38 `name → (arity, ptr)` rows — infrastructure the backend emits `Linkage::Import` against | `cranelisp-intrinsics` | **grade 2, and it exists**: `catalog/tests.rs::name_set_is_exactly_the_expected_38` asserts the set exactly, so a silent addition REDs |
+| **Slot-less polymorphic user callables** | `bind`, `race`, `select`, `catch-runtime-error` — declared in `src/bootstrap.rs`, backend-intercepted by name | `src/` + the primitives declaration table | **ungraded**: no cell asserts closure at HEAD, so a silent fifth member lands green |
+
+This catalog contributes exactly two things to the roster work, and neither is
+new construction:
+
+1. **Closure of its own half, already measured.** The name-set guard is the
+   durable form the second half still lacks; it is the shape to copy, not a
+   thing to build here.
+2. **Its declared representation dependencies.** Each row assumes facts about
+   the layouts it reads — the uniform `i64` value word (§2.1), the IO node tag
+   discipline, the closure `DROP_GLUE_PTR` offset, the `Result` Ok/Err tag
+   order, and the Vec header offsets. Those constants are intrinsics-owned and
+   already **structurally** pinned by `const _: () = assert!(…)` layout locks
+   (`vec_runtime::{LEN_OFFSET, CAP_OFFSET, DATA_PTR_OFFSET}`,
+   `HeapString::{LEN_OFFSET, DATA_OFFSET}`; crate `CLAUDE.md` §"Heap layout").
+   Recording a dependency in the roster is therefore a citation, not a new guard.
+
+**`vec-len` joins neither half, under either de-slot spelling.** Its body is
+`cranelisp-primitives::vec::vec_len` — a single length-word load through
+`cranelisp_intrinsics::vec_runtime::LEN_OFFSET` — and this catalog excludes it by
+design (`catalog.rs:63-66`, `:310-312`; `vec_runtime.rs:550-552`). Reclassified
+inline it has no runtime target at all; kept by-name its body is in the sibling
+crate, which is not this catalog's. A `vec-len` row here is a `/review` reject.
+Its roster entry, wherever the second half's cell eventually lives, reads *"the
+Vec `LEN` word at `vec_runtime::LEN_OFFSET` for every element type"* — the
+dependency above, already locked.
+
 ---
 
 ## 7. Seam for /arch
+
+> **`[S121]` RESOLVED, and the resolution went the other way.** Source landed
+> `pub fn intrinsics_table()`, per the S76 seam-3 `!Sync` ruling recorded at
+> `catalog.rs:24-32`. The "hold to `/arch`'s literal `static` wording" default
+> below did not apply, because the raw-pointer-bearing static would have needed
+> an `unsafe impl Sync` — a soundness obligation, not a naming preference.
+> **`/arch` blessed the `pub fn` spelling at the same S76 seam-3 ruling and BC
+> §4b invariant 11 already records it**, superseding its own earlier "static"
+> wording; no filing is owed. Only *this* document lagged. The paragraph below
+> stands as the record of the question.
 
 **One seam, naming/shape only — no new `cranelisp-types` type.** BC §4b invariant 11 + `sprints/SPRINT.md` say "`pub static INTRINSICS_TABLE`". §2.3 recommends `pub fn intrinsics_table() -> &'static [IntrinsicEntry]` to avoid an `unsafe impl Sync` on a raw-pointer-bearing static (Principle 6). Both satisfy invariant 11 (a published, iterable, flat `name → (signature, ptr)` catalog read at the three resolution points); the difference is `static` + `unsafe impl Sync` newtype vs `fn` returning `&'static [..]`. **/dev should confirm the spelling with /arch before baseline regen** so the `public-api.txt` baseline, the crate-root `//!`, and BC §4b invariant 11's "static" wording agree. If /arch holds to the literal `static`, /design defaults to /arch's wording (the BC is the configuration that grounds this surface; `feedback_hold_to_facade_default` — on a naming choice with a Decision/BC statement either way, hold to the stated wording). **No FIXME filed** — this is a Phase-3 confirmation the /dev wave resolves with /arch directly; flagging it here per the deliverable.
 

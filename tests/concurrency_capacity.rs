@@ -59,6 +59,8 @@
 mod helpers;
 
 use helpers::e2e::{CrOutput, Cranelisp};
+use std::process::Command;
+use std::time::{Duration, Instant};
 
 // =============================================================================
 // Tuning. D is the per-effect delay; small enough to keep each timed run well
@@ -68,6 +70,11 @@ use helpers::e2e::{CrOutput, Cranelisp};
 /// Per-effect delay (ms). With N=2 and 3 effects: unbounded ≈ 1·D, capacity-2
 /// ≈ 2·D, serial ≈ 3·D — three regimes separable at a generous margin.
 const D_MS: u64 = 60;
+
+/// Large enough that the independently measured executable interval is
+/// distinguishable from the compiler phase under the focused and suite-load
+/// lanes. This calibrates the harness control only; it is not a product bound.
+const EXECUTION_PHASE_PROBE_MS: u64 = 3_000;
 
 /// Best-of-N minimum for a wall-clock witness. CPU/scheduler contention can only
 /// make a measurement SLOWER than the true wall-clock, never faster, so the
@@ -94,12 +101,139 @@ fn run_prog(prog: &str) -> CrOutput {
         .output()
 }
 
-/// Best-of-`BEST_OF_N` minimum wall-clock (ms) over repeated `--run`s.
-fn best_elapsed_ms(prog: &str) -> u128 {
+/// Best-of-`BEST_OF_N` minimum for only the linked executable. `--run` stays
+/// separately asserted in each row for return-value parity and ordering.
+fn best_linked_execution_ms(prog: &str, expected_exit: i32) -> u128 {
     (0..BEST_OF_N)
-        .map(|_| run_prog(prog).elapsed.as_millis())
+        .map(|_| {
+            let out = Cranelisp::new()
+                .use_workspace_platforms()
+                .link_then_run("user.cl")
+                .user(prog)
+                .output()
+                .assert_exit(expected_exit);
+            out.linked_execution_elapsed
+                .expect("link_then_run must report the produced executable duration")
+                .as_millis()
+        })
         .min()
         .expect("BEST_OF_N >= 1")
+}
+
+/// Run a link-produced executable independently, timing only that child. This
+/// is the existing link-only oracle pattern used by `spec_10_io` timing tests.
+fn produced_execution_duration(linked: &CrOutput, expected_exit: i32) -> Duration {
+    let produced = linked.tmpdir.join("user");
+    assert!(
+        produced.exists(),
+        "--link must produce {}\nstdout:\n{}\nstderr:\n{}",
+        produced.display(),
+        linked.stdout,
+        linked.stderr,
+    );
+    let platform_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("debug");
+    let started = Instant::now();
+    let run = Command::new(&produced)
+        .current_dir(&linked.tmpdir)
+        .env("CRANELISP_PLATFORM_PATH", platform_path)
+        .output()
+        .expect("exec produced --link binary");
+    let duration = started.elapsed();
+    assert_eq!(
+        run.status.code(),
+        Some(expected_exit),
+        "produced executable returned the wrong value\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    duration
+}
+
+/// `actual` is execution-only when it agrees with an independently timed child
+/// more closely than one half of the compiler phase. The phase-separation
+/// precondition below makes both known wrong phases discriminating controls.
+fn is_execution_only_interval(actual: Duration, child: Duration, compiler: Duration) -> bool {
+    actual.abs_diff(child) < compiler / 2
+}
+
+// This is a harness control, not a product timing requirement. It independently
+// times a produced child, verifies the captured interval against that oracle,
+// then proves this predicate rejects the known compiler-only and
+// compiler-plus-execution counterfactuals. `elapsed` remains the compiler-child
+// lifecycle interval for its other consumers.
+// spec: tests/plan/helpers-api.md §CrOutput — captured outcome —
+// `linked_execution_elapsed` is the optional produced-executable interval;
+// `elapsed` retains the non-additive compiler-child lifecycle observation.
+#[test]
+fn linked_execution_duration_excludes_compilation_and_observes_the_child() {
+    let prog = format!(
+        "(platform test-capture)\n\
+         (import [platform.test-capture [commutative-sleep-ms]])\n\
+         (defn main [] (commutative-sleep-ms {d}))\n",
+        d = EXECUTION_PHASE_PROBE_MS,
+    );
+
+    let run = Cranelisp::new()
+        .run("user.cl")
+        .user("(import [primitives [Pure]])\n(defn main [] (Pure 0))\n")
+        .output()
+        .assert_exit(0);
+    assert!(
+        run.linked_execution_elapsed.is_none(),
+        "--run must not report a separately linked executable interval"
+    );
+
+    let linked_only = Cranelisp::new()
+        .use_workspace_platforms()
+        .link("user.cl")
+        .user(&prog)
+        .output()
+        .assert_ok();
+    let expected_exit = (EXECUTION_PHASE_PROBE_MS % 256) as i32;
+    let oracle = produced_execution_duration(&linked_only, expected_exit);
+
+    let linked = Cranelisp::new()
+        .use_workspace_platforms()
+        .link_then_run("user.cl")
+        .user(&prog)
+        .output()
+        .assert_exit(expected_exit);
+    let captured = linked
+        .linked_execution_elapsed
+        .expect("link_then_run must report the produced executable duration");
+
+    // The known child duration makes the two phase domains distinct. If this
+    // calibration failed, the test would fail closed rather than borrowing a
+    // timing value that cannot discriminate the measurement phases.
+    assert!(
+        oracle > linked.elapsed + linked.elapsed / 2,
+        "phase probe must outlast compiler by 1.5x: child={oracle:?}, \
+         compiler={:?}",
+        linked.elapsed,
+    );
+    assert!(
+        is_execution_only_interval(captured, oracle, linked.elapsed),
+        "captured execution interval must agree with independent child oracle: \
+         captured={captured:?}, child={oracle:?}, compiler={:?}",
+        linked.elapsed,
+    );
+
+    // Negative controls: both historical wrong-phase choices must be rejected.
+    let compiler_only = linked.elapsed;
+    let compiler_plus_execution = linked.elapsed + oracle;
+    assert!(
+        !is_execution_only_interval(compiler_only, oracle, linked.elapsed),
+        "negative control unexpectedly accepted compiler-only interval: \
+         compiler={compiler_only:?}, child={oracle:?}",
+    );
+    assert!(
+        !is_execution_only_interval(compiler_plus_execution, oracle, linked.elapsed),
+        "negative control unexpectedly accepted compiler+execution interval: \
+         combined={compiler_plus_execution:?}, child={oracle:?}, compiler={:?}",
+        linked.elapsed,
+    );
 }
 
 // =============================================================================
@@ -133,7 +267,7 @@ fn n_distinct_token_poll_leaves_overlap_max_not_sum() {
     );
     run_prog(&prog).assert_exit(180);
 
-    let ms = best_elapsed_ms(&prog);
+    let ms = best_linked_execution_ms(&prog, 180);
     assert!(
         ms < (D_MS as u128 * 3) / 2,
         "three independent poll leaves must OVERLAP on one reactor thread \
@@ -172,10 +306,11 @@ fn same_token_capacity_n_blocking_admits_n_concurrent_nplus1_parks() {
     );
     run_prog(&prog).assert_exit(180);
 
-    let ms = best_elapsed_ms(&prog);
-    // Two-sided window: > 1.5·D proves the 3rd PARKED (did not overlap freely);
-    // < 2.5·D proves the first two DID overlap (not fully serial). Wide on both
-    // edges — timing-flakiness is a banned disposition.
+    let ms = best_linked_execution_ms(&prog, 180);
+    // Two-sided window: > 1.5·D proves the 3rd PARKED (did not overlap freely).
+    // The < 2.5·D upper overlap floor is design-performance evidence for the
+    // current implementation, while the capacity and parking requirements are
+    // still traced by this row's spec annotation.
     assert!(
         ms > (D_MS as u128 * 3) / 2,
         "capacity-2 pool: the 3rd same-token effect must PARK (wall-clock \
@@ -233,7 +368,7 @@ fn same_token_capacity_1_blocking_serial_and_source_ordered() {
     );
 
     // Serialisation: ≈ 3·D (> 2.5·D), not overlapped.
-    let ms = best_elapsed_ms(&prog);
+    let ms = best_linked_execution_ms(&prog, 180);
     assert!(
         ms > (D_MS as u128 * 5) / 2,
         "capacity-1 token must SERIALISE (wall-clock > {}ms ≈ 2.5·D, ~3·D); \
@@ -273,7 +408,7 @@ fn distinct_blocking_effects_sharing_one_token_share_one_pool_nplus1_parks() {
     );
     run_prog(&prog).assert_exit(180);
 
-    let ms = best_elapsed_ms(&prog);
+    let ms = best_linked_execution_ms(&prog, 180);
     // Shared pool capacity 2: the 3rd effect (of either kind) PARKS ⇒ > 1.5·D;
     // the first two (a read + a write) OVERLAP ⇒ < 2.5·D.
     assert!(
@@ -324,7 +459,7 @@ fn mixed_blocking_and_poll_par_overlaps_on_both_pools() {
     );
     run_prog(&prog).assert_exit(120);
 
-    let ms = best_elapsed_ms(&prog);
+    let ms = best_linked_execution_ms(&prog, 120);
     assert!(
         ms < (D_MS as u128 * 3) / 2,
         "a mixed blocking+poll Par must OVERLAP on BOTH pools (≈max {D_MS}ms, \

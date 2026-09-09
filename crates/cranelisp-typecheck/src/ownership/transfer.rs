@@ -153,19 +153,56 @@ impl UseCtx {
 enum Origin {
     /// A fresh allocation / `Fresh`-result call / literal — no param reaches it.
     Fresh,
-    /// UNCONDITIONAL: this value IS param `root`'s reference on EVERY path (a
-    /// param used directly, or a `let x = p` alias when `projection == false`) —
-    /// or a borrowed view of it on every path (`projection == true`, the clean
-    /// accessor). The strong claim that licenses a hard `AliasOf`/`ProjectionOf`
-    /// publish (row 9). Constructable ONLY from a provably-unconditional source.
-    Unconditional { root: Symbol, projection: bool },
-    /// CONDITIONAL (the ⊤-ward conservative point, today's `MayParam`): the value
-    /// MAY reach param `rep` on some control-flow path and be fresh/other on
-    /// another — the not-`Fresh` join of divergent paths (FIXME 0520), a COW
-    /// may-alias, an element-store fold, or a projection of a conditional
-    /// container. `rep` is a representative param-rooted binding (lowest reaching
-    /// index on a join). A hard claim is UNREPRESENTABLE from here — it can only
-    /// publish `MayAliasOf` (§16.3), keeping every protect/dec the fresh arm needs.
+    /// UNCONDITIONAL: this value IS parameter `param`'s reference on EVERY path
+    /// (a param used directly, or a `let x = p` alias when `projection ==
+    /// false`) — or a borrowed view of it on every path (`projection == true`,
+    /// the clean accessor). The strong claim that licenses a hard
+    /// `AliasOf`/`ProjectionOf` publish (row 9). Constructable ONLY from a
+    /// provably-unconditional source.
+    ///
+    /// **`param` is TOTAL (§20.3).** The reached parameter is fixed where the
+    /// origin is MINTED, so no read re-derives it from a name and a binder
+    /// reusing a parameter's name cannot change what an already-minted origin
+    /// denotes. Totality is what the four mint sites give: the per-parameter seed
+    /// knows its own index, and the other three ([`join_origin`]'s definite arm,
+    /// the `ProjectionOf` result arm, [`Walker::bind_pattern`]) INHERIT an
+    /// unconditional operand — a projection out of, or a pattern bind of, a
+    /// `Fresh` value yields `Fresh`, never an unconditional origin rooted at a
+    /// local. So an unconditional origin reaching no parameter does not compile;
+    /// a mint site that genuinely needs one re-opens §20.3 rather than silently
+    /// narrowing. That is also what retired the name-following recursion in
+    /// [`Walker::classify_capture_escape`]: a captured projection reaches its
+    /// parameter from the index it carries.
+    ///
+    /// `root` survives for the ONE consumer that needs a live binding identity
+    /// rather than a reach — the symbol-keyed projection/arm provenance fact
+    /// (§13.6(d), §20.5(i)). It is never resolved to an index.
+    Unconditional {
+        root: Symbol,
+        param: usize,
+        projection: bool,
+    },
+    /// CONDITIONAL (the ⊤-ward conservative point): the value MAY reach one of
+    /// the parameters in `params` on some control-flow path and be fresh/other
+    /// on another — the not-`Fresh` join of divergent paths
+    /// (FIXME 0520), a COW may-alias, an element-store fold, or a projection of a
+    /// conditional container. A hard claim is UNREPRESENTABLE from here — it can
+    /// only publish `MayAliasOf`/`MayAliasAny` (§16.3), keeping every protect/dec
+    /// the fresh arm needs.
+    ///
+    /// **`params` — the REACH SET (§19.3, §20.3).** The parameter INDICES this
+    /// value may reach, sorted and deduplicated, each fixed where the origin was
+    /// minted rather than re-derived from a name at every read. It replaces the
+    /// single lowest-index `rep` the pre-S121 join kept: the representative was a
+    /// *discard*, and discarding a reaching parameter is what let a caller
+    /// publish `Fresh` for a body that returns one of its own parameters (F-2),
+    /// and what made the self-call transfer `r ↦ 1 − r` — an involution with no
+    /// fixed point (F-1). Publication resolves the set at the boundary only
+    /// ([`origin_to_result_mode`]): none ⇒ `Fresh`, one ⇒ `MayAliasOf(i)`, two or
+    /// more ⇒ the axis's ⊤ `MayAliasAny`.
+    /// The set is walk-internal and per-visit — the fixpoint compares
+    /// `ModeSummary`, never `Origin` — and it collapses at "two or more", which is
+    /// why the settle time does not depend on a permutation's cycle length.
     ///
     /// **`cow` — the may-alias LINK set (§17.2, S115 MS-P7 chained family).** The
     /// `Apply` spans at which a `MayAliasOf`-declared call MINTED a may-alias
@@ -183,7 +220,7 @@ enum Origin {
     /// `ResultMode` is unchanged — §17.6, no `cranelisp-types` edit, no
     /// `CACHE_SCHEMA_VERSION` bump).
     Conditional {
-        rep: Symbol,
+        params: Vec<usize>,
         projection: bool,
         cow: Vec<Span>,
     },
@@ -191,24 +228,65 @@ enum Origin {
 
 impl Origin {
     /// Construct an unconditional alias (`projection == false`) or borrowed view
-    /// (`projection == true`) — the ex-`Root`/`Projection` variants.
-    fn unconditional(root: Symbol, projection: bool) -> Origin {
-        Origin::Unconditional { root, projection }
+    /// (`projection == true`) of parameter `param` — the ex-`Root`/`Projection`
+    /// variants.
+    fn unconditional(root: Symbol, param: usize, projection: bool) -> Origin {
+        Origin::Unconditional {
+            root,
+            param,
+            projection,
+        }
     }
-    /// Construct a conditional (may-reach) origin — the ex-`MayParam` variant —
-    /// carrying `cow`, the §17.2 may-alias link set.
-    fn conditional(rep: Symbol, projection: bool, cow: Vec<Span>) -> Origin {
+    /// Construct a conditional (may-reach) origin over a reach SET of parameter
+    /// indices (§19.3), carrying `cow`, the §17.2 may-alias link set.
+    fn conditional_set(params: Vec<usize>, projection: bool, cow: Vec<Span>) -> Origin {
         Origin::Conditional {
-            rep,
+            params,
             projection,
             cow,
         }
     }
-    fn root(&self) -> Option<&Symbol> {
+    /// Every parameter this origin may reach — the §19.3 reach set, resolved at
+    /// construction (§20.3). Exactly one index for an unconditional claim, none
+    /// for `Fresh`.
+    fn params(&self) -> &[usize] {
         match self {
-            Origin::Unconditional { root, .. } => Some(root),
-            Origin::Conditional { rep, .. } => Some(rep),
-            Origin::Fresh => None,
+            Origin::Unconditional { param, .. } => std::slice::from_ref(param),
+            Origin::Conditional { params, .. } => params,
+            Origin::Fresh => &[],
+        }
+    }
+    fn reaches(&self) -> bool {
+        !self.params().is_empty()
+    }
+    /// The parameters an ordinary USE of this value widens toward `Owned`
+    /// (§4.4). An UNCONDITIONAL projection is a provably-clean borrowed view —
+    /// the rc-free read path a bare accessor exists for — so reading through it
+    /// does not make the viewed parameter `Owned`. Every other param-reaching
+    /// origin does widen, a CONDITIONAL projection included: it may be an alias
+    /// on some path, so over-approximating toward `Owned` is sound there.
+    ///
+    /// A CAPTURE is not an ordinary use: it widens over the whole reach set
+    /// ([`Walker::classify_capture_escape`]), because the captured reference
+    /// outlives the frame whichever way it views its parameter.
+    fn params_widened_by_use(&self) -> &[usize] {
+        match self {
+            Origin::Unconditional {
+                projection: true, ..
+            } => &[],
+            Origin::Unconditional { .. } | Origin::Conditional { .. } | Origin::Fresh => {
+                self.params()
+            }
+        }
+    }
+    /// Is every path through THIS origin a borrowed view rather than an alias?
+    /// `Fresh` reaches nothing, so its flag is not a claim about anything.
+    fn projection(&self) -> bool {
+        match self {
+            Origin::Unconditional { projection, .. } | Origin::Conditional { projection, .. } => {
+                *projection
+            }
+            Origin::Fresh => false,
         }
     }
     /// The §17.2 may-alias link set this value carries (empty for every origin
@@ -233,27 +311,159 @@ fn union_cow(a: &[Span], b: &[Span]) -> Vec<Span> {
     out
 }
 
-#[derive(Debug, Clone)]
-struct BindState {
-    origin: Origin,
-    /// `Some(idx)` iff this binding is a formal parameter.
-    param_idx: Option<usize>,
+/// Map a body's final value origin to a [`ResultMode`] (§3.3, §19.3). The
+/// multi-path join (§13.6(c) as corrected by FIXME 0520) is already applied via
+/// [`join_origin`] at `If`/`Match`: a partial param-return has become an
+/// [`Origin::Conditional`] (not `Fresh`), and only a provably-no-param path
+/// yields `Fresh`.
+///
+/// **This is the ONE boundary at which the reach set collapses (§19.3):** none ⇒
+/// `Fresh`; exactly one ⇒ the per-index claim; two or more ⇒ the axis's ⊤
+/// `MayAliasAny`, because the axis names conditionality and index and has no
+/// point for "definitely a parameter, index unknown" (§19.2 — a join of two
+/// distinct UNCONDITIONAL roots is therefore weakened, deliberately).
+fn origin_to_result_mode(origin: &Origin) -> ResultMode {
+    let [only] = origin.params() else {
+        return if origin.reaches() {
+            ResultMode::MayAliasAny
+        } else {
+            ResultMode::Fresh
+        };
+    };
+    match origin {
+        // Row 9 — the HARD-claim arms match ONLY `Unconditional` (§16.3 P20): an
+        // alias publishes `AliasOf(i)`, a borrowed view `ProjectionOf(i)` — both
+        // UNCONDITIONAL, so a consumer's elision is sound. Reaching two
+        // parameters is handled above: no hard claim can name them both, so it
+        // weakens to ⊤.
+        Origin::Unconditional { projection, .. } => {
+            if *projection {
+                ResultMode::ProjectionOf(*only)
+            } else {
+                ResultMode::AliasOf(*only)
+            }
+        }
+        // A CONDITIONAL claim can never publish a hard `AliasOf`/`ProjectionOf`
+        // (a `Fresh` path exists) — both projection arms publish `MayAliasOf`
+        // (S111 §15.3, spine §3.7(a1); §16.3): the consumer keeps its protect/dec
+        // on the fresh arm. Retain-side imprecision (the may-projection loses its
+        // provenance fact) is acceptable; the flagship bare-accessor stays an
+        // `Unconditional` projection (row 6), so no S99-target read-path shrinks.
+        Origin::Conditional { .. } => ResultMode::MayAliasOf(*only),
+        // Unreachable: `Fresh` reaches nothing, so it took the empty arm above.
+        Origin::Fresh => ResultMode::Fresh,
+    }
+}
+
+/// Join two value origins from divergent control-flow paths — the result may be
+/// `a` OR `b` (FIXME 0520, correcting §13.6(c)). The join is `Fresh` **only**
+/// when NEITHER path can carry a param to the result; any path that may
+/// alias/project a param makes the join a not-`Fresh` [`Origin::Conditional`].
+///
+/// Collapsing a param-reaching disagreement to `Fresh` (the old rule) is the
+/// ABI-half soundness narrowing 0520 cures: `Fresh` means "not aliased to any
+/// param", which a borrow-elision consumer trusts to drop a needed RC op and
+/// free the returned param. Widening toward not-`Fresh` (may-alias) is always
+/// sound; `Fresh` is reserved for provably-no-param-reaches-result.
+///
+/// When both paths reach the SAME param with the SAME kind, the definite origin
+/// is preserved (a full-`if`/same-param-`match` stays the precise
+/// `AliasOf(i)`/`ProjectionOf(i)`). Otherwise (a param vs fresh, two distinct
+/// params, or mixed alias/projection kinds) the conservative may-alias over the
+/// UNION of both reach sets (§19.3 — set union, and nothing else); `projection`
+/// only when EVERY reaching path is a projection (a mixed alias/projection join
+/// is the stronger `AliasOf`, keeping protect).
+///
+/// **Union is what makes the algebra structural (§19.3).** Commutativity,
+/// associativity and idempotence hold by construction rather than by assertion,
+/// because the joined set is the two operands' parameter indices sorted. The
+/// pre-S121 rule kept the lowest-index representative and DISCARDED the other
+/// reaching parameter, which is both F-2 (a caller composing the discarded
+/// position publishes a false `Fresh`) and F-1 (a self-call permuting its
+/// arguments walks `r ↦ 1 − r` forever).
+/// **Row 4 (§17.2, as CORRECTED by FIXME 0772) — the may-alias link sets UNION
+/// across the join, and the joined VARIANT is the ⊤-ward of the two operands,
+/// both INDEPENDENTLY OF OPERAND ORDER (P24).** An `If`/`Match`-produced
+/// container carries the links of BOTH arms, so the terminal projection-out (row
+/// 6) discharges whichever arm ran. Widening and monotone (the set only grows,
+/// and `Unconditional ⊑ Conditional`), and it is the composition — not a new
+/// consumer arm — that covers the face-3 container shape (§17.4).
+///
+/// The as-built pre-0772 arm read the joined variant off `a` alone
+/// (`match a { Conditional => …, other => other }`), which BOTH discarded the
+/// union it had just computed AND published a hard `AliasOf` claim from a
+/// may-alias operand — whenever `a` happened to be the `Unconditional` one.
+/// `MonoExpr::If` joins in source order, so the answer depended on which arm the
+/// COW producer was written in: the P24 acid test. Order symmetry is pinned by
+/// the `join_lattice_*` property cells in `transfer/tests.rs` (seam-level, no
+/// program involved).
+fn join_origin(a: Origin, b: Origin) -> Origin {
+    let cow = union_cow(a.cow_spans(), b.cow_spans());
+    // `Conditional` is the ⊤-ward point of the variant lattice: a join with a
+    // may-alias operand is a may-alias, whichever side contributed it.
+    let conditional =
+        matches!(a, Origin::Conditional { .. }) || matches!(b, Origin::Conditional { .. });
+    // The reach sets UNION, ordered by parameter index so the answer does not
+    // depend on which operand the source wrote first (P24, structurally).
+    let mut joined: Vec<usize> = a.params().to_vec();
+    for idx in b.params() {
+        if !joined.contains(idx) {
+            joined.push(*idx);
+        }
+    }
+    joined.sort_unstable();
+    if joined.is_empty() {
+        // NEITHER path carries a param: nothing to over-claim, and by row 8's own
+        // rule the link set goes with it.
+        return Origin::Fresh;
+    }
+    // `projection` is ANDed over the operands that actually REACH — a
+    // non-reaching operand has no path to be a projection on.
+    let projection = match (a.reaches(), b.reaches()) {
+        (true, true) => a.projection() && b.projection(),
+        (true, false) => a.projection(),
+        (false, true) => b.projection(),
+        (false, false) => unreachable!("empty union returned above"),
+    };
+    // The definite origin is preserved only when BOTH operands are themselves
+    // unconditional and reach exactly the same single param the same way (a
+    // full-`if` / same-param-`match` stays the precise `AliasOf(i)` /
+    // `ProjectionOf(i)`). Both are then `Unconditional` — `Fresh` reaches
+    // nothing — so either side's `root` names the same parameter.
+    if !conditional
+        && joined.len() == 1
+        && let (
+            Origin::Unconditional {
+                root,
+                param,
+                projection: pa,
+            },
+            Origin::Unconditional { projection: pb, .. },
+        ) = (&a, &b)
+        && pa == pb
+    {
+        return Origin::unconditional(root.clone(), *param, projection);
+    }
+    Origin::conditional_set(joined, projection, cow)
 }
 
 /// A saved lexical-scope frame (§13.6(i), F4 cure). For every name a binding
-/// scope (`Let`, `ParBind`, each `Match` arm) introduces, records the value
+/// scope (`Let`, `ParBind`, each `Match` arm) introduces, records the [`Origin`]
 /// `bindings` held for that name **before** the insertion (`None` if the name
 /// was unbound). On scope EXIT the frame is replayed in reverse so `bindings`
 /// faithfully models lexical scope: a name shadowed by an inner branch-sibling
-/// binding is restored to its outer/param `BindState` before a sibling scope is
-/// walked, closing the ABI-half narrowing (`param_modes` Owned→Borrowed) that
-/// the flat, never-restored map caused. Params are the base frame, never
-/// restored away.
-type ScopeFrame = Vec<(Symbol, Option<BindState>)>;
+/// binding is restored to its outer/param origin before a sibling scope is
+/// walked. Params are the base frame, never restored away.
+///
+/// Restoration keeps `bindings` a faithful lexical environment for the names a
+/// LATER expression resolves; it is no longer what makes an ALREADY-MINTED
+/// origin denote the right parameter, which the carried index now settles
+/// (§20.3).
+type ScopeFrame = Vec<(Symbol, Option<Origin>)>;
 
 struct Walker<'e, E: TransferEnv> {
     env: &'e E,
-    bindings: HashMap<Symbol, BindState>,
+    bindings: HashMap<Symbol, Origin>,
     /// Per-param accumulated mode (index-aligned with the formal list).
     param_modes: Vec<Mode>,
     param_flow: Vec<ParamFlow>,
@@ -272,150 +482,18 @@ struct Walker<'e, E: TransferEnv> {
 }
 
 impl<'e, E: TransferEnv> Walker<'e, E> {
-    /// Resolve a binding name to the formal-parameter it ultimately roots in
-    /// (following `Root` aliases), or `None` if it roots in no param.
-    fn param_root(&self, name: &Symbol) -> Option<usize> {
-        let mut cur = name.clone();
-        let mut guard = 0;
-        loop {
-            guard += 1;
-            if guard > 64 {
-                return None;
-            }
-            let bs = self.bindings.get(&cur)?;
-            if let Some(idx) = bs.param_idx {
-                return Some(idx);
-            }
-            match &bs.origin {
-                // An unconditional ALIAS (`projection:false`) IS its root — follow
-                // the chain. An unconditional PROJECTION is a borrowed view, NOT an
-                // alias, so it is NOT followed here (a projection rooted in a param
-                // is reached by `classify_capture_escape`'s recursion instead).
-                Origin::Unconditional {
-                    root,
-                    projection: false,
-                } => cur = root.clone(),
-                // A conditional binding roots (on its param-reaching path) in `rep`;
-                // follow it (either projection kind) so a store of such a binding
-                // widens the param (over-approximating toward Owned — always sound).
-                Origin::Conditional { rep, .. } => cur = rep.clone(),
-                _ => return None,
-            }
+    /// Conservative origin for an invalid persisted/result-summary parameter
+    /// index (§18.3 O-3, as corrected by §19.3): the value may reach **any** of
+    /// this frame's parameters, so the origin carries the whole parameter set and
+    /// publishes the ⊤ `MayAliasAny`. Only a parameterless frame can prove
+    /// `Fresh`. The pre-S121 answer was the lowest-index parameter alone, a
+    /// fictitious `MayAliasOf(0)` naming a parameter the value need not reach.
+    fn unknown_param_origin(&self) -> Origin {
+        let arity = self.param_modes.len();
+        if arity == 0 {
+            return Origin::Fresh;
         }
-    }
-
-    /// Map the body's final value origin to a [`ResultMode`] (§3.3). The
-    /// multi-path join (§13.6(c) as corrected by FIXME 0520) is already applied
-    /// via [`Walker::join_origin`] at `If`/`Match`: a partial param-return has
-    /// become a [`Origin::MayParam`] (not `Fresh`), and only a provably-no-param
-    /// path yields `Fresh`.
-    fn origin_to_result_mode(&self, origin: &Origin) -> ResultMode {
-        match origin {
-            // Row 9 — the HARD-claim arms match ONLY `Unconditional` (§16.3 P20):
-            // an alias publishes `AliasOf(i)`, a borrowed view `ProjectionOf(i)`
-            // — both UNCONDITIONAL, so a consumer's elision is sound. A `root` (for
-            // a projection) or the alias chain (`param_root`) that reaches no param
-            // is an owned local returned by value ⇒ `Fresh`.
-            Origin::Unconditional { root, projection } => match self.param_root(root) {
-                Some(i) if *projection => ResultMode::ProjectionOf(i),
-                Some(i) => ResultMode::AliasOf(i),
-                None => ResultMode::Fresh,
-            },
-            // A CONDITIONAL claim can never publish a hard `AliasOf`/`ProjectionOf`
-            // (a `Fresh` path exists) — both projection arms publish `MayAliasOf`
-            // (S111 §15.3, spine §3.7(a1); §16.3): the consumer keeps its
-            // protect/dec on the fresh arm. Retain-side imprecision (the
-            // may-projection loses its provenance fact) is acceptable; the flagship
-            // bare-accessor stays an `Unconditional` projection (row 6), so no
-            // S99-target read-path shrinks.
-            Origin::Conditional { rep, .. } => match self.param_root(rep) {
-                Some(idx) => ResultMode::MayAliasOf(idx),
-                None => ResultMode::Fresh,
-            },
-            Origin::Fresh => ResultMode::Fresh,
-        }
-    }
-
-    /// The param a value origin can carry to the result, if any: `(param index,
-    /// is-projection, representative param-rooted symbol)`, or `None` when the
-    /// origin roots in no param (fresh, or an owned local returned by value —
-    /// both `Fresh` at the result). The single reach classifier both
-    /// [`Walker::join_origin`] strata and the result-mode read share.
-    fn reach(&self, o: &Origin) -> Option<(usize, bool, Symbol)> {
-        match o {
-            Origin::Fresh => None,
-            Origin::Unconditional { root, projection } => self
-                .param_root(root)
-                .map(|i| (i, *projection, root.clone())),
-            Origin::Conditional {
-                rep, projection, ..
-            } => self.param_root(rep).map(|i| (i, *projection, rep.clone())),
-        }
-    }
-
-    /// Join two value origins from divergent control-flow paths — the result may
-    /// be `a` OR `b` (FIXME 0520, correcting §13.6(c)). The join is `Fresh`
-    /// **only** when NEITHER path can carry a param to the result; any path that
-    /// may alias/project a param makes the join a not-`Fresh` [`Origin::MayParam`].
-    ///
-    /// Collapsing a param-reaching disagreement to `Fresh` (the old rule) is the
-    /// ABI-half soundness narrowing 0520 cures: `Fresh` means "not aliased to any
-    /// param", which a borrow-elision consumer trusts to drop a needed RC op and
-    /// free the returned param. Widening toward not-`Fresh` (may-alias) is always
-    /// sound; `Fresh` is reserved for provably-no-param-reaches-result.
-    ///
-    /// When both paths reach the SAME param with the SAME kind, the definite
-    /// origin is preserved (a full-`if`/same-param-`match` stays the precise
-    /// `AliasOf(i)`/`ProjectionOf(i)`). Otherwise (a param vs fresh, two distinct
-    /// params, or mixed alias/projection kinds) the conservative may-alias:
-    /// representative = the reaching param of LOWEST index (deterministic);
-    /// `projection` only when EVERY reaching path is a projection (a mixed
-    /// alias/projection join is the stronger `AliasOf`, keeping protect).
-    /// **Row 4 (§17.2, as CORRECTED by FIXME 0772) — the may-alias link sets
-    /// UNION across the join, and the joined VARIANT is the ⊤-ward of the two
-    /// operands, both INDEPENDENTLY OF OPERAND ORDER (P24).** An `If`/`Match`-
-    /// produced container carries the links of BOTH arms, so the terminal
-    /// projection-out (row 6) discharges whichever arm ran. Widening and
-    /// monotone (the set only grows, and `Unconditional ⊑ Conditional`), and it
-    /// is the composition — not a new consumer arm — that covers the face-3
-    /// container shape (§17.4).
-    ///
-    /// The as-built pre-0772 arm read the joined variant off `a` alone
-    /// (`match a { Conditional => …, other => other }`), which BOTH discarded
-    /// the union it had just computed AND published a hard `AliasOf` claim from
-    /// a may-alias operand — whenever `a` happened to be the `Unconditional`
-    /// one. `MonoExpr::If` joins in source order, so the answer depended on
-    /// which arm the COW producer was written in: the P24 acid test. Order
-    /// symmetry is pinned by the `join_lattice_*` property cells in
-    /// `transfer/tests.rs` (seam-level, no program involved).
-    fn join_origin(&self, a: Origin, b: Origin) -> Origin {
-        let cow = union_cow(a.cow_spans(), b.cow_spans());
-        // `Conditional` is the ⊤-ward point of the variant lattice: a join with a
-        // may-alias operand is a may-alias, whichever side contributed it.
-        let conditional =
-            matches!(a, Origin::Conditional { .. }) || matches!(b, Origin::Conditional { .. });
-        match (self.reach(&a), self.reach(&b)) {
-            (None, None) => Origin::Fresh,
-            (Some((ia, pa, sa)), Some((ib, pb, _sb))) if ia == ib && pa == pb => {
-                // Same param, same kind ⇒ both paths definitely reach it that
-                // way, so the definite origin is preserved (a full-`if` /
-                // same-param-`match` stays the precise `AliasOf(i)` /
-                // `ProjectionOf(i)`) — but ONLY when NEITHER operand was itself a
-                // may-alias. `rep`/`root` is a REPRESENTATIVE: `sa` and `sb` both
-                // root in param `ia`, so either serves; `sa` keeps the
-                // both-`Unconditional` path byte-identical to pre-0772.
-                if conditional {
-                    Origin::conditional(sa, pa, cow)
-                } else {
-                    Origin::unconditional(sa, pa)
-                }
-            }
-            (Some((ia, pa, sa)), Some((ib, pb, sb))) => {
-                let (idx_sym, _) = if ia <= ib { (sa, ia) } else { (sb, ib) };
-                Origin::conditional(idx_sym, pa && pb, cow)
-            }
-            (Some((_, p, s)), None) | (None, Some((_, p, s))) => Origin::conditional(s, p, cow),
-        }
+        Origin::conditional_set((0..arity).collect(), false, Vec::new())
     }
 
     /// Widen a param's mode/flow from a use in `ctx`. No-op for `Copy` params.
@@ -493,20 +571,14 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                     // walk it Neutral and record its origin so uses of `n`
                     // propagate provenance. A param folded into a let-bound
                     // *Fresh* aggregate that later escapes is re-propagated by
-                    // the post-body drain below (blocker 1); a `Root`/`Projection`
-                    // binding's escape is re-classified through its origin at the
-                    // escaping use of `n` (`param_root` reaches the param).
+                    // the post-body drain below (blocker 1); an unconditional
+                    // binding's escape is re-classified through the parameter its
+                    // origin carries at the escaping use of `n`.
                     let origin = self.walk(rhs, UseCtx::Neutral);
                     // §13.6(d) let-shadow provenance guard (blocker 3, F2 helper).
                     self.drop_shadowed_provenance(n);
                     // Save the shadowed prior BEFORE inserting (scope discipline).
-                    let prior = self.bindings.insert(
-                        n.clone(),
-                        BindState {
-                            origin,
-                            param_idx: None,
-                        },
-                    );
+                    let prior = self.bindings.insert(n.clone(), origin);
                     frame.push((n.clone(), prior));
                 }
                 let body_origin = self.walk(body, ctx);
@@ -531,7 +603,7 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                 let b = self.walk(else_branch, ctx);
                 // Origin join (FIXME 0520): a param-reaching path survives as a
                 // may-alias; only both-Fresh collapses to `Fresh`.
-                self.join_origin(a, b)
+                join_origin(a, b)
             }
 
             MonoExpr::Match {
@@ -579,7 +651,7 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                     self.restore_frame(frame);
                     acc = Some(match acc.take() {
                         None => o,
-                        Some(prev) => self.join_origin(prev, o),
+                        Some(prev) => join_origin(prev, o),
                     });
                 }
                 if scrut_escapes {
@@ -609,13 +681,13 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                 // (freed COW read), `[(vec-set v 0 9)]` → a fresh container whose
                 // escaping element is a COW alias. Folding `join_origin` over the
                 // elements makes an element reaching param i widen the container to
-                // `Conditional{rep:i}` — a projection-OUT (row 6) then inherits the
+                // `Conditional{params:[i]}` — a projection-OUT (row 6) then inherits the
                 // alias reach. Losing per-element detail is fine (widen); losing the
                 // reach is the unsound direction.
                 let mut acc = Origin::Fresh;
                 for el in elements {
                     let el_origin = self.walk(el, UseCtx::Field { flow });
-                    acc = self.join_origin(acc, el_origin);
+                    acc = join_origin(acc, el_origin);
                 }
                 acc
             }
@@ -678,10 +750,10 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                     // Row 5 interaction (§16.2): with a fresh aggregate now carrying
                     // a `Conditional` origin, a capture of an ENCLOSING param used in
                     // this non-escaping lambda's `Return`-walked tail would widen the
-                    // enclosing param's flow/mode via `param_root` — but the lambda
-                    // does NOT escape, so its captures do not escape and the
-                    // enclosing param must not widen from them (the pre-row-5
-                    // behaviour, where captures were `Fresh` and `param_root` missed;
+                    // enclosing param's flow/mode through the reach it carries — but
+                    // the lambda does NOT escape, so its captures do not escape and
+                    // the enclosing param must not widen from them (the pre-row-5
+                    // behaviour, where captures were `Fresh` and reached nothing;
                     // the §13.6(j) B3.4 precision pin). Snapshot + restore the
                     // enclosing param flow/mode around the isolated body walk, exactly
                     // as `escaped` is isolated — the lambda's own tail allocations
@@ -707,13 +779,7 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                 for (n, rhs) in bindings {
                     let origin = self.walk(rhs, UseCtx::Neutral);
                     self.drop_shadowed_provenance(n);
-                    let prior = self.bindings.insert(
-                        n.clone(),
-                        BindState {
-                            origin,
-                            param_idx: None,
-                        },
-                    );
+                    let prior = self.bindings.insert(n.clone(), origin);
                     frame.push((n.clone(), prior));
                 }
                 let body_origin = self.walk(body, ctx);
@@ -747,9 +813,11 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
     }
 
     fn walk_var(&mut self, name: &Symbol, ctx: UseCtx) -> Origin {
-        if let Some(bs) = self.bindings.get(name).cloned() {
-            // A bound name. Classify the use against the param it roots in.
-            if let Some(idx) = self.param_root(name) {
+        if let Some(origin) = self.bindings.get(name).cloned() {
+            // A bound name. Classify the use against EVERY param its origin
+            // reaches (§19.3): a conditional binding branches, and widening only
+            // the representative left the other reaching param under-widened.
+            for &idx in origin.params_widened_by_use() {
                 self.classify_param_use(idx, ctx);
             }
             // Blocker 1: a freshly-CONSTRUCTED binding used in an escaping context
@@ -758,13 +826,14 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
             // aggregate/COW carrying a param — row 5 now gives such a container a
             // `Conditional` origin, not `Fresh`) both need the re-walk to flip the
             // allocation's escape site fact; the folded param's FLOW is already
-            // widened via `param_root` above (idempotent with the re-walk). An
+            // widened above (idempotent with the re-walk). An
             // UNCONDITIONAL binding is a direct param alias/view, not a fresh
-            // allocation — it is fully handled by `param_root`, no re-walk owed.
-            if matches!(bs.origin, Origin::Fresh | Origin::Conditional { .. }) && ctx.escapes() {
+            // allocation — the widening above is the whole of its handling, and
+            // no re-walk is owed.
+            if matches!(origin, Origin::Fresh | Origin::Conditional { .. }) && ctx.escapes() {
                 self.escaped.push((name.clone(), ctx));
             }
-            bs.origin
+            origin
         } else {
             // A free name = a callable / global reference. In non-callee
             // position this is a value-use (§8.3).
@@ -772,6 +841,48 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                 self.value_uses.insert(name.clone());
             }
             Origin::Fresh
+        }
+    }
+
+    /// §19.4 — the ONE conditional-result rule, with the reached argument
+    /// positions as its only input: `{k}` for `MayAliasOf(k)`, every position for
+    /// the ⊤ `MayAliasAny`. The result is EITHER fresh OR one of those arguments'
+    /// references, decided at runtime, so `Fresh` is joined with each of them: a
+    /// param-reaching argument yields a conditional origin (never collapsing to
+    /// `Fresh` — the 0520 rule keeps the consumer's protect), and arguments that
+    /// reach no param yield `Fresh`.
+    ///
+    /// **§17.2 ROW 8** — a conditional outcome MINTS a fresh may-alias LINK at
+    /// this `Apply`'s own span, unioned with the links the arguments already
+    /// carried. That union is what composes a chain: `(vec-set (vec-set v 0 1) 1
+    /// 2)` carries `[inner, outer]` by the time the terminal projection consumes
+    /// it. A `Fresh` outcome records no link — no aliased param can be
+    /// double-dec'd, so the fresh container's own dec is already balanced.
+    ///
+    /// An out-of-range position (a persisted index past this call's arity, §18.3
+    /// O-3) reads [`Walker::unknown_param_origin`] — the frame's whole parameter
+    /// set, never a fabricated index.
+    fn conditional_result_origin(
+        &self,
+        arg_origins: &[Origin],
+        positions: impl IntoIterator<Item = usize>,
+        span: Span,
+    ) -> Origin {
+        let mut acc = Origin::Fresh;
+        for k in positions {
+            let arg = arg_origins
+                .get(k)
+                .cloned()
+                .unwrap_or_else(|| self.unknown_param_origin());
+            acc = join_origin(acc, arg);
+        }
+        match acc {
+            Origin::Conditional {
+                params,
+                projection,
+                cow,
+            } => Origin::conditional_set(params, projection, union_cow(&cow, &[span])),
+            other => other,
         }
     }
 
@@ -827,12 +938,16 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                         // provenance fact, the backend materializes at Decision-24).
                         // With row 5 (container carries its element-join) this
                         // inherits the aliased element's reach.
-                        match arg_origins.get(k).cloned().unwrap_or(Origin::Fresh) {
-                            Origin::Unconditional { root, .. } => {
+                        match arg_origins
+                            .get(k)
+                            .cloned()
+                            .unwrap_or_else(|| self.unknown_param_origin())
+                        {
+                            Origin::Unconditional { root, param, .. } => {
                                 self.facts.provenance.insert(*span, root.clone());
-                                Origin::unconditional(root, true)
+                                Origin::unconditional(root, param, true)
                             }
-                            Origin::Conditional { rep, cow, .. } => {
+                            Origin::Conditional { params, cow, .. } => {
                                 // MS-P7 (§3.6) — PROJECTING OUT of a may-alias
                                 // CONTAINER: `(vec-get (vec-set v 0 9) 0)`, where the
                                 // container `(vec-set v 0 9)` is a COW result that may
@@ -876,41 +991,27 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                                 for cow_span in &cow {
                                     self.facts.escapes.insert(*cow_span, true);
                                 }
-                                Origin::conditional(rep, true, cow)
+                                Origin::conditional_set(params, true, cow)
                             }
                             Origin::Fresh => Origin::Fresh,
                         }
                     }
                     // The result IS arg k — carry its origin through verbatim.
-                    ResultMode::AliasOf(k) => arg_origins.get(k).cloned().unwrap_or(Origin::Fresh),
+                    ResultMode::AliasOf(k) => arg_origins
+                        .get(k)
+                        .cloned()
+                        .unwrap_or_else(|| self.unknown_param_origin()),
                     // COW result (S111 §15.4, spine §3.7(a1)): the result is
-                    // EITHER fresh OR arg k's reference, decided at runtime. Join
-                    // `Fresh` with the arg's origin — a param-reaching arg yields
-                    // `MayParam` (never collapses to `Fresh`, the 0520 rule keeps
-                    // protect); a fresh/non-param arg yields `Fresh`. Reuses the
-                    // exact 0520 may-alias composition, no new join logic.
+                    // EITHER fresh OR arg k's reference, decided at runtime — the
+                    // conditional-result rule over the single position `{k}`.
                     ResultMode::MayAliasOf(k) => {
-                        let arg = arg_origins.get(k).cloned().unwrap_or(Origin::Fresh);
-                        // §17.2 ROW 8 — this call MINTS a fresh may-alias LINK at
-                        // its own span, so the produced `Conditional` unions THIS
-                        // `Apply`'s span with the links the container argument
-                        // already carried. That union is what composes a chain:
-                        // `(vec-set (vec-set v 0 1) 1 2)` carries `[inner, outer]`
-                        // by the time the terminal projection consumes it. The
-                        // `rep`/reach axis is unchanged (§16 already correct); the
-                        // link set is the added carrier, and it only grows.
-                        //
-                        // A container with NO param reach joins to `Fresh` — no
-                        // aliased param can be double-dec'd, so no link is
-                        // recorded (the fresh container's own dec is balanced).
-                        match self.join_origin(Origin::Fresh, arg) {
-                            Origin::Conditional {
-                                rep,
-                                projection,
-                                cow,
-                            } => Origin::conditional(rep, projection, union_cow(&cow, &[*span])),
-                            other => other,
-                        }
+                        self.conditional_result_origin(&arg_origins, [k], *span)
+                    }
+                    // §19.2/§19.4 — the callee's result may reach SOME argument,
+                    // which one undetermined: the SAME rule over EVERY position.
+                    // A nullary callee reaches nothing, so it stays `Fresh`.
+                    ResultMode::MayAliasAny => {
+                        self.conditional_result_origin(&arg_origins, 0..arg_origins.len(), *span)
                     }
                     ResultMode::Fresh => Origin::Fresh,
                 };
@@ -931,30 +1032,37 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
     /// Mark a value captured by an escaping closure / suspension as escaping
     /// (FIXME 0523, R6). Capture is an escape edge regardless of use-position:
     ///
-    /// - roots in a **param** ⇒ widen it `Owned`/`Retained` (the escape rides the
-    ///   ABI, so a caller passing a fresh value at that position sees the escape —
-    ///   the inter-procedural half);
+    /// - reaches a **param** (directly, as an alias, as a borrowed view, or on
+    ///   the param-reaching paths of a conditional) ⇒ widen it `Owned`/`Retained`
+    ///   (the escape rides the ABI, so a caller passing a fresh value at that
+    ///   position sees the escape — the inter-procedural half);
     /// - a **Fresh** local (a fresh aggregate / `Fresh`-result) ⇒ push to the
     ///   escaped worklist so the enclosing scope's drain re-walks its RHS in the
-    ///   escaping context (flips the allocation's escape site fact);
-    /// - a **borrowed view / alias of another local** ⇒ materialize at its root
-    ///   (§4.2 rule 5): follow to the owning local and escape that.
+    ///   escaping context (flips the allocation's escape site fact).
     ///
     /// A free name that is not a binding (a callable / global) is not a
     /// capture-escape — its value-use is recorded by the body walk (§8.3).
+    ///
+    /// **No recursion through a root name (§20.3).** This function used to chase
+    /// an unconditional origin's `root` symbol back through `bindings`, because
+    /// the retired name resolver did not follow a projection to its parameter.
+    /// The carried index reaches it directly at the top, so the chase had no
+    /// remaining input — and under a shadow it escaped the WRONG local, leaving
+    /// the right one at `escapes = Some(false)` ⇒ stack allocation ⇒ the
+    /// FIXME-0524 dangle
+    /// (`transfer/tests.rs::captured_projection_widens_its_parameter_under_a_shadowed_root`).
     fn classify_capture_escape(&mut self, name: &Symbol) {
-        let bs = self.bindings.get(name).cloned();
-        // Widen any param this name roots in (a direct param, an alias chain, or
-        // the param-reaching path of a conditional). The escape rides the ABI, so
-        // a caller passing a fresh value at that position sees the escape (the
-        // inter-procedural half). This runs for ALL param-reaching origins — but a
-        // fresh AGGREGATE carrying a param (a `Conditional` binding) ALSO needs its
-        // allocation to escape (below), so it does NOT early-return.
-        if let Some(idx) = self.param_root(name) {
+        let Some(origin) = self.bindings.get(name).cloned() else {
+            return;
+        };
+        // Widen EVERY param this origin reaches. This runs for ALL param-reaching
+        // origins — but a fresh AGGREGATE carrying a param (a `Conditional`
+        // binding) ALSO needs its allocation to escape (below), so it does NOT
+        // early-return.
+        for &idx in origin.params() {
             self.classify_param_use(idx, UseCtx::EscapingCapture);
         }
-        let Some(bs) = bs else { return };
-        match bs.origin {
+        match origin {
             // Row 7 (§16.2, 0641 I-1 CORRECTION) — a FRESH ALLOCATION captured by an
             // escaping closure escapes: `Fresh` (no param) OR `Conditional` (a fresh
             // aggregate/COW carrying a param — row 5 now gives it a `Conditional`
@@ -967,12 +1075,9 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
             Origin::Fresh | Origin::Conditional { .. } => {
                 self.escaped.push((name.clone(), UseCtx::EscapingCapture))
             }
-            // An UNCONDITIONAL alias/projection of another LOCAL (not itself the
-            // param — that case is a direct param, `root == name`, and was widened
-            // above): follow to the owning binding and escape it. `param_root` does
-            // not chase an unconditional projection, so a projection rooted in a
-            // param is reached here and resolves on the recursion.
-            Origin::Unconditional { root: s, .. } if s != *name => self.classify_capture_escape(&s),
+            // An UNCONDITIONAL alias/view of a parameter: the widening above is
+            // the whole of its handling — the parameter owns the allocation, so
+            // there is no local allocation to escape.
             Origin::Unconditional { .. } => {}
         }
     }
@@ -991,7 +1096,7 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
 
     /// Restore a lexical-scope frame on scope exit (§13.6(i), F4 cure): replay
     /// the saved `(name, prior)` entries in **reverse** insertion order —
-    /// `Some(old)` reinserts the shadowed prior, `None` removes the binding.
+    /// `Some(old)` reinserts the shadowed prior origin, `None` removes the binding.
     /// This is what makes `bindings` faithfully model lexical scope, so an inner
     /// branch-sibling binding never leaks past its scope.
     fn restore_frame(&mut self, frame: ScopeFrame) {
@@ -1091,11 +1196,31 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
         scrut_origin: &Origin,
         arm: &MonoMatchArm,
     ) -> ScopeFrame {
-        let scrut_root = scrut_origin.root().cloned();
+        // The scrutinee's live binding identity, for the symbol-keyed provenance
+        // fact only — a `Conditional` scrutinee emits none, so it needs none.
+        let scrut_root = match scrut_origin {
+            Origin::Unconditional { root, .. } => Some(root.clone()),
+            Origin::Conditional { .. } | Origin::Fresh => None,
+        };
         let mut names = Vec::new();
         collect_pattern_bindings(pattern, &mut names);
         // §13.6(d) shadow guard (arm-own): if any bound name would shadow the
-        // scrutinee root, emit no provenance for the arm (conservative).
+        // scrutinee root, emit no provenance for the arm (conservative). This
+        // gates the SYMBOL-KEYED fact ONLY (§20.5(i)). What consumers read is
+        // PRESENCE, not the symbol: `compiler/apply.rs`'s borrowed-arg inc
+        // elision and `control_flow/sparkability.rs`'s spark-density heuristic
+        // both match `provenance: Some(_)`, no production site BINDS the
+        // `Symbol`, and the arm fact this line gates (`MonoMatchArm::provenance`,
+        // minted in `ownership/sites.rs`) has no backend reader at all. So
+        // withholding it reads as `None` ⇒ conservative (materialize,
+        // Decision-24). Falsifier for that reading: a backend site that binds
+        // the symbol rather than testing it.
+        // It does NOT gate the reach — the bindings below still inherit the
+        // scrutinee's carried parameter index (§20.3 "every mint inherits").
+        // One flag, two axes with OPPOSITE safe directions: suppressing the fact
+        // is conservative, minting `Fresh` on the result axis is the F-2
+        // narrowing (a caller trusts "no parameter reaches this result" and
+        // elides the return protect).
         let shadow = scrut_root
             .as_ref()
             .map(|r| names.iter().any(|n| n == r))
@@ -1104,10 +1229,7 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
         // UNCONDITIONAL scrutinee (a hard projection root the backend may trust). A
         // CONDITIONAL (COW) scrutinee gets NO arm provenance fact — Decision-24
         // materializes at the site, the safe direction.
-        if !shadow
-            && matches!(scrut_origin, Origin::Unconditional { .. })
-            && let Some(r) = &scrut_root
-        {
+        if !shadow && let Some(r) = &scrut_root {
             self.facts.provenance.insert(arm.span, r.clone());
         }
         // Row 3 (§16.2, 0641 B-2 CORRECTION): a binding's Origin roots at the
@@ -1126,30 +1248,24 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
             // any OTHER live binding of that name — drop pre-existing provenance
             // rooted in it (F2 mirror cure, single-sourced with the Let seam).
             self.drop_shadowed_provenance(&n);
-            let origin = if shadow {
-                Origin::Fresh
-            } else if is_whole_var {
+            let origin = if is_whole_var {
                 scrut_origin.clone()
             } else {
                 match scrut_origin {
-                    Origin::Unconditional { root, .. } => Origin::unconditional(root.clone(), true),
+                    Origin::Unconditional { root, param, .. } => {
+                        Origin::unconditional(root.clone(), *param, true)
+                    }
                     // Row 3 (§17.2 rider) — a destructured field of a
                     // CONDITIONAL scrutinee carries the scrutinee's may-alias
                     // link set, so a match-mediated chain composes exactly as a
                     // `let`-mediated one does.
-                    Origin::Conditional { rep, cow, .. } => {
-                        Origin::conditional(rep.clone(), true, cow.clone())
+                    Origin::Conditional { params, cow, .. } => {
+                        Origin::conditional_set(params.clone(), true, cow.clone())
                     }
                     Origin::Fresh => Origin::Fresh,
                 }
             };
-            let prior = self.bindings.insert(
-                n.clone(),
-                BindState {
-                    origin,
-                    param_idx: None,
-                },
-            );
+            let prior = self.bindings.insert(n.clone(), origin);
             frame.push((n, prior));
         }
         frame
@@ -1295,13 +1411,7 @@ pub(crate) fn transfer<E: TransferEnv>(
         let is_copy = copy.is_copy(ty);
         param_copy.push(is_copy);
         param_modes.push(if is_copy { Mode::Copy } else { Mode::Borrowed });
-        bindings.insert(
-            name.clone(),
-            BindState {
-                origin: Origin::unconditional(name.clone(), false),
-                param_idx: Some(i),
-            },
-        );
+        bindings.insert(name.clone(), Origin::unconditional(name.clone(), i, false));
     }
     let mut w = Walker {
         env,
@@ -1315,7 +1425,7 @@ pub(crate) fn transfer<E: TransferEnv>(
         escaped: Vec::new(),
     };
     let body_origin = w.walk(body, UseCtx::Return);
-    let result = w.origin_to_result_mode(&body_origin);
+    let result = origin_to_result_mode(&body_origin);
 
     let summary = ModeSummary {
         param_modes: w.param_modes,

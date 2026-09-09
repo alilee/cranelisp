@@ -226,7 +226,7 @@ pub(super) fn handle_import(
         }
 
         // Cache check: try to load from disk cache before parsing.
-        if try_cache_hit_load(ctx, dep, &dep_file) {
+        if try_cache_hit_load(ctx, dep, &dep_file)? {
             crate::imports::install_imports(
                 ctx.symbol_tables,
                 &ctx.current_module,
@@ -400,7 +400,7 @@ pub(super) fn drive_module_dep(
     // Cache check: try to load from disk cache before parsing (parity with
     // import). On a cache hit `dep` is registered `TypecheckDone` synchronously
     // — block-then-immediately-unblock to re-queue the referencing module.
-    if try_cache_hit_load(ctx, dep, &dep_file) {
+    if try_cache_hit_load(ctx, dep, &dep_file)? {
         if !ctx.eval_driven {
             ctx.scheduler
                 .block_for_typecheck(module, dep, &Symbol::from("*"), span)?;
@@ -867,7 +867,7 @@ pub(super) fn handle_export(
         }
 
         // Cache check.
-        if try_cache_hit_load(ctx, dep, &dep_file) {
+        if try_cache_hit_load(ctx, dep, &dep_file)? {
             continue;
         }
 
@@ -909,12 +909,13 @@ pub(super) fn handle_export(
     Ok(BlockAction::Continue)
 }
 
-/// Register the bare-short-name → full-submodule-path module alias for a
+/// Register the module-scoped short-name → full-submodule-path alias for a
 /// `(mod name)` declaration, so qualified references using the short name
 /// (spec §8.2.6 / §8.5.1, e.g. `util/helper`) resolve to the loaded submodule
-/// `<parent>.name`. Keyed by the bare short name so §8.6.6 longest-prefix
-/// substitution (`substitute_module_alias`) matches the `module_part` of a
-/// bare qualified reference. `Visibility::Private` — the alias serves the
+/// `<parent>.name`. The key includes the declaring module, preventing another
+/// module's same-spelled submodule alias from replacing it; alias substitution
+/// supplies that scope while matching the qualified reference's module part.
+/// `Visibility::Private` — the alias serves the
 /// declaring module's own qualified lookups (peers reference a submodule by
 /// its full path or import it). Idempotent: re-declaration overwrites with the
 /// same target (DashMap insert).
@@ -925,7 +926,7 @@ fn register_submodule_alias(
     span: Span,
 ) {
     ctx.module_aliases.insert(
-        ModuleFullPath::from(name.as_ref()),
+        cranelisp_types::module_alias_key(&ctx.current_module, name.as_ref()),
         cranelisp_types::ModuleAliasEntry::new(sub_path.clone(), Visibility::Private, span),
     );
 }
@@ -987,10 +988,10 @@ pub(super) fn handle_mod(
     // `util/helper` resolve to the loaded submodule `<parent>.util`). The
     // loaded module's identity is its full path (§8.1); without this alias a
     // bare `util/...` qualified ref hits `QualifiedModuleUnknown` because no
-    // module literally named `util` exists. Keyed by the bare short name so
-    // `substitute_module_alias` (§8.6.6 longest-prefix) matches the
-    // `module_part` of a bare qualified reference. Idempotent across re-entry
-    // (e.g. cache-hit / already-loaded paths below).
+    // module literally named `util` exists. The alias is scoped to this parent
+    // module; `substitute_module_alias` supplies that scope before applying its
+    // §8.6.6 longest-prefix match. Idempotent across re-entry (e.g. cache-hit /
+    // already-loaded paths below).
     register_submodule_alias(ctx, &decl.name, &sub_path, decl.span);
 
     // FIXME 0342 — DEFER the submodule register+typecheck-block. During Pass 0
@@ -1017,16 +1018,25 @@ pub(super) fn handle_mod(
 /// file-resolution + `register_dep` + `register_module` + `block_for_typecheck`
 /// sequence, moved out of Pass 0 so the parent's definitions are live (and thus
 /// visible to a `super` import) before the submodule typechecks.
-fn drive_submodule(
+pub(super) enum DeclaredSubmoduleEnrollment {
+    Ready,
+    Registered(ModuleFullPath),
+}
+
+/// The single declared-submodule enrollment mechanism shared by fresh-parent
+/// and cache-restored-parent orchestration. It owns path resolution, watcher
+/// mapping, child cache restoration and fresh registration; callers decide
+/// whether their parent must block on a newly registered child.
+pub(super) fn enrol_declared_submodule(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     decl: &cranelisp_types::ModDecl,
-) -> Result<BlockAction, CranelispError> {
+) -> Result<DeclaredSubmoduleEnrollment, CranelispError> {
     let sub_path = ModuleFullPath::from(format!("{}.{}", module, decl.name));
 
     // Already loaded — resolution chain handles qualified references.
     if ctx.symbol_tables.contains_key(&sub_path) {
-        return Ok(BlockAction::Continue);
+        return Ok(DeclaredSubmoduleEnrollment::Ready);
     }
 
     // Resolve file path.
@@ -1051,8 +1061,8 @@ fn drive_submodule(
     }
 
     // Cache check: try to load from disk cache before parsing.
-    if try_cache_hit_load(ctx, &sub_path, &dep_file) {
-        return Ok(BlockAction::Continue);
+    if try_cache_hit_load(ctx, &sub_path, &dep_file)? {
+        return Ok(DeclaredSubmoduleEnrollment::Ready);
     }
 
     // Run the shared per-dep prologue (read source, parse, record source
@@ -1074,11 +1084,23 @@ fn drive_submodule(
     // Register dep with scheduler (sexps ride the packet) and record edge.
     ctx.scheduler
         .register_module(sub_path.clone(), dep_sexps, true);
-    block_dep(ctx, module, &sub_path, decl_span)?;
+    Ok(DeclaredSubmoduleEnrollment::Registered(sub_path))
+}
 
-    Ok(BlockAction::Block {
-        dep_module: sub_path,
-    })
+fn drive_submodule(
+    ctx: &mut ModuleCompiler,
+    module: &ModuleFullPath,
+    decl: &cranelisp_types::ModDecl,
+) -> Result<BlockAction, CranelispError> {
+    match enrol_declared_submodule(ctx, module, decl)? {
+        DeclaredSubmoduleEnrollment::Ready => Ok(BlockAction::Continue),
+        DeclaredSubmoduleEnrollment::Registered(sub_path) => {
+            block_dep(ctx, module, &sub_path, decl.span)?;
+            Ok(BlockAction::Block {
+                dep_module: sub_path,
+            })
+        }
+    }
 }
 
 /// Drive all of `module`'s declared submodules to typecheck readiness AFTER the
@@ -1401,7 +1423,7 @@ pub(super) fn inject_prelude_if_needed(
         if let Some(prelude_file) = prelude_file {
             // Cache check: load prelude from disk cache (so the fallback has a
             // table to consult). No flatten — the bit was set above.
-            if try_cache_hit_load(ctx, &prelude_path, &prelude_file) {
+            if try_cache_hit_load(ctx, &prelude_path, &prelude_file)? {
                 return Ok(None);
             }
 

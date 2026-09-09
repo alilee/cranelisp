@@ -26,13 +26,6 @@ use cranelisp_platform::{CLAdtType, HostContext, SchedulingClass};
 // Static HOST required by the `host:` arm.
 static FULL_ARM_HOST: HostContext = HostContext::new();
 
-// An author-defined marker type keyed by FQ name — the post-S71 shape (the
-// macro no longer auto-emits these from a declaration DSL).
-struct Rectangle;
-impl CLAdtType for Rectangle {
-    const TYPE_NAME: &'static str = "shapes/Rectangle";
-}
-
 // Two extern fns referenced by the `functions:` arm. We never call them;
 // they exist only so the macro has real symbols to describe.
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -58,8 +51,12 @@ cranelisp_platform::declare_platform! {
     schema: "\
 ;; layout-hash: fullarmtest
 (schema
-  (shapes/Rectangle
+    (shapes/Rectangle
     (Rectangle 0 ((w primitives/Int) (h primitives/Int)))))",
+    adts: [
+        /// Compile-fixture marker emitted and checked against the schema above.
+        Rectangle => "shapes/Rectangle",
+    ],
     functions: [
         full_arm_noop {
             cl_name: "full-arm-noop",

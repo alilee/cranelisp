@@ -293,6 +293,38 @@ fn macro_generates_defmacro_available_to_later_use() {
     .assert_stdout_contains(":primitives/Int 42");
 }
 
+// spec: spec/09-macros.md §9.12.1 — after a generated macro checkpoint has
+// committed, a later lazy dependency gap resumes at the unprocessed suffix;
+// it does not replay the generated definition.
+#[test]
+fn generated_macro_checkpoint_is_not_replayed_after_later_dependency_gap_neg() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::None)
+        .file("dep.cl", "(defn value [] 42)\n")
+        .stdin(
+            "(begin\n\
+               (defmacro make-id [] `(defmacro generated [x] x))\n\
+               (make-id)\n\
+               (defn use-dependency [] (dep/value)))\n\
+             (generated (use-dependency))\n",
+        )
+        .output();
+    assert!(
+        out.stdout.contains(":primitives/Int 42"),
+        "the suffix must resume and use the generated macro; stdout={} stderr={}",
+        out.stdout,
+        out.stderr,
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
+    assert!(
+        !combined.contains("already defined")
+            && !combined.contains("illegal redefinition")
+            && !combined.contains("duplicate"),
+        "the committed generated macro must not be replayed after the gap; got:\n{combined}"
+    );
+}
+
 // =============================================================================
 // §5.13.2 — REPL ≡ batch macro availability (round-trip safety, §0.3).
 // The SAME program produces the SAME macro-availability outcome in REPL and

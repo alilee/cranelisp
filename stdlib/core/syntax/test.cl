@@ -7,37 +7,13 @@
 ;; stands on — `derive.helpers`, `defs` and `derive` all fold and reverse through
 ;; `sfold`/`sreverse`. It had no self-tests before S115.
 ;;
-;; ── WHAT IS NOT HERE, AND WHY (FIXME 0835) ────────────────────────────
-;;
-;; This file is DELIBERATELY THIN, and the missing tests are the point of this
-;; note. `sreverse` and `slist` have NO cases below, and `sfold` has only its
-;; base cases, because a `test-*` function that builds a **two-cell SList of
-;; heap `Sexp`** aborts the compiler process when invoked through the test
-;; runner:
-;;
-;;   (defn- slen [xs] :Int (sfold (fn [n _] (add-i64 n 1)) 0 xs))
-;;   (defn test-x [] :(Option String)
-;;     (assert-eq 2 (slen (SCons (SexpSym "a") (SCons (SexpSym "b") SNil)))))
-;;   ⇒ "6 passed, 0 failed, 0 panicked"   then   corrupted double-linked list
-;;
-;; Note WHERE it dies: the assertions all pass and the tally prints. The abort
-;; is in glibc, on teardown — this is a drop-glue/RC defect over nested heap
-;; ADTs, not a logic error, and it is reached through `discover-tests`/`run-one`
-;; (a ONE-cell list is fine, and the same fold run directly at the REPL is fine).
-;; Filed as FIXME 0835 with this cell as the minimal repro.
-;;
-;; So the honest position is: `sempty?`, `sfold`'s base case, and `make-def-name`
-;; are pinned below; `sreverse`, `slist`, and `sfold`'s inductive case are NOT
-;; COVERED AT ALL and cannot be until 0835 closes. The drafted-and-removed cases
-;; were: sreverse of empty / preserves length / puts last first / of a singleton
-;; / twice-is-identity; slist empty / single / preserves order; sfold counts
-;; elements / is left-associative. RESTORE THAT SET WHEN 0835 CLOSES — it is
-;; written down here precisely so the gap is not re-discovered from scratch.
+;; `sreverse`, `slist`, and sfold's inductive case remain uncovered. Restoring
+;; their broader historical matrix is outside this focused self-test slice.
 
-(import [super [sempty? sfold make-def-name]])
+(import [super [sempty? sfold make-def-name annotated? annotation unannotate]])
 (import [testing.assertions [assert-eq assert-true assert-false]])
-(import [macros [Sexp SList SCons SNil SexpSym SexpInt]])
-(import [primitives [Option String Int Bool add-i64]])
+(import [macros [Sexp SList SCons SNil SexpSym SexpInt SexpAnnotated]])
+(import [primitives [Option Some None String Int Bool add-i64]])
 
 ;; ── sempty? ────────────────────────────────────────────────────────────
 
@@ -64,3 +40,30 @@
 (defn test-make-def-name-passes-non-symbols-through [] :(Option String)
   ;; a non-symbol sexp is returned unchanged, not mangled into one
   (assert-eq 7 (match (make-def-name (SexpInt 7)) [(SexpInt n) n _ -1])))
+
+;; ── Reader-annotation helpers ─────────────────────────────────────────
+
+(defn test-annotated-recognises-reader-annotation [] :(Option String)
+  (assert-true (annotated? (SexpAnnotated (SexpSym "Int") (SexpInt 7)))))
+
+(defn test-annotated-rejects-ordinary-sexp [] :(Option String)
+  (assert-false (annotated? (SexpInt 7))))
+
+(defn test-annotation-projects-reader-annotation [] :(Option String)
+  (match (annotation (SexpAnnotated (SexpSym "Int") (SexpInt 7)))
+    [(Some ann) (assert-eq "Int" (match ann [(SexpSym name) name _ "<not-a-sym>"]))
+     None (assert-true false)]))
+
+(defn test-annotation-is-none-for-ordinary-sexp [] :(Option String)
+  (match (annotation (SexpInt 7))
+    [None (assert-true true)
+     (Some _) (assert-true false)]))
+
+(defn test-unannotate-projects-reader-subject [] :(Option String)
+  (assert-eq 7
+             (match (unannotate (SexpAnnotated (SexpSym "Int") (SexpInt 7)))
+               [(SexpInt value) value
+                _ -1])))
+
+(defn test-unannotate-preserves-ordinary-sexp [] :(Option String)
+  (assert-eq 7 (match (unannotate (SexpInt 7)) [(SexpInt value) value _ -1])))

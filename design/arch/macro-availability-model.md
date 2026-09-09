@@ -1,8 +1,12 @@
 # Macro-availability model — the foundation under W-Macro (S76)
 
-**Status — DECISION LOCKED (user-approved 2026-06-03).** The macro-availability foundation is settled. This document is now in two layers:
+**Status — DECISION LOCKED (user-approved 2026-06-03; checkpoint amendment approved 2026-09-03).** The macro-availability foundation is settled. This document is now in two layers:
 
 - **§0 (LOCKED decision)** — the normative model. Read this first; it is the working reference.
+- **§0.4, §0.5, and §0.7 (2026-09-03 amendment)** — successful
+  source-ordered `defmacro` forms are immediate module-local checkpoints. This
+  supersedes earlier wording that placed macro publication inside the later
+  non-macro cluster rollback domain.
 - **§1–§7 (deep-dive trace, SUPERSEDED as recommendation)** — the S76 Phase 3 design-space exploration that *drove* the locked decision. Its option-space analysis (§2), Option-(f) recommendation (§4–§7), and especially the **§4.4 concrete trace** are retained as the **disproof record** — they are *why* the simpler "expand-before-check_forms over a best-effort use-before-def model" collapsed and the locked decision took its present shape. The recommendation layer (Option (f), the (f)-vs-(a) framing, the §4.3 "atomic-commit over the fully-expanded set as target" hedging) is **SUPERSEDED by §0**. Where §0 and §1–§7 conflict, §0 governs. Each superseded section carries an inline pointer to §0; nothing is deleted (the trace is the legible record of what was ruled out and why).
 
 This is a cross-crate + cross-spec foundation, so it lives in `design/arch/`. The locked rule cascades into: the spec (via FIXMEs 0005/0006/0007 — `/spec`-owned), `bounded-contexts.md` §1 (frontend — quasiquote-only), §2 (typecheck — recognition role + three-pass), §6 (int — orchestrates Pass 1 + supplies `MacroExpander`), `exec-flow-compilation.mmd`+`.svg` (three-pass), `macro-expansion-ownership.md` (the mechanism doc this grounds, §4.3 pinned to the three-pass). No new Decision file (manifestation-site discipline — the commitment lives in the BC sections, these design docs, and the FIXME spec-text).
@@ -38,26 +42,63 @@ The reason a same-module non-macro definition is forbidden at expansion is **rou
 
 This is the constraint the deep dive's §4.4 trace exposed (a same-module `defn` helper's *code* is absent when the clause executes) and the user's round-trip-safety framing turned into the governing principle.
 
-### 0.4 Three-pass module compilation (the implementation shape)
+### 0.4 Source-ordered macro checkpoints, then the non-macro HM cluster
 
-A module compiles in three passes:
+A module compiles in two publication domains while preserving the established
+three logical passes:
 
-1. **Pass 1 — Recursively typecheck defmacros and expand all macro symbols** (both local and FQ), compiling dependent forms just-in-time as needed. This is the **compile-time layer**.
-   - *"Recursively"* = a macro-generated `defmacro` is itself typechecked/compiled and becomes available to subsequent expansion in the same pass; the expansion runs to fixpoint.
+1. **Pass 1 — Process macro expansion in source order.** When a `defmacro` is
+   encountered, typecheck its parent and complete clause set, close and
+   codegenerate its full expansion-time dependency/generated-realization
+   closure, and publish the parent, clauses, and defining-module generated
+   realizations as one module-local checkpoint before continuing. Nothing from
+   that macro becomes callable before the checkpoint succeeds.
+   - *"Recursively"* = a macro-generated `defmacro` is itself a checkpoint;
+     after it succeeds it becomes available to subsequent expansion in the
+     same pass, and expansion continues to fixpoint.
    - *FQ `mod/macro` references* trigger just-in-time typecheck/compile of the referenced module (FIXME 0007's FQ-macro-ref capability, **folded into Pass 1** — it is not a separate mechanism).
-   - Dependency forms a macro clause needs are JIT-compiled on demand via the pause-and-typecheck (just-in-time) mechanism.
+   - A dependency module publishes through its own module transaction. Its
+     success is not provisional state owned by the defining module.
 2. **Pass 2 — Scan non-macro signatures** (cluster-wide, over the fully-expanded form set, including macro-generated definitions).
 3. **Pass 3 — Typecheck non-macro bodies** (cluster-atomic, against the complete registered signature/impl set).
 
 **Key structural property — the pass order ENFORCES the stage restriction.** Pass-1 expansion runs *before* Passes 2–3, so when a macro clause executes the module's own non-macro definitions have **not yet been processed** (they are Pass-2/3 entities) and are therefore **structurally invisible** at expansion. The §0.1 restriction ("no same-module non-macro definition at expansion") is a **consequence of pass ordering, not a separate check** — there is nothing to enforce dynamically because the non-macro entries do not exist when Pass 1 runs.
 
-### 0.5 Decision 44 reconciliation — intact
+A failed macro checkpoint publishes none of that macro and preserves its prior
+committed generation, if any. A successful checkpoint is durable: a later
+expansion, non-macro typecheck, or codegen failure does not roll it back.
+The later §18 dependent cure is outside checkpoint success; a cure refusal or
+failure is reported without returning the committed macro to candidate state.
+
+Redefinition publishes the new active clause set exactly. Int carries clause
+identity as `(group, clause_index)` and uses the canonical key constructor; it
+does not infer ownership from a generated-name prefix. If the prior parent has
+`N` clauses and the staged parent has `M < N`, the exact indices `M..N` may be
+submitted as absent-key `ChangeAbi` decisions only after their live bindings
+are verified private, slotted `MacroClause`s of that parent. The table removes
+those surplus rows in the same transaction that replaces the parent and active
+clauses. Their old slots remain tombstoned with frozen GOT pointers and their
+owners return for session retention. A later growth recreates those indices on
+fresh slots. Cache load validates the complete relation in both directions—an
+active parent index has exactly its expected clause binding, and every stored
+`MacroClause` belongs to an active parent index—so missing, surplus and
+mismatched rows regenerate rather than entering live state.
+
+### 0.5 Decision 44 reconciliation — non-macro HM atomicity intact
 
 Decision 44's cluster-atomicity is **intact** and now operates cleanly on the **Pass-2/3 runtime layer** (the fully-expanded non-macro forms):
 
 - `check_forms`'s internal two passes **ARE Passes 2 + 3** (Pass 2 = signature registration into staging; Pass 3 = body typecheck against the unioned staging+live view; atomic commit on whole-cluster `Ok`).
-- The **compile-time layer (Pass 1)** runs *before* `check_forms`, orchestrated by int's `process_cluster` expand loop, and is resolved against **dependencies only**. Pass 1 is **self-sufficient** precisely because expansion helpers are dependencies (typechecked-before), not same-module entities.
+- The **compile-time layer (Pass 1)** runs before `check_forms`, orchestrated by
+  int's source-order expand loop. Each complete `defmacro` commits at its own
+  module-local checkpoint. This is intentionally outside the later non-macro
+  rollback domain.
 - `check_forms` therefore receives an **already-fully-expanded** `Vec<ParsedEntry>` and never triggers macro execution. D44's atomic-commit property is over that expanded entry set, **unchanged** — and this is now a true statement of the design (not the "target, not as-built" hedge the §4.3 caveat carried for Option (f)), because the locked decision removes the same-module mid-cluster clause-commit hazard the trace found: there is no same-module-helper compile interleaved with the cluster check.
+- Non-macro forms before and after a macro checkpoint remain in the same HM
+  cluster. The checkpoint does not reduce forward-reference or mutual-recursion
+  scope among them.
+- Dependency modules publish independently. There is no cross-module prepared
+  publication or rollback set.
 
 This **vindicates the deep dive's "expand before check_forms" shape** (§4.3 / `macro-expansion-ownership.md` §4.3 "second/cleaner shape") — and it is sound *because* Pass-1 expansion helpers are **dependencies**, not same-module helpers. The earlier disproof (§4.4) applied only to **same-module** helpers, which the locked principle now **forbids**. Removing that case removes the unsoundness.
 
@@ -67,11 +108,34 @@ This **vindicates the deep dive's "expand before check_forms" shape** (§4.3 / `
 - **§9.8 / §9.12** — the three-pass model (recursively-typecheck-defmacros-and-expand-all → scan-non-macro-sigs → typecheck-non-macro-bodies). **Drop** the "macro bodies can call helper functions defined earlier in the file" claim; **replace** it with the dependency rule (macro bodies may call helpers defined in **dependency modules**, and same-module **macros**, not same-module non-macro definitions).
 - **§8.5.1 + new §9.3.6** — FQ macro references authorized (now folded into Pass 1).
 
-### 0.7 W-Macro mechanism (pinned — supersedes the provisional shapes)
+### 0.7 W-Macro mechanism (checkpoint amendment)
 
-- **Pass 1 = the expand phase**, orchestrated by int's `process_cluster`. Macro heads are recognized via the **`cranelisp-types` resolution primitive** `cranelisp_types::resolve_macro_head` (module-local per Principle 17), which int calls directly over the **committed** symbol tables (`View::single(live)` first-hop — no staging exists during Pass 1). Recognition is therefore a types query with **zero int→typecheck dependency** (resolution-primitive fold-in, 2026-06-03). int's `cranelisp_types::MacroExpander` callback (impl over `src/expander.rs`'s invocation core + `src/marshal.rs`) executes the compiled clause; dependency forms are JIT-compiled on demand via the pause-and-typecheck mechanism. The expansion runs to fixpoint (nested macros + structural re-classification — `def` → `(begin (defn …) (defmacro …))` — re-enter the expand loop). The fully-expanded `Vec<ParsedEntry>` then feeds one `check_forms` call.
+- **Pass 1 = source-order expansion plus macro checkpoints**, orchestrated by
+  int's `process_cluster`. Macro heads are recognized via
+  `cranelisp_types::resolve_macro_head` over committed tables. At a `defmacro`,
+  int prepares the complete parent-and-clauses unit plus its full
+  expansion-time dependency/generated-realization closure, finishes that
+  closure's codegen, and publishes the macro plus its defining-module
+  generated realizations once
+  through the existing prepared commit and
+  `SymbolTable::publish_compiled_staged`. Only committed macros are invoked.
+  Dependency modules compile and publish independently. The expansion runs to
+  fixpoint (including expansion-produced `defmacro` checkpoints), and the
+  fully-expanded non-macro `Vec<ParsedEntry>` then feeds one `check_forms` call.
 - **Passes 2 + 3 = `check_forms`** (its internal two-pass discipline over the fully-expanded non-macro forms). Typecheck's body-resolution `resolve_*` family are thin callers of the same `cranelisp_types::resolve` primitive, supplying the staging ∪ live first-hop view.
-- **No public-API delta on the typecheck/int boundary** beyond the already-authored `MacroExpander` trait + `MacroInvokeError` enum (`crates/cranelisp-types/src/macro_expander.rs`). The resolution-primitive fold-in adds a **`cranelisp-types` surface** (`resolve` / `resolve_macro_head` / `Resolved` / `ResolveError`; +~40 lines to `crates/cranelisp-types/public-api.txt`) and **removes** the recognition logic from typecheck's surface entirely (recognition is now a types query, not a typecheck-exposed predicate — superseding the prior FIXME-0245 "typecheck-interior recognition surface" framing). The locked decision settles *semantics* + *sequencing*; the fold-in settles the *placement of resolution* (types-owned primitive + caller-chosen view). No new typecheck/int boundary type. See `bounded-contexts.md` §7 "Resolution primitive" + `interfaces.md`.
+- **No provisional invocation machinery.** There is no unpublished-candidate
+  macro call, temporary/reserved-GOT candidate stack, cross-module publication
+  set, or `MacroObservationFence`. Readers snapshot a committed macro and
+  selected clause under the existing module-table read guard; publication uses
+  that same table's write cadence.
+- **No additional boundary item.** This amendment needs no new types,
+  typecheck, or backend public item, no cache-schema change, and no platform
+  interface change. It composes the already-approved
+  `publish_compiled_staged` operation and the approved semantics of its
+  existing `ChangeAbi` decision: explicit retirement to absence is permitted,
+  while omission alone never deletes. The semantic change adds no signature,
+  re-export or generated-baseline line; the previously established resolution
+  primitive and `MacroExpander` surface remain unchanged.
 
 **The §4.4 trace's "net-new int-side step" (codegen a macro clause's transitive `defn`-callee closure before invoking) is RESOLVED by the locked decision, not carried forward.** Under Option (f), that step was needed because a clause could call a same-module `defn`. The locked decision **forbids** same-module non-macro expansion-time references — so the clause's callees are **dependency** functions (already compiled, by Pass-1's just-in-time dependency compilation) or same-module **macros** (compiled in Pass 1). There is no same-module-`defn`-callee-with-empty-GOT-slot case to wire `block_for_macro_codegen` for. The dead `block_for_macro_codegen` path can be deleted rather than wired live. (`/dev` (int) confirms the deletion when it lands the Pass-1 dependency-compile orchestration. The `facades/int.md` "Gap design rationale" cascade flagged in §4.4 — the "macro-clause callees ARE boosted" exception — is **withdrawn**: there are no same-module clause callees to boost; the rationale's "functions are NOT speculatively JIT-pushed" statement stands unqualified, because the dependency functions a clause needs are pulled in by Pass-1 just-in-time dependency compilation, not by a speculative function-caller boost.)
 
@@ -244,7 +308,13 @@ This is the option that **matches what the source already does**, **honours the 
 
 ### 4.3 Decision 44 reconciliation — the clarifying invariant (manifestation site: BC §2 + Decision 0044 site)
 
-> **SUPERSEDED/UPGRADED by §0.5 (2026-06-03 lock).** The "expand fully → then one `check_forms` over the fully-expanded set" shape below is **correct and now the locked design** — but the AS-BUILT CAVEAT hedge ("target, not as-built; D44 already scoped today") is resolved by the lock, not carried forward. Under §0 the atomic-commit-over-the-expanded-set statement is **true of the design**, full stop, because the locked decision **removes** the same-module clause-commit-to-live-mid-cluster hazard the trace found (clause callees are dependency forms compiled by Pass-1 just-in-time, outside the cluster). The compile-time layer is **Pass 1** (§0.4); `check_forms`'s two internal passes are **Passes 2+3** over the fully-expanded non-macro forms. §0.5 is the canonical reconciliation; the invariant text below is the (correct) shape it formalizes.
+> **SUPERSEDED by §0.5 (2026-09-03 checkpoint amendment).** The durable
+> part of the discussion below is only that macro expansion precedes one
+> `check_forms` call over the fully expanded non-macro set. Its treatment of a
+> macro definition as provisional cluster state is no longer authority: each
+> complete `defmacro` publishes at its own module-local checkpoint and survives
+> later failure. The caveat and mechanism trace remain as the historical
+> evidence that motivated making the publication domains explicit.
 
 > **AS-BUILT CAVEAT (§4.4).** The invariant below states the **target** shape (expand fully → then one `check_forms` over the fully-expanded set). The §4.4 concrete trace found the *current source* does NOT yet honour it: macro-clause typecheck+codegen commits to **live mid-Pass-2** (before the cluster's atomic check), so D44 atomic-commit is **already scoped, not intact, today**. The invariant is what /dev must build to; "the atomic-commit property is over that expanded set, unchanged" is true of the target, not the present source. Read the assertions below as target-stating.
 

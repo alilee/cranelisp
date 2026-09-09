@@ -64,6 +64,14 @@ fn var(name: &str, span: Span, ty: Type) -> Expr {
     }
 }
 
+fn string_lit(value: &str, span: Span) -> Expr {
+    Expr::StringLit {
+        value: value.into(),
+        span,
+        inferred_type: Some(Box::new(Type::String)),
+    }
+}
+
 /// `(go 0 <second>)` in tail position. The literal first argument keeps `n` out
 /// of `tail_transfer_skip`, so the cells isolate the second slot.
 fn tail_self_call(second: Expr) -> Expr {
@@ -107,6 +115,14 @@ fn go_defn(body: Expr) -> Defn {
 /// current fn's storage FQ — typecheck's self-recursion signal, without which
 /// fast-path 1 never reaches the tail-jump flushes at all.
 fn compile(defn: &Defn, summary: Option<ModeSummary>) -> Result<String, CranelispError> {
+    compile_typed(defn, summary, &[Type::Int, Type::String])
+}
+
+fn compile_typed(
+    defn: &Defn,
+    summary: Option<ModeSummary>,
+    param_types: &[Type],
+) -> Result<String, CranelispError> {
     let mut jit = crate::jit::Jit::new_with_symbols(&[]).expect("JIT construction");
     let module_path = module_path();
 
@@ -114,12 +130,7 @@ fn compile(defn: &Defn, summary: Option<ModeSummary>) -> Result<String, Cranelis
     let mut st = SymbolTable::new(module_path.clone());
     // The entry's `Scheme.ty` is where `bind_defn_params` reads param types
     // from: `x` MUST be `String` or nothing in this file is heap-classified.
-    crate::test_support::insert_user_fn_stub_typed(
-        &mut st,
-        GO,
-        &[Type::Int, Type::String],
-        Type::Int,
-    );
+    crate::test_support::insert_user_fn_stub_typed(&mut st, GO, param_types, Type::Int);
     symbol_tables.insert(module_path.clone(), st);
 
     let resolved_targets: HashMap<Span, FQSymbol> =
@@ -135,6 +146,69 @@ fn compile(defn: &Defn, summary: Option<ModeSummary>) -> Result<String, Cranelis
         jit.jit_module(),
     )
     .map(|mut clifs| clifs.pop().expect("one compiled defn"))
+}
+
+// spec: spec/12-runtime.md §12.3.1 — replacing a retained COW source releases
+// its old slot, so a borrowed sibling argument must first acquire an owner.
+#[test]
+fn retaining_cow_tail_replacement_protects_its_borrowed_sibling() {
+    let vec_ty = Type::ADT(
+        cranelisp_types::FQTypeName::new("primitives".into(), "Vec".into()),
+        vec![Type::Int],
+    );
+    let push = Expr::Apply {
+        callee: Box::new(var("vec-push", Span::new(101, 102), Type::Int)),
+        args: vec![
+            var("x", Span::new(103, 104), vec_ty.clone()),
+            Expr::IntLit {
+                value: 1,
+                span: Span::new(105, 106),
+                inferred_type: Some(Box::new(Type::Int)),
+            },
+        ],
+        span: Span::new(100, 110),
+        resolved_call: Some(Box::new(cranelisp_types::ResolvedCall::BuiltinFn {
+            name: "vec-push".into(),
+        })),
+        inferred_type: Some(Box::new(vec_ty.clone())),
+    };
+    let mut recur = tail_self_call(var("alias", Span::new(206, 207), vec_ty.clone()));
+    if let Expr::Apply { args, .. } = &mut recur {
+        args[0] = push;
+    }
+    let body = Expr::Match {
+        scrutinee: Box::new(var("x", Span::new(90, 91), vec_ty.clone())),
+        arms: vec![cranelisp_types::MatchArm {
+            pattern: cranelisp_types::Pattern::Var {
+                name: "alias".into(),
+                span: Span::new(92, 93),
+            },
+            body: recur,
+            span: Span::new(92, 215),
+        }],
+        span: Span::new(80, 220),
+        compiler_generated: false,
+        inferred_type: Some(Box::new(Type::Int)),
+    };
+    let clif = compile_typed(&go_defn(body), None, &[vec_ty.clone(), vec_ty]).unwrap();
+    let backedge = clif
+        .split("\n\n")
+        .find(|block| !block.starts_with("block0") && block.contains("jump block1("))
+        .expect("recursive backedge");
+    assert!(
+        backedge.contains("atomic_rmw"),
+        "borrow protection missing:\n{clif}"
+    );
+    assert!(
+        backedge
+            .lines()
+            .any(|line| line.contains("call ") && line.contains("(v3)")),
+        "old x slot must be released before the backedge:\n{clif}"
+    );
+    assert!(
+        backedge.find("atomic_rmw").unwrap() < backedge.rfind("(v3)").unwrap(),
+        "protect the sibling before releasing its owner:\n{clif}"
+    );
 }
 
 /// `x` is `Borrowed` — the caller owns the reference.
@@ -216,5 +290,67 @@ fn a_borrowed_parameter_carried_forward_is_not_a_shadowing_borrow() {
         "an OWNED parameter carried forward is the plain row-1 move and must \
          still compile: {}",
         owned.err().map(|e| e.to_string()).unwrap_or_default()
+    );
+}
+
+// spec: spec/12-runtime.md §12.3.1 — a bare tail argument transfers only the
+// latest binder it resolves to. A preceding same-name binder in the same let
+// frame remains unreachable and must be released before the backedge.
+//
+// defect: class=binder-name-underkey locus=FnCompiler::flush_let_scopes_before_tail_jump found=S121 owner=/dev
+#[test]
+fn same_name_tail_transfer_releases_the_displaced_binding() {
+    let subject = Expr::Let {
+        bindings: vec![
+            (
+                Symbol::from("x"),
+                string_lit("discarded", Span::new(101, 111)),
+            ),
+            (
+                Symbol::from("x"),
+                string_lit("carried", Span::new(112, 120)),
+            ),
+        ],
+        body: Box::new(tail_self_call(var("x", Span::new(206, 207), Type::String))),
+        span: Span::new(100, 220),
+        inferred_type: Some(Box::new(Type::Int)),
+    };
+    let control = Expr::Let {
+        bindings: vec![
+            (
+                Symbol::from("y"),
+                string_lit("discarded", Span::new(101, 111)),
+            ),
+            (
+                Symbol::from("x"),
+                string_lit("carried", Span::new(112, 120)),
+            ),
+        ],
+        body: Box::new(tail_self_call(var("x", Span::new(206, 207), Type::String))),
+        span: Span::new(100, 220),
+        inferred_type: Some(Box::new(Type::Int)),
+    };
+
+    let calls_before_backedge = |clif: &str| {
+        clif.split("\n\n")
+            .find(|block| !block.starts_with("block0") && block.contains("jump block1("))
+            .expect("recursive backedge")
+            .lines()
+            .filter(|line| line.contains("call "))
+            .count()
+    };
+    let subject_clif = compile(&go_defn(subject), None).unwrap();
+    let control_clif = compile(&go_defn(control), None).unwrap();
+    let subject_calls = calls_before_backedge(&subject_clif);
+    let control_calls = calls_before_backedge(&control_clif);
+
+    assert!(
+        control_calls > 0,
+        "the rename control must release its discarded heap binding before the backedge:\n{control_clif}"
+    );
+    assert_eq!(
+        subject_calls, control_calls,
+        "renaming only the discarded binder must not change tail cleanup \\
+         (subject {subject_calls} calls, control {control_calls})"
     );
 }

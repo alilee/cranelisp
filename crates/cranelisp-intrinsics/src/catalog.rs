@@ -76,8 +76,8 @@
 //! the create-gate reservation primitive, lenient-eval.md §3.6.1, S92; the
 //! 2 S99 `runtime/rc_stat_{inc,dec}` measurement tally helpers; and the 3
 //! increment-II `runtime/{reuse_hit,reuse_miss,extern_adapt_str_len}` tally
-//! helpers, §6.5/§9.2) + the 12
-//! `cranelisp_trace_*` family. The catalog + its tests are the single owner of
+//! helpers, §6.5/§9.2; and `runtime/free_io_node`, the post-dec IO teardown
+//! tail) + the 12 `cranelisp_trace_*` family. The catalog + its tests are the single owner of
 //! the trace name-agreement contract (closing the prior no-owner gap).
 
 /// One backend-emitted-call target in the published intrinsics catalog.
@@ -108,7 +108,7 @@ pub struct IntrinsicEntry {
 /// The published flat Import-catalog of this crate's backend-emitted-call
 /// targets (BC §4b invariant 11 — Decision-0048-for-intrinsics).
 ///
-/// Returns a `'static` slice of the 37 entries — 25 core (the set relocated
+/// Returns a `'static` slice of the 38 entries — 26 core (the set relocated
 /// from the retired `cranelisp_backend::jit::intrinsic_symbols()`, plus
 /// `cranelisp_ivar_dealloc`, the IVar-aware drop path;
 /// `cranelisp_spark_budget_try_reserve`, the create-gate primitive;
@@ -243,6 +243,13 @@ pub fn intrinsics_table() -> &'static [IntrinsicEntry] {
             name: "runtime/vec_drop",
             ptr: crate::vec_runtime::vec_drop as *const u8,
             param_count: 2,
+            has_return: false,
+            is_runtime: true,
+        },
+        IntrinsicEntry {
+            name: "runtime/free_io_node",
+            ptr: crate::drop::free_io_node as *const u8,
+            param_count: 1,
             has_return: false,
             is_runtime: true,
         },

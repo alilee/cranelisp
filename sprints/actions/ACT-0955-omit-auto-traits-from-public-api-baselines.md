@@ -1,0 +1,40 @@
+---
+id: ACT-0955
+title: Omit generated auto-trait impls from public-API baselines
+status: open
+priority: next-sprint
+from: sprint
+to: arch
+sprint: 121
+filed_at: 2026-09-05
+refers_to:
+  - design/arch/CLAUDE.md §Baseline-diff discipline
+  - tests/public_api_relocations.rs
+  - crates/cranelisp-platform/public-api.txt
+---
+
+## Request
+
+In the next sprint, add `--omit auto-trait-impls` to the repository's one
+canonical `cargo public-api` invocation. Generated `core::marker` rows such as
+`Freeze`, `Unpin`, `Send` and `Sync` dominate the baselines and review output;
+explicit implementations such as `unsafe impl Send for PlatformFn` remain
+visible with this option.
+
+Treat this as one coordinated baseline-format migration, not as part of an
+unrelated API change. First identify any auto-trait property that is a required
+cross-crate contract and give it a direct source or test fence if omission
+would otherwise hide it. Then update the canonical documentation and executing
+guard together and regenerate every tracked library baseline once.
+
+## Completion evidence
+
+- The documented command and `tests/public_api_relocations.rs` use the same
+  `--omit auto-trait-impls` policy.
+- All seven tracked baselines are regenerated in one mechanical change and the
+  user approves the resulting contraction before promotion.
+- A planted ordinary public-API addition still fails the guard, while explicit
+  `Send`/`Sync` implementations required by an ABI contract remain represented
+  or receive an equivalent direct fence.
+- No product behavior, language specification, cache schema or platform ABI is
+  changed by the baseline-format migration.

@@ -1,8 +1,7 @@
 //! Single declaration inventory for the primitive table and linker harvest.
 
 use cranelisp_types::{
-    DefKind, Mode, ModeSummary, ModuleEntry, ModuleFullPath, PrimitiveBody, Scheme, Symbol,
-    SymbolTable, Type, TypeName,
+    Mode, ModeSummary, ModuleFullPath, Scheme, Symbol, SymbolTable, Type, TypeName, Visibility,
 };
 
 use crate::ownership_facts;
@@ -657,9 +656,8 @@ primitive_declarations! {
             type_vars: vec![],
             ownership: ownership_facts::uniform_for_type(&Type::Fn(vec![sexp_type()], Box::new(sexp_type())), Mode::Owned)
         }
-        user_extern {
+        user_inline {
             name: "vec-len",
-            shim: shim_vec_len(vec: i64) => crate::vec::vec_len, call: (vec),
             metadata: PrimitiveDef {
     name: Symbol::from("vec-len"),
     ty: Type::Fn(vec![vec_a()], Box::new(Type::Int)),
@@ -723,7 +721,7 @@ primitive_declarations! {
 pub(crate) fn build_table(table: &mut SymbolTable<(), ()>, declarations: &[PrimitiveDecl]) {
     let mut names = std::collections::HashSet::new();
     for declaration in declarations {
-        let (name, scheme, param_names, docstring, ownership, body) = match declaration {
+        let (name, scheme, param_names, docstring, ownership, shim) = match declaration {
             PrimitiveDecl::UserExtern {
                 name,
                 scheme,
@@ -732,37 +730,21 @@ pub(crate) fn build_table(table: &mut SymbolTable<(), ()>, declarations: &[Primi
                 ownership,
                 shim,
                 ..
-            } => {
-                let slot = table
-                    .allocate_got_slot()
-                    .expect("fresh primitive GOT cannot be exhausted");
-                table.got.store_slot(slot, *shim);
-                (
-                    *name,
-                    scheme,
-                    param_names,
-                    docstring,
-                    ownership,
-                    PrimitiveBody::Extern {
-                        got_slot: slot,
-                        borrowed_sibling_slot: None,
-                    },
-                )
-            }
-            PrimitiveDecl::UserInline {
-                name,
-                scheme,
-                param_names,
-                docstring,
-                ownership,
             } => (
                 *name,
                 scheme,
                 param_names,
                 docstring,
                 ownership,
-                PrimitiveBody::Inline,
+                Some(*shim),
             ),
+            PrimitiveDecl::UserInline {
+                name,
+                scheme,
+                param_names,
+                docstring,
+                ownership,
+            } => (*name, scheme, param_names, docstring, ownership, None),
             PrimitiveDecl::HarvestExtern { name, .. } => {
                 assert!(
                     names.insert(*name),
@@ -777,19 +759,36 @@ pub(crate) fn build_table(table: &mut SymbolTable<(), ()>, declarations: &[Primi
             "duplicate primitive declaration: {}",
             name
         );
-        table.insert(
-            Symbol::from(name),
-            ModuleEntry::def(
-                scheme.as_ref().clone(),
-                DefKind::Primitive {
-                    body,
-                    mode_summary: Some(ownership.clone()),
-                },
-            )
-            .param_names(param_names.clone())
-            .docstring(*docstring)
-            .build(),
-        );
+        let name = Symbol::from(name);
+        let seq = table.next_seq;
+        table.next_seq += 1;
+        if let Some(shim) = shim {
+            let slot = table
+                .install_extern(
+                    name,
+                    scheme.as_ref().clone(),
+                    param_names.clone(),
+                    Some((*docstring).to_string()),
+                    seq,
+                    None,
+                    Some(ownership.clone()),
+                    Visibility::Public,
+                )
+                .expect("fresh primitive GOT cannot be exhausted");
+            table.got.store_slot(slot.index(), shim);
+        } else {
+            table
+                .install_inline(
+                    name,
+                    scheme.as_ref().clone(),
+                    param_names.clone(),
+                    Some((*docstring).to_string()),
+                    seq,
+                    Some(ownership.clone()),
+                    Visibility::Public,
+                )
+                .expect("inline primitive declaration must install");
+        }
     }
 }
 

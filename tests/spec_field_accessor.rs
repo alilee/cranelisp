@@ -6,11 +6,11 @@
 //
 //   - `Type.field` (e.g. `Box.v`) is the CANONICAL, uniformly-Public accessor —
 //     the one compiled function per (type, field).
-//   - bare `field` (e.g. `v`) is a CONVENIENCE ALIAS (a `ModuleEntry::Import`
-//     edge to the canonical key) — no second compiled function.
-//   - AMBIGUITY lives in the bare alias: when two same-module types share a field
-//     name, the bare key becomes `Ambiguous`; the canonical `Box.v`/`Cup.v` stay
-//     valid (§1.6.2).
+//   - bare `field` (e.g. `v`) is a convenience exposure of that canonical
+//     declaration — no second compiled function.
+//   - when types share a field name, every canonical accessor remains a
+//     candidate. Ordinary use-site constraints select one; only a fixed-point
+//     survivor set larger than one is ambiguous. `Box.v`/`Cup.v` stay valid.
 //
 // The load-bearing payoff (§1.6.3 / §1.6.6) is CROSS-MODULE NO-CLIFF: because the
 // canonical `Type.field` `Def` is unconditionally Public, `m/Box.v` resolves
@@ -22,7 +22,7 @@
 // Free-standing: PrimitivesOnly prelude; lib-dir module trees built inline.
 // Spec: spec/05-definitions.md §5.2.6 (Generated Accessors, reframed),
 // spec/08-modules.md §8.5.2 (Dotted Names, reframed), §8.6.5 (bare-name
-// ambiguity / poisoning).
+// candidate selection / ambiguity).
 
 #[path = "helpers/mod.rs"]
 mod helpers;
@@ -94,53 +94,69 @@ fn cross_module_contested_canonical_accessors_no_cliff() {
         .assert_exit(14);
 }
 
-// spec: spec/08-modules.md §8.6.5 — NEG (cross-module, contested): the BARE
-// cross-module name `m/v` MUST NOT silently dispatch in the contested case — it is
-// rejected (the bare alias is `Ambiguous` in `m`), while the canonical
-// `m/Box.v`/`m/Cup.v` always work (asserted above). The behavioural contrast: the
-// contested bare `shapes/v` program does NOT successfully compute the field value
-// (it errors / does not exit cleanly with the accessor's result).
-//
-// NOTE: the diagnostic wording on the contested bare cross-module path is
-// currently the module-resolution error rather than a clean "ambiguous bare name"
-// message (a diagnostic-quality gap on the qualified-bare-name path, distinct from
-// the accessor inversion); this guard pins the BEHAVIOURAL outcome (rejected, not
-// silently dispatched), not the exact message.
+// spec: spec/08-modules.md §8.6.5 — a contested module-qualified convenience spelling
+// remains a candidate set. The argument type selects `Box.v` and `Cup.v`
+// independently; an `Int` argument matches neither and reports no matching
+// declaration rather than silently choosing, reporting ambiguity, or claiming
+// the spelling is undefined.
 #[test]
-fn cross_module_contested_bare_accessor_rejected_neg() {
-    let out = Cranelisp::new()
-        .with_prelude(PreludeVariant::PrimitivesOnly)
-        .file(
-            "lib/shapes.cl",
-            "(deftype Box [:primitives/Int v])\n\
-             (deftype Cup [:primitives/Int v])\n",
-        )
-        .file(
-            "main.cl",
-            "(import [primitives [Pure]])\n\
-             (import [shapes [Box Cup]])\n\
-             (defn main [] (Pure (shapes/v (Box 5))))",
-        )
-        .lib_dir("lib")
-        .run("main")
-        .output();
-    // The contested bare cross-module accessor MUST NOT succeed as the field
-    // accessor — it must NOT exit 5 (the value `Box.v` would yield). It is
-    // rejected (the bare alias is ambiguous in `m`).
-    assert_ne!(
-        out.status.code(),
-        Some(5),
-        "a contested bare cross-module accessor `shapes/v` MUST NOT silently \
-         dispatch to a field accessor (it is ambiguous in the source module, \
-         §8.6.5); the canonical `shapes/Box.v` is the unambiguous form. \
+fn cross_module_contested_bare_accessor_selects_by_type_and_no_match_neg() {
+    fn run_main(expr: &str) -> helpers::e2e::CrOutput {
+        Cranelisp::new()
+            .with_prelude(PreludeVariant::PrimitivesOnly)
+            .file(
+                "lib/shapes.cl",
+                "(deftype Box [:primitives/Int v])\n\
+                 (deftype Cup [:primitives/Int v])\n",
+            )
+            .file(
+                "main.cl",
+                &format!(
+                    "(import [primitives [Pure]])\n\
+                     (import [shapes [Box Cup]])\n\
+                     (defn main [] (Pure {expr}))"
+                ),
+            )
+            .lib_dir("lib")
+            .run("main")
+            .output()
+    }
+
+    for (expr, expected) in [("(shapes/v (Box 5))", 5), ("(shapes/v (Cup 9))", 9)] {
+        let out = run_main(expr);
+        let diagnostic = format!("{}{}", out.stdout, out.stderr).to_lowercase();
+        assert!(
+            !diagnostic.contains("ambiguous") && !diagnostic.contains("no matching"),
+            "argument-directed selection of `{expr}` MUST succeed without a candidate \
+             diagnostic; stdout={} stderr={}",
+            out.stdout,
+            out.stderr
+        );
+        out.assert_exit(expected);
+    }
+
+    let no_match = run_main("(shapes/v 5)");
+    let diagnostic = format!("{}{}", no_match.stdout, no_match.stderr).to_lowercase();
+    assert!(
+        !no_match.status.success(),
+        "an `Int` argument matches neither contested accessor and MUST be rejected; \
          stdout={} stderr={}",
-        out.stdout,
-        out.stderr
+        no_match.stdout,
+        no_match.stderr
+    );
+    assert!(
+        diagnostic.contains("no matching")
+            && !diagnostic.contains("ambiguous")
+            && !diagnostic.contains("undefined variable"),
+        "zero compatible `shapes/v` candidates MUST be a no-matching-declaration \
+         error distinct from ambiguity and unknown spelling; stdout={} stderr={}",
+        no_match.stdout,
+        no_match.stderr
     );
 }
 
 // ===========================================================================
-// §1.6.2 — bare alias behaviour (resolves when unique; ambiguous when contested)
+// §1.6.2 — bare exposure behaviour (type-selected or fixed-point ambiguous)
 // ===========================================================================
 
 // spec: spec/05-definitions.md §5.2.6 — bare alias resolves when EXACTLY ONE type
@@ -156,189 +172,149 @@ fn bare_alias_resolves_when_field_unique() {
     .assert_stdout_contains(":primitives/Int 5");
 }
 
-// spec: spec/08-modules.md §8.6.5 — bare alias is AMBIGUOUS when two same-module
-// types share the field, BUT the canonical `Box.v`/`Cup.v` both still work. The
-// ambiguity lives in the bare alias (§1.6.2), not in the canonical accessors.
+// spec: spec/03-types.md §3.5.3 and spec/08-modules.md §8.6.5 — ordinary
+// argument constraints select a contested bare accessor independently at each
+// use. An unconstrained first-class use remains ambiguous and lists the complete
+// deduplicated canonical survivor set; dotted canonical uses always work.
 #[test]
 fn bare_alias_ambiguous_canonical_both_work() {
-    let out = repl_prims(
+    let canonical = repl_prims(
         "(deftype Box [:primitives/Int v])\n\
          (deftype Cup [:primitives/Int v])\n\
          (Box.v (Box 5))\n\
-         (Cup.v (Cup 9))\n\
-         (v (Box 5))\n",
+         (Cup.v (Cup 9))\n",
     );
-    // The canonical accessors both resolve cleanly (the inversion keeps them valid).
-    out.assert_stdout_contains_all(&[":primitives/Int 5", ":primitives/Int 9"]);
-    // The bare alias `v` is ambiguous — a diagnostic naming the canonical
-    // alternatives. (Re-fetch via a second session for the negative arm so the
-    // consuming assertion above does not move `out`.)
-    let amb = repl_prims(
+    canonical.assert_stdout_contains_all(&[":primitives/Int 5", ":primitives/Int 9"]);
+
+    let box_call = repl_prims(
         "(deftype Box [:primitives/Int v])\n\
          (deftype Cup [:primitives/Int v])\n\
          (v (Box 5))\n",
     );
-    let lc = format!("{}{}", amb.stdout, amb.stderr).to_lowercase();
+    let box_diagnostic = format!("{}{}", box_call.stdout, box_call.stderr).to_lowercase();
     assert!(
-        lc.contains("ambiguous") || (lc.contains("error") && lc.contains("box.v")),
-        "a contested bare alias `v` MUST be an ambiguity error naming the canonical \
-         alternatives `Box.v`/`Cup.v` (§8.6.5 / §1.6.2); stdout={} stderr={}",
+        !box_diagnostic.contains("ambiguous") && !box_diagnostic.contains("error"),
+        "the `Box` argument MUST uniquely select `user/Box.v`; stdout={} stderr={}",
+        box_call.stdout,
+        box_call.stderr
+    );
+    box_call.assert_stdout_contains(":primitives/Int 5");
+
+    let cup_call = repl_prims(
+        "(deftype Box [:primitives/Int v])\n\
+         (deftype Cup [:primitives/Int v])\n\
+         (v (Cup 9))\n",
+    );
+    let cup_diagnostic = format!("{}{}", cup_call.stdout, cup_call.stderr).to_lowercase();
+    assert!(
+        !cup_diagnostic.contains("ambiguous") && !cup_diagnostic.contains("error"),
+        "the `Cup` argument MUST uniquely select `user/Cup.v`; stdout={} stderr={}",
+        cup_call.stdout,
+        cup_call.stderr
+    );
+    cup_call.assert_stdout_contains(":primitives/Int 9");
+
+    let amb = repl_prims(
+        "(deftype Box [:primitives/Int v])\n\
+         (deftype Cup [:primitives/Int v])\n\
+         (defn discard [f] 0)\n\
+         (discard v)\n",
+    );
+    let diagnostic = format!("{}{}", amb.stdout, amb.stderr);
+    let lc = diagnostic.to_lowercase();
+    assert!(
+        lc.contains("ambiguous")
+            && diagnostic.contains("user/Box.v")
+            && diagnostic.contains("user/Cup.v")
+            && !lc.contains("undefined variable")
+            && !lc.contains("no matching"),
+        "an unconstrained first-class `v` MUST be ambiguous and list both canonical \
+         survivors exactly as candidates, not report unknown/no-match; stdout={} stderr={}",
         amb.stdout,
         amb.stderr
     );
+    assert_eq!(
+        diagnostic.matches("user/Box.v").count(),
+        1,
+        "the ambiguity diagnostic MUST deduplicate `user/Box.v`; {diagnostic}"
+    );
+    assert_eq!(
+        diagnostic.matches("user/Cup.v").count(),
+        1,
+        "the ambiguity diagnostic MUST deduplicate `user/Cup.v`; {diagnostic}"
+    );
 }
 
 // ===========================================================================
-// §5.2.6 — THE CONSTRUCTOR-ARM AXIS (FIXME 0867, S118 W1 repro)
+// §5.2.6 — product accessors versus sum payload labels (S121 ruling)
 //
-// FIXME 0867 (`/repl`, S117 Phase 6b) found that
-// `(deftype (Pair a b) (MkPair [:a fst :b snd]))` mints NEITHER the canonical
-// `Pair.fst` nor the unique bare `fst`, and attributed the gap to the
-// TYPE-PARAMETER axis: "a concrete product mints both, a polymorphic product
-// mints neither".
-//
-// REDUCED AT HEAD `e15ff20f` (`/testing`, S118 W1). The type parameter is NOT
-// causal. The axis is WHERE THE FIELD LIST LIVES:
-//
-//   deftype form                                        `T.f`   bare `f`
-//   (deftype Box [:Int v])                     product    yes      yes
-//   (deftype (Bx a) [:a val])            poly product     yes      yes   ← poly, GREEN
-//   (deftype Bz (Bz [:Int v]))          same-name arm     yes      yes
-//   (deftype (Pz a) (Pz [:a v]))   poly same-name arm     yes      yes   ← poly, GREEN
-//   (deftype Bxx (MkBxx [:Int v]))     distinct-name arm   NO       NO   ← concrete, RED
-//   (deftype (Duo a b) (MkDuo [:a fst :b snd]))          NO       NO   ← 0867's case
-//   (deftype Sh Circ (Sq [:Int side]))         sum         NO       NO
-//   (deftype (Opt a) Nul (Jus [:a unwrap]))  poly sum      NO       NO
-//
-// Two polymorphic forms mint BOTH accessors, and a CONCRETE distinct-name
-// constructor arm mints NEITHER. So the defect is: **field accessors are
-// synthesised only from the deftype-LEVEL field list (and the same-name
-// single-constructor spelling that reduces to it); a field list living in a
-// named constructor arm whose name differs from the type's contributes no
-// accessor at all.** That is every sum type and every product spelled with a
-// distinct constructor — far wider than 0867's polymorphic-product framing, and
-// it makes spec §5.2.6's OWN sum-type example (`Option.unwrap` /
-// bare `unwrap` over `(deftype (Option a) None (Some [:a unwrap]))`)
-// non-conforming.
-//
-// WHY THE WHOLE AXIS WAS INVISIBLE (tests/CLAUDE.md §"Coverage by definition
-// variants"): every pre-existing accessor guard — the four cells below, plus
-// `spec_05_definitions::{generated_field_accessor_resolves_as_free_callable,
-// accessor_is_first_class_value_passable, accessor_cross_type_duplicate_field_name}`
-// — spells its type `(deftype Box [:primitives/Int v])`. One variant of the
-// definition form was exercised; the missing cell is exactly where the sibling
-// variant diverged. The matrix below is the variant × polarity grid that lens
-// asks for, with the GREEN rows kept so the divergence NAMES its site instead of
-// just failing.
-//
-// The duplicate-field ambiguity family above is retained unchanged as the
-// negative boundary: a fix must mint the bare alias for these forms WITHOUT
-// weakening the contested-name rejection (§8.6.5).
-//
-// `/qa` finalizes the narrow `/dev` attribution from these REDs (FIXME 0867
-// §"Proposed resolution"); the `class=` below is `/testing`'s reading of the
-// controlled vocabulary and is `/qa`'s to re-label.
+// A product has one same-name constructor, so each product field denotes a
+// total projection and mints `Type.field` plus its bare convenience candidate.
+// A differently named constructor arm is a sum variant even when it is the
+// type's only arm. Its labels document positional payloads; they mint no names.
+// Extraction from a sum is therefore exhaustive `match`, never a partial
+// accessor with a runtime variant check.
 // ===========================================================================
 
-// 0867's own case, verbatim modulo the type name (`Pair` is a primitives-seeded
-// name, so a `deftype Pair` under any prelude that provides it is a §8.6.4
-// definition-over-import conflict, not an accessor question — the rename keeps
-// the cell about accessors).
-// spec: spec/05-definitions.md §5.2.6 — Generated Accessors: "For each named
-// field in a type definition, an accessor function is automatically generated",
-// canonical `Type.field` plus the unique bare alias. Nothing in §5.2.6 excludes
-// a type parameter or a named constructor arm.
-// defect: class=enumeration-miss locus=field-accessor synthesis walks the deftype-LEVEL field list only and omits named-constructor-arm field lists — no canonical `Type.field` Def and no bare-alias Import edge minted found=S117 owner=/dev
+fn assert_undefined_accessor(form: &str, use_site: &str, name: &str) {
+    let out = repl_prims(&format!("{form}\n{use_site}\n"));
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        combined.contains("undefined variable") && combined.contains(name),
+        "sum payload label `{name}` MUST NOT mint an accessor; got stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/05-definitions.md §5.2.2 and §5.2.6 — a differently named
+// constructor is a sum variant; its payload labels mint no accessors.
 #[test]
-fn polymorphic_product_mints_canonical_and_unique_bare_accessors() {
-    let out = repl_prims(
+fn polymorphic_single_sum_arm_payload_labels_do_not_mint_accessors_neg() {
+    let form = "(deftype (Duo a b) (MkDuo [:a fst :b snd]))";
+    assert_undefined_accessor(form, "(Duo.fst (MkDuo 42 false))", "Duo.fst");
+    assert_undefined_accessor(form, "(fst (MkDuo 42 false))", "fst");
+
+    repl_prims(
         "(deftype (Duo a b) (MkDuo [:a fst :b snd]))\n\
-         (Duo.fst (MkDuo 42 false))\n\
-         (fst (MkDuo 42 false))\n",
-    );
-    let both = format!("{}{}", out.stdout, out.stderr);
-    assert!(
-        !both.contains("undefined variable: Duo.fst"),
-        "the CANONICAL accessor `Duo.fst` MUST be minted for a field declared in \
-         a named constructor arm (§5.2.6); it is undefined. stdout={} stderr={}",
-        out.stdout,
-        out.stderr
-    );
-    assert!(
-        !both.contains("undefined variable: fst"),
-        "the unique bare alias `fst` MUST resolve — no second `fst` field exists, \
-         so this is not the §8.6.5 ambiguity case (§5.2.6); it is undefined. \
-         stdout={} stderr={}",
-        out.stdout,
-        out.stderr
-    );
-    out.assert_stdout_contains_all(&[":primitives/Int 42"]);
+         (match (MkDuo 42 false) [(MkDuo x _) x])\n",
+    )
+    .assert_stdout_contains(":primitives/Int 42");
 }
 
-// THE DISCRIMINATING RED — the same shape with NO type parameter. This is the
-// cell that removes polymorphism from the causal chain: `Bxx` is concrete, a
-// single-constructor product, one field, no contest — and it mints neither
-// accessor. Pair it with `control_polymorphic_deftype_level_product_*` below
-// (polymorphic, GREEN) and the axis is pinned to the constructor arm.
-// spec: spec/05-definitions.md §5.2.6 — Generated Accessors; a product's
-// accessors are total and are generated for each named field.
-// defect: class=enumeration-miss locus=field-accessor synthesis walks the deftype-LEVEL field list only and omits named-constructor-arm field lists — concrete face, no type parameter involved found=S117 owner=/dev
+// spec: spec/05-definitions.md §5.2.2 and §5.2.6 — the rule is determined
+// by the product/sum shape, not by whether the type is polymorphic.
 #[test]
-fn concrete_constructor_arm_product_mints_canonical_and_unique_bare_accessors() {
-    let out = repl_prims(
+fn monomorphic_single_sum_arm_payload_label_does_not_mint_accessor_neg() {
+    let form = "(deftype Bxx (MkBxx [:primitives/Int v]))";
+    assert_undefined_accessor(form, "(Bxx.v (MkBxx 5))", "Bxx.v");
+    assert_undefined_accessor(form, "(v (MkBxx 5))", "v");
+
+    repl_prims(
         "(deftype Bxx (MkBxx [:primitives/Int v]))\n\
-         (Bxx.v (MkBxx 5))\n\
-         (v (MkBxx 5))\n",
-    );
-    let both = format!("{}{}", out.stdout, out.stderr);
-    assert!(
-        !both.contains("undefined variable: Bxx.v") && !both.contains("undefined variable: v"),
-        "a CONCRETE single-constructor product whose constructor name differs \
-         from its type name MUST still mint `Bxx.v` and the unique bare `v` \
-         (§5.2.6) — the type parameter is not the variable. stdout={} stderr={}",
-        out.stdout,
-        out.stderr
-    );
-    out.assert_stdout_contains(":primitives/Int 5");
+         (match (MkBxx 5) [(MkBxx x) x])\n",
+    )
+    .assert_stdout_contains(":primitives/Int 5");
 }
 
-// THE SPEC'S OWN EXAMPLE — §5.2.6 "Sum type accessors are partial" shows
-// `(deftype (Option a) None (Some [:a unwrap]))` with `(Option.unwrap (Some 42))`
-// and `(unwrap (Some 42))` both yielding 42. Renamed to `Opt`/`Jus` only because
-// `Option`/`Some` are primitives-seeded (§8.6.4). Neither accessor exists.
-//
-// This is the widest statement of the defect and the reason it outranks 0867's
-// framing: the partial sum-type accessor is a documented, exampled §5.2.6
-// feature with no implementation for any type, of any arity, at any polymorphism.
-// spec: spec/05-definitions.md §5.2.6 — Generated Accessors: "Sum type
-// accessors are partial — they succeed on the matching variant and panic on
-// mismatched variants", with `Option.unwrap` / bare `unwrap` as the example.
-// defect: class=enumeration-miss locus=field-accessor synthesis walks the deftype-LEVEL field list only and omits named-constructor-arm field lists — sum-type face, the spec's own §5.2.6 example found=S117 owner=/dev
+// spec: spec/05-definitions.md §5.2.2 and §5.2.6 — sum payload extraction
+// is positional matching. `unwrap` is metadata, not a callable language name.
 #[test]
-fn sum_type_variant_field_mints_canonical_and_unique_bare_accessors() {
-    let out = repl_prims(
+fn sum_payload_label_extracts_by_match_and_mints_no_accessor_neg() {
+    let form = "(deftype (Opt a) Nul (Jus [:a unwrap]))";
+    assert_undefined_accessor(form, "(Opt.unwrap (Jus 42))", "Opt.unwrap");
+    assert_undefined_accessor(form, "(unwrap (Jus 42))", "unwrap");
+
+    repl_prims(
         "(deftype (Opt a) Nul (Jus [:a unwrap]))\n\
-         (Opt.unwrap (Jus 42))\n\
-         (unwrap (Jus 42))\n",
-    );
-    let both = format!("{}{}", out.stdout, out.stderr);
-    assert!(
-        !both.contains("undefined variable: Opt.unwrap")
-            && !both.contains("undefined variable: unwrap"),
-        "§5.2.6's own sum-type example MUST work: `Opt.unwrap` and the unique \
-         bare `unwrap` over `(deftype (Opt a) Nul (Jus [:a unwrap]))`. Both are \
-         undefined. stdout={} stderr={}",
-        out.stdout,
-        out.stderr
-    );
-    out.assert_stdout_contains(":primitives/Int 42");
+         (match (Jus 42) [(Jus x) x Nul 0])\n",
+    )
+    .assert_stdout_contains(":primitives/Int 42");
 }
 
 // CONTROL (GREEN) — a POLYMORPHIC product spelled with the deftype-LEVEL field
-// list mints BOTH accessors. This is the cell that falsifies 0867's stated
-// attribution: the type parameter is present and everything works. Read against
-// `polymorphic_product_mints_canonical_and_unique_bare_accessors` above, the
-// only difference is where the field list is written.
+// list mints BOTH accessors. This is the positive side of the product/sum
+// boundary and proves that polymorphism does not suppress total projections.
 // spec: spec/05-definitions.md §5.2.6 — Generated Accessors; a type parameter
 // does not change accessor generation.
 #[test]
@@ -351,12 +327,8 @@ fn control_polymorphic_deftype_level_product_mints_both_accessors_green() {
     .assert_stdout_contains(":primitives/Int 7");
 }
 
-// CONTROL (GREEN) — a constructor arm whose name EQUALS the type name mints both
-// accessors, concrete and polymorphic alike. `(deftype Bz (Bz [:Int v]))` is
-// §5.2.1's "product constructor sharing the type name is the normal case", and
-// it reduces to the deftype-level form. Its GREEN is what narrows the defect
-// from "constructor arms" to "constructor arms whose name differs from the
-// type's" — the sharpest available statement of the surviving synthesis path.
+// CONTROL (GREEN) — a constructor arm whose name EQUALS the type name is the
+// product spelling and mints both accessors, concrete and polymorphic alike.
 // spec: spec/05-definitions.md §5.2.6 — Generated Accessors; §5.2.7, a product
 // constructor sharing the type name is the normal case.
 #[test]

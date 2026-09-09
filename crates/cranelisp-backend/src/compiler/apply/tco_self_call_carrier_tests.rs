@@ -236,9 +236,7 @@ fn mono_sigdispatch_self_call_still_tco_loops() {
         Span::new(200, 210),
         Span::new(201, 209),
         "x",
-        Some(ResolvedCall::SigDispatch {
-            mangled_name: cranelisp_types::JitSymbol::from("countdown$Int"),
-        }),
+        Some(crate::test_support::sig_binding("user", "countdown$Int")),
     );
     // The callee name is "countdown" (not a carrier) — fast-path 2 keys on the
     // SigDispatch mangled name, not the callee carrier.

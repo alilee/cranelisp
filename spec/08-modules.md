@@ -73,7 +73,7 @@ In the REPL, an inline `(mod name ...)` writes the backing file and loads the su
 (mod- internal)
 ```
 
-Declares `internal` as a private submodule, accessible only within the declaring module and its submodule subtree. Other modules MUST NOT import from or reference names in a private submodule. Surfacing a private submodule's symbol as an importable result — e.g. advertising it in a REPL `/search` row with an `(import …)` hint (`repl/spec.md §17.19.2`) — counts as such a reference and MUST NOT occur; a private submodule's names are not eligible for import from outside its subtree.
+Declares `internal` as a private submodule, accessible only within the declaring module and its submodule subtree. Other modules MUST NOT import from or reference names in a private submodule. Surfacing a private submodule's symbol as an importable result — e.g. advertising it in a REPL `/search` row with an `(import …)` hint (`repl/spec/17a-agent-language-awareness.md §17.19.2`) — counts as such a reference and MUST NOT occur; a private submodule's names are not eligible for import from outside its subtree.
 
 ### 8.2.5 File Resolution [Tested tests/spec_08_modules::bare_mod_decl_resolves_nested_child_for_entry_main]
 
@@ -183,7 +183,10 @@ The **alias name** (`str` here) is a **local binder** — it introduces a new mo
 (import [core.option [(Some Maybe-Just) None]])
 ```
 
-Imports `Some` from `core.option` as the local bare name `Maybe-Just`; imports `None` unchanged. The local symbol-table entry for `Maybe-Just` is `ModuleEntry::Import { source: core.option/Some }` — the rename is a local-name aliasing layered on top of the standard import resolution. Per §8.6.2, lookups follow the source chain transitively.
+Imports `Some` from `core.option` as the local bare name `Maybe-Just`; imports
+`None` unchanged. `Maybe-Just` exposes under its local spelling every public
+terminal candidate reached through `core.option/Some`. The rename changes only
+the local spelling; candidate identity and resolution follow §8.6.2.
 
 Renamed selective members:
 
@@ -197,7 +200,7 @@ The accessibility-matrix entries from §8.3.11 extend naturally to renamed forms
 
 A rename of a symbol to itself (e.g. `[(Some Some)]`) MUST NOT be rejected; it is redundant but valid. An implementation MAY emit a style warning.
 
-Per §8.6.4, two import entries that produce the SAME local name (whether via rename or bare) are a duplicate-name conflict and MUST produce a compile-time error.
+Two imports MAY produce the same local symbol when they lead to distinct canonical identities. The local symbol then denotes the candidate set governed by §8.6.4–§8.6.5. Imports that lead to the same terminal identity deduplicate.
 
 **Composition with aliases.** Renamed forms compose with module aliases (§8.3.4):
 
@@ -207,10 +210,10 @@ Per §8.6.4, two import entries that produce the SAME local name (whether via re
 
 Imports `concat` as local `join-strings`, imports `chars` unchanged, AND registers `str` as a local module alias for `core.string`.
 
-**Negative cases** (compile-time errors):
+**Candidate and negative cases:**
 
-- `(import [m [(Some X) (None X)]])` MUST be a compile-time error — duplicate local name `X` within a single import entry.
-- `(import [m [(Some X)] n [Y X]])` MUST be a compile-time error if `X` is bound twice across import entries (per §8.6.4).
+- `(import [m [(Some X) (None X)]])` is permitted. Bare `X` denotes both canonical candidates until a use selects one; `m/Some` and `m/None` remain explicit references. [Uncovered S121]
+- `(import [m [(Some X)] n [Y X]])` is likewise permitted when the two sources have distinct canonical identities.
 - After `(import [m [(Option.None X)]])`, writing `:Option` MUST be a compile-time error — the parent type `Option` is NOT in bare scope (only local `X` is).
 
 ### 8.3.6 Alias-Only Import
@@ -266,7 +269,7 @@ Module-names-list pairs are processed left to right.
 
 `import` forms MUST appear as top-level forms. They are extracted from the raw S-expression stream before macro expansion. An implementation MUST process `import` before compiling definitions in the same module, so that imported names are available during type checking and code generation.
 
-A module MAY contain multiple `import` forms. Their effects accumulate: names imported by each form are merged into the module's symbol table. The conflict rules in Section 8.6.4 apply across all `import` forms — importing the same bare name from two different source modules (across any number of `import` forms) is an error.
+A module MAY contain multiple `import` forms. Their effects accumulate: names imported by each form are merged into the module's symbol table. Section 8.6.4 applies across all forms: paths to the same terminal deduplicate, while distinct canonical declarations sharing a spelling form a candidate set.
 
 **Example -- importing types and constructors:**
 
@@ -312,7 +315,7 @@ A conforming implementation MUST classify each name-list entry independently per
 - After `(import [m [Option.*]])`, writing `:Option` MUST be a compile-time error (same reason).
 - After `(import [m [Option.*]])`, writing `Option.Some` as a dotted reference MUST be a compile-time error (same reason).
 - After `(import [m [Option]])` (with no explicit member import), writing bare `Some` MUST be a compile-time error unless `Some` is brought in by another import or defined locally.
-- Multi-entry composition: `(import [m [Option Option.*]])` MUST NOT be an error; the effects union without conflict (Option as type + members as bare names, no duplicate-bare-name).
+- Multi-entry composition: `(import [m [Option Option.*]])` MUST NOT be an error; the effects union, with same-terminal projections deduplicated and distinct terminals retained as candidates.
 
 **Renames in the accessibility matrix.** For any entry of the form `(source-name local-name)` (per §8.3.5), the resulting bare scope contains `local-name` (not `source-name`); the resolution chain points at the source. Accessibility-after-import substitutes the local name everywhere the source name appears in the base matrix above.
 
@@ -324,7 +327,7 @@ Examples:
 
 The same rules apply symmetrically when consumers import from a renamed re-export — they see the renamed local name in this module's public API (per §8.4.5).
 
-See §8.6.4 for the general conflict rules and §8.6.5 for the ambiguity resolution discipline.
+See §8.6.4 for candidate registration and structural route conflicts, and §8.6.5 for use-site selection.
 
 ## 8.4 Export [Tested crates/cranelisp-frontend/src/module_extract.rs::test_export_specific, crates/cranelisp-frontend/src/module_extract.rs::test_export_glob]
 
@@ -339,7 +342,7 @@ The full §8.3 grammar (`module_spec` including the `(module alias)` pair form; 
 
 ### 8.4.0 Import and Export Are One Operation, Differing Only in Visibility `[S102]`
 
-Arbitrated S102. `import` and `export` are the **same** "bring the name into the current module's bare scope" operation. They differ in exactly one respect: the **visibility flag** stamped on the resulting symbol-table entry (the `ModuleEntry`).
+Arbitrated S102. `import` and `export` are the **same** "bring the name into the current module's bare scope" operation. They differ in exactly one respect: the **visibility** attached to each resulting local candidate exposure.
 
 - `import` (§8.3) binds the brought-in name **private**: usable within the module, but NOT part of the module's public API — it is not re-exposed to downstream consumers.
 - `export` binds the brought-in name **public**: usable within the module (identical bare-scope effect to `import`) AND part of the module's public API — re-exposed to any module that imports from this one.
@@ -350,7 +353,7 @@ This parallels the local-definition split (§5.7): `def` binds a public named va
 
 **Consequence — import-then-export of the same name is redundant.** Because `export` already brings the name into bare scope, an `(import [m [X]])` followed by `(export [m [X]])` for the same `X` is redundant: the export alone makes `X` usable in the module *and* public; the private import adds nothing (a private binding wholly subsumed by the public one). Both entries name the same terminal source (`m/X`), so they dedup per §8.6.4 rather than colliding — but the import is dead weight. The previously-common "import a name, then re-export it" pattern is unnecessary: **export it directly.** (See the /stdlib import-hygiene consequence under §8.6.4.)
 
-**Implementation consequence (informative — /int).** `export` MUST bring the exported name into the exporting module's bare scope, resolving per §8.6.2 exactly as `import` does — an implementation that treats `export` as downstream-only (populating only the public API without making the name usable within the module) is non-conforming under this ruling, and if the current implementation does so, correcting it is an implementation change. The `import`/`export` distinction is a single **visibility flag** on the `ModuleEntry` (private vs public); both forms produce the same inner-scope binding otherwise. The definition-over-name-in-scope rejection (§8.6.4, FIXME 0484) checks a definition against **any** name in the inner scope, whether it arrived private via `import` or public via `export`.
+**Implementation consequence (informative — /int).** `export` MUST bring the exported name into the exporting module's bare scope, resolving per §8.6.2 exactly as `import` does — an implementation that treats `export` as downstream-only (populating only the public API without making the name usable within the module) is non-conforming under this ruling. Import and export differ in visibility, not in candidate identity: both contribute terminal declarations to the same module-scope spelling under §8.6.4.
 
 **Implementation consequence (informative — /stdlib).** Modules that currently write `(import [m [X]])` followed by `(export [m [X]])` for the same `X` SHOULD drop the redundant import — the `export` alone brings `X` into scope and marks it public. This is import hygiene, not a correctness fix (the redundant pair dedups per §8.6.4 rather than erroring), but it removes dead declarations.
 
@@ -439,7 +442,10 @@ A bare-form mount without an alias (e.g. `(export [m []])`) re-exports no names 
 (export [core.option [(Some Just) None]])
 ```
 
-Re-exports `Some` from `core.option` as `Just` in the current module's public API; re-exports `None` unchanged. The current module's symbol-table entry for `Just` is `ModuleEntry::Reexport { source: core.option/Some }`. Downstream consumers see `Just` in this module's public API and reach `core.option/Some` via chain-follow per §8.6.2.
+Re-exports `Some` from `core.option` as `Just` in the current module's public
+API; re-exports `None` unchanged. `Just` publicly exposes the terminal
+candidate set reached through `core.option/Some`. A downstream import preserves
+that set under §8.6.2.
 
 Renamed selective members:
 
@@ -462,10 +468,10 @@ This is the canonical pattern for "rename for bare-name ergonomics, but preserve
 
 A rename of a symbol to itself in an export (e.g. `[(Some Some)]`) MUST NOT be rejected; it is redundant but valid.
 
-**Negative cases** (compile-time errors):
+**Candidate cases:**
 
-- `(export [m [(Some X) (None X)]])` MUST be a compile-time error — duplicate exported name `X` (per §8.6.4).
-- Cross-entry collision: `(export [m [(Some X)] n [X])` MUST be a compile-time error if `X` would be bound by two distinct sources.
+- `(export [m [(Some X) (None X)]])` is permitted and publicly exposes both canonical candidates under `X`. [Uncovered S121]
+- `(export [m [(Some X)] n [X]])` is likewise permitted when the sources have distinct canonical identities. A downstream import preserves the candidate set; canonical qualification selects a terminal directly (§8.6.5).
 
 ### 8.4.6 Semantics
 
@@ -543,9 +549,9 @@ core.math/+             ; operator '+' in module 'core.math'
 
 Qualified-name resolution per §8.6.6 walks module alias chains. Alias substitution operates on the dot-separated segments of `module_path` (within the grammar above), NOT across `/`. If the current resolution scope contains a public mount alias under module `current-module` that maps the segment `str` to `core.string` (per §8.4.4), then writing `current-module.str/split` causes the resolver to walk `module_path` segment-by-segment: it finds `current-module`, looks up `str` in that module's alias table, substitutes `core.string`, and then resolves `split` in `core.string`. Mount aliases declared by `export` are public; alias-imports declared by `import` (§8.3.4) are private to the importing module.
 
-### 8.5.2 Dotted Names
+### 8.5.2 Dotted Names [Tested+Neg tests/spec_08_modules::qualified_name_resolution, tests/spec_08_modules::same_named_ctors_dotted_value_position_both_resolve, tests/spec_08_modules::product_ctor_dotted_form_does_not_resolve_neg, tests/spec_05_definitions::type_member_field_accessor_disambiguates_poisoned_field]
 
-The `.` within a name provides access to members of types and traits. A member is a **constructor** of the type, a **field accessor** of the type, or a **method** of the trait:
+The `.` within a name provides access to members of types and traits. A member is a **constructor** of the type, a **total field accessor of a product type**, or a **method** of the trait:
 
 ```clojure
 Option.Some             ; constructor 'Some' of type 'Option'
@@ -557,27 +563,24 @@ Num.+                   ; operator '+' of trait 'Num'
 
 Dotted names resolve directly from the parent type or trait definition, bypassing the bare-name lookup. This means they work even when the bare name is ambiguous (see Section 8.6.5).
 
-**Field-accessor members are the CANONICAL accessor name (FIXME 0365/0439).** When `member` names a field accessor generated by `Type` (§5.2.6), `Type.member` is the **canonical, primary** accessor reference, typed `(Fn [Type] FieldType)` — `Box.v` is the real name of `Box`'s `v` accessor, just as `Option.Some` is the real name of the `Some` constructor. The **bare** field name (`v`) is a convenience *alias* to this canonical form (§5.2.6), available when exactly one in-scope type owns the field; the dotted form is not a fallback reached only under contention — it is the accessor's name, always valid. Given `(deftype Box [:Int v])` and `(deftype Cup [:Bool v])`, `Box.v` resolves to `(Fn [Box] Int)` and `Cup.v` to `(Fn [Cup] Bool)` directly and unconditionally; the contest (if any) is over the single bare alias `v`, not over these canonical accessors. Like dotted constructor/method access, the canonical accessor is a derived consequence of `Type` being in bare scope (no separate import) and is first-class — `Box.v` MAY be passed as an argument or bound to a variable.
+**Field-accessor members are the CANONICAL accessor name (FIXME 0365/0439).** When `member` names a total field accessor generated by a product `Type` (§5.2.6), `Type.member` is the **canonical, primary** accessor reference, typed `(Fn [Type] FieldType)` — `Box.v` is the real name of `Box`'s `v` accessor, just as `Option.Some` is the real name of the `Some` constructor. The **bare** field name (`v`) is a convenience projection of this canonical form into module scope (§5.2.6). Given `(deftype Box [:Int v])` and `(deftype Cup [:Bool v])`, `Box.v` resolves to `(Fn [Box] Int)` and `Cup.v` to `(Fn [Cup] Bool)` directly and unconditionally; bare `v` exposes both candidates and resolves at each use under §8.6.5. Like dotted constructor/method access, the canonical accessor is a derived consequence of `Type` being in bare scope (no separate import) and is first-class — `Box.v` MAY be passed as an argument or bound to a variable. Sum-constructor payload labels generate no dotted or bare member; they are extracted by `match` (§5.2.6, §6). [Tested+Neg tests/spec_05_definitions::type_member_field_accessor_disambiguates_poisoned_field, tests/spec_05_definitions::type_member_accessor_typed_fn_of_type, tests/spec_field_accessor::sum_payload_label_extracts_by_match_and_mints_no_accessor_neg]
 
-**Constructor members are the CANONICAL constructor name, exactly as field accessors are.** When `member` names a constructor of `Type` (§5.2.2), `Type.Ctor` is the **canonical, primary** constructor reference — `Option.Some` is the real name of the `Some` constructor of `Option`, just as `Box.v` is the real name of `Box`'s `v` accessor. The **bare** constructor name (`Some`) is a convenience *alias* to this canonical form, available when exactly one in-scope type owns a constructor of that name; the dotted form is not a fallback reached only under contention — it is the constructor's name, always valid. Given two in-scope types that each own a `Some` constructor — `(deftype (Maybe a) None (Some [:a v]))` and `(deftype (Option a) None (Some [:a v]))` — `Maybe.Some` resolves to `(Fn [a] (Maybe a))` and `Option.Some` to `(Fn [a] (Option a))` directly and unconditionally; the contest (if any) is over the single bare alias `Some`, not over these canonical constructors. Like the canonical accessor, the canonical constructor is a derived consequence of `Type` being in bare scope (no separate import) and is first-class — `Maybe.Some` MAY be passed as an argument, bound to a variable, or used as a match pattern (§6.2.1). This holds symmetrically for nullary constructors: `Maybe.None` and `Option.None` are each always-valid canonical value references, and the bare `None` is the alias that contests when both types are in scope.
+**Constructor members are the CANONICAL constructor name, exactly as field accessors are.** When `member` names a constructor of `Type` (§5.2.2), `Type.Ctor` is the **canonical, primary** constructor reference — `Option.Some` is the real name of the `Some` constructor of `Option`, just as `Box.v` is the real name of `Box`'s `v` accessor. The **bare** constructor name (`Some`) is a convenience projection of this canonical form into module scope. Given two in-scope types that each own a `Some` constructor — `(deftype (Maybe a) None (Some [:a v]))` and `(deftype (Option a) None (Some [:a v]))` — `Maybe.Some` resolves to `(Fn [a] (Maybe a))` and `Option.Some` to `(Fn [a] (Option a))` directly and unconditionally; bare `Some` exposes both candidates and resolves at each value or pattern use under §8.6.5 and §6.2.1. Like the canonical accessor, the canonical constructor is a derived consequence of `Type` being in bare scope (no separate import) and is first-class — `Maybe.Some` MAY be passed as an argument, bound to a variable, or used as a match pattern. This holds symmetrically for nullary constructors. [Tested tests/spec_08_modules::same_named_ctors_dotted_value_position_both_resolve, tests/spec_06_pattern_matching::same_named_ctors_dotted_pattern_position_disambiguates]
 
-**Product dual-facet corner.** For a product type whose constructor name equals the type name (`(deftype Point [:Int x :Int y])`, §5.2.1 — `Point` doubles as the sole constructor), the constructor keeps its single key at the type name `Point`, and its canonical dotted form `Point.Point` is **degenerate** (the type name and the constructor name coincide, so there is nothing to disambiguate). A product constructor is reached by its type name (`Point`), never a dotted form; two distinct product types cannot share a constructor name without also sharing a type name, which the type-name collision rules (§8.6.4) already govern.
+**Product dual-facet corner.** For a product type whose constructor name equals the type name (`(deftype Point [:Int x :Int y])`, §5.2.1 — `Point` doubles as the sole constructor), the constructor keeps its single key at the type name `Point`, and its canonical dotted form `Point.Point` is **degenerate**. A product constructor is reached by its type name (`Point`), never a dotted form. If distinct product types from different canonical homes expose the same bare type/constructor spelling, type or value context filters those candidates under §8.6.5; canonical module qualification selects one directly.
 
-`Type.member` always denotes exactly one thing. Constructor names and field names
-are each pairwise distinct within one `deftype` (§5.2.2), so two variants or two
-fields of the same type cannot mint the same canonical member. A field accessor
-also never has to be disambiguated against a same-named trait method: a trait
-`impl` whose method name collides with an existing field-accessor name of the
-target type is **rejected at impl time** (§7.3.1, FIXME 0365). Constructors are
-uppercase and accessors/methods are lowercase, preventing collisions across
-those categories; the remaining accessor-vs-method collision is prevented at
-the definition site. Cross-type reuse creates distinct canonical names and may
-contest only the bare alias (§8.6.5). These rules leave canonical `Type.member`
-a unique referent in every case.
+`Type.member` always denotes exactly one thing. Constructor names and product
+field names are each pairwise distinct within their defining type (§5.2.2),
+and sum payload labels mint no member. A same-named
+trait method has the distinct canonical identity `Trait.method`; an impl for
+`Type` realizes that trait method and does not mint another `Type.member`
+(§7.3.1). Cross-type member reuse likewise creates distinct canonical names.
+Only their unqualified projections share a spelling and participate in
+§8.6.5 candidate selection.
 
 **Canonical display form.** Because `Type.field` is the canonical accessor name, it is the form the language uses when it **displays or reports** an accessor (consistent with the qualified-display convention applied to all names — `:primitives/Int`, `:(Fn [a] a) user/id`). The bare alias is a convenience for source input, but introspection and reporting name the accessor by its canonical `Type.field`. (The exact wording of any REPL command surface that lists accessors is the REPL experience spec's concern, not specified here.)
 
-Dotted access is **derived** from the parent type or trait being in bare scope, not from a separate import. Whenever `Option` is bound in the current scope (via import, current-module definition, or qualified reference), `Option.Some` and `Option.None` are accessible as dotted references with no additional import statement required. Per §8.6.5, the dotted form is also the canonical disambiguator when bare `Some` is poisoned by simultaneous imports from multiple sources. In valid (non-ambiguous) code, bare names suffice and dotted forms are rarely needed.
+Dotted access is **derived** from the parent type or trait being in bare scope, not from a separate import. Whenever `Option` resolves in the current scope (via import, current-module definition, or qualified reference), `Option.Some` and `Option.None` are accessible as dotted references with no additional import statement required. Per §8.6.5, the dotted form directly selects a canonical member when bare `Some` retains multiple candidates. If the parent spelling `Option` is itself ambiguous, its canonical module qualification is required first.
 
 ### 8.5.3 Combined Qualification
 
@@ -600,7 +603,7 @@ The load-on-reference obligation is subject to the following normative edges.
 
 3. **File not found.** If auto-load cannot locate a backing file for the referenced module, the reference is a **compile-time error at the reference site**, naming both the referenced module and the referencing module (or REPL form). This diagnostic is produced at the **resolution layer** and MUST NOT surface as a codegen-layer "undefined variable" leak.
 
-4. **Loaded but member absent.** If the module loads but does not export the named member, the error is "module *X* has no member *Y*" (subject to the private-visibility rule, edge 9). This outcome is **order-independent** of load history — whether the module was already loaded or auto-loaded by this reference MUST NOT change the result (§8.6.4 terminal-source discipline; the same order-independence the def-over-import rule requires).
+4. **Loaded but member absent.** If the module loads but does not export the named member, the error is "module *X* has no member *Y*" (subject to the private-visibility rule, edge 9). This outcome is **order-independent** of load history — whether the module was already loaded or auto-loaded by this reference MUST NOT change the result (§8.6.4 terminal-source discipline).
 
 5. **Dependency fails to compile.** If the referenced module is located but fails to compile, the referencing form fails with a **chained diagnostic** naming the failed module and its underlying error. This is an evaluation/compile error at the reference site, not a session-killer: a REPL session MUST survive it (the failing reference reports and the session continues).
 
@@ -624,21 +627,24 @@ Resolution proceeds through three layers, in order:
 
 1. **Local environment**: `let` bindings, `fn` parameters, and `match` pattern variables. These are lexically scoped -- pushed on entry to a binding form and popped on exit.
 
-2. **Module scope**: Definitions within the current module, plus names brought in via `import` and names supplied by the implicit prelude import (§8.8.1). This layer consults the current module's symbol table (the **inner scope**), following `Import` and `Reexport` references to their source modules. When the inner scope misses and the module receives the implicit prelude (§8.8.1), an implementation MAY resolve the name against the prelude's public bindings as an **outer-scope** fallback before proceeding to the root module — but that outer/inner layering is a resolution-mechanism detail (§8.8.1), NOT an exemption: a prelude-provided name is in the module's scope and is subject to the §8.6.4 conflict rules exactly as an explicit import is. There is **no def-over-import precedence tier and no def-over-prelude precedence tier**: a module-local definition, an explicit import, and an implicit-prelude name are peers, and a module-local definition contesting the same bare name as any of them is a **conflict** per §8.6.4 (definition over a name in scope), not a shadow. The only shadowing relation is layer 1 — `let`/`fn`/`match` bindings (§8.6.3) — which lexically shadow module-scope names (imported OR prelude-provided) alike.
+2. **Module scope**: Definitions within the current module, names brought in via `import` or `export`, derived type/trait members, and names supplied by the implicit prelude import (§8.8.1). Distinct canonical declarations are peers and MAY project the same unqualified spelling; the module-scope lookup returns their candidate set (§8.6.4). An implementation MAY store prelude candidates in an outer structure, but it MUST merge them with inner candidates for the same spelling rather than make either tier silently win. The only shadowing relation is layer 1 — `let`/`fn`/`match` bindings (§8.6.3) — which lexically shadow the whole module-scope candidate set.
 
 3. **Root module**: Special forms (`if`, `let`, `fn`, `match`, `do`, etc.) live in a distinguished root module that is always consulted. Special forms are available without import or qualification.
 
 For qualified names (`module/name`), resolution bypasses layers 1 and 2 and goes directly to the named module's symbol table — auto-loading that module first if it is not yet loaded (§8.5.4).
 
-### 8.6.2 Import Resolution
+### 8.6.2 Import Resolution [Tested+Neg tests/spec_08_modules::glob_and_reexport_of_same_terminal_dedup, tests/spec_08_modules::distinct_terminal_overlap_collides]
 
-When a bare name is encountered in module scope, the implementation resolves it by looking up the current module's symbol table:
+A module-scope spelling denotes the terminal canonical candidates exposed by
+local declarations, imports, exports, derived members, and the prelude. An
+implementation MAY retain immediate references and follow them, or store
+terminal references directly. Before deduplication or use-site selection it
+MUST reach each candidate's terminal identity.
 
-- A `Def` entry provides the definition directly.
-- An `Import` entry provides a reference to the source module and name; the implementation follows this reference.
-- A `Reexport` entry likewise provides a reference to the original source, which the implementation follows.
-
-Import/Reexport chains MUST be followed transitively until a `Def` entry is reached. An implementation SHOULD impose a depth limit to detect pathological chains.
+Candidates that reach the same terminal identity deduplicate; candidates that
+reach distinct terminals remain available for use-site resolution
+(§8.6.4–§8.6.5). An implementation that follows reference chains MUST bound
+pathological cycles.
 
 ### 8.6.3 Shadowing Rules
 
@@ -652,151 +658,55 @@ Local bindings shadow module-scope names:
 
 This is permitted without error -- local bindings are lexically scoped and always take priority through the local environment layer.
 
-### 8.6.4 Conflict Rules
+### 8.6.4 Module-Scope Candidate Registration [Tested+Neg tests/spec_08_name_shadowing::def_over_import_repl_rejected, tests/spec_08_name_shadowing::deftrait_over_prelude_mode_parity_all_modes, tests/spec_08_modules::glob_and_reexport_of_same_terminal_dedup, tests/spec_08_modules::distinct_terminal_overlap_collides]
 
-The following conflicts MUST produce compile-time errors:
+A module-local declaration, an `import` or `export`, an implicit-prelude binding, and a derived type or trait member MAY expose the same unqualified spelling when they have distinct canonical identities. Registering the later declaration is not an ambiguity error, does not shadow an earlier module-scope declaration, and does not depend on textual order or compilation mode. Instead, the spelling denotes all such canonical candidates and is resolved separately at each use under §8.6.5.
 
-- **Duplicate imports**: Two `import` forms bringing the same bare name from different source modules:
-
-  ```clojure
-  (import [math [add] util [add]])    ; error: ambiguous bare name 'add'
-  ```
-
-  This rule reads over **trait method** names too — a trait method imports "like any other symbol" (§7.11). Under the method-import dispatch ruling ([§7.11.2](07-traits.md#7112-method-import-dispatch--a-method-reference-suffices)), importing a method `m` directly (without its trait) is sufficient to dispatch it, so importing the same method name `m` from two different modules — two different traits' `m` — is this same duplicate-bare-name conflict, not a shadow. The method import is itself the disambiguator: a program picks which trait's `m` it dispatches by choosing which module's `m` it imports (or by a fully-qualified reference, §8.6.6). [S113]
-
-- **Definition over a name in scope (via `import`, `export`, or the implicit prelude)** [Tested+Neg tests/spec_08_name_shadowing::def_over_import_run_rejected]: **It is ALWAYS a compile-time error to redefine or shadow a name that is in scope — whether via `import` (private), `export` (public), or the implicit prelude import (§8.8.1). There are NO exceptions; the prelude carries no exemption.** A definition (`defn`, `deftype`, etc.) in the current module that has the same name as a name already in the module's scope — brought in **private via `import`**, **public via `export`** (§8.4.0), or **via the implicit prelude import** (§8.8.1, an implicit `(import [prelude [*]])`) — is unconditionally rejected. The error does not depend on textual order (def-before-import or import-before-def), on import shape (specific, renamed, member, glob, or glob re-export), or on visibility (private import or public export):
-
-  ```clojure
-  (import [math [add]])
-  (defn add [x y] (+ x y))           ; error: definition conflicts with import
-  ```
-
-  Because `export` brings its name into bare scope on the same terms as `import` (differing only in visibility, §8.4.0), the conflict is identical when the in-scope name arrived via `export`:
-
-  ```clojure
-  (export [math [add]])
-  (defn add [x y] (+ x y))           ; error: definition conflicts with the exported name
-  ```
-
-  And identically when the in-scope name arrived via the **implicit prelude** — the prelude is just an implicit `(import [prelude [*]])`, so a name it provides is in scope on exactly the same terms as any explicit import. If the prelude provides `count`, a module that does not suppress it MUST NOT redefine `count`:
-
-  ```clojure
-  ;; module receives the implicit prelude (does not reference `prelude`);
-  ;; the prelude provides `count`
-  (defn count [xs] ...)              ; error: definition conflicts with the prelude-provided name
-  ```
-
-  The remedy is to reach the other module's same-named symbol by **fully-qualified reference** (`collections.vec/count`, §8.6.6), and — where the module genuinely wants to define its OWN `count` — to **not load** the prelude's `count`: suppress the implicit prelude with an explicit selective prelude import or a null import (§8.3.7, §8.8.1) so the name is not in scope, then define it freely. *Not loading* a prelude name (name absent from scope → free to define) is distinct from *shadowing* a loaded one (in scope → redefinition is this error); see §"Definition-Over-Import: Order-Independent, All Modes" below.
-
-  This conflict is order-independent and applies in every mode, including forms entered interactively at the REPL — see §"Definition-Over-Import: Order-Independent, All Modes" below for the full pinned statement.
-
-- **Rename collisions**: Two import (or export) entries — whether via rename or bare — producing the same local (or exported) name MUST produce a compile-time error. Example: `(import [m [(Some X) (None X)]])` is an error — duplicate local name `X`.
-
-- **Mount collisions**: Two export forms mounting different source modules at the same alias path MUST produce a compile-time error. Example: `(export [(core.string foo) [...]] [(core.option foo) [...]])` is an error — duplicate mount alias `foo`.
-
-- **Mount-vs-submodule collisions**: An export mount whose alias collides with an actual submodule `(mod inner)` of the current module MUST produce a compile-time error. Example: if module `A` declares `(mod inner)` AND `(export [(other.mod inner) [...]])`, that's an error — `A/inner` would be ambiguous.
-
-Same-source duplicates (the same name arriving through two re-export paths from the same original definition) are NOT ambiguous. The comparison is by **terminal source**, not immediate source: before declaring a same-name collision, an implementation MUST chain-follow BOTH import/re-export edges (per §8.6.2) to their terminal `(home_module, canonical_symbol)` — the original `Def` at the end of each chain. If the two terminals are equal, the imports denote the same original definition and dedup silently (no error); only **distinct** terminals collide. [Tested+Neg tests/spec_08_modules::glob_and_reexport_of_same_terminal_dedup, tests/spec_08_modules::distinct_terminal_overlap_collides]
-
-This terminal-source comparison is what makes a glob `(import [primitives [*]])` co-exist with a specific `(import [m [Option]])` when `m` re-exports `primitives/Option`: both bare `Option` entries chain-follow to the same terminal `primitives/Option`, so they dedup rather than poisoning the name. Comparing only the **immediate** source module (`primitives` vs `m`) would wrongly read these as two sources and report a false collision. The same rule resolves the common real-world shape "glob a module AND specifically import a name it re-exports."
-
-#### The Implicit Prelude Is an Implicit Import — No Silent Shadow [S20, revised]
-
-The implicit prelude is **just an implicit `(import [prelude [*]])`** (§8.8.1). Its provided names are in the module's scope on **exactly the same terms as any explicit import**, and they participate in the §8.6.4 conflict rules and the §8.6.5 ambiguity rule identically. **The prelude carries NO exemption from the shadowing rule, and there are no exceptions.**
-
-An implementation MAY realise the prelude as an **outer scope** — a resolution fallback consulted on a miss in the module's own (inner) table, rather than a set of bindings copied in — but that outer/inner layering is an **implementation detail of resolution, not a normative exemption**. Whether the prelude's names live in the inner table or in an outer fallback, the shadowing rule applies to them: a module-local definition over a prelude-provided name is the same compile-time error as a definition over an explicit import (§8.6.4).
-
-Because the prelude is an import like any other, the §8.6.4 terminal-source comparison governs its interaction with explicit imports:
-
-- **Same terminal** — an explicit import (or glob) brings a bare name that chain-follows to the SAME terminal `Def` as the prelude's binding (the common case — e.g. a module re-exporting `primitives/Some` while the prelude also provides `primitives/Some`): the two **dedup** silently (§8.6.4). No error; the bare name resolves to the shared terminal.
-- **Distinct terminals** — an explicit import brings a genuinely different definition that happens to share a bare name with a prelude-provided one: the name is **poisoned** exactly as any distinct-terminal collision (§8.6.5). This is deliberate footgun protection — an overlapping import of a genuinely-different definition MUST collide rather than one silently winning over the prelude.
-- **Definition over a prelude name** — a module-local definition (`defn`, `deftype`, …) whose name a loaded prelude also provides: **compile-time error** (§8.6.4), the reversal pinned above.
-
-There is no "explicit imports silently shadow the prelude" precedence tier. The **`let`/`fn`/`match` lexical shadow of §8.6.3 still applies** to prelude names as to imported ones — that is layer-1 scoping, not a module-local redefinition, and remains permitted.
-
-**Not loading ≠ shadowing.** The escape hatch for a module that genuinely needs its OWN version of a prelude-provided name is to **not load** that name, not to shadow a loaded one:
-
-- **Suppress the implicit prelude**: reference `prelude` in any `import`/`export` form and the implicit glob is not activated (§8.8.1). A null import `(import [prelude []])` (§8.3.7) suppresses it entirely; a selective `(import [prelude [Some None]])` loads only the named prelude bindings (as ordinary explicit imports) and leaves everything else out of scope — so a name you did not name is free to define.
-- **Fully-qualified reference**: to reach the prelude's (or another module's) same-named symbol at a site where you have defined your own, write `prelude/count` / `collections.vec/count` (§8.6.6). The two `count`s never share a bare binding, so there is nothing to disambiguate.
-- **Selective import over a distinct-terminal collision**: when a glob from another module would collide with a prelude name (distinct terminals), replace `(import [grid [*]])` with `(import [grid [solve other-fn]])` to avoid pulling in the colliding name, and/or suppress the prelude for that name.
-
-**Practical note**: Glob imports from modules with large public APIs no longer *silently* displace prelude bindings. A glob that re-exports the same terminal as a prelude name dedups; a glob that brings a distinct-terminal same name **poisons** it (a compile-time error listing the qualified alternatives), and a module-local definition over a prelude name is rejected. The remedy in each case is one of the "not loading" hatches above plus a fully-qualified reference — never a silent shadow.
-
-#### Definition-Over-Import: Order-Independent, All Modes [Tested+Neg tests/spec_08_name_shadowing::mode_parity_def_over_import_same_rejection_all_modes]
-
-Arbitrated S102 (FIXME 0484). The definition-over-import conflict above is pinned as follows.
-
-**Framing — a collision is not resolved by importing; the resolution is the fully-qualified reference.** Creating a symbol (a definition in the current module) whose name collides with a name that an import brought into scope is **not** an import-resolution question — there is no shadowing, no precedence, and no "which import wins." It is a **compile-time error**. The mechanism the language offers for reaching a *different* module's same-named symbol is the **fully-qualified reference** (`module/name`, §8.6.6): a module owns its own public `foo`, and to reach another module's `foo` it writes `other/foo`. The two `foo`s never share a bare binding, so there is nothing to disambiguate. This rests on the nominal-typing property (§3.8.4): same-named types/values from different modules are genuinely distinct, so the fully-qualified name denotes exactly one of them. A definition that collides with an import is telling the compiler two incompatible things about one bare name; the remedy is to stop importing the name you define and fully-qualify the reference to the other module's symbol where it was used. (The same reasoning applies unchanged when the colliding name was brought in **public via `export`** rather than private via `import` — §8.4.0 makes the two the same bring-into-scope operation, so the normative rule below reads over both.)
-
-**A definition form (`defn`, `def`, `deftype`, `deftrait`, `defmacro`, and their private `-` variants) whose name is already bound in the current module's inner scope by a name brought in via `import` or `export` — specific, renamed, member, or glob, private (`import`) or public (`export`) — MUST be rejected with a compile-time error.** The rejection is **unconditional**: there is no same-cluster exception, no same-file allowance, and no "the local definition wins" precedence — redefining or shadowing an explicitly imported or exported name is ALWAYS the error, in every textual order, for every import shape, and under either visibility. Under the unified model (§8.4.0) `import` and `export` populate the inner scope identically, differing only in visibility; the collision check reads over the inner scope uniformly and does not distinguish which of the two brought the name in. The rejected form has no effect on the module: the bare name continues to resolve to the in-scope name, and introspection MUST continue to describe that definition. A local definition is always a fresh terminal source, so the terminal-source dedup above can never reconcile it with the in-scope name — the collision is unconditional.
-
-**Uniform across glob and specific imports — there is NO glob-exemption.** The rule bites identically whether the colliding imported name arrived via a specific import (`(import [m [name]])`), a renamed or member import, a glob import (`(import [m [*]])`), or a glob **re-export** (`(export [m [*]])`, which populates the inner scope per §8.6.2). A glob is a convenience for pulling in the *non-colliding* names of a module; it does not license silently redefining one of the names it would have brought in. A name you define is yours, and if a glob would also have supplied that name, defining it is the collision this section rejects — not a permitted shadow. *(An earlier S102 draft floated exempting glob imports from the error — the "glob-of-seeded-ADT-constructors" prelude pattern — so that a glob-brought name could be silently redefined. That draft is **superseded**: there is no glob-exemption. A module that both glob-imports a source and defines one of that source's names must instead fully-qualify its references to the colliding source symbol rather than importing a name it defines — see the stdlib-hygiene consequence below.)*
-
-The rule is:
-
-- **Order-independent.** Whether the imported name was *used* before the conflicting definition appears MUST NOT affect the outcome. Name resolution is a property of the module's binding set, never of call history. There is no normative pre-shadow/post-shadow distinction: an implementation in which an already-exercised import behaves differently from an unexercised one under a same-name definition is defective on both legs — the definition must be rejected in both.
-
-- **Uniform across modes.** The rule applies identically to batch compilation (`--run`, `--link`) and to forms entered interactively at the REPL. **This mode-uniformity is normative: an implementation MUST NOT allow the collision in one mode while rejecting it in another.** REPL, `--run` (batch / whole-module), and `--link` MUST all produce the SAME error for the same colliding binding set; a mode where the redefinition or shadow is accepted while another mode rejects it is a **defect**, not permitted latitude. The rule is a property of the module's binding set alone, so it is mode-independent by construction — the three modes share one binding-set validity criterion. [Tested+Neg tests/spec_08_name_shadowing::mode_parity_def_over_import_same_rejection_all_modes, tests/spec_08_name_shadowing::deftrait_over_prelude_mode_parity_all_modes] In interactive mode, the **later-arriving form is the rejected one**: a definition entered over an existing explicit import fails, and symmetrically, an `import` entry that would bind a bare name already bound by a module-local definition fails; in both cases the pre-existing binding and the rest of the session state are unchanged. A REPL session MUST NOT accept a binding set that its own regenerated backing file would reject when batch-compiled — an interactive definition-over-import shadow would produce a module source containing both the import and the definition, which this section rejects, breaking session/file round-trip.
-
-```
-user> (import [util [measure]])
-user> (measure [1 2 3])
-:primitives/Int 3
-user> (defn measure "user shadow" [v] :Int 99)
-error: definition of 'measure' conflicts with the explicit import from 'util'
-       (rename the definition, use a renamed import (§8.3.5), or drop
-       'measure' from the import list)
-user> (measure [1 2 3])
-:primitives/Int 3                    ; the import remains the binding
-```
-
-The transcript is identical with or without the pre-definition call to `(measure ...)` — the definition is rejected either way.
-
-**The prelude carries no exemption — a loaded prelude name is NOT shadowable.** The always-error rule above ranges over **every** name in the module's scope: names brought in by an explicit `import` or `export` in *this* module **and** names supplied by the implicit prelude import (§8.8.1). The prelude is **just an implicit `(import [prelude [*]])`**; its provided names are in scope exactly like any imported name, and a module-local definition over one of them is the **same** compile-time error as a definition over an explicit import. There are **no exceptions** — not for the prelude, not for anything in scope. Whether the implementation resolves a prelude name via an outer-scope fallback or an inner-table entry is an implementation detail (§8.8.1); it grants the name no exemption. Redefining `count` is an error whenever `count` is in scope, whether it arrived via an explicit `import`/`export` **or** via the implicit prelude. The resolution is the fully-qualified reference (`collections.vec/count`, §8.6.6): the module owns its own `count`, and reaches another module's same-named symbol by qualifying it — the two never share a bare binding, so nothing has to be disambiguated.
-
-**Not loading the prelude is the distinct, legal escape hatch — and it is NOT shadowing.** A program may run *without* the prelude (an empty prelude, §8.8.3) or with the prelude suppressed for some or all names (an explicit selective prelude import, or a null import, §8.3.7 / §8.8.1). In that case the name is simply **not in scope**, and the module may define it freely — there is nothing to shadow. This is categorically different from *shadowing a loaded prelude name*: *not loading* a name leaves the scope empty at that name (a local definition is the sole binding, no conflict); *shadowing* means a definition contends with a name that IS in scope (the error). The optional/empty prelude (root `CLAUDE.md` §"Design Principles"; §8.8.3) is this legal "not loading" path — it is a property of which names are in scope, not a licence to redefine names that are. (This **reverses** the prior "prelude names stay shadowable" carve-out: the prelude is not special. Clojure's contrasting `clojure.core` allowance is **not** followed here.)
-
-**Rationale.**
-
-1. **No silent winner.** §8.6.5 pins that two distinct terminal sources contesting one bare name MUST error rather than one silently winning ("glob imports are peers of specific imports"). A local definition versus an explicit import is exactly such a contest; resolving it silently in either direction is the footgun this section exists to prevent.
-2. **Round-trip validity.** The REPL `user` module persists to a backing file and must batch-compile. Any interactive precedence other than rejection would admit sessions whose regenerated source is an invalid module.
-3. **The nearest-scope precedent does not apply.** §8.11.2.1 (S98, submodule-first) orders *search tiers* for bare **module** names, where the losing candidate remains independently reachable by its own path. Here two bindings contest a single scope name slot — §8.6.4/§8.6.5 conflict territory, not search-order territory. The only analogous nearest-scope shadow in name resolution is layer 1 (`let`/`fn`/`match` bindings, §8.6.3) — a temporary lexical scope *layering*, not a same-layer collision. A prelude-provided name is NOT such a layering: it is a peer of explicit imports at module scope (§8.6.1 layer 2) and a module-local definition over it is the same collision this section rejects.
-
-**Diagnostics.** The error SHOULD name the import's source module and offer remediations: rename the local definition; convert the import to a renamed import (§8.3.5) to move it out of the way; drop the name from the import list (using a qualified reference where the import was used); or suppress the import entirely. Whether a REPL additionally offers an affordance to *remove* an import binding from a live session (so the name can then be defined) is a REPL-experience concern (`repl/spec.md`), not specified here.
-
-**Implementation consequence (informative — for the binary/orchestration surface).** The rejection fires when a staged definition's name matches a name that an active import (specific, renamed, member, glob, or glob re-export) has brought into the module's inner scope. Whether the arriving form is a glob or a specific import — the distinction the superseded draft leaned on — is available at import/definition-processing time (the `(import [m [*]])` / `(export [m [*]])` glob shape versus the `(import [m [name]])` specific shape is carried by the *form* before the two collapse into shape-identical inner-scope entries), but under this ruling that distinction is **not consulted for the collision decision**: both shapes collide. The check is a pure property of the module's binding set at the point the later-arriving form is processed (the definition when the import already bound the name; symmetrically the import when a local definition already bound it), so it is order-independent and needs no call-history state. This is a consequence of the rule, not an implementation mandate about how to store entries.
-
-**Standard-library consequence (informative — import hygiene, not a type question).** A domain module (including the prelude and stdlib modules) that today glob-imports or glob-re-exports a source module (e.g. `(export [primitives [*]])`) **and** defines a name that source also provides (e.g. its own `Option`/`Some`/`None`) is, under this ruling, authoring the very collision this section rejects. The fix is import hygiene: such a module must **not** import a name it defines — it drops the colliding name from the glob's reach (or replaces the glob with a selective import of only the non-colliding names) and **fully-qualifies its references to the colliding source symbol** (`primitives/…`) at the sites that need the source's version. Whether a given stdlib module *should* define its own same-named type or reuse the source module's is a library-design choice governed by the nominal-typing property (§3.8.4) — the two are distinct types either way — and is out of scope for this specification; the normative point here is only that importing-and-redefining one name is an error, and fully-qualified references are the resolution.
-
-### 8.6.5 Ambiguity and Disambiguation
-
-When two **distinct terminal sources** (per the terminal-source comparison in §8.6.4) register the same bare name in a module's symbol table, the name becomes **ambiguous** (poisoned). Attempting to use an ambiguous bare name MUST produce a compile-time error listing the qualified alternatives.
-
-**Glob imports are peers of specific imports — there is no precedence tier.** A bare name brought in by a `[*]` glob participates in ambiguity exactly as a specifically-named import does: the rule is **terminal-source identity**, not import shape. An implementation MUST NOT treat a glob-brought name as a lower-precedence binding that a specific import silently shadows (the "wildcard loses to explicit" / Java model is NOT adopted). Once terminal-source dedup (§8.6.4) is applied, the residual glob-vs-specific overlaps fall into two cases, both handled by the single terminal-source rule:
-
-- **Same terminal** (the common case — the glob's source and the specific import re-export the same original definition): the two entries dedup benignly, no error.
-- **Distinct terminals** (genuinely different definitions that happen to share a bare name): the name is poisoned, as for any other same-name collision. This is deliberate footgun protection — overlapping imports of genuinely-different definitions MUST collide rather than one silently winning.
-
-[Tested+Neg tests/spec_08_modules::glob_and_reexport_of_same_terminal_dedup, tests/spec_08_modules::distinct_terminal_overlap_collides]
-
-**Duplicate field names contest the bare ALIAS, not the canonical accessors.** [Tested+Neg tests/spec_field_accessor::bare_alias_ambiguous_canonical_both_work, tests/spec_field_accessor::cross_module_contested_bare_accessor_rejected_neg, tests/spec_field_accessor::cross_module_contested_canonical_accessors_no_cliff] When two in-scope type definitions own a field with the same name (§5.2.6), it is the single **bare alias** (`v`) that cannot pick a target — using it is a compile-time error listing the canonical alternatives (`Box.v`, `Cup.v`), exactly as any other distinct-terminal bare-name collision. The **canonical accessors `Box.v` and `Cup.v` are not affected**: each is a distinct, always-valid function (§8.5.2 — the dotted form is the canonical accessor name, not a poison-only escape). The field therefore stays reachable in every case via its canonical accessor (`Box.v` / `Cup.v`, same-module and cross-module), via `match` (§6), and cross-module via module-qualification (§8.5.1).
-
-**Duplicate constructor names contest the bare ALIAS, not the canonical constructors.** When two in-scope type definitions each own a constructor with the same name (§5.2.2), it is the single **bare alias** (`Some`) that cannot pick a target — using it is a compile-time error listing the canonical alternatives (`Maybe.Some`, `Option.Some`), exactly as any other distinct-terminal bare-name collision. The **canonical constructors `Maybe.Some` and `Option.Some` are not affected**: each is a distinct, always-valid constructor (§8.5.2 — the dotted form is the canonical constructor name, not a poison-only escape). The constructor therefore stays reachable in every case via its canonical form (`Maybe.Some` / `Option.Some`, same-module and cross-module), in **pattern position** either bare — resolved against the match scrutinee's type — or dotted (§6.2.1), and cross-module via module-qualification (§8.5.1). Bringing two types that share a constructor name into scope is **permitted** — it is alias-poison territory (this section), NOT a §8.6.4 definition-over-a-name-in-scope rejection: neither `Some` is a standalone definition, each is a derived member of a distinct in-scope type, so the two types coexist and only the bare alias is poisoned.
+For example, this module is well formed:
 
 ```clojure
-;; If both Display and Debug define a 'show' method:
-(show x)              ; error: ambiguous bare name 'show'
-                      ;        use 'Display.show' or 'Debug.show'
+(import [math [convert] text [convert]])
+(defn convert [x] ...)
 ```
 
-Qualified names and dotted names always bypass ambiguity:
+The spelling `convert` denotes up to three distinct canonical declarations. A use that ordinary context reduces to one is valid; otherwise the source qualifies the intended declaration. The same rule applies when one candidate comes from the implicit prelude or from a public re-export.
 
-```clojure
-(Display.show x)      ; resolves directly via trait 'Display'
-(core.fmt/show x)     ; resolves directly via module 'core.fmt'
-```
+**Terminal identity.** Every import and re-export chain MUST be followed to its terminal `(home_module, canonical_symbol)` before candidates are compared (§8.6.2).
 
-Ambiguity disambiguation is the **only** routine reason to reach for the dotted form. In non-ambiguous code, bare names are the canonical access form and dotted access (per §8.5.2) is rarely written — it remains available as a derived consequence of the parent type or trait being in bare scope, but offers no additional reach beyond the bare name.
+- Paths reaching the same terminal identity denote one candidate and deduplicate silently.
+- Paths reaching distinct terminal identities remain distinct candidates even when they have the same spelling or type.
+- Repetition does not manufacture a second candidate. The declaration
+  category still governs whether repeated forms are legal: separate
+  same-canonical-name `defn` forms in one file-level or `begin` compilation
+  cluster are rejected under §5.13, multiple function variants use the one
+  explicit multi-signature form in §5.1.2, and a later REPL input may redefine
+  a definition committed by an earlier input under
+  [`repl/spec/18-redefinition.md` §18](../repl/spec/18-redefinition.md#18-redefinition-semantics--guarded-publication-and-stable-identities).
+
+Glob and selective imports are peers. Neither import shape, visibility, prelude origin, local-definition origin, nor arrival order gives a candidate precedence.
+
+This permission concerns declarations in language namespaces. **Module-routing names are not candidate sets.** Two import aliases binding the same local module alias, two export mounts binding the same path segment, or a mount colliding with an actual submodule remain compile-time errors because a path walk must select one route before it can reach a declaration (§8.3.4, §8.4.4). Lexical bindings remain ordinary shadowing layers under §8.6.3.
+
+### 8.6.5 Use-Site Selection and Ambiguity [Uncovered S121]
+
+An unqualified module-scope use is valid when ordinary resolution leaves exactly one canonical declaration. Resolution applies only information already available from the program; it MUST NOT select by declaration, import, or candidate iteration order.
+
+1. **Canonical qualification.** A canonical module-qualified name (`home/name`) or canonical dotted member (`Type.member`, `Trait.method`) selects that declaration directly. A qualifier that names a re-exporting module where the local spelling still exposes several terminals is not canonical enough to choose among them; the terminal home or member identity is required.
+2. **Syntactic context.** A position first retains only declarations that can occur there. Type positions retain types, pattern heads retain constructors, and value positions retain values. The type-before-trait annotation rule is §3.9.3. A candidate that must be resolved before type inference, including a macro in invocation position, cannot be selected by later HM information; if the pre-type context leaves several possible declarations, the source MUST qualify one.
+3. **Typed values.** In a value or call position, the typechecker independently instantiates each remaining candidate's scheme. Ordinary argument, result, annotation, and surrounding expected-type constraints eliminate incompatible candidates. This includes first-class uses such as passing an unqualified accessor to another function.
+4. **Patterns.** A constructor pattern additionally uses the scrutinee type as its ordinary selecting constraint (§6.2.1).
+
+After ordinary constraints settle:
+
+- exactly one candidate means the use resolves to that canonical declaration;
+- no candidate means the use is a no-matching-declaration type or resolution error; and
+- several candidates mean the use is ambiguous and MUST be canonically qualified or, where a concrete type would select one, annotated.
+
+Candidate filtering is not a runtime overload and creates no union value. It MUST NOT branch, backtrack, or enumerate combinations of candidate choices; §3.10 defines that HM boundary. Constraints MAY propagate and filtering MAY be revisited to a fixed point, but a program whose unique answer could be found only by combinatorial search is rejected as ambiguous.
+
+**Members follow the same rule.** Given `Box.v : (Fn [Box] Int)` and `Cup.v : (Fn [Cup] Bool)`, `(v box)` selects `Box.v`, while an unconstrained first-class `v` may require qualification. Given an accessor `Box.v` and a trait method `HasV.v` that are both compatible with `Box`, `(v box)` remains ambiguous and the source writes `(Box.v box)` or `(HasV.v box)`. Constructors use the same rule in value and pattern positions.
+
+Diagnostics for ambiguity MUST list the surviving canonical alternatives. Explicit qualification bypasses only the contested unqualified spelling; it does not change either declaration's type, visibility, or identity.
 
 ### 8.6.6 Qualified Name Resolution Order
 
@@ -877,7 +787,7 @@ When a module's source does not reference `prelude` in any `import` or `export` 
 (import [prelude [*]])    ; implicit -- injected by the compiler
 ```
 
-An implementation MAY realise this as an **outer scope**: rather than copying the prelude's public bindings into the module's symbol table, it **activates a prelude-resolution fallback** so that a bare name that misses in the module's own (inner) scope is resolved against the `prelude` module's public bindings. This outer/inner layering is a **resolution-mechanism detail, not a normative exemption** — the prelude is an implicit `(import [prelude [*]])`, and its provided names are in the module's scope on exactly the same terms as an explicit glob import. **The §8.6.4 conflict rules and the §8.6.5 ambiguity rule apply to prelude-provided names identically to explicitly-imported ones, whether the implementation stores them inner or outer.** In particular, a module-local definition over a prelude-provided name is the same compile-time error as a definition over an explicit import (§8.6.4) — the prelude carries **no** exemption from the shadowing rule, and there are no exceptions. (Lexical `let`/`fn`/`match` bindings still shadow prelude names per §8.6.3 — that is layer-1 scoping, not a module-local redefinition.) An explicit import and the implicit prelude that bring the same bare name dedup when they chain-follow to the same terminal source and collide (poison) when their terminals differ, exactly as any two imports do (§8.6.4).
+An implementation MAY store these bindings in an **outer scope** rather than copy them into the module's inner table, but this is only a storage choice. Prelude, explicit-import, re-export, derived-member, and module-local candidates with the same spelling MUST be merged for §8.6.4–§8.6.5 resolution; an outer-scope implementation MUST NOT consult the prelude only after an inner miss and thereby give a local declaration silent precedence. Same-terminal paths deduplicate, while distinct terminals remain candidates. Lexical `let`/`fn`/`match` bindings still shadow the entire module-scope set under §8.6.3. [Tested+Neg tests/spec_08_name_shadowing::deftrait_over_prelude_provided_trait_rejected_neg, crates/cranelisp-typecheck/src/checker/tests.rs::prelude_fallback_unions_local_and_prelude_candidates]
 
 An explicit `(import [prelude [...]])` or `(export [prelude [...]])` suppresses the implicit prelude — i.e. the prelude-resolution fallback is NOT activated for that module. The module author may import specific prelude names (those named bindings enter the inner scope as ordinary explicit imports, with no fallback), suppress the prelude entirely with a null import (§8.3.6), or re-export prelude symbols without receiving the implicit fallback. In every case the rule is the same: a module that references `prelude` gets no implicit fallback; a module that does not gets the fallback activated.
 
@@ -897,7 +807,7 @@ An empty prelude is valid. The core language -- primitives, special forms, type 
 ;; A valid, empty prelude.cl
 ```
 
-**Not loading a prelude name is legal; shadowing a loaded one is not.** The optional/empty prelude (and per-name suppression via an explicit selective prelude import or a null import, §8.3.7 / §8.8.1) is the language's escape hatch for a module that needs its OWN version of a name the prelude would otherwise provide: when the prelude — or a given prelude name — is **not loaded**, that name is simply **not in scope**, and the module may define it freely with no conflict (there is nothing to shadow). This is categorically distinct from **shadowing a loaded prelude name**: while the prelude is active and a name is in scope, a module-local definition over it is a compile-time error (§8.6.4), exactly as for an explicit import. The distinction is which names are in scope — *not loading* removes a name from scope; *shadowing* attempts to redefine one that is in scope. The prelude carries no exemption from the shadowing rule; the empty/suppressed prelude is a separate fact about scope membership, not an exception to it.
+Suppressing some or all prelude names reduces the module's candidate sets but is not required in order to define a same-spelled local declaration. With the prelude active, the local and prelude declarations coexist under §8.6.4; each use must resolve to one or use canonical qualification under §8.6.5. With an empty or selectively suppressed prelude, the absent prelude declarations simply contribute no candidates. [Tested tests/spec_08_name_shadowing::suppressed_prelude_allows_local_def_of_prelude_name, tests/spec_08_name_shadowing::no_prelude_allows_local_def_of_would_be_prelude_name]
 
 ## 8.9 Synthetic Modules [Tested tests/spec_08_modules::synthetic_primitives_module_available]
 
@@ -963,11 +873,17 @@ Circular dependencies MUST be detected and reported as a compile-time error. Two
 
 Each module is a compilation unit. A module is fully processed -- parsed, macro-expanded, AST-built, type-checked, and code-generated -- before any module that depends on it begins compilation. This is required because macro exports and type definitions must be fully available before importers can use them.
 
-### 8.10.4 Definition Execution Order
+### 8.10.4 Definition Execution Order [Tested+Neg tests/process_form_dispatch::process_form_dispatch_begin_cluster_resolves_mutual_forward_ref, tests/s76_macro_availability::macro_used_before_defmacro_is_unresolved_neg]
 
-Within a module, definitions are processed sequentially from top to bottom. Each definition is fully compiled before the next begins. This allows macros defined earlier in a file to be used by later definitions in the same file.
+Macro processing traverses a module in source order. A `defmacro` becomes
+available only after its compilation checkpoint succeeds, so an earlier form
+cannot use a macro defined later in the module (§9.12.1).
 
-Module-level expressions (definitions, trait implementations) execute at load time in definition order.
+After macro expansion, all non-macro definitions form one compilation cluster.
+The private registration, shared-state checking, and all-or-nothing publication
+rules are defined by [§3.5.2](03-types.md#352-two-pass-checking) and §5.13.
+Non-macro definitions may therefore forward-reference one another within the
+cluster regardless of source order.
 
 **Example:** The reference implementation's standard library compiles in this order. The specific structure is not required -- any module organization that satisfies the topological ordering constraint is valid:
 
@@ -1264,7 +1180,7 @@ The stored preamble **text** is the comment block's content with comment markers
 
 The preamble is the module-level entry on the same introspection surface as docstrings. A conforming REPL's module-documentation command (the `/doc <module>` family) MUST be able to return a module's preamble text, and MUST indicate when a module has no preamble (the documentation-read analogue of a definition with no docstring, §5.12).
 
-> **NOTE — experience is `/repl`-owned.** This subsection pins only the spec-level *read result*: `/doc <module>` returns the module's preamble text (or a no-preamble indication). The command's exact output formatting, framing, aliases, and interaction with `/doc <name>` (the definition-docstring read, `repl/spec.md` §3.1) are the REPL experience contract, authored by `/repl` in `repl/spec.md`. This section does not constrain that presentation beyond the read-result requirement above.
+> **NOTE — experience is `/repl`-owned.** This subsection pins only the spec-level *read result*: `/doc <module>` returns the module's preamble text (or a no-preamble indication). The command's exact output formatting, framing, aliases, and interaction with `/doc <name>` (the definition-docstring read, `repl/spec/03-slash-commands.md` §3.1) are the REPL experience contract in `repl/spec/`. This section does not constrain that presentation beyond the read-result requirement above.
 
 ### 8.16.5 Edit Path and Source-Regeneration Stability [S88]
 

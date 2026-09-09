@@ -467,6 +467,7 @@ pub const cranelisp_platform::HEAP_HEADER_SIZE: i64
 pub const cranelisp_platform::IO_EFFECT_CAPACITY_OFFSET: i64
 pub const cranelisp_platform::IO_EFFECT_FN_NAME_OFFSET: i64
 pub const cranelisp_platform::IO_EFFECT_RESOURCE_OFFSET: i64
+pub const cranelisp_platform::IO_PURE_GLUE_OFFSET: i64
 pub const cranelisp_platform::IO_TAG_BIND: i64
 pub const cranelisp_platform::IO_TAG_EFFECT: i64
 pub const cranelisp_platform::IO_TAG_EFFECT_POLL: i64
@@ -536,5 +537,6 @@ pub const fn cranelisp_platform::extract_layout_hash(&str) -> &str
 pub unsafe fn cranelisp_platform::manifest_to_descriptors(&cranelisp_platform::PlatformManifest) -> core::result::Result<(alloc::string::String, alloc::string::String, alloc::vec::Vec<cranelisp_platform::OwnedPlatformFnDescriptor>), cranelisp_types::error::PlatformError>
 pub c fn cranelisp_platform::null_alloc_with_tag(u32, u32, *const i64) -> i64
 pub fn cranelisp_platform::platform_manifest_symbol(&str) -> alloc::string::String
+pub const fn cranelisp_platform::schema_declares_type(&str, &str) -> bool
 pub fn cranelisp_platform::set_global_schema(cranelisp_platform::Schema)
 pub type cranelisp_platform::PollFn = fn(*mut core::ffi::c_void, *const cranelisp_platform::HostCtx, *const cranelisp_platform::Waker) -> cranelisp_types::scheduling::Poll

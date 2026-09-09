@@ -1,122 +1,36 @@
-; Redefinition — editing live code with a safety net
-; Body edits late-bind silently; signature edits recompile every dependent
-; and report exactly which world each symbol is in.
+; Redefinition — edit live code without splitting the session
+; Same-type body edits update the existing callable; guarded edits either
+; publish whole or leave the earlier definition untouched.
 
-; A small call chain. Annotated params pin concrete signatures:
+; A small call chain. total calls price through its live callable slot:
 
 (defn price [:Int n] (* n 3))
 (defn total [:Int n] (price (+ n 1)))
 (total 9)
 
-; A body-only edit keeps the signature. No ceremony, no recompiles —
-; total picks up the new price body at its next call (late binding):
+; This body-only edit keeps price's language type. total needs no rebuild;
+; its next call reaches the new body:
 
 (defn price [:Int n] (* n 4))
 (total 9)
 
-; Now a chain where the edit will change a signature. g's body follows f
-; wherever it goes; k pins its argument to Int:
+; A type-changing edit has a direct committed dependent, so it is rejected
+; before publication. The diagnostic names the target, both types, total,
+; and the remedy — retain the old type or use a new name:
 
-(defn f [:Int x] (+ x 1))
-(defn g [y] (f y))
-(defn k [:Int x] (f (* x 2)))
+(defn price [:String label] (str label "!"))
 
-; Redefine f to take a String. The session recompiles every dependent and
-; reports the outcome: g rode along into the new world; k no longer
-; typechecks, so it is marked broken — never silently wrong:
+; Rejected means the old definition is still the one the session calls:
 
-(defn f [:String s] (str s "!"))
+(total 9)
+price
 
-; A broken symbol is not gone. Its definition survives, and every lookup
-; explains what broke it — /info shows the provenance and the source:
+; With no blocking dependent, a type-changing edit can replace the callable
+; atomically. Later calls see only the new type and body:
 
-/info k
-/sig k
-k
+(defn label [:Int n] (show n))
+(defn label [:String text] (str text "!"))
+(label "gold")
 
-; Calling a broken symbol fails loud, with the same provenance.
-; (The Error:-wrapper around the trap is a known presentation defect —
-; repl/spec.md §18.5 specifies the bare runtime-error line.)
-
-(k 3)
-
-; The session shrugs it off: everything else still works, and g really
-; is in the new world now:
-
-(total 2)
-/sig g
-
-; Recovery, direction one: put f back. k is a static caller, so it
-; rejoins the transaction and recompiles — good as new, zero residue:
-
-(defn f [:Int x] (+ x 1))
-(k 3)
-k
-
-; Recovery, direction two: fix the broken symbol itself. Break a fresh
-; pair the same way:
-
-(defn fee [:Int n] (* n 10))
-(defn invoice [:Int n] (fee (+ n 2)))
-(defn fee [:String tier] (str tier "-rate"))
-
-; This time, redefine the broken caller to match fee's new signature:
-
-(defn invoice [:String tier] (fee (str tier "+")))
-(invoice "gold")
-invoice
-
-; And when a signature change has no compiled dependents, there is no
-; report at all — as quiet as a body edit:
-
-(defn solo [:Int n] (+ n 1))
-(defn solo [:String s] (str s "?"))
-
-; The safety net reaches unannotated code too. id generalizes to (Fn [a] a);
-; g monomorphizes it at Int. Redefining id would strand g's compiled copy on
-; the old body — a silent split world. Instead the session recompiles g at
-; end of turn, silently: no report, because nothing is left stale.
-
-(defn id [x] x)
-(defn g [x] (id (+ x 1)))
-(g 1)
-
-; Redefine id. g's next call sees the new definition — 2 becomes 102:
-
-(defn id [x] (+ x 100))
-(g 1)
-
-; Redefinition reaches the DISPATCH layer too. An impl is a body you can edit:
-; re-enter it and subsequent dispatch follows the new bodies.
-
-(deftype Box (MkBox [:Int w :Int h]))
-(deftrait Sizeable (size [x] Int) (tag [x] Int))
-(impl Sizeable Box (defn size [b] (match b [(MkBox w h) (* w h)])) (defn tag [b] 7))
-(size (MkBox 3 4))
-
-; Re-impl the pair with a new size body — same signature, so this is a body edit
-; like any other, and the next call sees it:
-
-(impl Sizeable Box (defn size [b] (match b [(MkBox w h) (+ w h)])) (defn tag [b] 7))
-(size (MkBox 3 4))
-
-; The truthfulness payoff: introspection lists ONE impl of Sizeable for Box, not
-; one entry per impl form typed. The session reports what dispatches today, not
-; the history of how it got there. The trait-side and type-side questions are
-; inverse views of that same live pair:
-
-/info Sizeable
-/info Box
-
-; A re-impl REPLACES — it is the whole implementation, not a patch. Omit a
-; required method and it is rejected at the conformance seam, named:
-
-(impl Sizeable Box (defn size [b] (match b [(MkBox w h) (- w h)])))
-
-; Rejected means rejected: the previous impl is untouched and still dispatching.
-
-(size (MkBox 3 4))
-(tag (MkBox 3 4))
-
-; Edit boldly: body edits are free, signature edits are accounted for,
-; and nothing is ever silently wrong.
+; Live edits stay coherent: a successful edit is fully published, and a
+; rejected one leaves the working definition in place.

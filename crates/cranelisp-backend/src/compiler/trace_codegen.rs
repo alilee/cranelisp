@@ -126,9 +126,7 @@ use cranelift::prelude::*;
 use cranelift_module::{FuncId, Linkage, Module};
 
 use cranelisp_intrinsics::trace::DescriptorKind;
-use cranelisp_types::{
-    CranelispError, ErrorLocation, FQTypeName, ModuleEntry, MonoExpr, Span, Type, TypeId,
-};
+use cranelisp_types::{CranelispError, ErrorLocation, FQTypeName, MonoExpr, Span, Type, TypeId};
 
 use super::{FnCompiler, TracedFnInfo};
 
@@ -312,7 +310,7 @@ where
         let module_path = module_guard.key();
         let table = module_guard.value();
         for (name, entry) in table.all_symbols() {
-            let ModuleEntry::Def { scheme, .. } = entry else {
+            let Some(callable) = entry.callable() else {
                 continue;
             };
             // The GOT slot rides on the callable `DefKind` variant (S83
@@ -334,7 +332,7 @@ where
                 continue;
             }
             // Arity + param/result types from the scheme.
-            let Type::Fn(params, ret) = &scheme.ty else {
+            let Type::Fn(params, ret) = &callable.arm.scheme.ty else {
                 continue;
             };
             traced.push(TracedFnInfo {
@@ -343,7 +341,7 @@ where
                 got_slot: slot,
                 arity: params.len(),
                 param_types: params.clone(),
-                result_type: (**ret).clone(),
+                result_type: ret.as_ref().clone(),
             });
         }
     }

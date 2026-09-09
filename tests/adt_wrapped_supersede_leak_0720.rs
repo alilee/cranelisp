@@ -39,7 +39,7 @@ use helpers::e2e::{Cranelisp, PreludeVariant};
 // old one), and the base reads `cells[0]` (forcing the chain observable).
 fn adt_wrapped_loop(n: usize) -> String {
     format!(
-        "(deftype G2 (Gr [cells]))\n\
+        "(deftype (G2 a) (Gr [:a cells]))\n\
          (defn set0 [g m] (match g [(Gr cells) (Gr (vec-set cells 0 m))]))\n\
          (defn go [g m] (if (eq-i64 m 0) (match g [(Gr cells) (vec-get cells 0)]) (go (set0 g m) (add-i64 m -1))))\n\
          (defn main [] (Pure (go (Gr [5 5]) {n})))\n"

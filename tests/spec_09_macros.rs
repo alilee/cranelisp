@@ -199,13 +199,29 @@ fn macro_body_non_sexp_bool_rejected_neg() {
 // §9.12 Bootstrapping Order — macro persists across REPL evals
 // =============================================================================
 
-// spec: spec/09-macros.md §9.12 — macro defined earlier is available later
+// spec: spec/09-macros.md §9.12.1 — a successful macro checkpoint remains
+// available after a later non-macro cluster fails; that cluster publishes none.
 #[test]
 fn macro_persists_across_evals() {
-    // Two REPL forms separated; the second invocation succeeds, proving the
-    // macro is registered and available on subsequent expansion.
-    repl_prims("(defmacro double [x] `(add-i64 ~x ~x))\n(double 7)\n(double 11)\n")
-        .assert_stdout_contains_all(&[":primitives/Int 14", ":primitives/Int 22"]);
+    let out = repl_prims(
+        "(defmacro double [x] `(add-i64 ~x ~x))\n\
+         (double 7)\n\
+         (defn broken [x] (add-i64 x \"nope\"))\n\
+         (double 11)\n\
+         /list\n",
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 14")
+            && out.stdout.contains(":primitives/Int 22")
+            && out.stdout.contains("Error:"),
+        "the macro must survive the diagnosed later failure; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.lines().any(|line| line.trim() == "broken"),
+        "the failed ordinary definition must not appear in /list; got:\n{}",
+        out.stdout
+    );
 }
 
 // =============================================================================
@@ -215,13 +231,14 @@ fn macro_persists_across_evals() {
 // spec: spec/09-macros.md §9.13 — defmacro display includes signature line
 #[test]
 fn defmacro_display_clause_signature() {
-    // Multi-clause defmacro display includes a clause signature line such
-    // that the printed text mentions the multi-clause arities.
+    // Multi-clause defmacro display includes one typed transform signature per
+    // clause, so both source arities remain visible.
     let out = repl_prims("(defmacro pick ([x] x) ([x y] x))\n");
     let stdout = &out.stdout;
     assert!(
-        stdout.contains("user/pick") && stdout.contains("defmacro"),
-        "expected user/pick and defmacro in display; got: {stdout}"
+        stdout.contains(":(Fn [macros/Sexp] macros/Sexp) user/pick ; defmacro")
+            && stdout.contains(":(Fn [macros/Sexp macros/Sexp] macros/Sexp) user/pick",),
+        "expected both compile-time transform signatures; got: {stdout}"
     );
 }
 
@@ -278,6 +295,26 @@ fn repl_macro_begin_splicing_defn_then_call() {
          (define-and-call my-fn 99)\n",
     )
     .assert_stdout_contains(":primitives/Int 99");
+}
+
+// spec: spec/09-macros.md §9.6 + repl/spec.md §1.3 — when one macro
+// invocation emits several definitions, the REPL confirms every definition in
+// emitted order. The unrelated names prevent a `def`/`-def` naming shortcut
+// from satisfying the result contract.
+#[test]
+fn macro_emitted_definition_batch_lists_all_definitions_in_order() {
+    let out = repl_prims(
+        "(defmacro make-two [left right] \
+           `(begin (defn ~left [] 1) (defn ~right [] 2)))\n\
+         (make-two alpha omega)\n",
+    );
+    let alpha = out.stdout.find("user/alpha ; defn");
+    let omega = out.stdout.find("user/omega ; defn");
+    assert!(
+        matches!((alpha, omega), (Some(left), Some(right)) if left < right),
+        "the definition result MUST list alpha then omega; got:\n{}",
+        out.stdout
+    );
 }
 
 // spec: spec/09-macros.md §9.6 + spec/08-modules.md §8.2 — expanded
@@ -389,19 +426,33 @@ fn expanded_begin_trait_family_registration_is_uniform() {
     );
 }
 
-// spec: spec/09-macros.md §9.6 — macros generating macros via begin
+// spec: spec/09-macros.md §9.6 + §9.12.1 — a generated macro checkpoint
+// remains available after a later non-macro cluster fails.
 // (carry: legacy/macros.rs::repl_defmacro_in_results)
 #[test]
 fn repl_defmacro_in_results_macro_generates_macro() {
     // The outer macro emits (begin (defmacro ~name [x] x)). After the outer
     // macro is invoked, the inner identity macro must be defined and
     // callable.
-    repl_prims(
+    let out = repl_prims(
         "(defmacro make-id-macro [name] `(begin (defmacro ~name [x] x)))\n\
          (make-id-macro gen-id)\n\
-         (gen-id 42)\n",
-    )
-    .assert_stdout_contains(":primitives/Int 42");
+         (defn broken-generated [x] (add-i64 x \"nope\"))\n\
+         (gen-id 42)\n\
+         /list\n",
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 42") && out.stdout.contains("Error:"),
+        "the generated macro must survive the diagnosed later failure; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout
+            .lines()
+            .any(|line| line.trim() == "broken-generated"),
+        "the failed ordinary definition must not appear in /list; got:\n{}",
+        out.stdout
+    );
 }
 
 // spec: spec/09-macros.md §9.6 — begin-splicing in batch mode
@@ -485,7 +536,8 @@ fn neg_macro_expansion_depth_limit_exceeded() {
     );
 }
 
-// spec: spec/09-macros.md §9.4.2 — rest-param + ~@ splice expansion
+// spec: spec/09-macros.md §9.2.2–§9.2.3 + §9.4.2 — every clause has the
+// canonical Sexp ABI; the selected rest-param clause performs ~@ splicing.
 // (carry: legacy/macros.rs::repl_defmacro_rest_splice)
 //
 // Multi-clause macro with rest param; the [x &rest] clause's `~@rest` splice
@@ -495,27 +547,78 @@ fn neg_macro_expansion_depth_limit_exceeded() {
 #[test]
 fn repl_defmacro_rest_splice() {
     repl_prims(
-        "(defmacro my-begin ([] 0) ([x &rest] `(begin ~x ~@rest)))\n\
+        "(defmacro my-begin ([] (macros/SexpInt 0)) ([x &rest] `(begin ~x ~@rest)))\n\
          (my-begin 42)\n",
     )
     .assert_stdout_contains(":primitives/Int 42");
 }
 
-// spec: spec/09-macros.md §9.14 — failed defmacro doesn't leave partial registration
+// spec: spec/09-macros.md §9.12.1 + §9.14 — a failed defmacro publishes no
+// partial binding, so the name remains undefined and a clean attempt can publish.
 // (carry: legacy/macros.rs::repl_error_recovery_no_partial_macro)
 //
-// Macro flavour of failed-defn-no-partial-binding. After a defmacro with a
-// bad body is rejected, the session must remain usable — the next form
-// (a primitive arithmetic expression) succeeds.
+// Macro flavour of failed-defn-no-partial-binding.
 #[test]
 fn repl_error_recovery_no_partial_macro() {
     let out = repl_prims(
         "(defmacro bad-mac [x] (add-i64 1 \"hello\"))\n\
-         (add-i64 1 2)\n",
+         (bad-mac 1)\n\
+         (defmacro bad-mac [x] x)\n\
+         (bad-mac 42)\n",
     );
     assert!(
-        out.stdout.contains(":primitives/Int 3"),
-        "session must remain usable after failed defmacro; got:\n{}",
+        out.stdout.contains("undefined") && out.stdout.contains("bad-mac"),
+        "the failed macro name must remain unavailable before a clean retry; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 42"),
+        "a clean same-name defmacro must publish after the failed attempt; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: spec/09-macros.md §9.12.1 — a failed macro redefinition preserves the
+// complete prior generation.
+#[test]
+fn failed_macro_redefinition_preserves_prior_generation() {
+    let out = repl_prims(
+        "(defmacro stable [x] (macros/SexpInt 7))\n\
+         (stable 0)\n\
+         (defmacro stable [x] (add-i64 1 \"nope\"))\n\
+         (stable 0)\n",
+    );
+    assert!(
+        out.stdout.matches(":primitives/Int 7").count() >= 2,
+        "both invocations must use the complete prior macro generation; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.to_lowercase().contains("error"),
+        "the invalid redefinition must be diagnosed; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: spec/09-macros.md §9.3.4 + §9.12.1 — macro invocation and
+// introspection are valid, but a macro parent is not a language value.
+#[test]
+fn macro_parent_in_value_position_is_rejected_neg() {
+    let out = repl_prims(
+        "(defmacro keep [x] x)\n\
+         (keep 42)\n\
+         /info keep\n\
+         (defn take [x] x)\n\
+         (take keep)\n",
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 42") && out.stdout.contains("defmacro"),
+        "macro invocation and introspection must remain valid controls; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.to_lowercase().contains("error") && out.stdout.contains("keep"),
+        "passing the macro parent as a language value must be rejected; got:\n{}",
         out.stdout
     );
 }

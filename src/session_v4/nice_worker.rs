@@ -141,7 +141,7 @@ pub(crate) fn nice_worker_loop(shared: &SharedState) {
 /// marked object-complete so the scheduler lifecycle proceeds.
 ///
 /// S87 §3.3: decomposed into phase-helpers (`write_module_meta`,
-/// `enumerate_codegen_names`, `record_empty_codegen`, `emit_object`,
+/// `enumerate_codegen_targets`, `record_empty_codegen`, `emit_object`,
 /// `write_object_and_record`). The orchestrator preserves every early `return`
 /// and the load-bearing ordering (.meta.json is DECOUPLED from `.o` output —
 /// persists whenever the module type-checked).
@@ -157,7 +157,13 @@ fn compile_module_object(shared: &SharedState, module: &ModuleFullPath, cache_di
     // fully-green turn re-enqueues (`mark_object_stale`) and persists
     // normally. The caller still marks the module object-complete, so
     // `wait_object_complete` never hangs on a poisoned module.
-    if shared.broken.iter().any(|r| r.key().module == *module) {
+    if shared.symbol_tables.get(module).is_some_and(|table| {
+        table.all_symbols().any(|(_, binding)| {
+            binding.callable().is_some_and(|callable| {
+                matches!(callable.arm.life, cranelisp_types::Life::Broken { .. })
+            })
+        })
+    }) {
         return;
     }
 
@@ -177,8 +183,8 @@ fn compile_module_object(shared: &SharedState, module: &ModuleFullPath, cache_di
 
     // Phase 2: enumerate codegen-compilable symbols. Empty → no `.o`, but the
     // module is still recorded in the manifest (Phase 3).
-    let names = enumerate_codegen_names(shared, module);
-    if names.is_empty() {
+    let targets = enumerate_codegen_targets(shared, module);
+    if targets.is_empty() {
         record_empty_codegen(shared, module);
         return;
     }
@@ -186,7 +192,7 @@ fn compile_module_object(shared: &SharedState, module: &ModuleFullPath, cache_di
     // Phase 3: build + emit the `.o` bytes. `None` on any non-fatal codegen
     // failure (the caller returns — the module is still marked object-complete
     // by `nice_worker_loop`).
-    let obj_bytes = match emit_object(shared, module, &names) {
+    let obj_bytes = match emit_object(shared, module, &targets) {
         Some(bytes) => bytes,
         None => return,
     };
@@ -249,14 +255,14 @@ fn write_module_meta(shared: &SharedState, module: &ModuleFullPath, meta_path: &
 /// imports-only, OR a generic-only `Polymorphic` module post-Phase-4B) → no
 /// `.o`, which is the correct new state (FIXME 0387). The `.meta.json` above
 /// has already persisted; we just emit no object.
-fn enumerate_codegen_names(
+fn enumerate_codegen_targets(
     shared: &SharedState,
     module: &ModuleFullPath,
-) -> Vec<cranelisp_types::Symbol> {
+) -> Vec<cranelisp_types::CallableTarget> {
     shared
         .symbol_tables
         .get(module)
-        .map(|t| t.defined_symbols().map(|(name, _)| name.clone()).collect())
+        .map(|t| t.codegen_targets().map(|(target, _)| target).collect())
         .unwrap_or_default()
 }
 
@@ -283,7 +289,7 @@ fn record_empty_codegen(shared: &SharedState, module: &ModuleFullPath) {
 fn emit_object(
     shared: &SharedState,
     module: &ModuleFullPath,
-    names: &[cranelisp_types::Symbol],
+    targets: &[cranelisp_types::CallableTarget],
 ) -> Option<Vec<u8>> {
     // Build ObjectModule with PIC ISA.
     let isa = match cranelisp_backend::build_isa(true) {
@@ -318,7 +324,7 @@ fn emit_object(
     // on the module internally; cross-module refs resolve from `symbol_tables`.
     match cranelisp_backend::compile_to_module(
         module.clone(),
-        names,
+        targets,
         &shared.symbol_tables,
         &mut obj_module,
         // FIXME 0325: nice-worker `.o` codegen is always batch (cache-write

@@ -211,16 +211,13 @@ Detection of single vs. multi-signature `defn`: if the form after the name (and 
 
 Multi-sexp REPL input (e.g., `:Int 42` as two forms) is handled by `build_repl_input_from_sexps`, which calls `build_args_with_annotations` to combine annotation + value into a single `Annotate` expression.
 
-### 3.7 `desugar_type_def`
+### 3.7 `deftype` normalization
 
-The prototype's `ast.rs` contains a `desugar_type_def()` function that handles the shortcut syntax for bare field names. When a field has no type annotation, it is assigned `TypeExpr::TypeVar("")` (empty string sentinel). The desugaring pass:
-
-1. Collects all bare fields across all constructors
-2. Assigns type variables `a`, `b`, `c`, ... in first-appearance order
-3. Replaces empty `TypeVar` with the assigned variable
-4. Merges explicit type params with inferred ones
-
-This function should live in `cranelisp-frontend` (it is a syntactic desugaring, not a type system operation). In Ring 0, it will only encounter the enum case (no fields), so it is exercised trivially. The implementation should be complete from the start so Ring 1 does not require rework.
+The frontend normalizes product and sum spellings only after validating spec
+§5.2.4: a bare head is monomorphic, a parenthesized head declares every type
+parameter, and every field is `:Type name`. Missing field types and undeclared
+type variables reject before any parsed entry is emitted. No inferred-parameter
+desugaring or empty-string sentinel remains.
 
 ## 4. Known Gotchas from the Prototype
 
@@ -307,7 +304,7 @@ cranelisp-frontend/
     lib.rs            # pub mod declarations, re-exports
     reader.rs         # hand-written recursive descent, parse_sexp(), parse_sexps()
     ast_builder.rs    # Sexp -> Expr, TopLevel, ReplInput
-    desugar.rs        # desugar_type_def() (type shortcut syntax)
+    desugar.rs        # deftype normalization after explicit-field validation
     CLAUDE.md         # Frontend-specific conventions
 ```
 
@@ -352,13 +349,11 @@ In Ring 0, the `build_program` and `build_repl_input` functions can omit the exp
 
 **No gap**: this is the correct design. The reader is syntactic; the AST builder is semantic.
 
-### 6.2 `FieldDef.type_expr` Sentinel for Bare Fields
+### 6.2 `FieldDef.type_expr` is total at the boundary
 
-The prototype uses `TypeExpr::TypeVar(String::new())` (empty string) as a sentinel for bare field names in the shortcut syntax `(deftype Pair [first second])`. The `desugar_type_def` function replaces these with assigned type variables.
-
-**Observation**: Using an empty string as a sentinel is fragile. Consider adding an explicit variant or using `Option<TypeExpr>` for field type expressions. However, since the spec explicitly defines bare fields as getting "a fresh type variable" (spec 2.2.2), and the empty-string sentinel is local to the frontend crate (not visible across the boundary), this is acceptable. The `FieldDef` in `cranelisp-types` always has a resolved `TypeExpr` after desugaring.
-
-**No gap**: the sentinel is internal to the frontend.
+The local parser may temporarily represent a missing type to produce a precise
+field-name diagnostic. It never exports that state: `cranelisp-types::FieldDef`
+always contains the source-written `TypeExpr`.
 
 ### 6.3 `TraitImpl.type_args` Uses `Vec<Symbol>` Not `Vec<TypeExpr>`
 

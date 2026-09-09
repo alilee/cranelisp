@@ -602,6 +602,9 @@ impl CrInvocationOwned {
         let mut stderr = String::from_utf8_lossy(&output.stderr).into_owned();
 
         // If link_then_run is set and link succeeded, exec the produced binary.
+        // `elapsed` intentionally remains the compiler-child lifecycle interval;
+        // this optional interval is only for the separately spawned executable.
+        let mut linked_execution_elapsed = None;
         if let Some((produced, _)) = &self.link_then_run {
             if status.success() && produced.exists() {
                 let started2 = Instant::now();
@@ -620,7 +623,7 @@ impl CrInvocationOwned {
                 stdout.push_str(&String::from_utf8_lossy(&out2.stdout));
                 stderr.push_str(&String::from_utf8_lossy(&out2.stderr));
                 status = out2.status;
-                let _ = started2; // elapsed already captured for overall run
+                linked_execution_elapsed = Some(started2.elapsed());
             }
         }
 
@@ -630,6 +633,7 @@ impl CrInvocationOwned {
             stdout,
             stderr,
             elapsed,
+            linked_execution_elapsed,
             tmpdir: tmpdir_path,
             _td: Some(self.tmpdir),
         })
@@ -645,7 +649,12 @@ pub struct CrOutput {
     pub status: ExitStatus,
     pub stdout: String,
     pub stderr: String,
+    /// Whole compiler-child lifecycle through completion. This deliberately
+    /// excludes the separately spawned executable from [`Cranelisp::link_then_run`].
     pub elapsed: Duration,
+    /// Duration of only the executable spawned by [`Cranelisp::link_then_run`].
+    /// `None` when no produced executable was run (including failed linking).
+    pub linked_execution_elapsed: Option<Duration>,
     pub tmpdir: PathBuf,
     /// Held internally so cleanup runs on drop.
     _td: Option<tempfile::TempDir>,

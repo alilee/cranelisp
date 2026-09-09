@@ -111,7 +111,7 @@ When `html`'s code dec's a Cell (either in a scope cleanup in `solution-cell` or
 
 ### H4 — GOT-slot population NULL-sink (Decision 37 §"No swallowed failures") — /arch addition
 
-**Prediction**. Per Decision 37, slot LAYOUT is pinned at typecheck; slot CONTENTS are written in codegen. If any codegen worker writes `Code::Jit { ... }` onto a `ModuleEntry::Def` AND pushes the symbol to `loaded_symbols` BEFORE the corresponding GOT slot store completes, then a sibling codegen worker whose callee-module imports the not-yet-populated symbol would read NULL at call time. The S58 Wave 2 `try_cache_hit_load` deletion closed this for the cache-hit path, but the fresh-build `inline_jit_codegen_for_names` path (`src/worker.rs:2800+`) might still have the ordering latently, because the loop that writes slots and the loop that writes `Code::Jit` are the same loop — the concern is whether a sibling worker can observe `Code::Jit = Some(_)` (via `all_symbols` iteration on line 2827-2833, which is how OTHER modules' already-compiled functions get registered as JIT symbols) before the GOT slot has been store'd.
+**Prediction**. Per Decision 37, slot LAYOUT is pinned at typecheck; slot CONTENTS are written in codegen. If any codegen worker writes `Code::Jit { ... }` onto a `ModuleEntry::Def` AND pushes the symbol to `loaded_symbols` BEFORE the corresponding GOT slot store completes, then a sibling codegen worker whose callee-module imports the not-yet-populated symbol would read NULL at call time. The S58 Wave 2 `try_cache_hit_load` deletion closed this for the cache-hit path, but the fresh-build `src/worker.rs::inline_jit_codegen_for_names` path might still have the ordering latently, because the loop that writes slots and the loop that writes `Code::Jit` are the same loop — the concern is whether a sibling worker can observe `Code::Jit = Some(_)` before the GOT slot has been store'd.
 
 Looking at lines 2886-2916 of `worker.rs`: per name, `got.store_slot(slot, code_ptr)` happens FIRST (line 2899), then `*code = Some(Code::jit(...))` SECOND (line 2911). Good. But the loop iterates `names` sequentially; between iteration `i` (storing slot) and iteration `i+1`, another thread iterating `all_symbols` might observe iteration `i`'s `Code::Jit = Some(...)`. That is fine IF every reader of `Code::Jit` uses the `c.ptr()` accessor and we never use `got.load_slot()` as a call target that could still be NULL.
 
@@ -158,13 +158,13 @@ register_module(M):
     register_module(import.module)   # recursive, blocking on transitive deps
 ```
 
-Both JIT fresh-build and `.o` cache-hit enter this flow identically. `src/worker.rs::try_cache_hit_load` (line 1389) lives inside the typecheck-or-deserialise branch of `register_module`'s body. Post-register, every transitive import is satisfied uniformly — no separate "cache-hit path" runs in parallel. This is the S58 Wave 2 deletion of the old `try_cache_hit_load` duplicate recursive walk.
+Both JIT fresh-build and `.o` cache-hit enter this flow identically. `src/process_form/cache_restore.rs::try_cache_hit_load` lives inside the typecheck-or-deserialise branch of `register_module`'s body. Post-register, every transitive import is satisfied uniformly — no separate "cache-hit path" runs in parallel. This is the S58 Wave 2 deletion of the old duplicate recursive walk.
 
 ### 3.2 Codegen-phase symmetry
 
 After typecheck-phase completion for all reachable modules, the codegen phase runs. Per-module codegen workers have two kernels depending on whether the module is cached (`cached_modules.contains(module)`):
 
-- Fresh build: `inline_jit_codegen_for_names` (`src/worker.rs:2800`). Calls `compile_to_module<JITModule>`, wraps the `Jit` in `Arc`, writes `Code::Jit { jit, ptr }`.
+- Fresh build: `src/worker.rs::inline_jit_codegen_for_names`. Calls `compile_to_module<JITModule>`, wraps the `Jit` in `Arc`, writes `Code::Jit { jit, ptr }`.
 - Cache-hit: `load_cached_module_via_linker` (`src/worker.rs:~3040+`). Calls `Linker::load_object`, writes `Code::Linker { linker, ptr }`.
 
 **These two kernels are the fixup-mechanism boundary.** Upstream of them: identical register_module flow, identical typecheck symbol tables, identical GOT slot layout. Downstream of them: identical `code: Some(Code)` state on every `ModuleEntry::Def`, identical GOT-slot contents (a `*const u8` pointing at valid executable bytes).
@@ -193,7 +193,7 @@ Per /arch Condition 1, absence of §4 blocks Phase 3.
 
 ### 4.2 Does carry-forward fire in the fresh-batch path?
 
-Yes — verified. `inline_jit_codegen_for_names` (`src/worker.rs:2800-2937`):
+Yes — verified. `src/worker.rs::inline_jit_codegen_for_names`:
 
 1. Line 2813-2833: collects `jit_symbols` from every `ModuleEntry::Def.code` that is currently `Some(_)`. This INCLUDES the carried-forward `Code::Jit` from a prior batch, because `register_defn_signature`'s upsert preserves it through typecheck.
 2. Line 2864: calls `compile_to_module`, which runs codegen against the current symbol tables (with their carried-forward `code` fields intact).
@@ -331,7 +331,7 @@ Three concrete sites where drop-glue code pointers flow as *raw* values, not GOT
 
 ### 6.1 Reading the fresh-build path
 
-`src/worker.rs:2886-2915` (inline_jit_codegen_for_names per-name loop):
+`src/worker.rs::inline_jit_codegen_for_names` per-name loop:
 
 ```rust
 for name in names {
@@ -364,7 +364,7 @@ All three are Decision 37 §"No swallowed failures" breaches in the fresh-build 
 
 ### 6.2 Reading the cache-hit path
 
-`src/worker.rs:3082-3101` already does the hard-error variant correctly. Reference model for the fresh-build fix.
+`src/worker.rs::load_cached_module_via_linker` already does the hard-error variant correctly. Reference model for the fresh-build fix.
 
 ### 6.3 Ordering audit
 
@@ -406,7 +406,7 @@ The sketch's codegen-level RC/closure/cross-module patterns that the reimplement
 - **Scope cleanup discipline** (`sketch/src/codegen.rs:176-260`): `borrowed_vars`, `consumed_vars`, `unique_vars` tracking; `pop_scope_for_value` with skip rules for borrowed and consumed. The reimplementation ports this and the S59 Pass-2 fix corrected `protect_return_value` against the same discipline.
 - **Closure drop glue** (`sketch/docs/closures.md`): the sketch stores `drop_glue_ptr` as a direct code pointer in the closure layout. Under the sketch's per-session JIT (no per-batch reclaim), this is safe because the JIT lives the full session. Under the reimplementation's Decision 31 per-batch reclaim, the same pattern is unsafe — hence §5.3's specified direction toward GOT-slot-indexed dispatch for drop glue.
 - **GOT management** (`sketch/docs/modules.md`): per-module GOT, swap patterns for trace/run-tests. The reimplementation's two-GOT model (Decision 23) is a refinement — the sketch had only the in-process GOT; the `.o` data-section GOT is new.
-- **`emit_scope_cleanup_for_tco`** (`sketch/src/codegen.rs:660`): the sketch's TCO scope-cleanup discipline. Sprint 59 ported this to `crates/cranelisp-backend/src/compiler/mod.rs:879-959` (per the S59 §Mechanism addressed notes).
+- **`emit_scope_cleanup_for_tco`** (`sketch/src/codegen.rs:660`): the sketch's TCO scope-cleanup discipline. The current backend's let-scope tail-jump cleanup is `crates/cranelisp-backend/src/compiler/fn_compiler.rs::flush_let_scopes_before_tail_jump`.
 
 ### 7.4 Sketch patterns NOT to follow
 

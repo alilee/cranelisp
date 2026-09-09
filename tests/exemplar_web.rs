@@ -23,18 +23,14 @@
 //! on `exemplar/` (cf. `tests/exemplar.rs`); the exemplar is one of the two
 //! trees permitted to use stdlib (root CLAUDE.md §Stdlib separation).
 //!
-//! Port: `exemplar/main.cl` hard-codes `(defn port [] 8080)`, so this test
-//! binds the fixed port 8080. If another process holds 8080 the spawn will fail
-//! to bind and the readiness poll times out (the test fails loudly rather than
-//! hanging). This is the documented limitation until the exemplar takes an
-//! ephemeral/env-configured port.
+//! Port: `exemplar/main.cl` supplies 8080 as its source default, while this
+//! test reserves an ephemeral port and passes it as `CRANELISP_PORT`; the web
+//! platform's `bind-listener` uses that override. The small bind-to-spawn TOCTOU
+//! window remains, but the test no longer contends on a fixed port.
 //!
-//! FIXME(/qa — DEF-4): once DEF-4 (`tests/link.rs::
-//! link_multi_module_platform_emits_single_layout_hash_gate_symbol`) lands,
-//! extend this guard with a `--link`-then-run variant — the standalone linked
-//! server should serve identically. `--run` is the only viable server entry
-//! today because `--link` of the multi-module `(platform web)` program fails
-//! with the duplicate per-platform hash symbol.
+//! The `--run` route below is the same-outcome control for the linked-server
+//! route. The linked route copies the top-level exemplar `.cl` inputs into its
+//! own TempDir, links there, then launches the produced `main` executable.
 //!
 //! spec: design/arch/platform-interface.md §3a — Model A (Cranelisp-owned serve
 //! loop; one accept→handle→send→recur cycle per request, synchronous platform
@@ -66,6 +62,8 @@ fn free_port() -> u16 {
 /// run). Holds a captured-stderr handle for diagnostics.
 struct ServerGuard {
     child: Child,
+    // Keep the scratch program inputs alive while a linked server runs.
+    _scratch: Option<tempfile::TempDir>,
 }
 
 impl Drop for ServerGuard {
@@ -79,6 +77,43 @@ impl Drop for ServerGuard {
 /// platform + stdlib env, then poll the listening port until it accepts a
 /// connection (server is ready). `CRANELISP_PORT` overrides the exemplar's
 /// source `(defn port [] 8080)`.
+fn wait_until_listening(
+    child: Child,
+    port: u16,
+    scratch: Option<tempfile::TempDir>,
+) -> ServerGuard {
+    let mut guard = ServerGuard {
+        child,
+        _scratch: scratch,
+    };
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        // If the child exited early, the server never came up — surface its
+        // output rather than spin to the deadline.
+        if let Ok(Some(status)) = guard.child.try_wait() {
+            panic!(
+                "exemplar web server exited before listening (status {:?}). \
+                 Is port {port} already in use? Check CRANELISP_PLATFORM_PATH/CRANELISP_LIB.",
+                status
+            );
+        }
+        if TcpStream::connect_timeout(
+            &format!("127.0.0.1:{port}").parse().unwrap(),
+            Duration::from_millis(200),
+        )
+        .is_ok()
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "exemplar web server did not start listening on 127.0.0.1:{port} within 20s"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    guard
+}
+
 fn spawn_server(port: u16) -> ServerGuard {
     let root = workspace_root();
     let binary = root.join("target").join("debug").join("cranelisp");
@@ -107,37 +142,68 @@ fn spawn_server(port: u16) -> ServerGuard {
         .spawn()
         .expect("spawn exemplar web server");
 
-    let mut guard = ServerGuard { child };
+    wait_until_listening(child, port, None)
+}
 
-    // Poll the port until the server is listening (or the child died, or we
-    // exceed the readiness deadline).
-    let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        // If the child exited early, the server never came up — surface its
-        // output rather than spin to the deadline.
-        if let Ok(Some(status)) = guard.child.try_wait() {
-            panic!(
-                "exemplar web server exited before listening (status {:?}). \
-                 Is port {port} already in use? Check CRANELISP_PLATFORM_PATH/CRANELISP_LIB.",
-                status
-            );
+/// Copy the top-level exemplar sources into a fresh project. Read-only on
+/// project_root; the linked executable and any cache stay in this TempDir.
+fn exemplar_scratch() -> tempfile::TempDir {
+    let root = workspace_root();
+    let scratch = tempfile::tempdir().expect("create linked-web TempDir");
+    for entry in std::fs::read_dir(root.join("exemplar")).expect("read exemplar sources") {
+        let source = entry.expect("exemplar source entry").path();
+        if source.extension().and_then(|extension| extension.to_str()) == Some("cl") {
+            std::fs::copy(&source, scratch.path().join(source.file_name().unwrap()))
+                .unwrap_or_else(|error| panic!("copy {}: {error}", source.display()));
         }
-        if TcpStream::connect_timeout(
-            &format!("127.0.0.1:{port}").parse().unwrap(),
-            Duration::from_millis(200),
-        )
-        .is_ok()
-        {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "exemplar web server did not start listening on 127.0.0.1:{port} within 20s"
-        );
-        std::thread::sleep(Duration::from_millis(100));
     }
+    scratch
+}
 
-    guard
+/// Link the actual web entry in its own scratch project, then start the linked
+/// `main` executable with the same ephemeral-port and platform configuration as
+/// the `--run` control.
+fn spawn_linked_server(port: u16) -> ServerGuard {
+    let root = workspace_root();
+    let compiler = root.join("target").join("debug").join("cranelisp");
+    assert!(
+        compiler.exists(),
+        "cranelisp binary not found at {} — run `cargo build` first",
+        compiler.display()
+    );
+    let scratch = exemplar_scratch();
+    let link = Command::new(&compiler)
+        .current_dir(scratch.path())
+        .arg("--link")
+        .arg("main.cl")
+        .env("CRANELISP_PLATFORM_PATH", root.join("target").join("debug"))
+        .env("CRANELISP_LIB", root.join("stdlib"))
+        .output()
+        .expect("link scratch exemplar web entry");
+    assert!(
+        link.status.success(),
+        "`--link main.cl` on a fresh exemplar copy must succeed; exit={:?}\nstdout:\n{}\nstderr:\n{}",
+        link.status.code(),
+        String::from_utf8_lossy(&link.stdout),
+        String::from_utf8_lossy(&link.stderr)
+    );
+    let executable = scratch.path().join("main");
+    assert!(
+        executable.exists(),
+        "successful `--link main.cl` produced no main executable in {}",
+        scratch.path().display()
+    );
+    let child = Command::new(&executable)
+        .current_dir(scratch.path())
+        .env("CRANELISP_PORT", port.to_string())
+        .env("CRANELISP_PLATFORM_PATH", root.join("target").join("debug"))
+        .env("CRANELISP_LIB", root.join("stdlib"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn linked exemplar web server");
+    wait_until_listening(child, port, Some(scratch))
 }
 
 /// Send one HTTP/1.0 request on a fresh connection and return the full response
@@ -194,12 +260,12 @@ fn encode_puzzle_form(puzzle: &str) -> String {
 // =============================================================================
 
 // spec: design/arch/platform-interface.md §3a — Model A serve loop.
-//   The `web` exemplar front-end, run via `--run exemplar/main.cl`, serves a
-//   real HTTP server. This guard spawns it, polls until listening, exercises
-//   all three routes over live TCP connections, asserts the rendered HTML, and
-//   kills the process. It proves the platform DLL crosses Request/Response ADTs
-//   across the host<->DLL boundary AND the pure Cranelisp router produces the
-//   correct pages end-to-end.
+//   The `web` exemplar front-end, run through the `--run` control and the
+//   linked executable, serves a real HTTP server. Each guard spawns it, polls
+//   until listening, exercises all three routes over live TCP connections,
+//   asserts the rendered HTML, and kills the process. Together they prove the
+//   platform DLL crosses Request/Response ADTs across the host<->DLL boundary
+//   and the pure Cranelisp router produces correct pages end-to-end.
 //
 //   GET  /        -> form page    (<form ... action="/solve">, <title>Sudoku Solver</title>)
 //   POST /solve   -> solution page (<title>Solution</title>, an 81-cell solved grid:
@@ -227,10 +293,7 @@ fn encode_puzzle_form(puzzle: &str) -> String {
 // end-to-end proof that both fixes hold together: the full Sudoku-over-HTTP
 // round-trip (concurrent launched handlers, borrowed-Var grid mutation, DLL
 // marshaling) now serves correctly with no heap corruption.
-#[test]
-fn exemplar_web_server_serves_form_solution_and_not_found_over_http() {
-    let port = free_port();
-    let _server = spawn_server(port);
+fn assert_web_routes(port: u16) {
 
     // --- GET / -> the puzzle-entry form page ---
     let form_resp = http_request(port, "GET", "/", None);
@@ -292,12 +355,37 @@ fn exemplar_web_server_serves_form_solution_and_not_found_over_http() {
     // --- GET /missing -> the 404 not-found page ---
     let nf_resp = http_request(port, "GET", "/no-such-path", None);
     assert!(
+        nf_resp.starts_with("HTTP/1.0 404 Not Found\r\n"),
+        "GET on an unknown path must return HTTP 404; got:\n{}",
+        truncate(&nf_resp, 600)
+    );
+    assert!(
         nf_resp.contains("<title>Not Found</title>"),
         "GET on an unknown path must serve the Not Found page; got:\n{}",
         truncate(&nf_resp, 600)
     );
 
+}
+
+// spec: design/arch/platform-interface.md §3a — the established Model-A
+// `--run` server is the same-outcome control for the linked executable below.
+#[test]
+fn exemplar_web_server_serves_form_solution_and_not_found_over_http() {
+    let port = free_port();
+    let _server = spawn_server(port);
+    assert_web_routes(port);
     // _server's Drop kills + reaps the child here.
+}
+
+// spec: design/arch/platform-interface.md §3a — the linked Model-A web
+// executable serves the same GET-form, POST-solve/valid-grid, and 404 routes
+// as the established `--run` server control.
+#[test]
+fn exemplar_linked_web_server_serves_form_solution_and_not_found_over_http() {
+    let port = free_port();
+    let _server = spawn_linked_server(port);
+    assert_web_routes(port);
+    // _server's Drop kills + reaps the linked child and scratch tree here.
 }
 
 // =============================================================================

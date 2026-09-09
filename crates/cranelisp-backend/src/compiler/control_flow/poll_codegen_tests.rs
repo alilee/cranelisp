@@ -16,8 +16,8 @@
 
 use crate::jit::Jit;
 use cranelisp_types::{
-    DefKind, Defn, DefnVariant, Expr, ModuleEntry, ModuleFullPath, SchedulingClass, Scheme, Span,
-    Symbol, SymbolTable, Type, Visibility,
+    Defn, DefnVariant, Expr, FQTypeName, ModuleFullPath, SchedulingClass, Scheme, Span, Symbol,
+    SymbolTable, Type, TypeName, Visibility,
 };
 use std::collections::HashMap;
 
@@ -37,37 +37,38 @@ fn string_lit(s: &str) -> Expr {
     }
 }
 
-/// A synthetic `async-read` platform effect: `(Fn [params...] (IO Int))`
-/// represented as `Fn([params...], Int)` for codegen (the return is an i64 node
-/// pointer). Under v9 `params` is the FULL leaf signature — every param is a leaf
-/// arg marshaled into the env (no leading pair is peeled).
-fn poll_effect_entry(poll_shape: bool, params: Vec<Type>) -> ModuleEntry {
+/// A synthetic `async-read` platform effect: `(Fn [params...] (IO Int))`.
+/// The backend ABI is still an i64 node pointer, but the concrete language-level
+/// result is retained so v10 can select the returned node's tag-specific stamp.
+/// Under v9 `params` is the FULL leaf signature — every param is a leaf arg
+/// marshaled into the env (no leading pair is peeled).
+fn install_poll_effect(table: &mut SymbolTable, poll_shape: bool, params: Vec<Type>) {
     let param_names = (0..params.len())
         .map(|i| Symbol::from(format!("a{i}")))
         .collect();
-    ModuleEntry::Def {
-        scheme: Scheme {
-            type_vars: vec![],
-            constraints: HashMap::new(),
-            ty: Type::Fn(params, Box::new(Type::Int)),
-        },
-        visibility: Visibility::Public,
-        docstring: None,
-        param_names,
-        kind: Box::new(DefKind::PlatformEffect {
-            scheduling_class: SchedulingClass::Commutative,
+    table
+        .install_platform(
+            Symbol::from("async-read"),
+            Scheme {
+                type_vars: vec![],
+                constraints: HashMap::new(),
+                ty: Type::Fn(
+                    params,
+                    Box::new(Type::ADT(
+                        FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("IO")),
+                        vec![Type::Int],
+                    )),
+                ),
+            },
+            param_names,
+            None,
+            0,
+            SchedulingClass::Commutative,
             poll_shape,
-            got_slot: 0,
-            mode_summary: None,
-        }),
-        callees: vec![],
-        trait_origin: None,
-        seq: 0,
-        ast: None,
-        codegen_view: None,
-        code: None,
-        value_use: false,
-    }
+            0,
+            Visibility::Public,
+        )
+        .expect("install poll-effect fixture");
 }
 
 /// Build an `(async-read <args...>)` call body with the given arg expressions.
@@ -111,10 +112,7 @@ fn clif_of_body(poll_shape: bool, params: Vec<Type>, body: Expr) -> String {
     let symbol_tables: dashmap::DashMap<ModuleFullPath, SymbolTable> = dashmap::DashMap::new();
     let module_path = ModuleFullPath::from("user");
     let mut st = SymbolTable::new(module_path.clone());
-    st.insert(
-        Symbol::from("async-read"),
-        poll_effect_entry(poll_shape, params),
-    );
+    install_poll_effect(&mut st, poll_shape, params);
     symbol_tables.insert(module_path.clone(), st);
     // W1 (KC-W0-6): the `(async-read …)` callee Var reads its `resolved_target`
     // at the poll/platform dispatch. The body's callee Var carries `Span::SYNTHETIC`

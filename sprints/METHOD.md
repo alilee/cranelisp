@@ -92,6 +92,17 @@ Phases 6a/6b schedule the language-facing work. The standing-quality question ea
 
 ### 2.2 Phase notes
 
+**Discovered defects: RED → design → GREEN, with parallel QA review**
+(user directive, S121). First preserve each discovered defect as a minimal,
+permanent, failing-not-ignored reproduction with a discriminating control.
+Then design and implement the correction until the reproductions pass,
+including the required module evidence. In parallel, `qa` investigates why
+existing coverage missed the scenario and whether a systematic testing gap
+needs correction. This review does not delay recording the RED or become a
+serial prerequisite to the repair. Reconcile its findings before closure;
+existing requirement, architecture, public-API and phase approval gates still
+apply. An ambiguous requirement is escalated, not guessed into a test.
+
 **Scope a drawdown sprint from a test run, not from prose (S77).** For a get-to-green or defect-drawdown increment, Phase 1 scope is built from an actual `cargo nextest run --no-fail-fast`, collapsed to root causes and classified (code defect / fixture defect / gated) — never from the prior sprint's close notes or ROADMAP prose. Close notes summarise *intent*; named carries drift from the live failing set. S77's prose-built scope covered 13 of the 38 real failures. Two calibrations from the same episode: the 38 collapsed to about 10 roots, so N failing tests never means N fixes; and several "defects" were test-design defects, so check the test against the spec before assuming the code is wrong.
 
 **A ruling is scheduled when it is recorded, not merely routed.** `sprint` writes the implementing wave into `SPRINT.md` at the moment it writes the ruling into the notes. A ruling with no scheduled slot is an open item, not a settled one — S115 lost four waves to a widened trait-method rule that was scribed, routed, and never scheduled. The close checklist asserts it: every ruling recorded this sprint has either landed its implementation or carries an explicit, owned deferral.

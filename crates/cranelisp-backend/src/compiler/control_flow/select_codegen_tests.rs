@@ -11,12 +11,130 @@
 // — the tag bake does not depend on the branch shape, and the runtime semantics
 // are covered e2e.
 
+use crate::heap::HeapAdt;
 use crate::jit::Jit;
 use cranelisp_types::{
-    Defn, DefnVariant, Expr, ModuleFullPath, ResolvedCall, Span, Symbol, SymbolTable, Type,
-    Visibility,
+    Defn, DefnVariant, Expr, FQTypeName, ModuleFullPath, ResolvedCall, Span, Symbol, SymbolTable,
+    Type, TypeName, Visibility,
 };
 use std::collections::HashMap;
+
+fn node_bases_for_tag(clif: &str, tag: i64) -> Vec<String> {
+    let tag_values: Vec<&str> = clif
+        .lines()
+        .filter_map(|line| {
+            let (lhs, rhs) = line.trim().split_once(" = ")?;
+            (rhs.trim() == format!("iconst.i64 {tag}")).then_some(lhs)
+        })
+        .collect();
+    clif.lines()
+        .filter_map(|line| {
+            let code = line.split(';').next()?.trim();
+            let (stored, address) = code
+                .strip_prefix("store notrap aligned ")?
+                .split_once(", ")?;
+            if !tag_values.contains(&stored) {
+                return None;
+            }
+            address
+                .strip_suffix("+16")
+                .map(std::string::ToString::to_string)
+        })
+        .collect()
+}
+
+fn assert_node_func_addr_store(clif: &str, tag: i64, offset: i32) {
+    let func_values: Vec<&str> = clif
+        .lines()
+        .filter_map(|line| {
+            let (lhs, rhs) = line.trim().split_once(" = ")?;
+            rhs.starts_with("func_addr.i64 ").then_some(lhs)
+        })
+        .collect();
+    let bases = node_bases_for_tag(clif, tag);
+    let found = clif.lines().any(|line| {
+        let code = line.split(';').next().unwrap_or(line).trim();
+        let Some((stored, address)) = code
+            .strip_prefix("store notrap aligned ")
+            .and_then(|store| store.split_once(", "))
+        else {
+            return false;
+        };
+        func_values.contains(&stored)
+            && bases
+                .iter()
+                .any(|base| address == format!("{base}+{offset}"))
+    });
+    assert!(
+        found,
+        "node tag {tag} must store its disposer func_addr at +{offset}; CLIF:\n{clif}"
+    );
+}
+
+fn values_for_iconst(clif: &str, value: i64) -> Vec<&str> {
+    let expected = format!("iconst.i64 {value}");
+    clif.lines()
+        .filter_map(|line| {
+            let (lhs, rhs) = line.trim().split_once(" = ")?;
+            (rhs.trim() == expected).then_some(lhs)
+        })
+        .collect()
+}
+
+fn assert_node_const_store(clif: &str, tag: i64, offset: i32, value: i64) {
+    let stored_values = values_for_iconst(clif, value);
+    let bases = node_bases_for_tag(clif, tag);
+    let found = clif.lines().any(|line| {
+        let code = line.split(';').next().unwrap_or(line).trim();
+        let Some((stored, address)) = code
+            .strip_prefix("store notrap aligned ")
+            .and_then(|store| store.split_once(", "))
+        else {
+            return false;
+        };
+        stored_values.contains(&stored)
+            && bases
+                .iter()
+                .any(|base| address == format!("{base}+{offset}"))
+    });
+    assert!(
+        found,
+        "node tag {tag} must store constant {value} at +{offset}; CLIF:\n{clif}"
+    );
+}
+
+fn assert_node_payload_size(clif: &str, tag: i64, payload_size: usize) {
+    let expected = format!("iconst.i64 {payload_size}");
+    let size_values: Vec<&str> = clif
+        .lines()
+        .filter_map(|line| {
+            let (lhs, rhs) = line.trim().split_once(" = ")?;
+            (rhs.trim() == expected).then_some(lhs)
+        })
+        .collect();
+    let bases = node_bases_for_tag(clif, tag);
+    let found = clif.lines().any(|line| {
+        let code = line.split(';').next().unwrap_or(line).trim();
+        let Some((result, rhs)) = code.split_once(" = ") else {
+            return false;
+        };
+        if !bases.iter().any(|base| base == result) {
+            return false;
+        }
+        let Some(arguments) = rhs
+            .strip_prefix("call ")
+            .and_then(|call| call.split_once('('))
+            .and_then(|(_, tail)| tail.strip_suffix(')'))
+        else {
+            return false;
+        };
+        size_values.contains(&arguments.trim())
+    });
+    assert!(
+        found,
+        "node tag {tag} must allocate payload size {payload_size}; CLIF:\n{clif}"
+    );
+}
 
 fn int_lit(v: i64) -> Expr {
     Expr::IntLit {
@@ -26,11 +144,48 @@ fn int_lit(v: i64) -> Expr {
     }
 }
 
+fn io_int_type() -> Type {
+    Type::ADT(
+        FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("IO")),
+        vec![Type::Int],
+    )
+}
+
+fn io_int_lit(v: i64) -> Expr {
+    Expr::IntLit {
+        value: v,
+        span: Span::SYNTHETIC,
+        inferred_type: Some(Box::new(io_int_type())),
+    }
+}
+
+fn io_string_lit(v: i64) -> Expr {
+    Expr::IntLit {
+        value: v,
+        span: Span::SYNTHETIC,
+        inferred_type: Some(Box::new(Type::ADT(
+            FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("IO")),
+            vec![Type::String],
+        ))),
+    }
+}
+
+fn continuation_lit(input: Type) -> Expr {
+    Expr::IntLit {
+        value: 99,
+        span: Span::SYNTHETIC,
+        inferred_type: Some(Box::new(Type::Fn(vec![input], Box::new(io_int_type())))),
+    }
+}
+
 fn vec_lit(elements: Vec<Expr>) -> Expr {
     Expr::VecLit {
         elements,
         span: Span::SYNTHETIC,
-        inferred_type: Some(Box::new(Type::Int)),
+        inferred_type: Some(Box::new(Type::ADT(
+            FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Vec")),
+            vec![io_int_type()],
+        ))),
     }
 }
 
@@ -88,7 +243,7 @@ fn clif_of_body(body: Expr) -> String {
 // node over a 2-element branch Vec (the literal `6` at TAG_OFFSET).
 #[test]
 fn race_builds_select_node_tag_six() {
-    let clif = clif_of_body(builtin_call("race", vec![int_lit(1), int_lit(2)]));
+    let clif = clif_of_body(builtin_call("race", vec![io_int_lit(1), io_int_lit(2)]));
     assert!(
         clif.contains("iconst.i64 6"),
         "`race` must construct an IO_TAG_SELECT (tag 6) node; CLIF:\n{clif}"
@@ -101,12 +256,65 @@ fn race_builds_select_node_tag_six() {
 fn select_builds_select_node_tag_six() {
     let clif = clif_of_body(builtin_call(
         "select",
-        vec![vec_lit(vec![int_lit(1), int_lit(2)])],
+        vec![vec_lit(vec![io_int_lit(1), io_int_lit(2)])],
     ));
     assert!(
         clif.contains("iconst.i64 6"),
         "`select` must construct an IO_TAG_SELECT (tag 6) node; CLIF:\n{clif}"
     );
+}
+
+// spec: spec/10-io.md §10.12.9 item 4 + design/backend/io-trampoline.md §16.4 —
+// a Select result ownership edge carries the canonical disposer for `a`.
+#[test]
+fn race_carries_result_disposer_only_for_owning_payload() {
+    let scalar = clif_of_body(builtin_call("race", vec![io_int_lit(1), io_int_lit(2)]));
+    let owning = clif_of_body(builtin_call(
+        "race",
+        vec![io_string_lit(1), io_string_lit(2)],
+    ));
+    assert_eq!(HeapAdt::payload_size(2), 24);
+    assert_eq!(HeapAdt::field_offset(1), 32);
+    assert_node_payload_size(&scalar, 6, HeapAdt::payload_size(2));
+    assert_node_payload_size(&owning, 6, HeapAdt::payload_size(2));
+    assert_node_const_store(&scalar, 6, HeapAdt::field_offset(1), 0);
+    assert!(
+        !scalar.contains("func_addr"),
+        "Int result carries the zero disposer:\n{scalar}"
+    );
+    assert!(
+        owning.contains("func_addr.i64"),
+        "String result carries canonical drop glue:\n{owning}"
+    );
+    assert_node_func_addr_store(&owning, 6, HeapAdt::field_offset(1));
+}
+
+// spec: spec/10-io.md §10.12.9 item 4 + design/backend/io-trampoline.md §5.1 —
+// Bind records disposal authority for the value passed to its continuation.
+#[test]
+fn bind_carries_inner_result_disposer_only_for_owning_payload() {
+    let scalar = clif_of_body(builtin_call(
+        "bind",
+        vec![io_int_lit(1), continuation_lit(Type::Int)],
+    ));
+    let owning = clif_of_body(builtin_call(
+        "bind",
+        vec![io_string_lit(1), continuation_lit(Type::String)],
+    ));
+    assert_eq!(HeapAdt::payload_size(3), 32);
+    assert_eq!(HeapAdt::field_offset(2), 40);
+    assert_node_payload_size(&scalar, 2, HeapAdt::payload_size(3));
+    assert_node_payload_size(&owning, 2, HeapAdt::payload_size(3));
+    assert_node_const_store(&scalar, 2, HeapAdt::field_offset(2), 0);
+    assert!(
+        !scalar.contains("func_addr"),
+        "Int Bind input carries the zero disposer:\n{scalar}"
+    );
+    assert!(
+        owning.contains("func_addr.i64"),
+        "String Bind input carries canonical drop glue:\n{owning}"
+    );
+    assert_node_func_addr_store(&owning, 2, HeapAdt::field_offset(2));
 }
 
 // spec: io-trampoline.md §16.9 — the structural no-regression guard: an ordinary

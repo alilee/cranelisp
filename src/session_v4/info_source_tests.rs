@@ -1,7 +1,5 @@
 use super::*;
-use crate::code::Code;
-use cranelisp_types::{DefKind, ModuleEntry, Scheme, Symbol, Type, UserFnState, Visibility};
-use std::collections::HashMap as StdHashMap;
+use cranelisp_types::{BrokenProvenance, Symbol, Visibility};
 
 /// Fresh session with empty lib_dirs and a temp project_root so no
 /// prelude.cl is auto-discovered (mirrors
@@ -23,7 +21,8 @@ fn isolated_session() -> (CompilerSession, PathBuf) {
         nice_workers: 0,
         run_mode: RunMode::Repl,
     };
-    let mut s = CompilerSession::new(settings, tmp_root.clone(), "user");
+    let mut s =
+        CompilerSession::new(settings, tmp_root.clone(), "user").expect("test session bootstrap");
     s.set_lib_dirs(vec![]);
     (s, tmp_root)
 }
@@ -37,23 +36,7 @@ fn stage_fn_with_source(s: &CompilerSession, name: &str, source: &str, code_size
         .entry(user.clone())
         .or_insert_with(|| SessionSymbolTable::new_with_params(user.clone()));
     if let Some(mut st) = s.shared.symbol_tables.get_mut(&user) {
-        let slot = st.allocate_got_slot().expect("fresh table has free slots");
-        let entry: ModuleEntry<Code> = ModuleEntry::def(
-            Scheme {
-                type_vars: vec![],
-                constraints: StdHashMap::new(),
-                ty: Type::Fn(vec![Type::Int], Box::new(Type::Int)),
-            },
-            DefKind::UserFn {
-                fn_state: UserFnState::Concrete {
-                    got_slot: slot,
-                    mode_summary: None,
-                },
-            },
-        )
-        .visibility(Visibility::Public)
-        .build();
-        st.insert(Symbol::from(name), entry);
+        let _ = crate::repl::test_support::install_userfn(&mut st, name, None, Visibility::Public);
     }
     s.shared
         .introspection
@@ -120,13 +103,19 @@ fn handle_info_broken_includes_source_and_provenance_no_stats() {
         symbol: Symbol::from("f"),
     };
     let original_error = "type error: expected primitives/String, got primitives/Int";
-    s.shared.broken.insert(
-        fq_g.clone(),
-        crate::redefine::BrokenInfo {
-            broken_by: fq_f.clone(),
-            original_error: original_error.to_string(),
-            provenance: crate::redefine::compose_provenance(&fq_g, &fq_f, original_error),
-        },
+    let transition = s
+        .shared
+        .symbol_tables
+        .get_mut(&fq_g.module)
+        .expect("user table exists")
+        .mark_broken(
+            &fq_g.symbol,
+            BrokenProvenance::new(fq_f.clone(), original_error.to_string()),
+        )
+        .expect("concrete fixture becomes broken");
+    assert!(
+        transition.displaced_owner.is_none(),
+        "fixture has no compiled owner to retain"
     );
 
     let out = s.handle_info("g");

@@ -53,22 +53,30 @@ fn make_bind_expr_with_callee(callee: &str, io_expr: Expr, name: &str, body: Exp
     }
 }
 
-fn platform_effect_entry(sc: SchedulingClass) -> ModuleEntry {
-    ModuleEntry::def(
-        Scheme {
-            type_vars: vec![],
-            constraints: std::collections::HashMap::new(),
-            ty: Type::Int,
-        },
-        DefKind::PlatformEffect {
-            scheduling_class: sc,
-            poll_shape: false,
-            got_slot: 0,
-            mode_summary: None,
-        },
-    )
-    .visibility(Visibility::Public)
-    .build()
+fn install_platform_effect(
+    table: &mut SymbolTable,
+    name: &str,
+    sc: SchedulingClass,
+    poll_shape: bool,
+    slot: usize,
+) {
+    table
+        .install_platform(
+            Symbol::from(name),
+            Scheme {
+                type_vars: vec![],
+                constraints: std::collections::HashMap::new(),
+                ty: Type::Int,
+            },
+            Vec::new(),
+            None,
+            0,
+            sc,
+            poll_shape,
+            slot,
+            Visibility::Public,
+        )
+        .expect("platform-effect fixture installs");
 }
 
 /// Build a symbol table setup for bind-chain tests. Creates the
@@ -80,32 +88,34 @@ fn commutative_tables() -> (SymbolTables, ModuleFullPath) {
     let plat_mod = ModuleFullPath::from("platform.test");
 
     let mut plat = SymbolTable::new(plat_mod.clone());
-    plat.insert(
-        Symbol::from("get-time"),
-        platform_effect_entry(SchedulingClass::Commutative),
+    install_platform_effect(
+        &mut plat,
+        "get-time",
+        SchedulingClass::Commutative,
+        false,
+        0,
     );
-    plat.insert(
-        Symbol::from("http-get"),
-        platform_effect_entry(SchedulingClass::Commutative),
+    install_platform_effect(
+        &mut plat,
+        "http-get",
+        SchedulingClass::Commutative,
+        false,
+        1,
     );
-    plat.insert(
-        Symbol::from("print"),
-        platform_effect_entry(SchedulingClass::Sequential),
-    );
+    install_platform_effect(&mut plat, "print", SchedulingClass::Sequential, false, 2);
     tables.insert(plat_mod.clone(), plat);
 
     let mut user = SymbolTable::new(user_mod.clone());
     for name in &["get-time", "http-get", "print"] {
-        user.insert(
+        user.expose_candidate(
             Symbol::from(*name),
-            ModuleEntry::Import {
-                source: FQSymbol {
-                    module: plat_mod.clone(),
-                    symbol: Symbol::from(*name),
-                },
-                visibility: Visibility::Private,
+            FQSymbol {
+                module: plat_mod.clone(),
+                symbol: Symbol::from(*name),
             },
-        );
+            Visibility::Private,
+        )
+        .expect("platform-effect import fixture installs");
     }
     tables.insert(user_mod.clone(), user);
 
@@ -462,22 +472,18 @@ fn bind_chain_analysis_reads_scheduling_class_from_entry() {
     let m = ModuleFullPath::from("caller");
     let plat = ModuleFullPath::from("platform.t");
     let mut pst = SymbolTable::new(plat.clone());
-    pst.insert(
-        Symbol::from("op"),
-        platform_effect_entry(SchedulingClass::Commutative),
-    );
+    install_platform_effect(&mut pst, "op", SchedulingClass::Commutative, false, 0);
     tables.insert(plat.clone(), pst);
     let mut cst = SymbolTable::new(m.clone());
-    cst.insert(
+    cst.expose_candidate(
         Symbol::from("op"),
-        ModuleEntry::Import {
-            source: FQSymbol {
-                module: plat.clone(),
-                symbol: Symbol::from("op"),
-            },
-            visibility: Visibility::Private,
+        FQSymbol {
+            module: plat.clone(),
+            symbol: Symbol::from("op"),
         },
-    );
+        Visibility::Private,
+    )
+    .expect("platform-effect import fixture installs");
     tables.insert(m.clone(), cst);
 
     // Classify a direct call to `op` — must pick up the Commutative class
@@ -527,22 +533,18 @@ fn test_launch_emitted_for_discarded_resource_serial_result() {
     let m = ModuleFullPath::from("user");
     let plat = ModuleFullPath::from("platform.test");
     let mut pst = SymbolTable::new(plat.clone());
-    pst.insert(
-        Symbol::from("rd"),
-        platform_effect_entry(SchedulingClass::ResourceSerial),
-    );
+    install_platform_effect(&mut pst, "rd", SchedulingClass::ResourceSerial, false, 0);
     tables.insert(plat.clone(), pst);
     let mut cst = SymbolTable::new(m.clone());
-    cst.insert(
+    cst.expose_candidate(
         Symbol::from("rd"),
-        ModuleEntry::Import {
-            source: FQSymbol {
-                module: plat.clone(),
-                symbol: Symbol::from("rd"),
-            },
-            visibility: Visibility::Private,
+        FQSymbol {
+            module: plat.clone(),
+            symbol: Symbol::from("rd"),
         },
-    );
+        Visibility::Private,
+    )
+    .expect("platform-effect import fixture installs");
     tables.insert(m.clone(), cst);
 
     // (bind (rd) (fn [r] 7)) — r discarded; rd is ResourceSerial.
@@ -621,24 +623,6 @@ fn test_launch_transform_idempotent() {
 /// A poll-shape platform-effect entry (`poll_shape == true`) — the leading
 /// operand is the DYNAMIC token (the `(token, capacity, …)` convention), so
 /// these exercise the E3 token-0 refusal.
-fn poll_effect_entry(sc: SchedulingClass) -> ModuleEntry {
-    ModuleEntry::def(
-        Scheme {
-            type_vars: vec![],
-            constraints: std::collections::HashMap::new(),
-            ty: Type::Int,
-        },
-        DefKind::PlatformEffect {
-            scheduling_class: sc,
-            poll_shape: true,
-            got_slot: 0,
-            mode_summary: None,
-        },
-    )
-    .visibility(Visibility::Public)
-    .build()
-}
-
 /// Tables for the C-fanout matrix: a `platform.web`-shaped module exporting
 /// poll-shape leaves `rd`/`wr` (the read-conn/send-conn analogues,
 /// `ResourceSerial`), a `cm` (`Commutative` = token-0) and a `seq`
@@ -648,52 +632,39 @@ fn fanout_tables() -> (SymbolTables, ModuleFullPath) {
     let user_mod = ModuleFullPath::from("user");
     let plat = ModuleFullPath::from("platform.web");
     let mut p = SymbolTable::new(plat.clone());
-    p.insert(
-        Symbol::from("rd"),
-        poll_effect_entry(SchedulingClass::ResourceSerial),
-    );
-    p.insert(
-        Symbol::from("wr"),
-        poll_effect_entry(SchedulingClass::ResourceSerial),
-    );
-    p.insert(
-        Symbol::from("cm"),
-        poll_effect_entry(SchedulingClass::Commutative),
-    );
-    p.insert(
-        Symbol::from("seq"),
-        poll_effect_entry(SchedulingClass::Sequential),
-    );
+    install_platform_effect(&mut p, "rd", SchedulingClass::ResourceSerial, true, 0);
+    install_platform_effect(&mut p, "wr", SchedulingClass::ResourceSerial, true, 1);
+    install_platform_effect(&mut p, "cm", SchedulingClass::Commutative, true, 2);
+    install_platform_effect(&mut p, "seq", SchedulingClass::Sequential, true, 3);
     tables.insert(plat.clone(), p);
     let mut u = SymbolTable::new(user_mod.clone());
     for n in &["rd", "wr", "cm", "seq"] {
-        u.insert(
+        u.expose_candidate(
             Symbol::from(*n),
-            ModuleEntry::Import {
-                source: FQSymbol {
-                    module: plat.clone(),
-                    symbol: Symbol::from(*n),
-                },
-                visibility: Visibility::Private,
+            FQSymbol {
+                module: plat.clone(),
+                symbol: Symbol::from(*n),
             },
-        );
+            Visibility::Private,
+        )
+        .expect("platform-effect import fixture installs");
     }
     // The `sleep` timer leaf — a `DefKind::PrimitiveExtern` (mirrors
     // `bootstrap.rs`'s `sleep`). A resource-free timer: launch-eligible only as
     // a sub-tree MEMBER (the §4.1 timer refinement), never the single-step root.
-    u.insert(
+    u.install_host_promised(
         Symbol::from("sleep"),
-        ModuleEntry::def(
-            Scheme {
-                type_vars: vec![],
-                constraints: std::collections::HashMap::new(),
-                ty: Type::Int,
-            },
-            DefKind::PrimitiveExtern,
-        )
-        .visibility(Visibility::Public)
-        .build(),
-    );
+        Scheme {
+            type_vars: vec![],
+            constraints: std::collections::HashMap::new(),
+            ty: Type::Int,
+        },
+        Vec::new(),
+        None,
+        0,
+        Visibility::Public,
+    )
+    .expect("sleep primitive fixture installs");
     tables.insert(user_mod.clone(), u);
     (tables, user_mod)
 }

@@ -193,16 +193,16 @@ fn callees_records_renamed_import_by_storage_key() {
     check_src(&mut tc, "(defn foo [] 0)");
     // Back in `test`: import `foo` RENAMED to `bar`, then call `(bar)`.
     tc.set_current_module(ModuleFullPath::from("test"));
-    tc.symbol_table_mut().insert(
-        Symbol::from("bar"),
-        ModuleEntry::Import {
-            source: FQSymbol {
+    tc.symbol_table_mut()
+        .expose_candidate(
+            Symbol::from("bar"),
+            FQSymbol {
                 module: ModuleFullPath::from("lib"),
                 symbol: Symbol::from("foo"),
             },
-            visibility: Visibility::Public,
-        },
-    );
+            Visibility::Public,
+        )
+        .unwrap();
     check_src(&mut tc, "(defn use-bar [] (bar))");
     let edges = callees_of(&tc, "test", "use-bar");
     assert!(
@@ -330,12 +330,32 @@ fn callees_uniform_carrier_for_call_and_value_position() {
     );
 }
 
+// spec: design/typecheck/checked-body-publication.md §11.2 — a late
+// fn-value mono rewrite refines the exact checked body's callee vector before
+// its single publication window.
+#[test]
+fn callees_records_late_fn_value_mono_instance() {
+    let mut tc = tc_with_prims();
+    check_src(
+        &mut tc,
+        "(defn iden [x] x)\n\
+         (defn call1 [f x] (f x))\n\
+         (defn use1 [] (call1 iden 5))",
+    );
+    let edges = callees_of(&tc, "test", "use1");
+    assert!(
+        edges.contains(&fq_sym("test", "test/iden$Int")),
+        "the final callee set must include the fn-value's minted instance; got {edges:?}",
+    );
+}
+
 // spec: design/arch/fixmes/0472 + tests/plan/s101-coverage-postmortem.md
 //   §2.1 (impl-method-caller row) — a trait-impl method body checked at the
 //   Pass-1 seam (`check_impl_method`, outside the Pass-2 per-form delta)
 //   must STILL record its statically-resolved user-fn references on the
 //   mangled entry. Before the cure: `Sizey.bump$Int/Def.callees = []`
 //   (the recorder fired but every Pass-2 snapshot preceded its spans).
+//   tests/plan/s121-test-plan.md §3.8 CA-1.
 #[test]
 fn callees_records_impl_method_body_reference() {
     let mut tc = tc_with_prims();
@@ -377,11 +397,10 @@ fn callees_records_impl_method_body_reference() {
     };
     tc.register_trait_impl_self(&impl_).unwrap();
 
-    let edges = callees_of(&tc, "test", "Sizey.bump$primitives/Int");
-    assert!(
-        edges.contains(&fq_sym("test", "helper")),
-        "an impl-method body reference must record the edge on the \
-         mangled entry (FIXME 0472); got {edges:?}",
+    assert_eq!(
+        callees_of(&tc, "test", "Sizey.bump$primitives/Int"),
+        vec![fq_sym("test", "helper")],
+        "the impl body and its exact canonical callees publish atomically",
     );
 }
 
@@ -389,6 +408,7 @@ fn callees_records_impl_method_body_reference() {
 //   impl-method writeback; a synthesized default body (checked under the
 //   trait's DEFINING module, D1/S86) records its user-fn references on
 //   the mangled entry, with the FQ resolved in the trait-home context.
+//   tests/plan/s121-test-plan.md §3.8 CA-1.
 #[test]
 fn callees_records_default_method_body_reference() {
     let mut tc = tc_with_prims();
@@ -427,11 +447,123 @@ fn callees_records_default_method_body_reference() {
     };
     tc.register_trait_impl_self(&impl_).unwrap();
 
-    let edges = callees_of(&tc, "test", "Doubly.dbl$primitives/Int");
-    assert!(
-        edges.contains(&fq_sym("test", "dhelper")),
-        "a default-method body reference must record the edge on the \
-         mangled entry (FIXME 0472, same writeback seam); got {edges:?}",
+    assert_eq!(
+        callees_of(&tc, "test", "Doubly.dbl$primitives/Int"),
+        vec![fq_sym("test", "dhelper")],
+        "the default body and its exact canonical callees publish atomically",
+    );
+}
+
+// spec: design/typecheck/checked-body-publication.md §5;
+//   tests/plan/s121-test-plan.md §3.8 CA-1.
+#[test]
+fn callees_records_hkt_impl_method_body_reference() {
+    let mut tc = tc_with_prims();
+    check_src(&mut tc, "(defn hhelper [:Int x] :Int x)");
+    tc.register_type_def_self(
+        &TypeName::from("HOption"),
+        &None,
+        &[Symbol::from("a")],
+        &[cranelisp_types::ConstructorDef {
+            name: Symbol::from("HNone"),
+            docstring: None,
+            fields: vec![],
+            span: Span::SYNTHETIC,
+        }],
+        Visibility::Public,
+        Span::SYNTHETIC,
+    )
+    .unwrap();
+    let decl = crate::traits::test_helpers::parse_trait_decl(
+        "(deftrait (HCall f) (hcall [:(f a) x] Int))",
+    );
+    tc.register_trait_decl_self(&decl).unwrap();
+    let impl_ = TraitImpl {
+        head_con_var: Some(Symbol::from("f")),
+        trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("HCall")),
+        target: TypeExpr::Applied(
+            cranelisp_types::TypeRef::new(None, TypeName::from("HCall")),
+            vec![TypeExpr::Named(cranelisp_types::TypeRef::new(
+                None,
+                TypeName::from("HOption"),
+            ))],
+        ),
+        type_constraints: vec![],
+        methods: vec![Defn {
+            name: Symbol::from("hcall"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![(Symbol::from("x"), None)],
+                body: Expr::Apply {
+                    callee: Box::new(Expr::var(Symbol::from("hhelper"), Span::new(970, 977))),
+                    args: vec![Expr::IntLit {
+                        value: 1,
+                        span: Span::new(978, 979),
+                        inferred_type: None,
+                    }],
+                    span: Span::new(969, 980),
+                    resolved_call: None,
+                    inferred_type: None,
+                },
+                span: Span::new(960, 981),
+            }],
+            visibility: Visibility::Public,
+            span: Span::new(960, 981),
+        }],
+        span: Span::new(950, 982),
+    };
+    tc.register_trait_impl_self(&impl_).unwrap();
+    assert_eq!(
+        callees_of(&tc, "test", "HCall.hcall$test/HOption"),
+        vec![fq_sym("test", "hhelper")],
+        "the HKT body and its exact canonical callees publish atomically",
+    );
+}
+
+// spec: design/typecheck/checked-body-publication.md §5;
+//   tests/plan/s121-test-plan.md §3.8 CA-2.
+#[test]
+fn default_sig_dispatch_callee_keeps_trait_home_module() {
+    let mut tc = tc_with_prims();
+    let trait_home = ModuleFullPath::from("traits-home");
+    tc.set_current_module(trait_home.clone());
+    seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
+    check_src(&mut tc, "(defn pick ([:Int x] x) ([:String x] x))");
+    let decl = crate::traits::test_helpers::parse_trait_decl(
+        "(deftrait HomeDefault (req [self] self) (choose [x] :Int (pick x)))",
+    );
+    tc.register_trait_decl_self(&decl).unwrap();
+
+    tc.set_current_module(ModuleFullPath::from("test"));
+    let impl_ = TraitImpl {
+        head_con_var: None,
+        trait_name: cranelisp_types::TraitRef::new(
+            Some(trait_home.clone()),
+            TraitName::from("HomeDefault"),
+        ),
+        target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
+        type_constraints: vec![],
+        methods: vec![Defn {
+            name: Symbol::from("req"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![(Symbol::from("x"), None)],
+                body: Expr::var(Symbol::from("x"), Span::new(990, 991)),
+                span: Span::new(985, 992),
+            }],
+            visibility: Visibility::Public,
+            span: Span::new(985, 992),
+        }],
+        span: Span::new(980, 993),
+    };
+    tc.register_trait_impl_self(&impl_).unwrap();
+    assert_eq!(
+        callees_of(&tc, "test", "HomeDefault.choose$primitives/Int"),
+        vec![FQSymbol {
+            module: trait_home,
+            symbol: Symbol::from("pick"),
+        }],
+        "default-body SigDispatch must retain the authored overload owner",
     );
 }
 

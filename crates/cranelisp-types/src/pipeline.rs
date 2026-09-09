@@ -21,7 +21,7 @@ pub enum CodegenBehaviour {
 // zero-consumer public type; the binary's pipeline returns its own internal
 // shapes. The call-graph cluster (`CallEdge`/`CallInfo`/`CallGraph`) is
 // likewise deleted — the LIVE call-graph mechanism is the per-entry
-// `ModuleEntry::Def.callees: Vec<FQSymbol>` field (Decision 21), not a
+// callable lifecycle's `callees: Vec<FQSymbol>` field (Decision 21), not a
 // parallel map.
 
 /// Named constant for GOT table size. Shared between backend and runtime crates

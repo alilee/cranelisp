@@ -1,5 +1,7 @@
 use super::*;
-use cranelisp_types::{Scheme, Visibility};
+use cranelisp_types::{
+    CallableOrigin, ConcreteType, MonoDefnVariant, MonoExpr, Realization, Scheme, Span, Visibility,
+};
 use std::collections::HashMap;
 
 fn fqtn(module: &str, name: &str) -> FQTypeName {
@@ -48,31 +50,39 @@ fn register_product_named(
         type_params: vec![],
         constructors: vec![Symbol::from(name)],
     };
-    st.insert(
-        Symbol::from(name),
-        ModuleEntry::Def {
-            scheme,
-            visibility: Visibility::Public,
-            docstring: None,
-            param_names,
-            kind: Box::new(DefKind::Constructor {
-                got_slot: 0,
-                type_name: fqtn(module, name),
-                tag: 0,
-                field_count: field_types.len(),
-                internal: false,
-                type_def: Some(Box::new(type_def)),
-                mode_summary: None,
-            }),
-            callees: vec![],
-            trait_origin: None,
-            seq: 0,
-            ast: None,
-            codegen_view: None,
-            code: None,
-            value_use: false,
+    let symbol = Symbol::from(name);
+    st.install_concrete(
+        symbol.clone(),
+        scheme,
+        param_names,
+        None,
+        0,
+        CallableOrigin::Ctor {
+            type_name: fqtn(module, name),
+            tag: 0,
+            field_count: field_types.len(),
+            internal: false,
+            type_def: Some(Box::new(type_def)),
         },
-    );
+        Realization::Body {
+            view: MonoDefnVariant {
+                name: symbol,
+                params: vec![],
+                body: MonoExpr::IntLit {
+                    value: 0,
+                    span: Span::SYNTHETIC,
+                    ty: ConcreteType::Int,
+                },
+                span: Span::SYNTHETIC,
+                mode_summary: None,
+            },
+            code: None,
+        },
+        None,
+        vec![],
+        Visibility::Public,
+    )
+    .expect("install product constructor fixture");
     tables.insert(m, st);
 }
 
@@ -170,32 +180,22 @@ fn platform_effect_roots_excludes_scalars() {
     let plat = ModuleFullPath::from("platform.shapes");
     let mut pt = SymbolTable::new(plat.clone());
     let rect = Type::ADT(fqtn("shapes", "Rectangle"), vec![]);
-    pt.insert(
+    pt.install_platform(
         Symbol::from("rectangle-area"),
-        ModuleEntry::Def {
-            scheme: Scheme {
-                type_vars: vec![],
-                constraints: HashMap::new(),
-                ty: Type::Fn(vec![rect.clone()], Box::new(Type::Int)),
-            },
-            visibility: Visibility::Public,
-            docstring: None,
-            param_names: vec![Symbol::from("r")],
-            kind: Box::new(DefKind::PlatformEffect {
-                scheduling_class: cranelisp_types::SchedulingClass::Sequential,
-                poll_shape: false,
-                got_slot: 0,
-                mode_summary: None,
-            }),
-            callees: vec![],
-            trait_origin: None,
-            seq: 0,
-            ast: None,
-            codegen_view: None,
-            code: None,
-            value_use: false,
+        Scheme {
+            type_vars: vec![],
+            constraints: HashMap::new(),
+            ty: Type::Fn(vec![rect.clone()], Box::new(Type::Int)),
         },
-    );
+        vec![Symbol::from("r")],
+        None,
+        0,
+        cranelisp_types::SchedulingClass::Sequential,
+        false,
+        0,
+        Visibility::Public,
+    )
+    .expect("install platform-effect fixture");
     tables.insert(plat.clone(), pt);
 
     let roots = platform_effect_roots(tables.get(&plat).unwrap().value());

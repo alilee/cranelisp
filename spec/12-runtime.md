@@ -110,12 +110,12 @@ When a top-level function is used as a value (passed as an argument, stored in a
 
 ## 12.3 Memory Management [Tested]
 
-### 12.3.1 Requirements [Tested tests/spec_12_runtime::string_literal_alloc_drop_balanced]
+### 12.3.1 Requirements [Tested tests/spec_12_runtime::string_literal_alloc_drop_balanced, tests/shadowed_param_reach_stale_rc_dec::binder_rename_must_not_change_rc_counters, tests/same_form_rebinding::tail_transfer_releases_the_displaced_same_name_binder_run_and_link, tests/par_cont_capture_consuming_use::par_continuation_heap_capture_survives_consuming_uses]
 
 A conforming implementation MUST satisfy the following:
 
 1. Heap-allocated values (strings, closures, data constructors, Vecs) MUST be freed when they are no longer reachable from any live binding or data structure. [Tested tests/spec_12_runtime::string_literal_alloc_drop_balanced, tests/nullary_arm_beside_boxed_arm_0917::nullary_arm_beside_boxed_arm_frees_its_loop_under_run]
-2. Freed memory MUST NOT be accessed after deallocation. [Tested tests/spec_12_runtime::string_literal_alloc_drop_balanced]
+2. Freed memory MUST NOT be accessed after deallocation. [Tested tests/spec_12_runtime::string_literal_alloc_drop_balanced, tests/shadowed_param_reach_stale_rc_dec::shadowed_param_binder_safety_matrix_run_and_link_agree, tests/shadowed_param_reach_stale_rc_dec::shadowed_fresh_rhs_binder_rc_balance_matches_ownership_off, tests/shadowed_param_reach_stale_rc_dec::renamed_fresh_rhs_binder_control_safety_matrix_green]
 3. The user MUST NOT need to manage memory manually — allocation and deallocation are entirely the implementation's responsibility. [Tested tests/spec_12_runtime::string_literal_alloc_drop_balanced]
 
 ### 12.3.2 Implementation Freedom [Tested crates/cranelisp-intrinsics/src/alloc.rs::test_live_allocs_tracking]
@@ -148,7 +148,7 @@ The left-to-right ordering of `let` bindings and function arguments is the **obs
 
 The `Seq` type provides lazy evaluation through thunks (zero-argument closures). Laziness is explicit and user-controlled — it is NOT a property of the evaluation model itself.
 
-### 12.4.3 Lenient Evaluation [Tested tests/spec_12_runtime::lenient_no_lenient_env_var_preserves_correctness]
+### 12.4.3 Lenient Evaluation [Tested+Neg tests/spec_12_runtime::lenient_no_lenient_env_var_preserves_correctness, tests/spec_12_runtime::apply_arg_single_expensive_preserves_result_parity]
 
 An implementation MUST evaluate independent `let` bindings in parallel where a cost heuristic determines it is beneficial, and MAY likewise evaluate independent arguments of a function application in parallel under the same heuristic. This is called **lenient evaluation**. Because all binding expressions in a `let` and all argument expressions in an application are pure (effects are sequenced through `IO`/`bind!`, never through raw binding or argument evaluation — see [§10.12](10-io.md#1012-automatic-io-scheduling)), evaluating independent sub-expressions concurrently produces the same result as sequential left-to-right evaluation — the non-determinism in evaluation order is not observable. The permission is granted precisely *because* it is unobservable: a conforming implementation that evaluates everything sequentially left-to-right also conforms. [S92]
 

@@ -323,9 +323,9 @@ Grep-2 overlay files audited in §4a:
 
 | File | Owning crate | Site count | §4a sub |
 |---|---|---:|---|
-| `src/code.rs` | `cranelisp` (/int) | 1 (`Code`) | §4a.1 |
+| `crates/cranelisp-backend/src/code.rs` (re-exported by `src/code.rs`) | `cranelisp-backend` | 1 (`Code`) | §4a.1 |
 | `crates/cranelisp-types/src/got.rs` | `cranelisp-types` | 1 (`GotTable`) | §4a.2 |
-| `crates/cranelisp-types/src/module.rs` | `cranelisp-types` | 1 (`ModuleEntry<C>`) | §4a.3 |
+| `crates/cranelisp-types/src/module.rs` | `cranelisp-types` | 1 historical (`ModuleEntry<C>`; C1 successor in `lifecycle.rs`) | §4a.3 |
 | `src/session_v4.rs` | `cranelisp` (/int) | 4 (2 unsafe impl + 2 thread_local raw-ptr) | §4a.4 |
 | `src/platform.rs` | `cranelisp` (/int) | 1 (`LoadedPlatform`) | §4a.5 |
 | `crates/cranelisp-platform/src/lib.rs` | `cranelisp-platform` | 1 (`PlatformFn`) | §4a.5 |
@@ -429,33 +429,28 @@ column G states the invariant (paraphrasing or quoting the source
 `unsafe-impl-with-invariant`, `unsafe-impl-prose-invariant`, or
 `thread_local-coordination`.
 
-### §4a.1 `src/code.rs::Code` — JITModule/Linker wrapper
+### §4a.1 `crates/cranelisp-backend/src/code.rs::Code` — JITModule/Linker retention root
 
 | A | B | C | D | E | F | G | H | I | J |
 |---|---|---|---|---|---|---|---|---|---|
-| `code::Code` (enum — `Jit { jit: Arc<Jit>, ptr: *const u8 }` / `Linker { linker: Arc<Linker>, ptr: *const u8 }`) | `f22dd2d` L72–87, unsafe impls L106–107 | S (writer — batch finalise); P/N/R (readers — function dispatch via `ModuleEntry::Def.code`) | clone the `Arc`, read `ptr`; never mutate the contained `Jit`/`Linker` after construction | none — thread-safety rests on `Arc`'s own Send+Sync plus post-finalize immutability of the `Jit`/`Linker` body | `published-then-read` | Source comment L98–105 (quoted): "`Arc<Jit>` / `Arc<Linker>` carriers are themselves `Send + Sync`; the `*const u8` pointer is an integer handle into pages the Arc keeps alive. `Jit` is not auto-`Sync` because of `JITModule`'s interior mutability around its symbol cache, but the post-finalize state we hold here is read-only: `Code` instances only support cloning the `Arc` (thread-safe refcount bumps) and reading `ptr` (no method dispatch on `Jit`)." | no | stable (S58 Wave 3b) — **Wave-1c re-verification**: source comment L98–105 + module-level docs L38–53 are current with Decision 31 / Wave-3b (module docs L33–36 explicitly document `kept_jits` dissolution; SAFETY block at L38–53 references per-redefinition reclaim, not process-lifetime pages). Column G matches source; no rewrite needed. Contrast §4a.2 `GotTable`, whose source comment is stale. | `unsafe-impl-with-invariant` |
+| `cranelisp_backend::Code` (`Jit(Arc<Jit>)` / `Linker(Arc<Linker>)`) | `code.rs` enum + manual `Send`/`Sync` impl | S (writer — batch finalise); P/N/R (retention readers via `Binding → Decl::Callable → Life::Concrete → Realization::Body.code`) | clone/drop the `Arc`; callable addresses are read from `GotTable`, not from `Code` | none — thread-safety rests on post-finalize immutability of the `Jit`/`Linker` body and thread-safe `Arc` refcounting | `published-then-read` | `Code` carries lifecycle ownership only and contains no raw address. The manual auto-trait override exists because `JITModule` has interior mutability, but callers can only clone/drop the retained post-finalize batch. | no | current (Decision 41 + S121 C1 carrier refresh) | `unsafe-impl-with-invariant` |
 
 Decision 31 linkage: this row carries the JIT-memory lifetime
 invariant — no thread may hold a reference into JIT code whose
 `Arc<Jit>` has been dropped. See §9.5.
 
-**Wave-1c re-verification outcome** (precedent check against
-`GotTable`'s stale-invariant finding at §4a.2): the `Code` source
-comment was re-read at SHA `f22dd2d` on 2026-04-22. Both the
-inline SAFETY comment (L98–105) and the module-level docs (L38–53
-§Safety) explicitly document the Wave-3b/Decision-31 reclaim model
-— no `kept_jits` claim, no process-lifetime-pages claim. The
-column-G statement matches the current source. **No rewrite
-required.** The `GotTable` drift pattern (source comment stale w.r.t.
-Decision 31) is confirmed as specific to `crates/cranelisp-types/src/got.rs`
-and does not generalize to the adjacent `src/code.rs`; the Code
-authors updated the SAFETY text when Wave 3b landed.
+**C1 refresh.** `Code` remains the Arc retention root but no longer carries
+the callable address. The address has one home in `GotTable`; the private
+binding store carries `Code` only in `Life::Concrete →
+Realization::Body.code`. Replacing that binding drops its Arc clone. This
+preserves the Decision-31 reclaim model without the former `ModuleEntry`
+carrier.
 
 ### §4a.2 `crates/cranelisp-types/src/got.rs::GotTable` — GOT slots
 
 | A | B | C | D | E | F | G | H | I | J |
 |---|---|---|---|---|---|---|---|---|---|
-| `cranelisp_types::got::GotTable` (`slots: Box<[AtomicPtr<u8>; GOT_TABLE_SIZE]>`) | `f22dd2d` L26–28, unsafe impls L33–34 | S (writer at registration); P/N (writers on codegen completion — `store_slot` with `Release`); R (readers via JIT code + `load_slot` with `Acquire`) | `store_slot(slot, ptr)` — `AtomicPtr::store(Release)`; `load_slot(slot)` — `AtomicPtr::load(Acquire)`; JIT code reads raw bytes at `got_base + slot*8` | none beyond per-slot `AtomicPtr` release/acquire pairing | `atomic-by-construction` | Source comment L30–32 (quoted): "`GotTable` contains `AtomicPtr` which is inherently `Send+Sync`. The raw pointer values stored point to JIT code pages that remain valid for the process lifetime (Cranelift leaks code memory on drop)." — However, under Decision 31 per-redefinition reclaim, JIT code pages **do not** remain valid for the process lifetime: the prior generation's pages are freed when the last `Arc<Jit>` drops. The comment's quoted invariant is **stale with respect to Decision 31**. The actual Decision-31 invariant is stated at §9.5: GOT-slot atomic swap must be paired with the originating generation's `Arc<Jit>` being kept alive by at least one `ModuleEntry::Def.code` for the duration of any read that observed the slot value. | no | **flagged for /arch** — invariant in source comment predates Decision 31 and should be rewritten | `unsafe-impl-prose-invariant` (source-comment invariant is stale w.r.t. Decision 31; the correct invariant lives in §9.5, not in the `GotTable` impl itself) |
+| `cranelisp_types::got::GotTable` (`slots: Box<[AtomicPtr<u8>; GOT_TABLE_SIZE]>`) | `f22dd2d` L26–28, unsafe impls L33–34 | S (writer at registration); P/N (writers on codegen completion — `store_slot` with `Release`); R (readers via JIT code + `load_slot` with `Acquire`) | `store_slot(slot, ptr)` — `AtomicPtr::store(Release)`; `load_slot(slot)` — `AtomicPtr::load(Acquire)`; JIT code reads raw bytes at `got_base + slot*8` | none beyond per-slot `AtomicPtr` release/acquire pairing | `atomic-by-construction` | Source comment L30–32 (quoted): "`GotTable` contains `AtomicPtr` which is inherently `Send+Sync`. The raw pointer values stored point to JIT code pages that remain valid for the process lifetime (Cranelift leaks code memory on drop)." — However, under Decision 31 per-redefinition reclaim, JIT code pages **do not** remain valid for the process lifetime: the prior generation's pages are freed when the last `Arc<Jit>` drops. The comment's quoted invariant is **stale with respect to Decision 31**. The actual Decision-31 invariant is stated at §9.5: GOT-slot atomic swap must be paired with the originating generation's `Arc<Jit>` being kept alive by the binding's `Life::Concrete → Realization::Body.code` carrier for the duration of any read that observed the slot value. | no | **flagged for /arch** — invariant in source comment predates Decision 31 and should be rewritten | `unsafe-impl-prose-invariant` (source-comment invariant is stale w.r.t. Decision 31; the correct invariant lives in §9.5, not in the `GotTable` impl itself) |
 
 **New finding.** The `GotTable` source comment ("JIT code pages remain
 valid for the process lifetime") was accurate under the pre-Decision-31
@@ -468,15 +463,18 @@ currently-live `Arc<Jit>` — stated in §9.5, not at the `GotTable`
 site. `/arch` to adjudicate whether the `GotTable` SAFETY comment is
 rewritten or a cross-reference note is added.
 
-### §4a.3 `crates/cranelisp-types/src/module.rs::ModuleEntry<C>` — module entry
+### §4a.3 `crates/cranelisp-types/src/lifecycle.rs::Binding<C>` — C1 lifecycle carrier
 
-Discovered during Grep 2 pass — was NOT on the original 10-site list
-supplied by `/sprint`. `rg 'unsafe impl'` found it in active code at
-`crates/cranelisp-types/src/module.rs:559-560`.
+The Sprint 62 Grep-2 pass found the former `ModuleEntry<C>` manual
+`Send`/`Sync` implementation. C1 removed that enum and its raw
+`platform_fn_ptr`. The current carrier follows
+`design/arch/symbol-table-lifecycle.md` §§3–4: private table storage holds
+`Binding<C>`; callable declarations carry `Callable<C>` and exactly one
+`Life<C>` state; lifecycle writes pass through the `SymbolTable` funnels.
 
 | A | B | C | D | E | F | G | H | I | J |
 |---|---|---|---|---|---|---|---|---|---|
-| `cranelisp_types::module::ModuleEntry<C>` (enum — variants include `Def { platform_fn_ptr: Option<*const u8>, code: Option<C>, ... }`) | `f22dd2d` L559–560 (module.rs) | S/P/N/R | DashMap insert/read via `SymbolTable<C,_>::entries`; field reads on `Def` variant | DashMap shard (per-entry) | `published-then-read` (per §6.1 `SharedState::symbol_tables` row) | Source comment L540–558 (paraphrased): the `*const u8` `platform_fn_ptr` is an integer handle into DLL code pages kept alive by the session's `kept_dlls` Vec (see §4a.5 `LoadedPlatform`); threads dereferencing `platform_fn_ptr` must hold a live handle transitively via the session. The `code: Option<C>` field's safety is delegated to the `C: CodeStore` bound, which requires `Send + Sync + 'static`; for `C = Code` (the integration layer's enum per Decision 35) the §4a.1 invariants apply. | no | stable (S58+, Decision 25/32/35) | `unsafe-impl-with-invariant` |
+| `Binding<C> → BindingBody::Decl(Decl::Callable(Callable<C>)) → Life<C>` | C1: `lifecycle.rs` `Binding`/`Callable`/`Life`; `module.rs` private `symbols` + lifecycle funnels | S/P/N/R | DashMap access to the per-module `SymbolTable`; reads project through `Binding`; declaration, settlement, installation, break and retirement use table funnels | DashMap shard (per module); no inner manual auto-trait override | `published-then-read` (per §6.1 `SharedState::symbol_tables` row) | The carrier contains no raw pointer. Compiled code exists only as `Realization::Body { code: Option<C>, .. }`, where `C: CodeStore` requires `Clone + Send + Sync + 'static`; platform callables carry `Realization::Dll`, while the DLL pointer is published into the atomic `GotTable` slot and its loaded library remains the session lifetime root (§4a.5). `Binding<C>`, `Callable<C>` and `Life<C>` therefore derive thread safety from their fields. | no | current (S121 C1); the former manual `ModuleEntry<C>` unsafe impl is retired | `auto-derived-safe` |
 
 ### §4a.4 `src/session_v4.rs` and `src/expander.rs` — thread_local-coordination surface
 
@@ -758,6 +756,10 @@ references the current Decision-31 / Wave-3b model:
   the reclaim path actually runs on every `Jit` drop; this counter is
   the observable evidence it does."
 
+Those quotations preserve the pre-C1 source spelling. The current table
+carrier is the §4a.3 `Binding → Callable → Life::Concrete →
+Realization::Body.code` path; the lifetime invariant is unchanged.
+
 No stale `kept_jits` claim, no "process-lifetime pages" claim, no
 references to the pre-Wave-3b retention model. The invariant on the
 `Jit` side is **current**. This matches the `Code` re-verification
@@ -866,12 +868,12 @@ fields plus the two REPL-specific items (§6.3, §6.4).
 | `session_v4::SharedState::cached_modules` | `f22dd2d` L582 | S/P/R (via `try_cache_hit_load`, file-watcher cascade, `re_register_module`) | insert on cache-hit load; remove on invalidation; `contains` checks | `cached_modules` Mutex | `invariant-unclear` |  | no (per-field); **cross-cutting dual-store with `SchedulerState::cached_modules` §4.2 — flagged §9** | flagged for `/arch` Wave-1 gate |
 | `session_v4::SharedState::file_to_module` | `f22dd2d` L587 | P (writer in `handle_import`); R (reader in file-watcher `try_pop_changes`) | Mutex-guarded insert on canonicalised path; lookup on FS event | `file_to_module` Mutex | `under-lock-L` | Every module with a resolved on-disk source has at most one canonical-path key mapping to its `ModuleFullPath`; lookups see a fully-inserted entry or none. | no | stable |
 | `session_v4::SharedState::cache_state` | `f22dd2d` L592 | P/N (writers for record hits/writes); R (initialisation, snapshot at end) | Mutex-guarded option initialise / record update | `cache_state` Mutex | `under-lock-L` | Manifest records are added exactly once per successful cache hit or object write; Option is `Some` iff caching is enabled for this session. | no | stable |
-| `session_v4::SharedState::symbol_tables` | `f22dd2d` L608 | S/P/N/R | DashMap entry seed / mutate / read (52+ call sites across typecheck + codegen + REPL) | DashMap shard RwLock (per key) | `published-then-read` | Writer (typechecker via `TypeCheckEnv::ensure_module_exists` + per-form Def inserts) populates an entry fully, and the module transitions to `TypecheckDone` only after the last Def is inserted; readers that observe the pool transition see a complete `SymbolTable`. (S61 H6 residue is the residual risk: see §5.5 / §10.) | yes (shared surface with §5.5 residue) | **Tier 1 candidate** for risk register |
+| `session_v4::SharedState::symbol_tables` | `f22dd2d` L608 | S/P/N/R | DashMap entry seed / mutate / read (52+ call sites across typecheck + codegen + REPL) | DashMap shard RwLock (per key) | `published-then-read` | Writer populates the private binding store through the `SymbolTable` declaration and settlement funnels, and the module transitions to `TypecheckDone` only after the last binding settles; readers that observe the pool transition see a complete `SymbolTable`. (S61 H6 residue is the residual risk: see §5.5 / §10.) | yes (shared surface with §5.5 residue) | **Tier 1 candidate** for risk register |
 | `session_v4::SharedState::next_type_id` | `f22dd2d` L612 | S/P | `fetch_add(1, Relaxed)` across all TypeCheckEnv instances | none (it's the atomic itself) | `atomic-by-construction` | Every TypeId issued by the session is unique; monotonically non-decreasing; no invariant across multiple fetches other than uniqueness. | no | stable (S51) |
 | `session_v4::SharedState::current_module` | `f22dd2d` L616 | R (read+write); S (initialisation) | Mutex-guarded single-value swap | `current_module` Mutex | `under-lock-L` | Reads and writes are single-value under the Mutex; the value is only meaningful in REPL mode where one thread (REPL eval) drives reads and writes. In batch mode, worker-thread reads occur under the same Mutex with the guarantee that no concurrent writer exists. | no | stable |
 | `session_v4::SharedState::repl_check_state` | `f22dd2d` L621 | R (primary); P (read for REPL retry post-unblock) | Mutex-guarded option read/mutate | `repl_check_state` Mutex | `invariant-unclear` |  | no | **flagged for Wave-1 gate — reader-class split** |
 | `session_v4::SharedState::typecheck_products` | `f22dd2d` L628 | P (writer); N (reader) | DashMap insert per module / read-on-claim for codegen | DashMap shard | `published-then-read` | Writer inserts the `TypecheckProduct` entry before calling `scheduler.notify_typecheck_done`; readers observe the entry only after the pool transition, via the scheduler's publication barrier. | no | stable |
-| `session_v4::SharedState::kept_dlls` | `f22dd2d` L663 | S/P/N/R (readers through transitively-held `fn_ptr`s); P (writer — platform load) | Mutex-guarded push (append-only) | `kept_dlls` Mutex | `published-then-read` | A `LoadedPlatform` is pushed before any `ModuleEntry::Def.platform_fn_ptr` derived from it is registered into `symbol_tables`; the Vec is never drained for session lifetime; readers dispatching through `fn_ptr` rely on the handle being retained. | no | stable (S57 W3 G8) |
+| `session_v4::SharedState::kept_dlls` | `f22dd2d` L663 | S/P/N/R (readers through transitively-held `fn_ptr`s); P (writer — platform load) | Mutex-guarded push (append-only) | `kept_dlls` Mutex | `published-then-read` | A `LoadedPlatform` is pushed before its function pointers are published into the module's atomic GOT slots through platform lifecycle installation; the Vec is never drained for session lifetime, so readers dispatching through a slot retain the DLL transitively. | no | stable (S57 W3 G8; C1 carrier refresh) |
 | `session_v4::SharedState::introspection` | `f22dd2d` L665 | P (writer, per compiled symbol); R (reader, REPL slash commands) | DashMap insert per symbol; REPL reads on demand | DashMap shard | `published-then-read` | Writer inserts the `Introspection` entry for `sym` before or during the inmem codegen completion; REPL reads rely on the user having evaluated the symbol, which implies codegen completion published the entry first. | no | stable |
 
 ### §6.2 `CompilerSession.shared: Arc<SharedState>` clone sites
@@ -1035,7 +1037,7 @@ two access paths:
 | A | B | C | D | E | F | G | H | I |
 |---|---|---|---|---|---|---|---|---|
 | `typecheck::checker::TypeCheckEnv::modules` (ensure-path) | `f22dd2d` L148 / L233–L293 | S/P/R | `entry(path).or_insert_with(...)` — shard-locked check-then-insert; emits `SymbolTableEnsure { Created | AlreadyPresent }` after the shard lock is released | DashMap shard write-lock (held by `entry(...)` guard across the closure) | `atomic-by-construction` | A concurrent ensure on the same `path` serialises behind the shard write-lock: exactly one caller observes `Vacant` and inserts; all others observe `Occupied` and leave the populated table intact (no overwrite). | no (S61 Wave 3 step 3e'' closed the prior `contains_key` … `insert` residue by collapsing to a single shard-locked `entry` call) | stable (S61 Wave 3) |
-| `typecheck::checker::TypeCheckEnv::modules` (lookup-path) | `f22dd2d` L148 / 52 sites | S/P/R | `get` / `get_mut` / `contains_key` / `iter` / per-entry `SymbolTable` mutation via `RefMut` guard | DashMap shard RwLock (per-guard) | `published-then-read` | A reader that observes `modules[m]` after the writer (priority worker's typecheck of `m`) has transitioned `m` to `TypecheckDone` (§4.2) sees a complete `SymbolTable` for `m`; mid-typecheck concurrent reads on `m` are confined to the same worker's own `CheckState` + per-form incremental `ModuleEntry` inserts which are monotonic-additive within a module (no entry is removed mid-typecheck). | no (H6 residue on this physical map is enumerated on the /int side under `handle_import` §5.5 — cross-crate, not typecheck-internal) | stable (S60 Wave 2 Round 4 / S61 Wave 3 on the cross-crate surface) |
+| `typecheck::checker::TypeCheckEnv::modules` (lookup-path) | `f22dd2d` L148 / 52 sites | S/P/R | `get` / `get_mut` / `contains_key` / `iter` / per-entry `SymbolTable` mutation via `RefMut` guard | DashMap shard RwLock (per-guard) | `published-then-read` | A reader that observes `modules[m]` after the writer (priority worker's typecheck of `m`) has transitioned `m` to `TypecheckDone` (§4.2) sees a complete `SymbolTable` for `m`; mid-typecheck concurrent reads on `m` are confined to the same worker's own `CheckState` plus monotonic per-form `Binding` insertion and lifecycle settlement through the table funnels (no binding is removed mid-typecheck). | no (H6 residue on this physical map is enumerated on the /int side under `handle_import` §5.5 — cross-crate, not typecheck-internal) | stable (S60 Wave 2 Round 4 / S61 Wave 3 on the cross-crate surface; C1 carrier refresh) |
 | `typecheck::checker::TypeCheckEnv::next_id` | `f22dd2d` L142 | S/P | `fetch_add(1, Relaxed)` via `self.next_id.fetch_add(1, Ordering::Relaxed)` across `fresh_type_var` / `fresh_id` helpers | none (it's the atomic itself) | `atomic-by-construction` | Every TypeId issued by any `TypeCheckEnv` aliasing the same `AtomicU32` is unique; monotonically non-decreasing; no invariant across multiple fetches other than uniqueness (matches §6.1 `SharedState::next_type_id` invariant — same physical atomic). | no | stable (S51) |
 
 **`repl_check_state` priority-worker-reader claim — verdict: REFUTED.**
@@ -1216,12 +1218,13 @@ constraint, not race) is unchanged.
 Typecheck readers of `SharedState::symbol_tables` (via
 `TypeCheckEnv::modules`) do NOT assume `got_slot` stability across
 concurrent redefinition. The §8.2 lookup-path row's `published-then-read`
-invariant rests on monotonic-additive per-form `ModuleEntry` inserts
-within a module, not on the GOT-slot or `Code::Jit` handle remaining
+invariant rests on monotonic-additive per-form `Binding` insertion and
+lifecycle settlement through the table funnels within a module, not on
+the GOT-slot or `Code::Jit` handle remaining
 identity-stable across redefinition. Typecheck never dereferences a raw
-`fn_ptr` and never holds a `Code::Jit` Arc across a read of
-`ModuleEntry::Def`; the per-redefinition reclaim (Decision 31) is
-therefore transparent to typecheck-side readers.
+`fn_ptr` and never holds a `Code::Jit` Arc across a read of a callable's
+`Life::Concrete → Realization::Body`; the per-redefinition reclaim
+(Decision 31) is therefore transparent to typecheck-side readers.
 
 **Proposed addition to §9 (new §9.5 placement)**: `/sprint` to renumber
 — the four proposed items above land as §9.5 (joint symbol_tables),
@@ -1267,13 +1270,13 @@ pattern if an observed test exists, else Tier-3).
 
 `design/arch/CLAUDE.md` Decision 31 establishes that every REPL
 redefinition produces a new `Arc<Jit>` (or `Arc<Linker>`) on the
-matching `ModuleEntry::Def.code`, and when the prior entry drops, the
-`Jit::Drop` call reclaims JIT memory. Every reader of
+matching callable's `Life::Concrete → Realization::Body.code`, and when
+the prior binding drops, the `Jit::Drop` call reclaims JIT memory. Every reader of
 `SharedState::symbol_tables` (§6.1) MUST preserve the GOT-slot
-atomic-swap invariant: reads of `Def.code` go through the DashMap
-entry, which holds the Arc, keeping the JIT alive for the duration of
-the read borrow. The §6.1 row for `symbol_tables` and the §5.3 row
-for the nice-worker reader reference this invariant. Decision 31 is
+atomic-swap invariant: reads of `Realization::Body.code` go through the
+DashMap table guard and private binding projection, which holds the Arc
+for the duration of the read borrow. The §6.1 row for `symbol_tables` and
+the §5.3 row for the nice-worker reader reference this invariant. Decision 31 is
 the cited authority; the audit records the invariant as
 `published-then-read` and notes that the per-redefinition reclaim is
 predicated on no priority worker holding a raw fn_ptr across a
@@ -1295,8 +1298,9 @@ reclaim: every REPL redefinition produces a new `Arc<Jit>` (or
 `Arc<Linker>`), and when the last reference drops, JIT pages are
 freed. This cross-cuts three rows in §4a and two rows in §4–§6:
 
-- **§4a.1 `Code`** — `Arc<Jit>` is the lifetime root for the raw `ptr`;
-  they drop atomically. The `unsafe impl Send+Sync` rests on
+- **§4a.1 `Code`** — `Arc<Jit>` is the lifetime root for the JIT batch;
+  the callable address has its separate single home in `GotTable`. The
+  `unsafe impl Send+Sync` rests on
   post-finalize immutability of the `Jit` body plus `Arc`'s auto-Send+Sync.
 - **§4a.2 `GotTable`** — atomic slot swap via `AtomicPtr::store(Release)`
   / `load(Acquire)` serialises concurrent writers + readers. The
@@ -1305,25 +1309,27 @@ freed. This cross-cuts three rows in §4a and two rows in §4–§6:
   `/arch` rewrite.
 - **§5.3 nice-worker reader of `SharedState::symbol_tables`** and
   **§6.1 `SharedState::symbol_tables`** — readers observe
-  `ModuleEntry::Def.code` through the DashMap entry, which holds the
-  `Arc<Jit>` via `Code::Jit`, keeping the JIT alive for the duration
-  of the read borrow.
+  `Binding → Decl::Callable → Life::Concrete → Realization::Body.code`
+  through the DashMap table guard. The binding holds the `Arc<Jit>` via
+  `Code::Jit`, keeping the JIT alive for the duration of the read borrow.
 
 **Composite invariant statement (proposed Wave-1 gate addition — for
 `/arch` ratification):**
 
 > **Decision-31 temporal-lifetime invariant.** No thread may hold a
-> raw reference into JIT code (a `*const u8` code pointer, a GOT-slot
-> value, or a dereferencable `ptr` field inside `Code::Jit` / `Code::Linker`)
+> raw reference into JIT code (a `*const u8` code pointer or a GOT-slot
+> value)
 > whose originating `Arc<Jit>` / `Arc<Linker>` has been dropped. The
 > invariant is maintained by three structural mechanisms:
 >
-> 1. `ModuleEntry::Def.code: Option<Code>` holds the `Arc` alongside
->    the `ptr`; the two drop together.
+> 1. `Life::Concrete → Realization::Body.code: Option<Code>` holds the
+>    batch's `Arc`; the private `SymbolTable` binding store routes its
+>    publication and replacement through the lifecycle funnels. The callable
+>    address remains separately single-homed in `GotTable`.
 > 2. GOT-slot writes use `AtomicPtr::store(Release)`; reads use
 >    `AtomicPtr::load(Acquire)`; the pairing serialises the swap with
 >    any concurrent reader's observation of the slot value.
-> 3. A caller that observes a GOT-slot value or a `Code::Jit.ptr`
+> 3. A caller that observes a GOT-slot value
 >    must hold (directly or transitively) a live reference to the
 >    owning `Arc<Jit>` for the duration of the dereference — in
 >    practice this is the DashMap entry borrow on `symbol_tables[m]`,

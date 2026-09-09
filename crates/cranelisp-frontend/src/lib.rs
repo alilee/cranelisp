@@ -337,6 +337,10 @@
 //! - `design/frontend/wave-3a-build-form.md` — per-form boundary detailed design
 //! - `crates/cranelisp-frontend/public-api.txt` — authoritative surface enumeration
 
+// `CranelispError` is the shared, intentionally rich compiler diagnostic
+// carrier; boxing it here would change every published frontend signature.
+#![allow(clippy::result_large_err)]
+
 pub mod ast_builder;
 pub mod defmacro;
 pub mod module_extract;

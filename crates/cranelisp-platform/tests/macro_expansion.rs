@@ -87,11 +87,9 @@ fn invoke_manifest() -> cranelisp_platform::PlatformManifest {
 fn macro_exports_got_in_manifest_order() {
     let manifest = invoke_manifest();
     assert_eq!(
-        manifest.abi_version, 9,
-        "ABI v9 (Sprint 97 — the ctx-vtable handle-model cutover, §6.8.0b: `HostCtx` \
-         gains `acquire`/`retire`, `ConcurrencyDescriptor` gains `role`, the `Acquire` \
-         enum is added; `PollFn`/`Poll` unchanged). Was v8 (Sprint 96 single-ABI \
-         cutover), v7 (Sprint 93 ABI-v4 cascade), v6 at DEF-5)"
+        manifest.abi_version,
+        cranelisp_platform::ABI_VERSION,
+        "the macro-emitted manifest must carry the crate's current ABI version"
     );
     assert_eq!(manifest.function_count, 2);
 

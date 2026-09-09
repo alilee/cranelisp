@@ -9,7 +9,7 @@
 
 use std::sync::Mutex;
 
-use cranelisp_types::{ModuleEntry, ModuleFullPath};
+use cranelisp_types::{Life, ModuleFullPath, Realization};
 
 use crate::code::SessionSymbolTable;
 
@@ -47,19 +47,22 @@ pub(crate) fn discover_test_names(
         }
         // The callable slot rides on the `DefKind` variant (S83 reshape,
         // FIXME 0356/0357) — read it via the `callable_got_slot()` chokepoint.
-        match entry {
-            ModuleEntry::Def {
-                param_names,
-                code: Some(_),
-                ..
-            } if param_names.is_empty()
-                && entry
-                    .callable_got_slot()
-                    .is_some_and(|slot| !symbols.got.load_slot(slot).is_null()) =>
-            {
-                names.push(format!("{}/{}", module.as_ref(), name.as_ref()));
-            }
-            _ => continue,
+        let Some(callable) = entry.callable() else {
+            continue;
+        };
+        if callable.arm.param_names.is_empty()
+            && matches!(
+                callable.arm.life,
+                Life::Concrete {
+                    realization: Realization::Body { code: Some(_), .. },
+                    ..
+                }
+            )
+            && entry
+                .callable_got_slot()
+                .is_some_and(|slot| !symbols.got.load_slot(slot).is_null())
+        {
+            names.push(format!("{}/{}", module.as_ref(), name.as_ref()));
         }
     }
     names.sort();
@@ -94,9 +97,18 @@ pub(crate) fn run_test_by_name(
         // The callable slot rides on the `DefKind` variant (S83 reshape,
         // FIXME 0356/0357) — read it via the `callable_got_slot()` chokepoint.
         let entry = t.get(bare_name)?;
-        let ModuleEntry::Def { code: Some(_), .. } = entry else {
+        let Some(callable) = entry.callable() else {
             return None;
         };
+        if !matches!(
+            callable.arm.life,
+            Life::Concrete {
+                realization: Realization::Body { code: Some(_), .. },
+                ..
+            }
+        ) {
+            return None;
+        }
         let slot = entry.callable_got_slot()?;
         let ptr = t.got.load_slot(slot);
         if ptr.is_null() { None } else { Some(ptr) }
@@ -329,13 +341,13 @@ fn discover_eligible_tests(
         }
         // The callable slot rides on the `DefKind` variant (S83 reshape,
         // FIXME 0356/0357) — read it via the `callable_got_slot()` chokepoint.
-        let ModuleEntry::Def { scheme, .. } = entry else {
+        let Some(callable) = entry.callable() else {
             continue;
         };
         let Some(slot) = entry.callable_got_slot() else {
             continue;
         };
-        if !test_scheme_is_eligible(scheme) {
+        if !test_scheme_is_eligible(&callable.arm.scheme) {
             continue; // mis-typed test-* — excluded (q-eligibility).
         }
         out.push(EligibleTest {

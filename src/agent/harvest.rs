@@ -223,13 +223,13 @@ impl CompilerSession {
         //    render closes the window. Skip mangled overload/multi-sig variants,
         //    the synthetic `__expr` wrapper, and special forms (mirrors the
         //    `/list` filter, shared `is_internal_listing_name`).
-        let own: Vec<(String, cranelisp_types::ModuleEntry<crate::code::Code>)> =
+        let own: Vec<(String, cranelisp_types::Binding<crate::code::Code>)> =
             if let Some(table) = self.shared.symbol_tables.get(cur) {
                 table
                     .all_symbols()
                     .filter(|(sym, entry)| {
                         !crate::worker::is_internal_listing_name(sym.as_ref())
-                            && !matches!(entry, cranelisp_types::ModuleEntry::SpecialForm { .. })
+                            && !matches!(entry.declaration, cranelisp_types::Decl::SpecialForm(_))
                     })
                     .map(|(sym, entry)| (sym.as_ref().to_string(), entry.clone()))
                     .collect()
@@ -256,7 +256,7 @@ impl CompilerSession {
         //    session state).
         let prelude_path = cranelisp_types::ModuleFullPath::from("prelude");
         let prelude_names = self.prelude_implicit_names();
-        let prelude_entries: Vec<(String, cranelisp_types::ModuleEntry<crate::code::Code>)> =
+        let prelude_entries: Vec<(String, cranelisp_types::Binding<crate::code::Code>)> =
             if let Some(ptable) = self.shared.symbol_tables.get(&prelude_path) {
                 prelude_names
                     .into_iter()
@@ -309,7 +309,7 @@ impl CompilerSession {
     /// renderer) for the rich grains — Principle 7, no second formatter.
     fn render_in_scope_entry(
         &self,
-        entry: &cranelisp_types::ModuleEntry<crate::code::Code>,
+        entry: &cranelisp_types::Binding<crate::code::Code>,
         name: &str,
         home: &cranelisp_types::ModuleFullPath,
     ) -> InScopeEntry {
@@ -344,7 +344,15 @@ impl CompilerSession {
     fn push_module_full_source(&self, module: &cranelisp_types::ModuleFullPath, out: &mut String) {
         if let Some(table) = self.shared.symbol_tables.get(module) {
             let names: Vec<String> = table
-                .defined_symbols()
+                .all_symbols()
+                .filter(|(_, entry)| {
+                    matches!(
+                        entry.declaration,
+                        cranelisp_types::Decl::Callable(_)
+                            | cranelisp_types::Decl::Overloaded(_)
+                            | cranelisp_types::Decl::Macro(_)
+                    )
+                })
                 // Exclude internal compiler artifacts ($-mangled names + the
                 // synthetic `__expr` wrapper) from the harvested module source.
                 .filter(|(s, _)| !crate::worker::is_internal_listing_name(s.as_ref()))
@@ -441,18 +449,19 @@ struct InScopeEntry {
 /// other fields are preserved. Keeps `format_def_entry` the single source of
 /// truth for the rendering (Principle 7) rather than string-stripping its output.
 fn strip_entry_docstring(
-    mut entry: cranelisp_types::ModuleEntry<crate::code::Code>,
-) -> cranelisp_types::ModuleEntry<crate::code::Code> {
-    use cranelisp_types::ModuleEntry::*;
-    match &mut entry {
-        Def { docstring, .. }
-        | SpecialForm { docstring, .. }
-        | TypeDef { docstring, .. }
-        | IntrinsicType { docstring, .. }
-        | TraitDecl { docstring, .. } => {
-            *docstring = None;
-        }
-        _ => {}
+    mut entry: cranelisp_types::Binding<crate::code::Code>,
+) -> cranelisp_types::Binding<crate::code::Code> {
+    use cranelisp_types::{Decl, TypeRecord};
+    match &mut entry.declaration {
+        Decl::Callable(callable) => callable.docstring = None,
+        Decl::Overloaded(declaration) => declaration.docstring = None,
+        Decl::Macro(declaration) => declaration.docstring = None,
+        Decl::TraitMethod(method) => method.docstring = None,
+        Decl::Type(TypeRecord::Defined { docstring, .. })
+        | Decl::Type(TypeRecord::Intrinsic { docstring, .. }) => *docstring = None,
+        Decl::Trait(trait_record) => trait_record.docstring = None,
+        Decl::SpecialForm(special) => special.docstring = None,
+        Decl::ImplShell(_) => {}
     }
     entry
 }

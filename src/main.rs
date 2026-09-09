@@ -301,7 +301,7 @@ fn run(spec: LaunchSpec) -> Result<(), CranelispError> {
     // entry module name (the CLI target, or `"user"` default) seeds the REPL
     // cursor / check-state / test-runner "home" — the entry module is ordinary,
     // `"user"` is only its default name.
-    let mut s = CompilerSession::new(settings, project_root.to_path_buf(), entry_module_name);
+    let mut s = CompilerSession::new(settings, project_root.to_path_buf(), entry_module_name)?;
 
     // §3.1: Register the entry module. Front-end work (resolve, parse,
     // extract declarations) then enqueue for typechecking. Workers wake

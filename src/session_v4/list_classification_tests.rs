@@ -2,7 +2,8 @@ use super::*;
 // S87 §2: types formerly reached via the parent's `use cranelisp_types`
 // glob (the impl moved to `lifecycle.rs`); import them directly now.
 use cranelisp_types::{
-    DefKind, FQTypeName, ModuleEntry, Scheme, Sexp, Span, Symbol, Type, Visibility,
+    CallableOrigin, DefnVariant, FQTypeName, Realization, Scheme, Sexp, Span, Symbol, Type,
+    Visibility,
 };
 use std::collections::HashMap as StdHashMap;
 
@@ -38,7 +39,8 @@ fn isolated_session() -> (CompilerSession, PathBuf) {
         nice_workers: 0,
         run_mode: RunMode::Repl,
     };
-    let mut s = CompilerSession::new(settings, tmp_root.clone(), "user");
+    let mut s =
+        CompilerSession::new(settings, tmp_root.clone(), "user").expect("test session bootstrap");
     s.set_lib_dirs(vec![]);
     (s, tmp_root)
 }
@@ -51,6 +53,94 @@ fn mono(ty: Type) -> Scheme {
     }
 }
 
+fn install_user_fn(st: &mut SessionSymbolTable, name: &str, ty: Type) {
+    let param_count = match &ty {
+        Type::Fn(params, _) => params.len(),
+        _ => 0,
+    };
+    let params: Vec<_> = (0..param_count)
+        .map(|index| (Symbol::from(format!("p{index}")), None))
+        .collect();
+    let variant = DefnVariant {
+        params: params.clone(),
+        body: cranelisp_types::Expr::IntLit {
+            value: 0,
+            span: Span::SYNTHETIC,
+            inferred_type: None,
+        },
+        span: Span::SYNTHETIC,
+    };
+    let view = cranelisp_types::MonoDefnVariant {
+        name: Symbol::from(name),
+        params: params.iter().map(|(name, _)| name.clone()).collect(),
+        body: cranelisp_types::MonoExpr::lenient_from_expr(
+            &variant.body,
+            &Default::default(),
+            &Default::default(),
+            &Default::default(),
+        ),
+        span: Span::SYNTHETIC,
+        mode_summary: None,
+    };
+    st.install_concrete(
+        Symbol::from(name),
+        mono(ty),
+        params.into_iter().map(|(name, _)| name).collect(),
+        None,
+        0,
+        CallableOrigin::Plain,
+        Realization::Body { view, code: None },
+        Some(variant),
+        Vec::new(),
+        Visibility::Public,
+    )
+    .expect("function fixture installs");
+}
+
+fn install_constructor(st: &mut SessionSymbolTable, user: &ModuleFullPath) {
+    let name = Symbol::from("Mk");
+    let variant = DefnVariant {
+        params: Vec::new(),
+        body: cranelisp_types::Expr::IntLit {
+            value: 0,
+            span: Span::SYNTHETIC,
+            inferred_type: None,
+        },
+        span: Span::SYNTHETIC,
+    };
+    let view = cranelisp_types::MonoDefnVariant {
+        name: name.clone(),
+        params: Vec::new(),
+        body: cranelisp_types::MonoExpr::lenient_from_expr(
+            &variant.body,
+            &Default::default(),
+            &Default::default(),
+            &Default::default(),
+        ),
+        span: Span::SYNTHETIC,
+        mode_summary: None,
+    };
+    st.install_concrete(
+        name,
+        mono(Type::Int),
+        Vec::new(),
+        None,
+        0,
+        CallableOrigin::Ctor {
+            type_name: FQTypeName::new(user.clone(), "T".into()),
+            tag: 0,
+            field_count: 0,
+            internal: false,
+            type_def: None,
+        },
+        Realization::Body { view, code: None },
+        Some(variant),
+        Vec::new(),
+        Visibility::Public,
+    )
+    .expect("constructor fixture installs");
+}
+
 // spec: repl/spec.md §3.3 — `/list` buckets symbols by category; a defmacro
 //       MUST classify as Macro (NOT Fn), a constructor as Constructor, and
 //       imports MUST NOT appear (they are surfaced by `/imports`).
@@ -61,65 +151,27 @@ fn list_user_definitions_classifies_and_excludes_imports() {
 
     if let Some(mut st) = s.shared.symbol_tables.get_mut(&user) {
         // A plain function.
-        st.insert(
-            Symbol::from("f"),
-            ModuleEntry::def(
-                mono(Type::Fn(vec![Type::Int], Box::new(Type::Int))),
-                DefKind::UserFn {
-                    fn_state: cranelisp_types::UserFnState::Concrete {
-                        got_slot: 0,
-                        mode_summary: None,
-                    },
-                },
-            )
-            .visibility(Visibility::Public)
-            .build(),
-        );
+        install_user_fn(&mut st, "f", Type::Fn(vec![Type::Int], Box::new(Type::Int)));
         // A macro.
-        st.insert(
-            Symbol::from("m"),
-            ModuleEntry::def(
-                mono(Type::Int),
-                DefKind::Macro {
-                    clauses_meta: vec![],
-                    macro_sexp: Sexp::Symbol("m".to_string(), Span::SYNTHETIC),
-                },
-            )
-            .visibility(Visibility::Public)
-            .build(),
+        crate::repl::test_support::install_macro_fixture(
+            &mut st,
+            "m",
+            Sexp::Symbol("m".to_string(), Span::SYNTHETIC),
+            Vec::new(),
+            Visibility::Public,
         );
         // A constructor.
-        st.insert(
-            Symbol::from("Mk"),
-            ModuleEntry::def(
-                mono(Type::Int),
-                DefKind::Constructor {
-                    got_slot: 0,
-                    type_name: FQTypeName {
-                        module: user.clone(),
-                        name: cranelisp_types::TypeName::from("T"),
-                    },
-                    tag: 0,
-                    field_count: 0,
-                    internal: false,
-                    type_def: None,
-                    mode_summary: None,
-                },
-            )
-            .visibility(Visibility::Public)
-            .build(),
-        );
+        install_constructor(&mut st, &user);
         // An import — MUST NOT be listed by `/list`.
-        st.insert(
+        st.expose_candidate(
             Symbol::from("imported"),
-            ModuleEntry::Import {
-                source: FQSymbol {
-                    module: ModuleFullPath::from("other"),
-                    symbol: Symbol::from("imported"),
-                },
-                visibility: Visibility::Private,
+            FQSymbol {
+                module: ModuleFullPath::from("other"),
+                symbol: Symbol::from("imported"),
             },
-        );
+            Visibility::Private,
+        )
+        .expect("import fixture installs");
     }
 
     let defs = s.list_user_definitions();
@@ -169,50 +221,15 @@ fn list_user_definitions_excludes_synthetic_expr_wrapper() {
     if let Some(mut st) = s.shared.symbol_tables.get_mut(&user) {
         // The synthetic `__expr` wrapper — a Public zero-arg UserFn, exactly
         // as `wrap_exprs_as_defns` builds it for a bare top-level Expr.
-        st.insert(
-            Symbol::from("__expr"),
-            ModuleEntry::def(
-                mono(Type::Int),
-                DefKind::UserFn {
-                    fn_state: cranelisp_types::UserFnState::Concrete {
-                        got_slot: 0,
-                        mode_summary: None,
-                    },
-                },
-            )
-            .visibility(Visibility::Public)
-            .build(),
-        );
+        install_user_fn(&mut st, "__expr", Type::Int);
         // A `$`-mangled mono variant — also an internal artifact.
-        st.insert(
-            Symbol::from("add$Int+Int"),
-            ModuleEntry::def(
-                mono(Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int))),
-                DefKind::UserFn {
-                    fn_state: cranelisp_types::UserFnState::Concrete {
-                        got_slot: 0,
-                        mode_summary: None,
-                    },
-                },
-            )
-            .visibility(Visibility::Public)
-            .build(),
+        install_user_fn(
+            &mut st,
+            "add$Int+Int",
+            Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
         );
         // A genuine user definition — MUST still appear.
-        st.insert(
-            Symbol::from("g"),
-            ModuleEntry::def(
-                mono(Type::Fn(vec![Type::Int], Box::new(Type::Int))),
-                DefKind::UserFn {
-                    fn_state: cranelisp_types::UserFnState::Concrete {
-                        got_slot: 0,
-                        mode_summary: None,
-                    },
-                },
-            )
-            .visibility(Visibility::Public)
-            .build(),
-        );
+        install_user_fn(&mut st, "g", Type::Fn(vec![Type::Int], Box::new(Type::Int)));
     }
 
     let defs = s.list_user_definitions();

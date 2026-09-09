@@ -1,7 +1,17 @@
 use super::*;
 // S87 §2: types formerly reached via the parent's `use cranelisp_types`
 // glob (the impl moved to `lifecycle.rs`); import them directly now.
-use cranelisp_types::{ModuleEntry, Sexp};
+use cranelisp_types::Sexp;
+
+fn has_compiled_body(binding: &cranelisp_types::Binding<crate::code::Code>) -> bool {
+    matches!(
+        binding.callable().map(|callable| &callable.arm.life),
+        Some(cranelisp_types::Life::Concrete {
+            realization: cranelisp_types::Realization::Body { code: Some(_), .. },
+            ..
+        })
+    )
+}
 
 fn test_session(priority_workers: usize) -> (CompilerSession, PathBuf) {
     // Use a unique temp dir per call as project_root so no stray
@@ -22,7 +32,8 @@ fn test_session(priority_workers: usize) -> (CompilerSession, PathBuf) {
         nice_workers: 0,
         run_mode: RunMode::Repl,
     };
-    let mut s = CompilerSession::new(settings, tmp_root.clone(), "user");
+    let mut s =
+        CompilerSession::new(settings, tmp_root.clone(), "user").expect("test session bootstrap");
     s.set_lib_dirs(vec![]);
     (s, tmp_root)
 }
@@ -250,8 +261,8 @@ fn harvest_concurrent_register_many_modules_codegen_populated() {
             .get(&mp)
             .unwrap_or_else(|| panic!("symbol table missing for modA{i}"));
         match table.get(&format!("f{i}")) {
-            Some(ModuleEntry::Def { code, .. }) => assert!(
-                code.is_some(),
+            Some(binding) => assert!(
+                has_compiled_body(binding),
                 "defn f{i} in modA{i}: code must be Some after persistent-worker codegen"
             ),
             other => panic!("expected Def for f{i} in modA{i}, got {other:?}"),
@@ -284,8 +295,11 @@ fn harvest_per_worker_jit_isolation_across_sessions() {
             .get(&mp)
             .unwrap_or_else(|| panic!("{label}.iso symbol table must exist"));
         match tab.get("f") {
-            Some(ModuleEntry::Def { code, .. }) => {
-                assert!(code.is_some(), "{label}.iso/f code must be populated")
+            Some(binding) => {
+                assert!(
+                    has_compiled_body(binding),
+                    "{label}.iso/f code must be populated"
+                )
             }
             other => panic!("expected Def for {label}.iso/f, got {other:?}"),
         }
@@ -305,9 +319,9 @@ fn harvest_per_worker_jit_isolation_across_sessions() {
             .get(&post_mp)
             .expect("B.post_a symbol table must exist");
         match b_tab.get("g") {
-            Some(ModuleEntry::Def { code, .. }) => {
+            Some(binding) => {
                 assert!(
-                    code.is_some(),
+                    has_compiled_body(binding),
                     "B.post_a/g code must be populated after A shutdown"
                 )
             }

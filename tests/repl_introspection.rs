@@ -591,14 +591,15 @@ fn expand_neg_non_macro_unchanged() {
 // defmacro display — repl/spec.md §4.1.6 / §11.3
 // =============================================================================
 
-// spec: repl/spec.md §4.1.6 — single-clause defmacro classified as `; defmacro`
+// spec: repl/spec.md §4.1.6 — a macro exposes its compile-time transform
+// signature and remains classified as `; defmacro`.
 #[test]
 fn defmacro_display_single_clause() {
     repl(
         "(defmacro double [x] `(add-i64 ~x ~x))
 ",
     )
-    .assert_stdout_contains(":user/double ; defmacro");
+    .assert_stdout_contains(":(Fn [macros/Sexp] macros/Sexp) user/double ; defmacro");
 }
 
 // spec: repl/spec.md §4.1.6 — multi-clause defmacro
@@ -609,8 +610,12 @@ fn defmacro_display_multi_clause() {
 ",
     );
     assert!(
-        out.stdout.contains(":user/pick ; defmacro"),
-        "multi-clause defmacro must display ':user/pick ; defmacro'; got:\n{}",
+        out.stdout
+            .contains(":(Fn [macros/Sexp] macros/Sexp) user/pick ; defmacro")
+            && out
+                .stdout
+                .contains(":(Fn [macros/Sexp macros/Sexp] macros/Sexp) user/pick"),
+        "multi-clause defmacro must display every transform signature; got:\n{}",
         out.stdout
     );
 }
@@ -1617,8 +1622,8 @@ fn expand_recursively_to_fixpoint() {
 }
 
 // spec: repl/spec.md §11.2.4 — `/doc <macro>` on a macro without a
-// docstring surfaces the macro name (not an error). Distinct code path
-// from /doc on a fn (covered by `doc_no_docstring`).
+// docstring uses the docstring-only response, not the macro symbol card.
+// Distinct code path from /doc on a fn (covered by `doc_no_docstring`).
 // (carry: legacy/e2e.rs::e2e_s11_2_4_doc_macro_no_docstring)
 #[test]
 fn doc_macro_no_docstring() {
@@ -1627,16 +1632,21 @@ fn doc_macro_no_docstring() {
 /doc my-mac
 ",
     );
-    assert!(
-        out.stdout.contains("my-mac"),
-        "/doc on docstringless macro MUST mention the macro name; got:\n{}",
+    let response = out.stdout.lines().find_map(|line| {
+        let (_, response) = line.split_once("user> ")?;
+        response.starts_with("my-mac:").then_some(response)
+    });
+    assert_eq!(
+        response,
+        Some("my-mac: no docstring"),
+        "/doc on a docstringless macro MUST emit only its docstring response; got:\n{}",
         out.stdout
     );
 }
 
-// spec: repl/spec.md §11.2.4 — `/doc <macro>` surfaces the docstring text
-// when the macro was defined with one. Distinct code path from /doc on a
-// fn (covered by `doc_shows_docstring`).
+// spec: repl/spec.md §11.2.4 — `/doc <macro>` uses the docstring-only response
+// when the macro was defined with one. Distinct code path from /doc on a fn
+// (covered by `doc_shows_docstring`).
 // (carry: legacy/e2e.rs::e2e_s11_2_4_doc_macro_with_docstring)
 #[test]
 fn doc_macro_with_docstring() {
@@ -1645,9 +1655,14 @@ fn doc_macro_with_docstring() {
 /doc my-inc
 ",
     );
-    assert!(
-        out.stdout.contains("Increment by one"),
-        "/doc on documented macro MUST surface the docstring text; got:\n{}",
+    let response = out.stdout.lines().find_map(|line| {
+        let (_, response) = line.split_once("user> ")?;
+        response.starts_with("my-inc:").then_some(response)
+    });
+    assert_eq!(
+        response,
+        Some("my-inc: \"Increment by one\""),
+        "/doc on a documented macro MUST emit only its docstring response; got:\n{}",
         out.stdout
     );
 }
@@ -1670,11 +1685,15 @@ fn info_multi_clause_macro_shows_clause_count() {
          /info cond\n",
     );
     let display = &out.stdout;
-    // Precondition: the clause signatures and classification are present (the
-    // parts that already work — keeps the failure attributable to the count).
+    // Precondition: both transformation signatures, the variadic pattern and
+    // classification are present; the count is a separate obligation.
     assert!(
-        display.contains("defmacro") && display.contains("[x] -> Sexp"),
-        "/info on a macro MUST show classification + clause signatures; \
+        display.contains(
+            ":(Fn [macros/Sexp] macros/Sexp) user/cond ; defmacro - Multi-way conditional"
+        ) && display.contains(
+            ":(Fn [macros/Sexp macros/Sexp (macros/SList macros/Sexp)] macros/Sexp) user/cond"
+        ) && display.contains("; pattern: [x body & rest]"),
+        "/info on a macro MUST show classification, transformation signatures and pattern; \
          got:\n{display}"
     );
     // The defect: the clause COUNT line MUST appear per §11.2.2.
@@ -2184,7 +2203,7 @@ fn bare_special_form_if_classification_token() {
 }
 
 // spec: repl/spec.md §4.1.6 — bare macro lookup shows `; defmacro`
-// classification AND clause signature `; [x] -> Sexp`.
+// classification and its compile-time transformation signature.
 // (carry: legacy/e2e.rs::e2e_s4_1_bare_macro_defmacro)
 #[test]
 fn bare_macro_lookup_shows_clause_signature() {
@@ -2199,8 +2218,27 @@ inc
         out.stdout
     );
     assert!(
-        out.stdout.contains("; [x] -> Sexp"),
-        "bare macro 'inc' MUST surface clause signature '; [x] -> Sexp' per §4.1.6; got:\n{}",
+        out.stdout
+            .contains(":(Fn [macros/Sexp] macros/Sexp) user/inc ; defmacro"),
+        "bare macro 'inc' MUST surface its transformation signature per §4.1.6; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §11.2.3 — the typed macro transform signature records
+// each fixed syntax argument as `Sexp`; bracket destructuring remains visible
+// as call-pattern metadata because an ordinary `Fn` type cannot express it.
+#[test]
+fn sig_macro_preserves_bracket_pattern_shape() {
+    let out = repl_prims(
+        "(defmacro destruct [[head & tail] body] body)\n\
+         /sig destruct\n",
+    );
+    assert!(
+        out.stdout
+            .contains(":(Fn [macros/Sexp macros/Sexp] macros/Sexp) user/destruct ; defmacro")
+            && out.stdout.contains("; pattern: [[head & tail] body]"),
+        "`/sig` MUST retain the bracket call pattern beside the typed transform signature; got:\n{}",
         out.stdout
     );
 }
@@ -3317,7 +3355,7 @@ fn display_format_eval_result_after_relocation_unchanged() {
     );
 }
 
-// spec: structural — FIXME 0108 closure: backend's public surface MUST NOT
+// spec: design/backend/backend.md §"FIXME 0108 — Relocate `display.rs` to `int`" — backend's public surface MUST NOT
 // list `display::*` post-relocation. Negative test verified via the
 // committed `cargo public-api` baseline.
 // FIXME(/dev int FIXME 0108 + /dev backend baseline regenerated post-relocation).

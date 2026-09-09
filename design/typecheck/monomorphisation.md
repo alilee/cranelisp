@@ -97,20 +97,35 @@ primacy**, and a leak was pinpointed:
 
 > **S119 amendment — the invariant is site-independent (FIXME 0924).** §2 below
 > states the gate as a property of `finalize_check_form`'s determination points.
-> Two *other* sites construct `UserFnState::Concrete { got_slot }` and were never
-> brought under it: `adt.rs::synthesise_one_accessor` (`:618-637`) for a polymorphic
-> product's field accessor, and `traits/impl_check.rs` (`:1043,1078-1090`) for a
+> *Other* sites construct `UserFnState::Concrete { got_slot }` and were never
+> brought under it: `adt.rs::synthesise_one_accessor` (`:617-637`) for a polymorphic
+> product's field accessor, and `traits/impl_check.rs` (`:1039-1043,:1078-1089`) for a
 > trait-impl method, the latter via `scheme::mono` over a `fn_type` that still
 > carries `Type::Var`. Both therefore hand backend the exact
 > `Concrete{slot} ∧ non-concrete-type` pairing §2.1 declares unconstructable, and
 > `design/backend/non-concrete-release-contract.md` §2.4 measures the result as
 > **memory-unsafe** (a wild `atomic_rmw` on a scalar payload ≥ `NULLARY_TAG_THRESHOLD`),
-> not merely leaky. The ruling is **P-1**: no site may construct
-> `Concrete { got_slot }` for a scheme whose type is not `is_concrete()`, enforced
-> by converging all three decision points onto ONE helper. Full statement, the
-> A-MINT accessor-instantiation rule, and the F2 mangle ruling (which **rejects** a
-> widened `mangle_trait_method` key in favour of this doc's §3.5
-> `build_mangled_name`): **`non-concrete-producer-obligations.md`**.
+> not merely leaky.
+>
+> **S121 re-grounding — the gate stops being a rule and becomes a representation.**
+> Two corrections to the amendment above. First, the site census was **incomplete**:
+> `adt.rs:172-181` (constructor slot pre-allocation, FIXME 0931) and
+> `monomorphise.rs:667,:680-697` (`register_mono_entry`) are two further literal
+> mints of the same pairing, so a helper convention three sites opted into would
+> have left two outside it. Second, the user adopted the unified lifecycle
+> (`design/arch/symbol-table-lifecycle.md`, 2026-09-01): C1 makes `symbols` private
+> and `Life::Concrete { slot, realization, … }` constructible **only** by the
+> `settle_concrete` funnel, which checks `is_concrete()`, accepts the realization,
+> and mints-or-rebinds in one act; `Life::Template` has **no field** for a slot or a
+> view. So there is no longer a decision for a fifth site to get wrong, and
+> `allocate_got_slot()` as a free capability disappears from this crate.
+>
+> **P-1** therefore reads: *`Life::Concrete` is constructed only by the funnel, and
+> typecheck's obligation is to route its five populations through it and delete the
+> four hand-mints.* Full statement, the A-MINT accessor-instantiation rule, the F2
+> mangle ruling (which **rejects** a widened `mangle_trait_method` key in favour of
+> §3.5's `build_mangled_name`), and the FIXME-0935 close by typed demand:
+> **`non-concrete-producer-obligations.md`**.
 
 This is the S84 generalisation of Principle 20 (BC §7). It subsumes two species of
 slot-less def under one predicate:
@@ -211,6 +226,22 @@ suppress the 0344 generalisation (break the fold). /dev must keep the two concer
 separate at each site.
 
 ### 2.3 The slot-less arm — distinct variant `Polymorphic` (NOT a reuse)
+
+> **SUPERSEDED IN SPELLING, PRESERVED IN SUBSTANCE (S121).** The S84 need this
+> section argues for — *a determined-parametric, slot-less state carrying enough
+> body to monomorphise, distinct from both the Pass-1 interim and the
+> trait-bounded template* — is now met by C1's `Life::Template { body, kind, callees }`
+> (`design/arch/symbol-table-lifecycle.md` §4.2), where `kind` is
+> `Constrained(..) | Parametric` and the Pass-1 interim is `Life::Declared { prior }`.
+> The three-way rationale below is why the C1 machine keeps the *why*-distinction on
+> `TemplateKind` instead of collapsing it, and it is retained for that argument. **No
+> `UserFnState::Polymorphic` variant is authored** — it was a strict waypoint of the
+> unified machine, and landing it first would churn the same sites twice
+> (`symbol-table-lifecycle.md` §9). Read `Polymorphic` below as
+> `Life::Template { kind: Parametric }`, `Constrained` as
+> `Life::Template { kind: Constrained(..) }`, and `NotDetermined` as `Life::Declared`.
+> §6's `arch` FIXME and its cache-bump consequence are likewise subsumed: the one
+> S121 window is `CACHE_SCHEMA_VERSION` 24→25, in the C1 change-set.
 
 **Decision: a NEW `UserFnState` variant, working name `Polymorphic`** — slot-less,
 sibling to `Constrained`. Rationale (reuse rejected):
@@ -369,52 +400,21 @@ and chase reachable successors", with the slot-less-ness of `Polymorphic` defs a
 representation-level signal that a reached-but-unslotted instance still needs a
 concrete mint.
 
-### 3.5 Dedup — keyed on the canonical home-qualified mangled name
+### 3.5 Dedup — complete generic substitution identity
 
-Key each instance by the canonical mangled name `build_mangled_name(home,
-fn_name, param_types)` (`traits/monomorphise.rs`), which is also the dedup key the
-per-pass4 `seen: HashMap<String, JitSymbol>` map uses and which
-`register_mono_entry` preserves-slot-on-collision. No new key scheme — the mangled
-name IS the GOT-slot / JIT-symbol identity the backend links against, so it must be
-the dedup identity (Principle 7). **The name path and the dedup-key path are the same
-function** (`build_mangled_name`) over the same inputs, so the two grains cannot
-disagree (the FIXME-0508 collapse point closed).
+The demand's `InstanceLink` supplies the instance key once, through
+`InstanceLink::instance_key`. Collection, worklist deduplication, recursion,
+minting and `install_instance` retain that same link. Its `CallableTarget`
+identifies the defining binding or selected overload arm; `type_args` records
+the concrete substitutions in structural first-occurrence order within the
+template scheme. Repeated generic variables occupy one position, and result-only
+variables occupy positions even when the function has no value parameters.
 
-#### Mangled-name grammar (FIXME 0519 — the ONE canonical lossless mangler)
-
-```
-{home}/{bare}${recursive-concrete-sig}
-```
-
-- **`home`** = the DEFINING module's `ModuleFullPath` — the `home:
-  Option<&ModuleFullPath>` threaded through `monomorphise_call` (FIXME 0355) when
-  `Some` (imported generic), else `state.current_module` (local fn). Home-qualifying
-  the key distinguishes two same-named imported generics `a/twist` vs `b/twist`
-  registered into ONE consumer table → cures the **0508** silent wrong-dispatch.
-- **`recursive-concrete-sig`** = each concrete param type mangled by the ONE canonical
-  **total** type-mangler `program::mangle_type` (Principle 7 — single-sourced; the
-  multi-sig `mangle_sig` composer routes its type components through the same
-  function). `mangle_type` recurses EVERY concrete `Type` variant:
-  - `ADT(fqtn, args)` → `{fqtn}$arg1+arg2+…` recursing args (`…/Vec$Int` ≠
-    `…/Vec$String`) → cures the **0483** ADT-arg-erasure SIGBUS. The head is the
-    FQTypeName (`{type-home}/{Name}`), so cross-module same-named types never collide.
-  - `Fn(params, ret)` → `Fn(p1,p2,…;ret)` recursing params + ret in a balanced-paren
-    form (nested `Fn` extents stay unambiguous). The `Fn` param is NEVER dropped →
-    cures the latent third collision axis (two instantiations differing only in a
-    concrete `Fn`-typed param no longer collide).
-  - `TyConApp`, scalars — present as distinguishing text.
-
-**Collision-free BY CONSTRUCTION (Principle 20):** the name is a pure function of
-(defining home, bare name, recursively-mangled concrete sig); two instantiations
-differing in any one distinguishing fact mint different names, and the "two distinct
-instantiations → one name" state is unrepresentable. **Cache-safe:** all three facts
-are persisted (module path, symbol, concrete param types) and compile-order-
-independent; the grammar change bumps `CACHE_SCHEMA_VERSION` 12→13 (the mangled name is
-the persisted `.meta.json` / symbol-table identity). The retired predecessor
-(`build_mangled_name(fn_name, param_types)` = `{bare}${head-types}`) was lossy on THREE
-axes: ADT args erased (`concrete_type_name` returned only `fqtn.name`), `Fn` params
-dropped (`filter_map`→None), and home-independent. `concrete_type_name` survives only
-for trait-impl TARGET naming (impl-on-type-constructor, head-name only).
+[Result-context specialization](result-context-specialization.md) owns the
+interior derivation and replay collaboration under the approved architecture.
+Typecheck does not maintain a second instance-name composer. The recursive key
+encoding belongs to `cranelisp-types`; overload-member naming remains separate.
+`concrete_type_name` serves nominal trait lookup, not instance identity.
 
 ### 3.6 No new boundary item for the mono output
 
@@ -475,6 +475,121 @@ wrong and the call mis-typechecks, with the characteristic symptom being a
 
 Guarded by
 `program::tests::cross_module_imported_constrained_fn_monomorphises_in_defining_scope`.
+
+---
+
+## 3.8 "Instantiate this symbol at these types" — the FIXME-0553 entry point (S121 C3)
+
+**Status:** DESIGN SETTLED — the public facade is `arch`-approved (2026-09-01) and its
+binding contract is pinned at `design/arch/bounded-contexts.md` §2 ("The
+monomorphisation reload seed — `instantiate_demands`"). Where this section and that
+contract disagree, the contract wins. Resolves the typecheck half
+of FIXME **0553**, included in S121 by user decision 2026-09-01 because its natural
+types / typecheck / backend / `src` seams all open in this sprint. The carrier is
+C1's (`design/arch/symbol-table-lifecycle.md` §9 names `MonoDemand` as the carrier
+this entry point demands instances through).
+
+### 3.8.1 The capability, and the two limitations it dissolves
+
+After a from-source module reload, orphaned same-module polymorphic mono variants
+must be re-minted. Today `src/redefine.rs::capture_instantiation_drivers` (`:1264`,
+called `:1324`) captures the **single last `__expr` driver expression** and
+`reload_module`'s `extra_forms` (`src/session_v4/lifecycle.rs:1330,:1392`) replays
+it. That is correct for the reachable case and at parity with prior robustness, and
+it carries two structural limitations:
+
+1. **Multiple past instantiations are not covered.** Each REPL turn overwrites the
+   single `__expr` introspection record, so a session that minted `g$Int` then
+   `g$Bool` from two separate expressions replays only the last. Sound today only by
+   a reachability argument (unreplayed variants are dead or re-minted at durable call
+   sites), not by a guarantee.
+2. **The stale-`__expr` wart.** `introspection[__expr].sexp` is session-persistent
+   and never cleared on a defn turn, so a cure firing on an unrelated later turn can
+   re-inject a now-ill-typed `__expr` and degrade a clean cure to the error-blocked
+   floor. **Replaying a form re-runs whatever ill-typedness the form has acquired.**
+
+Both dissolve if the reload requests instantiation of a named symbol **at a recorded
+set of concrete type-argument tuples** — data, not a form.
+
+### 3.8.2 Replay the complete substitution demand
+
+`instantiate_demands` seeds the existing pass-4 driver and mint engine with
+`MonoDemand { template: CallableTarget, type_args, site }`. It retains its
+public signature and returns `CheckResult`; source rustdoc is the canonical
+entry-point contract.
+
+The selected template's authoritative scheme interprets `type_args` in the
+same structural variable order used at collection. Replay checks generic-vector
+length before binding fresh representatives, reconstructs the entire signature,
+verifies constraints and rechecks in the defining scope. Value-call arity does
+not define the vector length. Result-only substitutions need no expression map.
+
+Instances install in the demanding module through the ordinary lifecycle funnel.
+The same `InstanceLink` supplies deduplication, naming and publication; a repeated
+demand reuses its concrete instance and slot. A missing home remains a load/retry
+gap. An absent or changed template, malformed vector or rejected type constraint
+produces a per-root stale-demand warning while other roots continue. Hard
+invariant failures propagate. A rejected root installs no partial instance.
+
+Replay uses `Span::SYNTHETIC` to avoid writes into live span-keyed dispatch
+carriers. The span is only a diagnostic location; it does not provide or suppress
+result specialization. The returned product has no display or live unresolved
+dispatch sites. No production reload caller is added by this result-context wave.
+
+### 3.8.3 The boundary — who owns which half
+
+| Half | Owner | Content |
+|---|---|---|
+| instantiate + monomorphise at given concrete type arguments | **C3** | this section |
+| codegen the resulting instances | C4 | nothing new — the instances are ordinary concrete entries that `defined_symbols()` already yields |
+| capture the live mono-variant demand set before the Replace commit, and re-request it after the reload settles | C6 | retires `capture_instantiation_drivers` and `reload_module`'s `extra_forms` parameter in the same change-set |
+
+**C3 does not delete the int-side replay**, and C6 must not land the capture before
+the entry point exists. The ordering is C1 → C3 → C6, which is the sprint's ordering
+already.
+
+### 3.8.4 The public-API consequence — approved
+
+This is the **one** addition to `crates/cranelisp-typecheck/public-api.txt` in the
+whole C3 visit. Verified at HEAD, the baseline is 145 lines and exports
+`check_forms`, `check_type_expr`, the two signature-match predicates, the staging
+accessors and the crate-owned result types; this adds one free function beside
+`check_forms`.
+
+`arch` approved that addition on 2026-09-01 under M-1 through M-4
+(`design/arch/bounded-contexts.md` §2), so C3 proceeds. Per `design/arch/CLAUDE.md`
+§Public-API discipline the regenerated baseline rides the implementing change-set, and
+the per-item contract lands in the `///` rustdoc `dev` authors beside `check_forms`.
+`MonoDemand` itself is C1's and is published from `cranelisp-types`, so no new boundary
+*type* is added here — only an entry point that consumes one. The surface effect is
+exactly one typecheck baseline line: zero `cranelisp-types` delta, zero cache-schema
+effect (a demand set is session-live and never persisted), zero ABI effect, and zero
+backend facade effect.
+
+### 3.8.5 Acceptance
+
+- **The capability:** a session that mints `g$Int` and `g$Bool` from two separate
+  REPL expressions, then reloads `g`'s module from source, has **both** variants
+  live afterwards. The single-driver replay cannot pass this; it is the direct
+  falsifier for limitation 1.
+- **The wart:** a session whose `__expr` record is stale and ill-typed against the
+  current module reloads cleanly, because no form is replayed. Falsifier for
+  limitation 2.
+- **Idempotence:** calling the entry point twice with the same demand set mints one
+  instance and preserves its slot.
+- **Declines are `Ok` and are reported:** a demand whose template the reload deleted, and
+  a demand whose `type_args` no longer satisfy the new scheme, each yield one warning
+  naming the template and its arguments while every other demand in the same set
+  instantiates. Falsifier for M-3's first arm.
+- **A decline leaves no residue:** a set holding a declined demand plus a valid demand for
+  the same template at other arguments produces exactly the valid instance, in the table
+  state the valid demand alone would produce (M-3 obligation 3).
+- **A gap is not a decline:** a demand whose home module is not loaded returns
+  `Err(CheckError::Gap)`, so the orchestrator's existing load-and-retry runs.
+- **No second path:** the entry point adds **no new caller of `monomorphise_call`** — the
+  crate's caller census for the mint core is unchanged — and its body builds demands and
+  enters the existing pass-4 drive path rather than duplicating §3.3. A
+  keyed-read-else-replay hybrid is a reject.
 
 ---
 
@@ -953,40 +1068,17 @@ path reaching the mangler tripwire *before* that backstop. **The fix is to move 
 verdict earlier — to the mint seam — so both builds converge on the clean error and
 the mangler is never reached with a non-concrete param.**
 
-### 9.3 The seam — guard `monomorphise_call` P1, before `build_mangled_name`
+### 9.3 The seam — reconstruct before publication
 
-**The fix is an early concreteness gate at `monomorphise_call` P1, between
-`instantiate_and_resolve` and `build_mangled_name`** (`monomorphise.rs`, after the
-`concrete_param_types` binding at `:111–115`, before `:117`). This is the **only**
-place where a residual-`Var` param vector is handed to the mangler; guarding here is
-necessary and sufficient for Face B.
+The collector admits a demand only after every generalized variable has a
+concrete substitution. The minter validates vector length, reconstructs the
+complete function signature and refuses residual parameter types with the
+existing located ambiguity error. The strict concrete-body builder and lifecycle
+settlement retain their own boundary checks.
 
-The gate:
-
-1. After `concrete_param_types` is bound (`:111`), test
-   `concrete_param_types.iter().all(Type::is_concrete)` — the **same predicate** the
-   `:1016` `debug_assert!` tests, lifted from a release-erased assertion to a live
-   `Result`-returning check.
-2. On a **non-concrete** param, return `Err(CranelispError::TypeError { … })` —
-   **not** `Ok(None)` (which means "not a mono target" and would silently skip the
-   instance) and **not** a panic. The error propagates via the existing `?` chain
-   out of `pass4_monomorphise` exactly as the §4 backstop's error does.
-3. `build_mangled_name` is then reached **only** with all-concrete params. Its
-   `:1016` `debug_assert!` stays as a **pure tripwire** for a *future* unrelated
-   spurious-mint site (it should now be unreachable for 0432; keep it — it is the
-   §4.5 "ground-truth tripwire" discipline, Principle 18). The gate is the *clean
-   path*; the assert is the *belt-and-braces backstop* behind it — exactly the
-   two-layer shape §4.5 already establishes for the codegen-reaching ambiguity.
-
-**Why P1 and not the §4 backstop alone.** The §4 backstop fires at the
-*finalisation* boundary, which in release is *after* Pass 4 returns — too late to
-stop the debug `debug_assert!` that fires *during* Pass 4. The §4 backstop is
-position-complete over **top-level value positions**, but the residual-`Var`
-**mono-instance param vector** is an *intermediate Pass-4 artifact*, not a
-top-level value position it scans. The mint seam is where the non-concrete param
-first becomes observable; catching it there is the minimal, on-path fix. (The §4
-backstop remains as the finalisation-boundary guard for the *other* ambiguity
-shapes; this gate is its Pass-4-interior sibling for the mono-mint shape.)
+The former `build_mangled_name` debug tripwire is retired with that private
+argument-only composer. `InstanceLink::instance_key` consumes the demand's
+already-concrete substitutions; it never receives inference variables.
 
 ### 9.4 Intended error — converge REPL and `--run` on one message
 
@@ -2047,6 +2139,22 @@ promoted). File `target: /arch` rather than adding the invocation. This is the
 harvest-window analogue of the P26 "record from settled state" boundary: the
 windows are a finite, enumerated set, and growing the set is an architectural
 event, not an implementation convenience.
+
+> **The class, and where it is ruled (FIXME 0776).** `review` judged this rule's
+> shape right and its scope too narrow: the real class is *an operation performed at
+> N non-equivalent seams, where each seam's version can silently omit an obligation
+> its siblings discharge*, and this crate carries at least two instances — these
+> three settlement windows, and `resolve_auto_curry`'s six drain seams
+> (`auto-curry.md` §1.2). The proposed generalisation — *when one operation runs at
+> more than one settlement seam, the seams are an enumerated set with a named
+> discipline per seam, and the discipline is a required input at every call site*
+> — is a register-row / principle question and stays with `arch`; C3 authors no
+> register row. What C3 discharges is the **instance**: both multi-seam operations
+> in this crate now carry an enumerated seam set with a stated per-seam reason in
+> their design, so the mapping is checkable rather than folklore. `review`'s answer
+> on whether the S115 auto-curry re-drain was a fourth window in this section's
+> sense stands: **no on the letter** (there are still exactly three
+> `pass4_monomorphise` invocations), **yes on the pattern**.
 
 #### 11.8.11 The 0719 wrapper-indirection consume-at-distance — window-3 re-derivation, not a fourth window (S115)
 

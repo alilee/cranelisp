@@ -51,11 +51,11 @@ sequenceDiagram
         Note over Sched: TYPECHECK PHASE
         Note over Sched: Workers operate on &SymbolTable via Sess.shared.symbol_tables.get. Cache hit via sidecar skips the cluster loop entirely.
         Note over Sched: Per Decision 44 the typecheck surface is a single free function check_forms. The orchestrator process_cluster in the int crate drives it across one cluster.
-        Note over Sched: A cluster is one form for non-begin REPL input, or contents of a begin-block for explicit REPL clusters, or the file non-structural forms for batch one-big-cluster.
+        Note over Sched: The HM cluster is the fully-expanded non-macro set: one non-macro form for non-begin REPL input, non-macro contents of a begin-block, or the file's non-structural non-macro forms. Source-ordered defmacro checkpoints publish separately without splitting non-macro forward-reference scope.
         Note over Sched: check_forms takes Vec of ParsedEntry plus mutable SymbolTableAccess plus SymbolTables and returns Result of CheckError. It runs over the FULLY-EXPANDED non-macro forms (macro expansion already happened in Pass 1, outside check_forms). Internally it registers non-macro signatures then checks non-macro bodies — these are Passes 2 and 3 of the three-pass module model. Working state lives inside check_forms frame and never crosses the facade.
         Note over Sched: typecheck reads via ctx.current_symbol_table which returns a View union of staging and live in Cluster mode, and writes via ctx.current_symbol_table_mut which returns mutable staging. The 91 register-call sites in program.rs do not change individually.
         Note over Sched: orchestrator owns a transient staging SymbolTable for the cluster, held under mutable borrow inside SymbolTableAccess::Cluster, and commits via insert_cluster atomically into the live SymbolTable on success.
-        Note over Sched: On Err of TypeError staging dissolves with the function frame. Live table is byte-identical to pre-cluster state. On Err of Gap the orchestrator drops staging and retries the whole check_forms call against a fresh staging frame.
+        Note over Sched: On Err of TypeError non-macro staging dissolves with the function frame. Non-macro live state is unchanged, while earlier successful macro checkpoints remain committed. On Err of Gap the orchestrator drops staging and retries the whole check_forms call against a fresh staging frame.
 
         create participant PW as Priority Worker<br/>::worker::priority_worker_loop(Arc[SharedState])
         Sched -->> PW: Some(PriorityWork::Typecheck(m1: ModuleFullPath))<br/>(returned from take_priority_work_blocking() the worker was parked in)
@@ -75,25 +75,28 @@ sequenceDiagram
             loop one cluster (file's non-structural forms in source order, from saved cursor on resume)
                 Note over PW, Sched: process_cluster is the orchestrator. Signature — shared ref to SharedState, forms as Vec of Sexp, scope as ref to m1. Per Decision 44 amended by FIXME 0167 — 2026-05-13 third amendment.
                 Note over PW, Sched: Frontend stays pure — no live mutation. Typecheck stays pure with respect to live state — mutates orchestrator-handed staging via ctx.current_symbol_table_mut.
-                Note over PW, Sched: Neither has a Sess or scheduler dependency — they SURFACE dependencies as Err of CheckError.Gap of ResolutionGap. Per S76 W-Macro typecheck surfaces the MacroInMem gap on recognising a not-yet-jitted macro, and the retired frontend ExpansionError path is gone.
+                Note over PW, Sched: Neither frontend nor typecheck has a Sess or scheduler dependency — they SURFACE foreign dependencies as CheckError.Gap of ResolutionGap. Macro checkpoints and invocation are int-orchestrated. The retired frontend ExpansionError path is gone.
                 Note over PW, Sched: process_cluster catches each gap and dispatches via handle_gap — ensure_registered then wait then priority_boost plus wait_for_inmem — and RETRIES the call.
                 Note over PW, Sched: Workers park inside scheduler wait_* — never inside library code. See facades/int.md section "process_cluster — the cluster-atomic orchestration loop".
-                Note over PW, Sched: THREE-PASS model (S76 W-Macro DECISION LOCKED 2026-06-03 — macro-availability-model.md section 0 — resolution-primitive fold-in section 0.9). PASS 1 expand — int's process_cluster loop recognises macro heads via the cranelisp-types primitive resolve_macro_head over the committed view (zero int to typecheck dep for recognition), executes via the injected MacroExpander, build_forms the result, re-enters to fixpoint. Dependency-module forms a clause needs are typechecked-and-compiled just-in-time. Same-module non-macro defs are NOT available at expansion. PASS 2 plus PASS 3 — one check_forms call over the fully-expanded vec of ParsedEntry, internally registering non-macro signatures then checking non-macro bodies. Then cluster-atomic drain into live via insert_cluster.
+                Note over PW, Sched: THREE-PASS model (S76 W-Macro, checkpoint amendment 2026-09-03). PASS 1 expands in source order over committed macros. Each encountered or expansion-produced defmacro closes typecheck and codegen over its parent, all clauses, and full expansion-time dependency/generated-realization closure, then publishes the parent, clauses, and defining-module realization rows as one checkpoint. Dependency modules publish independently. PASS 2 plus PASS 3 — one check_forms call over the fully-expanded non-macro vec of ParsedEntry, internally registering signatures then checking bodies, followed by one non-macro cluster commit. Later failure, including the section 18 dependent cure, never rolls back an earlier macro checkpoint.
 
                 PW ->> Shared: Sess.shared.symbol_tables.get(&m1)<br/>(shared shard read lock — concurrent with other workers' shared reads)
                 Shared -->> PW: Some(Ref[SymbolTable]) ≡ [&SymbolTable]
 
-                Note over PW, Sched: PASS 1 — EXPAND (S76 W-Macro DECISION LOCKED — resolution-primitive fold-in section 0.9). Macro expansion is NO LONGER a frontend.expand call. macro-availability-model.md section 0 + macro-expansion-ownership.md.<br/>int's process_cluster expand loop OWNS Pass 1: it recognises macro heads via the cranelisp-types primitive resolve_macro_head over the committed symbol tables (walk + macro-vs-fn discrimination via the types query, zero int to typecheck dep for recognition), executes via the injected MacroExpander, build_forms the result, and re-enters to fixpoint.<br/>defmacro-before-use is normative. A macro's expansion may reference DEPENDENCY-module defs (typechecked-before, fetched just-in-time) plus same-module MACROS — never same-module non-macro defs (those are Pass 2/3 entities, structurally invisible). Frontend does only quasiquote desugaring now.
+                Note over PW, Sched: PASS 1 — SOURCE-ORDER EXPANSION + MACRO CHECKPOINTS. int recognises heads via resolve_macro_head over committed tables, executes only committed clauses via MacroExpander, builds results, and re-enters to fixpoint.<br/>At each direct or generated defmacro, int prepares the complete parent and clauses, closes and codegenerates the full expansion-time dependency/generated-realization closure, and publishes once for m1 through the existing module-local prepared commit plus publish_compiled_staged. Failure publishes none of that macro. Success is durable. No unpublished-candidate invocation, temporary GOT stack, cross-module transaction, or MacroObservationFence.<br/>defmacro-before-use is normative. Expansion may reference dependency-module defs plus same-module macros, never same-module non-macro defs. Frontend does only quasiquote desugaring.
 
-                loop Pass 1 expand-loop to fixpoint — int drives, typecheck recognises, MacroExpander executes
-                    opt macro head recognised whose clause code (or a dependency form it needs) is not yet in memory
-                        Note over PW, Sched: int surfaces the just-in-time dependency need as a gap. handle_gap dispatch:
+                loop Pass 1 source-order expand/checkpoint loop to fixpoint
+                    opt direct or expansion-produced defmacro encountered
+                        Note over PW, ST_m1: int prepares parent plus every clause in private staging, closes the full expansion-time dependency/generated-realization closure, and finishes codegen for that closure. It then publishes the parent, clauses, and defining-module realization rows once for m1 through publish_compiled_staged. Only committed code can be invoked. On refusal GOT compensation completes while owners are held. Successful checkpoint remains if a later form or the later section 18 dependent cure fails.
+                    end
+                    opt committed FQ macro or one of its dependency forms is not yet in memory
+                        Note over PW, Sched: int surfaces the foreign just-in-time dependency need as a gap. The dependency module compiles and publishes independently. The m1 attempt is discarded and retried from source.
                         PW ->> Shared: ensure_registered(shared, &dep.module) — calls register_module_internal if absent (Phase 0 runs synchronously). Acyclic dependency graph — dep cannot refer back to m1.
                         Shared -->> PW: Ok(())
                         PW ->> Sched: CompileScheduler::wait_for_typecheck_symbol(fq: &FQSymbol) -> Result[(), SchedulerError]
                         Note over PW, Sched: PW releases m1 and parks. Resumes when dep/sym typecheck-done (may be different priority worker on resume).
                         Sched -->> PW: Ok(())
-                        Note over PW: peek at the now-typechecked entry — force code in-mem only when needed to EXECUTE a macro clause or its dependency:
+                        Note over PW: peek at the now-typechecked dependency entry — force code in-mem only when needed to execute its committed macro clause or dependency:
                         opt entry needs JIT to be invoked at expansion (macro clause or its just-in-time dependency)
                             PW ->> Sched: CompileScheduler::priority_boost_jit(fq: &FQSymbol)
                             PW ->> Sched: CompileScheduler::wait_for_inmem(fq: &FQSymbol) -> Result[(), SchedulerError]
@@ -102,7 +105,7 @@ sequenceDiagram
                         end
                     end
 
-                    opt macro head recognised with clause code in memory — EXECUTE via the injected MacroExpander
+                    opt committed macro head recognised — snapshot parent plus chosen clause under the existing module read guard, then EXECUTE via MacroExpander
                         create participant Expander as MacroExpander impl<br/>cranelisp_types::MacroExpander (int-owned)<br/>src::expander invocation core + src::marshal
                         PW ->> Expander: MacroExpander::invoke(fq: &FQSymbol, args: &[Sexp], call_span: Span) -> Result[Sexp, MacroInvokeError]
                         Note over PW, Expander: int marshals args to runtime ADT (src::marshal), transmutes the GOT'd clause to extern "C" fn(i64)->i64, calls it under sigsetjmp/siglongjmp signal protection, unmarshals + rewrites spans (fresh synthetic spans).
@@ -117,7 +120,7 @@ sequenceDiagram
 
                 PW ->> Frontend: cranelisp_frontend::build_form — defn_sexp as &Sexp returns Result of vec of ParsedEntry or CranelispError
                 Note over PW, Frontend: S66 FIXME 0156 — returns vec of ParsedEntry because some shapes yield more than one entry per source form.
-                Note over PW, Frontend: Multi-clause defmacro emits one parent Def of kind Macro — metadata only — plus one Def of kind UserFn per clause body under mangled name {macro}$clause-{N} per cranelisp_types::DefKind::Macro.
+                Note over PW, Frontend: A multi-clause defmacro emitted one parent plus its clause bodies into the earlier macro-checkpoint path. It is not accumulated into the non-macro HM cluster here.
                 Note over PW, Frontend: deftype emits the type Def plus one Constructor-kind Def per ctor per D49.
                 Note over PW, Frontend: For trailing-expression forms the REPL path calls build_expr instead — sexp as &Sexp returns Result of Expr or CranelispError — chosen at the call site, no AST union enum.
                 Frontend -->> PW: Ok of vec of ParsedEntry — untyped. build_form and build_expr have no gaps — pure transform.
@@ -135,10 +138,10 @@ sequenceDiagram
                     PW ->> ST_m2: SymbolTable::public_symbols() -> Iterator[(&Symbol, &ModuleEntry[Code])]
                     ST_m2 -->> PW: iterator over (&Symbol, &ModuleEntry[Code]) for each export
                     PW ->> ST_m1: SymbolTable::install_import_bindings(from: &ModuleFullPath, names: ImportNames)<br/>([&self] — writes Import-variant entries via inner DashMap per-key locks)
-                else FQ form — the catch-all — defns, defmacros, deftypes, deftraits, impls, top-level exprs
+                else non-macro FQ form — defns, deftypes, deftraits, impls, top-level exprs
                     create participant Typecheck as Typecheck facade<br/>cranelisp_typecheck
                     Note over PW, Typecheck: After PASS 1 expand has run to fixpoint (int's expand loop above) and build_form has accumulated the fully-expanded vec of ParsedEntry for the cluster, the orchestrator makes one cranelisp_typecheck::check_forms call for PASSES 2 plus 3.
-                    Note over PW, Typecheck: Multi-clause defmacro yields one parent Macro-kind Def plus N clause-body UserFn Defs under {macro}$clause-{N} names. deftype-with-constructors yields the type Def plus N Constructor-kind Defs. Both shapes produce multiple ParsedEntry items per source form.
+                    Note over PW, Typecheck: deftype-with-constructors yields the type Def plus N Constructor-kind Defs. Defmacro parent and clauses were already published together at their source-order checkpoint and are not part of this call.
                     Note over PW, Typecheck: Per Decision 44 — amended by FIXME 0167 for Approach B plus SymbolTableAccess, and 2026-05-13 third amendment collapsing the two-pass split — check_forms internally registers non-macro signatures (Pass 2) then checks non-macro bodies (Pass 3) across all parsed entries. Macro expansion (Pass 1) already completed before this call, so check_forms never triggers macro execution and Decision 44 atomic-commit is intact over the expanded set.
                     Note over PW, Typecheck: The orchestrator constructs SymbolTableAccess.Cluster carrying modules, staging as mutable ref to empty_staging, and current_module once per cluster, then threads &mut ctx through the single check_forms call.
                     Note over PW, Typecheck: Typecheck mutates staging via ctx.current_symbol_table_mut — cluster-atomic drain at the end. The Pass-2-to-Pass-3 working state lives inside check_forms frame and never crosses the facade.
@@ -171,7 +174,7 @@ sequenceDiagram
                     Typecheck -->> PW: Ok of unit — cluster fully checked. Staging carries body-checked entries with per-symbol Pass-2 side products on staging Def fields.
 
                     Note over PW, ST_m1: After check_forms returns Ok, the orchestrator drops ctx — releases the &mut staging borrow — and int::insert_cluster commits staging into the live SymbolTable atomically. Per-entry inner DashMap writes — no whole-module lock.
-                    Note over PW, ST_m1: Order matters for ADT — type Def then Constructor-kind Defs per D49 — and multi-clause defmacro — parent Macro-kind metadata Def then each clause-body UserFn Def under {macro}$clause-{N} per cranelisp_types::DefKind::Macro. Order is preserved by build_form emission order, threaded through staging.
+                    Note over PW, ST_m1: Order matters for ADT — type Def then Constructor-kind Defs per D49. Macro parent-and-clause ordering belonged to the earlier checkpoint transaction, not this non-macro drain.
                     loop for each (sym, entry) in drained staging
                         PW ->> ST_m1: SymbolTable::insert_or_update — sym as Symbol, entry as ModuleEntry over Code
                         Note over PW, ST_m1: Takes &self — inner DashMap per-entry write lock briefly. Decision 41 carry-forward of existing code field. Formerly Decision 31, retired.

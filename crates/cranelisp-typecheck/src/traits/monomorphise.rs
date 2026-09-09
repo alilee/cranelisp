@@ -1,19 +1,84 @@
 use std::collections::{HashMap, HashSet};
 
 use cranelisp_types::{
-    ApplyRef, ConstrainedFn, CranelispError, DefKind, Defn, DefnVariant, ErrorLocation, Expr,
-    FQSymbol, JitSymbol, MethodResolutions, ModuleEntry, ModuleFullPath, MonoDefn, MonoDefnVariant,
-    MonoExpr, NotConcrete, ResolvedCall, Scheme, Span, Symbol, Type, TypeName, UserFnState, VarRef,
-    ViewBuildError, Visibility, apply,
+    ApplyRef, CallableOrigin, CallableTarget, ConcreteType, CranelispError, Defn, DefnVariant,
+    ErrorLocation, Expr, FQSymbol, InstanceLink, JitSymbol, Life, MethodResolutions,
+    ModuleFullPath, MonoDefn, MonoDefnVariant, MonoDemand, MonoExpr, NotConcrete, Realization,
+    ResolvedCall, Scheme, Span, Symbol, TemplateBody, Type, TypeName, VarRef, ViewBuildError,
+    Visibility, apply, free_vars,
 };
 
 use crate::checker::{CheckState, TypeCheckEnv};
+
+#[derive(Clone)]
+pub(crate) struct TemplateCore {
+    pub(crate) body: TemplateBody,
+    pub(crate) scheme: Scheme,
+    pub(crate) origin: CallableOrigin,
+}
+
+#[derive(Clone)]
+pub(crate) struct TemplateFn {
+    pub(crate) core: TemplateCore,
+    pub(crate) local_templates: HashMap<Symbol, TemplateCore>,
+    /// Semantic declaration body which owns this template. Ordinary templates
+    /// derive a binding target from `fn_name`; owned overload arms provide it.
+    pub(crate) template_target: Option<CallableTarget>,
+}
 
 // ---------------------------------------------------------------------------
 // Constrained Instantiation
 // ---------------------------------------------------------------------------
 
 impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
+    pub(crate) fn derive_mono_demand(
+        &self,
+        state: &CheckState,
+        template: CallableTarget,
+        scheme: &Scheme,
+        use_type: &Type,
+        site: Span,
+    ) -> Option<MonoDemand> {
+        let (inst_type, mapping) = self.fresh_mono_signature(scheme);
+        let mut subst = cranelisp_types::Subst::new();
+        crate::unify::unify_with_rigid(
+            &mut subst,
+            &HashSet::new(),
+            &inst_type,
+            &apply(&state.subst, use_type),
+        )
+        .ok()?;
+        let type_args = ordered_generic_vars(scheme)
+            .into_iter()
+            .map(|id| ConcreteType::from_type(&apply(&subst, &Type::Var(mapping[&id]))))
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        Some(MonoDemand::from_type_args(template, type_args, site))
+    }
+
+    fn fresh_mono_signature(
+        &self,
+        scheme: &Scheme,
+    ) -> (
+        Type,
+        HashMap<cranelisp_types::TypeId, cranelisp_types::TypeId>,
+    ) {
+        let bound: HashSet<_> = scheme.type_vars.iter().copied().collect();
+        let mut subst = cranelisp_types::Subst::new();
+        let mut mapping = HashMap::new();
+        for &id in &scheme.type_vars {
+            let (ty, fresh) = loop {
+                let pair = self.fresh_var_id();
+                if !bound.contains(&pair.1) {
+                    break pair;
+                }
+            };
+            subst.insert(id, ty);
+            mapping.insert(id, fresh);
+        }
+        (apply(&subst, &scheme.ty), mapping)
+    }
+
     /// Instantiate a constrained scheme, tracking the constraints on fresh vars.
     ///
     /// Returns the instantiated type. Side effect: adds constraints to
@@ -66,8 +131,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
     /// Generate a monomorphised specialization of a constrained function.
     ///
-    /// Called when a constrained function is applied with concrete argument types.
-    #[allow(dead_code)]
+    /// The demand supplies every concrete generic substitution, including result context.
     ///
     /// `home` is `Some(defining_module)` when `fn_name` is an IMPORTED
     /// constrained fn whose body must be re-checked in its DEFINING module's
@@ -79,30 +143,30 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         &self,
         state: &mut CheckState,
         fn_name: &Symbol,
-        arg_types: &[Type],
-        call_span: Span,
+        demand: &MonoDemand,
         home: Option<&ModuleFullPath>,
         origin_base: Option<&Symbol>,
+        local_template: Option<TemplateFn>,
     ) -> Result<Option<MonoDefn>, CranelispError> {
+        let call_span = demand.site;
         // === P0 — lookup ===
         // Look up the constrained fn (in its defining module when imported).
         // `home` selects the lookup module; early `None` is the "not a mono
         // target" signal callers depend on (`Ok(None)` vs `Ok(Some)`).
-        let constrained_fn = match self.get_constrained_fn(state, fn_name, home) {
-            Some(cf) => cf,
-            None => return Ok(None),
-        };
+        let constrained_fn =
+            match local_template.or_else(|| self.get_constrained_fn(state, fn_name, home)) {
+                Some(cf) => cf,
+                None => return Ok(None),
+            };
 
-        let scheme = constrained_fn.scheme.clone();
-        let defn = constrained_fn.variant.clone();
+        let scheme = constrained_fn.core.scheme.clone();
+        let template_body = constrained_fn.core.body.clone();
+        let origin = constrained_fn.core.origin.clone();
 
-        // === P1 — instantiate + concrete params ===
-        // Instantiate, unify with arg types, and resolve concrete types. Keep
-        // the original→fresh var-id mapping so constraint verification resolves
-        // through the instantiated vars (FIXME 0355). Losing the mapping
-        // reintroduces the cross-module `IO`-collision bug.
+        // Reconstruct the complete signature from the demand before allocating an identity.
+        // The fresh-variable mapping also owns constraint verification across modules.
         let (resolved, var_mapping) =
-            self.instantiate_and_resolve(state, &scheme, arg_types, call_span)?;
+            self.instantiate_and_resolve(state, &scheme, &demand.type_args, call_span)?;
 
         let concrete_param_types = if let Type::Fn(pts, _) = &resolved {
             pts.clone()
@@ -110,24 +174,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             return Ok(None);
         };
 
-        // === §9 concreteness gate (FIXME 0432, monomorphisation.md §9.3) ===
-        // Defence-in-depth, Principle 18 belt-and-braces. A residual `Type::Var`
-        // in a minted mono-instance param vector (the FIXME's `[Int, Var(N)]`
-        // shape from an unannotated multi-clause `defn` whose cross-variant
-        // self-call cannot pin a param) must NEVER reach `build_mangled_name` as
-        // a debug panic (`:1016` tripwire) — `s84-concrete-types-ambiguity-ruling`:
-        // a residual `Var` at a codegen position is a CLEAN type error, never a
-        // panic. The release path's §3.11.1 backstop
-        // (`find_ambiguous_top_level_form`) already catches this form cleanly AND
-        // the multi-clause variant mangler (`program.rs:627`) tolerates a `Var`
-        // param without reaching this seam — so the `:1016` assert is provably
-        // unreachable-for-0432 today (this gate makes that guarantee structural
-        // rather than incidental). Lift the same `Type::is_concrete()` predicate
-        // the `:1016` `debug_assert!` tests from a release-erased assertion to a
-        // live `Result`-returning check, fired one step earlier — at the
-        // param-vector, before mangling. The error reuses the §3.11.1 /
-        // `finalize_mono_codegen_view` wording so REPL and `--run` produce one
-        // identical diagnostic and the suite's ambiguous-type assertions hold.
+        // Reject malformed template signatures before publication.
         if !concrete_param_types.iter().all(Type::is_concrete) {
             return Err(CranelispError::TypeError {
                 message: format!(
@@ -139,12 +186,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             });
         }
 
-        // The DEFINING module qualifies the mangled name (FIXME 0519): `home`
-        // for an imported generic (FIXME 0355), else the local `current_module`.
-        let home_path = home
-            .cloned()
-            .unwrap_or_else(|| state.current_module.clone());
-        let mangled_name = build_mangled_name(&home_path, fn_name, &concrete_param_types);
+        // Preserve the demand's identity through naming and publication.
+        let link = demand.instance_link();
+        let instance_key = link.instance_key();
+        let mangled_name = String::from(instance_key.as_ref());
 
         // === P2 — verify constraints (module-switched) ===
         self.verify_mono_constraints(state, &scheme, &var_mapping, home, call_span)?;
@@ -155,8 +200,27 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             return Ok(None);
         };
 
-        // === P3 — call-site return pinning (0349) ===
-        self.pin_call_site_return(state, &concrete_ret_ty, call_span)?;
+        // Synthesized templates have no authored body or span-keyed check-run
+        // sidecars.  Re-run their derivation at the concrete signature and
+        // settle the ordinary instance directly (A-MINT); never send them
+        // through the source-body recheck path below.
+        if let TemplateBody::Synth(synth) = template_body {
+            return self.monomorphise_synth(
+                state,
+                fn_name,
+                synth,
+                link,
+                origin,
+                &mangled_name,
+                &concrete_param_types,
+                &concrete_ret_ty,
+            );
+        }
+        let TemplateBody::Ast(defn) = template_body else {
+            // Uniform Rust templates are served through facades and do not
+            // acquire a source/body instance in this engine.
+            return Ok(None);
+        };
 
         // === P4 — recheck body + harvest ===
         // `defn: DefnVariant` (S70 ConstrainedFn narrowing). Wrap in a
@@ -169,22 +233,21 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             visibility: Visibility::Public,
             span: defn.span,
         };
-        // I1 fix (§11.3.1 caveat (b)): when this mono is a multi-sig template
-        // clause instantiation (`origin_base` names the overloaded base), set the
-        // monomorphic-recursion context so an inner self-call to that base at these
-        // concrete args resolves inline against THIS instance during the recheck
-        // (`infer_apply`), rather than deferring a pending entry the drain has taken.
-        // Scoped to the recheck and restored unconditionally (nesting-safe: an inner
-        // hop's `monomorphise_call` passes `origin_base: None`, so its own recheck
-        // runs with the ctx cleared).
+        // Scope the exact same-cluster template set to this mono recheck. For a
+        // multi-signature clause, also carry the concrete self-recursion identity.
+        // The previous context is restored unconditionally so nested rechecks do
+        // not leak either fact into their caller.
         let saved_mono_recheck_self = state.mono_recheck_self.take();
-        if let Some(base) = origin_base {
-            state.mono_recheck_self = Some((
-                base.clone(),
-                JitSymbol::from(mangled_name.as_str()),
-                concrete_param_types.clone(),
-                concrete_ret_ty.clone(),
-            ));
+        if origin_base.is_some() || !constrained_fn.local_templates.is_empty() {
+            state.mono_recheck_self = Some(crate::checker::MonoRecheckContext {
+                recursion: origin_base.map(|base| crate::checker::MonoRecursionContext {
+                    base: base.clone(),
+                    instance: JitSymbol::from(mangled_name.as_str()),
+                    params: concrete_param_types.clone(),
+                    ret: concrete_ret_ty.clone(),
+                }),
+                local_templates: constrained_fn.local_templates.clone(),
+            });
         }
         let recheck_result = self.recheck_and_resolve_inner(
             state,
@@ -199,7 +262,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // === P5 — self-recursion dispatch (0374) ===
         self.record_self_recursion_dispatch(
             &wrap_defn,
-            &home_path,
+            state,
+            &scheme,
+            &link,
             fn_name,
             &mangled_name,
             &mono_expr_types,
@@ -222,6 +287,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let mono_defn = self.finalize_mono_codegen_view(
             state,
             mono_defn_ast,
+            link,
+            origin,
             &mangled_name,
             &concrete_param_types,
             &concrete_ret_ty,
@@ -230,6 +297,124 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         )?;
 
         Ok(Some(mono_defn))
+    }
+
+    /// Re-synthesise a constructor/accessor template at concrete arguments.
+    #[allow(clippy::too_many_arguments)]
+    fn monomorphise_synth(
+        &self,
+        state: &mut CheckState,
+        fn_name: &Symbol,
+        synth: cranelisp_types::SynthSpec,
+        link: InstanceLink,
+        origin: CallableOrigin,
+        mangled_name: &str,
+        concrete_param_types: &[Type],
+        concrete_ret_ty: &Type,
+    ) -> Result<Option<MonoDefn>, CranelispError> {
+        let parameter_vars: HashSet<_> = concrete_param_types.iter().flat_map(free_vars).collect();
+        if free_vars(concrete_ret_ty)
+            .iter()
+            .any(|var| !parameter_vars.contains(var))
+        {
+            return Ok(None);
+        }
+        let mut variant = synth.variant;
+        let variant_span = variant.span;
+        match (&origin, &mut variant.body) {
+            (
+                CallableOrigin::Ctor { .. },
+                Expr::ConstrADT {
+                    fields,
+                    inferred_type,
+                    ..
+                },
+            ) => {
+                *inferred_type = Some(Box::new(concrete_ret_ty.clone()));
+                for (field, ty) in fields.iter_mut().zip(concrete_param_types) {
+                    field.set_inferred_type(Some(Box::new(ty.clone())));
+                }
+            }
+            (
+                CallableOrigin::Accessor { type_name, .. },
+                Expr::Match {
+                    scrutinee,
+                    arms,
+                    inferred_type,
+                    ..
+                },
+            ) => {
+                let Some(receiver_ty) = concrete_param_types.first() else {
+                    return Ok(None);
+                };
+                scrutinee.set_inferred_type(Some(Box::new(receiver_ty.clone())));
+                for arm in arms.iter_mut() {
+                    arm.body
+                        .set_inferred_type(Some(Box::new(concrete_ret_ty.clone())));
+                }
+                let _ = type_name;
+                *inferred_type = Some(Box::new(concrete_ret_ty.clone()));
+            }
+            _ => {
+                return Err(CranelispError::CodegenError {
+                    message: format!(
+                        "synthesis recipe for `{fn_name}` does not match its callable origin"
+                    ),
+                    location: ErrorLocation::from_span(variant.span),
+                });
+            }
+        }
+
+        let mut pattern_ctors = HashMap::new();
+        if let CallableOrigin::Accessor { type_name, .. } = &origin
+            && let Expr::Match { arms, .. } = &variant.body
+        {
+            for arm in arms {
+                if let cranelisp_types::Pattern::Constructor { name, span, .. } = &arm.pattern {
+                    let symbol = if name.name.as_ref() == type_name.name.as_ref() {
+                        name.name.clone()
+                    } else {
+                        cranelisp_types::member_key(&type_name.name, name.name.as_ref())
+                    };
+                    pattern_ctors.insert(
+                        *span,
+                        FQSymbol {
+                            module: type_name.module.clone(),
+                            symbol,
+                        },
+                    );
+                }
+            }
+        }
+        let view = MonoDefnVariant {
+            name: Symbol::from(mangled_name),
+            params: variant
+                .params
+                .iter()
+                .map(|(name, _)| name.clone())
+                .collect(),
+            body: MonoExpr::synthetic_local_from_expr(&variant.body, &pattern_ctors),
+            span: variant.span,
+            mode_summary: None,
+        };
+        let defn = Defn {
+            name: Symbol::from(mangled_name),
+            docstring: None,
+            variants: vec![variant],
+            visibility: Visibility::Public,
+            span: variant_span,
+        };
+        let mono = MonoDefn { defn };
+        self.register_mono_entry(
+            state,
+            &mono,
+            link,
+            origin,
+            concrete_param_types,
+            concrete_ret_ty,
+            view,
+        )?;
+        Ok(Some(mono))
     }
 
     /// P2 — verify trait constraints, with `current_module` switched to `home`
@@ -258,45 +443,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         verify_result
     }
 
-    /// P3 — propagate the concrete return type back to the CALL SITE (FIXME 0349).
-    ///
-    /// `instantiate_and_resolve` instantiated a FRESH copy of the callee
-    /// scheme and unified only its parameters with the concrete arg types;
-    /// the freshly-instantiated return var (now resolved to `concrete_ret_ty`)
-    /// is otherwise disconnected from the caller's recorded result type. Under
-    /// forward-reference ordering a polymorphic callee (`reduce`) is generalized
-    /// before the helper that ties its accumulator-to-result var, so the
-    /// caller (`main`) bound its own result var to the callee's *loose*
-    /// generalized return var during body-check; that left `main`'s result
-    /// un-pinned (`(IO t)`), marking `main` itself spuriously polymorphic.
-    /// Unifying the call-site's recorded expr type with the concrete return
-    /// pins the caller's result (`t -> Int`), so the subsequent caller
-    /// re-generalization yields the correct monomorphic scheme — the caller
-    /// then calls the mono variant instead of the polymorphic template (0344).
-    ///
-    /// This unify writes into the parent's LIVE `state.subst` (NOT an isolated
-    /// clone) — this is the one place the parent subst is intentionally mutated.
-    fn pin_call_site_return(
-        &self,
-        state: &mut CheckState,
-        concrete_ret_ty: &Type,
-        call_span: Span,
-    ) -> Result<(), CranelispError> {
-        if let Some(call_result_ty) = state.expr_types.get(&call_span).cloned() {
-            self.unify(state, &call_result_ty, concrete_ret_ty, call_span)?;
-        }
-        Ok(())
-    }
-
     /// P4 — re-check the mono body with concrete types and harvest resolutions,
     /// then propagate the concrete instantiation through inner hops.
     ///
     /// `recheck_body_for_mono` saves/restores `method_resolutions`/`expr_types`/
     /// `pending_auto_curry`/`current_module` itself, and the post-passes
     /// annotate the SAME `wrap_defn` clone (passed by `&mut`).
-    ///
-    /// `resolve_inner_constrained_calls` records SigDispatch for inner
-    /// constrained calls (e.g. self-recursion), scoped in `home` (FIXME 0355).
     ///
     /// FIXME 0373 (Tier 1, /arch ruling (A)) — propagate the concrete
     /// instantiation through the CHAIN OF HOPS. The repro `(h1 neg)` reaches
@@ -329,33 +481,18 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             home,
         )?;
 
-        // Add SigDispatch entries for inner constrained fn calls. For an
-        // imported callee, inner constrained calls (e.g. self-recursion) are
-        // named in the DEFINING module's scope, so scope this in `home` too
-        // (FIXME 0355).
-        self.resolve_inner_constrained_calls(
-            state,
-            wrap_defn,
-            &mono_expr_types,
-            &mut resolutions,
-            home,
-        );
-
-        // FIXME 0373: recursively monomorphise inner polymorphic-result hops.
-        // `resolve_inner_constrained_calls` above already records the
-        // SigDispatch for inner CONSTRAINED self-recursion; this step
-        // additionally CREATES the mono entries for distinct inner hops
-        // (constrained or pure-parametric) and records their dispatch. The
-        // `seen`-style de-dup that guards the outer pass lives in
-        // `register_mono_entry` (it preserves an existing entry's slot) and in
-        // the `resolved_calls` contains-key guard inside the recursion, so a
-        // diamond of hops converging on one specialisation is created once.
         self.monomorphise_inner_parametric_hops(
             state,
             wrap_defn,
             &mono_expr_types,
             &mut resolutions,
             home,
+        )?;
+        self.monomorphise_inner_function_values(
+            state,
+            wrap_defn,
+            &mono_expr_types,
+            &mut resolutions,
         )?;
 
         // §11.8.3 leg R2 — overloaded-base dispatch calls (`(h 1)→h$Int`) inside
@@ -385,7 +522,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     fn record_self_recursion_dispatch(
         &self,
         wrap_defn: &Defn,
-        home: &ModuleFullPath,
+        state: &CheckState,
+        scheme: &Scheme,
+        link: &InstanceLink,
         fn_name: &Symbol,
         mangled_name: &str,
         mono_expr_types: &HashMap<Span, Type>,
@@ -416,20 +555,28 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             if !crate::program::callee_has_keyed_carrier(&resolutions.var_refs, *callee_span) {
                 continue;
             }
-            let self_arg_types: Vec<Type> = arg_spans
-                .iter()
-                .filter_map(|span| mono_expr_types.get(span).cloned())
-                .collect();
-            if self_arg_types.len() != arg_spans.len() {
+            let Some(use_type) =
+                Self::mono_call_type(state, mono_expr_types, resolutions, arg_spans, *self_span)
+            else {
                 continue;
-            }
-            // Same concrete param types ⇒ same mono instance (`mangled_name`).
-            // Same instance ⇒ same defining home, so key with the same `home`.
-            if build_mangled_name(home, fn_name, &self_arg_types) == mangled_name {
+            };
+            let Some(demand) = self.derive_mono_demand(
+                state,
+                link.template.clone(),
+                scheme,
+                &use_type,
+                *self_span,
+            ) else {
+                continue;
+            };
+            if demand.instance_link() == *link {
                 resolutions.resolved_calls.insert(
                     *self_span,
                     ResolvedCall::SigDispatch {
-                        mangled_name: JitSymbol::from(mangled_name),
+                        target: CallableTarget::Binding(FQSymbol {
+                            module: current_module.clone(),
+                            symbol: Symbol::from(mangled_name),
+                        }),
                     },
                 );
                 // S110 0583 leg 1 (mono self-recursion carrier, FIXME 0616):
@@ -456,8 +603,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// Def's ModuleEntry which is keyed by `fn_name`. For an imported callee the
     /// parent `Def` lives in `home`, not the caller's current module, so probe
     /// there (FIXME 0355). `apply_subst_to_defn` reads the parent's live
-    /// `state.subst` (which P3+P4 populated) — it runs after P4, on the parent
-    /// subst.
+    /// `state.subst` after the scoped body recheck.
     #[allow(clippy::too_many_arguments)]
     fn build_annotated_mono_defn(
         &self,
@@ -472,13 +618,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let parent_metadata: Option<(Option<String>, Visibility)> = {
             let lookup_module = home.unwrap_or(&state.current_module);
             self.resolve_terminal_entry_and_home(lookup_module, fn_name.as_ref())
-                .and_then(|(e, _)| match e {
-                    ModuleEntry::Def {
-                        docstring,
-                        visibility,
-                        ..
-                    } => Some((docstring.clone(), visibility)),
-                    _ => None,
+                .and_then(|(entry, _)| {
+                    entry
+                        .callable()
+                        .map(|c| (c.docstring.clone(), entry.visibility))
                 })
         };
         let (docstring, visibility) = parent_metadata.unwrap_or((None, Visibility::Public));
@@ -543,6 +686,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         &self,
         state: &mut CheckState,
         mono_defn_ast: Defn,
+        link: InstanceLink,
+        origin: CallableOrigin,
         mangled_name: &str,
         concrete_param_types: &[Type],
         concrete_ret_ty: &Type,
@@ -642,6 +787,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         self.register_mono_entry(
             state,
             &mono_defn,
+            link,
+            origin,
             concrete_param_types,
             concrete_ret_ty,
             codegen_view,
@@ -656,6 +803,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         &self,
         state: &mut CheckState,
         mono: &MonoDefn,
+        link: InstanceLink,
+        origin: CallableOrigin,
         concrete_param_types: &[Type],
         concrete_ret_ty: &Type,
         codegen_view: MonoDefnVariant,
@@ -666,52 +815,46 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         );
         let scheme = crate::scheme::mono(fn_ty);
 
-        let mut st = self.current_symbol_table_mut(state);
-        // De-duplication note: `pass4_monomorphise` / `monomorphise_expr_calls`
-        // short-circuit via `seen` before calling `monomorphise_call` a second
-        // time for the same mangled name, so this insertion runs exactly once
-        // per specialisation. If an entry already exists (e.g., REPL redefinition),
-        // we preserve its `got_slot` to keep call-site GOT indices stable.
-        // A mono specialisation is a concrete callable born with its slot
-        // (S83 deferred allocation, Principle 20). On REPL redefinition reuse
-        // the prior concrete entry's slot (read via `callable_got_slot`) to
-        // keep call-site GOT indices stable; the slot rides inside the
-        // `Concrete` fn_state, not a flat `Def` field.
-        let existing_got_slot = st
-            .get(mono.defn.name.as_ref())
-            .and_then(|e| e.callable_got_slot());
-        let got_slot = match existing_got_slot {
-            Some(s) => s,
-            None => st
-                .allocate_got_slot()
-                .map_err(crate::result::got_exhausted_error)?,
+        let instance_key = link.instance_key();
+        let already_installed = {
+            let table = self.current_symbol_table(state);
+            let view = table.view();
+            view.lookup(&instance_key)
+                .and_then(|binding| binding.callable())
+                .is_some_and(|callable| {
+                    callable.arm.scheme.type_vars == scheme.type_vars
+                        && callable.arm.scheme.constraints == scheme.constraints
+                        && callable.arm.scheme.ty == scheme.ty
+                        && matches!(
+                            &callable.arm.life,
+                            Life::Concrete {
+                                minted_from: Some(existing),
+                                ..
+                            } if existing == &link
+                        )
+                })
         };
-
-        let mut builder = ModuleEntry::def(
-            scheme,
-            DefKind::UserFn {
-                fn_state: UserFnState::Concrete {
-                    got_slot,
-                    mode_summary: None,
+        if already_installed {
+            return Ok(());
+        }
+        let ast = mono.defn.variants.first().cloned();
+        self.current_symbol_table_mut(state)
+            .install_instance(
+                link,
+                scheme,
+                mono.defn.params().iter().map(|(n, _)| n.clone()).collect(),
+                mono.defn.docstring.clone(),
+                0,
+                origin,
+                Realization::Body {
+                    view: codegen_view,
+                    code: None,
                 },
-            },
-        )
-        .visibility(mono.defn.visibility)
-        .param_names(mono.defn.params().iter().map(|(n, _)| n.clone()).collect());
-        if let Some(doc) = mono.defn.docstring.clone() {
-            builder = builder.docstring(doc);
-        }
-        // S69 Submission 35: ast holds the single meaningful DefnVariant
-        // (not the parent Defn wrapper).
-        if let Some(ast) = mono.defn.variants.first().cloned() {
-            builder = builder.ast(ast);
-        }
-        // S84 Phase-3 (FIXME 0392): a mono instance is a codegen-bound
-        // `Concrete` entry — carry its concrete-boundary `MonoExpr` view, built
-        // + validated at the `monomorphise_call` seam. Produces-but-unread until
-        // the backend read-flip (FIXME 0391); the backend still reads `ast`.
-        builder = builder.codegen_view(codegen_view);
-        st.insert(mono.defn.name.clone(), builder.build());
+                ast,
+                Vec::new(),
+                mono.defn.visibility,
+            )
+            .map_err(crate::result::lifecycle_error)?;
         Ok(())
     }
 
@@ -721,7 +864,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         &self,
         state: &mut CheckState,
         scheme: &Scheme,
-        arg_types: &[Type],
+        type_args: &[ConcreteType],
         call_span: Span,
     ) -> Result<
         (
@@ -730,39 +873,20 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         ),
         CranelispError,
     > {
-        // Instantiate the scheme with fresh vars, KEEPING the original→fresh
-        // var-id mapping. The mapping is needed by `verify_constraints`:
-        // `scheme.constraints` are keyed by the scheme's ORIGINAL var_ids, but
-        // only the FRESH vars are unified into `state.subst` here. Cross-module
-        // (FIXME 0355) the scheme comes from another module's check, so its
-        // original var_ids are stale in the caller's `state.subst` — and may
-        // COLLIDE with a caller var (observed: `cmp`'s constraint var_id
-        // resolving to the caller's `IO` from `main`'s `Pure`, producing a
-        // spurious "no impl of Eq/Display for IO"). Resolving constraints
-        // through the instantiation map fixes this. Re-rolls fresh ids on
-        // collision with the scheme's own bound vars (FIXME 0279/0295), like
-        // the sibling instantiator above.
-        let bound: std::collections::HashSet<cranelisp_types::TypeId> =
-            scheme.type_vars.iter().copied().collect();
-        let mut inst_subst = cranelisp_types::Subst::new();
-        let mut var_mapping: HashMap<cranelisp_types::TypeId, cranelisp_types::TypeId> =
-            HashMap::new();
-        for &var_id in &scheme.type_vars {
-            let (fresh_ty, fresh_id) = loop {
-                let (fresh_ty, fresh_id) = self.fresh_var_id();
-                if !bound.contains(&fresh_id) {
-                    break (fresh_ty, fresh_id);
-                }
-            };
-            inst_subst.insert(var_id, fresh_ty);
-            var_mapping.insert(var_id, fresh_id);
+        let ordered = ordered_generic_vars(scheme);
+        if type_args.len() != ordered.len() {
+            return Err(CranelispError::TypeError {
+                message: format!(
+                    "generic argument count mismatch: expected {}, got {}",
+                    ordered.len(),
+                    type_args.len()
+                ),
+                location: ErrorLocation::from_span(call_span),
+            });
         }
-        let inst_type = apply(&inst_subst, &scheme.ty);
-
-        if let Type::Fn(param_types, _) = &inst_type {
-            for (pt, at) in param_types.iter().zip(arg_types.iter()) {
-                self.unify(state, pt, at, call_span)?;
-            }
+        let (inst_type, var_mapping) = self.fresh_mono_signature(scheme);
+        for (id, ty) in ordered.iter().zip(type_args) {
+            self.unify(state, &Type::Var(var_mapping[id]), &ty.to_type(), call_span)?;
         }
 
         Ok((self.apply_subst(state, &inst_type), var_mapping))
@@ -854,26 +978,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let result =
             self.check_defn_body_with_types(state, defn, concrete_param_types, concrete_ret_ty);
 
-        // Drain the overloaded-base DISPATCH calls the body deferred, reusing the
-        // ONE drain (P7 — full concrete/template bifurcation + return-var
-        // unification): a genuinely-poly selected clause `(h 1 2)` monomorphises
-        // to a concrete instance (never a slot-less `$Var` template mangle,
-        // Important 1a), and the call's result type is pinned (no residual-var
-        // wrong-reject, Important 1b). A locally-shadowed call never deferred (the
-        // §11.8.7 local-scope-first gate), so it is absent here and stays a local.
-        // Self-calls to the mono base are handled inline by the R1 gate (never
-        // pushed), so pass 1 of the drain is a no-op in a mono recheck. THEN the
-        // auto-curry drain (unchanged ordering, mirroring the top-level pass).
-        let drain_result = if result.is_ok() {
-            let r = self.resolve_pending_overloads(state);
-            if r.is_ok() {
-                self.resolve_auto_curry(state, crate::program::AutoCurryDrain::Final);
-            }
-            r
-        } else {
-            Ok(())
-        };
-
         let resolutions = std::mem::take(&mut state.method_resolutions);
         let mono_expr_types: HashMap<Span, Type> = state
             .expr_types
@@ -892,117 +996,19 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         }
 
         result?;
-        drain_result?;
         Ok((resolutions, mono_expr_types))
-    }
-
-    /// Scan the monomorphised body for constrained fn calls (e.g. self-recursive
-    /// calls) and add SigDispatch entries so the backend can find them.
-    fn resolve_inner_constrained_calls(
-        &self,
-        state: &CheckState,
-        defn: &Defn,
-        mono_expr_types: &HashMap<Span, Type>,
-        resolutions: &mut MethodResolutions,
-        home: Option<&ModuleFullPath>,
-    ) {
-        // For an imported callee, inner constrained-fn names live in the
-        // DEFINING module's scope (FIXME 0355). Read constrained fns from there
-        // rather than the caller's current module.
-        let constrained_fn_names: HashSet<Symbol> = match home {
-            Some(h) => {
-                let mut names = HashSet::new();
-                self.for_each_in_module(h, |name, entry| {
-                    if let ModuleEntry::Def { kind, .. } = entry
-                        && let DefKind::UserFn {
-                            fn_state: UserFnState::Constrained(_),
-                        } = kind.as_ref()
-                    {
-                        names.insert(name.clone());
-                    }
-                });
-                names
-            }
-            None => {
-                let r = self.current_symbol_table(state);
-                r.view()
-                    .iter()
-                    .filter_map(|(name, entry)| {
-                        if let ModuleEntry::Def { kind, .. } = entry
-                            && let DefKind::UserFn {
-                                fn_state: UserFnState::Constrained(_),
-                            } = kind.as_ref()
-                        {
-                            return Some(name.clone());
-                        }
-                        None
-                    })
-                    .collect()
-            }
-        };
-        let mut inner_calls = Vec::new();
-        // FIXME 0653 — the recheck's carriers (`resolutions.var_refs`, S114 carrier
-        // flip — was `resolved_targets`) gate the name-scan: a §4.6 local shadow of
-        // a constrained fn carries `VarRef::Local`, not the `VarRef::Global`
-        // `callee_has_keyed_carrier` admits.
-        Self::collect_constrained_calls(
-            defn.body(),
-            &constrained_fn_names,
-            &resolutions.var_refs,
-            &mut inner_calls,
-        );
-        for (inner_fn_name, arg_spans, inner_call_span) in &inner_calls {
-            if resolutions.resolved_calls.contains_key(inner_call_span) {
-                continue; // already resolved (e.g. as a trait method)
-            }
-            let inner_arg_types: Vec<Type> = arg_spans
-                .iter()
-                .filter_map(|span| mono_expr_types.get(span).cloned())
-                .collect();
-            if inner_arg_types.len() != arg_spans.len() {
-                continue;
-            }
-            // Inner constrained fns live in the SAME defining module as the
-            // outer (collected from `home` when imported, else current), so the
-            // inner mono instance's name is qualified by that same home.
-            let inner_home = home
-                .cloned()
-                .unwrap_or_else(|| state.current_module.clone());
-            let inner_mangled = build_mangled_name(&inner_home, inner_fn_name, &inner_arg_types);
-            resolutions.resolved_calls.insert(
-                *inner_call_span,
-                ResolvedCall::SigDispatch {
-                    mangled_name: JitSymbol::from(inner_mangled.as_str()),
-                },
-            );
-            // S110 0583 leg 1 (inner constrained-call carrier, FIXME 0616): the
-            // inner mono variant registers in the caller's current module, so
-            // its storage FQ is `{current_module, inner_mangled}`. Apply-span
-            // dispatch verdict (S114 carrier flip).
-            resolutions.apply_refs.insert(
-                *inner_call_span,
-                ApplyRef::Dispatch(FQSymbol {
-                    module: state.current_module.clone(),
-                    symbol: Symbol::from(inner_mangled.as_str()),
-                }),
-            );
-        }
     }
 
     /// Recursively monomorphise the polymorphic-result hops a just-rechecked
     /// mono body reached (FIXME 0373, Tier 1 — multi-hop concrete-type
     /// propagation; /arch ruling (A)).
     ///
-    /// `resolve_inner_constrained_calls` (called just before this) records the
-    /// SigDispatch for inner CONSTRAINED self-recursion, but does not CREATE a
-    /// mono entry for a *distinct* inner hop. A chain `h1 → h2 → f` needs `h2`
-    /// monomorphised at the concrete `(Fn [Int] Int)` instantiation that only
-    /// became visible during `h1`'s recheck — otherwise `h2`'s result stays
-    /// `Type::Var` and the RC-guard SIGSEGV fires one hop deeper.
+    /// A nested hop can settle only during its parent's recheck. Derive its
+    /// complete demand from that recheck's captured maps before minting it.
     ///
     /// For each inner `Apply`-of-bare-`Var` call whose callee chain-resolves to a
     /// monomorphisable polymorphic `Def` (constrained OR pure-parametric), with
-    /// all argument types now concrete in `mono_expr_types`, this recursively
+    /// its full use type settled in `mono_expr_types`, this recursively
     /// invokes [`Self::monomorphise_call`] (which itself recurses into deeper
     /// hops and registers the inner mono entry + slot via `register_mono_entry`),
     /// then records the inner call site's SigDispatch. The recheck module is the
@@ -1044,66 +1050,29 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             }
             // Resolve the inner callee's terminal entry + its home, rooted in the
             // module the body was re-checked in.
-            let resolved =
-                self.resolve_terminal_entry_and_home(&recheck_module, inner_name.as_ref());
-            let (entry, callee_home) = match resolved {
-                Some(r) => r,
+            let resolved = self
+                .scope_resolve_in(&recheck_module, inner_name.as_ref(), Span::SYNTHETIC)
+                .ok();
+            let (entry, callee) = match resolved {
+                Some(resolved) => (resolved.entry, resolved.canonical),
                 None => continue,
             };
-            if !Self::entry_is_monomorphisable_polymorphic(&entry) {
+            // Same-cluster checked templates are deliberately unpublished
+            // until final settlement, so their table entry is still
+            // `Declared`. The ledger-derived mono context is authoritative for
+            // that population; persisted templates continue to use the table
+            // lifecycle predicate.
+            let local_core = state
+                .mono_recheck_self
+                .as_ref()
+                .and_then(|context| context.local_templates.get(inner_name).cloned());
+            if local_core.is_none() && !Self::entry_is_monomorphisable_polymorphic(&entry) {
                 continue;
             }
-            // All arg types must be concrete (pinned during the parent recheck).
-            let inner_arg_types: Vec<Type> = arg_spans
-                .iter()
-                .filter_map(|span| mono_expr_types.get(span).cloned())
-                .collect();
-            if inner_arg_types.len() != arg_spans.len() {
-                continue;
-            }
-            // ALL-ARGS-CONCRETE GUARD (Phase-4 part A, concrete-boundary-type.md
-            // §4-A). A hop reached from a GENERIC caller's body is collected with
-            // the parent's OWN free scheme vars in its arg positions (the
-            // `reduce → reduce-loop` 0344 fold: `f`/`acc`/element are still
-            // `reduce`'s `Var34`/`Var31`). Minting on that is a SPURIOUS partial
-            // instance — a re-spelling of the generic template under a lossy
-            // name, not a concrete specialisation. The GENUINE concrete instance
-            // is minted by the parent's CONCRETE re-check chain (e.g.
-            // `reduce$Int+Vec → reduce-loop$Int+Vec+Int+Int`), which arrives here
-            // with every arg pinned. Skip the hop unless every arg is concrete
-            // after substitution — suppressing the spurious mint so the
-            // `allowed_vars` carve-out at the mono-population seam is dead and
-            // `from_expr` succeeds on every minted instance (the completeness
-            // proof).
-            if !inner_arg_types
-                .iter()
-                .all(|t| apply(&state.subst, t).is_concrete())
-            {
-                continue;
-            }
-            // FIXME 0373 (Tier 1.5 — CROSS-MODULE hops). `monomorphise_call`
-            // roots its callee lookup + body re-check at `home`, falling back to
-            // `state.current_module` when `home` is `None`. Crucially,
-            // `recheck_body_for_mono` has ALREADY RESTORED `state.current_module`
-            // to the caller's module by the time this runs — so the gate must be
-            // "is the inner callee in a different module than `state.current_module`
-            // NOW", not "than `recheck_module`". For a CROSS-MODULE parent hop
-            // (`h1` imported from `hop`, re-checked with `recheck_module = hop` but
-            // `state.current_module = user`), the inner hop `h2` lives in `hop`,
-            // which differs from the current `user`; passing `None` here would make
-            // `get_constrained_fn` look `h2` up in `user` (where it does not exist)
-            // → `None` → `h2` never re-monomorphised at the concrete
-            // `(Fn [Int] Int)` instantiation → its result stays `Type::Var` → the
-            // RC-guard SIGSEGV one hop deeper (the 0373 residual). Rooting at
-            // `Some(callee_home)` whenever the callee is not in the current module
-            // re-checks `h2`'s body in its defining (`hop`) scope (the 0355 module
-            // switch), yielding a concrete-`Int`-result `h2$` mono. A genuinely
-            // same-(current-)module inner hop still passes `None` (the as-built
-            // local path).
-            let inner_home = if callee_home == state.current_module {
+            let inner_home = if callee.module == state.current_module {
                 None
             } else {
-                Some(callee_home.clone())
+                Some(callee.module.clone())
             };
             // Isolate `state.subst` around the inner-mono recursion (FIXME 0373,
             // preserves 0344). The sole obligation of this recursion is to CREATE
@@ -1117,21 +1086,50 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // polymorphic scheme 0344 deliberately keeps. The inner entry is built
             // from `inner_arg_types` (already concrete, captured before this) +
             // the isolated subst, so isolation does not affect what gets created.
+            let local_template = local_core.and_then(|core| {
+                state.mono_recheck_self.as_ref().map(|context| TemplateFn {
+                    core,
+                    local_templates: context.local_templates.clone(),
+                    template_target: Some(CallableTarget::Binding(callee.clone())),
+                })
+            });
+            let template = local_template
+                .or_else(|| self.get_constrained_fn(state, &callee.symbol, Some(&callee.module)));
+            let Some(template) = template else {
+                continue;
+            };
+            let Some(use_type) =
+                Self::mono_call_type(state, mono_expr_types, resolutions, arg_spans, *inner_span)
+            else {
+                continue;
+            };
+            let Some(demand) = self.derive_mono_demand(
+                state,
+                CallableTarget::Binding(callee.clone()),
+                &template.core.scheme,
+                &use_type,
+                *inner_span,
+            ) else {
+                continue;
+            };
             let saved_subst = state.subst.clone();
             let inner_mono = self.monomorphise_call(
                 state,
-                inner_name,
-                &inner_arg_types,
-                *inner_span,
+                &callee.symbol,
+                &demand,
                 inner_home.as_ref(),
                 None,
+                Some(template),
             );
             state.subst = saved_subst;
             if let Some(mono) = inner_mono? {
                 resolutions.resolved_calls.insert(
                     *inner_span,
                     ResolvedCall::SigDispatch {
-                        mangled_name: JitSymbol::from(mono.defn.name.as_ref()),
+                        target: CallableTarget::Binding(FQSymbol {
+                            module: state.current_module.clone(),
+                            symbol: mono.defn.name.clone(),
+                        }),
                     },
                 );
                 // S110 0583 leg 1 (inner parametric-hop carrier, FIXME 0616):
@@ -1150,55 +1148,110 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         Ok(())
     }
 
+    /// Mint concrete instances for bare function references used as values in a
+    /// rechecked mono body. Apply callees keep their existing dispatch path.
+    fn monomorphise_inner_function_values(
+        &self,
+        state: &mut CheckState,
+        defn: &Defn,
+        mono_expr_types: &HashMap<Span, Type>,
+        resolutions: &mut MethodResolutions,
+    ) -> Result<(), CranelispError> {
+        let mut sites = Vec::new();
+        collect_non_callee_var_values(defn.body(), &mut sites);
+
+        for span in sites {
+            let Some(VarRef::Global(callee)) = resolutions.var_refs.get(&span) else {
+                continue;
+            };
+            let Some(Type::Fn(params, ret)) = mono_expr_types.get(&span) else {
+                continue;
+            };
+            if !params.iter().all(Type::is_concrete) || !ret.is_concrete() {
+                continue;
+            }
+            let callee = callee.clone();
+            let Some(entry) = self.probe_module_entry_owned(&callee.module, callee.symbol.as_ref())
+            else {
+                continue;
+            };
+            if !Self::entry_is_monomorphisable_polymorphic(&entry) {
+                continue;
+            }
+            let Some(template) =
+                self.get_constrained_fn(state, &callee.symbol, Some(&callee.module))
+            else {
+                continue;
+            };
+            let use_type = Type::Fn(params.clone(), ret.clone());
+            let Some(demand) = self.derive_mono_demand(
+                state,
+                CallableTarget::Binding(callee.clone()),
+                &template.core.scheme,
+                &use_type,
+                span,
+            ) else {
+                continue;
+            };
+
+            let saved_subst = state.subst.clone();
+            let mono = self.monomorphise_call(
+                state,
+                &callee.symbol,
+                &demand,
+                (callee.module != state.current_module).then_some(&callee.module),
+                None,
+                Some(template),
+            );
+            state.subst = saved_subst;
+            if mono?.is_some() {
+                resolutions.var_refs.insert(
+                    span,
+                    VarRef::Global(FQSymbol {
+                        module: state.current_module.clone(),
+                        symbol: Symbol::from(demand.instance_key().as_ref()),
+                    }),
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Look up a constrained function by name.
-    #[allow(dead_code)]
     fn get_constrained_fn(
         &self,
         state: &CheckState,
         name: &Symbol,
         home: Option<&ModuleFullPath>,
-    ) -> Option<ConstrainedFn> {
+    ) -> Option<TemplateFn> {
         // For an IMPORTED callee (FIXME 0355), the constrained `Def` lives in its
         // DEFINING module — chain-follow to the terminal entry there. The home is
         // a committed import → live view suffices. For a local callee, read the
         // current module directly. Staging-aware (FIXME 0179): the local probe
         // reads through staging so in-cluster constrained-fn registrations are
         // visible.
-        let entry = match home {
-            Some(h) => self
-                .resolve_terminal_entry_and_home(h, name.as_ref())
-                .map(|(e, _)| e)?,
-            None => self.probe_module_entry_owned(&state.current_module, name.as_ref())?,
+        let lookup_module = home.unwrap_or(&state.current_module);
+        // `name` is already a terminal storage key. It can legitimately
+        // contain `/` inside a generated trait-method mangle
+        // (`Functor.fmap$primitives/Option`), so do not feed it back through
+        // source-name qualification parsing here.
+        let entry = self.probe_module_entry_owned(lookup_module, name.as_ref())?;
+        let callable = entry.callable()?;
+        let Life::Template { body, .. } = &callable.arm.life else {
+            return None;
         };
-        match &entry {
-            ModuleEntry::Def {
-                kind, scheme, ast, ..
-            } => match kind.as_ref() {
-                DefKind::UserFn {
-                    fn_state: UserFnState::Constrained(cf),
-                } => Some(cf.as_ref().clone()),
-                // Pure parametric polymorphism: the scheme is still polymorphic
-                // (non-empty `vars`), no trait constraints, but the call site
-                // demands a concrete specialisation. Synthesise a
-                // `ConstrainedFn` view from the stored AST so the existing
-                // `monomorphise_call` machinery applies. The previously-stored
-                // defn AST is the source of truth for the body — it was
-                // annotated and substitution-applied during the originating
-                // Pass 2 / finalize pass for this defn.
-                DefKind::UserFn { fn_state }
-                    if !matches!(fn_state, UserFnState::Constrained(_))
-                        && !scheme.type_vars.is_empty()
-                        && ast.is_some() =>
-                {
-                    Some(ConstrainedFn {
-                        variant: ast.as_ref().unwrap().clone(),
-                        scheme: scheme.clone(),
-                    })
-                }
-                _ => None,
+        Some(TemplateFn {
+            core: TemplateCore {
+                body: body.clone(),
+                scheme: callable.arm.scheme.clone(),
+                origin: callable.origin.clone(),
             },
-            _ => None,
-        }
+            local_templates: HashMap::new(),
+            template_target: Some(CallableTarget::Binding(FQSymbol {
+                module: lookup_module.clone(),
+                symbol: name.clone(),
+            })),
+        })
     }
 }
 
@@ -1236,6 +1289,25 @@ pub(super) fn collect_apply_var_calls(
     });
 }
 
+/// Collect bare `Var` references in value positions. An `Apply` callee is a
+/// dispatch position and remains owned by `collect_apply_var_calls`.
+fn collect_non_callee_var_values(expr: &Expr, out: &mut Vec<Span>) {
+    match expr {
+        Expr::Var { span, .. } => out.push(*span),
+        Expr::Apply { callee, args, .. } => {
+            if !matches!(callee.as_ref(), Expr::Var { .. }) {
+                collect_non_callee_var_values(callee, out);
+            }
+            for arg in args {
+                collect_non_callee_var_values(arg, out);
+            }
+        }
+        _ => crate::program::for_each_child_expr(expr, |child| {
+            collect_non_callee_var_values(child, out)
+        }),
+    }
+}
+
 /// Collect every `Apply`-of-bare-`Var` call to `self_name` (the OPPOSITE of
 /// [`collect_apply_var_calls`], which excludes self-calls). Used by
 /// `monomorphise_call` (FIXME 0374) to redirect a polymorphic fn's monomorphic
@@ -1264,53 +1336,9 @@ pub(super) fn collect_self_apply_calls(
     });
 }
 
-pub(crate) fn build_mangled_name(
-    home: &ModuleFullPath,
-    fn_name: &Symbol,
-    param_types: &[Type],
-) -> String {
-    // THE ONE canonical mono-instance name-composer (FIXME 0519, Principle 7).
-    // Grammar: `{home}/{bare}${recursive-concrete-sig}` where
-    //   - `home` = the DEFINING module's `ModuleFullPath` (distinguishes two
-    //     same-named imported generics `a/twist` vs `b/twist` registered into
-    //     one consumer table → cures the 0508 home-erasure silent miscompile);
-    //   - the sig recurses EVERY concrete param type through the ONE canonical
-    //     total type-mangler `program::mangle_type` — ADT args are recursed
-    //     (`Vec$Int` ≠ `Vec$String`, curing 0483) and `Fn` params are recursed
-    //     rather than dropped (curing the latent Fn-param-drop collision axis).
-    //
-    // Collision-free BY CONSTRUCTION (Principle 20): the name is a pure function
-    // of (defining home, bare name, recursively-mangled concrete sig); two
-    // instantiations differing in any one fact mint different names, and the
-    // "two distinct instantiations → one name" state is unrepresentable. All
-    // three facts are persisted (module path, symbol, concrete param types), so
-    // the name is cache-safe / compile-order-independent.
-    //
-    // TRIPWIRE (Phase-4 part A, concrete-boundary-type.md §4-A "secondary
-    // hardening", Principle 18). After the all-args-concrete collection gate,
-    // every minted instance has all-CONCRETE params. A residual `Type::Var`
-    // reaching here is a lossy-name hazard (`mangle_type` would emit the shared
-    // token `Var`, collapsing two distinct partial instantiations). The §9.3
-    // concreteness gate in `monomorphise_call` returns a clean type error one
-    // step earlier; this `debug_assert!` is the belt-and-braces backstop for a
-    // future spurious-mint site.
-    debug_assert!(
-        param_types.iter().all(|t| t.is_concrete()),
-        "build_mangled_name({home}/{fn_name}) saw a non-concrete param type \
-         (lossy-name hazard — a spurious partial mono instance reached the \
-         mangler): {param_types:?}"
-    );
-    let sig = param_types
-        .iter()
-        .map(crate::program::mangle_type)
-        .collect::<Vec<_>>()
-        .join("+");
-    format!("{home}/{fn_name}${sig}")
-}
-
 /// Extract the bare TypeName from a concrete (non-Var) type.
 /// For ADTs, returns the bare name without module qualification.
-/// This is used for mangled name construction and impl registry lookup.
+/// This is used for nominal trait dispatch and impl registry lookup.
 pub(crate) fn concrete_type_name(ty: &Type) -> Option<TypeName> {
     match ty {
         Type::Int => Some(TypeName::from("Int")),
@@ -1324,3 +1352,10 @@ pub(crate) fn concrete_type_name(ty: &Type) -> Option<TypeName> {
 
 #[cfg(test)]
 mod tests;
+
+fn ordered_generic_vars(scheme: &Scheme) -> Vec<cranelisp_types::TypeId> {
+    let mut ids = Vec::new();
+    cranelisp_types::collect_var_ids_ordered(&scheme.ty, &mut ids);
+    ids.retain(|id| scheme.type_vars.contains(id));
+    ids
+}

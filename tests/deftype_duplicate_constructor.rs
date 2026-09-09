@@ -154,6 +154,22 @@ fn deftype_distinct_fielded_constructors_control_green() {
     );
 }
 
+// GREEN boundary — sum payload labels are constructor-local metadata, not
+// binders or accessors. Distinct variants may reuse a descriptive payload label
+// without creating a module-scope collision; extraction remains positional.
+// spec: spec/05-definitions.md §5.2.2 and §5.2.6
+#[test]
+fn deftype_sum_arms_may_repeat_payload_label_control_green() {
+    let c = repl_prims(
+        "(deftype Scalar (AsInt [:primitives/Int value]) \
+                         (AsString [:primitives/String value]))\n",
+    );
+    assert!(
+        c.contains(ACCEPTED) && !c.to_lowercase().contains("error"),
+        "repeating payload label `value` across distinct sum arms must be accepted; got:\n{c}"
+    );
+}
+
 // RED — duplicate FIELD binders in one product type. Both accessors would mint
 // the same canonical `T.a`; §8.5.2 requires that name to have one referent. The
 // diagnostic is required to point at the second `a`, not the first declaration.

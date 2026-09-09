@@ -66,14 +66,7 @@ pub(crate) fn impl_line_home_for(
     // ON. Public-head filtered (I-1) — a private prelude head is not in scope.
     let prelude = ModuleFullPath::from("prelude");
     if scope != &prelude && prelude_fallback.get(scope).map(|b| *b).unwrap_or(false) {
-        let head_public = tables
-            .get(&prelude)
-            .and_then(|t| t.get(name).map(|e| e.is_public()))
-            .unwrap_or(false);
-        if head_public
-            && let Some((_, home)) =
-                cranelisp_types::resolve_terminal_entry_and_home(tables, &prelude, name)
-        {
+        if let Some((_, home)) = resolve_unique_public_terminal(tables, &prelude, name) {
             return home;
         }
     }
@@ -119,7 +112,7 @@ pub(crate) fn classification_metadata(classification: &str, docstring: Option<&s
 pub(crate) fn collect_related_for(
     tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
     scope: &ModuleFullPath,
-    entry: &ModuleEntry<crate::code::Code>,
+    entry: &Binding<crate::code::Code>,
     fq: &FQSymbol,
     resolved_module: &ModuleFullPath,
 ) -> Vec<FQSymbol> {
@@ -134,9 +127,9 @@ pub(crate) fn collect_related_for(
             }
         })
     };
-    match entry {
+    match &entry.declaration {
         // A `TypeDef` is a type → its constructors are the match arms.
-        ModuleEntry::TypeDef { info, .. } => {
+        Decl::Type(TypeRecord::Defined { info, .. }) => {
             for ctor in &info.constructors {
                 related.push(FQSymbol {
                     module: resolved_module.clone(),
@@ -146,12 +139,12 @@ pub(crate) fn collect_related_for(
         }
         // A `Constructor` Def → its parent type (defn-related). A product
         // ctor additionally carries the type facet's constructors.
-        ModuleEntry::Def { kind, .. } => {
-            if let DefKind::Constructor {
+        Decl::Callable(callable) => {
+            if let CallableOrigin::Ctor {
                 type_name,
                 type_def,
                 ..
-            } = kind.as_ref()
+            } = &callable.origin
             {
                 related.push(FQSymbol {
                     module: type_name.module.clone(),
@@ -168,7 +161,7 @@ pub(crate) fn collect_related_for(
             }
         }
         // A `TraitDecl` → its method defns + its implementing types.
-        ModuleEntry::TraitDecl { .. } => {
+        Decl::Trait(_) => {
             let tn = TraitName::from(fq.symbol.as_ref());
             if let Some(decl) = cranelisp_types::lookup_trait_decl_chain(tables, scope, &tn) {
                 for m in &decl.methods {
@@ -429,14 +422,22 @@ impl CompilerSession {
         // 0440) — single-symbol describe surfaces every category incl.
         // SpecialForm. The scheme/docstring facets are pulled per-entry below.
         let category = crate::worker::classify_listing_entry(&entry)?;
-        let (scheme, docstring) = match &entry {
-            ModuleEntry::Def {
-                scheme, docstring, ..
-            } => (Some(scheme.clone()), docstring.clone()),
-            ModuleEntry::SpecialForm {
-                scheme, docstring, ..
-            } => (Some(scheme.clone()), docstring.clone()),
-            ModuleEntry::TraitDecl { docstring, .. } => (None, docstring.clone()),
+        let (scheme, docstring) = match &entry.declaration {
+            Decl::Callable(callable) => (
+                Some(callable.arm.scheme.clone()),
+                callable.docstring.clone(),
+            ),
+            Decl::Overloaded(declaration) => (
+                declaration
+                    .arms
+                    .first()
+                    .map(|arm| arm.callable.scheme.clone()),
+                declaration.docstring.clone(),
+            ),
+            Decl::Macro(declaration) => (None, declaration.docstring.clone()),
+            Decl::SpecialForm(record) => (Some(record.scheme.clone()), record.docstring.clone()),
+            Decl::Trait(record) => (None, record.docstring.clone()),
+            Decl::TraitMethod(record) => (Some(record.scheme.clone()), record.docstring.clone()),
             _ => (None, None),
         };
         let source = self
@@ -473,7 +474,7 @@ impl CompilerSession {
     /// skipped rather than emitted with a wrong module.
     pub(crate) fn collect_related(
         &self,
-        entry: &ModuleEntry<crate::code::Code>,
+        entry: &Binding<crate::code::Code>,
         fq: &FQSymbol,
         resolved_module: &ModuleFullPath,
     ) -> Vec<FQSymbol> {
@@ -524,79 +525,17 @@ impl CompilerSession {
     /// lines (FIXME 0363).
     fn format_eval_result_body_doc(&self, result: &EvalResult) -> StyledDoc {
         match result {
-            EvalResult::Def { symbol, .. } => {
-                let name = symbol.symbol.as_ref();
-                let module = &symbol.module;
-
-                // Builtin type names (Int, Bool, etc.) from primitives module.
-                if module.as_ref() == "primitives" && intrinsic_type_from_name(name).is_some() {
-                    return self.format_builtin_type_display_doc(name);
-                }
-
-                let cur_module = self.current_module_path();
-                // S78 §2.7.6 — prelude outer-scope hop. A bare prelude-provided
-                // name (e.g. `add-i64`) is no longer flattened into the current
-                // table; when the per-module fallback bit is ON, look it up in
-                // prelude's own table (the `(export …)` re-export edge) so the
-                // chain-follow below still reaches `primitives/add-i64`. Routes
-                // through the canonical helper with `root: false` (S87 §4 dedup,
-                // Principle 7) — the NO-root-tier walk is deliberate: a bare
-                // special-form name must NOT resolve here (it falls through to
-                // the `None` arm below); the root cleanup is deferred (§4.1).
-                let (entry, lookup_module) =
-                    match self.lookup_with_prelude_fallback_opt(name, false) {
-                        Some((e, m)) => (Some(e), m),
-                        // 0571 D2: an UNIMPORTED qualified reference (`mathx/gcount`)
-                        // is not in the current scope — resolve it in its OWN
-                        // module so the bare FQ display renders the `; defn`
-                        // introspection envelope, IDENTICAL to the imported-bare
-                        // control, instead of the generic `; defined` fallback.
-                        None => match self
-                            .shared
-                            .symbol_tables
-                            .get(module)
-                            .and_then(|t| t.get(name).cloned())
-                        {
-                            Some(e) => (Some(e), module.clone()),
-                            None => (None, cur_module.clone()),
-                        },
-                    };
-                // Follow import chains to the definition.
-                let (entry, resolved_module) = match entry {
-                    Some(ref e) => self.resolve_entry_for_display(e, &lookup_module),
-                    None => {
-                        // TraitImpl entries have `Trait.Type` names; not in symbol table.
-                        let mut doc = StyledDoc::new();
-                        if let Some((trait_name, target_type)) = name.split_once('.') {
-                            // FIXME 0671: qualify the trait and the type each by
-                            // its CANONICAL HOME, not the asking module.
-                            let trait_home = self.impl_line_home(trait_name, module);
-                            let type_home = self.impl_line_home(target_type, module);
-                            doc.plain("impl ");
-                            push_fq_name(&mut doc, &trait_home, trait_name);
-                            doc.plain(" for ");
-                            push_fq_name(&mut doc, &type_home, target_type);
-                        } else {
-                            push_fq_name(&mut doc, &symbol.module, symbol.symbol.as_ref());
-                            doc.plain(" ");
-                            push_metadata(&mut doc, "; defined");
-                        }
-                        return doc;
+            EvalResult::Definitions { symbols, .. } => {
+                let mut out = StyledDoc::new();
+                for (index, symbol) in symbols.iter().enumerate() {
+                    if index > 0 {
+                        out.plain("\n");
                     }
-                };
-                // FIXME 0647: a trait's empty `; impl:` section is omitted for
-                // BOTH the definition echo and the bare lookup (matching the
-                // deftype `; match:` precedent); no bare-lookup-vs-echo flag.
-                let mut body = self.format_def_entry_doc(&entry, name, &resolved_module);
-                // S101 (repl/spec.md §18.4): bare lookup of a broken symbol is
-                // self-documenting — the ordinary per-class display (last-good
-                // signature) plus the provenance comment line (R6 metadata).
-                if let Some(line) = self.broken_status_line(name, &resolved_module) {
-                    body.plain("\n");
-                    push_metadata(&mut body, line);
+                    out.extend(self.format_definition_symbol_doc(symbol));
                 }
-                body
+                out
             }
+            EvalResult::Def { symbol, .. } => self.format_definition_symbol_doc(symbol),
             // The value is READ here, while the turn's result owner is still
             // armed; the release happens after this whole `StyledDoc` is built
             // (`design/int/result-owner.md` §4.2). This formatter must never
@@ -615,6 +554,11 @@ impl CompilerSession {
                 result.ty(),
                 &self.shared.symbol_tables,
             ),
+            // A slot-less polymorphic value is rendered from syntax + type;
+            // there is intentionally no runtime word to observe or release.
+            EvalResult::DisplayValue { ty, form, .. } => {
+                self.format_display_only_value_doc(ty, form)
+            }
             // A runtime TRAP renders as the bare §18.5 line: the `runtime error: `
             // category prefix (§5.1) directly followed by the trap payload — no
             // `Error: ` prefix, no `codegen error at 0..0:` wrapper, no
@@ -630,11 +574,139 @@ impl CompilerSession {
         }
     }
 
+    /// Render one canonical definition identity through the same lookup and
+    /// classification path used by bare-symbol introspection.
+    fn format_definition_symbol_doc(&self, symbol: &FQSymbol) -> StyledDoc {
+        let name = symbol.symbol.as_ref();
+        let module = &symbol.module;
+
+        // Builtin type names (Int, Bool, etc.) from primitives module.
+        if module.as_ref() == "primitives" && intrinsic_type_from_name(name).is_some() {
+            return self.format_builtin_type_display_doc(name);
+        }
+
+        let cur_module = self.current_module_path();
+        // S78 §2.7.6 — prelude outer-scope hop. A bare prelude-provided
+        // name (e.g. `add-i64`) is no longer flattened into the current
+        // table; when the per-module fallback bit is ON, look it up in
+        // prelude's own table (the `(export …)` re-export edge) so the
+        // chain-follow below still reaches `primitives/add-i64`. Routes
+        // through the canonical helper with `root: false` (S87 §4 dedup,
+        // Principle 7) — the NO-root-tier walk is deliberate: a bare
+        // special-form name must NOT resolve here (it falls through to
+        // the `None` arm below); the root cleanup is deferred (§4.1).
+        let (entry, lookup_module) = match self.lookup_with_prelude_fallback_opt(name, false) {
+            Some((e, m)) => (Some(e), m),
+            // 0571 D2: an UNIMPORTED qualified reference (`mathx/gcount`)
+            // is not in the current scope — resolve it in its OWN module so
+            // the bare FQ display renders the `; defn` introspection envelope,
+            // IDENTICAL to the imported-bare control, instead of the generic
+            // `; defined` fallback.
+            None => match self
+                .shared
+                .symbol_tables
+                .get(module)
+                .and_then(|t| t.get(name).cloned())
+            {
+                Some(e) => (Some(e), module.clone()),
+                None => (None, cur_module.clone()),
+            },
+        };
+        // Follow import chains to the definition.
+        let (entry, resolved_module) = match entry {
+            Some(ref e) => self.resolve_entry_for_display(e, &lookup_module),
+            None => {
+                // TraitImpl entries have `Trait.Type` names; not in symbol table.
+                let mut doc = StyledDoc::new();
+                if let Some((trait_name, target_type)) = name.split_once('.') {
+                    // FIXME 0671: qualify the trait and the type each by its
+                    // CANONICAL HOME, not the asking module.
+                    let trait_home = self.impl_line_home(trait_name, module);
+                    let type_home = self.impl_line_home(target_type, module);
+                    doc.plain("impl ");
+                    push_fq_name(&mut doc, &trait_home, trait_name);
+                    doc.plain(" for ");
+                    push_fq_name(&mut doc, &type_home, target_type);
+                } else {
+                    push_fq_name(&mut doc, &symbol.module, symbol.symbol.as_ref());
+                    doc.plain(" ");
+                    push_metadata(&mut doc, "; defined");
+                }
+                return doc;
+            }
+        };
+        let display_name = match &entry.declaration {
+            Decl::Overloaded(_) => cranelisp_types::bare_member_name(name),
+            _ => name,
+        };
+        // FIXME 0647: a trait's empty `; impl:` section is omitted for BOTH
+        // the definition echo and the bare lookup (matching the deftype
+        // `; match:` precedent); no bare-lookup-vs-echo flag.
+        let mut body = self.format_def_entry_doc(&entry, display_name, &resolved_module);
+        // S101 (repl/spec.md §18.4): bare lookup of a broken symbol is
+        // self-documenting — the ordinary per-class display (last-good
+        // signature) plus the provenance comment line (R6 metadata).
+        if let Some(line) = self.broken_status_line(name, &resolved_module) {
+            body.plain("\n");
+            push_metadata(&mut body, line);
+        }
+        body
+    }
+
+    /// Render the narrow §1.5.1 display-only value family. Empty Vec syntax is
+    /// already canonical. A bare nullary constructor is resolved to its type
+    /// home so `None` becomes `Option.None` without acquiring definition
+    /// metadata or a runtime tag.
+    fn format_display_only_value_doc(&self, ty: &Type, form: &Sexp) -> StyledDoc {
+        let value = match form {
+            Sexp::Bracket(items, _) if items.is_empty() => "[]".to_string(),
+            Sexp::Symbol(name, _) => self
+                .lookup_with_prelude_fallback_opt(name, false)
+                .and_then(|(entry, module)| {
+                    let (entry, resolved_module) = self.resolve_entry_for_display(&entry, &module);
+                    let callable = entry.callable()?;
+                    let CallableOrigin::Ctor {
+                        type_name,
+                        type_def,
+                        field_count,
+                        ..
+                    } = &callable.origin
+                    else {
+                        return None;
+                    };
+                    if *field_count != 0 {
+                        return None;
+                    }
+                    let bare_ctor = name.rsplit_once('.').map_or(name.as_str(), |(_, c)| c);
+                    let info = type_def.as_deref().cloned().or_else(|| {
+                        cranelisp_types::lookup_type_def_chain(
+                            &self.shared.symbol_tables,
+                            &resolved_module,
+                            &TypeName::from(type_name.name.as_ref()),
+                        )
+                    })?;
+                    Some(crate::display::format_ctor_display(
+                        type_name.name.as_ref(),
+                        bare_ctor,
+                        &info,
+                    ))
+                })
+                .unwrap_or_else(|| name.clone()),
+            _ => form.format_flat(),
+        };
+
+        let mut doc = StyledDoc::new();
+        push_type_annotation(&mut doc, &crate::display::format_type_qualified(ty));
+        doc.plain(" ");
+        doc.plain(value);
+        doc
+    }
+
     /// Format a definition entry with its classification (spec §1.1, §4.1).
     /// Renders the role-tagged `StyledDoc` from `format_def_entry_doc`.
     pub(crate) fn format_def_entry(
         &self,
-        entry: &ModuleEntry<Code>,
+        entry: &Binding<Code>,
         name: &str,
         module: &ModuleFullPath,
     ) -> String {
@@ -650,108 +722,89 @@ impl CompilerSession {
     /// the `deftype` `; match:` precedent).
     pub(crate) fn format_def_entry_doc(
         &self,
-        entry: &ModuleEntry<Code>,
+        entry: &Binding<Code>,
         name: &str,
         module: &ModuleFullPath,
     ) -> StyledDoc {
-        match entry {
-            ModuleEntry::Def {
-                scheme,
-                kind,
-                docstring,
-                ..
-            } => {
-                match kind.as_ref() {
-                    // Multi-sig: emit one line per variant per repl/spec.md
-                    // §1.3 + §4.1.1.
-                    DefKind::Overloaded { variants } if !variants.is_empty() => {
-                        // D1 (traits.md §7.0.2): render each variant from its
-                        // recorded template `Scheme` (constraints intact), keyed
-                        // by `mangled_name` in this module's OWN table. `entry` is
-                        // an OWNED clone here (not borrowed from the table), so the
-                        // read guard cannot deadlock against it.
-                        let module_table = self.shared.symbol_tables.get(module);
-                        return format_overloaded_variants_doc(
-                            name,
-                            module,
-                            variants,
-                            docstring.as_deref(),
-                            module_table.as_deref(),
-                        );
-                    }
-                    DefKind::Constructor {
-                        type_name,
-                        type_def,
-                        ..
-                    } => {
-                        let type_str = format_type_qualified(&scheme.ty);
-                        let tn = TypeName::from(type_name.name.as_ref());
-                        // The display authority builds the ONE canonical
-                        // `module/Type.Ctor` form from the ctor's BARE name — so
-                        // BOTH REPL input shapes converge here: a bare `Red` and a
-                        // dotted `Color.Red` (the S109 canonical `Type.Ctor` key,
-                        // which the dotted-input introspection path carries verbatim
-                        // as `name`). `format_ctor_display` re-prepends `Type.`, so
-                        // strip any leading `Type.` segment first or the dotted path
-                        // doubles it to `Color.Color.Red` (§4.1.2/§1.5). One
-                        // formatter, no per-input special-casing.
-                        let bare_ctor = name.rsplit_once('.').map_or(name, |(_, c)| c);
-                        // Resolve the type's `TypeDefInfo` so `format_ctor_display`
-                        // can suppress the redundant `Type.Ctor` dot for a
-                        // single-ctor product (`Point`, not `Point.Point`). A
-                        // single-ctor product type's `name` key is THIS ctor `Def`
-                        // (type-name == ctor-name; FIXME 0319), so `type_def` on
-                        // `kind` is the authoritative facet — prefer it; fall back
-                        // to the chain lookup for sum/enum ctors whose type is a
-                        // separate `TypeDef` entry. Reaching the spurious
-                        // `{type_name}.{name}` branch (e.g. `user/Point.Point`,
-                        // which the outer `{module}/` then double-qualifies to
-                        // `user/user/Point.Point`) is the Root-C defect (FIXME 0321).
-                        let ctor_display = {
-                            let info = type_def.as_deref().cloned().or_else(|| {
-                                // D1 (S108, FIXME-0321 mis-qualify class): root
-                                // the fallback chain-lookup at the ctor's already-
-                                // RESOLVED HOME `module` (the fn param), NOT
-                                // `current_module_path()`. At the home the TypeDef
-                                // is local so the chain terminates at depth 0; a
-                                // seeded/prelude-globbed ctor resolves its product
-                                // facet instead of missing and mis-qualifying.
-                                cranelisp_types::lookup_type_def_chain(
-                                    &self.shared.symbol_tables,
-                                    module,
-                                    &tn,
-                                )
-                            });
-                            match info {
-                                Some(info) => {
-                                    crate::display::format_ctor_display(&tn, bare_ctor, &info)
-                                }
-                                None => format!("{tn}.{bare_ctor}"),
+        match &entry.declaration {
+            Decl::Overloaded(declaration) => format_overloaded_variants_doc(
+                name,
+                module,
+                &declaration.arms,
+                declaration.docstring.as_deref(),
+            ),
+            Decl::Macro(declaration) => format_macro_display_doc(
+                name,
+                &declaration.clauses,
+                declaration.docstring.as_deref(),
+                module,
+            ),
+            Decl::Callable(callable) => {
+                if let CallableOrigin::Ctor {
+                    type_name,
+                    type_def,
+                    ..
+                } = &callable.origin
+                {
+                    let type_str = format_type_qualified(&callable.arm.scheme.ty);
+                    let tn = TypeName::from(type_name.name.as_ref());
+                    // The display authority builds the ONE canonical
+                    // `module/Type.Ctor` form from the ctor's BARE name — so
+                    // BOTH REPL input shapes converge here: a bare `Red` and a
+                    // dotted `Color.Red` (the S109 canonical `Type.Ctor` key,
+                    // which the dotted-input introspection path carries verbatim
+                    // as `name`). `format_ctor_display` re-prepends `Type.`, so
+                    // strip any leading `Type.` segment first or the dotted path
+                    // doubles it to `Color.Color.Red` (§4.1.2/§1.5). One
+                    // formatter, no per-input special-casing.
+                    let bare_ctor = name.rsplit_once('.').map_or(name, |(_, c)| c);
+                    // Resolve the type's `TypeDefInfo` so `format_ctor_display`
+                    // can suppress the redundant `Type.Ctor` dot for a
+                    // single-ctor product (`Point`, not `Point.Point`). A
+                    // single-ctor product type's `name` key is THIS ctor `Def`
+                    // (type-name == ctor-name; FIXME 0319), so `type_def` on
+                    // `kind` is the authoritative facet — prefer it; fall back
+                    // to the chain lookup for sum/enum ctors whose type is a
+                    // separate `TypeDef` entry. Reaching the spurious
+                    // `{type_name}.{name}` branch (e.g. `user/Point.Point`,
+                    // which the outer `{module}/` then double-qualifies to
+                    // `user/user/Point.Point`) is the Root-C defect (FIXME 0321).
+                    let ctor_display = {
+                        let info = type_def.as_deref().cloned().or_else(|| {
+                            // D1 (S108, FIXME-0321 mis-qualify class): root
+                            // the fallback chain-lookup at the ctor's already-
+                            // RESOLVED HOME `module` (the fn param), NOT
+                            // `current_module_path()`. At the home the TypeDef
+                            // is local so the chain terminates at depth 0; a
+                            // seeded/prelude-globbed ctor resolves its product
+                            // facet instead of missing and mis-qualifying.
+                            cranelisp_types::lookup_type_def_chain(
+                                &self.shared.symbol_tables,
+                                module,
+                                &tn,
+                            )
+                        });
+                        match info {
+                            Some(info) => {
+                                crate::display::format_ctor_display(&tn, bare_ctor, &info)
                             }
-                        };
-                        let mut doc = StyledDoc::new();
-                        push_type_annotation(&mut doc, &type_str);
-                        doc.plain(" ");
-                        push_fq_name(&mut doc, module, &ctor_display);
-                        doc.plain(" ");
-                        push_metadata(&mut doc, "; deftype");
-                        return doc;
-                    }
-                    DefKind::Macro { clauses_meta, .. } => {
-                        return format_macro_display_doc(
-                            name,
-                            clauses_meta,
-                            docstring.as_deref(),
-                            module,
-                        );
-                    }
-                    _ => {}
+                            None => format!("{tn}.{bare_ctor}"),
+                        }
+                    };
+                    let mut doc = StyledDoc::new();
+                    push_type_annotation(&mut doc, &type_str);
+                    doc.plain(" ");
+                    push_fq_name(&mut doc, module, &ctor_display);
+                    doc.plain(" ");
+                    push_metadata(&mut doc, "; deftype");
+                    return doc;
                 }
                 // FIXME 0352 (Principle 7): both the constrained and
                 // unconstrained arms render the scheme type through the single
                 // `format_scheme_type` renderer (`format_scheme_display_doc` is
                 // the `:type module/name` primary-line builder).
-                let mut doc = crate::display::format_scheme_display_doc(name, scheme, module);
+                let mut doc =
+                    crate::display::format_scheme_display_doc(name, &callable.arm.scheme, module);
                 // Both got-slotted primitives (`DefKind::Primitive`, e.g.
                 // `add-i64`) and slot-less host-promised externs
                 // (`DefKind::PrimitiveExtern`, e.g. the S96 `race`/`select`/
@@ -760,10 +813,7 @@ impl CompilerSession {
                 // `; primitive` per `repl/spec.md §1.1` — a `PrimitiveExtern`
                 // dispatches by-name via `Linkage::Import` but is no less a
                 // primitive to the user (FIXME 0481).
-                let is_primitive = matches!(
-                    kind.as_ref(),
-                    DefKind::Primitive { .. } | DefKind::PrimitiveExtern
-                );
+                let is_primitive = matches!(callable.origin, CallableOrigin::RustPrimitive);
                 let classification = if is_primitive { "primitive" } else { "defn" };
                 // FIXME 0308: primitive entries now carry their Appendix A.5
                 // description on `PrimitiveDef.docstring`; read it through the
@@ -773,22 +823,33 @@ impl CompilerSession {
                 doc.plain(" ");
                 push_metadata(
                     &mut doc,
-                    classification_metadata(classification, docstring.as_deref()),
+                    classification_metadata(classification, callable.docstring.as_deref()),
                 );
                 doc
             }
-            ModuleEntry::SpecialForm {
-                scheme,
-                description,
-                ..
-            } => format_special_form_display_doc(name, scheme, description),
-            ModuleEntry::TypeDef { .. } => self.format_type_display_doc(name, module),
-            ModuleEntry::TraitDecl { docstring, .. } => {
+            Decl::SpecialForm(record) => {
+                format_special_form_display_doc(name, &record.scheme, &record.description)
+            }
+            // REPL §4.1.8: trait methods self-document under their canonical
+            // `Trait.method` identity and classify as `deftrait`, including
+            // operator spellings such as `Num.+`.
+            Decl::TraitMethod(record) => {
+                let mut doc =
+                    crate::display::format_scheme_display_doc(name, &record.scheme, module);
+                doc.plain(" ");
+                push_metadata(
+                    &mut doc,
+                    classification_metadata("deftrait", record.docstring.as_deref()),
+                );
+                doc
+            }
+            Decl::Type(_) => self.format_type_display_doc(name, module),
+            Decl::Trait(record) => {
                 // 0558 (S108, resolve-home-enumeration.md §5): pass the RESOLVED
                 // HOME `module` (the fn param, produced by the gate) so the trait
                 // sections root at the home — where the `TraitDecl` is local
                 // (depth 0) and the prelude outer-scope question cannot arise.
-                self.format_trait_display_doc(name, docstring.as_deref(), module)
+                self.format_trait_display_doc(name, record.docstring.as_deref(), module)
             }
             _ => {
                 // TraitImpl entries have `Trait.Type` symbol names and
@@ -835,33 +896,10 @@ impl CompilerSession {
     /// divergence.
     pub(crate) fn resolve_entry_for_display(
         &self,
-        entry: &ModuleEntry<Code>,
+        entry: &Binding<Code>,
         current_module: &ModuleFullPath,
-    ) -> (ModuleEntry<Code>, ModuleFullPath) {
-        const MAX_DEPTH: usize = 32;
-        let mut cur_entry = entry.clone();
-        let mut cur_module = current_module.clone();
-        for _ in 0..MAX_DEPTH {
-            match &cur_entry {
-                ModuleEntry::Import { source, .. } => {
-                    match self.shared.symbol_tables.get(&source.module) {
-                        Some(module_table) => match module_table.get(source.symbol.as_ref()) {
-                            Some(resolved) => {
-                                let next = resolved.clone();
-                                cur_module = source.module.clone();
-                                cur_entry = next;
-                                continue;
-                            }
-                            None => return (cur_entry, cur_module),
-                        },
-                        None => return (cur_entry, cur_module),
-                    }
-                }
-                _ => return (cur_entry, cur_module),
-            }
-        }
-        // Depth exhausted — return the last resolved entry/module.
-        (cur_entry, cur_module)
+    ) -> (Binding<Code>, ModuleFullPath) {
+        (entry.clone(), current_module.clone())
     }
 }
 
@@ -869,7 +907,10 @@ impl CompilerSession {
 mod collect_related_tests {
     use super::*;
 
-    use cranelisp_types::{FQTypeName, ModuleFullPath, Scheme, TypeDefInfo, TypeName, Visibility};
+    use cranelisp_types::{
+        Binding, CallableOrigin, Decl, DefnVariant, FQTypeName, ModuleFullPath, Realization,
+        Scheme, TypeDefInfo, TypeName, TypeRecord, Visibility,
+    };
     use std::collections::HashMap;
 
     fn tables() -> dashmap::DashMap<ModuleFullPath, SessionSymbolTable> {
@@ -899,16 +940,18 @@ mod collect_related_tests {
         ensure(&tables, "user");
         let user = ModuleFullPath::from("user");
 
-        // (deftype Color [Red Green]) — a sum type with two nullary ctors.
-        let type_entry = ModuleEntry::TypeDef {
-            info: TypeDefInfo {
-                name: FQTypeName::new(user.clone(), TypeName::from("Color")),
-                type_params: vec![],
-                constructors: vec![Symbol::from("Red"), Symbol::from("Green")],
-            },
-            visibility: Visibility::Public,
-            docstring: None,
-        };
+        // (deftype Color Red Green) — a sum type with two nullary ctors.
+        let type_entry = Binding::new(
+            Decl::Type(TypeRecord::Defined {
+                info: TypeDefInfo {
+                    name: FQTypeName::new(user.clone(), TypeName::from("Color")),
+                    type_params: vec![],
+                    constructors: vec![Symbol::from("Red"), Symbol::from("Green")],
+                },
+                docstring: None,
+            }),
+            Visibility::Public,
+        );
 
         let related = collect_related_for(&tables, &user, &type_entry, &fq("user", "Color"), &user);
 
@@ -931,27 +974,60 @@ mod collect_related_tests {
         ensure(&tables, "user");
         let user = ModuleFullPath::from("user");
 
-        let ctor_entry = ModuleEntry::def(
-            Scheme {
-                type_vars: vec![],
-                constraints: HashMap::new(),
-                ty: Type::ADT(
-                    FQTypeName::new(user.clone(), TypeName::from("Color")),
-                    vec![],
-                ),
+        let scheme = Scheme {
+            type_vars: vec![],
+            constraints: HashMap::new(),
+            ty: Type::ADT(
+                FQTypeName::new(user.clone(), TypeName::from("Color")),
+                vec![],
+            ),
+        };
+        let variant = DefnVariant {
+            params: Vec::new(),
+            body: cranelisp_types::Expr::IntLit {
+                value: 0,
+                span: Span::SYNTHETIC,
+                inferred_type: None,
             },
-            DefKind::Constructor {
-                got_slot: 0,
-                type_name: FQTypeName::new(user.clone(), TypeName::from("Color")),
-                type_def: None,
-                tag: 0,
-                field_count: 0,
-                internal: false,
-                mode_summary: None,
-            },
-        )
-        .visibility(Visibility::Public)
-        .build();
+            span: Span::SYNTHETIC,
+        };
+        let view = cranelisp_types::MonoDefnVariant {
+            name: Symbol::from("Red"),
+            params: Vec::new(),
+            body: cranelisp_types::MonoExpr::lenient_from_expr(
+                &variant.body,
+                &Default::default(),
+                &Default::default(),
+                &Default::default(),
+            ),
+            span: Span::SYNTHETIC,
+            mode_summary: None,
+        };
+        let mut ctor_table = SessionSymbolTable::new_with_params(user.clone());
+        ctor_table
+            .install_concrete(
+                Symbol::from("Red"),
+                scheme,
+                Vec::new(),
+                None,
+                0,
+                CallableOrigin::Ctor {
+                    type_name: FQTypeName::new(user.clone(), TypeName::from("Color")),
+                    type_def: None,
+                    tag: 0,
+                    field_count: 0,
+                    internal: false,
+                },
+                Realization::Body { view, code: None },
+                Some(variant),
+                Vec::new(),
+                Visibility::Public,
+            )
+            .expect("constructor fixture installs");
+        let ctor_entry = ctor_table
+            .get("Red")
+            .cloned()
+            .expect("constructor fixture is readable");
 
         let related = collect_related_for(&tables, &user, &ctor_entry, &fq("user", "Red"), &user);
 
@@ -1200,7 +1276,7 @@ mod styling_colour_on_tests {
 #[cfg(test)]
 mod impl_line_home_tests {
     use super::*;
-    use cranelisp_types::{Scheme, Type, UserFnState, Visibility};
+    use cranelisp_types::{Binding, Decl, Scheme, Type, TypeRecord, Visibility};
     use std::collections::HashMap;
 
     fn tables() -> dashmap::DashMap<ModuleFullPath, SessionSymbolTable> {
@@ -1223,17 +1299,17 @@ mod impl_line_home_tests {
         module: &str,
         name: &str,
     ) {
-        let entry = ModuleEntry::def(
-            scheme(),
-            DefKind::UserFn {
-                fn_state: UserFnState::NotDetermined,
-            },
-        )
-        .visibility(Visibility::Public)
-        .build();
+        let entry = Binding::new(
+            Decl::Type(TypeRecord::Intrinsic {
+                ty: scheme().ty,
+                docstring: None,
+            }),
+            Visibility::Public,
+        );
         t.get_mut(&ModuleFullPath::from(module))
             .unwrap()
-            .insert(Symbol::from(name), entry);
+            .install_binding(Symbol::from(name), entry)
+            .expect("public fixture installs");
     }
     fn public_import(
         t: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
@@ -1241,16 +1317,17 @@ mod impl_line_home_tests {
         name: &str,
         src_mod: &str,
     ) {
-        let entry = ModuleEntry::Import {
-            source: FQSymbol {
-                module: ModuleFullPath::from(src_mod),
-                symbol: Symbol::from(name),
-            },
-            visibility: Visibility::Public,
-        };
         t.get_mut(&ModuleFullPath::from(importer))
             .unwrap()
-            .insert(Symbol::from(name), entry);
+            .expose_candidate(
+                Symbol::from(name),
+                FQSymbol {
+                    module: ModuleFullPath::from(src_mod),
+                    symbol: Symbol::from(name),
+                },
+                Visibility::Public,
+            )
+            .expect("public import fixture installs");
     }
 
     // The 0671 repro shape: `Display` (homed in text.display, imported into user)

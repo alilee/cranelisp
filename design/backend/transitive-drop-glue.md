@@ -395,6 +395,16 @@ mechanism):
 >    discriminate scalars from pointers. I-CT proves the *count* balances and is
 >    silent on whether the word is a reference at all.
 >
+> **S121: I-CT′ is discharged STRUCTURALLY, and this face's deletion site
+> vanishes.** Under C1's unified symbol lifecycle a `Life::Template` carries no
+> slot and no view, and FIXME 0931 retires the generic-ADT constructor's template
+> slot — so **a ctor-template frame with a residual parameter is no longer a
+> codegen target at all**. There is no frame left in which to emit, or to delete,
+> the pair. Backend's obligation reduces to observing that the census's `Ctor`
+> partition reads zero (`s121-c4-visit.md` §5, §7). 0931's own acceptance names
+> this subsumption; it is recorded here as it asked. I-CT and its standing
+> `Borrowed`-mode obligation retire with it.
+>
 > The live disposition for this face — **the pair deletes; a ctor template frame
 > emits no RC operation on a residual parameter**, under invariant I-CT′ — is
 > `non-concrete-release-contract.md` §4 face 1 and §4.1. I-CT, its standing
@@ -408,27 +418,17 @@ authority for it; D2 defers here, and §11's no-interim list names it as the sol
 admitted exception so `/review` can tell it from the shallow fallback the
 migration exists to delete.
 
-**The class — and why it is not about generics OR about undeclared fields.** A
+**The class — generic constructor templates.** A
 constructor `Def` is compiled **once per declaration**, never once per
 instantiation. `design/arch/concrete-boundary-type.md` §3.1.1 partitions it as a
 *signature-driven* codegen target: its parameter types come from the entry's
-`scheme`, not from body nodes. Two declaration shapes hand that scheme a
-non-concrete parameter:
-
-- a **generic** product/sum — `(deftype (Option a) (Some [:a v]))`: the field
-  parameter is the declared type parameter;
-- an **undeclared field** — `(deftype B (Mk [v]))`: typecheck leaves the field a
-  free type variable, and `B` is monomorphic, so no instantiation ever pins it.
-
-Both are legal source and both arrive through the same door, so the class is
-intrinsic to compile-once-per-declaration rather than an artifact of either
-shape. It cannot be closed upstream without monomorphising constructor `Def`s
+`scheme`, not from body nodes. A generic product or sum such as `(deftype
+(Option a) (Some [:a v]))` therefore hands the template a non-concrete field
+parameter. This class is intrinsic to compile-once-per-declaration. It cannot be
+closed upstream without monomorphising constructor `Def`s
 per instantiation — a pipeline change with no sponsor, outside this migration,
-and unnecessary for soundness (below). **This is why the FIXME's option (c) is
-rejected:** FIXME 0394, the number the as-built comments still cite, was
-**closed at S84** (`09d91719`) on a different axis (`codegen_view` population),
-and even a future ruling that made undeclared fields concrete would leave the
-generic half exactly where it is.
+and unnecessary for soundness (below). FIXME 0394, which older comments cited,
+was closed at S84 on the different `codegen_view` population axis.
 
 **Why the release is sound — stated as an invariant, not as a site anecdote.**
 In a ctor template frame the parameter's scope-exit release is not a teardown at

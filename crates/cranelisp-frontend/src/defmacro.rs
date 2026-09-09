@@ -28,7 +28,7 @@ use crate::synth;
 // per FIXME 0156 (Sprint 66 Wave 0). They are re-exported through this
 // module's public surface and through `cranelisp_frontend::lib.rs`.
 
-pub use cranelisp_types::{DefmacroInfo, MacroClause};
+pub use cranelisp_types::{DefmacroInfo, ParsedMacroClause as MacroClause};
 
 // ---------------------------------------------------------------------------
 // Form detection

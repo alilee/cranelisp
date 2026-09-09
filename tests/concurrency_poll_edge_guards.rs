@@ -51,9 +51,9 @@ fn poll_capacity_rides_node_convention_and_abi_is_v8() {
         );
     }
 
-    // (2) The S97 ctx-vtable handle-model cutover stamps `ABI_VERSION = 9`
-    // (`HostCtx` gains `acquire`/`retire`, `ConcurrencyDescriptor` gains `role`,
-    // the `Acquire` enum is added; `platform-interface.md §6.8.0b`). Was 8 (S96).
+    // (2) The current ABI stamp is 10 after the S121 DLL-constructed Pure-node
+    // witness append. The earlier poll-capacity work still contributed no ABI
+    // change of its own.
     let lib_rs = std::fs::read_to_string(
         workspace_root()
             .join("crates")
@@ -63,9 +63,9 @@ fn poll_capacity_rides_node_convention_and_abi_is_v8() {
     )
     .expect("read cranelisp-platform/src/lib.rs");
     assert!(
-        lib_rs.contains("pub const ABI_VERSION: u32 = 9;"),
-        "the S97 ctx-vtable cutover (§6.8.0b) stamps `ABI_VERSION = 9`. The \
-         `pub const ABI_VERSION: u32 = 9;` line was not found in \
+        lib_rs.contains("pub const ABI_VERSION: u32 = 10;"),
+        "the S121 Pure witness append stamps `ABI_VERSION = 10`. The \
+         `pub const ABI_VERSION: u32 = 10;` line was not found in \
          cranelisp-platform/src/lib.rs."
     );
 
@@ -118,8 +118,8 @@ fn chunk_c_no_new_public_api_edge_or_abi_bump_neg() {
     }
 
     // (2) The combinator/cancellation work (Chunk C) added no public-api edge
-    // (asserted above). The ABI stamp itself is now `9` after the S97 ctx-vtable
-    // cutover (`platform-interface.md §6.8.0b`) — the combinators remain in-process
+    // (asserted above). The ABI stamp is now `10` after the S121 Pure-node
+    // witness append — the combinators remain in-process
     // node tags + derived `.cl` (they contributed no ABI change; the bump is the
     // `HostCtx`/`ConcurrencyDescriptor` ctx-vtable change, not Chunk C).
     let lib_rs = std::fs::read_to_string(
@@ -131,8 +131,8 @@ fn chunk_c_no_new_public_api_edge_or_abi_bump_neg() {
     )
     .expect("read cranelisp-platform/src/lib.rs");
     assert!(
-        lib_rs.contains("pub const ABI_VERSION: u32 = 9;"),
-        "post-S97 the ABI stamp is `9` (the ctx-vtable cutover); the combinators \
+        lib_rs.contains("pub const ABI_VERSION: u32 = 10;"),
+        "post-S121 the ABI stamp is `10` (the Pure witness append); the combinators \
          themselves are in-process node tags + derived `.cl` (no Chunk-C edge)."
     );
 }

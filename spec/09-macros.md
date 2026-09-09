@@ -1,8 +1,13 @@
-# 9. Macros [Tested]
+# 9. Macros [Uncovered S121]
 
-This section defines the compile-time macro system in Cranelisp. Macros are ordinary Cranelisp functions that transform S-expression values before type checking. They are compiled with the same code generation pipeline as user functions and called during expansion — no separate interpreter is required.
+This section defines the compile-time macro system in Cranelisp. Macro clause
+bodies obey ordinary Cranelisp function typing and use the same code generation
+pipeline as user functions, but `defmacro` introduces a macro declaration rather
+than language-visible functions for its clauses. Compiled clauses transform
+S-expression values before type checking and are invoked during expansion — no
+separate interpreter is required.
 
-## 9.1 Sexp Data Model [Uncovered S115 — was crates/cranelisp-typecheck/src/builtins.rs::test_macros_module_exists]
+## 9.1 Sexp Data Model [Uncovered S121]
 
 The macro system operates on S-expression values. Two algebraic data types are provided by the compiler in a synthetic `macros` module. These types are immutable and not user-modifiable.
 
@@ -46,7 +51,7 @@ Each variant represents one kind of S-expression:
 | `SexpBracket` | Bracketed list `[...]` | `[x y z]` |
 | `SexpAnnotated` | Annotated form — the read-time `:Type <form>` fold (§1.4.5) | `:Int 5` [S115] |
 
-Field names are prefixed with `s` (e.g., `sval`, `sname`, `sitems`) to avoid collision with user-defined field names.
+Payload labels are prefixed with `s` (e.g., `sval`, `sname`, `sitems`) for clear runtime-layout and documentation identities. They belong to sum-constructor arms and therefore generate no callable accessors (§5.2.6); repeated labels such as `sval` and `sitems` do not create module-scope collisions.
 
 **`SexpAnnotated` — what the annotation halves hold. [S115]** `stype` is the annotation half **with the colon stripped**: `:Int 5` marshals to `(SexpAnnotated (SexpSym "Int") (SexpInt 5))`, and `:(Fn [a] a) f` to `(SexpAnnotated (SexpList …) (SexpSym "f"))`. The half is an ordinary `Sexp`, not a distinguished type value — macros quote, unquote, and destructure it like any other form; that it must denote a type expression (§2.4) is checked when the annotated form is built into an expression, not when it is read or marshalled. `sform` is the annotated subject. Stacked annotations nest (`:A :B x` → `SexpAnnotated` whose `sform` is another `SexpAnnotated`).
 
@@ -157,7 +162,7 @@ Macro bodies are full Cranelisp expressions. They MAY use:
 
 Macro bodies MUST NOT perform IO operations. They are pure functions from `Sexp` to `Sexp`.
 
-### 9.2.6 Multi-Clause Macros
+### 9.2.6 Multi-Clause Macros [Tested+Neg tests/spec_09_macros::defmacro_multi_clause_dispatch, src/expander.rs::no_matching_clause_error_reports_user_span_and_clause_arities]
 
 A `defmacro` form MAY contain multiple clauses. Each clause is a `([params] body)` pair enclosed in parentheses:
 
@@ -176,7 +181,15 @@ At expansion time, clauses are tried in definition order — the first matching 
 
 If no clause matches, the implementation MUST report a compile-time error naming the macro and the argument count.
 
-Each clause is compiled independently into a separate function. The dispatch occurs at expansion time, not at compile time of the macro definition.
+Each clause body obeys ordinary function typing and is compiled independently
+through the ordinary code generation pipeline. The dispatch occurs at expansion
+time, not at compile time of the macro definition.
+
+The `defmacro` form introduces only its named macro into the language namespace.
+Any compiler-generated binding used to store or execute an individual clause is
+not a module value: it MUST NOT be imported or referenced, whether by an
+unqualified or qualified name, and MUST NOT be called except by macro expansion.
+The representation and names of such bindings are implementation-defined.
 
 ```clojure
 ;; Recursive base/step pattern:
@@ -268,9 +281,9 @@ Implementations SHOULD limit the number of expansion iterations to prevent infin
 ;; Fixed point reached (no more macros)
 ```
 
-### 9.3.4 Macro Availability and Definition Order [S76 — tested-by /qa S76]
+### 9.3.4 Macro Availability and Definition Order [Tested+Neg tests/s76_macro_availability::macro_used_before_defmacro_is_unresolved_neg, tests/s76_macro_availability::macro_defined_before_use_expands, tests/spec_09_macros::macro_persists_across_evals]
 
-**A macro MUST be defined before it is used, in source order.** Within a module (and within a REPL `(begin …)` cluster), a `defmacro` is available only to forms that *follow* it. A use of a name that appears textually before its `defmacro` is **not** a macro call: it is an ordinary reference that passes through to the AST builder, and fails name resolution there if the name is otherwise undefined. (This is the *defmacro-before-use* rule; it is the same rule whether the code runs in the REPL or in a batch file — see [Section 5.13.2](05-definitions.md#5132-repl-input-boundary-and-begin-clusters).)
+**A macro MUST be defined before it is used, in source order.** Within a module (and within a REPL `(begin …)` cluster), a `defmacro` is available only to forms that *follow* its successful compilation checkpoint (§9.12.1). A use of a name that appears textually before its `defmacro`, or after a failed `defmacro` attempt for which no prior definition exists, is **not** a macro call: it is an ordinary reference that passes through to the AST builder, and fails name resolution there if the name is otherwise undefined. (This is the *defmacro-before-use* rule; it is the same rule whether the code runs in the REPL or in a batch file — see [Section 5.13.2](05-definitions.md#5132-repl-input-boundary-and-begin-clusters).) Once a checkpoint succeeds, a failure in a later form does not withdraw that macro.
 
 **A macro's expansion may reference only:** (a) definitions in modules that are **dependencies** of the macro's defining module — i.e. modules typechecked before it (the compiler typechecks-and-compiles such a dependency just-in-time when an expansion first needs it; per §8.5.4 lazy loading); and (b) **macros**, including macros defined earlier in the same module (macros are the compile-time layer and depend only on prior modules). **A macro's expansion MUST NOT reference a same-module non-macro definition** (a `defn`, `def`, `const`, `deftype` constructor, or trait method defined in the same module). Such definitions are processed *after* macro expansion (see the three-pass model, §9.12) and do not exist when the macro expands; a macro that needs a helper MUST place that helper in a dependency module, or inline the logic into the macro body.
 
@@ -282,11 +295,13 @@ Forbidding same-module non-macro expansion-time references is what makes REPL se
 
 The expanded S-expressions SHOULD carry the source location (span) of the original macro call site. This means that error messages resulting from expanded code point to where the macro was invoked, not where the macro was defined.
 
-### 9.3.6 Qualified Macro References [Tested tests/s76_macro_availability::fq_macro_reference_expands_without_import]
+### 9.3.6 Qualified Macro References [Tested tests/s76_macro_availability::fq_macro_reference_expands_without_import, tests/process_form_dispatch::process_form_dispatch_macro_after_import_succeeds_in_one_eval]
 
 Macros MAY be invoked through qualified names (`module/macro-name`) without an explicit `import`. A qualified macro reference is resolved during macro expansion (the compile-time pass): the compiler lazy-loads, typechecks, and compiles the referenced module just-in-time (per §8.5.4), then expands the macro. There is no syntactic distinction between a qualified macro call and a qualified function call; the distinction is made when the compiler resolves the entry.
 
 Qualified macro references are **not** constrained by source order within the referring module — they target a dependency module, which is always typechecked before the referring module (the dependency graph is acyclic, §9.3.4). This asymmetry is intentional: in-module macro availability follows the defmacro-before-use rule (§9.3.4), while cross-module macro references are available as soon as their defining module can be loaded and typechecked.
+
+**Same-spelled macro candidates. [Uncovered S121]** Imports, re-exports, and module-local declarations MAY expose several canonical declarations under one bare spelling (§8.6.4). Macro expansion occurs before HM inference, so later value-type information MUST NOT select among candidates at a macro call head. If compile-time syntactic resolution does not leave exactly one macro declaration — including when a same-spelled function remains a possible ordinary call — the bare call is ambiguous and MUST use the macro's canonical `module/macro-name`. The macro declaration introduced by `defmacro` is not a value outside invocation position and is eliminated by syntactic context under §8.6.5. Compiler-generated clause bindings are not language-namespace candidates at all (§9.2.6).
 
 ## 9.4 Quasiquote [Tested+Neg tests/spec_09_macros::quasiquote_with_unquote, crates/cranelisp-frontend/src/quasiquote.rs::quote_and_quasiquote_preserve_annotated_node_shape, crates/cranelisp-frontend/src/quasiquote.rs::annotation_half_splice_is_rejected_in_quasiquote, crates/cranelisp-frontend/src/quasiquote.rs::annotation_subject_splice_is_rejected_in_quasiquote, crates/cranelisp-frontend/src/quasiquote.rs::unquote_is_processed_in_both_annotated_halves]
 
@@ -351,10 +366,10 @@ Nested quasiquote with symbol construction:
 
 ```clojure
 (defmacro when [cond body]
-  `(if ~cond ~body 0))
+  `(if ~cond (Some ~body) None))
 
-(when (> x 0) (print "positive"))
-;; Expands to: (if (> x 0) (print "positive") 0)
+(when (> x 0) "positive")
+;; Expands to: (if (> x 0) (Some "positive") None)
 ```
 
 ### 9.4.4 Legal Wherever an Expression Is Legal
@@ -400,7 +415,7 @@ An implementation MUST check for zero-argument macros during expansion whenever 
 
 This mechanism can be used to implement named constants. For example, the reference implementation provides `const` and `def` macros (Section 9.10.1, 9.10.2) built on bare-symbol expansion.
 
-## 9.6 Multi-Form Expansion (`begin`) [Tested tests/spec_09_macros::macro_begin_two_forms]
+## 9.6 Multi-Form Expansion (`begin`) [Tested+Neg tests/spec_09_macros::macro_emitted_definition_batch_lists_all_definitions_in_order, tests/spec_09_macros::macro_expanded_begin_deftype_then_impl_registers_in_source_order, tests/spec_09_macros::macro_expanded_begin_impl_neg_before_deftype_is_rejected]
 
 A macro MAY return a form whose head symbol is `begin`. The `begin` form causes the expander to splice multiple top-level forms into the surrounding context:
 
@@ -431,9 +446,13 @@ Each `form1` through `formN` is treated as a separate top-level form, as if the 
 ;;   (defmacro ten [] (SexpList (SCons (SexpSym "ten-def") SNil)))
 ```
 
-The `begin` expansion is performed before re-expansion of individual forms. Each spliced form is then expanded independently.
+The `begin` expansion is performed before re-expansion of individual forms. Each
+spliced form is then expanded independently. A spliced `defmacro` has the same
+source-ordered compilation-checkpoint semantics as an authored `defmacro`;
+generation by macro expansion does not join it to a later non-macro publication
+cluster (§9.12.1).
 
-## 9.7 SList Helper Functions [Tested]
+## 9.7 SList Helper Functions [Uncovered S121]
 
 Macro authors typically need helper functions for `SList`. A standard library may provide functions such as the following (these are defined in the reference implementation's `core.syntax` module).
 
@@ -506,16 +525,18 @@ A convenience macro that constructs an `(SList a)` from its arguments. Expands t
 ;; Expands to: (SCons 1 (SCons 2 (SCons 3 SNil)))
 ```
 
-### 9.7.6 `shead` / `stail`
+### 9.7.6 SList payload extraction
 
-The field accessors `shead` and `stail` are auto-generated from the `SCons` constructor definition (as with all ADT field accessors). They extract the head element and tail list from a non-empty SList.
+`shead` and `stail` are payload labels on the sum constructor `SCons`, not
+helper-function names or callable accessors. Code extracts the two payloads by
+matching `(SCons head tail)`; the bindings are positional and need not repeat
+the declaration labels (§5.2.6, §6.2).
 
 ```clojure
-(shead (SCons 1 (SCons 2 SNil)))   ; -> 1
-(stail (SCons 1 (SCons 2 SNil)))   ; -> (SCons 2 SNil)
+(match (SCons 1 (SCons 2 SNil))
+  [(SCons head tail) head
+   SNil 0])                         ; -> 1
 ```
-
-Calling `shead` or `stail` on `SNil` is a runtime error (match failure).
 
 ## 9.8 Hygiene [Tested tests/spec_09_macros::auto_gensym_introduced_binding_does_not_capture_outer]
 
@@ -568,12 +589,14 @@ If macro expansion does not reach a fixed point within the implementation's iter
 
 ### 9.9.3 Type Error in Macro Body
 
-Macro bodies are type-checked like any other function. Type errors in the body (e.g., applying `shead` to an `Int`) are compile-time errors reported at the `defmacro` form.
+Macro bodies are type-checked like any other function. Type errors in the body
+(e.g., constructing `SCons` with a non-`SList` tail) are compile-time errors
+reported at the `defmacro` form.
 
 ```clojure
 (defmacro bad [x]
-  (shead x))
-;; Error: shead expects (SList a), got Sexp
+  (SCons x 1))
+;; Error: SCons expects an (SList a) tail, got Int
 ```
 
 ### 9.9.4 Runtime Error During Expansion
@@ -595,7 +618,7 @@ Calling a macro with the wrong number of arguments is a compile-time error. For 
 
 ## 9.10 Example Prelude Macros [Tested tests/spec_11_stdlib::macro_when_true, tests/spec_11_stdlib::macro_cond_first_match, tests/spec_11_stdlib::macro_thread_first_single, tests/spec_11_stdlib::macro_vec_elements]
 
-The following macros illustrate the capabilities of the macro system. They are provided by the reference implementation's standard prelude (`stdlib/core/syntax.cl`) and are available in all modules that import the prelude (which is the default). Full details of the reference standard library are in Section 11 (non-normative); brief descriptions and expansion examples are given here.
+The following macros illustrate the capabilities of the macro system. They are provided by the reference implementation's standard prelude, and are available in all modules that import the prelude (which is the default). Full details of the reference standard library are in Section 11 (non-normative); brief descriptions and expansion examples are given here. The prelude's own module layout is the standard library's to decide and is not fixed by this specification.
 
 ### 9.10.1 `const` / `const-`
 
@@ -893,6 +916,30 @@ With zero arguments, returns the empty string `""`.
        (str-fold (SexpList (SCons (SexpSym "show") (SCons x SNil))) rest)]))
 ```
 
+### 9.10.12 `when` / `unless` [S121]
+
+```clojure
+(when test body)
+(unless test body)
+```
+
+One-armed conditionals. `when` evaluates `body` if `test` is true; `unless` evaluates `body` if `test` is false. Because Cranelisp `if` requires both branches to have the same type ([§4.4](04-expressions.md#44-if-expression)), a one-armed conditional has no value to return on the untaken branch, so both macros return an **`Option`**: the body's value wrapped in `Some` on the taken branch, and `None` otherwise. The result type is `(Option a)` for a body of any type `a` — the wrap is unconditional and does not collapse when the body is itself an `Option`, so `(when true (Some 1))` is `(Some (Some 1))`.
+
+```clojure
+(when (> x 0) "positive")     ; => (Some "positive") when x > 0, else None
+(unless (> x 0) "negative")   ; => None when x > 0, else (Some "negative")
+```
+
+**Implementation:**
+
+```clojure
+(defmacro when "Conditional returning (Some body) when test holds, else None" [test body]
+  `(if ~test (Some ~body) None))
+
+(defmacro unless "Conditional returning (Some body) when test fails, else None" [test body]
+  `(if ~test None (Some ~body)))
+```
+
 ## 9.11 Primitives for Macro Authors [Tested tests/spec_09_macros::quasiquote_with_unquote]
 
 ### 9.11.1 `quote-sexp`
@@ -921,15 +968,29 @@ Concatenates two strings. Available as a primitive and commonly used in macro he
 (str-concat "foo" "-def")   ; -> "foo-def"
 ```
 
-## 9.12 Bootstrapping Order [Tested tests/spec_09_macros::macro_persists_across_evals]
+## 9.12 Bootstrapping Order [Tested+Neg tests/spec_09_macros::macro_persists_across_evals, tests/s76_macro_availability::macro_generates_defmacro_available_to_later_use, tests/s76_macro_availability::generated_macro_checkpoint_is_not_replayed_after_later_dependency_gap_neg]
 
 A module is compiled in **three passes**:
 
-1. **Pass 1 — Recursively typecheck `defmacro`s and expand all macro calls** (both unqualified and qualified `module/macro`). Dependency-module forms a macro clause needs are typechecked-and-compiled just-in-time during this pass. A macro generated by expansion (e.g. via `def` → `(begin (defn …) (defmacro …))`) is itself typechecked and compiled in this pass and becomes available to subsequent expansion; expansion runs to a fixed point. This is the compile-time layer.
+1. **Pass 1 — Process macros and expansion in source order.** A macro call
+   (unqualified or qualified as `module/macro`) expands using only macros whose
+   compilation checkpoints have already succeeded. On encountering a
+   `defmacro`, the compiler typechecks and compiles its complete expansion-time
+   closure; only a successful checkpoint makes it available to following
+   forms. Dependency-module forms a macro clause needs are
+   typechecked-and-compiled just in time. A macro generated by expansion (for
+   example, via `def` → `(begin (defn …) (defmacro …))`) enters the same
+   source-ordered traversal; expansion runs to a fixed point. This is the
+   compile-time layer.
 
-2. **Pass 2 — Register non-macro signatures** of the fully-expanded form set (including macro-generated definitions), so the module's `defn`/`deftype`/`deftrait`/`impl` definitions may forward-reference one another (§5.13.1).
+2. **Pass 2 — Register non-macro binding heads** from the fully expanded form
+   set, including macro-generated definitions, in the private cluster state
+   defined by [§3.5.2](03-types.md#352-two-pass-checking). This pass does not
+   typecheck a body or publish a provisional signature.
 
-3. **Pass 3 — Type-check non-macro bodies** against the complete registered signature/impl set, and commit.
+3. **Pass 3 — Check and publish the non-macro cluster.** Every non-macro body is
+   checked against that shared private state. The §3.5.2 finalization and
+   publication step runs only if every definition succeeds.
 
 Because Pass 1 runs before Passes 2–3, the module's own non-macro definitions do not yet exist when a macro expands — this is **why** a macro's expansion cannot reference a same-module non-macro definition (§9.3.4): the restriction is a structural consequence of the pass order, not a separate rule the compiler must police.
 
@@ -940,21 +1001,62 @@ This ordering ensures that:
 
 A `defmacro` MAY appear at any point in a source file, interleaved with other definitions. It is available to the forms that **follow** it in the same file (§9.3.4) and to any module that imports it.
 
-## 9.13 REPL Integration [Tested tests/spec_09_macros::defmacro_display_clause_signature, tests/spec_09_macros::macro_persists_across_evals, tests/repl_introspection::defmacro_display_single_clause]
+### 9.12.1 `defmacro` Compilation Checkpoints [Uncovered S121]
+
+A `defmacro` is a source-ordered compilation checkpoint. The checkpoint succeeds
+only after its macro declaration, every clause, and all required expansion-time
+dependencies and generated realizations have successfully typechecked and
+compiled. Dependency modules publish independently as they succeed and are
+outside the macro's publication transaction. The checkpoint atomically
+publishes the macro declaration, all active clauses, and the generated
+realizations owned by the defining module.
+
+If the checkpoint fails, none of that attempt's macro declaration, compiled
+clauses, or defining-module generated realizations are committed. Dependency
+results published before the failure remain available. If the checkpoint
+succeeds, it commits as a unit and becomes available to following forms;
+failure of a later form MUST NOT undo it.
+
+When a successful checkpoint is a redefinition, it affects future expansions
+only. Definitions already expanded and compiled retain that expansion until
+their authored forms are typechecked again. Reload and restart re-expand
+persisted authored calls with the then-current macro. Macro invocations create
+no stable runtime caller edge; ordinary calls and value uses inside the macro
+clause body remain ordinary stored `callees`. The full rule is
+[`repl/spec/18-redefinition.md` §18.4](../repl/spec/18-redefinition.md#184-macro-redefinition).
+
+The checkpoint does not permit a live visibility change for an existing
+canonical macro name. Changing between `defmacro` and `defmacro-` is rejected
+atomically with the prior macro unit and backing source retained. The user must
+reload/restart from changed persisted source or introduce a new name.
+
+This rule applies equally to authored and macro-generated `defmacro` forms, to
+first definitions and successful redefinitions, and during REPL, batch, and
+reload compilation. It does not expose an incompletely loaded module to another
+module or permit evaluation from a module in the reload error state: the
+whole-module visibility rule remains §8.5.4 edge 7, and reload error blocking
+remains [`repl/spec/14-file-watching.md` §14.4–§14.5](../repl/spec/14-file-watching.md#144-error-blocking).
+
+The fully expanded non-macro definitions remain one HM binding cluster. They
+publish together only after registration, body checking, and finalization all
+succeed (§5.13); they do not roll back an earlier successful `defmacro`
+checkpoint.
+
+## 9.13 REPL Integration [Tested+Neg tests/spec_09_macros::defmacro_display_clause_signature, tests/spec_09_macros::macro_persists_across_evals, tests/spec_09_macros::repl_error_recovery_no_partial_macro, tests/repl_introspection::expand_user_defmacro]
 
 In a REPL session:
 
-- `defmacro` at the REPL compiles and registers the macro immediately. All subsequent input is expanded through the updated macro environment.
+- A successful `defmacro` checkpoint at the REPL compiles and registers the macro immediately. All subsequent input is expanded through the updated macro environment. A later failure in the same input does not remove that macro; a failed checkpoint leaves no partial macro attempt (§9.12.1).
 - The `/expand` (or `/e`) REPL command shows the result of macro expansion without evaluating it, which is useful for debugging macros.
 - Macros appear in REPL introspection commands (`/list`, `/info`, `/sig`, `/doc`) alongside functions and types.
 
 ```
 user> (defmacro double [x] `(+ ~x ~x))
-double :: macro: (fn [Sexp] Sexp)
+:(Fn [macros/Sexp] macros/Sexp) user/double ; defmacro
 user> /expand (double 21)
 (+ 21 21)
 user> (double 21)
-42 :: Int
+:primitives/Int 42
 ```
 
 ## 9.14 Limitations [Tested tests/spec_09_macros::repl_error_recovery_no_partial_macro]

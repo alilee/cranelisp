@@ -12,6 +12,8 @@
 //!   sleeps then returns the duration (witnesses same-token serialization vs diff-token concurrency)
 //! - `fault-now`: Sequential, takes no args, panics inside the IO Effect body when forced
 //!   (raises a dispatch fault DURING the trampoline; witnesses the S81 fault funnel end-to-end)
+//! - `pure-int` / `pure-string`: blocking platform calls returning DLL-built
+//!   `Pure` nodes, exercising scalar and owning adoption at the host crossing
 //!
 //! Also exports test utility functions (NOT platform functions) for setup/teardown:
 //! - `test_capture_set_input`: queue input lines for read-line
@@ -117,6 +119,18 @@ pub extern "C" fn resource_serial_sleep_ms(token: CLInt, ms: CLInt) -> CLIO<CLIn
     })
 }
 
+/// Return a DLL-constructed scalar `Pure` node. The DLL writes the ABI-v10
+/// payload-glue sentinel `0`; the host crossing confirms the scalar stamp.
+pub extern "C" fn pure_int() -> CLIO<CLInt> {
+    CLIO::pure(CLInt::from(121i64))
+}
+
+/// Return a DLL-constructed owning `Pure` node. The DLL writes sentinel `0`;
+/// the host crossing adopts the string by stamping canonical `drop<String>`.
+pub extern "C" fn pure_string() -> CLIO<CLString> {
+    CLIO::pure(CLString::from("s121-platform-pure"))
+}
+
 declare_platform! {
     name: "test-capture",
     version: "0.1.0",
@@ -170,6 +184,20 @@ declare_platform! {
             doc: "Sleep for ms milliseconds with a resource token, returning the duration (ResourceSerial scheduling class, for testing token serialization)",
             params: [token, ms],
             scheduling: SchedulingClass::ResourceSerial,
+        },
+        pure_int {
+            cl_name: "pure-int",
+            sig: "(Fn [] (primitives/IO primitives/Int))",
+            doc: "Return a DLL-constructed scalar Pure node (ABI-v10 adoption fixture)",
+            params: [],
+            scheduling: SchedulingClass::Sequential,
+        },
+        pure_string {
+            cl_name: "pure-string",
+            sig: "(Fn [] (primitives/IO primitives/String))",
+            doc: "Return a DLL-constructed owning Pure node (ABI-v10 adoption fixture)",
+            params: [],
+            scheduling: SchedulingClass::Sequential,
         },
     ]
 }

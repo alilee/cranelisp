@@ -140,19 +140,21 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 //     pins it) → the §3.11 ambiguity error — the same disposition
                 //     the equivalent standalone function would get.
                 for (i, variant) in defn.variants.iter().enumerate() {
-                    let internal_name = Symbol::from(format!("{}__v{}", defn.name, i));
                     let allowed_vars: std::collections::HashSet<u32> = accumulator
-                        .defn_type_vars
-                        .get(&internal_name)
-                        .map(|(param_types, ret_ty)| {
+                        .bodies
+                        .registration_for_target(&BodyTarget::MultiSignatureClause {
+                            group: defn.name.clone(),
+                            clause: i,
+                        })
+                        .map(|registration| {
                             let mut vars = std::collections::HashSet::new();
-                            for t in param_types {
+                            for t in &registration.param_types {
                                 vars.extend(cranelisp_types::free_vars(
                                     &self.apply_subst(state, t),
                                 ));
                             }
                             vars.extend(cranelisp_types::free_vars(
-                                &self.apply_subst(state, ret_ty),
+                                &self.apply_subst(state, &registration.ret_ty),
                             ));
                             vars
                         })
@@ -193,7 +195,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // EMPTY (except the RD-3 benign resolved-dispatch stale vars) and the
             // polymorphic-skip below is suppressed (0585 VP-3/4/5).
             let is_entry_eval = defn.name.as_ref() == "__expr";
-            let sig = accumulator.defn_type_vars.get(&defn.name);
+            let sig = accumulator.bodies.registration_for_publication(&defn.name);
             let allowed_vars: std::collections::HashSet<u32> = if is_entry_eval {
                 // `__expr`'s only sound residual vars are the STALE vars left by a
                 // RESOLVED dispatch (`(add2 3 4)` resolves its Int impl by
@@ -207,12 +209,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 }
                 benign
             } else {
-                sig.map(|(param_types, ret_ty)| {
+                sig.map(|registration| {
                     let mut vars = std::collections::HashSet::new();
-                    for t in param_types {
+                    for t in &registration.param_types {
                         vars.extend(cranelisp_types::free_vars(&self.apply_subst(state, t)));
                     }
-                    vars.extend(cranelisp_types::free_vars(&self.apply_subst(state, ret_ty)));
+                    vars.extend(cranelisp_types::free_vars(
+                        &self.apply_subst(state, &registration.ret_ty),
+                    ));
                     vars
                 })
                 .unwrap_or_default()
@@ -350,7 +354,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 false
             };
             // S110 B1 — a RESOLVED multi-sig/overload call (sig-dispatch) is also
-            // benign. `resolve_pending_overloads` (the sole drain, run BEFORE this
+            // benign. The module-wide `resolve_pending_overloads` drain (run BEFORE this
             // POST-drain LEG-2 scan) unified the call's fresh return var with the
             // selected variant's concrete return AND recorded a `SigDispatch` at
             // the span; if any residual var lingers on the recorded surface type

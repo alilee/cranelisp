@@ -1,8 +1,9 @@
 use super::*;
 use crate::checker::TestFixture;
 use cranelisp_types::{
-    ConstructorDef, FQSymbol, FQTypeName, ModuleEntry, ModuleFullPath, Scheme, Span, Symbol,
-    TypeName, Visibility,
+    Binding, CallableOrigin, ConstructorDef, FQSymbol, FQTypeName, Life, ModuleFullPath,
+    Realization, Scheme, Sexp, Span, Symbol, TemplateBody, TemplateKind, TypeName, VarRef,
+    Visibility,
 };
 use std::collections::HashMap;
 
@@ -10,24 +11,16 @@ use std::collections::HashMap;
 /// mirroring `(import [source [*]])`. Import registration is no longer a
 /// typecheck concern (facade `typecheck.md`); tests seed edges directly.
 fn seed_glob_import(tc: &mut TestFixture, source: &ModuleFullPath) {
-    let names: Vec<Symbol> = {
+    let candidates: Vec<(Symbol, cranelisp_types::NameCandidate)> = {
         let src = tc.modules.get(source).expect("source module exists");
-        src.all_symbols()
-            .filter(|(_, e)| e.is_public())
-            .map(|(n, _)| n.clone())
+        src.public_name_candidates()
+            .map(|(name, candidate)| (name.clone(), candidate))
             .collect()
     };
-    for name in names {
-        tc.symbol_table_mut().insert(
-            name.clone(),
-            ModuleEntry::Import {
-                source: FQSymbol {
-                    module: source.clone(),
-                    symbol: name,
-                },
-                visibility: Visibility::Public,
-            },
-        );
+    for (name, candidate) in candidates {
+        tc.symbol_table_mut()
+            .expose_candidate(name, candidate.source, Visibility::Public)
+            .unwrap();
     }
 }
 
@@ -68,6 +61,229 @@ fn tc() -> TestFixture {
     // Import primitives so bare names (add-i64 etc.) resolve.
     seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
     tc
+}
+
+fn install_candidate_callable(tc: &mut TestFixture, module: &str, name: &str, parameter: Type) {
+    tc.set_current_module(ModuleFullPath::from(module));
+    tc.symbol_table_mut()
+        .install_concrete(
+            Symbol::from(name),
+            crate::scheme::mono(Type::Fn(vec![parameter], Box::new(Type::Int))),
+            vec![Symbol::from("x")],
+            None,
+            0,
+            CallableOrigin::RustPrimitive,
+            Realization::ExternShim {
+                borrowed_sibling: None,
+            },
+            None,
+            vec![],
+            Visibility::Public,
+        )
+        .unwrap();
+}
+
+fn candidate_search_fixture() -> TestFixture {
+    let mut fixture = tc();
+    for (module, name, parameter) in [
+        ("a", "f", Type::Int),
+        ("b", "f", Type::Bool),
+        ("c", "g", Type::Bool),
+        ("d", "g", Type::String),
+    ] {
+        install_candidate_callable(&mut fixture, module, name, parameter);
+    }
+    fixture.set_current_module(ModuleFullPath::from("test"));
+    for (written, module) in [("f", "a"), ("f", "b"), ("g", "c"), ("g", "d")] {
+        fixture
+            .symbol_table_mut()
+            .expose_candidate(
+                Symbol::from(written),
+                FQSymbol {
+                    module: ModuleFullPath::from(module),
+                    symbol: Symbol::from(written),
+                },
+                Visibility::Public,
+            )
+            .unwrap();
+    }
+    fixture
+}
+
+fn mixed_macro_and_callable_fixture() -> TestFixture {
+    let mut fixture = tc();
+    let shared = Symbol::from("shared-sky");
+
+    install_candidate_callable(&mut fixture, "ordinary", shared.as_ref(), Type::Int);
+    fixture.set_current_module(ModuleFullPath::from("expansion"));
+    fixture
+        .symbol_table_mut()
+        .install_macro(
+            shared.clone(),
+            None,
+            0,
+            Sexp::Symbol("source-form".into(), Span::SYNTHETIC),
+            Vec::new(),
+            Visibility::Public,
+        )
+        .unwrap();
+
+    fixture.set_current_module(ModuleFullPath::from("test"));
+    for module in ["ordinary", "expansion"] {
+        fixture
+            .symbol_table_mut()
+            .expose_candidate(
+                shared.clone(),
+                FQSymbol {
+                    module: ModuleFullPath::from(module),
+                    symbol: shared.clone(),
+                },
+                Visibility::Public,
+            )
+            .unwrap();
+    }
+    fixture
+}
+
+// spec: 08-modules §8.6.5; design/typecheck/use-site-candidate-selection.md
+// §3/§5.1 — syntactic value filtering precedes cardinality. A colliding macro
+// parent contributes no value candidate, so the ordinary callable is selected
+// without raw-candidate ambiguity.
+#[test]
+fn mixed_macro_parent_and_callable_selects_the_callable() {
+    let mut fixture = mixed_macro_and_callable_fixture();
+    let callee_span = span(160, 170);
+    let mut expr = Expr::Apply {
+        callee: Box::new(Expr::var(Symbol::from("shared-sky"), callee_span)),
+        args: vec![Expr::IntLit {
+            value: 7,
+            span: span(171, 172),
+            inferred_type: None,
+        }],
+        span: span(160, 173),
+        resolved_call: None,
+        inferred_type: None,
+    };
+
+    assert_eq!(fixture.infer_expr_for_test(&mut expr).unwrap(), Type::Int);
+    assert_eq!(
+        fixture.state.method_resolutions.var_refs.get(&callee_span),
+        Some(&VarRef::Global(FQSymbol {
+            module: ModuleFullPath::from("ordinary"),
+            symbol: Symbol::from("shared-sky"),
+        }))
+    );
+}
+
+fn two_site_candidate_expr(pin_bool: bool) -> Expr {
+    let mut bindings = Vec::new();
+    if pin_bool {
+        bindings.push((
+            Symbol::from("pin"),
+            Expr::If {
+                cond: Box::new(Expr::var(Symbol::from("x"), span(200, 201))),
+                then_branch: Box::new(Expr::IntLit {
+                    value: 0,
+                    span: span(202, 203),
+                    inferred_type: None,
+                }),
+                else_branch: Box::new(Expr::IntLit {
+                    value: 0,
+                    span: span(204, 205),
+                    inferred_type: None,
+                }),
+                span: span(200, 205),
+                inferred_type: None,
+            },
+        ));
+    }
+    bindings.push((
+        Symbol::from("left"),
+        Expr::Apply {
+            callee: Box::new(Expr::var(Symbol::from("f"), span(210, 211))),
+            args: vec![Expr::var(Symbol::from("x"), span(212, 213))],
+            span: span(210, 214),
+            resolved_call: None,
+            inferred_type: None,
+        },
+    ));
+    bindings.push((
+        Symbol::from("right"),
+        Expr::Apply {
+            callee: Box::new(Expr::var(Symbol::from("g"), span(220, 221))),
+            args: vec![Expr::var(Symbol::from("x"), span(222, 223))],
+            span: span(220, 224),
+            resolved_call: None,
+            inferred_type: None,
+        },
+    ));
+    Expr::Lambda {
+        params: vec![(Symbol::from("x"), None)],
+        body: Box::new(Expr::Let {
+            bindings,
+            body: Box::new(Expr::IntLit {
+                value: 0,
+                span: span(230, 231),
+                inferred_type: None,
+            }),
+            span: span(200, 231),
+            inferred_type: None,
+        }),
+        span: span(190, 232),
+        inferred_type: None,
+    }
+}
+
+// design/typecheck/use-site-candidate-selection.md §6.2; QA CS-4 — each
+// candidate site trials independently. The shared Bool pair is not discovered
+// by Cartesian search, while an ordinary Bool constraint settles both sites.
+#[test]
+fn candidate_settlement_does_not_search_cross_site_combinations() {
+    let mut unpinned = candidate_search_fixture();
+    let message = unpinned
+        .infer_expr_for_test(&mut two_site_candidate_expr(false))
+        .expect_err("joint candidate guessing is forbidden")
+        .message()
+        .to_string();
+    assert!(message.contains("ambiguous bare name 'f'"), "{message}");
+    assert!(
+        message.contains("a/f") && message.contains("b/f"),
+        "{message}"
+    );
+    assert!(
+        message.contains("qualify") || message.contains("annotation"),
+        "{message}"
+    );
+
+    let mut pinned = candidate_search_fixture();
+    assert_eq!(
+        pinned
+            .infer_expr_for_test(&mut two_site_candidate_expr(true))
+            .unwrap(),
+        Type::Fn(vec![Type::Bool], Box::new(Type::Int))
+    );
+    assert_eq!(
+        pinned
+            .state
+            .method_resolutions
+            .var_refs
+            .get(&span(210, 211)),
+        Some(&VarRef::Global(FQSymbol {
+            module: ModuleFullPath::from("b"),
+            symbol: Symbol::from("f"),
+        }))
+    );
+    assert_eq!(
+        pinned
+            .state
+            .method_resolutions
+            .var_refs
+            .get(&span(220, 221)),
+        Some(&VarRef::Global(FQSymbol {
+            module: ModuleFullPath::from("c"),
+            symbol: Symbol::from("g"),
+        }))
+    );
 }
 
 /// Register a simple enum type for testing.
@@ -328,7 +544,7 @@ fn infer_lambda_teardown_is_symmetric_on_body_error() {
     let mut tc = tc();
     let mut scope = std::collections::HashMap::new();
     scope.insert(Symbol::from("a"), 999u32);
-    tc.state.written_var_scope = Some(scope.clone());
+    tc.state.body_frame.written_var_scope = Some(scope.clone());
     let frames_before = tc.state.env.top_frame_index();
 
     // (fn [y] undefined-name) — the body Var errors at infer time.
@@ -346,7 +562,7 @@ fn infer_lambda_teardown_is_symmetric_on_body_error() {
 
     // The shared scope is re-installed (never None) on the error path.
     assert_eq!(
-        tc.state.written_var_scope,
+        tc.state.body_frame.written_var_scope,
         Some(scope),
         "infer_lambda must restore the shared written_var_scope on the error path"
     );
@@ -1838,7 +2054,7 @@ fn test_resolve_primitive_quote_sexp() {
 // and BOTH must classify as builtins.
 #[test]
 fn test_resolve_primitive_extern_classifies_as_builtin() {
-    use cranelisp_types::{DefKind, ModuleEntry, ModuleFullPath};
+    use cranelisp_types::{ModuleFullPath, Realization};
 
     let tc = tc();
 
@@ -1849,15 +2065,24 @@ fn test_resolve_primitive_extern_classifies_as_builtin() {
     let prims = tc.modules.get(&ModuleFullPath::from("primitives")).unwrap();
     assert!(
         matches!(
-            prims.get("quote-sexp"),
-            Some(ModuleEntry::Def { kind, .. }) if matches!(kind.as_ref(), DefKind::PrimitiveExtern)
+            prims
+                .get("quote-sexp")
+                .and_then(Binding::callable)
+                .map(|c| &c.arm.life),
+            Some(Life::HostPromised)
         ),
         "fixture precondition: quote-sexp must be slot-less PrimitiveExtern"
     );
     assert!(
         matches!(
-            prims.get("add-i64"),
-            Some(ModuleEntry::Def { kind, .. }) if matches!(kind.as_ref(), DefKind::Primitive { .. })
+            prims
+                .get("add-i64")
+                .and_then(Binding::callable)
+                .map(|c| &c.arm.life),
+            Some(Life::Concrete {
+                realization: Realization::ExternShim { .. },
+                ..
+            })
         ),
         "fixture precondition: add-i64 must be GOT-slotted Primitive"
     );
@@ -1893,7 +2118,7 @@ fn test_resolve_primitive_extern_classifies_as_builtin() {
 
 /// Register a constrained function "cfn" in the current module for testing.
 fn register_constrained_fn(tc: &mut TestFixture) {
-    use cranelisp_types::{ConstrainedFn, DefnVariant};
+    use cranelisp_types::{ConstrainedMeta, DefnVariant};
 
     let a_var = tc.fresh_var();
     let a_id = match &a_var {
@@ -1925,28 +2150,28 @@ fn register_constrained_fn(tc: &mut TestFixture) {
     // as a §4.6 lexical local (a plain value the value-position gate must NOT
     // reject — the PS-SH1 local-scope-first discipline); the reject fires on
     // the MODULE-resolved constrained base, which is what these tests intend.
-    tc.symbol_table_mut().insert(
-        Symbol::from("cfn"),
-        ModuleEntry::def(
+    tc.symbol_table_mut()
+        .install_template(
+            Symbol::from("cfn"),
             scheme.clone(),
-            cranelisp_types::DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Constrained(Box::new(ConstrainedFn {
-                    variant: DefnVariant {
-                        params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
-                        body: Expr::IntLit {
-                            value: 0,
-                            span: Span::SYNTHETIC,
-                            inferred_type: None,
-                        },
-                        span: Span::SYNTHETIC,
-                    },
-                    scheme: scheme.clone(),
-                })),
-            },
+            vec![Symbol::from("x"), Symbol::from("y")],
+            None,
+            0,
+            CallableOrigin::Plain,
+            TemplateBody::Ast(DefnVariant {
+                params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
+                body: Expr::IntLit {
+                    value: 0,
+                    span: Span::SYNTHETIC,
+                    inferred_type: None,
+                },
+                span: Span::SYNTHETIC,
+            }),
+            TemplateKind::Constrained(Box::new(ConstrainedMeta::new(scheme.constraints.clone()))),
+            Vec::new(),
+            Visibility::Public,
         )
-        .param_names(vec![Symbol::from("x"), Symbol::from("y")])
-        .build(),
-    );
+        .unwrap();
 }
 
 // spec: 03-types §3.6.6 — constrained fn as argument in nested apply is rejected
@@ -2022,77 +2247,22 @@ fn test_constrained_fn_allowed_in_call_position() {
 /// Set up Num trait with + method (impl for Int, Float only)
 /// and Ord trait with < method (impl for Int, Float only).
 fn register_num_and_ord_traits(tc: &mut TestFixture) {
-    use cranelisp_types::{Defn, DefnVariant, TraitImpl, TraitName};
-
     // Num trait: + :: (Fn [a a] a)
     let num_decl =
         crate::traits::test_helpers::parse_trait_decl("(deftrait Num (+ [lhs rhs] self))");
     tc.register_trait_decl_self(&num_decl).unwrap();
 
-    // impl Num for Int
-    let int_impl = TraitImpl {
-        head_con_var: None,
-        trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Num")),
-        target: cranelisp_types::TypeExpr::Named(cranelisp_types::TypeRef::new(
-            None,
-            TypeName::from("Int"),
-        )),
-        type_constraints: vec![],
-        methods: vec![Defn {
-            name: Symbol::from("+"),
-            docstring: None,
-            variants: vec![DefnVariant {
-                params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
-                body: Expr::Apply {
-                    callee: Box::new(Expr::var(Symbol::from("add-i64"), Span::SYNTHETIC)),
-                    args: vec![
-                        Expr::var(Symbol::from("x"), Span::SYNTHETIC),
-                        Expr::var(Symbol::from("y"), Span::SYNTHETIC),
-                    ],
-                    span: Span::SYNTHETIC,
-                    resolved_call: None,
-                    inferred_type: None,
-                },
-                span: Span::SYNTHETIC,
-            }],
-            visibility: Visibility::Public,
-            span: Span::SYNTHETIC,
-        }],
-        span: Span::SYNTHETIC,
-    };
+    // Authored impl bodies use real, distinct spans: the resolution/type
+    // carriers are span-keyed, while all-SYNTHETIC bodies are reserved for
+    // directly-derived constructor/accessor synthesis.
+    let int_impl = crate::traits::test_helpers::parse_trait_impl(
+        "(impl Num Int (defn + [x y] (add-i64 x y)))",
+    );
     tc.register_trait_impl_self(&int_impl).unwrap();
 
-    // impl Num for Float
-    let float_impl = TraitImpl {
-        head_con_var: None,
-        trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Num")),
-        target: cranelisp_types::TypeExpr::Named(cranelisp_types::TypeRef::new(
-            None,
-            TypeName::from("Float"),
-        )),
-        type_constraints: vec![],
-        methods: vec![Defn {
-            name: Symbol::from("+"),
-            docstring: None,
-            variants: vec![DefnVariant {
-                params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
-                body: Expr::Apply {
-                    callee: Box::new(Expr::var(Symbol::from("add-f64"), Span::SYNTHETIC)),
-                    args: vec![
-                        Expr::var(Symbol::from("x"), Span::SYNTHETIC),
-                        Expr::var(Symbol::from("y"), Span::SYNTHETIC),
-                    ],
-                    span: Span::SYNTHETIC,
-                    resolved_call: None,
-                    inferred_type: None,
-                },
-                span: Span::SYNTHETIC,
-            }],
-            visibility: Visibility::Public,
-            span: Span::SYNTHETIC,
-        }],
-        span: Span::SYNTHETIC,
-    };
+    let float_impl = crate::traits::test_helpers::parse_trait_impl(
+        "(impl Num Float (defn + [x y] (add-f64 x y)))",
+    );
     tc.register_trait_impl_self(&float_impl).unwrap();
 
     // Ord trait: < :: (Fn [a a] Bool)
@@ -2100,37 +2270,8 @@ fn register_num_and_ord_traits(tc: &mut TestFixture) {
         crate::traits::test_helpers::parse_trait_decl("(deftrait Ord (< [lhs rhs] Bool))");
     tc.register_trait_decl_self(&ord_decl).unwrap();
 
-    // impl Ord for Int
-    let int_ord_impl = TraitImpl {
-        head_con_var: None,
-        trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Ord")),
-        target: cranelisp_types::TypeExpr::Named(cranelisp_types::TypeRef::new(
-            None,
-            TypeName::from("Int"),
-        )),
-        type_constraints: vec![],
-        methods: vec![Defn {
-            name: Symbol::from("<"),
-            docstring: None,
-            variants: vec![DefnVariant {
-                params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
-                body: Expr::Apply {
-                    callee: Box::new(Expr::var(Symbol::from("lt-i64"), Span::SYNTHETIC)),
-                    args: vec![
-                        Expr::var(Symbol::from("x"), Span::SYNTHETIC),
-                        Expr::var(Symbol::from("y"), Span::SYNTHETIC),
-                    ],
-                    span: Span::SYNTHETIC,
-                    resolved_call: None,
-                    inferred_type: None,
-                },
-                span: Span::SYNTHETIC,
-            }],
-            visibility: Visibility::Public,
-            span: Span::SYNTHETIC,
-        }],
-        span: Span::SYNTHETIC,
-    };
+    let int_ord_impl =
+        crate::traits::test_helpers::parse_trait_impl("(impl Ord Int (defn < [x y] (lt-i64 x y)))");
     tc.register_trait_impl_self(&int_ord_impl).unwrap();
 
     tc.clear_transient_state();

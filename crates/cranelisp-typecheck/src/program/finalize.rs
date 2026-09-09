@@ -1,18 +1,20 @@
 use super::*;
-
+use cranelisp_types::Scheme;
 mod ambiguity;
 #[cfg(test)]
 pub(super) use ambiguity::AmbiguousForm;
 
+pub(crate) fn collect_expr_spans(expr: &Expr, spans: &mut HashSet<Span>) {
+    spans.insert(expr.span());
+    for_each_child_expr(expr, |child| collect_expr_spans(child, spans));
+}
+
 impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
     /// Merge a `FormCheckResult` into the module's accumulator.
     ///
-    /// Called after each `check_form()` to accumulate per-form results
-    /// into the module-level state. Also eagerly writes callees to
-    /// `ModuleEntry` in the symbol table (Decision 21) so that the
-    /// scheduler can read them immediately without waiting for
-    /// `finalize_check_result`.
-    /// Merge a per-form check result into the module accumulator.
+    /// Called after each `check_form()` to accumulate the remaining per-form
+    /// products. Resolution, expression and callee facts have longer-lived
+    /// owners and do not travel through this carrier.
     pub(crate) fn merge_form_result(
         &self,
         _module: &ModuleFullPath,
@@ -25,23 +27,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
     pub(super) fn merge_form_result_inner(
         &self,
-        state: &mut CheckState,
+        _state: &mut CheckState,
         accumulator: &mut ModuleCheckAccumulator,
         result: FormCheckResult,
     ) {
-        // Write callees to ModuleEntry eagerly (Decision 21).
-        if !result.call_graph_edges.is_empty() {
-            let mut guard = self.current_symbol_table_mut(state);
-            write_callees_to_module_entries(&mut *guard, &result.call_graph_edges);
-        }
-
-        accumulator
-            .method_resolutions
-            .extend(result.method_resolutions);
-        accumulator.pattern_ctors.extend(result.pattern_ctors);
-        accumulator.var_refs.extend(result.var_refs);
-        accumulator.apply_refs.extend(result.apply_refs);
-        accumulator.expr_types.extend(result.expr_types);
         if let Some(name) = result.constrained_fn {
             accumulator.constrained_fn_names.insert(name);
         }
@@ -51,7 +40,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             .extend(result.default_method_defns);
         accumulator.multi_sig_defns.extend(result.multi_sig_defns);
         accumulator.warnings.extend(result.warnings);
-        accumulator.call_graph_edges.extend(result.call_graph_edges);
     }
 
     /// Finalize typecheck for a module: run post-passes and drain accumulator into `CheckResult`.
@@ -79,7 +67,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         self.finalize_check_result_inner(state, accumulator, working_program, strategy)
     }
 
-    /// Re-generalize every defn's scheme from its `defn_type_vars` source vars
+    /// Re-generalize every checked body's scheme from its registered source vars
     /// resolved through the current global substitution, and clear any
     /// false-positive constrained-fn markers whose schemes ended up
     /// constraint-free.
@@ -97,215 +85,56 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         state: &mut CheckState,
         accumulator: &ModuleCheckAccumulator,
     ) -> Result<(), CranelispError> {
-        for (name, (param_types, ret_ty)) in &accumulator.defn_type_vars {
+        for body in accumulator.bodies.checked_bodies() {
+            let registration = &body.registration;
             let fn_type = Type::Fn(
-                param_types
+                registration
+                    .param_types
                     .iter()
                     .map(|t| self.apply_subst(state, t))
                     .collect(),
-                Box::new(self.apply_subst(state, ret_ty)),
+                Box::new(self.apply_subst(state, &registration.ret_ty)),
             );
             let scheme = self.generalize(state, &fn_type);
-            let mut st = self.current_symbol_table_mut(state);
-            // Demoting a false-positive constrained template (its constraints
-            // vanished after final substitution) — the re-slotting decision is
-            // the SAME structural gate as the determination point (FIXME 0374,
-            // Principle 20): slot ⟺ concrete.
-            //   - constraints vanished AND scheme concrete → `Concrete{slot}`
-            //     (reuse the entry's own concrete slot if any, else allocate).
-            //   - constraints vanished BUT scheme still generic (`Type::Var`)
-            //     → `Polymorphic` (slot-less); only its mono instances slot.
-            // A constrained template that generalised to a still-generic
-            // unconstrained type must NOT be re-slotted `Concrete` — that would
-            // re-introduce the non-concrete-def-with-slot leak.
-            // A `Constrained` OR `Polymorphic` template whose regeneralized
-            // scheme is now constraint-free is a re-slotting candidate (both are
-            // slot-less templates that may have become concrete). The
-            // re-slotting follows the SAME structural gate as the determination
-            // point (FIXME 0374, Principle 20): slot ⟺ concrete.
-            let is_reslot_candidate = scheme.constraints.is_empty()
-                && matches!(
-                    st.get(name.as_ref()),
-                    Some(ModuleEntry::Def { kind, .. })
-                        if matches!(
-                            kind.as_ref(),
-                            DefKind::UserFn {
-                                fn_state: UserFnState::Constrained(_)
-                                    | UserFnState::Polymorphic(_)
-                            }
-                        )
-                );
-            // Compute the demoted slot before the `get_mut` borrow so the
-            // `&mut st` allocate doesn't alias the entry borrow. Only the
-            // concrete branch needs a slot. A `Polymorphic` def whose scheme
-            // collapsed to a concrete type (e.g. `g : ∀a.a→a` pinned to
-            // `(Fn [Int] Int)` by a direct concrete call `(g 1)` + the post-mono
-            // regeneralisation) MUST become `Concrete{slot}` — otherwise it is a
-            // slot-less `Polymorphic` arm carrying a concrete scheme, an
-            // inconsistent state where a same-program caller cannot resolve it
-            // through a slot (the REPL mutual-forward-ref `undefined function`
-            // symptom).
-            // Keep `Polymorphic` (slot-less) whenever the def is still
-            // non-concrete (S84 Wave 1b TOTAL gate — slot ⟺ concrete, no
-            // monomorphisable-from-params carve-out). Otherwise allocate a slot:
-            // a concrete scheme is a plain `Concrete{slot}`. A result-only-var
-            // scheme (`(Fn [] (Option a))`) stays `Polymorphic` here; if it is a
-            // test-fn entry it is given a concrete slotted instance by the
-            // test-fn mono-root pass (`register_test_fn_mono_roots`).
-            let stay_polymorphic = is_reslot_candidate && !scheme.ty.is_concrete();
-            let demoted_slot = if is_reslot_candidate && !stay_polymorphic {
-                Some(match existing_callable_slot(&st, name.as_ref()) {
-                    Some(s) => s,
-                    None => st
-                        .allocate_got_slot()
-                        .map_err(crate::result::got_exhausted_error)?,
-                })
-            } else {
-                None
-            };
-            if let Some(ModuleEntry::Def {
-                scheme: s,
-                kind,
-                ast,
-                ..
-            }) = st.symbols.get_mut(name)
-            {
-                *s = scheme.clone();
-                if is_reslot_candidate {
-                    if let Some(got_slot) = demoted_slot {
-                        **kind = DefKind::UserFn {
-                            fn_state: UserFnState::Concrete {
-                                got_slot,
-                                mode_summary: None,
-                            },
-                        };
-                    } else if let Some(variant) = ast.clone() {
-                        // Still non-concrete: slot-less `Polymorphic`, carrying
-                        // the stored annotated body + new scheme for later
-                        // monomorphisation. (For a `Constrained` false-positive
-                        // that stays generic-unconstrained this is the correct
-                        // demotion; for a `Polymorphic` that stayed generic this
-                        // is idempotent.)
-                        **kind = DefKind::UserFn {
-                            fn_state: UserFnState::Polymorphic(Box::new(ParametricFn {
-                                variant,
-                                scheme: scheme.clone(),
-                            })),
-                        };
-                    }
-                }
-            }
+            self.current_symbol_table_mut(state)
+                .update_declared_scheme(&registration.publication_name, scheme)
+                .map_err(crate::result::lifecycle_error)?;
         }
 
         Ok(())
     }
 
-    /// Scoped re-generalize + reslot restricted to entries CURRENTLY in the
-    /// `Polymorphic` state (S110 C-4). This is [`Self::regeneralize_defn_schemes`]
-    /// with a `Polymorphic`-only gate: it recomputes each still-`Polymorphic`
-    /// defn's scheme from its `defn_type_vars` source vars through the final
-    /// substitution and, when that scheme is now fully concrete, reslots the entry
-    /// to `Concrete{slot}` (the SAME structural gate — slot ⟺ concrete — as the
-    /// two full regeneralize passes).
-    ///
-    /// **Why a scoped pass, not a third full `regeneralize_defn_schemes`.** The
-    /// spurious-poly caller this fixes (`main` calling an overloaded/multi-arity
-    /// fn, whose return var is only pinned by `resolve_pending_overloads` AFTER the
-    /// FIXME-0349 re-generalize) needs one more generalize once the overload drain
-    /// settles its return var. But a full re-generalize UNCONDITIONALLY overwrites
-    /// EVERY `defn_type_vars` entry's stored scheme (`*s = scheme`) — including the
-    /// `Concrete` instances `register_test_fn_mono_roots` minted, whose
-    /// `defn_type_vars` signature is still the pre-mint poly `(Fn [] (Option a))`.
-    /// That would demote a mono-root's concrete scheme back to poly (the finalize
-    /// ordering hazard; `test_fn_registered_as_mono_root_gets_concrete_instance`).
-    /// Gating on the current `Polymorphic` state leaves every `Concrete` entry —
-    /// mono-roots and ordinary concrete defns alike — untouched, and only re-settles
-    /// the spuriously-poly callers. A genuinely polymorphic defn
-    /// (`(defn empty [] [])`) recomputes to a still-non-concrete scheme and stays
-    /// `Polymorphic`, unchanged.
+    /// Re-generalize checked source bodies after the overload drain, which may
+    /// have supplied their last return-type constraint. Every body remains
+    /// `Life::Declared` at this point, so the exact ledger population is the
+    /// scope. Test-root specialization runs afterward and therefore cannot be
+    /// overwritten by this source-monotype refresh.
     pub(super) fn regeneralize_only_polymorphic(
         &self,
         state: &mut CheckState,
         accumulator: &ModuleCheckAccumulator,
     ) -> Result<(), CranelispError> {
-        for (name, (param_types, ret_ty)) in &accumulator.defn_type_vars {
-            // Gate: ONLY re-settle entries currently registered `Polymorphic`.
-            // A `Concrete` entry (mono-root or ordinary concrete defn) is skipped
-            // so its stored scheme is never overwritten.
-            let is_polymorphic = matches!(
-                self.current_symbol_table(state).view().lookup(name),
-                Some(ModuleEntry::Def { kind, .. })
-                    if matches!(
-                        kind.as_ref(),
-                        DefKind::UserFn { fn_state: UserFnState::Polymorphic(_) }
-                    )
-            );
-            if !is_polymorphic {
-                continue;
-            }
+        for body in accumulator.bodies.checked_bodies() {
+            let registration = &body.registration;
             let fn_type = Type::Fn(
-                param_types
+                registration
+                    .param_types
                     .iter()
                     .map(|t| self.apply_subst(state, t))
                     .collect(),
-                Box::new(self.apply_subst(state, ret_ty)),
+                Box::new(self.apply_subst(state, &registration.ret_ty)),
             );
             let scheme = self.generalize(state, &fn_type);
-            // A scheme that acquired constraints is left to the constrained-fn
-            // path — never reslotted `Concrete` here (mirrors the reslot gate in
-            // `regeneralize_defn_schemes`).
-            if !scheme.constraints.is_empty() {
-                continue;
-            }
-            // Reslot ⟺ concrete (the S84 Wave 1b TOTAL slot gate): a
-            // `Polymorphic` entry whose scheme collapsed to a concrete type (the
-            // overloaded-call caller pinned by `resolve_pending_overloads`) becomes
-            // `Concrete{slot}`, reusing its own callable slot if any; a scheme that
-            // is still generic stays `Polymorphic`.
-            let mut st = self.current_symbol_table_mut(state);
-            let demoted_slot = if scheme.ty.is_concrete() {
-                Some(match existing_callable_slot(&st, name.as_ref()) {
-                    Some(s) => s,
-                    None => st
-                        .allocate_got_slot()
-                        .map_err(crate::result::got_exhausted_error)?,
-                })
-            } else {
-                None
-            };
-            if let Some(ModuleEntry::Def {
-                scheme: s,
-                kind,
-                ast,
-                ..
-            }) = st.symbols.get_mut(name)
-            {
-                *s = scheme.clone();
-                if let Some(got_slot) = demoted_slot {
-                    **kind = DefKind::UserFn {
-                        fn_state: UserFnState::Concrete {
-                            got_slot,
-                            mode_summary: None,
-                        },
-                    };
-                } else if let Some(variant) = ast.clone() {
-                    // Still non-concrete: keep it slot-less `Polymorphic`, carrying
-                    // the refreshed scheme for later monomorphisation (idempotent).
-                    **kind = DefKind::UserFn {
-                        fn_state: UserFnState::Polymorphic(Box::new(ParametricFn {
-                            variant,
-                            scheme: scheme.clone(),
-                        })),
-                    };
-                }
-            }
+            self.current_symbol_table_mut(state)
+                .update_declared_scheme(&registration.publication_name, scheme)
+                .map_err(crate::result::lifecycle_error)?;
         }
 
         Ok(())
     }
 
     /// Re-settle the stored schemes of already-determined **`Polymorphic`**
-    /// cluster members from their `defn_type_vars` source vars through the
+    /// cluster members from their registered body monotypes through the
     /// current global substitution — scheme-only, no re-slotting (FIXME 0488
     /// sig c).
     ///
@@ -343,27 +172,27 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         &self,
         state: &mut CheckState,
         accumulator: &ModuleCheckAccumulator,
-    ) {
-        for (name, (param_types, ret_ty)) in &accumulator.defn_type_vars {
-            // Only already-determined `Polymorphic` templates are re-tie
-            // candidates. The read guard is a temporary in this `matches!`.
-            let is_poly_determined = matches!(
-                self.current_symbol_table(state).view().lookup(name),
-                Some(ModuleEntry::Def { kind, .. })
-                    if matches!(
-                        kind.as_ref(),
-                        DefKind::UserFn { fn_state: UserFnState::Polymorphic(_) }
-                    )
-            );
-            if !is_poly_determined {
+    ) -> Result<(), CranelispError> {
+        for body in accumulator.bodies.checked_bodies() {
+            let registration = &body.registration;
+            // This pre-sibling refresh is the former `Polymorphic`-only gate.
+            // Checked bodies remain `Life::Declared` until final publication,
+            // so lifecycle state can no longer distinguish a pure-parametric
+            // body from an eagerly detected constrained body. The accumulator
+            // owns that checked-body classification during this window.
+            if accumulator
+                .constrained_fn_names
+                .contains(&registration.publication_name)
+            {
                 continue;
             }
             let fn_type = Type::Fn(
-                param_types
+                registration
+                    .param_types
                     .iter()
                     .map(|t| self.apply_subst(state, t))
                     .collect(),
-                Box::new(self.apply_subst(state, ret_ty)),
+                Box::new(self.apply_subst(state, &registration.ret_ty)),
             );
             let scheme = self.generalize(state, &fn_type);
             // Pure-parametric only (mirror the 0344 writeback gate). A scheme
@@ -371,12 +200,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             if !scheme.constraints.is_empty() {
                 continue;
             }
-            if let Some(ModuleEntry::Def { scheme: s, .. }) =
-                self.current_symbol_table_mut(state).symbols.get_mut(name)
-            {
-                *s = scheme;
-            }
+            self.current_symbol_table_mut(state)
+                .update_declared_scheme(&registration.publication_name, scheme)
+                .map_err(crate::result::lifecycle_error)?;
         }
+        Ok(())
     }
 
     /// Phase 3 (finalize): re-resolve deferred trait calls with the final
@@ -443,61 +271,21 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         if strategy == ModuleStrategy::Additive {
             let r = self.current_symbol_table(state);
             for (name, entry) in r.view().iter() {
-                if let ModuleEntry::Def {
-                    kind, scheme, ast, ..
-                } = entry
-                {
-                    match kind.as_ref() {
-                        // Trait-constrained polymorphism: classic constrained
-                        // fn marker.
-                        DefKind::UserFn {
-                            fn_state: UserFnState::Constrained(_),
-                        } => {
-                            constrained_fn_names.insert(name.clone());
+                if entry.callable().is_some_and(|callable| {
+                    matches!(
+                        callable.arm.life,
+                        Life::Template {
+                            body: TemplateBody::Ast(_),
+                            ..
                         }
-                        // Pure parametric polymorphism registered by a previous
-                        // `check_forms` call (Additive cross-call shape): the
-                        // scheme is still polymorphic (`scheme.type_vars` non-empty)
-                        // and we have the annotated `ast`. The current
-                        // cluster's call sites against this name need
-                        // monomorphisation just as if it were constrained —
-                        // backend codegen requires concrete CLIF types.
-                        // `get_constrained_fn` synthesises a `ConstrainedFn`
-                        // view from `ast + scheme` for this case. Matches the
-                        // non-constrained `UserFn` states (`Concrete` /
-                        // `NotDetermined`) — the slot, if any, is irrelevant here.
-                        DefKind::UserFn { fn_state }
-                            if !matches!(fn_state, UserFnState::Constrained(_))
-                                && !scheme.type_vars.is_empty()
-                                && ast.is_some() =>
-                        {
-                            constrained_fn_names.insert(name.clone());
-                        }
-                        _ => {}
-                    }
+                    )
+                }) {
+                    constrained_fn_names.insert(name.clone());
                 }
             }
         }
 
         constrained_fn_names
-    }
-
-    /// Surface deferred field-accessor / binding collisions as non-fatal
-    /// warnings (FIXME 0351(a), spec §5.2.6 safe disposition): the accessor was
-    /// suppressed (the existing binding wins) and the clash is reported so it is
-    /// never silent. Drained so a redefining REPL re-check does not double-report.
-    pub(super) fn drain_accessor_collisions(&self, state: &mut CheckState) {
-        for (accessor_name, type_name) in std::mem::take(&mut state.deferred_accessor_collisions) {
-            state.warnings.push(cranelisp_types::Warning {
-                kind: cranelisp_types::WarningKind::ShadowedName,
-                message: format!(
-                    "field accessor `{accessor_name}` for type `{type_name}` \
-                     conflicts with a name already bound to `{accessor_name}`; \
-                     the accessor is suppressed and the existing binding is kept"
-                ),
-                span: Span::SYNTHETIC,
-            });
-        }
     }
 
     /// Sweep post-pass outputs from `state` into the accumulator. Post-passes
@@ -510,23 +298,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         state: &mut CheckState,
         accumulator: &mut ModuleCheckAccumulator,
     ) {
-        let taken = std::mem::take(&mut state.method_resolutions);
-        accumulator.method_resolutions.extend(taken.resolved_calls);
-        // S110 W0.1b (§1.1.1) / S114 carrier flip: post-pass typed-verdict
-        // inserts (the fn-value mono-rewrite carrier; the finalize-drained
-        // auto-curry leg) land in `state.method_resolutions.{var_refs,apply_refs}`
-        // AFTER the per-form snapshots that feed the accumulator. Sweep BOTH
-        // typed maps into the accumulator so the finalize view-rebuild
-        // (`finalize_annotations_and_publish`) sees them.
-        accumulator.var_refs.extend(taken.var_refs);
-        accumulator.apply_refs.extend(taken.apply_refs);
-        // S110 W3.1 (§1.1.3, FIXME 0622): sweep the THIRD `MethodResolutions`
-        // sidecar too. Harmless today (no post-pass records pattern ctors into
-        // `state.method_resolutions` — the mono/test-root rechecks swap in their
-        // own per-instance maps), but a partial sweep of a 3-field struct is how
-        // the next map-provenance starvation hides. Extend all three so the
-        // accumulator is the total authoritative source (behaviour-invariant).
-        accumulator.pattern_ctors.extend(taken.pattern_ctors);
+        accumulator.resolutions = std::mem::take(&mut state.method_resolutions);
         accumulator
             .expr_types
             .extend(std::mem::take(&mut state.expr_types));
@@ -562,7 +334,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let _multi_sig_defns = self.resolve_multi_sig_overloads(
             state,
             working_program,
-            &accumulator.defn_type_vars,
+            accumulator,
             &mut multi_sig_mangled_names,
         )?;
 
@@ -572,28 +344,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let constrained_fn_names =
             self.collect_all_constrained_names(state, &single_sig_defns, accumulator, strategy);
 
-        // Pass 4: monomorphise constrained function call sites.
-        // Side effect: registers mono specialisations on the symbol table via
-        // `register_mono_entry` inside `monomorphise_call`. The returned
-        // Vec<MonoDefn> was carried on CheckResult.mono_defns pre-slim; no
-        // longer needed — mono entries live on SymbolTable.
-        // S84 Phase-3 (FIXME 0392): each instance's concrete-boundary `MonoExpr`
-        // view is set ON its `ModuleEntry::Def.codegen_view` at
-        // `register_mono_entry` (produces-but-unread until the backend read-flip,
-        // FIXME 0391). The validation payoff (every instance's body run through
-        // `MonoExpr::from_expr` at the seam) is unchanged; the transitional
-        // parallel `Vec<MonoDefnVariant>` return is retired.
-        let _mono_defns =
-            self.pass4_monomorphise(state, &single_sig_defns, &constrained_fn_names)?;
-
-        // FIXME 0349 — re-generalize after monomorphisation. pass4's call-site
-        // result propagation (`monomorphise_call`) can pin a caller's
-        // previously-loose result var (a forward-referenced callee left it
-        // polymorphic). Re-running generalization makes the caller's STORED
-        // scheme reflect that pinning, so a spuriously-polymorphic caller
-        // collapses to its true monomorphic scheme and the backend emits a
-        // direct call to the mono variant rather than the polymorphic template.
-        self.regeneralize_defn_schemes(state, accumulator)?;
+        // Instance demands are derived after overload back-flow and scheme
+        // settlement below; nested rechecks must see that same settled scheme.
 
         // S84 Wave 1b (FIXME 0374/0378 issue 3): register discovered `test-*`
         // entry points as monomorphisation ROOTS — mint a concrete
@@ -604,8 +356,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // scheme back to `(Option a)`. The discovery readers
         // (`discover_test_names` / `discover_eligible_tests`) read the concrete
         // instance's slot under the same name.
-        self.register_test_fn_mono_roots(state)?;
-
         // Pass 5: drain the deferred multi-sig/overload resolutions and
         // auto-curry. This is the TOP-LEVEL drain of `state.pending_overload_
         // resolutions`, which `infer.rs` fills whenever a call targets an
@@ -618,7 +368,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // mono` runs a SECOND, SCOPED invocation over the isolated pendings a mono
         // body defers, so its inner multi-sig dispatch carriers land in the mono
         // view — the outer pendings here are unaffected by that scoped drain.
-        self.resolve_pending_overloads(state)?;
+        self.resolve_pending_overloads(state, Some(&accumulator.bodies))?;
         // S115 W4 — the SETTLED auto-curry window. Re-admit every entry a
         // pre-settlement body drain held back because its only carrier was a
         // trait-method-declaration FQ (`mono_collect::AutoCurryDrain`); by here
@@ -650,12 +400,18 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // `(Fn [] (IO Int))` `Concrete{slot}` WITHOUT touching the concrete schemes
         // minted by `register_test_fn_mono_roots` above — a BLANKET third
         // `regeneralize_defn_schemes` would overwrite a mono-root's minted concrete
-        // scheme back to its poly `defn_type_vars` signature (the finalize ordering
+        // scheme back to its polymorphic registered signature (the finalize ordering
         // hazard the mono-root comment guards; `test_fn_registered_as_mono_root_
         // gets_concrete_instance`). Genuinely polymorphic defns (`(defn empty []
         // [])`, scheme stays `(Fn [] (Vec a))`) are non-concrete after
         // re-generalize and stay `Polymorphic`.
         self.regeneralize_only_polymorphic(state, accumulator)?;
+
+        // Test entry roots are the final scheme refinement for their checked
+        // ledger records. Run after every source-monotype re-generalization so
+        // the concrete `(Option String)` root cannot be overwritten before the
+        // one publication window.
+        self.register_test_fn_mono_roots(state, &mut accumulator.bodies)?;
 
         // §3.11.1 value-position scan for ALL top-level forms — single-clause
         // defns, `__expr`, AND multi-arity clauses (S112 leg a: the former
@@ -735,12 +491,17 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
              a later-added defn family that reaches neither is this assert's job to \
              catch loudly"
         );
-        self.pass4_monomorphise(state, &multi_sig_defns, &constrained_fn_names)?;
+        self.pass4_monomorphise(
+            state,
+            &multi_sig_defns,
+            &constrained_fn_names,
+            &mut accumulator.bodies,
+        )?;
 
         // MC-X4 / MC-X4b — the SINGLE-SIG consumer RE-HARVEST at the settlement
         // point (P26 — record from settled state). A poly callee consuming a
         // MULTI-SIG fn's bare return (`(mycount (build 3))` in a single-sig body,
-        // or `(unwrap (build 3))` over an untyped ADT field) had its arg type — the
+        // or `(unwrap (build 3))` over an explicit generic ADT field) had its arg type — the
         // multi-sig call's RESULT — as a residual `Var` at the PRE-drain single-sig
         // pass-4 (line ~1023), because a multi-sig call's return settles only in the
         // drain (`resolve_pending_overloads`) + Phase A. So `collect_mono_call_sites`'
@@ -758,11 +519,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // post-settlement / pre-sweep window as the D3 MultiSig harvest above (the
         // §11.8.3 "one parameterized fn at two settlement points" precedent, extended
         // to the single-sig consumer face). `class=carrier-loss`.
-        self.pass4_monomorphise(state, &single_sig_defns, &constrained_fn_names)?;
-
-        // Surface any field-accessor synthesis collisions with a NON-accessor
-        // binding (FIXME 0351(a)) as non-fatal warnings.
-        self.drain_accessor_collisions(state);
+        self.pass4_monomorphise(
+            state,
+            &single_sig_defns,
+            &constrained_fn_names,
+            &mut accumulator.bodies,
+        )?;
 
         // Sweep post-pass outputs from self.state into the accumulator (the
         // single authoritative source for the final CheckResult).
@@ -811,18 +573,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     pub(super) fn finalize_annotations_and_publish(
         &self,
         state: &mut CheckState,
-        accumulator: &ModuleCheckAccumulator,
+        accumulator: &mut ModuleCheckAccumulator,
         working_program: &[TopLevel],
-        multi_sig_mangled_names: &MangledNamesByBase,
+        _multi_sig_mangled_names: &MangledNamesByBase,
     ) -> Result<(), CranelispError> {
-        // Final callee write (Decision 21): overwrite the eager writes from
-        // merge_form_result with the final canonical version that includes any
-        // edges from post-passes.
-        if !accumulator.call_graph_edges.is_empty() {
-            let mut guard = self.current_symbol_table_mut(state);
-            write_callees_to_module_entries(&mut *guard, &accumulator.call_graph_edges);
-        }
-
         // Resolve all accumulated expr_types through the final substitution.
         let resolved_expr_types: HashMap<Span, Type> = accumulator
             .expr_types
@@ -837,19 +591,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // re-resolve, Pass 5 overloads/auto-curry) may add new resolutions after
         // per-defn annotation. Re-annotate ASTs that have new information.
         //
-        // S84 ConcreteType arc (FIXME 0394/0395): rebuild each `Concrete{slot}`
-        // entry's `codegen_view` HERE, from the now-post-mono-annotated `ast`.
-        // The single-sig population at `check_form_body_single_defn` ran at body-
-        // check time — BEFORE `pass4_monomorphise` rewrote this caller's call-node
-        // `resolved_call` to its `SigDispatch{mangled}` target (`(id 7)`'s `id`
-        // call → `SigDispatch{id$Int}`). That early view carried a stale
-        // `resolved_call: None` on the polymorphic call, so the backend could not
-        // consume it (it rebuilt from `ast` instead — the dual-source FIXME 0395
-        // forecloses). This re-annotation block has just refreshed `existing`
-        // (the `ast`) from `accumulator.method_resolutions` (now carrying the
-        // post-mono `SigDispatch`s) — so rebuilding the view from `existing` HERE
-        // makes `codegen_view` POST-mono-correct. The backend reads it on the live
-        // path; the dual-source collapses to one (Principle 7).
+        // S84 ConcreteType arc (FIXME 0394/0395): final publication consumes the
+        // checked-body ledger only after mono/dispatch settlement, annotates from
+        // `accumulator.resolutions`, and builds each `Concrete` codegen view in
+        // that same atomic settlement. No body/view was published earlier.
         //
         // Scope: only a `UserFn { Concrete{slot} }` entry is a body-AST-node-typed
         // codegen target (§3.1.1) — its view is the one the backend backstop
@@ -862,9 +607,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // so the codegen-view rebuild inside the closure cannot also read
             // `state.method_resolutions` (§10.2 requires the sidecar to reach
             // `from_expr`). The map is per-cluster (spans → FQSymbols), cheap.
-            let pattern_ctors_for_views = accumulator.pattern_ctors.clone();
-            let var_refs_for_views = accumulator.var_refs.clone();
-            let apply_refs_for_views = accumulator.apply_refs.clone();
+            let pattern_ctors_for_views = accumulator.resolutions.pattern_ctors.clone();
+            let var_refs_for_views = accumulator.resolutions.var_refs.clone();
+            let apply_refs_for_views = accumulator.resolutions.apply_refs.clone();
             let sym_table = &mut self.current_symbol_table_mut(state);
             // Reannotate `existing` from the final side maps + subst, then, for a
             // `Concrete{slot}` codegen target, rebuild `codegen_view` from the
@@ -873,34 +618,49 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // `ViewBuildError::Unresolved` gate error rather than swallowing a
             // real-span resolution miss into the lenient fallback.
             let reannotate_and_refresh_view = |name: &Symbol,
-                                               entry: &mut ModuleEntry<C>,
+                                               sym_table: &mut SymbolTable<C, L>,
                                                resolved_expr_types: &HashMap<Span, Type>,
                                                method_resolutions: &HashMap<Span, ResolvedCall>,
                                                subst: &Subst|
              -> Result<(), CranelispError> {
-                if let ModuleEntry::Def {
-                    ast: Some(existing),
-                    kind,
-                    codegen_view: cv,
-                    ..
-                } = entry
-                {
-                    annotate_variant_from_maps(existing, resolved_expr_types, method_resolutions);
-                    apply_subst_to_variant(subst, existing);
-                    if matches!(
-                        kind.as_ref(),
-                        DefKind::UserFn {
-                            fn_state: UserFnState::Concrete { .. }
-                        }
-                    ) {
-                        *cv = build_concrete_codegen_view(
-                            name,
-                            existing,
-                            &pattern_ctors_for_views,
-                            &var_refs_for_views,
-                            &apply_refs_for_views,
-                        )?;
-                    }
+                let Some(callable) = sym_table
+                    .get(name.as_ref())
+                    .and_then(Binding::callable)
+                    .cloned()
+                else {
+                    return Ok(());
+                };
+                let scheme = callable.arm.scheme.clone();
+                let (mut existing, kind, callees) = match callable.arm.life {
+                    Life::Concrete {
+                        ast: Some(ast),
+                        callees,
+                        ..
+                    } => (ast, None, callees),
+                    Life::Template {
+                        body: TemplateBody::Ast(ast),
+                        kind,
+                        callees,
+                    } => (ast, Some(kind), callees),
+                    _ => return Ok(()),
+                };
+                annotate_variant_from_maps(&mut existing, resolved_expr_types, method_resolutions);
+                apply_subst_to_variant(subst, &mut existing);
+                if let Some(kind) = kind {
+                    sym_table
+                        .settle_checked_template(name, scheme, existing, kind, callees)
+                        .map_err(crate::result::lifecycle_error)?;
+                } else if let Some(view) = build_concrete_codegen_view(
+                    name,
+                    &existing,
+                    &scheme,
+                    &pattern_ctors_for_views,
+                    &var_refs_for_views,
+                    &apply_refs_for_views,
+                )? {
+                    sym_table
+                        .settle_checked_concrete(name, scheme, existing, view, callees)
+                        .map_err(crate::result::lifecycle_error)?;
                 }
                 Ok(())
             };
@@ -909,57 +669,237 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // settled names directly; reconstructing them from `TraitImpl`
             // syntax would discard canonical identity (Principles 24 and 26).
             for defn in &accumulator.default_method_defns {
-                if let Some(entry) = sym_table.symbols.get_mut(&defn.name) {
-                    reannotate_and_refresh_view(
-                        &defn.name,
-                        entry,
-                        &resolved_expr_types,
-                        &accumulator.method_resolutions,
-                        &state.subst,
-                    )?;
-                }
+                reannotate_and_refresh_view(
+                    &defn.name,
+                    sym_table,
+                    &resolved_expr_types,
+                    &accumulator.resolutions.resolved_calls,
+                    &state.subst,
+                )?;
             }
+        }
 
-            for top in working_program {
-                match top {
-                    TopLevel::Defn(defn) if defn.is_multi_sig() => {
-                        // S91 Wave-7 (FIXME 0432 Face A): re-annotate each
-                        // variant body under its MANGLED key. The internal
-                        // `{name}__v{i}` entries were removed-and-reinserted as
-                        // mangled names by `register_mangled_variants` (Pass
-                        // 2.5), so a stale internal-key lookup misses and an
-                        // in-body self-call's `SigDispatch` resolution (written
-                        // by `resolve_pending_overloads`) never lands on the
-                        // body — the backend then falls back to the undefined
-                        // bare name. Look up the live mangled keys instead.
-                        if let Some(mangled_names) = multi_sig_mangled_names.get(&defn.name) {
-                            for mangled_name in mangled_names {
-                                if let Some(entry) = sym_table.symbols.get_mut(mangled_name) {
-                                    reannotate_and_refresh_view(
-                                        mangled_name,
-                                        entry,
-                                        &resolved_expr_types,
-                                        &accumulator.method_resolutions,
-                                        &state.subst,
-                                    )?;
-                                }
-                            }
+        let checked_bodies = std::mem::take(&mut accumulator.bodies).into_checked()?;
+        let mut overload_drafts: HashMap<Symbol, Vec<(usize, Symbol, CallableArmDraft)>> =
+            HashMap::new();
+        for mut checked in checked_bodies {
+            let name = checked.registration.publication_name.clone();
+            annotate_variant_from_maps(
+                &mut checked.ast,
+                &resolved_expr_types,
+                &accumulator.resolutions.resolved_calls,
+            );
+            apply_subst_to_variant(&state.subst, &mut checked.ast);
+
+            let mut body_spans = HashSet::new();
+            collect_expr_spans(&checked.ast.body, &mut body_spans);
+            let late_resolutions: HashMap<Span, ResolvedCall> = accumulator
+                .resolutions
+                .resolved_calls
+                .iter()
+                .filter(|(span, _)| body_spans.contains(span))
+                .map(|(span, resolution)| (*span, resolution.clone()))
+                .collect();
+            checked
+                .callees
+                .extend(self.harvest_callees(state, &late_resolutions, &HashMap::new()));
+            checked.callees.sort_by(|a, b| {
+                a.module
+                    .as_ref()
+                    .cmp(b.module.as_ref())
+                    .then(a.symbol.as_ref().cmp(b.symbol.as_ref()))
+            });
+            checked.callees.dedup();
+
+            let scheme = self
+                .current_symbol_table(state)
+                .view()
+                .lookup(&name)
+                .and_then(Binding::callable)
+                .map(|callable| callable.arm.scheme.clone())
+                .ok_or_else(|| CranelispError::TypeError {
+                    message: format!("internal: missing declaration for checked body `{name}`"),
+                    location: ErrorLocation::from_span(checked.registration.span),
+                })?;
+            // `__expr` is an execution boundary, not a reusable polymorphic
+            // definition. A result-only residual below a preserved constructor
+            // therefore takes the already-approved bounded-defaulting path and
+            // receives a concrete execution scheme/view. Keep the checked AST
+            // unchanged: int reads its original inferred type for REPL display
+            // while the producer/release boundary reads the concrete view.
+            //
+            // The two §3.11.2 display-only shapes stay templates: a bare name
+            // or literal empty vector is rendered without execution, so minting
+            // a runtime capability for it would be the wrong lifecycle.
+            let display_only_expr = name.as_ref() == "__expr"
+                && match &checked.ast.body {
+                    Expr::Var { .. } => true,
+                    Expr::VecLit { elements, .. } => elements.is_empty(),
+                    _ => false,
+                };
+            let defaulted_expr =
+                if name.as_ref() == "__expr"
+                    && !display_only_expr
+                    && !scheme.ty.is_concrete()
+                    && scheme.constraints.is_empty()
+                {
+                    let ast = default_residual_parameters(&checked.ast, &scheme)?;
+                    let result = ast.body.inferred_type().cloned().ok_or_else(|| {
+                        CranelispError::TypeError {
+                            message: "internal: defaulted `__expr` body has no inferred type"
+                                .into(),
+                            location: ErrorLocation::from_span(ast.span),
                         }
-                    }
-                    TopLevel::Defn(defn) => {
-                        if let Some(entry) = sym_table.symbols.get_mut(&defn.name) {
-                            reannotate_and_refresh_view(
-                                &defn.name,
-                                entry,
-                                &resolved_expr_types,
-                                &accumulator.method_resolutions,
-                                &state.subst,
-                            )?;
+                    })?;
+                    let execution_scheme = Scheme {
+                        type_vars: Vec::new(),
+                        constraints: HashMap::new(),
+                        ty: Type::Fn(Vec::new(), Box::new(result)),
+                    };
+                    Some((ast, execution_scheme))
+                } else {
+                    None
+                };
+            let draft = if scheme.ty.is_concrete() && scheme.constraints.is_empty() {
+                let view = build_concrete_codegen_view(
+                    &name,
+                    &checked.ast,
+                    &scheme,
+                    &accumulator.resolutions.pattern_ctors,
+                    &accumulator.resolutions.var_refs,
+                    &accumulator.resolutions.apply_refs,
+                )?
+                .ok_or_else(|| CranelispError::TypeError {
+                    message: format!("could not build concrete view for `{name}`"),
+                    location: ErrorLocation::from_span(checked.registration.span),
+                })?;
+                CallableArmDraft::concrete_body(
+                    scheme.clone(),
+                    checked
+                        .ast
+                        .params
+                        .iter()
+                        .map(|(param, _)| param.clone())
+                        .collect(),
+                    checked.ast.clone(),
+                    view,
+                    checked.callees.clone(),
+                )
+            } else if let Some((defaulted_ast, execution_scheme)) = defaulted_expr {
+                let view = build_concrete_codegen_view(
+                    &name,
+                    &defaulted_ast,
+                    &execution_scheme,
+                    &accumulator.resolutions.pattern_ctors,
+                    &accumulator.resolutions.var_refs,
+                    &accumulator.resolutions.apply_refs,
+                )?
+                .ok_or_else(|| CranelispError::TypeError {
+                    message: "could not build concrete view for `__expr`".into(),
+                    location: ErrorLocation::from_span(checked.registration.span),
+                })?;
+                CallableArmDraft::concrete_body(
+                    execution_scheme,
+                    Vec::new(),
+                    checked.ast.clone(),
+                    view,
+                    checked.callees.clone(),
+                )
+            } else {
+                let kind = if scheme.constraints.is_empty() {
+                    TemplateKind::Parametric
+                } else {
+                    TemplateKind::Constrained(Box::new(ConstrainedMeta::new(
+                        scheme.constraints.clone(),
+                    )))
+                };
+                CallableArmDraft::template(
+                    scheme.clone(),
+                    checked
+                        .ast
+                        .params
+                        .iter()
+                        .map(|(param, _)| param.clone())
+                        .collect(),
+                    TemplateBody::Ast(checked.ast.clone()),
+                    kind,
+                    checked.callees.clone(),
+                )
+            };
+
+            match checked.registration.target {
+                BodyTarget::Direct(_) => {
+                    let settled_scheme = draft.scheme.clone();
+                    match draft.settlement {
+                        cranelisp_types::CallableArmSettlement::ConcreteBody {
+                            ast,
+                            view,
+                            callees,
+                        } => {
+                            self.current_symbol_table_mut(state)
+                                .settle_checked_concrete(&name, settled_scheme, ast, view, callees)
+                                .map_err(crate::result::lifecycle_error)?;
                         }
+                        cranelisp_types::CallableArmSettlement::Template {
+                            body: TemplateBody::Ast(ast),
+                            kind,
+                            callees,
+                        } => self
+                            .current_symbol_table_mut(state)
+                            .settle_checked_template(&name, settled_scheme, ast, kind, callees)
+                            .map_err(crate::result::lifecycle_error)?,
+                        cranelisp_types::CallableArmSettlement::Template { .. } => {
+                            unreachable!("invariant: checked source body draft is AST-backed")
+                        }
+                        _ => unreachable!("invariant: callable-arm settlement is closed here"),
                     }
-                    _ => {}
+                }
+                BodyTarget::MultiSignatureClause { group, clause } => {
+                    overload_drafts
+                        .entry(group)
+                        .or_default()
+                        .push((clause, name, draft));
                 }
             }
+        }
+
+        for (group, mut entries) in overload_drafts {
+            entries.sort_by_key(|(clause, _, _)| *clause);
+            for (expected, (actual, _, _)) in entries.iter().enumerate() {
+                if *actual != expected {
+                    return Err(CranelispError::TypeError {
+                        message: format!(
+                            "internal: overload `{group}` has non-contiguous clause roster"
+                        ),
+                        location: ErrorLocation::from_span(Span::SYNTHETIC),
+                    });
+                }
+            }
+            let source = working_program.iter().find_map(|form| match form {
+                TopLevel::Defn(defn) if defn.name == group && defn.is_multi_sig() => Some(defn),
+                _ => None,
+            });
+            let Some(source) = source else {
+                return Err(CranelispError::TypeError {
+                    message: format!("internal: missing source declaration for overload `{group}`"),
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
+                });
+            };
+            let mut table = self.current_symbol_table_mut(state);
+            for (_, temporary_name, _) in &entries {
+                table
+                    .discard_declared(temporary_name)
+                    .map_err(crate::result::lifecycle_error)?;
+            }
+            table
+                .install_overloaded(
+                    group,
+                    source.docstring.clone(),
+                    0,
+                    entries.into_iter().map(|(_, _, draft)| draft).collect(),
+                    source.visibility,
+                )
+                .map_err(crate::result::lifecycle_error)?;
         }
         Ok(())
     }

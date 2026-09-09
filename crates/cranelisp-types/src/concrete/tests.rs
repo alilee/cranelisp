@@ -137,8 +137,16 @@ fn result_root_is_identity_off_the_io_head() {
     assert_eq!(opt.result_root(), &opt);
 
     let user_io = adt("user", "IO", vec![ConcreteType::Int]);
-    assert_eq!(user_io.result_root(), &user_io, "user IO is not primitives/IO");
+    assert_eq!(
+        user_io.result_root(),
+        &user_io,
+        "user IO is not primitives/IO"
+    );
 
     let nullary_io = adt("primitives", "IO", vec![]);
-    assert_eq!(nullary_io.result_root(), &nullary_io, "nullary head is itself");
+    assert_eq!(
+        nullary_io.result_root(),
+        &nullary_io,
+        "nullary head is itself"
+    );
 }

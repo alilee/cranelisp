@@ -26,16 +26,24 @@ fn test_check_form_single_defn_check_body() {
         .check_form(&module, &form, CheckPass::CheckBody, &mut accumulator)
         .unwrap();
 
-    // CheckBody pass should produce expr_types (body expressions typed)
+    // Per-form expression and dispatch facts remain in the active check state;
+    // the result carrier only transports cross-form products.
     assert!(
-        !body_result.expr_types.is_empty(),
+        !tc.state.expr_types.is_empty(),
         "CheckBody should produce expr_types for body expressions"
     );
 
     // CheckBody pass should produce method_resolutions for add-i64 call
     assert!(
-        !body_result.method_resolutions.is_empty(),
+        !tc.state.method_resolutions.resolved_calls.is_empty(),
         "CheckBody should have method resolution for add-i64 call"
+    );
+
+    assert!(
+        accumulator
+            .bodies
+            .checked_for_publication(&Symbol::from("inc"))
+            .is_some()
     );
 
     // No constrained fn (inc is monomorphic)
@@ -59,8 +67,6 @@ fn test_check_form_typedef_check_body_noop() {
     let result = tc
         .check_form(&module, &form, CheckPass::CheckBody, &mut accumulator)
         .unwrap();
-    assert!(result.method_resolutions.is_empty());
-    assert!(result.expr_types.is_empty());
     assert!(result.constrained_fn.is_none());
     assert!(result.mono_defns.is_empty());
 }
@@ -81,11 +87,11 @@ fn test_check_form_trait_decl_check_body_noop() {
         .unwrap();
 
     // CheckBody should be no-op
-    let result = tc
+    let _result = tc
         .check_form(&module, &form, CheckPass::CheckBody, &mut accumulator)
         .unwrap();
-    assert!(result.method_resolutions.is_empty());
-    assert!(result.expr_types.is_empty());
+    assert!(tc.state.method_resolutions.resolved_calls.is_empty());
+    assert!(tc.state.expr_types.is_empty());
 }
 
 // spec: design/typecheck/check-form-api.md §check_form — Expr wrapped as __expr
@@ -122,8 +128,9 @@ fn test_check_form_expr_register_and_check() {
 
     assert!(
         accumulator
-            .defn_type_vars
-            .contains_key(&Symbol::from("__expr"))
+            .bodies
+            .registration_for_publication(&Symbol::from("__expr"))
+            .is_some()
     );
 
     // CheckBody pass
@@ -133,9 +140,10 @@ fn test_check_form_expr_register_and_check() {
 
     // expr_types should contain the literal's type
     assert!(
-        !body_result.expr_types.is_empty(),
+        !tc.state.expr_types.is_empty(),
         "CheckBody should produce expr_types for the expression"
     );
+    assert!(body_result.constrained_fn.is_none());
 }
 
 // ---- Category 3: Two-Pass Correctness ----
@@ -160,13 +168,15 @@ fn test_check_form_two_pass_mutual_reference() {
     // Both signatures should be registered
     assert!(
         accumulator
-            .defn_type_vars
-            .contains_key(&Symbol::from("double"))
+            .bodies
+            .registration_for_publication(&Symbol::from("double"))
+            .is_some()
     );
     assert!(
         accumulator
-            .defn_type_vars
-            .contains_key(&Symbol::from("add-self"))
+            .bodies
+            .registration_for_publication(&Symbol::from("add-self"))
+            .is_some()
     );
 
     // Pass 2: Check bodies of both
@@ -177,10 +187,11 @@ fn test_check_form_two_pass_mutual_reference() {
         tc.merge_form_result(&module, &mut accumulator, result);
     }
 
-    // Both should have produced expr_types
+    // Both should have produced active expression facts; they move to the
+    // accumulator only in the final sweep.
     assert!(
-        !accumulator.expr_types.is_empty(),
-        "accumulated expr_types should be non-empty"
+        !tc.state.expr_types.is_empty(),
+        "active expr_types should be non-empty"
     );
 
     // Finalize to get final types
@@ -190,9 +201,17 @@ fn test_check_form_two_pass_mutual_reference() {
 
     // After finalization, all expr_types should be resolved on annotated ASTs.
     for name in ["double", "add-self"] {
-        if let Some(ModuleEntry::Def {
-            ast: Some(defn), ..
-        }) = tc.symbol_table().get(name)
+        let table = tc.symbol_table();
+        if let Some(defn) =
+            table
+                .get(name)
+                .and_then(Binding::callable)
+                .and_then(|c| match &c.arm.life {
+                    Life::Concrete {
+                        ast: Some(defn), ..
+                    } => Some(defn),
+                    _ => None,
+                })
         {
             let mut _any = false;
             let mut all_resolved = true;
@@ -344,7 +363,8 @@ fn test_check_form_multi_defn_shared_substitution() {
 
     // All three should be monomorphic Int via shared substitution
     for name in &["f", "g", "h"] {
-        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get(*name) {
+        if let Some(callable) = tc.symbol_table().get(*name).and_then(Binding::callable) {
+            let scheme = &callable.arm.scheme;
             assert!(
                 scheme.type_vars.is_empty(),
                 "{} should be monomorphic (pinned to Int via shared substitution)",
@@ -413,12 +433,12 @@ fn test_check_form_expr_types_no_unresolved_vars() {
     // body `x` is a Var — that is the corrected inference, not a regression.
     // Guard resolution only for monomorphic-scheme defns.
     for (_name, entry) in tc.symbol_table().all_symbols() {
-        if let ModuleEntry::Def {
-            ast: Some(defn),
-            scheme,
-            ..
-        } = entry
+        if let Some(callable) = entry.callable()
+            && let Life::Concrete {
+                ast: Some(defn), ..
+            } = &callable.arm.life
         {
+            let scheme = &callable.arm.scheme;
             if !scheme.type_vars.is_empty() {
                 // Polymorphic def — Var entries in its body are expected.
                 continue;
@@ -444,21 +464,12 @@ fn test_check_form_warnings_accumulated() {
 
     // Simulate a FormCheckResult with a warning
     let result_with_warning = FormCheckResult {
-        method_resolutions: HashMap::new(),
-        pattern_ctors: HashMap::new(),
-        var_refs: HashMap::new(),
-        apply_refs: HashMap::new(),
-        expr_types: HashMap::new(),
-        constrained_fn: None,
-        mono_defns: Vec::new(),
-        default_method_defns: Vec::new(),
-        multi_sig_defns: Vec::new(),
         warnings: vec![Warning {
             kind: cranelisp_types::WarningKind::Other,
             message: "test warning".to_string(),
             span: Span::SYNTHETIC,
         }],
-        call_graph_edges: Vec::new(),
+        ..FormCheckResult::empty()
     };
 
     let mut tc = tc_with_prims();

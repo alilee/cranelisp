@@ -29,13 +29,12 @@ fn produce_disasm_returns_nonempty_for_jit_compiled_fn() {
     let tables = empty_tables();
     {
         let mut st = SymbolTable::new(module.clone());
-        st.insert(defn.name.clone(), make_def_entry_slot(defn.clone(), 0));
-        st.next_got_slot = 1;
+        install_def_entry_at_slot(&mut st, defn.clone(), 0);
         tables.insert(module.clone(), st);
     }
 
     let mut jit = Jit::new_with_symbols(&[]).unwrap();
-    let artifacts = compile_to_module(
+    let artifacts = compile_names_to_module(
         module.clone(),
         std::slice::from_ref(&defn.name),
         &tables,
@@ -97,13 +96,12 @@ fn capture_clif_gates_clif_ir_text() {
         let tables = empty_tables();
         {
             let mut st = SymbolTable::new(module.clone());
-            st.insert(defn.name.clone(), make_def_entry_slot(defn.clone(), 0));
-            st.next_got_slot = 1;
+            install_def_entry_at_slot(&mut st, defn.clone(), 0);
             tables.insert(module.clone(), st);
         }
 
         let mut jit = Jit::new_with_symbols(&[]).unwrap();
-        compile_to_module(
+        compile_names_to_module(
             module,
             std::slice::from_ref(&defn.name),
             &tables,

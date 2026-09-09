@@ -219,8 +219,10 @@ The frontend hands off; **int wires**. The seam:
   `cranelisp_frontend::parse(&source)` at the load sites
   (`src/session_v4.rs:470`, `src/session_v4/lifecycle.rs:1029/1104`,
   `src/process_form/dependency.rs:412`), then calls `extract_module_declarations` and
-  writes structural decls onto the per-module `SymbolTable` via
-  `write_structural_decls` (Decision 33 — single source of truth for structural decls).
+  appends the structural decls directly onto the per-module `SymbolTable`'s `pub`
+  structural `Vec` fields (Decision 33 — single source of truth for structural
+  decls; `modules.md` §1.5 states the append contract, and there is no bulk-load
+  method).
 - **The added wiring.** At each module-load site, after parsing, int calls
   `cranelisp_frontend::capture_module_preamble(&source)` on the **same source string**
   and assigns the result to the module's `SymbolTable.module_preamble` (the field
@@ -229,7 +231,7 @@ The frontend hands off; **int wires**. The seam:
 - **Frontend's responsibility ends** at returning `Option<String>` from the source.
   Threading it onto the right module's table, at the right load sites, in all modes
   (`--run` / `--link` / REPL / cache-restore), is int's orchestration concern — the
-  same surface that owns `write_structural_decls` and the module-load lifecycle.
+  same surface that owns the structural-decl append and the module-load lifecycle.
 
 **Cache interaction (int's concern, noted for completeness).** `module_preamble` is a
 serialized `SymbolTable` field (`/arch`: `#[serde(default)]`, schema 8→9), so a

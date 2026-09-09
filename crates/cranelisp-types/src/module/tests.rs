@@ -1,43 +1,37 @@
 use super::*;
 use crate::{
-    DefnVariant, Expr, FQSymbol, FQTraitName, FQTypeName, ModuleFullPath, ModuleName, Scheme, Span,
-    Symbol, TraitName, Type, TypeDefInfo, TypeName, Visibility,
+    BrokenProvenance, Expr, MonoDefnVariant, MonoDemand, MonoExpr, SynthSpec, TraitRecord, Type,
+    TypeRecord,
 };
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-// ---- Sprint 56 Wave 0 §9.5 — defined_symbols filter predicate ----
-
-/// Build a minimal `ModuleEntry::Def` for test fixtures.
-fn mk_def(kind: DefKind, ast: Option<DefnVariant>) -> ModuleEntry {
-    ModuleEntry::Def {
-        scheme: Scheme {
-            type_vars: vec![],
-            constraints: HashMap::new(),
-            ty: Type::Int,
-        },
-        visibility: Visibility::Public,
-        docstring: None,
-        param_names: vec![],
-        kind: Box::new(kind),
-        callees: Vec::new(),
-        value_use: false,
-        trait_origin: None,
-        seq: 0,
-        ast,
-        codegen_view: None,
-        code: None,
+fn scheme(ty: Type) -> Scheme {
+    Scheme {
+        type_vars: Vec::new(),
+        constraints: HashMap::new(),
+        ty,
     }
 }
 
-/// A trivial `DefnVariant` used as an `ast` payload for tests (S69 Submission 35
-/// narrowed `ModuleEntry::Def.ast` from `Option<Defn>` to `Option<DefnVariant>`).
-/// The `_name` parameter is retained at call sites for readability but no longer
-/// threads into the payload (the entry's own symbol-table key carries the name).
-fn trivial_variant(_name: &str) -> DefnVariant {
+fn concrete_scheme() -> Scheme {
+    scheme(Type::Int)
+}
+
+fn template_scheme() -> Scheme {
+    Scheme {
+        type_vars: vec![0],
+        constraints: HashMap::new(),
+        ty: Type::Var(0),
+    }
+}
+
+fn ast() -> DefnVariant {
     DefnVariant {
-        params: vec![],
+        params: Vec::new(),
         body: Expr::IntLit {
-            value: 0,
+            value: 1,
             span: Span::SYNTHETIC,
             inferred_type: Some(Box::new(Type::Int)),
         },
@@ -45,2249 +39,5110 @@ fn trivial_variant(_name: &str) -> DefnVariant {
     }
 }
 
-// `trivial_defn` test helper retired in S70 Phase 3 alongside
-// `ConstrainedFn { defn: Defn }` → `{ variant: DefnVariant }` narrow.
-// Tests construct `ConstrainedFn { variant: trivial_variant(name), .. }`
-// directly — the outer `Defn` wrapper duplicated metadata already on the
-// parent `Def` entry (parallel to S69 Submission 35's `Def.ast` narrow).
-
-// spec: design/typecheck/ast-annotation.md §9.5 — defined_symbols filter predicate
-#[test]
-fn wave0_defined_symbols_filter_is_correct() {
-    let mut st = SymbolTable::new(ModuleFullPath::from("user"));
-
-    // (a) Regular UserFn with ast: Some(_) — SHOULD appear.
-    st.insert(
-        Symbol::from("regular"),
-        mk_def(
-            DefKind::UserFn {
-                fn_state: UserFnState::NotDetermined,
-            },
-            Some(trivial_variant("regular")),
-        ),
-    );
-
-    // (b) Overloaded base with ast: None — MUST NOT appear.
-    st.insert(
-        Symbol::from("overloaded_base"),
-        mk_def(DefKind::Overloaded { variants: vec![] }, None),
-    );
-
-    // (c) UserFn template with constrained_fn: Some(_) — MUST NOT appear,
-    // even if ast happens to be Some(_) (§9.5 filter excludes templates by kind).
-    let template_cf = ConstrainedFn {
-        variant: trivial_variant("template"),
-        scheme: Scheme {
-            type_vars: vec![],
-            constraints: HashMap::new(),
-            ty: Type::Int,
+fn view() -> MonoDefnVariant {
+    MonoDefnVariant {
+        name: Symbol::from("f"),
+        params: Vec::new(),
+        body: MonoExpr::IntLit {
+            value: 1,
+            span: Span::SYNTHETIC,
+            ty: ConcreteType::Int,
         },
-    };
-    st.insert(
-        Symbol::from("template"),
-        mk_def(
-            DefKind::UserFn {
-                fn_state: UserFnState::Constrained(Box::new(template_cf)),
-            },
-            Some(trivial_variant("template")),
-        ),
-    );
+        span: Span::SYNTHETIC,
+        mode_summary: None,
+    }
+}
 
-    // (d) TypeDef — not a Def variant at all; MUST NOT appear.
-    st.insert(
-        Symbol::from("MyType"),
-        ModuleEntry::TypeDef {
-            info: TypeDefInfo {
-                name: FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("MyType")),
-                type_params: vec![],
-                constructors: vec![],
-            },
-            visibility: Visibility::Public,
+fn ownership_annotated_view() -> MonoDefnVariant {
+    MonoDefnVariant {
+        name: Symbol::from("f"),
+        params: Vec::new(),
+        body: MonoExpr::StringLit {
+            value: "owned".into(),
+            span: Span::SYNTHETIC,
+            ty: ConcreteType::String,
+            escapes: Some(false),
+            confined: Some(true),
+            unique_static: Some(true),
+        },
+        span: Span::SYNTHETIC,
+        mode_summary: None,
+    }
+}
+
+fn body() -> Realization<()> {
+    Realization::Body {
+        view: view(),
+        code: None,
+    }
+}
+
+fn non_callable_binding() -> Binding<()> {
+    Binding::new(
+        Decl::Type(TypeRecord::Intrinsic {
+            ty: Type::Int,
             docstring: None,
-        },
-    );
-
-    // (e) Import — not a Def variant; MUST NOT appear.
-    st.insert(
-        Symbol::from("imported"),
-        ModuleEntry::Import {
-            source: FQSymbol {
-                module: ModuleFullPath::from("primitives"),
-                symbol: Symbol::from("some-prim"),
-            },
-            visibility: Visibility::Private,
-        },
-    );
-
-    // (f) Mangled multi-sig variant with ast: Some(_) — SHOULD appear.
-    st.insert(
-        Symbol::from("add$Int+Int"),
-        mk_def(
-            DefKind::UserFn {
-                fn_state: UserFnState::NotDetermined,
-            },
-            Some(trivial_variant("add$Int+Int")),
-        ),
-    );
-
-    let names: std::collections::HashSet<String> = st
-        .defined_symbols()
-        .map(|(s, _)| s.as_ref().to_string())
-        .collect();
-
-    assert!(
-        names.contains("regular"),
-        "regular UserFn with ast: Some(..) must appear; got {:?}",
-        names
-    );
-    assert!(
-        names.contains("add$Int+Int"),
-        "mangled multi-sig variant with ast: Some(..) must appear; got {:?}",
-        names
-    );
-    assert!(
-        !names.contains("overloaded_base"),
-        "Overloaded base must NOT appear; got {:?}",
-        names
-    );
-    assert!(
-        !names.contains("template"),
-        "constrained-fn template must NOT appear; got {:?}",
-        names
-    );
-    assert!(
-        !names.contains("MyType"),
-        "TypeDef must NOT appear; got {:?}",
-        names
-    );
-    assert!(
-        !names.contains("imported"),
-        "Import must NOT appear; got {:?}",
-        names
-    );
-}
-
-// spec: design/arch/concrete-boundary-type.md §4 Phase 4(B) —
-//       a slot-less `UserFnState::Polymorphic` generic template is a mono
-//       SOURCE, never a codegen target (FIXME 0381). It MUST NOT appear in
-//       `defined_symbols()` (symmetric with `Constrained`); only its
-//       concrete monomorphised instances codegen.
-#[test]
-fn polymorphic_template_excluded_from_defined_symbols() {
-    let mut st = SymbolTable::new(ModuleFullPath::from("user"));
-
-    // The slot-less Polymorphic generic template (e.g. `(defn id [x] x)`).
-    let parametric = ParametricFn {
-        variant: trivial_variant("id"),
-        scheme: Scheme {
-            type_vars: vec![0],
-            constraints: HashMap::new(),
-            ty: Type::Var(0),
-        },
-    };
-    st.insert(
-        Symbol::from("id"),
-        mk_def(
-            DefKind::UserFn {
-                fn_state: UserFnState::Polymorphic(Box::new(parametric)),
-            },
-            // Even though the template body is present (ast: Some), it MUST
-            // NOT be a codegen target.
-            Some(trivial_variant("id")),
-        ),
-    );
-
-    // Its concrete monomorphised instance (`id$Int`) — a `Concrete` UserFn
-    // — IS a codegen target and SHOULD appear.
-    st.insert(
-        Symbol::from("id$Int"),
-        mk_def(
-            DefKind::UserFn {
-                fn_state: UserFnState::Concrete {
-                    got_slot: 0,
-                    mode_summary: None,
-                },
-            },
-            Some(trivial_variant("id$Int")),
-        ),
-    );
-
-    let names: std::collections::HashSet<String> = st
-        .defined_symbols()
-        .map(|(s, _)| s.as_ref().to_string())
-        .collect();
-
-    assert!(
-        !names.contains("id"),
-        "Polymorphic generic template must NOT be a codegen target; got {:?}",
-        names
-    );
-    assert!(
-        names.contains("id$Int"),
-        "concrete mono instance id$Int must appear; got {:?}",
-        names
-    );
-}
-
-// spec: design/arch/bounded-contexts.md §7 "Callability is structural" +
-//       design/arch/principles/20-model-invariants-by-representation.md —
-//       the slot lives on the callable DefKind variants, so a constrained
-//       template structurally CANNOT hold a callable slot (the 0356/0357
-//       representation fix; superseded the S82 0354 accessor stopgap).
-//       Structural guard (per /qa's S83 re-point): callable_got_slot() is
-//       Some for a Concrete UserFn / Primitive / Constructor and None for a
-//       Constrained template, a NotDetermined interim fn, and the slot-less
-//       kinds — and the illegal "constrained + slot" pairing is now
-//       unconstructable (no field to set), proven by the type system, not
-//       by an accessor reading around it.
-#[test]
-fn callable_got_slot_is_structural() {
-    let cf = ConstrainedFn {
-        variant: trivial_variant("cmp"),
-        scheme: Scheme {
-            type_vars: vec![],
-            constraints: HashMap::new(),
-            ty: Type::Int,
-        },
-    };
-
-    // A concrete UserFn carries its slot on the kind's Concrete fn_state.
-    let concrete: ModuleEntry = ModuleEntry::def(
-        mono_scheme(Type::Int),
-        DefKind::UserFn {
-            fn_state: UserFnState::Concrete {
-                got_slot: 3,
-                mode_summary: None,
-            },
-        },
-    )
-    .build();
-    assert_eq!(concrete.callable_got_slot(), Some(3));
-    assert!(!concrete.is_constrained_template());
-
-    // A constrained template carries NO slot — there is no field to set.
-    // (The once-illegal `Def{got_slot:Some} + constrained` shape from the
-    // 0354 era is now unconstructable: Constrained has no got_slot.)
-    let template: ModuleEntry = ModuleEntry::def(
-        mono_scheme(Type::Int),
-        DefKind::UserFn {
-            fn_state: UserFnState::Constrained(Box::new(cf)),
-        },
-    )
-    .build();
-    assert!(template.is_constrained_template());
-    assert_eq!(
-        template.callable_got_slot(),
-        None,
-        "a constrained template structurally has no callable slot"
-    );
-
-    // The Pass-1 interim NotDetermined fn is also slot-less → None.
-    let interim: ModuleEntry = ModuleEntry::def(
-        mono_scheme(Type::Int),
-        DefKind::UserFn {
-            fn_state: UserFnState::NotDetermined,
-        },
-    )
-    .build();
-    assert_eq!(interim.callable_got_slot(), None);
-    assert!(!interim.is_constrained_template());
-
-    // Primitive and Constructor carry their (mandatory) slot too.
-    let prim: ModuleEntry = ModuleEntry::def(mono_scheme(Type::Int), DefKind::primitive(9)).build();
-    assert_eq!(prim.callable_got_slot(), Some(9));
-
-    let ctor: ModuleEntry = ModuleEntry::def(
-        mono_scheme(Type::Int),
-        DefKind::Constructor {
-            got_slot: 11,
-            type_name: FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Some")),
-            tag: 0,
-            field_count: 1,
-            internal: false,
-            type_def: None,
-            mode_summary: None,
-        },
-    )
-    .build();
-    assert_eq!(ctor.callable_got_slot(), Some(11));
-}
-
-// ---- S109 Phase 3 — type_def_info: the single "answers as a type" reader ----
-
-/// A `TypeDefInfo` fixture for `ty` in module `user`.
-fn tdi(ty: &str, constructors: &[&str]) -> TypeDefInfo {
-    TypeDefInfo {
-        name: FQTypeName::new(ModuleFullPath::from("user"), TypeName::from(ty)),
-        type_params: vec![],
-        constructors: constructors.iter().map(|c| Symbol::from(*c)).collect(),
-    }
-}
-
-// spec: spec/04-types.md §4.2 — both surviving type shapes answer as a type
-// through ONE reader (S79 dual facet; FIXME 0573 root-cause class: a bare
-// `ModuleEntry::TypeDef` match silently skips product types).
-#[test]
-fn type_def_info_answers_for_both_type_shapes() {
-    // Sum/enum: a real `ModuleEntry::TypeDef` entry.
-    let sum: ModuleEntry = ModuleEntry::TypeDef {
-        info: tdi("Rotation", &["L", "R"]),
-        visibility: Visibility::Public,
-        docstring: None,
-    };
-    let info = sum
-        .type_def_info()
-        .expect("a TypeDef entry answers as a type");
-    assert_eq!(info.name.name, TypeName::from("Rotation"));
-
-    // Single-ctor product: the got-slotted ctor `Def` carrying the type facet
-    // (type-name == ctor-name, S79 Option 3a).
-    let product: ModuleEntry = mk_def(
-        DefKind::Constructor {
-            got_slot: 3,
-            type_name: FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Position")),
-            tag: 0,
-            field_count: 1,
-            internal: false,
-            type_def: Some(Box::new(tdi("Position", &["Position"]))),
-            mode_summary: None,
-        },
-        None,
-    );
-    let info = product
-        .type_def_info()
-        .expect("a product ctor Def with a type facet answers as a type");
-    assert_eq!(info.name.name, TypeName::from("Position"));
-    assert_eq!(info.constructors, vec![Symbol::from("Position")]);
-}
-
-// spec: spec/04-types.md §4.2 — entries that are NOT a type answer None:
-// an ordinary sum ctor (type_def: None), a plain user fn, an import edge.
-#[test]
-fn type_def_info_none_for_non_type_entries() {
-    let sum_ctor: ModuleEntry = mk_def(
-        DefKind::Constructor {
-            got_slot: 7,
-            type_name: FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Rotation")),
-            tag: 1,
-            field_count: 1,
-            internal: false,
-            type_def: None,
-            mode_summary: None,
-        },
-        None,
-    );
-    assert!(
-        sum_ctor.type_def_info().is_none(),
-        "an ordinary sum ctor is not its own type"
-    );
-
-    let user_fn: ModuleEntry = mk_def(
-        DefKind::UserFn {
-            fn_state: UserFnState::NotDetermined,
-        },
-        None,
-    );
-    assert!(
-        user_fn.type_def_info().is_none(),
-        "a plain Def never answers as a type"
-    );
-
-    let import: ModuleEntry = ModuleEntry::Import {
-        source: FQSymbol {
-            module: ModuleFullPath::from("lib"),
-            symbol: Symbol::from("Position"),
-        },
-        visibility: Visibility::Private,
-    };
-    assert!(
-        import.type_def_info().is_none(),
-        "an import edge is not a type facet — chain-follow first, then read the terminal"
-    );
-}
-
-// ---- Sprint 56 Wave 0 §9.8 — GotTable on SymbolTable ----
-
-// spec: design/typecheck/ast-annotation.md §9.8 — GotTable on SymbolTable: presence + serde roundtrip
-#[test]
-fn wave0_symbol_table_got_present_and_serde_skipped() {
-    // Build a SymbolTable and verify `got` is live and addressable.
-    let mut st = SymbolTable::new(ModuleFullPath::from("user"));
-
-    // base_ptr() is non-null and stable across reads.
-    let p1 = st.got.base_ptr();
-    let p2 = st.got.base_ptr();
-    assert!(
-        !p1.is_null(),
-        "fresh SymbolTable's GOT base pointer must be non-null"
-    );
-    assert_eq!(p1, p2, "GOT base_ptr() must be stable across reads");
-
-    // Slot bookkeeping before and after allocation.
-    assert_eq!(st.next_got_slot, 0);
-    let s0 = st.allocate_got_slot().expect("fresh table has free slots");
-    let s1 = st.allocate_got_slot().expect("fresh table has free slots");
-    assert_eq!(s0, 0);
-    assert_eq!(s1, 1);
-    assert_eq!(st.next_got_slot, 2);
-
-    // Allocation does not move the GOT array in memory.
-    assert_eq!(st.got.base_ptr(), p1);
-
-    // Insert one entry to prove serde roundtrip preserves symbol data.
-    st.insert(
-        Symbol::from("entry"),
-        mk_def(
-            DefKind::UserFn {
-                fn_state: UserFnState::NotDetermined,
-            },
-            Some(trivial_variant("entry")),
-        ),
-    );
-
-    // Write a known pointer through the GOT and read it back (round-trip
-    // of the runtime pointer must NOT survive serde — verified below).
-    let fake_ptr = 0xDEAD_BEEFusize as *const u8;
-    st.got.store_slot(s0, fake_ptr);
-    assert_eq!(st.got.load_slot(s0), fake_ptr);
-
-    // Serialize and deserialize. The `got` field is `#[serde(skip)]` so it
-    // must NOT round-trip the runtime pointer; a fresh null GOT is expected.
-    let json = serde_json::to_string(&st).expect("SymbolTable must serialize");
-    assert!(
-        !json.contains("DEADBEEF") && !json.contains("deadbeef"),
-        "serialized form must not contain runtime pointer values: {}",
-        json
-    );
-    let rt: SymbolTable = serde_json::from_str(&json).expect("SymbolTable must deserialize");
-
-    // next_got_slot bookkeeping is preserved across the roundtrip.
-    assert_eq!(
-        rt.next_got_slot, 2,
-        "next_got_slot must round-trip via serde"
-    );
-
-    // The deserialized GOT exists (#[serde(default)] reconstructs it), has a
-    // valid base pointer, and all slots start null (runtime state NOT
-    // round-tripped — §9.8.3 Serde semantics).
-    let rt_base = rt.got.base_ptr();
-    assert!(
-        !rt_base.is_null(),
-        "deserialized SymbolTable must have a live GOT (non-null base_ptr)"
-    );
-    assert!(
-        rt.got.load_slot(s0).is_null(),
-        "deserialized GOT must reset slot pointers to null"
-    );
-    assert!(
-        rt.got.load_slot(s1).is_null(),
-        "deserialized GOT must reset every slot to null"
-    );
-
-    // Symbol payload (non-runtime) survives the roundtrip.
-    assert!(rt.get("entry").is_some(), "entry must round-trip");
-}
-
-// ---- Sprint 57 Wave 2 Step 1 — Decision 25: `code` field on ModuleEntry::Def ----
-
-// spec: design/arch/CLAUDE.md Decision 25 / design/typecheck/ast-annotation.md §10.1 —
-//       `code: Option<Code>` present and defaults to None on fresh construction.
-#[test]
-fn module_entry_def_has_code_field_none_by_default() {
-    let entry = mk_def(
-        DefKind::UserFn {
-            fn_state: UserFnState::NotDetermined,
-        },
-        Some(trivial_variant("fresh")),
-    );
-    match entry {
-        ModuleEntry::Def { code, .. } => {
-            assert!(
-                code.is_none(),
-                "freshly constructed ModuleEntry::Def must have code: None; got {:?}",
-                code
-            );
-        }
-        other => panic!("expected ModuleEntry::Def, got {:?}", other),
-    }
-}
-
-// spec: design/arch/CLAUDE.md Decision 25 + Sprint 58 Wave 3b (Decision 35) —
-//       #[serde(skip)] on the `code: Option<C>` field; runtime-only, never
-//       round-trips through the cache manifest. Wave 3b note: the old
-//       `cranelisp_types::Code` pointer-only struct is gone; the field is
-//       now generic over `C: CodeStore`. This test exercises the `()`
-//       default flavour (typecheck-side view); the integration-layer
-//       enum-flavour serde is exercised in `src/code.rs::tests`.
-#[test]
-fn code_serialise_round_trip_skips_field() {
-    let entry: ModuleEntry<()> = ModuleEntry::Def {
-        scheme: Scheme {
-            type_vars: vec![],
-            constraints: HashMap::new(),
-            ty: Type::Int,
-        },
-        visibility: Visibility::Public,
-        docstring: None,
-        param_names: vec![],
-        kind: Box::new(DefKind::UserFn {
-            fn_state: UserFnState::NotDetermined,
         }),
-        callees: Vec::new(),
-        value_use: false,
-        trait_origin: None,
-        seq: 0,
-        ast: Some(trivial_variant("with_code")),
-        codegen_view: None,
-        // `()` flavour — Some/None of the unit type. Serde discipline
-        // is the same regardless of `C`.
-        code: Some(()),
-    };
-
-    let json = serde_json::to_string(&entry).expect("entry must serialize");
-    // Field must not appear in the serialised form.
-    assert!(
-        !json.contains("\"code\""),
-        "serialised form must not contain the `code` field (it is #[serde(skip)]): {}",
-        json
-    );
-
-    let rt: ModuleEntry = serde_json::from_str(&json).expect("entry must deserialize");
-    match rt {
-        ModuleEntry::Def { code, ast, .. } => {
-            assert!(
-                code.is_none(),
-                "deserialised ModuleEntry::Def must have code: None (serde(skip)); got {:?}",
-                code
-            );
-            assert!(
-                ast.is_some(),
-                "ast must survive the roundtrip so codegen can repopulate code from it"
-            );
-        }
-        other => panic!("expected ModuleEntry::Def, got {:?}", other),
-    }
-}
-
-// ---- Sprint 66 Wave 0 amendment — fn_ptr removed; GOT is the single source of truth ----
-
-// spec: design/arch/bounded-contexts.md §7 "Callability is structural" +
-//       Principle 20 — the GOT slot lives on the callable DefKind variants,
-//       not as a flat field. A freshly registered user fn is the Pass-1
-//       interim `UserFnState::NotDetermined`, which is slot-less by
-//       construction, so `callable_got_slot()` is None. The slot is
-//       allocated only at the determination point (constructing
-//       `UserFnState::Concrete`), per the deferred-allocation timing-wall
-//       resolution (gating decision 3).
-#[test]
-fn fresh_module_entry_def_has_no_callable_slot() {
-    let entry = mk_def(
-        DefKind::UserFn {
-            fn_state: UserFnState::NotDetermined,
-        },
-        Some(trivial_variant("fresh")),
-    );
-    assert!(
-        matches!(entry, ModuleEntry::Def { .. }),
-        "expected ModuleEntry::Def"
-    );
-    assert_eq!(
-        entry.callable_got_slot(),
-        None,
-        "a freshly registered (NotDetermined) user fn has no callable slot"
-    );
-}
-
-// spec: design/arch/CLAUDE.md Decision 26 (Option B — variant-internal) —
-//       DefKind::PlatformEffect { scheduling_class } carries the class on
-//       the variant itself, not as a sibling field on ModuleEntry::Def.
-//       S69 Submission 36 promoted PlatformEffect from PrimitiveKind
-//       sub-discriminator to its own DefKind variant; the substantive
-//       Decision-26 invariant (variant-internal scheduling_class) is
-//       preserved, restated at the DefKind level.
-#[test]
-fn def_kind_platform_effect_carries_scheduling_class() {
-    // Build a platform-effect entry.
-    let entry = mk_def(
-        DefKind::PlatformEffect {
-            scheduling_class: crate::SchedulingClass::Commutative,
-            poll_shape: false,
-            got_slot: 0,
-            mode_summary: None,
-        },
-        None,
-    );
-
-    match entry {
-        ModuleEntry::Def { kind, .. } => match *kind {
-            DefKind::PlatformEffect {
-                scheduling_class, ..
-            } => {
-                assert_eq!(
-                    scheduling_class,
-                    crate::SchedulingClass::Commutative,
-                    "scheduling_class must be readable from the variant directly"
-                );
-            }
-            other => panic!("expected DefKind::PlatformEffect {{ .. }}, got {:?}", other),
-        },
-        other => panic!("expected ModuleEntry::Def, got {:?}", other),
-    }
-}
-
-// spec: design/arch/CLAUDE.md Sprint 66 Wave 0 amendment — `fn_ptr` field
-//       removed from `ModuleEntry::Def`; `scheduling_class` inside
-//       `DefKind::PlatformEffect` (S69 Submission 36 — promoted from
-//       PrimitiveKind sub-variant) continues to round-trip via serde
-//       (it is static manifest data, not a runtime pointer).
-#[test]
-fn platform_effect_scheduling_class_round_trips() {
-    // Explicit `<()>` annotation: `code: None` is polymorphic in `C`, so
-    // the inferred `C` would be ambiguous without context.
-    let entry: ModuleEntry = ModuleEntry::Def {
-        scheme: Scheme {
-            type_vars: vec![],
-            constraints: HashMap::new(),
-            ty: Type::Int,
-        },
-        visibility: Visibility::Public,
-        docstring: None,
-        param_names: vec![],
-        kind: Box::new(DefKind::PlatformEffect {
-            scheduling_class: crate::SchedulingClass::ResourceSerial,
-            poll_shape: true,
-            got_slot: 0,
-            mode_summary: None,
-        }),
-        callees: Vec::new(),
-        value_use: false,
-        trait_origin: None,
-        seq: 0,
-        ast: None,
-        codegen_view: None,
-        code: None,
-    };
-
-    let json = serde_json::to_string(&entry).expect("entry must serialize");
-
-    // No leaked runtime pointer field of any name.
-    assert!(
-        !json.contains("fn_ptr"),
-        "serialised form must not contain any `fn_ptr` field (the field has been removed entirely): {}",
-        json
-    );
-    // jit_name retired per S69 Submission 36 — symbol-table key IS the
-    // JIT linker name uniformly per src/CLAUDE.md §"JIT Symbol Names".
-    assert!(
-        !json.contains("jit_name"),
-        "serialised form must not contain `jit_name` (retired S69 Submission 36): {}",
-        json
-    );
-
-    let rt: ModuleEntry = serde_json::from_str(&json).expect("entry must deserialize");
-    match rt {
-        ModuleEntry::Def { kind, .. } => {
-            // scheduling_class (on the variant) MUST round-trip — it is static
-            // manifest data, not a runtime pointer.
-            match *kind {
-                DefKind::PlatformEffect {
-                    scheduling_class,
-                    poll_shape,
-                    ..
-                } => {
-                    assert_eq!(
-                        scheduling_class,
-                        crate::SchedulingClass::ResourceSerial,
-                        "scheduling_class inside DefKind::PlatformEffect must survive serde roundtrip"
-                    );
-                    // S94 R1 (FIXME 0457): poll_shape rides alongside and must
-                    // survive serde too — it is the backend's poll-vs-blocking
-                    // emission key.
-                    assert!(
-                        poll_shape,
-                        "poll_shape inside DefKind::PlatformEffect must survive serde roundtrip"
-                    );
-                }
-                other => panic!("expected DefKind::PlatformEffect, got {:?}", other),
-            }
-        }
-        other => panic!("expected ModuleEntry::Def, got {:?}", other),
-    }
-}
-
-// spec: design/arch/effect-concurrency.md §13 "S94 R1" (FIXME 0457) — the
-//       `poll_shape` field is `#[serde(default)]`, and its default polarity is
-//       chosen so a PRE-S94 cached `.meta.json` (whose serialized
-//       `PlatformEffect` has no `poll_shape` key) deserializes as a v6 BLOCKING
-//       effect (`poll_shape == false`). This is the cache-back-compat guard:
-//       old caches keep their byte-identical blocking behaviour, no rebuild
-//       forced by the field addition.
-#[test]
-fn platform_effect_poll_shape_defaults_to_false_for_pre_s94_cache() {
-    // A pre-S94 serialized DefKind::PlatformEffect: externally-tagged enum with
-    // the two fields that existed before the poll_shape addition. No poll_shape.
-    let legacy_json = r#"{"PlatformEffect":{"scheduling_class":"Commutative","got_slot":3}}"#;
-    let kind: DefKind =
-        serde_json::from_str(legacy_json).expect("pre-S94 PlatformEffect must still deserialize");
-    match kind {
-        DefKind::PlatformEffect {
-            scheduling_class,
-            poll_shape,
-            got_slot,
-            mode_summary,
-        } => {
-            assert_eq!(scheduling_class, crate::SchedulingClass::Commutative);
-            assert_eq!(got_slot, 3);
-            assert!(
-                !poll_shape,
-                "a pre-S94 cache (no poll_shape key) MUST default to blocking (false)"
-            );
-            assert!(
-                mode_summary.is_none(),
-                "a pre-S102 cache (no mode_summary key) MUST default to None (Decision-24)"
-            );
-        }
-        other => panic!("expected DefKind::PlatformEffect, got {:?}", other),
-    }
-}
-
-// spec: design/arch/test-discovery.md §6/§7 — DefKind::PrimitiveExtern is a
-//       payload-free unit variant (host-promised extern; key IS the ABI
-//       name; slot-less; code None). Pins the serde round-trip alongside
-//       the other DefKind variants. Post-S83 the slot-less invariant is
-//       structural — PrimitiveExtern carries no slot field — so
-//       callable_got_slot() is None by representation, not by a field value.
-#[test]
-fn def_kind_primitive_extern_round_trips() {
-    // Explicit `<()>` annotation: `code: None` is polymorphic in `C`.
-    let entry: ModuleEntry = ModuleEntry::Def {
-        scheme: Scheme {
-            type_vars: vec![],
-            constraints: HashMap::new(),
-            ty: Type::Int,
-        },
-        visibility: Visibility::Public,
-        docstring: None,
-        param_names: vec![],
-        kind: Box::new(DefKind::PrimitiveExtern),
-        callees: Vec::new(),
-        value_use: false,
-        trait_origin: None,
-        seq: 0,
-        ast: None,
-        codegen_view: None,
-        code: None,
-    };
-
-    // Slot-less is structural — there is no slot field on PrimitiveExtern.
-    assert_eq!(
-        entry.callable_got_slot(),
-        None,
-        "PrimitiveExtern is slot-less by representation"
-    );
-
-    let json = serde_json::to_string(&entry).expect("entry must serialize");
-    let rt: ModuleEntry = serde_json::from_str(&json).expect("entry must deserialize");
-    match rt {
-        ModuleEntry::Def { kind, .. } => {
-            assert!(
-                matches!(*kind, DefKind::PrimitiveExtern),
-                "kind must round-trip as PrimitiveExtern; got {:?}",
-                kind
-            );
-        }
-        other => panic!("expected ModuleEntry::Def, got {:?}", other),
-    }
-}
-
-// ---- Sprint 58 Wave 2 Step 5a — Decision 33: structural-decl fields on SymbolTable ----
-
-/// Build an `ImportSpec` with a unique span (used to verify source-order
-/// preservation in the no-deduplication and ordering tests).
-fn mk_import(module_path: &str, names: &[&str], span_start: u32) -> ImportSpec {
-    ImportSpec {
-        module_path: ModuleFullPath::from(module_path),
-        alias: None,
-        names: ImportNames::Specific(names.iter().map(|s| Symbol::from(*s)).collect()),
-        span: Span::new(span_start, span_start + 8),
-    }
-}
-
-/// Build an `ExportSpec` with a unique span.
-fn mk_export(module_path: &str, names: &[&str], span_start: u32) -> ExportSpec {
-    ExportSpec {
-        module_path: ModuleFullPath::from(module_path),
-        names: ImportNames::Specific(names.iter().map(|s| Symbol::from(*s)).collect()),
-        span: Span::new(span_start, span_start + 8),
-    }
-}
-
-/// Build a `PlatformSpec` with a unique span.
-fn mk_platform(name: &str, span_start: u32) -> PlatformSpec {
-    PlatformSpec {
-        name: name.to_string(),
-        span: Span::new(span_start, span_start + 8),
-    }
-}
-
-/// Build a `ModDecl` with a unique span.
-fn mk_mod(name: &str, visibility: Visibility, span_start: u32) -> ModDecl {
-    ModDecl {
-        name: ModuleName::from(name),
-        visibility,
-        inline_body: None,
-        span: Span::new(span_start, span_start + 8),
-    }
-}
-
-// spec: design/typecheck/ast-annotation.md §11.3 invariant 1 — source-order preservation
-//       (importing `[a [x]]` then `[b [y]]` records both in declaration order).
-#[test]
-fn symbol_table_imports_preserves_source_order() {
-    let mut st = SymbolTable::new(ModuleFullPath::from("user"));
-
-    // Push three imports in source order; spans are strictly increasing.
-    st.imports.push(mk_import("a", &["x"], 10));
-    st.imports.push(mk_import("b", &["y"], 30));
-    st.imports.push(mk_import("c", &["z"], 50));
-
-    assert_eq!(st.imports.len(), 3, "all three imports must be recorded");
-
-    // First-class structural shape: module paths in source order.
-    assert_eq!(
-        st.imports[0].module_path.as_ref(),
-        "a",
-        "imports[0] must be the first form pushed"
-    );
-    assert_eq!(st.imports[1].module_path.as_ref(), "b");
-    assert_eq!(st.imports[2].module_path.as_ref(), "c");
-
-    // Span ordering: insertion order matches source order.
-    assert!(
-        st.imports[0].span.start < st.imports[1].span.start,
-        "source-order invariant: imports[0].span.start < imports[1].span.start"
-    );
-    assert!(
-        st.imports[1].span.start < st.imports[2].span.start,
-        "source-order invariant: imports[1].span.start < imports[2].span.start"
-    );
-}
-
-// spec: design/typecheck/ast-annotation.md §11.3 invariant 2 — no deduplication
-//       (importing `[a [x y]]` then `[a [x]]` records both; writer MUST NOT dedup).
-#[test]
-fn symbol_table_imports_no_deduplication() {
-    let mut st = SymbolTable::new(ModuleFullPath::from("user"));
-
-    // Two imports from the same module, different name lists, distinct spans.
-    st.imports.push(mk_import("a", &["x", "y"], 10));
-    st.imports.push(mk_import("a", &["x"], 30));
-
-    assert_eq!(
-        st.imports.len(),
-        2,
-        "duplicate imports MUST NOT collapse — both spans needed for resolver diagnostics"
-    );
-
-    // Both retain their distinct spans (not collapsed to one).
-    assert_eq!(st.imports[0].span.start, 10);
-    assert_eq!(st.imports[1].span.start, 30);
-
-    // Same shape applies to structurally-identical pushes (different spans).
-    let mut st2 = SymbolTable::new(ModuleFullPath::from("user"));
-    st2.imports.push(mk_import("a", &["x"], 10));
-    st2.imports.push(mk_import("a", &["x"], 30));
-    assert_eq!(
-        st2.imports.len(),
-        2,
-        "structurally-identical imports with distinct spans MUST NOT collapse"
-    );
-}
-
-// spec: design/typecheck/ast-annotation.md §11.3 invariant 3 — no cross-module mixing
-//       (module A's `imports` does not contain B's imports).
-#[test]
-fn symbol_table_no_cross_module_mixing() {
-    // Two distinct symbol tables for modules A and B.
-    let mut a = SymbolTable::new(ModuleFullPath::from("user.a"));
-    let mut b = SymbolTable::new(ModuleFullPath::from("user.b"));
-
-    // Push to A only.
-    a.imports.push(mk_import("primitives", &["foo"], 10));
-    a.exports.push(mk_export("user.a", &["bar"], 20));
-    a.platforms.push(mk_platform("io", 30));
-    a.submodules.push(mk_mod("inner", Visibility::Public, 40));
-
-    // B is untouched.
-    assert_eq!(
-        b.imports.len(),
-        0,
-        "B's imports MUST be empty — A's writes do not leak"
-    );
-    assert_eq!(b.exports.len(), 0, "B's exports MUST be empty");
-    assert_eq!(b.platforms.len(), 0, "B's platforms MUST be empty");
-    assert_eq!(b.submodules.len(), 0, "B's submodules MUST be empty");
-
-    // Now push to B; A is unchanged.
-    b.imports.push(mk_import("primitives", &["baz"], 100));
-    assert_eq!(a.imports.len(), 1, "A's imports unchanged after B's write");
-    assert_eq!(b.imports.len(), 1);
-
-    // Distinct content across modules.
-    assert_ne!(
-        a.imports[0].span.start, b.imports[0].span.start,
-        "A and B carry independent records"
-    );
-}
-
-// spec: design/typecheck/ast-annotation.md §11.3 invariant 4 — coherence with
-//       ModuleEntry::Import chains is one-way (positive direction):
-//       every imports entry's specific names have a corresponding ModuleEntry::Import.
-//       The reverse is NOT required (implicit prelude injection is /int's call).
-#[test]
-fn symbol_table_imports_have_corresponding_module_entries_positive() {
-    let mut st = SymbolTable::new(ModuleFullPath::from("user"));
-
-    // Structural record: import [primitives [foo bar]].
-    st.imports
-        .push(mk_import("primitives", &["foo", "bar"], 10));
-
-    // Resolved effects: per-symbol Import entries from the same module.
-    st.insert(
-        Symbol::from("foo"),
-        ModuleEntry::Import {
-            source: FQSymbol {
-                module: ModuleFullPath::from("primitives"),
-                symbol: Symbol::from("foo"),
-            },
-            visibility: Visibility::Private,
-        },
-    );
-    st.insert(
-        Symbol::from("bar"),
-        ModuleEntry::Import {
-            source: FQSymbol {
-                module: ModuleFullPath::from("primitives"),
-                symbol: Symbol::from("bar"),
-            },
-            visibility: Visibility::Private,
-        },
-    );
-
-    // For every name in every Specific imports entry, a corresponding
-    // ModuleEntry::Import must exist whose source matches.
-    for spec in &st.imports {
-        if let ImportNames::Specific(syms) = &spec.names {
-            for sym in syms {
-                let entry = st.get(sym.as_ref()).unwrap_or_else(|| {
-                    panic!(
-                        "import [{} [{}]] has no corresponding ModuleEntry::Import for `{}`",
-                        spec.module_path.as_ref(),
-                        sym.as_ref(),
-                        sym.as_ref()
-                    )
-                });
-                match entry {
-                    ModuleEntry::Import { source, .. } => {
-                        assert_eq!(
-                            source.module, spec.module_path,
-                            "ModuleEntry::Import source module must match imports entry"
-                        );
-                        assert_eq!(
-                            source.symbol.as_ref(),
-                            sym.as_ref(),
-                            "ModuleEntry::Import source symbol must match imports entry"
-                        );
-                    }
-                    other => panic!(
-                        "expected ModuleEntry::Import for `{}`, got {:?}",
-                        sym.as_ref(),
-                        other
-                    ),
-                }
-            }
-        }
-    }
-
-    // Reverse direction (every ModuleEntry::Import has an imports entry)
-    // is /int's Wave 2b design call per §11.3 invariant 4 — NOT enforced
-    // here. Implicit prelude injection produces ModuleEntry::Import chains
-    // without a structural imports entry, and that may be the chosen
-    // behaviour. /int picks based on resolver-diagnostic quality.
-}
-
-// spec: design/typecheck/ast-annotation.md §11.3 invariant 5 — read-only after
-//       typecheck completes. There is no setter API for these fields; they are
-//       written via direct field access by the worker (per §11.2). This test
-//       is the documented-sense check: SymbolTable exposes no `set_imports`
-//       /`add_import` / `clear_imports`-style mutator method that would imply
-//       a public mutation protocol post-typecheck.
-#[test]
-fn symbol_table_structural_fields_have_no_setter_api() {
-    // Compile-time enforcement: this test compiles only because no such
-    // methods exist. The presence of any of the following inherent methods
-    // would indicate an unintended mutation API and SHOULD break the build:
-    //
-    //   st.set_imports(...)
-    //   st.add_import(...)
-    //   st.clear_imports()
-    //   st.set_exports(...)
-    //   st.set_platforms(...)
-    //   st.set_submodules(...)
-    //
-    // The fields are `pub`, so the worker writes via `st.imports.push(spec)`
-    // directly — that is the documented writer protocol (§11.2). No setter
-    // method abstraction is introduced because doing so would imply the
-    // mutation is part of the type's public API; the actual contract is
-    // "writer-only during the form-by-form classification pass, frozen
-    // after `tc.check_program(...)` returns" (§11.3 invariant 5), which
-    // is enforced at the call-site discipline level (in `/int`'s
-    // `src/worker.rs`), not at the type level.
-    //
-    // Assert nothing additional here — the test passes by compilation.
-    // Constructor returns empty fields, confirming the only mutation path
-    // is direct field-access by the writer.
-    let st = SymbolTable::new(ModuleFullPath::from("user"));
-    assert!(
-        st.imports.is_empty(),
-        "fresh SymbolTable starts with empty imports"
-    );
-    assert!(
-        st.exports.is_empty(),
-        "fresh SymbolTable starts with empty exports"
-    );
-    assert!(
-        st.platforms.is_empty(),
-        "fresh SymbolTable starts with empty platforms"
-    );
-    assert!(
-        st.submodules.is_empty(),
-        "fresh SymbolTable starts with empty submodules"
-    );
-}
-
-// spec: design/typecheck/ast-annotation.md §11.3 invariant 6 — serde round-trip
-//       identity. A SymbolTable serialised → deserialised yields structurally
-//       identical fields modulo runtime-only fields (`got`, `code`,
-//       `linker`).
-#[test]
-fn symbol_table_serde_round_trip_with_structural_decls() {
-    let mut st = SymbolTable::new(ModuleFullPath::from("user.module"));
-    st.schema_version = 1;
-
-    // Populate all four structural fields with non-trivial content.
-    st.imports
-        .push(mk_import("primitives", &["foo", "bar"], 10));
-    st.imports.push(mk_import("user.helper", &["baz"], 30));
-
-    st.exports
-        .push(mk_export("user.module", &["public_fn"], 50));
-
-    st.platforms.push(mk_platform("stdio", 70));
-    st.platforms.push(mk_platform("test_capture", 90));
-
-    st.submodules
-        .push(mk_mod("public_child", Visibility::Public, 110));
-    st.submodules
-        .push(mk_mod("private_child", Visibility::Private, 130));
-
-    // Also add one Def entry to confirm symbols round-trip alongside.
-    st.insert(
-        Symbol::from("entry"),
-        mk_def(
-            DefKind::UserFn {
-                fn_state: UserFnState::NotDetermined,
-            },
-            Some(trivial_variant("entry")),
-        ),
-    );
-
-    // Round-trip via serde-JSON.
-    let json = serde_json::to_string(&st).expect("SymbolTable must serialize");
-    let rt: SymbolTable = serde_json::from_str(&json).expect("SymbolTable must deserialize");
-
-    // Structural identity on the four new fields.
-    assert_eq!(rt.imports.len(), 2, "imports.len() must round-trip");
-    assert_eq!(rt.imports[0].module_path.as_ref(), "primitives");
-    assert_eq!(rt.imports[0].span.start, 10);
-    assert_eq!(rt.imports[1].module_path.as_ref(), "user.helper");
-    assert_eq!(rt.imports[1].span.start, 30);
-
-    assert_eq!(rt.exports.len(), 1, "exports.len() must round-trip");
-    assert_eq!(rt.exports[0].module_path.as_ref(), "user.module");
-    assert_eq!(rt.exports[0].span.start, 50);
-
-    assert_eq!(rt.platforms.len(), 2, "platforms.len() must round-trip");
-    assert_eq!(rt.platforms[0].name, "stdio");
-    assert_eq!(rt.platforms[1].name, "test_capture");
-    assert_eq!(rt.platforms[0].span.start, 70);
-
-    assert_eq!(rt.submodules.len(), 2, "submodules.len() must round-trip");
-    assert_eq!(rt.submodules[0].name.as_ref(), "public_child");
-    assert_eq!(
-        rt.submodules[0].visibility,
-        Visibility::Public,
-        "visibility must round-trip (Public)"
-    );
-    assert_eq!(rt.submodules[1].name.as_ref(), "private_child");
-    assert_eq!(
-        rt.submodules[1].visibility,
         Visibility::Private,
-        "visibility must round-trip (Private)"
-    );
-
-    // Schema version round-trips.
-    assert_eq!(rt.schema_version, 1, "schema_version must round-trip");
-
-    // Symbols round-trip (sanity check that adding new fields didn't
-    // disturb the existing serde shape).
-    assert!(rt.get("entry").is_some(), "Def entry must round-trip");
-
-    // Source ordering invariant survives the round-trip.
-    assert!(
-        rt.imports[0].span.start < rt.imports[1].span.start,
-        "source-order invariant survives serde round-trip"
-    );
-}
-
-// spec: design/arch/CLAUDE.md Decision 34 + trait-impl-cache-carrier.md §6 —
-//       `schema_version` defaults to 0 when the field is absent (the loader
-//       compares to `CACHE_SCHEMA_VERSION` and rejects mismatches as stale),
-//       but a PRE-CARRIER sidecar (no `written_trait_impls`, S119 schema < 24)
-//       now fails AT PARSE: the carrier field has deliberately NO
-//       #[serde(default)], so wholesale invalidation happens at the serde
-//       boundary — a default-empty read would silently reproduce the 0869
-//       defect.
-#[test]
-fn symbol_table_schema_version_defaults_to_zero_for_legacy_cache() {
-    // The Sprint-57-era shape (no schema_version, no structural-decl Vecs,
-    // no carrier field) is a HARD serde error post-S119 — rejected before any
-    // version comparison can even run.
-    let legacy_json = r#"{
-        "path": "user",
-        "symbols": {},
-        "next_got_slot": 0
-    }"#;
-    assert!(
-        serde_json::from_str::<SymbolTable>(legacy_json).is_err(),
-        "a pre-carrier sidecar must fail at parse (wholesale invalidation)"
-    );
-
-    // With the required carrier field present, the #[serde(default)] fields
-    // (schema_version + the four structural-decl Vecs) still default — the
-    // Decision-34 version-mismatch path for sidecars that ARE parseable.
-    let carrier_json = r#"{
-        "path": "user",
-        "symbols": {},
-        "next_got_slot": 0,
-        "written_trait_impls": []
-    }"#;
-    let rt: SymbolTable = serde_json::from_str(carrier_json)
-        .expect("carrier-bearing SymbolTable JSON must deserialize cleanly");
-    assert_eq!(
-        rt.schema_version, 0,
-        "schema_version MUST default to 0 when absent — the loader detects \
-         the mismatch against CACHE_SCHEMA_VERSION and rejects as stale"
-    );
-    assert!(rt.imports.is_empty(), "missing `imports` defaults to empty");
-    assert!(rt.exports.is_empty(), "missing `exports` defaults to empty");
-    assert!(rt.platforms.is_empty(), "missing `platforms` defaults to empty");
-    assert!(
-        rt.submodules.is_empty(),
-        "missing `submodules` defaults to empty"
-    );
-}
-
-// spec: design/typecheck/ast-annotation.md §11.3 invariant 2 — no deduplication
-//       (same shape applies to exports as to imports).
-#[test]
-fn symbol_table_exports_no_deduplication() {
-    let mut st = SymbolTable::new(ModuleFullPath::from("user"));
-
-    st.exports.push(mk_export("user", &["foo"], 10));
-    st.exports.push(mk_export("user", &["foo"], 30));
-
-    assert_eq!(
-        st.exports.len(),
-        2,
-        "duplicate exports MUST NOT collapse (parallel to imports invariant)"
-    );
-    assert_eq!(st.exports[0].span.start, 10);
-    assert_eq!(st.exports[1].span.start, 30);
-}
-
-// ---- Sprint 58 Wave 3a — Decision 32: CodeStore / LinkerStore marker traits ----
-
-// spec: design/typecheck/ast-annotation.md §12.1 + Decision 32 —
-//       SymbolTable<C: CodeStore = (), L: LinkerStore = ()> defaults
-//       resolve to SymbolTable<(), ()> when constructed without args.
-//       Confirms the "default-(): propagation" invariant: typecheck-side
-//       call sites that name `SymbolTable` (no args) get the unit
-//       parameterisation and the `code: Option<()>` / `linker: Option<()>`
-//       shape compiles cleanly.
-#[test]
-fn symbol_table_default_generics_resolve_to_unit() {
-    // Construct via the inherent `SymbolTable<(), ()>::new(...)` path
-    // (the only one defined; see the inherent-impl rationale on
-    // `impl SymbolTable<(), ()>` for why `::new` lives there rather
-    // than on the generic impl).
-    let st = SymbolTable::new(ModuleFullPath::from("user"));
-
-    // Annotate explicitly to assert the inferred parameterisation is
-    // <(), ()>. The `:` binds a fresh local with the spelled type;
-    // the assignment from `st` would fail to compile if the parameters
-    // were anything other than <(), ()>.
-    let _typed: SymbolTable<(), ()> = st;
-
-    // The four Vec<…> fields and the linker / schema_version fields
-    // are all populated with their defaults by `::new`. The `linker`
-    // field is `Option<()>` (a meaningless tag from typecheck's POV);
-    // confirm it starts as None.
-    let st: SymbolTable<(), ()> = SymbolTable::new(ModuleFullPath::from("user"));
-    assert!(
-        st.linker.is_none(),
-        "fresh SymbolTable<(), ()> must have linker: None (Wave 3a default)"
-    );
-    // Sanity: the structural-decl Vec<…> fields are empty too (Step 5a
-    // invariant; reasserted here to prove parameterisation didn't
-    // disturb the existing field set).
-    assert!(st.imports.is_empty());
-    assert!(st.exports.is_empty());
-    assert!(st.platforms.is_empty());
-    assert!(st.submodules.is_empty());
-    // `code` field shape exists on every Def entry; it is Option<()>
-    // for typecheck-side fixtures and would be Option<Code> for
-    // integration-layer fixtures (Wave 3b instantiates `C = Code`).
-}
-
-// spec: design/typecheck/ast-annotation.md §12.2 + Decision 32 —
-//       The blanket `impl<T: Send + Sync + 'static> CodeStore for T` /
-//       `impl<T: Send + Sync + 'static> LinkerStore for T` makes both
-//       traits trivially satisfied by `()` (zero-sized, Send + Sync +
-//       'static) and by other common types the integration layer
-//       might choose. Confirms the "no per-call-site impl line"
-//       ergonomic property of the empty-marker design (Decision 32
-//       rationale).
-#[test]
-fn code_store_and_linker_store_blanket_impl_holds() {
-    // Compile-time check: the function below requires its parameter
-    // type to satisfy `CodeStore`. The fact that this compiles is the
-    // assertion — calling it with `()` and several other plausible
-    // integration-layer concrete types proves the blanket impl
-    // applies.
-    fn _requires_code_store<T: CodeStore>() {}
-    fn _requires_linker_store<T: LinkerStore>() {}
-
-    _requires_code_store::<()>();
-    _requires_linker_store::<()>();
-
-    // Common Arc-wrapped shapes that the integration layer may use
-    // for `C` (per Decision 35: `Arc<Jit>`-or-`Code`-enum) and `L`
-    // (per Decision 35: `Arc<Linker>` if `L` is reactivated). Use
-    // `Arc<()>` and `Arc<u64>` as stand-ins for the integration
-    // layer's concrete shapes — they must satisfy the bound for the
-    // Wave 3b instantiation to compile. `i64` exercises the simplest
-    // primitive case (the §G.12 unit test for `module_entry_def_code_field_is_optional_c`
-    // uses `i64` synthetically).
-    _requires_code_store::<std::sync::Arc<()>>();
-    _requires_code_store::<std::sync::Arc<u64>>();
-    _requires_code_store::<i64>();
-    _requires_code_store::<u64>();
-    _requires_linker_store::<std::sync::Arc<()>>();
-    _requires_linker_store::<std::sync::Arc<u64>>();
-
-    // (Sprint 58 Wave 3b: the previous `_requires_code_store::<crate::Code>()`
-    // assertion targeted the now-dissolved `cranelisp_types::Code` struct.
-    // The replacement test lives in `src/code.rs::tests` —
-    // `session_symbol_table_concrete_type_choice` — and asserts
-    // `_requires_code_store::<src::code::Code>()` against the integration
-    // layer's enum, the actual concrete type for `C`. This module's
-    // tests stay strictly within `cranelisp-types`'s scope and exercise
-    // only synthetic / `()`-flavoured shapes.)
-}
-
-// spec: design/typecheck/ast-annotation.md §12.4 + Decision 32 + §G.12
-//       (`module_entry_def_code_field_is_optional_c`) —
-//       `ModuleEntry<C>` parameterises the `code: Option<C>` field over
-//       the `C: CodeStore` parameter. With a synthetic `C = i64`,
-//       constructing `Def { code: Some(42i64), .. }` must compile and
-//       round-trip via serde with `code` skipped (the serialised JSON
-//       contains no `code` field; deserialise produces `code: None`
-//       regardless of the source `C`).
-#[test]
-fn module_entry_def_code_field_is_optional_c() {
-    // Synthetic `C = i64`: any `Send + Sync + 'static` type satisfies
-    // CodeStore via the blanket impl. The point of this test is to
-    // exercise the `Option<C>` parameterisation with a `C` that is
-    // NOT `Code` and NOT `()` — proving the field is genuinely
-    // generic over the parameter, not specialised to either default.
-    let entry: ModuleEntry<i64> = ModuleEntry::Def {
-        scheme: Scheme {
-            type_vars: vec![],
-            constraints: HashMap::new(),
-            ty: Type::Int,
-        },
-        visibility: Visibility::Public,
-        docstring: None,
-        param_names: vec![],
-        kind: Box::new(DefKind::UserFn {
-            fn_state: UserFnState::NotDetermined,
-        }),
-        callees: Vec::new(),
-        value_use: false,
-        trait_origin: None,
-        seq: 0,
-        ast: Some(trivial_variant("synthetic")),
-        codegen_view: None,
-        code: Some(42i64),
-    };
-
-    // The `code` field carries the synthetic `C = i64` value.
-    match &entry {
-        ModuleEntry::Def { code, .. } => {
-            assert_eq!(
-                *code,
-                Some(42i64),
-                "code field must hold the constructed Some(42i64)"
-            );
-        }
-        other => panic!("expected ModuleEntry::Def, got {:?}", other),
-    }
-
-    // Serde discipline: `code` is `#[serde(skip)]`, so the serialised
-    // shape MUST NOT contain a `code` field, and the deserialised
-    // entry MUST have `code: None` regardless of the source `C`. Use
-    // the `()` flavour for the deserialise target (typecheck-side
-    // view) to confirm cross-flavour serde compatibility — the
-    // serialised shape is identical because `code` never appears in
-    // the JSON.
-    let json = serde_json::to_string(&entry).expect("ModuleEntry<i64> must serialize");
-    assert!(
-        !json.contains("\"code\""),
-        "serialised form must not contain the `code` field (it is #[serde(skip)]): {}",
-        json
-    );
-
-    let rt: ModuleEntry<()> = serde_json::from_str(&json)
-        .expect("ModuleEntry<()> must deserialize from ModuleEntry<i64>'s JSON");
-    match rt {
-        ModuleEntry::Def { code, ast, .. } => {
-            // The deserialised `code` is `None::<()>` — the source
-            // `Some(42i64)` did not survive (correctly) because the
-            // field is skipped.
-            assert!(
-                code.is_none(),
-                "deserialised ModuleEntry<()>::Def must have code: None (serde(skip)); got {:?}",
-                code
-            );
-            // ast survives the round-trip — only the `code` field is
-            // skipped (the prior `fn_ptr` field has been removed entirely
-            // per the Sprint 66 Wave 0 amendment).
-            assert!(ast.is_some(), "ast must survive the round-trip");
-        }
-        other => panic!("expected ModuleEntry::Def, got {:?}", other),
-    }
-}
-
-// ---- Tier-1 DefBuilder (ModuleEntry::def) ----
-
-fn mono_scheme(ty: Type) -> Scheme {
-    Scheme {
-        type_vars: vec![],
-        constraints: HashMap::new(),
-        ty,
-    }
-}
-
-// spec: design/arch/fixmes/0241 — Tier-1 Def constructor: defaults
-#[test]
-fn def_builder_defaults() {
-    // Use a slot-less kind so the builder's field defaults (not a kind
-    // slot) are the subject — the GOT slot now rides on the kind (S83), so
-    // there is no flat `got_slot` field to default.
-    let entry: ModuleEntry = ModuleEntry::def(
-        mono_scheme(Type::Int),
-        DefKind::UserFn {
-            fn_state: UserFnState::NotDetermined,
-        },
     )
-    .build();
-    // No callable slot by default (NotDetermined is slot-less).
-    assert_eq!(
-        entry.callable_got_slot(),
-        None,
-        "default builder yields no callable slot"
-    );
-    match entry {
-        ModuleEntry::Def {
+}
+
+fn declare(table: &mut SymbolTable, name: &str, scheme: Scheme, origin: CallableOrigin) {
+    table
+        .declare(
+            Symbol::from(name),
             scheme,
-            visibility,
-            docstring,
-            param_names,
-            kind,
-            callees,
-            value_use,
-            trait_origin,
-            seq,
-            ast,
-            codegen_view,
-            code,
-        } => {
-            assert_eq!(scheme.ty, Type::Int);
-            assert_eq!(
-                visibility,
-                Visibility::Public,
-                "default visibility is Public"
-            );
-            assert!(docstring.is_none());
-            assert!(param_names.is_empty());
-            assert!(matches!(
-                *kind,
-                DefKind::UserFn {
-                    fn_state: UserFnState::NotDetermined
-                }
-            ));
-            assert!(callees.is_empty(), "callees defaulted, never settable");
-            assert!(
-                !value_use,
-                "value_use defaulted false, never settable at build"
-            );
-            assert!(trait_origin.is_none());
-            assert_eq!(seq, 0);
-            assert!(ast.is_none());
-            assert!(
-                codegen_view.is_none(),
-                "codegen_view defaulted, never settable via build()"
-            );
-            assert!(code.is_none(), "code defaulted, never settable");
-        }
-        other => panic!("expected Def, got {:?}", other),
-    }
+            Vec::new(),
+            None,
+            0,
+            origin,
+            Visibility::Public,
+        )
+        .unwrap();
 }
 
-// spec: design/arch/fixmes/0241 — Tier-1 Def constructor: overrides
-#[test]
-fn def_builder_overrides() {
-    let trait_name = FQTraitName::new(ModuleFullPath::from("core.num"), TraitName::from("Num"));
-    // The GOT slot rides on the kind (S83): a concrete callable carries it
-    // via `UserFnState::Concrete { got_slot }`. The builder has no
-    // `.got_slot(_)` setter — the slot is part of the `kind` value passed in.
-    let entry: ModuleEntry = ModuleEntry::def(
-        mono_scheme(Type::Bool),
-        DefKind::UserFn {
-            fn_state: UserFnState::Concrete {
-                got_slot: 7,
-                mode_summary: None,
-            },
+fn binding_target(module: &str, name: &str) -> CallableTarget {
+    CallableTarget::Binding(FQSymbol {
+        module: ModuleFullPath::from(module),
+        symbol: Symbol::from(name),
+    })
+}
+
+fn overload_target(module: &str, name: &str, ordinal: usize) -> CallableTarget {
+    CallableTarget::OverloadArm {
+        owner: FQSymbol {
+            module: ModuleFullPath::from(module),
+            symbol: Symbol::from(name),
         },
-    )
-    .visibility(Visibility::Private)
-    .docstring("doc")
-    .param_names(vec![Symbol::from("a"), Symbol::from("b")])
-    .trait_origin(trait_name.clone())
-    .seq(42)
-    .ast(trivial_variant("f"))
-    .build();
-    assert_eq!(
-        entry.callable_got_slot(),
-        Some(7),
-        "concrete callable slot rides on the kind"
-    );
-    match entry {
-        ModuleEntry::Def {
-            visibility,
-            docstring,
-            param_names,
-            trait_origin,
-            seq,
-            ast,
-            ..
-        } => {
-            assert_eq!(visibility, Visibility::Private);
-            assert_eq!(docstring.as_deref(), Some("doc"));
-            assert_eq!(param_names, vec![Symbol::from("a"), Symbol::from("b")]);
-            assert_eq!(trait_origin, Some(trait_name));
-            assert_eq!(seq, 42);
-            assert!(ast.is_some());
-        }
-        other => panic!("expected Def, got {:?}", other),
+        arm: CallableArmId::from_ordinal(ordinal).unwrap(),
     }
 }
 
-// spec: design/arch/fixmes/0241 — From<DefBuilder> conversion (terminal)
-#[test]
-fn def_builder_from_conversion() {
-    let entry: ModuleEntry = ModuleEntry::def(mono_scheme(Type::Int), DefKind::primitive(0)).into();
-    assert!(matches!(entry, ModuleEntry::Def { .. }));
-}
-
-// =============================================================================
-// S102 CS-A — ownership carrier accessors + the FIXME-0476 PrimitiveBody shape
-// (design/arch/ownership-inference.md §3.3;
-//  design/typecheck/ownership-inference.md §13.1 items 6, 10, 11)
-// =============================================================================
-
-// spec: design/arch/fixmes/0476 §Ruling — an Inline primitive is slot-less BY
-//       CONSTRUCTION; callable_got_slot() answers None structurally, and
-//       is_callable_target() still answers true (the resolution stop
-//       condition covers slot-dispatched AND inline-dispatched kinds).
-#[test]
-fn inline_primitive_is_slotless_but_callable_target() {
-    let inline: ModuleEntry = ModuleEntry::def(
-        mono_scheme(Type::Int),
-        DefKind::Primitive {
-            body: PrimitiveBody::Inline,
-            mode_summary: None,
+fn macro_target(module: &str, name: &str, ordinal: usize) -> CallableTarget {
+    CallableTarget::MacroClause {
+        owner: FQSymbol {
+            module: ModuleFullPath::from(module),
+            symbol: Symbol::from(name),
         },
-    )
-    .build();
-    assert_eq!(
-        inline.callable_got_slot(),
-        None,
-        "Inline carries no slot by construction"
-    );
-    assert!(
-        inline.is_callable_target(),
-        "Inline IS a dispatchable call target (inline emission)"
-    );
-
-    let ext: ModuleEntry = ModuleEntry::def(mono_scheme(Type::Int), DefKind::primitive(5)).build();
-    assert_eq!(ext.callable_got_slot(), Some(5));
-    assert!(ext.is_callable_target());
-}
-
-// spec: design/arch/fixmes/0476 §Ruling — is_callable_target() preserves the
-//       negative half of the stop condition: non-callable kinds are NOT
-//       callable targets (shadowing precedence unchanged).
-#[test]
-fn non_callable_kinds_are_not_callable_targets() {
-    let template: ModuleEntry = ModuleEntry::def(
-        mono_scheme(Type::Int),
-        DefKind::UserFn {
-            fn_state: UserFnState::NotDetermined,
-        },
-    )
-    .build();
-    assert!(!template.is_callable_target());
-
-    let ext_prim: ModuleEntry =
-        ModuleEntry::def(mono_scheme(Type::Int), DefKind::PrimitiveExtern).build();
-    assert!(
-        !ext_prim.is_callable_target(),
-        "PrimitiveExtern dispatches by-name, never a target"
-    );
-}
-
-// spec: design/typecheck/ownership-inference.md §13.1 item 6 — uniform
-//       mode_summary() read + set_mode_summary() did-write mutator on the
-//       callable kinds; non-callable kinds answer None / false (no summary
-//       slot by construction).
-#[test]
-fn mode_summary_accessor_and_mutator_cover_callable_kinds() {
-    use crate::{Mode, ModeSummary};
-    let summary = ModeSummary {
-        param_modes: vec![Mode::Borrowed],
-        ..Default::default()
-    };
-
-    // UserFn Concrete: writable, readable.
-    let mut concrete: ModuleEntry = ModuleEntry::def(
-        mono_scheme(Type::Int),
-        DefKind::UserFn {
-            fn_state: UserFnState::Concrete {
-                got_slot: 1,
-                mode_summary: None,
-            },
-        },
-    )
-    .build();
-    assert!(
-        concrete.mode_summary().is_none(),
-        "pre-analysis entry carries no summary"
-    );
-    assert!(
-        concrete.set_mode_summary(Some(summary.clone())),
-        "Concrete is a publication target"
-    );
-    assert_eq!(concrete.mode_summary(), Some(&summary));
-
-    // Primitive: the SAME slot carries declared facts (item 7 — no separate type).
-    let mut prim: ModuleEntry =
-        ModuleEntry::def(mono_scheme(Type::Int), DefKind::primitive(0)).build();
-    assert!(prim.set_mode_summary(Some(summary.clone())));
-    assert_eq!(prim.mode_summary(), Some(&summary));
-
-    // Non-callable kind: did-not-write indicator, still None.
-    let mut nd: ModuleEntry = ModuleEntry::def(
-        mono_scheme(Type::Int),
-        DefKind::UserFn {
-            fn_state: UserFnState::NotDetermined,
-        },
-    )
-    .build();
-    assert!(
-        !nd.set_mode_summary(Some(summary)),
-        "no summary slot on non-callable kinds"
-    );
-    assert!(nd.mode_summary().is_none());
-}
-
-// spec: design/typecheck/ownership-inference.md §13.1 item 10 /
-//       §8.3 — the per-entry value-use mark: builder-defaulted false,
-//       pass-written via set_value_use (did-write for Def entries only).
-#[test]
-fn value_use_mark_defaults_false_and_is_pass_written() {
-    let mut entry: ModuleEntry =
-        ModuleEntry::def(mono_scheme(Type::Int), DefKind::primitive(0)).build();
-    assert!(
-        !entry.value_use(),
-        "builder default is false (pre-analysis point)"
-    );
-    assert!(entry.set_value_use(true));
-    assert!(entry.value_use());
-
-    let mut imp: ModuleEntry = ModuleEntry::Import {
-        source: FQSymbol {
-            module: ModuleFullPath::from("m"),
-            symbol: Symbol::from("x"),
-        },
-        visibility: Visibility::Public,
-    };
-    assert!(!imp.set_value_use(true), "non-Def entries carry no mark");
-    assert!(!imp.value_use());
-}
-
-// spec: design/arch/ownership-inference.md §3.3 — serde strict-additivity: a
-//       pre-S102 Primitive JSON (bare got_slot shape) does NOT deserialize
-//       against the reshaped variant; the CACHE_SCHEMA_VERSION 11→12 bump is
-//       what rejects such caches wholesale (this pins that the reshape is
-//       non-additive, i.e. the bump is mandatory), while the NEW shape with
-//       absent mode_summary/borrowed_sibling_slot defaults conservatively.
-#[test]
-fn primitive_reshape_serde_shape() {
-    // Old v11 shape must NOT silently deserialize (field renamed to `body`).
-    let legacy = r#"{"Primitive":{"got_slot":3}}"#;
-    assert!(
-        serde_json::from_str::<DefKind>(legacy).is_err(),
-        "pre-S102 Primitive shape must not deserialize — schema bump covers it"
-    );
-    // New shape with only the mandatory Extern slot: sibling + summary default.
-    let v12 = r#"{"Primitive":{"body":{"Extern":{"got_slot":3}}}}"#;
-    match serde_json::from_str::<DefKind>(v12).expect("v12 shape deserializes") {
-        DefKind::Primitive {
-            body:
-                PrimitiveBody::Extern {
-                    got_slot,
-                    borrowed_sibling_slot,
-                },
-            mode_summary,
-        } => {
-            assert_eq!(got_slot, 3);
-            assert!(
-                borrowed_sibling_slot.is_none(),
-                "absent sibling defaults None"
-            );
-            assert!(
-                mode_summary.is_none(),
-                "absent declared facts default None (Decision-24)"
-            );
-        }
-        other => panic!("expected Extern Primitive, got {other:?}"),
+        clause: CallableArmId::from_ordinal(ordinal).unwrap(),
     }
 }
 
-// ---- S111 R7 — GOT slot exhaustion is a diagnosed error, not release UB ----
-
-// spec: 12-runtime §12.2 — GOT exhaustion boundary (GE-1)
-// The GOT slab is a fixed `GOT_TABLE_SIZE` array; `allocate_got_slot` hands out
-// `Ok(0)..=Ok(GOT_TABLE_SIZE-1)` and then refuses with `Err(GotExhausted)` — the
-// diagnosed replacement for the former unchecked `+= 1` (release slot-1024 UB).
-// Failure is idempotent: `next_got_slot` is NOT advanced, so a second call fails
-// identically.
-#[test]
-fn got_slot_exhaustion_boundary() {
-    let mut st = SymbolTable::new(ModuleFullPath::from("user"));
-
-    // 1024 consecutive allocations succeed with the monotone slot indices.
-    for expected in 0..crate::GOT_TABLE_SIZE {
-        match st.allocate_got_slot() {
-            Ok(slot) => assert_eq!(slot, expected, "slot {expected} must allocate in order"),
-            Err(e) => panic!("slot {expected} must be Ok, got {e:?}"),
-        }
-    }
-
-    // The 1025th call is refused, carrying the exhausted module.
-    let first = st.allocate_got_slot();
-    match &first {
-        Err(GotExhausted { module }) => {
-            assert_eq!(module, &ModuleFullPath::from("user"), "carries the module");
-        }
-        Ok(slot) => panic!("slot {slot} past the slab bound must be Err(GotExhausted)"),
-    }
-
-    // Idempotent failure — `next_got_slot` was not advanced, so a second call
-    // fails identically (stable, repeatable; no bump on failure).
-    let second = st.allocate_got_slot();
-    assert_eq!(first, second, "exhaustion failure is stable and repeatable");
-    assert_eq!(
-        st.next_got_slot,
-        crate::GOT_TABLE_SIZE,
-        "next_got_slot must NOT advance past the bound on failure"
-    );
+fn concrete_arm_draft(ty: Type, body_name: &str) -> CallableArmDraft {
+    let mut body_view = view();
+    body_view.name = Symbol::from(body_name);
+    CallableArmDraft::concrete_body(scheme(ty), Vec::new(), ast(), body_view, Vec::new())
 }
 
-// spec: 12-runtime §12.2 — GOT exhaustion diagnostic content (GE-2)
-// The error names the module AND the capacity, so the caller-mapped compile
-// error is self-explanatory without re-deriving either.
-#[test]
-fn got_slot_exhaustion_diagnostic_names_module_and_capacity() {
-    let mut st = SymbolTable::new(ModuleFullPath::from("proj.widget"));
-    for _ in 0..crate::GOT_TABLE_SIZE {
-        st.allocate_got_slot().expect("within-bounds allocation");
-    }
-    let err = st.allocate_got_slot().expect_err("must be exhausted");
-    let text = err.to_string();
-    assert!(
-        text.contains("proj.widget"),
-        "diagnostic names the module: {text}"
-    );
-    assert!(
-        text.contains(&crate::GOT_TABLE_SIZE.to_string()),
-        "diagnostic names the capacity: {text}"
-    );
-}
-
-// spec: appendix-c-nfr §C.1.4 — per-type drop glue must have a stable,
-// collision-free callable identity. Implementation lock: design/backend/
-// transitive-drop-glue.md §3.1.
-#[test]
-fn drop_glue_names_are_injective_and_linker_safe() {
-    let m = ModuleFullPath::from("user.mod");
-    let n = FQTypeName::new(ModuleFullPath::from("p"), TypeName::from("Vec"));
-    let cases = [
-        drop_glue_symbol_name(&m, &ConcreteType::Int),
-        drop_glue_symbol_name(&m, &ConcreteType::Bool),
-        drop_glue_symbol_name(&m, &ConcreteType::ADT(n.clone(), vec![ConcreteType::Int])),
-        drop_glue_symbol_name(&m, &ConcreteType::ADT(n, vec![ConcreteType::String])),
-        drop_glue_symbol_name(
-            &m,
-            &ConcreteType::Fn(vec![ConcreteType::Int], Box::new(ConcreteType::Bool)),
-        ),
-        drop_glue_symbol_name(&ModuleFullPath::from("user_mod"), &ConcreteType::Int),
-    ];
-    let unique = cases
-        .iter()
-        .map(AsRef::<str>::as_ref)
-        .collect::<std::collections::HashSet<_>>();
-    assert_eq!(unique.len(), cases.len());
-    assert!(
-        cases
-            .iter()
-            .all(|n| n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
-    );
-}
-
-// spec: appendix-c-nfr §C.1.4 — recursive field structure determines the
-// per-type drop glue. Implementation lock: design/backend/
-// transitive-drop-glue.md §3.2.
-#[test]
-fn drop_glue_name_preserves_nested_concrete_structure() {
-    let node = FQTypeName::new(ModuleFullPath::from("tree"), TypeName::from("Node"));
-    let shallow = ConcreteType::ADT(node.clone(), vec![ConcreteType::String]);
-    let deep = ConcreteType::ADT(
-        node.clone(),
-        vec![ConcreteType::ADT(node, vec![shallow.clone()])],
-    );
-    let m = ModuleFullPath::from("emit");
-    assert_ne!(
-        drop_glue_symbol_name(&m, &shallow),
-        drop_glue_symbol_name(&m, &deep)
-    );
-    assert_eq!(
-        drop_glue_symbol_name(&m, &deep),
-        drop_glue_symbol_name(&m, &deep)
-    );
-}
-
-// spec: appendix-c-nfr §C.1.4 — distinct concrete types require distinct
-// per-type drop glue. Implementation lock: design/backend/
-// transitive-drop-glue.md §3.1.
-#[test]
-fn drop_glue_name_length_prefixes_identifier_bytes() {
-    let a = ConcreteType::ADT(
-        FQTypeName::new(ModuleFullPath::from("a/b"), TypeName::from("C_D")),
-        vec![],
-    );
-    let b = ConcreteType::ADT(
-        FQTypeName::new(ModuleFullPath::from("a"), TypeName::from("b/C_D")),
-        vec![],
-    );
-    assert_ne!(
-        drop_glue_symbol_name(&ModuleFullPath::from("μ"), &a),
-        drop_glue_symbol_name(&ModuleFullPath::from("μ"), &b)
-    );
-}
-
-// spec: appendix-c-nfr §C.1.4 — distinct concrete function types require
-// distinct per-type drop glue. Implementation lock: design/backend/
-// transitive-drop-glue.md §3.1 (arity and params/result boundaries).
-#[test]
-fn drop_glue_name_separates_fn_arity_and_result_boundary() {
-    let module = ModuleFullPath::from("emit");
-    let one_param = ConcreteType::Fn(vec![ConcreteType::Int], Box::new(ConcreteType::Bool));
-    let two_params = ConcreteType::Fn(
-        vec![ConcreteType::Int, ConcreteType::Bool],
-        Box::new(ConcreteType::String),
-    );
-    let nested_result = ConcreteType::Fn(
-        vec![ConcreteType::Int],
-        Box::new(ConcreteType::Fn(
-            vec![ConcreteType::Bool],
-            Box::new(ConcreteType::String),
-        )),
-    );
-
-    assert_ne!(
-        drop_glue_symbol_name(&module, &one_param),
-        drop_glue_symbol_name(
-            &module,
-            &ConcreteType::Fn(
-                vec![ConcreteType::Int, ConcreteType::Bool],
-                Box::new(ConcreteType::Bool),
-            ),
-        ),
-        "Fn parameter arity must distinguish otherwise shared leaves"
-    );
-    assert_ne!(
-        drop_glue_symbol_name(&module, &two_params),
-        drop_glue_symbol_name(&module, &nested_result),
-        "a second parameter cannot collide with a nested result parameter"
-    );
-    assert_eq!(
-        drop_glue_symbol_name(&module, &nested_result),
-        drop_glue_symbol_name(&module, &nested_result),
-        "equal complete function types must retain equal identity"
-    );
-}
-
-// spec: appendix-c-nfr §C.1.4 — distinct nested concrete ADTs require
-// distinct per-type drop glue. Implementation lock: design/backend/
-// transitive-drop-glue.md §3.1 (nested ADT arity boundaries).
-#[test]
-fn drop_glue_name_separates_nested_adt_argument_boundaries() {
-    let module = ModuleFullPath::from("emit");
-    let pair = FQTypeName::new(ModuleFullPath::from("data"), TypeName::from("Pair"));
-    let boxed = FQTypeName::new(ModuleFullPath::from("data"), TypeName::from("Box"));
-    let outer_two_args = ConcreteType::ADT(
-        pair.clone(),
-        vec![
-            ConcreteType::ADT(boxed.clone(), vec![ConcreteType::Int]),
-            ConcreteType::Bool,
-        ],
-    );
-    let nested_two_args = ConcreteType::ADT(
-        pair,
-        vec![ConcreteType::ADT(
-            boxed,
-            vec![ConcreteType::Int, ConcreteType::Bool],
-        )],
-    );
-
-    assert_ne!(
-        drop_glue_symbol_name(&module, &outer_two_args),
-        drop_glue_symbol_name(&module, &nested_two_args),
-        "outer and nested ADT argument boundaries must not flatten together"
-    );
-    assert_eq!(
-        drop_glue_symbol_name(&module, &outer_two_args),
-        drop_glue_symbol_name(&module, &outer_two_args),
-        "equal nested ADTs must retain equal identity"
-    );
-}
-
-// ---- CallableSlot witness mint (S119 types-first slice;
-// design/arch/concreteness-types-first.md §3.1/§3.2) ----
-
-fn generic_scheme(ty: Type, vars: Vec<crate::TypeId>) -> Scheme {
-    Scheme {
-        type_vars: vars,
-        constraints: HashMap::new(),
-        ty,
+fn publish_string_owner(table: &mut SymbolTable<String, ()>, target: &CallableTarget, owner: &str) {
+    match table.publish_compiled_owner(target, owner.to_owned()) {
+        Ok(None) => {}
+        Ok(Some(_)) => panic!("fresh family owner publication displaced an owner"),
+        Err(rejection) => panic!("family owner publication refused: {}", rejection.reason()),
     }
 }
 
-// spec: design/arch/concreteness-types-first.md §3.2 — the mint refuses a
-// non-concrete scheme (the planted fault: a `∀a. a→a` template must not
-// acquire a slot).
 #[test]
-fn mint_refuses_non_concrete_scheme() {
-    let mut st = SymbolTable::new(ModuleFullPath::from("m"));
-    let poly = generic_scheme(
-        Type::Fn(vec![Type::Var(0)], Box::new(Type::Var(0))),
-        vec![0],
+fn concrete_settlement_is_atomic_and_codegen_visible() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    declare(&mut table, "f", concrete_scheme(), CallableOrigin::Plain);
+    let slot = table
+        .settle_concrete(&Symbol::from("f"), body(), Some(ast()), Vec::new())
+        .unwrap();
+
+    assert_eq!(slot.index(), 0);
+    assert_eq!(table.get("f").unwrap().callable_got_slot(), Some(0));
+    assert_eq!(
+        table
+            .codegen_targets()
+            .map(|(target, _)| target)
+            .collect::<Vec<_>>(),
+        vec![binding_target("m", "f")]
     );
-    let err = st
-        .mint_callable_slot(&poly)
-        .expect_err("non-concrete scheme must refuse");
-    assert!(
-        matches!(err, SlotMintError::NotConcrete(crate::NotConcrete::Var(0))),
-        "refusal carries the residual var: {err:?}"
-    );
-    // The refusal is side-effect-free: the cursor did not advance.
-    assert_eq!(st.next_got_slot, 0, "refusal must not consume a slot");
+    table.validate_lifecycle().unwrap();
 }
 
-// spec: design/arch/concreteness-types-first.md §3.2 — the negative leg: a
-// concrete scheme mints, slots are monotone from 0, and the witness index
-// matches the cursor the allocation consumed.
 #[test]
-fn mint_accepts_concrete_scheme_monotonically() {
-    let mut st = SymbolTable::new(ModuleFullPath::from("m"));
-    let conc = mono_scheme(Type::Fn(vec![Type::Int], Box::new(Type::Int)));
-    let a = st.mint_callable_slot(&conc).expect("concrete scheme mints");
-    let b = st.mint_callable_slot(&conc).expect("concrete scheme mints");
-    assert_eq!(a.index(), 0);
-    assert_eq!(b.index(), 1);
-    assert_eq!(st.next_got_slot, 2);
-}
+fn concrete_metadata_updates_use_table_funnels() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    declare(&mut table, "f", concrete_scheme(), CallableOrigin::Plain);
+    table
+        .settle_concrete(&Symbol::from("f"), body(), Some(ast()), Vec::new())
+        .unwrap();
 
-// spec: design/arch/concreteness-types-first.md §3.2 — a TyConApp head is
-// non-concrete at the mint gate (same acceptance set as Type::is_concrete()).
-#[test]
-fn mint_refuses_hkt_head() {
-    let mut st = SymbolTable::new(ModuleFullPath::from("m"));
-    let hkt = generic_scheme(Type::TyConApp(4, vec![Type::Int]), vec![4]);
-    let err = st.mint_callable_slot(&hkt).expect_err("HKT head refuses");
+    let summary = ModeSummary::default();
+    table
+        .publish_body_ownership(&binding_target("m", "f"), summary.clone(), view())
+        .unwrap();
+    table.set_value_use(&Symbol::from("f"), true).unwrap();
+    let binding = table.get("f").unwrap();
+    assert_eq!(binding.mode_summary(), Some(&summary));
+    assert!(binding.value_use());
+
     assert!(matches!(
-        err,
-        SlotMintError::NotConcrete(crate::NotConcrete::HktHead(4))
+        table.set_value_use(&Symbol::from("missing"), true),
+        Err(LifecycleError::NotCallable { .. })
     ));
 }
 
-// spec: design/arch/concreteness-types-first.md §3.2 — exhaustion surfaces as
-// SlotMintError::Exhausted with the pre-existing GotExhausted meaning.
 #[test]
-fn mint_surfaces_got_exhaustion() {
-    let mut st = SymbolTable::new(ModuleFullPath::from("m"));
-    st.next_got_slot = GOT_TABLE_SIZE;
-    let conc = mono_scheme(Type::Int);
-    let err = st.mint_callable_slot(&conc).expect_err("slab exhausted");
-    assert!(matches!(err, SlotMintError::Exhausted(_)));
+fn family_install_mints_distinct_slots_and_one_authored_binding() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    table
+        .install_overloaded(
+            Symbol::from("f"),
+            Some("overloaded".into()),
+            7,
+            vec![
+                CallableArmDraft::concrete_body(
+                    concrete_scheme(),
+                    Vec::new(),
+                    ast(),
+                    view(),
+                    Vec::new(),
+                ),
+                CallableArmDraft::concrete_body(
+                    concrete_scheme(),
+                    Vec::new(),
+                    ast(),
+                    {
+                        let mut second = view();
+                        second.name = Symbol::from("f$second");
+                        second
+                    },
+                    Vec::new(),
+                ),
+            ],
+            Visibility::Public,
+        )
+        .unwrap();
+
+    assert_eq!(table.all_symbols().count(), 1);
+    let binding = table.get("f").unwrap();
+    let Decl::Overloaded(declaration) = &binding.declaration else {
+        panic!("family installer must publish one overloaded declaration")
+    };
+    let slots = declaration
+        .arms
+        .iter()
+        .map(|arm| arm.callable.life.claimed_slot().unwrap().index())
+        .collect::<Vec<_>>();
+    assert_eq!(slots, vec![0, 1]);
     assert_eq!(
-        st.next_got_slot, GOT_TABLE_SIZE,
-        "exhaustion is stable and repeatable"
+        table
+            .codegen_targets()
+            .map(|(target, _)| target)
+            .collect::<Vec<_>>(),
+        vec![
+            CallableTarget::OverloadArm {
+                owner: FQSymbol {
+                    module: ModuleFullPath::from("m"),
+                    symbol: Symbol::from("f"),
+                },
+                arm: CallableArmId::from_ordinal(0).unwrap(),
+            },
+            CallableTarget::OverloadArm {
+                owner: FQSymbol {
+                    module: ModuleFullPath::from("m"),
+                    symbol: Symbol::from("f"),
+                },
+                arm: CallableArmId::from_ordinal(1).unwrap(),
+            },
+        ]
     );
+    table.validate_lifecycle().unwrap();
 }
 
-// spec: design/arch/concreteness-types-first.md §3.1 — rebind (the
-// Decision-31 REPL slot carry-forward) re-checks concreteness: transfer to a
-// concrete redefinition succeeds and preserves the index; transfer to a
-// non-concrete redefinition refuses.
 #[test]
-fn rebind_rechecks_concreteness() {
-    let mut st = SymbolTable::new(ModuleFullPath::from("m"));
-    let conc = mono_scheme(Type::Fn(vec![Type::Int], Box::new(Type::Int)));
-    let slot = st.mint_callable_slot(&conc).expect("mint");
+fn failed_family_install_leaves_binding_revision_and_slot_claims_unchanged() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    table
+        .install_concrete(
+            Symbol::from("prior"),
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            0,
+            CallableOrigin::Plain,
+            body(),
+            Some(ast()),
+            Vec::new(),
+            Visibility::Private,
+        )
+        .unwrap();
 
-    let conc2 = mono_scheme(Type::Fn(vec![Type::Bool], Box::new(Type::Int)));
-    let rebound = slot.rebind(&conc2).expect("concrete rebind succeeds");
-    assert_eq!(rebound.index(), slot.index(), "rebind preserves the index");
+    let family = Symbol::from("f");
+    assert!(matches!(
+        table.install_overloaded(
+            family.clone(),
+            None,
+            1,
+            vec![
+                CallableArmDraft::concrete_body(
+                    concrete_scheme(),
+                    Vec::new(),
+                    ast(),
+                    view(),
+                    Vec::new(),
+                ),
+                CallableArmDraft::concrete_body(
+                    template_scheme(),
+                    Vec::new(),
+                    ast(),
+                    view(),
+                    Vec::new(),
+                ),
+            ],
+            Visibility::Private,
+        ),
+        Err(LifecycleError::SlotMint(SlotMintError::NotConcrete(_)))
+    ));
+    assert!(table.get("f").is_none());
+    assert_eq!(table.symbol_revision(&family), 0);
 
-    let poly = generic_scheme(Type::Fn(vec![Type::Var(9)], Box::new(Type::Var(9))), vec![9]);
-    let err = rebound
-        .rebind(&poly)
-        .expect_err("non-concrete rebind refuses");
-    assert!(matches!(err, crate::NotConcrete::Var(9)));
+    let next = table
+        .install_concrete(
+            Symbol::from("next"),
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            2,
+            CallableOrigin::Plain,
+            body(),
+            Some(ast()),
+            Vec::new(),
+            Visibility::Private,
+        )
+        .unwrap();
+    assert_eq!(next.index(), 1);
 }
 
-// spec: design/arch/concreteness-types-first.md §3.6 — the wire pin:
-// CallableSlot is #[serde(transparent)], so the serialized form is the bare
-// index (byte-identical to the usize it will replace at the S120 flip — the
-// retype alone forces no schema bump).
 #[test]
-fn callable_slot_serde_is_transparent() {
-    let mut st = SymbolTable::new(ModuleFullPath::from("m"));
-    let slot = st
-        .mint_callable_slot(&mono_scheme(Type::Int))
-        .expect("mint");
-    let json = serde_json::to_string(&slot).expect("serialize");
-    assert_eq!(json, "0", "wire shape is the bare index");
-    let rt: CallableSlot = serde_json::from_str("17").expect("deserialize");
-    assert_eq!(rt.index(), 17, "serde bypasses the mint — the cache load \
-        boundary re-checks restored slots (R-29)");
-}
+fn ownership_publication_targets_exact_family_arm() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    let mut second = view();
+    second.name = Symbol::from("f$second");
+    table
+        .install_overloaded(
+            Symbol::from("f"),
+            None,
+            0,
+            vec![
+                CallableArmDraft::concrete_body(
+                    concrete_scheme(),
+                    Vec::new(),
+                    ast(),
+                    view(),
+                    Vec::new(),
+                ),
+                CallableArmDraft::concrete_body(
+                    concrete_scheme(),
+                    Vec::new(),
+                    ast(),
+                    second.clone(),
+                    Vec::new(),
+                ),
+            ],
+            Visibility::Private,
+        )
+        .unwrap();
+    let target = CallableTarget::OverloadArm {
+        owner: FQSymbol {
+            module: ModuleFullPath::from("m"),
+            symbol: Symbol::from("f"),
+        },
+        arm: CallableArmId::from_ordinal(1).unwrap(),
+    };
+    let summary = ModeSummary::default();
+    table
+        .publish_body_ownership(&target, summary.clone(), second)
+        .unwrap();
 
-// spec: design/arch/concreteness-types-first.md §3.3 — the DORMANT CtorState
-// sum's wire shape, pinned ahead of the 0931 flip so the schema-window review
-// diffs against a recorded shape.
-#[test]
-fn ctor_state_serde_shape_pin() {
-    let template = CtorState::Template;
-    assert_eq!(
-        serde_json::to_string(&template).expect("serialize"),
-        "\"Template\""
-    );
-    let mut st = SymbolTable::new(ModuleFullPath::from("m"));
-    let slot = st
-        .mint_callable_slot(&mono_scheme(Type::Int))
-        .expect("mint");
-    let concrete = CtorState::Concrete { got_slot: slot };
-    assert_eq!(
-        serde_json::to_string(&concrete).expect("serialize"),
-        "{\"Concrete\":{\"got_slot\":0}}"
-    );
-    let rt: CtorState =
-        serde_json::from_str("{\"Concrete\":{\"got_slot\":3}}").expect("deserialize");
-    assert_eq!(rt, CtorState::Concrete { got_slot: rt_slot(3) });
-
-    fn rt_slot(n: usize) -> CallableSlot {
-        serde_json::from_str(&n.to_string()).expect("transparent slot")
-    }
-}
-
-// ---- Injective GOT data-symbol mint (S119, FIXME 0748; safety-register R4) ----
-
-/// Test-only decoder for the escape image — unambiguous decode IS the
-/// injectivity argument: every `_` in the image begins exactly one legal pair.
-fn decode_got_flat(flat: &str) -> Option<String> {
-    let mut out = String::new();
-    let mut chars = flat.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c != '_' {
-            out.push(c);
-            continue;
+    let Decl::Overloaded(declaration) = &table.get("f").unwrap().declaration else {
+        panic!("expected overloaded declaration")
+    };
+    assert!(declaration.arms[0].callable.life.claimed_slot().is_some());
+    assert!(matches!(
+        &declaration.arms[0].callable.life,
+        Life::Concrete {
+            mode_summary: None,
+            ..
         }
-        match chars.next()? {
-            '_' => out.push('_'),
-            'd' => out.push('.'),
-            'h' => out.push('-'),
-            'u' => {
-                let hex: String = (0..6).map(|_| chars.next()).collect::<Option<String>>()?;
-                out.push(char::from_u32(u32::from_str_radix(&hex, 16).ok()?)?);
-            }
-            _ => return None, // illegal pair — not in the image
-        }
-    }
-    Some(out)
+    ));
+    assert!(matches!(
+        &declaration.arms[1].callable.life,
+        Life::Concrete {
+            mode_summary: Some(found),
+            ..
+        } if found == &summary
+    ));
 }
 
-fn got_flat(path: &str) -> String {
-    got_data_symbol_name(&ModuleFullPath::from(path))
-        .strip_prefix("__cranelisp_got_")
-        .expect("prefix")
-        .to_string()
-}
-
-// spec: design/arch/safety-invariants.md §4 R4 — the collision class is closed:
-// `a.b` and `a_b` mint DISTINCT GOT slab symbols (the inverted 0748 witness).
 #[test]
-fn got_data_symbol_name_is_injective_on_the_0748_pair() {
-    assert_ne!(
-        got_data_symbol_name(&ModuleFullPath::from("a.b")),
-        got_data_symbol_name(&ModuleFullPath::from("a_b")),
+fn overload_preserve_pairs_reordered_arms_by_complete_scheme() {
+    let mut live = SymbolTable::<String, ()>::new_with_params(ModuleFullPath::from("m"));
+    live.install_overloaded(
+        Symbol::from("f"),
+        None,
+        0,
+        vec![
+            concrete_arm_draft(Type::Int, "f$int"),
+            concrete_arm_draft(Type::Bool, "f$bool"),
+        ],
+        Visibility::Public,
+    )
+    .unwrap();
+    for (ordinal, owner) in [(0, "old-int"), (1, "old-bool")] {
+        publish_string_owner(&mut live, &overload_target("m", "f", ordinal), owner);
+    }
+    let old_slots = [0, 1].map(|ordinal| {
+        live.callable_target(&overload_target("m", "f", ordinal))
+            .unwrap()
+            .life
+            .claimed_slot()
+            .unwrap()
+    });
+
+    let mut staging = SymbolTable::<String, ()>::new_with_params(ModuleFullPath::from("m"));
+    staging
+        .install_overloaded(
+            Symbol::from("f"),
+            None,
+            0,
+            vec![
+                concrete_arm_draft(Type::Bool, "f$bool"),
+                concrete_arm_draft(Type::Int, "f$int"),
+            ],
+            Visibility::Public,
+        )
+        .unwrap();
+    let records = live
+        .publish_staged(
+            staging,
+            &[StagedPublicationDecision::PreserveAbi {
+                symbol: Symbol::from("f"),
+            }],
+        )
+        .unwrap();
+
+    assert_eq!(records[0].bodies.len(), 2);
+    assert_eq!(
+        records[0].bodies[0].prior_target,
+        Some(overload_target("m", "f", 0))
+    );
+    assert_eq!(
+        records[0].bodies[0].published_target,
+        Some(overload_target("m", "f", 1))
+    );
+    assert_eq!(records[0].bodies[0].published_slot, Some(old_slots[0]));
+    assert_eq!(
+        records[0].bodies[0].displaced_owner.as_deref(),
+        Some("old-int")
+    );
+    assert_eq!(
+        records[0].bodies[1].prior_target,
+        Some(overload_target("m", "f", 1))
+    );
+    assert_eq!(
+        records[0].bodies[1].published_target,
+        Some(overload_target("m", "f", 0))
+    );
+    assert_eq!(records[0].bodies[1].published_slot, Some(old_slots[1]));
+    assert_eq!(
+        records[0].bodies[1].displaced_owner.as_deref(),
+        Some("old-bool")
+    );
+    assert_eq!(
+        live.callable_target(&overload_target("m", "f", 0))
+            .unwrap()
+            .life
+            .claimed_slot(),
+        Some(old_slots[1])
     );
 }
 
-// spec: design/arch/fixmes/0748 constraint 1 — purely-alphanumeric paths are
-// FIXED POINTS (`__cranelisp_got_primitives` is a link-time ABI literal).
 #[test]
-fn got_data_symbol_name_alphanumeric_paths_are_fixed_points() {
-    for path in ["primitives", "prelude", "user", "macros", "sudoku9"] {
-        assert_eq!(
-            got_data_symbol_name(&ModuleFullPath::from(path)),
-            format!("__cranelisp_got_{path}")
+fn overload_change_abi_shrink_retires_whole_prior_family() {
+    let mut live = SymbolTable::<String, ()>::new_with_params(ModuleFullPath::from("m"));
+    live.install_overloaded(
+        Symbol::from("f"),
+        None,
+        0,
+        vec![
+            concrete_arm_draft(Type::Int, "f$int"),
+            concrete_arm_draft(Type::Bool, "f$bool"),
+            concrete_arm_draft(Type::String, "f$string"),
+        ],
+        Visibility::Public,
+    )
+    .unwrap();
+    let old_slots = [0, 1, 2].map(|ordinal| {
+        publish_string_owner(
+            &mut live,
+            &overload_target("m", "f", ordinal),
+            &format!("old-{ordinal}"),
         );
-    }
-}
+        live.callable_target(&overload_target("m", "f", ordinal))
+            .unwrap()
+            .life
+            .claimed_slot()
+            .unwrap()
+    });
+    let mut staging = SymbolTable::<String, ()>::new_with_params(ModuleFullPath::from("m"));
+    staging
+        .install_overloaded(
+            Symbol::from("f"),
+            None,
+            0,
+            vec![
+                concrete_arm_draft(Type::Int, "f$int"),
+                concrete_arm_draft(Type::Bool, "f$bool"),
+            ],
+            Visibility::Public,
+        )
+        .unwrap();
 
-// spec: design/arch/fixmes/0748 constraint 3 — the `_entry` sentinel is outside
-// the escape image (no path can mint it).
-#[test]
-fn got_data_symbol_name_entry_sentinel_outside_image() {
+    let records = live
+        .publish_staged(
+            staging,
+            &[StagedPublicationDecision::ChangeAbi {
+                symbol: Symbol::from("f"),
+            }],
+        )
+        .unwrap();
+    assert_eq!(records[0].bodies.len(), 5);
     assert_eq!(
-        got_data_symbol_name(&ModuleFullPath::from("")),
-        "__cranelisp_got__entry"
+        records[0]
+            .bodies
+            .iter()
+            .filter_map(|body| body.displaced_owner.as_deref())
+            .collect::<Vec<_>>(),
+        vec!["old-0", "old-1", "old-2"]
     );
-    // `_entry` decodes as an illegal `_e` pair — not in the image.
-    assert_eq!(decode_got_flat("_entry"), None);
-    // Nearby paths that COULD be confused all mint something else.
-    for path in ["entry", "_entry", ".entry", "-entry"] {
-        assert_ne!(got_flat(path), "_entry", "path {path:?} must not collide with the sentinel");
+    assert!(old_slots.into_iter().all(|slot| {
+        live.retired_slots()
+            .iter()
+            .any(|retired| retired.slot == slot)
+    }));
+    let new_slots = [0, 1].map(|ordinal| {
+        live.callable_target(&overload_target("m", "f", ordinal))
+            .unwrap()
+            .life
+            .claimed_slot()
+            .unwrap()
+    });
+    assert!(new_slots.into_iter().all(|slot| !old_slots.contains(&slot)));
+}
+
+#[test]
+fn macro_preserve_pairs_only_equal_patterns_at_the_same_ordinal() {
+    let macro_draft = |param: &str, body_name: &str| {
+        MacroClauseDraft::new(
+            vec![crate::MacroParam::Name(Symbol::from(param))],
+            None,
+            concrete_arm_draft(Type::Int, body_name),
+        )
+    };
+    let mut live = SymbolTable::<String, ()>::new_with_params(ModuleFullPath::from("m"));
+    live.install_macro(
+        Symbol::from("mac"),
+        None,
+        0,
+        Sexp::Symbol("mac".into(), Span::SYNTHETIC),
+        vec![macro_draft("x", "mac$0"), macro_draft("y", "mac$1")],
+        Visibility::Public,
+    )
+    .unwrap();
+    for (ordinal, owner) in [(0, "old-x"), (1, "old-y")] {
+        publish_string_owner(&mut live, &macro_target("m", "mac", ordinal), owner);
+    }
+    let old_slots = [0, 1].map(|ordinal| {
+        live.callable_target(&macro_target("m", "mac", ordinal))
+            .unwrap()
+            .life
+            .claimed_slot()
+            .unwrap()
+    });
+    let mut staging = SymbolTable::<String, ()>::new_with_params(ModuleFullPath::from("m"));
+    staging
+        .install_macro(
+            Symbol::from("mac"),
+            None,
+            0,
+            Sexp::Symbol("mac".into(), Span::SYNTHETIC),
+            vec![macro_draft("x", "mac$0"), macro_draft("z", "mac$1")],
+            Visibility::Public,
+        )
+        .unwrap();
+
+    let records = live
+        .publish_staged(
+            staging,
+            &[StagedPublicationDecision::PreserveAbi {
+                symbol: Symbol::from("mac"),
+            }],
+        )
+        .unwrap();
+    assert_eq!(records[0].bodies.len(), 3);
+    assert_eq!(records[0].bodies[0].published_slot, Some(old_slots[0]));
+    assert_eq!(records[0].bodies[1].prior_slot, Some(old_slots[1]));
+    assert!(records[0].bodies[1].published_target.is_none());
+    assert!(records[0].bodies[2].prior_target.is_none());
+    assert_ne!(records[0].bodies[2].published_slot, Some(old_slots[1]));
+    assert_eq!(
+        records[0].bodies[0].displaced_owner.as_deref(),
+        Some("old-x")
+    );
+    assert_eq!(
+        records[0].bodies[1].displaced_owner.as_deref(),
+        Some("old-y")
+    );
+}
+
+#[test]
+fn complete_scheme_alpha_equivalence_includes_constraints_and_tycon_heads() {
+    let trait_name = FQTraitName::new(ModuleFullPath::from("traits"), TraitName::from("Show"));
+    let left = Scheme {
+        type_vars: vec![7, 8],
+        constraints: HashMap::from([(7, vec![trait_name.clone()])]),
+        ty: Type::Fn(
+            vec![Type::TyConApp(8, vec![Type::Var(7)])],
+            Box::new(Type::Var(7)),
+        ),
+    };
+    let right = Scheme {
+        type_vars: vec![40, 41],
+        constraints: HashMap::from([(40, vec![trait_name])]),
+        ty: Type::Fn(
+            vec![Type::TyConApp(41, vec![Type::Var(40)])],
+            Box::new(Type::Var(40)),
+        ),
+    };
+    assert!(schemes_alpha_equivalent(&left, &right));
+}
+
+fn assert_plain_docstring_update(
+    table: &mut SymbolTable<String, ()>,
+    name: &Symbol,
+    docstring: &str,
+) {
+    let mut expected = table.get(name.as_ref()).unwrap().clone();
+    expected.callable_mut().unwrap().docstring = Some(docstring.to_owned());
+    let revision = table.symbol_revision(name);
+
+    table
+        .set_plain_callable_docstring(name, docstring.to_owned())
+        .unwrap();
+
+    assert_eq!(
+        format!("{:?}", table.get(name.as_ref()).unwrap()),
+        format!("{expected:?}")
+    );
+    assert_eq!(table.symbol_revision(name), revision.wrapping_add(1));
+}
+
+#[test]
+fn plain_callable_docstring_accepts_every_legal_plain_lifecycle() {
+    let name = Symbol::from("f");
+
+    let mut declared = SymbolTable::<String, ()>::new_with_params(ModuleFullPath::from("declared"));
+    declared
+        .declare(
+            name.clone(),
+            concrete_scheme(),
+            vec![Symbol::from("arg")],
+            Some("old".into()),
+            3,
+            CallableOrigin::Plain,
+            Visibility::Private,
+        )
+        .unwrap();
+    assert_plain_docstring_update(&mut declared, &name, "declared doc");
+
+    let mut template = SymbolTable::<String, ()>::new_with_params(ModuleFullPath::from("template"));
+    template
+        .install_template(
+            name.clone(),
+            template_scheme(),
+            vec![Symbol::from("arg")],
+            Some("old".into()),
+            4,
+            CallableOrigin::Plain,
+            TemplateBody::Ast(ast()),
+            TemplateKind::Parametric,
+            vec![FQSymbol {
+                module: ModuleFullPath::from("dep"),
+                symbol: Symbol::from("callee"),
+            }],
+            Visibility::Private,
+        )
+        .unwrap();
+    assert_plain_docstring_update(&mut template, &name, "template doc");
+
+    let mut concrete = owner_table("concrete", Some("compiled"));
+    assert_plain_docstring_update(&mut concrete, &name, "concrete doc");
+
+    let mut broken = owner_table("broken", Some("compiled"));
+    let old_slot = broken.get("f").unwrap().callable_got_slot().unwrap();
+    let transition = broken
+        .mark_broken(
+            &name,
+            BrokenProvenance::new(
+                FQSymbol {
+                    module: ModuleFullPath::from("broken"),
+                    symbol: Symbol::from("cause"),
+                },
+                "failed recompilation".into(),
+            ),
+        )
+        .unwrap();
+    assert_eq!(transition.slot.index(), old_slot);
+    assert_eq!(transition.displaced_owner.as_deref(), Some("compiled"));
+    assert_plain_docstring_update(&mut broken, &name, "broken doc");
+}
+
+#[test]
+fn plain_callable_docstring_preserves_concrete_payload_candidates_got_and_tombstones() {
+    let name = Symbol::from("f");
+    let mut table = SymbolTable::<String, ()>::new_with_params(ModuleFullPath::from("m"));
+    let slot = table
+        .install_concrete(
+            name.clone(),
+            concrete_scheme(),
+            vec![Symbol::from("arg")],
+            Some("old".into()),
+            17,
+            CallableOrigin::Plain,
+            owner_body(None),
+            Some(ast()),
+            vec![FQSymbol {
+                module: ModuleFullPath::from("dep"),
+                symbol: Symbol::from("callee"),
+            }],
+            Visibility::Private,
+        )
+        .unwrap();
+    let summary = ModeSummary::default();
+    table
+        .publish_body_ownership(
+            &binding_target("m", "f"),
+            summary,
+            ownership_annotated_view(),
+        )
+        .unwrap();
+    table.set_value_use(&name, true).unwrap();
+    match table.publish_compiled_owner(&binding_target("m", "f"), "compiled-owner".into()) {
+        Ok(None) => {}
+        Ok(Some(_)) | Err(_) => panic!("first compiled owner publication must succeed"),
+    }
+    let published = std::ptr::dangling::<u8>();
+    table.got.store_slot(slot.index(), published);
+    table
+        .expose_candidate(
+            name.clone(),
+            FQSymbol {
+                module: ModuleFullPath::from("dep"),
+                symbol: Symbol::from("other-f"),
+            },
+            Visibility::Public,
+        )
+        .unwrap();
+
+    table
+        .install_concrete(
+            Symbol::from("retired"),
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            18,
+            CallableOrigin::Plain,
+            owner_body(None),
+            None,
+            Vec::new(),
+            Visibility::Private,
+        )
+        .unwrap();
+    table.retire_abi_changing(&Symbol::from("retired")).unwrap();
+
+    let candidates = table.name_candidates(&name);
+    let tombstones = table.retired_slots().to_vec();
+    assert_plain_docstring_update(&mut table, &name, "replacement");
+
+    assert_eq!(table.name_candidates(&name), candidates);
+    assert_eq!(table.retired_slots(), tombstones);
+    assert_eq!(table.got.load_slot(slot.index()), published);
+}
+
+#[test]
+fn plain_callable_docstring_refusals_are_exact_and_atomic() {
+    let mut table = SymbolTable::<String, ()>::new_with_params(ModuleFullPath::from("m"));
+
+    let missing = Symbol::from("missing");
+    assert_eq!(
+        table.set_plain_callable_docstring(&missing, "new".into()),
+        Err(LifecycleError::MissingBinding {
+            symbol: missing.clone(),
+        })
+    );
+    assert_eq!(table.symbol_revision(&missing), 0);
+    assert!(table.name_candidates(&missing).is_empty());
+
+    let candidate_only = Symbol::from("imported");
+    table
+        .expose_candidate(
+            candidate_only.clone(),
+            FQSymbol {
+                module: ModuleFullPath::from("dep"),
+                symbol: Symbol::from("target"),
+            },
+            Visibility::Public,
+        )
+        .unwrap();
+    let candidates = table.name_candidates(&candidate_only);
+    let revision = table.symbol_revision(&candidate_only);
+    assert_eq!(
+        table.set_plain_callable_docstring(&candidate_only, "new".into()),
+        Err(LifecycleError::MissingBinding {
+            symbol: candidate_only.clone(),
+        })
+    );
+    assert!(table.get(candidate_only.as_ref()).is_none());
+    assert_eq!(table.name_candidates(&candidate_only), candidates);
+    assert_eq!(table.symbol_revision(&candidate_only), revision);
+
+    let non_callable = Symbol::from("a-type");
+    table
+        .install_binding(
+            non_callable.clone(),
+            Binding::new(
+                Decl::Type(TypeRecord::Intrinsic {
+                    ty: Type::Int,
+                    docstring: Some("type doc".into()),
+                }),
+                Visibility::Private,
+            ),
+        )
+        .unwrap();
+    let binding = format!("{:?}", table.get(non_callable.as_ref()).unwrap());
+    let revision = table.symbol_revision(&non_callable);
+    assert_eq!(
+        table.set_plain_callable_docstring(&non_callable, "new".into()),
+        Err(LifecycleError::NotCallable {
+            symbol: non_callable.clone(),
+        })
+    );
+    assert_eq!(
+        format!("{:?}", table.get(non_callable.as_ref()).unwrap()),
+        binding
+    );
+    assert_eq!(table.symbol_revision(&non_callable), revision);
+
+    let non_plain = Symbol::from("primitive");
+    table
+        .install_extern(
+            non_plain.clone(),
+            concrete_scheme(),
+            vec![Symbol::from("arg")],
+            Some("primitive doc".into()),
+            9,
+            None,
+            Some(ModeSummary::default()),
+            Visibility::Public,
+        )
+        .unwrap();
+    let binding = format!("{:?}", table.get(non_plain.as_ref()).unwrap());
+    let revision = table.symbol_revision(&non_plain);
+    assert_eq!(
+        table.set_plain_callable_docstring(&non_plain, "new".into()),
+        Err(LifecycleError::WrongState {
+            symbol: non_plain.clone(),
+            expected: "plain callable",
+        })
+    );
+    assert_eq!(
+        format!("{:?}", table.get(non_plain.as_ref()).unwrap()),
+        binding
+    );
+    assert_eq!(table.symbol_revision(&non_plain), revision);
+}
+
+#[test]
+fn residual_scheme_cannot_settle_concrete() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    declare(&mut table, "f", template_scheme(), CallableOrigin::Plain);
+    assert!(matches!(
+        table.settle_concrete(&Symbol::from("f"), body(), Some(ast()), Vec::new(),),
+        Err(LifecycleError::SlotMint(SlotMintError::NotConcrete(_)))
+    ));
+    assert!(matches!(
+        table.get("f").unwrap().callable().unwrap().arm.life,
+        Life::Declared { prior: None }
+    ));
+}
+
+#[test]
+fn concrete_scheme_cannot_settle_as_template() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    declare(&mut table, "f", concrete_scheme(), CallableOrigin::Plain);
+    assert!(matches!(
+        table.settle_template(
+            &Symbol::from("f"),
+            TemplateBody::Ast(ast()),
+            TemplateKind::Parametric,
+            Vec::new(),
+        ),
+        Err(LifecycleError::ConcreteTemplate { .. })
+    ));
+}
+
+#[test]
+fn redeclaration_rebinds_the_same_slot() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    declare(&mut table, "f", concrete_scheme(), CallableOrigin::Plain);
+    let first = table
+        .settle_concrete(&Symbol::from("f"), body(), Some(ast()), Vec::new())
+        .unwrap();
+    declare(&mut table, "f", concrete_scheme(), CallableOrigin::Plain);
+    let declared = table.get("f").unwrap();
+    assert_eq!(
+        declared.callable().unwrap().arm.life.claimed_slot(),
+        Some(first)
+    );
+    assert_eq!(
+        declared.callable_got_slot(),
+        None,
+        "Declared.prior is an allocation claim, not a dispatch capability"
+    );
+    let rebound = table
+        .settle_concrete(&Symbol::from("f"), body(), Some(ast()), Vec::new())
+        .unwrap();
+    assert_eq!(rebound, first);
+    assert!(table.retired_slots().is_empty());
+}
+
+#[test]
+fn redeclaration_cannot_change_callable_origin() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    declare(&mut table, "f", concrete_scheme(), CallableOrigin::Plain);
+    table
+        .settle_concrete(&Symbol::from("f"), body(), Some(ast()), Vec::new())
+        .unwrap();
+    let old_slot = table.get("f").unwrap().callable_got_slot();
+
+    assert!(matches!(
+        table.declare(
+            Symbol::from("f"),
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            1,
+            CallableOrigin::RustPrimitive,
+            Visibility::Public,
+        ),
+        Err(LifecycleError::IllegalOriginState { .. })
+    ));
+    assert_eq!(table.get("f").unwrap().callable_got_slot(), old_slot);
+}
+
+#[test]
+fn concrete_to_template_conserves_and_never_reissues_prior_slot() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    declare(&mut table, "f", concrete_scheme(), CallableOrigin::Plain);
+    let old = table
+        .settle_concrete(&Symbol::from("f"), body(), Some(ast()), Vec::new())
+        .unwrap();
+
+    declare(&mut table, "f", template_scheme(), CallableOrigin::Plain);
+    table
+        .settle_template(
+            &Symbol::from("f"),
+            TemplateBody::Ast(ast()),
+            TemplateKind::Parametric,
+            Vec::new(),
+        )
+        .unwrap();
+    assert_eq!(table.retired_slots()[0].slot, old);
+    assert!(matches!(
+        table.retired_slots()[0].reason,
+        RetireReason::TemplateFlip { .. }
+    ));
+
+    declare(&mut table, "g", concrete_scheme(), CallableOrigin::Plain);
+    let next = table
+        .settle_concrete(&Symbol::from("g"), body(), Some(ast()), Vec::new())
+        .unwrap();
+    assert_ne!(next, old);
+}
+
+#[test]
+fn abi_retirement_tombstones_the_slot_and_is_atomic_on_refusal() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    table
+        .install_binding(Symbol::from("x"), non_callable_binding())
+        .unwrap();
+    assert!(table.retire_abi_changing(&Symbol::from("x")).is_err());
+    assert!(table.get("x").is_some());
+
+    declare(&mut table, "f", concrete_scheme(), CallableOrigin::Plain);
+    let old = table
+        .settle_concrete(&Symbol::from("f"), body(), Some(ast()), Vec::new())
+        .unwrap();
+    table.retire_abi_changing(&Symbol::from("f")).unwrap();
+    assert!(table.get("f").is_none());
+    assert_eq!(table.retired_slots()[0].slot, old);
+
+    declare(&mut table, "g", concrete_scheme(), CallableOrigin::Plain);
+    let next = table
+        .settle_concrete(&Symbol::from("g"), body(), Some(ast()), Vec::new())
+        .unwrap();
+    assert_ne!(next, old);
+}
+
+fn owner_body(owner: Option<&str>) -> Realization<String> {
+    Realization::Body {
+        view: view(),
+        code: owner.map(str::to_owned),
     }
 }
 
-// spec: design/arch/fixmes/0748 — round-trip battery: encode→decode is the
-// identity over a corpus spanning every escape class, so the mint is injective
-// on everything the decoder covers.
+fn owner_table(path: &str, owner: Option<&str>) -> SymbolTable<String, ()> {
+    let mut table = SymbolTable::<String, ()>::new_with_params(ModuleFullPath::from(path));
+    table
+        .install_concrete(
+            Symbol::from("f"),
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            0,
+            CallableOrigin::Plain,
+            owner_body(owner),
+            Some(ast()),
+            Vec::new(),
+            Visibility::Public,
+        )
+        .unwrap();
+    table
+}
+
+fn compiled_owner<'a>(table: &'a SymbolTable<String, ()>, name: &str) -> Option<&'a str> {
+    let callable = table.get(name)?.callable()?;
+    let Life::Concrete {
+        realization: Realization::Body { code, .. },
+        ..
+    } = &callable.arm.life
+    else {
+        return None;
+    };
+    code.as_deref()
+}
+
+#[derive(Clone)]
+struct DropSpy {
+    label: &'static str,
+    drops: Arc<AtomicUsize>,
+}
+
+impl Drop for DropSpy {
+    fn drop(&mut self) {
+        self.drops.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+fn drop_spy(label: &'static str) -> (DropSpy, Arc<AtomicUsize>) {
+    let drops = Arc::new(AtomicUsize::new(0));
+    (
+        DropSpy {
+            label,
+            drops: Arc::clone(&drops),
+        },
+        drops,
+    )
+}
+
+fn slotted_rust_primitive_table() -> SymbolTable<String, ()> {
+    let mut table = SymbolTable::<String, ()>::new_with_params(ModuleFullPath::from("m"));
+    table
+        .install_extern(
+            Symbol::from("primitive"),
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            0,
+            None,
+            None,
+            Visibility::Public,
+        )
+        .unwrap();
+    table
+}
+
 #[test]
-fn got_data_symbol_name_round_trips() {
-    for path in [
-        "user",
-        "a.b",
-        "a_b",
-        "a-b",
-        "a.b.c",
-        "a_b.c",
-        "a.b_c",
-        "my-lib.sub_mod.deep",
-        "compare.ord",
-        "fn.option.test",
-        "__x",
-        "x__",
-        "ümlaut.mod",
+fn compiled_owner_publication_conserves_submitted_and_displaced_owners() {
+    let mut table = owner_table("m", None);
+    match table.publish_compiled_owner(&binding_target("m", "f"), "first".to_owned()) {
+        Ok(None) => {}
+        Ok(Some(_)) | Err(_) => panic!("first owner publication should displace nothing"),
+    }
+    match table.publish_compiled_owner(&binding_target("m", "f"), "second".to_owned()) {
+        Ok(Some(displaced)) => assert_eq!(displaced, "first"),
+        Ok(None) | Err(_) => panic!("replacement should return the first owner"),
+    }
+
+    let rejection =
+        match table.publish_compiled_owner(&binding_target("m", "missing"), "kept".into()) {
+            Err(rejection) => rejection,
+            Ok(_) => panic!("missing binding must refuse the owner"),
+        };
+    assert!(matches!(
+        rejection.reason(),
+        LifecycleError::MissingBinding { symbol } if symbol.as_ref() == "missing"
+    ));
+    let (reason, owner) = rejection.into_parts();
+    assert!(matches!(reason, LifecycleError::MissingBinding { .. }));
+    assert_eq!(owner, "kept");
+
+    table
+        .install_binding(
+            Symbol::from("non_callable"),
+            Binding::new(
+                Decl::Type(TypeRecord::Intrinsic {
+                    ty: Type::Int,
+                    docstring: None,
+                }),
+                Visibility::Private,
+            ),
+        )
+        .unwrap();
+    let rejection = match table.publish_compiled_owner(
+        &binding_target("m", "non_callable"),
+        "non-callable-owner".into(),
+    ) {
+        Err(rejection) => rejection,
+        Ok(_) => panic!("non-callable binding must refuse the owner"),
+    };
+    let (reason, owner) = rejection.into_parts();
+    assert!(matches!(reason, LifecycleError::NotCallable { .. }));
+    assert_eq!(owner, "non-callable-owner");
+
+    table
+        .install_template(
+            Symbol::from("template"),
+            template_scheme(),
+            Vec::new(),
+            None,
+            1,
+            CallableOrigin::Plain,
+            TemplateBody::Ast(ast()),
+            TemplateKind::Parametric,
+            Vec::new(),
+            Visibility::Private,
+        )
+        .unwrap();
+    let rejection = match table
+        .publish_compiled_owner(&binding_target("m", "template"), "template-owner".into())
+    {
+        Err(rejection) => rejection,
+        Ok(_) => panic!("slotless template must refuse the owner"),
+    };
+    let (reason, owner) = rejection.into_parts();
+    assert!(matches!(reason, LifecycleError::WrongState { .. }));
+    assert_eq!(owner, "template-owner");
+
+    table
+        .install_extern(
+            Symbol::from("extern"),
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            2,
+            None,
+            None,
+            Visibility::Private,
+        )
+        .unwrap();
+    let rejection =
+        match table.publish_compiled_owner(&binding_target("m", "extern"), "extern-owner".into()) {
+            Err(rejection) => rejection,
+            Ok(_) => panic!("non-Body concrete callable must refuse the owner"),
+        };
+    let (reason, owner) = rejection.into_parts();
+    assert!(matches!(reason, LifecycleError::WrongState { .. }));
+    assert_eq!(owner, "extern-owner");
+}
+
+#[test]
+fn broken_transition_retains_slot_and_returns_body_owner() {
+    let mut table = owner_table("m", Some("compiled"));
+    let old_slot = table.get("f").unwrap().callable_got_slot().unwrap();
+    let transition = table
+        .mark_broken(
+            &Symbol::from("f"),
+            BrokenProvenance::new(
+                FQSymbol {
+                    module: ModuleFullPath::from("m"),
+                    symbol: Symbol::from("cause"),
+                },
+                "failed".into(),
+            ),
+        )
+        .unwrap();
+    assert_eq!(transition.slot.index(), old_slot);
+    assert_eq!(transition.displaced_owner.as_deref(), Some("compiled"));
+    assert!(matches!(
+        &table.get("f").unwrap().callable().unwrap().arm.life,
+        Life::Broken { slot, .. } if slot.index() == old_slot
+    ));
+}
+
+#[test]
+fn staged_publication_preserves_or_changes_abi_and_returns_old_owner() {
+    let mut live = owner_table("m", Some("generation-1"));
+    let old_slot = live.get("f").unwrap().callable_got_slot().unwrap();
+    let records = live
+        .publish_staged(
+            owner_table("m", None),
+            &[StagedPublicationDecision::PreserveAbi {
+                symbol: Symbol::from("f"),
+            }],
+        )
+        .unwrap();
+    assert_eq!(records.len(), 1);
+    assert!(records[0].prior_was_callable);
+    assert_eq!(
+        records[0].bodies[0].prior_slot.map(|slot| slot.index()),
+        Some(old_slot)
+    );
+    assert_eq!(
+        records[0].bodies[0].published_slot.map(|slot| slot.index()),
+        Some(old_slot)
+    );
+    assert_eq!(
+        records[0].bodies[0].displaced_owner.as_deref(),
+        Some("generation-1")
+    );
+    assert!(live.retired_slots().is_empty());
+
+    match live.publish_compiled_owner(&binding_target("m", "f"), "generation-2".into()) {
+        Ok(None) => {}
+        Ok(Some(_)) | Err(_) => panic!("preserved publication should be ownerless before codegen"),
+    }
+    let records = live
+        .publish_staged(
+            owner_table("m", None),
+            &[StagedPublicationDecision::ChangeAbi {
+                symbol: Symbol::from("f"),
+            }],
+        )
+        .unwrap();
+    assert_eq!(records[0].bodies.len(), 2);
+    let new_slot = records[0].bodies[1].published_slot.unwrap();
+    assert_ne!(new_slot.index(), old_slot);
+    assert_eq!(
+        records[0].bodies[0].displaced_owner.as_deref(),
+        Some("generation-2")
+    );
+    assert_eq!(live.retired_slots()[0].slot.index(), old_slot);
+    assert!(matches!(
+        live.retired_slots()[0].reason,
+        RetireReason::AbiChanging { .. }
+    ));
+}
+
+#[test]
+fn staged_publication_change_abi_can_explicitly_retire_absent_bindings() {
+    let mut live = owner_table("m", Some("old-f"));
+    for (name, seq, owner) in [("g", 1, "old-g"), ("h", 2, "old-h")] {
+        live.install_concrete(
+            Symbol::from(name),
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            seq,
+            CallableOrigin::Plain,
+            owner_body(Some(owner)),
+            Some(ast()),
+            Vec::new(),
+            Visibility::Public,
+        )
+        .unwrap();
+    }
+    live.expose_candidate(
+        Symbol::from("g"),
+        FQSymbol {
+            module: ModuleFullPath::from("dep"),
+            symbol: Symbol::from("g"),
+        },
+        Visibility::Private,
+    )
+    .unwrap();
+
+    let old_slots = ["f", "g", "h"].map(|name| {
+        live.get(name)
+            .unwrap()
+            .callable()
+            .unwrap()
+            .arm
+            .life
+            .claimed_slot()
+            .unwrap()
+    });
+    let old_revisions = ["f", "g", "h"].map(|name| {
+        let name = Symbol::from(name);
+        (name.clone(), live.symbol_revision(&name))
+    });
+    let frozen = std::ptr::dangling::<u8>();
+    live.got.store_slot(old_slots[1].index(), frozen);
+    live.got.store_slot(old_slots[2].index(), frozen);
+
+    let records = match live.publish_compiled_staged(
+        owner_table("m", None),
+        &[
+            StagedPublicationDecision::ChangeAbi {
+                symbol: Symbol::from("h"),
+            },
+            StagedPublicationDecision::PreserveAbi {
+                symbol: Symbol::from("f"),
+            },
+            StagedPublicationDecision::ChangeAbi {
+                symbol: Symbol::from("g"),
+            },
+        ],
+        HashMap::from([(binding_target("m", "f"), "new-f".to_owned())]),
+    ) {
+        Ok(records) => records,
+        Err(rejection) => panic!("explicit retirement refused: {}", rejection.reason()),
+    };
+
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| record.symbol.as_ref())
+            .collect::<Vec<_>>(),
+        vec!["f", "g", "h"]
+    );
+    for (name, owner, old_slot) in [("g", "old-g", old_slots[1]), ("h", "old-h", old_slots[2])] {
+        let record = records
+            .iter()
+            .find(|record| record.symbol.as_ref() == name)
+            .unwrap();
+        assert!(record.prior_was_callable);
+        assert_eq!(record.bodies[0].prior_slot, Some(old_slot));
+        assert!(record.bodies[0].published_slot.is_none());
+        assert_eq!(record.bodies[0].displaced_owner.as_deref(), Some(owner));
+        assert!(live.get(name).is_none());
+        assert_eq!(live.got.load_slot(old_slot.index()), frozen);
+        assert!(live.retired_slots().iter().any(|retired| {
+            retired.slot == old_slot
+                && matches!(
+                    &retired.reason,
+                    RetireReason::AbiChanging { symbol } if symbol.as_ref() == name
+                )
+        }));
+    }
+    assert_eq!(live.retired_slots().len(), 2);
+    assert_eq!(
+        live.name_candidates(&Symbol::from("g")),
+        vec![NameCandidate::new(
+            FQSymbol {
+                module: ModuleFullPath::from("dep"),
+                symbol: Symbol::from("g"),
+            },
+            Visibility::Private,
+        )]
+    );
+    assert!(live.symbols.contains_key(&Symbol::from("g")));
+    assert!(!live.symbols.contains_key(&Symbol::from("h")));
+    for (name, revision) in old_revisions {
+        assert_eq!(live.symbol_revision(&name), revision.wrapping_add(1));
+    }
+
+    let mut growth = SymbolTable::<String, ()>::new_with_params(ModuleFullPath::from("m"));
+    for (name, seq) in [("g", 1), ("h", 2)] {
+        growth
+            .install_concrete(
+                Symbol::from(name),
+                concrete_scheme(),
+                Vec::new(),
+                None,
+                seq,
+                CallableOrigin::Plain,
+                owner_body(None),
+                Some(ast()),
+                Vec::new(),
+                Visibility::Public,
+            )
+            .unwrap();
+    }
+    match live.publish_compiled_staged(
+        growth,
+        &[],
+        HashMap::from([
+            (binding_target("m", "g"), "new-g".to_owned()),
+            (binding_target("m", "h"), "new-h".to_owned()),
+        ]),
+    ) {
+        Ok(_) => {}
+        Err(rejection) => panic!("later growth refused: {}", rejection.reason()),
+    }
+    for name in ["g", "h"] {
+        let new_slot = live.get(name).unwrap().callable_got_slot().unwrap();
+        assert!(!old_slots.iter().any(|old| old.index() == new_slot));
+    }
+}
+
+#[test]
+fn absent_retirement_returns_the_displaced_owner_in_its_record() {
+    let retained = Arc::new(());
+    let mut live = SymbolTable::<Arc<()>, ()>::new_with_params(ModuleFullPath::from("m"));
+    live.install_concrete(
+        Symbol::from("f"),
+        concrete_scheme(),
+        Vec::new(),
+        None,
+        0,
+        CallableOrigin::Plain,
+        Realization::Body {
+            view: view(),
+            code: Some(Arc::clone(&retained)),
+        },
+        Some(ast()),
+        Vec::new(),
+        Visibility::Public,
+    )
+    .unwrap();
+    assert_eq!(Arc::strong_count(&retained), 2);
+
+    let staging = SymbolTable::<Arc<()>, ()>::new_with_params(ModuleFullPath::from("m"));
+    let mut records = live
+        .publish_staged(
+            staging,
+            &[StagedPublicationDecision::ChangeAbi {
+                symbol: Symbol::from("f"),
+            }],
+        )
+        .unwrap();
+
+    assert!(live.get("f").is_none());
+    assert_eq!(Arc::strong_count(&retained), 2);
+    assert!(Arc::ptr_eq(
+        records[0].bodies[0].displaced_owner.as_ref().unwrap(),
+        &retained
+    ));
+    records[0].bodies[0].displaced_owner.take();
+    assert_eq!(Arc::strong_count(&retained), 1);
+}
+
+#[test]
+fn staged_publication_omission_never_removes_live_bindings() {
+    let mut live = owner_table("m", Some("old-f"));
+    live.install_concrete(
+        Symbol::from("g"),
+        concrete_scheme(),
+        Vec::new(),
+        None,
+        1,
+        CallableOrigin::Plain,
+        owner_body(Some("old-g")),
+        Some(ast()),
+        Vec::new(),
+        Visibility::Public,
+    )
+    .unwrap();
+    let old_g_slot = live.get("g").unwrap().callable_got_slot();
+    let old_g_revision = live.symbol_revision(&Symbol::from("g"));
+
+    match live.publish_compiled_staged(
+        owner_table("m", None),
+        &[StagedPublicationDecision::PreserveAbi {
+            symbol: Symbol::from("f"),
+        }],
+        HashMap::from([(binding_target("m", "f"), "new-f".to_owned())]),
+    ) {
+        Ok(_) => {}
+        Err(rejection) => panic!("ordinary replacement refused: {}", rejection.reason()),
+    }
+
+    assert_eq!(live.get("g").unwrap().callable_got_slot(), old_g_slot);
+    assert_eq!(compiled_owner(&live, "g"), Some("old-g"));
+    assert_eq!(live.symbol_revision(&Symbol::from("g")), old_g_revision);
+}
+
+#[test]
+fn staged_publication_absent_decision_refusal_matrix_is_atomic() {
+    #[derive(Clone, Copy)]
+    enum ExpectedRefusal {
+        Missing,
+        NotCallable,
+        WrongState,
+    }
+
+    fn retirement_live() -> SymbolTable<String, ()> {
+        let mut live = owner_table("m", Some("old-f"));
+        live.install_binding(
+            Symbol::from("type"),
+            Binding::new(
+                Decl::Type(TypeRecord::Intrinsic {
+                    ty: Type::Int,
+                    docstring: None,
+                }),
+                Visibility::Private,
+            ),
+        )
+        .unwrap();
+        live.install_template(
+            Symbol::from("template"),
+            template_scheme(),
+            Vec::new(),
+            None,
+            1,
+            CallableOrigin::Plain,
+            TemplateBody::Ast(ast()),
+            TemplateKind::Parametric,
+            Vec::new(),
+            Visibility::Public,
+        )
+        .unwrap();
+        live.expose_candidate(
+            Symbol::from("candidate"),
+            FQSymbol {
+                module: ModuleFullPath::from("dep"),
+                symbol: Symbol::from("candidate"),
+            },
+            Visibility::Private,
+        )
+        .unwrap();
+        live
+    }
+
+    fn retirement_staging() -> SymbolTable<String, ()> {
+        let mut staging = SymbolTable::<String, ()>::new_with_params(ModuleFullPath::from("m"));
+        staging
+            .install_concrete(
+                Symbol::from("new"),
+                concrete_scheme(),
+                Vec::new(),
+                None,
+                2,
+                CallableOrigin::Plain,
+                owner_body(None),
+                Some(ast()),
+                Vec::new(),
+                Visibility::Public,
+            )
+            .unwrap();
+        staging
+    }
+
+    let cases = vec![
+        (
+            vec![StagedPublicationDecision::PreserveAbi {
+                symbol: Symbol::from("f"),
+            }],
+            ExpectedRefusal::WrongState,
+        ),
+        (
+            vec![StagedPublicationDecision::ChangeAbi {
+                symbol: Symbol::from("missing"),
+            }],
+            ExpectedRefusal::Missing,
+        ),
+        (
+            vec![StagedPublicationDecision::ChangeAbi {
+                symbol: Symbol::from("type"),
+            }],
+            ExpectedRefusal::NotCallable,
+        ),
+        (
+            vec![StagedPublicationDecision::ChangeAbi {
+                symbol: Symbol::from("template"),
+            }],
+            ExpectedRefusal::WrongState,
+        ),
+        (
+            vec![StagedPublicationDecision::ChangeAbi {
+                symbol: Symbol::from("candidate"),
+            }],
+            ExpectedRefusal::WrongState,
+        ),
+        (
+            vec![
+                StagedPublicationDecision::ChangeAbi {
+                    symbol: Symbol::from("f"),
+                },
+                StagedPublicationDecision::ChangeAbi {
+                    symbol: Symbol::from("f"),
+                },
+            ],
+            ExpectedRefusal::WrongState,
+        ),
+    ];
+
+    for (decisions, expected) in cases {
+        let mut live = retirement_live();
+        let live_slot = live.get("f").unwrap().callable_got_slot().unwrap();
+        let frozen = std::ptr::dangling::<u8>();
+        live.got.store_slot(live_slot, frozen);
+        let before = serde_json::to_string(&live).unwrap();
+        let revisions = ["f", "type", "template", "candidate"].map(|name| {
+            let name = Symbol::from(name);
+            (name.clone(), live.symbol_revision(&name))
+        });
+        let rejection = match live.publish_compiled_staged(
+            retirement_staging(),
+            &decisions,
+            HashMap::from([(binding_target("m", "new"), "submitted".to_owned())]),
+        ) {
+            Err(rejection) => rejection,
+            Ok(_) => panic!("invalid absent-key decision must refuse publication"),
+        };
+        assert!(matches!(
+            (expected, rejection.reason()),
+            (
+                ExpectedRefusal::Missing,
+                LifecycleError::MissingBinding { .. }
+            ) | (
+                ExpectedRefusal::NotCallable,
+                LifecycleError::NotCallable { .. }
+            ) | (
+                ExpectedRefusal::WrongState,
+                LifecycleError::WrongState { .. }
+            )
+        ));
+        let (_, recovered) = rejection.into_parts();
+        assert_eq!(recovered[&binding_target("m", "new")], "submitted");
+        assert_eq!(serde_json::to_string(&live).unwrap(), before);
+        assert_eq!(compiled_owner(&live, "f"), Some("old-f"));
+        assert_eq!(live.got.load_slot(live_slot), frozen);
+        for (name, revision) in revisions {
+            assert_eq!(live.symbol_revision(&name), revision);
+        }
+    }
+}
+
+#[test]
+fn absent_retirement_dangling_candidate_refusal_returns_all_submitted_owners() {
+    let (old_f, _old_f_drops) = drop_spy("old-f");
+    let mut live = SymbolTable::<DropSpy, ()>::new_with_params(ModuleFullPath::from("m"));
+    live.install_concrete(
+        Symbol::from("f"),
+        concrete_scheme(),
+        Vec::new(),
+        None,
+        0,
+        CallableOrigin::Plain,
+        Realization::Body {
+            view: view(),
+            code: Some(old_f),
+        },
+        Some(ast()),
+        Vec::new(),
+        Visibility::Public,
+    )
+    .unwrap();
+    live.expose_candidate(
+        Symbol::from("alias"),
+        FQSymbol {
+            module: ModuleFullPath::from("m"),
+            symbol: Symbol::from("f"),
+        },
+        Visibility::Private,
+    )
+    .unwrap();
+    let before = serde_json::to_string(&live).unwrap();
+    let f_revision = live.symbol_revision(&Symbol::from("f"));
+    let g_revision = live.symbol_revision(&Symbol::from("g"));
+    let h_revision = live.symbol_revision(&Symbol::from("h"));
+
+    let mut staging = SymbolTable::<DropSpy, ()>::new_with_params(ModuleFullPath::from("m"));
+    for (name, seq) in [("g", 1), ("h", 2)] {
+        staging
+            .install_concrete(
+                Symbol::from(name),
+                concrete_scheme(),
+                Vec::new(),
+                None,
+                seq,
+                CallableOrigin::Plain,
+                Realization::Body {
+                    view: view(),
+                    code: None,
+                },
+                Some(ast()),
+                Vec::new(),
+                Visibility::Public,
+            )
+            .unwrap();
+    }
+    let (new_g, new_g_drops) = drop_spy("new-g");
+    let (new_h, new_h_drops) = drop_spy("new-h");
+    let rejection = match live.publish_compiled_staged(
+        staging,
+        &[StagedPublicationDecision::ChangeAbi {
+            symbol: Symbol::from("f"),
+        }],
+        HashMap::from([
+            (binding_target("m", "g"), new_g),
+            (binding_target("m", "h"), new_h),
+        ]),
+    ) {
+        Err(rejection) => rejection,
+        Ok(_) => panic!("dangling local candidate must refuse the complete publication"),
+    };
+
+    assert!(matches!(
+        rejection.reason(),
+        LifecycleError::WrongState { .. }
+    ));
+    assert_eq!(serde_json::to_string(&live).unwrap(), before);
+    assert_eq!(live.symbol_revision(&Symbol::from("f")), f_revision);
+    assert_eq!(live.symbol_revision(&Symbol::from("g")), g_revision);
+    assert_eq!(live.symbol_revision(&Symbol::from("h")), h_revision);
+    assert_eq!(new_g_drops.load(Ordering::SeqCst), 0);
+    assert_eq!(new_h_drops.load(Ordering::SeqCst), 0);
+    let (_, recovered) = rejection.into_parts();
+    assert_eq!(recovered.len(), 2);
+    assert_eq!(recovered[&binding_target("m", "g")].label, "new-g");
+    assert_eq!(recovered[&binding_target("m", "h")].label, "new-h");
+    assert_eq!(new_g_drops.load(Ordering::SeqCst), 0);
+    assert_eq!(new_h_drops.load(Ordering::SeqCst), 0);
+    drop(recovered);
+    assert_eq!(new_g_drops.load(Ordering::SeqCst), 1);
+    assert_eq!(new_h_drops.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn staged_publication_refusals_are_atomic_and_owner_safe() {
+    let mut live = owner_table("m", Some("live-owner"));
+    let old_slot = live.get("f").unwrap().callable_got_slot().unwrap();
+
+    assert!(matches!(
+        live.publish_staged(owner_table("other", None), &[]),
+        Err(LifecycleError::WrongModule { .. })
+    ));
+    assert!(matches!(
+        live.publish_staged(owner_table("m", None), &[]),
+        Err(LifecycleError::WrongState { .. })
+    ));
+    assert!(matches!(
+        live.publish_staged(
+            owner_table("m", None),
+            &[
+                StagedPublicationDecision::PreserveAbi {
+                    symbol: Symbol::from("f"),
+                },
+                StagedPublicationDecision::ChangeAbi {
+                    symbol: Symbol::from("f"),
+                },
+            ],
+        ),
+        Err(LifecycleError::WrongState { .. })
+    ));
+    assert!(matches!(
+        live.publish_staged(
+            owner_table("m", Some("staging-owner")),
+            &[StagedPublicationDecision::PreserveAbi {
+                symbol: Symbol::from("f"),
+            }],
+        ),
+        Err(LifecycleError::WrongState { .. })
+    ));
+    assert!(matches!(
+        live.publish_staged(
+            owner_table("m", None),
+            &[StagedPublicationDecision::PreserveAbi {
+                symbol: Symbol::from("not_staged"),
+            }],
+        ),
+        Err(LifecycleError::WrongState { .. })
+    ));
+
+    assert_eq!(live.get("f").unwrap().callable_got_slot(), Some(old_slot));
+    let owner = match &live.get("f").unwrap().callable().unwrap().arm.life {
+        Life::Concrete {
+            realization: Realization::Body { code, .. },
+            ..
+        } => code.as_deref(),
+        _ => None,
+    };
+    assert_eq!(owner, Some("live-owner"));
+    assert!(live.retired_slots().is_empty());
+}
+
+#[test]
+fn staged_publication_collision_and_late_validation_refusals_are_atomic() {
+    let mut collision = SymbolTable::<String, ()>::new_with_params(ModuleFullPath::from("m"));
+    collision
+        .install_binding(
+            Symbol::from("f"),
+            Binding::new(
+                Decl::Type(TypeRecord::Intrinsic {
+                    ty: Type::Int,
+                    docstring: None,
+                }),
+                Visibility::Private,
+            ),
+        )
+        .unwrap();
+    assert!(matches!(
+        collision.publish_staged(owner_table("m", None), &[]),
+        Err(LifecycleError::NotCallable { .. })
+    ));
+    assert!(matches!(
+        collision.get("f").unwrap().declaration,
+        Decl::Type(_)
+    ));
+
+    let mut invalid_live = owner_table("m", Some("retained"));
+    let claimed = invalid_live
+        .get("f")
+        .unwrap()
+        .callable()
+        .unwrap()
+        .arm
+        .life
+        .claimed_slot()
+        .unwrap();
+    invalid_live.retired_slots.push(RetiredSlot {
+        slot: claimed,
+        reason: RetireReason::AbiChanging {
+            symbol: Symbol::from("prior"),
+        },
+    });
+    let mut staging = SymbolTable::<String, ()>::new_with_params(ModuleFullPath::from("m"));
+    staging
+        .install_binding(
+            Symbol::from("metadata"),
+            Binding::new(
+                Decl::Type(TypeRecord::Intrinsic {
+                    ty: Type::String,
+                    docstring: None,
+                }),
+                Visibility::Private,
+            ),
+        )
+        .unwrap();
+    assert!(matches!(
+        invalid_live.publish_staged(staging, &[]),
+        Err(LifecycleError::DuplicateSlot { .. })
+    ));
+    assert!(invalid_live.get("metadata").is_none());
+    let retained = match &invalid_live.get("f").unwrap().callable().unwrap().arm.life {
+        Life::Concrete {
+            realization: Realization::Body { code, .. },
+            ..
+        } => code.as_deref(),
+        _ => None,
+    };
+    assert_eq!(retained, Some("retained"));
+}
+
+#[test]
+fn staged_publication_commits_a_deterministic_mixed_cluster() {
+    let mut live = owner_table("m", Some("old-f"));
+    live.install_concrete(
+        Symbol::from("g"),
+        concrete_scheme(),
+        Vec::new(),
+        None,
+        1,
+        CallableOrigin::Plain,
+        Realization::Body {
+            view: view(),
+            code: Some("old-g".into()),
+        },
+        Some(ast()),
+        Vec::new(),
+        Visibility::Public,
+    )
+    .unwrap();
+
+    let mut staging = owner_table("m", None);
+    staging
+        .install_template(
+            Symbol::from("g"),
+            template_scheme(),
+            Vec::new(),
+            None,
+            1,
+            CallableOrigin::Plain,
+            TemplateBody::Ast(ast()),
+            TemplateKind::Parametric,
+            Vec::new(),
+            Visibility::Public,
+        )
+        .unwrap();
+    staging
+        .install_concrete(
+            Symbol::from("h"),
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            2,
+            CallableOrigin::Plain,
+            owner_body(None),
+            Some(ast()),
+            Vec::new(),
+            Visibility::Public,
+        )
+        .unwrap();
+    staging
+        .install_binding(
+            Symbol::from("metadata"),
+            Binding::new(
+                Decl::Type(TypeRecord::Intrinsic {
+                    ty: Type::String,
+                    docstring: None,
+                }),
+                Visibility::Private,
+            ),
+        )
+        .unwrap();
+
+    let records = live
+        .publish_staged(
+            staging,
+            &[StagedPublicationDecision::PreserveAbi {
+                symbol: Symbol::from("f"),
+            }],
+        )
+        .unwrap();
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| record.symbol.as_ref())
+            .collect::<Vec<_>>(),
+        vec!["f", "h", "g", "metadata"]
+    );
+    let displaced = records
+        .iter()
+        .flat_map(|record| &record.bodies)
+        .filter_map(|body| body.displaced_owner.as_deref())
+        .collect::<Vec<_>>();
+    assert_eq!(displaced, vec!["old-f", "old-g"]);
+    assert_eq!(live.get("f").unwrap().callable_got_slot(), Some(0));
+    assert!(live.get("g").unwrap().callable_got_slot().is_none());
+    assert_eq!(live.get("h").unwrap().callable_got_slot(), Some(2));
+    assert!(matches!(
+        live.get("metadata").unwrap().declaration,
+        Decl::Type(_)
+    ));
+}
+
+#[test]
+fn compiled_staged_publication_commits_preserve_change_template_and_new_as_one_cluster() {
+    let mut live = owner_table("m", Some("old-f"));
+    live.install_concrete(
+        Symbol::from("g"),
+        concrete_scheme(),
+        Vec::new(),
+        None,
+        1,
+        CallableOrigin::Plain,
+        owner_body(Some("old-g")),
+        Some(ast()),
+        Vec::new(),
+        Visibility::Public,
+    )
+    .unwrap();
+    live.install_concrete(
+        Symbol::from("template"),
+        concrete_scheme(),
+        Vec::new(),
+        None,
+        2,
+        CallableOrigin::Plain,
+        owner_body(Some("old-template")),
+        Some(ast()),
+        Vec::new(),
+        Visibility::Public,
+    )
+    .unwrap();
+    live.expose_candidate(
+        Symbol::from("f"),
+        FQSymbol {
+            module: ModuleFullPath::from("dep.one"),
+            symbol: Symbol::from("f"),
+        },
+        Visibility::Private,
+    )
+    .unwrap();
+    live.module_preamble = Some("live preamble".into());
+    live.schema_version = 17;
+    live.imports.push(ImportSpec {
+        module_path: ModuleFullPath::from("dep.import"),
+        alias: None,
+        names: ImportNames::Glob,
+        span: Span::SYNTHETIC,
+    });
+    live.exports.push(ExportSpec {
+        module_path: ModuleFullPath::from("dep.export"),
+        names: ImportNames::Specific(vec![Symbol::from("x")]),
+        span: Span::SYNTHETIC,
+    });
+    live.platforms.push(PlatformSpec {
+        name: "io".into(),
+        span: Span::SYNTHETIC,
+    });
+    live.submodules.push(ModDecl {
+        name: ModuleName::from("child"),
+        visibility: Visibility::Private,
+        inline_body: None,
+        span: Span::SYNTHETIC,
+    });
+    let live_written_impl = written_impl("m", "display");
+    live.written_trait_impls.push(live_written_impl.clone());
+
+    let old_f_slot = live.get("f").unwrap().callable_got_slot().unwrap();
+    let old_g_slot = live.get("g").unwrap().callable_got_slot().unwrap();
+    let old_template_slot = live.get("template").unwrap().callable_got_slot().unwrap();
+    let revisions = ["f", "g", "template", "h", "metadata"].map(|name| {
+        let name = Symbol::from(name);
+        (name.clone(), live.symbol_revision(&name))
+    });
+
+    let mut staging = owner_table("m", None);
+    staging
+        .install_concrete(
+            Symbol::from("g"),
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            1,
+            CallableOrigin::Plain,
+            owner_body(None),
+            Some(ast()),
+            Vec::new(),
+            Visibility::Public,
+        )
+        .unwrap();
+    staging
+        .install_template(
+            Symbol::from("template"),
+            template_scheme(),
+            Vec::new(),
+            None,
+            2,
+            CallableOrigin::Plain,
+            TemplateBody::Ast(ast()),
+            TemplateKind::Parametric,
+            Vec::new(),
+            Visibility::Public,
+        )
+        .unwrap();
+    staging
+        .install_concrete(
+            Symbol::from("h"),
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            3,
+            CallableOrigin::Plain,
+            owner_body(None),
+            Some(ast()),
+            Vec::new(),
+            Visibility::Public,
+        )
+        .unwrap();
+    staging
+        .install_binding(
+            Symbol::from("metadata"),
+            Binding::new(
+                Decl::Type(TypeRecord::Intrinsic {
+                    ty: Type::String,
+                    docstring: Some("metadata".into()),
+                }),
+                Visibility::Private,
+            ),
+        )
+        .unwrap();
+    staging
+        .expose_candidate(
+            Symbol::from("f"),
+            FQSymbol {
+                module: ModuleFullPath::from("dep.two"),
+                symbol: Symbol::from("f"),
+            },
+            Visibility::Public,
+        )
+        .unwrap();
+    let staged_written_impl = WrittenTraitImpl::new(
+        FQTraitName::new(ModuleFullPath::from("traits"), TraitName::from("Eq")),
+        FQTypeName::new(ModuleFullPath::from("types"), TypeName::from("Other")),
+        ModuleFullPath::from("m"),
+        vec![Symbol::from("eq")],
+        Visibility::Public,
+    );
+    staging
+        .written_trait_impls
+        .push(staged_written_impl.clone());
+
+    let owners = HashMap::from([
+        (binding_target("m", "f"), "new-f".to_owned()),
+        (binding_target("m", "g"), "new-g".to_owned()),
+        (binding_target("m", "h"), "new-h".to_owned()),
+    ]);
+    let records = match live.publish_compiled_staged(
+        staging,
+        &[
+            StagedPublicationDecision::PreserveAbi {
+                symbol: Symbol::from("f"),
+            },
+            StagedPublicationDecision::ChangeAbi {
+                symbol: Symbol::from("g"),
+            },
+        ],
+        owners,
+    ) {
+        Ok(records) => records,
+        Err(rejection) => panic!("compiled publication refused: {}", rejection.reason()),
+    };
+
+    assert_eq!(compiled_owner(&live, "f"), Some("new-f"));
+    assert_eq!(compiled_owner(&live, "g"), Some("new-g"));
+    assert_eq!(compiled_owner(&live, "h"), Some("new-h"));
+    assert_eq!(live.get("f").unwrap().callable_got_slot(), Some(old_f_slot));
+    assert_ne!(live.get("g").unwrap().callable_got_slot(), Some(old_g_slot));
+    assert!(live.get("template").unwrap().callable_got_slot().is_none());
+    assert_eq!(
+        records
+            .iter()
+            .flat_map(|record| &record.bodies)
+            .filter_map(|body| body.displaced_owner.as_deref())
+            .collect::<Vec<_>>(),
+        vec!["old-f", "old-g", "old-template"]
+    );
+    assert!(live.retired_slots().iter().any(|retired| {
+        retired.slot.index() == old_g_slot
+            && matches!(retired.reason, RetireReason::AbiChanging { .. })
+    }));
+    assert!(live.retired_slots().iter().any(|retired| {
+        retired.slot.index() == old_template_slot
+            && matches!(retired.reason, RetireReason::TemplateFlip { .. })
+    }));
+    let candidates = live.name_candidates(&Symbol::from("f"));
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate.source.module.as_ref() == "dep.one")
+    );
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate.source.module.as_ref() == "dep.two")
+    );
+    assert_eq!(live.module_preamble.as_deref(), Some("live preamble"));
+    assert_eq!(live.schema_version, 17);
+    assert_eq!(live.imports.len(), 1);
+    assert_eq!(live.imports[0].module_path.as_ref(), "dep.import");
+    assert_eq!(live.exports.len(), 1);
+    assert_eq!(live.exports[0].module_path.as_ref(), "dep.export");
+    assert_eq!(live.platforms.len(), 1);
+    assert_eq!(live.platforms[0].name, "io");
+    assert_eq!(live.submodules.len(), 1);
+    assert_eq!(live.submodules[0].name.as_ref(), "child");
+    assert_eq!(
+        live.written_trait_impls,
+        vec![live_written_impl, staged_written_impl]
+    );
+    for (name, revision) in revisions {
+        assert_eq!(live.symbol_revision(&name), revision.wrapping_add(1));
+    }
+    live.validate_lifecycle().unwrap();
+}
+
+fn owner_coverage_staging() -> SymbolTable<String, ()> {
+    let mut staging = owner_table("m", None);
+    staging
+        .install_template(
+            Symbol::from("template"),
+            template_scheme(),
+            Vec::new(),
+            None,
+            1,
+            CallableOrigin::Plain,
+            TemplateBody::Ast(ast()),
+            TemplateKind::Parametric,
+            Vec::new(),
+            Visibility::Public,
+        )
+        .unwrap();
+    staging
+        .install_inline(
+            Symbol::from("inline"),
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            2,
+            None,
+            Visibility::Public,
+        )
+        .unwrap();
+    staging
+        .install_host_promised(
+            Symbol::from("host"),
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            3,
+            Visibility::Public,
+        )
+        .unwrap();
+    staging
+        .install_extern(
+            Symbol::from("extern"),
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            4,
+            None,
+            None,
+            Visibility::Public,
+        )
+        .unwrap();
+    staging
+        .install_overloaded(
+            Symbol::from("group"),
+            None,
+            5,
+            Vec::new(),
+            Visibility::Public,
+        )
+        .unwrap();
+    staging
+        .install_binding(
+            Symbol::from("type"),
+            Binding::new(
+                Decl::Type(TypeRecord::Intrinsic {
+                    ty: Type::Int,
+                    docstring: None,
+                }),
+                Visibility::Private,
+            ),
+        )
+        .unwrap();
+    staging
+        .install_trait_method(
+            Symbol::from("method"),
+            TraitMethodRecord::new(
+                concrete_scheme(),
+                Vec::new(),
+                None,
+                FQTraitName::new(ModuleFullPath::from("m"), TraitName::from("Trait")),
+            ),
+            Visibility::Public,
+        )
+        .unwrap();
+    staging
+        .expose_candidate(
+            Symbol::from("candidate"),
+            FQSymbol {
+                module: ModuleFullPath::from("dep"),
+                symbol: Symbol::from("candidate"),
+            },
+            Visibility::Private,
+        )
+        .unwrap();
+    staging
+}
+
+#[test]
+fn compiled_staged_publication_requires_exact_concrete_body_owner_keys() {
+    let staging = owner_coverage_staging();
+    let mut live = SymbolTable::<String, ()>::new_with_params(ModuleFullPath::from("m"));
+    let rejection = match live.publish_compiled_staged(staging.clone(), &[], HashMap::new()) {
+        Err(rejection) => rejection,
+        Ok(_) => panic!("missing concrete-body owner must refuse publication"),
+    };
+    assert!(matches!(
+        rejection.reason(),
+        LifecycleError::WrongState { symbol, .. } if symbol.as_ref() == "f"
+    ));
+    assert!(rejection.into_parts().1.is_empty());
+    assert!(live.all_symbols().next().is_none());
+
+    for extra in [
+        "template",
+        "inline",
+        "host",
+        "extern",
+        "group",
+        "type",
+        "Trait.method",
+        "candidate",
+        "absent",
     ] {
+        let owners = HashMap::from([
+            (binding_target("m", "f"), "body-owner".to_owned()),
+            (binding_target("m", extra), "extra-owner".to_owned()),
+        ]);
+        let rejection = match live.publish_compiled_staged(staging.clone(), &[], owners) {
+            Err(rejection) => rejection,
+            Ok(_) => panic!("owner for '{extra}' must refuse publication"),
+        };
+        assert!(matches!(
+            rejection.reason(),
+            LifecycleError::WrongState { symbol, .. } if symbol.as_ref() == extra
+        ));
+        let (_, recovered) = rejection.into_parts();
+        assert_eq!(recovered.len(), 2);
         assert_eq!(
-            decode_got_flat(&got_flat(path)).as_deref(),
-            Some(path),
-            "escape must round-trip for {path:?}"
+            recovered.get(&binding_target("m", "f")).map(String::as_str),
+            Some("body-owner")
         );
-    }
-    // Pairwise distinctness over the historically-colliding cluster.
-    let cluster = ["a.b", "a_b", "a-b", "a.b.c", "a_b.c", "a.b_c"];
-    for (i, p) in cluster.iter().enumerate() {
-        for q in &cluster[i + 1..] {
-            assert_ne!(got_flat(p), got_flat(q), "{p:?} vs {q:?}");
-        }
+        assert_eq!(
+            recovered
+                .get(&binding_target("m", extra))
+                .map(String::as_str),
+            Some("extra-owner")
+        );
+        assert!(live.all_symbols().next().is_none());
     }
 }
 
-// ---- trait_impl_key + enrol_written_trait_impl (S119, FIXME 0869 carrier;
-// design/arch/trait-impl-cache-carrier.md §4) ----
+#[test]
+fn compiled_staged_publication_returns_all_owners_after_late_multi_row_refusal() {
+    let (old_owner, _old_drops) = drop_spy("old-f");
+    let mut live = SymbolTable::<DropSpy, ()>::new_with_params(ModuleFullPath::from("m"));
+    live.install_concrete(
+        Symbol::from("f"),
+        concrete_scheme(),
+        Vec::new(),
+        None,
+        0,
+        CallableOrigin::Plain,
+        Realization::Body {
+            view: view(),
+            code: Some(old_owner),
+        },
+        Some(ast()),
+        Vec::new(),
+        Visibility::Public,
+    )
+    .unwrap();
+    live.expose_candidate(
+        Symbol::from("f"),
+        FQSymbol {
+            module: ModuleFullPath::from("dep"),
+            symbol: Symbol::from("f"),
+        },
+        Visibility::Private,
+    )
+    .unwrap();
+    let claimed = live
+        .get("f")
+        .unwrap()
+        .callable()
+        .unwrap()
+        .arm
+        .life
+        .claimed_slot()
+        .unwrap();
+    live.retired_slots.push(RetiredSlot {
+        slot: claimed,
+        reason: RetireReason::AbiChanging {
+            symbol: Symbol::from("prior"),
+        },
+    });
+    let f_revision = live.symbol_revision(&Symbol::from("f"));
+    let g_revision = live.symbol_revision(&Symbol::from("g"));
+    let candidates = live.name_candidates(&Symbol::from("f")).to_vec();
+    let tombstones = live.retired_slots.clone();
+    let live_written_impl = written_impl("m", "display");
+    live.written_trait_impls.push(live_written_impl.clone());
 
-fn wt_record(methods: &[&str]) -> WrittenTraitImpl {
-    WrittenTraitImpl::new(
-        FQTraitName::new(ModuleFullPath::from("core"), TraitName::from("Display")),
-        FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Point")),
-        ModuleFullPath::from("user"),
-        methods.iter().map(|m| Symbol::from(*m)).collect(),
+    let mut staging = SymbolTable::<DropSpy, ()>::new_with_params(ModuleFullPath::from("m"));
+    for (name, seq) in [("f", 0), ("g", 1)] {
+        staging
+            .install_concrete(
+                Symbol::from(name),
+                concrete_scheme(),
+                Vec::new(),
+                None,
+                seq,
+                CallableOrigin::Plain,
+                Realization::Body {
+                    view: view(),
+                    code: None,
+                },
+                Some(ast()),
+                Vec::new(),
+                Visibility::Public,
+            )
+            .unwrap();
+    }
+    let (new_f, new_f_drops) = drop_spy("new-f");
+    let (new_g, new_g_drops) = drop_spy("new-g");
+    let owners = HashMap::from([
+        (binding_target("m", "f"), new_f),
+        (binding_target("m", "g"), new_g),
+    ]);
+
+    let rejection = match live.publish_compiled_staged(
+        staging,
+        &[StagedPublicationDecision::PreserveAbi {
+            symbol: Symbol::from("f"),
+        }],
+        owners,
+    ) {
+        Err(rejection) => rejection,
+        Ok(_) => panic!("duplicate live claim must refuse the complete cluster"),
+    };
+    assert!(matches!(
+        rejection.reason(),
+        LifecycleError::DuplicateSlot { .. }
+    ));
+    assert_eq!(new_f_drops.load(Ordering::SeqCst), 0);
+    assert_eq!(new_g_drops.load(Ordering::SeqCst), 0);
+    assert!(live.get("g").is_none());
+    assert_eq!(live.symbol_revision(&Symbol::from("f")), f_revision);
+    assert_eq!(live.symbol_revision(&Symbol::from("g")), g_revision);
+    assert_eq!(live.name_candidates(&Symbol::from("f")), candidates);
+    assert_eq!(live.retired_slots, tombstones);
+    assert_eq!(live.written_trait_impls, vec![live_written_impl]);
+
+    let (_, recovered) = rejection.into_parts();
+    assert_eq!(recovered.len(), 2);
+    assert_eq!(recovered[&binding_target("m", "f")].label, "new-f");
+    assert_eq!(recovered[&binding_target("m", "g")].label, "new-g");
+    assert_eq!(new_f_drops.load(Ordering::SeqCst), 0);
+    assert_eq!(new_g_drops.load(Ordering::SeqCst), 0);
+    drop(recovered);
+    assert_eq!(new_f_drops.load(Ordering::SeqCst), 1);
+    assert_eq!(new_g_drops.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn compiled_owner_attachment_recovers_earlier_rows_on_late_candidate_inconsistency() {
+    let live = SymbolTable::<DropSpy, ()>::new_with_params(ModuleFullPath::from("m"));
+    let mut staging = SymbolTable::<DropSpy, ()>::new_with_params(ModuleFullPath::from("m"));
+    for (name, seq) in [("f", 0), ("g", 1)] {
+        staging
+            .install_concrete(
+                Symbol::from(name),
+                concrete_scheme(),
+                Vec::new(),
+                None,
+                seq,
+                CallableOrigin::Plain,
+                Realization::Body {
+                    view: view(),
+                    code: None,
+                },
+                Some(ast()),
+                Vec::new(),
+                Visibility::Public,
+            )
+            .unwrap();
+    }
+    let mut plan = live.plan_staged_publication(staging, &[]).unwrap();
+    plan.candidate.symbols.remove(&Symbol::from("g"));
+    let (f_owner, f_drops) = drop_spy("f");
+    let (g_owner, g_drops) = drop_spy("g");
+
+    let (reason, recovered) = attach_compiled_publication_owners(
+        &mut plan,
+        HashMap::from([
+            (binding_target("m", "f"), f_owner),
+            (binding_target("m", "g"), g_owner),
+        ]),
+    )
+    .unwrap_err();
+    assert!(matches!(
+        reason,
+        LifecycleError::MissingBinding { symbol } if symbol.as_ref() == "g"
+    ));
+    assert_eq!(recovered.len(), 2);
+    assert_eq!(recovered[&binding_target("m", "f")].label, "f");
+    assert_eq!(recovered[&binding_target("m", "g")].label, "g");
+    assert_eq!(f_drops.load(Ordering::SeqCst), 0);
+    assert_eq!(g_drops.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn compiled_staged_publication_refusal_matrix_is_atomic_and_returns_submitted_owners() {
+    let owners = || HashMap::from([(binding_target("m", "f"), "new-f".to_owned())]);
+
+    let mut wrong_module = SymbolTable::<String, ()>::new_with_params(ModuleFullPath::from("m"));
+    let rejection =
+        match wrong_module.publish_compiled_staged(owner_table("other", None), &[], owners()) {
+            Err(rejection) => rejection,
+            Ok(_) => panic!("wrong-module staging must be refused"),
+        };
+    assert!(matches!(
+        rejection.reason(),
+        LifecycleError::WrongModule { .. }
+    ));
+    assert_eq!(rejection.into_parts().1[&binding_target("m", "f")], "new-f");
+    assert!(wrong_module.all_symbols().next().is_none());
+
+    let mut owner_bearing_staging = owner_table("m", Some("illegal-staging-owner"));
+    let mut live = SymbolTable::<String, ()>::new_with_params(ModuleFullPath::from("m"));
+    let rejection = match live.publish_compiled_staged(
+        std::mem::replace(
+            &mut owner_bearing_staging,
+            SymbolTable::<String, ()>::new_with_params(ModuleFullPath::from("unused")),
+        ),
+        &[],
+        owners(),
+    ) {
+        Err(rejection) => rejection,
+        Ok(_) => panic!("owner-bearing staging must be refused"),
+    };
+    assert!(matches!(
+        rejection.reason(),
+        LifecycleError::WrongState { .. }
+    ));
+    assert_eq!(rejection.into_parts().1[&binding_target("m", "f")], "new-f");
+    assert!(live.all_symbols().next().is_none());
+
+    let mut broken_staging = owner_table("m", None);
+    let broken_transition = broken_staging
+        .mark_broken(
+            &Symbol::from("f"),
+            BrokenProvenance::new(
+                FQSymbol {
+                    module: ModuleFullPath::from("m"),
+                    symbol: Symbol::from("cause"),
+                },
+                "failed".into(),
+            ),
+        )
+        .unwrap();
+    assert!(broken_transition.displaced_owner.is_none());
+    let rejection = match live.publish_compiled_staged(broken_staging, &[], owners()) {
+        Err(rejection) => rejection,
+        Ok(_) => panic!("broken staging must be refused"),
+    };
+    assert!(matches!(
+        rejection.reason(),
+        LifecycleError::WrongState { .. }
+    ));
+    assert_eq!(rejection.into_parts().1[&binding_target("m", "f")], "new-f");
+    assert!(live.all_symbols().next().is_none());
+
+    let mut collision = SymbolTable::<String, ()>::new_with_params(ModuleFullPath::from("m"));
+    collision
+        .install_binding(
+            Symbol::from("f"),
+            Binding::new(
+                Decl::Type(TypeRecord::Intrinsic {
+                    ty: Type::Int,
+                    docstring: None,
+                }),
+                Visibility::Private,
+            ),
+        )
+        .unwrap();
+    let collision_revision = collision.symbol_revision(&Symbol::from("f"));
+    let rejection = match collision.publish_compiled_staged(owner_table("m", None), &[], owners()) {
+        Err(rejection) => rejection,
+        Ok(_) => panic!("non-callable collision must be refused"),
+    };
+    assert!(matches!(
+        rejection.reason(),
+        LifecycleError::NotCallable { .. }
+    ));
+    assert_eq!(rejection.into_parts().1[&binding_target("m", "f")], "new-f");
+    assert!(matches!(
+        collision.get("f").unwrap().declaration,
+        Decl::Type(_)
+    ));
+    assert_eq!(
+        collision.symbol_revision(&Symbol::from("f")),
+        collision_revision
+    );
+
+    let mut missing_decision = owner_table("m", Some("old-f"));
+    let old_slot = missing_decision
+        .get("f")
+        .unwrap()
+        .callable_got_slot()
+        .unwrap();
+    let decision_revision = missing_decision.symbol_revision(&Symbol::from("f"));
+    let rejection =
+        match missing_decision.publish_compiled_staged(owner_table("m", None), &[], owners()) {
+            Err(rejection) => rejection,
+            Ok(_) => panic!("missing ABI decision must be refused"),
+        };
+    assert!(matches!(
+        rejection.reason(),
+        LifecycleError::WrongState { .. }
+    ));
+    assert_eq!(rejection.into_parts().1[&binding_target("m", "f")], "new-f");
+    assert_eq!(
+        missing_decision.get("f").unwrap().callable_got_slot(),
+        Some(old_slot)
+    );
+    assert_eq!(compiled_owner(&missing_decision, "f"), Some("old-f"));
+    assert_eq!(
+        missing_decision.symbol_revision(&Symbol::from("f")),
+        decision_revision
+    );
+    assert!(missing_decision.retired_slots().is_empty());
+
+    let mut exhausted = SymbolTable::<String, ()>::new_with_params(ModuleFullPath::from("m"));
+    for index in 0..GOT_TABLE_SIZE {
+        exhausted.retired_slots.push(RetiredSlot {
+            slot: CallableSlot(index),
+            reason: RetireReason::AbiChanging {
+                symbol: Symbol::from("retired"),
+            },
+        });
+    }
+    let tombstones = exhausted.retired_slots.clone();
+    let revision = exhausted.symbol_revision(&Symbol::from("f"));
+    let rejection = match exhausted.publish_compiled_staged(owner_table("m", None), &[], owners()) {
+        Err(rejection) => rejection,
+        Ok(_) => panic!("full live GOT must refuse a fresh published slot"),
+    };
+    assert!(matches!(
+        rejection.reason(),
+        LifecycleError::SlotMint(SlotMintError::Exhausted(_))
+    ));
+    assert_eq!(rejection.into_parts().1[&binding_target("m", "f")], "new-f");
+    assert!(exhausted.get("f").is_none());
+    assert_eq!(exhausted.retired_slots, tombstones);
+    assert_eq!(exhausted.symbol_revision(&Symbol::from("f")), revision);
+}
+
+fn live_table_with_publication_state() -> SymbolTable<String, ()> {
+    let mut live = owner_table("m", Some("old-f"));
+    live.expose_candidate(
+        Symbol::from("f"),
+        FQSymbol {
+            module: ModuleFullPath::from("dep"),
+            symbol: Symbol::from("f"),
+        },
+        Visibility::Private,
+    )
+    .unwrap();
+    live.retired_slots.push(RetiredSlot {
+        slot: CallableSlot(7),
+        reason: RetireReason::AbiChanging {
+            symbol: Symbol::from("retired"),
+        },
+    });
+    live
+}
+
+#[test]
+fn compiled_staged_publication_rejects_staging_tombstone_without_live_mutation() {
+    let mut live = live_table_with_publication_state();
+    let live_slot = live.get("f").unwrap().callable_got_slot();
+    let live_revision = live.symbol_revision(&Symbol::from("f"));
+    let live_tombstones = live.retired_slots.clone();
+    let live_candidates = live.name_candidates(&Symbol::from("f")).to_vec();
+    let live_symbols = live
+        .all_symbols()
+        .map(|(name, _)| name.clone())
+        .collect::<Vec<_>>();
+
+    let mut staging = owner_table("m", None);
+    staging.retired_slots.push(RetiredSlot {
+        slot: CallableSlot(8),
+        reason: RetireReason::AbiChanging {
+            symbol: Symbol::from("staged-retired"),
+        },
+    });
+    let rejection = match live.publish_compiled_staged(
+        staging,
+        &[StagedPublicationDecision::PreserveAbi {
+            symbol: Symbol::from("f"),
+        }],
+        HashMap::from([(binding_target("m", "f"), "new-f".to_owned())]),
+    ) {
+        Err(rejection) => rejection,
+        Ok(_) => panic!("staging tombstone must refuse compiled publication"),
+    };
+    assert!(matches!(
+        rejection.reason(),
+        LifecycleError::WrongState { expected, .. }
+            if *expected == "unpublished staging without retired slots"
+    ));
+    let (_, recovered) = rejection.into_parts();
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[&binding_target("m", "f")], "new-f");
+    assert_eq!(live.get("f").unwrap().callable_got_slot(), live_slot);
+    assert_eq!(compiled_owner(&live, "f"), Some("old-f"));
+    assert_eq!(live.symbol_revision(&Symbol::from("f")), live_revision);
+    assert_eq!(live.retired_slots, live_tombstones);
+    assert_eq!(live.name_candidates(&Symbol::from("f")), live_candidates);
+    assert_eq!(
+        live.all_symbols()
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<_>>(),
+        live_symbols
+    );
+}
+
+#[test]
+fn compiled_staged_publication_rejects_declared_life_without_live_mutation() {
+    let mut live = live_table_with_publication_state();
+    let live_slot = live.get("f").unwrap().callable_got_slot();
+    let live_revision = live.symbol_revision(&Symbol::from("f"));
+    let live_tombstones = live.retired_slots.clone();
+    let live_candidates = live.name_candidates(&Symbol::from("f")).to_vec();
+    let live_symbols = live
+        .all_symbols()
+        .map(|(name, _)| name.clone())
+        .collect::<Vec<_>>();
+
+    let mut staging = SymbolTable::<String, ()>::new_with_params(ModuleFullPath::from("m"));
+    staging
+        .declare(
+            Symbol::from("f"),
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            0,
+            CallableOrigin::Plain,
+            Visibility::Public,
+        )
+        .unwrap();
+    assert!(matches!(
+        &staging.get("f").unwrap().callable().unwrap().arm.life,
+        Life::Declared { .. }
+    ));
+    let rejection = match live.publish_compiled_staged(
+        staging,
+        &[],
+        HashMap::from([(binding_target("m", "f"), "new-f".to_owned())]),
+    ) {
+        Err(rejection) => rejection,
+        Ok(_) => panic!("Declared staging must refuse compiled publication"),
+    };
+    assert!(matches!(
+        rejection.reason(),
+        LifecycleError::WrongState { expected, .. }
+            if *expected == "a settled, non-broken staged callable"
+    ));
+    let (_, recovered) = rejection.into_parts();
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[&binding_target("m", "f")], "new-f");
+    assert_eq!(live.get("f").unwrap().callable_got_slot(), live_slot);
+    assert_eq!(compiled_owner(&live, "f"), Some("old-f"));
+    assert_eq!(live.symbol_revision(&Symbol::from("f")), live_revision);
+    assert_eq!(live.retired_slots, live_tombstones);
+    assert_eq!(live.name_candidates(&Symbol::from("f")), live_candidates);
+    assert_eq!(
+        live.all_symbols()
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<_>>(),
+        live_symbols
+    );
+}
+
+#[test]
+fn staged_slotless_replacement_retires_slot_and_keeps_unrelated_live_candidates() {
+    let mut live = owner_table("m", Some("compiled"));
+    let old_slot = live.get("f").unwrap().callable_got_slot().unwrap();
+    live.expose_candidate(
+        Symbol::from("f"),
+        FQSymbol {
+            module: ModuleFullPath::from("dependency"),
+            symbol: Symbol::from("f"),
+        },
+        Visibility::Public,
+    )
+    .unwrap();
+
+    let mut staging = SymbolTable::<String, ()>::new_with_params(ModuleFullPath::from("m"));
+    staging
+        .install_template(
+            Symbol::from("f"),
+            template_scheme(),
+            Vec::new(),
+            None,
+            0,
+            CallableOrigin::Plain,
+            TemplateBody::Ast(ast()),
+            TemplateKind::Parametric,
+            Vec::new(),
+            Visibility::Public,
+        )
+        .unwrap();
+    let records = live.publish_staged(staging, &[]).unwrap();
+    assert_eq!(
+        records[0].bodies[0].prior_slot.map(|slot| slot.index()),
+        Some(old_slot)
+    );
+    assert!(records[0].bodies[0].published_slot.is_none());
+    assert_eq!(
+        records[0].bodies[0].displaced_owner.as_deref(),
+        Some("compiled")
+    );
+    assert_eq!(live.retired_slots()[0].slot.index(), old_slot);
+    assert_eq!(live.name_candidates(&Symbol::from("f")).len(), 2);
+}
+
+#[test]
+fn staged_slotted_primitive_cannot_be_relabelled_inline_or_host_promised() {
+    let mut live = slotted_rust_primitive_table();
+    let slot = live.get("primitive").unwrap().callable_got_slot().unwrap();
+    let mut inline = SymbolTable::<String, ()>::new_with_params(ModuleFullPath::from("m"));
+    inline
+        .install_inline(
+            Symbol::from("primitive"),
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            0,
+            None,
+            Visibility::Public,
+        )
+        .unwrap();
+    assert!(matches!(
+        live.publish_staged(inline, &[]),
+        Err(LifecycleError::WrongState { .. })
+    ));
+    assert_eq!(
+        live.get("primitive").unwrap().callable_got_slot(),
+        Some(slot)
+    );
+    assert!(live.retired_slots().is_empty());
+
+    let mut host = SymbolTable::<String, ()>::new_with_params(ModuleFullPath::from("m"));
+    host.install_host_promised(
+        Symbol::from("primitive"),
+        concrete_scheme(),
+        Vec::new(),
+        None,
+        0,
+        Visibility::Public,
+    )
+    .unwrap();
+    assert!(matches!(
+        live.publish_staged(host, &[]),
+        Err(LifecycleError::WrongState { .. })
+    ));
+    assert_eq!(
+        live.get("primitive").unwrap().callable_got_slot(),
+        Some(slot)
+    );
+    assert!(live.retired_slots().is_empty());
+}
+
+fn raw_callable(scheme: Scheme, origin: CallableOrigin, life: Life<()>) -> Binding<()> {
+    Binding::new(
+        Decl::Callable(Callable {
+            docstring: None,
+            seq: 0,
+            origin,
+            arm: CallableArm::new(scheme, Vec::new(), life),
+        }),
         Visibility::Public,
     )
 }
 
-// spec: design/arch/trait-impl-cache-carrier.md §4 — the ONE key mint matches
-// the (to-be-re-pointed) hand-rolled `format!("impl${}${}", type, trait)` sites
-// byte-for-byte.
 #[test]
-fn trait_impl_key_matches_the_handrolled_grammar() {
-    let r = wt_record(&["show"]);
-    let key = crate::trait_impl_key(&r.impl_type, &r.trait_name);
+fn load_validation_rejects_duplicate_claims_and_claim_tombstone_collision() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    let slot = CallableSlot(2);
+    table.replace_binding(
+        Symbol::from("a"),
+        raw_callable(
+            concrete_scheme(),
+            CallableOrigin::Plain,
+            Life::Concrete {
+                slot,
+                realization: body(),
+                minted_from: None,
+                ast: Some(ast()),
+                callees: Vec::new(),
+                value_use: false,
+                mode_summary: None,
+            },
+        ),
+    );
+    table.replace_binding(
+        Symbol::from("b"),
+        raw_callable(
+            concrete_scheme(),
+            CallableOrigin::Plain,
+            Life::Broken {
+                slot,
+                error: BrokenProvenance {
+                    broken_by: FQSymbol {
+                        module: ModuleFullPath::from("m"),
+                        symbol: Symbol::from("b"),
+                    },
+                    message: "plant".into(),
+                },
+            },
+        ),
+    );
     assert_eq!(
-        key.as_ref(),
-        format!("impl${}${}", r.impl_type, r.trait_name).as_str()
+        table.validate_lifecycle(),
+        Err(LifecycleError::DuplicateSlot { slot: 2 })
+    );
+
+    table.symbols.remove("b");
+    table.retired_slots.push(RetiredSlot {
+        slot,
+        reason: RetireReason::AbiChanging {
+            symbol: Symbol::from("old"),
+        },
+    });
+    assert_eq!(
+        table.validate_lifecycle(),
+        Err(LifecycleError::DuplicateSlot { slot: 2 })
     );
 }
 
-// spec: design/arch/trait-impl-cache-carrier.md §4 — absent ⇒ insert the shell
-// (Enrolled); identical replay ⇒ AlreadyEnrolled (idempotence carried by the
-// helper, not caller bookkeeping).
 #[test]
-fn enrol_written_trait_impl_inserts_then_idempotent() {
-    let mut home = SymbolTable::new(ModuleFullPath::from("core"));
-    let r = wt_record(&["show"]);
-    assert_eq!(
-        enrol_written_trait_impl(&mut home, &r).expect("fresh enrol"),
-        EnrolOutcome::Enrolled
+fn load_validation_counts_declared_prior_and_duplicate_tombstones_as_claims() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    let slot = CallableSlot(3);
+    table.replace_binding(
+        Symbol::from("live"),
+        raw_callable(
+            concrete_scheme(),
+            CallableOrigin::Plain,
+            Life::Concrete {
+                slot,
+                realization: body(),
+                minted_from: None,
+                ast: Some(ast()),
+                callees: Vec::new(),
+                value_use: false,
+                mode_summary: None,
+            },
+        ),
     );
-    let key = crate::trait_impl_key(&r.impl_type, &r.trait_name);
-    match home.get(key.as_ref()) {
-        Some(ModuleEntry::TraitImpl {
-            trait_name,
-            impl_module,
-            methods,
-            ..
-        }) => {
-            assert_eq!(trait_name, &r.trait_name);
-            assert_eq!(impl_module, &r.impl_module);
-            assert_eq!(methods, &r.methods);
-        }
-        other => panic!("expected the discovery shell, got {other:?}"),
+    table.replace_binding(
+        Symbol::from("pending"),
+        raw_callable(
+            concrete_scheme(),
+            CallableOrigin::Plain,
+            Life::Declared { prior: Some(slot) },
+        ),
+    );
+    assert_eq!(
+        table.validate_lifecycle(),
+        Err(LifecycleError::DuplicateSlot { slot: 3 })
+    );
+
+    table.symbols.clear();
+    table.replace_binding(
+        Symbol::from("pending"),
+        raw_callable(
+            concrete_scheme(),
+            CallableOrigin::Plain,
+            Life::Declared {
+                prior: Some(CallableSlot(GOT_TABLE_SIZE)),
+            },
+        ),
+    );
+    assert_eq!(
+        table.validate_lifecycle(),
+        Err(LifecycleError::SlotOutOfRange {
+            slot: GOT_TABLE_SIZE
+        })
+    );
+
+    table.symbols.clear();
+    for symbol in ["old-a", "old-b"] {
+        table.retired_slots.push(RetiredSlot {
+            slot,
+            reason: RetireReason::AbiChanging {
+                symbol: Symbol::from(symbol),
+            },
+        });
     }
     assert_eq!(
-        enrol_written_trait_impl(&mut home, &r).expect("replay"),
-        EnrolOutcome::AlreadyEnrolled
+        table.validate_lifecycle(),
+        Err(LifecycleError::DuplicateSlot { slot: 3 })
     );
 }
 
-// spec: design/arch/trait-impl-cache-carrier.md §4 — divergent payload is a
-// hard error naming both, never a silent pick; a non-TraitImpl occupant is
-// equally divergent.
 #[test]
-fn enrol_written_trait_impl_rejects_divergence() {
-    let mut home = SymbolTable::new(ModuleFullPath::from("core"));
-    let r = wt_record(&["show"]);
-    enrol_written_trait_impl(&mut home, &r).expect("fresh enrol");
-    let divergent = wt_record(&["show", "extra"]);
-    let err = enrol_written_trait_impl(&mut home, &divergent)
-        .expect_err("divergent methods must hard-error");
-    assert!(matches!(err, crate::CranelispError::ModuleError { .. }));
+fn load_validation_rejects_nonconcrete_and_out_of_range_claims() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    table.replace_binding(
+        Symbol::from("bad"),
+        raw_callable(
+            template_scheme(),
+            CallableOrigin::Plain,
+            Life::Concrete {
+                slot: CallableSlot(0),
+                realization: body(),
+                minted_from: None,
+                ast: Some(ast()),
+                callees: Vec::new(),
+                value_use: false,
+                mode_summary: None,
+            },
+        ),
+    );
+    assert!(matches!(
+        table.validate_lifecycle(),
+        Err(LifecycleError::NonConcreteSlot { .. })
+    ));
 
-    // Non-TraitImpl occupant at the key.
-    let mut home2 = SymbolTable::new(ModuleFullPath::from("core"));
-    let key = crate::trait_impl_key(&r.impl_type, &r.trait_name);
-    home2.insert(key, ModuleEntry::Ambiguous { visibility: Visibility::Public });
-    let err2 = enrol_written_trait_impl(&mut home2, &r)
-        .expect_err("non-TraitImpl occupant must hard-error");
-    assert!(matches!(err2, crate::CranelispError::ModuleError { .. }));
+    table.symbols.clear();
+    table.retired_slots.push(RetiredSlot {
+        slot: CallableSlot(GOT_TABLE_SIZE),
+        reason: RetireReason::AbiChanging {
+            symbol: Symbol::from("old"),
+        },
+    });
+    assert_eq!(
+        table.validate_lifecycle(),
+        Err(LifecycleError::SlotOutOfRange {
+            slot: GOT_TABLE_SIZE
+        })
+    );
 }
 
-// spec: design/arch/trait-impl-cache-carrier.md §5 (R6) — a malformed record
-// (empty method list) is rejected before enrolment; nothing is inserted.
-#[test]
-fn enrol_written_trait_impl_rejects_malformed_record() {
-    let mut home = SymbolTable::new(ModuleFullPath::from("core"));
-    let r = wt_record(&[]);
-    let err = enrol_written_trait_impl(&mut home, &r).expect_err("empty methods must reject");
-    assert!(matches!(err, crate::CranelispError::ModuleError { .. }));
-    let key = crate::trait_impl_key(&r.impl_type, &r.trait_name);
-    assert!(home.get(key.as_ref()).is_none(), "nothing enrolled on rejection");
+fn fq_type() -> FQTypeName {
+    FQTypeName::new(ModuleFullPath::from("m"), TypeName::from("T"))
 }
 
-// spec: design/arch/trait-impl-cache-carrier.md §2 — the carrier is
-// serde-visible with NO default: a sidecar missing `written_trait_impls` is a
-// hard serde error (absence unrepresentable post-bump), and a populated field
-// round-trips in order.
-#[test]
-fn written_trait_impls_serde_required_and_round_trips() {
-    let mut st = SymbolTable::new(ModuleFullPath::from("user"));
-    st.written_trait_impls.push(wt_record(&["show"]));
-    let json = serde_json::to_string(&st).expect("serialize");
-    assert!(json.contains("written_trait_impls"));
-    let rt: SymbolTable = serde_json::from_str(&json).expect("round trip");
-    assert_eq!(rt.written_trait_impls, st.written_trait_impls);
+fn origins() -> Vec<CallableOrigin> {
+    vec![
+        CallableOrigin::Plain,
+        CallableOrigin::TraitMethod {
+            shell: FQSymbol {
+                module: ModuleFullPath::from("m"),
+                symbol: Symbol::from("impl"),
+            },
+            trait_name: FQTraitName::new(ModuleFullPath::from("m"), TraitName::from("Show")),
+            impl_type: fq_type(),
+        },
+        CallableOrigin::Ctor {
+            type_name: fq_type(),
+            tag: 0,
+            field_count: 0,
+            internal: false,
+            type_def: None,
+        },
+        CallableOrigin::Accessor {
+            type_name: fq_type(),
+            field: Symbol::from("v"),
+        },
+        CallableOrigin::RustPrimitive,
+        CallableOrigin::PlatformEffect {
+            scheduling_class: SchedulingClass::Sequential,
+            poll_shape: false,
+        },
+    ]
+}
 
-    // Field stripped ⇒ hard error, not a silently-empty default.
-    let v: serde_json::Value = serde_json::from_str(&json).expect("value");
-    let mut obj = v;
-    obj.as_object_mut()
-        .expect("object")
-        .remove("written_trait_impls")
-        .expect("field present");
-    let stripped = serde_json::to_string(&obj).expect("re-serialize");
+#[derive(Debug, Clone, Copy)]
+enum State {
+    Declared,
+    Template,
+    Concrete,
+    Inline,
+    HostPromised,
+    Broken,
+}
+
+fn life_for(origin: &CallableOrigin, state: State) -> Life<()> {
+    match state {
+        State::Declared => Life::Declared { prior: None },
+        State::Template => {
+            let body = match origin {
+                CallableOrigin::RustPrimitive => TemplateBody::UniformRust {
+                    abi_name: LinkerSymbol::from("shim"),
+                },
+                CallableOrigin::Ctor { .. } | CallableOrigin::Accessor { .. } => {
+                    TemplateBody::Synth(SynthSpec { variant: ast() })
+                }
+                _ => TemplateBody::Ast(ast()),
+            };
+            Life::Template {
+                body,
+                kind: TemplateKind::Parametric,
+                callees: Vec::new(),
+            }
+        }
+        State::Concrete => {
+            let realization = match origin {
+                CallableOrigin::PlatformEffect { .. } => Realization::Dll,
+                CallableOrigin::RustPrimitive => Realization::ExternShim {
+                    borrowed_sibling: None,
+                },
+                _ => body(),
+            };
+            Life::Concrete {
+                slot: CallableSlot(0),
+                realization,
+                minted_from: None,
+                ast: None,
+                callees: Vec::new(),
+                value_use: false,
+                mode_summary: None,
+            }
+        }
+        State::Inline => Life::Inline { mode_summary: None },
+        State::HostPromised => Life::HostPromised,
+        State::Broken => Life::Broken {
+            slot: CallableSlot(0),
+            error: BrokenProvenance {
+                broken_by: FQSymbol {
+                    module: ModuleFullPath::from("m"),
+                    symbol: Symbol::from("f"),
+                },
+                message: "plant".into(),
+            },
+        },
+    }
+}
+
+fn expected_legal(origin: &CallableOrigin, state: State) -> bool {
+    match origin {
+        CallableOrigin::PlatformEffect { .. } => matches!(state, State::Concrete),
+        CallableOrigin::RustPrimitive => matches!(
+            state,
+            State::Template | State::Concrete | State::Inline | State::HostPromised
+        ),
+        CallableOrigin::Ctor { .. } | CallableOrigin::Accessor { .. } => {
+            matches!(state, State::Template | State::Concrete | State::Broken)
+        }
+        _ => matches!(
+            state,
+            State::Declared | State::Template | State::Concrete | State::Broken
+        ),
+    }
+}
+
+#[test]
+fn load_validation_exercises_exhaustive_origin_life_matrix() {
+    let states = [
+        State::Declared,
+        State::Template,
+        State::Concrete,
+        State::Inline,
+        State::HostPromised,
+        State::Broken,
+    ];
+    for origin in origins() {
+        for state in states {
+            let scheme = if matches!(state, State::Template) {
+                template_scheme()
+            } else {
+                concrete_scheme()
+            };
+            let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+            table.replace_binding(
+                Symbol::from("f"),
+                raw_callable(scheme, origin.clone(), life_for(&origin, state)),
+            );
+            assert_eq!(
+                table.validate_lifecycle().is_ok(),
+                expected_legal(&origin, state),
+                "origin={origin:?}, state={state:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn funnels_reject_incompatible_template_and_realization_payloads_atomically() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    declare(
+        &mut table,
+        "template",
+        template_scheme(),
+        CallableOrigin::Plain,
+    );
+    assert!(matches!(
+        table.settle_template(
+            &Symbol::from("template"),
+            TemplateBody::Synth(SynthSpec { variant: ast() }),
+            TemplateKind::Parametric,
+            Vec::new(),
+        ),
+        Err(LifecycleError::IllegalRealization { .. })
+    ));
+    assert!(matches!(
+        table.get("template").unwrap().callable().unwrap().arm.life,
+        Life::Declared { prior: None }
+    ));
+
+    assert!(matches!(
+        table.install_concrete(
+            Symbol::from("concrete"),
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            0,
+            CallableOrigin::Plain,
+            Realization::Dll,
+            None,
+            Vec::new(),
+            Visibility::Public,
+        ),
+        Err(LifecycleError::IllegalRealization { .. })
+    ));
+    assert!(table.get("concrete").is_none());
+}
+
+#[test]
+fn serde_and_clone_bypass_are_rejected_by_validation() {
+    let mut valid = SymbolTable::new(ModuleFullPath::from("m"));
+    declare(&mut valid, "f", concrete_scheme(), CallableOrigin::Plain);
+    let slot = valid
+        .settle_concrete(&Symbol::from("f"), body(), Some(ast()), Vec::new())
+        .unwrap();
+
+    let mut cloned = valid.clone();
+    cloned.replace_binding(
+        Symbol::from("g"),
+        raw_callable(
+            concrete_scheme(),
+            CallableOrigin::Plain,
+            Life::Broken {
+                slot,
+                error: BrokenProvenance {
+                    broken_by: FQSymbol {
+                        module: ModuleFullPath::from("m"),
+                        symbol: Symbol::from("g"),
+                    },
+                    message: "clone plant".into(),
+                },
+            },
+        ),
+    );
+    assert!(matches!(
+        cloned.validate_lifecycle(),
+        Err(LifecycleError::DuplicateSlot { .. })
+    ));
+
+    let json = serde_json::to_string(&cloned).unwrap();
+    let restored: SymbolTable = serde_json::from_str(&json).unwrap();
+    assert!(matches!(
+        restored.validate_lifecycle(),
+        Err(LifecycleError::DuplicateSlot { .. })
+    ));
+}
+
+#[test]
+fn platform_manifest_slot_and_fresh_mint_share_one_claim_space() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("platform"));
+    let platform = table
+        .install_platform(
+            Symbol::from("effect"),
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            0,
+            SchedulingClass::Sequential,
+            false,
+            0,
+            Visibility::Public,
+        )
+        .unwrap();
+    assert_eq!(platform.index(), 0);
+
+    declare(&mut table, "f", concrete_scheme(), CallableOrigin::Plain);
+    let fresh = table
+        .settle_concrete(&Symbol::from("f"), body(), Some(ast()), Vec::new())
+        .unwrap();
+    assert_eq!(fresh.index(), 1);
+}
+
+#[test]
+fn illegal_funnels_refuse_without_mutating_the_table() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    assert!(matches!(
+        table.declare(
+            Symbol::from("effect"),
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            0,
+            CallableOrigin::PlatformEffect {
+                scheduling_class: SchedulingClass::Sequential,
+                poll_shape: false,
+            },
+            Visibility::Public,
+        ),
+        Err(LifecycleError::IllegalOriginState { .. })
+    ));
+    assert!(table.get("effect").is_none());
+
+    table
+        .install_platform(
+            Symbol::from("effect"),
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            0,
+            SchedulingClass::Sequential,
+            false,
+            0,
+            Visibility::Public,
+        )
+        .unwrap();
+    assert!(matches!(
+        table.mark_broken(
+            &Symbol::from("effect"),
+            BrokenProvenance {
+                broken_by: FQSymbol {
+                    module: ModuleFullPath::from("m"),
+                    symbol: Symbol::from("effect"),
+                },
+                message: "plant".into(),
+            },
+        ),
+        Err(LifecycleError::IllegalOriginState { .. })
+    ));
+    assert!(matches!(
+        table.get("effect").unwrap().callable().unwrap().arm.life,
+        Life::Concrete {
+            realization: Realization::Dll,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn install_instance_derives_key_preserves_backlink_and_mints_slot() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("consumer"));
+    table
+        .install_template(
+            Symbol::from("generic"),
+            template_scheme(),
+            Vec::new(),
+            None,
+            0,
+            CallableOrigin::Plain,
+            TemplateBody::Ast(ast()),
+            TemplateKind::Parametric,
+            Vec::new(),
+            Visibility::Public,
+        )
+        .unwrap();
+
+    let link = InstanceLink::from_type_args(
+        CallableTarget::Binding(FQSymbol {
+            module: ModuleFullPath::from("producer"),
+            symbol: Symbol::from("generic"),
+        }),
+        vec![ConcreteType::Int],
+    );
+    let expected_key = link.instance_key();
+    let (key, slot) = table
+        .install_instance(
+            link.clone(),
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            1,
+            CallableOrigin::Plain,
+            body(),
+            Some(ast()),
+            Vec::new(),
+            Visibility::Private,
+        )
+        .unwrap();
+    assert_eq!(key, expected_key);
+    assert_eq!(slot.index(), 0);
+    assert_eq!(
+        table.get(key.as_ref()).unwrap().callable_got_slot(),
+        Some(0)
+    );
+    let callable = table.get(key.as_ref()).unwrap().callable().unwrap();
+    assert!(matches!(
+        &callable.arm.life,
+        Life::Concrete {
+            minted_from: Some(found),
+            ..
+        } if found == &link
+    ));
+}
+
+#[test]
+fn mismatched_instance_candidate_is_rejected_before_mutation() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("consumer"));
+    let link = InstanceLink::from_type_args(
+        CallableTarget::Binding(FQSymbol {
+            module: ModuleFullPath::from("producer"),
+            symbol: Symbol::from("generic"),
+        }),
+        vec![ConcreteType::Int],
+    );
+    let expected = link.instance_key();
+    let actual = Symbol::from("wrong-key");
+    let slot = table.mint_callable_slot(&concrete_scheme()).unwrap();
+    let candidate = Callable {
+        docstring: None,
+        seq: 0,
+        origin: CallableOrigin::Plain,
+        arm: CallableArm::new(
+            concrete_scheme(),
+            Vec::new(),
+            Life::Concrete {
+                slot,
+                realization: body(),
+                minted_from: Some(link),
+                ast: Some(ast()),
+                callees: Vec::new(),
+                value_use: false,
+                mode_summary: None,
+            },
+        ),
+    };
+
+    assert_eq!(
+        table.install_settled_callable(actual.clone(), candidate, Visibility::Private),
+        Err(LifecycleError::InstanceKeyMismatch {
+            symbol: actual.clone(),
+            expected,
+        })
+    );
+    assert!(table.get(actual.as_ref()).is_none());
+    assert_eq!(table.all_symbols().count(), 0);
+}
+
+#[test]
+fn restored_instance_with_tampered_storage_key_is_rejected_exactly() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("consumer"));
+    let link = InstanceLink::from_type_args(
+        CallableTarget::Binding(FQSymbol {
+            module: ModuleFullPath::from("producer"),
+            symbol: Symbol::from("generic"),
+        }),
+        vec![ConcreteType::Int],
+    );
+    let expected = link.instance_key();
+    table
+        .install_instance(
+            link,
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            0,
+            CallableOrigin::Plain,
+            body(),
+            Some(ast()),
+            Vec::new(),
+            Visibility::Private,
+        )
+        .unwrap();
+
+    let actual = Symbol::from("tampered-key");
+    let mut serialized = serde_json::to_value(&table).unwrap();
+    let symbols = serialized
+        .get_mut("symbols")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("symbol table serializes its private binding map");
+    let binding = symbols
+        .remove(expected.as_ref())
+        .expect("installed instance key is serialized");
+    symbols.insert(actual.to_string(), binding);
+    let restored: SymbolTable = serde_json::from_value(serialized).unwrap();
+
+    assert_eq!(
+        restored.validate_lifecycle(),
+        Err(LifecycleError::InstanceKeyMismatch {
+            symbol: actual,
+            expected,
+        })
+    );
+}
+
+#[test]
+fn typed_demand_and_link_share_one_lossless_instance_key() {
+    let template = FQSymbol {
+        module: ModuleFullPath::from("producer"),
+        symbol: Symbol::from("apply"),
+    };
+    let vec_name = FQTypeName::new(ModuleFullPath::from("collections"), TypeName::from("Vec"));
+    let args = vec![
+        ConcreteType::ADT(vec_name.clone(), vec![ConcreteType::Int]),
+        ConcreteType::Fn(vec![ConcreteType::String], Box::new(ConcreteType::Bool)),
+    ];
+    let target = CallableTarget::Binding(template.clone());
+    let demand = MonoDemand::from_type_args(target.clone(), args.clone(), Span::SYNTHETIC);
+    let link = demand.instance_link();
+    assert_eq!(link.template, target);
+    assert_eq!(link.type_args, args);
+    assert_eq!(demand.instance_key(), link.instance_key());
+
+    let other_home = InstanceLink::from_type_args(
+        CallableTarget::Binding(FQSymbol {
+            module: ModuleFullPath::from("other"),
+            symbol: Symbol::from("apply"),
+        }),
+        link.type_args.clone(),
+    );
+    assert_ne!(link.instance_key(), other_home.instance_key());
+    let other_adt_arg = InstanceLink::from_type_args(
+        link.template.clone(),
+        vec![
+            ConcreteType::ADT(vec_name, vec![ConcreteType::String]),
+            ConcreteType::Fn(vec![ConcreteType::String], Box::new(ConcreteType::Bool)),
+        ],
+    );
+    assert_ne!(link.instance_key(), other_adt_arg.instance_key());
+}
+
+fn trait_name() -> FQTraitName {
+    FQTraitName::new(ModuleFullPath::from("traits"), TraitName::from("Display"))
+}
+
+fn impl_type() -> FQTypeName {
+    FQTypeName::new(ModuleFullPath::from("types"), TypeName::from("Thing"))
+}
+
+fn written_impl(writer: &str, method: &str) -> WrittenTraitImpl {
+    WrittenTraitImpl::new(
+        trait_name(),
+        impl_type(),
+        ModuleFullPath::from(writer),
+        vec![Symbol::from(method)],
+        Visibility::Public,
+    )
+}
+
+#[test]
+fn trait_method_install_is_idempotent_and_conflict_checked() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("traits"));
+    let method = TraitMethodRecord::new(
+        concrete_scheme(),
+        vec![Symbol::from("self")],
+        Some("display".into()),
+        trait_name(),
+    );
+    table
+        .install_trait_method(Symbol::from("display"), method.clone(), Visibility::Public)
+        .unwrap();
+    table
+        .install_trait_method(Symbol::from("display"), method, Visibility::Public)
+        .unwrap();
+    assert_eq!(table.name_candidates(&Symbol::from("display")).len(), 1);
+    let divergent = TraitMethodRecord::new(
+        template_scheme(),
+        vec![Symbol::from("self")],
+        None,
+        trait_name(),
+    );
+    assert!(matches!(
+        table.install_trait_method(Symbol::from("display"), divergent, Visibility::Public),
+        Err(LifecycleError::WrongState { .. })
+    ));
+    assert_eq!(table.name_candidates(&Symbol::from("display")).len(), 1);
+    assert_eq!(table.all_symbols().count(), 1);
+    table
+        .install_binding(
+            crate::member_key("Display", "occupied"),
+            non_callable_binding(),
+        )
+        .unwrap();
+    assert!(matches!(
+        table.install_trait_method(
+            Symbol::from("occupied"),
+            TraitMethodRecord::new(concrete_scheme(), Vec::new(), None, trait_name()),
+            Visibility::Private,
+        ),
+        Err(LifecycleError::WrongState { .. })
+    ));
+}
+
+#[test]
+fn trait_method_dedicated_funnel_cannot_be_bypassed_or_removed() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("traits"));
+    let name = Symbol::from("display");
+    let canonical = crate::member_key("Display", "display");
+    let method = TraitMethodRecord::new(
+        concrete_scheme(),
+        vec![Symbol::from("self")],
+        Some("original".into()),
+        trait_name(),
+    );
+    let direct = Binding::new(Decl::TraitMethod(method.clone()), Visibility::Public);
+    assert!(matches!(
+        table.install_binding(name.clone(), direct),
+        Err(LifecycleError::WrongState { .. })
+    ));
+    assert!(table.get(name.as_ref()).is_none());
+
+    table
+        .install_trait_method(name.clone(), method, Visibility::Public)
+        .unwrap();
+    let divergent = Binding::new(
+        Decl::TraitMethod(TraitMethodRecord::new(
+            template_scheme(),
+            Vec::new(),
+            Some("divergent".into()),
+            trait_name(),
+        )),
+        Visibility::Private,
+    );
+    assert!(matches!(
+        table.install_binding(canonical.clone(), divergent),
+        Err(LifecycleError::WrongState { .. })
+    ));
+    assert!(matches!(
+        table.remove_non_callable(&canonical),
+        Err(LifecycleError::WrongState { .. })
+    ));
+    assert_eq!(
+        table
+            .get(canonical.as_ref())
+            .unwrap()
+            .trait_method()
+            .unwrap()
+            .docstring
+            .as_deref(),
+        Some("original")
+    );
+}
+
+#[test]
+fn trait_method_is_dispatchable_but_never_defined() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("traits"));
+    table
+        .install_trait_method(
+            Symbol::from("display"),
+            TraitMethodRecord::new(
+                concrete_scheme(),
+                vec![Symbol::from("self")],
+                None,
+                trait_name(),
+            ),
+            Visibility::Public,
+        )
+        .unwrap();
+
+    let binding = table.get("Display.display").unwrap();
+    assert!(binding.trait_method().is_some());
+    assert!(binding.is_callable_target());
+    assert!(table.get("display").is_none());
+    assert_eq!(table.name_candidates(&Symbol::from("display")).len(), 1);
+    assert_eq!(table.codegen_targets().count(), 0);
+}
+
+#[test]
+fn trait_method_uses_qualified_storage_and_bare_projection() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("traits"));
+    let method = Symbol::from("display");
+    table
+        .install_trait_method(
+            method.clone(),
+            TraitMethodRecord::new(
+                concrete_scheme(),
+                vec![Symbol::from("self")],
+                None,
+                trait_name(),
+            ),
+            Visibility::Public,
+        )
+        .unwrap();
+
+    let canonical = crate::member_key("Display", "display");
+    assert!(table.get(method.as_ref()).is_none());
     assert!(
-        serde_json::from_str::<SymbolTable>(&stripped).is_err(),
-        "a pre-24 sidecar (no carrier field) must be a hard serde error"
+        table
+            .get(canonical.as_ref())
+            .unwrap()
+            .trait_method()
+            .is_some()
+    );
+    assert_eq!(
+        table.name_candidates(&method),
+        vec![NameCandidate::new(
+            FQSymbol {
+                module: ModuleFullPath::from("traits"),
+                symbol: canonical,
+            },
+            Visibility::Public,
+        )]
+    );
+    table.validate_lifecycle().unwrap();
+}
+
+#[test]
+fn trait_method_funnels_refuse_wrong_home_and_source_atomically() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("consumer"));
+    assert!(matches!(
+        table.install_trait_method(
+            Symbol::from("display"),
+            TraitMethodRecord::new(concrete_scheme(), Vec::new(), None, trait_name()),
+            Visibility::Public,
+        ),
+        Err(LifecycleError::WrongState { .. })
+    ));
+    assert_eq!(table.all_symbols().count(), 0);
+    assert!(table.name_candidates(&Symbol::from("display")).is_empty());
+
+    assert!(matches!(
+        table.expose_candidate(
+            Symbol::from("display"),
+            FQSymbol {
+                module: ModuleFullPath::from("consumer"),
+                symbol: Symbol::from("display"),
+            },
+            Visibility::Public,
+        ),
+        Err(LifecycleError::MissingBinding { .. })
+    ));
+    assert!(table.name_candidates(&Symbol::from("display")).is_empty());
+}
+
+#[test]
+fn accessor_and_trait_method_candidates_coexist() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("traits"));
+    let method = Symbol::from("display");
+    let accessor = FQSymbol {
+        module: ModuleFullPath::from("types"),
+        symbol: Symbol::from("Box.display"),
+    };
+    table
+        .expose_candidate(method.clone(), accessor.clone(), Visibility::Public)
+        .unwrap();
+    table
+        .install_trait_method(
+            method.clone(),
+            TraitMethodRecord::new(concrete_scheme(), Vec::new(), None, trait_name()),
+            Visibility::Public,
+        )
+        .unwrap();
+
+    assert!(table.get(method.as_ref()).is_none());
+    let candidates = table.name_candidates(&method);
+    assert_eq!(candidates.len(), 2);
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate.source == accessor)
     );
 }
 
-// spec: design/arch/platform-interface.md §1 — the platform GOT symbol is the
-// DLL's ratified export_name literal; the host mint reproduces it verbatim
-// (the S119 escape carves out the synthetic platform.* namespace).
 #[test]
-fn got_data_symbol_name_platform_carve_out_matches_the_dll_abi_literal() {
+fn name_candidate_same_source_dedups_and_public_wins() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("consumer"));
+    let local = Symbol::from("display");
+    let source = FQSymbol {
+        module: ModuleFullPath::from("traits"),
+        symbol: crate::member_key("Display", "display"),
+    };
+    table
+        .expose_candidate(local.clone(), source.clone(), Visibility::Private)
+        .unwrap();
+    table
+        .expose_candidate(local.clone(), source.clone(), Visibility::Public)
+        .unwrap();
+    table
+        .expose_candidate(local.clone(), source.clone(), Visibility::Private)
+        .unwrap();
+
     assert_eq!(
-        got_data_symbol_name(&ModuleFullPath::from("platform.stdio")),
-        "__cranelisp_got_platform_stdio"
+        table.name_candidates(&local),
+        vec![NameCandidate::new(source, Visibility::Public)]
     );
+}
+
+#[test]
+fn all_name_candidates_includes_private_while_public_projection_filters() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("consumer"));
+    table
+        .expose_candidate(
+            Symbol::from("value"),
+            FQSymbol {
+                module: ModuleFullPath::from("private-source"),
+                symbol: Symbol::from("hidden"),
+            },
+            Visibility::Private,
+        )
+        .unwrap();
+    table
+        .expose_candidate(
+            Symbol::from("value"),
+            FQSymbol {
+                module: ModuleFullPath::from("public-source"),
+                symbol: Symbol::from("visible"),
+            },
+            Visibility::Public,
+        )
+        .unwrap();
+
+    let all = table.all_name_candidates().collect::<Vec<_>>();
+    assert_eq!(all.len(), 2);
+    assert!(
+        all.iter()
+            .any(|(_, candidate)| candidate.visibility == Visibility::Private)
+    );
+    let public = table.public_name_candidates().collect::<Vec<_>>();
+    assert_eq!(public.len(), 1);
     assert_eq!(
-        got_data_symbol_name(&ModuleFullPath::from("platform.test-capture")),
-        "__cranelisp_got_platform_test-capture",
-        "the platform name joins VERBATIM (hyphen preserved) — the DLL \
-         concat! literal is the authority"
+        public[0].1.source.module,
+        ModuleFullPath::from("public-source")
     );
-    // Outside the carve-out, a root module spelled `platform_stdio` escapes
-    // its underscore and therefore cannot collide with a platform slab.
-    assert_ne!(
-        got_data_symbol_name(&ModuleFullPath::from("platform_stdio")),
-        got_data_symbol_name(&ModuleFullPath::from("platform.stdio")),
+}
+
+#[test]
+fn inline_and_extern_installers_preserve_declared_mode_summary() {
+    let summary = ModeSummary {
+        result_unique: true,
+        ..ModeSummary::default()
+    };
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    table
+        .install_inline(
+            Symbol::from("inline"),
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            0,
+            Some(summary.clone()),
+            Visibility::Public,
+        )
+        .unwrap();
+    table
+        .install_extern(
+            Symbol::from("extern"),
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            1,
+            None,
+            Some(summary.clone()),
+            Visibility::Public,
+        )
+        .unwrap();
+
+    assert_eq!(table.get("inline").unwrap().mode_summary(), Some(&summary));
+    assert_eq!(table.get("extern").unwrap().mode_summary(), Some(&summary));
+}
+
+#[test]
+fn distinct_name_candidate_sources_remain_candidates() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("consumer"));
+    let local = Symbol::from("show");
+    for (module, parent) in [("alpha", "Display"), ("beta", "Render")] {
+        table
+            .expose_candidate(
+                local.clone(),
+                FQSymbol {
+                    module: ModuleFullPath::from(module),
+                    symbol: crate::member_key(parent, "show"),
+                },
+                Visibility::Public,
+            )
+            .unwrap();
+    }
+    let candidates = table.name_candidates(&local);
+    assert_eq!(candidates.len(), 2);
+    assert_eq!(candidates[0].source.module, ModuleFullPath::from("alpha"));
+    assert_eq!(candidates[1].source.module, ModuleFullPath::from("beta"));
+}
+
+#[test]
+fn name_candidate_load_validation_rejects_dangling_sources() {
+    let method = Symbol::from("display");
+    let mut dangling = SymbolTable::new(ModuleFullPath::from("consumer"));
+    dangling
+        .expose_candidate(
+            method,
+            FQSymbol {
+                module: ModuleFullPath::from("missing"),
+                symbol: crate::member_key("Display", "display"),
+            },
+            Visibility::Public,
+        )
+        .unwrap();
+    let tables = SymbolTables::new();
+    assert!(matches!(
+        dangling.validate_name_candidates(&tables),
+        Err(LifecycleError::MissingBinding { .. })
+    ));
+
+    let mut wrong_home = SymbolTable::new(ModuleFullPath::from("traits"));
+    let canonical = crate::member_key("Display", "display");
+    wrong_home.replace_binding(
+        canonical.clone(),
+        Binding::new(
+            Decl::TraitMethod(TraitMethodRecord::new(
+                concrete_scheme(),
+                Vec::new(),
+                None,
+                FQTraitName::new(ModuleFullPath::from("other"), TraitName::from("Display")),
+            )),
+            Visibility::Public,
+        ),
     );
+    assert!(matches!(
+        wrong_home.validate_lifecycle(),
+        Err(LifecycleError::WrongState { .. })
+    ));
+}
+
+#[test]
+fn cross_table_candidate_validation_direct_probes_terminal() {
+    let mut home = SymbolTable::new(ModuleFullPath::from("traits"));
+    home.install_trait_method(
+        Symbol::from("display"),
+        TraitMethodRecord::new(concrete_scheme(), Vec::new(), None, trait_name()),
+        Visibility::Public,
+    )
+    .unwrap();
+    let source = FQSymbol {
+        module: home.path.clone(),
+        symbol: crate::member_key("Display", "display"),
+    };
+    let mut consumer = SymbolTable::new(ModuleFullPath::from("consumer"));
+    consumer
+        .expose_candidate(Symbol::from("show"), source.clone(), Visibility::Public)
+        .unwrap();
+    let tables = SymbolTables::new();
+    tables.insert(home.path.clone(), home);
+    consumer.validate_name_candidates(&tables).unwrap();
+
+    tables
+        .get_mut(&source.module)
+        .unwrap()
+        .remove_binding(&source.symbol);
+    assert!(matches!(
+        consumer.validate_name_candidates(&tables),
+        Err(LifecycleError::WrongState { .. })
+    ));
+}
+
+#[test]
+fn module_replacement_drops_name_candidates_with_the_table() {
+    let path = ModuleFullPath::from("traits");
+    let mut old = SymbolTable::new(path.clone());
+    old.install_trait_method(
+        Symbol::from("display"),
+        TraitMethodRecord::new(concrete_scheme(), Vec::new(), None, trait_name()),
+        Visibility::Public,
+    )
+    .unwrap();
+    let tables = SymbolTables::new();
+    tables.insert(path.clone(), old);
+    let replacement = SymbolTable::new(path.clone());
+    let displaced = tables.insert(path.clone(), replacement).unwrap();
+
+    assert_eq!(displaced.name_candidates(&Symbol::from("display")).len(), 1);
+    let current = tables.get(&path).unwrap();
+    assert!(current.name_candidates(&Symbol::from("display")).is_empty());
+    assert!(current.get("Display.display").is_none());
+}
+
+#[test]
+fn remove_non_callable_refuses_trait_and_trait_method_terminals() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("traits"));
+    let trait_key = Symbol::from("Display");
+    table
+        .install_binding(
+            trait_key.clone(),
+            Binding::new(
+                Decl::Trait(TraitRecord::new(
+                    TraitDeclInfo {
+                        name: TraitName::from("Display"),
+                        type_params: Vec::new(),
+                        methods: Vec::new(),
+                    },
+                    None,
+                )),
+                Visibility::Public,
+            ),
+        )
+        .unwrap();
+    table
+        .install_trait_method(
+            Symbol::from("display"),
+            TraitMethodRecord::new(concrete_scheme(), Vec::new(), None, trait_name()),
+            Visibility::Public,
+        )
+        .unwrap();
+    let canonical = crate::member_key("Display", "display");
+
+    assert!(matches!(
+        table.remove_non_callable(&trait_key),
+        Err(LifecycleError::WrongState { .. })
+    ));
+    assert!(matches!(
+        table.remove_non_callable(&canonical),
+        Err(LifecycleError::WrongState { .. })
+    ));
+    assert!(matches!(
+        table.install_binding(trait_key.clone(), non_callable_binding()),
+        Err(LifecycleError::WrongState { .. })
+    ));
+}
+
+#[test]
+fn checked_resettlement_is_atomic_and_moves_slots_once() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    declare(&mut table, "f", template_scheme(), CallableOrigin::Plain);
+    table
+        .settle_checked_template(
+            &Symbol::from("f"),
+            template_scheme(),
+            ast(),
+            TemplateKind::Parametric,
+            Vec::new(),
+        )
+        .unwrap();
+    let first = table
+        .settle_checked_concrete(
+            &Symbol::from("f"),
+            concrete_scheme(),
+            ast(),
+            view(),
+            Vec::new(),
+        )
+        .unwrap();
+    table
+        .settle_checked_template(
+            &Symbol::from("f"),
+            template_scheme(),
+            ast(),
+            TemplateKind::Parametric,
+            Vec::new(),
+        )
+        .unwrap();
+    assert_eq!(table.retired_slots().len(), 1);
+    assert_eq!(table.retired_slots()[0].slot, first);
+    let second = table
+        .settle_checked_concrete(
+            &Symbol::from("f"),
+            concrete_scheme(),
+            ast(),
+            view(),
+            Vec::new(),
+        )
+        .unwrap();
+    assert_ne!(first, second);
+
+    let tombstones = table.retired_slots().to_vec();
+    assert!(matches!(
+        table.settle_checked_template(
+            &Symbol::from("f"),
+            concrete_scheme(),
+            ast(),
+            TemplateKind::Parametric,
+            Vec::new(),
+        ),
+        Err(LifecycleError::ConcreteTemplate { .. })
+    ));
+    assert_eq!(
+        table.get("f").unwrap().callable_got_slot(),
+        Some(second.index())
+    );
+    assert_eq!(table.retired_slots(), tombstones);
+    table.validate_lifecycle().unwrap();
+}
+
+#[test]
+fn checked_view_identity_refuses_without_mutation() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    let name = Symbol::from("f");
+    declare(&mut table, "f", concrete_scheme(), CallableOrigin::Plain);
+    let mut wrong = view();
+    wrong.name = Symbol::from("other");
+    assert!(matches!(
+        table.settle_checked_concrete(&name, concrete_scheme(), ast(), wrong.clone(), Vec::new(),),
+        Err(LifecycleError::WrongState { .. })
+    ));
+    assert!(matches!(
+        table.get("f").unwrap().callable().unwrap().arm.life,
+        Life::Declared { prior: None }
+    ));
+    assert!(table.retired_slots().is_empty());
+
+    table
+        .settle_checked_concrete(&name, concrete_scheme(), ast(), view(), Vec::new())
+        .unwrap();
+    assert!(matches!(
+        table.publish_body_ownership(&binding_target("m", "f"), ModeSummary::default(), wrong),
+        Err(LifecycleError::WrongState { .. })
+    ));
+    let binding = table.get("f").unwrap();
+    assert!(binding.mode_summary().is_none());
+    assert_eq!(binding.codegen_view().unwrap().name, name);
+    assert!(matches!(
+        binding.codegen_view().unwrap().body,
+        MonoExpr::IntLit { .. }
+    ));
+}
+
+#[test]
+fn checked_body_rejects_synth_uniform_instance_and_foreign_realizations() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    table
+        .install_template(
+            Symbol::from("synth"),
+            template_scheme(),
+            Vec::new(),
+            None,
+            0,
+            CallableOrigin::Ctor {
+                type_name: FQTypeName::new(ModuleFullPath::from("m"), TypeName::from("Synth")),
+                tag: 0,
+                field_count: 0,
+                internal: false,
+                type_def: None,
+            },
+            TemplateBody::Synth(SynthSpec::new(ast())),
+            TemplateKind::Parametric,
+            Vec::new(),
+            Visibility::Private,
+        )
+        .unwrap();
+    assert!(matches!(
+        table.settle_checked_concrete(
+            &Symbol::from("synth"),
+            concrete_scheme(),
+            ast(),
+            view(),
+            Vec::new(),
+        ),
+        Err(LifecycleError::WrongState { .. })
+    ));
+    assert!(matches!(
+        table.get("synth").unwrap().callable().unwrap().arm.life,
+        Life::Template {
+            body: TemplateBody::Synth(_),
+            ..
+        }
+    ));
+
+    table
+        .install_template(
+            Symbol::from("uniform"),
+            template_scheme(),
+            Vec::new(),
+            None,
+            1,
+            CallableOrigin::RustPrimitive,
+            TemplateBody::UniformRust {
+                abi_name: LinkerSymbol::from("uniform_shim"),
+            },
+            TemplateKind::Parametric,
+            Vec::new(),
+            Visibility::Private,
+        )
+        .unwrap();
+    assert!(matches!(
+        table.settle_checked_concrete(
+            &Symbol::from("uniform"),
+            concrete_scheme(),
+            ast(),
+            view(),
+            Vec::new(),
+        ),
+        Err(LifecycleError::WrongState { .. })
+    ));
+
+    let link = InstanceLink::from_type_args(
+        CallableTarget::Binding(FQSymbol {
+            module: ModuleFullPath::from("producer"),
+            symbol: Symbol::from("generic"),
+        }),
+        vec![ConcreteType::Int],
+    );
+    let (instance, _) = table
+        .install_instance(
+            link,
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            1,
+            CallableOrigin::Plain,
+            body(),
+            Some(ast()),
+            Vec::new(),
+            Visibility::Private,
+        )
+        .unwrap();
+    assert!(matches!(
+        table.settle_checked_concrete(&instance, concrete_scheme(), ast(), view(), Vec::new(),),
+        Err(LifecycleError::WrongState { .. })
+    ));
+
+    table
+        .install_concrete(
+            Symbol::from("foreign"),
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            2,
+            CallableOrigin::PlatformEffect {
+                scheduling_class: SchedulingClass::Sequential,
+                poll_shape: false,
+            },
+            Realization::Dll,
+            None,
+            Vec::new(),
+            Visibility::Private,
+        )
+        .unwrap();
+    assert!(matches!(
+        table.settle_checked_concrete(
+            &Symbol::from("foreign"),
+            concrete_scheme(),
+            ast(),
+            view(),
+            Vec::new(),
+        ),
+        Err(LifecycleError::WrongState { .. })
+    ));
+}
+
+#[test]
+fn declared_scheme_update_preserves_prior() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    declare(&mut table, "f", concrete_scheme(), CallableOrigin::Plain);
+    let slot = table
+        .settle_concrete(&Symbol::from("f"), body(), Some(ast()), Vec::new())
+        .unwrap();
+    declare(&mut table, "f", template_scheme(), CallableOrigin::Plain);
+
+    table
+        .update_declared_scheme(&Symbol::from("f"), concrete_scheme())
+        .unwrap();
+    let callable = table.get("f").unwrap().callable().unwrap();
+    assert_eq!(callable.arm.scheme.ty, Type::Int);
+    assert!(matches!(callable.arm.life, Life::Declared { prior: Some(found) } if found == slot));
+}
+
+#[test]
+fn checked_settlement_uses_final_scheme() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    declare(&mut table, "f", template_scheme(), CallableOrigin::Plain);
+    table
+        .update_declared_scheme(&Symbol::from("f"), concrete_scheme())
+        .unwrap();
+    table
+        .settle_checked_concrete(
+            &Symbol::from("f"),
+            concrete_scheme(),
+            ast(),
+            view(),
+            Vec::new(),
+        )
+        .unwrap();
+    table.set_value_use(&Symbol::from("f"), true).unwrap();
+    table
+        .publish_body_ownership(&binding_target("m", "f"), ModeSummary::default(), view())
+        .unwrap();
+    table
+        .settle_checked_concrete(
+            &Symbol::from("f"),
+            concrete_scheme(),
+            ast(),
+            view(),
+            Vec::new(),
+        )
+        .unwrap();
+    let binding = table.get("f").unwrap();
+    assert_eq!(binding.callable().unwrap().arm.scheme.ty, Type::Int);
+    assert!(!binding.value_use());
+    assert!(binding.mode_summary().is_none());
+    assert!(binding.codegen_view().unwrap().mode_summary.is_none());
+    assert!(matches!(
+        table.update_declared_scheme(&Symbol::from("f"), concrete_scheme()),
+        Err(LifecycleError::WrongState { .. })
+    ));
+}
+
+#[test]
+fn replace_callees_canonicalizes_both_settled_states() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    declare(&mut table, "f", concrete_scheme(), CallableOrigin::Plain);
+    table
+        .settle_concrete(&Symbol::from("f"), body(), Some(ast()), Vec::new())
+        .unwrap();
+    let b = FQSymbol {
+        module: ModuleFullPath::from("z"),
+        symbol: Symbol::from("b"),
+    };
+    let a = FQSymbol {
+        module: ModuleFullPath::from("a"),
+        symbol: Symbol::from("a"),
+    };
+    table
+        .replace_callees(&Symbol::from("f"), vec![b.clone(), a.clone(), b])
+        .unwrap();
+    assert_eq!(
+        table.get("f").unwrap().callees(),
+        &[
+            a,
+            FQSymbol {
+                module: ModuleFullPath::from("z"),
+                symbol: Symbol::from("b"),
+            }
+        ]
+    );
+
+    declare(
+        &mut table,
+        "template",
+        template_scheme(),
+        CallableOrigin::Plain,
+    );
+    table
+        .settle_template(
+            &Symbol::from("template"),
+            TemplateBody::Ast(ast()),
+            TemplateKind::Parametric,
+            Vec::new(),
+        )
+        .unwrap();
+    table
+        .replace_callees(
+            &Symbol::from("template"),
+            vec![
+                FQSymbol {
+                    module: ModuleFullPath::from("z"),
+                    symbol: Symbol::from("b"),
+                },
+                FQSymbol {
+                    module: ModuleFullPath::from("a"),
+                    symbol: Symbol::from("a"),
+                },
+                FQSymbol {
+                    module: ModuleFullPath::from("z"),
+                    symbol: Symbol::from("b"),
+                },
+            ],
+        )
+        .unwrap();
+    assert_eq!(table.get("template").unwrap().callees().len(), 2);
+}
+
+#[test]
+fn ownership_publication_keeps_summary_twins_equal() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    declare(&mut table, "f", concrete_scheme(), CallableOrigin::Plain);
+    table
+        .settle_concrete(&Symbol::from("f"), body(), Some(ast()), Vec::new())
+        .unwrap();
+    let summary = ModeSummary::default();
+    let mut replacement = ownership_annotated_view();
+    replacement.mode_summary = None;
+    table
+        .publish_body_ownership(&binding_target("m", "f"), summary.clone(), replacement)
+        .unwrap();
+    let binding = table.get("f").unwrap();
+    assert_eq!(binding.mode_summary(), Some(&summary));
+    assert_eq!(
+        binding.codegen_view().unwrap().mode_summary.as_ref(),
+        Some(&summary)
+    );
+    assert!(matches!(
+        &binding.codegen_view().unwrap().body,
+        MonoExpr::StringLit {
+            escapes: Some(false),
+            confined: Some(true),
+            unique_static: Some(true),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn ownership_and_value_use_refuse_wrong_or_published_states() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    declare(
+        &mut table,
+        "declared",
+        concrete_scheme(),
+        CallableOrigin::Plain,
+    );
+    assert!(matches!(
+        table.set_value_use(&Symbol::from("declared"), true),
+        Err(LifecycleError::WrongState { .. })
+    ));
+
+    table
+        .install_concrete(
+            Symbol::from("published"),
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            0,
+            CallableOrigin::Plain,
+            Realization::Body {
+                view: view(),
+                code: Some(()),
+            },
+            Some(ast()),
+            Vec::new(),
+            Visibility::Private,
+        )
+        .unwrap();
+    assert!(matches!(
+        table.publish_body_ownership(
+            &binding_target("m", "published"),
+            ModeSummary::default(),
+            view(),
+        ),
+        Err(LifecycleError::WrongState { .. })
+    ));
+}
+
+#[test]
+fn non_callable_remove_and_prior_free_declared_discard_are_narrow() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    table
+        .install_binding(Symbol::from("alias"), non_callable_binding())
+        .unwrap();
+    assert!(
+        table
+            .remove_non_callable(&Symbol::from("alias"))
+            .unwrap()
+            .is_some()
+    );
+
+    declare(
+        &mut table,
+        "fresh",
+        concrete_scheme(),
+        CallableOrigin::Plain,
+    );
+    table.discard_declared(&Symbol::from("fresh")).unwrap();
+    assert!(table.get("fresh").is_none());
+
+    declare(&mut table, "live", concrete_scheme(), CallableOrigin::Plain);
+    table
+        .settle_concrete(&Symbol::from("live"), body(), Some(ast()), Vec::new())
+        .unwrap();
+    assert!(matches!(
+        table.remove_non_callable(&Symbol::from("live")),
+        Err(LifecycleError::WrongState { .. })
+    ));
+    declare(&mut table, "live", concrete_scheme(), CallableOrigin::Plain);
+    assert!(matches!(
+        table.discard_declared(&Symbol::from("live")),
+        Err(LifecycleError::WrongState { .. })
+    ));
+    assert!(matches!(
+        table.get("live").unwrap().callable().unwrap().arm.life,
+        Life::Declared {
+            prior: Some(slot)
+        } if slot.index() == 0
+    ));
+    assert!(table.retired_slots().is_empty());
+}
+
+#[test]
+fn retained_callables_roll_back_first_write_and_reimpl() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    declare(&mut table, "f", concrete_scheme(), CallableOrigin::Plain);
+    table
+        .settle_concrete(&Symbol::from("f"), body(), Some(ast()), Vec::new())
+        .unwrap();
+    let retained = table
+        .retain_callables(&[Symbol::from("f"), Symbol::from("g")])
+        .unwrap();
+    declare(&mut table, "f", template_scheme(), CallableOrigin::Plain);
+    table
+        .settle_template(
+            &Symbol::from("f"),
+            TemplateBody::Ast(ast()),
+            TemplateKind::Parametric,
+            Vec::new(),
+        )
+        .unwrap();
+    declare(&mut table, "g", concrete_scheme(), CallableOrigin::Plain);
+    table
+        .settle_concrete(&Symbol::from("g"), body(), Some(ast()), Vec::new())
+        .unwrap();
+    assert_eq!(table.retired_slots().len(), 1);
+
+    table.rollback_callables(retained).unwrap();
+    assert_eq!(table.get("f").unwrap().callable_got_slot(), Some(0));
+    assert!(table.get("g").is_none());
+    assert!(table.retired_slots().is_empty());
+    table.validate_lifecycle().unwrap();
+}
+
+#[test]
+fn retained_callable_batch_commit_and_overlap_are_explicit() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    let retained = table.retain_callables(&[Symbol::from("f")]).unwrap();
+    assert!(matches!(
+        table.retain_callables(&[Symbol::from("f")]),
+        Err(LifecycleError::WrongState { .. })
+    ));
+    declare(&mut table, "f", concrete_scheme(), CallableOrigin::Plain);
+    table
+        .settle_concrete(&Symbol::from("f"), body(), Some(ast()), Vec::new())
+        .unwrap();
+    retained.commit();
+    assert_eq!(table.get("f").unwrap().callable_got_slot(), Some(0));
+    table
+        .retain_callables(&[Symbol::from("f")])
+        .unwrap()
+        .commit();
+}
+
+#[test]
+fn retained_callables_refuse_published_fresh_slot() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    let retained = table.retain_callables(&[Symbol::from("f")]).unwrap();
+    let slot = table
+        .install_concrete(
+            Symbol::from("f"),
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            0,
+            CallableOrigin::Plain,
+            body(),
+            Some(ast()),
+            Vec::new(),
+            Visibility::Private,
+        )
+        .unwrap();
+    table
+        .got
+        .store_slot(slot.index(), std::ptr::dangling::<u8>());
+    assert!(matches!(
+        table.rollback_callables(retained),
+        Err(LifecycleError::WrongState { .. })
+    ));
+    assert!(table.get("f").is_some());
+
+    let mut code_table = SymbolTable::new(ModuleFullPath::from("code"));
+    let retained = code_table
+        .retain_callables(&[Symbol::from("compiled")])
+        .unwrap();
+    code_table
+        .install_concrete(
+            Symbol::from("compiled"),
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            0,
+            CallableOrigin::Plain,
+            Realization::Body {
+                view: view(),
+                code: Some(()),
+            },
+            Some(ast()),
+            Vec::new(),
+            Visibility::Private,
+        )
+        .unwrap();
+    assert!(matches!(
+        code_table.rollback_callables(retained),
+        Err(LifecycleError::WrongState { .. })
+    ));
+}
+
+#[test]
+fn rollback_callables_refuses_published_template_hidden_slot() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    let name = Symbol::from("f");
+    let retained = table.retain_callables(std::slice::from_ref(&name)).unwrap();
+    let slot = table
+        .install_concrete(
+            name.clone(),
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            0,
+            CallableOrigin::Plain,
+            body(),
+            Some(ast()),
+            Vec::new(),
+            Visibility::Private,
+        )
+        .unwrap();
+    table
+        .settle_checked_template(
+            &name,
+            template_scheme(),
+            ast(),
+            TemplateKind::Parametric,
+            Vec::new(),
+        )
+        .unwrap();
+    table
+        .got
+        .store_slot(slot.index(), std::ptr::dangling::<u8>());
+
+    assert!(matches!(
+        table.rollback_callables(retained),
+        Err(LifecycleError::WrongState { .. })
+    ));
+    assert!(matches!(
+        table.get("f").unwrap().callable().unwrap().arm.life,
+        Life::Template { .. }
+    ));
+    assert_eq!(table.retired_slots()[0].slot, slot);
+}
+
+#[test]
+fn rollback_callables_refuses_published_removed_binding_slot() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    let name = Symbol::from("f");
+    let retained = table.retain_callables(std::slice::from_ref(&name)).unwrap();
+    let slot = table
+        .install_concrete(
+            name.clone(),
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            0,
+            CallableOrigin::Plain,
+            body(),
+            Some(ast()),
+            Vec::new(),
+            Visibility::Private,
+        )
+        .unwrap();
+    table.retire_abi_changing(&name).unwrap();
+    table
+        .got
+        .store_slot(slot.index(), std::ptr::dangling::<u8>());
+
+    assert!(matches!(
+        table.rollback_callables(retained),
+        Err(LifecycleError::WrongState { .. })
+    ));
+    assert!(table.get("f").is_none());
+    assert_eq!(table.retired_slots()[0].slot, slot);
+}
+
+#[test]
+fn staged_impl_shell_rolls_back_absent_and_prior() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("traits"));
+    let first = written_impl("writer", "first");
+    let staged = table.stage_trait_impl_shell(&first).unwrap();
+    let key = crate::trait_impl_key(&first.impl_type, &first.trait_name);
+    assert!(table.get(key.as_ref()).is_some());
+    table.rollback_trait_impl_shell(staged).unwrap();
+    assert!(table.get(key.as_ref()).is_none());
+
+    table.stage_trait_impl_shell(&first).unwrap().commit();
+    let replacement = written_impl("writer", "replacement");
+    let staged = table.stage_trait_impl_shell(&replacement).unwrap();
+    table.rollback_trait_impl_shell(staged).unwrap();
+    assert!(binding_matches_written_trait_impl(
+        table.get(key.as_ref()).unwrap(),
+        &first
+    ));
+
+    let staged = table.stage_trait_impl_shell(&replacement).unwrap();
+    staged.commit();
+    assert!(binding_matches_written_trait_impl(
+        table.get(key.as_ref()).unwrap(),
+        &replacement
+    ));
+
+    table.replace_binding(Symbol::from("occupied"), non_callable_binding());
+    let mut colliding = replacement.clone();
+    colliding.impl_type =
+        FQTypeName::new(ModuleFullPath::from("types"), TypeName::from("Occupied"));
+    let occupied_key = crate::trait_impl_key(&colliding.impl_type, &colliding.trait_name);
+    table.replace_binding(occupied_key, non_callable_binding());
+    assert!(table.stage_trait_impl_shell(&colliding).is_err());
+}
+
+#[test]
+fn staged_impl_shell_refuses_payload_identical_intervening_write() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("traits"));
+    let record = written_impl("writer", "staged");
+    let staged = table.stage_trait_impl_shell(&record).unwrap();
+    let key = crate::trait_impl_key(&record.impl_type, &record.trait_name);
+    let identical = table.get(key.as_ref()).unwrap().clone();
+    table.install_binding(key.clone(), identical).unwrap();
+
+    assert!(table.rollback_trait_impl_shell(staged).is_err());
+    assert!(binding_matches_written_trait_impl(
+        table.get(key.as_ref()).unwrap(),
+        &record
+    ));
+}
+
+#[test]
+fn stage_impl_shell_refuses_wrong_trait_home_without_mutation() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("wrong-home"));
+    let record = written_impl("writer", "staged");
+
+    assert!(table.stage_trait_impl_shell(&record).is_err());
+    assert_eq!(table.all_symbols().count(), 0);
+    assert!(
+        table
+            .transactions
+            .0
+            .lock()
+            .unwrap()
+            .staged_shells
+            .is_empty()
+    );
+}
+
+#[test]
+fn staged_impl_shell_refuses_intervening_occupant() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("traits"));
+    let staged_record = written_impl("writer", "staged");
+    let staged = table.stage_trait_impl_shell(&staged_record).unwrap();
+    let key = crate::trait_impl_key(&staged_record.impl_type, &staged_record.trait_name);
+    let intervening = written_impl("other-writer", "other");
+    table.replace_binding(key.clone(), written_trait_impl_binding(&intervening));
+    assert!(table.rollback_trait_impl_shell(staged).is_err());
+    assert!(binding_matches_written_trait_impl(
+        table.get(key.as_ref()).unwrap(),
+        &intervening
+    ));
+}
+
+#[test]
+fn transaction_tokens_refuse_wrong_table_identity() {
+    let source = SymbolTable::new(ModuleFullPath::from("source"));
+    let mut other = SymbolTable::new(ModuleFullPath::from("other"));
+    let retained = source.retain_callables(&[Symbol::from("method")]).unwrap();
+    assert!(matches!(
+        other.rollback_callables(retained),
+        Err(LifecycleError::WrongState { .. })
+    ));
+    source
+        .retain_callables(&[Symbol::from("method")])
+        .unwrap()
+        .commit();
+
+    let mut trait_home = SymbolTable::new(ModuleFullPath::from("traits"));
+    let mut other_trait_home = SymbolTable::new(ModuleFullPath::from("traits"));
+    let record = written_impl("writer", "staged");
+    let staged = trait_home.stage_trait_impl_shell(&record).unwrap();
+    assert!(other_trait_home.rollback_trait_impl_shell(staged).is_err());
+    assert_eq!(trait_home.all_symbols().count(), 1);
+    trait_home.stage_trait_impl_shell(&record).unwrap().commit();
+}
+
+#[test]
+fn written_impl_upsert_is_one_per_key_and_writer_checked() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("writer"));
+    let first = written_impl("writer", "first");
+    table.upsert_written_trait_impl(first.clone()).unwrap();
+    let replacement = written_impl("writer", "replacement");
+    table
+        .upsert_written_trait_impl(replacement.clone())
+        .unwrap();
+    assert_eq!(table.written_trait_impls, vec![replacement.clone()]);
+
+    let mut other = written_impl("writer", "other");
+    other.impl_type = FQTypeName::new(ModuleFullPath::from("types"), TypeName::from("Other"));
+    table.upsert_written_trait_impl(other.clone()).unwrap();
+    assert_eq!(table.written_trait_impls, vec![replacement, other]);
+
+    let before = table.written_trait_impls.clone();
+    assert!(
+        table
+            .upsert_written_trait_impl(written_impl("wrong-writer", "bad"))
+            .is_err()
+    );
+    assert_eq!(table.written_trait_impls, before);
+
+    let empty = WrittenTraitImpl::new(
+        trait_name(),
+        impl_type(),
+        ModuleFullPath::from("writer"),
+        Vec::new(),
+        Visibility::Public,
+    );
+    assert!(table.upsert_written_trait_impl(empty).is_err());
+    assert_eq!(table.written_trait_impls, before);
+
+    table.written_trait_impls.push(first.clone());
+    table.written_trait_impls.push(first);
+    let duplicate_before = table.written_trait_impls.clone();
+    assert!(
+        table
+            .upsert_written_trait_impl(written_impl("writer", "new"))
+            .is_err()
+    );
+    assert_eq!(table.written_trait_impls, duplicate_before);
+}
+
+// spec: spec/03-types.md §3.6.3 — complete substitutions identify concrete instances
+#[test]
+fn result_only_substitutions_distinguish_instances_and_reuse_equal_vectors() {
+    let target = CallableTarget::Binding(FQSymbol {
+        module: ModuleFullPath::from("producer"),
+        symbol: Symbol::from("returned_closure"),
+    });
+    let int = MonoDemand::from_type_args(target.clone(), vec![ConcreteType::Int], Span::new(1, 4));
+    let string = MonoDemand::from_type_args(
+        target.clone(),
+        vec![ConcreteType::String],
+        Span::new(10, 14),
+    );
+    let int_again = MonoDemand::from_type_args(target, vec![ConcreteType::Int], Span::new(20, 24));
+
+    assert_eq!(int.instance_link().type_args, vec![ConcreteType::Int]);
+    assert_eq!(string.instance_link().type_args, vec![ConcreteType::String]);
+    assert_ne!(int.instance_key(), string.instance_key());
+    assert_eq!(int.instance_key(), int_again.instance_key());
+    let mut instances = std::collections::HashSet::new();
+    assert!(instances.insert(int.instance_link()));
+    assert!(instances.insert(string.instance_link()));
+    assert!(!instances.insert(int_again.instance_link()));
+    assert_eq!(instances.len(), 2);
+}
+
+#[test]
+fn demand_key_uses_storage_symbol_but_excludes_diagnostic_site() {
+    let template = FQSymbol {
+        module: ModuleFullPath::from("producer"),
+        symbol: Symbol::from("written-alias"),
+    };
+    let args = vec![ConcreteType::Int];
+    let target = CallableTarget::Binding(template.clone());
+    let first = MonoDemand::from_type_args(target.clone(), args.clone(), Span::new(1, 4));
+    let later_site = MonoDemand::from_type_args(target.clone(), args.clone(), Span::new(40, 80));
+    assert_eq!(first.instance_link().template, target);
+    assert_eq!(first.instance_key(), later_site.instance_key());
+    assert_eq!(first.instance_key(), first.instance_link().instance_key());
+
+    let other_storage_symbol = MonoDemand::from_type_args(
+        CallableTarget::Binding(FQSymbol {
+            module: ModuleFullPath::from("producer"),
+            symbol: Symbol::from("terminal-storage-key"),
+        }),
+        args,
+        first.site,
+    );
+    assert_ne!(first.instance_key(), other_storage_symbol.instance_key());
+}
+
+fn packet_a_accessor_origin(field: &str) -> CallableOrigin {
+    CallableOrigin::Accessor {
+        type_name: FQTypeName::new(ModuleFullPath::from("m"), TypeName::from("Box")),
+        field: Symbol::from(field),
+    }
+}
+
+fn packet_a_view(name: &str) -> MonoDefnVariant {
+    MonoDefnVariant {
+        name: Symbol::from(name),
+        params: Vec::new(),
+        body: MonoExpr::IntLit {
+            value: 1,
+            span: Span::SYNTHETIC,
+            ty: ConcreteType::Int,
+        },
+        span: Span::SYNTHETIC,
+        mode_summary: None,
+    }
+}
+
+fn install_packet_a_accessor<C: CodeStore>(
+    table: &mut SymbolTable<C>,
+    name: &str,
+    code: Option<C>,
+) -> CallableSlot {
+    table
+        .install_concrete(
+            Symbol::from(name),
+            concrete_scheme(),
+            Vec::new(),
+            Some("old".into()),
+            7,
+            packet_a_accessor_origin("v"),
+            Realization::Body {
+                view: packet_a_view(name),
+                code,
+            },
+            Some(ast()),
+            Vec::new(),
+            Visibility::Public,
+        )
+        .unwrap()
+}
+
+#[test]
+fn unpublished_synthesized_template_replacement_preserves_complete_candidates() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    let name = Symbol::from("Box.v");
+    let old_slot = install_packet_a_accessor(&mut table, name.as_ref(), None);
+    table
+        .install_binding(Symbol::from("Trait.v"), non_callable_binding())
+        .unwrap();
+    for (source, visibility) in [
+        (name.clone(), Visibility::Public),
+        (Symbol::from("Trait.v"), Visibility::Private),
+    ] {
+        table
+            .expose_candidate(
+                Symbol::from("v"),
+                FQSymbol {
+                    module: ModuleFullPath::from("m"),
+                    symbol: source,
+                },
+                visibility,
+            )
+            .unwrap();
+    }
+    let candidates_before = table.name_candidates(&Symbol::from("v"));
+
+    table
+        .replace_unpublished_synthesized_template(
+            name.clone(),
+            template_scheme(),
+            vec![Symbol::from("self")],
+            Some("new".into()),
+            packet_a_accessor_origin("v"),
+            SynthSpec::new(ast()),
+            Visibility::Private,
+        )
+        .unwrap();
+
+    assert_eq!(table.name_candidates(&Symbol::from("v")), candidates_before);
+    assert!(table.retired_slots().is_empty());
+    let callable = table.get(name.as_ref()).unwrap().callable().unwrap();
+    assert_eq!(callable.seq, 7);
+    assert_eq!(callable.docstring.as_deref(), Some("new"));
+    assert_eq!(
+        table.get(name.as_ref()).unwrap().visibility,
+        Visibility::Private
+    );
+    assert!(matches!(
+        &callable.arm.life,
+        Life::Template {
+            body: TemplateBody::Synth(_),
+            kind: TemplateKind::Parametric,
+            callees,
+        } if callees.is_empty()
+    ));
+    assert!(table.got.load_slot(old_slot.index()).is_null());
+    table.validate_lifecycle().unwrap();
+}
+
+#[test]
+fn unpublished_synthesized_concrete_replaces_broken_and_returns_its_slot() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    let name = Symbol::from("Box.v");
+    let old_slot = install_packet_a_accessor(&mut table, name.as_ref(), None);
+    let broken = table
+        .mark_broken(
+            &name,
+            BrokenProvenance::new(
+                FQSymbol {
+                    module: ModuleFullPath::from("m"),
+                    symbol: Symbol::from("cause"),
+                },
+                "failed".into(),
+            ),
+        )
+        .unwrap();
+    assert_eq!(broken.slot, old_slot);
+    assert!(broken.displaced_owner.is_none());
+
+    let returned = table
+        .replace_unpublished_synthesized_concrete(
+            name.clone(),
+            concrete_scheme(),
+            vec![Symbol::from("self")],
+            Some("replacement".into()),
+            packet_a_accessor_origin("v"),
+            SynthSpec::new(ast()),
+            packet_a_view(name.as_ref()),
+            Visibility::Public,
+        )
+        .unwrap();
+
+    assert_eq!(returned, old_slot);
+    assert!(table.retired_slots().is_empty());
+    assert!(matches!(
+        &table.get(name.as_ref()).unwrap().callable().unwrap().arm.life,
+        Life::Concrete {
+            slot,
+            realization: Realization::Body { code: None, view },
+            minted_from: None,
+            ast: Some(_),
+            callees,
+            value_use: false,
+            mode_summary: None,
+        } if *slot == old_slot && view.name == name && callees.is_empty()
+    ));
+    table.validate_lifecycle().unwrap();
+}
+
+#[test]
+fn unpublished_synthesized_constructor_replacement_accepts_the_same_origin() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    let name = Symbol::from("Box");
+    let type_name = FQTypeName::new(ModuleFullPath::from("m"), TypeName::from("Box"));
+    let old_slot = table
+        .install_concrete(
+            name.clone(),
+            concrete_scheme(),
+            vec![Symbol::from("v")],
+            None,
+            0,
+            CallableOrigin::Ctor {
+                type_name: type_name.clone(),
+                tag: 0,
+                field_count: 1,
+                internal: false,
+                type_def: None,
+            },
+            Realization::Body {
+                view: packet_a_view(name.as_ref()),
+                code: None,
+            },
+            Some(ast()),
+            Vec::new(),
+            Visibility::Public,
+        )
+        .unwrap();
+
+    let returned = table
+        .replace_unpublished_synthesized_concrete(
+            name.clone(),
+            concrete_scheme(),
+            vec![Symbol::from("v")],
+            None,
+            CallableOrigin::Ctor {
+                type_name,
+                tag: 0,
+                field_count: 1,
+                internal: false,
+                type_def: None,
+            },
+            SynthSpec::new(ast()),
+            packet_a_view(name.as_ref()),
+            Visibility::Public,
+        )
+        .unwrap();
+
+    assert_eq!(returned, old_slot);
+    assert!(matches!(
+        &table.get(name.as_ref()).unwrap().callable().unwrap().origin,
+        CallableOrigin::Ctor { field_count: 1, .. }
+    ));
+    assert!(table.retired_slots().is_empty());
+}
+
+#[test]
+fn unpublished_synthesized_replacement_refuses_wrong_origin_and_shape_atomically() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    let name = Symbol::from("Box.v");
+    install_packet_a_accessor(&mut table, name.as_ref(), None);
+    let before = serde_json::to_string(&table).unwrap();
+
+    assert!(matches!(
+        table.replace_unpublished_synthesized_template(
+            name.clone(),
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            packet_a_accessor_origin("v"),
+            SynthSpec::new(ast()),
+            Visibility::Public,
+        ),
+        Err(LifecycleError::ConcreteTemplate { .. })
+    ));
+    assert_eq!(serde_json::to_string(&table).unwrap(), before);
+
+    assert!(matches!(
+        table.replace_unpublished_synthesized_concrete(
+            name.clone(),
+            template_scheme(),
+            Vec::new(),
+            None,
+            packet_a_accessor_origin("v"),
+            SynthSpec::new(ast()),
+            packet_a_view(name.as_ref()),
+            Visibility::Public,
+        ),
+        Err(LifecycleError::SlotMint(SlotMintError::NotConcrete(_)))
+    ));
+    assert_eq!(serde_json::to_string(&table).unwrap(), before);
+
+    assert!(matches!(
+        table.replace_unpublished_synthesized_template(
+            name.clone(),
+            template_scheme(),
+            Vec::new(),
+            None,
+            packet_a_accessor_origin("other"),
+            SynthSpec::new(ast()),
+            Visibility::Public,
+        ),
+        Err(LifecycleError::IllegalOriginState { .. })
+    ));
+    assert_eq!(serde_json::to_string(&table).unwrap(), before);
+
+    assert!(matches!(
+        table.replace_unpublished_synthesized_concrete(
+            name.clone(),
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            packet_a_accessor_origin("v"),
+            SynthSpec::new(ast()),
+            packet_a_view("wrong-name"),
+            Visibility::Public,
+        ),
+        Err(LifecycleError::WrongState { .. })
+    ));
+    assert_eq!(serde_json::to_string(&table).unwrap(), before);
+    assert!(table.retired_slots().is_empty());
+}
+
+#[test]
+fn unpublished_synthesized_replacement_refuses_published_owner_without_mutation() {
+    let mut table = SymbolTable::<String, ()>::new_with_params(ModuleFullPath::from("m"));
+    let name = Symbol::from("Box.v");
+    install_packet_a_accessor(&mut table, name.as_ref(), Some("compiled".into()));
+    let before = serde_json::to_string(&table).unwrap();
+
+    assert!(matches!(
+        table.replace_unpublished_synthesized_template(
+            name.clone(),
+            template_scheme(),
+            Vec::new(),
+            None,
+            packet_a_accessor_origin("v"),
+            SynthSpec::new(ast()),
+            Visibility::Public,
+        ),
+        Err(LifecycleError::WrongState { .. })
+    ));
+
+    assert_eq!(serde_json::to_string(&table).unwrap(), before);
+    assert!(matches!(
+        &table.get(name.as_ref()).unwrap().callable().unwrap().arm.life,
+        Life::Concrete {
+            realization: Realization::Body {
+                code: Some(owner), ..
+            },
+            ..
+        } if owner == "compiled"
+    ));
+    assert!(table.retired_slots().is_empty());
+}
+
+#[test]
+fn unpublished_synthesized_replacement_refuses_non_null_got_without_mutation() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    let name = Symbol::from("Box.v");
+    let slot = install_packet_a_accessor(&mut table, name.as_ref(), None);
+    let published = std::ptr::dangling::<u8>();
+    table.got.store_slot(slot.index(), published);
+    let before = serde_json::to_string(&table).unwrap();
+
+    assert!(matches!(
+        table.replace_unpublished_synthesized_concrete(
+            name.clone(),
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            packet_a_accessor_origin("v"),
+            SynthSpec::new(ast()),
+            packet_a_view(name.as_ref()),
+            Visibility::Public,
+        ),
+        Err(LifecycleError::WrongState { .. })
+    ));
+
+    assert_eq!(serde_json::to_string(&table).unwrap(), before);
+    assert_eq!(table.got.load_slot(slot.index()), published);
+    assert_eq!(
+        table.get(name.as_ref()).unwrap().callable_got_slot(),
+        Some(slot.index())
+    );
+    assert!(table.retired_slots().is_empty());
 }

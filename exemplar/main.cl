@@ -8,6 +8,10 @@
 ;;            --run  exemplar/main.cl  (serves until killed)
 ;;   stdio :  --run  exemplar/user.cl  (one-shot solve-and-print)
 ;;
+;; S121 verifies both web modes over the same scratch HTTP journey: GET form,
+;; POST valid solved grid, and the missing-path Not Found response. That is a
+;; serving check, not a linked fan-out or performance claim.
+;;
 ;; The HTTP roundtrip:
 ;;
 ;;   GET  /        →  form-page         (9×9 puzzle-entry grid)

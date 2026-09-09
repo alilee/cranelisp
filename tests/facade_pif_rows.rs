@@ -68,7 +68,7 @@ fn strip_attr_prefix(line: &str) -> &str {
 // Row 1 — `Code` enum lives in cranelisp-backend (Decision 41 close-out)
 // =============================================================================
 
-// spec: design/arch/facades/backend.md §"`Code` — the per-symbol lifecycle owner"
+// spec: design/backend/backend.md §2.3
 // FIXME(/dev backend Wave 3): physically relocate `Code` from src/code.rs to
 // crates/cranelisp-backend; the pub-api line should appear in cranelisp-backend's
 // baseline, not in cranelisp-types or as an int-only type.
@@ -96,7 +96,7 @@ fn row_01_code_enum_named_in_backend_pub_api() {
 // ObjectArtefact) in cranelisp-backend per REV-4
 // =============================================================================
 
-// spec: design/arch/facades/backend.md §"Errors" — CompilationError enum
+// spec: design/backend/backend.md §2.4 — CompilationError enum
 // FIXME(/dev backend Wave 3 rows 2–5): introduce typed error enums in
 // cranelisp-backend; retire stringly-typed `CodegenError { message }` at the
 // backend boundary.
@@ -116,7 +116,7 @@ fn rows_02_03_compilation_error_enum_named_in_backend_pub_api() {
     );
 }
 
-// spec: design/arch/facades/backend.md §"Errors" — LinkerError enum (REV-4 in backend, not types)
+// spec: design/backend/backend.md §2.4 — LinkerError enum (REV-4 in backend, not types)
 // FIXME(/dev backend Wave 3 row 5): add LinkerError to cranelisp-backend.
 #[test]
 fn row_05_linker_error_enum_named_in_backend_pub_api() {
@@ -136,7 +136,8 @@ fn row_05_linker_error_enum_named_in_backend_pub_api() {
     );
 }
 
-// spec: design/arch/facades/backend.md §"Return shapes" — LinkerArtefact + ObjectArtefact
+// spec: design/backend/backend.md §6.1 — ObjectArtefact
+// spec: design/backend/backend.md §6.2 — LinkerArtefact
 // FIXME(/dev backend Wave 3 rows 3, 4): introduce the DTOs in backend.
 #[test]
 fn rows_03_04_linker_and_object_artefact_named_in_backend_pub_api() {
@@ -165,7 +166,7 @@ fn rows_03_04_linker_and_object_artefact_named_in_backend_pub_api() {
 // Row 6 — primitive_for_trait_method (D43 forbidden pattern; delete)
 // =============================================================================
 
-// spec: design/arch/facades/backend.md §"Operator special-casing is forbidden"
+// spec: design/arch/decisions/0043-runtime-split-into-primitives-intrinsics.md §"Status pointer — Sprint 67 FULL CLOSE"
 // FIXME(/dev backend Wave 3 row 6): delete primitive_for_trait_method per D43.
 #[test]
 fn row_06_primitive_for_trait_method_absent_from_backend_pub_api() {
@@ -188,7 +189,7 @@ fn row_06_primitive_for_trait_method_absent_from_backend_pub_api() {
 // Row 7 — operators.rs full retirement (D43 full close; FIXME 0150)
 // =============================================================================
 
-// spec: design/arch/facades/backend.md §"Operator special-casing is forbidden"
+// spec: design/arch/decisions/0043-runtime-split-into-primitives-intrinsics.md §"Status pointer — Sprint 67 FULL CLOSE"
 // What the facade actually forbids (S69 audit F-6 + F-7, grounded in Decision
 // 43 §"Status pointer — Sprint 67 FULL CLOSE"): the TRAIT-KEYED substitution
 // — `primitive_for_trait_method(TraitName, Symbol, TypeName) -> Option<&str>`
@@ -236,7 +237,7 @@ fn row_07_trait_keyed_substitution_retired_from_backend() {
 // Row 21 — TypeCheckEnv 30→2 method narrowing (FIXME 0172)
 // =============================================================================
 
-// spec: design/arch/facades/typecheck.md §"Cluster check scaffolding"
+// spec: design/typecheck/typecheck.md §2
 // FIXME(/dev typecheck Wave 3 row 21): narrow TypeCheckEnv to {new, next_type_id}.
 #[test]
 fn row_21_typecheck_env_narrowed_to_facade_two_methods() {
@@ -263,7 +264,7 @@ fn row_21_typecheck_env_narrowed_to_facade_two_methods() {
 // Rows 26, 27 — PRIMITIVES_TABLE static + primitives/string/vec relocation
 // =============================================================================
 
-// spec: design/arch/facades/primitives.md §"Public surface"
+// spec: design/primitives/primitives.md §2.2
 // FIXME(/dev primitives Wave 3 row 26, FIXME 0159): introduce PRIMITIVES_TABLE static.
 #[test]
 fn row_26_primitives_table_static_named_in_primitives_pub_api() {
@@ -283,7 +284,7 @@ fn row_26_primitives_table_static_named_in_primitives_pub_api() {
     );
 }
 
-// spec: design/arch/facades/primitives.md §"Public surface"
+// spec: design/primitives/primitives.md §3.3
 // FIXME(/dev primitives Wave 3 row 27, FIXME 0180): physical relocation of
 // string/vec helpers from intrinsics into primitives.
 #[test]
@@ -350,7 +351,7 @@ fn row_27_primitives_string_vec_physically_owned_by_primitives_not_reexported() 
 // Rows 30, 33 — io_trace + trace observer relocation intrinsics → int
 // =============================================================================
 
-// spec: design/arch/facades/intrinsics.md §"IO observation" / facades/int.md
+// spec: design/int/observability.md §4
 // FIXME(/dev int Wave 4 row 30, D40 close): io_trace::* moves to int.
 #[test]
 fn row_30_io_trace_absent_from_intrinsics_pub_api() {
@@ -398,7 +399,7 @@ fn row_33_trace_bodies_hosted_in_intrinsics_pub_api() {
 // Row 31 — ops::cranelisp_op_* deletion (D43 full close)
 // =============================================================================
 
-// spec: design/arch/facades/intrinsics.md / facades/backend.md §"Forbidden patterns"
+// spec: design/arch/decisions/0043-runtime-split-into-primitives-intrinsics.md §"Status pointer — Sprint 67 FULL CLOSE"
 // FIXME(/dev intrinsics Wave 2 row 31, REV-5 audit): delete ops::cranelisp_op_*.
 #[test]
 fn row_31_cranelisp_op_extern_fns_deleted_from_intrinsics() {
@@ -417,7 +418,7 @@ fn row_31_cranelisp_op_extern_fns_deleted_from_intrinsics() {
 // Row 42 — describe_symbol family lands on CompilerSession (REV-3 read-side-only)
 // =============================================================================
 
-// spec: design/arch/facades/int.md §"Introspection accessors" lines 88–101
+// spec: design/int/int.md §8.2
 // FIXME(/dev int Wave 3 row 42, FIXME 0176 partial close): describe_symbol family
 // + read-side accessors land as CompilerSession methods reading shared.symbol_tables
 // + shared.introspection. SharedState interior decomposition deferred S68.
@@ -505,7 +506,7 @@ fn walk_rust_files(root: &std::path::Path) -> Vec<PathBuf> {
 // Row 45 — re_register_module forward on CompilerSession (trivial PIF)
 // =============================================================================
 
-// spec: design/arch/facades/int.md line 36 — CompilerSession::re_register_module
+// spec: design/int/int.md §8.4 — CompilerSession::re_register_module
 // FIXME(/dev int Wave 3 row 45): add the thin forward; CompileScheduler keeps
 // its method, CompilerSession exposes a one-line passthrough.
 #[test]
@@ -531,7 +532,7 @@ fn row_45_re_register_module_callable_on_compiler_session() {
 // FQTypeName binding (Decision 47, types.md §232) — second user-challenge amend
 // =============================================================================
 
-// spec: design/arch/facades/types.md §"FQTypeName binding"
+// spec: design/arch/decisions/0047-fqtypename-binding-at-resolved-stage-boundaries.md §"Status pointer — Sprint 67 close"
 // FIXME(/dev typecheck/backend/intrinsics/primitives/platform/int Wave 3):
 // every API past frontend's resolution stage that names a type uses FQTypeName.
 // Exceptions: frontend syntactic-stage; receiver-pinned SymbolTable::get_type;
@@ -592,7 +593,7 @@ fn fqtypename_binding_resolved_stage_apis_use_fqtypename_not_bare_typename() {
 // shared.introspection (not a SharedState restructure)
 // =============================================================================
 
-// spec: design/arch/facades/int.md §"Composed introspection flows"
+// spec: design/int/int.md §8.5
 // FIXME(/dev int Wave 3): describe_symbol family reads from shared maps; the
 // facade prescribes accessor methods rather than direct field access at
 // call-sites. A small e2e signal: /info on a primitive should resolve through
@@ -756,7 +757,7 @@ fn platform_repr_c_field_order_frozen() {
     // Frozen field-order tables (source-declaration order). A reshuffle that
     // changes byte offsets reorders these lines in the baseline → mismatch.
     let platform_fn_fields = fields_in_order(&api, "cranelisp_platform::PlatformFn");
-    // Frozen field-set for ABI_VERSION = 8 (Sprint 96, the SINGLE-ABI CUTOVER,
+    // Frozen field-set introduced at ABI_VERSION = 8 (Sprint 96, the SINGLE-ABI CUTOVER,
     // platform-interface.md §6.8.0): the unified `PlatformFn` absorbs the former
     // `ConcurrentPlatformFn` — `scheduling_class: u32` is REPLACED by
     // `concurrency: ConcurrencyDescriptor`, and a `drop_state` poll-leaf teardown

@@ -17,6 +17,26 @@ planned (§5).
 land; the invariant statements fold into BC §7 + `module.rs` rustdoc + R11; this
 file moves to `design/arch/archive/`.
 
+> **AMENDED 2026-09-01 (`/arch`, S121 Phase 3): the route's vehicle changed;
+> the invariants did not.** The user adopted the unified symbol-lifecycle
+> target (`symbol-table-lifecycle.md`, disposition 2026-09-01), so the
+> "S120 tranche" staging in §5.2 is superseded as a schedule: the per-kind
+> `CtorState` flip does not land first — the ctor template-slot retirement
+> (§3.1, FIXME 0931), the `vec-len` de-slot (§3.2, 0932), and the platform
+> `Type::Var` refusal (§3.5, 0933) all land as arms of the ONE S121 C1-led
+> lifecycle wash (`Life::Template`/`Concrete`, the §5.5/§5.6 population
+> installs, the manifest-order mint). §5.3's Bind payload-glue tranche
+> (0934) is INCLUDED in S121, ruled below in §3.4. I-CONC/I-FRAME/I-EMIT
+> stand unchanged; the lifecycle machine is their representation.
+
+> **AMENDED 2026-09-01 (`/arch`, S121 Phase 3 R1): `Pure` force is
+> once-only per node.** The QA shared-node finding invalidates the earlier
+> plain-clear/lane-exclusive residual. The existing glue word is now the one
+> three-state atomic claim/transfer witness; duplicate force refuses before
+> payload access. No new tag, field, ownership mechanism or ABI bump beyond
+> the already-scheduled 9→10 is introduced. Canonical contract: §3.4;
+> safety-register row R20.
+
 > **AMENDED 2026-07-28 (`/arch`, the design commission): I-ABI is re-ruled.**
 > The user's follow-on direction (R-25/R-27 of
 > `sprints/concreteness-requirements.md` — "typecheck must emit fully
@@ -81,7 +101,7 @@ Every polymorphic (non-`is_concrete()`) callable at HEAD, with slot status:
 | 1 | every generic-ADT constructor — user `deftype (T a…)` ctors + the bootstrap seeds `Option.Some`, `Result.Ok`/`Err`, `Pair.MkPair`, `SList.SNil`/`SCons`, `IO.Pure`/`Effect` | `Constructor` | `∀a…. Fn(fields…, T a…)` | **YES — mandatory** | `adt.rs` mint; `src/bootstrap.rs::register_synth_adt` |
 | 2 | `IO.Bind` | `Constructor` | `∀a b. Fn([IO b, Fn [b] (IO a)], IO a)` — the **existential** (`b` not recoverable from the result type) | **YES** | `src/bootstrap.rs:760-830` |
 | 3 | `vec-len` | `Primitive { body: Extern }` | `∀a. Fn([Vec a], Int)` | **YES** — the ONE slotted polymorphic primitive | `crates/cranelisp-primitives/src/declarations.rs:660-671` |
-| 4 | `vec-get`, `vec-set`, `vec-push` | `Primitive { body: Inline }` | `∀a.…` | **NO — slot-less by construction** (unit-pinned, `primitives/src/tests.rs:75-99`); emitted inline at each concrete call site; value-position via the `__inlwrap_{bare}_{sig}__` per-concrete-sig wrappers | `declarations.rs:672-704` |
+| 4 | `vec-get`, `vec-set`, `vec-push` | `Primitive { body: Inline }` | `∀a.…` | **NO — slot-less by construction** (unit-pinned, `primitives/src/tests.rs:75-99`); emitted inline at each concrete call site; value-position via the backend's span-keyed `__wrap_…__` closure wrappers over the same inline lowering *(corrected 2026-09-01: the `__inlwrap_{bare}_{sig}__` per-concrete-sig family originally cited here never existed in source — §3.2)* | `declarations.rs:672-704` |
 | 5 | `bind`, `race`, `select`, `catch-runtime-error` | `PrimitiveExtern` | `∀a[,b].…` | **NO — slot-less, by-name** | `src/bootstrap.rs` (876, 925-943, 1129-1160) |
 | 6 | the two S119-censused hand-mints: synthetic accessors (F1), residual trait-impl methods (F2) | `UserFn { Concrete }` | non-concrete | **YES — the defects** | `adt.rs:618-637`; `impl_check.rs:1043,1078-1090` |
 | 7 | `PlatformEffect` | — | all concrete at HEAD (`type_vars: vec![]` hard-coded, all shipped manifest sigs concrete) — but a lowercase manifest sig leaf parses to `TypeExpr::TypeVar` and would smuggle a `Type::Var` through `parse_and_check_platform_type_sig` unrefused | n/a (state unoccupied) | `src/platform.rs:360-430` |
@@ -130,8 +150,11 @@ Three clauses; each is assertable on its own.
 > polymorphic import REDs until it is declared with its representation
 > dependencies. Value-position use of a roster member or of an inline
 > primitive always goes through a per-instantiation concrete wrapper
-> (`__inlwrap` family / the mono mint) — the *dispatched* surface is concrete
-> even when the *body* is shared.
+> (the value-position wrapper family / the mono mint) — the *dispatched*
+> surface is concrete even when the *body* is shared. *(Corrected 2026-09-01,
+> within this retained superseded record: the wrapper family this text named
+> as `__inlwrap` was never a source name; the live family is the span-keyed
+> `__wrap_…__` closure wrapper — §3.2.)*
 
 Under I-CONC + I-FRAME the compiled-code domain reaches **zero polymorphism** —
 no licences, no partition table, one predicate. I-ABI is the honest boundary:
@@ -230,8 +253,9 @@ answer: **inline primitives are concrete-per-use by construction.** `vec-get`/
 `vec-set`/`vec-push` have no shared compiled body: their "body" is emitted at
 each call site from the site's concrete `MonoExpr` types (element category
 drives the RC arm today; element size/stride would drive it under specialised
-layouts), and value-position use goes through per-concrete-sig `__inlwrap`
-wrappers. They are **not a residual** — they are the model the rest of the
+layouts), and value-position use goes through the backend's span-keyed `__wrap_…__`
+closure wrappers over the same inline lowering (§3.2's mechanism
+correction). They are **not a residual** — they are the model the rest of the
 family converges to, and they survive layout specialisation by construction
 because every emission point knows the concrete element type.
 
@@ -253,6 +277,103 @@ the one family member whose *body* may legitimately survive layout
 specialisation (a common length-word is a layout-contract choice); `vec-get`/
 `set`/`push` cannot — and they already don't share a body. The family's exposure
 is therefore already discharged except for one entry.
+
+> **SETTLED + GATE RULED (`/arch`, 2026-09-01, S121 Phase 3 — consumes the C5
+> primitives design, `design/primitives/s121-c5-primitives-visit.md` §3, and
+> answers its §3.8 gate / H1).**
+>
+> **Spelling (a) — `user_inline` today, `Life::Inline` under the lifecycle —
+> is the ruling**, on that design's four source-backed §3.1 grounds: the
+> applied path has been inline since S102 (`apply.rs:626-643`; the slot is
+> already dead there); the closed three-variant `PrimitiveDecl` set is the
+> crate's structural control and spelling (b) would widen it for one row; a
+> by-name polymorphic extern is the only row shape that could present a bare
+> `Type::Var` to the ABI-kind derivation; and spelling (b) grows the
+> uniform-realization roster against the FIXME 0936 trajectory while
+> preserving the Fact-A non-consuming-body anomaly. The only in-machine
+> alternative under the adopted lifecycle —
+> `Life::Template { body: UniformRust }`, the spelling-(b) analogue — is
+> rejected on the same grounds.
+>
+> **Mechanism correction (the `__inlwrap` record — discharges C5 H5(a)).**
+> Value-position use of an inline primitive does **not** ride a
+> per-concrete-sig `__inlwrap` wrapper family: **no `inlwrap` symbol has ever
+> existed in source** (the S102 wrapper-identity naming ruling was never
+> realized). The live mechanism is the backend's span-keyed, unit-local
+> closure wrapper `__wrap_{name}_{disc}{start}_{end}__`
+> (`fn_as_value.rs:154-162`), routed to the inline arm by the kind-keyed
+> `is_inline_primitive_at` test (`context.rs:244-255`) and delegating the
+> wrapper *body* to `vec_codegen.rs::emit_vec_query_into` (`:1113-1213`) — a
+> `(name, arity)` match with `vec-get`/`vec-set`/`vec-push` arms and a
+> located-`CodegenError` fall-through. It has **no `("vec-len", 1)` arm**, so
+> the de-slot needs exactly one backend edit, fully shaped at C5 §3.4
+> (length-word load + the same rc-checked release the `vec-get` arm performs
+> + return).
+>
+> **The gate: the arm is C4's, landed DORMANT before the flip.** Neither of
+> C5 §3.8's two routes is taken as offered. The `("vec-len", 1)` arm is
+> allocated to **C4's already-reserved backend visit** (its §11 reservation
+> is the whole `crates/cranelisp-backend/src/` tree, with a
+> `compiler/vec_codegen` module-test row already standing), landed **dormant**
+> in C4's implementation wave: both `emit_vec_query_into` call sites
+> (`fn_as_value.rs:591-596` value position, `:709-736` auto-curry) are gated
+> on `is_inline_primitive_at`, which reads the entry's *kind* — so while
+> `vec-len` remains `user_extern` the arm is unreachable and value position
+> keeps the working GOT/extern path. C5 §3.8's "cannot be split" atomicity
+> claim holds only in the flip-before-arm direction; arm-before-flip is safe
+> at every intermediate state, and is the repository's standing dormant→flip
+> template. Consequences: C5-primitives makes **zero backend edits** (its §9
+> reject 9 tightens to "any backend edit"), the same source area is visited
+> once, and no dispensation or C4 re-open is needed.
+>
+> **Ordering (matches the §9 stream order of `symbol-table-lifecycle.md`):**
+> C4's wave lands the dormant arm → C5's wave flips the declaration
+> (`user_extern` → `user_inline`, P0) which makes the arm live → C5's P1
+> typed-funnel slice then excludes `vec_len` (already removed). The flip is a
+> **precondition of C5's born-settled install conversion**: under the adopted
+> lifecycle the settlement funnel refuses a slot mint against a polymorphic
+> scheme, so "defer P0, keep `vec-len` `user_extern`" is not an available
+> S121 end-state — the only genuine fallback axis is *where the arm lands*,
+> not *whether* the de-slot happens.
+>
+> **Acceptance evidence.** C4 (dormant arm): a `compiler/vec_codegen` unit
+> row exercising the `("vec-len", 1)` emission directly, in the same
+> change-set (the arm is otherwise landed-with-zero-consumers); dormancy
+> proven by the golden-CLIF corpus staying byte-identical and the two
+> `tests/vec_query_value_use.rs` `vec-len` cells (`:326`, `:341`) staying
+> green via the GOT path. C5 (flip): the same two e2e cells stay green now
+> through the inline arm (the acceptance cells, `qa`-owned per C5 H4); the
+> projection fixture's one-line diff; the whole-table
+> no-slot-with-`type_vars` negative; NC-1's `vec-len` expected-RED retires;
+> applied-path golden rows unmoved (C5 §3.3).
+>
+> **If the C4 allocation proves unsound at wave planning** (e.g. C4's wave is
+> already closed when this ruling is consumed), the fallback is C5 §3.8
+> route 1 — a scoped dispensation to `dev`(runtime pair) for that one arm,
+> atomic with the flip in P0's change-set. Route 2 (re-open C4's design)
+> remains disproportionate and is not authorized.
+>
+> **Public-surface ruling (C5 §10 sign-off).** Deleting
+> `crates/cranelisp-primitives/src/vec.rs` with the flip removes exactly one
+> baseline line — `pub mod cranelisp_primitives::vec` — an item-free module
+> name (`vec_len` is `pub(crate)`), with zero workspace consumers outside the
+> crate (only comment references in `cranelisp-intrinsics`, C5-intrinsics'
+> own surface). **Approved as a contraction**: the crate is
+> workspace-internal, so the only compatibility requirement is the standing
+> one — regenerate `public-api.txt` via the canonical command in the same P0
+> change-set, diff included beside the source change
+> (`design/arch/CLAUDE.md` §Baseline-diff discipline). No shim, no
+> deprecation window.
+>
+> The two secondary `vec-len` declaration-site records move in their own
+> already-reserved streams, not in a new visit (C5 H6): the
+> `cranelisp-types/src/module.rs:2638` "one polymorphic `Primitive{Extern}`"
+> rustdoc in C1's wash, and the independent scheme seed at
+> `cranelisp-typecheck/src/builtins.rs:1157-1167` in C3's. The `qa`
+> attribution of the `Mode`-keyed wrapper-adaptation ownership defect (C5
+> §2.3 / H4) is **not** decided here and this gate does not depend on its
+> repair — the flip removes `vec-len` from that population without touching
+> `emit_d24_adaptation`.
 
 ### 3.3 The by-name imports (row 5): the I-ABI roster, pinned — SUPERSEDED 2026-07-28
 
@@ -302,13 +423,300 @@ self-description, stamped at the concrete construction site.** Under I-FRAME,
 knows `x`'s concrete type; the backend's inline `bind` lowering knows the
 intermediate type at each call site. So:
 
-> **S121 tranche (design owed, `/design`(backend)+(intrinsics)):** the `Pure`
-> node (or the IO node header uniformly — `/design` chooses the narrower
-> sound shape) gains a **payload-glue word**, stamped at construction with the
-> canonical `drop<T>` address for the payload's concrete type. The intrinsics
-> tag-walker (`free_io_node`, the 0923 split) calls through it when discharging
-> a nested `Pure`. The face-4 residual guard (`/qa`'s failing-not-ignored leak
-> cell) is the acceptance instrument: it flips GREEN when the word lands.
+> **S121 tranche — the narrow sound shape RULED (`/arch`, 2026-09-01, S121
+> Phase 3; the user included 0934 with C7 owning the ABI bump + fixtures).**
+> The glue word goes on the **`Pure` node only, as a second (hidden) field**
+> — NOT a uniform IO-header word. `Pure` becomes the two-field allocation
+> `[header | tag@16 | payload@24 | payload_glue@32]`; every other IO node
+> is byte-identical. Narrower is sound because `Pure` is the only node whose
+> discharge needs a type-directed call: `Effect`'s thunk and `EffectPoll`'s
+> state-closure are Rust/closure-owned, `Bind`'s continuation carries its own
+> closure `DROP_GLUE_PTR` (Decision 0011), and `Par`/`Select`/`Launch`
+> children are IO nodes walked recursively. The payload stays at field 0, so
+> every existing read (`FIELD_0_OFFSET` in the trampoline, `consume_io_tree`,
+> `io_observer`) is untouched; pattern matching binds field 0 as today; the
+> hidden word is a backend-stamped slot on the closure-`DROP_GLUE_PTR`
+> precedent, never enumerated as a language-visible field (IO mints no
+> accessors).
+>
+> **Stamp contract (produce side).** Every `Pure` construction site is
+> concrete post-mono (I-FRAME), and every such site is compiled code — the
+> runtime only *reads* `Pure` nodes (verified: `io.rs` extracts payloads,
+> allocates none). The word is stamped at construction: the canonical
+> `drop<T>` glue address for a heap-category payload type, or the sentinel
+> `0` for a scalar/non-heap payload (no discharge — which also closes the
+> wild-write-on-scalar hazard class by construction: the type is known at
+> the stamp site). No new release identity is minted — the word carries the
+> SAME canonical glue every other site calls (release-contract reject
+> criterion 5). The construction emitters are exactly the backend's: the
+> inline concrete `ConstrADT` lowering of `Pure`, and the minted
+> value-position ctor instance (the `compile_ctor_wrapper_body` promotion);
+> both stamp, and the C4 design enumerates them as a closed set.
+>
+> **Discharge and once-only-force contract (consume side) — the word is the
+> one ownership state (`/arch` re-ruling, 2026-09-01, S121 Phase 3 R1).**
+> Field 1 is a three-state atomic word after construction/adoption:
+>
+> | Bits | State | Meaning |
+> |---|---|---|
+> | `0` | `Scalar` | this `Pure` has a scalar/non-heap payload and owes no deep discharge |
+> | `1` | `Claimed` | this node has already been forced, or teardown has claimed its obligation |
+> | any other value | `Owned(glue)` | this node owns one heap-payload obligation, discharged through this canonical glue address |
+>
+> `1` is reserved by the IO-node contract and is never a callable glue
+> address. The compiler emits only `0` or a canonical `drop<T>` address; the
+> platform emits only `0`, and the tag-directed backend adoption stamp replaces
+> it with `0` or that same canonical address. The supported targets cannot map
+> executable code at address `1`; a producer emitting `1` is a construction
+> defect, never a fourth state or a call target.
+>
+> The run lane performs one atomic `swap(Claimed, AcqRel)` **before reading
+> field 0**. An old `Scalar` or `Owned(glue)` value wins the claim and may read
+> and transfer the payload; an old `Claimed` value is a duplicate force and
+> must not read, return, increment, decrement, or otherwise touch field 0. It
+> sets the existing runtime-error slot to **`Pure node forced more than once`**
+> (pointer/strand detail stays diagnostic, not stable user text), ferried through the
+> existing fork-join error slot when the loser is on a worker. This is the safe
+> failure direction: one winner at most, no fabricated result, no second
+> payload owner, and no call through the tombstone. Scalar `Pure`s obey the
+> same once-only force rule even though copying their bits would be memory-safe;
+> payload category must not change effect-node semantics.
+>
+> Structural teardown uses the same state transition at `free_io_node`, the
+> sole field-discharge seam: `swap(Claimed, AcqRel)` returning `Owned(glue)`
+> calls that glue with the field-0 payload and then deallocates; `Scalar` or
+> `Claimed` calls nothing. `SpineTransferred` accepts only `Claimed`. Thus the
+> word remains the single ownership mechanism: force and teardown contend for
+> one obligation in one atomic modification order; neither a tag state, a
+> side-table claim, nor a second payload flag is added. (Corrected 2026-09-01:
+> the glue argument is field 0; calling through field 0 would execute the
+> payload as code.)
+>
+> The claim is *required*, not defensive: lane exclusivity per node is
+> false in the live runtime. Decision 24 composes the lanes sequentially
+> over the SAME references — `cranelisp_run_io` forces the caller's tree
+> non-consumingly, then structurally consumes that same tree — and one
+> teardown walk covers both extracted `Pure`s (forced path, `Select`
+> winner, error-abort partial forcing) and unextracted ones (`Select`
+> losers, unrun `Bind` sub-trees) in the same tree. Only per-node state
+> discriminates; the witness is that state, and discharge-exactly-once
+> holds per *obligation* (witnessed), not per node (exclusive lanes).
+>
+> **Publication (ordering/atomicity) — the complete rule (`/arch`,
+> 2026-09-01, verified against live `io.rs`/`drop.rs`).** Construction and
+> platform adoption initialise field 1 non-atomically only while the fresh
+> node is exclusively owned and unpublished. After publication, every read or
+> mutation of field 1 in intrinsics is through the aligned `AtomicI64` at
+> offset 32; both force and teardown use `swap(Claimed, AcqRel)`. The atomic
+> modification order linearises two forcing lanes: exactly one observes the
+> initial state, and every later claimant observes `Claimed`. Acquire also
+> observes the payload and stamp published with the node; Release publishes
+> the claim before any later RC release or joined teardown. The existing node
+> publication and lifetime edges remain required:
+>
+> 1. **Same-strand program order.** The claim is sequenced before the
+>    extractor's shallow dec (fresh path) and before the terminal
+>    `consume_io_tree` of the caller's tree (a non-fresh node claimed on
+>    the strand that later tears it down) — the common case.
+> 2. **The RC Release-dec/Acquire-fence pair.** Where the claiming strand
+>    subsequently decs the node, the claim is sequenced before its
+>    Release dec, and the teardown walk runs only behind the
+>    zero-observing dec's Acquire fence (`free_io_node`'s stated
+>    precondition) — the same argument that makes any drop-glue field
+>    read sound.
+> 3. **The structured fork-join edge.** A `Par` worker that claims a
+>    non-fresh `Pure` inside its branch never decs that node — the branch
+>    is caller-owned and the root strand performs every non-fresh dec in
+>    its own later teardown walk — so edge 2 does not apply there. The
+>    publishing edge is the join the branch *result* already rides: the
+>    worker→reactor `oneshot` bridge send/receive on the async path
+>    (`run_blocking_branch`), and the rayon `collect` join on the
+>    synchronous dispatcher (`dispatch_par_branches_with_trace`); nested
+>    joins compose transitively, and the root's teardown is sequenced
+>    after all its joins in program order. This demands nothing new of
+>    the runtime: the same edge is what already publishes a worker's
+>    fresh-node frees and RC decs to the root. The atomic word removes the
+>    former clear-vs-clear data race; it does not license severing this join.
+>
+> The rule's precondition is that the path's edge is intact; its remaining
+> pre-existing failure is named below. Backend-emitted
+> pattern reads of field 0 are non-transferring (ordinary ADT field
+> discipline, node retains ownership) and never touch the word.
+>
+> **Constructability and evidence.** The source shape is not structurally
+> excluded: IO values are ordinary RC-managed values, and two `race`/`select`
+> or `Par` lanes can receive aliases. No affine type or unique-IO carrier exists.
+> The claim therefore stays always-on even if the smallest source spelling
+> proves awkward. C5 owns the atomic helper, the standard-error outcome, the
+> worker ferry, and cleanup of every already-produced winner value before the
+> error is surfaced. The diagnostic observer records successful run-lane
+> transitions, keyed by `(node pointer, strand id)`; a second successful clear
+> of the same pointer is the exact fault. Its planted positive must bypass or
+> revert the atomic claim so it proves the observer can catch the old two-clear
+> mechanism; two equal-but-distinct nodes, one ordinary force, and the unarmed
+> path are negative legs. The production shared-node row must prove one
+> successful claim, no duplicate-clear observation, loser refusal before the
+> payload read, and exact payload discharge. A unit plant using the same pointer
+> on two lanes must retain two counted node references; handing one counted
+> reference to two teardown owners is already forbidden by the RC/container
+> representation and is not a permitted way to construct the plant.
+>
+> **Allocation and W3 order.** C5-intrinsics owns the state constant, atomic
+> claim helper, run-lane/teardown uses, standard-error and worker-ferry outcome,
+> cleanup and the observer/detection proof. It lands in **I0b**, in the same
+> change-set as the field-1 discharge: splitting claim from discharge would
+> temporarily reinterpret `1` as a callable pointer or restore the old double
+> transfer. The existing braided W3 order remains: I0a; stage C7 P0; complete C4
+> B5 against the widened layout; finish C7's ABI-10 fixtures; then C5 I0b lands
+> claim + discharge + R1 evidence before any integrated `Pure` fixture or IO
+> corpus is accepted. C4 does not revisit its tag-directed adoption stamp and
+> C7 does not revisit the layout: both already emit only the initial `0`/glue
+> states. `test` owns the language-level alias row; `qa` owns its acceptance
+> classification. If retained reservations cannot preserve this braid, W3 stays
+> blocked rather than executing an intermediate witness interpretation.
+>
+> **Remaining named residual (pre-existing, neither created nor cured):**
+> *Severed join* — a cancelled `Select` loser with a rayon bridge in
+> flight detaches its worker: the dropped `run_blocking_branch` future
+> abandons the `oneshot`, `pending_bridges` carries no drop guard, and
+> `block_on_reactor`'s exit condition drains the supervisor but not
+> bridges — so the detached worker's branch walk (field reads today; reads
+> plus the claim under this contract) can race the root's
+> `consume_io_tree`, a use-after-free window that exists at HEAD
+> independent of the witness (`/arch` source finding, 2026-09-01).
+> Falsifier: a `select` whose losing branch holds an in-flight blocking
+> `Par` bridge at cancellation. It remains `qa` intake; its cure must restore
+> the join before this claim mechanism executes on the detached worker, not
+> weaken the witness or add another ownership channel.
+>
+> **ABI + fixtures (C7).** The IO-node family is a `#[repr]`-class layout
+> contract governed by `cranelisp_platform::ABI_VERSION` (Principle 14; the
+> `IO_TAG_*` constants live there). The `Pure` size/layout change bumps
+> **`ABI_VERSION` 9→10**, executed in C7's visit together with the platform
+> test-fixture rebuilds — no new versioning mechanism is invented. Stale
+> cached objects constructing one-field `Pure` nodes are excluded by the one
+> S121 `CACHE_SCHEMA_VERSION` 24→25 window's wholesale invalidation
+> (`symbol-table-lifecycle.md` §9): no acceptance cache baseline is captured
+> between the C1 bump and the C4 layout flip.
+> R1 changes the field's state predicate inside that same v10 window; it adds no
+> field, tag, public constant, glue identity, cache datum, or second ABI bump.
+>
+> The face-4 residual guard (`/qa`'s failing-not-ignored leak cell) is the
+> acceptance instrument: it flips GREEN when the word lands, and its negative
+> partner (no double-discharge on the run lane) is the discriminating
+> control.
+>
+> **The platform-return seam — the fourth stamp site (`/arch` ruling,
+> 2026-09-01, S121 Phase 3; discharges the C7 H2 handoff and closes C7 §4.2's
+> platform-edge residual at this seam).** The C7 finding is CONFIRMED at
+> source: the backend's platform fn-name stamp is selected by the *call
+> target's kind*, not the returned node's tag — `compile_direct_call` stamps
+> whenever the fetched entry is `DefKind::PlatformEffect`
+> (`crates/cranelisp-backend/src/compiler/apply.rs:1546-1549`) and performs an
+> unconditional 8-byte store at `HeapHeader::SIZE + IO_EFFECT_FN_NAME_OFFSET`
+> = base+40 (`apply.rs:39-40`, `:1636-1641`) — while `CLIO::pure` builds a
+> 32-byte node at v9 and a 40-byte node at v10
+> (`crates/cranelisp-platform/src/lib.rs:908-920`), so the store is **out of
+> bounds at both ABI versions** whenever a platform fn returns a `Pure` node.
+> Latent today — every in-tree platform fn returns `CLIO::effect*`, and the
+> load gate forces an `IO _` return (`src/platform.rs:584-613`, spec §8.11),
+> so the returned value is always an IO node and a tag read at base+16 is
+> always in-bounds — but `CLIO::pure` plus its `From` lifts are published
+> author surface, and the stamp comment's own premise ("the call returned an
+> `IO_TAG_EFFECT` node") is a narrowing that carries no check (P25).
+>
+> **The authoritative lowering rule dispatches on the returned node's tag, at
+> the one existing chokepoint** — no second backend visit, and C7 §4.4's
+> platform-local footprint-absorber fallback is REJECTED (it removes the
+> symptom and preserves the mechanism):
+>
+> ```
+> node = <GOT-indirect platform call>            # non-poll; the S6 poll arm returns earlier
+> tag  = load.i64 [node + 16]
+> tag == IO_TAG_EFFECT ⇒ store fn_name_ptr → [node + 40]   # in-bounds: Effect payload is 40 bytes
+> tag == IO_TAG_PURE   ⇒ store glue        → [node + 32]   # in-bounds at ABI ≥ 10 only
+> otherwise            ⇒ no write                          # degrades like the null fn-name → "<unknown>"; never a store
+> ```
+>
+> The Effect arm's store is value-identical to today's for every existing
+> platform call; the only emission delta on live traffic is the guard itself.
+> The Pure arm is the **adoption stamp**: the DLL structurally cannot name a
+> glue address (`HostCallbacks` is permanently two fields, S98) and writes
+> the sentinel `0`; the backend — which knows `T` concretely from the entry's
+> `(Fn […] (IO T))` scheme (the §3.5 manifest-sig concreteness gate) —
+> overwrites it at the ABI crossing with the SAME canonical `drop<T>` every
+> release site calls (`DropGlueRegistry::request_if_owning`,
+> `func_addr`-materialised; `iconst 0` when the request declines; a residual
+> `T` is a located refusal, never a default — R18). This is construction-time
+> stamping from the host's viewpoint — the store lands before the node can be
+> forced or transferred, exactly as the fn-name stamp already documents. It
+> supplies only the initial `Scalar`/`Owned(glue)` state; after publication C5
+> alone atomically claims the word on the run and teardown lanes. It closes C7
+> §4.2's under-claiming residual for every node crossing
+> this seam (the F4 leak cell becomes a GREEN acceptance cell), and no
+> DLL-minted `Pure` survives elsewhere: `CLIO` does not implement `CLType`,
+> so a nested DLL `Pure` (`pure(pure(…))`) is unconstructable through the
+> facade.
+>
+> **Allocation: C4, bundle B5, the same one backend visit.** The seam
+> (`apply.rs`) is inside C4's reserved surface, and C4 §11's module-test
+> reservation for `compiler/apply` already names the `Pure` stamp rows. The
+> ruling leaves no interior design freedom, so the C4 design visit is not
+> re-opened (the `trait-impl-cache-carrier.md` §9 precedent): `dev`(backend)
+> consumes this contract directly. C4 §6.3's closed stamp set gains this as
+> its **fourth sanctioned site** and §13 reject 10 reads accordingly (any
+> fifth site remains a reject). Offset authority: the arm composes base+32
+> from the types-owned field placement the construction emitter already uses
+> (`HeapAdt::FIELDS_START + 8` — field 1), because C7's `IO_PURE_GLUE_OFFSET`
+> lands later in the stream order.
+>
+> **Offset detector packaging — zero crate revisit (`/arch` follow-up,
+> 2026-09-01).** The architectural crossing datum is the absolute byte offset
+> **32**. Each vocabulary carries an independent compile-time pin in the crate
+> that owns it: C4 B5 lands
+> `const _: () = assert!(PURE_GLUE_ABS_OFFSET == 32);` beside backend's sole
+> explicit-offset composition, and C7 P0 lands
+> `const _: () = assert!(HEAP_HEADER_SIZE + IO_PURE_GLUE_OFFSET == 32);`
+> beside the platform constant. A drift in either composition therefore fails
+> constant evaluation while compiling its owning crate. There is **no later
+> C7 edit to backend source**, no backend reservation for a joint assertion,
+> and no root integration assertion: the latter two would duplicate a
+> relationship already made structural by the independent pins and would add
+> a second owner or a cross-stream carve-out without detecting another
+> failure. C4 owns the backend pin; C7 owns the platform pin; neither owns the
+> other's expression.
+>
+> QA's crossing evidence exercises rather than redefines this authority: the
+> C7 H3/F4 `Pure`-returning fixture pair compiles both owning crates, observes
+> the heap-payload adoption/discharge path and the scalar-zero path, and keeps
+> the no-double-discharge negative control. C4's existing CLIF rows continue
+> to pin the tag dispatch, stamp identity and absolute store location. Thus a
+> one-sided offset drift fails at compile time before the crossing can run,
+> while a correctly pinned but wrongly used offset fails the existing emission
+> or end-to-end evidence. Tag dispatch, stamp/claim ownership,
+> `ABI_VERSION` ownership and stream order are unchanged.
+>
+> **Evidence (C4 tier).** Direct: a CLIF row over a seeded
+> `DefKind::PlatformEffect` entry pins the tag load, both stores and the
+> no-write fall-through, with two instantiations — `(IO String)` materialises
+> the SAME `drop<String>` `FuncId` the release path names (the discriminator
+> against a minted second identity) and `(IO Int)` stamps `0`. Arming /
+> negative: the stores are asserted **branch-dominated by the tag compare**
+> (control-flow walk, the `assert_threshold_guarded_rmws` idiom — reverting
+> to the unguarded store REDs the row), and a non-platform callee emits no
+> stamp block. Execution acceptance stays where C7/qa placed it (H3's F4
+> cell over a `Pure`-returning fixture fn, with the no-double-discharge
+> negative control) and gates on C5's walker and C7's rebuild; the fixture
+> is C7-surface work.
+>
+> **Window discipline (named residual + falsifier).** The Pure arm's store
+> is in-bounds only against the two-field node. In the C4→C7 window it has
+> zero traffic (no in-tree platform fn returns `Pure` — verified at source
+> 2026-09-01; C7's design adds none before P0), and after C7 the ABI 9→10
+> refusal excludes v9 DLLs. Falsifier: a `Pure`-returning platform fn
+> landing before C7's P0 — `sprint` sequences that exclusion alongside the
+> standing C4→C5→C7 ordering constraints. Register row: R19
+> (`safety-invariants.md` §4).
 
 This makes the existential a **representation fact with local self-description**
 — no type-system residual, no header type-word (R15 stands: this is one glue
@@ -343,7 +751,8 @@ were factually wrong (§1). NC-1's corrected form:
 > partitions. At HEAD this REDs on: (a) the two `UserFn` hand-mints — open
 > defect, flips with CS-1/P-1 (S119); (b) every generic-ADT ctor template incl.
 > `Bind` — **intentional RED against the S120 ctor tranche** (FIXME 0931);
-> (c) `vec-len` — **intentional RED against the S120 de-slot** (FIXME 0932).
+> (c) `vec-len` — **intentional RED against the S121 de-slot** (FIXME 0932;
+> settled + gated at §3.2 — the RED retires at C5's declaration flip).
 > Each RED traces to its open item per the failing-not-ignored convention; a
 > RED outside (a)–(c) is a genuine regression. Partner cell: the I-ABI roster
 > pin (§3.3) — slot-less polymorphic imports are enumerated exactly.
@@ -377,7 +786,9 @@ end-state claim (amended in this change-set: BC §7, `interfaces.md`,
 `module.rs` rustdoc, R11), and `/qa`'s NC-1 form (FIXME 0930, before `/testing`
 authors the cell).
 
-### 5.2 S120 — the structural tranche
+### 5.2 The structural tranche — superseded as a schedule (see the 2026-09-01
+amendment box): items 1–6 land as arms of the S121 C1-led unified-lifecycle
+wash, not as a standalone S120 per-kind flip
 
 1. **Ctor monomorphisation + template slot retirement** (§3.1) — FIXME 0931,
    `/design`(typecheck) with backend adjacency; ONE schema window shared with:
@@ -386,13 +797,16 @@ authors the cell).
    *universal* gate: with the Constructor exception gone, the fallible
    `Concrete{slot}` constructor and the ctor-instance mint enforce the same
    single predicate).
-3. **`vec-len` de-slot** (§3.2) — FIXME 0932, `/design`(backend + runtime pair).
+3. **`vec-len` de-slot** (§3.2) — FIXME 0932; design settled (the S121 C5
+   primitives visit + the §3.2 gate ruling): C4 lands the dormant backend arm,
+   C5 flips the declaration.
 4. **Platform sig `Type::Var` refusal** (§3.5) — FIXME 0933, `/design`(int).
 5. **I-ABI roster pin cell** (§3.3) — with 0932's change-set.
 6. **NC-1 universal flip** (§4) — FIXME 0930, `/qa`.
 
-### 5.3 S121+ — the Bind payload-glue word (§3.4) — FIXME 0934; retires the
-face-4 bounded residual; version-gated IO-node layout change.
+### 5.3 S121 — the Bind payload-glue word (§3.4, ruled) — FIXME 0934; retires
+the face-4 bounded residual; C4 stamps + C5 discharges + C7 bumps
+`ABI_VERSION` 9→10 and rebuilds fixtures.
 
 ---
 

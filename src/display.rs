@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    DefKind, FQTypeName, ModuleEntry, ModuleFullPath, NULLARY_TAG_THRESHOLD, PrimitiveNaming,
-    Scheme, Symbol, SymbolTable, Type, TypeDefInfo, TypeId, VarNaming, render_type,
+    FQTypeName, ModuleFullPath, NULLARY_TAG_THRESHOLD, PrimitiveNaming, Scheme, Symbol,
+    SymbolTable, Type, TypeDefInfo, TypeId, VarNaming, render_type,
 };
 
 use cranelisp_backend::heap::{HeapAdt, HeapVec};
@@ -355,18 +355,9 @@ where
 {
     let table = symbol_tables.get(&fqtn.module)?;
     let type_key = Symbol::from(fqtn.name.as_ref());
-    match table.get(type_key.as_ref()) {
-        Some(ModuleEntry::TypeDef { info, .. }) => Some(info.clone()),
-        // A single-ctor product type: the entry is the ctor `Def` carrying the
-        // type facet on its `DefKind::Constructor.type_def`.
-        Some(ModuleEntry::Def { kind, .. }) => match kind.as_ref() {
-            DefKind::Constructor {
-                type_def: Some(td), ..
-            } => Some((**td).clone()),
-            _ => None,
-        },
-        _ => None,
-    }
+    table
+        .get(type_key.as_ref())
+        .and_then(|binding| binding.type_def_info().cloned())
 }
 
 /// Push an ADT value's VALUE form (no `:Type` prefix) as role spans (spec §1.5).
@@ -545,7 +536,7 @@ where
     {
         // Every constructor — sum, enum, and single-ctor product — is now a
         // got-slotted `Def`; field types come off its `scheme`.
-        Some(ModuleEntry::Def { scheme, .. }) => Some(&scheme.ty),
+        Some(binding) => binding.callable().map(|callable| &callable.arm.scheme.ty),
         _ => None,
     };
     match scheme_ty {
@@ -1156,7 +1147,65 @@ mod tests {
 
     // --- ctor_field_types: single-ctor product (S79 Option 3a, FIXME 0319) ---
 
-    use cranelisp_types::{DefKind, ModuleEntry, Symbol, TypeDefInfo};
+    use cranelisp_types::{
+        CallableOrigin, DefnVariant, Realization, Span, Symbol, TypeDefInfo, Visibility,
+    };
+
+    fn install_ctor(
+        table: &mut SymbolTable,
+        name: &str,
+        scheme: Scheme,
+        type_name: FQTypeName,
+        type_def: Option<Box<TypeDefInfo>>,
+        field_count: usize,
+        param_names: Vec<Symbol>,
+    ) {
+        let variant = DefnVariant {
+            params: param_names
+                .iter()
+                .cloned()
+                .map(|name| (name, None))
+                .collect(),
+            body: cranelisp_types::Expr::IntLit {
+                value: 0,
+                span: Span::SYNTHETIC,
+                inferred_type: None,
+            },
+            span: Span::SYNTHETIC,
+        };
+        let view = cranelisp_types::MonoDefnVariant {
+            name: Symbol::from(name),
+            params: param_names.clone(),
+            body: cranelisp_types::MonoExpr::lenient_from_expr(
+                &variant.body,
+                &Default::default(),
+                &Default::default(),
+                &Default::default(),
+            ),
+            span: Span::SYNTHETIC,
+            mode_summary: None,
+        };
+        table
+            .install_concrete(
+                Symbol::from(name),
+                scheme,
+                param_names,
+                None,
+                0,
+                CallableOrigin::Ctor {
+                    type_name,
+                    tag: 0,
+                    field_count,
+                    internal: false,
+                    type_def,
+                },
+                Realization::Body { view, code: None },
+                Some(variant),
+                Vec::new(),
+                Visibility::Private,
+            )
+            .expect("constructor fixture installs");
+    }
 
     fn point_fqtn() -> FQTypeName {
         FQTypeName {
@@ -1187,22 +1236,14 @@ mod tests {
                 Box::new(Type::ADT(point_fqtn(), Vec::new())),
             ),
         };
-        table.insert(
-            Symbol::from("Point"),
-            ModuleEntry::def(
-                ctor_scheme,
-                DefKind::Constructor {
-                    got_slot: 0,
-                    type_name: point_fqtn(),
-                    tag: 0,
-                    field_count: 2,
-                    internal: false,
-                    type_def: Some(Box::new(info)),
-                    mode_summary: None,
-                },
-            )
-            .param_names(vec![Symbol::from("x"), Symbol::from("y")])
-            .build(),
+        install_ctor(
+            &mut table,
+            "Point",
+            ctor_scheme,
+            point_fqtn(),
+            Some(Box::new(info)),
+            2,
+            vec![Symbol::from("x"), Symbol::from("y")],
         );
         tables.insert(ModuleFullPath::from("user"), table);
         tables
@@ -1244,21 +1285,14 @@ mod tests {
                 Box::new(Type::ADT(fqtn.clone(), Vec::new())),
             ),
         };
-        table.insert(
-            Symbol::from("Circle"),
-            ModuleEntry::def(
-                ctor_scheme,
-                DefKind::Constructor {
-                    got_slot: 0,
-                    type_name: fqtn.clone(),
-                    tag: 0,
-                    field_count: 1,
-                    internal: false,
-                    type_def: None,
-                    mode_summary: None,
-                },
-            )
-            .build(),
+        install_ctor(
+            &mut table,
+            "Circle",
+            ctor_scheme,
+            fqtn.clone(),
+            None,
+            1,
+            Vec::new(),
         );
         tables.insert(ModuleFullPath::from("user"), table);
         let fields = ctor_field_types(&fqtn, "Circle", &tables);
@@ -1311,22 +1345,14 @@ mod tests {
                 Box::new(Type::ADT(fqtn.clone(), Vec::new())),
             ),
         };
-        table.insert(
-            Symbol::from(name),
-            ModuleEntry::def(
-                ctor_scheme,
-                DefKind::Constructor {
-                    got_slot: 0,
-                    type_name: fqtn.clone(),
-                    tag: 0,
-                    field_count: 1,
-                    internal: false,
-                    type_def: Some(Box::new(info)),
-                    mode_summary: None,
-                },
-            )
-            .param_names(vec![Symbol::from("v")])
-            .build(),
+        install_ctor(
+            &mut table,
+            name,
+            ctor_scheme,
+            fqtn.clone(),
+            Some(Box::new(info)),
+            1,
+            vec![Symbol::from("v")],
         );
         tables.insert(ModuleFullPath::from("user"), table);
         tables

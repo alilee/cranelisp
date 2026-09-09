@@ -22,10 +22,10 @@
 use std::collections::{HashMap, HashSet};
 
 use cranelisp_types::{
-    ConstrainedFn, CranelispError, DefKind, Defn, DefnVariant, ErrorLocation, Expr, FQSymbol,
-    JitSymbol, ModuleEntry, ModuleFullPath, ModuleStrategy, MonoDefn, ParametricFn, ResolvedCall,
-    Span, Subst, Symbol, SymbolTable, TopLevel, Type, TypeId, UserFnState, Visibility, Warning,
-    apply,
+    Binding, CallableArmDraft, CallableArmId, CallableOrigin, CallableTarget, ConstrainedMeta,
+    CranelispError, Decl, Defn, DefnVariant, ErrorLocation, Expr, FQSymbol, JitSymbol, Life,
+    MethodResolutions, ModuleFullPath, ModuleStrategy, MonoDefn, ResolvedCall, Span, Subst, Symbol,
+    SymbolTable, TemplateBody, TemplateKind, TopLevel, Type, TypeId, Visibility, Warning, apply,
 };
 
 use crate::result::CheckResult;
@@ -37,6 +37,7 @@ use crate::scheme::mono;
 mod body;
 mod callees;
 mod finalize;
+pub(crate) use finalize::collect_expr_spans;
 mod mono_collect;
 mod register;
 mod support;
@@ -52,36 +53,6 @@ pub(crate) use mono_collect::AutoCurryDrain;
 pub(crate) use support::*;
 
 pub(crate) struct FormCheckResult {
-    /// Method resolutions discovered while checking this form.
-    /// In Pass 1: empty (registration produces no resolutions).
-    /// In Pass 2: resolutions from the body of this defn.
-    pub(crate) method_resolutions: HashMap<Span, ResolvedCall>,
-
-    /// The pattern-constructor STORAGE identities discovered while checking this
-    /// form's bodies (`MethodResolutions.pattern_ctors`, keyed by
-    /// `Pattern::Constructor.span`; S109 W1.2 §10.2). Accumulated cross-form so
-    /// the finalize codegen-view rebuild can populate `MonoMatchArm.resolved_ctor`
-    /// AFTER the per-form `state.method_resolutions` has been drained.
-    pub(crate) pattern_ctors: HashMap<Span, cranelisp_types::FQSymbol>,
-
-    /// The per-`Var`-span typed resolution verdicts discovered while checking
-    /// this form's bodies (`MethodResolutions.var_refs`; S114 carrier flip).
-    /// Mirror of `pattern_ctors` — accumulated cross-form so the finalize
-    /// codegen-view rebuild can populate `MonoExpr::Var.resolution` AFTER the
-    /// per-form `state.method_resolutions` has been drained.
-    pub(crate) var_refs: HashMap<Span, cranelisp_types::VarRef>,
-
-    /// The per-`Apply`-span typed dispatch verdicts discovered while checking
-    /// this form's bodies (`MethodResolutions.apply_refs`; S114 carrier flip) —
-    /// the Apply-side sibling of `var_refs`, populating
-    /// `MonoExpr::Apply.dispatch`.
-    pub(crate) apply_refs: HashMap<Span, cranelisp_types::ApplyRef>,
-
-    /// Expression types for this form's AST nodes.
-    /// In Pass 1: may contain constructor types for TypeDef forms.
-    /// In Pass 2: contains all expr types from the defn body + the defn's Fn type.
-    pub(crate) expr_types: HashMap<Span, Type>,
-
     /// If this form defines a constrained polymorphic function (Pass 2 only),
     /// the function name. Used by the caller to build the constrained_fn_names set.
     pub(crate) constrained_fn: Option<Symbol>,
@@ -99,87 +70,351 @@ pub(crate) struct FormCheckResult {
 
     /// Warnings emitted during checking this form.
     pub(crate) warnings: Vec<Warning>,
-
-    /// Call graph edges discovered during this form's checking.
-    /// Each entry is (caller_symbol, callee_fqsymbol). The caller is local to
-    /// the current module; the callee is fully qualified (may be cross-module).
-    /// Accumulated for the module's call graph, used by the scheduler for
-    /// macro dependency walks.
-    pub(crate) call_graph_edges: Vec<(Symbol, FQSymbol)>,
 }
 
 impl FormCheckResult {
     /// Create an empty FormCheckResult (used for no-op passes).
     pub(super) fn empty() -> Self {
         FormCheckResult {
-            method_resolutions: HashMap::new(),
-            pattern_ctors: HashMap::new(),
-            var_refs: HashMap::new(),
-            apply_refs: HashMap::new(),
-            expr_types: HashMap::new(),
             constrained_fn: None,
             mono_defns: Vec::new(),
             default_method_defns: Vec::new(),
             multi_sig_defns: Vec::new(),
             warnings: Vec::new(),
-            call_graph_edges: Vec::new(),
         }
     }
 }
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum BodyTarget {
+    Direct(Symbol),
+    MultiSignatureClause { group: Symbol, clause: usize },
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct RegisteredBody {
+    pub(crate) target: BodyTarget,
+    pub(crate) publication_name: Symbol,
+    pub(crate) param_types: Vec<Type>,
+    pub(crate) ret_ty: Type,
+    pub(crate) written_var_scope: HashMap<Symbol, TypeId>,
+    pub(crate) span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CheckedBody {
+    pub(crate) registration: RegisteredBody,
+    pub(crate) ast: DefnVariant,
+    pub(crate) callees: Vec<FQSymbol>,
+}
+
+mod body_ledger {
+    use super::*;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+    struct BodySlot(usize);
+
+    enum BodyState {
+        Registered,
+        Checked {
+            ast: DefnVariant,
+            callees: Vec<FQSymbol>,
+        },
+    }
+
+    struct BodyRecord {
+        registration: RegisteredBody,
+        state: BodyState,
+    }
+
+    /// Ledger-borrowed capability for the only valid `Registered -> Checked` move.
+    ///
+    /// It borrows the exact record that created it and finishes through that
+    /// borrow. There is no ledger argument to `finish`, so a capability from
+    /// one ledger cannot be applied to another. Dropping it leaves the record
+    /// in `Registered`; construction never removes data from the ledger.
+    pub(crate) struct RegisteredBodyHandle<'ledger> {
+        registration: &'ledger RegisteredBody,
+        state: &'ledger mut BodyState,
+    }
+
+    impl RegisteredBodyHandle<'_> {
+        pub(crate) fn registration(&self) -> &RegisteredBody {
+            self.registration
+        }
+
+        pub(crate) fn finish(self, ast: DefnVariant, mut callees: Vec<FQSymbol>) {
+            callees.sort_by(|a, b| {
+                a.module
+                    .as_ref()
+                    .cmp(b.module.as_ref())
+                    .then(a.symbol.as_ref().cmp(b.symbol.as_ref()))
+            });
+            callees.dedup();
+            *self.state = BodyState::Checked { ast, callees };
+        }
+    }
+
+    #[derive(Default)]
+    pub(crate) struct BodyLedger {
+        records: Vec<BodyRecord>,
+        by_target: HashMap<BodyTarget, BodySlot>,
+        by_publication: HashMap<Symbol, BodySlot>,
+    }
+
+    impl BodyLedger {
+        pub(crate) fn reject_duplicate(
+            &self,
+            target: &BodyTarget,
+            publication_name: &Symbol,
+            span: Span,
+        ) -> Result<(), CranelispError> {
+            if self.by_target.contains_key(target)
+                || self.by_publication.contains_key(publication_name)
+            {
+                return Err(CranelispError::TypeError {
+                    message: format!(
+                        "illegal redefinition of `{publication_name}` in one compilation cluster; use one multi-signature definition for multiple bodies"
+                    ),
+                    location: ErrorLocation::from_span(span),
+                });
+            }
+            Ok(())
+        }
+
+        pub(crate) fn register(&mut self, body: RegisteredBody) -> Result<(), CranelispError> {
+            self.reject_duplicate(&body.target, &body.publication_name, body.span)?;
+            let slot = BodySlot(self.records.len());
+            self.by_target.insert(body.target.clone(), slot);
+            self.by_publication
+                .insert(body.publication_name.clone(), slot);
+            self.records.push(BodyRecord {
+                registration: body,
+                state: BodyState::Registered,
+            });
+            Ok(())
+        }
+
+        fn registration(&self, slot: BodySlot) -> Option<&RegisteredBody> {
+            self.records.get(slot.0).map(|record| &record.registration)
+        }
+
+        pub(crate) fn registration_for_publication(
+            &self,
+            name: &Symbol,
+        ) -> Option<&RegisteredBody> {
+            self.registration(*self.by_publication.get(name)?)
+        }
+
+        pub(crate) fn registration_for_target(
+            &self,
+            target: &BodyTarget,
+        ) -> Option<&RegisteredBody> {
+            self.registration(*self.by_target.get(target)?)
+        }
+
+        pub(crate) fn registered_for_check(
+            &mut self,
+            name: &Symbol,
+        ) -> Option<RegisteredBodyHandle<'_>> {
+            let slot = *self.by_publication.get(name)?;
+            let record = self.records.get_mut(slot.0)?;
+            if !matches!(record.state, BodyState::Registered) {
+                return None;
+            }
+            Some(RegisteredBodyHandle {
+                registration: &record.registration,
+                state: &mut record.state,
+            })
+        }
+
+        pub(crate) fn checked_for_publication(&self, name: &Symbol) -> Option<CheckedBodyRef<'_>> {
+            let slot = *self.by_publication.get(name)?;
+            let record = self.records.get(slot.0)?;
+            let BodyState::Checked { ast, callees } = &record.state else {
+                return None;
+            };
+            Some(CheckedBodyRef {
+                registration: &record.registration,
+                ast,
+                callees,
+            })
+        }
+
+        pub(crate) fn checked_mut_for_publication(
+            &mut self,
+            name: &Symbol,
+        ) -> Option<CheckedBodyMut<'_>> {
+            let slot = *self.by_publication.get(name)?;
+            let record = self.records.get_mut(slot.0)?;
+            let BodyState::Checked { ast, callees } = &mut record.state else {
+                return None;
+            };
+            Some(CheckedBodyMut { ast, callees })
+        }
+
+        pub(crate) fn rekey_publication(
+            &mut self,
+            old_name: &Symbol,
+            name: Symbol,
+        ) -> Result<(), CranelispError> {
+            let Some(&slot) = self.by_publication.get(old_name) else {
+                return Err(CranelispError::CodegenError {
+                    message: format!(
+                        "internal: no checked-body publication owner for `{old_name}`"
+                    ),
+                    location: ErrorLocation::unknown(),
+                });
+            };
+            if self
+                .by_publication
+                .get(&name)
+                .is_some_and(|existing| *existing != slot)
+            {
+                let span = self
+                    .registration(slot)
+                    .map_or(Span::SYNTHETIC, |registration| registration.span);
+                return Err(CranelispError::TypeError {
+                    message: format!(
+                        "checked-body publication target `{name}` already has an owner"
+                    ),
+                    location: ErrorLocation::from_span(span),
+                });
+            }
+
+            // Both collision checks completed before any index or record move.
+            let Some(record) = self.records.get_mut(slot.0) else {
+                return Err(CranelispError::CodegenError {
+                    message: format!(
+                        "internal: checked-body publication index for `{old_name}` has no record"
+                    ),
+                    location: ErrorLocation::unknown(),
+                });
+            };
+            record.registration.publication_name = name.clone();
+            self.by_publication.remove(old_name);
+            self.by_publication.insert(name, slot);
+            Ok(())
+        }
+
+        pub(crate) fn checked_bodies(&self) -> impl Iterator<Item = CheckedBodyRef<'_>> + '_ {
+            self.records.iter().filter_map(|record| {
+                let BodyState::Checked { ast, callees } = &record.state else {
+                    return None;
+                };
+                Some(CheckedBodyRef {
+                    registration: &record.registration,
+                    ast,
+                    callees,
+                })
+            })
+        }
+
+        /// Consume the ledger at the sole publication window. Because this
+        /// method takes `self`, no checked-body identity survives to publish a
+        /// record a second time. An incomplete registered record is reported as
+        /// an internal pipeline failure rather than being silently omitted.
+        pub(crate) fn into_checked(self) -> Result<Vec<CheckedBody>, CranelispError> {
+            self.records
+                .into_iter()
+                .map(|record| match record.state {
+                    BodyState::Checked { ast, callees } => Ok(CheckedBody {
+                        registration: record.registration,
+                        ast,
+                        callees,
+                    }),
+                    BodyState::Registered => Err(CranelispError::CodegenError {
+                        message: format!(
+                            "internal: registered body `{}` reached final publication unchecked",
+                            record.registration.publication_name
+                        ),
+                        location: ErrorLocation::from_span(record.registration.span),
+                    }),
+                })
+                .collect()
+        }
+
+        #[cfg(test)]
+        pub(crate) fn snapshot(
+            &self,
+        ) -> (
+            Vec<Option<(BodyTarget, Symbol)>>,
+            Vec<Option<(BodyTarget, Symbol)>>,
+            Vec<(BodyTarget, usize)>,
+            Vec<(Symbol, usize)>,
+        ) {
+            let registered = self
+                .records
+                .iter()
+                .map(|record| {
+                    matches!(record.state, BodyState::Registered).then(|| {
+                        (
+                            record.registration.target.clone(),
+                            record.registration.publication_name.clone(),
+                        )
+                    })
+                })
+                .collect();
+            let checked = self
+                .records
+                .iter()
+                .map(|record| {
+                    matches!(record.state, BodyState::Checked { .. }).then(|| {
+                        (
+                            record.registration.target.clone(),
+                            record.registration.publication_name.clone(),
+                        )
+                    })
+                })
+                .collect();
+            let mut targets: Vec<_> = self
+                .by_target
+                .iter()
+                .map(|(target, slot)| (target.clone(), slot.0))
+                .collect();
+            targets.sort_by_key(|(_, slot)| *slot);
+            let mut publications: Vec<_> = self
+                .by_publication
+                .iter()
+                .map(|(name, slot)| (name.clone(), slot.0))
+                .collect();
+            publications.sort_by_key(|(_, slot)| *slot);
+            (registered, checked, targets, publications)
+        }
+    }
+
+    pub(crate) struct CheckedBodyRef<'ledger> {
+        pub(crate) registration: &'ledger RegisteredBody,
+        pub(crate) ast: &'ledger DefnVariant,
+        #[cfg_attr(not(test), allow(dead_code))]
+        pub(crate) callees: &'ledger Vec<FQSymbol>,
+    }
+
+    pub(crate) struct CheckedBodyMut<'ledger> {
+        pub(crate) ast: &'ledger mut DefnVariant,
+        pub(crate) callees: &'ledger mut Vec<FQSymbol>,
+    }
+}
+
+pub(crate) use body_ledger::BodyLedger;
 
 /// Per-module accumulator for form-by-form typecheck results.
 ///
 /// One accumulator per module. Created before Pass 1, consumed by
 /// `finalize_check_result()`. No concurrent access — a single worker
 /// processes one module's forms sequentially (Invariant 5).
-/// The accumulator is the **authoritative source** for method_resolutions, expr_types,
-/// and warnings in the final `CheckResult`. During per-form checking, `merge_form_result()`
-/// collects these from each `FormCheckResult`. After post-passes run in
-/// `finalize_check_result()`, any additional resolutions/warnings produced by those passes
-/// are swept from `self.state` into the accumulator, and the `CheckResult` is built
-/// exclusively from the accumulator.
+/// The ledger is the authoritative cross-pass owner of source bodies. Active
+/// resolution and expression facts remain on `CheckState` through settlement,
+/// then the final sweep moves them here once for annotation and publication.
 pub(crate) struct ModuleCheckAccumulator {
-    pub(crate) method_resolutions: HashMap<Span, ResolvedCall>,
-    pub(crate) pattern_ctors: HashMap<Span, cranelisp_types::FQSymbol>,
-    pub(crate) var_refs: HashMap<Span, cranelisp_types::VarRef>,
-    pub(crate) apply_refs: HashMap<Span, cranelisp_types::ApplyRef>,
+    pub(crate) resolutions: MethodResolutions,
     pub(crate) expr_types: HashMap<Span, Type>,
+    pub(crate) bodies: BodyLedger,
     pub(crate) constrained_fn_names: HashSet<Symbol>,
     pub(crate) mono_defns: Vec<MonoDefn>,
     pub(crate) default_method_defns: Vec<Defn>,
     pub(crate) multi_sig_defns: Vec<Defn>,
     pub(crate) warnings: Vec<Warning>,
-    pub(crate) call_graph_edges: Vec<(Symbol, FQSymbol)>,
-    /// Type vars from pass 1 registration, keyed by defn name.
-    /// Needed by pass 2 to check bodies against registered signatures.
-    pub(crate) defn_type_vars: HashMap<Symbol, (Vec<Type>, Type)>,
-    /// **Written-var lexical scope from Pass-1 signature registration** (spec
-    /// §3.3.1 [S109 W6.3]), keyed by the same defn name (multi-arity clauses
-    /// under their `{name}__v{i}` internal name). Each maps the written type-var
-    /// names in the parameter annotations (`:a`, `:(Box a)`) to the ONE flexible
-    /// `TypeId` they minted. Pass-2 `check_defn_body` installs it as the
-    /// definition's `written_var_scope`, so a body/nested-`fn` occurrence of the
-    /// same name CO-REFERS to the same var (the 0588 cross-pass threading; empty
-    /// for a signature with no written type vars). A bare written var carries
-    /// only a name — rigidity lives on the CONSTRAINT path (`check_defn_body`
-    /// seeds `rigid_vars` from asserted-constraint param vars, NOT from this
-    /// map).
-    pub(crate) defn_var_scopes: HashMap<Symbol, HashMap<Symbol, TypeId>>,
-    /// **Redefinition slot carry-forward (S83, FIXME 0356/0357, Principle 20).**
-    /// With deferred GOT-slot allocation, Pass-1 `register_defn_signature`
-    /// overwrites a redefined symbol's prior `Concrete` entry with a slot-less
-    /// `UserFnState::NotDetermined` — which would drop the prior callable slot
-    /// before the Pass-2 determination point can reuse it (orphaning the live
-    /// GOT pointer the prior `Code::Jit` installed = a use-after-free). So Pass-1
-    /// captures the prior entry's concrete slot HERE (read via
-    /// `callable_got_slot()`, before the overwrite), keyed by defn name; the
-    /// Pass-2 unconstrained determination arm reuses it instead of allocating
-    /// fresh. A prior `NotDetermined` / `Constrained` / absent entry leaves no
-    /// key here, so the arm allocates a fresh slot (constrained→concrete redef,
-    /// or first definition). Per-`check`-call (each REPL eval threads its own
-    /// accumulator through Pass-1 → Pass-2), which is exactly the redefinition
-    /// granularity. See `UserFnState` rustdoc "Timing-wall resolution".
-    pub(crate) redef_slots: HashMap<Symbol, usize>,
 }
 
 impl Default for ModuleCheckAccumulator {
@@ -192,20 +427,14 @@ impl ModuleCheckAccumulator {
     /// Create a new empty accumulator for a module.
     pub(crate) fn new() -> Self {
         ModuleCheckAccumulator {
-            method_resolutions: HashMap::new(),
-            pattern_ctors: HashMap::new(),
-            var_refs: HashMap::new(),
-            apply_refs: HashMap::new(),
+            resolutions: MethodResolutions::new(),
             expr_types: HashMap::new(),
+            bodies: BodyLedger::default(),
             constrained_fn_names: HashSet::new(),
             mono_defns: Vec::new(),
             default_method_defns: Vec::new(),
             multi_sig_defns: Vec::new(),
             warnings: Vec::new(),
-            call_graph_edges: Vec::new(),
-            defn_type_vars: HashMap::new(),
-            defn_var_scopes: HashMap::new(),
-            redef_slots: HashMap::new(),
         }
     }
 }
@@ -223,6 +452,15 @@ impl ModuleCheckAccumulator {
 /// key variant entries by their live mangled names, not the removed internal
 /// `{name}__v{i}` keys.
 type MangledNamesByBase = HashMap<Symbol, Vec<Symbol>>;
+
+fn callable_target_owner(target: &CallableTarget) -> Option<&FQSymbol> {
+    match target {
+        CallableTarget::Binding(owner)
+        | CallableTarget::OverloadArm { owner, .. }
+        | CallableTarget::MacroClause { owner, .. } => Some(owner),
+        _ => None,
+    }
+}
 
 impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
     /// Check a single `TopLevel` form through one pass.
@@ -256,4 +494,162 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 }
 
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
+
+#[cfg(test)]
+mod ledger_tests {
+    use super::*;
+
+    fn registered(target: BodyTarget, publication_name: &str, span: Span) -> RegisteredBody {
+        RegisteredBody {
+            target,
+            publication_name: Symbol::from(publication_name),
+            param_types: vec![Type::Int],
+            ret_ty: Type::Int,
+            written_var_scope: HashMap::new(),
+            span,
+        }
+    }
+
+    fn checked_ast(span: Span) -> DefnVariant {
+        DefnVariant {
+            params: vec![(Symbol::from("x"), None)],
+            body: Expr::IntLit {
+                value: 1,
+                span,
+                inferred_type: Some(Box::new(Type::Int)),
+            },
+            span,
+        }
+    }
+
+    // spec: design/typecheck/checked-body-publication.md §4;
+    //   tests/plan/s121-test-plan.md §3.8 LC-1.
+    #[test]
+    fn ledger_enforces_registered_checked_consumed_lifecycle() {
+        let mut ledger = BodyLedger::default();
+        let span = Span::new(10, 20);
+        let name = Symbol::from("f");
+        ledger
+            .register(registered(BodyTarget::Direct(name.clone()), "f", span))
+            .unwrap();
+        let registered_snapshot = ledger.snapshot();
+        drop(
+            ledger
+                .registered_for_check(&name)
+                .expect("registration lends its exact record"),
+        );
+        assert_eq!(
+            ledger.snapshot(),
+            registered_snapshot,
+            "dropping the borrowed capability leaves registration and indexes intact",
+        );
+        let handle = ledger
+            .registered_for_check(&name)
+            .expect("a dropped borrow leaves the registration available");
+
+        let duplicate = FQSymbol {
+            module: ModuleFullPath::from("z"),
+            symbol: Symbol::from("callee"),
+        };
+        let first = FQSymbol {
+            module: ModuleFullPath::from("a"),
+            symbol: Symbol::from("callee"),
+        };
+        handle.finish(
+            checked_ast(span),
+            vec![duplicate.clone(), first.clone(), duplicate],
+        );
+        assert_eq!(
+            *ledger.checked_for_publication(&name).unwrap().callees,
+            vec![
+                first,
+                FQSymbol {
+                    module: ModuleFullPath::from("z"),
+                    symbol: Symbol::from("callee"),
+                }
+            ]
+        );
+        let mut published = ledger.into_checked().unwrap();
+        let consumed = published.pop().expect("whole-ledger drain owns the body");
+        assert_eq!(consumed.registration.publication_name, name);
+        assert!(published.is_empty());
+
+        let mut incomplete = BodyLedger::default();
+        incomplete
+            .register(registered(
+                BodyTarget::Direct(Symbol::from("unchecked")),
+                "unchecked",
+                span,
+            ))
+            .unwrap();
+        let error = incomplete.into_checked().unwrap_err();
+        assert!(
+            matches!(&error, CranelispError::CodegenError { .. }),
+            "the final drain reports, rather than omits, an indexed registered record",
+        );
+        assert!(error.to_string().contains("registered body `unchecked`"));
+    }
+
+    // spec: design/typecheck/checked-body-publication.md §3–§4;
+    //   tests/plan/s121-test-plan.md §3.8 LC-1.
+    #[test]
+    fn ledger_rejects_duplicate_direct_targets_but_accepts_distinct_clauses() {
+        let mut ledger = BodyLedger::default();
+        let name = Symbol::from("f");
+        ledger
+            .register(registered(
+                BodyTarget::Direct(name.clone()),
+                "f",
+                Span::new(0, 5),
+            ))
+            .unwrap();
+        let error = ledger
+            .register(registered(
+                BodyTarget::Direct(name.clone()),
+                "f",
+                Span::new(6, 11),
+            ))
+            .unwrap_err();
+        assert!(error.to_string().contains("illegal redefinition of `f`"));
+        assert!(ledger.registration_for_publication(&name).is_some());
+
+        let mut clauses = BodyLedger::default();
+        for clause in 0..2 {
+            clauses
+                .register(registered(
+                    BodyTarget::MultiSignatureClause {
+                        group: name.clone(),
+                        clause,
+                    },
+                    &format!("f__v{clause}"),
+                    Span::new((clause * 10) as u32, (clause * 10 + 5) as u32),
+                ))
+                .unwrap();
+        }
+        let before = clauses.snapshot();
+        let collision = clauses
+            .rekey_publication(&Symbol::from("f__v0"), Symbol::from("f__v1"))
+            .unwrap_err();
+        assert!(collision.to_string().contains("already has an owner"));
+        assert_eq!(clauses.snapshot(), before);
+
+        let before = clauses.snapshot();
+        let same_publication = clauses
+            .register(registered(
+                BodyTarget::MultiSignatureClause {
+                    group: Symbol::from("g"),
+                    clause: 0,
+                },
+                "f__v0",
+                Span::new(30, 35),
+            ))
+            .unwrap_err();
+        assert!(
+            same_publication
+                .to_string()
+                .contains("illegal redefinition of `f__v0`")
+        );
+        assert_eq!(clauses.snapshot(), before);
+    }
+}

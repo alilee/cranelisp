@@ -19,23 +19,25 @@ body-check, so the body narrowing it to a concrete type is a skolem escape.
 The pieces:
 
 1. **`written_var_scope` (name → `TypeId`) threads LEXICAL CO-REFERENCE only.**
-   From Pass-1 (`register_defn_signature` → `accumulator.defn_var_scopes`)
-   through Pass-2 and INTO nested `fn` closures (`infer_lambda` SHARES it, never
-   resets — §3.3.1 co-reference, 0588). Every occurrence of one bare name within
-   a definition resolves to the SAME var (`[:a x :a y]` ties x/y; a body `:a`
-   co-refers to a param `:a`; an inner `(fn [:a y] …)` co-refers to the
-   enclosing `a`). This is ALL a bare written var carries — a name, never
-   rigidity. A bare var is otherwise an ordinary flexible var: the body pinning
-   it is fine (rows 2/4/11); two bare vars tied by the body MERGE (C-1).
+   Pass 1 stores it with the exact source occurrence in the private body
+   ledger. Pass 2 installs it in that occurrence's `BodyFrame`, and nested `fn`
+   closures share the active frame (`infer_lambda` never resets it — §3.3.1
+   co-reference, 0588). Every occurrence of one bare name within a definition
+   resolves to the same var (`[:a x :a y]` ties x/y; a body `:a` co-refers to a
+   param `:a`; an inner `(fn [:a y] …)` co-refers to the enclosing `a`). This is
+   all a bare written var carries—a name, never rigidity. A bare var is
+   otherwise flexible: the body may pin it (rows 2/4/11), and two bare vars tied
+   by the body merge (C-1).
 
-2. **`rigid_vars` holds ONLY asserted-constraint param vars.** `check_defn_body`
+2. **`BodyFrame.rigid_vars` holds ONLY asserted-constraint param vars.** `check_defn_body`
    seeds it, per body, from the param `Type::Var`s that ALREADY carry a
    constraint at Pass-2 entry — i.e. `resolve_bound_param` recorded the
    assertion (`:C x`) into `state.active_constraints` during Pass-1. A BARE `:a`
    param that merely ACCRUES a constraint from body use (row 7) is NOT seeded
    (its var has no constraint until body inference runs, after the seeding), so
-   it stays flexible — inferred-not-asserted. Scoped to the owning body,
-   torn down on return.
+   it stays flexible—inferred-not-asserted. The frame also owns the recursion
+   name/frame pair, candidate-pending work and exact user-function references;
+   the shared wrapper restores the whole frame and lexical depth on every exit.
 
 3. **`unify::unify_with_rigid(subst, rigid, t1, t2)` + `unify_var`** are the ONE
    unification seam (the free 3-arg `unify` is a test-only helper). Asymmetry:
@@ -131,8 +133,8 @@ Principle 7):
   post-mono rebuild (`program/finalize.rs::finalize_annotations_and_publish`).
   All route through the shared `program::build_concrete_codegen_view(name,
   variant, pattern_ctors, var_refs, apply_refs)` helper (`program/support.rs`).
-  Only a `UserFnState::Concrete` entry gets a view — guard on the kind before
-  calling the helper.
+  Only a callable in `Life::Concrete` gets a view — guard on the lifecycle
+  before calling the helper.
 
 > **The helper is NOT "best-effort `Option`" — that contract was FALSIFIED by the
 > S114 carrier flip, and the distinction is safety-relevant.** Its signature is
@@ -140,9 +142,11 @@ Principle 7):
 > `ViewBuildError` arms are deliberately asymmetric:
 >
 > - **`NotConcrete`** (a residual `Type::Var` / unresolved HKT head / an
->   un-annotated node — a ctor's synthetic body, an `f$Var` multi-sig variant)
->   — **FALLS BACK** to `lenient_from_expr`, exactly as pre-flip. These are valid
->   programs the `ast`-path codegen compiles fine.
+>   un-annotated node) — clone the checked variant, default only eligible
+>   residual positions below a preserved type constructor, and retry strict
+>   `from_expr`. A residual root, a variable present in a declared parameter
+>   type, or a constrained variable is not defaulted. If non-concreteness
+>   remains, return the existing located ambiguity error.
 > - **`Unresolved { span, name }`** (a real-span `Var`/`Apply` for which
 >   typecheck recorded NO typed verdict — no `VarRef`, no `ApplyRef`) —
 >   **PROPAGATES** as a LOCATED typecheck-phase error. It is the phase-boundary
@@ -154,16 +158,12 @@ Principle 7):
 > ships to the backend, where the miss resurfaces as a raw codegen error with no
 > source location. When adding a caller, propagate — never `.ok()` — the `Err`.
 
-**Why `NotConcrete` falls back (NOT hard-error) for concrete defns.** `defined_symbols()` also
-yields `DefKind::Constructor` (ctor + accessor) entries whose synthetic bodies are
-`inferred_type: None` (`adt.rs`), and `f$Var` multi-sig variants whose param is a
-genuine `Type::Var` — neither converts via `from_expr`, yet the current `ast`-path
-codegen compiles them fine (ctor codegen reads field types from the signature, not
-node `inferred_type`). Hard-erroring would reject valid programs. The
-fallback-vs-hard-error asymmetry + the ctor/accessor gap is recorded in **FIXME 0393**
-(the Phase-3/0391 backend backstop must scope its `expect` to `Concrete` entries,
-not the whole `defined_symbols()` set). The `--workspace` e2e suite produced ZERO
-`from_expr`-fail on a real concrete defn — the validation payoff holds.
+**Constructor/template distinction.** Synthetic constructor and accessor bodies
+are populated directly at their synthesis seams; polymorphic constructors and
+accessors are `Life::Template` and carry no codegen view. This helper handles
+codegen-bound concrete source bodies only: they must produce a strict view,
+either immediately or after the bounded defaulting step above. There is no
+lenient concrete-body rebuild path.
 
 ## `Def.callees` completeness contract (S101, FIXME 0470 + 0472)
 
@@ -173,9 +173,9 @@ stored, curried, nested-lambda), same-module and imported alike — recorded
 uniformly as `Vec<FQSymbol>` (value vs call edges indistinguishable to
 consumers; `design/int/session-transaction.md` §3.2). The feed is two-channel:
 
-- `ResolvedCall`-derived edges (`extract_call_graph_edges` — trait methods,
-  sig-dispatch, auto-curry), unchanged;
-- `CheckState.user_fn_refs` — recorded at the `infer_var` chokepoint by
+- the body's `ResolvedCall` delta—trait methods, signature dispatch and
+  auto-curry;
+- `BodyFrame.user_fn_refs`—recorded at the `infer_var` chokepoint by
   `checker::record_reference_target` (the S110 W0.1 "resolve once" consolidation;
   the former `record_user_fn_ref` was deleted — `infer_var` now resolves each
   name ONCE via `resolve_ref_target`, writes the TYPED carrier
@@ -187,25 +187,28 @@ consumers; `design/int/session-transaction.md` §3.2). The feed is two-channel:
   (chain-follow to home, prelude-fallback-aware, `lookup`-mirroring qualified
   candidate order) to a `DefKind::UserFn` `Def`.
 
-Both channels are combined by the ONE shared **`harvest_callee_edges`** helper
-(the `codegen_view` all-seams precedent — FIXME 0472) at every body-check
-seam:
+Both channels are combined by the one shared `harvest_callees` projection at
+every body-check seam:
 
-- **Pass-2 per-form** — `check_form_body_single_defn` / `_multi_sig`
-  (span-set snapshot deltas like `form_mr`; edges ride
-  `FormCheckResult.call_graph_edges` into the merge/finalize sinks, attributed
-  to the enclosing defn — nested-lambda refs included, the L-R2 carrier);
-- **Pass-1 impl-method writeback** — `finalize_impl_method_writeback`
-  (impl-provided, default, AND HKT trait-method bodies; these are checked
-  outside every per-form delta, so the edges are written DIRECTLY to the
-  mangled entry, mirroring its `ast`/`codegen_view` direct writes; default
-  bodies harvest under the D1 trait-home module switch, so their edge FQs
-  resolve in the defining module's context).
+- **Pass-2 top-level bodies:** the exact checked ledger record owns its AST and
+  initial callees. Final annotation unions late resolution edges and passes the
+  canonical vector with that body through one checked-settlement call.
+- **Pass-1 impl/default/HKT bodies:** `finalize_impl_method_writeback` harvests
+  while retaining the module used for body checking, then passes the canonical
+  vector through its one local checked-settlement call. A cross-module default
+  therefore attributes local signature dispatch to the trait home, not the
+  impl writer.
 
-When adding a NEW body-check seam, snapshot `state.user_fn_refs` before the
-body check and route the delta through `harvest_callee_edges` — a seam that
-skips the harvest silently starves the S101 transaction's reverse index (the
-0472 defect class).
+When adding a body-check seam, use the shared `BodyFrame` wrapper and route its
+returned exact references plus the resolution delta through `harvest_callees`.
+Do not publish a body and mutate its callees afterward; a seam that skips the
+atomic payload silently starves the S101 transaction's reverse index.
+
+`CheckState.method_resolutions` remains the sole active resolution record
+through deterministic post-passes. The final sweep moves the complete
+`MethodResolutions`—resolved calls, pattern constructors, variable references
+and apply references—once into `ModuleCheckAccumulator`; no per-form split
+transport is authoritative.
 
 Dispositions: **self-edges are skipped** (the recursion name is a local
 binding in `check_defn_body`, so the shadow gate filters it); non-`UserFn`
@@ -408,7 +411,50 @@ verdict depended on which `If` arm the programmer wrote the COW producer in
 (`--link` exit 134 in one order, clean in the other, same runtime path). The
 lattice rule now stated plainly: `Unconditional ⊑ Conditional`, the join takes
 the ⊤-ward variant of the two operands, and the link sets UNION — always, both
-orders. **When you touch a join/merge/fold seam here, extend the property cells
+orders.
+
+> Section numbers below are `design/typecheck/ownership-inference.md`, which
+> carries the narrative, measurements and alternatives; this note carries only
+> what a narrow-deployed `dev` must not break.
+>
+> **The param-reach axis is a SET of parameter INDICES** (§19.3, §20.3).
+> `Origin::Conditional` holds every parameter the value may reach, sorted;
+> `Origin::Unconditional` holds the one parameter it IS. The join is set UNION
+> and nothing else, so commutativity, associativity and idempotence are
+> structural. **Do not reintroduce a representative** — keeping the lowest-index
+> reaching param and discarding the rest is the pre-S121 rule, and it is both
+> F-1 and F-2 (§19.1). The set collapses at ONE boundary only,
+> `origin_to_result_mode`: none ⇒ `Fresh`, one ⇒ the per-index claim, two or
+> more ⇒ `ResultMode::MayAliasAny`.
+>
+> **The reach is resolved at the MINT, never re-derived from a name** (§20.2,
+> §20.3). `bindings` is a flat save/restore map, so resolving an origin's root
+> SYMBOL at read time answers whatever that name denotes there, and the shadowing
+> shape is macro-generated (stdlib `case`/`cond` expand to `(let [a a] …)`).
+> **Do not add a site that maps a binding name to a parameter index**; carry the
+> index the origin already holds — that is what makes an unconditional origin
+> reaching no parameter structurally unrepresentable.
+>
+> An ordinary USE still widens through an alias and not through an unconditional
+> PROJECTION (`Origin::params_widened_by_use` — the rc-free read path a bare
+> accessor exists for). A CAPTURE widens through both.
+>
+> **`bind_pattern`'s `shadow` flag gates the symbol-keyed provenance fact ONLY,
+> never the reach** (§13.6(d), §20.5(i)). The arm's bindings still INHERIT the
+> scrutinee's carried parameter index (§20.3); minting `Origin::Fresh` for them
+> instead is the F-2 narrowing. What consumers read is the fact's PRESENCE, not
+> its symbol — the comment at `ownership/transfer.rs::bind_pattern` names the
+> current consumer set and the falsifier for that reading.
+>
+> Pinned by the subject/control pairs in `transfer/tests.rs`
+> (`shadowing_binder_must_not_narrow_the_returned_parameter`,
+> `shadowing_binder_must_not_permute_the_obligation`,
+> `captured_projection_widens_its_parameter_under_a_shadowed_root`,
+> `shadowing_pattern_binder_must_not_erase_the_scrutinee_reach` against
+> `renamed_pattern_binder_projects_the_scrutinee_parameter`) and end-to-end by
+> `tests/shadowed_param_reach_stale_rc_dec.rs`.
+
+**When you touch a join/merge/fold seam here, extend the property cells
 (`transfer/tests.rs::join_lattice_*`), not just the example cells.** Those are
 seam-level algebraic-property cells over the `Origin` lattice with no program
 involved; the pre-existing `msp7_chained_*` cells are program-SHAPE cells over

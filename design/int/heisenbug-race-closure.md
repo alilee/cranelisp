@@ -165,12 +165,12 @@ the windows the shape exercises — and that step 3b should instrument
   `src/worker.rs:1309` — publish-before-register discipline.
 - `notify_typecheck_done` at `src/scheduler.rs:688` vs symbol
   publication in `process_module_forms` + `inline_jit_codegen_for_module`
-  sequence in `src/worker.rs:3431-3449`.
+  historical sequence in `src/worker.rs:3431-3449`.
 - Session 2 relying on cache-hit via `try_cache_hit_load` at
   `src/worker.rs:1424` (but session 2 starts after `rm -rf
   .cranelisp-cache`, so it must recompile — this path is
   *not* exercised in the reduced repro; the race is session-1-side).
-- `register_dep_for_eval` at `src/session_v4.rs:1371` — REPL-side
+- `register_dep_for_eval` at historical `src/session_v4.rs:1371` — REPL-side
   dep registration, republish-before-register invariant at line
   1446 debug_assert.
 
@@ -540,7 +540,7 @@ baseline signature.
 
 From the five suspect windows in §3b:
 
-- **Primary**: `src/session_v4.rs:1381-1453`
+- **Primary historical locus**: `src/session_v4.rs:1381-1453`
   (`register_dep_for_eval` — the defensive republish+re-register
   pair that races with t2's claim of helper from `typecheck_first`).
   The fix must ensure that either (a) the defensive pair is NOT
@@ -752,7 +752,7 @@ eval for `symbol_tables[helper]` read consistency.
   `typecheck_first` unconditionally. If the fix lives here (filter
   at pop time), the pop loop needs an additional check against an
   eval-in-flight registry. Less surgical than gating at the push.
-- **Secondary — `src/session_v4.rs::wait_module_inmem_complete_blocking`
+- **Secondary — `src/scheduler.rs::wait_module_inmem_complete_blocking`
   interaction (`session_v4.rs:1520`, via
   `scheduler.rs::wait_module_inmem_complete_blocking` at
   `scheduler.rs:943-969`)**: the REPL-eval thread parks here on
@@ -846,7 +846,7 @@ Change B / a scheduler-side change is in scope.
 
 #### 8.1.2 Touched files + line ranges (H4)
 
-- `src/session_v4.rs:1371-1477` — `register_dep_for_eval`: add
+- Historical `src/session_v4.rs:1371-1477` — `register_dep_for_eval`: add
   hot-path gate before line 1382 (the publish) to skip the
   defensive pair when dep is already published + registered.
   Preserve user-sexps republish at line 1428 unconditionally.
@@ -952,7 +952,7 @@ eval thread is known to own the caller's retry. Concretely:
    `wait_module_inmem_complete_blocking`, via a new
    `Scheduler::set_eval_in_flight(&self, caller: &ModuleFullPath)`
    method. (The §7.8-named interaction: the caller is
-   `session_v4.rs::current_module_path()` at the point of
+   `session_v4/lifecycle.rs::current_module_path()` at the point of
    `register_dep_for_eval` execution.)
 3. Clear the flag on exit from
    `wait_module_inmem_complete_blocking` (or at the end of
@@ -1854,10 +1854,10 @@ src/`:
 |---|---|---|
 | `src/scheduler.rs:943` | definition | the function itself |
 | `src/scheduler.rs:1113` | comment | doc reference inside `is_registered` |
-| `src/session_v4.rs:1473` | comment | doc reference inside `register_dep_for_eval` |
-| `src/session_v4.rs:1520` | **call** | the sole non-test call site |
+| historical `src/session_v4.rs:1473` | comment | doc reference inside `register_dep_for_eval` |
+| historical `src/session_v4.rs:1520` | **call** | the sole non-test call site |
 | `src/session_v4.rs:2232` | comment | doc reference near deleted `compile_dep_inline` |
-| `src/session_v4.rs:4587` | comment inside test | test explicitly AVOIDS calling it; replays publish+register manually |
+| historical `src/session_v4.rs:4587` | comment inside test | test explicitly AVOIDS calling it; replays publish+register manually |
 
 `register_dep_for_eval` is the only caller driving post-unblock
 retries. Condition 1 satisfied — no other call site needs
@@ -2154,7 +2154,7 @@ Event ordering pins the mechanism:
 
 - **Line 29 (ts=16581333, t2)**: t2 emitted `ModuleStateTypechecking
   helper`. Immediately PRIOR to this emission, inside
-  `handle_typecheck_work_shared` (`src/worker.rs:3415-3418`), t2
+  `handle_typecheck_work_shared` (historical `src/worker.rs:3415-3418`), t2
   called `TypeCheckEnv::new(...).ensure_module_exists(helper)`. This
   is the worker-side ensure. It executes the full check-seed-insert
   sequence IF t1's ensure hadn't already inserted.
@@ -2162,7 +2162,7 @@ Event ordering pins the mechanism:
   in the ~107 ms gap between `RegisterModuleRegister helper` and
   `RepublishFromSymbolTable user`, t1 is executing
   `register_dep_for_eval`'s body. The ensure_module_exists call at
-  `src/session_v4.rs:1594` (`self.tc_env().ensure_module_exists(
+  historical `src/session_v4.rs:1594` (`self.tc_env().ensure_module_exists(
   dep_module)`) fires in that window. It is AFTER the
   `scheduler.register_module(helper, true)` at line 1589 — which has
   ALREADY woken the priority worker and allowed t2 to start helper.
@@ -2188,10 +2188,10 @@ make the ordering directly inspectable.
 **Code-reading derivation**:
 
 1. **Two callers of `ensure_module_exists` in the REPL hot path**:
-   - `src/worker.rs:3415-3418` — t2 (priority worker) in
+   - historical `src/worker.rs:3415-3418` — t2 (priority worker) in
      `handle_typecheck_work_shared`, at the top of every module's
      typecheck work item, before `CheckState` is created.
-   - `src/session_v4.rs:1594` — t1 (REPL-eval thread) in
+   - historical `src/session_v4.rs:1594` — t1 (REPL-eval thread) in
      `register_dep_for_eval`, BEFORE `wait_module_inmem_complete_blocking`
      at line 1607.
 
@@ -2220,7 +2220,7 @@ make the ordering directly inspectable.
    - Insert helper-val and all other Pass-1 / Pass-2 / finalize
      entries via `current_symbol_table_mut(state).insert(...)` at
      `crates/cranelisp-typecheck/src/program.rs:632, 1457`,
-     `crates/cranelisp-typecheck/src/infer.rs:2581`,
+     historical `crates/cranelisp-typecheck/src/infer.rs:2581`,
      `program.rs:998-1006, 1043, 1071` (resolve_multi_sig_overloads,
      pass4_monomorphise, etc).
 
@@ -2296,9 +2296,9 @@ make the ordering directly inspectable.
   become atomic via DashMap `entry(path).or_insert_with(...)`, which
   holds the shard write-lock across both "is it present?" and "if
   not, build and insert".
-- **Secondary — `src/worker.rs:3415-3418`** (`handle_typecheck_work_shared`
+- **Secondary — historical `src/worker.rs:3415-3418`** (`handle_typecheck_work_shared`
   ensure caller). No change needed; the primary fix subsumes this.
-- **Secondary — `src/session_v4.rs:1594`** (`register_dep_for_eval`
+- **Secondary — historical `src/session_v4.rs:1594`** (`register_dep_for_eval`
   ensure caller). No change needed; the primary fix subsumes this.
 - **Observability gap — `ensure_module_exists` has no trace tag**.
   §8.3 proposes adding `SymbolTableEnsure { module, outcome }` (where
@@ -2509,9 +2509,9 @@ will add them alongside the fix, if /arch approves at 3d''.
 5. **Interaction with typecheck crate's other callers of
    `ensure_module_exists`**. Grep across the workspace for
    callers:
-   - `src/worker.rs:3417` (priority worker pre-typecheck) —
+   - historical `src/worker.rs:3417` (priority worker pre-typecheck) —
      benefits from the fix.
-   - `src/session_v4.rs:1594` (REPL eval pre-wait) — benefits
+   - historical `src/session_v4.rs:1594` (REPL eval pre-wait) — benefits
      from the fix.
    - `src/session_v4.rs:79` (inside `tc_env().ensure_module_exists`
      helper usage) — benefits.
@@ -2966,7 +2966,7 @@ Integration layer (`cranelisp` binary crate):
 
 - `src/platform.rs:235` — platform-module bootstrap at session
   init, single-threaded.
-- `src/session_v4.rs:954` (`set_current_module`), `1594`
+- historical `src/session_v4.rs:954` (`set_current_module`), `1594`
   (`register_dep_for_eval`), `1850` (eval path), `2927`
   (recompile path) — REPL eval thread.
 - `src/worker.rs:79` (`set_current_module`), `3417`

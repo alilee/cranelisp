@@ -456,7 +456,7 @@ pub(crate) mod test_support {
         // Keep the tempdir alive for the session's lifetime by leaking it — these
         // are short-lived unit-test sessions and the dir is OS-tmp.
         let root = tmp.keep();
-        CompilerSession::new(settings, root, "user")
+        CompilerSession::new(settings, root, "user").expect("test session bootstrap")
     }
 }
 

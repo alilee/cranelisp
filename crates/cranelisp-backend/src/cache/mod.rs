@@ -388,7 +388,48 @@ pub mod serialize;
 /// monomorphisation / 0913 lenient-view root) and the 0869 enrolment call
 /// sites ride this same window when they land in-sprint; a rider that slips
 /// past S119 close takes its own window in its landing sprint.
-pub const CACHE_SCHEMA_VERSION: u32 = 24;
+///
+/// **24 → 25 (S121 unified symbol-lifecycle shape).** `ModuleEntry` and its
+/// fragmented callable states are replaced wholesale by
+/// `Binding`/`Decl`/`Callable`/`Life`, including typed instance links and
+/// retired-slot tombstones. Pre-25 sidecars cannot represent that lifecycle
+/// or its validation invariants, so every schema-24 sidecar and paired object
+/// is invalidated wholesale and rebuilt; no field-level compatibility path is
+/// permitted across this boundary.
+///
+/// **25 → 26 (S121 result-context specialization).** Persisted instance links
+/// replace value-parameter `args` with complete generic substitutions in
+/// `type_args`. Both the field shape and instance-key meaning change; old
+/// sidecars and paired objects are invalidated, without translation.
+///
+/// **26 → 27 (S121 ownership-result correction —
+/// `design/typecheck/ownership-inference.md` §19.9 row 3).** `ResultMode` gains
+/// the index-free `MayAliasAny` ⊤, serde-visible on every persisted
+/// `ModeSummary`. This is a **soundness** invalidation, not a shape one: a
+/// sidecar written by the pre-correction tree can carry a present
+/// `result: Fresh` for a body that returns one of its own parameters (design
+/// §19.1 F-2 — the lowest-index representative discarded a reaching parameter),
+/// and `return_is_fresh_by_summary` elides the callee's return protect on
+/// exactly that claim. A cache-hit on such a sidecar would resurrect the elision
+/// on unchanged source, which no source hash or shape check can catch. The bump
+/// refuses every schema-26 sidecar and paired object wholesale.
+///
+/// **27 → 28 (S121 shadowed-parameter reach correction —
+/// `design/typecheck/ownership-inference.md` §20.5).** A **value-only**
+/// soundness invalidation: the serde shape is identical either side. The
+/// pre-fix ownership walker resolved a parameter reach by binder NAME, so under
+/// a binder shadowing a parameter it published a wrong `ModeSummary` — a false
+/// `result: Fresh` (on which `return_is_fresh_by_summary` elides the callee's
+/// return protect) and permuted `param_mode`s driving caller arg-protects and
+/// callee RC. HEAD was already schema 27 **with** that defective producer, so
+/// schema-27 sidecars carrying those values are producible and schema 27 cannot
+/// distinguish the two epochs; a warm hit on unchanged source resurrects the
+/// elision as the measured `STALE RC DEC` abort (the CS-2/P25 cache-trust
+/// class), and the paired `.o` bakes the pre-fix RC contract. `BUILD_ID` does
+/// not cover it — an uncommitted landing build stamps the pre-fix sha, the
+/// identical hole recorded for the S103 15 → 16 bump. The bump refuses every
+/// schema-27 sidecar and paired object wholesale; no translation path.
+pub const CACHE_SCHEMA_VERSION: u32 = 28;
 
 /// Compile-time build identifier (Sprint 60 Workstream C).
 ///
@@ -504,13 +545,13 @@ impl CachedModule {
     /// since they are always available without cache loading.
     pub fn imported_modules(&self) -> std::collections::HashSet<cranelisp_types::ModuleFullPath> {
         let mut modules = std::collections::HashSet::new();
-        for (_name, entry) in self.symbol_table.all_symbols() {
-            if let cranelisp_types::ModuleEntry::Import { source, .. } = entry {
-                let mod_path = &source.module;
-                // Skip synthetic compiler modules.
-                if mod_path.as_ref() != "primitives" && mod_path.as_ref() != "macros" {
-                    modules.insert(mod_path.clone());
-                }
+        for (_name, candidate) in self.symbol_table.all_name_candidates() {
+            let mod_path = &candidate.source.module;
+            if *mod_path != self.symbol_table.path
+                && mod_path.as_ref() != "primitives"
+                && mod_path.as_ref() != "macros"
+            {
+                modules.insert(mod_path.clone());
             }
         }
         modules
@@ -571,8 +612,8 @@ pub fn try_load_cached_module(
 ///
 /// This is the entry point for `/int` to use on cache hit with `has_object: true`.
 /// It reads the `.o` file, loads it into the linker (resolving relocations against
-/// registered symbols), and returns a map of function name → code pointer for
-/// wiring into the live GOT.
+/// registered symbols), and returns exact callable targets paired with code
+/// pointers for wiring into the live GOT.
 ///
 /// **Prerequisites** (the caller must ensure before calling):
 /// 1. All external symbols the `.o` references are registered with the linker:
@@ -582,14 +623,17 @@ pub fn try_load_cached_module(
 /// 2. The `CachedModule` was loaded via `try_load_cached_module()` and
 ///    `has_object` is `true`.
 ///
-/// **After calling**, the caller should wire the returned function pointers
-/// into the live GOT using the slot assignments from `cached.codegen_state().got_slots`.
+/// **After calling**, the caller should wire each returned target into the live
+/// GOT using the slot carried by that exact target's callable arm.
 ///
-/// Returns a map of function name → code pointer (`*const u8`).
+/// Returns a map of semantic execution target → code pointer (`*const u8`).
 pub fn load_cached_object(
     linker: &mut linker::Linker,
     cached: &CachedModule,
-) -> Result<std::collections::HashMap<String, *const u8>, cranelisp_types::CranelispError> {
+) -> Result<
+    std::collections::HashMap<cranelisp_types::CallableTarget, *const u8>,
+    cranelisp_types::CranelispError,
+> {
     let obj_bytes = std::fs::read(&cached.object_path).map_err(|e| {
         cranelisp_types::CranelispError::CodegenError {
             message: format!(
@@ -600,17 +644,17 @@ pub fn load_cached_object(
         }
     })?;
 
-    let module_name = cached.symbol_table.path.as_ref().to_string();
-    linker.load_object(&module_name, &obj_bytes)?;
+    linker.load_object(cached.symbol_table.path.as_ref(), &obj_bytes)?;
 
-    // Collect function addresses from the linker's defined_symbols.
-    // Function names with GOT slots are on ModuleEntry::Def in the symbol table.
+    // The emitted spelling remains backend-private. Only the semantic target
+    // crosses back to integration, so cache restore cannot depend on the label
+    // grammar used by JIT/ObjectModule.
     let mut fn_addrs = std::collections::HashMap::new();
-    for (name, entry) in cached.symbol_table().all_symbols() {
-        if entry.callable_got_slot().is_some()
-            && let Ok(addr) = linker.get_symbol(name.as_ref())
+    for (target, _) in cached.symbol_table().codegen_targets() {
+        if let Some(label) = crate::callable_target_label(&target)
+            && let Ok(addr) = linker.get_symbol(label.as_ref())
         {
-            fn_addrs.insert(name.as_ref().to_string(), addr);
+            fn_addrs.insert(target, addr);
         }
     }
 

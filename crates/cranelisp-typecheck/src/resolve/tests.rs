@@ -1,12 +1,14 @@
 use super::*;
 use cranelisp_types::{
-    DefKind, FQTypeName, ModuleFullPath, Scheme, TypeDefInfo, TypeName, Visibility,
+    Binding, CallableOrigin, Decl, Expr, FQSymbol, FQTraitName, FQTypeName, ModuleFullPath,
+    Realization, Scheme, TraitMethodRecord, TraitName, TypeDefInfo, TypeName, TypeRecord,
+    Visibility,
 };
 use std::collections::HashMap as StdHashMap;
 
 /// Test entry type: the unit `CodeStore` marker used in the crate's
-/// other unit tests for `ModuleEntry<()>`.
-type Entry = ModuleEntry<()>;
+/// other unit tests for `Binding<()>`.
+type Entry = Binding<()>;
 
 fn test_fqtn(name: &str) -> FQTypeName {
     FQTypeName::new(ModuleFullPath::from("test"), TypeName::from(name))
@@ -18,24 +20,28 @@ fn prim_fqtn(name: &str) -> FQTypeName {
 
 /// Build an `IntrinsicType` entry carrying `ty`.
 fn intrinsic_entry(ty: Type) -> Entry {
-    ModuleEntry::IntrinsicType {
-        ty,
-        visibility: Visibility::Public,
-        docstring: None,
-    }
+    Binding::new(
+        Decl::Type(TypeRecord::Intrinsic {
+            ty,
+            docstring: None,
+        }),
+        Visibility::Public,
+    )
 }
 
 /// Build a `TypeDef` entry with the given arity (type-param count).
 fn typedef_entry(name: &str, arity: usize) -> Entry {
-    ModuleEntry::TypeDef {
-        info: TypeDefInfo {
-            name: test_fqtn(name),
-            type_params: (0..arity).map(|i| Symbol::from(format!("t{i}"))).collect(),
-            constructors: vec![],
-        },
-        visibility: Visibility::Public,
-        docstring: None,
-    }
+    Binding::new(
+        Decl::Type(TypeRecord::Defined {
+            info: TypeDefInfo {
+                name: test_fqtn(name),
+                type_params: (0..arity).map(|i| Symbol::from(format!("t{i}"))).collect(),
+                constructors: vec![],
+            },
+            docstring: None,
+        }),
+        Visibility::Public,
+    )
 }
 
 /// Build a single-ctor **product** entry: a got-slotted ctor `Def`
@@ -47,30 +53,68 @@ fn product_ctor_entry(name: &str, arity: usize) -> Entry {
         type_params: (0..arity).map(|i| Symbol::from(format!("t{i}"))).collect(),
         constructors: vec![],
     };
-    ModuleEntry::def(
-        Scheme {
-            type_vars: vec![],
-            constraints: StdHashMap::new(),
-            ty: Type::ADT(test_fqtn(name), vec![]),
-        },
-        DefKind::Constructor {
-            got_slot: 0,
-            type_name: test_fqtn(name),
-            tag: 0,
-            field_count: 0,
-            internal: false,
-            type_def: Some(Box::new(info)),
-            mode_summary: None,
-        },
-    )
-    .build()
+    let mut table = cranelisp_types::SymbolTable::<()>::new(ModuleFullPath::from("test"));
+    let body = Expr::IntLit {
+        value: 0,
+        span: Span::SYNTHETIC,
+        inferred_type: Some(Box::new(Type::Int)),
+    };
+    let view = cranelisp_types::MonoDefnVariant {
+        name: Symbol::from(name),
+        params: vec![],
+        body: cranelisp_types::MonoExpr::synthetic_local_from_expr(&body, &StdHashMap::new()),
+        span: Span::SYNTHETIC,
+        mode_summary: None,
+    };
+    table
+        .install_concrete(
+            Symbol::from(name),
+            Scheme {
+                type_vars: vec![],
+                constraints: StdHashMap::new(),
+                ty: Type::ADT(test_fqtn(name), vec![]),
+            },
+            vec![],
+            None,
+            0,
+            CallableOrigin::Ctor {
+                type_name: test_fqtn(name),
+                tag: 0,
+                field_count: 0,
+                internal: false,
+                type_def: Some(Box::new(info)),
+            },
+            Realization::Body { view, code: None },
+            None,
+            vec![],
+            Visibility::Public,
+        )
+        .unwrap();
+    table.get(name).unwrap().clone()
 }
 
 /// A resolver closure backed by a small fixture map keyed on bare name.
 /// Mirrors the production chain-follow's terminal-entry result without
 /// needing a full `TypeCheckEnv`.
-fn resolver<'a>(map: &'a HashMap<&'static str, Entry>) -> impl Fn(&TypeRef) -> Option<Entry> + 'a {
-    move |r: &TypeRef| map.get(r.name.as_ref()).cloned()
+fn resolver<'a>(
+    map: &'a HashMap<&'static str, Entry>,
+) -> impl Fn(&TypeRef) -> Result<Vec<(Entry, FQSymbol)>, ResolveError> + 'a {
+    move |r: &TypeRef| {
+        Ok(map
+            .get(r.name.as_ref())
+            .cloned()
+            .into_iter()
+            .map(|entry| {
+                (
+                    entry,
+                    FQSymbol {
+                        module: ModuleFullPath::from("test"),
+                        symbol: Symbol::from(r.name.as_ref()),
+                    },
+                )
+            })
+            .collect())
+    }
 }
 
 fn intrinsics_map() -> HashMap<&'static str, Entry> {
@@ -86,6 +130,101 @@ fn named(name: &str) -> TypeExpr {
     TypeExpr::Named(TypeRef::new(None, TypeName::from(name)))
 }
 
+fn trait_method_entry(name: &str) -> Entry {
+    Binding::new(
+        Decl::TraitMethod(TraitMethodRecord::new(
+            Scheme {
+                type_vars: vec![],
+                constraints: StdHashMap::new(),
+                ty: Type::Fn(vec![Type::Int], Box::new(Type::Int)),
+            },
+            vec![Symbol::from("x")],
+            None,
+            FQTraitName::new(ModuleFullPath::from("traits"), TraitName::from(name)),
+        )),
+        Visibility::Public,
+    )
+}
+
+// spec: 03-types §3.9.3; design use-site-candidate-selection §3.2 — type
+// syntax filters non-type declarations before applying candidate cardinality.
+#[test]
+fn named_type_ignores_same_spelling_trait_method_candidate() {
+    let candidates = |_name: &TypeRef| {
+        Ok(vec![
+            (
+                trait_method_entry("Named"),
+                FQSymbol {
+                    module: ModuleFullPath::from("traits"),
+                    symbol: Symbol::from("Named"),
+                },
+            ),
+            (
+                typedef_entry("Named", 0),
+                FQSymbol {
+                    module: ModuleFullPath::from("types"),
+                    symbol: Symbol::from("Named"),
+                },
+            ),
+        ])
+    };
+    let ctx = TypeExprCtx {
+        resolve_candidates: &candidates,
+        mint_free_var: None,
+        self_type: None,
+        self_params: &[],
+        con_vars: ConVars::None,
+        scalar_fastpath: false,
+    };
+    let got =
+        resolve_type_expr(&named("Named"), &mut HashMap::new(), &ctx, Span::SYNTHETIC).unwrap();
+    assert_eq!(got, Type::ADT(test_fqtn("Named"), vec![]));
+}
+
+// design use-site-candidate-selection §3.2 — cardinality remains ambiguous
+// when multiple candidates survive the type-role filter.
+#[test]
+fn named_type_reports_all_same_spelling_type_candidates() {
+    let candidates = |_name: &TypeRef| {
+        Ok(vec![
+            (
+                typedef_entry("Named", 0),
+                FQSymbol {
+                    module: ModuleFullPath::from("a"),
+                    symbol: Symbol::from("Named"),
+                },
+            ),
+            (
+                typedef_entry("Named", 0),
+                FQSymbol {
+                    module: ModuleFullPath::from("b"),
+                    symbol: Symbol::from("Named"),
+                },
+            ),
+        ])
+    };
+    let ctx = TypeExprCtx {
+        resolve_candidates: &candidates,
+        mint_free_var: None,
+        self_type: None,
+        self_params: &[],
+        con_vars: ConVars::None,
+        scalar_fastpath: false,
+    };
+    let error =
+        resolve_type_expr(&named("Named"), &mut HashMap::new(), &ctx, Span::SYNTHETIC).unwrap_err();
+    let ResolveError::Ambiguous { candidates, .. } = error else {
+        panic!("expected filtered type ambiguity");
+    };
+    assert_eq!(
+        candidates
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["a/Named", "b/Named"]
+    );
+}
+
 /// FIXME 0590 compatibility shim: the former 5-arg `resolve_type_expr`
 /// `(resolve_terminal, mint_free_var)` params collapsed into a
 /// [`TypeExprCtx`]. These tests exercise the ctx-None regime (no `Self`, no
@@ -95,12 +234,12 @@ fn named(name: &str) -> TypeExpr {
 fn resolve_via(
     texpr: &TypeExpr,
     var_map: &mut HashMap<Symbol, TypeId>,
-    resolve_terminal: &dyn Fn(&TypeRef) -> Option<Entry>,
+    resolve_candidates: &dyn Fn(&TypeRef) -> Result<Vec<(Entry, FQSymbol)>, ResolveError>,
     mint_free_var: Option<&dyn Fn() -> TypeId>,
     span: Span,
 ) -> Result<Type, ResolveError> {
     let ctx = TypeExprCtx {
-        resolve_terminal,
+        resolve_candidates,
         mint_free_var,
         self_type: None,
         self_params: &[],
@@ -371,15 +510,17 @@ fn test_resolve_applied_product_ctor_as_type() {
 /// `primitives/Vec` `TypeDef` with EMPTY `type_params` (no declared arity),
 /// even though `Vec` is genuinely arity-1 (`(Vec a)`, spec §3.2.7).
 fn builtin_vec_entry() -> Entry {
-    ModuleEntry::TypeDef {
-        info: TypeDefInfo {
-            name: prim_fqtn("Vec"),
-            type_params: vec![],
-            constructors: vec![],
-        },
-        visibility: Visibility::Public,
-        docstring: Some("builtin vector type".to_string()),
-    }
+    Binding::new(
+        Decl::Type(TypeRecord::Defined {
+            info: TypeDefInfo {
+                name: prim_fqtn("Vec"),
+                type_params: vec![],
+                constructors: vec![],
+            },
+            docstring: Some("builtin vector type".to_string()),
+        }),
+        Visibility::Public,
+    )
 }
 
 // spec: 03-types §3.11.1 / §3.2.7 — the builtin `Vec` resolves as an applied
@@ -692,7 +833,7 @@ fn ctx_self_type_substitutes() {
     let r = resolver(&map);
     let self_ty = Type::Int;
     let ctx = TypeExprCtx {
-        resolve_terminal: &r,
+        resolve_candidates: &r,
         mint_free_var: None,
         self_type: Some(self_ty.clone()),
         self_params: &[],
@@ -711,7 +852,7 @@ fn ctx_self_type_none_errors() {
     let map: HashMap<&'static str, Entry> = HashMap::new();
     let r = resolver(&map);
     let ctx = TypeExprCtx {
-        resolve_terminal: &r,
+        resolve_candidates: &r,
         mint_free_var: None,
         self_type: None,
         self_params: &[],
@@ -733,7 +874,7 @@ fn ctx_trait_type_param_aliases_self() {
     let mint = minter(700);
     let params = [Symbol::from("a")];
     let ctx = TypeExprCtx {
-        resolve_terminal: &r,
+        resolve_candidates: &r,
         mint_free_var: Some(&mint),
         self_type: Some(Type::Var(9)),
         self_params: &params,
@@ -767,7 +908,7 @@ fn ctx_sig_free_var_mints_and_corefers() {
     let r = resolver(&map);
     let mint = minter(800);
     let ctx = TypeExprCtx {
-        resolve_terminal: &r,
+        resolve_candidates: &r,
         mint_free_var: Some(&mint),
         self_type: Some(Type::Var(1)),
         self_params: &[],
@@ -802,7 +943,7 @@ fn ctx_hkt_decl_con_var_interception() {
     let mint = minter(900);
     let cm = con_map(&[("f", 5)]);
     let ctx = TypeExprCtx {
-        resolve_terminal: &r,
+        resolve_candidates: &r,
         mint_free_var: Some(&mint),
         self_type: None,
         self_params: &[],
@@ -838,7 +979,7 @@ fn ctx_hkt_impl_con_var_substitutes_target() {
     let names = [Symbol::from("f")];
     let target = test_fqtn("Option");
     let ctx = TypeExprCtx {
-        resolve_terminal: &r,
+        resolve_candidates: &r,
         mint_free_var: Some(&mint),
         self_type: None,
         self_params: &[],
@@ -868,7 +1009,7 @@ fn ctx_hkt_decl_unknown_named_errors_neg() {
     let mint = minter(1100);
     let cm = con_map(&[("f", 5)]);
     let ctx = TypeExprCtx {
-        resolve_terminal: &r,
+        resolve_candidates: &r,
         mint_free_var: Some(&mint),
         self_type: None,
         self_params: &[],
@@ -895,7 +1036,7 @@ fn ctx_hkt_impl_unknown_named_errors_neg() {
     let names = [Symbol::from("f")];
     let target = test_fqtn("Option");
     let ctx = TypeExprCtx {
-        resolve_terminal: &r,
+        resolve_candidates: &r,
         mint_free_var: Some(&mint),
         self_type: None,
         self_params: &[],
@@ -926,7 +1067,7 @@ fn ctx_hkt_impl_known_named_resolves() {
     let names = [Symbol::from("f")];
     let target = test_fqtn("Option");
     let ctx = TypeExprCtx {
-        resolve_terminal: &r,
+        resolve_candidates: &r,
         mint_free_var: Some(&mint),
         self_type: None,
         self_params: &[],
@@ -949,7 +1090,7 @@ fn ctx_intrinsic_scalar_fastpath_without_terminal() {
     let map: HashMap<&'static str, Entry> = HashMap::new(); // deliberately empty
     let r = resolver(&map);
     let ctx = TypeExprCtx {
-        resolve_terminal: &r,
+        resolve_candidates: &r,
         mint_free_var: None,
         self_type: Some(Type::Var(1)),
         self_params: &[],

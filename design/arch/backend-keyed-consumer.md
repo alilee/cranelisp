@@ -341,10 +341,10 @@ terminal key (it looks the terminal up BY that key — the last followed edge's
    is UNTOUCHED — every display/attribution consumer is byte-identical by
    construction. `Resolved` is not serialized (no serde derives): zero cache
    surface. Baseline: +2 additive lines + `#[non_exhaustive]` (policy
-   alignment; no external construction sites exist — verified). Unit pins:
-   `resolve/tests.rs::storage_key_*` (member alias, renamed import,
-   qualified renaming re-export, prelude-fallback alias, unaliased
-   identity).
+   alignment; no external construction sites exist — verified). Current
+   direct types pin:
+   `resolve/tests.rs::unqualified_import_chain_returns_terminal_storage_key`;
+   typed-consumer carrier cases remain in the typecheck suite.
 2. **`cranelisp-typecheck` (`/dev`, one small change-set):** in
    `record_reference_target`, the `resolved_targets` insert takes
    `resolved.storage_fq()` instead of `resolved.fq` (the ONE line at
@@ -826,8 +826,8 @@ here** (§7). Same verification obligations as W1 + the `/qa` value-position ×
   mono-view seam still produced `None` arms via the wrong map instance until
   the §1.1.3 pairing fix. S19's deletion is gated on that fix landing.)*
 - Delete `lenient_mono_from_expr` + the `lib.rs:909` arm (dead since W0.b) and
-  the unit-test-only `jit.rs::compile_defn` lenient build (migrate the harness
-  onto typecheck-built/`from_expr`-built views, or demote `compile_defn` to
+  the unit-test-only `test_support.rs::compile_defns_in_module` lenient build
+  (migrate the harness onto typecheck-built/`from_expr`-built views, or demote it to
   `#[cfg(test)]` with a view parameter — `/dev`'s choice; the live-path
   invariant is what binds).
 - Delete S21–S23: `resolve_driven`, `resolve_chain`, the global scan, the ten
@@ -867,7 +867,7 @@ carriers; under Rev-2 they cannot keep a resolver and must not get a hybrid.
    class.
 3. `compile_to_module` runs only downstream of a live typecheck (no re-codegen
    on cache-hit — cache invariant 5), so typecheck ALWAYS has the resolutions
-   in hand when any view is built; and `jit.rs::compile_defn` has **no live
+   in hand when any view is built; and `test_support.rs::compile_defns_in_module` has **no live
    caller** (unit-test harness only — verified by call-site grep this phase;
    its "REPL calls directly" rustdoc is stale and is corrected in W3).
 
@@ -1024,7 +1024,8 @@ additional schema bump. *(Landed `144828d1`.)*
 **W1.1 addendum (0620 ruling, §1.1.2):** the types half — `Resolved.
 storage_key` + `storage_fq()` threaded through both chain-follow walks —
 landed WITH the ruling (additive, `Resolved` unserialized, +2 baseline lines
-+ `#[non_exhaustive]`, five `resolve/tests.rs::storage_key_*` pins). The
++ `#[non_exhaustive]`; the direct types pin is now
+`resolve/tests.rs::unqualified_import_chain_returns_terminal_storage_key`). The
 pinned `/dev` (typecheck) change-set: `record_reference_target`'s
 `resolved_targets` insert flips `resolved.fq` → `resolved.storage_fq()`;
 `builtin_storage_fq`'s `def_resolved` arm likewise; `user_fn_refs` stays on

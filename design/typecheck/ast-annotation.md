@@ -946,7 +946,7 @@ Cross-skill call-out of downstream work that touches code outside `design/typech
 
 4. **Object path `__cranelisp_got_{module}` data symbol** (owned by `/backend`). Declared as `Linkage::Import` in the `ObjectModule`. Resolved at link time from the per-module `.o` file that exports the corresponding data symbol. No change from the existing design — just documenting that the same data-symbol name is what the JIT closure resolves against, giving uniform GOT emission across JIT and object paths. Principle 11 again: the backend emits the same `global_value` load against the same `Linkage::Import` data symbol for both modes; only the `Module` implementation differs.
 
-5. **Callers that inspect `typecheck_products` for non-GOT fields**: the ~18 call sites enumerated in the grep results at `src/worker.rs:225, 349, 614, 802, 1455, 1569, 1767, 1864, 2176, 2337, 2465, 2561, 2766, 2772` and `src/session_v4.rs:885, 970, 1679, 2480`. Each must be rewritten to read from `symbol_tables[m]` instead. Mechanical but wide. Owned by `/int`; FIXME filed on `src/session_v4.rs:401`.
+5. **Historical callers that inspected `typecheck_products` for non-GOT fields** were enumerated across `src/worker.rs` and `src/session_v4.rs`. Each had to be rewritten to read from `symbol_tables[m]` instead. Mechanical but wide. Owned by `/int`.
 
 #### 9.8.6 Sketch Comparison
 
@@ -1072,7 +1072,7 @@ Same reasoning as field 2: each default method has its own `ModuleEntry::Def { a
 
 **Field 4: `constrained_fn_names: HashSet<Symbol>`**
 
-- `crates/cranelisp-backend/src/lib.rs:2482` — inside `#[cfg(test)]`.
+- Historical `crates/cranelisp-backend/src/lib.rs:2482` — inside `#[cfg(test)]`.
 - `src/` — **zero** matches.
 - `crates/cranelisp-typecheck/` — reads/writes inside `finalize_check_result` and the `detect_constrained_fns` pass. Typecheck-internal.
 
@@ -1200,7 +1200,7 @@ Step 4 landed atomically: `cranelisp-types`, `cranelisp-typecheck` built green i
 - `cargo check -p cranelisp-types`, `-p cranelisp-typecheck`, `cargo check --workspace --tests` all green.
 - `cargo nextest run -p cranelisp-types` 59/59 passing; `-p cranelisp-typecheck` 312/312 passing.
 - `cargo clippy -p cranelisp-types -- -D warnings` and `-p cranelisp-typecheck -- -D warnings` both clean.
-- `src/worker.rs:836`, `src/session_v4.rs:1324, 1348, 1439, 1591, 1610, 1637, 1647, 2189` still compile — they only read `.warnings` / `.display`.
+- Historical `src/worker.rs:836` and `src/session_v4.rs:1324, 1348, 1439, 1591, 1610, 1637, 1647, 2189` still compiled — they only read `.warnings` / `.display`.
 
 **Dead carriers retained for now:** `MonoDefn.resolutions` and `MonoDefn.expr_types` are still constructed inside `monomorphise_call` (they feed the in-place `annotate_defn_from_maps` call right before `register_mono_entry`). These can be retired in a later cleanup pass once the annotation path is fully collapsed onto `check_defn_body_and_annotate`-style helpers; they are no longer boundary data.
 

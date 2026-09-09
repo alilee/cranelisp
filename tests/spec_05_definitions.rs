@@ -252,10 +252,11 @@ fn defmacro_qualified_head_rejected_binder_neg() {
 }
 
 // BD-M1 defmacro — bare-head accept TWIN.
-// spec: spec/05-definitions.md §5.5 — a bare `defmacro` head binds normally.
+// spec: spec/05-definitions.md §5.5 + spec/09-macros.md §9.2.2–§9.2.3 — a
+// bare `defmacro` head binds normally with the canonical Sexp clause ABI.
 #[test]
 fn defmacro_bare_head_accepts_twin() {
-    let out = repl_prims("(defmacro mm2 [] 0)\n");
+    let out = repl_prims("(defmacro mm2 [] (macros/SexpInt 0))\n");
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
         !c.to_lowercase().contains("error"),
@@ -283,10 +284,11 @@ fn defmacro_private_qualified_head_rejected_binder_neg() {
 }
 
 // BD-M1 defmacro- (private) — bare-head accept TWIN.
-// spec: spec/05-definitions.md §5.11 — a bare `defmacro-` head binds normally.
+// spec: spec/05-definitions.md §5.11 + spec/09-macros.md §9.2.2–§9.2.3 — a
+// bare `defmacro-` head binds normally with the canonical Sexp clause ABI.
 #[test]
 fn defmacro_private_bare_head_accepts_twin() {
-    let out = repl_prims("(defmacro- mm3 [] 0)\n");
+    let out = repl_prims("(defmacro- mm3 [] (macros/SexpInt 0))\n");
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
         !c.to_lowercase().contains("error"),
@@ -599,28 +601,38 @@ fn deftype_product_construct_and_destructure() {
     .assert_stdout_contains(":primitives/Int 7");
 }
 
-// spec: spec/05-definitions.md §5.2.4 — bare-field-name shortcut syntax
-// `(deftype Pair [first second])` — fresh type vars assigned to bare field
-// names, no `:Type` annotation required. Distinct from explicitly-annotated
-// product shape.
-// (carry: legacy/sketch_port.rs::sketch_adt_shortcut_syntax)
+// spec: spec/05-definitions.md §5.2.4 — every field type is explicit. A
+// rejected declaration must not partially register its type, constructor or
+// product accessors.
 #[test]
-fn deftype_product_shortcut_field_names() {
-    // This test validates the bare-field-name SHORTCUT SYNTAX itself, so it
-    // must define its OWN `Pair` — reuse of the seeded `primitives/Pair` would
-    // erase the syntax under test. `Pair` is prelude-seeded, so the deftype is
-    // only legal with the prelude SUPPRESSED (§8.6.4). Run bare (no prelude):
-    // `Pair` is then not in scope and the shortcut deftype is a fresh, legal
-    // definition; the Int literal still displays as `:primitives/Int`.
+fn deftype_omitted_field_types_rejected_without_partial_registration_neg() {
     Cranelisp::new()
         .repl()
         .with_prelude(PreludeVariant::None)
         .stdin(
             "(deftype Pair [first second])\n\
-             (match (Pair 7 8) [(Pair a b) a])\n",
+             Pair\n\
+             first\n\
+             second\n",
         )
         .output()
-        .assert_stdout_contains(":primitives/Int 7");
+        .assert_stdout_contains_all(&["requires a written type", "undefined"]);
+}
+
+// spec: spec/05-definitions.md §5.2.4 — a bare head is monomorphic, so a field
+// type variable is legal only when the parenthesized head declares it.
+#[test]
+fn deftype_bare_head_rejects_undeclared_field_type_variable_neg() {
+    Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::None)
+        .stdin(
+            "(deftype Box [:a value])\n\
+             Box\n\
+             value\n",
+        )
+        .output()
+        .assert_stdout_contains_all(&["not declared by the type head", "undefined"]);
 }
 
 // spec: spec/05-definitions.md §5.2 — constructor as first-class value
@@ -924,34 +936,17 @@ fn accessor_neg_synth_does_not_shadow_existing_binding() {
 }
 
 // spec: spec/05-definitions.md §5.2.6 — Generated Accessors, cross-type
-// spec: spec/08-modules.md §8.6.5 — bare-name ambiguity (poisoning)
+// spec: spec/08-modules.md §8.6.5 — type-directed candidate selection
 //
-// Two product types `Box` and `Cup` in the SAME module each carry a field
-// named `v`, so each generates an accessor named `v`. Per §5.2.6 + §8.6.5
-// (user ruling S83 W2) the bare accessor `v` is **ambiguous (poisoned)** —
-// NOT folded into an argument-type-dispatched overload and NOT first-wins
-// shadowed. The ruled behaviour, asserted here against single-cluster
-// `--run` (where the poison is realised; the REPL per-cluster path is the
-// deferred cross-cluster-rehydration gap, FIXME 0364 → /design):
-//
-//   1. Defining BOTH deftypes does NOT error on the second `deftype` — both
-//      types coexist; a program that defines both and reaches `v` only via
-//      `match` type-checks and runs cleanly (sub-programs 2 & 3 prove this).
-//   2. A **bare** use of the poisoned accessor `(v (Box 5))` is a
-//      compile-time **ambiguity error** listing the qualified alternatives
-//      (`ambiguous bare name 'v'`, `Box.v`, `Cup.v`).
-//   3. The field stays reachable via `match` (§6): `(match (Box 5) [(Box v)
-//      v])` -> 5 and `(match (Cup 9) [(Cup v) v])` -> 9. (`Box.v` dotted
-//      accessor syntax is the deferred escape, FIXME 0365; today `match`
-//      and module-qualification are the working escapes.)
+// Two product types in one module may expose the same bare field spelling.
+// Their canonical accessors remain `Box.v` and `Cup.v`; the Box argument in
+// `(v (Box 5))` filters the candidate set to `Box.v`. Pattern extraction is
+// included as an independent control for both product types.
 #[test]
 fn accessor_cross_type_duplicate_field_name() {
-    // (1)+(2) Bare use of the poisoned accessor is a compile-time ambiguity
-    //          error. The error proves the second deftype did NOT crash the
-    //          module (it parsed + registered; the failure is at the USE
-    //          site, not the second definition) and that the bare name is
-    //          poisoned rather than silently first-wins/overload-folded.
-    let bare = Cranelisp::new()
+    // Both accessors remain candidates, and the Box argument selects Box.v.
+    // This is type-directed candidate filtering, not first-wins shadowing.
+    Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
         .user(
@@ -959,38 +954,11 @@ fn accessor_cross_type_duplicate_field_name() {
              (deftype Cup [:primitives/Int v])\n\
              (defn main [] (Pure (v (Box 5))))",
         )
-        .output();
-    let bare_combined = format!("{}{}", bare.stdout, bare.stderr);
-    assert!(
-        bare_combined.contains("ambiguous bare name 'v'"),
-        "bare use of the duplicate-field accessor `v` MUST be a compile-time \
-         ambiguity error naming `ambiguous bare name 'v'` per §5.2.6 + \
-         §8.6.5; got stdout={} stderr={}",
-        bare.stdout,
-        bare.stderr
-    );
-    // The ambiguity error lists the qualified alternatives.
-    assert!(
-        bare_combined.contains("Box.v") && bare_combined.contains("Cup.v"),
-        "the ambiguity error MUST list the qualified alternatives `Box.v` \
-         and `Cup.v` per §8.6.5; got stdout={} stderr={}",
-        bare.stdout,
-        bare.stderr
-    );
-    // It MUST NOT silently fold into an overload or pick a winner: a poisoned
-    // bare use does not succeed (no value reaches the exit / stdout).
-    assert!(
-        !bare_combined.contains(":primitives/Int 5"),
-        "the poisoned bare accessor MUST NOT silently dispatch to a value \
-         (no overload, no first-wins winner) per §5.2.6; got stdout={} \
-         stderr={}",
-        bare.stdout,
-        bare.stderr
-    );
+        .output()
+        .assert_exit(5);
 
     // (3) The field stays reachable via `match`. Both deftypes coexist and the
-    //     program runs cleanly — exit code carries the Pure-wrapped Int
-    //     (post-S80 main:IO rule).
+    // The field also stays reachable through pattern extraction.
     Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
@@ -1015,94 +983,39 @@ fn accessor_cross_type_duplicate_field_name() {
 }
 
 // spec: spec/05-definitions.md §5.2.6 — Generated Accessors, cross-type
-// spec: spec/08-modules.md §8.6.5 — bare-name ambiguity (poisoning)
+// spec: spec/08-modules.md §8.6.5 — type-directed candidate selection
 //
-// FAILING-NOT-IGNORED defect guard for the REPL/`--run` divergence in the
-// same-module duplicate-field accessor ruling. See FIXME 0366
-// (design/arch/fixmes/0366-typecheck-repl-cross-cluster-accessor-collision-rehydration.md).
-//
-// The single-cluster `--run`/`--link` path (asserted green in
-// `accessor_cross_type_duplicate_field_name` above) poisons the bare
-// accessor `v` correctly. The REPL processes each input as a SEPARATE
-// cluster, and the duplicate-field poison classifier keys on the per-
-// `CheckState` `synthesised_accessor_names` set (adt.rs) — which is empty on
-// the cluster that defines `Cup` (the first accessor `v` from `Box` was
-// committed in a PRIOR cluster, not in this `CheckState`). The collision is
-// therefore missed and the REPL falls into the still-live suppress-and-
-// first-wins path (program.rs `deferred_accessor_collisions`), emitting the
-// warning "the accessor is suppressed and the existing binding is kept" and
-// then resolving `(v (Box 5))` to `5`.
-//
-// The spec gives the REPL no exemption from §5.2.6 + §8.6.5: a bare use of a
-// duplicate-field accessor MUST be a compile-time ambiguity error in EVERY
-// mode. This test asserts the SPEC-CORRECT behaviour and therefore FAILS
-// today (the REPL returns `:primitives/Int 5` + a warning, not the error).
-// It flips green when the cross-cluster rehydration gap is fixed in
-// cranelisp-typecheck (re-derive the accessor collision from the COMMITTED
-// live symbol-table entry when synthesising in a later cluster — analogous
-// to the staging+live union probe in commit b612532 for the non-accessor
-// collision). Severity: low (REPL-only, niche), but a genuine
-// spec-conformance divergence between modes.
+// The same candidate filtering must survive separate REPL publication turns;
+// committed candidates participate exactly as same-cluster candidates do.
 #[test]
 fn repl_cross_cluster_duplicate_field_accessor_is_ambiguous() {
-    // SEPARATE REPL inputs => separate clusters: `Box` and `Cup` are defined
-    // on distinct lines, then the bare poisoned accessor is used on a third.
+    // `Box` and `Cup` are published in separate REPL clusters before use.
     let out = repl_prims(
         "(deftype Box [:primitives/Int v])\n\
          (deftype Cup [:primitives/Int v])\n\
          (v (Box 5))\n",
     );
-    let combined = format!("{}{}", out.stdout, out.stderr);
-
-    // The bare use of the duplicate-field accessor MUST be a compile-time
-    // ambiguity error in the REPL, exactly as in `--run`/`--link`.
     assert!(
-        combined.contains("ambiguous bare name 'v'"),
-        "REPL bare use of the cross-cluster duplicate-field accessor `v` MUST \
-         be a compile-time ambiguity error naming `ambiguous bare name 'v'` \
-         per §5.2.6 + §8.6.5 (no REPL exemption); got stdout={} stderr={}",
-        out.stdout,
-        out.stderr
-    );
-    // It MUST NOT silently first-wins: the poisoned bare use does not resolve
-    // to a value. Today the REPL prints `:primitives/Int 5` here — the red.
-    assert!(
-        !combined.contains(":primitives/Int 5"),
-        "the REPL MUST NOT silently first-wins-resolve the poisoned bare \
-         accessor to `5` per §5.2.6; the cross-cluster collision must poison \
-         `v` just as the single-cluster path does; got stdout={} stderr={}",
+        out.stdout.contains(":primitives/Int 5"),
+        "the Box argument MUST select Box.v from the cross-cluster candidate \
+         set under §8.6.5; got stdout={} stderr={}",
         out.stdout,
         out.stderr
     );
 }
 
 // spec: spec/05-definitions.md §5.2.6 — Generated Accessors, bare-field
-// ambiguity DIAGNOSTIC QUALITY (S91 Phase 6, defect surfaced by /docs).
-// FAILING-NOT-IGNORED defect repro — routes to /typecheck to improve the
-// REPL ambiguity message.
+// ambiguity diagnostic quality.
 //
-// §5.2.6 requires that when two types share a field name, a BARE use of that
-// field name produces "a compile-time error that lists the canonical
-// alternatives (`Box.v`, `Cup.v`)". With `(deftype Box [:primitives/Int v])`
-// and `(deftype Cup [:primitives/Bool v])` both defined, the BEHAVIOUR is
-// already correct (bare `v` is rejected; canonical `Box.v`/`Cup.v` both work —
-// see `type_member_field_accessor_disambiguates_poisoned_field`). Only the
-// DIAGNOSTIC is below spec: the `--run` path lists both alternatives
-// (`ambiguous bare name 'v' — use a qualified accessor (Box.v or Cup.v)`,
-// guarded green by `accessor_cross_type_duplicate_field_name`), but the **REPL**
-// path truncates the message to a bare `ambiguous bare name 'v'` with NEITHER
-// canonical alternative listed. §5.2.6 gives the REPL no exemption — the error
-// MUST list BOTH `Box.v` AND `Cup.v` in every mode so the user is told how to
-// disambiguate. This is RED today (REPL message names neither alternative) and
-// flips green when /typecheck threads the canonical-alternative list into the
-// REPL-path diagnostic. The field types here differ (Int vs Bool) to match the
-// exact shape /docs reported.
+// When no contextual type selects an accessor, the ambiguity diagnostic must
+// list both canonical alternatives. The ignored local `f` deliberately leaves
+// the first-class accessor's argument type unconstrained.
 #[test]
 fn bare_field_ambiguity_message_lists_both_alternatives() {
     let out = repl_prims(
         "(deftype Box [:primitives/Int v])\n\
          (deftype Cup [:primitives/Bool v])\n\
-         (v (Box 7))\n",
+         (let [f v] 0)\n",
     );
     let combined = format!("{}{}", out.stdout, out.stderr);
     // The diagnostic MUST be framed as an ambiguity (not "undefined variable").
@@ -1114,9 +1027,7 @@ fn bare_field_ambiguity_message_lists_both_alternatives() {
         out.stdout,
         out.stderr
     );
-    // RED today (REPL path): the message MUST list BOTH canonical alternatives
-    // `Box.v` AND `Cup.v` so the user learns how to disambiguate. The REPL today
-    // emits only the bare `ambiguous bare name 'v'` with neither name.
+    // The message names both canonical qualification remedies.
     assert!(
         combined.contains("Box.v") && combined.contains("Cup.v"),
         "the ambiguity error MUST list BOTH canonical alternatives `Box.v` and \

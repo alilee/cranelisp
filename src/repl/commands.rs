@@ -18,11 +18,13 @@ pub(crate) enum ImportClass {
 /// `Def`, per the test convention §16.1) — the `/tests-for` filter
 /// (repl/spec.md §17.6.2). Structural (does not require the function to be
 /// codegen'd), so it works over freshly-typechecked REPL state.
-pub(crate) fn is_test_function(name: &str, entry: &ModuleEntry<Code>) -> bool {
+pub(crate) fn is_test_function(name: &str, entry: &Binding<Code>) -> bool {
     if !name.starts_with("test-") {
         return false;
     }
-    matches!(entry, ModuleEntry::Def { param_names, .. } if param_names.is_empty())
+    entry
+        .callable()
+        .is_some_and(|callable| callable.arm.param_names.is_empty())
 }
 
 impl CompilerSession {
@@ -91,24 +93,21 @@ impl CompilerSession {
         // from `lookup_module` (current module, or prelude when the fallback
         // hop fired) so the prelude→primitives edge is walked.
         let (entry, _resolved_module) = self.resolve_entry_for_display(&local, &lookup_module);
-        match &entry {
-            ModuleEntry::Def { docstring, .. } => {
-                // FIXME 0308: primitive Defs now carry their Appendix A.5
-                // description on `PrimitiveDef.docstring` (populated in
-                // cranelisp-primitives) — read it through the entry's
-                // `docstring` field directly; the parallel `builtin_docs` table
-                // is retired.
-                match docstring.as_deref() {
-                    Some(doc) => format!("{name}: \"{doc}\""),
-                    None => format!("{name}: no docstring"),
-                }
-            }
-            ModuleEntry::SpecialForm { docstring, .. }
-            | ModuleEntry::TraitDecl { docstring, .. } => match docstring {
-                Some(doc) => format!("{name}: \"{doc}\""),
-                None => format!("{name}: no docstring"),
-            },
-            _ => format!("{name}: no docstring"),
+        let docstring = match &entry.declaration {
+            Decl::Callable(callable) => callable.docstring.as_ref(),
+            Decl::Overloaded(declaration) => declaration.docstring.as_ref(),
+            Decl::Macro(declaration) => declaration.docstring.as_ref(),
+            Decl::Trait(record) => record.docstring.as_ref(),
+            Decl::Type(
+                TypeRecord::Defined { docstring, .. } | TypeRecord::Intrinsic { docstring, .. },
+            ) => docstring.as_ref(),
+            Decl::SpecialForm(record) => record.docstring.as_ref(),
+            Decl::TraitMethod(record) => record.docstring.as_ref(),
+            Decl::ImplShell(_) => None,
+        };
+        match docstring {
+            Some(doc) => format!("{name}: \"{doc}\""),
+            None => format!("{name}: no docstring"),
         }
     }
 
@@ -120,7 +119,7 @@ impl CompilerSession {
         let mut traits = Vec::new();
         let mut macros = Vec::new();
 
-        for (name, entry) in table_ref.symbols.iter() {
+        for (name, entry) in table_ref.all_symbols() {
             // §3.3: internal compiler artifacts are not user definitions —
             // `$`-mangled names and the synthetic `__expr` top-level-expression
             // wrapper are excluded (shared predicate so the filter cannot drift
@@ -498,13 +497,9 @@ impl CompilerSession {
             out.push_str(&src);
         }
         // Append code info if available.
-        let is_macro = matches!(&resolved_entry,
-            ModuleEntry::Def { kind, .. } if matches!(kind.as_ref(), DefKind::Macro { .. }));
+        let is_macro = matches!(&resolved_entry.declaration, Decl::Macro(_));
         if !is_macro
-            && !matches!(
-                resolved_entry,
-                ModuleEntry::TypeDef { .. } | ModuleEntry::TraitDecl { .. }
-            )
+            && !matches!(resolved_entry.declaration, Decl::Type(_) | Decl::Trait(_))
             && let Some(intr) = self.get_introspection(name)
         {
             let size_str = intr
@@ -665,13 +660,13 @@ impl CompilerSession {
     /// Read back the inferred type of the synthetic `__expr` defn, if any.
     pub(crate) fn lift_expr_type(&self, module: &ModuleFullPath) -> Option<Type> {
         let table = self.shared.symbol_tables.get(module)?;
-        match table.get("__expr")? {
-            ModuleEntry::Def { scheme, .. } => {
+        match table.get("__expr")?.callable() {
+            Some(callable) => {
                 // Zero-arg defns have type `Fn([], ret)` — surface the return.
-                if let Type::Fn(_, ret) = &scheme.ty {
-                    Some((**ret).clone())
+                if let Type::Fn(_, ret) = &callable.arm.scheme.ty {
+                    Some((*ret.clone()).clone())
                 } else {
-                    Some(scheme.ty.clone())
+                    Some(callable.arm.scheme.ty.clone())
                 }
             }
             _ => None,
@@ -704,16 +699,19 @@ impl CompilerSession {
             return Vec::new();
         };
         let mut names: Vec<String> = Vec::new();
-        for (sym, entry) in table.all_symbols() {
+        for (sym, candidate) in table.public_name_candidates() {
             // Public symbols only — both prelude's own defs and its re-export
             // `(export …)` Import edges (e.g. `add-i64`) are user-visible.
-            if !entry.is_public() {
-                continue;
-            }
             let name = sym.to_string();
             // Skip mangled multi-sig / overload variants and special forms
             // (special forms are surfaced from root in their own category).
-            if name.contains('$') || matches!(entry, ModuleEntry::SpecialForm { .. }) {
+            if name.contains('$') {
+                continue;
+            }
+            if self
+                .resolve_to_definition(&candidate.source)
+                .is_some_and(|entry| matches!(entry.declaration, Decl::SpecialForm(_)))
+            {
                 continue;
             }
             names.push(name);
@@ -725,6 +723,7 @@ impl CompilerSession {
 
     /// /imports handler: list imports in current module by category.
     pub(crate) fn handle_imports(&self, filter: &str) -> String {
+        let current = self.current_module_path();
         let table = self.current_symbol_table();
         let mut output = String::new();
 
@@ -745,30 +744,23 @@ impl CompilerSession {
             let root = ModuleFullPath::from("");
             if let Some(root_table) = self.shared.symbol_tables.get(&root) {
                 for (sym, entry) in root_table.all_symbols() {
-                    if matches!(entry, ModuleEntry::SpecialForm { .. }) {
+                    if matches!(entry.declaration, Decl::SpecialForm(_)) {
                         special_forms.push(sym.to_string());
                     }
                 }
             }
 
-            for (sym, entry) in table.all_symbols() {
+            for (sym, candidate) in table.all_name_candidates() {
                 let name = sym.to_string();
-                match entry {
-                    // Special forms live at root only (handled above); skip
-                    // any locally-defined fns / primitives.
-                    ModuleEntry::Import { source, .. } => {
-                        if name.contains('$') {
-                            continue;
-                        }
-                        let classification = self.classify_import(source);
-                        match classification {
-                            ImportClass::Macro => macros.push(name),
-                            ImportClass::Trait => traits.push(name),
-                            ImportClass::Type | ImportClass::Constructor => types.push(name),
-                            ImportClass::Fn => fns.push(name),
-                        }
-                    }
-                    _ => {} // locally defined / special form
+                if candidate.source.module == current || name.contains('$') {
+                    continue;
+                }
+                let classification = self.classify_import(&candidate.source);
+                match classification {
+                    ImportClass::Macro => macros.push(name),
+                    ImportClass::Trait => traits.push(name),
+                    ImportClass::Type | ImportClass::Constructor => types.push(name),
+                    ImportClass::Fn => fns.push(name),
                 }
             }
 
@@ -812,11 +804,11 @@ impl CompilerSession {
         } else {
             // Filtered mode: show imports from named module only
             let mut names: Vec<String> = Vec::new();
-            for (sym, entry) in table.all_symbols() {
-                let source = match entry {
-                    ModuleEntry::Import { source, .. } => source,
-                    _ => continue,
-                };
+            for (sym, candidate) in table.all_name_candidates() {
+                let source = &candidate.source;
+                if source.module == current {
+                    continue;
+                }
                 let name = sym.to_string();
                 if name.contains('$') {
                     continue;
@@ -843,17 +835,15 @@ impl CompilerSession {
     /// Classify an imported symbol by following import chains to the definition.
     pub(crate) fn classify_import(&self, source: &FQSymbol) -> ImportClass {
         match self.resolve_to_definition(source) {
-            Some(entry) => match entry {
-                ModuleEntry::Def { kind, .. } if matches!(kind.as_ref(), DefKind::Macro { .. }) => {
-                    ImportClass::Macro
-                }
-                ModuleEntry::Def { kind, .. }
-                    if matches!(kind.as_ref(), DefKind::Constructor { .. }) =>
+            Some(entry) => match &entry.declaration {
+                Decl::Macro(_) => ImportClass::Macro,
+                Decl::Callable(callable)
+                    if matches!(callable.origin, CallableOrigin::Ctor { .. }) =>
                 {
                     ImportClass::Constructor
                 }
-                ModuleEntry::TraitDecl { .. } => ImportClass::Trait,
-                ModuleEntry::TypeDef { .. } => ImportClass::Type,
+                Decl::Trait(_) => ImportClass::Trait,
+                Decl::Type(_) => ImportClass::Type,
                 _ => ImportClass::Fn,
             },
             None => ImportClass::Fn,
@@ -861,23 +851,9 @@ impl CompilerSession {
     }
 
     /// Follow Import/Reexport chains to find the ultimate definition entry.
-    pub(crate) fn resolve_to_definition(&self, source: &FQSymbol) -> Option<ModuleEntry<Code>> {
-        let mut current_module = source.module.clone();
-        let mut current_name = source.symbol.to_string();
-        for _ in 0..10 {
-            let entry = {
-                let table = self.module_table(&current_module)?;
-                table.get(&current_name)?.clone()
-            };
-            match &entry {
-                ModuleEntry::Import { source: next, .. } => {
-                    current_module = next.module.clone();
-                    current_name = next.symbol.to_string();
-                }
-                _ => return Some(entry),
-            }
-        }
-        None
+    pub(crate) fn resolve_to_definition(&self, source: &FQSymbol) -> Option<Binding<Code>> {
+        let table = self.module_table(&source.module)?;
+        table.get(source.symbol.as_ref()).cloned()
     }
 
     /// /exports handler: list a module's public symbols.
@@ -904,13 +880,7 @@ impl CompilerSession {
         let mut types: Vec<String> = Vec::new();
         let mut fns: Vec<String> = Vec::new();
 
-        for (sym, entry) in table.all_symbols() {
-            if matches!(entry, ModuleEntry::Import { .. }) {
-                continue;
-            }
-            if !entry.is_public() {
-                continue;
-            }
+        for (sym, candidate) in table.public_name_candidates() {
             let name = sym.to_string();
             // §3.3: exclude `$`-mangled internal names and the synthetic
             // `__expr` top-level-expression wrapper (the wrapper is
@@ -930,7 +900,26 @@ impl CompilerSession {
             // 0440); /exports's only presentation concern is folding the
             // Constructor category into Types (a public ctor is listed under its
             // type) and dropping special forms.
-            match crate::worker::classify_listing_entry(entry) {
+            let Some(entry) = self.resolve_to_definition(&candidate.source) else {
+                continue;
+            };
+            // A local sum constructor is exposed twice for lookup: under its
+            // canonical `Type.Ctor` binding and under the convenient bare
+            // spelling. `/exports` describes declarations, not every lookup
+            // spelling, so retain only the canonical local binding. External
+            // re-export aliases remain visible because their source module is
+            // different from the module being described.
+            if candidate.source.module == module_path
+                && candidate.source.symbol != *sym
+                && matches!(
+                    &entry.declaration,
+                    Decl::Callable(callable)
+                        if matches!(callable.origin, CallableOrigin::Ctor { .. })
+                )
+            {
+                continue;
+            }
+            match crate::worker::classify_listing_entry(&entry) {
                 Some(SymbolCategory::Macro) => macros.push(name),
                 Some(SymbolCategory::Trait) => traits.push(name),
                 Some(SymbolCategory::Type) | Some(SymbolCategory::Constructor) => types.push(name),
@@ -967,120 +956,10 @@ impl CompilerSession {
         if form_src.is_empty() {
             return "usage: /expand <form>".to_string();
         }
-        // Compile any uncompiled macros before expansion.
-        if let Err(e) = self.compile_pending_macros() {
-            return crate::style::error_line(&e.to_string());
-        }
         match self.expand_form_sexp(form_src) {
             Ok(expanded) => format_sexp(&expanded),
             Err(e) => crate::style::error_line(&e.to_string()),
         }
-    }
-
-    /// Compile any macros in the TC symbol table that don't yet have code pointers.
-    ///
-    /// When a defmacro form is processed by the worker, it registers the macro
-    /// in the TC but defers compilation until the macro is first used. For /expand
-    /// we need to compile them eagerly.
-    pub(crate) fn compile_pending_macros(&mut self) -> Result<(), CranelispError> {
-        use crate::worker::ModuleCheckAccumulator;
-
-        // Collect macro names + sexps that need compilation. S70/W-Absorb:
-        // macros are `Def { kind: DefKind::Macro { clauses_meta } }`; the
-        // defining `sexp` lives on the int-layer `Introspection` record
-        // (Decision 41), keyed by `FQSymbol`, not on the symbol-table entry.
-        let module = self.current_module_path();
-        let mut to_compile: Vec<(Symbol, Sexp)> = Vec::new();
-        {
-            let table = self.current_symbol_table();
-            for (sym, entry) in table.all_symbols() {
-                let ModuleEntry::Def { kind, .. } = entry else {
-                    continue;
-                };
-                let DefKind::Macro { clauses_meta, .. } = kind.as_ref() else {
-                    continue;
-                };
-                let name = Symbol::from(sym.as_ref());
-                let fq = FQSymbol {
-                    module: module.clone(),
-                    symbol: name.clone(),
-                };
-                let Some(sexp) = self
-                    .shared
-                    .introspection
-                    .as_ref()
-                    .and_then(|m| m.get(&fq))
-                    .and_then(|i| i.sexp.clone())
-                else {
-                    continue;
-                };
-                let needs_compile = clauses_meta.iter().enumerate().any(|(idx, _)| {
-                    let clause_name = Symbol::from(format!("__macro_{}_clause_{}", name, idx));
-                    let compiled = self
-                        .shared
-                        .symbol_tables
-                        .get(&module)
-                        .and_then(|t| match t.get(clause_name.as_ref())? {
-                            ModuleEntry::Def { code, .. } => Some(code.is_some()),
-                            _ => None,
-                        })
-                        .unwrap_or(false);
-                    !compiled
-                });
-                if needs_compile {
-                    to_compile.push((name, sexp));
-                }
-            }
-        }
-
-        for (_, sexp) in &to_compile {
-            let module = self.current_module_path();
-            let info = cranelisp_frontend::parse_defmacro(sexp)?;
-            let mut accumulator = ModuleCheckAccumulator::new();
-
-            cranelisp_types::ensure_module_exists(&self.shared.symbol_tables, &module);
-            let repl_cs = self
-                .repl_check_state
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .take()
-                .unwrap_or_else(|| CheckState::new(module.clone()));
-            let lib_dirs_snap = self.lib_dirs();
-            let platform_dirs_snap = self.platform_dirs();
-            let mut wctx = ModuleCompiler {
-                symbol_tables: &self.shared.symbol_tables,
-                next_type_id: &self.shared.next_type_id,
-                module_aliases: &self.shared.module_aliases,
-                prelude_fallback: &self.shared.prelude_fallback,
-                check_state: repl_cs,
-                current_module: module.clone(),
-                scheduler: &self.shared.scheduler,
-                typecheck_products: &self.shared.typecheck_products,
-                // D1/D1b: introspection is REPL-only. The store is `Some` only
-                // under `RunMode::Repl`, so `.as_ref()` is the single adaptor.
-                introspection: self.shared.introspection.as_ref(),
-                lib_dirs: &lib_dirs_snap,
-                platform_dirs: &platform_dirs_snap,
-                project_root: &self.shared.project_root,
-                shared_state: Some(&self.shared),
-                // S93 Invariant SW: REPL eval thread driving the entry module.
-                eval_driven: true,
-            };
-
-            crate::process_form::compile_macro_for_repl(
-                &mut wctx,
-                &module,
-                &info,
-                Span::SYNTHETIC,
-                &mut accumulator,
-            )?;
-            // Restore REPL check_state.
-            *self
-                .repl_check_state
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()) = Some(wctx.check_state);
-        }
-        Ok(())
     }
 
     /// Parse and expand a form through the compiled macros in the session.
@@ -1186,6 +1065,19 @@ impl CompilerSession {
         } else {
             ModuleFullPath::from(arg)
         };
+        // A cache-restored parent enrolls its declared children synchronously,
+        // but their object may still be queued for in-memory loading. Test
+        // discovery must not race that load (or worse, call a null GOT slot and
+        // count the sentinel as a pass). A named, registered module is therefore
+        // observed only after its in-memory readiness boundary.
+        if self.shared.scheduler.is_registered(&module)
+            && let Err(error) = self
+                .shared
+                .scheduler
+                .wait_module_inmem_complete_blocking(&module)
+        {
+            return crate::style::error_line(&error.to_string());
+        }
         // Core discovery — shared with discover_tests_extern.
         let test_names = discover_test_names(&self.shared.symbol_tables, &module);
         if test_names.is_empty() {
@@ -1407,11 +1299,58 @@ mod sig_display_helper_tests {
         );
     }
 
-    fn mk_clause(name: &str) -> cranelisp_types::MacroClauseInfo {
-        cranelisp_types::MacroClauseInfo {
-            params: vec![cranelisp_types::MacroParam::Name(Symbol::from(name))],
-            rest_param: None,
-        }
+    fn mk_clause(name: &str) -> cranelisp_types::MacroClause<()> {
+        clause(
+            vec![cranelisp_types::MacroParam::Name(Symbol::from(name))],
+            None,
+        )
+    }
+
+    fn clause(
+        params: Vec<cranelisp_types::MacroParam>,
+        rest_param: Option<Symbol>,
+    ) -> cranelisp_types::MacroClause<()> {
+        cranelisp_types::MacroClause::new(
+            cranelisp_types::CallableArmId::from_ordinal(0)
+                .expect("fixture clause ordinal is representable"),
+            params,
+            rest_param,
+            cranelisp_types::CallableArm::new(
+                Scheme {
+                    type_vars: Vec::new(),
+                    constraints: StdHashMap::new(),
+                    ty: Type::Int,
+                },
+                Vec::new(),
+                cranelisp_types::Life::Declared { prior: None },
+            ),
+        )
+    }
+
+    #[test]
+    fn format_macro_display_uses_compile_time_transform_signature() {
+        let module = ModuleFullPath::from("user");
+        let out = format_macro_display("n", &[clause(Vec::new(), None)], None, &module);
+        assert_eq!(out, ":(Fn [] macros/Sexp) user/n ; defmacro");
+    }
+
+    #[test]
+    fn format_macro_display_retains_variadic_pattern() {
+        let module = ModuleFullPath::from("user");
+        let out = format_macro_display(
+            "many",
+            &[clause(
+                vec![cranelisp_types::MacroParam::Name(Symbol::from("x"))],
+                Some(Symbol::from("rest")),
+            )],
+            None,
+            &module,
+        );
+        assert_eq!(
+            out,
+            ":(Fn [macros/Sexp (macros/SList macros/Sexp)] macros/Sexp) user/many ; defmacro\n\
+             ; pattern: [x & rest]"
+        );
     }
 
     // spec: repl/spec.md §11.2.2 — a multi-clause macro card ends with a
@@ -1447,9 +1386,7 @@ mod fq_arg_commands_tests {
 
     use crate::repl::test_support::*;
 
-    use cranelisp_types::{
-        ModuleAliasEntry, ModuleEntry, ModuleFullPath, Span, Symbol, Visibility,
-    };
+    use cranelisp_types::{ModuleAliasEntry, ModuleFullPath, Span, Symbol, Visibility};
 
     // A bare argument keeps the current module as its home; the FQ split leaves
     // it untouched. spec: §17.6.1
@@ -1475,7 +1412,7 @@ mod fq_arg_commands_tests {
     fn resolve_symbol_arg_substitutes_module_alias() {
         let s = session();
         s.shared.module_aliases.insert(
-            ModuleFullPath::from("u"),
+            cranelisp_types::module_alias_key(&s.current_module_path(), "u"),
             ModuleAliasEntry::new(
                 ModuleFullPath::from("real.mod"),
                 Visibility::Private,
@@ -1521,14 +1458,15 @@ mod fq_arg_commands_tests {
     fn handle_sig_bare_local_matches_format_def_entry_fully_qualified() {
         let s = session();
         let user = s.current_module_path();
-        let entry = userfn_def(Some("Multiply by 2"));
-        if let Some(mut table) = s.shared.symbol_tables.get_mut(&user) {
-            table.insert(Symbol::from("dbl"), entry.clone());
+        let entry = if let Some(mut table) = s.shared.symbol_tables.get_mut(&user) {
+            install_userfn(&mut table, "dbl", Some("Multiply by 2"), Visibility::Public)
         } else {
             let mut table = SessionSymbolTable::new_with_params(user.clone());
-            table.insert(Symbol::from("dbl"), entry.clone());
+            let entry =
+                install_userfn(&mut table, "dbl", Some("Multiply by 2"), Visibility::Public);
             s.shared.symbol_tables.insert(user.clone(), table);
-        }
+            entry
+        };
         let sig = s.handle_sig("dbl");
         // `/sig` and the bare-value display share the ONE `format_def_entry`
         // (§3.8) — byte-equality holds by construction.
@@ -1603,17 +1541,19 @@ mod fq_arg_commands_tests {
         let s = session();
         let m = ModuleFullPath::from("m");
         let mut table = SessionSymbolTable::new_with_params(m.clone());
-        table.insert(Symbol::from("mf"), userfn_def(None));
+        let _ = install_userfn(&mut table, "mf", None, Visibility::Public);
         // mg calls mf — the `callees` edge (serialized for cache-restored
         // modules) is present, but no introspection record exists.
-        let mut mg = userfn_def(None);
-        if let ModuleEntry::Def { callees, .. } = &mut mg {
-            callees.push(FQSymbol {
+        let _ = install_userfn_with_callees(
+            &mut table,
+            "mg",
+            None,
+            Visibility::Public,
+            vec![FQSymbol {
                 module: m.clone(),
                 symbol: Symbol::from("mf"),
-            });
-        }
-        table.insert(Symbol::from("mg"), mg);
+            }],
+        );
         s.shared.symbol_tables.insert(m.clone(), table);
 
         let referers = s.collect_referers(&m, "mf", false);
@@ -1632,26 +1572,30 @@ mod fq_arg_commands_tests {
         let s = session();
         let m = ModuleFullPath::from("m");
         let mut table = SessionSymbolTable::new_with_params(m.clone());
-        table.insert(Symbol::from("mf"), userfn_def(None));
+        let _ = install_userfn(&mut table, "mf", None, Visibility::Public);
         // Base template `g` calls mf.
-        let mut g = userfn_def(None);
-        if let ModuleEntry::Def { callees, .. } = &mut g {
-            callees.push(FQSymbol {
+        let _ = install_userfn_with_callees(
+            &mut table,
+            "g",
+            None,
+            Visibility::Public,
+            vec![FQSymbol {
                 module: m.clone(),
                 symbol: Symbol::from("mf"),
-            });
-        }
-        table.insert(Symbol::from("g"), g);
+            }],
+        );
         // A minted mono instance `g$Int` also calls mf — `ReverseIndex::build`
         // records the mangled name verbatim as a caller.
-        let mut g_int = userfn_def(None);
-        if let ModuleEntry::Def { callees, .. } = &mut g_int {
-            callees.push(FQSymbol {
+        let _ = install_userfn_with_callees(
+            &mut table,
+            "g$Int",
+            None,
+            Visibility::Public,
+            vec![FQSymbol {
                 module: m.clone(),
                 symbol: Symbol::from("mf"),
-            });
-        }
-        table.insert(Symbol::from("g$Int"), g_int);
+            }],
+        );
         s.shared.symbol_tables.insert(m.clone(), table);
 
         let referers = s.collect_referers(&m, "mf", false);

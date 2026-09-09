@@ -103,12 +103,11 @@ fn ambiguity_check_admits_named_polymorphic_defn() {
     let entry = table.get("ambig").expect("ambig registered");
     assert!(
         matches!(
-            entry,
-            ModuleEntry::Def { kind, .. }
-                if matches!(
-                    kind.as_ref(),
-                    DefKind::UserFn { fn_state: UserFnState::Polymorphic(_) }
-                )
+            entry.callable().map(|c| &c.arm.life),
+            Some(Life::Template {
+                kind: TemplateKind::Parametric,
+                ..
+            })
         ),
         "a named result-only-var defn is slot-less `Polymorphic`, got {entry:?}",
     );

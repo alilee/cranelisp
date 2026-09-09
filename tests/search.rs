@@ -1112,8 +1112,9 @@ fn search_unloaded_module_still_indexes_alongside_loaded_feed_neg() {
 // ===========================================================================
 
 // ===========================================================================
-// Sprint 109 — MV-1/MV-3 (0570 `mod-` search-exclude twin), EV-3 (macro row
-// shows `; defmacro`, 0569), EV-4 (search-row ≡ bare-lookup envelope), DC-10
+// Sprint 109/Sprint 121 — MV-1/MV-3 (0570 `mod-` search-exclude twin), EV-3
+// (macro declarations excluded from search; ACT-0952 retains future full
+// semantic indexing), EV-4 (search-row ≡ bare-lookup envelope), DC-10
 // (constructor listed once, canonical form). Plan: tests/plan/PLAN.md §S109
 // §J/§G/§D. Stdlib-free; PrimitivesOnly; reachable modules built inline.
 // ===========================================================================
@@ -1174,37 +1175,32 @@ fn bare_mod_submodule_symbols_present_in_search() {
     out.assert_stdout_contains("public-pub-sym");
 }
 
-// spec: repl/spec.md §17.19.2a (0569) — a macro's /search row primary line is the
-// canonical macro envelope (`:{mod}/{name} ; defmacro …`), NEVER a placeholder
-// scalar `:primitives/Int {name}`. RED today: a user-defined macro's row does not
-// carry the `; defmacro` classification (macros are not surfaced with a macro
-// envelope in the index).
-// defect: class=display-envelope-mirror locus=src/session_v4/index_worker.rs (macro search row omits `; defmacro`, risks a scalar :Type) found=S108 owner=/dev
+// spec: repl/spec.md §17.19.2a (NEG) — /search ignores macro declarations rather
+// than manufacturing a searchable compiler binding for an uncompiled clause.
+// The ordinary definition in the same module is the live-index control.
+// defect: class=display-envelope-mirror locus=src/session_v4/index_worker.rs (the indexer fabricated a scalar-typed macro row; macro rows are now excluded) found=S108 owner=/dev
 #[test]
-fn search_macro_row_shows_defmacro_not_scalar_type_neg() {
+fn search_ignores_macro_declaration_but_keeps_ordinary_definition_neg() {
     let out = Cranelisp::new()
         .repl()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .file(
             "lib/macx.cl",
             "(import [primitives [Int add-i64]])\n\
-             (defmacro twice [x] `(add-i64 ~x ~x))\n",
+             (defmacro twice [x] `(add-i64 ~x ~x))\n\
+             (defn searchable [] :Int 7)\n",
         )
         .lib_dir("lib")
-        .stdin("/search twice\n")
+        .stdin("/search twice\n/search searchable\n")
         .output();
-    // The wrong scalar type MUST NOT appear …
     assert!(
-        !out.stdout.contains(":primitives/Int twice"),
-        "a macro row MUST NOT render a placeholder scalar `:primitives/Int` \
-         (§17.19.2a, 0569); got:\n{}",
+        !out.stdout.contains("twice") && !out.stdout.contains("; defmacro"),
+        "a macro declaration MUST NOT produce any /search row (§17.19.2a); got:\n{}",
         out.stdout
     );
-    // … and the macro MUST be surfaced with its `; defmacro` classification.
     assert!(
-        out.stdout.contains("twice") && out.stdout.contains("; defmacro"),
-        "a macro's /search row MUST carry the `; defmacro` classification \
-         (§17.19.2a); got:\n{}",
+        out.stdout.contains("searchable") && out.stdout.contains("primitives/Int"),
+        "the ordinary public definition in the same module must remain searchable; got:\n{}",
         out.stdout
     );
 }

@@ -11,26 +11,23 @@
 
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+use cranelisp_types::Defn;
 use cranelisp_types::{
-    CranelispError, DefKind, Defn, ErrorLocation, ModuleEntry, ModuleFullPath, Sexp, Span, Symbol,
-    TopLevel,
+    Binding, CallableOrigin, CallableTarget, CranelispError, Decl, ErrorLocation, Life,
+    ModuleFullPath, Realization, Sexp, Span, StagedPublicationDecision, Symbol, TopLevel,
 };
 
 use cranelisp_typecheck::CheckState;
 
 pub(crate) struct PreparedCommit {
     module: ModuleFullPath,
-    snapshot_cursor: usize,
-    final_cursor: usize,
+    staging: crate::code::SessionSymbolTable,
+    decisions: Vec<StagedPublicationDecision>,
     tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-    names: Vec<Symbol>,
-    published_names: Vec<Symbol>,
-    retained: Vec<crate::redefine::RetainedCode>,
-    freezes: Vec<(Symbol, usize, usize)>,
-    redefinition_ptrs: Vec<(Symbol, usize, usize)>,
+    targets: Vec<CallableTarget>,
     outcomes: Vec<crate::redefine::RedefinitionOutcome>,
     pub(crate) unresolved_dispatch: Vec<cranelisp_typecheck::UnresolvedDispatchSite>,
-    compiled: Option<PreparedCompilation>,
 }
 
 struct PreparedCompilation {
@@ -55,29 +52,38 @@ struct PreparedCheck {
     result: cranelisp_typecheck::CheckResult,
 }
 
-// Internal per-int compatibility shim for the (post-Decision-44, 2026-05-13
-// third amendment) collapsed `check_forms` surface. The legacy multi-call
-// shape (`check_form` + `merge_form_result` + `finalize_check_result` +
-// `ModuleCheckAccumulator`) has been retired from typecheck's public API; the
-// `accumulator` parameter that pre-S66 worker code threaded through 20+
-// call sites is no longer required at the facade. The shim type below is a
-// vestigial empty placeholder so the existing worker call signatures compile
-// while we route the actual typecheck dispatch through `check_forms` (one
-// call per cluster of `Vec<ParsedEntry>`). This is the migration scaffold
-// described in `design/arch/facades/int.md` §"process_cluster" and the
-// `2026-05-13 third amendment` block in Decision 44.
-#[derive(Default)]
-pub struct ModuleCheckAccumulator {
-    /// Default-method defns deferred from trait-impl registration to the
-    /// next pass. Kept for source compatibility with pre-S66 worker code;
-    /// `check_forms` handles this internally and the worker side no longer
-    /// drives it.
-    pub default_method_defns: Vec<Defn>,
+fn binding_is_definition(binding: &Binding<crate::code::Code>) -> bool {
+    matches!(
+        binding.declaration,
+        Decl::Callable(_) | Decl::Overloaded(_) | Decl::Macro(_)
+    )
 }
 
-impl ModuleCheckAccumulator {
-    pub fn new() -> Self {
-        Self::default()
+fn binding_first_slot(binding: &Binding<crate::code::Code>) -> Option<usize> {
+    let life_slot = |life: &Life<crate::code::Code>| match life {
+        Life::Concrete { slot, .. } | Life::Broken { slot, .. } => Some(slot.index()),
+        _ => None,
+    };
+    match &binding.declaration {
+        Decl::Callable(callable) => life_slot(&callable.arm.life),
+        Decl::Overloaded(declaration) => declaration
+            .arms
+            .iter()
+            .find_map(|arm| life_slot(&arm.callable.life)),
+        Decl::Macro(declaration) => declaration
+            .clauses
+            .iter()
+            .find_map(|clause| life_slot(&clause.callable.life)),
+        _ => None,
+    }
+}
+
+fn callable_target_owner(target: &CallableTarget) -> Option<&cranelisp_types::FQSymbol> {
+    match target {
+        CallableTarget::Binding(owner)
+        | CallableTarget::OverloadArm { owner, .. }
+        | CallableTarget::MacroClause { owner, .. } => Some(owner),
+        _ => None,
     }
 }
 
@@ -424,25 +430,46 @@ pub(crate) fn prepare_cluster_commit(
         Ok(checked) => checked,
         Err(gap) => return Ok(Some(Err(gap))),
     };
+    // A top-level expression whose return-directed dispatch is still
+    // unresolved deliberately survives typecheck so the REPL/executable entry
+    // boundary can report the language-level ambiguity. It has no concrete
+    // `__expr` body to compile, however. Keep every successfully checked
+    // definition in this cluster eligible for codegen and omit only the
+    // affected expression wrapper from the forced-enrollment input.
+    let codegen_program: Vec<TopLevel> = codegen_program
+        .iter()
+        .filter(|top| match top {
+            TopLevel::Expr(expr) => {
+                crate::exe::first_dispatch_within(&checked.result.unresolved_dispatch, expr.span())
+                    .is_none()
+            }
+            _ => true,
+        })
+        .cloned()
+        .collect();
     let prepared = plan_staging_commit(
         symbol_tables,
         module,
         checked.staging,
-        codegen_program,
+        &codegen_program,
         shared,
+        &[],
     )?;
     Ok(Some(Ok((prepared, checked.result))))
 }
 
-fn plan_staging_commit(
+pub(crate) fn plan_staging_commit(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module: &ModuleFullPath,
     staging: crate::code::SessionSymbolTable,
     codegen_program: &[TopLevel],
     shared: &crate::session_v4::SharedState,
+    additional_decisions: &[StagedPublicationDecision],
 ) -> Result<PreparedCommit, CranelispError> {
-    use crate::redefine::{RedefKind, RedefinitionOutcome, RetainedCode, classify_redefinition};
-    use cranelisp_types::{FQSymbol, GOT_TABLE_SIZE};
+    use crate::redefine::{RedefKind, RedefinitionOutcome, classify_redefinition};
+    use cranelisp_types::FQSymbol;
+
+    validate_guarded_staging(symbol_tables, module, &staging)?;
 
     let tables = dashmap::DashMap::new();
     for row in symbol_tables.iter() {
@@ -455,90 +482,38 @@ fn plan_staging_commit(
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         });
     };
-    let snapshot_cursor = candidate.next_got_slot;
-    let mut cursor = snapshot_cursor;
-    let mut retained = Vec::new();
-    let mut freezes = Vec::new();
-    let mut redefinition_ptrs = Vec::new();
+    let mut decisions = additional_decisions.to_vec();
     let mut outcomes = Vec::new();
-    let mut published_names = Vec::new();
-    let mut drained: Vec<_> = staging.symbols.into_iter().collect();
-    drained.sort_by(|(a_name, a), (b_name, b)| {
-        match (a.callable_got_slot(), b.callable_got_slot()) {
-            (Some(a), Some(b)) => a.cmp(&b),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => a_name.as_ref().cmp(b_name.as_ref()),
-        }
-    });
-
-    for (name, mut entry) in drained {
-        crate::imports::check_terminal_closure(
+    for (name, exposure) in staging.all_name_candidates() {
+        crate::imports::check_exposed_candidate_closure(
             module,
-            name.as_ref(),
-            &entry,
+            name,
+            &exposure.source,
+            exposure.visibility,
             Span::SYNTHETIC,
             declared.as_ref(),
         )?;
-        let prior = candidate.symbols.get(&name);
-        let prior_was_def = matches!(prior, Some(ModuleEntry::Def { .. }));
-        let prior_slot = prior.and_then(ModuleEntry::callable_got_slot);
-        if let Some(slot) = prior_slot {
-            let prior_ptr = candidate.got.load_slot(slot) as usize;
-            if prior_ptr != 0 {
-                redefinition_ptrs.push((name.clone(), slot, prior_ptr));
-            }
+    }
+    for (name, binding) in staging.all_symbols() {
+        let prior = candidate.get(name.as_ref());
+        let prior_was_def = prior.is_some_and(binding_is_definition);
+        let staged_is_def = binding_is_definition(binding);
+        let prior_slot = prior.and_then(binding_first_slot);
+        let staged_slot = binding_first_slot(binding);
+        let (kind, per_symbol) = classify_redefinition(name.as_ref(), prior, binding);
+        if prior_slot.is_some() && staged_slot.is_some() {
+            decisions.push(match kind {
+                RedefKind::AbiChanging => StagedPublicationDecision::ChangeAbi {
+                    symbol: name.clone(),
+                },
+                RedefKind::New | RedefKind::AbiPreserving => {
+                    StagedPublicationDecision::PreserveAbi {
+                        symbol: name.clone(),
+                    }
+                }
+            });
         }
-        let prior_code = match prior {
-            Some(ModuleEntry::Def { code, .. }) => code.clone(),
-            _ => None,
-        };
-        let (kind, per_symbol) = classify_redefinition(name.as_ref(), prior, &entry);
-        let mut new_slot = None;
-
-        if entry.callable_got_slot().is_some() {
-            let slot = match kind {
-                RedefKind::AbiPreserving => prior_slot.unwrap_or_else(|| {
-                    let slot = cursor;
-                    cursor += 1;
-                    slot
-                }),
-                RedefKind::New | RedefKind::AbiChanging => {
-                    let slot = cursor;
-                    cursor += 1;
-                    slot
-                }
-            };
-            if cursor > GOT_TABLE_SIZE {
-                return Err(CranelispError::ModuleError {
-                    message: format!(
-                        "GOT slot table exhausted for module '{module}' ({GOT_TABLE_SIZE} slots)"
-                    ),
-                    location: ErrorLocation::from_span(Span::SYNTHETIC),
-                });
-            }
-            if kind == RedefKind::AbiChanging {
-                let old_slot = prior_slot.ok_or_else(|| CranelispError::ModuleError {
-                    message: format!("ABI-changing '{module}/{name}' has no prior slot"),
-                    location: ErrorLocation::from_span(Span::SYNTHETIC),
-                })?;
-                if let Some(code) = prior_code.clone() {
-                    retained.push(RetainedCode::frozen(module, &name, Some(old_slot), code));
-                }
-                freezes.push((name.clone(), old_slot, slot));
-            }
-            if let ModuleEntry::Def {
-                kind: def_kind,
-                code,
-                ..
-            } = &mut entry
-            {
-                repoint_callable_slot(def_kind, slot);
-                if code.is_none() && kind != RedefKind::AbiChanging {
-                    *code = prior_code;
-                }
-            }
-            new_slot = Some(slot);
+        if staged_is_def && (staged_slot.is_some() || prior_was_def) {
             outcomes.push(RedefinitionOutcome {
                 fq: FQSymbol {
                     module: module.clone(),
@@ -548,55 +523,50 @@ fn plan_staging_commit(
                 per_symbol,
                 prior_was_def,
                 old_slot: prior_slot,
-                new_slot,
-            });
-        } else if prior_was_def && matches!(entry, ModuleEntry::Def { .. }) {
-            if let (Some(slot), Some(code)) = (prior_slot, prior_code) {
-                retained.push(RetainedCode::frozen(module, &name, Some(slot), code));
-            }
-            outcomes.push(RedefinitionOutcome {
-                fq: FQSymbol {
-                    module: module.clone(),
-                    symbol: name.clone(),
-                },
-                kind,
-                per_symbol,
-                prior_was_def: true,
-                old_slot: prior_slot,
-                new_slot,
+                new_slot: staged_slot,
             });
         }
-        published_names.push(name.clone());
-        candidate.symbols.insert(name, entry);
     }
-    candidate.next_got_slot = cursor;
+    let records = candidate
+        .publish_staged(staging.clone(), &decisions)
+        .map_err(|error| CranelispError::ModuleError {
+            message: error.to_string(),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        })?;
+    for outcome in &mut outcomes {
+        if let Some(record) = records
+            .iter()
+            .find(|record| record.symbol == outcome.fq.symbol)
+        {
+            outcome.new_slot = record
+                .bodies
+                .iter()
+                .find_map(|body| body.published_slot.map(|slot| slot.index()));
+        }
+    }
     drop(candidate);
-    let names = derive_codegen_batch(module, codegen_program, &tables);
-    for name in &names {
-        let valid = tables
-            .get(module)
-            .and_then(|table| table.get(name.as_ref()).cloned())
-            .is_some_and(|entry| entry.callable_got_slot().is_some());
+    let targets = derive_codegen_batch(module, codegen_program, &tables);
+    for target in &targets {
+        let valid = tables.get(module).is_some_and(|table| {
+            table.callable_target(target).is_some_and(|arm| {
+                matches!(arm.life, Life::Concrete { .. })
+            })
+        });
         if !valid {
             return Err(CranelispError::ModuleError {
-                message: format!("prepared codegen member '{module}/{name}' is not callable"),
+                message: format!("prepared codegen target '{target:?}' is not callable"),
                 location: ErrorLocation::from_span(Span::SYNTHETIC),
             });
         }
     }
     Ok(PreparedCommit {
         module: module.clone(),
-        snapshot_cursor,
-        final_cursor: cursor,
+        staging,
+        decisions,
         tables,
-        names,
-        published_names,
-        retained,
-        freezes,
-        redefinition_ptrs,
+        targets,
         outcomes,
         unresolved_dispatch: Vec::new(),
-        compiled: None,
     })
 }
 
@@ -710,334 +680,124 @@ fn commit_staging_to_live(
     staging: crate::code::SessionSymbolTable,
     shared: Option<&crate::session_v4::SharedState>,
 ) -> Result<Vec<crate::redefine::RedefinitionOutcome>, CranelispError> {
-    use crate::redefine::RedefinitionOutcome;
-    use cranelisp_types::ModuleEntry;
-
-    // Drain staging into a Vec before acquiring the live write guard to
-    // avoid simultaneous borrow paths on `staging`. `staging` is owned
-    // here; we move its `symbols` field out by destructuring.
-    let mut drained: Vec<(Symbol, ModuleEntry<crate::code::Code>)> =
-        staging.symbols.into_iter().collect();
-
-    // FIXME 0348 — DETERMINISTIC commit order, keyed on the STAGED got_slot.
-    // `staging.symbols` is a `HashMap`; `into_iter()` yields entries in
-    // hash-bucket order, which is non-deterministic across runs (randomised
-    // seed). The drain
-    // loop below re-allocates a fresh LIVE slot per `Def` *in iteration order*,
-    // so a non-deterministic drain produced a non-deterministic staging→live
-    // slot PERMUTATION (run-to-run: `a→0,b→1` one run, `a→1,b→0` the next). The
-    // body codegen bakes intra-module calls against `resolve_got_target` (which
-    // reads the live got_slot) and the GOT data is stored against the same live
-    // got_slot — but a forward reference compiled in one pass against a slot map
-    // that the OTHER pass reordered makes `main`'s baked call land on the wrong
-    // function (returns the initial accumulator / 0 instead of the fold result).
-    // Draining in staged-slot order makes the live allocation order — and hence
-    // the staging→live slot mapping — STABLE and identity-preserving when live
-    // starts empty (the fresh-build case). Entries with no staged slot
-    // (non-`Def`) sort last, by name, so the whole commit is deterministic.
-    drained.sort_by(|(a_name, a_entry), (b_name, b_entry)| {
-        // The staged slot now rides on the callable `DefKind` variant (S83
-        // reshape, FIXME 0356/0357) — read it through the single
-        // `callable_got_slot()` chokepoint rather than the retired flat field.
-        let slot_of = |e: &ModuleEntry<crate::code::Code>| e.callable_got_slot();
-        match (slot_of(a_entry), slot_of(b_entry)) {
-            (Some(sa), Some(sb)) => sa.cmp(&sb),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => a_name.as_ref().cmp(b_name.as_ref()),
-        }
-    });
-
-    // FIXME 0604 §2.4 (the S115 missed-census-row route): precompute D(module)
-    // BEFORE the `get_mut` guard — a read of the SEPARATE `declared_exports` map,
-    // so no session map is read under the guard (the deadlock hazard is honored;
-    // /arch precompute-before-guard directive). `shared == None` (unit tests /
-    // dry-run) or an unrecorded module ⇒ D unknown ⇒ the gate permits (never
-    // false-fires).
     let declared = shared.and_then(|s| s.declared_exports.get(module).map(|d| d.clone()));
-
-    let Some(mut live) = symbol_tables.get_mut(module) else {
-        // Live module disappeared between dispatch and commit — drop staging
-        // silently. This shouldn't happen under normal Wave-3a-α
-        // registration discipline (live exists for the current module
-        // before `process_cluster` runs), but a no-op is safer than a
-        // panic at commit.
-        return Ok(Vec::new());
-    };
-
-    // §8.6.4 definition-over-(import|export|prelude) rejection now lives at the
-    // shared typecheck seam (`check_forms` Pass-1, FIXME 0514) — the single
-    // mode-uniform chokepoint both REPL/Additive and batch/Replace traverse,
-    // and the only place that also sees the prelude OUTER scope. By the time a
-    // cluster reaches this commit gate it has already passed `check_forms`
-    // cleanly, so a colliding def never arrives here. The former Additive-gated
-    // int-side pre-scan (retired e1fe4a8) is gone.
-
-    let mut outcomes: Vec<RedefinitionOutcome> = Vec::new();
-
-    for (name, mut entry) in drained.drain(..) {
-        // Each staged `Def` re-points its (staging-fresh) GOT slot to a live
-        // slot at commit. A callable staged entry routes through
-        // `commit_slotted_def` (slot policy + freeze); a slot-less staged `Def`
-        // displacing a prior live `Def` routes through `commit_slotless_redef`
-        // (the T1 downgrade outcome). Both push at most one outcome.
-        if entry.callable_got_slot().is_some() {
-            outcomes.push(commit_slotted_def(
-                &mut live, module, &name, &mut entry, shared,
-            )?);
-        } else if let Some(outcome) = commit_slotless_redef(&live, module, &name, &entry, shared) {
-            outcomes.push(outcome);
-        }
-        // FIXME 0604 §2.4: gate every staged public write through the terminal
-        // declared-export-closure chokepoint. Legitimate staged entries are the
-        // module's OWN defs (own-def arm → Ok, NO map read — safe under the held
-        // `live` guard); a mis-targeted/materialized phantom public re-export
-        // whose name ∉ D(module) is rejected + diagnosed here (isolation by
-        // construction), propagating through the existing `Result`. `MODULE_TRACE`
-        // emits at the seam inside the gate for observability.
-        crate::imports::check_terminal_closure(
+    for (name, exposure) in staging.all_name_candidates() {
+        crate::imports::check_exposed_candidate_closure(
             module,
-            name.as_ref(),
-            &entry,
-            cranelisp_types::Span::SYNTHETIC,
+            name,
+            &exposure.source,
+            exposure.visibility,
+            Span::SYNTHETIC,
             declared.as_ref(),
         )?;
-        live.insert(name, entry);
     }
-
+    validate_guarded_staging(symbol_tables, module, &staging)?;
+    let Some(mut live) = symbol_tables.get_mut(module) else {
+        return Ok(Vec::new());
+    };
+    let (decisions, mut outcomes) = publication_plan(&live, &staging);
+    let records =
+        live.publish_staged(staging, &decisions)
+            .map_err(|error| CranelispError::ModuleError {
+                message: error.to_string(),
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
+            })?;
+    for record in records {
+        if let Some(shared) = shared {
+            let mut retained = shared
+                .retained_code
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            for body in record.bodies.iter().filter(|body| body.displaced_owner.is_some()) {
+                retained.push(crate::redefine::RetainedCode::frozen(
+                    module,
+                    &record.symbol,
+                    body.prior_slot.map(|slot| slot.index()),
+                    body.displaced_owner.clone().expect("owner presence was filtered"),
+                ));
+            }
+        }
+        if let Some(outcome) = outcomes
+            .iter_mut()
+            .find(|outcome| outcome.fq.symbol == record.symbol)
+        {
+            outcome.new_slot = record
+                .bodies
+                .iter()
+                .find_map(|body| body.published_slot.map(|slot| slot.index()));
+        }
+    }
     Ok(outcomes)
 }
 
-/// Commit a callable staged `Def` (its `callable_got_slot()` is `Some`),
-/// re-pointing its staging-fresh GOT slot to a live slot and returning the
-/// redefinition outcome. The caller has already confirmed the staged entry
-/// carries a slot.
-///
-/// The staged slot (read via the `callable_got_slot()` chokepoint — the slot
-/// rides on the callable `DefKind` variant per the S83 reshape, FIXME
-/// 0356/0357) is meaningless in live's GOT (staging holds a fresh GOT Arc).
-///
-/// Redefinition slot authority (supersedes the pre-S101 "we must NOT introduce
-/// a second allocation policy" invariant): typecheck's Pass-1 `redef_slots` pin
-/// remains the fast-path identity — for an `AbiPreserving` redefinition the
-/// staged slot already equals the reused live slot — but THIS gate is the
-/// documented single authority that overrides it on `AbiChanging`, allocating a
-/// fresh live slot and freezing the old one (its code retained in the session
-/// pool so stale closures and in-flight frames keep a coherent old-ABI chain —
-/// design §4.3, no quiesce needed).
-///
-/// `AbiPreserving` also CARRIES OVER the prior `code` field — codegen's
-/// redefinition detection compares prior `code` against None to decide whether
-/// to emit a `Redefinition` trace event, and Decision 31 Scenario 2's
-/// per-redefinition reclaim happens when codegen replaces it. `AbiChanging`
-/// deliberately does NOT carry code: the fresh slot is a new world, and the
-/// prior code's lifetime belongs to the pool.
-fn commit_slotted_def(
-    live: &mut crate::code::SessionSymbolTable,
+fn validate_guarded_staging(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module: &ModuleFullPath,
-    name: &Symbol,
-    entry: &mut cranelisp_types::ModuleEntry<crate::code::Code>,
-    shared: Option<&crate::session_v4::SharedState>,
-) -> Result<crate::redefine::RedefinitionOutcome, CranelispError> {
-    use crate::redefine::{
-        RedefKind, RedefinitionOutcome, RetainedCode, allocate_live_got_slot, classify_redefinition,
+    staging: &crate::code::SessionSymbolTable,
+) -> Result<(), CranelispError> {
+    let Some(live) = symbol_tables.get(module).map(|table| table.clone()) else {
+        return Ok(());
     };
-    use cranelisp_types::{FQSymbol, ModuleEntry};
+    for (name, staged) in staging.all_symbols() {
+        crate::redefine::validate_guarded_redefinition(
+            symbol_tables,
+            module,
+            name,
+            &live,
+            staging,
+            live.get(name.as_ref()),
+            staged,
+        )?;
+    }
+    Ok(())
+}
 
-    let (prior_slot, prior_code, kind, per_symbol, prior_was_def) = match live.symbols.get(name) {
-        Some(prior @ ModuleEntry::Def { code, .. }) => {
-            let (kind, per_symbol) = classify_redefinition(name.as_ref(), Some(prior), &*entry);
-            (
-                prior.callable_got_slot(),
-                code.clone(),
+fn publication_plan(
+    live: &crate::code::SessionSymbolTable,
+    staging: &crate::code::SessionSymbolTable,
+) -> (
+    Vec<StagedPublicationDecision>,
+    Vec<crate::redefine::RedefinitionOutcome>,
+) {
+    use crate::redefine::{RedefKind, RedefinitionOutcome, classify_redefinition};
+    use cranelisp_types::FQSymbol;
+
+    let mut decisions = Vec::new();
+    let mut outcomes = Vec::new();
+    for (name, binding) in staging.all_symbols() {
+        let prior = live.get(name.as_ref());
+        let prior_was_def = prior.is_some_and(binding_is_definition);
+        let staged_is_def = binding_is_definition(binding);
+        let old_slot = prior.and_then(binding_first_slot);
+        let staged_slot = binding_first_slot(binding);
+        let (kind, per_symbol) = classify_redefinition(name.as_ref(), prior, binding);
+        if old_slot.is_some() && staged_slot.is_some() {
+            decisions.push(match kind {
+                RedefKind::AbiChanging => StagedPublicationDecision::ChangeAbi {
+                    symbol: name.clone(),
+                },
+                RedefKind::New | RedefKind::AbiPreserving => {
+                    StagedPublicationDecision::PreserveAbi {
+                        symbol: name.clone(),
+                    }
+                }
+            });
+        }
+        if staged_is_def && (staged_slot.is_some() || prior_was_def) {
+            outcomes.push(RedefinitionOutcome {
+                fq: FQSymbol {
+                    module: live.path.clone(),
+                    symbol: name.clone(),
+                },
                 kind,
                 per_symbol,
-                true,
-            )
-        }
-        prior => {
-            let (kind, per_symbol) = classify_redefinition(name.as_ref(), prior, &*entry);
-            (None, None, kind, per_symbol, false)
-        }
-    };
-
-    // Fresh-slot is unconditional on ABI change, independent of the
-    // recorded caller set (invisible value captures exist — design
-    // §7.1) — but freezing requires the retention pool: without it
-    // the displaced `Code`'s pages would be freed while the frozen
-    // slot still points at them, so a pool-less context degrades to
-    // reuse-and-patch.
-    let effective_kind = match kind {
-        RedefKind::AbiChanging if shared.is_none() => RedefKind::AbiPreserving,
-        k => k,
-    };
-
-    let new_slot = match effective_kind {
-        RedefKind::New => match prior_slot {
-            // Defensive: a `New`-classified commit with a prior slot
-            // cannot arise (classification requires no prior Def
-            // slot), but reuse would be the safe answer.
-            Some(slot) => slot,
-            None => allocate_live_got_slot(live, module)?,
-        },
-        RedefKind::AbiPreserving => match prior_slot {
-            Some(slot) => slot,
-            None => allocate_live_got_slot(live, module)?,
-        },
-        RedefKind::AbiChanging => {
-            // Freeze: push the superseded `Code` into the retention
-            // pool BEFORE `live.insert` replaces the entry (the pool
-            // clone keeps the pages mapped; the old slot is never
-            // written again — Principle 20: after this commit no live
-            // entry carries the old index, so the illegal write is
-            // unreachable by representation).
-            let shared = shared.expect("AbiChanging requires a session (gated above)");
-            let old_slot = prior_slot.expect("AbiChanging requires a prior slot");
-            if let Some(code) = prior_code.clone() {
-                shared
-                    .retained_code
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .push(RetainedCode::frozen(module, name, Some(old_slot), code));
-            }
-            let fresh = allocate_live_got_slot(live, module)?;
-            crate::got_trace::emit_slot_freeze(module, name, old_slot, fresh);
-            fresh
-        }
-    };
-
-    if let ModuleEntry::Def {
-        kind: def_kind,
-        code,
-        ..
-    } = &mut *entry
-    {
-        repoint_callable_slot(def_kind, new_slot);
-        // Preserve the prior code handle on the reuse path if staging
-        // didn't already write one (staging-side typecheck does not
-        // run codegen, so `code` is normally `None` for staged Def
-        // entries). `AbiChanging` starts its fresh slot code-less.
-        if code.is_none() && effective_kind != RedefKind::AbiChanging {
-            *code = prior_code;
+                prior_was_def,
+                old_slot,
+                new_slot: staged_slot,
+            });
         }
     }
-
-    Ok(RedefinitionOutcome {
-        fq: FQSymbol {
-            module: module.clone(),
-            symbol: name.clone(),
-        },
-        kind: effective_kind,
-        per_symbol,
-        prior_was_def,
-        old_slot: prior_slot,
-        new_slot: Some(new_slot),
-    })
-}
-
-/// Commit a slot-less staged `Def` that displaces a prior live `Def`, returning
-/// the T1-downgrade outcome (or `None` when the staged entry is not a `Def`, or
-/// no prior live `Def` exists — the no-outcome cases).
-///
-/// The SLOT-LESS-staged redefinition arms — both T1 shapes (S102 §9.1.1 gate
-/// widening: the gate emits an outcome for EVERY staged `Def` whose name had a
-/// prior live `Def`, any slot shape — outcomes are the only channel the driver
-/// sees, so a T1 shape that produces no outcome is invisible to the §18.1.1
-/// downgrade print):
-///
-/// (a) FIXME 0479 — a slotted prior with compiled code displaced by a slot-less
-///     staged Def (a concrete fn redefined as a polymorphic/constrained
-///     template or an `Overloaded` base). The caller's `live.insert` drops the
-///     prior entry — possibly the last `Code` Arc, freeing mapped JIT pages —
-///     while compiled callers still embed the prior's GOT slot: a use-after-free
-///     SIGSEGV on the next call. Retain the prior `Code` (frozen supersession,
-///     design §6.3) so the still-populated slot keeps dispatching the frozen old
-///     chain — memory-safe coherent-stale execution (the §4.3 frozen-world
-///     argument). Pool-less contexts (`shared: None` — unit tests, dry-run
-///     shapes) keep the pre-S101 drop, as at the sibling displacement sites.
-///
-/// (b) template-replacing-template (slot-less over slot-less prior `Def`) —
-///     nothing to retain, but the outcome still carries `prior_was_def` so the
-///     downgrade is not silent.
-///
-/// The *semantic* cure for these T1-kind targets (module-grain reload with
-/// end-of-turn sequencing; design §10 T1) is S103; the outcome feeds the interim
-/// §18.1.1 `stale:` print.
-fn commit_slotless_redef(
-    live: &crate::code::SessionSymbolTable,
-    module: &ModuleFullPath,
-    name: &Symbol,
-    entry: &cranelisp_types::ModuleEntry<crate::code::Code>,
-    shared: Option<&crate::session_v4::SharedState>,
-) -> Option<crate::redefine::RedefinitionOutcome> {
-    use crate::redefine::{RedefinitionOutcome, RetainedCode, classify_redefinition};
-    use cranelisp_types::{FQSymbol, ModuleEntry};
-
-    if !matches!(entry, ModuleEntry::Def { .. }) {
-        return None;
-    }
-    let prior = live.symbols.get(name)?;
-    if !matches!(prior, ModuleEntry::Def { .. }) {
-        return None;
-    }
-
-    let (kind, per_symbol) = classify_redefinition(name.as_ref(), Some(prior), entry);
-    let prior_slot = prior.callable_got_slot();
-    if let Some(shared) = shared
-        && let Some(prior_slot) = prior_slot
-        && let ModuleEntry::Def {
-            code: Some(prior_code),
-            ..
-        } = prior
-    {
-        shared
-            .retained_code
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(RetainedCode::frozen(
-                module,
-                name,
-                Some(prior_slot),
-                prior_code.clone(),
-            ));
-    }
-    Some(RedefinitionOutcome {
-        fq: FQSymbol {
-            module: module.clone(),
-            symbol: name.clone(),
-        },
-        kind,
-        per_symbol,
-        prior_was_def: true,
-        old_slot: prior_slot,
-        new_slot: None,
-    })
-}
-
-/// Re-point the GOT slot carried on a callable [`DefKind`] variant
-/// (`UserFn { fn_state: Concrete }`, `Primitive`, `Constructor`,
-/// `PlatformEffect`) to `slot`, in place. The mutating peer of the read-only
-/// [`ModuleEntry::callable_got_slot`] chokepoint — used by the staging→live
-/// commit to re-point a staged slot (valid only in staging's fresh GOT) to a
-/// live slot. Non-callable kinds carry no slot and are left untouched
-/// (callers gate this on `callable_got_slot().is_some()`, S83 FIXME 0356/0357).
-fn repoint_callable_slot(kind: &mut cranelisp_types::DefKind, slot: usize) {
-    use cranelisp_types::{DefKind, PrimitiveBody, UserFnState};
-    match kind {
-        DefKind::UserFn {
-            fn_state: UserFnState::Concrete { got_slot, .. },
-        } => *got_slot = slot,
-        // Only the Extern arm carries a slot; an Inline primitive is
-        // slot-less by construction (S102 FIXME 0476) and falls to `_`.
-        DefKind::Primitive {
-            body: PrimitiveBody::Extern { got_slot, .. },
-            ..
-        } => *got_slot = slot,
-        DefKind::Constructor { got_slot, .. } => *got_slot = slot,
-        DefKind::PlatformEffect { got_slot, .. } => *got_slot = slot,
-        // Non-callable kinds carry no slot — nothing to re-point.
-        _ => {}
-    }
+    (decisions, outcomes)
 }
 
 /// Translate `CheckError` to the legacy `CranelispError` shape used by
@@ -1183,7 +943,11 @@ pub enum ClusterOnce {
     /// on; the caller drives the wait + retry. (`dep` may already be loaded in
     /// the cache-hit / already-imported case — the block-then-unblock was
     /// issued so the scheduler requeues this module.)
-    Gap { dep: ModuleFullPath },
+    Gap {
+        dep: ModuleFullPath,
+        continuation: Vec<Sexp>,
+        generation_started: bool,
+    },
 }
 
 /// Ensure a `TypecheckProduct` entry exists for a module, creating an empty
@@ -1217,7 +981,7 @@ pub(crate) fn ensure_typecheck_product(
 // JIT symbols by hand.
 
 /// The predicate behind `derive_codegen_batch`'s forced-enrollment
-/// `debug_assert!` — "this name resolves to a live `ModuleEntry::Def` in the
+/// `debug_assert!` — "this name resolves to a live concrete body in the
 /// module's table".
 ///
 /// Split out as a named function so the instrument's DISCRIMINATION is itself
@@ -1225,20 +989,29 @@ pub(crate) fn ensure_typecheck_product(
 /// `worker::tests::forced_enrollment_predicate_discriminates`). `None` table =
 /// the module is not in `tc_modules` yet; that is a legitimate no-table case,
 /// not a dead lookup, so it answers `true`.
+#[cfg(test)]
 fn forced_enrollment_resolves(
     table: Option<&crate::code::SessionSymbolTable>,
-    name: &Symbol,
+    target: &CallableTarget,
 ) -> bool {
     let Some(table) = table else {
         return true;
     };
-    matches!(table.get(name.as_ref()), Some(ModuleEntry::Def { .. }))
+    table.callable_target(target).is_some_and(|arm| {
+        matches!(
+            arm.life,
+            Life::Concrete {
+                realization: Realization::Body { .. },
+                ..
+            }
+        )
+    })
 }
 
-/// Derive the codegen batch — a `Vec<Symbol>` — from a `program` and the
-/// module's symbol table. Separated out from `inline_jit_codegen_for_module`
-/// so unit tests can exercise the name-derivation logic without standing up
-/// a full JIT pipeline. See the sprint's testing ownership clause.
+/// Derive the typed codegen batch from a `program` and the module's symbol
+/// table. Separated out from `inline_jit_codegen_for_module` so unit tests can
+/// exercise the target-selection policy without standing up a full JIT
+/// pipeline. See the sprint's testing ownership clause.
 ///
 /// The batch includes:
 /// - each `TopLevel::Defn`'s `name` (when the symbol-table entry has
@@ -1246,7 +1019,9 @@ fn forced_enrollment_resolves(
 ///   generic template (S84 Phase 4B, FIXME 0381 — its concrete mono
 ///   instances carry the bodies that codegen), or an `Overloaded` base);
 /// - every mangled multi-sig variant whose base name appears in `program`;
-/// - `__expr` when `program` contains a `TopLevel::Expr`;
+/// - `__expr` when `program` contains a `TopLevel::Expr` and that wrapper is a
+///   live concrete callable (a polymorphic value shown by REPL introspection is
+///   a template and has no body to codegen);
 /// - for each `TopLevel::TraitImpl`, every live mangled method `Def` of that
 ///   TRAIT (`{trait}.` prefix + a `$` in the remainder) — not only the methods
 ///   the impl explicitly provides, so a method whose source changes explicit ->
@@ -1259,244 +1034,84 @@ pub fn derive_codegen_batch(
     module: &ModuleFullPath,
     program: &[TopLevel],
     tc_modules: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-) -> Vec<Symbol> {
-    let mut names: Vec<Symbol> = Vec::new();
-    let mut seen: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
-    let table_ref = tc_modules.get(module);
+) -> Vec<cranelisp_types::CallableTarget> {
+    let Some(table) = tc_modules.get(module) else {
+        return Vec::new();
+    };
+    let mut candidates: Vec<_> = table
+        .codegen_targets()
+        .map(|(target, arm)| {
+            let needs_codegen = matches!(
+                arm.life,
+                Life::Concrete {
+                    realization: Realization::Body { code: None, .. },
+                    ..
+                }
+            );
+            (target, needs_codegen)
+        })
+        .collect();
+    candidates.sort_by(|(left, _), (right, _)| left.cmp(right));
 
-    let try_push = |name: &Symbol,
-                    names: &mut Vec<Symbol>,
-                    seen: &mut std::collections::HashSet<Symbol>|
-     -> bool {
-        if seen.contains(name) {
-            return false;
+    let mut targets = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut push_matching = |predicate: &dyn Fn(&CallableTarget) -> bool| {
+        for (target, _) in &candidates {
+            if predicate(target) && seen.insert(target.clone()) {
+                targets.push(target.clone());
+            }
         }
-        let Some(ref table) = table_ref else {
-            return false;
-        };
-        let Some(entry) = table.get(name.as_ref()) else {
-            return false;
-        };
-        if let ModuleEntry::Def {
-            kind, ast: Some(_), ..
-        } = entry
-            && !matches!(
-                kind.as_ref(),
-                DefKind::UserFn {
-                    fn_state: cranelisp_types::UserFnState::Constrained(_)
-                } | DefKind::UserFn {
-                    fn_state: cranelisp_types::UserFnState::Polymorphic(_)
-                } | DefKind::Overloaded { .. }
-            )
-        {
-            names.push(name.clone());
-            seen.insert(name.clone());
-            return true;
-        }
-        false
     };
 
-    // S115 W6b (FIXME 0792's sibling ask; /review's dead-lookup finding): every
-    // name the FORCED loop offers for enrollment MUST resolve to a live `Def` in
-    // this module's table. `try_push` returns `bool` and every call site
-    // discards it, so an enrollment naming a symbol that does not resolve is
-    // silently `false` — which is exactly how the pre-S115 `TopLevel::TraitImpl`
-    // arm shipped a dead unmangled-name push while `derive_codegen_batch`'s own
-    // rustdoc asserted "each trait-impl method's mangled name" was an enrolled
-    // category. The doc claimed a contract the code did not keep, and nothing
-    // could tell.
-    //
-    // TIER: `debug_assert!` (Principle 5 — the cheapest instrument that turns a
-    // silent no-op into a loud failure at the seam; Principle 25 — the forced
-    // loop NARROWS by skipping the `already_compiled` sweep, so it carries the
-    // check that its narrowing is well-founded).
-    //
-    // RELEASE-MODE BEHAVIOUR (explicit, per the S115 0751 lesson): in a
-    // `debug_assertions`-off build the predicate is NOT evaluated and the whole
-    // wrapper degenerates to the bare `try_push` call — byte-for-byte today's
-    // behaviour, a dead lookup silently enrolling nothing. There is NO release
-    // fallback, no alternate path, and therefore no polarity to get wrong: the
-    // instrument is a detector, never a gate. A `None` table (module not yet in
-    // `tc_modules`) is a legitimate no-table case and never fires.
-    let force_enroll =
-        |name: &Symbol, names: &mut Vec<Symbol>, seen: &mut std::collections::HashSet<Symbol>| {
-            let pushed = try_push(name, names, seen);
-            debug_assert!(
-                pushed || forced_enrollment_resolves(table_ref.as_deref(), name),
-                "derive_codegen_batch: the forced loop enrolled `{name}` in module \
-             `{module}`, but no live `ModuleEntry::Def` resolves under that name \
-             — a DEAD LOOKUP. The push silently no-ops and the symbol is left to \
-             the `already_compiled`-gated sweep, which skips any entry that \
-             already carries code (the S115 impl-redefinition silent-ignore \
-             class). See `design/int/impl-redefinition-hot-reload.md` §2."
-            );
-        };
-
-    for tl in program {
-        match tl {
+    // Source-present definitions are forced even if publication retained the
+    // prior compiled owner for ABI-preserving replacement. For an owned
+    // declaration family, matching the authored owner selects every concrete
+    // arm without turning an emitted label back into semantic identity.
+    for top in program {
+        match top {
             TopLevel::Defn(defn) => {
-                force_enroll(&defn.name, &mut names, &mut seen);
-
-                if defn.is_multi_sig()
-                    && let Some(ref table) = table_ref
-                {
-                    let mangled: Vec<Symbol> = table
-                        .defined_symbols()
-                        .filter_map(|(sym, _)| {
-                            sym.as_ref().split_once('$').and_then(|(base, _)| {
-                                if base == defn.name.as_ref() {
-                                    Some(sym.clone())
-                                } else {
-                                    None
-                                }
-                            })
-                        })
-                        .collect();
-                    for m in &mangled {
-                        force_enroll(m, &mut names, &mut seen);
-                    }
-                }
+                push_matching(&|target| {
+                    callable_target_owner(target)
+                        .is_some_and(|owner| owner.symbol == defn.name)
+                });
             }
             TopLevel::Expr(_) => {
-                force_enroll(&Symbol::from(SYNTHETIC_EXPR_WRAPPER), &mut names, &mut seen);
+                push_matching(&|target| {
+                    callable_target_owner(target).is_some_and(|owner| {
+                        owner.symbol.as_ref() == SYNTHETIC_EXPR_WRAPPER
+                    })
+                });
             }
             TopLevel::TraitImpl(impl_) => {
-                // S115 (spec §5.4.5, `design/int/impl-redefinition-hot-reload.md`
-                // §3): enroll the impl's MANGLED method `Def`s into this FORCED
-                // loop, exactly as the multi-sig `defn` arm above enrolls its
-                // `base$…` variants. The callable an impl method compiles to is
-                // `Trait.method$<fq-type>` (`mangle_trait_method`), homed in the
-                // impl WRITER's module (D45 as amended, S110 W0.1) — never the
-                // unmangled `method.name`, which was a dead lookup here (and,
-                // worse, could hit an unrelated same-named plain `defn`).
-                //
-                // Because the forced loop ignores `already_compiled`, a re-impl
-                // whose staged Def carried over the prior code at
-                // `commit_slotted_def` (AbiPreserving) is still recompiled, and
-                // the reused GOT slot is patched in place — the same hot-reload
-                // mechanism a redefined `defn` uses (P11/P7: no impl-specific
-                // path). Pre-fix these Defs were reachable only through the
-                // `already_compiled`-gated sweep below, which skipped them, so
-                // the re-impl's new body never took (silent ignore).
-                //
-                // The prefix is derived from the SAME AST field the mangle used
-                // (`impl_.trait_name`), so writer and reader stay in lockstep;
-                // matching by prefix (rather than resolving the impl target)
-                // keeps int out of the resolution business (Principle 24) — a
-                // sibling impl of the same trait+method for a different type may
-                // be co-enrolled, which costs a recompile and changes nothing
-                // observable.
-                //
-                // S115 W6b (FIXME 0791): the prefix is the TRAIT's alone —
-                // `{trait}.` + a `$` in the remainder — NOT `{trait}.{method}$`
-                // per `impl_.methods`. Narrowing to the methods the new impl
-                // EXPLICITLY provides reopened the same silent-ignore hole one
-                // method-source away: a method whose source changes explicit ->
-                // DEFAULT is not in `impl_.methods` (nor in `program` at all —
-                // `finalize_cluster` appends the synthesised default `Defn`s to
-                // the WORKING program only, never to the `expanded_program` that
-                // reaches here), so it was never enrolled, `commit_slotted_def`
-                // carried the prior override's code over (AbiPreserving), the
-                // sweep skipped it as `already_compiled`, and the STALE OVERRIDE
-                // kept dispatching where spec §7.1.5's default MUST take over.
-                // The trait-wide prefix covers explicit, default-synthesised and
-                // omitted-then-restored methods uniformly — the same accepted
-                // over-enrolment tradeoff, one notch wider (Principle 18: the
-                // enrollment set is structural, not a per-form enumeration).
-                if let Some(ref table) = table_ref {
-                    let prefix = format!("{}.", impl_.trait_name);
-                    let mangled: Vec<Symbol> = table
-                        .defined_symbols()
-                        .filter(|(sym, _)| {
-                            sym.as_ref()
-                                .strip_prefix(&prefix)
-                                .is_some_and(|rest| rest.contains('$'))
-                        })
-                        .map(|(sym, _)| sym.clone())
-                        .collect();
-                    for m in &mangled {
-                        force_enroll(m, &mut names, &mut seen);
-                    }
-                }
+                // A re-impl must also recompile an omitted method restored from
+                // its default body. Select every concrete implementation body
+                // for the authored trait, as before, but return its typed
+                // binding target. The generated storage spelling is compared
+                // only as a private table key; it is never source-resolved.
+                let prefix = format!("{}.", impl_.trait_name);
+                push_matching(&|target| {
+                    callable_target_owner(target).is_some_and(|owner| {
+                        owner
+                            .symbol
+                            .as_ref()
+                            .strip_prefix(&prefix)
+                            .is_some_and(|rest| rest.contains('$'))
+                    })
+                });
             }
             _ => {}
         }
     }
 
-    if let Some(ref table) = table_ref {
-        let candidates: Vec<Symbol> = table
-            .defined_symbols()
-            .filter(|(sym, _)| !seen.contains(*sym))
-            .map(|(sym, _)| sym.clone())
-            .collect();
-        for name in &candidates {
-            // Sprint 57 Wave 2 G6: check `ModuleEntry::Def.code` instead of
-            // the deleted `codegen_products` DashMap.
-            let already_compiled = table
-                .get(name.as_ref())
-                .and_then(|e| match e {
-                    ModuleEntry::Def { code, .. } => Some(code.is_some()),
-                    _ => None,
-                })
-                .unwrap_or(false);
-            if already_compiled {
-                continue;
-            }
-            // S76 W-Enablement (0249-b): enumerate synthesised constructor
-            // `Def`s into the codegen batch so their `Expr::ConstrADT` bodies
-            // are lowered and their GOT slots (allocated by typecheck's
-            // 0249-a `register_constructors`) are populated — making
-            // `(map Some xs)` (constructor-as-value) reach the constructor via
-            // its GOT slot. Mirror of the Decision 0048 primitives got-slotting.
-            //
-            // S76 W4b (FIXME 0285): the same uncovered-sibling treatment for
-            // bootstrap-synthesised NON-constructor Defs carrying `ast: Some`
-            // (the Trace field-accessor family — `nanos`/`name`/…). They are
-            // function bodies (synthesised `match` extractions) that MUST be
-            // lowered into the GOT for an accessor call to resolve GOT-indirect.
-            // (Inline `DefKind::Primitive` entries with `ast: None`, e.g.
-            // `bind`/`sconcat`, are excluded — they resolve from the intrinsics
-            // archive and carry no body to compile.)
-            //
-            // S83 W2 (FIXME 0363): the spec §5.2.6 product field accessors that
-            // typecheck synthesises in `register_constructors` are concrete
-            // `DefKind::UserFn { fn_state: Concrete { got_slot } }` entries with
-            // a single-arm `match` body (`ast: Some(_)`) born in the symbol
-            // table WITHOUT a `TopLevel::Defn` in `program`. A normal user
-            // `UserFn::Concrete` defn is already batched via the `program` loop
-            // above (it enters `seen` at its `TopLevel::Defn`), so this sibling
-            // arm only catches the body-carrying synthetic accessors — it does
-            // NOT double-compile normal defns (they are skipped by the `seen`
-            // guard at the top of this loop). Without this arm the accessor's
-            // body is never lowered and its GOT slot stays empty, so `(v (Box
-            // 5))` resolves the name but loads an empty slot → no value.
-            let is_uncompiled_synth_def = table
-                .get(name.as_ref())
-                .map(|e| {
-                    matches!(
-                        &e,
-                        ModuleEntry::Def { kind, ast: Some(_), .. }
-                            if matches!(
-                                kind.as_ref(),
-                                DefKind::Constructor { .. }
-                                    | DefKind::Primitive { .. }
-                                    | DefKind::UserFn {
-                                        fn_state: cranelisp_types::UserFnState::Concrete { .. }
-                                    }
-                            )
-                    )
-                })
-                .unwrap_or(false);
-            if name.as_ref().contains('$') || name.as_ref() == "__expr" || is_uncompiled_synth_def {
-                try_push(name, &mut names, &mut seen);
-            }
+    // Pick up newly synthesized constructors/accessors and monomorphic
+    // instances which have no corresponding authored top-level form.
+    for (target, needs_codegen) in candidates {
+        if needs_codegen && seen.insert(target.clone()) {
+            targets.push(target);
         }
     }
-
-    drop(table_ref);
-    names
+    targets
 }
-
 /// Compile the defined symbols of a module through the unified
 /// `compile_to_module` entry point.
 ///
@@ -1543,14 +1158,14 @@ pub fn derive_codegen_batch(
 #[cfg(test)]
 pub fn inline_jit_codegen_for_names(
     module: &ModuleFullPath,
-    names: &[Symbol],
+    targets: &[CallableTarget],
     tc_modules: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     introspection: Option<
         &dashmap::DashMap<cranelisp_types::FQSymbol, crate::session_v4::Introspection>,
     >,
     shared_state: Option<&crate::session_v4::SharedState>,
 ) -> Result<(), CranelispError> {
-    if names.is_empty() {
+    if targets.is_empty() {
         return Ok(());
     }
     // The unified `Jit::new(symbol_tables)` derives the entire JIT symbol set —
@@ -1580,7 +1195,7 @@ pub fn inline_jit_codegen_for_names(
     let capture_clif = introspection.is_some();
     let result = cranelisp_backend::compile_to_module(
         module.clone(),
-        names,
+        targets,
         tc_modules,
         jit.jit_module(),
         capture_clif,
@@ -1599,37 +1214,45 @@ pub fn inline_jit_codegen_for_names(
     //    The GOT slot is already populated by `compile_to_module` (backend's
     //    own write); int's only job is lifecycle-owner installation +
     //    redefinition observability.
-    for name in names {
-        let prior_ptr: Option<*const u8> = read_got_addr(tc_modules, module, name);
+    for target in targets {
+        let prior_ptr: Option<*const u8> = read_got_addr(tc_modules, module, target);
 
         let Some(mut st) = tc_modules.get_mut(module) else {
             return Err(CranelispError::ModuleError {
                 message: format!(
                     "fresh-build codegen invariant violation: symbol table \
                      for module '{module}' disappeared during codegen while \
-                     writing Code::Jit for '{name}'."
+                     writing Code::Jit for '{target:?}'."
                 ),
                 location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
             });
         };
-        let Some(entry) = st.symbols.get_mut(name.as_ref()) else {
+        let Some(slot) = st.callable_target(target).and_then(|arm| match &arm.life {
+            Life::Concrete { slot, .. } => Some(slot.index()),
+            _ => None,
+        }) else {
             // Not every name in the batch is a Def on this module (e.g. an
             // Import alias); backend handles its own resolution. Skip
             // lifecycle installation for non-local names.
             continue;
         };
-        // The callable slot now rides on the `DefKind` variant (S83 reshape,
-        // FIXME 0356/0357) — read it through the `callable_got_slot()`
-        // chokepoint before taking the mutable borrow for `code`.
-        let slot = entry.callable_got_slot();
-        let cranelisp_types::ModuleEntry::Def { code, .. } = entry else {
-            continue;
-        };
-        *code = Some(crate::code::Code::jit(std::sync::Arc::clone(&jit_arc)));
-        if let (Some(prior), Some(slot)) = (prior_ptr, slot) {
+        st.publish_compiled_owner(
+            target,
+            crate::code::Code::jit(std::sync::Arc::clone(&jit_arc)),
+        )
+        .map_err(|rejection| {
+            let (reason, _owner) = rejection.into_parts();
+            CranelispError::ModuleError {
+                message: reason.to_string(),
+                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+            }
+        })?;
+        if let Some(prior) = prior_ptr {
             let new_ptr = st.got.load_slot(slot);
             drop(st);
-            crate::got_trace::emit_redefinition(module, name, slot, new_ptr, prior);
+            if let Some(owner) = callable_target_owner(target) {
+                crate::got_trace::emit_redefinition(module, &owner.symbol, slot, new_ptr, prior);
+            }
         }
     }
 
@@ -1639,12 +1262,8 @@ pub fn inline_jit_codegen_for_names(
     //    disasm is on-demand via `cranelisp_backend::produce_disasm` (the
     //    `/disasm` handler reads it lazily).
     if let Some(intr_map) = introspection {
-        for name in names {
-            let fq = cranelisp_types::FQSymbol {
-                module: module.clone(),
-                symbol: name.clone(),
-            };
-            let mut entry = intr_map.entry(fq).or_default();
+        for owner in targets.iter().filter_map(callable_target_owner) {
+            let mut entry = intr_map.entry(owner.clone()).or_default();
             entry.clif_ir = Some(result.clif_ir.clone());
             entry.code_size = Some(result.code_size);
         }
@@ -1653,30 +1272,41 @@ pub fn inline_jit_codegen_for_names(
     Ok(())
 }
 
-pub(crate) fn compile_prepared_turn(
-    prepared: &mut PreparedCommit,
-    live_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+fn compile_and_publish_prepared(
+    processed: &mut crate::cluster::ProcessedCluster,
+    shared: &crate::session_v4::SharedState,
     capture_clif: bool,
 ) -> Result<(), CranelispError> {
-    let live_cursor = live_tables
-        .get(&prepared.module)
-        .map(|table| table.next_got_slot)
-        .ok_or_else(|| CranelispError::ModuleError {
-            message: format!("module '{}' disappeared before codegen", prepared.module),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        })?;
-    if live_cursor != prepared.snapshot_cursor {
+    let Some(prepared) = processed.prepared.take() else {
+        return Ok(());
+    };
+    let prepared = *prepared;
+
+    // Construct the JIT from the live tables before taking the target write
+    // guard. Its GOT data symbols therefore name the canonical session slabs,
+    // including dependency-module slabs. The target slab itself is moved into
+    // the prepared target table below without changing its base address.
+    let mut jit = if prepared.targets.is_empty() {
+        None
+    } else {
+        Some(build_session_jit(&shared.symbol_tables)?)
+    };
+
+    let Some(mut live) = shared.symbol_tables.get_mut(&prepared.module) else {
         return Err(CranelispError::ModuleError {
             message: format!(
-                "module '{}' changed while its turn was being prepared",
+                "prepared module '{}' disappeared before publication",
                 prepared.module
             ),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         });
-    }
-    if prepared.names.is_empty() {
-        return Ok(());
-    }
+    };
+
+    // Resolve every backend member to its final prepared slot before codegen.
+    // Snapshot that cell from the canonical slab: reused cells carry the old
+    // pointer, while fresh cells are null. The snapshots are the compensation
+    // set if compiled publication later refuses.
+    let mut got_snapshots = Vec::new();
     {
         let table =
             prepared
@@ -1686,65 +1316,205 @@ pub(crate) fn compile_prepared_turn(
                     message: format!("prepared module '{}' disappeared", prepared.module),
                     location: ErrorLocation::from_span(Span::SYNTHETIC),
                 })?;
-        for name in &prepared.names {
-            let Some(ModuleEntry::Def { .. }) = table.symbols.get(name) else {
+        for target in &prepared.targets {
+            let Some(arm) = table.callable_target(target) else {
                 return Err(CranelispError::ModuleError {
                     message: format!(
-                        "prepared member '{}/{}' is missing or not a definition",
-                        prepared.module, name
+                        "prepared target '{target:?}' is missing or not executable"
                     ),
                     location: ErrorLocation::from_span(Span::SYNTHETIC),
                 });
             };
-        }
-    }
-    let mut jit = build_session_jit(&prepared.tables)?;
-    let artifacts = cranelisp_backend::compile_to_module(
-        prepared.module.clone(),
-        &prepared.names,
-        &prepared.tables,
-        jit.jit_module(),
-        capture_clif,
-    )?;
-    #[allow(clippy::arc_with_non_send_sync)]
-    let jit = std::sync::Arc::new(jit);
-    {
-        let mut table = prepared
-            .tables
-            .get_mut(&prepared.module)
-            .unwrap_or_else(|| {
-                unreachable!("invariant: prevalidated prepared module survives backend call")
-            });
-        for name in &prepared.names {
-            let entry = table.symbols.get_mut(name).unwrap_or_else(|| {
-                unreachable!("invariant: prevalidated prepared member survives backend call")
-            });
-            let ModuleEntry::Def { code, .. } = entry else {
-                unreachable!("invariant: prevalidated prepared member remains a definition")
+            let slot = match &arm.life {
+                Life::Concrete {
+                    slot,
+                    realization: Realization::Body { .. },
+                    ..
+                } => slot.index(),
+                _ => {
+                    return Err(CranelispError::ModuleError {
+                    message: format!(
+                            "prepared target '{target:?}' has no concrete body slot"
+                    ),
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
+                    });
+                }
             };
-            *code = Some(crate::code::Code::jit(std::sync::Arc::clone(&jit)));
+            got_snapshots.push((target.clone(), slot, live.got.load_slot(slot) as usize));
         }
     }
-    prepared.compiled = Some(PreparedCompilation {
-        jit,
-        clif_ir: artifacts.clif_ir,
-        code_size: artifacts.code_size,
-        drop_glues: artifacts.drop_glues,
-    });
-    Ok(())
-}
 
-pub(crate) fn publish_prepared_turn(
-    processed: &mut crate::cluster::ProcessedCluster,
-    shared: &crate::session_v4::SharedState,
-) {
-    let Some(prepared) = processed.prepared.take() else {
-        return;
+    let prior_ptrs: std::collections::HashMap<_, _> = prepared
+        .staging
+        .codegen_targets()
+        .filter_map(|(target, arm)| {
+            let slot = match &arm.life {
+                Life::Concrete { slot, .. } => slot.index(),
+                _ => return None,
+            };
+            let ptr = got_snapshots
+                .iter()
+                .find(|(snapshot_target, snapshot_slot, _)| {
+                    snapshot_target == &target && *snapshot_slot == slot
+                })
+                .map(|(_, _, ptr)| *ptr as *const u8)
+                .unwrap_or_else(|| live.got.load_slot(slot));
+            Some((target, (slot, ptr)))
+        })
+        .collect();
+
+    // Backend must patch the canonical slab only after it has finalized the
+    // complete batch, while this writer guard prevents a macro reader from
+    // pairing the old binding/owner with a new reused-slot pointer. Moving the
+    // slab preserves its base address, so code emitted by `jit` continues to
+    // name the same cells after it is moved back into `live`.
+    if jit.is_some() {
+        let mut table = prepared.tables.get_mut(&prepared.module).ok_or_else(|| {
+            CranelispError::ModuleError {
+                message: format!("prepared module '{}' disappeared", prepared.module),
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
+            }
+        })?;
+        std::mem::swap(&mut live.got, &mut table.got);
+    }
+
+    let compiled = if let Some(mut jit) = jit.take() {
+        let result = cranelisp_backend::compile_to_module(
+            prepared.module.clone(),
+            &prepared.targets,
+            &prepared.tables,
+            jit.jit_module(),
+            capture_clif,
+        );
+        let artifacts = match result {
+            Ok(artifacts) => artifacts,
+            Err(error) => {
+                restore_prepared_got(
+                    &prepared.module,
+                    &prepared.tables,
+                    &mut live,
+                    &got_snapshots,
+                )?;
+                return Err(error.into());
+            }
+        };
+        #[allow(clippy::arc_with_non_send_sync)]
+        let jit = std::sync::Arc::new(jit);
+        Some(PreparedCompilation {
+            jit,
+            clif_ir: artifacts.clif_ir,
+            code_size: artifacts.code_size,
+            drop_glues: artifacts.drop_glues,
+        })
+    } else {
+        None
     };
-    let mut prepared = *prepared;
-    let compiled = prepared.compiled.take();
-    // Install every owner produced by codegen before any live entry or
-    // callable pointer becomes reachable through symbol-table publication.
+    let compiled_owners = compiled
+        .as_ref()
+        .map(|compiled| {
+            prepared
+                .staging
+                .codegen_targets()
+                .map(|(target, _)| {
+                    (
+                        target,
+                        crate::code::Code::jit(std::sync::Arc::clone(&compiled.jit)),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut records = match live.publish_compiled_staged(
+        prepared.staging,
+        &prepared.decisions,
+        compiled_owners,
+    ) {
+        Ok(records) => records,
+        Err(rejection) => {
+            let (reason, owners) = rejection.into_parts();
+            retain_and_restore_rejected_compilation(
+                shared,
+                &prepared.module,
+                owners,
+                &got_snapshots,
+                &prepared
+                    .tables
+                    .get(&prepared.module)
+                    .ok_or_else(|| CranelispError::ModuleError {
+                        message: format!("prepared module '{}' disappeared", prepared.module),
+                        location: ErrorLocation::from_span(Span::SYNTHETIC),
+                    })?
+                    .got,
+            );
+            if compiled.is_some() {
+                restore_prepared_got(&prepared.module, &prepared.tables, &mut live, &[])?;
+            }
+            return Err(CranelispError::ModuleError {
+                message: format!("compiled publication refused: {reason}"),
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
+            });
+        }
+    };
+    let mut retained = shared
+        .retained_code
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    for record in &mut records {
+        for body in &mut record.bodies {
+            if let Some(owner) = body.displaced_owner.take() {
+                retained.push(crate::redefine::RetainedCode::frozen(
+                    &prepared.module,
+                    &record.symbol,
+                    body.prior_slot.map(|slot| slot.index()),
+                    owner,
+                ));
+            }
+        }
+    }
+    drop(retained);
+    if compiled.is_some() {
+        // The canonical slab returns to the now-published live table before the
+        // write guard is released. The prepared table receives the temporary
+        // empty slab and can be dropped without invalidating emitted GOT bases.
+        restore_prepared_got(&prepared.module, &prepared.tables, &mut live, &[])?;
+    }
+    let trace_facts: Vec<_> = records
+        .iter()
+        .flat_map(|record| {
+            record.bodies.iter().map(|body| {
+                let prior = body
+                    .prior_target
+                    .as_ref()
+                    .and_then(|target| prior_ptrs.get(target))
+                    .map(|(slot, ptr)| (*slot, *ptr));
+                let published = body
+                    .published_slot
+                    .map(|slot| (slot.index(), live.got.load_slot(slot.index())));
+                (record.symbol.clone(), prior, published)
+            })
+        })
+        .collect();
+    drop(live);
+
+    for (name, prior, published) in trace_facts {
+        if let (Some((old_slot, _)), Some((new_slot, _))) = (prior, published)
+            && old_slot != new_slot
+        {
+            crate::got_trace::emit_slot_freeze(&prepared.module, &name, old_slot, new_slot);
+        }
+        if let (Some((old_slot, prior_ptr)), Some((_, new_ptr))) = (prior, published)
+            && !prior_ptr.is_null()
+        {
+            crate::got_trace::emit_redefinition(
+                &prepared.module,
+                &name,
+                old_slot,
+                new_ptr,
+                prior_ptr,
+            );
+        }
+    }
     if let Some(compiled) = compiled {
         let owner = crate::code::Code::jit(std::sync::Arc::clone(&compiled.jit));
         for (ty, artifact) in compiled.drop_glues {
@@ -1757,60 +1527,22 @@ pub(crate) fn publish_prepared_turn(
             );
         }
         if let Some(introspection) = shared.introspection.as_ref() {
-            for name in &prepared.names {
+            let names: std::collections::BTreeSet<_> = prepared
+                .targets
+                .iter()
+                .filter_map(callable_target_owner)
+                .map(|owner| owner.symbol.clone())
+                .collect();
+            for name in names {
                 let fq = cranelisp_types::FQSymbol {
                     module: prepared.module.clone(),
-                    symbol: name.clone(),
+                    symbol: name,
                 };
                 let mut record = introspection.entry(fq).or_default();
                 record.clif_ir = Some(compiled.clif_ir.clone());
                 record.code_size = Some(compiled.code_size);
             }
         }
-    }
-    let mut live = shared
-        .symbol_tables
-        .get_mut(&prepared.module)
-        .unwrap_or_else(|| unreachable!("invariant: prepared module remains live through publish"));
-    debug_assert_eq!(live.next_got_slot, prepared.snapshot_cursor);
-    live.next_got_slot = prepared.final_cursor;
-
-    shared
-        .retained_code
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .extend(prepared.retained);
-
-    let mut candidate = prepared
-        .tables
-        .get_mut(&prepared.module)
-        .unwrap_or_else(|| unreachable!("invariant: prepared table survives through publish"));
-    for name in &prepared.published_names {
-        let entry = candidate
-            .symbols
-            .remove(name)
-            .unwrap_or_else(|| unreachable!("invariant: planned entry survives through publish"));
-        live.symbols.insert(name.clone(), entry);
-    }
-    drop(candidate);
-    drop(live);
-
-    for (name, old_slot, new_slot) in prepared.freezes {
-        crate::got_trace::emit_slot_freeze(&prepared.module, &name, old_slot, new_slot);
-    }
-    for (name, slot, prior_ptr) in prepared.redefinition_ptrs {
-        let new_ptr = shared
-            .symbol_tables
-            .get(&prepared.module)
-            .map(|table| table.got.load_slot(slot))
-            .unwrap_or(std::ptr::null());
-        crate::got_trace::emit_redefinition(
-            &prepared.module,
-            &name,
-            slot,
-            new_ptr,
-            prior_ptr as *const u8,
-        );
     }
     shared
         .typecheck_products
@@ -1822,23 +1554,71 @@ pub(crate) fn publish_prepared_turn(
         })
         .unresolved_dispatch = prepared.unresolved_dispatch;
     processed.set_redefinitions(prepared.outcomes);
-    processed.pending_codegen_notification =
-        Some((prepared.module.clone(), prepared.names.clone()));
+    let notification_names = prepared
+        .targets
+        .iter()
+        .filter_map(callable_target_owner)
+        .map(|owner| owner.symbol.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    processed.pending_codegen_notification = Some((prepared.module.clone(), notification_names));
+    Ok(())
+}
+
+fn restore_prepared_got(
+    module: &ModuleFullPath,
+    tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    live: &mut crate::code::SessionSymbolTable,
+    snapshots: &[(CallableTarget, usize, usize)],
+) -> Result<(), CranelispError> {
+    let mut table = tables
+        .get_mut(module)
+        .ok_or_else(|| CranelispError::ModuleError {
+            message: format!("prepared module '{module}' disappeared"),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        })?;
+    for (_, slot, ptr) in snapshots {
+        table.got.store_slot(*slot, *ptr as *const u8);
+    }
+    std::mem::swap(&mut live.got, &mut table.got);
+    Ok(())
+}
+
+fn retain_and_restore_rejected_compilation(
+    shared: &crate::session_v4::SharedState,
+    module: &ModuleFullPath,
+    owners: std::collections::HashMap<CallableTarget, crate::code::Code>,
+    snapshots: &[(CallableTarget, usize, usize)],
+    got: &cranelisp_types::GotTable,
+) {
+    // The recovered owner map stays in this frame while every cell is restored;
+    // only after no canonical cell can name the rejected code do the owners
+    // move into session retention.
+    for (_, slot, ptr) in snapshots {
+        got.store_slot(*slot, *ptr as *const u8);
+    }
+    let mut retained = shared
+        .retained_code
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    for (target, owner) in owners {
+        let slot = snapshots
+            .iter()
+            .find(|(snapshot_target, _, _)| snapshot_target == &target)
+            .map(|(_, slot, _)| *slot);
+        let name = callable_target_owner(&target)
+            .map(|owner| owner.symbol.clone())
+            .unwrap_or_else(|| Symbol::from("<unknown-callable-target>"));
+        retained.push(crate::redefine::RetainedCode::frozen(module, &name, slot, owner));
+    }
 }
 
 pub(crate) fn compile_and_publish_processed_without_notify(
     processed: &mut crate::cluster::ProcessedCluster,
     shared: &crate::session_v4::SharedState,
 ) -> Result<(), CranelispError> {
-    if let Some(prepared) = processed.prepared.as_mut() {
-        compile_prepared_turn(
-            prepared,
-            &shared.symbol_tables,
-            shared.introspection.is_some(),
-        )?;
-    }
-    publish_prepared_turn(processed, shared);
-    Ok(())
+    compile_and_publish_prepared(processed, shared, shared.introspection.is_some())
 }
 
 pub(crate) fn compile_and_publish_processed(
@@ -1943,19 +1723,20 @@ pub(crate) fn is_internal_listing_name(name: &str) -> bool {
 /// `Constructor` category, `/exports` folds it into `Type`, and
 /// `list_user_definitions` skips `SpecialForm`.
 pub(crate) fn classify_listing_entry(
-    entry: &ModuleEntry<crate::code::Code>,
+    entry: &Binding<crate::code::Code>,
 ) -> Option<crate::session_v4::SymbolCategory> {
     use crate::session_v4::SymbolCategory;
-    Some(match entry {
-        ModuleEntry::Def { kind, .. } => match kind.as_ref() {
-            DefKind::Macro { .. } => SymbolCategory::Macro,
-            DefKind::Constructor { .. } => SymbolCategory::Constructor,
+    Some(match &entry.declaration {
+        Decl::Macro(_) => SymbolCategory::Macro,
+        Decl::Overloaded(_) => SymbolCategory::Fn,
+        Decl::Callable(callable) => match callable.origin {
+            CallableOrigin::Ctor { .. } => SymbolCategory::Constructor,
             _ => SymbolCategory::Fn,
         },
-        ModuleEntry::TypeDef { .. } => SymbolCategory::Type,
-        ModuleEntry::TraitDecl { .. } => SymbolCategory::Trait,
-        ModuleEntry::SpecialForm { .. } => SymbolCategory::SpecialForm,
-        _ => return None,
+        Decl::Type(_) => SymbolCategory::Type,
+        Decl::Trait(_) => SymbolCategory::Trait,
+        Decl::SpecialForm(_) => SymbolCategory::SpecialForm,
+        Decl::TraitMethod(_) | Decl::ImplShell(_) => return None,
     })
 }
 
@@ -1990,50 +1771,28 @@ pub(crate) fn build_session_jit(
 fn read_got_addr(
     tc_modules: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module: &ModuleFullPath,
-    name: &Symbol,
+    target: &CallableTarget,
 ) -> Option<*const u8> {
-    let slot = lookup_got_slot(tc_modules, module, name)?;
     let st = tc_modules.get(module)?;
+    let slot = st.callable_target(target).and_then(|arm| match &arm.life {
+        Life::Concrete { slot, .. } => Some(slot.index()),
+        _ => None,
+    })?;
     let ptr = st.got.load_slot(slot);
     if ptr.is_null() { None } else { Some(ptr) }
 }
 
-/// Follow Import/Reexport chains to find a symbol's GOT slot.
+/// Follow a written binding name through candidate chains to its terminal
+/// callable slot. Retained for the integration-level GOT routing tests; the
+/// typed compilation path above does not use written names.
 #[cfg(test)]
 fn lookup_got_slot(
     tc_modules: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module: &ModuleFullPath,
     name: &Symbol,
 ) -> Option<usize> {
-    fn walk(
-        tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-        module: &ModuleFullPath,
-        name: &str,
-        depth: usize,
-    ) -> Option<usize> {
-        if depth > 10 {
-            return None;
-        }
-        let st = tables.get(module)?;
-        let entry = st.get(name)?;
-        // The callable slot rides on the `DefKind` variant (S83 reshape,
-        // FIXME 0356/0357); read it through the `callable_got_slot()`
-        // chokepoint. A non-callable / slot-less Def yields `None` and falls
-        // through to the import-chain walk / `None` terminal below.
-        if let Some(slot) = entry.callable_got_slot() {
-            return Some(slot);
-        }
-        match entry {
-            ModuleEntry::Import { source, .. } => {
-                let source_module = source.module.clone();
-                let source_symbol = source.symbol.clone();
-                drop(st);
-                walk(tables, &source_module, source_symbol.as_ref(), depth + 1)
-            }
-            _ => None,
-        }
-    }
-    walk(tc_modules, module, name.as_ref(), 0)
+    cranelisp_types::resolve_terminal_entry_and_home(tc_modules, module, name.as_ref())
+        .and_then(|(binding, _)| binding.callable_got_slot())
 }
 
 // ---------------------------------------------------------------------------
@@ -2071,14 +1830,16 @@ fn register_binary_exported_primitives(
     for st_entry in shared_state.symbol_tables.iter() {
         let st = st_entry.value();
         for (name, entry) in st.all_symbols() {
-            let ModuleEntry::Def { kind, .. } = entry else {
-                continue;
-            };
             // Slot-less `PrimitiveExtern` entries are the synthetic externs
             // resolved by ABI name (S83 reshape, FIXME 0360). Ring
             // `DefKind::Primitive` entries carry a GOT slot and are registered
             // by the GOT-pointer walk — skip them here.
-            if !matches!(kind.as_ref(), DefKind::PrimitiveExtern) {
+            if !matches!(
+                entry.callable(),
+                Some(callable)
+                    if matches!(callable.origin, CallableOrigin::RustPrimitive)
+                        && matches!(callable.arm.life, Life::HostPromised)
+            ) {
                 continue;
             }
             let bare = name.as_ref();
@@ -2178,10 +1939,12 @@ fn load_cached_module_via_linker(
         for (name, entry) in st.all_symbols() {
             // The platform effect's GOT slot now rides on its variant (S83
             // reshape, FIXME 0358 — PlatformEffect IS GOT-callable).
-            if let ModuleEntry::Def { kind, .. } = entry
-                && let DefKind::PlatformEffect { got_slot, .. } = kind.as_ref()
+            if matches!(
+                entry.callable().map(|callable| &callable.origin),
+                Some(CallableOrigin::PlatformEffect { .. })
+            ) && let Some(got_slot) = entry.callable_got_slot()
             {
-                let ptr = st.got.load_slot(*got_slot);
+                let ptr = st.got.load_slot(got_slot);
                 if !ptr.is_null() {
                     linker.register_symbol(name.as_ref(), ptr);
                 }
@@ -2195,8 +1958,13 @@ fn load_cached_module_via_linker(
     for st_entry in shared_state.symbol_tables.iter() {
         let st = st_entry.value();
         for (name, entry) in st.all_symbols() {
-            if let ModuleEntry::Def { code: Some(_), .. } = entry
-                && let Some(slot) = entry.callable_got_slot()
+            if matches!(
+                entry.callable().map(|callable| &callable.arm.life),
+                Some(Life::Concrete {
+                    realization: Realization::Body { code: Some(_), .. },
+                    ..
+                })
+            ) && let Some(slot) = entry.callable_got_slot()
             {
                 let ptr = st.got.load_slot(slot);
                 if !ptr.is_null() {
@@ -2240,27 +2008,25 @@ fn load_cached_module_via_linker(
     // than silently produce an `inmem_done` state with empty GOT slots —
     // the latter is a Decision-31 safety-invariant violation (a slot that
     // resolves to NULL is reachable from the code path that calls it).
-    let mut loaded_symbols = Vec::new();
-    for (name, entry) in cached.symbol_table().all_symbols() {
-        // The callable slot rides on the `DefKind` variant (S83 reshape,
-        // FIXME 0356/0357) — read it via the `callable_got_slot()` chokepoint;
-        // slot-less entries are skipped.
-        let Some(slot) = entry.callable_got_slot() else {
+    let mut loaded_targets = Vec::new();
+    for (target, arm) in cached.symbol_table().codegen_targets() {
+        let Life::Concrete { slot, .. } = &arm.life else {
             continue;
         };
-        let Some(ptr) = fn_addrs.get(name.as_ref()).copied() else {
+        let slot = slot.index();
+        let Some(ptr) = fn_addrs.get(&target).copied() else {
             return Err(CranelispError::ModuleError {
                 message: format!(
-                    "cache-hit symbol resolution failed for '{module}/{name}': \
-                     `.o` linker did not define expected bare symbol '{name}'. \
+                    "cache-hit symbol resolution failed for target '{target:?}' in '{module}': \
+                     `.o` linker did not define its expected emitted symbol. \
                      This indicates a cache inconsistency — the cached `.meta.json` \
-                     records a defined function whose code is missing from the `.o`."
+                     records a callable body whose code is missing from the `.o`."
                 ),
                 location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
             });
         };
         module_got.store_slot(slot, ptr);
-        loaded_symbols.push(name.clone());
+        loaded_targets.push(target);
     }
 
     // Sprint 58 Step 5b §3.2 + Wave 3b (Decision 35 Cache-restore): after
@@ -2273,19 +2039,24 @@ fn load_cached_module_via_linker(
     // JIT reclaim).
     let linker_arc = std::sync::Arc::new(linker);
     if let Some(mut live_table) = shared_state.symbol_tables.get_mut(module) {
-        for (name, entry) in live_table.symbols.iter_mut() {
-            // `Code::linker` is now lifecycle-owner only (D41/D35 — the GOT
-            // slot, populated above, is the single source of the address; no
-            // per-entry `ptr`). Install the Arc on every entry the linker
-            // materialised (presence in `fn_addrs` is the membership test).
-            if let ModuleEntry::Def { code, .. } = entry
-                && fn_addrs.contains_key(name.as_ref())
-            {
-                *code = Some(crate::code::Code::linker(std::sync::Arc::clone(
-                    &linker_arc,
-                )));
+        let mut displaced_owners = Vec::new();
+        for target in &loaded_targets {
+            let owner = crate::code::Code::linker(std::sync::Arc::clone(&linker_arc));
+            match live_table.publish_compiled_owner(target, owner) {
+                Ok(Some(displaced)) => displaced_owners.push(displaced),
+                Ok(None) => {}
+                Err(rejection) => {
+                    return Err(CranelispError::ModuleError {
+                        message: format!(
+                            "cache-hit owner publication failed for '{target:?}' in '{module}': {}",
+                            rejection.reason()
+                        ),
+                        location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+                    });
+                }
             }
         }
+        drop(displaced_owners);
     }
     // Sprint 58 Wave 3b: `kept_linkers` dissolved per Decision 35 — the
     // `Arc<Linker>` retention root is now the per-entry `Code::Linker`.
@@ -2304,7 +2075,13 @@ fn load_cached_module_via_linker(
     // and later freshly recompiled is listed once.
     shared_state.cache.append_o_path(cached.object_path.clone());
 
-    Ok(loaded_symbols)
+    Ok(loaded_targets
+        .iter()
+        .filter_map(callable_target_owner)
+        .map(|owner| owner.symbol.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect())
 }
 
 /// Handle a cache-hit codegen work item: check if the module is cached
@@ -2404,7 +2181,11 @@ pub fn priority_worker_loop_shared(shared: &crate::session_v4::SharedState) {
     loop {
         let work = shared.scheduler.take_priority_work_blocking();
         match work {
-            Some(PriorityWork::Typecheck { module, sexps }) => {
+            Some(PriorityWork::Typecheck {
+                module,
+                sexps,
+                generation_started,
+            }) => {
                 // FIXME 0285 defect 2 — worker-panic→park robustness. A panic
                 // inside the work handler (e.g. an unresolved-symbol panic from
                 // the JIT at finalize, or any `unreachable!`) would otherwise
@@ -2414,7 +2195,7 @@ pub fn priority_worker_loop_shared(shared: &crate::session_v4::SharedState) {
                 // Catch the unwind, convert it to a module failure, and notify
                 // so `wait_inmem_complete_blocking` returns `ModuleFailed`.
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                    handle_typecheck_work_shared(shared, &module, &sexps)
+                    handle_typecheck_work_shared(shared, &module, &sexps, generation_started)
                 }));
                 match result {
                     Ok(Ok(())) => {}
@@ -2651,8 +2432,14 @@ fn handle_typecheck_work_shared(
     shared: &crate::session_v4::SharedState,
     module: &ModuleFullPath,
     sexps: &std::sync::Arc<[Sexp]>,
+    generation_started: bool,
 ) -> Result<(), CranelispError> {
-    match crate::cluster::process_cluster(shared, std::sync::Arc::clone(sexps), module)? {
+    match crate::cluster::process_cluster(
+        shared,
+        std::sync::Arc::clone(sexps),
+        module,
+        generation_started,
+    )? {
         crate::cluster::ClusterOutcome::Done {
             mut processed,
             program: _,
@@ -2685,10 +2472,19 @@ fn handle_typecheck_work_shared(
             // when the index is not armed (batch modes / pre-arm startup).
             crate::session_v4::index_worker::on_module_published(shared, module);
         }
-        crate::cluster::ClusterOutcome::Gap { dep } => {
+        crate::cluster::ClusterOutcome::Gap {
+            dep,
+            continuation,
+            generation_started,
+        } => {
             // The dependency was registered + blocked on inside the cluster
             // pass; this worker frees back to the pool. The scheduler requeues
             // `module` (sexps persist on its ModuleState) when `dep` completes.
+            shared.scheduler.set_source_continuation(
+                module,
+                std::sync::Arc::from(continuation),
+                generation_started,
+            );
             let _ = dep;
         }
     }

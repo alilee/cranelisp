@@ -275,13 +275,7 @@ where
     ) -> Result<(), CranelispError> {
         // Bind scrutinee to variable, always matches.
         self.push_scope();
-        let var = self.fresh_variable();
-        self.builder.declare_var(var, types::I64);
-        self.builder.def_var(var, scrut_val);
-        self.variables.insert(name.clone(), var);
-        // Record type for RC management.
-        self.variable_types
-            .insert(name.clone(), scrutinee.ty().to_type());
+        self.bind_local(name, scrut_val, Some(scrutinee.ty().to_type()));
 
         // **FIXME 0782, resolution (a) — the var-pattern binder BORROWS.**
         //
@@ -299,17 +293,13 @@ where
         // the arm's release) was rejected: it makes the release owner depend on
         // the PATTERN KIND, which is the per-spelling rule §5 exists to
         // eliminate.
-        self.scope_stack
-            .last_mut()
-            .unwrap_or_else(|| unreachable!("invariant: scope_stack non-empty"))
-            .push(name.clone());
         self.mark_borrowed(name);
         if let Some(root) = scrut_root {
             self.record_borrow_root(name, root);
         }
 
         self.in_tail_position = saved_tail;
-        let skip_var = Self::return_var_in_scope(body, self.scope_stack.last());
+        let skip_var = self.return_var_in_scope(body);
         let body_val = self.compile_expr(body)?;
         // In a tail-call-arg context (`(recur (match … v))`) use the tail-arg
         // alias protection instead of `protect_return_value`: the tail-jump flush
@@ -321,7 +311,7 @@ where
         } else {
             self.protect_return_value(&skip_var, body_val, body);
         }
-        self.pop_scope_with_cleanup(skip_var.as_ref())?;
+        self.pop_scope_with_cleanup(skip_var)?;
         self.emit_arm_scrutinee_release(owes_release)?;
         self.builder.ins().jump(merge_block, &[body_val]);
 
@@ -525,17 +515,17 @@ where
         );
 
         self.in_tail_position = match_ctx.saved_tail;
-        let skip_var = Self::return_var_in_scope(body, self.scope_stack.last());
+        let skip_var = self.return_var_in_scope(body);
         let body_val = self.compile_expr(body)?;
 
         // Auto-upgrade: if the return value is a borrowed var, inc it to
         // create an owning reference. Borrowed vars share the scrutinee's
         // reference, but the return value must survive the scrutinee's
         // eventual dec. This is the sketch's "auto-upgrade borrowed on return".
-        if let Some(ref sv) = skip_var
-            && self.is_borrowed(sv)
+        if let Some(sv) = skip_var
+            && self.scope.slot(sv).is_some_and(|slot| slot.is_borrowed())
         {
-            if let Some(ty) = self.variable_types.get(sv).cloned() {
+            if let Some(ty) = self.scope.slot(sv).and_then(|slot| slot.ty()).cloned() {
                 let category = signature_heap_category(&ty, Some(self.ctx.symbol_tables));
                 // B3.3-R (§5.1): the auto-upgrade materialization inc is always
                 // atomic. This was a through-binding site (per-binding Confined
@@ -574,7 +564,7 @@ where
             self.protect_return_value(&skip_var, body_val, body);
         }
 
-        self.pop_scope_with_cleanup(skip_var.as_ref())?;
+        self.pop_scope_with_cleanup(skip_var)?;
         // §2 — protect, THEN tear down. Every protective inc on an extracted
         // field that outlives the wrapper (the borrowed-return auto-upgrade
         // above, the tail-arg alias protect, `protect_return_value`) has been
@@ -676,29 +666,27 @@ where
             // types come from the SIGNATURE (concrete-boundary-type.md §3.1.1,
             // FIXME 0391 site 3): convert the field `Type` → `ConcreteType` here
             // (must succeed — §3.11.1 guarantees concreteness upstream).
-            if let Some(ft) = field_types.get(i) {
-                let category = signature_heap_category(ft, Some(self.ctx.symbol_tables));
-                if matches!(category, HeapCategory::AlwaysHeap | HeapCategory::Mixed) {
-                    self.variable_types.insert(binding_name.clone(), ft.clone());
-                    // Mark as borrowed: skip scope-exit dec (owner handles cleanup).
-                    self.mark_borrowed(binding_name);
-                    // S118 slice S3 (§2): remember WHOSE reference this view
-                    // rides on, so an escape into a tail call can be upgraded
-                    // exactly when that owner is released at the jump.
-                    if let Some(root) = scrut_root.clone() {
-                        self.record_borrow_root(binding_name, root);
-                    }
+            // A field binder records its type only when the field OWNS
+            // something heap: the absence is what keeps a scalar field binder
+            // out of `apply.rs`'s owned-binding gate, exactly as before.
+            let recorded_ty = field_types.get(i).filter(|ft| {
+                matches!(
+                    signature_heap_category(ft, Some(self.ctx.symbol_tables)),
+                    HeapCategory::AlwaysHeap | HeapCategory::Mixed
+                )
+            });
+            let owns_heap = recorded_ty.is_some();
+            self.bind_local(binding_name, field_val, recorded_ty.cloned());
+            if owns_heap {
+                // Mark as borrowed: skip scope-exit dec (owner handles cleanup).
+                self.mark_borrowed(binding_name);
+                // S118 slice S3 (§2): remember WHOSE reference this view
+                // rides on, so an escape into a tail call can be upgraded
+                // exactly when that owner is released at the jump.
+                if let Some(root) = scrut_root.clone() {
+                    self.record_borrow_root(binding_name, root);
                 }
             }
-
-            let var = self.fresh_variable();
-            self.builder.declare_var(var, types::I64);
-            self.builder.def_var(var, field_val);
-            self.variables.insert(binding_name.clone(), var);
-            self.scope_stack
-                .last_mut()
-                .unwrap_or_else(|| unreachable!("invariant: scope_stack non-empty"))
-                .push(binding_name.clone());
         }
     }
 

@@ -294,9 +294,7 @@ fn nice_worker_lifecycle_spawn_and_shutdown() {
         // S91 Pillar-3: importable-symbol indices (empty/unarmed default —
         // this scheduler unit test does not arm the burn-down).
         importable_indices: crate::session_v4::ImportableIndices::default(),
-        // S101: broken registry + retention pool start empty (no
-        // redefinition transaction runs in this lifecycle test).
-        broken: dashmap::DashMap::new(),
+        // No redefinition transaction runs in this lifecycle test.
         retained_code: Mutex::new(Vec::new()),
         fresh_jit_drop_glues: dashmap::DashMap::new(),
         // D1 ruling §4: run-mode carrier. This scheduler unit test does not

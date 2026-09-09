@@ -311,10 +311,9 @@ re-exported domain modules concurrently):
    live tables.
 3. `src/process_form/` + `src/worker.rs` register paths — foreground Def/decl
    commits.
-4. `src/imports.rs::insert_detecting_ambiguity` (~L547-560) — the §8.6.5
-   poison-consumer is **CORRECT (do not touch its logic)**; the assert is added
-   BESIDE the insertion, not inside the poison decision, so it observes without
-   perturbing the sanctioned ambiguity behaviour.
+4. `src/imports.rs::install_candidates` preserves each distinct canonical
+   source for later type-directed selection; the closure assertion belongs
+   before exposure, not inside use-site ambiguity selection.
 
 Because the assert is single-sourced, its call sites are the greppable structural
 guard (§5-style): a live-table insertion WITHOUT the assert is a `/review` finding

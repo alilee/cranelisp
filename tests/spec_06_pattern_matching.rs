@@ -582,24 +582,29 @@ fn same_named_ctors_dotted_pattern_position_disambiguates() {
 
 // spec: spec/06-pattern-matching.md §6.2.1/§6.2.2 — scrutinee-directed (W1
 // re-ruling, landed): a contested BARE constructor pattern RESOLVES against a
-// DETERMINED scrutinee type. Here the scrutinee is determined via a unique ctor
-// `(MOnly 7)` (concrete construction — no free-type-var annotation); the bare
-// `(Some x)` arm resolves to `Maybe.Some` and the bare `None` arm to `Maybe.None`
-// (data + nullary legs). REPLACES the pre-re-ruling "requires dotted" expectation.
+// DETERMINED scrutinee type. Qualified `Maybe.Some`, `Maybe.None`, and the unique
+// `MOnly` construct three concrete `Maybe` scrutinees; the contested bare
+// `(Some x)` and `None` patterns resolve to `Maybe.Some` and `Maybe.None`.
+// `Option` is declared first so declaration-order selection cannot satisfy the
+// witness. REPLACES the pre-re-ruling "requires dotted" expectation.
 // RED today: the bare contested pattern is not scrutinee-directed — it picks the
 // wrong type, producing `type mismatch: Maybe vs Option`.
 // defect: class=silent-accept locus=crates/cranelisp-typecheck (contested bare ctor pattern not resolved against the determined scrutinee type) found=S109 owner=/dev
 #[test]
 fn contested_bare_pattern_resolves_against_determined_scrutinee() {
     run_through_all_modes(
-        "(import [primitives [Pure]])\n\
-         (deftype (Maybe a) None (Some [:a v]) (MOnly [:a w]))\n\
+        "(import [primitives [Pure add-i64]])\n\
          (deftype (Option a) None (Some [:a v]))\n\
+         (deftype (Maybe a) None (Some [:a v]) (MOnly [:a w]))\n\
          (defn main [] (Pure\n\
-           (match (MOnly 7) [(Some x) x None 0 (MOnly w) w])))\n",
+           (add-i64\n\
+             (add-i64\n\
+               (match (Maybe.Some 7) [(Some x) x None 0 (MOnly w) w])\n\
+               (match Maybe.None [(Some x) x None 3 (MOnly w) w]))\n\
+             (match (MOnly 5) [(Some x) x None 0 (MOnly w) w]))))\n",
         PreludeVariant::None,
     )
-    .assert_all_equal(7);
+    .assert_all_equal(15);
 }
 
 // spec: spec/06-pattern-matching.md §6.2.1 + §8.6.5 (NEG) — a contested bare
@@ -632,8 +637,18 @@ fn contested_bare_pattern_indeterminate_scrutinee_poisoned_neg() {
          not silently resolve; {text}"
     );
     assert!(
-        text.contains("Maybe.Some") && text.contains("Option.Some"),
-        "the poison error MUST list the canonical alternatives; {text}"
+        text.to_lowercase().contains("ambiguous")
+            && text.contains("main/Maybe.Some")
+            && text.contains("main/Option.Some"),
+        "the ambiguity MUST list every surviving canonical alternative; {text}"
+    );
+    assert!(
+        !text.contains("undefined variable")
+            && !text.to_lowercase().contains("no matching")
+            && !text.contains("main/Maybe.MOnly"),
+        "an indeterminate contested pattern has several compatible constructors; \
+         it is neither unknown nor no-match, and unrelated constructors MUST NOT \
+         enter its survivor list; {text}"
     );
     assert!(
         !text.contains("__expr"),
@@ -643,15 +658,16 @@ fn contested_bare_pattern_indeterminate_scrutinee_poisoned_neg() {
     Cranelisp::new()
         .file(
             "ctrl.cl",
-            "(import [primitives [Pure Int]])\n\
+            "(import [primitives [Pure Int add-i64]])\n\
              (deftype (Maybe a) None (Some [:a v]))\n\
              (deftype (Option a) None (Some [:a v]))\n\
              (defn f [m] (match m [(Maybe.Some x) x Maybe.None 0]))\n\
-             (defn main [] (Pure 0))\n",
+             (defn main []\n\
+               (Pure (add-i64 (f (Maybe.Some 9)) (f Maybe.None))))\n",
         )
         .run("ctrl.cl")
         .output()
-        .assert_ok();
+        .assert_exit(9);
 }
 
 // spec: spec/06-pattern-matching.md §6.5 exhaustiveness × the `.`-strip (design

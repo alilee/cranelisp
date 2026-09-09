@@ -1,22 +1,19 @@
-//! Form classification + Pass-1 registration (S87 §1.1 extraction from
+//! Form classification + source-presentation recording (S87 §1.1 extraction from
 //! `process_form.rs`).
 //!
 //! The pre-typecheck shaping of a cluster's forms: classify raw sexps into
 //! `FormKind`, write the structural-decl Vecs onto the table
-//! (`record_*_on_symbol_table`), separate macros, register defmacro entries +
-//! the (now no-op) Pass-1 / default-method shims, and wrap bare exprs as
-//! synthetic defns. One concern: turning raw sexps into the shapes Pass-2 +
+//! (`record_*_on_symbol_table`), record already-published macro introspection,
+//! and wrap bare exprs as synthetic defns. One concern: turning raw sexps into
+//! the shapes the source walk and
 //! `check_forms` consume.
 
 use cranelisp_types::{
-    CranelispError, DefKind, Defn, ErrorLocation, ExportSpec, FQSymbol, ImportSpec,
-    MacroClauseInfo, ModuleAliases, ModuleEntry, ModuleFullPath, PlatformSpec, ResolutionScope,
-    Sexp, Span, Symbol, TopLevel, View, Visibility,
+    CranelispError, Defn, ErrorLocation, ExportSpec, FQSymbol, ImportSpec, ModuleFullPath,
+    PlatformSpec, Sexp, Span, Symbol, TopLevel,
 };
 
-use cranelisp_typecheck::{CheckState, PreludeFallback};
-
-use crate::worker::{ModuleCheckAccumulator, ModuleCompiler};
+use crate::worker::ModuleCompiler;
 
 // ---------------------------------------------------------------------------
 // FormKind — per-sexp form classification for Pass 2
@@ -168,92 +165,7 @@ pub(super) fn classify_form(
     }
 }
 
-/// Separate defmacro forms from regular forms for Pass 1.
-#[allow(clippy::type_complexity)]
-pub(super) fn separate_macros(
-    sexps: &[Sexp],
-    containing_module: &ModuleFullPath,
-) -> Result<
-    (
-        Vec<Sexp>,
-        Vec<(Symbol, cranelisp_frontend::DefmacroInfo, Sexp)>,
-    ),
-    CranelispError,
-> {
-    let mut regular_sexps = Vec::new();
-    let mut macro_infos = Vec::new();
-
-    for sexp in sexps {
-        if cranelisp_frontend::is_defmacro(sexp) {
-            let info = cranelisp_frontend::parse_defmacro(sexp)?;
-            macro_infos.push((info.name.clone(), info, sexp.clone()));
-        } else {
-            // Skip import/export/mod/platform in Pass 1 regular forms.
-            // They don't contribute type signatures and are handled in Pass 2.
-            match classify_form(sexp, containing_module)? {
-                FormKind::Import(_)
-                | FormKind::Export(_)
-                | FormKind::Mod(_)
-                | FormKind::Platform(_) => {
-                    // Skip — handled during Pass 2.
-                }
-                _ => {
-                    regular_sexps.push(sexp.clone());
-                }
-            }
-        }
-    }
-    Ok((regular_sexps, macro_infos))
-}
-
-/// The implicit-prelude module (§8.8.1) that a module with its `prelude_fallback`
-/// bit ON resolves bare-name misses against.
-const PRELUDE_MODULE: &str = "prelude";
-
-/// The §8.6.4 defmacro definition gate (S108 Wave-G CS2,
-/// `design/arch/prelude-import-convergence.md` §4.2): construct the int
-/// resolution scope over `module`'s committed view — the prelude fallback
-/// decided ONCE here from the session-side `prelude_fallback` bit — and delegate
-/// to the ONE types-owned `reject_def_over_binding` seam. Rejects a `defmacro`
-/// of `name` over an in-scope explicit import/export or a prelude-provided name;
-/// the module's OWN prior definition (home == current — a REPL macro redefine)
-/// and a miss (name free to define) both pass. Behaviourally the int-side twin
-/// of typecheck's `reject_def_over_binding` adapter (checker.rs) — same seam,
-/// same diagnostic — reached without a typecheck dependency because the seam and
-/// the scope both live in `cranelisp-types`.
-fn reject_defmacro_over_binding(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-    module_aliases: &ModuleAliases,
-    prelude_fallback: &PreludeFallback,
-    module: &ModuleFullPath,
-    name: &Symbol,
-    span: Span,
-) -> Result<(), CranelispError> {
-    // No table yet for this module ⇒ nothing is in scope to conflict with.
-    let Some(table_ref) = symbol_tables.get(module) else {
-        return Ok(());
-    };
-    let view: View<'_, crate::code::Code, ()> = View::single(&table_ref);
-    // Fallback ON iff the module's bit is set and it is not prelude itself
-    // (absence-is-OFF; never self-fallback — `ResolutionScope::new` also collapses
-    // a self-fallback defensively).
-    let prelude_module = ModuleFullPath::from(PRELUDE_MODULE);
-    let prelude = if module.as_ref() != PRELUDE_MODULE
-        && prelude_fallback.get(module).map(|b| *b).unwrap_or(false)
-    {
-        Some(&prelude_module)
-    } else {
-        None
-    };
-    let scope = ResolutionScope::new(symbol_tables, module_aliases, &view, module, prelude);
-    cranelisp_types::reject_def_over_binding(&scope, name, span)
-}
-
-/// Register a defmacro in the module table (Pass 1).
-///
-/// Parses clause info and stores it as `ModuleEntry::Macro` with the
-/// original sexp for later compilation. No codegen — deferred until
-/// first use.
+/// Record presentation for a macro whose complete checkpoint is already live.
 ///
 /// `authored` is the turn's ORIGINAL authored form — the regeneration
 /// authority (S102 CS-D1, `design/int/s102-defect-wave.md` §4.2 rule 1:
@@ -267,64 +179,14 @@ fn reject_defmacro_over_binding(
 /// clause-recompile authority — that role is unchanged); persisting it as
 /// regen source alongside the original was the D1 directory poison (the two
 /// forms do not co-load).
-/// The session/table environment threaded into macro registration — the module
-/// symbol tables, the optional REPL introspection map (write target), and the
-/// module-alias + prelude-fallback resolution scope (the §8.6.4 rejection gate's
-/// inputs). Groups the cohesive reference set so [`register_macro_in_module`]
-/// stays under the 8-param cap (Principle 6). Each call site builds it from its
-/// own reference sources; the values threaded are unchanged.
-pub(crate) struct MacroRegisterEnv<'a> {
-    pub symbol_tables: &'a dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-    pub introspection: Option<&'a dashmap::DashMap<FQSymbol, crate::session_v4::Introspection>>,
-    pub module_aliases: &'a ModuleAliases,
-    pub prelude_fallback: &'a PreludeFallback,
-}
-
-pub(crate) fn register_macro_in_module(
-    env: &MacroRegisterEnv<'_>,
+pub(crate) fn record_macro_introspection(
+    introspection: Option<&dashmap::DashMap<FQSymbol, crate::session_v4::Introspection>>,
     module: &ModuleFullPath,
     name: &Symbol,
-    info: &cranelisp_frontend::DefmacroInfo,
     sexp: &Sexp,
     authored: &Sexp,
     authored_source: Option<String>,
-) -> Result<(), CranelispError> {
-    // §8.6.4 definition seam (S108 Wave-G CS2): a `defmacro` over a name already
-    // in scope — an explicit import/export head OR a prelude-provided name — is
-    // a compile-time conflict, never a shadow (spec §8.6.4/§8.8.1). Route the
-    // defmacro binding through the SAME types-owned seam every other definition
-    // form uses (`defn`/`deftype` at the typecheck arm, `deftrait` at its arm),
-    // so int's macro path rejects on identical terms with no typecheck
-    // dependency. A rejected form has NO effect: this gate runs BEFORE any
-    // introspection or symbol-table write, so the error propagates through the
-    // normal form-error path with nothing registered.
-    reject_defmacro_over_binding(
-        env.symbol_tables,
-        env.module_aliases,
-        env.prelude_fallback,
-        module,
-        name,
-        sexp.span(),
-    )?;
-    let clause_infos: Vec<MacroClauseInfo> = info
-        .clauses
-        .iter()
-        .map(|c| MacroClauseInfo {
-            params: c.fixed_params.clone(),
-            rest_param: c.rest_param.clone(),
-        })
-        .collect();
-    let visibility = if info.is_private {
-        Visibility::Private
-    } else {
-        Visibility::Public
-    };
-    // S70 macro-unification (W-Absorb): the macro parent is a
-    // `ModuleEntry::Def` with `kind: DefKind::Macro { clauses_meta }` — no
-    // callable address (`got_slot: None`), no AST. The `sexp` argument used to
-    // ride on the entry; per Decision 41 macro `sexp` lives on the int-layer
-    // `Introspection` record keyed by `FQSymbol`.
-    //
+) {
     // S77 W-MacroTrait (FIXME 0299): route the macro sexp into Introspection
     // (REPL mode only — `introspection` is `Some` only when `--repl`). This is
     // the single source the macro round-trip needs in two places:
@@ -345,7 +207,7 @@ pub(crate) fn register_macro_in_module(
     // defmacro arrived via expansion (`authored` ≠ `sexp` — compared by span,
     // expansion output carries synthetic rewritten spans) the expanded
     // artifact rides `.expanded` for `/sexp` display.
-    if let Some(intr_map) = env.introspection {
+    if let Some(intr_map) = introspection {
         let fq = FQSymbol {
             module: module.clone(),
             symbol: name.clone(),
@@ -366,91 +228,6 @@ pub(crate) fn register_macro_in_module(
             );
         }
     }
-    if let Some(mut table) = env.symbol_tables.get_mut(module) {
-        // Macro parents carry no meaningful type scheme (not callable); use a
-        // placeholder monomorphic scheme, as the legacy `ModuleEntry::Macro`
-        // path effectively did (it had no scheme field at all).
-        let placeholder_scheme = cranelisp_types::Scheme {
-            type_vars: vec![],
-            constraints: std::collections::HashMap::new(),
-            ty: cranelisp_types::Type::Int,
-        };
-        let mut builder = ModuleEntry::def(
-            placeholder_scheme,
-            DefKind::Macro {
-                clauses_meta: clause_infos,
-                // D1 ruling §2/§6: the macro's original `(defmacro …)` form is
-                // compile-path data — it lives on the symbol-table entry, NOT
-                // introspection (which is REPL-only and absent on cache
-                // restore). Set UNCONDITIONALLY (all modes): the on-demand
-                // clause recompile (`resolve_macro_sexp_from`) and the REPL
-                // backing-file regeneration (`save::generate_module_source`)
-                // both re-source it from here, and it serializes (no
-                // `#[serde(skip)]`) so it round-trips the disk cache.
-                macro_sexp: sexp.clone(),
-            },
-        )
-        .visibility(visibility);
-        if let Some(doc) = &info.docstring {
-            builder = builder.docstring(doc.clone());
-        }
-        let entry = builder.build();
-        // FIXME 0604 chokepoint (§2.1 census): route the foreground macro-Def
-        // register through the terminal-closure gate. A `Def` (macro) entry is
-        // non-`Import` → own-definition → the gate short-circuits to Ok WITHOUT a
-        // map read (provable no-op), safe while the `get_mut` guard is held. The
-        // legacy prelude observability rider stays beside it (defense-in-depth).
-        crate::imports::assert_prelude_closure(env.symbol_tables, module, name.as_ref(), &entry);
-        crate::imports::check_terminal_closure(
-            module,
-            name.as_ref(),
-            &entry,
-            cranelisp_types::Span::SYNTHETIC,
-            // A macro `Def` is non-`Import` → the own-def arm returns Ok with NO
-            // map read, so `D(M)` is never consulted (pass `None`) and the gate
-            // stays deadlock-safe under the held `get_mut` guard (§2.2 margin 2).
-            None,
-        )?;
-        table.insert(name.clone(), entry);
-    }
-    Ok(())
-}
-
-/// Pass 1 registration (no-op under the collapsed `check_forms` surface).
-///
-/// Per Decision 44's 2026-05-13 third amendment, the typecheck Pass-1
-/// registration phase is internal to `check_forms` and runs as part of the
-/// single call performed by `finalize_module` (via `check_program_compat`).
-/// This function is retained for source compatibility with the existing
-/// `process_module_forms` orchestration; it intentionally performs no
-/// typecheck work itself.
-pub(super) fn pass1_register(
-    _symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-    _next_type_id: &std::sync::atomic::AtomicU32,
-    _check_state: &mut CheckState,
-    _module: &ModuleFullPath,
-    _working_program: &[TopLevel],
-    _accumulator: &mut ModuleCheckAccumulator,
-) -> Result<(), CranelispError> {
-    Ok(())
-}
-
-/// Register default method defns generated during Pass 1 TraitImpl processing.
-///
-/// Pre-S66 this drove `check_form(Register)` for each default-method-defn the
-/// `check_form(TraitImpl)` Pass-1 step had appended to `accumulator`. Under
-/// the collapsed `check_forms` surface, default-method handling is internal
-/// to typecheck — the orchestrator merely takes the (now-empty) deferral list
-/// off the local accumulator to maintain the pre-S66 worker invariants.
-pub(super) fn register_default_methods(
-    _symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-    _next_type_id: &std::sync::atomic::AtomicU32,
-    _check_state: &mut CheckState,
-    _module: &ModuleFullPath,
-    accumulator: &mut ModuleCheckAccumulator,
-) -> Result<Vec<Defn>, CranelispError> {
-    let defaults: Vec<Defn> = std::mem::take(&mut accumulator.default_method_defns);
-    Ok(defaults)
 }
 
 /// Wrap `Expr` variants as synthetic zero-arg `Defn` named `__expr`.

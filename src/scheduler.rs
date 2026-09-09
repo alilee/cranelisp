@@ -137,6 +137,11 @@ pub struct ModuleState {
     /// (registered at `TypecheckDone`, never typechecked from source).
     pub sexps: Option<std::sync::Arc<[Sexp]>>,
 
+    /// True after this generation's structural/prologue work has completed.
+    /// A dependency retry then consumes only `sexps`, which is the remaining
+    /// source continuation, without repeating generation setup.
+    pub generation_started: bool,
+
     /// Module this module is currently blocked on (forward edge).
     /// Set when entering TypecheckBlocked, cleared when unblocked.
     /// Used for cycle detection.
@@ -171,6 +176,7 @@ impl ModuleState {
             error: None,
             static_closure_memo: None,
             sexps,
+            generation_started: false,
             blocked_on: None,
         }
     }
@@ -193,6 +199,7 @@ impl ModuleState {
             error: None,
             static_closure_memo: None,
             sexps: None,
+            generation_started: false,
             blocked_on: None,
         }
     }
@@ -218,6 +225,7 @@ impl ModuleState {
             error: None,
             static_closure_memo: None,
             sexps: None,
+            generation_started: false,
             blocked_on: None,
         }
     }
@@ -260,6 +268,7 @@ pub enum PriorityWork {
     Typecheck {
         module: ModuleFullPath,
         sexps: std::sync::Arc<[Sexp]>,
+        generation_started: bool,
     },
     /// JIT-compile a symbol from a TypecheckDone module.
     JitCodegen(ModuleFullPath, Symbol),
@@ -634,6 +643,7 @@ impl CompileScheduler {
                 // Source changed — the static closure must be re-walked.
                 static_closure_memo: None,
                 sexps: Some(sexps),
+                generation_started: false,
                 blocked_on: None,
             };
         }
@@ -726,7 +736,30 @@ impl CompileScheduler {
             .get(&module)
             .and_then(|ms| ms.sexps.clone())
             .unwrap_or_else(|| std::sync::Arc::from(Vec::new()));
-        PriorityWork::Typecheck { module, sexps }
+        let generation_started = state
+            .modules
+            .get(&module)
+            .is_some_and(|ms| ms.generation_started);
+        PriorityWork::Typecheck {
+            module,
+            sexps,
+            generation_started,
+        }
+    }
+
+    /// Replace a blocked module's retry packet with its source-only
+    /// continuation. Compilation candidates never enter scheduler state.
+    pub fn set_source_continuation(
+        &self,
+        module: &ModuleFullPath,
+        sexps: std::sync::Arc<[Sexp]>,
+        generation_started: bool,
+    ) {
+        let mut state = self.lock();
+        if let Some(module_state) = state.modules.get_mut(module) {
+            module_state.sexps = Some(sexps);
+            module_state.generation_started = generation_started;
+        }
     }
 
     /// Try to take a work item from the priority ladder (locked).

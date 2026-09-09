@@ -43,6 +43,121 @@ const FIELD_1_OFFSET: isize = FIELD_0_OFFSET + 8; // 32
 const FIELD_2_OFFSET: isize =
     HeapHeader::SIZE as isize + cranelisp_platform::IO_EFFECT_FN_NAME_OFFSET as isize; // 16 + 24 = 40
 
+/// A compiler-provided callback that consumes one owned language value.
+/// Zero denotes a representation with no heap ownership.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ResultDisposer(i64);
+
+impl ResultDisposer {
+    pub(crate) const NONE: Self = Self(0);
+
+    pub(crate) fn from_raw(raw: i64) -> Self {
+        Self(raw)
+    }
+
+    #[cfg(test)]
+    fn from_fn(dispose: extern "C" fn(i64)) -> Self {
+        Self(dispose as *const () as i64)
+    }
+
+    pub(crate) fn dispose(self, value: i64) {
+        if self.0 == 0 {
+            return;
+        }
+        // SAFETY: non-zero result-disposer words are emitted by the backend as
+        // canonical `(i64) -> ()` drop-glue addresses.
+        let dispose: extern "C" fn(i64) = unsafe { std::mem::transmute(self.0 as *const ()) };
+        dispose(value);
+    }
+}
+
+/// A trampoline either transfers a produced value or stops without one.
+/// Keeping the outcomes distinct prevents cancellation and fault sentinels
+/// from acquiring value-disposal authority.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum TrampolineOutcome {
+    Completed(i64),
+    Stopped,
+}
+
+impl TrampolineOutcome {
+    fn into_raw(self) -> i64 {
+        match self {
+            Self::Completed(value) => value,
+            Self::Stopped => 0,
+        }
+    }
+
+    fn map_completed<T>(self, map: impl FnOnce(i64) -> T) -> Option<T> {
+        match self {
+            Self::Completed(value) => Some(map(value)),
+            Self::Stopped => None,
+        }
+    }
+}
+
+/// Owns a result between production and its next language-level handoff.
+/// Transfer is explicit; every other exit discharges the value.
+struct ProducedValue {
+    value: i64,
+    ownership: Option<ResultOwnership>,
+}
+
+enum ResultOwnership {
+    Value(ResultDisposer),
+    ParBuffer(Vec<ResultDisposer>),
+}
+
+impl ProducedValue {
+    fn with_disposer(value: i64, disposer: ResultDisposer) -> Self {
+        Self {
+            value,
+            ownership: Some(ResultOwnership::Value(disposer)),
+        }
+    }
+
+    fn par_buffer(value: i64, disposers: Vec<ResultDisposer>) -> Self {
+        Self {
+            value,
+            ownership: Some(ResultOwnership::ParBuffer(disposers)),
+        }
+    }
+
+    fn transfer(mut self) -> i64 {
+        self.ownership = None;
+        self.value
+    }
+}
+
+impl Drop for ProducedValue {
+    fn drop(&mut self) {
+        match self.ownership.take() {
+            Some(ResultOwnership::Value(disposer)) => disposer.dispose(self.value),
+            Some(ResultOwnership::ParBuffer(disposers)) => {
+                for (index, disposer) in disposers.into_iter().enumerate() {
+                    // SAFETY: a Par result buffer has one initialized value slot
+                    // per disposer, beginning at the ordinary ADT field offset.
+                    let value = unsafe {
+                        crate::heap_access::read_i64(
+                            self.value,
+                            FIELD_0_OFFSET + (index as isize) * 8,
+                        )
+                    };
+                    disposer.dispose(value);
+                }
+                crate::rc::consume_shallow(self.value);
+            }
+            None => {}
+        }
+    }
+}
+
+struct ContinuationFrame {
+    ptr: i64,
+    is_fresh: bool,
+    input_disposer: ResultDisposer,
+}
+
 /// Byte offset of the code pointer within a closure from the base pointer.
 /// Closure layout: [header(16) | code_ptr(8) | drop_glue_ptr(8) | captures...]
 const CLOSURE_CODE_PTR_OFFSET: isize = HeapHeader::SIZE as isize; // 16
@@ -120,10 +235,17 @@ pub(crate) fn drive_io(io_ptr: i64) -> i64 {
         IoEventTag::TrampolineEnter,
         &IoEvent::TrampolineEnter { io_ptr },
     );
-    let result = crate::reactor::block_on_reactor(async |env| {
-        run_io_trampoline_inner_async(io_ptr, env, crate::strand::StrandId::ROOT).await
+    let outcome = crate::reactor::block_on_reactor(async |env| {
+        run_io_trampoline_inner_async(
+            io_ptr,
+            env,
+            crate::strand::StrandId::ROOT,
+            ResultDisposer::NONE,
+        )
+        .await
     })
     .expect("reactor init failed");
+    let result = outcome.into_raw();
     io_observer::emit(
         IoEventTag::TrampolineExit,
         &IoEvent::TrampolineExit { result },
@@ -156,8 +278,8 @@ struct TrampolineFrame {
     current: i64,
     /// `true` iff `current` is a fresh (trampoline-produced) node this guard owns.
     current_is_fresh: bool,
-    /// The continuation stack `(cont_ptr, is_fresh)` — fresh entries are owned here.
-    cont_stack: Vec<(i64, bool)>,
+    /// Continuations plus the disposer for the value each one accepts.
+    cont_stack: Vec<ContinuationFrame>,
     /// `true` while in-flight; set `false` before every return (normal finish /
     /// early abort) so a completed walk's frame-drop is a no-op.
     armed: bool,
@@ -176,9 +298,9 @@ impl Drop for TrampolineFrame {
         // already dec_shallow_io'd at push, so this is its sole remaining owner). A
         // non-fresh cont belongs to the caller's/owner's tree — left for its
         // consume_io_tree.
-        for (cont_ptr, is_fresh) in self.cont_stack.drain(..) {
-            if is_fresh {
-                crate::drop::consume_closure(cont_ptr);
+        for cont in self.cont_stack.drain(..) {
+            if cont.is_fresh {
+                crate::drop::consume_closure(cont.ptr);
             }
         }
     }
@@ -214,7 +336,8 @@ pub(crate) fn run_io_trampoline_inner_async<'a, 'h: 'a>(
     io_ptr: i64,
     env: &'a crate::reactor::ReactorEnv<'h>,
     strand: crate::strand::StrandId,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = i64> + 'a>> {
+    terminal_disposer: ResultDisposer,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = TrampolineOutcome> + 'a>> {
     Box::pin(async move {
         // The cancellation drop-guard (§2.15.1) OWNS the loop's in-flight pointers —
         // see [`TrampolineFrame`]. It frees the fresh in-flight subtree if the future
@@ -232,23 +355,21 @@ pub(crate) fn run_io_trampoline_inner_async<'a, 'h: 'a>(
             let current_is_fresh = frame.current_is_fresh;
             let tag = unsafe { read_node_tag(current) };
 
-            let produced: i64 = match tag {
-                t if t == IO_TAG_PURE => {
-                    let val = unsafe { read_node_field(current, FIELD_0_OFFSET) };
-                    io_observer::emit(
-                        IoEventTag::PureStep,
-                        &IoEvent::PureStep {
-                            value: val,
-                            is_fresh: current_is_fresh,
-                        },
-                    );
-                    val
-                }
+            let edge_disposer = frame
+                .cont_stack
+                .last()
+                .map_or(terminal_disposer, |cont| cont.input_disposer);
+
+            let produced = match tag {
+                t if t == IO_TAG_PURE => match force_pure_node(current, current_is_fresh, strand) {
+                    PureStep::Value(value) => ProducedValue::with_disposer(value, edge_disposer),
+                    PureStep::AlreadyClaimed => return TrampolineOutcome::Stopped,
+                },
                 t if t == IO_TAG_EFFECT => match force_effect_node(current) {
-                    EffectStep::Value(v) => v,
+                    EffectStep::Value(value) => ProducedValue::with_disposer(value, edge_disposer),
                     EffectStep::Aborted => {
                         frame.armed = false;
-                        return 0;
+                        return TrampolineOutcome::Stopped;
                     }
                 },
                 // S94 R1 — the real async Effect arm: a poll-shape effect node
@@ -257,10 +378,15 @@ pub(crate) fn run_io_trampoline_inner_async<'a, 'h: 'a>(
                 // live `(token, capacity)`, acquires the permit, and hands it to
                 // the `EffectPoll` (which owns it across the arc), so it needs the
                 // full `ReactorEnv` (pool + host), not just `env.host`.
-                t if t == IO_TAG_EFFECT_POLL => await_poll_node(current, env, strand).await,
+                t if t == IO_TAG_EFFECT_POLL => ProducedValue::with_disposer(
+                    await_poll_node(current, env, strand).await,
+                    edge_disposer,
+                ),
                 t if t == IO_TAG_BIND => {
                     let inner = unsafe { read_node_field(current, FIELD_0_OFFSET) };
                     let cont = unsafe { read_node_field(current, FIELD_1_OFFSET) };
+                    let input_disposer =
+                        ResultDisposer(unsafe { read_node_field(current, FIELD_2_OFFSET) });
                     io_observer::emit(
                         IoEventTag::BindEnter,
                         &IoEvent::BindEnter {
@@ -269,7 +395,11 @@ pub(crate) fn run_io_trampoline_inner_async<'a, 'h: 'a>(
                             is_fresh: current_is_fresh,
                         },
                     );
-                    frame.cont_stack.push((cont, current_is_fresh));
+                    frame.cont_stack.push(ContinuationFrame {
+                        ptr: cont,
+                        is_fresh: current_is_fresh,
+                        input_disposer,
+                    });
                     io_observer::emit(
                         IoEventTag::ContPush,
                         &IoEvent::Cont {
@@ -285,18 +415,35 @@ pub(crate) fn run_io_trampoline_inner_async<'a, 'h: 'a>(
                     // freshness unchanged: descending the inner of a (non-)fresh Bind.
                     continue;
                 }
-                t if t == IO_TAG_PAR => run_par_node_async(current, env).await,
+                t if t == IO_TAG_PAR => match run_par_node_async(current, env).await {
+                    Some(value) => value,
+                    None => {
+                        frame.armed = false;
+                        return TrampolineOutcome::Stopped;
+                    }
+                },
                 // S96 Chunk B — launch-and-continue (§2.11): detach the launched
                 // sub-tree into a supervised strand and yield `Pure Unit` so the
                 // continuation runs WITHOUT awaiting it (fire-and-forget).
-                t if t == IO_TAG_LAUNCH => launch_continue(current, env, strand).await,
+                t if t == IO_TAG_LAUNCH => ProducedValue::with_disposer(
+                    launch_continue(current, env, strand).await,
+                    edge_disposer,
+                ),
                 // S96 Chunk C — race/select (§2.15): run all branch sub-trees
                 // concurrently on the reactor, yield the first-ready winner's
                 // value, and DROP the losers (cancellation = future-drop, which
                 // releases their permits + reactor interest via the RAII drop
                 // paths). The node is NOT moved-out — it owns the branch Vec for
                 // the tree lifetime; `consume_io_tree` reclaims every branch.
-                t if t == IO_TAG_SELECT => run_select_node(current, env, strand).await,
+                t if t == IO_TAG_SELECT => match run_select_node(current, env, strand).await {
+                    TrampolineOutcome::Completed(value) => {
+                        ProducedValue::with_disposer(value, edge_disposer)
+                    }
+                    TrampolineOutcome::Stopped => {
+                        frame.armed = false;
+                        return TrampolineOutcome::Stopped;
+                    }
+                },
                 _ => panic!("cranelisp_run_io: unknown IO tag {tag}"),
             };
 
@@ -310,22 +457,29 @@ pub(crate) fn run_io_trampoline_inner_async<'a, 'h: 'a>(
             // it) — not the return value.
             if crate::panic::has_runtime_error() || crate::panic::has_dispatch_fault() {
                 frame.armed = false;
-                return 0;
+                return TrampolineOutcome::Stopped;
             }
 
-            match feed_continuation(&mut frame.cont_stack, current, current_is_fresh, produced) {
+            match feed_continuation(
+                &mut frame.cont_stack,
+                current,
+                current_is_fresh,
+                produced,
+                CancellationProbe::Never,
+            ) {
                 Step::Advance(new_io) => {
                     if crate::panic::has_runtime_error() || crate::panic::has_dispatch_fault() {
                         frame.armed = false;
-                        return 0;
+                        return TrampolineOutcome::Stopped;
                     }
                     frame.current = new_io;
                     frame.current_is_fresh = true;
                 }
                 Step::Finish(value) => {
                     frame.armed = false;
-                    return value;
+                    return TrampolineOutcome::Completed(value);
                 }
+                Step::Cancelled => return TrampolineOutcome::Stopped,
             }
         }
     })
@@ -468,6 +622,8 @@ async fn launch_continue(
     //    free it — ownership transfers to the strand (the move-out contract,
     //    io-trampoline.md §15.5).
     let sub_tree = unsafe { read_node_field(node, FIELD_0_OFFSET) };
+    let result_disposer =
+        ResultDisposer::from_raw(unsafe { read_node_field(node, FIELD_1_OFFSET) });
     // SAFETY: `node` is the live current IO_TAG_LAUNCH node; field 0 is its only
     // payload slot. Writing the `0` sentinel is the backend↔intrinsics move-out
     // contract (§15.5) — without it node-drop would double-free the sub-tree.
@@ -476,7 +632,7 @@ async fn launch_continue(
     // 4. Hand ownership of the sub-tree + the global permit to a supervised strand
     //    (it `consume_io_tree`s the sub-tree + releases the permit on end, §2.12).
     env.supervisor
-        .spawn(sub_tree, env.clone(), child, global_permit);
+        .spawn(sub_tree, result_disposer, env.clone(), child, global_permit);
 
     // 5. The launch's value is always Unit — the continuation proceeds at once.
     0
@@ -541,9 +697,11 @@ async fn run_select_node(
     node: i64,
     env: &crate::reactor::ReactorEnv<'_>,
     _strand: crate::strand::StrandId,
-) -> i64 {
+) -> TrampolineOutcome {
     // SAFETY: `node` is the live `current` IO_TAG_SELECT node base pointer.
     let branches = unsafe { read_select_branches(node) };
+    let branch_disposer =
+        ResultDisposer::from_raw(unsafe { read_node_field(node, FIELD_1_OFFSET) });
     if branches.is_empty() {
         // Degenerate `(select [])` — no branch can win and there is no value to
         // return (FIXME 0475 / `reactor.md §9`; `spec/10-io.md §10.12.8`). Raise a
@@ -555,7 +713,7 @@ async fn run_select_node(
         // (`run_io_trampoline_inner_async`) aborts BEFORE feeding the continuation,
         // so the `0` is never applied.
         crate::panic::set_runtime_error("select over empty collection".to_string());
-        return 0;
+        return TrampolineOutcome::Stopped;
     }
 
     let mut futures = Vec::with_capacity(branches.len());
@@ -563,7 +721,12 @@ async fn run_select_node(
     for branch in branches {
         let child = crate::strand::next_strand();
         strands.push(child);
-        futures.push(run_io_trampoline_inner_async(branch, env, child));
+        futures.push(run_io_trampoline_inner_async(
+            branch,
+            env,
+            child,
+            branch_disposer,
+        ));
     }
 
     // Race on the ONE reactor thread: first-ready wins, `winner_idx` indexes the
@@ -612,7 +775,10 @@ async fn run_select_node(
 /// Poll branches read the sentinel token 0 this sprint (poll-shape capacity-N is
 /// S96), so their acquire is an inert no-op — admission still wraps both
 /// partitions structurally.
-async fn run_par_node_async(parent_ptr: i64, env: &crate::reactor::ReactorEnv<'_>) -> i64 {
+async fn run_par_node_async(
+    parent_ptr: i64,
+    env: &crate::reactor::ReactorEnv<'_>,
+) -> Option<ProducedValue> {
     // SAFETY: `parent_ptr` is the live `current` Par node base pointer.
     let branch_ptrs = unsafe { read_par_branches(parent_ptr) };
     let count = branch_ptrs.len();
@@ -620,15 +786,15 @@ async fn run_par_node_async(parent_ptr: i64, env: &crate::reactor::ReactorEnv<'_
     // Partition by reachable effect-leaf tag (minimal slice = root tag; the
     // auto-IO independence analysis yields effect-rooted branches). Poll-shape →
     // reactor; everything else → rayon. Indices ride along for in-order merge.
-    let mut blocking: Vec<(usize, i64)> = Vec::new();
-    let mut pollshape: Vec<(usize, i64)> = Vec::new();
-    for (i, &b) in branch_ptrs.iter().enumerate() {
-        // SAFETY: `b` is a live branch base pointer from `read_par_branches`.
-        let tag = unsafe { read_node_tag(b) };
+    let mut blocking: Vec<(usize, ParBranch)> = Vec::new();
+    let mut pollshape: Vec<(usize, ParBranch)> = Vec::new();
+    for (i, &branch) in branch_ptrs.iter().enumerate() {
+        // SAFETY: `branch.io` is a live branch base pointer from `read_par_branches`.
+        let tag = unsafe { read_node_tag(branch.io) };
         if tag == IO_TAG_EFFECT_POLL {
-            pollshape.push((i, b));
+            pollshape.push((i, branch));
         } else {
-            blocking.push((i, b));
+            blocking.push((i, branch));
         }
     }
 
@@ -648,18 +814,12 @@ async fn run_par_node_async(parent_ptr: i64, env: &crate::reactor::ReactorEnv<'_
     );
 
     // Merge by original binding index into the single results buffer.
-    let mut merged = vec![0i64; count];
-    for (idx, val) in blocking_results.into_iter().chain(poll_results) {
-        merged[idx] = val;
+    let mut merged: Vec<Option<ProducedValue>> = (0..count).map(|_| None).collect();
+    for (idx, value) in blocking_results.into_iter().chain(poll_results) {
+        merged[idx] = value;
     }
-    let results_buf = alloc_with_rc(8 + count * 8) as i64; // payload: padding(8) + N*8
-    for (i, &val) in merged.iter().enumerate() {
-        // SAFETY: `results_buf` was just allocated with `count` field slots.
-        unsafe {
-            crate::heap_access::write_i64(results_buf, FIELD_0_OFFSET + (i as isize) * 8, val)
-        };
-    }
-    results_buf
+    let results = merged.into_iter().collect::<Option<Vec<_>>>()?;
+    Some(par_results_buffer(&branch_ptrs, results))
 }
 
 /// The blocking partition of the two-pool join: each branch acquires its
@@ -668,9 +828,9 @@ async fn run_par_node_async(parent_ptr: i64, env: &crate::reactor::ReactorEnv<'_
 /// thread so capacity-N branches overlap (the first N acquire + spawn; the
 /// (N+1)th parks on the token's `Semaphore` until a permit frees).
 async fn run_blocking_partition(
-    branches: Vec<(usize, i64)>,
+    branches: Vec<(usize, ParBranch)>,
     env: &crate::reactor::ReactorEnv<'_>,
-) -> Vec<(usize, i64)> {
+) -> Vec<(usize, Option<ProducedValue>)> {
     let futs = branches
         .into_iter()
         .map(|(idx, b)| run_blocking_branch(idx, b, env));
@@ -684,37 +844,52 @@ async fn run_blocking_partition(
 /// bounds same-token concurrency to the pool's capacity.
 async fn run_blocking_branch(
     idx: usize,
-    branch: i64,
+    branch: ParBranch,
     env: &crate::reactor::ReactorEnv<'_>,
-) -> (usize, i64) {
-    let token = read_resource_token(branch) as u64;
-    let capacity = read_capacity(branch).max(1) as u32;
+) -> (usize, Option<ProducedValue>) {
+    let token = read_resource_token(branch.io) as u64;
+    let capacity = read_capacity(branch.io).max(1) as u32;
     let strand = crate::strand::next_strand();
 
     // 1. Admit on the reactor thread (capacity-N parking; capacity-1 FIFO =
     //    source order). `token == 0` ⇒ inert no-op permit.
     let permit = env.acquire(token, capacity, strand).await;
+    // A capacity-1 sibling may have failed while this branch was parked. It has
+    // not started yet, so sequential left-to-right semantics require aborting
+    // before the worker is spawned. Dropping the acquired permit wakes the next
+    // waiter without performing this branch's effect.
+    if crate::panic::has_runtime_error() || crate::panic::has_dispatch_fault() {
+        return (idx, None);
+    }
 
     // 2. Offload run-to-completion to rayon across the wakeable bridge. The
     //    reactor thread is freed while the worker runs; the `oneshot` send wakes
     //    the reactor through the executor's mio-backed waker (NOT block_on).
-    let (tx, rx) = futures::channel::oneshot::channel::<(i64, Option<String>)>();
-    env.pending_bridges.set(env.pending_bridges.get() + 1);
+    let (tx, rx) = futures::channel::oneshot::channel::<(Option<ProducedValue>, Option<String>)>();
+    let (lease, ticket) = env.bridge_join.start_bridge();
+    let mut cancel_guard = crate::reactor::CancelBridgeGuard::new(ticket, Some(permit));
     rayon::spawn(move || {
         // Non-consuming run on the worker (the Par node owns the branch; freed
         // later by `consume_io_tree`) — the same model as the sync dispatcher.
-        let result = run_io_trampoline(branch);
+        let outcome = run_io_trampoline_with_bridge(branch.io, &lease, strand, branch.disposer);
+        // The nested trampoline transfers its terminal value out as a raw word.
+        // Re-arm it immediately, before any fault/cancellation policy can choose
+        // to abandon the completion.
+        let produced =
+            outcome.map_completed(|value| ProducedValue::with_disposer(value, branch.disposer));
         // Worker-side: capture + clear this thread's runtime-error slot (a
         // different thread-local than the reactor thread reads) so it can be
         // ferried back — the fork-join error-slot ferry (test-discovery.md §6).
         let err = crate::panic::take_runtime_error();
-        let _ = tx.send((result, err));
+        if !lease.is_cancelled() {
+            let _ = tx.send((produced, err));
+        }
     });
 
     // 3. Await completion (reactor thread parks here, freed for the poll
     //    partition). A dropped sender (rayon panic) yields the sentinel 0.
-    let (result, err) = rx.await.unwrap_or((0, None));
-    env.pending_bridges.set(env.pending_bridges.get() - 1);
+    let (result, err) = rx.await.unwrap_or((None, None));
+    cancel_guard.complete();
 
     // 4. Re-raise the ferried error into the reactor thread's slot. This is
     //    first-to-*complete*-wins: across distinct-token concurrent blocking
@@ -728,9 +903,8 @@ async fn run_blocking_branch(
         crate::panic::set_runtime_error(msg);
     }
 
-    // 5. Release the permit (drop) — increments the pool + wakes the FRONT
-    //    (FIFO) parked waiter, which re-polls and acquires.
-    drop(permit);
+    // 5. The guard released the permit after disarming cancellation — this
+    //    increments the pool and wakes the front parked waiter.
     (idx, result)
 }
 
@@ -746,13 +920,24 @@ async fn run_blocking_branch(
 /// the permit live on the future whose drop releases it). Acquiring here too would
 /// double-acquire, so this partition no longer touches the pool.
 async fn run_poll_partition(
-    branches: Vec<(usize, i64)>,
+    branches: Vec<(usize, ParBranch)>,
     env: &crate::reactor::ReactorEnv<'_>,
-) -> Vec<(usize, i64)> {
-    let futs = branches.into_iter().map(|(idx, b)| async move {
+) -> Vec<(usize, Option<ProducedValue>)> {
+    let futs = branches.into_iter().map(|(idx, branch)| async move {
         let strand = crate::strand::next_strand();
-        let result = run_io_trampoline_inner_async(b, env, strand).await;
-        (idx, result)
+        let outcome = run_io_trampoline_inner_async(branch.io, env, strand, branch.disposer).await;
+        // A completed nested trampoline has transferred the raw value. Restore
+        // its owner before consulting shared fault state; returning `None` then
+        // drops the armed value rather than leaking it.
+        let produced =
+            outcome.map_completed(|value| ProducedValue::with_disposer(value, branch.disposer));
+        let produced = if !crate::panic::has_runtime_error() && !crate::panic::has_dispatch_fault()
+        {
+            produced
+        } else {
+            None
+        };
+        (idx, produced)
     });
     futures::future::join_all(futs).await
 }
@@ -787,16 +972,49 @@ async fn run_poll_partition(
 /// captured from a fresh Bind are consumed; closures from the caller's
 /// tree are left alone.
 pub fn run_io_trampoline(io_ptr: i64) -> i64 {
+    run_io_trampoline_controlled(
+        io_ptr,
+        CancellationProbe::Never,
+        crate::strand::StrandId::ROOT,
+        ResultDisposer::NONE,
+    )
+    .into_raw()
+}
+
+fn run_io_trampoline_with_bridge(
+    io_ptr: i64,
+    lease: &crate::reactor::WorkerBridgeLease,
+    strand: crate::strand::StrandId,
+    terminal_disposer: ResultDisposer,
+) -> TrampolineOutcome {
+    run_io_trampoline_controlled(
+        io_ptr,
+        CancellationProbe::Bridge(lease),
+        strand,
+        terminal_disposer,
+    )
+}
+
+fn run_io_trampoline_controlled(
+    io_ptr: i64,
+    cancellation: CancellationProbe<'_>,
+    strand: crate::strand::StrandId,
+    terminal_disposer: ResultDisposer,
+) -> TrampolineOutcome {
     io_observer::emit(
         IoEventTag::TrampolineEnter,
         &IoEvent::TrampolineEnter { io_ptr },
     );
-    let result = run_io_trampoline_inner(io_ptr);
+    let outcome = run_io_trampoline_inner(io_ptr, cancellation, strand, terminal_disposer);
+    let result = match outcome {
+        TrampolineOutcome::Completed(value) => value,
+        TrampolineOutcome::Stopped => 0,
+    };
     io_observer::emit(
         IoEventTag::TrampolineExit,
         &IoEvent::TrampolineExit { result },
     );
-    result
+    outcome
 }
 
 /// The walk position after a `Pure`/`Effect`/`Par` arm has produced a result
@@ -807,6 +1025,23 @@ enum Step {
     Advance(i64),
     /// The continuation stack was empty; the walk is complete with this value.
     Finish(i64),
+    /// A bridge loser was cancelled before its next continuation call.
+    Cancelled,
+}
+
+#[derive(Clone, Copy)]
+enum CancellationProbe<'a> {
+    Never,
+    Bridge(&'a crate::reactor::WorkerBridgeLease),
+}
+
+impl CancellationProbe<'_> {
+    fn is_cancelled(self) -> bool {
+        match self {
+            Self::Never => false,
+            Self::Bridge(lease) => lease.is_cancelled(),
+        }
+    }
 }
 
 /// Read the `i64` tag field of an IO node at `node`.
@@ -836,18 +1071,22 @@ unsafe fn read_node_field(node: i64, field_offset: isize) -> i64 {
 /// [`Step::Advance`] with the continuation-produced node (now a fresh subtree)
 /// or [`Step::Finish`] with `value` when no continuation remains.
 fn feed_continuation(
-    cont_stack: &mut Vec<(i64, bool)>,
+    cont_stack: &mut Vec<ContinuationFrame>,
     current: i64,
     current_is_fresh: bool,
-    value: i64,
+    value: ProducedValue,
+    cancellation: CancellationProbe<'_>,
 ) -> Step {
+    if cancellation.is_cancelled() {
+        return Step::Cancelled;
+    }
     match cont_stack.pop() {
-        Some((cont_ptr, cont_is_fresh)) => {
+        Some(cont) => {
             io_observer::emit(
                 IoEventTag::ContPop,
                 &IoEvent::Cont {
-                    cont_ptr,
-                    is_fresh: cont_is_fresh,
+                    cont_ptr: cont.ptr,
+                    is_fresh: cont.is_fresh,
                     new_depth: cont_stack.len() as u32,
                 },
             );
@@ -859,7 +1098,7 @@ fn feed_continuation(
             }
             // Same rule for the closure we're about to invoke: consume it only
             // if it was part of a fresh Bind.
-            let new_io = call_continuation(cont_ptr, value, cont_is_fresh);
+            let new_io = call_continuation(cont.ptr, value.transfer(), cont.is_fresh);
             io_observer::emit(
                 IoEventTag::BindExit,
                 &IoEvent::BindExit {
@@ -873,7 +1112,7 @@ fn feed_continuation(
             if current_is_fresh {
                 crate::drop::dec_shallow_io(current);
             }
-            Step::Finish(value)
+            Step::Finish(value.transfer())
         }
     }
 }
@@ -885,6 +1124,33 @@ enum EffectStep {
     /// A fault was captured in the dispatch-fault slot; abort the trampoline
     /// with the sentinel (int reads the slot, not the return value).
     Aborted,
+}
+
+enum PureStep {
+    Value(i64),
+    AlreadyClaimed,
+}
+
+/// Claim a Pure node's payload obligation before reading or transferring it.
+/// Both trampoline bodies use this one seam.
+fn force_pure_node(node: i64, is_fresh: bool, strand: crate::strand::StrandId) -> PureStep {
+    // SAFETY: callers select this helper only after reading `IO_TAG_PURE`, so
+    // ABI 10 guarantees the aligned state word at absolute offset 32.
+    match unsafe { crate::drop::swap_pure_payload_to_claimed(node) } {
+        crate::drop::PurePayloadState::Claimed => {
+            crate::diagnostics::record_pure_claim_lost(node, strand);
+            crate::panic::set_runtime_error("Pure node forced more than once".to_string());
+            PureStep::AlreadyClaimed
+        }
+        crate::drop::PurePayloadState::Scalar | crate::drop::PurePayloadState::Owned(_) => {
+            crate::diagnostics::record_pure_claim_success(node, strand);
+            // Read only after winning the exchange. The losing path must never
+            // inspect, return, retain, or discharge the payload.
+            let value = unsafe { read_node_field(node, FIELD_0_OFFSET) };
+            io_observer::emit(IoEventTag::PureStep, &IoEvent::PureStep { value, is_fresh });
+            PureStep::Value(value)
+        }
+    }
 }
 
 /// Force an `IO_TAG_EFFECT` node's thunk under the platform fault guard
@@ -929,17 +1195,48 @@ fn force_effect_node(node: i64) -> EffectStep {
     }
 }
 
-/// Read a `Par` node's `count` and branch IO pointers.
+#[derive(Clone, Copy)]
+struct ParBranch {
+    io: i64,
+    disposer: ResultDisposer,
+}
+
+/// Read a `Par` node's `count` and branch IO/disposer descriptors.
 ///
-/// Par node layout: `[header(16) | tag(8) | count(8) | branch_0(8) | …]`.
+/// Par node layout: `[header | tag | count | io_0 | disposer_0 | …]`.
 ///
 /// # Safety
 /// `node` must be a valid `IO_TAG_PAR` node base pointer.
-unsafe fn read_par_branches(node: i64) -> Vec<i64> {
+unsafe fn read_par_branches(node: i64) -> Vec<ParBranch> {
     let count = unsafe { read_node_field(node, FIELD_0_OFFSET) } as usize;
     (0..count)
-        .map(|i| unsafe { read_node_field(node, FIELD_1_OFFSET + (i as isize) * 8) })
+        .map(|i| {
+            let offset = FIELD_1_OFFSET + (i as isize) * 16;
+            ParBranch {
+                io: unsafe { read_node_field(node, offset) },
+                disposer: ResultDisposer::from_raw(unsafe { read_node_field(node, offset + 8) }),
+            }
+        })
         .collect()
+}
+
+fn par_results_buffer(branches: &[ParBranch], results: Vec<ProducedValue>) -> ProducedValue {
+    debug_assert_eq!(branches.len(), results.len());
+    let results_buf = alloc_with_rc(8 + results.len() * 8) as i64;
+    for (index, result) in results.into_iter().enumerate() {
+        // SAFETY: the buffer was allocated with exactly one slot per result.
+        unsafe {
+            crate::heap_access::write_i64(
+                results_buf,
+                FIELD_0_OFFSET + (index as isize) * 8,
+                result.transfer(),
+            )
+        };
+    }
+    ProducedValue::par_buffer(
+        results_buf,
+        branches.iter().map(|branch| branch.disposer).collect(),
+    )
 }
 
 /// Run a `Par` node's branches, marshal their results into a fresh heap results
@@ -949,11 +1246,15 @@ unsafe fn read_par_branches(node: i64) -> Vec<i64> {
 /// caller-tree or fresh-tree branch — it dec's only its own fresh intermediates.
 /// The branches themselves are left live for later `consume_io_tree` (caller
 /// tree) or shallow-dec'd at the enclosing Par level (§3.5.6 detail unchanged).
-fn run_par_node(parent_ptr: i64) -> i64 {
+fn run_par_node(
+    parent_ptr: i64,
+    cancellation: CancellationProbe<'_>,
+    strand: crate::strand::StrandId,
+) -> Option<ProducedValue> {
     // SAFETY: `parent_ptr` is the live `current` Par node base pointer.
     let branch_ptrs = unsafe { read_par_branches(parent_ptr) };
     let count = branch_ptrs.len();
-    let results = dispatch_par_branches_with_trace(&branch_ptrs, parent_ptr);
+    let results = dispatch_par_branches_with_trace(&branch_ptrs, parent_ptr, cancellation, strand)?;
     io_observer::emit(
         IoEventTag::ParJoin,
         &IoEvent::ParJoin {
@@ -962,55 +1263,61 @@ fn run_par_node(parent_ptr: i64) -> i64 {
         },
     );
 
-    // Allocate results buffer via alloc_with_rc so the continuation can dec it
-    // when done. Results stored at FIELD_0_OFFSET + i*8 (offsets 24, 32, 40, …)
-    // matching HeapAdt::field_offset(i).
-    let results_buf = alloc_with_rc(8 + count * 8) as i64; // payload: padding(8) + N*8
-    for (i, &val) in results.iter().enumerate() {
-        // SAFETY: `results_buf` was just allocated with `count` field slots.
-        unsafe {
-            crate::heap_access::write_i64(results_buf, FIELD_0_OFFSET + (i as isize) * 8, val)
-        };
-    }
-    results_buf
+    Some(par_results_buffer(&branch_ptrs, results))
 }
 
 /// Inner loop — all state-machine instrumentation lives here; the outer
 /// `run_io_trampoline` wraps it solely to emit enter/exit bookends. Each node
 /// arm delegates to a named helper (`force_effect_node`, `run_par_node`) and the
 /// shared `feed_continuation` step; the loop body is the dispatcher.
-fn run_io_trampoline_inner(io_ptr: i64) -> i64 {
-    let mut cont_stack: Vec<(i64, bool)> = Vec::new(); // (cont_ptr, is_fresh)
-    let mut current: i64 = io_ptr;
-    let mut current_is_fresh: bool = false;
+fn run_io_trampoline_inner(
+    io_ptr: i64,
+    cancellation: CancellationProbe<'_>,
+    strand: crate::strand::StrandId,
+    terminal_disposer: ResultDisposer,
+) -> TrampolineOutcome {
+    let mut frame = TrampolineFrame {
+        current: io_ptr,
+        current_is_fresh: false,
+        cont_stack: Vec::new(),
+        armed: true,
+    };
 
     loop {
+        if cancellation.is_cancelled() {
+            return TrampolineOutcome::Stopped;
+        }
+        let current = frame.current;
+        let current_is_fresh = frame.current_is_fresh;
         let tag = unsafe { read_node_tag(current) };
+
+        let edge_disposer = frame
+            .cont_stack
+            .last()
+            .map_or(terminal_disposer, |cont| cont.input_disposer);
 
         // The value a Pure/Effect/Par arm produces, ready to feed to the next
         // continuation via the shared `feed_continuation` step. Bind descends
         // in-place and `continue`s without producing a value.
-        let produced: i64 = match tag {
-            t if t == IO_TAG_PURE => {
-                let val = unsafe { read_node_field(current, FIELD_0_OFFSET) };
-                io_observer::emit(
-                    IoEventTag::PureStep,
-                    &IoEvent::PureStep {
-                        value: val,
-                        is_fresh: current_is_fresh,
-                    },
-                );
-                val
-            }
+        let produced = match tag {
+            t if t == IO_TAG_PURE => match force_pure_node(current, current_is_fresh, strand) {
+                PureStep::Value(value) => ProducedValue::with_disposer(value, edge_disposer),
+                PureStep::AlreadyClaimed => return TrampolineOutcome::Stopped,
+            },
             t if t == IO_TAG_EFFECT => match force_effect_node(current) {
-                EffectStep::Value(v) => v,
+                EffectStep::Value(value) => ProducedValue::with_disposer(value, edge_disposer),
                 // Abort: the fault is in the dispatch-fault slot. Return the
                 // sentinel (0), mirroring the `runtime_panic` convention.
-                EffectStep::Aborted => return 0,
+                EffectStep::Aborted => {
+                    frame.armed = false;
+                    return TrampolineOutcome::Stopped;
+                }
             },
             t if t == IO_TAG_BIND => {
                 let inner = unsafe { read_node_field(current, FIELD_0_OFFSET) };
                 let cont = unsafe { read_node_field(current, FIELD_1_OFFSET) };
+                let input_disposer =
+                    ResultDisposer(unsafe { read_node_field(current, FIELD_2_OFFSET) });
                 io_observer::emit(
                     IoEventTag::BindEnter,
                     &IoEvent::BindEnter {
@@ -1022,13 +1329,17 @@ fn run_io_trampoline_inner(io_ptr: i64) -> i64 {
                 // The Bind's cont pointer inherits the freshness of the Bind
                 // node: caller-tree Binds hold caller-tree conts; fresh Binds
                 // (produced by an outer continuation) hold fresh conts.
-                cont_stack.push((cont, current_is_fresh));
+                frame.cont_stack.push(ContinuationFrame {
+                    ptr: cont,
+                    is_fresh: current_is_fresh,
+                    input_disposer,
+                });
                 io_observer::emit(
                     IoEventTag::ContPush,
                     &IoEvent::Cont {
                         cont_ptr: cont,
                         is_fresh: current_is_fresh,
-                        new_depth: cont_stack.len() as u32,
+                        new_depth: frame.cont_stack.len() as u32,
                     },
                 );
                 if current_is_fresh {
@@ -1039,14 +1350,23 @@ fn run_io_trampoline_inner(io_ptr: i64) -> i64 {
                 // current_is_fresh stays as-is: if we were fresh, the inner
                 // (allocated by the same continuation) is also fresh; if we
                 // were not, we're still descending the caller's tree.
-                current = inner;
+                frame.current = inner;
                 continue;
             }
-            t if t == IO_TAG_PAR => run_par_node(current),
+            t if t == IO_TAG_PAR => match run_par_node(current, cancellation, strand) {
+                Some(value) => value,
+                None => return TrampolineOutcome::Stopped,
+            },
             _ => panic!("cranelisp_run_io: unknown IO tag {tag}"),
         };
 
-        match feed_continuation(&mut cont_stack, current, current_is_fresh, produced) {
+        match feed_continuation(
+            &mut frame.cont_stack,
+            current,
+            current_is_fresh,
+            produced,
+            cancellation,
+        ) {
             Step::Advance(new_io) => {
                 // The continuation just ran user code (`call_continuation`). If
                 // that user code raised a runtime error (e.g. div-by-zero via
@@ -1059,12 +1379,17 @@ fn run_io_trampoline_inner(io_ptr: i64) -> i64 {
                 // surfacing point (FIXME 0401). Mirrors the
                 // `EffectStep::Aborted => return 0` convention above.
                 if crate::panic::has_runtime_error() || crate::panic::has_dispatch_fault() {
-                    return 0;
+                    frame.armed = false;
+                    return TrampolineOutcome::Stopped;
                 }
-                current = new_io;
-                current_is_fresh = true;
+                frame.current = new_io;
+                frame.current_is_fresh = true;
             }
-            Step::Finish(value) => return value,
+            Step::Finish(value) => {
+                frame.armed = false;
+                return TrampolineOutcome::Completed(value);
+            }
+            Step::Cancelled => return TrampolineOutcome::Stopped,
         }
     }
 }
@@ -1171,16 +1496,17 @@ fn read_effect_fn_name(io_ptr: i64) -> String {
 /// original indices, plus the first runtime panic ferried off the worker thread
 /// (the fork-join error-slot ferry, test-discovery.md §6).
 struct ItemResult {
-    positioned: Vec<(usize, i64)>,
+    positioned: Vec<(usize, ProducedValue)>,
     error: Option<String>,
+    cancelled: bool,
 }
 
 /// Work item for Par dispatch.
 enum WorkItem {
     /// A single branch to run independently (token=0).
-    Single(usize, i64),
+    Single(usize, ParBranch),
     /// A group of branches to run sequentially (same non-zero resource token).
-    SerialGroup(Vec<(usize, i64)>),
+    SerialGroup(Vec<(usize, ParBranch)>),
 }
 
 /// Dispatch Par branches with resource token serialization.
@@ -1196,15 +1522,20 @@ enum WorkItem {
 /// `dispatch_par_branches` wrapper forwarding `parent_ptr = 0` existed but was
 /// dead — zero callers — and was deleted; LOW-1, FIXME 0370. Pass `0` directly
 /// if an untraced dispatch is ever needed.)
-fn dispatch_par_branches_with_trace(branch_ptrs: &[i64], parent_ptr: i64) -> Vec<i64> {
+fn dispatch_par_branches_with_trace(
+    branches: &[ParBranch],
+    parent_ptr: i64,
+    cancellation: CancellationProbe<'_>,
+    strand: crate::strand::StrandId,
+) -> Option<Vec<ProducedValue>> {
     use rayon::prelude::*;
     use std::collections::HashMap;
 
     // Group branches by resource token.
-    let mut token_groups: HashMap<i64, Vec<(usize, i64)>> = HashMap::new();
-    for (i, &io_ptr) in branch_ptrs.iter().enumerate() {
-        let token = read_resource_token(io_ptr);
-        token_groups.entry(token).or_default().push((i, io_ptr));
+    let mut token_groups: HashMap<i64, Vec<(usize, ParBranch)>> = HashMap::new();
+    for (i, &branch) in branches.iter().enumerate() {
+        let token = read_resource_token(branch.io);
+        token_groups.entry(token).or_default().push((i, branch));
     }
 
     // Build work items.
@@ -1212,7 +1543,7 @@ fn dispatch_par_branches_with_trace(branch_ptrs: &[i64], parent_ptr: i64) -> Vec
     for (&token, entries) in &token_groups {
         if token == 0 {
             // Each unrestricted branch is independent.
-            for &(idx, io_ptr) in entries {
+            for &(idx, branch) in entries {
                 io_observer::emit(
                     IoEventTag::ParSpark,
                     &IoEvent::ParSpark {
@@ -1221,7 +1552,7 @@ fn dispatch_par_branches_with_trace(branch_ptrs: &[i64], parent_ptr: i64) -> Vec
                         token,
                     },
                 );
-                work_items.push(WorkItem::Single(idx, io_ptr));
+                work_items.push(WorkItem::Single(idx, branch));
             }
         } else {
             // Same non-zero token: run sequentially as one work item.
@@ -1254,46 +1585,100 @@ fn dispatch_par_branches_with_trace(branch_ptrs: &[i64], parent_ptr: i64) -> Vec
     let item_results: Vec<ItemResult> = work_items
         .into_par_iter()
         .map(|item| match item {
-            WorkItem::Single(idx, io_ptr) => {
-                let result = run_io_trampoline(io_ptr);
+            WorkItem::Single(idx, branch) => {
+                let result = if cancellation.is_cancelled() {
+                    None
+                } else {
+                    let outcome = run_io_trampoline_controlled(
+                        branch.io,
+                        cancellation,
+                        strand,
+                        branch.disposer,
+                    );
+                    let produced = outcome.map_completed(|value| {
+                        ProducedValue::with_disposer(value, branch.disposer)
+                    });
+                    if cancellation.is_cancelled() {
+                        None
+                    } else {
+                        produced
+                    }
+                };
                 // Worker-side: capture and clear this thread's slot so it does
                 // not pollute later rayon work on the same thread.
                 let err = crate::panic::take_runtime_error();
                 ItemResult {
-                    positioned: vec![(idx, result)],
+                    positioned: result.into_iter().map(|value| (idx, value)).collect(),
                     error: err,
+                    cancelled: cancellation.is_cancelled(),
                 }
             }
             WorkItem::SerialGroup(entries) => {
                 let mut positioned = Vec::with_capacity(entries.len());
                 let mut error: Option<String> = None;
-                for (idx, io_ptr) in entries {
-                    let result = run_io_trampoline(io_ptr);
-                    if let Some(e) = crate::panic::take_runtime_error()
-                        && error.is_none()
-                    {
-                        error = Some(e);
+                let mut cancelled = false;
+                for (idx, branch) in entries {
+                    if cancellation.is_cancelled() {
+                        cancelled = true;
+                        break;
                     }
-                    positioned.push((idx, result));
+                    let outcome = run_io_trampoline_controlled(
+                        branch.io,
+                        cancellation,
+                        strand,
+                        branch.disposer,
+                    );
+                    // Re-arm immediately after the nested trampoline transfers
+                    // its terminal raw value. Any following error/cancellation
+                    // branch then disposes it by dropping `produced`.
+                    let produced = outcome.map_completed(|value| {
+                        ProducedValue::with_disposer(value, branch.disposer)
+                    });
+                    if let Some(e) = crate::panic::take_runtime_error() {
+                        error = Some(e);
+                        // A capacity-1 token group is observably sequential in
+                        // source order. Once this entry fails, later entries
+                        // have not started and the enclosing structured join
+                        // aborts as-if ordinary left-to-right evaluation.
+                        break;
+                    }
+                    if cancellation.is_cancelled() {
+                        cancelled = true;
+                        break;
+                    }
+                    if error.is_none()
+                        && let Some(value) = produced
+                    {
+                        positioned.push((idx, value));
+                    }
                 }
-                ItemResult { positioned, error }
+                ItemResult {
+                    positioned,
+                    error,
+                    cancelled,
+                }
             }
         })
         .collect();
 
     // Place results in correct positions; re-raise the first ferried error into
     // the joining thread's slot (first-error-wins matches sequential semantics).
-    let mut results = vec![0i64; branch_ptrs.len()];
+    let mut results: Vec<Option<ProducedValue>> = (0..branches.len()).map(|_| None).collect();
+    let mut cancelled = cancellation.is_cancelled();
     for item in item_results {
+        cancelled |= item.cancelled;
         for (idx, val) in item.positioned {
-            results[idx] = val;
+            results[idx] = Some(val);
         }
         if let Some(msg) = item.error {
             crate::panic::set_runtime_error(msg);
         }
     }
 
-    results
+    if cancelled {
+        return None;
+    }
+    results.into_iter().collect()
 }
 
 #[cfg(test)]

@@ -7,15 +7,16 @@
 //! A constructor `Def` is compiled ONCE per declaration, so its parameter types
 //! come from the entry's `scheme` and two legal declaration shapes hand that
 //! scheme a non-concrete parameter — a generic field (`(deftype (Option a)
-//! (Some [:a v]))`) and an undeclared field (`(deftype B (Mk [v]))`). In that
+//! (Some [:a v]))`). In that
 //! frame the scope-exit release is not a teardown: it is the balancing half of
 //! the guarded consuming inc `compile_consuming_arg_list` emitted on the same
 //! value, on a word the returned box now also holds (invariant **I-CT**), so the
 //! shallow dec can never observe the last reference.
 //!
 //! **What these cells fence, and what they deliberately do NOT.** These are §10
-//! row 4's positive and edge cells: the balance itself, for both non-concrete
-//! template shapes and for the multi-field case, plus the boundary that being a
+//! row 4's positive and edge cells: the balance itself for generic parameters
+//! (including a nonzero inference-variable identity) and for the multi-field
+//! case, plus the boundary that being a
 //! ctor template is *necessary but not sufficient* (a concrete field takes the
 //! ordinary `drop<T>` path). They hold under any admission key.
 //!
@@ -59,9 +60,9 @@ use std::collections::HashMap;
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    CranelispError, DefKind, Defn, DefnVariant, Expr, FQSymbol, FQTypeName, HeapHeader, ModuleEntry,
-    ModuleFullPath, Scheme, Span, Symbol, SymbolTable, Type, TypeDefInfo, TypeName, Visibility,
-    NULLARY_TAG_THRESHOLD,
+    CallableOrigin, CranelispError, Defn, DefnVariant, Expr, FQSymbol, FQTypeName, HeapHeader,
+    ModuleFullPath, NULLARY_TAG_THRESHOLD, Scheme, Span, Symbol, SymbolTable, SynthSpec,
+    TemplateBody, TemplateKind, Type, TypeDefInfo, TypeName, Visibility,
 };
 
 use crate::test_support::count_release_ops;
@@ -138,50 +139,62 @@ fn ctor_template(
     };
 
     let mut st = SymbolTable::new(module.clone());
-    st.insert(
+    crate::test_support::install_type_fixture(
+        &mut st,
         Symbol::from(type_name),
-        ModuleEntry::TypeDef {
-            info: TypeDefInfo {
-                name: fqtn.clone(),
-                type_params: vec![],
-                constructors: vec![Symbol::from(ctor)],
-            },
-            visibility: Visibility::Public,
-            docstring: None,
+        TypeDefInfo {
+            name: fqtn.clone(),
+            type_params: vec![],
+            constructors: vec![Symbol::from(ctor)],
         },
     );
-    st.insert(
-        Symbol::from(ctor),
-        ModuleEntry::Def {
-            scheme: Scheme {
-                type_vars: vec![],
-                constraints: HashMap::new(),
-                ty: Type::Fn(
-                    fields.iter().map(|(_, ty)| ty.clone()).collect(),
-                    Box::new(adt),
-                ),
-            },
-            visibility: Visibility::Public,
-            docstring: None,
-            param_names: fields.iter().map(|(name, _)| Symbol::from(*name)).collect(),
-            kind: Box::new(DefKind::Constructor {
-                got_slot: 0,
+    let scheme = Scheme {
+        type_vars: vec![],
+        constraints: HashMap::new(),
+        ty: Type::Fn(
+            fields.iter().map(|(_, ty)| ty.clone()).collect(),
+            Box::new(adt),
+        ),
+    };
+    let param_names = fields.iter().map(|(name, _)| Symbol::from(*name)).collect();
+    if scheme.ty.is_concrete() {
+        crate::test_support::install_ctor_fixture(
+            &mut st,
+            Symbol::from(ctor),
+            scheme,
+            param_names,
+            fqtn,
+            0,
+            fields.len(),
+            None,
+            Some(defn.variants[0].clone()),
+            Some(crate::test_support::test_codegen_view(
+                &Symbol::from(ctor),
+                &defn.variants[0],
+                &HashMap::new(),
+            )),
+        );
+    } else {
+        st.install_template(
+            Symbol::from(ctor),
+            scheme,
+            param_names,
+            None,
+            0,
+            CallableOrigin::Ctor {
                 type_name: fqtn,
                 tag: 0,
                 field_count: fields.len(),
                 internal: false,
                 type_def: None,
-                mode_summary: None,
-            }),
-            callees: vec![],
-            trait_origin: None,
-            seq: 0,
-            ast: None,
-            codegen_view: None,
-            code: None,
-            value_use: false,
-        },
-    );
+            },
+            TemplateBody::Synth(SynthSpec::new(defn.variants[0].clone())),
+            TemplateKind::Parametric,
+            vec![],
+            Visibility::Public,
+        )
+        .expect("install constructor template fixture");
+    }
 
     let tables = DashMap::new();
     tables.insert(module, st);
@@ -517,7 +530,10 @@ fn assert_threshold_guarded_rmws(clif: &str, per_op: usize, what: &str) {
                  polarity is inverted\n{clif}",
                 guard.lhs
             );
-            subjects_by_op.entry(op).or_default().push(subject.to_string());
+            subjects_by_op
+                .entry(op)
+                .or_default()
+                .push(subject.to_string());
         }
     }
 
@@ -576,16 +592,14 @@ fn a_generic_ctor_template_balances_its_guarded_inc_with_a_guarded_dec() {
 }
 
 // spec: spec/05-definitions.md §5.3 (deftype); appendix-c-nfr §C.1.4 —
-// `transitive-drop-glue.md` §4.1 / §10 row 4 POSITIVE: the undeclared-field
-// template `(deftype B (Mk [v]))`. `B` is monomorphic and no instantiation ever
-// pins the field, so typecheck leaves it a free type variable. The class is
-// intrinsic to compiling a ctor `Def` ONCE per declaration — not to generics —
-// which is why this shape must take the identical path.
+// `transitive-drop-glue.md` §4.1 / §10 row 4 EDGE: a generic parameter may have
+// any inference-variable identity. Admission must classify the residual
+// variable structurally, not accidentally special-case `Type::Var(0)`.
 #[test]
-fn an_undeclared_field_ctor_template_takes_the_same_admission() {
+fn a_nonzero_generic_var_ctor_template_takes_the_same_admission() {
     let (defn, tables) = ctor_template("B", "Mk", &[("v", Type::Var(7))]);
-    let clif = compile(&defn, &tables).expect("the undeclared-field template must compile");
-    assert_balanced_guarded_pair(&clif, 1, "undeclared-field ctor template");
+    let clif = compile(&defn, &tables).expect("the generic template must compile");
+    assert_balanced_guarded_pair(&clif, 1, "nonzero-var generic ctor template");
 }
 
 // spec: spec/05-definitions.md §5.3 (deftype); appendix-c-nfr §C.1.4 —

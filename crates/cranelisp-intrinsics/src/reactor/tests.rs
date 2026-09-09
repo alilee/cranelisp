@@ -528,6 +528,374 @@ fn poll_once<F: _Future + Unpin>(f: &mut F) -> _Poll<F::Output> {
     _Pin::new(f).poll(&mut cx)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BridgeLifecycleEvent {
+    Spawned,
+    CancelRequested,
+    WorkerExited,
+    RootTeardown,
+}
+
+/// Observe the bridge axis of the executor return gate. At this seam the top
+/// future is complete and the supervisor is empty, so a zero join count is the
+/// only remaining authority for root teardown.
+fn observe_root_teardown(
+    join: &BridgeJoinState,
+    worker_exited: bool,
+    events: &mut Vec<BridgeLifecycleEvent>,
+) -> Result<(), &'static str> {
+    if join.live_count() != 0 {
+        return Ok(());
+    }
+    events.push(BridgeLifecycleEvent::RootTeardown);
+    if worker_exited {
+        Ok(())
+    } else {
+        Err("root teardown preceded blocking-worker exit")
+    }
+}
+
+// spec: spec/10-io.md §10.12.9 / design/intrinsics/s121-c5-intrinsics-visit.md
+// §9.3–§9.5 — cancelling an admitted blocking branch releases its permit
+// immediately, while the worker-owned lease keeps root teardown closed until
+// the worker acknowledges exit.
+#[test]
+fn bridge_join_lifecycle_holds_root_until_cancelled_worker_exits() {
+    let reactor = Reactor::new().expect("reactor");
+    let join = std::sync::Arc::new(BridgeJoinState::new(reactor.bridge_waker()));
+    let pool = TokenPool::new();
+    let permit = acquire_now(&pool, 73, 1, StrandId(1));
+    let (lease, ticket) = join.start_bridge();
+    let guard = CancelBridgeGuard::new(ticket, Some(permit));
+    let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let worker = {
+        let entered = std::sync::Arc::clone(&entered);
+        let release = std::sync::Arc::clone(&release);
+        std::thread::spawn(move || {
+            entered.wait();
+            release.wait();
+            assert!(lease.is_cancelled());
+            drop(lease);
+        })
+    };
+    let mut events = vec![BridgeLifecycleEvent::Spawned];
+
+    entered.wait();
+    drop(guard);
+    events.push(BridgeLifecycleEvent::CancelRequested);
+    assert_eq!(
+        join.live_count(),
+        1,
+        "the worker still owns the only live lease"
+    );
+    observe_root_teardown(&join, false, &mut events)
+        .expect("a live worker must keep the root-teardown gate closed");
+    assert!(!events.contains(&BridgeLifecycleEvent::RootTeardown));
+
+    let _reacquired = acquire_now(&pool, 73, 1, StrandId(2));
+    release.wait();
+    worker.join().expect("held worker exits cleanly");
+    events.push(BridgeLifecycleEvent::WorkerExited);
+    observe_root_teardown(&join, true, &mut events)
+        .expect("worker acknowledgement licenses root teardown");
+
+    assert_eq!(
+        events,
+        vec![
+            BridgeLifecycleEvent::Spawned,
+            BridgeLifecycleEvent::CancelRequested,
+            BridgeLifecycleEvent::WorkerExited,
+            BridgeLifecycleEvent::RootTeardown,
+        ]
+    );
+}
+
+// spec: design/intrinsics/s121-c5-intrinsics-visit.md §9.5 — capability
+// proof for the lifecycle observer. Plant the former owner placement by dropping
+// the lease at branch-future cancellation instead of worker exit; the observer
+// must report the inverted WorkerExited/RootTeardown order.
+#[test]
+fn bridge_join_early_lease_release_plant_detects_teardown_before_worker_exit() {
+    COMPOSED_WORKER_CALL_FINISHED.store(false, std::sync::atomic::Ordering::SeqCst);
+    COMPOSED_RETURN_SEEN.store(false, std::sync::atomic::Ordering::SeqCst);
+    COMPOSED_RETURN_BEFORE_CALL_FINISHED.store(false, std::sync::atomic::Ordering::SeqCst);
+    let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let worker = std::sync::Arc::new(std::sync::Mutex::new(None));
+    set_bridge_gate_observer(Some(composed_bridge_gate_observer));
+    let result = block_on_reactor({
+        let entered = std::sync::Arc::clone(&entered);
+        let release = std::sync::Arc::clone(&release);
+        let worker = std::sync::Arc::clone(&worker);
+        async move |env: &ReactorEnv<'_>| {
+            let (lease, ticket) = env.bridge_join.start_bridge();
+            let guard = CancelBridgeGuard::new(ticket, None);
+            let worker_entered = std::sync::Arc::clone(&entered);
+            let handle = std::thread::spawn(move || {
+                worker_entered.wait();
+                release.wait();
+                COMPOSED_WORKER_CALL_FINISHED.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+            *worker.lock().expect("worker slot") = Some(handle);
+            entered.wait();
+            drop(guard);
+            drop(lease);
+            73
+        }
+    })
+    .expect("reactor");
+    set_bridge_gate_observer(None);
+
+    assert_eq!(result, 73);
+    assert!(COMPOSED_RETURN_SEEN.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(
+        COMPOSED_RETURN_BEFORE_CALL_FINISHED.load(std::sync::atomic::Ordering::SeqCst),
+        "the gate observer must detect the planted early return while the actual \
+         worker remains barrier-held"
+    );
+    release.wait();
+    worker
+        .lock()
+        .expect("worker slot")
+        .take()
+        .expect("worker was spawned")
+        .join()
+        .expect("held planted worker exits cleanly");
+}
+
+static COMPOSED_WORKER_ENTERED: AtomicBool = AtomicBool::new(false);
+static COMPOSED_WORKER_CALL_FINISHED: AtomicBool = AtomicBool::new(false);
+static COMPOSED_GATE_SEEN: AtomicBool = AtomicBool::new(false);
+static COMPOSED_RETURN_SEEN: AtomicBool = AtomicBool::new(false);
+static COMPOSED_RETURN_BEFORE_CALL_FINISHED: AtomicBool = AtomicBool::new(false);
+static COMPOSED_GATE_LIVE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+fn composed_bridge_gate_observer(
+    top_ready: bool,
+    supervisor_empty: bool,
+    live_bridges: usize,
+    returning: bool,
+) {
+    if top_ready && supervisor_empty && live_bridges > 0 {
+        COMPOSED_GATE_LIVE_COUNT.store(live_bridges, std::sync::atomic::Ordering::SeqCst);
+        COMPOSED_GATE_SEEN.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    if returning {
+        COMPOSED_RETURN_BEFORE_CALL_FINISHED.store(
+            !COMPOSED_WORKER_CALL_FINISHED.load(std::sync::atomic::Ordering::SeqCst),
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        COMPOSED_RETURN_SEEN.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+unsafe extern "C" fn entry_gated_winner_poll(
+    state: *mut core::ffi::c_void,
+    _host: *const cranelisp_platform::HostCtx,
+    _waker: *const cranelisp_platform::Waker,
+) -> cranelisp_platform::Poll {
+    if !COMPOSED_WORKER_ENTERED.load(std::sync::atomic::Ordering::Acquire) {
+        return cranelisp_platform::Poll::Pending;
+    }
+    unsafe { *(state as *mut i64) = 91 };
+    cranelisp_platform::Poll::Ready
+}
+
+unsafe extern "C" fn immediate_composed_poll(
+    state: *mut core::ffi::c_void,
+    _host: *const cranelisp_platform::HostCtx,
+    _waker: *const cranelisp_platform::Waker,
+) -> cranelisp_platform::Poll {
+    unsafe { *(state as *mut i64) = 7 };
+    cranelisp_platform::Poll::Ready
+}
+
+fn composed_poll_node(poll_fn: cranelisp_platform::PollFn) -> i64 {
+    let closure = crate::alloc::alloc_with_rc(24) as i64;
+    unsafe {
+        crate::heap_access::write_i64(closure, 16, poll_fn as *const () as i64);
+        crate::heap_access::write_i64(closure, 24, 0);
+        crate::heap_access::write_i64(closure, 32, 0);
+    }
+    let node = crate::alloc::alloc_with_rc(32) as i64;
+    unsafe {
+        crate::heap_access::write_i64(node, 16, cranelisp_platform::IO_TAG_EFFECT_POLL);
+        crate::heap_access::write_i64(node, 24, closure);
+        crate::heap_access::write_i64(node, 32, 0);
+        crate::heap_access::write_i64(node, 40, 1);
+    }
+    node
+}
+
+fn composed_held_effect(
+    join: std::sync::Arc<BridgeJoinState>,
+    entered: std::sync::mpsc::Sender<()>,
+    release: std::sync::Arc<std::sync::Barrier>,
+) -> i64 {
+    let thunk: Box<Box<dyn FnOnce() -> cranelisp_platform::EffectOutcome>> =
+        Box::new(Box::new(move || {
+            COMPOSED_WORKER_ENTERED.store(true, std::sync::atomic::Ordering::Release);
+            entered.send(()).expect("report worker entry");
+            let _ = join.waker.wake();
+            release.wait();
+            COMPOSED_WORKER_CALL_FINISHED.store(true, std::sync::atomic::Ordering::SeqCst);
+            cranelisp_platform::EffectOutcome {
+                value: 41,
+                fault_cause: std::ptr::null(),
+                fault_len: 0,
+            }
+        }));
+    let node = crate::alloc::alloc_with_rc(40) as i64;
+    unsafe {
+        crate::heap_access::write_i64(node, 16, cranelisp_platform::IO_TAG_EFFECT);
+        crate::heap_access::write_i64(node, 24, Box::into_raw(thunk) as i64);
+        crate::heap_access::write_i64(node, 32, 0);
+        crate::heap_access::write_i64(node, 40, 0);
+        crate::heap_access::write_i64(node, 48, 1);
+    }
+    node
+}
+
+fn composed_par_node(branches: &[i64]) -> i64 {
+    let node = crate::alloc::alloc_with_rc(16 + branches.len() * 16) as i64;
+    unsafe {
+        crate::heap_access::write_i64(node, 16, cranelisp_platform::IO_TAG_PAR);
+        crate::heap_access::write_i64(node, 24, branches.len() as i64);
+        for (index, branch) in branches.iter().copied().enumerate() {
+            let offset = 32 + index as isize * 16;
+            crate::heap_access::write_i64(node, offset, branch);
+            crate::heap_access::write_i64(node, offset + 8, 0);
+        }
+    }
+    node
+}
+
+fn composed_select_node(branches: &[i64]) -> i64 {
+    let branch_vec = crate::alloc::alloc_with_rc(24) as i64;
+    let data = crate::vec_runtime::alloc_data_buffer(branches.len() as i64);
+    unsafe {
+        crate::heap_access::write_i64(
+            branch_vec,
+            crate::vec_runtime::LEN_OFFSET as isize,
+            branches.len() as i64,
+        );
+        crate::heap_access::write_i64(
+            branch_vec,
+            crate::vec_runtime::CAP_OFFSET as isize,
+            branches.len() as i64,
+        );
+        crate::heap_access::write_i64(
+            branch_vec,
+            crate::vec_runtime::DATA_PTR_OFFSET as isize,
+            data as i64,
+        );
+        for (index, branch) in branches.iter().copied().enumerate() {
+            crate::heap_access::write_i64(data as i64, index as isize * 8, branch);
+        }
+    }
+    let node = crate::alloc::alloc_with_rc(24) as i64;
+    unsafe {
+        crate::heap_access::write_i64(node, 16, cranelisp_platform::IO_TAG_SELECT);
+        crate::heap_access::write_i64(node, 24, branch_vec);
+        crate::heap_access::write_i64(node, 32, 0);
+    }
+    node
+}
+
+// spec: spec/10-io.md §10.12.9 / design/intrinsics/s121-c5-intrinsics-visit.md
+// §9.2–§9.5 — an actual blocking worker inside a Select loser's nested Par
+// keeps the root drive open after the winner has completed. The worker-entry
+// signal wakes the poll winner; the barrier then holds the entered call until
+// the test has observed the post-top-result return gate with one live lease.
+#[test]
+fn select_nested_par_holds_root_after_winner_until_entered_worker_exits() {
+    COMPOSED_WORKER_ENTERED.store(false, std::sync::atomic::Ordering::SeqCst);
+    COMPOSED_WORKER_CALL_FINISHED.store(false, std::sync::atomic::Ordering::SeqCst);
+    COMPOSED_GATE_SEEN.store(false, std::sync::atomic::Ordering::SeqCst);
+    COMPOSED_RETURN_SEEN.store(false, std::sync::atomic::Ordering::SeqCst);
+    COMPOSED_RETURN_BEFORE_CALL_FINISHED.store(false, std::sync::atomic::Ordering::SeqCst);
+    COMPOSED_GATE_LIVE_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
+
+    let allocs_before = crate::alloc::alloc_count();
+    let deallocs_before = crate::alloc::dealloc_count();
+    let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let root = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
+    let returned = std::sync::Arc::new(AtomicBool::new(false));
+
+    let execution = {
+        let release = std::sync::Arc::clone(&release);
+        let root = std::sync::Arc::clone(&root);
+        let returned = std::sync::Arc::clone(&returned);
+        std::thread::spawn(move || {
+            set_bridge_gate_observer(Some(composed_bridge_gate_observer));
+            let outcome = block_on_reactor(async |env| {
+                let held = composed_held_effect(
+                    std::sync::Arc::clone(&env.bridge_join),
+                    entered_tx,
+                    release,
+                );
+                let immediate = composed_poll_node(immediate_composed_poll);
+                let loser = composed_par_node(&[held, immediate]);
+                let winner = composed_poll_node(entry_gated_winner_poll);
+                let select = composed_select_node(&[loser, winner]);
+                root.store(select, std::sync::atomic::Ordering::Release);
+                crate::io::run_io_trampoline_inner_async(
+                    select,
+                    env,
+                    StrandId::ROOT,
+                    crate::io::ResultDisposer::NONE,
+                )
+                .await
+            })
+            .expect("reactor");
+            returned.store(true, std::sync::atomic::Ordering::Release);
+            set_bridge_gate_observer(None);
+            let root = root.load(std::sync::atomic::Ordering::Acquire);
+            crate::drop::consume_io_tree(root);
+            outcome
+        })
+    };
+
+    entered_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("the blocking worker enters before the winner completes");
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while !COMPOSED_GATE_SEEN.load(std::sync::atomic::Ordering::SeqCst) && Instant::now() < deadline
+    {
+        std::thread::yield_now();
+    }
+    assert!(
+        COMPOSED_GATE_SEEN.load(std::sync::atomic::Ordering::SeqCst),
+        "the executor must observe a completed top future while the held bridge is live"
+    );
+    assert_eq!(
+        COMPOSED_GATE_LIVE_COUNT.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the held worker owns the one remaining bridge lease"
+    );
+    assert!(
+        !returned.load(std::sync::atomic::Ordering::Acquire),
+        "block_on must not return while the entered worker remains barrier-held"
+    );
+
+    release.wait();
+    let outcome = execution.join().expect("executor thread exits cleanly");
+    assert_eq!(outcome, crate::io::TrampolineOutcome::Completed(91));
+    assert!(COMPOSED_WORKER_CALL_FINISHED.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(COMPOSED_RETURN_SEEN.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(
+        !COMPOSED_RETURN_BEFORE_CALL_FINISHED.load(std::sync::atomic::Ordering::SeqCst),
+        "root return must follow the held worker call and lease release"
+    );
+    assert_eq!(
+        crate::alloc::alloc_count() - allocs_before,
+        crate::alloc::dealloc_count() - deallocs_before,
+        "the composed cancelled tree is released exactly once after worker exit"
+    );
+}
+
 // spec: design/intrinsics/reactor.md §2.8 / §2.9 (the `AcquirePermit` seam) — a pool
 // keyed by token, each slot sized from the node-read `capacity`: capacity-N ⇒ N
 // acquires return `Ready`, the (N+1)th `Pending` until a `Permit` drops. Distinct
@@ -829,17 +1197,16 @@ fn cap_held_off_while_blocking_bridge_in_flight() {
     let start = Instant::now();
     let result = block_on_reactor_capped(
         async |env| {
-            // Mirror `run_blocking_branch`: bump the bridge counter, offload to
-            // rayon across the wakeable `oneshot`, await, then drop the counter.
+            // Mirror `run_blocking_branch`: create the worker-owned bridge lease,
+            // offload across the wakeable `oneshot`, then let worker exit acknowledge.
             let (tx, rx) = futures::channel::oneshot::channel::<i64>();
-            env.pending_bridges.set(env.pending_bridges.get() + 1);
+            let (lease, _ticket) = env.bridge_join.start_bridge();
             rayon::spawn(move || {
                 std::thread::sleep(work);
                 let _ = tx.send(42);
+                drop(lease);
             });
-            let v = rx.await.unwrap_or(-1);
-            env.pending_bridges.set(env.pending_bridges.get() - 1);
-            v
+            rx.await.unwrap_or(-1)
         },
         crate::reactor::DriveMode::OneShot,
         cap,

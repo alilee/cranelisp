@@ -15,10 +15,12 @@ use std::collections::HashMap;
 
 use cranelift_module::{FuncOrDataId, Module};
 use cranelisp_types::{
-    ConcreteType, DefKind, Defn, DefnVariant, Expr, FQSymbol, FQTypeName, ModuleFullPath, Scheme,
-    Span, Symbol, SymbolTable, Type, TypeDefInfo, TypeName, Visibility, drop_glue_symbol_name,
+    ConcreteType, Defn, DefnVariant, Expr, FQSymbol, FQTypeName, ModuleFullPath, Scheme, Span,
+    Symbol, SymbolTable, Type, TypeDefInfo, TypeName, Visibility, drop_glue_symbol_name,
 };
 use dashmap::DashMap;
+
+use crate::test_support::{install_ctor_fixture, install_type_fixture};
 
 fn module_path() -> ModuleFullPath {
     ModuleFullPath::from("user")
@@ -34,49 +36,33 @@ fn wrap_tables() -> DashMap<ModuleFullPath, SymbolTable> {
     let tables = DashMap::new();
     let mut st = SymbolTable::new(module_path());
     let fqtn = wrap_fqtn();
-    st.insert(
+    install_type_fixture(
+        &mut st,
         Symbol::from("Wrap"),
-        cranelisp_types::ModuleEntry::TypeDef {
-            info: TypeDefInfo {
-                name: fqtn.clone(),
-                type_params: vec![],
-                constructors: vec![Symbol::from("MkWrap")],
-            },
-            visibility: Visibility::Public,
-            docstring: None,
+        TypeDefInfo {
+            name: fqtn.clone(),
+            type_params: vec![],
+            constructors: vec![Symbol::from("MkWrap")],
         },
     );
-    st.insert(
+    install_ctor_fixture(
+        &mut st,
         Symbol::from("MkWrap"),
-        cranelisp_types::ModuleEntry::Def {
-            scheme: Scheme {
-                type_vars: vec![],
-                constraints: HashMap::new(),
-                ty: Type::Fn(
-                    vec![Type::String],
-                    Box::new(Type::ADT(fqtn.clone(), vec![])),
-                ),
-            },
-            visibility: Visibility::Public,
-            docstring: None,
-            param_names: vec![Symbol::from("s")],
-            kind: Box::new(DefKind::Constructor {
-                got_slot: 0,
-                type_name: fqtn,
-                tag: 0,
-                field_count: 1,
-                internal: false,
-                type_def: None,
-                mode_summary: None,
-            }),
-            callees: vec![],
-            trait_origin: None,
-            seq: 0,
-            ast: None,
-            codegen_view: None,
-            code: None,
-            value_use: false,
+        Scheme {
+            type_vars: vec![],
+            constraints: HashMap::new(),
+            ty: Type::Fn(
+                vec![Type::String],
+                Box::new(Type::ADT(fqtn.clone(), vec![])),
+            ),
         },
+        vec![Symbol::from("s")],
+        fqtn,
+        0,
+        1,
+        None,
+        None,
+        None,
     );
     tables.insert(module_path(), st);
     tables

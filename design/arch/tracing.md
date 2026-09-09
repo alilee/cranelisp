@@ -550,7 +550,7 @@ descriptor at codegen, so even the formatting becomes a pure intrinsic.
 ## 5. Discovery moves into backend codegen — swap ALL symbol tables
 
 **Discovery is no longer an int session-orchestration step.** The prior `build_traced_fns`
-(`src/session_v4.rs:2727`) iterated the session's typecheck products, applied the project-root filter,
+(historical `src/session_v4.rs:2727`) iterated the session's typecheck products, applied the project-root filter,
 and handed a pre-built `traced_fns: Option<&[TracedFnInfo]>` to backend through the compile context.
 The target **deletes that** and computes the traced set **inside backend's trace-codegen**, because
 backend already receives `symbol_tables` in `compile_to_module` (BC §3 — "`symbol_tables` is the single

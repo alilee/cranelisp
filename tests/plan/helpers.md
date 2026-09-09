@@ -115,11 +115,19 @@ pub struct CrOutput {
     pub status: ExitStatus,
     pub stdout: String,        // utf-8 lossy
     pub stderr: String,
-    pub elapsed: Duration,
+    pub elapsed: Duration,     // compiler-child lifecycle; excludes linked executable
+    pub linked_execution_elapsed: Option<Duration>, // link_then_run executable only
     pub tmpdir: PathBuf,       // for inspecting cache, .o, etc.
     // _td: held internally so it lives until CrOutput drops
 }
 ```
+
+`elapsed` deliberately retains its established compiler-child lifecycle meaning,
+including spawn and completion detection. For `link_then_run`,
+`linked_execution_elapsed` is `Some` only when the produced executable was
+actually launched, and measures that executable alone; it excludes compilation
+and linking. Runtime-performance guards for a linked program use the latter,
+while ordinary `--run` result and ordering assertions remain independent.
 
 Assertion methods on `CrOutput`:
 

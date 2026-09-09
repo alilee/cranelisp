@@ -461,6 +461,43 @@ Phase 1 disposes them with the user; `audit` files nothing.
 
 ## 9. Disposition trail
 
-*(Appended at Sprint 121 Phase 1 by `sprint` with the user: accepted →
-filed against the proposed owner; declined → recorded here with rationale.
-This assessment is a point-in-time record and is not rewritten.)*
+### Sprint 121 evidence reconciliation — 2026-09-09
+
+Owner: `sprint`. The user authorized checking these recommendations before
+closure. After reviewing the statuses below, the user approved carrying the
+remaining tooling/documentation work to the next sprint, with publication
+separately approved at close. Sections 1–8 remain the original assessment;
+the statuses below describe implementation completeness, not carry approval.
+
+| Recommendation | Verified status | Evidence and remaining decision |
+|---|---|---|
+| R-1 — publication and reproducibility | **Original publication repaired; current reproducibility not established.** | The approved S120 close published package `76f6432` and committed consumer wiring/hooks as `9330f32`; see `sprints/archive/sprint-120.md` §Outcome and its close record. Current gitlink is `76f6432`, and `.claude/settings.json` is tracked. Current `.agents` has five modified files, however, and `CONSUMING.md` still combines the fresh-clone promise with a local-unpublished contribution window. S121 commit/publication and the package-text decision are not complete or newly authorized. |
+| R-2 — principle first-read detection | **Met.** | `scripts/verify-role-wiring.py` implements the obligation as W6 rather than W2, checks both host adapters for the four obliged roles, and has retained planted-fault evidence. Current verifier reports four first-read roles and zero findings; `tests/role_wiring.rs` carries the fence. |
+| R-3 — ownership and effort | **Partial.** | `sprints/METHOD.md` §3.1 assigns host adapters/hooks to sprint and repository verifiers to test; root `CLAUDE.md` §Models declares shared `high` allocation. Those rows do not assign the remaining `AGENTS.md`, `.codex/`, or `.github/copilot-instructions.md` surfaces. Their ownership still requires a user decision, not inference from adjacency. |
+| R-4 — generate adapters / decide Copilot | **Open.** | Both adapter inventories remain hand-maintained; the current wiring verifier measures them. No adapter generator or explicit Copilot keep/drop disposition was found in the inspected scripts, package tools, or sprint records. This is an economy recommendation, not a demonstrated compiler defect. |
+| R-5 — live review guidance and corpus | **Met.** | `design/review/CLAUDE.md` names the live shared contract/current review standard. The current live corpus includes that standing file; the citation ratchet reports zero findings. Broader undated-review lifecycle debt is not silently included in this closure. |
+| R-6 — package transport/summary repairs | **Partial.** | Current outcome precedence, open/unavailable summary accounting, hook stopped-vs-success distinction, deleted adapter fallback and writer docstring are repaired. Fresh local Python suites pass 23/23 transport and 10/10 summary cases. A missing-contract refusal test is still absent; the exit-130 interruption test does not exercise an actual negative SIGTERM return status. These two requested evidence legs remain open. |
+| R-7 — dispatch/session parity | **Partial; historical sessions recovered, full parity unproven.** | `.local/subagents.jsonl` retains the two audit-era review sessions listed below as Claude/Fable, not Codex. The archived sprint dispatch table still lacks session IDs, and no complete telemetry-to-plan reconciliation was established. Native Codex role rows in S121 are recorded by agent identity; that does not prove parity with the Claude telemetry file. Do not manufacture missing phase attribution. |
+| R-8 — ownership header / retired references | **Partial.** | `tests/citation_drift.rs` now cites METHOD §3.1 for ownership. `tests/CLAUDE.md` still assigns live work to `/testing`; `design/CLAUDE.md` still names `/stdlib` and the nonexistent METHOD §1.4 (current content split is §1.2). Those remaining record repairs are not complete. |
+
+**R-1 provenance limit.** A read-only remote query on 2026-09-09 returned
+package `origin/main = 3b816602b26efc3e5b03d600798d1112f6085d61`; the local
+tracking ref still names `76f6432`. The remote tip object is not present
+locally. No fetch, merge, pin update, fresh clone, commit or push was performed;
+the historical publication evidence is not a fresh remote-ancestry proof.
+
+**R-7 recovered review identities.** The closed telemetry rows identify
+`375fe048-959d-4da1-ad76-4d7344cecb3d` and
+`db287613-bf3d-42a2-91e5-a97e002b03e6`, both provider `claude`, reported model
+`claude-fable-5`, effort `high`, exit 0. This resolves those executions' provider
+identity, not the complete historical phase-to-session mapping.
+
+**Checks and decision boundary.** QA's clause evidence is retained at
+`/tmp/cranelisp-s121-phase6b-M0qqm2/audit-r256.md`. This reconciliation ran
+local Python checks and read-only source/history/remote queries; it made no
+implementation change. Only R-2 and R-5 are fully met as written. The other
+rows retain their stated residuals, now explicitly accepted as next-sprint
+carries in [ACT-0957](../sprints/actions/ACT-0957-shared-role-audit-residuals.md).
+Sprint owns the coordinated handoff to the named roles. This disposition does
+not approve implementation choices, commit/publication operations, or reopening
+compiler work.
