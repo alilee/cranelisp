@@ -35,8 +35,7 @@ There is **no middle integration tier.** Tests do NOT construct `Sess`,
 `SharedState`, `SymbolTable`, or any internal session primitive. If a feature
 cannot be expressed e2e, that is a gap in the binary's testability surface —
 file a FIXME (`target: /qa` or `/arch`), do not bridge with an internal-API
-helper. The earlier four-layer pyramid is retired; `plan/legacy/strategy.md`
-preserves it for provenance only.
+helper. The earlier four-layer pyramid is retired (Git history).
 
 ## Plan documents (`plan/`, owned by `/qa`)
 
@@ -48,7 +47,6 @@ preserves it for provenance only.
 | `coverage-gaps.md` | Per-crate coverage analysis. |
 | `negative-coverage.md` | `[Tested]` → `[Tested+Neg]` upgrade register. |
 | `helpers.md` | E2E helper API design (contract for `tests/helpers/`). |
-| `legacy/` | Superseded plans (rings, four-layer strategy). Provenance only. |
 
 Per-sprint plans accumulate as `plan/s{NN}-*.md` (and `spec_*.py` traceability
 tooling); those are `/qa`'s working documents, not durable references.

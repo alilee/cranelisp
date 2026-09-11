@@ -483,7 +483,9 @@ fn platform_dirs_neg_config_only_garbage_fails_to_load() {
 // (carry: legacy/v4_pipeline.rs::v4_platform_form,
 //         legacy/v4_pipeline.rs::v4_platform_stdio_print collapsed)
 // REGRESSION-GUARD: Sprint 56 baseline failure cluster — flipped green
-// per `tests/plan/legacy/ring4.md` line 712 acceptance criteria.
+// per the retired ring4 plan §G.5 (v4_platform five-failure
+// identification) acceptance criteria; Git history:
+// `git show 7f834bf6:tests/plan/legacy/`.
 #[test]
 fn platform_form_with_stdio_compiles_in_run_mode() {
     let out = Cranelisp::new()

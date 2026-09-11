@@ -1122,7 +1122,7 @@ case for REPL-time entry-module updates.
 **FIXME(/int)** — `session_v4::regenerate_backing_file` or the enclosing
 REPL-eval path is the right site. This belongs to `/int` (session and
 REPL orchestration), not `/backend` (codegen). The dual-path-persistence
-collapse doc (`design/int/dual-path-persistence-collapse.md`) already
+collapse doc (S59/S60 persistence migration record (`dual-path-persistence-collapse.md` in `git show 7f834bf6:design/int/`)) already
 names this class of bug; this is a residual site the Sprint 59 collapse
 did not cover.
 

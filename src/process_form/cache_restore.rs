@@ -557,8 +557,9 @@ pub(super) fn register_transitive_cached_imports(
             continue;
         }
         // Sprint 60 Workstream E-1 — route the cache-miss branch through the
-        // `register_dep` shim (worker.rs:1327), closing the 6th per-dep
-        // prologue site. See `design/int/dual-path-persistence-collapse.md §8.1`.
+        // `register_dep` shim (`src/process_form/dependency.rs`), closing the
+        // 6th per-dep prologue site. See `design/int/int.md §6.1` — dep
+        // registration inside the single `register_module` recursion.
         // The shim publishes dep_sexps BEFORE returning (Sprint 58 W6 Defect 1
         // ordering), stashes source_text for /source introspection, records the
         // source hash, and updates file_to_module. Silent-continue-on-error is
@@ -589,7 +590,8 @@ pub(super) fn register_transitive_cached_imports(
         // it `inmem_done`. We do NOT block here (we are inside the outer
         // module's typecheck); the outer module either already typechecked or
         // its own normal import-block chain handles its dependency on this dep.
-        // `delays_other=true` matches worker-side consensus (see §8.2 rationale).
+        // `delays_other=true` matches worker-side consensus — every dep site
+        // passes `true` (`design/int/int.md §6.1`, queue-priority rule).
         ctx.scheduler
             .register_module(transitive_dep.clone(), dep_sexps, true);
     }

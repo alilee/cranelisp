@@ -13,7 +13,7 @@ This document covers the Phase 4 G9/G11 migration: priority workers become sessi
 - `design/arch/CLAUDE.md` Decision 31 (canonical JIT-lifetime story: per-batch, `Arc<Jit>`, custom `Drop → unsafe free_memory()`).
 - `design/arch/concurrent-pipeline.md` §5.1 (priority worker ladder), §6 (`CompileScheduler` interface), §11 (invariants).
 - `design/arch/CLAUDE.md` Principle 11 (single pipeline, mode parameters), Decision 23 (uniform codegen).
-- `design/int/phase2-codegen-convergence.md` §9.1 (module-level exclusivity via scheduler).
+- `design/int/int.md` §6 (module-level exclusivity via the scheduler; per-symbol write discipline in §4.1).
 - `sprints/SPRINT.md` §Architecture Review condition 4 (descope triggers for G9).
 - Existing nice worker implementation (historical `src/session_v4.rs:665–693`) — reference pattern for persistent workers.
 - `sketch/` — **no sketch antecedent for this subsystem**: the sketch was single-threaded (no scheduler, no workers). §3 below covers this.
@@ -179,8 +179,8 @@ pub fn eval(&mut self, src: &str) -> Result<Option<EvalResult>, CranelispError> 
     // Wait for typecheck + inmem codegen for this module.
     self.shared.scheduler.wait_module_complete(&self.current_module)?;
 
-    // Read __expr pointer from the symbol table (post-G6 — see §13.6 of
-    // phase2-codegen-convergence.md). Call it via a fresh per-eval JIT
+    // Read __expr pointer from the symbol table (`ModuleEntry::Def.code` —
+    // int.md §5). Call it via a fresh per-eval JIT
     // wrapped in the custom-Drop Jit newtype (Decision 31).
     let ptr = /* … */;
     let result = call_repl_expr(ptr)?;

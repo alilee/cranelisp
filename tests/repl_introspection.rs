@@ -3083,8 +3083,10 @@ fn bare_primitive_lookup_not_empty_neg() {
 
 // spec: design/int/bare-primitive-value-path.md §2 (three paths) + §5
 //       (expected output) — anti-divergence guard between bare-value /
-//       introspection / call paths. Cross-ref design/int/dual-path-persistence-collapse.md
-//       (dual-path anti-pattern).
+//       introspection / call paths. Cross-ref Principle 7 (single source
+//       of truth) — the divergent-duplication class — and its
+//       orchestration-surface instance, closed by the S59 persistence
+//       collapse and recorded at `design/int/int.md` §6/§7.
 // (carry: legacy/sprint61_bare_primitive.rs::bare_primitive_parallel_paths_converge_on_same_attribution)
 #[test]
 fn bare_primitive_parallel_paths_converge_on_same_attribution() {

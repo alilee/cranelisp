@@ -430,7 +430,7 @@ disposition = "established"
 
 [[document_class]]
 name = "int-historical-records"
-patterns = ["design/int/cache-prelude-restoration-repro.md", "design/int/concurrency/archive/README.md", "design/int/dual-path-persistence-collapse.md", "design/int/phase2-codegen-convergence.md", "design/int/pipeline-convergence.md", "design/int/platform-registry-removal.md", "design/int/s102-defect-wave.md", "design/int/s76-implementation-plan.md", "design/int/s77-int-restructure.md", "design/int/s78-entry-module.md", "design/int/s78-implementation.md", "design/int/s87-decomposition.md", "design/int/step4-macro-blocking.md", "design/int/step5-lazy-discovery.md", "design/int/step7-repl-eval.md", "design/int/step8-platform-registry.md", "design/int/step9-error-cascade.md", "design/int/wave-3a-process-form.md"]
+patterns = ["design/int/cache-prelude-restoration-repro.md", "design/int/concurrency/archive/README.md", "design/int/platform-registry-removal.md", "design/int/s102-defect-wave.md", "design/int/s76-implementation-plan.md", "design/int/s77-int-restructure.md", "design/int/s78-entry-module.md", "design/int/s78-implementation.md", "design/int/s87-decomposition.md", "design/int/step4-macro-blocking.md", "design/int/step5-lazy-discovery.md", "design/int/step7-repl-eval.md", "design/int/step8-platform-registry.md", "design/int/step9-error-cascade.md", "design/int/wave-3a-process-form.md"]
 owner = "design"
 purpose = "Superseded Binary/int working, migration and slice records retained solely for the audit trail described by the S110 triage."
 established_by = "design/int/CLAUDE.md"

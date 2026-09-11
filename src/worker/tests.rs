@@ -1581,7 +1581,8 @@ fn dlsym_host_symbol_misses_unexported_name() {
 // construction (Defect-B / OQ-4). The behaviour is guarded e2e by
 // `tests/spec_08_modules.rs::defn_before_import_resumes_correctly_after_dep_load`.
 
-// spec: design/int/phase2-codegen-convergence.md §5 — typed codegen projection
+// spec: design/int/int.md §4.2 — typed codegen projection (the worker's name
+// list is the entry's `defined_symbols()` set)
 #[test]
 fn priority_worker_batch_via_codegen_targets_filter() {
     // Seed a symbol table with a cross-section of entries. Only the entries
@@ -1701,7 +1702,8 @@ fn priority_worker_routes_batch_artifacts_to_introspection() {
     }
 }
 
-// spec: design/int/phase2-codegen-convergence.md §5 — GOT slot registration on compile completion
+// spec: design/int/int.md §7.1 — GOT slot contents are filled on compile
+// completion (typecheck pins the layout; codegen fills the slot)
 #[test]
 fn priority_worker_stores_code_ptr_in_got_slot() {
     // Given a symbol_tables entry with got_slot: Some(3), verify that after
@@ -1761,8 +1763,8 @@ fn priority_worker_stores_code_ptr_in_got_slot() {
     );
 }
 
-// spec: design/int/phase2-codegen-convergence.md §13 — G6 write onto ModuleEntry::Def.code
-// + macro-clause compile via unified path.
+// spec: design/int/int.md §4.2 + §5 — S57 G6 write of `Code` onto the
+// symbol-table entry + macro-clause compile via unified path.
 #[test]
 fn inline_jit_codegen_for_names_compiles_single_defn() {
     // Exercises the macro-clause migration path: a single-element `names`
@@ -1859,8 +1861,9 @@ fn inline_jit_codegen_for_names_compiles_single_defn() {
     );
 }
 
-// spec: design/int/phase2-codegen-convergence.md §13.2 — priority worker
-// writes `code: Some(_)` onto the symbol-table entry via `compile_to_module`.
+// spec: design/int/int.md §4.2 — the priority worker is the sole writer: it
+// writes `code: Some(_)` onto the symbol-table entry via `compile_to_module`,
+// with no session-side merge step.
 #[test]
 fn priority_worker_writes_code_to_entry_via_compile_to_module() {
     // A trivial single-symbol batch flows through the worker's unified
@@ -1901,8 +1904,8 @@ fn priority_worker_writes_code_to_entry_via_compile_to_module() {
     }
 }
 
-// spec: design/int/phase2-codegen-convergence.md §13.3 — introspection reads
-// compiled-code presence from the symbol table (not the deleted
+// spec: design/int/int.md §5.4 — introspection reads compiled-code presence
+// through the symbol-table entry's code accessor (not the deleted
 // `CodegenProduct` DashMap).
 #[test]
 fn introspection_reads_code_from_symbol_table_not_codegen_products() {
@@ -1960,9 +1963,9 @@ fn introspection_reads_code_from_symbol_table_not_codegen_products() {
     );
 }
 
-// spec: design/int/phase2-codegen-convergence.md §13.6 — REPL `__expr`
-// flows through `compile_to_module` like any name (no special case in
-// `finalize_module`).
+// spec: design/int/int.md §4.2 + §8.1 — REPL `__expr` flows through
+// `compile_to_module` on the same per-symbol path as any name (no special
+// case in `finalize_module`).
 #[test]
 fn repl_expr_finalize_module_no_longer_uses_special_case() {
     // Register `__expr` as a synthetic zero-arg defn on the symbol table

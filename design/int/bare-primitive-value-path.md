@@ -58,9 +58,10 @@ Typing `add-i64` at a REPL prompt errors `undefined variable`, but
 evaluates to `5`. Re-exported `primitives` names are visible on the
 introspection path and the call path but NOT on the bare-value path.
 
-This is a fresh instance of the dual-path anti-pattern established in
-Sprint 59 (see `design/int/dual-path-persistence-collapse.md`) — three
-code paths for what should be one resolution.
+This is a fresh instance of the divergent-duplication anti-pattern
+(Principle 7 — single source of truth; the S59 persistence collapse was
+the same shape at the orchestration surface) — three code paths for what
+should be one resolution.
 
 ## 2. The three paths
 
@@ -163,9 +164,10 @@ criterion is that path 1 and path 2 produce the same output string
 - `spec/08-modules.md §8.8.1` + §8.9 primitives paragraph (line 544) —
   primitives are brought into user scope via the implicit prelude
   import as bare names; this is spec-expected behaviour.
-- `design/int/dual-path-persistence-collapse.md` — the "two paths
-  must not diverge" anti-pattern Sprint 59 established; bare-value vs
-  introspection vs call is a third instance.
+- `design/int/int.md` §6/§7 — the single-orchestrator shape the S59
+  persistence collapse converged on; bare-value vs introspection vs
+  call is the same "two paths must not diverge" class at the
+  resolution surface.
 - **Decision 22** (`defined_symbols()` predicate, if the divergence
   turns out to be in which symbol-filter the bare-value handler
   consults) — the fix aligns all three paths on the same filter.
@@ -216,6 +218,6 @@ from the v4 persistent-worker / `CompilerSession` restructure where
 `check_bare_symbol_introspection` was added to produce the
 spec-mandated introspection card (`repl/spec.md §1.1`) without a round
 trip through codegen. The divergence is incidental to that
-restructure, not a re-discovered sketch pattern. See
-`design/int/dual-path-persistence-collapse.md` for the broader class
-of anti-pattern this is an instance of.
+restructure, not a re-discovered sketch pattern. The broader class is
+Principle 7's divergent duplication; `design/int/int.md` §6/§7 records
+the orchestration-surface convergence that closed the S59 instance.

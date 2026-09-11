@@ -253,7 +253,7 @@ and durable.
   `wave6_demo_repros.rs`). These are durable findings now visible to
   Wave 4+ via the linter's full-scan mode (`exit 1`). Common patterns:
   references to `spec/06-types.md` (renamed/split), `tests/plan/ring4.md`
-  (moved to `tests/plan/legacy/`), `bare-primitive-value-path.md`
+  (retired; Git history), `bare-primitive-value-path.md`
   (missing `design/int/` prefix), `spec/01-syntax.md` /
   `spec/05-functions.md` (renamed). No spec violations — only
   citation-text drift.

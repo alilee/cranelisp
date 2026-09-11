@@ -870,7 +870,7 @@ The priority worker's post-compile loop (currently in `src/worker.rs` around lin
 - **Before G6 (Sprint 56 shape, described in §11 for reference)**: worker reads `result.func_ids`, calls `jit.get_finalized_ptr(func_id)`, writes into GOT slot, and inserts into `CodegenProduct.code` DashMap.
 - **After G6 (Sprint 57 target)**: worker reads `result.func_ids` (for GOT-slot-population convenience only — the slot write still lives on the worker side per the current boundary), and relies on `compile_to_module` having already populated `ModuleEntry::Def.code`. The `CodegenProduct` DashMap is deleted. GOT-slot population may consolidate onto the backend side as a follow-on micro-change, but is not required by G6 itself.
 
-The authoritative migration table for consumer-side reads (priority worker, REPL eval, `/clif`, `/disasm`, `/source`, introspection) is `/int`'s `design/int/phase2-codegen-convergence.md` G6 extension. `/backend` owns the write side; `/int` owns the read-site migration; the two must agree on ownership of the `Code` pointer's lifecycle. `compile-to-module.md` §9.1 pins the write contract; `phase2-codegen-convergence.md` G6 pins the read migration.
+The completed G6 consumer-side migration is retained in the S56/S57 record (`phase2-codegen-convergence.md` in `git show 7f834bf6:design/int/`). Current integration responsibilities and code lifetime are documented under [no merge step](../int/int.md#42-no-merge-step) and [Code lifecycle](../int/int.md#5-code-enum--lifecycle-decisions-31-35-41).
 
 #### 9.1.8 Cross-references
 
@@ -878,7 +878,7 @@ The authoritative migration table for consumer-side reads (priority worker, REPL
 - `/arch` `design/arch/interfaces.md` §"Module Entries" — the `ModuleEntry::Def` shape with the `code` field already landed (Sprint 57 interfaces update).
 - `/arch` `design/arch/pipeline-v4-roadmap.md` §"Phase 3 Step 3b (G6)" — the migration step summary, deferring `SymbolTable<C, L>` generics.
 - `/typecheck` `design/typecheck/ast-annotation.md` §9 — source of `ast` that `compile_to_module` reads. Invariant: for every name in `names`, the entry carries `ast: Some(_)` (§2.1 Wave 0 contract).
-- `/int` `design/int/phase2-codegen-convergence.md` G6 extension — consumer-side read-site migration table (priority worker, REPL eval, introspection, `/clif`, `/disasm`, `/source`).
+- `/int` S56/S57 codegen migration record (`phase2-codegen-convergence.md` in `git show 7f834bf6:design/int/`) G6 extension — consumer-side read-site migration table (priority worker, REPL eval, introspection, `/clif`, `/disasm`, `/source`).
 - `crates/cranelisp-types/src/code.rs` — landed Shape-1 `Code` definition (pointer-only). The earlier `src/session_v4.rs:447` location held the pre-Shape-1 `{ jit, ptr }` form; that form is retired and the canonical `Code` is now in `cranelisp-types`.
 - `src/session_v4.rs` `SharedState.kept_jits` field — session-side `Arc<Jit>` retention pool (Decision 28) that anchors the lifetime of every `Code::ptr` produced.
 
@@ -1318,7 +1318,7 @@ These are deleted as part of the Phase 2 implementation wave:
 - `CompilationEnv` trait and every related type: `ObjectCompilationEnv`, `JitCompilationEnv`, and shared helpers (`resolve_got_module_shared`, `func_arity_shared`, `resolve_cross_module_ref_shared`) introduced for the withdrawn dual-env design.
 - `CodegenTarget` enum (or any equivalent mode discriminator) — mode lives on the `Module` implementation, not inside `compile_to_module`.
 
-Deletions on the `/int` side (Step 2b) are out of scope for this doc (covered in `design/int/phase2-codegen-convergence.md`), but the principal ones are: `codegen_module_symbols`, `compile_regular_defns`, `compile_and_register_defn_shared`, `pre_register_got_slots_in_tc`, `SessionCompilationEnv` (all of it — env plumbing is gone), and the `finalize_module` program-inlining path that currently splices `mono_defns` and `default_method_defns` into the program before codegen.
+Deletions on the `/int` side (Step 2b) are out of scope for this doc (covered in S56/S57 codegen migration record (`phase2-codegen-convergence.md` in `git show 7f834bf6:design/int/`)), but the principal ones are: `codegen_module_symbols`, `compile_regular_defns`, `compile_and_register_defn_shared`, `pre_register_got_slots_in_tc`, `SessionCompilationEnv` (all of it — env plumbing is gone), and the `finalize_module` program-inlining path that currently splices `mono_defns` and `default_method_defns` into the program before codegen.
 
 ### 16.7 Phase 3 seam — `code: Option<Code>` on `ModuleEntry::Def`
 

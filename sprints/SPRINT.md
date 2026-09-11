@@ -1155,3 +1155,56 @@ the package contribution policy. Reproducing this in-flight checkpoint's shared
 checker and Claude allocation requires that local package branch. NOTES remains
 on disk, unchanged and ignored; the checkpoint removes its tracked copy.
 This is a work-in-progress checkpoint, not sprint acceptance or closure.
+
+Checkpoint `7f834bf6` is complete. The next document cohort reserves
+the legacy-plan collection and its minimum QA-owned integration to `qa`; four old int
+records (codegen convergence, pipeline convergence, persistence collapse and
+race closure) and their minimum int-owned integration to `design`. The source
+and shared checker remain unchanged. Dispatch results follow on completion.
+
+| Cleanup owner | Provider/model | Effort | Session | State |
+|---|---|---|---|---|
+| qa — legacy assurance records | Claude/claude-fable-5-1 | high | `4046d1bc-c463-4053-970d-eaf4ac084eba` | complete |
+| design — int migration and race records | Claude/claude-opus-5 | high | `cc87a0ac-f2d2-4616-921a-a3589c7d2ab6` | complete |
+
+The candidate set starts at 15 documents, 8,709 lines and 80,905 words.
+These counts describe the assessment scope, not a deletion target.
+
+The owners retired all eleven legacy QA plans and three int migration records.
+The race-lineage record retains its useful evidence, rationale and live cited
+anchors in 283 lines, down from 3,214. The dependency queue-priority rule now
+lives in the int master. QA preserved the never-authored S61 inline-ADT
+equivalence matrix as an unclassified historical lead in current allocation.
+Reports: `.local/s122-checkpoint-qa-result.md` and
+`.local/s122-checkpoint-int-result.md`.
+
+Remaining source-currentness leads: int master code-publication/lifetime
+sections and concurrency publication terminology; QA's unannotated blank-line
+case and missing CLI conflict test; design-based worker unit annotations. These
+are not new implementation authorizations or claims of reproduced defects.
+
+Citation-only handoffs completed through Claude Opus 5/high: test session
+`b299b6fb-65dd-4a93-8bcd-0eeb4347c447` and dev (int) session
+`53eae155-ee9f-4416-8eb8-0bd27ac9c42b`. Root integrates the owning reports'
+mechanical design/QA citations, historical checkpoint links and declaration
+removals. All four streams released their reservations. Ten changed Rust files
+have identical non-comment content against the checkpoint; no compiler suite
+was needed for this document/comment-only batch.
+
+Final stable-tree check: 750 documents, 2,956 findings at 3,660 locations, down
+from 3,365 findings. Exactly 409 identities removed and none added; no baseline
+or exception added, historical exclusions unchanged at 182. Existing debt
+keeps the checker at exit 1. Report: `.local/s122-checkpoint-final.json`, SHA-256
+`b64fe85486c89a708c0c1d7f60517bc0c7c1417ef7f35322bec3ff63f6e5b49e`.
+This check precedes this ledger-only completion entry. Consumer/wiring and diff
+checks pass. NOTES integrity and ignore status remain unchanged.
+
+The test-to-spec diagnostic improved by one malformed citation; its six
+mis-cited and four malformed entries remain pre-existing intake. Its support
+for the split REPL-spec pointer also corrects the earlier assumption that all
+pointer-form citations require repair. No annotation-policy change follows.
+
+Next consolidation candidates are the S64 harvest working audits and stale QA
+registers, assessed against current evidence before retirement; int master
+source reconciliation remains a separate owned pass. Further cleanup after
+checkpoint `7f834bf6` is uncommitted. No publication or phase transition occurred.

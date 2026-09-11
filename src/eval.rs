@@ -618,15 +618,19 @@ impl CompilerSession {
     // (`trace_codegen::discover_traced_fns_from_tables`); int no longer
     // populates a `traced_fns` list nor threads it into the eval path.
 
-    // `compile_dep_inline` — deleted Sprint 59 Workstream A §7 Step 5.
+    // `compile_dep_inline` — deleted Sprint 59 Workstream A (the dual-path
+    // persistence collapse; its design record is retired, recoverable with
+    // `git show 7f834bf6:design/int/dual-path-persistence-collapse.md`).
     //
     // The session-side second orchestrator (an inline `priority_worker_loop`
     // running on the eval thread in parallel with the persistent priority
     // worker pool) has been replaced by `register_dep_for_eval` above: the
     // persistent worker pool is now the single orchestrator for every
     // dep, and the eval thread blocks on `wait_module_inmem_complete_blocking`
-    // scoped to the dep. See `design/int/dual-path-persistence-collapse.md`
-    // §§2–3 (Decision 37 alignment) and §7 Step 5.
+    // scoped to the dep. See `design/int/int.md` §6.1 (the single
+    // `register_module` recursion and its dep-registration sites, including
+    // `register_dep_for_eval`) and §7.1 (Decision 37 — cache-hit-or-fresh is a
+    // branch inside that recursion, not a parallel orchestrator).
 
     /// Check if a bare symbol should produce introspection display instead of eval.
     ///

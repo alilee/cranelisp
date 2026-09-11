@@ -106,9 +106,9 @@ fn batch_cross_module_adt_export_and_pattern_match() {
 
 // spec: spec/05-definitions.md §5.2 — ADT pattern matching contract
 //       (the test exercises a layer-1 algorithmic invariant on the ADT
-//       defined inline; T-S2-1 was originally documented in
-//       tests/plan/legacy/ring4.md "Slice 2 branch-b outcome" but that
-//       doc is archived).
+//       defined inline; T-S2-1 was originally documented in the retired
+//       S61 ring4 plan, Slice 2 — exemplar branch (b), now Git history:
+//       `git show 7f834bf6:tests/plan/legacy/`).
 //
 // FIXME(/spec): the contract is not stated normatively in any spec/*.md;
 // it is an exemplar-internal invariant ledgered as the regression

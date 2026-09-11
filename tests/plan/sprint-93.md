@@ -7,8 +7,7 @@ implementation waves are allocated.
 
 **Scope source:** `sprints/SPRINT.md` (S93: race gate + ABI-v7 dormant contracts + FIXME
 drain). **Design of record:** `design/int/signature-body-prepass.md` (the gate fix +
-§6 "/qa isolation hook"); `design/int/heisenbug-race-closure.md` §7–§8 (the tactical
-lineage + H6/H7 evidence); `design/arch/effect-concurrency.md` §5/§6/§11/§12 (the ABI-v7
+§6 "/qa isolation hook"); the historical tactical lineage and H6/H7 evidence (`heisenbug-race-closure.md` in `git show 7f834bf6:design/int/`) (sections 7–8); `design/arch/effect-concurrency.md` §5/§6/§11/§12 (the ABI-v7
 layout contracts). **Ledger anchor:** `tests/plan/ledger.md`:2118 (the H6/H7 residue row).
 
 ## Baseline (Phase-3 sanity, `/qa` 2026-06-27)

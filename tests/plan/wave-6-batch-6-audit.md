@@ -98,8 +98,9 @@ Per Wave 5.6 brief (in force from Waves 5.5/5.6):
 
 - **47/47 PASS** (815ms total). No failing tests. Includes the 5
   Step 8 platform-registry tests that were the Sprint 56 baseline
-  failures (`v4_platform_*` cluster — flipped green per
-  `tests/plan/legacy/ring4.md` line 712 acceptance criteria).
+  failures (`v4_platform_*` cluster — flipped green per the retired
+  ring4 plan's §G.5 acceptance criteria; Git history,
+  `git show 7f834bf6:tests/plan/legacy/` — `ring4.md`).
 - The Sprint 58 Wave 2c FIXME on `v4_cache_hit_dependency` (line 587:
   "second `--run` invocation produces different exit code") appears
   resolved — this test passes today.

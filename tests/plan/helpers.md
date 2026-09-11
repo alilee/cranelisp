@@ -16,9 +16,8 @@ implementation codes against. This document is the design intent;
 
 1. **Subprocess only.** Every helper spawns `target/debug/cranelisp` as
    a child process. No `cranelisp::session_v4::CompilerSession`, no
-   `SharedState`, no internal-API construction. Per the strategy
-   direction recorded in
-   `memory/project_test_strategy.md` (2026-05-03).
+   `SharedState`, no internal-API construction, per the
+   [current tier strategy](PLAN.md#strategy--two-tiers-no-middle).
 
    **Canonical mode for language-conformance bulk = REPL.** Per the
    Sprint 64 Wave 2.5 architecture decision recorded in

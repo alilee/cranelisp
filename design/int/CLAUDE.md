@@ -172,9 +172,14 @@ audit trail only): `step4-macro-blocking.md`, `step5-lazy-discovery.md`, `step7-
 `s77-int-restructure.md`, `s78-implementation.md`, `s78-entry-module.md` (its §2
 prelude-fallback mechanism is now canonical in `design/arch/prelude-import-convergence.md` +
 `src/CLAUDE.md`), `s87-decomposition.md`, `s102-defect-wave.md`, `wave-3a-process-form.md`,
-`phase2-codegen-convergence.md`, `pipeline-convergence.md`,
-`dual-path-persistence-collapse.md`, `cache-prelude-restoration-repro.md`,
-`platform-registry-removal.md`.
+`cache-prelude-restoration-repro.md`, `platform-registry-removal.md`.
+
+**Redirections.** Three landed-migration records were deleted at S122 (Git retains them);
+a citation to one of them reads instead: `phase2-codegen-convergence.md` → `int.md`
+§4.1/§4.2/§5/§7 (`Code` home, single writer, cache-hit regeneration);
+`dual-path-persistence-collapse.md` → `int.md` §6.1 (single `register_module` recursion,
+the `delays_other` rule) and §7.1; `pipeline-convergence.md` → root `CLAUDE.md` §Pipeline
+and [project-root resolution](repl-lifecycle.md#6-project-root-resolution) (project root = cwd).
 
 ## Cross-references
 

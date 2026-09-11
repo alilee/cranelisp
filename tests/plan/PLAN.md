@@ -88,6 +88,15 @@ working plan. The S64/S82 quarantine harvest is complete; its initial GAP
 counts are not current findings. [The S82 outcome](../../sprints/archive/sprint-82.md)
 and Git preserve the migration result and original per-test dispositions.
 
+The ring-era plans, the four-layer strategy and the S61 audits that lived
+in the legacy-plan collection (`git show 7f834bf6:tests/plan/legacy/`)
+were deleted in S122 after verification against source; the checkpoint retains the set. Their surviving rules live where a reader needs them: the
+tier strategy above, the per-test temporary-directory rule in
+[test conventions](../CLAUDE.md#fresh-temp-directory-per-test) with its
+harness enforcement in [helpers design constraints](helpers.md#design-constraints),
+and the S61 negative-coverage promotions in the specification annotations
+themselves.
+
 ### Mode canonicalisation — REPL is the canonical surface for language conformance
 
 Use REPL for bulk language conformance and the relevant public entry for
@@ -163,7 +172,19 @@ active allocation cites them; they are not fresh source censuses.
   - the S121 capture-veto optimization/observer proposals — the
     [historical S121 same-form rebinding rows](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md#sprint-121-same-form-rebinding-rows-design-designbackendbinding-scopemd)
     and the observation limit in
-    [binding-scope state and assurance](../../design/backend/binding-scope.md#state-and-assurance).
+    [binding-scope state and assurance](../../design/backend/binding-scope.md#state-and-assurance);
+  - the S61 inline-ADT-argument equivalence property — `(f (Ctor [v]))`
+    observationally equivalent to `(let [x (Ctor [v])] (f x))` in value and
+    exact allocation balance, for a callee that takes the constructed value
+    by ownership and matches it, over scalar and heap field types and across
+    a module boundary. The S61 plan rows that reserved it were never authored
+    (retired ring plans, `git show 7f834bf6:tests/plan/legacy/` — `ring1.md`
+    §"Inline-ADT-arg class"). Today's observations are the single-type,
+    value-only repro in [regression](../regression.rs)
+    (`t_s2_2_inline_adt_arg_wrapping_vec_preserves_len`) and the
+    [ownership-flow generator](../gen_ownership_flows.rs), whose argument
+    positions hand inline-constructed owning types to a borrowed reader in
+    one module rather than to an owning matcher across modules.
 
   They are not newly allocated defects. Before relying on any, compare current
   specification and evidence; no new test, API or optimization is authorized

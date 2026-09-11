@@ -31,8 +31,9 @@ use e2e::{Cranelisp, PreludeVariant};
 
 // spec: design/backend/ring2-rc.md §5.5 — Captured and Borrowed Variables
 //       and Last-Use (regression history names this repro shape inline).
-//       Cross-references the archived tests/plan/legacy/ring4.md
-//       "Slice 2 branch-b outcome" T-S2-2 entry.
+//       Cross-references the T-S2-2 entry in the retired S61 ring4 plan,
+//       Slice 2 — exemplar branch (b) (Git history:
+//       `git show 7f834bf6:tests/plan/legacy/`).
 //
 // FIXME(/spec): borrowed_vars is a backend implementation invariant, not
 // a normatively-spec'd language behaviour. The user-observable surface

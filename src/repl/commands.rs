@@ -1261,7 +1261,9 @@ mod mem_command_tests {
 // Sprint 60 Workstream G — /sig docstring format fix.
 // spec: repl/spec.md §1.1 — universal output format mandates
 //       `:Type name ; classification - docstring-first-line`.
-// design: design/int/dual-path-persistence-collapse.md §9.
+// design: S60 Workstream G section of the retired dual-path collapse record —
+//         `git show 7f834bf6:design/int/dual-path-persistence-collapse.md` §9.
+//         No current design-of-record; the format rule is spec-owned above.
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod sig_display_helper_tests {

@@ -402,7 +402,7 @@ Cranelift 0.116 leaks per-function memory on default `Drop` (`cranelift-jit/src/
 2. Refcounting `Jit` via `Arc`, with one `Arc<Jit>` clone per `Code::Jit { jit, ptr }` entry. With Decision 41's per-symbol cardinality, that's one clone per entry, no sharing.
 3. Per-redefinition reclaim falls out: REPL user redefines `(defn f [x] x)` → old `ModuleEntry::Def` is replaced → prior `Code::Jit` drops → `Arc<Jit>` decrement → `Arc::drop` → `Jit::drop` → `unsafe free_memory()`.
 
-**Carry-forward invariant** (`crates/cranelisp-typecheck/src/program.rs:2184-2232`, Wave 3b discovery): `register_defn_signature` clones the existing `code: Option<C>` forward into the rebuilt entry on REPL upsert. Without this, mid-typecheck `Arc<Jit>` drop would call `free_memory()` on JIT pages still referenced by the GOT slot before the new code address is written. This is the fix that made `C: Clone` a `CodeStore` super-bound (Decision 32 Wave 3 close).
+**Carry-forward invariant** (typecheck's defn re-registration upsert, Wave 3b discovery; the S64 typecheck program module is now Git history and the seam needs re-anchoring against HEAD): `register_defn_signature` clones the existing `code: Option<C>` forward into the rebuilt entry on REPL upsert. Without this, mid-typecheck `Arc<Jit>` drop would call `free_memory()` on JIT pages still referenced by the GOT slot before the new code address is written. This is the fix that made `C: Clone` a `CodeStore` super-bound (Decision 32 Wave 3 close).
 
 **Eval lifetime**: each REPL expression compiles its temp closure on a fresh `JITModule` wrapped in `Arc<Jit>`; the Arc reclaims when the trampoline returns and the value is consumed (per pipeline-v4 §6.2 + facade invariant 6).
 
@@ -445,6 +445,13 @@ register_module(module):
 ```
 
 The Phase 0 block is microsecond-scale. The RefMut drop *must* happen before `scheduler.register_module` so workers picking up `PriorityWork::Typecheck` find the SymbolTable reachable via shared `.get()` only.
+
+**Queue-priority rule (`delays_other`)** — `scheduler.register_module(module, delays_other)` routes the module into the prioritised `TypecheckFirst` queue when `true` and `TypecheckNext` when `false`. The flag answers one question: *is some other module's progress waiting on this one?*
+
+- **Every dep-registration site passes `true`** — worker-side form handlers, the cache-restore transitive-import registration, and the session-side `register_dep_for_eval`. A dep is registered precisely because something is blocked on it, and even where the immediate registrant has already finished (cache-restore's fire-and-forget recursion), any other module importing that dep will block on it.
+- **`false` is for entry-module registration by the thread that is itself the whole-world waiter** — `register_module_with_source`, `reload_module`'s watcher-seed fallback, and `recover_startup_failure`'s re-drive. Nothing else is queued behind them.
+
+A `false` at a dep site is a silent divergence: the dep lands in the unprioritised queue behind unrelated work while a blocked caller waits. (S59/S60 lineage; the rule is the one durable residue of the dual-path persistence collapse.)
 
 ### 6.2 Worker dispatch + `process_form`
 
@@ -952,121 +959,15 @@ The destination shape is the working reference for design. The as-built reality 
 
 ---
 
-## 15. Subordinate topic docs (triage)
+## 15. Subordinate topic docs
 
-> **S88 — `agent.md` is a current, load-bearing subordinate doc (KEEP).** `design/int/agent.md`
-> designs the agentic-REPL track: the §5.3 dispatch classifier + `/ask`, the
-> `#[cfg(feature="agent")]` `src/agent/` module + `agent_turn` loop, the provider-agnostic
-> `LlmBackend` trait (R3), the harvester/relevance-ranker, the always-on primer,
-> pull-as-visible-commands, read-only Advise mode, the `[R5]` spec-grep + telemetry
-> release-valve seams, and the LLM-free reverse-query commands (`/refs`/`/tests-for`).
-> It elaborates within BC §6 (the agent is a REPL-cadence consumer, not a new state window)
-> and refines `design/arch/repl-embedded-agent.md` (U1–U6 ratified). Feature-off ⇒ the binary
-> is byte-identical to today (the classifier's `Err(other parse error)` arm falls back to
-> today's diagnostic). Cited from §8.5 (slash commands) once `/ask`/`/refs`/`/tests-for` land.
-
-> **S101 — `session-transaction.md` is a current, load-bearing subordinate doc (KEEP).**
-> The R3 redefinition-machinery design (summary-diff gate, reverse dependency index,
-> dependent-recompilation transaction, BROKEN/trap-stub cascade, ABI-epoch slot versioning
-> + retention pools, persistence pins). Cited from §8.6; consumes backend §8.3's pinned
-> interface; elaborates spine `design/arch/ownership-inference.md` §5 within BC §6.
-> Amended S102 (§9.1.1 downgrade `stale:` contract; §10 T1 full-cure mechanics).
-
-> **S102 — `s102-defect-wave.md` is a current, load-bearing subordinate doc (KEEP until
-> the wave lands; then fold residuals into §8/§9 and archive).** The Block-A /int
-> defect-wave cluster designs: T1 downgrade-print change-set plan + full-cure sizing
-> verdict (S103 recommendation), persistence-integrity cures (D1/D2 regeneration
-> fidelity, 0489 restart floor), file-backed dev-loop cures (D3/0487 module-env
-> install invariant + FQ introspection), display/diagnostic batch sketches, and the
-> Principle-23 scenario-space matrices (A–E) that FIXME 0496 derives its unit briefs
-> from. Cited from §8.6.
-
-> **S116/S118 — `result-owner.md` is a current, load-bearing subordinate doc (KEEP).**
-> It defines the program-result owner's observe-then-release state machine and
-> the fresh-JIT/cache-hit/linked-startup adapters for backend's one canonical
-> per-concrete drop-glue contract. It is the int design of record for R15/FIXME
-> 0745 and is cited from §§7.4 and 8. **Refreshed S118 Phase 3** against HEAD:
-> §0 records what moved (the S117 as-built routing, the production-dead
-> `inline_jit_codegen_for_names` seam, two corrected S116 claims), §3.0 is the
-> as-built turn-lifecycle seam census, §8 the serial slice order, §9 the
-> acceptance mapping.
-
-> **S117 — `s117-conformance-recovery.md` is a current, load-bearing subordinate
-> doc (KEEP).** Tracks A/B of S117: the W3a prepared-turn transaction (§1.1 —
-> one owned prepare → whole-batch codegen → infallible publish, shared by the
-> eval and worker cadences), the W3b presentation readers (§4/§5), and the W7
-> cached-macro executable-clause repair (§2.1.1). Its §1.1.2 + §6 are the
-> deferred FIXME-0863 implementation handoff; §6.5 records the S118
-> precondition re-verification and the binding 0745-before-0863 order.
-
-The 32 docs in `design/int/` plus the `concurrency/` subdirectory were authored over 12+ sprints and reflect the historical evolution of int. Sprint 64 triage applies the methodology rule: *delete files, rely on git for history if work is fully embodied; preserve if still load-bearing*. Below is the per-doc disposition.
-
-### Concurrency family
-
-| Doc | LOC | Disposition | Rationale |
-|---|---:|---|---|
-| `concurrency-architecture.md` | 744 | **archive** | Pre-dates Decision 38; documents the per-form RefMut shape that 38 supersedes. Heavily cross-referenced from sibling docs but the references are themselves stale. The current concurrency story lives in §4 + §10 of this master + the `concurrency/` diagrams. |
-| `concurrency-audit.md` | 4,290 | **archive** | Sprint-62 audit; superseded by `audits/src-20260423.md` + the S64 Decisions. Audit-trail value preserved by the move. |
-| `concurrency-risks.md` | 504 | **archive** | Risk catalogue keyed to pre-38 lock shape. The current risks are §10 invariants. |
-| `concurrency-test-strategy.md` | 559 | **refresh** (low priority) | Test catalogue still valid in spirit; some test shapes change under 38. Worth keeping during the §3.3 decomposition. |
-| `concurrent-workers.md` | 1,043 | **archive** | Pre-G9 worker model; superseded by `persistent-workers.md` + the active scheduler design. |
-| `persistent-workers.md` | 836 | **keep** (with G10 retraction noted at top) | Wave-1 design that landed; describes the active worker-pool shape. |
-| `concurrency/` subdir | n/a | **keep** | Target diagrams are current; `archive/` already separates pre-target snapshots. |
-
-### Pipeline / cadence
-
-| Doc | LOC | Disposition | Rationale |
-|---|---:|---|---|
-| `pipeline-convergence.md` | 553 | **archive** | S26 dual-pipeline analysis; structural superseded by `archive/pipeline-convergence-review.md` (under `design/arch/archive/`). This int-side copy is duplicate. |
-| `phase2-codegen-convergence.md` | 1,624 | **archive** | Sprint-54 W3a analysis; superseded by Decisions 22/23/25. Mostly duplicate of `design/arch/archive/codegen-convergence.md`. |
-| `step4-macro-blocking.md`, `step5-lazy-discovery.md`, `step7-repl-eval.md`, `step8-platform-registry.md`, `step9-error-cascade.md` | 5 docs, ~3,000 LOC total | **archive** | Step-N execution playbooks (Sprints 23–26). The execution landed; the playbooks served their purpose. The concepts are in §6 + §7 of this master. |
-
-### Cache
-
-| Doc | LOC | Disposition | Rationale |
-|---|---:|---|---|
-| `cache-hit-loading.md` | 666 | **refresh** | Decision 37 supersedes the high-level shape; the lower-level mechanism description is still useful. Update the §-on-`try_cache_hit_load` to reflect the deletion. |
-| `cache-prelude-restoration-repro.md` | 226 | **keep** (defect history) | Specific repro; preserves audit-trail value. |
-| `dual-path-persistence-collapse.md` | 1,288 | **keep** | Documents the collapse of the dual-path persistence (a load-bearing event in int's evolution); pointed at by `audits/src-20260423.md`. |
-| `symbol-table-cache.md` | 692 | **refresh** | Per-symbol shape needs aligning with Decision 38; some `try_cache_hit_load` references are stale (it's deleted). |
-
-### Macro / expander
-
-| Doc | LOC | Disposition | Rationale |
-|---|---:|---|---|
-| `macro-resolver-impl.md` | 596 | **refresh** | Frontend FIXME 6 may flag dead `MacroEnv` here — int's `expander.rs` glue. Refresh post-FIXME 0098 Phase 4 (the migration of `expand_sexp_recursive` to frontend). |
-| `macro-marshal-rc-protection.md` | 254 | **keep** (superseded mechanism, live history) | S114/FIXME 0638. §2's deep `protect_marshalled_cell` +1 is **superseded by `macro-turn-ownership.md` Rule 2** (S119); §0/§1's actor analysis and the negative-control-twin argument remain load-bearing and are cited by the successor. Banner carries the supersession. |
-| `macro-turn-ownership.md` | — | **keep** (active, ruled S119) | FIXME 0889 — the macro-turn ownership protocol: single-owner marshalling, transfer-by-ABI-crossing, exactly-once result discharge, the `MacroClauseAbi` ownership declaration, and the §9 FIXME-0863 interaction surface. Ruled pre-implementation; §8 is the `/dev` gate set. |
-
-### Repro / debug
-
-| Doc | LOC | Disposition | Rationale |
-|---|---:|---|---|
-| `heisenbug-race-closure.md` | 3,890 | **keep** (defect epic) | The Sprint 61 Slice 3 race investigation; preserved as historical defect record. Massive but high-value when the next race-class issue surfaces. |
-| `bind-chain-analysis.md` | 470 | **keep** | bind! chain analyzer description — still load-bearing for `src/bind_chain_analysis.rs`. |
-
-### Settings / config / misc
-
-| Doc | LOC | Disposition | Rationale |
-|---|---:|---|---|
-| `cranelisp-toml.md` | 412 | **keep** | TOML settings format; load-bearing reference. |
-| `repl-lifecycle.md` | 506 | **refresh** | REPL flow steps; some pre-38. Shorter refresh than `concurrency-architecture.md`; high reader-utility. |
-| `session-persistence.md` | 469 | **refresh** | `module_sources` references; supersede with Decision 39. The `regenerate_backing_file` shape moved per §8.3 of this master. |
-| `observability.md` | 344 | **keep** | Refreshed S122 against source: four sinks + the SIGUSR1 snapshot, the int-owned activator table, the placement constraints and the dump mechanics. Canonical for activator semantics; §11 here is the one-glance map. |
-| `terminal-styling.md` | 511 | **keep** | Style spec; load-bearing reference. |
-| `private-submodule-import.md` | 304 | **keep** | Edge-case behaviour spec; preserves audit-trail value. |
-| `bare-primitive-value-path.md` | 219 | **keep** | Edge-case behaviour spec. |
-| `multi-sig-introspection.md` | 254 | **refresh** | Introspection shape — verify against §4.3 / Decision 38. |
-| `io-integration.md` | 565 | **refresh** | Sprint-16 design; refresh to align with current `Sess::trampoline` shape and the IO observer pattern (§11). |
-| `platform-registry-removal.md` | 642 | **archive** | G8 landed; FIXME 0106 already proposed archive. |
-| `symbol-table-generics.md` | 481 | **keep** | Wave-3b implementation playbook for Decision 35. Useful for future C/L parameter changes. |
-
-**Headcount summary**: 32 docs.
-- **Archive**: 11 (≈12,000 LOC) — concurrency family pre-38, pipeline-convergence/phase2 duplicates, step-N execution playbooks, platform-registry-removal.
-- **Refresh**: 9 (≈4,500 LOC) — cache-hit-loading, symbol-table-cache, macro-resolver-impl, repl-lifecycle, session-persistence, observability, multi-sig-introspection, io-integration, concurrency-test-strategy.
-- **Keep**: 12 (≈10,000 LOC) — persistent-workers, concurrency subdir, cache-prelude-restoration-repro, dual-path-persistence-collapse, heisenbug-race-closure, bind-chain-analysis, cranelisp-toml, terminal-styling, private-submodule-import, bare-primitive-value-path, symbol-table-generics, plus this master.
-
-The triage itself is a `/sprint`-coordinated `/dev` task — too large for a single design-pass. Recommended sequencing: archive first (pure delete; commit per group), refresh second (post-FIXME-landing for the cache + observability subset).
+`design/int/CLAUDE.md` §"Document index" is the triage of record: it names the
+master, the durable subsystem docs, the active subordinate feature docs, the
+reference lineage and the historical records, and it is the collection
+declaration those documents are established through. Do not maintain a second
+inventory here — a per-doc table in the master decays against the directory it
+describes, and the S64 table that stood here had drifted on counts, on
+dispositions never executed, and on files since deleted.
 
 ---
 

@@ -1968,8 +1968,8 @@ pub fn derive_codegen_batch(
 /// `compile_to_module` entry point.
 ///
 /// Sprint 56 Wave 2 replacement for `codegen_module_symbols`. Per
-/// `design/int/phase2-codegen-convergence.md` §5 and `pipeline-v4.md` §9.3,
-/// the worker:
+/// `design/int/int.md` §4.2 (worker-side per-symbol `Code` write, no merge
+/// step) and §6.2 (worker dispatch), plus `pipeline-v4.md` §9.3, the worker:
 ///
 /// 1. Derives `names` — a compilation batch — from `program`'s `TopLevel::Defn`
 ///    entries plus any mangled multi-sig variants that belong to those base

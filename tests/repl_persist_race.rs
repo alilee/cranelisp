@@ -24,8 +24,11 @@
 //!     deadline — outside the harness's fire-and-block timeout shape.
 //!
 //! Spec anchors:
-//!   - `design/int/dual-path-persistence-collapse.md §7` — heisenbug repro
-//!     (the migration plan step 7 50-loop loop-repro).
+//!   - `design/int/int.md §6.1`/`§7.1` — the single `register_module`
+//!     recursion with cache-hit as a branch inside it, which the S59/S60
+//!     dual-path persistence collapse converged on. The collapse design
+//!     that specified this 50-loop repro is retired (Git history:
+//!     `git show 7f834bf6:design/int/`).
 //!   - `design/int/heisenbug-race-closure.md §3b` — reduced repro
 //!     calibration (N=6, K=2, 10 trials).
 //!   - `design/int/s77-int-restructure.md §3.5` — the S60–S62 heisenbugs
@@ -123,13 +126,16 @@ fn run_repl_in_with_test_prelude(dir: &std::path::Path, input: &str) -> Output {
 // 1. Heisenbug parallel-stress repro (Sprint 58/59 dual-path collapse loop)
 // =============================================================================
 
-// spec: design/int/dual-path-persistence-collapse.md §7 — migration plan
-//   step 7 (heisenbug verification: 50-loop loop-repro). The dual-path
-//   persistence collapse design explicitly names the ~1755/1754 heisenbug
-//   observed at Sprint 58 close as the structural symptom of two
-//   orchestrators working on the same module simultaneously. Under the
-//   collapsed path this loop MUST be rock-solid; before the collapse this
-//   test was expected to flake.
+// spec: design/int/int.md §6.1 + §7.1 — the single `register_module`
+//   recursion, with the cache-hit decision a branch inside it rather than
+//   a parallel orchestrator. The S59/S60 dual-path persistence collapse
+//   that converged on this shape named the ~1755/1754 heisenbug observed
+//   at Sprint 58 close as the structural symptom of two orchestrators
+//   working on the same module simultaneously, and specified this 50-loop
+//   verification repro; that design doc is retired (Git history:
+//   `git show 7f834bf6:design/int/`). Under the collapsed path this loop
+//   MUST be rock-solid; before the collapse this test was expected to
+//   flake.
 //
 //   Disposition (see crate ledger entry): RESOLVED — passes 58/59 in
 //   the full sprint23 suite at SHA `35062ca` after the H5 scheduler-side
