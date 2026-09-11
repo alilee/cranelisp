@@ -9,7 +9,7 @@
 > **Status: DESIGN (S102 Phase 3).** Companion to `design/int/session-transaction.md`
 > (amended this phase: §9.1.1 downgrade `stale:` contract; §10 T1 full-cure mechanics).
 > Scope authority: `sprints/SPRINT.md` Block A. Acceptance authority: the S101 6a/6b
-> guard set (`tests/plan/ledger.md` §"Sprint 101 Phase 6a/6b defect set") — every design
+> guard set (the retired failure ledger, section "Sprint 101 Phase 6a/6b defect set") — every design
 > below names the guards it flips. Master design: `design/int/int.md` (§8 REPL flow,
 > §8.3 regeneration, §8.6 transaction).
 >
@@ -562,3 +562,5 @@ agent).
   full cure.
 - `/sprint` — §2's verdict (T1 full cure → S103) and §8's table are the Phase-4
   inputs.
+
+The full retired failure ledger is available in Git: `git show a25ce2c8:tests/plan/` (file `ledger.md`).

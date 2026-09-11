@@ -1504,7 +1504,7 @@ fn agent_prose_lines_keep_gutter() {
 // These five e2e are GREEN against the landed impl (integration confirmation);
 // the load-bearing pure `== render_agent_prose` differential test is the
 // by-construction unit test in `src/agent/render.rs` (per G-1 the test infra was
-// impl, so these e2e are not failing-first — documented in `tests/plan/ledger.md`).
+// impl, so these e2e are not failing-first).
 // They drive the real binary through CRANELISP_AGENT_PROVIDER=stub, zero network.
 // ===========================================================================
 

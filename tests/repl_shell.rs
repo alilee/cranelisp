@@ -1,10 +1,9 @@
 //! Sprint 64 Wave 6 batch 2 Part A carry-forward — `/sh` Shell Escape cluster.
 //!
-//! Per the Wave 6 batch 2 audit (`tests/plan/wave-6-batch-2-audit.md` §2),
-//! these 11 tests carry forward the `/sh` shell-escape surface from
-//! `tests/sprint23.rs` (lines 386–527). The audit notes
-//! `repl/spec.md §13` has zero existing `[Tested]` annotations across
-//! the carry-forward suite — these tests are the first §13 coverage.
+//! Per the Wave 6 batch 2 audit, these 11 tests carry forward the `/sh`
+//! shell-escape surface from `tests/sprint23.rs` (lines 386–527). The
+//! audit notes `repl/spec.md §13` has zero existing `[Tested]` annotations
+//! across the carry-forward suite — these tests are the first §13 coverage.
 //!
 //! Spec anchors:
 //!   - `repl/spec.md §13.2` — Execution

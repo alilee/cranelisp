@@ -3,7 +3,7 @@
 Owner: `/qa`. Authored Phase 3 (2026-06-20). Tests are NOT written here —
 this plan scopes the failing tests Phase 5 Stage 1 will author so the
 implementation stages have a concrete acceptance criterion. Persisted under
-`tests/plan/` per `qa.md §"Test plan obligation"` (subordinate to `ledger.md`
+`tests/plan/` per `qa.md §"Test plan obligation"` (subordinate to the retired failure ledger
 and `PLAN.md`).
 
 S87 is three stages: **A** (green-and-clear, source-touching), **B** (audit,
@@ -13,7 +13,7 @@ design/review only), **C** (stdlib adequacy + rollout, source-touching).
 
 ## 1. Stage-A entry verification — live red set == exactly the 4 named guards
 
-**Procedure (the `ledger.md §Close-time Verification Protocol` run AT ENTRY, R3).**
+**Procedure (the retired failure ledger §Close-time Verification Protocol run AT ENTRY, R3).**
 
 1. `cargo nextest run --workspace --no-fail-fast` ONCE, read-only. (`/qa` owns
    the suite; no source change. One agent, one run.)
@@ -31,7 +31,7 @@ design/review only), **C** (stdlib adequacy + rollout, source-touching).
    (b) it is `#[test]` with NO `#[ignore]` (failing-not-ignored);
    (c) it asserts the CORRECT outcome (RED today, flips GREEN on the fix).
 5. **Any RED beyond these 4 is a genuine regression** → block Stage A until
-   entered in `ledger.md` per the required-fields list. **Fewer than 4 RED**
+   entered in the retired failure ledger per the required-fields list. **Fewer than 4 RED**
    means a fix already landed → reconcile the ledger entry (Resolved removal).
 
 > Note: SPRINT.md item 0 lists the macro-count guard as `→/repl`; the test
@@ -285,7 +285,7 @@ tests, contribute the wall-clock-witness best-of-N audit finding to the /qa lens
 (§4). Phase 5 Stage 1: `/qa` writes the failing e2e the plan calls for,
 sprint-wide, BEFORE per-crate D/D/R cycles (QA-first, METHOD §2.2).
 
-**Design refs.** `tests/plan/ledger.md` (§S86 4-guard entries + §Close-time
+**Design refs.** the retired failure ledger (§S86 4-guard entries + §Close-time
 Verification Protocol); `tests/plan/s87-test-plan.md` (this file);
 `crates/cranelisp-typecheck/src/unify.rs:117` + `crates/cranelisp-types/src/types.rs:182-235`
 (FQ-naming root cause); `src/repl.rs` (disasm + /info renderers);
@@ -300,11 +300,11 @@ Verification Protocol); `tests/plan/s87-test-plan.md` (this file);
 **Acceptance.**
 - Stage-A entry: live `cargo nextest run --workspace` red set == EXACTLY the 4
   named guards (`2829/2825/4/0`), all failing-not-ignored, asserting correct
-  outcome. Any other RED blocks Stage A (entered in `ledger.md` first).
+  outcome. Any other RED blocks Stage A (entered in the retired failure ledger first).
 - Stage-A exit: the 4 e2e guards GREEN; each fix carries its mandatory unit test
   (renderer-seam / disasm-call / info-card) in the SAME change-set; 0 intentional
   reds. Close-time ledger re-verification satisfied for the 4 touched entries
-  (Resolved → removed from `ledger.md`, noted in close report).
+  (Resolved → removed from the retired failure ledger, noted in close report).
 - Stage-C: bare-verb e2e prove resolve-bare-via-reexport (positive) AND
   constitutional-invariant survival (negative: FQ still works, empty prelude
   valid, no raw-primitive bare leak) — promotion set does NOT pre-bind a 0402
@@ -314,7 +314,7 @@ Verification Protocol); `tests/plan/s87-test-plan.md` (this file);
 - Stage-B: no `/qa` tests authored; the wall-clock-witness best-of-N sweep is
   delivered as a finding (`file:line` + severity) into `audits/s87-findings.md`,
   not an in-sprint test edit (unless an active flake makes it emergent-mandatory).
-- Every new test traces to a spec section (`// spec:`), has a `ledger.md`/`PLAN.md`
+- Every new test traces to a spec section (`// spec:`), has a the retired failure ledger/`PLAN.md`
   row; `spec_link_check.py` clean on touched files; suite runtime within the 30 s
   cap; per-wave count+runtime reported.
 

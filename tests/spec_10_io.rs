@@ -1049,7 +1049,7 @@ const RS_SLEEP_MS: u64 = 200;
 /// MORE serial, so they are already robust, and `min` could weaken them.
 ///
 /// Hardened S86 (the S85 map-reduce best-of-N precedent applied to the auto-IO
-/// timing witnesses; see tests/plan/ledger.md S86 entry).
+/// timing witnesses).
 const RS_BEST_OF_N: usize = 5;
 
 /// Run `attempt` `RS_BEST_OF_N` times and return the minimum elapsed-ms.

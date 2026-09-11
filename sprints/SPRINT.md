@@ -1208,3 +1208,61 @@ Next consolidation candidates are the S64 harvest working audits and stale QA
 registers, assessed against current evidence before retirement; int master
 source reconciliation remains a separate owned pass. Further cleanup after
 checkpoint `7f834bf6` is uncommitted. No publication or phase transition occurred.
+
+### Harvest-record consolidation after checkpoint
+
+The user authorized checkpoint and continuation; local commit `b602708e` saves
+the preceding completed cohort. Shared package `eda9132` remains local and
+unchanged; the published Gitlink is retained. QA owns the S64 harvest audit
+cohort and three older QA registers, plus minimum QA-owned integration, as
+one stream. Root handles cross-owner mechanical citations and declaration
+changes. No source behavior, policy, publication or phase change is authorized
+by this document cleanup.
+
+QA dispatch: Claude Fable/high through shared transport, session
+`0a4b6465-619b-4507-b5aa-087c85255898`, complete (reported Claude Fable 5.1). The candidate inventory is
+`.local/s122-harvest-candidates.json`; the prior-tree reference inventory is
+`.local/s122-harvest-crossrefs.json`. Both are temporary working inputs.
+
+QA retired all seventeen candidates after source and historical-disposition
+checks: fourteen harvest audits, the old coverage snapshot, negative-coverage
+register and ledger stub. PLAN retains the Vec/List negative-coverage leads
+and the existing S119 traceability practices; Risk 11 retains the marshalling
+gaps. The S119 close-report band ratio was not practised in recent closes; its
+application or deliberate retirement remains a Phase-7 coordination question.
+No new evidence policy or tests were introduced here.
+
+QA report: `.local/s122-harvest-qa-result.md`; all QA reservations released.
+Test integration uses Claude Opus/high, session
+`1677472e-98e9-42bc-80d6-cf8165f0c1be`, complete (reported Claude Opus 5). Root applied the exact
+retired-ledger navigation handoffs in root guidance, design and audit records.
+The shared checker/declaration is unchanged; none of the retired files had
+a declaration to remove.
+
+The QA tools' dormant harvest-crosswalk branch and stale linter-origin
+docstring remain a separate tooling cleanup; no code changed in that tooling.
+Dated QA plans remain candidates for further retention assessment.
+
+Harvest integration is complete; both role reservations are released. Test
+repaired 60 references across 28 files while preserving all test-side spec and
+defect annotations. Root completed the three metadata/message references
+outside the comment-only brief: the ignored benchmark's reason now names the
+current design, and the suite-polarity comment/reminder names the open-filing
+rule. Ignore status, test assertions and script control flow are unchanged.
+The obsolete inline-FIXME migration sentences were superseded by root's
+current filing protocol; their removal creates no new obligation.
+
+Final stable-tree observation: 733 documents, 2,625 findings at 3,208 locations;
+331 identities removed from the prior 2,956, none added. No baselines or
+exceptions added; historical exclusions remain 182. The checker still exits 1
+for existing debt. Report: `.local/s122-harvest-final.json`, SHA-256
+`99a555176db331f5f33a34b4745a5e375af39e24f5361142dd4d9099d2739661`.
+The snapshot precedes this ledger-only completion entry.
+
+All 27 changed Rust files were compared against checkpoint content with only
+comments and the one named ignore-reason citation allowed to differ. Script
+syntax and unchanged control flow were checked; consumer/wiring and diff
+checks pass. No compiler builds or runtime suites were run for this batch.
+NOTES remains unchanged and ignored. The seventeen retirements remove about
+97,000 net Markdown words across the changed surface. Changes after checkpoint
+`b602708e` remain uncommitted; no push or phase transition occurred.

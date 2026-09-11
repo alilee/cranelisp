@@ -680,7 +680,7 @@ fn list_neg_macros_not_in_functions() {
 // + `append_name_category`) does NOT implement the L0–L4 layout at all — it
 // renders one name per line and (for Fns) appends `: <type>`. Every rule
 // below diverges; the single resolver is /int in `src/repl.rs` (the
-// symbol-list formatter). See `tests/plan/ledger.md` S87 RED entry.
+// symbol-list formatter). RED since S87.
 // =============================================================================
 
 /// Extract the body lines of a `/list`/`/imports`/`/exports` category — the
@@ -1100,8 +1100,8 @@ fn sig_unknown_name_graceful() {
 }
 
 // =============================================================================
-// Wave 5.6 file 6 e2e.rs chunk-1 GAP-COVER carry-forwards (per
-// tests/plan/wave-5.6-e2e-reaudit.md). Each carries a `(carry: legacy/...)`
+// Wave 5.6 file 6 e2e.rs chunk-1 GAP-COVER carry-forwards.
+// Each carries a `(carry: legacy/...)`
 // provenance tag. Three prelude-Option tests are REGRESSION-GUARDs against
 // historic display BUGs (raw-pointer / definition-vs-value display) that
 // the current implementation no longer exhibits — they land green and are
@@ -1408,8 +1408,7 @@ Color
 }
 
 // =============================================================================
-// Wave 5.6 file 6 e2e.rs chunk-2 GAP-COVER carry-forwards (per
-// tests/plan/wave-5.6-e2e-reaudit.md chunk 2). Each carries a
+// Wave 5.6 file 6 e2e.rs chunk-2 GAP-COVER carry-forwards. Each carries a
 // `(carry: legacy/...)` provenance tag.
 // =============================================================================
 
@@ -1767,8 +1766,7 @@ fn list_prefix_filter_matches_names() {
 }
 
 // =============================================================================
-// Wave 5.6 file 6 e2e.rs chunk-3 GAP-COVER carry-forwards (per
-// tests/plan/wave-5.6-e2e-reaudit.md chunk 3). Each carries a
+// Wave 5.6 file 6 e2e.rs chunk-3 GAP-COVER carry-forwards. Each carries a
 // `(carry: legacy/...)` provenance tag.
 // =============================================================================
 
@@ -3700,8 +3698,7 @@ fn display_user_list_value_shows_elements_and_nil() {
 // premature `)`, leaving the line with unbalanced parens. Concrete payloads
 // (and non-generic ADT payloads inside a generic wrapper) render correctly —
 // the single-level control below pins that boundary. Resolver TBD (/int
-// display seam or /backend). Ledger: tests/plan/ledger.md §"Sprint 101 Phase
-// 6a/6b defect set".
+// display seam or /backend).
 // =============================================================================
 
 // spec: repl/spec.md §1.5 — ADT fields MUST be recursively formatted; a
@@ -3747,7 +3744,6 @@ fn display_single_level_parameterized_adt_value_control() {
 // (the lookup form appears to be recorded as the symbol's latest source).
 // Likely owner /int (bare-lookup evaluation path recording); the
 // `info_definition_source` display seam renders what introspection hands it.
-// Ledger: tests/plan/ledger.md §"Sprint 101 Phase 6a/6b defect set".
 // =============================================================================
 
 // spec: repl/spec.md §3.6 — `/info` MUST display the definition source; §3.1

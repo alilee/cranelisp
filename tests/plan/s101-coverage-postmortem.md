@@ -225,7 +225,7 @@ NULL slots (S100 triage, qa plan §7). New information for the resolver
 `vec_get_stored_in_adt_field_applies` — one guard per new position on the family
 exemplar (the HOF trio already pins the per-member boundary; duplicating all
 three members × all positions would add 6 more guards with zero new information).
-Ledger: `tests/plan/ledger.md` §"Sprint 101 Wave-1 cat-3 sweep". These join the
+Ledger: the retired failure ledger §"Sprint 101 Wave-1 cat-3 sweep". These join the
 qa-plan §7.1 flip protocol: the Wave-3 fix must flip **7** vec-query guards, and
 the §7.1 count/wording is superseded accordingly (4 → 7 RED; control unchanged).
 

@@ -6,8 +6,7 @@
 //! and today's binary does not deliver — the dependent-recompilation
 //! transaction, trap stubs for BROKEN symbols, the cascade report, and the
 //! type-change-hole cure. They flip green as the S101 `/dev` waves land
-//! (typecheck 0470 → backend trap stub → src/ transaction). Ledger entry:
-//! `tests/plan/ledger.md` §"Sprint 101 Phase-5 Stage-1".
+//! (typecheck 0470 → backend trap stub → src/ transaction).
 //!
 //! Draft-time polarity (verified by hand against HEAD 0b0e234 before
 //! authoring — every RED shape was probed; crashes are SIGBUS/SIGSEGV):
@@ -21,7 +20,6 @@
 //! stand as permanent regression guards; `repl/spec.md` §18 rows carry the
 //! `[Tested …]` citations. The T1 coherent-stale pins at the bottom carry
 //! flip notes (they fail loudly when the full T1 cure lands — deliberate).
-//! Flip record: `tests/plan/ledger.md` §"Sprint 101 Phase-5 Stage-1".
 //!
 //! ## The pre-break VALUE-carrier residue (documented per the Wave-1 brief)
 //!
@@ -238,7 +236,6 @@ fn single_to_overload_family_change_with_caller_is_rejected() {
 // S101 Phase 6a/6b defect-set guards (/qa guard batch, 2026-07-03).
 // Four §18 conformance defects surfaced by the 6a/6b proxy exercise, all
 // deterministic, all RED-first-verified on the S101 change-set binary.
-// Ledger: tests/plan/ledger.md §"Sprint 101 Phase 6a/6b defect set".
 //   - FIXME 0491: the internal `__expr` eval-wrapper leaks into the cascade
 //     report's `broken:` section (both directions — break and revert).
 //   - trap presentation format (no FIXME — these guards are the record): the

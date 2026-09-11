@@ -8,7 +8,7 @@ planning (`sprints/SPRINT.md` §Skill plans).
 `tests/plan/coverage-audit-s101.md` (lane proposals §2.4, drafting rules §2.5, risk
 register §4 — the baseline this plan executes), `tests/plan/s100-ownership-verification.md`
 (§2 I-G gates, §3 lanes, §6 increment-I drafting list — amended this pass per FIXME 0503),
-`tests/plan/ledger.md` §"Sprint 101 Phase 6a/6b defect set" (the 22 intentional REDs),
+the retired failure ledger §"Sprint 101 Phase 6a/6b defect set" (the 22 intentional REDs),
 FIXMEs 0499 (lane refactor) + 0503 (golden-corpus pin — actioned + deleted this pass).
 
 ---

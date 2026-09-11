@@ -44,7 +44,6 @@
 //!                                          (NEW defect: 1-alloc-per-call leak
 //!                                           — /backend B3.1, 0474-adjacent)
 //!   GREEN ×24.
-//! Ledger: tests/plan/ledger.md §"Sprint 102 Phase-5 Stage-1 QA-first RED set".
 
 #[path = "helpers/mod.rs"]
 mod helpers;
@@ -114,16 +113,17 @@ fn assert_exit_value(out: helpers::e2e::CrOutput, value: i64) -> helpers::e2e::C
 /// ⇒ delta ≤ 1); the rare full-suite FAIL is the pathological at-exit collision
 /// pushing one measurement to 2–3. We do NOT absorb that by widening the bar
 /// (which would blunt small-leak sensitivity). Instead we distinguish the race
-/// from a real leak by REPETITION — the property the ledger §Discipline
-/// mandates over "flaky": a genuine per-iteration leak is DETERMINISTIC and
-/// huge (≥ 950 at this N-spread, every pair), while the at-exit race is
+/// from a real leak by REPETITION — the property `tests/CLAUDE.md`
+/// §"Failing-test discipline" mandates over "flaky": a genuine per-iteration
+/// leak is DETERMINISTIC and huge (≥ 950 at this N-spread, every pair),
+/// while the at-exit race is
 /// transient and collapses to ≤1 on a clean re-measure. Take the tightest
 /// delta across up to 3 measurement pairs, re-measuring ONLY when a pair is
 /// ambiguous (delta > 2). The deterministic clean case (delta 0–1) passes on
 /// the first pair with zero extra subprocess cost; the retry budget targets the
 /// rare race pair. A real leak fails all 3 pairs and stays RED (the #26
 /// `vec_returned_from_generic_fn…` guard reads delta 950 — 59× the bar —
-/// unaffected). Bug-not-flake per `tests/plan/ledger.md` §Discipline.
+/// unaffected). Bug-not-flake per `tests/CLAUDE.md` §"Failing-test discipline".
 fn assert_iteration_independent_imbalance(template: &str, context: &str) {
     let measure = || {
         let (_o1, small) = run_with_rc_stats(&template.replace("{N}", "50"));
@@ -710,7 +710,7 @@ fn h2_rc_stats_reports_per_mechanism_counters() {
 // attribution needs a runtime name-keyed tally + per-extern emitted hooks that
 // ride the L-D5 sibling-expansion (str-len$borrowed, §9.2) — increment-II work,
 // not a cheap fall-out of H2's codegen-time counters. Stays RED as the owed
-// signal; see ledger.md #22 for the deferral rationale + target increment.
+// signal.
 #[test]
 fn h3_rc_stats_reports_per_extern_adaptation_pairs() {
     let (out, _) = run_with_rc_stats(

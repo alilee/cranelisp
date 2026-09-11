@@ -36,9 +36,6 @@
 //!       alias not counted as a use ⇒ in-place mutation corrupts the alias;
 //!       exit 198 vs correct 109)
 //!
-//! Ledger: tests/plan/ledger.md §"Sprint 103 Phase-5 Stage-1 increment-II
-//! QA-first RED set".
-//!
 //! Free-standing: every fixture is `(import [primitives [*]])` + inline helpers;
 //! zero stdlib dependency (root CLAUDE.md §Stdlib separation).
 

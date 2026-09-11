@@ -1,10 +1,9 @@
 //! Sprint 64 Wave 6 batch 2 Part B carry-forward — File Watching cluster.
 //!
-//! Per the Wave 6 batch 2 audit (`tests/plan/wave-6-batch-2-audit.md` §3),
-//! these 12 tests carry forward the file-watching surface from
-//! `tests/sprint23.rs` (lines 540–1061). The audit notes
-//! `repl/spec.md §14` has zero existing `[Tested]` annotations across
-//! the carry-forward suite — these tests are the first §14 coverage.
+//! Per the Wave 6 batch 2 audit, these 12 tests carry forward the
+//! file-watching surface from `tests/sprint23.rs` (lines 540–1061). The
+//! audit notes `repl/spec.md §14` has zero existing `[Tested]` annotations
+//! across the carry-forward suite — these tests are the first §14 coverage.
 //!
 //! Spec anchors:
 //!   - `repl/spec.md §14.1` — Watch Scope

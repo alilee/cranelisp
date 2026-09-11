@@ -863,6 +863,6 @@ above is exactly why CI cannot cover it.
   no-stderr-leak/graceful, default-build-inert) the §28 work must preserve.
 
 No plan-row shifts. No carry-forward ledger entry beyond the addendum entry in
-`tests/plan/ledger.md` (ship-this-sprint RED-first guards). No FIXME filed (the
+the retired failure ledger (ship-this-sprint RED-first guards). No FIXME filed (the
 four 5d seams are named here; file `target: /int` only if a knob proves
 unwireable at Phase 5).

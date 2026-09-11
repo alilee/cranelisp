@@ -212,7 +212,7 @@ New e2e file or extensions to `spec_03_types.rs` / `spec_06_pattern_matching.rs`
 
 After the sweep is green, `/spec` promotes `spec/07-traits.md §7.3.1` to `[Tested+Neg]`
 (coordinate; `/qa` confirms the P+N pairs green first). Record sweep result in
-`tests/plan/ledger.md`.
+the retired failure ledger.
 
 ---
 
@@ -310,7 +310,7 @@ repro-pass record. (Face B closed S90.) Trace: FIXME 0432 Face A, §5.1.2.
 > **Disposition rule:** this row is the cross-skill-handoff minimal repro
 > (`CLAUDE.md §"Cross-skill defect handoff requires minimal repro"`). If RED, it is
 > committed failing-not-ignored with a `// FIXME(/backend)` brief; if green, the
-> repro-pass is recorded in `tests/plan/ledger.md` and FIXME 0432 closes. NOT a committed
+> repro-pass is recorded in the retired failure ledger and FIXME 0432 closes. NOT a committed
 > backend fix this sprint.
 
 ### C.0433 — literal-pattern reconciliation (spec-internal; NO test change expected)
@@ -345,7 +345,7 @@ untouched by this plan unless 0432-A / 0434-sweep surface within them.
 **Discipline reminders:** failing-not-ignored (`memory/feedback_failing_not_ignored.md`);
 every `/dev` fix lands with a mandatory unit test (`tests/CLAUDE.md §Unit-test-per-fix`);
 free-standing tests (zero stdlib); `// spec:` annotation on every `#[test]`; row in
-`tests/plan/ledger.md` at authoring time. A genuine regression is any RED beyond these
+the retired failure ledger at authoring time. A genuine regression is any RED beyond these
 named guards + the 14 S81 guards.
 
 ---

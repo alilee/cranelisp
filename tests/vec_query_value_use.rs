@@ -12,9 +12,8 @@
 //! signature). The 4 S100 guards + 3 Wave-1 cat-3 guards below flipped GREEN;
 //! the `vec-len` control stayed green throughout. They remain permanently as
 //! regression guards — never deleted, never weakened (qa plan §7.1 step 2).
-//! Ledger resolution records: `tests/plan/ledger.md` §"Sprint 100 Phase-3
-//! triage" + §"Sprint 101 Wave-1 cat-3 sweep". Residual on the SAME new
-//! paths: the COW copy-branch leak — `tests/vec_cow_value_use_leak.rs`
+//! Residual on the SAME new paths: the COW copy-branch leak —
+//! `tests/vec_cow_value_use_leak.rs`
 //! (FIXME 0474, intentional RED). The "RED on HEAD" notes on the tests below
 //! are the historical draft-time polarity, kept as the triage narrative.
 //!
@@ -43,10 +42,10 @@
 //! `/backend`; the alternative — real extern bodies in `cranelisp-primitives` —
 //! is blocked on element-type erasure, which is exactly why the slots are NULL).
 //!
-//! Failing-not-ignored per `memory/feedback_failing_not_ignored.md`; ledger entry
-//! in `tests/plan/ledger.md` (S100 triage section); plan cross-ref
-//! `tests/plan/s100-ownership-verification.md` §7. These flip GREEN when value-use
-//! of the vec query family gets a working entry (spine §3.1: "the target design
+//! Failing-not-ignored per `memory/feedback_failing_not_ignored.md`; plan
+//! cross-ref `tests/plan/s100-ownership-verification.md` §7. These flip GREEN
+//! when value-use of the vec query family gets a working entry (spine §3.1:
+//! "the target design
 //! implies every primitive gets a real GOT-backed value entry"). NOTE for the
 //! resolver: `/repl`'s self-documenting principle aside, the REPL must never
 //! SIGSEGV on valid input — the REPL-mode tests below pin process survival too.
@@ -124,8 +123,8 @@ fn vec_get_as_value_run_mode_returns_element() {
 
 // =============================================================================
 // S101 Wave-1 cat-3 sweep extension — the same NULL-slot class in THREE more
-// use positions (tests/plan/s101-coverage-postmortem.md §3; ledger §"Sprint
-// 101 Wave-1 cat-3 sweep"). Probed 2026-07-03 on HEAD 0b0e234:
+// use positions (tests/plan/s101-coverage-postmortem.md §3 — the S101 Wave-1
+// cat-3 sweep). Probed 2026-07-03 on HEAD 0b0e234:
 //   - curried partial `(vec-get v)`  → Rust panic `can't resolve symbol
 //     vec-get` in cranelift-jit backend.rs:345 (exit 101) — the auto-curry
 //     wrapper's `primitives_inline` fallback does NOT cover the vec family
@@ -190,9 +189,9 @@ fn vec_get_stored_in_adt_field_applies() {
 // explicit import (spec/08-modules.md §8.6.4/§8.8.1) — NO exception. The pins
 // below are FLIPPED to expect REJECTION. RED against the current impl
 // (`e1fe4a8`, prelude/outer-scope arm unimplemented); flip GREEN when FIXME
-// 0514's prelude arm lands. Ledger: `tests/plan/ledger.md` §"Sprint 102
-// name-shadowing matrix (FIXME 0514)". (The resolver's "user fn shadows
-// vec-get" arm is now unreachable via a prelude-provided vec-get; a user that
+// 0514's prelude arm lands (the S102 name-shadowing matrix). (The resolver's
+// "user fn shadows vec-get" arm is now unreachable via a prelude-provided
+// vec-get; a user that
 // wants its OWN `vec-get` must suppress/not-load the prelude name, §8.8.3.)
 // =============================================================================
 
@@ -259,8 +258,7 @@ fn user_fn_over_prelude_vec_get_rejected_even_with_value_use() {
 // HOFs / same-op-same-type ×2 / vec-get + user fn / `vec-len` at two element
 // types — all PASS; the two-instantiation control below pins the boundary.
 // Resolver: /backend — the same `fn_as_value.rs` seam as the S101 fix, per
-// `design/backend/ownership-codegen.md` §12.7. Failing-not-ignored; ledger
-// entry: tests/plan/ledger.md §"Sprint 101 Phase 6a/6b defect set".
+// `design/backend/ownership-codegen.md` §12.7. Failing-not-ignored.
 // =============================================================================
 
 // spec: spec/04-expressions.md §4.6.2 — indirect calls: the same generic HOF

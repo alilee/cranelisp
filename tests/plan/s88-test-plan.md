@@ -252,7 +252,7 @@ ahead of the rest of the agent lane.
   **2873 passed / 1 failed / 0 skipped** (one intentional failing-not-ignored
   guard: 0423). DEF-2 adds NO red (resolved).
 
-## Ledger note (for `/qa` to fold into `ledger.md` at close)
+## Ledger note (for `/qa` to fold into the retired failure ledger at close)
 
 - DEF-2: **resolved collaterally by FIXME 0417** (S87); 3 GREEN guards added; no
   RED, no owner triage. Stage D G2 swap unblocked.

@@ -496,7 +496,7 @@ poll node reserves the slots at the sentinel this sprint).
 
 ## Stage-1 ledger note
 
-At Phase-5 Stage-1 close `/qa` will add a `tests/plan/ledger.md` entry recording: (1) the
+At Phase-5 Stage-1 close `/qa` will add a the retired failure ledger entry recording: (1) the
 5 new RED-first `nt-reactor-e2e` capacity/two-pool e2e rows authored failing-not-ignored
 (gated `#[cfg(feature="concurrency-runtime")]`, compiled OUT of default `nt` so no
 collateral RED there); (2) the **3 named two-pool guards transition from "named

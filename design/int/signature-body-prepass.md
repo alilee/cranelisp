@@ -409,7 +409,7 @@ tiers:
 ### Existing stress repro (the contention guard)
 
 `tests/repl_persist_race.rs::heisenbug_race_reduced_concurrent_import_pairs`
-(6 threads × 2 sequential import pairs, fast-fail over 10 trials; `tests/plan/ledger.md`
+(6 threads × 2 sequential import pairs, fast-fail over 10 trials; the retired failure ledger
 :2118) stays in the suite as the **contention** guard. Acceptance: it stays green
 20/20 under full-suite load. The deterministic test (tier 1/2) is the **regression
 pin** (un-ignored per `memory/feedback_failing_not_ignored.md`); the stress test is
@@ -572,5 +572,7 @@ Cross-refs: `design/arch/bounded-contexts.md` §6 (boundary note);
 barrier); `design/int/concurrency-architecture.md` §3.5/§3.6 (the convention-spread
 protocol this retires); `design/int/heisenbug-race-closure.md` (the tactical
 lineage this supersedes); `design/arch/fixmes/0425-*.md`, `0426-*.md` (the gate
-FIXMEs); `tests/repl_persist_race.rs`, `tests/plan/ledger.md`:2118 (the stress
+FIXMEs); `tests/repl_persist_race.rs`, the retired failure ledger:2118 (the stress
 repro).
+
+The full retired failure ledger is available in Git: `git show a25ce2c8:tests/plan/` (file `ledger.md`).

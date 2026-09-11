@@ -343,7 +343,7 @@ blocked by the D4 `-force_load` driver bug (Wave-2E). Until that lands, the
 link permutations of the output-equivalence corpus ride red. This is a
 **compiler defect, not a test-infra gap** — the setup script makes the
 artifacts present; the linker driver still rejects `-force_load`. Tracked
-in `ledger.md` under the Wave-2E entry.
+in the retired failure ledger (Git history) under the Wave-2E entry.
 
 ### 5.2 Platform load + ABI/layout-hash gate (spec/10-io.md §10.10, §8.9.3)
 
@@ -407,7 +407,7 @@ and the prereq set has a named owner + extension protocol.
 4. **Record the contract.** Add to `tests/CLAUDE.md`: the setup-script
    mechanism, the "no `cargo build` in a test" rule, and the "new platform
    fixture → extend `build-link-prereqs.sh`" protocol. `/qa`-only.
-5. **Ledger.** Note in `ledger.md` that the `--link`/platform reds were an
+5. **Ledger.** Note in the failure ledger (retired S108, Git history) that the `--link`/platform reds were an
    artifact-provisioning gap (not a profile desync), now closed by the
    setup script; the residual Linux `--link` reds are the D4 driver bug
    (Wave-2E), owner `/dev` (`src/exe.rs`).

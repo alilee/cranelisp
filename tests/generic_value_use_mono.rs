@@ -32,8 +32,8 @@
 //! UNKNOWN (FIXME 0488 residue; do not "simplify" the fixture without
 //! re-verifying it still fails).
 //!
-//! Failing-not-ignored per `memory/feedback_failing_not_ignored.md`; ledger:
-//! `tests/plan/ledger.md` §"Sprint 101 Phase 6a/6b defect set".
+//! Failing-not-ignored per `memory/feedback_failing_not_ignored.md` (S101
+//! Phase 6a/6b defect set).
 //!
 //! SEAM ATTRIBUTION (S102 Wave 2, /qa isolation — full notes + call-chain
 //! evidence in `tests/plan/0488-isolation.md`): all THREE signatures attribute

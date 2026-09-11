@@ -29,8 +29,8 @@
 //!      protect-inc'd source reference at static shared-source sites too —
 //!      same root class (the copy branch releases nothing), and since the
 //!      Wave-3 cores are line-identical to the pre-S101 static bodies this
-//!      leg is almost certainly PRE-EXISTING, newly pinned. Recorded in the
-//!      ledger; the /backend cure for the class covers all three.
+//!      leg is almost certainly PRE-EXISTING, newly pinned. The /backend cure
+//!      for the class covers all three.
 //!
 //! Leak-only (polarity errs on the retain side — no UAF/double-free). COW
 //! value semantics hold throughout (asserted via the computed results).
@@ -40,8 +40,7 @@
 //! fix (a consumed-source polarity on the COW cores / call sites so the copy
 //! branch releases exactly when an owned reference was handed in — see the
 //! FIXME's proposed resolution; sequencing: before/with increment I's
-//! R2-wrapper + `str-len$borrowed` work on the same seam). Ledger entry:
-//! `tests/plan/ledger.md` §"Sprint 101 Wave-5 — FIXME 0474 repro".
+//! R2-wrapper + `str-len$borrowed` work on the same seam).
 
 #[path = "helpers/mod.rs"]
 mod helpers;

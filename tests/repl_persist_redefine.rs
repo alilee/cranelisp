@@ -183,8 +183,7 @@ fn rejected_generic_change_persists_and_restarts_with_prior_source() {
 // repl/spec.md §18.8 "The restart MUST reach a prompt" ([S102]-tagged MUST):
 // the session MUST start, display the load error per §5.1 NAMING the broken
 // symbol, enter the §14.4 error-blocked state, and accept a definition turn
-// as the repair. Resolver: /int. Ledger: tests/plan/ledger.md §"Sprint 101
-// Phase 6a/6b defect set".
+// as the repair. Resolver: /int.
 // =============================================================================
 
 // spec: repl/spec.md §18.8 — the restart MUST reach a prompt; the load error

@@ -659,7 +659,7 @@ fn dependent_spark_partial_dependency_win() {
 //     inside the full 1700-test concurrent `cargo nt` ⇒ dips below 3x ⇒ GREEN. A
 //     hard CPU-ratio assert in the default lane therefore flips RED↔GREEN with
 //     machine load — exactly the banned `flaky`/`timing-sensitive` disposition
-//     (`tests/plan/ledger.md` §Discipline), and it would surface a spurious
+//     (`tests/CLAUDE.md` §"Failing-test discipline"), and it would surface a spurious
 //     "regression" on a loaded CI box.
 //   - Deterministic-RED-in-the-concurrent-suite is INFEASIBLE from `tests/` alone:
 //     it would need exclusive core scheduling (a nextest test-group in
@@ -673,7 +673,7 @@ fn dependent_spark_partial_dependency_win() {
 // CPU-contention demonstration is preserved as an `#[ignore]`'d on-demand benchmark
 // (`alloc_rc_heavy_parallel_cpu_floor_benchmark_ignored`) that reproduces the floor
 // violation on an IDLE box. The durable record of the finding lives in
-// `tests/plan/ledger.md` (S94 Phase 6) + `design/arch/effect-concurrency.md` §3.1 —
+// `design/arch/effect-concurrency.md` §3.1 (the S94 floor-scope finding) —
 // NOT a flaky default-suite RED. Owner of the floor fix: /backend + /arch.
 // =============================================================================
 
@@ -817,13 +817,13 @@ fn alloc_rc_heavy_parallel_result_equals_sequential() {
 // Expected on an idle box: RED with `FLOOR VIOLATED … ~6x (> 3x margin)`. It flips
 // GREEN when the floor is restored for the alloc/RC-heavy shape (a contention-aware
 // create-gate, a non-copying / single-owner Vec path, or Phase-H memory work).
-// Durable record: `tests/plan/ledger.md` (S94 Phase 6) + `design/arch/
-// effect-concurrency.md` §3.1. Owner: /backend + /arch.
+// Durable record: `design/arch/effect-concurrency.md` §3.1 (the S94
+// floor-scope finding). Owner: /backend + /arch.
 #[test]
 #[ignore = "perf/contention benchmark: CPU-ratio signal is scheduling-dependent \
             (idle ~6.5x RED, saturated ~3x, concurrent-suite GREEN) so it cannot be a \
             deterministic default-suite assert — run on an IDLE box via --run-ignored; \
-            durable record in tests/plan/ledger.md + effect-concurrency.md §3.1"]
+            durable record in design/arch/effect-concurrency.md §3.1"]
 fn alloc_rc_heavy_parallel_cpu_floor_benchmark_ignored() {
     const VEC_LEN: usize = 81; // /port's "~81-element Vec of (Box Int)".
     const LEAVES: i64 = 16; // 16 D&C leaves → a wide parallel frontier.

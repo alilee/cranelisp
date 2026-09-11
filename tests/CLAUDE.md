@@ -42,10 +42,7 @@ helper. The earlier four-layer pyramid is retired (Git history).
 | File | Purpose |
 |---|---|
 | `PLAN.md` | Current assurance policy, evidence navigation and active allocation. Fine-grained traceability remains in specs and test sources. |
-| `ledger.md` | RETIRED S108 (tombstone only). Triage = the inline defect-comment/FIXME convention; analysis = `// defect:` notation (see §"Defect-repro notation"). History in git. |
 | `risks.md` | Qualitative risk register. |
-| `coverage-gaps.md` | Per-crate coverage analysis. |
-| `negative-coverage.md` | `[Tested]` → `[Tested+Neg]` upgrade register. |
 | `helpers.md` | E2E helper API design (contract for `tests/helpers/`). |
 
 Per-sprint plans accumulate as `plan/s{NN}-*.md` (and `spec_*.py` traceability
@@ -396,12 +393,12 @@ Every **repro test** — a test born from a defect, committed per root
 fn nullary_constructor_bare_lookup_shows_deftype_and_qualified_home() { ... }
 ```
 
-This replaces the retired failure ledger (`plan/ledger.md`, retired S108) as
-the substrate for defect frequency/locus/recurrence analysis. Unlike the
-ledger — which by its own discipline held only *currently-failing* tests —
-the notation rides the permanent corpus, so analysis works over **GREEN
-repros too**: a fixed defect keeps contributing to the class-frequency and
-hotspot signals forever.
+This replaces the failure ledger retired in S108 — its last full revision is
+`git show a25ce2c8:tests/plan/` — as the substrate for defect
+frequency/locus/recurrence analysis. Unlike the ledger, which by its own
+discipline held only *currently-failing* tests, the notation rides the
+permanent corpus, so analysis works over **GREEN repros too**: a fixed defect
+keeps contributing to the class-frequency and hotspot signals forever.
 
 **Fields** (the four below required; single line; no free text):
 
@@ -560,8 +557,7 @@ cargo llvm-cov report                               # text summary
 ```
 
 Name real `--test` targets (see `ls tests/*.rs`); there are no `ringN` binaries.
-Per-crate gap analysis lives in `plan/coverage-gaps.md` — not restated here,
-it decays.
+No standing per-crate gap register is kept; measure when a question needs it.
 
 **Known limitation — JIT code not covered:** Cranelisp compiles user code via
 Cranelift JIT at runtime; LLVM instrumentation covers only the Rust compiler

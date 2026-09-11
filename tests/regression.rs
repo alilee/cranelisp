@@ -143,8 +143,7 @@ fn t_s2_2_inline_adt_arg_wrapping_vec_preserves_len() {
 //     corrupt (0/40), while THIS bare single-threaded ADT-wrapping-Vec repro does.
 // /backend should confirm whether the `assoc` path shares the `vec-set` fix (the
 // likely common borrowed_vars root) or needs a sibling fix, and whether
-// concurrency is load-bearing for the `assoc` manifestation. See
-// tests/plan/ledger.md (S97 entry).
+// concurrency is load-bearing for the `assoc` manifestation (S97 triage).
 //
 // spec: design/backend/ring2-rc.md §5.5 — Captured and Borrowed Variables and
 //       Last-Use (the borrowed_vars inner-Vec RC invariant). Same anchor as
@@ -196,8 +195,8 @@ fn nested_adt_wrapping_vec_looped_double_use_corrupts_heap_neg() {
 // Sprint 59 Defects 4+5 reductions — `/run-tests` batched-dispatch crashes
 // =============================================================================
 //
-// Carry-forward from `tests/legacy/sprint59_defects456_repro.rs` per Wave 6
-// batch 3 audit (`tests/plan/wave-6-batch-3-audit.md`). Each test is a
+// Carry-forward from `tests/legacy/sprint59_defects456_repro.rs` per the
+// Sprint 64 Wave 6 batch 3 audit. Each test is a
 // reduction rung — "this small shape passes; this slightly larger shape
 // fails" — narrowing the historic Defects 4+5 surface (the
 // `/run-tests <mod>` REPL command crashing with SIGSEGV/SIGTRAP when the
@@ -210,9 +209,7 @@ fn nested_adt_wrapping_vec_looped_double_use_corrupts_heap_neg() {
 // Pre-Sprint 63 inline `FIXME(/backend)` hypothesis comments are preserved
 // verbatim from the legacy file — they document the discrimination
 // calibration ("if this PASSES, the next axis is X; if this FAILS, the
-// defect is in Y"). Per `tests/plan/wave-6-batch-3-audit.md` §"Tests
-// flagged for /sprint judgment" §B, the inline FIXMEs migrate to
-// numbered fixme files at FIXME 0145 close, not at carry-forward time.
+// defect is in Y").
 // =============================================================================
 
 use std::path::Path;
@@ -823,11 +820,9 @@ fn d45_cross_module_html_full_10_tests_no_crash() {
 // =============================================================================
 //
 // These tests copy `exemplar/` into the per-test TempDir to exercise the
-// actual exemplar's html.cl + grid.cl. Per
-// `tests/plan/wave-6-batch-3-audit.md` §"Tests flagged for /sprint judgment"
-// §E, the copy-from-exemplar shape is preserved (not inlined) because the
-// d6 ledger entries (4 of them) reproduce against the real exemplar source
-// and inlining would change the semantic.
+// actual exemplar's html.cl + grid.cl. The copy-from-exemplar shape is
+// preserved (not inlined) because the four d6 reductions reproduce against
+// the real exemplar source and inlining would change the semantic.
 
 // spec: repl/spec.md §16.3 — real exemplar /run-tests html
 //
@@ -1739,14 +1734,12 @@ fn d6_solve_recursive_adt_does_not_segv() {
 // §F — d6: real-exemplar reductions (4 currently FAILING — open Defect 6)
 // =============================================================================
 //
-// Per `tests/plan/ledger.md §"Escaped carries — surfaced Sprint 61 Wave 3"`:
-// these four tests fail at audit time (2026-05-05) because Defect 6 (deep
-// recursion stack overflow in JIT'd `propagate`/`solve` on 81-cell
-// Vec-copying ADT traversal) remains open. Per
+// These four tests (Sprint 61 Wave 3 escaped carries) fail at audit time
+// (2026-05-05) because Defect 6 (deep recursion stack overflow in JIT'd
+// `propagate`/`solve` on 81-cell Vec-copying ADT traversal) remains open. Per
 // `memory/feedback_failing_not_ignored.md` they MUST land un-ignored as
-// the durable record. The legacy ledger entries (lines 83–131 of
-// `tests/plan/ledger.md`) name the legacy file's tests but cover the
-// same regression surface — when /backend resolves Defect 6 these
+// the durable record. They cover the same regression surface as the legacy
+// file's tests under new names — when /backend resolves Defect 6 these
 // carry-forwards become passing regression guards.
 //
 // Disposition: `exemplar-gap (owner=/port, underlying-owner=/backend)`.
@@ -1964,8 +1957,8 @@ fn d6_exemplar_make_grid_only_does_not_segv() {
 // Sprint 60 cache-reuse + drop-glue reductions
 // =============================================================================
 //
-// Carry-forward from `tests/legacy/sprint60_reduction.rs` per Wave 6 batch 4
-// audit (`tests/plan/wave-6-batch-4-audit.md`). Two reduction clusters:
+// Carry-forward from `tests/legacy/sprint60_reduction.rs` per the Sprint 64
+// Wave 6 batch 4 audit. Two reduction clusters:
 //
 //   §A cache-reuse SIGSEGV (steps 1 + 2.1–2.7 + 3 controls = 11 tests) —
 //      first run populates `.cranelisp-cache`; second run cache-hit-loads
@@ -1978,8 +1971,7 @@ fn d6_exemplar_make_grid_only_does_not_segv() {
 //
 // All 17 sprint60_reduction tests PASS on the current binary at audit time
 // (2026-05-05). Pre-Sprint 63 inline `FIXME(/backend)` hypothesis comments
-// preserved verbatim — see `tests/plan/wave-6-batch-4-audit.md` §"Tests
-// flagged for /sprint judgment" §C–§D for the migration discipline.
+// preserved verbatim.
 // =============================================================================
 
 /// Run `cranelisp --run program.cl` from `cwd`, returning the raw `Output`.

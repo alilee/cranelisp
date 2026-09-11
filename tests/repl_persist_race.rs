@@ -1,10 +1,10 @@
 //! Sprint 64 Wave 6 batch 2 Part B carry-forward — Heisenbug + H5 gate
 //! race-shape regression cluster.
 //!
-//! Per the Wave 6 batch 2 audit (`tests/plan/wave-6-batch-2-audit.md` §7),
-//! these 4 tests are race-shape regression probes that pin specific
-//! Sprint 58/59/61 concurrency defects. They are intentionally subprocess
-//! stress / scheduler-trace tests; the empirical calibration constants
+//! Per the Wave 6 batch 2 audit, these 4 tests are race-shape regression
+//! probes that pin specific Sprint 58/59/61 concurrency defects. They are
+//! intentionally subprocess stress / scheduler-trace tests; the
+//! empirical calibration constants
 //! (THREADS=6, ITERS=2, TRIALS=10, TIMEOUT=15s, STRESS_ITERATIONS=20) were
 //! tuned against documented per-trial fire-rates and are preserved
 //! verbatim from `tests/sprint23.rs`. See the per-test comments for the

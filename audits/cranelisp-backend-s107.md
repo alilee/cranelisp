@@ -17,7 +17,7 @@
 > for staleness; spot-checks of its claims against code are recorded in §2.6.
 >
 > **Method.** Read-only. Evidence gathered from source (`crates/cranelisp-backend/`),
-> `design/backend/`, `design/arch/fixmes/`, `tests/plan/ledger.md`,
+> `design/backend/`, `design/arch/fixmes/`, the retired failure ledger,
 > `sprints/archive/sprint-{87,100..107}.md`, and a scripted >100-line function
 > census over non-test sources. No build or test run (tree shared with a
 > concurrent seeding chain, per dispatch).
@@ -142,7 +142,7 @@ declare-idempotent/define-once discipline are re-stated per site — and the
 identity half has produced two separate defects on two different mirrors:
 FIXME 0350 (closure glue collision under monomorphisation, per the
 `lambda.rs:228-237` comment) and ledger item 25 (`curry_drop_glue_{span}`
-collision, `tests/plan/ledger.md:188`, fixed S102 B3.1). The fix comments
+collision, `historical failure-ledger line 188`, fixed S102 B3.1). The fix comments
 cross-reference each other as "precedent" (`fn_as_value.rs:975-985`) — the
 textbook P7/P8 signal that the discipline wants one home, per the standing
 `/review` root-cause-and-duplication feedback.
@@ -209,7 +209,7 @@ now carry local tests (`literals.rs:429`, `match_codegen.rs:666`).
 `ownership_reuse`, `vec_query_value_use`, `repl_redefinition` families). The
 suite's single failing-not-ignored guard at S107 close
 (`ownership_reuse::chaining_toggle_off_allocates_intermediate`,
-`tests/plan/ledger.md:136`) is owned by `/typecheck` (0528 carry), not backend.
+`historical failure-ledger line 136`) is owned by `/typecheck` (0528 carry), not backend.
 The two S102 backend defect guards (ledger items 25/26) flipped green in the
 B3.1 seam work. No backend-owned RED exists.
 
@@ -331,7 +331,7 @@ byte-identical); `apply.rs` trending down, not up, at the next audit.
 (`vec_codegen.rs:769`) re-implement the same skeleton, and the subtle half —
 glue-name identity must fold the mono discriminator, plus declare-idempotent/
 define-once — has produced two real defects on two different mirrors (FIXME
-0350; ledger item 25, `tests/plan/ledger.md:188`), with the fixes
+0350; ledger item 25, `historical failure-ledger line 188`), with the fixes
 cross-referencing each other as "precedent" (`fn_as_value.rs:975-985`). Per the
 standing `/review` root-cause feedback, a defect class recurring across mirrors
 is past the consolidation threshold. This is design-shaped first: the shared
@@ -531,3 +531,5 @@ residual gap in A.2 risk 4).
 No recommendations are added or withdrawn: R1, R2, R4, R6 done-bars already
 cure their risks, and A.2 surfaced no top risk outside the existing set plus
 R3-revised's scope.
+
+The full retired failure ledger is available in Git: `git show a25ce2c8:tests/plan/` (file `ledger.md`).

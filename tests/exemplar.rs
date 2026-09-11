@@ -5,13 +5,12 @@
 //! (carry: legacy/exemplar.rs::exemplar_batch_cross_module_adt)
 //! (carry: legacy/exemplar_solver_correctness.rs::eliminate_on_same_value_given_returns_none, inline-rewritten)
 //!
-//! Per the Wave 6 batch 1 audit (tests/plan/wave-6-batch-1-audit.md),
-//! these tests assert the **multi-file on-disk batch compilation**
-//! pipeline against TempDir-rooted source (not inline strings via the
-//! REPL session). The legacy tests used the integration helper
-//! `batch_run_file`; the new shape uses the e2e `Cranelisp` builder
-//! with `.run("main.cl")` and reads the program exit code as the
-//! observation.
+//! Per the Wave 6 batch 1 audit, these tests assert the **multi-file
+//! on-disk batch compilation** pipeline against TempDir-rooted source (not
+//! inline strings via the REPL session). The legacy tests used the
+//! integration helper `batch_run_file`; the new shape uses the e2e
+//! `Cranelisp` builder with `.run("main.cl")` and reads the program exit code
+//! as the observation.
 //!
 //! T-S2-1 (the Layer-1 `eliminate` contract guard) is inline-rewritten
 //! per `memory/feedback_repro_handoff.md` — the new repro embeds a

@@ -217,7 +217,7 @@ F3 atomic-RC finding as the durable RED guard (below) for a future sprint.
 
 These add **2** to the suite's intentional failing-not-ignored count (22 → **24**);
 they are known-defect/gap guards, not regressions. Owners + rationale recorded in
-`tests/plan/ledger.md`.
+the retired failure ledger.
 
 ---
 

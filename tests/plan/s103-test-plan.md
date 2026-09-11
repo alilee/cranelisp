@@ -16,7 +16,7 @@ FIXME 0499 (e2e-lane refactor, target /qa — the QA-first stage head);
 flattening), §7.2 (one-word bound), §7.6 (compatibility checklist), §9.2 (str-len sibling /
 L-D5), §13.3 (fn_as_value seam rework); `design/typecheck/ownership-inference.md` §7 (write
 path, `result_unique` chaining, eligibility-vs-permission); `repl/spec.md` §18.1.1 (the
-downgrade-report `stale:` section — the T1-cure negative-MUST); `tests/plan/ledger.md`
+downgrade-report `stale:` section — the T1-cure negative-MUST); the retired failure ledger
 (guard inventory; the sole carried intentional RED = `h3_rc_stats_reports_per_extern_adaptation_pairs`).
 
 Where this plan and the spine disagree, the spine governs. Metrics discipline is
@@ -335,7 +335,7 @@ cross-skill change requests.
 
 Written this pass. Full suite after the batch: **3972 run / 3960 passed / 12 failed /
 1 skipped** (51.9s) — 12 reds = the carried h3 + 11 new QA-first reds. No pre-existing
-green regressed. Ledger: `tests/plan/ledger.md` §"Sprint 103 Phase-5 Stage-1
+green regressed. Ledger: the retired failure ledger §"Sprint 103 Phase-5 Stage-1
 increment-II QA-first RED set".
 
 | Plan item | File(s) | Status |

@@ -783,7 +783,7 @@ in the same change-set (`memory/feedback_unit_test_per_fix.md`):
 - **Increment II sprint:** F2v fixture; L-C3; L-B3(4) schema-bump lane; reuse/flatten
   counters; perf lanes II-G1…II-G6; L-D2 decision point executed on increment-I data.
 - **Every sprint:** ledger discipline — new intentional-failing guards enter
-  `tests/plan/ledger.md` with the six fields; the canonical-suite intentional-failure
+  the retired failure ledger with the six fields; the canonical-suite intentional-failure
   count in root `CLAUDE.md` §Testing is updated by `/sprint` at close.
 
 ### 6.1 Stage-M drafting specification (S101 Phase 3 — sprint-ready)
@@ -1090,7 +1090,7 @@ spec as written, discovered at drafting:
   `vec_get_as_value_run_mode_returns_element` (4 RED, signal-terminated on HEAD), plus
   `vec_len_as_value_through_hof_returns_length_control` (GREEN — pins the root-cause
   boundary to the NULL slots, not the wrapper mechanism). Ledger entry:
-  `tests/plan/ledger.md` §"Sprint 100 Phase-3 triage". No FIXME filed — the failing
+  the retired failure ledger §"Sprint 100 Phase-3 triage". No FIXME filed — the failing
   tests are the record and trigger (`memory/feedback_no_fixme_with_failing_test.md`).
 - **Interaction with this plan:** backend §9.1's sibling registration touches the same
   primitives-table site — §12.7 there already requires this defect verified/fixed
@@ -1125,7 +1125,7 @@ The fix is S101 scope item 1; when it lands, in order:
    `vec_get_as_value_run_mode_returns_element`) green in the canonical run; the
    control (`vec_len_…_control`) stays green. The tests are permanent regression
    guards — never deleted, never weakened.
-3. **Ledger update** (`/qa`): annotate the `tests/plan/ledger.md` §"Sprint 100
+3. **Ledger update** (`/qa`): annotate the retired failure ledger §"Sprint 100
    Phase-3 triage" entry in place with a resolution line — sprint (S101), fixing SHA,
    "4 RED → GREEN; control green throughout" — the S81→S82 flip-recording precedent.
 4. **Test-file docs** (`/qa`, same change-set as 3): update the

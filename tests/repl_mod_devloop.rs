@@ -27,12 +27,11 @@
 //!     sig_imported_name_shows_full_signature_line              (0487 face 3 / §3.8)
 //!     redefinition_blocker_name_pasteable_into_info            (0487 face 3)
 //!   GREEN ×5 controls/pins.
-//! Ledger: tests/plan/ledger.md §"Sprint 102 Phase-5 Stage-1 QA-first RED set".
 //!
 //! Watch obligation (risk-register #10, qa plan §1.3): when the A2/A4 fixes
 //! land, re-probe the two UNREDUCED residues — the D2 hybrid-meta arm and the
 //! exemplar's false-`undefined variable: None` faces — against this lane's
-//! cells; record outcomes in the ledger.
+//! cells; report the outcomes to `/qa`.
 
 #[path = "helpers/mod.rs"]
 mod helpers;

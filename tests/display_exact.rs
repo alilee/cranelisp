@@ -33,7 +33,6 @@
 //!     macro_arity_diagnostic_plain_call_no_debug_repr          (0485)
 //!     qualified_ref_missing_member_diagnostic_names_real_module (0490)
 //!   GREEN ×7 exact pins (value/type/defn/error/cascade-block classes).
-//! Ledger: tests/plan/ledger.md §"Sprint 102 Phase-5 Stage-1 QA-first RED set".
 
 #[path = "helpers/mod.rs"]
 mod helpers;

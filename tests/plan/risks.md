@@ -300,7 +300,7 @@ host↔platform-DLL ADT crossing overran the previous chunk's heap metadata by
 `--run`/JIT path (`src/platform.rs`) used the correct `heap_alloc_payload`,
 so the bug was **`--link`-ONLY** — a divergence between two separately
 hand-rolled host-callback wirings. See the ledger S86 DEF-6 entry for the
-full bisection (git history of `tests/plan/ledger.md`, retired S108).
+full bisection (the retired failure ledger, `git show a25ce2c8:tests/plan/`).
 
 **Impact**: A platform/FFI program that passes every conformance test and
 links cleanly aborts in production once a server loop, batch job, or any

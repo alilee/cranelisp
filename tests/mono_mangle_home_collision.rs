@@ -37,8 +37,8 @@
 //!     yields 410 (both dispatch b's `+200` body) — the FIRST-referenced
 //!     module's minted body wins, the second collides onto its slot.
 //!
-//! Failing-not-ignored per `memory/feedback_failing_not_ignored.md`; ledger:
-//! `tests/plan/ledger.md` §"Sprint 102 — 0508 HOME-axis mono-mangle guard".
+//! Failing-not-ignored per `memory/feedback_failing_not_ignored.md`; this is
+//! the S102 0508 HOME-axis mono-mangle guard.
 
 #[path = "helpers/mod.rs"]
 mod helpers;

@@ -408,7 +408,7 @@ Lane A cannot be authored deterministically without these int-internal hooks. Fl
 
 ---
 
-## Ledger note (for `/qa` to fold into `ledger.md` at close)
+## Ledger note (for `/qa` to fold into the retired failure ledger at close)
 
 - Cluster A: ANSI-leak narrow failing-not-ignored repro
   (`agent_output_no_literal_ansi_escape_when_color_off_neg`) — RED-first, owner `/dev` (int,

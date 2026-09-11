@@ -56,7 +56,7 @@ landed.
 batch by scanning **only the current module's own symbol table**
 (`tc_modules.get(module)`, `worker.rs:606`) plus names appearing in `program`. It
 never reads `prelude_fallback` and never walks the `prelude` module's table. This is
-the exact src/-side seat of S86 DEF-1 (ledger `tests/plan/ledger.md:416-438`,
+the exact src/-side seat of S86 DEF-1 (ledger `historical failure-ledger lines 416–438`,
 "LOCALIZED at the batch-derivation seam", owner /int): a plain `defn` reached only
 through the implicit-prelude glob typechecks (the §8.8.1 fallback surfaces the name)
 but its **body never enters the consuming module's batch**, yielding `codegen error
@@ -250,3 +250,5 @@ the Wave-2 synthesis per SPRINT R2 (cite 0407, stays open, not actioned in-sprin
 - New S87 findings: **12** (F-A … F-L) — 7 Important, 5 Suggestion. None Blocker
   (the one DEF-1-class correctness item, F-A, has a committed S86 repro and a named
   resolver; it is a known-defect guard awaiting fix, not a new regression).
+
+The full retired failure ledger is available in Git: `git show a25ce2c8:tests/plan/` (file `ledger.md`).

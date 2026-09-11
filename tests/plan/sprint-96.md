@@ -585,7 +585,7 @@ WITH the /dev wave that lands the type (the S95 precedent):
   `mixed_blocking_and_poll_par_overlaps_on_both_pools` all stay GREEN. **No regression beyond
   the named set.**
 
-> A `tests/plan/ledger.md` entry mirroring this record will be added at Chunk-A Stage-1 close
+> A the retired failure ledger entry mirroring this record will be added at Chunk-A Stage-1 close
 > proper (after the A2–A5 /dev waves flip the RED set green).
 
 <!-- ========================================================================= -->
@@ -970,7 +970,7 @@ do not exist on HEAD — writing them now would break the single-lane build. Seq
 Plan authored against the Chunk-B contracts above; the sibling `/spec` (0447 first half §10.12/§12)
 and `/design` (reactor supervisor/backpressure + FIXME-0465 web interface) agents are authoring the
 co-requisite anchors in parallel THIS Phase — the provisional-cite gaps (G5/G6) close at Stage-1.
-No test code yet (Phase 5). A `tests/plan/ledger.md` entry mirroring the Chunk-B RED-first set will
+No test code yet (Phase 5). A the retired failure ledger entry mirroring the Chunk-B RED-first set will
 be added at Chunk-B Stage-1 close.
 
 ## Wave-B1 landing record (Phase-5 Chunk-B Stage-1, `/qa` 2026-06-29 — ACTUAL)
@@ -1072,8 +1072,8 @@ Chunk-A 1716 baseline.** `/qa` did not edit `crates/src/` (ownership boundary).
 
 - **`cargo nextest run`** — **UNAVAILABLE** (workspace non-compiling, see the BUILD BLOCKER). The
   expected post-fix state: the 1 GREEN verify pin + the Chunk-A 1716 baseline stay green; the 3
-  new synthetic RED-first rows fail (validated RED against the stale binary). A `tests/plan/
-  ledger.md` entry will be added once the build is restored and the suite re-run confirms it.
+  new synthetic RED-first rows fail (validated RED against the stale binary). A failure-ledger
+  entry will be added once the build is restored and the suite re-run confirms it.
 
 <!-- ========================================================================= -->
 <!-- ============================ CHUNK C ==================================== -->
@@ -1510,7 +1510,7 @@ interior — findings #3/#4 + the `race`/`select` IO node tags) agents are autho
 requisite anchors in parallel THIS Phase — the provisional-cite gaps (G8/G9) close at Stage-1.
 No test code yet (Phase 5). The Chunk-C RED-first set is gated on (i) the `race`/`select` combinator
 surface, (ii) the finding-#3/#4 reactor cancel-safety, (iii) the Gap-G10 `poll-block` leaf; the web
-cancel-on-disconnect/shutdown rows are deferred with FIXME 0470. A `tests/plan/ledger.md` entry
+cancel-on-disconnect/shutdown rows are deferred with FIXME 0470. A the retired failure ledger entry
 mirroring the Chunk-C RED-first set will be added at Chunk-C Stage-1 close.
 
 ## Wave-C1 landing record (Phase-5 Chunk-C + C-fanout Stage-1, `/qa` 2026-06-29 — ACTUAL)
@@ -1630,5 +1630,5 @@ authoring them now would break the single-lane build. They co-land WITH their /d
     cancel-on-disconnect + graceful-shutdown). All fail FAST (the 11 synthetic ≈0.023s each — clean
     `undefined: race` / absent-leaf runtime-RED; the 4 web ≈1.5s each — fast fixture-absent early-exit,
     no hang). A genuine regression would be any RED BEYOND these 15.
-- A `tests/plan/ledger.md` entry mirroring this record will be added at Chunk-C Stage-1 close proper
+- A the retired failure ledger entry mirroring this record will be added at Chunk-C Stage-1 close proper
   (after the C2/C3/C-fanout /dev waves flip the RED set green).

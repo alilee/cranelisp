@@ -1036,7 +1036,7 @@ fn cache_invalidation_on_dep_change_e2e() {
 // =============================================================================
 // REPL-mode cache integration — Wave 6 batch 2 Part A carry-forward
 //
-// Per `tests/plan/wave-6-batch-2-audit.md` §4: the existing
+// Per the Wave 6 batch 2 audit: the existing
 // `cache_repl_restart_cache_hit` and `cache_repl_incremental_monomorphisation`
 // cover the *batch-mode* (`--run`) cache restart flow. The legacy
 // `tests/sprint23.rs::cache_repl_*` cluster covers the *interactive REPL
@@ -1184,8 +1184,8 @@ fn cache_repl_writer_survives_slash_reset() {
 //     module-load pathway. If session 2 fails on a literal, the bug is at the
 //     module level, not the symbol-rebinding level.
 //
-// Carried from `tests/legacy/sprint59_cache_repro.rs` per Wave 6 batch 3 audit
-// (tests/plan/wave-6-batch-3-audit.md). Headed by FIXME 0145.
+// Carried from `tests/legacy/sprint59_cache_repro.rs` per the Sprint 64 Wave 6
+// batch 3 audit. Headed by FIXME 0145.
 // =============================================================================
 
 // spec: design/int/repl-lifecycle.md §4.2 — Cache Load on Startup/Reset.
@@ -1193,8 +1193,7 @@ fn cache_repl_writer_survives_slash_reset() {
 //   Reduction A: smallest possible prelude — single plain `(defn f [] 42)`.
 //   No traits, no impls, no operators. If session 2 cannot call `f`,
 //   cache-hit prelude restoration is broken for EVERY binding type — not
-//   just operator/trait machinery. Per the Wave 6 batch 3 audit
-//   (tests/plan/wave-6-batch-3-audit.md).
+//   just operator/trait machinery.
 //
 // REGRESSION-GUARD: Sprint 59 Workstream A. The legacy test header documents
 //   `design/int/cache-prelude-restoration-repro.md` as the diagnosis anchor.
@@ -1288,7 +1287,7 @@ fn cache_repl_empty_prelude_session_2_evaluates_literal() {
 // (`build_id_round_trip_succeeds`, `stale_build_id_produces_build_id_mismatch`,
 // `missing_build_id_field_routes_cache_stale`); these e2e tests prove
 // the user-surface invariant fires through the binary subprocess.
-// Carry from Wave 6 batch 4 audit (tests/plan/wave-6-batch-4-audit.md).
+// Carry from the Sprint 64 Wave 6 batch 4 audit.
 
 /// Trivial single-file program used by the build_id tests below. `main`
 /// returns 0 (spec §12.6) so `assert_ok()` is the right assertion.
@@ -1503,8 +1502,6 @@ fn cache_meta_without_build_id_field_triggers_recompile() {
 // + `read_manifest` other-polarity-as-absent landed; both tests GREEN.
 // Wave-5 amendment: every session pins its polarity EXPLICITLY (env_remove
 // for OFF) so the tests hold under the L-B2(i) ambient-polarity lane.
-// Ledger: `tests/plan/ledger.md` §"Sprint 101 Phase-5 Stage-1" + Wave-5
-// close-out records.
 //
 // Observability: dep-module cache hits emit `module-trace: cache hit …` on
 // stderr under CRANELISP_MODULE_TRACE=1 (tests/CLAUDE.md §Diagnostic Logging);
@@ -1629,8 +1626,7 @@ fn cache_ownership_toggle_round_trip_and_same_polarity_stability() {
 // `CacheStale::SchemaMismatch` (cache-miss → recompute).
 //
 // Both tests below are RED at draft (schema is still 14) and flip GREEN with
-// the bump. Ledger: `tests/plan/ledger.md` §"Sprint 103 Phase-5 Stage-1
-// increment-II QA-first RED set".
+// the bump.
 
 const SCHEMA_MAIN: &str =
     "(import [primitives [Pure]])\n(import [util [helper]])\n(defn main [] (Pure (helper 21)))";

@@ -39,9 +39,8 @@
 //! (`traits/dispatch.rs` + the `finalize_impl_method_writeback` symbol key in
 //! `traits/impl_check.rs`, kept in lock-step). Routed for /sprint dispatch.
 //!
-//! Failing-not-ignored per `memory/feedback_failing_not_ignored.md`; ledger:
-//! `tests/plan/ledger.md` §"Sprint 102 — trait-method $Type-grain home collision
-//! (4th lossy-head instance)".
+//! Failing-not-ignored per `memory/feedback_failing_not_ignored.md`; surfaced
+//! S102 as the 4th lossy-head instance of the class.
 
 #[path = "helpers/mod.rs"]
 mod helpers;

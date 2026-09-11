@@ -320,7 +320,7 @@ carry their durable record as the RED guards above, not as additional FIXMEs.
 
 ## Close-time disposition (Phase 7)
 
-At S97 close `/sprint` re-verifies each row per `tests/plan/ledger.md` §"Close-time Verification
+At S97 close `/sprint` re-verifies each row per the retired failure ledger §"Close-time Verification
 Protocol": a row that now passes on HEAD is **Resolved** (note the flip); a still-RED row carries
 forward with its owner + signature; the two GREEN regression guards (2.3, 6.3) must remain GREEN
 (a RED there is a v9-reshape regression, not a known guard). The standing REDs (item 7) flip or

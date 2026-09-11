@@ -826,7 +826,7 @@ Phase-3 exit gate.
    wave; NC-5 flipped by the ctor-materialisation ruling's change-set (or
    an explicit user-approved carry);
    the close report states the annotation-band ratio
-   (`[Tested]`-only vs `[Tested+Neg]`, `negative-coverage.md` §S119) beside
+   (`[Tested]`-only vs `[Tested+Neg]`, now a standing rule in [PLAN §Traceability](PLAN.md#traceability-and-authoring)) beside
    the suite scalar. A close that certifies the release contract with NC-4
    still unguarded-and-unlanded repeats the R11 failure and is blocked.
 

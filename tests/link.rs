@@ -1,10 +1,9 @@
 //! Sprint 64 Wave 6 batch 2 Part A carry-forward — `--link` Executable Generation cluster.
 //!
-//! Per the Wave 6 batch 2 audit (`tests/plan/wave-6-batch-2-audit.md` §1),
-//! these 11 tests carry forward the Executable Generation surface from
-//! `tests/sprint23.rs` (lines 117–376). The cluster covers `--link`
-//! mode happy path, output-path derivation, error cases (no main,
-//! wrong return type, file-not-found, bundle missing, `--no-cache`
+//! Per the Wave 6 batch 2 audit, these 11 tests carry forward the Executable
+//! Generation surface from `tests/sprint23.rs` (lines 117–376). The cluster
+//! covers `--link` mode happy path, output-path derivation, error cases
+//! (no main, wrong return type, file-not-found, bundle missing, `--no-cache`
 //! incompatibility), cache reuse, and multi-module project linking.
 //!
 //! Spec anchors:
@@ -764,8 +763,7 @@ fn link_two_distinct_platforms_namespaced_manifest_coexist() {
 //   loop then spun fast (accept on a never-bound listener returns immediately),
 //   and the per-iteration corruption reached the heap-consistency abort.
 //
-// ISOLATION (verified /qa, 2026-06-18; full bisection in tests/plan/ledger.md
-// S86-DEF-6 entry):
+// ISOLATION (verified /qa, 2026-06-18; the S86 DEF-6 bisection):
 //   - web platform ALONE, trivial non-serving main (`(bind (listen p) (Pure 0))`)
 //     on a FREE port: links + runs CLEAN (exit 0). So web-platform static init /
 //     module init is NOT the trigger.

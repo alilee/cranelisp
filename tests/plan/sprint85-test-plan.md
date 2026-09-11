@@ -4,7 +4,7 @@
 **Scope source:** `sprints/SPRINT.md` §Scope items 1–4 + §Architecture review (Phase 2) (a)–(d).
 **FIXMEs:** `0367` (int — auto-IO wiring, CORE), `0397` (arch RULED → /dev intrinsics/primitives — RC-inc atomicity), `0398` (qa — Par-boundary panic e2e guard, gated on 0367), `0353` (platform/qa — closes automatically on 0367's diff-token guard).
 
-This doc is subordinate to `tests/plan/ledger.md` (failure ledger) and `tests/plan/PLAN.md` (spec→test bridge). Phase-5 Stage-1 authoring derives the `.rs` rows below.
+This doc is subordinate to the retired failure ledger (failure ledger) and `tests/plan/PLAN.md` (spec→test bridge). Phase-5 Stage-1 authoring derives the `.rs` rows below.
 
 Definition of done (the sprint's measurable exit, per SPRINT.md §Scope item 4): `cargo nextest run --workspace` is **fully green (0 fail)**. The baseline is **3 reds, all auto-IO** (`resource_serial_diff_token_parallelizes`, `auto_io_independent_diff_token_parallelizes_e2e`, `auto_io_par_grouping_uniform_across_modes`). Every red flips on the 0367 wiring.
 

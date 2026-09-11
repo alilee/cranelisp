@@ -245,8 +245,8 @@ fn defmacro_display_clause_signature() {
 // =============================================================================
 // Wave 5.6 carry-forwards from legacy/macros.rs (11 tests)
 //
-// Per the Wave 5.6 audit (tests/plan/wave-5.6-dedupe-audit.md §3),
-// 11 GAP-COVER tests recovered from legacy/macros.rs (1 dropped as
+// Per the Wave 5.6 dedupe audit, 11 GAP-COVER tests recovered
+// from legacy/macros.rs (1 dropped as
 // DUPLICATE-IN-LEGACY: batch_defmacro_quasiquote, canonical = batch_
 // defmacro_simple via mode_equiv_macro_user_defined). The §9.2.3
 // non-Sexp-macro-body negatives (the FIXME 0137 residual) are authored
@@ -651,7 +651,6 @@ fn repl_error_recovery_bad_macro() {
 
 // =============================================================================
 // Wave 5.6 file 6 e2e.rs chunk-2 GAP-COVER carry-forward.
-// (per tests/plan/wave-5.6-e2e-reaudit.md chunk 2)
 // =============================================================================
 
 // spec: spec/09-macros.md §9.9.4 — when a macro body raises a runtime

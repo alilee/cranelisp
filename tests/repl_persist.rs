@@ -1,11 +1,10 @@
 //! Sprint 64 Wave 6 batch 2 Part B carry-forward — Session Persistence
 //! (`user.cl`) cluster.
 //!
-//! Per the Wave 6 batch 2 audit (`tests/plan/wave-6-batch-2-audit.md` §5),
-//! these 16 tests carry forward the session-persistence surface from
-//! `tests/sprint23.rs` (lines 1241–2047). The audit notes
-//! `repl/spec.md §15` across-restart has zero existing `[Tested]`
-//! annotations across the carry-forward suite — these tests are the
+//! Per the Wave 6 batch 2 audit, these 16 tests carry forward the
+//! session-persistence surface from `tests/sprint23.rs` (lines 1241–2047).
+//! The audit notes `repl/spec.md §15` across-restart has zero existing
+//! `[Tested]` annotations across the carry-forward suite — these tests are the
 //! first §15.2 across-restart coverage. The cluster includes 8 named
 //! `_bug{N}_` / `_neg_` / `_bug_macro_*` REGRESSION-GUARD tests that
 //! pin specific Sprint 23 defects.
@@ -872,8 +871,7 @@ fn mod_submodule_body_survives_source_regeneration() {
 
 // =============================================================================
 // /port D1 + D2 (S101 Phase 6a exemplar assessment; no FIXME — these guards
-// are the record, per the defect discipline). Ledger:
-// tests/plan/ledger.md §"Sprint 101 Phase 6a/6b defect set". Resolver: /int.
+// are the record, per the defect discipline). Resolver: /int.
 //
 // D1 — a macro-defining macro used at the prompt poisons the directory: the
 // regenerated backing file persists BOTH the expansion artifact

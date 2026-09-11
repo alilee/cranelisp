@@ -47,6 +47,16 @@ separates delivered wiring from unresolved document conformance.
   behavior is evidenced; do not label it `[Tested+Neg]`. QA chooses the
   proportionate observation under the shared risk/cost rule, without weakening
   that coverage distinction.
+- When MUST or MUST NOT prose is annotated `[Tested]` without a negative, name
+  the missing negative observation at annotation time in the unclassified-leads
+  list below; the specification band and that list are the only registers
+  (S119 standing practice — no separate negative-coverage register is kept).
+- The sprint close report states the `[Tested]`-only and `[Tested+Neg]`
+  counts and their delta beside the suite result. A ratio that moves only when
+  a defect forces it is the dormancy signal the S119 R11 finding exposed. A
+  [safety-register](../../design/arch/safety-invariants.md) row touched in
+  scope carries its own cited detection proof under that register's
+  requirement; this plan does not duplicate it.
 - In-scope failures remain visible. Unknown attribution stays provisional;
   neither an old issue label nor a terminal error identifies the corrective
   owner. Use the [test-side notation and harness rules](../CLAUDE.md).
@@ -90,7 +100,16 @@ and Git preserve the migration result and original per-test dispositions.
 
 The ring-era plans, the four-layer strategy and the S61 audits that lived
 in the legacy-plan collection (`git show 7f834bf6:tests/plan/legacy/`)
-were deleted in S122 after verification against source; the checkpoint retains the set. Their surviving rules live where a reader needs them: the
+were deleted in S122 after verification against source; the checkpoint retains the set. The Sprint-64 harvest audits of the deleted `tests/legacy`
+quarantine (the wave-3.5, wave-5.5, wave-5.6 and wave-6 records), the S21
+line-coverage snapshot, the S16 negative-coverage register and the
+failure-ledger stub followed (`git show b602708e:tests/plan/`): every
+sampled carry-forward those audits demanded exists in the current suite or
+was dispositioned by the S82 harvest gate, and no register held a rule
+without a current home — the FFI-marshalling detection gaps are
+[Risk 11](risks.md), the failure-ledger retirement is stated in
+[test conventions](../CLAUDE.md), and the S119 negative-coverage practice
+is in §Traceability above. Their surviving rules live where a reader needs them: the
 tier strategy above, the per-test temporary-directory rule in
 [test conventions](../CLAUDE.md#fresh-temp-directory-per-test) with its
 harness enforcement in [helpers design constraints](helpers.md#design-constraints),
@@ -184,7 +203,15 @@ active allocation cites them; they are not fresh source censuses.
     (`t_s2_2_inline_adt_arg_wrapping_vec_preserves_len`) and the
     [ownership-flow generator](../gen_ownership_flows.rs), whose argument
     positions hand inline-constructed owning types to a borrowed reader in
-    one module rather than to an owning matcher across modules.
+    one module rather than to an owning matcher across modules;
+  - the S108 §1.5 Vec and List value-display rows in
+    [display format](../../repl/spec/01-display-format.md), downgraded to
+    positive-only when their original negatives were deleted. The named
+    missing observations are a no-raw-pointer / no-truncation negative for
+    Vec and a no-raw-pointer / no-forced-tail negative for List; the bare-`[]`
+    case is now evidenced by [introspection](../repl_introspection.rs)
+    (`display_empty_vec_value`), and the exact-line display cells partially
+    subsume both by whole-line equality.
 
   They are not newly allocated defects. Before relying on any, compare current
   specification and evidence; no new test, API or optimization is authorized

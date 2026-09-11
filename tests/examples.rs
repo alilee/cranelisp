@@ -3,9 +3,9 @@
 //! (carry: legacy/examples.rs + legacy/examples_run.rs umbrella)
 //!
 //! This is the canonical regression-guard for `examples/*.cl` programs.
-//! Per the Wave 6 batch 1 audit (tests/plan/wave-6-batch-1-audit.md),
-//! the 15 row-tests in `legacy/examples.rs` were strictly subsumed by
-//! `legacy/examples_run.rs`'s 27-row subprocess umbrella; the new shape
+//! Per the Wave 6 batch 1 audit, the 15 row-tests in `legacy/examples.rs`
+//! were strictly subsumed by `legacy/examples_run.rs`'s 27-row subprocess
+//! umbrella; the new shape
 //! adopts that umbrella + on-disk parity guard + a signal-vs-exit
 //! *distinction* (see `Outcome`; S115 replaced the old `128 + signal`
 //! normalisation, which could let a SIGSEGV pose as a legitimate

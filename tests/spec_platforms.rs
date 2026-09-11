@@ -115,8 +115,7 @@ fn platform_read_line_via_test_capture() {
 
 // =============================================================================
 // Wave 5.6 file 6 e2e.rs chunk-3 GAP-COVER carry-forwards (REGRESSION-GUARD).
-// Sprint 58 Wave 5 — Cranelisp.toml E2E coverage (per
-// tests/plan/wave-5.6-e2e-reaudit.md chunk 3 cluster MM).
+// Sprint 58 Wave 5 — Cranelisp.toml E2E coverage.
 //
 // `/int` Wave 4 landed Step 5d (iii) — `Cranelisp.toml` project config
 // lookup in `src/session.rs::load_project_config_lib_dirs` +

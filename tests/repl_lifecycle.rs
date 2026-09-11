@@ -513,8 +513,7 @@ fn redefinition_updates_live_callers() {
 }
 
 // =============================================================================
-// Wave 5.6 file 6 e2e.rs chunk-1 GAP-COVER carry-forwards
-// (per tests/plan/wave-5.6-e2e-reaudit.md).
+// Wave 5.6 file 6 e2e.rs chunk-1 GAP-COVER carry-forwards.
 // =============================================================================
 
 // spec: repl/spec.md §2.1 — Primary Prompt format `{N}+{N}ms; user>`. The
@@ -562,7 +561,6 @@ fn continuation_prompt_for_unclosed_paren() {
 
 // =============================================================================
 // Wave 5.6 file 6 e2e.rs chunk-2 GAP-COVER carry-forward.
-// (per tests/plan/wave-5.6-e2e-reaudit.md chunk 2)
 // =============================================================================
 
 // spec: (none — regression-only)
@@ -606,8 +604,7 @@ fn two_independent_sessions_isolation_neg_no_state_leak() {
 }
 
 // =============================================================================
-// Wave 5.6 file 6 e2e.rs chunk-3 GAP-COVER carry-forwards
-// (per tests/plan/wave-5.6-e2e-reaudit.md chunk 3).
+// Wave 5.6 file 6 e2e.rs chunk-3 GAP-COVER carry-forwards.
 // =============================================================================
 
 // spec: repl/spec.md §8 — Scenario 1: `/mod math` switches the prompt

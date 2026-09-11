@@ -198,6 +198,6 @@ assertions run colour-off. Pre-existing; carried forward, not new to S107.
    delta channel); the pure differential-invariant + fence-buffering tests are `/dev` unit
    obligations named here. RED / staged until S1–S5 land.
 
-**Ledger:** add each new RED to `tests/plan/ledger.md` at authoring with SHA + signature +
+**Ledger:** add each new RED to the retired failure ledger at authoring with SHA + signature +
 owner (`/dev(cranelisp-frontend)` for item 1; `/dev(src)` for items 2–4), per the
 required-fields list.
