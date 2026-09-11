@@ -10,9 +10,9 @@
 
 **Status.** Phase 5 Stage 2 design refinement against Wave 3a parallel /design agents (frontend `build_form`, typecheck single-call cluster surface).
 **Author.** /design (int), 2026-05-12.
-**Reads.** `design/arch/facades/int.md` §"`process_cluster` — the cluster-atomic orchestration loop", `design/int/int.md` master, `design/int/implementation-slice-s66.md` Waves A/B/C/D, `design/arch/decisions/0044-cluster-atomic-typecheck-orchestrator-staging.md` (post-FIXME-0167 + 0168 amendments), `design/arch/decisions/0043-runtime-split-into-primitives-intrinsics.md`, `design/arch/fixmes/0098-*.md` Phase 4 (int row), `design/arch/fixmes/0107-*.md` (verify-only on int side).
+**Reads.** `design/arch/facades/int.md` §"`process_cluster` — the cluster-atomic orchestration loop", `design/int/int.md` master, `design/arch/decisions/0044-cluster-atomic-typecheck-orchestrator-staging.md` (post-FIXME-0167 + 0168 amendments), `design/arch/decisions/0043-runtime-split-into-primitives-intrinsics.md`, `design/arch/fixmes/0098-*.md` Phase 4 (int row), `design/arch/fixmes/0107-*.md` (verify-only on int side).
 
-This doc elaborates a single intra-crate refinement that ties together five Wave 3a deliverables on int: the `process_form → process_cluster` shape pivot per Decision 44; the Waves A + B + C structural foundation that must land before β fires; the D43 source migration; the FIXME 0107 verify task; and the resulting facade-compliance delta. It is subordinate to `int.md` (the master), not a replacement; rows referenced here trace back to `implementation-slice-s66.md`.
+This doc elaborates a single intra-crate refinement that ties together five Wave 3a deliverables on int: the `process_form → process_cluster` shape pivot per Decision 44; the Waves A + B + C structural foundation that must land before β fires; the D43 source migration; the FIXME 0107 verify task; and the resulting facade-compliance delta. It is subordinate to `int.md` (the master), not a replacement. The row-level S66 planning substrate is retained in Git history; current mechanism authority is `int.md` and the subsystem documents indexed by `CLAUDE.md`.
 
 Wave 3a-α (locality-correctness refactor per Decision 0046) is parallel /design-typecheck's deliverable; this doc covers β — the post-α triad re-fire as it lands int-side.
 
@@ -368,7 +368,7 @@ The final test in this list — "failure mid-cluster leaves live unchanged" — 
 - `design/arch/facades/int.md` §"`process_cluster` — the cluster-atomic orchestration loop" — the contract (lines 667–800)
 - `design/arch/facades/int.md` §"`SharedState`" — the data model split (lines 110–190)
 - `design/int/int.md` §4 (SharedState architecture), §6 (pipeline orchestration), §8 (REPL flow) — master design context
-- `design/int/implementation-slice-s66.md` Waves A, B, C — the row-level enumeration that this doc elaborates
+- `design/int/CLAUDE.md` §Document index and `design/int/int.md` §§3–8 — current int design authority
 - `design/arch/decisions/0044-cluster-atomic-typecheck-orchestrator-staging.md` (post-FIXME-0167 + 0168 amendments) — cluster-atomic protocol
 - `design/arch/decisions/0046-wave3a-locality-refactor-precedes-triad.md` — α/β sequencing rationale
 - `design/arch/decisions/0043-runtime-split-into-primitives-intrinsics.md` §"Migration scope" — D43 import-path migration table

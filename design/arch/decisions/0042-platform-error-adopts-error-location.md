@@ -50,8 +50,7 @@ Decision 39 is the binding cross-crate rule: errors carry `ErrorLocation`. Platf
 ## Cross-references
 
 - Decision 39 (errors carry `ErrorLocation`) — binding cross-crate rule that this Decision applies to platform.
-- §2.11 — runtime facade signature alignment for `runtime_panic` (sibling work; intentionally NOT enriched per §2.10).
-- Sprint 63 substance-scoping resolution §1.3.
+- Sprint 63 substance-scoping resolution §1.3 (Git history; the legacy record was retired S122). Its sibling item §2.11 aligned the `runtime_panic` signature without enrichment; the current contract is `crates/cranelisp-intrinsics/src/panic.rs` rustdoc + `bounded-contexts.md` §4b.
 
 ## Rationale
 

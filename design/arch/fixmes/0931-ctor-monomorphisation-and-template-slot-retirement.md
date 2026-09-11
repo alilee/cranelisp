@@ -21,6 +21,40 @@ status: open
 
 # S120: constructors join monomorphisation — the non-concrete ctor template slot retires
 
+## S122 current-source disposition (2026-09-10)
+
+The original `refers_to` targets were checked before disposition. The proposed
+`DefKind::Constructor`/`CtorState` migration below is superseded, not outstanding
+source work: `concreteness-types-first.md`'s opening S121 disposition explicitly
+replaces it with the unified lifecycle in `symbol-table-lifecycle.md`.
+The old module.rs constructor rustdoc and named backend wrapper helpers are no
+longer the authoritative source locations for the proposed mechanism.
+
+Current source carries the intended slot boundary in
+`crates/cranelisp-types/src/lifecycle.rs::Life`: `Template` has no slot or view,
+while `Concrete` carries `CallableSlot`. The checked settlement funnels are in
+`crates/cranelisp-types/src/module.rs::settle_template` and `settle_concrete`.
+`src/bootstrap.rs::register_synth_adt` now builds slot-free constructor recipes
+and installs concrete or template state through the table; source ADTs follow
+the corresponding split in `crates/cranelisp-typecheck/src/adt.rs`.
+`crates/cranelisp-typecheck/src/traits/monomorphise.rs` handles
+`TemplateBody::Synth` through the current `InstanceLink` vocabulary. Do not
+restore the historical separate constructor-state sum or a second mangler.
+The current cache schema is 28, not a pending S120 constructor-only window.
+`design/backend/non-concrete-release-contract.md` already records face 1 as
+producer-discharged with no backend deletion site remaining.
+
+**Remaining closure obligation:** QA/test and the owning typecheck/backend
+streams reconcile retained NC-1 / ctor-partition evidence and MEASURE-C1/C2
+against the delivered lifecycle and current corpus, identifying an existing
+witness, an explicitly superseded measurement, or a concrete missing observation.
+This read-only inspection does not supply those measurements, claim executed
+acceptance, or establish a source defect. Keep this filing open for that bounded
+evidence disposition; the historical implementation instructions below are not
+an instruction to repeat the delivered wash.
+
+## Original commission (superseded implementation mechanism)
+
 **Target: `/design`(typecheck), with backend adjacency for the wrapper
 promotion. S120 scope — do NOT interleave with S119 Phase 5.**
 

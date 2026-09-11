@@ -23,7 +23,7 @@ fn multi_sig_clause_body_poly_callee_monomorphised_d3() {
                          (build (sub-i64 n 1) (add-i64 acc (idpoly n))))))",
     );
     assert!(
-        !symbol_names_containing(&tc, "idpoly$").is_empty(),
+        !symbol_names_containing(&tc, "(test/idpoly [").is_empty(),
         "`idpoly`'s Int mono instance MUST be minted from `build`'s multi-sig \
          clause body (leg D3); current-module symbols: {:?}",
         symbol_names_containing(&tc, "idpoly"),
@@ -52,7 +52,7 @@ fn single_sig_consumer_of_multi_sig_return_monomorphised_mc_x4() {
          (defn top [] (mycount (build 3)))",
     );
     assert!(
-        !symbol_names_containing(&tc, "mycount$").is_empty(),
+        !symbol_names_containing(&tc, "(test/mycount [").is_empty(),
         "the poly consumer `mycount` of the multi-sig `build`'s `(Vec Int)` \
          return MUST have its ground mono instance minted at the settlement \
          re-harvest (MC-X4); current-module symbols: {:?}",
@@ -78,7 +78,7 @@ fn generic_adt_field_consumer_of_multi_sig_return_monomorphised_mc_x4b() {
          (defn top [] (unwrap (build 3)))",
     );
     assert!(
-        !symbol_names_containing(&tc, "unwrap$").is_empty(),
+        !symbol_names_containing(&tc, "(test/unwrap [").is_empty(),
         "the poly consumer `unwrap` over the generic `Box` field from a \
          multi-sig return MUST have its ground mono instance minted at the \
          settlement re-harvest (MC-X4b); current-module symbols: {:?}",
@@ -112,14 +112,15 @@ fn self_qualified_multi_sig_self_call_normalizes_at_overload_gate_mc_x5() {
     // The typed arm identity contributes its canonical home exactly once. The
     // old string-mangling defect produced `test/test/msig...`; the canonical
     // instance key is expected to contain the single `test/msig` owner.
-    let expected = cranelisp_types::InstanceLink::from_type_args(
-        CallableTarget::OverloadArm {
-            owner: fq_sym("test", "msig"),
-            arm: declaration.arms[0].id,
-        },
-        vec![],
+    let expected = cranelisp_types::concrete_callable_key(
+        &fq_sym("test", "msig"),
+        &ConcreteType::Fn(vec![ConcreteType::Int], Box::new(ConcreteType::Int)),
     )
-    .instance_key();
+    .unwrap();
+    assert_eq!(
+        expected.as_ref(),
+        "(test/msig [primitives/Int] primitives/Int)"
+    );
     assert!(
         table.get(expected.as_ref()).is_some(),
         "the normalized self-call must mint the canonical typed arm instance `{expected}`",
@@ -130,6 +131,55 @@ fn self_qualified_multi_sig_self_call_normalizes_at_overload_gate_mc_x5() {
          self-call; got: {:?}",
         symbol_names_containing(&tc, "test/test/msig"),
     );
+}
+
+// spec: spec/03-types.md §3.6.3 + spec/05-definitions.md §5.1.2 — legal
+// different-arity generic arms may have the same substitution vector. Their
+// full concrete function signatures must still produce distinct instances.
+#[test]
+fn repeated_variable_different_arity_arms_have_distinct_signature_keys() {
+    let mut tc = tc_with_prims();
+    check_src(
+        &mut tc,
+        "(defn f ([:a x] 7) ([:a x :a y] 42))\n\
+         (defn call-one [] (f 0))\n\
+         (defn call-two [] (f 0 0))",
+    );
+
+    let table = tc.symbol_table();
+    let declaration = match &table.get("f").expect("f family").declaration {
+        Decl::Overloaded(declaration) => declaration,
+        other => panic!("expected owned f overload, got {other:?}"),
+    };
+    assert_eq!(declaration.arms.len(), 2);
+
+    let mut keys = Vec::new();
+    for (arm, expected) in declaration.arms.iter().zip([
+        "(test/f [primitives/Int] primitives/Int)",
+        "(test/f [primitives/Int primitives/Int] primitives/Int)",
+    ]) {
+        let link = cranelisp_types::InstanceLink::from_type_args(
+            CallableTarget::OverloadArm {
+                owner: fq_sym("test", "f"),
+                arm: arm.id,
+            },
+            vec![ConcreteType::Int],
+        );
+        let key = link.instance_key(&arm.callable.scheme).unwrap();
+        assert_eq!(key.as_ref(), expected);
+        let instance = table
+            .get(key.as_ref())
+            .unwrap_or_else(|| panic!("missing realized arm `{key}`"));
+        assert!(matches!(
+            &instance.callable().expect("instance callable").arm.life,
+            Life::Concrete { minted_from: Some(actual), .. } if actual == &link
+        ));
+        keys.push(key);
+    }
+    assert_ne!(keys[0], keys[1]);
+    drop(table);
+    result_context::assert_instance_references(&tc, "call-one", &keys[..1]);
+    result_context::assert_instance_references(&tc, "call-two", &keys[1..]);
 }
 
 // PS-SH1 (S114 W3) — the value-position mirror of Ruling 5. A `let` shadows a
@@ -189,7 +239,7 @@ fn multi_sig_base_dispatch_in_mono_body_carrier_r2() {
          (defn ga [:a x] (add-i64 (h 1) 0))\n\
          (defn use-ga [] (ga 5))",
     );
-    let view = mono_instance_view_containing(&tc, "ga$");
+    let view = mono_instance_view_containing(&tc, "(test/ga [");
     let mut targets = Vec::new();
     collect_resolved_targets(&view.body, &mut targets);
     // The `(h 1)` dispatch carries the authored family owner in `ApplyRef`;
@@ -224,7 +274,7 @@ fn multi_sig_dispatch_template_clause_monomorphised_r2a() {
     // at Int (an `h__arm1$Int+Int` concrete mono instance exists) — proving R2
     // did NOT freeze the slot-less template arm into the view.
     assert!(
-        !symbol_names_containing(&tc, "h__arm1$Int+Int").is_empty(),
+        !symbol_names_containing(&tc, "(test/h [primitives/Int primitives/Int]").is_empty(),
         "the poly 2-arg clause selected by `(h 1 2)` MUST be monomorphised to a \
          concrete instance (leg R2, Important 1a) — never dispatched to the \
          slot-less template arm; symbols: {:?}",
@@ -253,7 +303,7 @@ fn multi_sig_dispatch_in_d3_harvested_body_drained_r2b() {
     // poly2 was monomorphised from build3's clause body AND its inner `(h2 1)`
     // dispatch drained (the instance minted cleanly, no residual var).
     assert!(
-        !symbol_names_containing(&tc, "poly2$").is_empty(),
+        !symbol_names_containing(&tc, "(test/poly2 [").is_empty(),
         "poly2 reached from build3's multi-sig clause body MUST monomorphise \
          cleanly with its inner `(h2 1)` dispatch drained in-recheck (leg R2, \
          Important 1b); symbols: {:?}",
@@ -293,7 +343,7 @@ fn method_only_import_constrained_fn_verify_constraints_home_rooted_d2() {
     // "no impl of trait blib/Bump for type Int". `check_src` panics on it.
     check_src(&mut tc, "(defn use-int [] (wrap 1))");
     assert!(
-        !symbol_names_containing(&tc, "wrap$").is_empty(),
+        !symbol_names_containing(&tc, "(user/wrap [").is_empty(),
         "wrap$Int must be minted (proving verify_constraints ran + passed \
          home-rooted); symbols: {:?}",
         symbol_names_containing(&tc, "wrap"),
@@ -368,14 +418,14 @@ fn mono_recheck_shadowed_self_call_records_no_dispatch() {
         "(defn s1 [x] (let [s1 (fn [y] y)] (s1 x)))\n\
          (defn use-s1 [] (add-i64 (s1 5) 0))",
     );
-    let view = mono_instance_view_containing(&tc, "s1$");
+    let view = mono_instance_view_containing(&tc, "(test/s1 [");
     let mut targets = Vec::new();
     collect_resolved_targets(&view.body, &mut targets);
     // No node in s1$Int's body may dispatch to a `s1$…` mono instance (the
     // shadowed `(s1 x)` is the LOCAL identity, an indirect call).
     let leaks_self_dispatch = targets
         .iter()
-        .any(|(_, fq)| matches!(fq, Some(fq) if fq.symbol.as_ref().contains("s1$")));
+        .any(|(_, fq)| matches!(fq, Some(fq) if fq.symbol.as_ref().starts_with("(test/s1 [")));
     assert!(
         !leaks_self_dispatch,
         "the let-shadowed `(s1 x)` inside `s1$Int` MUST NOT record a \
@@ -399,13 +449,13 @@ fn mono_recheck_shadowed_self_call_non_tail_records_no_dispatch() {
         "(defn s1 [x] (let [s1 (fn [y] y)] (let [r (s1 x)] r)))\n\
          (defn use-s1 [] (s1 5))",
     );
-    let view = mono_instance_view_containing(&tc, "s1$");
+    let view = mono_instance_view_containing(&tc, "(test/s1 [");
     let mut targets = Vec::new();
     collect_resolved_targets(&view.body, &mut targets);
     assert!(
         !targets
             .iter()
-            .any(|(_, fq)| matches!(fq, Some(fq) if fq.symbol.as_ref().contains("s1$"))),
+            .any(|(_, fq)| matches!(fq, Some(fq) if fq.symbol.as_ref().starts_with("(test/s1 ["))),
         "the non-tail let-shadowed `(s1 x)` MUST NOT record a self-recursion \
          dispatch (Fix 1 non-tail cell); collected: {targets:?}"
     );
@@ -641,12 +691,14 @@ fn contested_imported_overload_group_matches_qualified_dispatch_carrier() {
 // Fix 1 / ruling-5 composition (/arch-flagged): §11.8.7's "during a mono
 // recheck the base is not locally bound" is FALSIFIED by a let-rebinds-base
 // case. A multi-sig base `m` shadowed by a `let` INSIDE a mono recheck
-// (`poly$Int`) must skip BOTH the overload gate AND the self-call classifier.
+// (the concrete `test/poly` instance) must skip BOTH the overload gate AND the
+// self-call classifier.
 // The ruling-5 gate does NOT rely on "base not locally bound" — it checks
 // `env.lookup(m).is_none() || is_recursion_self_ref(m)`: here env.lookup(m) is
 // Some (the let) and is_recursion_self_ref is false → gate false → the overload
 // path is skipped and `(m p)` resolves to the LOCAL. `check_src` panics if it
-// wrong-rejects; the mono instance's `(m p)` must carry no `m$…` dispatch.
+// wrong-rejects; the mono instance's `(m p)` must carry no concrete `test/m`
+// dispatch.
 #[test]
 fn ruling5_composition_let_shadowed_multi_sig_base_in_mono_recheck() {
     let mut tc = tc_with_prims();
@@ -656,16 +708,17 @@ fn ruling5_composition_let_shadowed_multi_sig_base_in_mono_recheck() {
          (defn poly [p] (let [m (fn [y] y)] (m p)))\n\
          (defn use-poly [] (poly 5))",
     );
-    let view = mono_instance_view_containing(&tc, "poly$");
+    let view = mono_instance_view_containing(&tc, "(test/poly [");
     let mut targets = Vec::new();
     collect_resolved_targets(&view.body, &mut targets);
     assert!(
         !targets
             .iter()
-            .any(|(_, fq)| matches!(fq, Some(fq) if fq.symbol.as_ref().contains("m$"))),
-        "the let-shadowed multi-sig base call `(m p)` inside `poly$Int` MUST \
-         resolve to the LOCAL (no `m$…` overload dispatch) — the ruling-5 gate \
-         composes under a mono recheck even when the base IS locally bound; \
+            .any(|(_, fq)| matches!(fq, Some(fq) if fq.symbol.as_ref().starts_with("(test/m ["))),
+        "the let-shadowed multi-sig base call `(m p)` inside the concrete \
+         `test/poly` instance MUST resolve to the LOCAL (no concrete `test/m` \
+         overload dispatch) — the ruling-5 gate composes under a mono recheck \
+         even when the base IS locally bound; \
          collected: {targets:?}"
     );
 }
@@ -683,13 +736,13 @@ fn mono_recheck_genuine_self_recursion_still_records() {
         "(defn cnt [x n] (if (eq-i64 n 0) x (cnt x (sub-i64 n 1))))\n\
          (defn use-cnt [] (cnt 5 3))",
     );
-    let view = mono_instance_view_containing(&tc, "cnt$");
+    let view = mono_instance_view_containing(&tc, "(test/cnt [");
     let mut targets = Vec::new();
     collect_resolved_targets(&view.body, &mut targets);
     assert!(
         targets
             .iter()
-            .any(|(_, fq)| matches!(fq, Some(fq) if fq.symbol.as_ref().contains("cnt$"))),
+            .any(|(_, fq)| matches!(fq, Some(fq) if fq.symbol.as_ref().starts_with("(test/cnt ["))),
         "the genuine self-call `(cnt x (sub-i64 n 1))` MUST still dispatch to \
          the mono instance `cnt$Int+Int` (Fix 1 must not break genuine \
          self-recursion); collected: {targets:?}"
@@ -711,7 +764,7 @@ fn shadowed_parametric_in_concrete_caller_no_mint_fix_b() {
          (defn use-c [] (caller 5))",
     );
     assert!(
-        symbol_names_containing(&tc, "idp$").is_empty(),
+        symbol_names_containing(&tc, "(test/idp [").is_empty(),
         "the let-shadowed `(idp n)` MUST NOT mint the top-level `idp`'s mono \
          (FIXME 0653); symbols: {:?}",
         symbol_names_containing(&tc, "idp"),
@@ -725,7 +778,7 @@ fn shadowed_parametric_in_concrete_caller_no_mint_fix_b() {
          (defn use-c2 [] (caller2 5))",
     );
     assert!(
-        !symbol_names_containing(&tc2, "idp$").is_empty(),
+        !symbol_names_containing(&tc2, "(test/idp [").is_empty(),
         "the UNSHADOWED `(idp n)` control MUST still mint `idp$Int`; symbols: {:?}",
         symbol_names_containing(&tc2, "idp"),
     );
@@ -744,13 +797,13 @@ fn shadowed_parametric_in_mono_body_no_record_fix_b() {
          (defn poly [p] (let [tgt (fn [y] y)] (tgt p)))\n\
          (defn use-poly [] (poly 5))",
     );
-    let view = mono_instance_view_containing(&tc, "poly$");
+    let view = mono_instance_view_containing(&tc, "(test/poly [");
     let mut targets = Vec::new();
     collect_resolved_targets(&view.body, &mut targets);
     assert!(
         !targets
             .iter()
-            .any(|(_, fq)| matches!(fq, Some(fq) if fq.symbol.as_ref().contains("tgt$"))),
+            .any(|(_, fq)| matches!(fq, Some(fq) if fq.symbol.as_ref().starts_with("(test/tgt ["))),
         "the shadowed `(tgt p)` in `poly$Int` MUST NOT record a `tgt$…` dispatch \
          (FIXME 0653 site 4); collected: {targets:?}"
     );
@@ -768,13 +821,13 @@ fn shadowed_constrained_in_mono_body_no_record_fix_b() {
          (defn poly [p] (let [cadd (fn [y] y)] (cadd p)))\n\
          (defn use-poly [] (poly 5))",
     );
-    let view = mono_instance_view_containing(&tc, "poly$");
+    let view = mono_instance_view_containing(&tc, "(test/poly [");
     let mut targets = Vec::new();
     collect_resolved_targets(&view.body, &mut targets);
     assert!(
-        !targets
-            .iter()
-            .any(|(_, fq)| matches!(fq, Some(fq) if fq.symbol.as_ref().contains("cadd$"))),
+        !targets.iter().any(
+            |(_, fq)| matches!(fq, Some(fq) if fq.symbol.as_ref().starts_with("(test/cadd ["))
+        ),
         "the shadowed `(cadd p)` in `poly$Int` MUST NOT record a `cadd$…` \
          dispatch (FIXME 0653 site 3); collected: {targets:?}"
     );
@@ -1068,7 +1121,8 @@ fn recursive_poly_multi_sig_clause_monomorphises_inline_no_residual() {
     );
     // The concrete instance is a live, fully-concrete Concrete entry.
     let st = tc.symbol_table();
-    match st.get("test/g__arm0$Int").and_then(Binding::callable) {
+    let g_int = "(test/g [primitives/Int] primitives/Int)";
+    match st.get(g_int).and_then(Binding::callable) {
         Some(callable) => {
             assert!(
                 matches!(callable.arm.life, Life::Concrete { .. }),
@@ -1082,7 +1136,7 @@ fn recursive_poly_multi_sig_clause_monomorphises_inline_no_residual() {
                 callable.arm.scheme.ty,
             );
         }
-        other => panic!("the `(g 5)` mono instance `test/g__arm0$Int` is missing: {other:?}"),
+        other => panic!("the `(g 5)` mono instance `{g_int}` is missing: {other:?}"),
     }
 }
 
@@ -1154,14 +1208,15 @@ fn constrained_multi_sig_clause_is_template_and_dispatches_via_mono() {
     }
     // u8/u9: `(g 3)` monomorphised the clause template at Int — a concrete
     // instance of `g` arm 0 at Int exists.
+    let g_int = "(test/g [primitives/Int] primitives/Int)";
     assert!(
-        st.all_symbols().any(|(n, e)| n.as_ref().contains("g__arm0")
-            && n.as_ref().contains("Int")
-            && matches!(
-                e.callable().map(|c| &c.arm.life),
-                Some(Life::Concrete { .. })
-            )),
+        matches!(
+            st.get(g_int)
+                .and_then(Binding::callable)
+                .map(|callable| &callable.arm.life),
+            Some(Life::Concrete { .. })
+        ),
         "`(g 3)` must monomorphise the constrained clause template to a concrete \
-         Int instance (§11.4 step 4)"
+         Int instance at `{g_int}` (§11.4 step 4)"
     );
 }

@@ -14,7 +14,10 @@ without restating: the `Pure` ownership-witness contract
 (`design/arch/total-concreteness.md` §3.4 as re-ruled 2026-09-01;
 `design/arch/interfaces.md` §"IO Tag Constants"), the C4 emission contract
 (`design/backend/s121-c4-visit.md` §6 and handoff H1), the unified symbol
-lifecycle (`design/arch/symbol-table-lifecycle.md` §4.6/§5.5/§9), and the
+lifecycle (`design/arch/symbol-table-lifecycle.md` §§4.6 and 5.5), the
+historical C5 stream allocation in [the S121 lifecycle design at checkpoint
+`dc78ddbe`](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/arch/symbol-table-lifecycle.md)
+§9, and the
 cross-pair typed-handle contract (`design/runtime/s119-typed-consume-funnel.md`,
 reconciled to S121 in the same change-set as this document).
 
@@ -564,7 +567,7 @@ The user's 2026-09-01 disposition — accept R-2 on the existing evidence with t
 filed revival trigger — retires the protocol before it runs. §9a is rewritten in
 this visit from a scheduled obligation to a closed record naming the disposition
 and the revival trigger. **No intrinsics source work, and none owed.** The
-revival trigger's home is `tests/plan/PLAN.md` and it is `qa`'s (§15.1, H4);
+revival trigger's home is `tests/plan/PLAN.md` and it is `qa`'s ([outgoing handoffs](#151-handoffs-out), H4);
 this design does not duplicate primitives' ownership declarations, which are
 complete and unit-pinned in `ownership_facts.rs` and witnessed by the nine
 committed cells in `tests/s117_ownership_witnesses.rs`.
@@ -845,7 +848,7 @@ fallback.
 | `crates/cranelisp-types/` | C1 |
 | `src/` | C6 |
 | `tests/`, `tests/plan/` | `test` / `qa` |
-| `design/arch/`, `design/backend/`, `design/primitives/`, `design/runtime/runtime.md` | their owners |
+| `design/arch/`, `design/backend/`, `design/primitives/`, and (as reserved at S121) the pre-Decision-43 combined-runtime record, retired at S122 | their owners |
 | `design/arch/fixmes/` | owning roles delete |
 
 **Design documents this invocation writes**: this file;
@@ -955,7 +958,7 @@ that procedure repair.
 | **H1** | `sprint` | Preserve the QA-plan §4 braid: I0a ahead of C4; resume the same C5 reservation for I0b after C4/C7 make the state word valid; I2 only after C4 is closed. I0b includes R1 and R2 and is not split into another visit. |
 | **H2** | `dev`(intrinsics) | Crate `CLAUDE.md` and rustdoc current-state, in the implementing visit: a `free_io_node` + witness row under §"Debug hooks"/§"RC discipline"; `drop.rs:24`'s `consume_vec_of_heap` → the live `consume_vec_with`/`consume_vec_of_string`; `catalog.rs:310-312`'s `vec-len` GOT claim, conditional on §7.1c. |
 | **H3** | `design`(primitives) — the next C5 invocation | Consume the reconciled funnel document **without editing it**. Its half: the A2/A3 body flips, the `abi_facts` derivation, the `shim_abi_kinds_match_declared_facts` row with its one-name `sconcat` allow-list, and the `vec-len` spelling with the three source facts at §7.1c. |
-| **H4** | `qa` | (a) consume §9.1/§9.5 without strengthening it: R1 successful-claim plant/controls and R2 held-worker/non-cancelled/poll-only triplet; (b) 0859's revival trigger into `tests/plan/PLAN.md`, and retirement of the dead conditional rows; (c) 0857's regrade inputs; (d) the face-4 guard as a GREEN acceptance cell with the double-discharge negative. |
+| **H4** | `qa` | (a) consume §9.1/§9.5 without strengthening it: R1 successful-claim plant/controls and R2 held-worker/non-cancelled/poll-only triplet; (b) 0859's revival trigger into the [S121 QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md), and retirement of the dead conditional rows; (c) 0857's regrade inputs; (d) the face-4 guard as a GREEN acceptance cell with the double-discharge negative. |
 | **H5** | `qa` + `test` | The `SexpAnnotated` leak's measurement question (§5): the fix removes one named contributor on the macro path; whether the ambient prelude-load residue moves is evidence *for* FIXME 0889's `src/`-side attribution either way, and must not be read as this fix failing. |
 | **H6** | `design`(platform) → C7 | I0b is **gated** on `ABI_VERSION` 9→10 and the fixture rebuilds; the gate is a landing order, not a code dependency. |
 | **H7** | `arch` | The result-handoff amendment changes only the private backend↔intrinsics layouts for Bind, Par, Select and Launch. The user approved that standalone wave; it changes no facade, platform ABI, cancellation policy or bounded-context dependency, and its public-api baselines must remain unchanged. |

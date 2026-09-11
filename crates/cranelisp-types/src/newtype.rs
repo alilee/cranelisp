@@ -85,9 +85,16 @@ impl std::fmt::Display for FQSymbol {
 
 /// Fully qualified type name: module path + local type name.
 ///
-/// Embeds module context at construction time so downstream consumers
-/// (backend match codegen, display, cache) never need reverse lookups.
-/// See `design/arch/fqtypename.md` for motivation and migration plan.
+/// The resolved-stage identity of a type (Decision 47): every API past
+/// typecheck's resolution lift names a type by this value, and bare
+/// `TypeName` is syntactic-stage only — `TypeRef` is the as-written form it
+/// is lifted from. Equality and hashing cover the whole pair, so a `Point`
+/// defined in two modules is two distinct types. Because the module travels
+/// with the name, downstream consumers (backend match codegen, display,
+/// cache) never reverse-look a module up from a bare name; do not introduce
+/// such a map. Binding rule, its two exceptions and rationale:
+/// `design/arch/interfaces.md` §"Type System" and
+/// `design/arch/decisions/0047-fqtypename-binding-at-resolved-stage-boundaries.md`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FQTypeName {
     pub module: ModuleFullPath,
@@ -108,8 +115,12 @@ impl std::fmt::Display for FQTypeName {
 
 /// Fully qualified trait name: module path + local trait name.
 ///
-/// Eliminates bare `TraitName` collisions in the same way `FQTypeName`
-/// eliminates bare `TypeName` collisions. See `design/arch/fqtypename.md`.
+/// The trait-side counterpart of `FQTypeName` under the same resolved-stage
+/// rule (Decision 47): past the resolution lift a trait is named only by this
+/// value, and bare `TraitName` is syntactic-stage only — `TraitRef` is the
+/// as-written form it is lifted from. See `design/arch/interfaces.md`
+/// §"Type System" and
+/// `design/arch/decisions/0047-fqtypename-binding-at-resolved-stage-boundaries.md`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FQTraitName {
     pub module: ModuleFullPath,

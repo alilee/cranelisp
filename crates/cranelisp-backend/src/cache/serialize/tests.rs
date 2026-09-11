@@ -5,6 +5,17 @@ use cranelisp_types::{
 };
 use std::collections::HashMap;
 
+fn result_context_template_scheme() -> Scheme {
+    Scheme {
+        type_vars: vec![0],
+        constraints: HashMap::new(),
+        ty: Type::Fn(
+            Vec::new(),
+            Box::new(Type::Fn(vec![Type::Var(0)], Box::new(Type::Int))),
+        ),
+    }
+}
+
 fn result_context_instances() -> SymbolTable {
     use cranelisp_types::{
         CallableOrigin, CallableTarget, ConcreteType, InstanceLink, MonoDefnVariant, MonoExpr,
@@ -26,7 +37,9 @@ fn result_context_instances() -> SymbolTable {
             ty: Type::Fn(Vec::new(), Box::new(closure_ty.to_type())),
         };
         let view = MonoDefnVariant {
-            name: link.instance_key(),
+            name: link
+                .instance_key(&result_context_template_scheme())
+                .unwrap(),
             params: Vec::new(),
             body: MonoExpr::Lambda {
                 params: vec![Symbol::from("y")],
@@ -68,7 +81,7 @@ fn result_context_instances_round_trip_complete_links() {
     // Bump tripwire: the round trip below is version-agnostic, so this literal
     // exists only to make a `CACHE_SCHEMA_VERSION` change re-read this cell.
     // Advance it once the version-log entry for the new epoch is written.
-    assert_eq!(super::super::CACHE_SCHEMA_VERSION, 28);
+    assert_eq!(super::super::CACHE_SCHEMA_VERSION, 29);
     let table = result_context_instances();
     let bytes = serialise_meta(&table, super::super::CACHE_SCHEMA_VERSION).unwrap();
     let loaded = deserialise_meta(
@@ -78,6 +91,18 @@ fn result_context_instances_round_trip_complete_links() {
     )
     .unwrap();
     assert_eq!(loaded.all_symbols().count(), 2);
+    let mut keys = loaded
+        .all_symbols()
+        .map(|(key, _)| key.to_string())
+        .collect::<Vec<_>>();
+    keys.sort();
+    assert_eq!(
+        keys,
+        vec![
+            "(producer/g [] (Fn [primitives/Int] primitives/Int))",
+            "(producer/g [] (Fn [primitives/String] primitives/Int))",
+        ]
+    );
     for (key, original) in table.all_symbols() {
         let restored = loaded.get(key.as_ref()).unwrap();
         assert_eq!(restored.callable_got_slot(), original.callable_got_slot());
@@ -98,7 +123,12 @@ fn result_context_instances_round_trip_complete_links() {
                 },
             ) => {
                 assert_eq!(actual, expected);
-                assert_eq!(actual.instance_key(), *key);
+                assert_eq!(
+                    actual
+                        .instance_key(&result_context_template_scheme())
+                        .unwrap(),
+                    *key
+                );
             }
             other => panic!("expected two concrete instance links, got {other:?}"),
         }

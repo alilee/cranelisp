@@ -6,8 +6,8 @@
 // via the `use_workspace_stdlib_for_stdlib_conformance_only()` gate. No
 // other test file may use that gate.
 //
-// Wave 2.5 architecture pivot (per `tests/plan/PLAN.md §"Mode
-// canonicalisation"`): bulk language-conformance tests run in REPL mode,
+// Wave 2.5 architecture pivot (per the [current mode-canonicalisation guidance](plan/PLAN.md#mode-canonicalisation--repl-is-the-canonical-surface-for-language-conformance)):
+// bulk language-conformance tests run in REPL mode,
 // not `--run`. The REPL prints `:Type value` per top-level expression
 // (`repl/spec.md §1.2`); each test pipes one expression and asserts the
 // stdout contains the expected `:Type value` substring. This validates
@@ -33,8 +33,8 @@
 //   2. The test asserts `:primitives/Bool true` — a single deterministic
 //      output line — which keeps each test small and the assertion tight.
 // The shape looks more complex than it is; per-test comments explain the
-// witness arm where it is non-obvious. See also `tests/plan/PLAN.md
-// §"Mode canonicalisation"` for the broader Wave 2.5 decision.
+// witness arm where it is non-obvious. See also the
+// [current mode-canonicalisation guidance](plan/PLAN.md#mode-canonicalisation--repl-is-the-canonical-surface-for-language-conformance).
 
 #[path = "helpers/mod.rs"]
 mod helpers;
@@ -131,11 +131,53 @@ fn def_info_and_sig_describe_macro_while_bare_use_expands_value() {
     );
 }
 
-// spec: repl/spec.md §18.4 — a failed codegen turn is discarded; the next
-// independent literal starts from the last committed session state.
-// defect: class=routing-misclassify locus=src/session_v4.rs::process_cluster_with_staging found=S115 owner=/dev
+// spec: spec/05-definitions.md §5.7 + spec/09-macros.md §9.5/§9.10.2 — a
+// `def` name is a zero-argument macro. Bare expansion may yield a function
+// value, while list-head use with arguments is a macro-arity error. A local
+// value binding is the ordinary callable control under spec/04 §4.6.2.
 #[test]
-fn failed_codegen_turn_does_not_poison_following_literal() {
+fn function_valued_def_retains_zero_argument_macro_semantics() {
+    let out = Cranelisp::new()
+        .use_workspace_stdlib_for_stdlib_conformance_only()
+        .repl()
+        .stdin(
+            "(defn mk [n] (fn [a b] (+ n (+ a b))))\n\
+             (def k (mk 10))\n\
+             k\n\
+             (k 1 2)\n\
+             (defn local-control [] (let [g (mk 10)] ((g 1) 2)))\n\
+             (local-control)\n",
+        )
+        .output();
+    let details = format!(
+        "status={:?}\nstdout:\n{}\nstderr:\n{}",
+        out.status, out.stdout, out.stderr
+    );
+    assert!(
+        out.status.success(),
+        "the REPL must continue through the specified macro-arity rejection; {details}"
+    );
+    assert!(
+        out.stdout
+            .contains(":(Fn [primitives/Int primitives/Int] primitives/Int) <closure>"),
+        "bare `k` must expand to its function value; {details}"
+    );
+    assert!(
+        out.stdout.contains("macro `user/k`")
+            && out.stdout.contains("2 argument(s)")
+            && out.stdout.contains("accept 0 argument(s)"),
+        "argument-bearing `(k 1 2)` must report the zero-argument macro contract; {details}"
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 13"),
+        "the equivalent local function value must remain callable; {details}"
+    );
+}
+
+// spec: repl/spec.md §18.1 — a successful generic stdlib call leaves the REPL
+// ready to evaluate the next independent literal.
+#[test]
+fn successful_vec_flatten_then_following_literal_completes_session() {
     let out = Cranelisp::new()
         .use_workspace_stdlib_for_stdlib_conformance_only()
         .repl()
@@ -145,28 +187,29 @@ fn failed_codegen_turn_does_not_poison_following_literal() {
              42\n",
         )
         .output();
-    assert!(
-        out.stdout.contains(":primitives/Int 42"),
-        "a literal after a genuine codegen failure MUST evaluate normally; stdout:\n{}\nstderr:\n{}",
-        out.stdout,
-        out.stderr
+    let details = format!(
+        "status={:?}\nstdout:\n{}\nstderr:\n{}",
+        out.status, out.stdout, out.stderr
     );
     assert!(
-        format!("{}{}", out.stdout, out.stderr)
-            .matches("generic value reference 'vec-concat'")
-            .count()
-            <= 1,
-        "the failed batch MUST NOT be retried on the following literal; stdout:\n{}\nstderr:\n{}",
-        out.stdout,
-        out.stderr
+        out.status.success(),
+        "successful vec-flatten and the following literal must leave the child successful; {details}"
+    );
+    assert!(
+        out.stdout
+            .contains(":(primitives/Vec primitives/Int) [1 2 3 4]"),
+        "vec-flatten must complete before the next turn; {details}"
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 42"),
+        "the following independent literal must evaluate; {details}"
     );
 }
 
-// spec: repl/spec.md §18.4 — recovery after failed codegen includes later
-// definition registration, compilation, publication, and evaluation.
-// defect: class=routing-misclassify locus=src/session_v4.rs::process_cluster_with_staging found=S115 owner=/dev
+// spec: repl/spec.md §18.1 — a successful generic stdlib call leaves the REPL
+// ready to register, publish, and evaluate a later definition.
 #[test]
-fn failed_codegen_turn_does_not_poison_following_definition_and_call() {
+fn successful_vec_flatten_then_following_definition_and_call_completes_session() {
     let out = Cranelisp::new()
         .use_workspace_stdlib_for_stdlib_conformance_only()
         .repl()
@@ -177,11 +220,27 @@ fn failed_codegen_turn_does_not_poison_following_definition_and_call() {
              (alive)\n",
         )
         .output();
+    let details = format!(
+        "status={:?}\nstdout:\n{}\nstderr:\n{}",
+        out.status, out.stdout, out.stderr
+    );
     assert!(
-        out.stdout.contains(":primitives/Int 42") && out.stdout.contains("user/alive"),
-        "definition and call after failed codegen MUST publish and evaluate; stdout:\n{}\nstderr:\n{}",
-        out.stdout,
-        out.stderr
+        out.status.success(),
+        "successful vec-flatten and the following definition/call must leave the child successful; {details}"
+    );
+    assert!(
+        out.stdout
+            .contains(":(primitives/Vec primitives/Int) [1 2 3 4]"),
+        "vec-flatten must complete before the later definition; {details}"
+    );
+    assert!(
+        out.stdout
+            .contains(":(Fn [] primitives/Int) user/alive ; defn"),
+        "the following definition must publish; {details}"
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 42"),
+        "the following definition must evaluate; {details}"
     );
 }
 
@@ -317,6 +376,90 @@ fn same_session_generic_redefinition_without_vec_import() {
     );
 }
 
+// spec: repl/spec/18-redefinition.md §18.1 — a caller-free generic callable
+// with no existing concrete realization may change type; the first later call
+// observes only the replacement body and type.
+#[test]
+fn generic_redefinition_without_prior_realization_uses_replacement_control() {
+    let out = Cranelisp::repl_capture(
+        "(defn replacement-without-realization [v] v)\n\
+         (defn replacement-without-realization [_] 42)\n\
+         (replacement-without-realization 0)\n\
+         /info replacement-without-realization\n",
+    );
+    let details = format!(
+        "status={:?}\nstdout:\n{}\nstderr:\n{}",
+        out.status, out.stdout, out.stderr
+    );
+    assert!(
+        out.status.success(),
+        "replacement without a prior realization must leave the child successful; {details}"
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 42"),
+        "the first concrete call must observe the replacement body; {details}"
+    );
+    assert!(
+        out.stdout
+            .matches(":(Fn [a] primitives/Int) user/replacement-without-realization ; defn")
+            .count()
+            >= 2,
+        "replacement confirmation and /info must expose the new generic Int type; {details}"
+    );
+}
+
+// spec: repl/spec/18-redefinition.md §18.1 — redefining a caller-free generic
+// callable with the same language type publishes the replacement body even
+// when the prior body has a concrete realization.
+#[test]
+fn same_type_generic_redefinition_after_realization_uses_replacement() {
+    let out = Cranelisp::repl_capture(
+        "(defn same-type-replacement [_] 7)\n\
+         (same-type-replacement 0)\n\
+         (defn same-type-replacement [_] 42)\n\
+         (same-type-replacement 0)\n",
+    );
+    let details = format!(
+        "status={:?}\nstdout:\n{}\nstderr:\n{}",
+        out.status, out.stdout, out.stderr
+    );
+    assert!(
+        out.status.success(),
+        "same-type generic replacement must leave the child successful; {details}"
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 7"),
+        "the prior body must be realized before replacement; {details}"
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 42"),
+        "the call after same-type replacement must observe the new body; {details}"
+    );
+}
+
+// spec: repl/spec/18-redefinition.md §18.1 — control: the same generic body
+// replacement succeeds when the prior body has no concrete realization.
+#[test]
+fn same_type_generic_redefinition_without_prior_realization_control() {
+    let out = Cranelisp::repl_capture(
+        "(defn same-type-replacement-control [_] 7)\n\
+         (defn same-type-replacement-control [_] 42)\n\
+         (same-type-replacement-control 0)\n",
+    );
+    let details = format!(
+        "status={:?}\nstdout:\n{}\nstderr:\n{}",
+        out.status, out.stdout, out.stderr
+    );
+    assert!(
+        out.status.success(),
+        "same-type replacement without prior realization must leave the child successful; {details}"
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 42"),
+        "the first call after same-type replacement must observe the new body; {details}"
+    );
+}
+
 // spec: repl/spec/18-redefinition.md §18.1 — control: an ordinary
 // same-session, same-name monomorphic redefinition publishes the replacement
 // body and is available to later lookup and `/info`.
@@ -355,60 +498,6 @@ fn same_session_monomorphic_redefinition_control_publishes_replacement() {
             .count()
             >= 2,
         "the monomorphic replacement confirmation and /info must expose its current type; {details}"
-    );
-}
-
-// spec: repl/spec.md §18.4 — a failed codegen turn publishes no partial
-// definition/specialization; a clean redefinition of the same public symbol
-// can subsequently compile, replace it, and run.
-// defect: class=routing-misclassify locus=src/session_v4.rs::process_cluster_with_staging found=S115 owner=/dev
-#[test]
-fn failed_codegen_turn_does_not_publish_partial_definition() {
-    let out = Cranelisp::new()
-        .use_workspace_stdlib_for_stdlib_conformance_only()
-        .repl()
-        .stdin(
-            "(import [collections.vec [vec-flatten]])\n\
-             (defn failed-unit [v] (vec-flatten v))\n\
-             (failed-unit [[1 2] [3 4]])\n\
-             (defn failed-unit [_] 42)\n\
-             (failed-unit 0)\n\
-             /info failed-unit\n",
-        )
-        .output();
-    let combined = format!("{}{}", out.stdout, out.stderr);
-    assert!(
-        out.stdout.contains(":primitives/Int 42"),
-        "a clean same-name redefinition after failed codegen MUST compile and run; got:\n{combined}"
-    );
-    let info = out.stdout.rsplit("user/failed-unit").next().unwrap_or("");
-    assert!(
-        !info.contains("broken") && !info.contains("vec-flatten"),
-        "failed turn metadata/code MUST not survive into the clean redefinition's /info; got:\n{combined}"
-    );
-}
-
-// spec: repl/spec.md §18.4 — a codegen diagnostic names the actual failing
-// compilation unit, never an incidental operator spelling.
-// defect: class=display-envelope-mirror locus=src/session_v4.rs::inline_jit_codegen_for_names found=S115 owner=/dev
-#[test]
-fn failed_codegen_diagnostic_names_actual_failing_unit_not_operator_slash() {
-    let out = Cranelisp::new()
-        .use_workspace_stdlib_for_stdlib_conformance_only()
-        .repl()
-        .stdin(
-            "(import [collections.vec [vec-flatten]])\n\
-             (vec-flatten [[1 2] [3 4]])\n",
-        )
-        .output();
-    let combined = format!("{}{}", out.stdout, out.stderr);
-    assert!(
-        !combined.contains("codegen failed for /"),
-        "diagnostic MUST NOT attribute vec-flatten/vec-concat failure to `/`; got:\n{combined}"
-    );
-    assert!(
-        combined.contains("vec-flatten") || combined.contains("vec-concat"),
-        "diagnostic MUST identify the actual failing unit or located backend subject; got:\n{combined}"
     );
 }
 
@@ -972,7 +1061,7 @@ fn macro_thread_last_multi() {
 
 // =============================================================================
 // Sprint 109 W1-prep — AN-1(b) prelude-cascade availability smoke.
-// Plan: tests/plan/PLAN.md §S109 §D.1 AN-1.
+// [Historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md), S109 D.1 AN-1.
 // =============================================================================
 
 // spec: spec/08-modules.md §8.6.2 + root CLAUDE.md stdlib-separation exception —

@@ -531,6 +531,210 @@ fn same_type_body_edit_late_binds_without_recompile_report() {
     drop(cap);
 }
 
+// spec: repl/spec/18-redefinition.md §18.3 — reordering a concrete overload
+// family's unchanged signature set is a same-type redefinition. Existing named
+// callers of two disjoint signatures must keep their selected bodies.
+#[test]
+fn overload_family_clause_reorder_preserves_realized_named_callers() {
+    let out = Cranelisp::repl_capture(
+        "(defn f ([:primitives/String x :primitives/Int y] 7) ([:primitives/Int x :primitives/String y] 42))\n\
+         (defn call-string-int [] (f \"s\" 0))\n\
+         (defn call-int-string [] (f 0 \"s\"))\n\
+         (call-string-int)\n\
+         (call-int-string)\n\
+         (defn f ([:primitives/Int x :primitives/String y] 42) ([:primitives/String x :primitives/Int y] 7))\n\
+         (call-string-int)\n\
+         (call-int-string)\n",
+    );
+    let details = format!(
+        "status={:?}\nstdout:\n{}\nstderr:\n{}",
+        out.status, out.stdout, out.stderr
+    );
+    assert!(
+        out.status.success(),
+        "overload-family reorder must leave the child successful; {details}"
+    );
+    assert_eq!(
+        count(&out.stdout, " user/f ; defn"),
+        2,
+        "initial definition and replacement must each confirm the complete family; {details}"
+    );
+    assert_eq!(
+        count(
+            &out.stdout,
+            ":(Fn [primitives/String primitives/Int] primitives/Int) user/f"
+        ),
+        2,
+        "both family confirmations must include the String/Int signature; {details}"
+    );
+    assert_eq!(
+        count(
+            &out.stdout,
+            ":(Fn [primitives/Int primitives/String] primitives/Int) user/f"
+        ),
+        2,
+        "both family confirmations must include the Int/String signature; {details}"
+    );
+    assert_eq!(
+        count(&out.stdout, ":primitives/Int 7"),
+        2,
+        "the string/Int caller must select body 7 before and after reorder; {details}"
+    );
+    assert_eq!(
+        count(&out.stdout, ":primitives/Int 42"),
+        2,
+        "the Int/string caller must select body 42 before and after reorder; {details}"
+    );
+    for needle in ["; stale:", "recompiled", "broken"] {
+        assert!(
+            !out.stdout.contains(needle),
+            "same-type family reordering must not report dependent recompilation `{needle}`; {details}"
+        );
+    }
+}
+
+// spec: repl/spec/18-redefinition.md §18.3 — control: the already-reordered
+// family has the same unambiguous signature-to-body selection in a fresh
+// session, without a redefinition transition.
+#[test]
+fn overload_family_already_reordered_fresh_session_control() {
+    let out = Cranelisp::repl_capture(
+        "(defn f ([:primitives/Int x :primitives/String y] 42) ([:primitives/String x :primitives/Int y] 7))\n\
+         (defn call-string-int [] (f \"s\" 0))\n\
+         (defn call-int-string [] (f 0 \"s\"))\n\
+         (call-string-int)\n\
+         (call-int-string)\n",
+    );
+    let details = format!(
+        "status={:?}\nstdout:\n{}\nstderr:\n{}",
+        out.status, out.stdout, out.stderr
+    );
+    assert!(
+        out.status.success(),
+        "fresh reordered overload family must leave the child successful; {details}"
+    );
+    assert_eq!(
+        count(&out.stdout, ":primitives/Int 7"),
+        1,
+        "the fresh string/Int caller must select body 7; {details}"
+    );
+    assert_eq!(
+        count(&out.stdout, ":primitives/Int 42"),
+        1,
+        "the fresh Int/string caller must select body 42; {details}"
+    );
+}
+
+// spec: repl/spec/18-redefinition.md §18.3 — reordering a generic overload
+// family's unchanged signatures is a same-type redefinition. The replacement
+// must publish completely and preserve existing callers of both realized arms.
+#[test]
+fn generic_overload_family_reorder_preserves_realized_named_callers() {
+    let out = Cranelisp::repl_capture(
+        "(defn f ([:a x] 7) ([:a x :b y] 42))\n\
+         (defn call-one [] (f 0))\n\
+         (defn call-two [] (f 0 0))\n\
+         (call-one)\n\
+         (call-two)\n\
+         (defn f ([:a x :b y] 42) ([:a x] 7))\n\
+         (call-one)\n\
+         (call-two)\n",
+    );
+    let details = format!(
+        "status={:?}\nstdout:\n{}\nstderr:\n{}",
+        out.status, out.stdout, out.stderr
+    );
+    assert!(
+        out.status.success(),
+        "generic overload-family reorder must leave the child successful; {details}"
+    );
+    assert!(
+        !out.stdout.contains("Error:"),
+        "the same-type replacement must be accepted before its callers are reused; {details}"
+    );
+    assert_eq!(
+        count(&out.stdout, " user/f ; defn"),
+        2,
+        "initial definition and replacement must each confirm the complete generic family; {details}"
+    );
+    assert_eq!(
+        count(&out.stdout, ":(Fn [a] primitives/Int) user/f"),
+        2,
+        "both family confirmations must include the one-argument generic signature; {details}"
+    );
+    assert_eq!(
+        count(&out.stdout, ":(Fn [a b] primitives/Int) user/f"),
+        2,
+        "both family confirmations must include the two-argument generic signature; {details}"
+    );
+    assert_eq!(
+        count(&out.stdout, ":primitives/Int 7"),
+        2,
+        "the realized one-argument caller must return 7 before and after reorder; {details}"
+    );
+    assert_eq!(
+        count(&out.stdout, ":primitives/Int 42"),
+        2,
+        "the realized two-argument caller must return 42 before and after reorder; {details}"
+    );
+    for needle in ["; stale:", "recompiled", "broken"] {
+        assert!(
+            !out.stdout.contains(needle),
+            "same-type generic-family reordering must not report a cascade `{needle}`; {details}"
+        );
+    }
+}
+
+// spec: repl/spec/18-redefinition.md §18.3 — control: the already-reordered
+// generic family publishes completely and selects both arms in a fresh session.
+#[test]
+fn generic_overload_family_already_reordered_fresh_session_control() {
+    let out = Cranelisp::repl_capture(
+        "(defn f ([:a x :b y] 42) ([:a x] 7))\n\
+         (defn call-one [] (f 0))\n\
+         (defn call-two [] (f 0 0))\n\
+         (call-one)\n\
+         (call-two)\n",
+    );
+    let details = format!(
+        "status={:?}\nstdout:\n{}\nstderr:\n{}",
+        out.status, out.stdout, out.stderr
+    );
+    assert!(
+        out.status.success(),
+        "fresh reordered generic family must leave the child successful; {details}"
+    );
+    assert!(
+        !out.stdout.contains("Error:"),
+        "fresh reordered generic family must be accepted; {details}"
+    );
+    assert_eq!(
+        count(&out.stdout, " user/f ; defn"),
+        1,
+        "the fresh session must confirm one complete generic family; {details}"
+    );
+    assert_eq!(
+        count(&out.stdout, ":(Fn [a] primitives/Int) user/f"),
+        1,
+        "the family confirmation must include the one-argument generic signature; {details}"
+    );
+    assert_eq!(
+        count(&out.stdout, ":(Fn [a b] primitives/Int) user/f"),
+        1,
+        "the family confirmation must include the two-argument generic signature; {details}"
+    );
+    assert_eq!(
+        count(&out.stdout, ":primitives/Int 7"),
+        1,
+        "the fresh one-argument caller must return 7; {details}"
+    );
+    assert_eq!(
+        count(&out.stdout, ":primitives/Int 42"),
+        1,
+        "the fresh two-argument caller must return 42; {details}"
+    );
+}
+
 // spec: repl/spec/18-redefinition.md §18.1–§18.2 — a macro clause's
 // ordinary call edge blocks an incompatible helper replacement, but the
 // diagnostic reports the authored macro parent exactly once and never leaks

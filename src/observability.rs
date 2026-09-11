@@ -1,7 +1,8 @@
 //! Scheduler / worker event log — Slice 0 observability infrastructure.
 //!
-//! See `design/int/observability.md` for the full design and the companion
-//! `design/backend/io-trampoline-trace.md` for the IO-trampoline sibling.
+//! See `design/int/observability.md` for the full design; the S61
+//! IO-trampoline sibling is the archived
+//! `design/backend/archive/io-trampoline-trace.md`.
 //!
 //! ## Overview
 //!
@@ -595,9 +596,8 @@ pub fn flush_to_stderr() {
 //     so a panic still prints the trace before the stack unwinds and
 //     the thread-local ring buffers are dropped.
 //
-// Mirror of the io-trace-side pattern in
-// `src/io_trace.rs` — see
-// `design/backend/io-trampoline-trace.md §6.1` for the rationale.
+// Mirror of the io-trace-side pattern in `src/io_trace.rs` — see the archived
+// `design/backend/archive/io-trampoline-trace.md §6.1` for the rationale.
 //
 // Scenarios covered:
 //   (b) Normal return from `main()` — `SchedulerTraceFlushGuard::drop`

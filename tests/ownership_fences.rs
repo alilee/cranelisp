@@ -815,37 +815,85 @@ fn clif_golden_single_module_smoke() {
     // NOTE (review F6): this extraction mirrors the Python one in
     // tests/scripts/clif_golden.sh dump() — keep the two in lockstep; a
     // THIRD consumer is the bar for unifying them into one tool.
-    let re = regex::Regex::new(r"(?s); === CLIF (\S+) ===\n.*?; === end CLIF (\S+) ===\n").unwrap();
-    let mut frames: std::collections::BTreeMap<String, String> = Default::default();
-    for cap in re.captures_iter(&out.stderr) {
-        assert_eq!(
-            &cap[1], &cap[2],
-            "malformed CLIF frame: start/end symbol names disagree \
-             (interleaved or truncated dump); stderr:\n{}",
-            out.stderr
-        );
-        let prev = frames.insert(cap[1].to_string(), cap[0].to_string());
-        assert!(
-            prev.is_none(),
-            "DUPLICATE FRAME: {} — under --no-cache each symbol dumps \
-             exactly once (JIT pass); a second frame means the nice-worker \
-             .o cache-write pass leaked into the capture (config drift). \
-             Hard error — do NOT dedup (review F4).",
-            &cap[1]
-        );
-    }
-    let dumped: String = frames.into_values().collect();
-    assert!(
-        !dumped.is_empty(),
-        "no CLIF frames captured from CRANELISP_CODEGEN_DUMP — the \
-         empty-vs-empty false-green class (S102 Wave 1, review F3); stderr:\n{}",
-        out.stderr
-    );
+    let dumped = extract_clif_frames(&out.stderr)
+        .unwrap_or_else(|message| panic!("{message}; stderr:\n{}", out.stderr));
     assert_eq!(
         dumped, golden,
         "toggle-off CLIF of corpus entry 06_tco_loop diverged from the \
          golden (L-B1 zero-diff gate; scoped re-baseline required if this \
          change-set is emission-affecting — MANIFEST.md §Capture contract)"
+    );
+}
+
+/// Extract complete, name-matched CLIF frames and sort them by their canonical
+/// executable name. Names may contain spaces because concrete signature keys
+/// retain full type syntax.
+fn extract_clif_frames(raw: &str) -> Result<String, String> {
+    let re = regex::Regex::new(
+        r"(?s); === CLIF ([^\r\n]+?) ===\r?\n.*?; === end CLIF ([^\r\n]+?) ===\r?\n",
+    )
+    .expect("CLIF frame regex");
+    let start_re =
+        regex::Regex::new(r"(?m)^; === CLIF ([^\r\n]+?) ===\r?$").expect("CLIF start-header regex");
+    let end_re = regex::Regex::new(r"(?m)^; === end CLIF ([^\r\n]+?) ===\r?$")
+        .expect("CLIF end-header regex");
+    let start_count = start_re.captures_iter(raw).count();
+    let end_count = end_re.captures_iter(raw).count();
+    let mut frames: std::collections::BTreeMap<String, String> = Default::default();
+    let mut matched_count = 0;
+    for cap in re.captures_iter(raw) {
+        matched_count += 1;
+        if cap[1] != cap[2] {
+            return Err(format!(
+                "malformed CLIF frame: start name {:?} and end name {:?} disagree \
+                 (interleaved or truncated dump)",
+                &cap[1], &cap[2]
+            ));
+        }
+        let prev = frames.insert(cap[1].to_string(), cap[0].to_string());
+        if prev.is_some() {
+            return Err(format!(
+                "DUPLICATE FRAME: {} — under --no-cache each symbol dumps \
+                 exactly once (JIT pass); a second frame means the nice-worker \
+                 .o cache-write pass leaked into the capture (config drift). \
+                 Hard error — do NOT dedup (review F4).",
+                &cap[1]
+            ));
+        }
+    }
+    if matched_count != start_count || matched_count != end_count {
+        return Err(format!(
+            "malformed CLIF frame set: starts={start_count}, ends={end_count}, \
+             matched={matched_count} — a header is mismatched or truncated"
+        ));
+    }
+    let dumped: String = frames.into_values().collect();
+    if dumped.is_empty() {
+        return Err("no CLIF frames captured from CRANELISP_CODEGEN_DUMP — the \
+             empty-vs-empty false-green class (S102 Wave 1, review F3)"
+            .to_string());
+    }
+    Ok(dumped)
+}
+
+// The prior `\S+` extractor silently omitted this canonical generated name.
+// The negative leg proves a mismatched end header cannot turn malformed output
+// into a trusted golden frame.
+#[test]
+fn clif_frame_extractor_accepts_whitespace_name_and_rejects_mismatched_end() {
+    const NAME: &str = "user::(primitives/IO.Pure [primitives/Int] (primitives/IO primitives/Int))";
+    let matched =
+        format!("; === CLIF {NAME} ===\nfunction %probe() {{\n}}\n; === end CLIF {NAME} ===\n");
+    let extracted = extract_clif_frames(&matched).expect("whitespace-bearing matched frame");
+    assert_eq!(extracted, matched);
+
+    let mismatched = format!(
+        "{matched}; === CLIF {NAME} ===\nfunction %second() {{\n}}\n\
+         ; === end CLIF user::different ===\n"
+    );
+    assert!(
+        extract_clif_frames(&mismatched).is_err(),
+        "a mismatched end header must not produce a trusted frame"
     );
 }
 

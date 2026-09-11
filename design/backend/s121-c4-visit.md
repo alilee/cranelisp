@@ -31,8 +31,12 @@ zero-revisit detector: C4 owns the backend's `PURE_GLUE_ABS_OFFSET == 32`
 compile-time pin, while C7 owns its independent platform composition pin
 (§6.7.3); neither stream edits the other's crate.
 **Subordinate to:** `backend.md`.
-**Consumes, does not decide:** `design/arch/symbol-table-lifecycle.md` §§4–5, §9
-(the `Life`/`Realization` machine, the one `CACHE_SCHEMA_VERSION` 24→25 window);
+**Consumes, does not decide:** `design/arch/symbol-table-lifecycle.md` §§4–5
+(the current `Life`/`Realization` machine); the one
+`CACHE_SCHEMA_VERSION` 24→25 window is S121 migration provenance in
+[the lifecycle design at checkpoint
+`dc78ddbe`](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/arch/symbol-table-lifecycle.md)
+§9;
 `design/arch/total-concreteness.md` §3.4 + `design/arch/interfaces.md`
 §"IO Tag Constants" (the `Pure` payload-glue layout, the ABI 9→10 gate, the
 platform-return tag dispatch and its window residual — register row R19,
@@ -53,6 +57,16 @@ canonically named entries and the partitioned zero census); `design/int/int.md`
 the C4 dormant-arm half of 0932, and the C4-owned rows of the 0929 census.
 **Also absorbs:** QA finding R3, the Decision-24 value-wrapper double discharge
 (`tests/plan/s121-test-plan.md` §3.3), without adding a second backend visit.
+
+**S122 selected-closure amendment (2026-09-09; delivered 2026-09-10).** The
+current backend pass delivered §8.1's 0898 result-root consumer, §8.2's two remaining Vec
+guard copies, the approved typed adaptation of the direct `consume_closure`
+launch fixture, and evidence/record reconciliation. The exact current mechanics,
+reservation and ungrounded stops are in `design/backend/s122-closure.md`. The
+other S121 bundles are not implicitly reopened; generic replacement and
+sequence-IO remain unattributed. Source reconciliation also narrows §8.2's
+mechanism: both Vec copies call the existing public-within-crate
+`heap::emit_rc_inc_guarded`; the lower `emit_nullary_skip_guard` stays private.
 
 ---
 
@@ -167,7 +181,7 @@ the instrument (the `classify_auto_curry_target` precedent, crate `CLAUDE.md`
 | `Concrete { realization: ExternShim { borrowed_sibling } }` | nothing; call sites emit an import against the shim. A `Borrowed`-moded call site selects `borrowed_sibling` when present, and when absent takes the ordinary consuming path | registration | — |
 | `Concrete { realization: Dll }` | nothing; call sites are GOT-indirect against the manifest-order slot | the platform loader | — |
 | `Concrete { realization: FacadeOf { abi_name } }` | nothing per instance: the slot is populated with the address of the one uniform hand-written body named by `abi_name` (I-EMIT §1.2; `catch-runtime-error`). **No per-instantiation body is emitted and no per-instantiation glue identity is minted** | codegen, as a name-alias | — |
-| `Inline` | inline lowering at concrete call sites (`primitives_inline`, and the `bind`/`race`/`select` interceptions). **Value position mints no table entry**: backend emits a span-keyed unit-local closure wrapper (`__wrap_{name}_{disc}{start}_{end}__`, `fn_as_value.rs:157-162`) whose body is the same inline lowering, selected by the kind-keyed `is_inline_primitive_at` (`context.rs:244`) — an emission artifact like `__lambda_…`, below the table (`symbol-table-lifecycle.md` §5.5). B8 supplies that body's `("vec-len", 1)` arm (§8.5) | — (slot-less; the wrapper is not a table entry) | located `CodegenError` when the wrapper body carries no arm for the name — the existing `emit_vec_query_into` fall-through, never a wrong body (§8.5) |
+| `Inline` | inline lowering at concrete call sites (`primitives_inline`, and the `bind`/`race`/`select` interceptions). **Value position mints no table entry**: backend emits a span-keyed unit-local closure wrapper (`__wrap_{name}_{disc}{start}_{end}__`, `fn_as_value.rs:157-162`) whose body is the same inline lowering, selected by the kind-keyed `is_inline_primitive_at` (`context.rs:244`) — an emission artifact like `__lambda_…`, below the table (`symbol-table-lifecycle.md` §5.5). B8 supplies that body's `("vec-len", 1)` arm ([value-position arm](#85-the-dormant-vec-len-value-position-arm-bundle-b8)) | — (slot-less; the wrapper is not a table entry) | located `CodegenError` when the wrapper body carries no arm for the name — the existing `emit_vec_query_into` fall-through, never a wrong body ([value-position arm](#85-the-dormant-vec-len-value-position-arm-bundle-b8)) |
 | `HostPromised` | nothing; by-name `Linkage::Import` against the key | the host | — |
 | `Template { .. }` | **nothing — a template is not a codegen target.** A value-position reference to one reached codegen without a mint | — | located refusal naming the symbol and that no instantiation was demanded (the 0585 loud backstop, retained and re-keyed off `Life` instead of `UserFnState`) |
 | `Declared { .. }` | nothing | — | located refusal: settlement did not run for this symbol before codegen. A compiler-invariant breach, reported as one |
@@ -195,10 +209,13 @@ single per-entry loop in `cache/serialize.rs`; a parallel walk is a reject.
 
 ### 4.3 The schema constant — an explicit cross-stream reservation
 
-`CACHE_SCHEMA_VERSION` is defined at `crates/cranelisp-backend/src/cache/mod.rs`
-(value 24 at HEAD) — physically backend's file, but the **24→25 edit belongs to
-C1's change-set** and is the sole S121 window
-(`symbol-table-lifecycle.md` §9).
+At the S121 measurement point, `CACHE_SCHEMA_VERSION` was defined at
+`crates/cranelisp-backend/src/cache/mod.rs` with value 24 — physically
+backend's file, but the **24→25 edit belonged to C1's change-set** and was the
+sole S121 window
+([lifecycle design at checkpoint
+`dc78ddbe`](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/arch/symbol-table-lifecycle.md)
+§9). This is the dated migration instruction, not the current schema version.
 
 > **Reservation.** For the whole of S121 the *value* of `CACHE_SCHEMA_VERSION`
 > is reserved to C1. C4 does not bump it, does not re-bump it, and does not
@@ -991,6 +1008,13 @@ category. This is the same gate order as §3.1, one level down.
 
 ### 8.3 One binding-root finder (0747 — W-B5, ruled)
 
+> **S122 supersession.** This consolidation is historical and is not a B6
+> implementation obligation. Current source has three distinct identities and
+> liveness domains: exact cleanup `SlotRef`, carrier-keyed current-frame COW
+> source, and name-valued provenance through binding indirection. Preserving
+> those functions is the smallest truthful design. See
+> `design/backend/s122-closure.md` §5.1 for the evidence and cost ruling.
+
 **The contradiction, restated.** W-B5 asks for two things: collapse the
 three fn-return patches onto one contract, and accept only a byte-identical-off
 refactor. The patches disagree by construction —
@@ -1174,7 +1198,7 @@ filing, carried here because it allocates implementation to a C4 bundle.
 
 | # | Target | Live state at HEAD | Disposition | Bundle |
 |---|---|---|---|---|
-| **0747** | `/design` | all three finders live and separate (`fn_compiler.rs:1751`, `:2148`, `:3294`) | **live implementation** — ruled §8.3; `s115-carrier-and-rc-sweep.md` §6 restated | B6 |
+| **0747** | `/design` | all three finders live and separate (`fn_compiler.rs:1751`, `:2148`, `:3294`) | **retired manufactured consolidation; no source change** — S122 supersession at §8.3 and `s122-closure.md` §5.1 | B6 |
 | **0761** | `/qa` | the exact-balance lane landed: `tests/gen_ownership_flows.rs` asserts absolute balance across the owning-type × position matrix, `balance_exclusion` retired | **filing retirement, evidence-only.** C4 contributes nothing; `qa` verifies and deletes | — |
 | **0781** | `/qa` | backend half landed S115 W4c — `value_provenance` is the one derived answer; `emit_vec_drop_if_temporary` reads it | **evidence-only + QA handoff** (§10 H4). No backend implementation | — |
 | **0782** | `/dev` | resolution (a) landed: the var-pattern binder is marked borrowed and the arm's lifetime plan is the sole release owner; unit pins present at `match_codegen/{arm_lifetime_plan,scrutinee_ownership}_tests.rs` | **filing retirement.** Re-confirm one release in the repro's CLIF once inside C4's evidence, then delete | B7 |
@@ -1182,12 +1206,12 @@ filing, carried here because it allocates implementation to a C4 bundle.
 | **0891** | `/dev`(backend), deferred | items 2 and 3 shipped; item 1 (the frame key) is retired by I-CT′, which §7.2 discharges structurally | **filing retirement**, subsumption recorded in `transitive-drop-glue.md` §4.1 and the contract §4 face 1 | B7 |
 | **0900** | `/test` | test-corpus `// defect:` token grain | **handoff to `test`** (§10 H6); `qa` records. No backend work, and no test-policy decision taken here | — |
 | **0903** | `/design`(backend) | `Err ⇒ Mixed` live at `rc_emission.rs:493`; type-keyed arm live at `fn_compiler.rs:1287`; census absent | **live implementation** — §5 then §7 | B3, B4 |
-| **0906** | `/dev`(backend) | live, **and under-scoped**: two hand-rolled copies in `vec_codegen.rs`, not one | **live implementation, re-scoped** (§8.2) | B6 |
+| **0906** | `/dev`(backend) | delivered: both former `vec_codegen.rs` copies use the shared guarded-inc emitter; focused polarity evidence passes | **source/module evidence complete; solution-golden selection pending** (§8.2) | B6 |
 | **0907** | `/design`(backend) | `ctor_shapes` identity check live at `drop_glue.rs:497-505`; 7 e2e REDs | **live implementation** (§6); execution gated on C5 | B5 |
 | **0915** | `/design`(backend) | doubling and `Span::SYNTHETIC` both live | **live implementation** (§8.4); **precondition** for §7's flips | B2 |
 | **0916** | `/design`(backend) | producer-gated on C3's `TraitMethod` monomorphisation | **producer-gated.** No backend lowering change: `compile_match` already types its scrutinee from the mono view (`scrutinee.ty()`), so there is nothing to fabricate and nothing to compensate. Closes when the census's `TraitMethod` partition reads zero | B4 |
 | **0917** | `/design`(backend) | **fixed at S120** (`cbb3be9e`): `NoReference` in the lattice, the fold seeded at the identity, the three-state `CtorValueShape` probe, both repro cells green | **filing retirement** — the first confirmed stale-status record, as `SPRINT.md` notes | B7 |
-| **0898** (C6-primary) | `/dev` | types half landed (`ConcreteType::result_root`); backend twin live at `lib.rs:672-683` | **live implementation, backend twin only** (§8.1). C6 removes the int twin and deletes the filing | B6 |
+| **0898** (C6-primary) | `/dev` | types helper and backend consumer are delivered; `compile_to_module` calls `ConcreteType::result_root` | **backend source/module evidence complete** (§8.1). C6 retains the separate int/root filing tail | B6 |
 | **0932** (C5-primary) | `/design`(backend + runtime pair) | `emit_vec_query_into` carries three arms and no `("vec-len", 1)`; both call sites are kind-gated (`fn_as_value.rs:595`, `:729`) | **live implementation, C4 dormant-arm half** (§8.5), allocated here by `total-concreteness.md` §3.2. C5's P0 flips the declaration and closes the primitives arm | B8 |
 | **0934** (C5-primary) | `/design` | approved by the user; layout ruled by arch | **live implementation, C4 construction half** (§6.1–§6.3). C5 discharges, C7 bumps ABI 9→10 and rebuilds fixtures | B5 |
 | **R19** (arch register row, not a FIXME) | `/dev`(backend) | the fn-name stamp is kind-selected and stores base+40 unconditionally (`apply.rs:1546-1549`, `:1636-1641`, `:39-40`); `CLIO::pure` allocates 32 bytes at v9 / 40 at v10 (`platform/src/lib.rs:908-920`) — out of bounds for a `Pure` return at both. Zero in-tree traffic | **live implementation, ruled** (§6.7). Arch's `total-concreteness.md` §3.4 allocated the tag dispatch here; C7's H2 is discharged and its §4.6 fallback rejected. C4 consumes and does not re-open. Window residual + falsifier at §6.7.5 | B5 |

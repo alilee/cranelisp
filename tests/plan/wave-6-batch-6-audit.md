@@ -65,8 +65,8 @@ exit-code observation** — REPL canonical does not exercise:
 
 - Spec §12.6 (entry point — `defn main` lookup + invocation), which
   is `[R4 S10]` in spec/12-runtime.md (untested per
-  `tests/plan/PLAN.md`).
-- The IO trampoline path (§D-2 platform_io_trampoline).
+  [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md)).
+- The IO trampoline path (the historical D-2 `platform_io_trampoline` allocation).
 - The error-cascade rendering through batch driver `stderr` (the REPL
   prints errors per-form; the batch path renders cascade chains
   differently — design/int/step9-error-cascade.md §6).

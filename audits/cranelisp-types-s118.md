@@ -179,7 +179,7 @@ comments, again in the `DefKind::Macro` rustdoc `:2025-2114`, again in
 `parsed.rs:63-105`; the `PlatformDecl` retirement twice), sprint/submission
 numbers as narrative anchors, and citations to retired documents
 (`design/arch/facades/int.md` at `module.rs:281`,
-`facades/frontend-audit-s70.md` at `:309`, a malformed self-citation
+[`facades/frontend-audit-s70.md`](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/arch/facades/frontend-audit-s70.md) at `:309` (cited record now retained in Git), a malformed self-citation
 ``design/arch/`view.rs` rustdoc`` at `view.rs:16`). Because this crate's
 rustdoc IS its facade (BC §7 "Per-surface documentation"), archaeology here
 is not harmless colour — it is the surface record decaying in place.
@@ -253,7 +253,7 @@ does not meet the bar.
 S-DRIFT-19/20/21, 31 sprints unmigrated — the as-built `&mut`-per-table
 model has carried S70–S118); phantom `SymbolTable.dll`/`DllStore` at
 `module.rs:622,1193,1836,2518`; retired-doc citations
-(`facades/int.md` at `:281`, `facades/frontend-audit-s70.md` at `:309`,
+(`facades/int.md` at `:281`, [`facades/frontend-audit-s70.md`](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/arch/facades/frontend-audit-s70.md) at `:309` (cited record now retained in Git),
 the malformed `view.rs:16` citation); `PlatformSpec.name: String`
 (`module.rs:2529`) pointing at a dead S69 brief.
 **Done:** The rustdoc describes only the as-built model. The

@@ -255,15 +255,17 @@ fn test_compile_with_default_method_defns() {
 // spec: 12-runtime §12.5, 07-traits §7.7 — TCO for monomorphised self-recursive call
 //
 // When a constrained-poly function like `countdown` is monomorphised to
-// `countdown$Int`, the body contains a self-recursive call `(countdown ...)`
-// that the typechecker resolves to `SigDispatch { mangled_name: "countdown$Int" }`.
+// the concrete `countdown` instance, the body contains a self-recursive call
+// `(countdown ...)` that typecheck resolves to the same canonical executable
+// identity.
 // The backend's TCO check must recognize this as self-recursion.
 //
 // This test compiles a simple recursive function and verifies it completes
 // without stack overflow (1M iterations would blow the stack without TCO).
 #[test]
 fn test_mono_defn_self_recursive_tco() {
-    // countdown$Int: (defn countdown$Int [n] (if (= n 0) 0 (countdown$Int (- n 1))))
+    let concrete_key = "(test/countdown [primitives/Int] primitives/Int)";
+    // Concrete countdown: (defn countdown [n] (if (= n 0) 0 (countdown (- n 1))))
     // Simplified: use intrinsic primitives instead of trait dispatch.
     let n_span = Span::new(10, 11);
     let zero_span = Span::new(20, 21);
@@ -273,7 +275,7 @@ fn test_mono_defn_self_recursive_tco() {
     let if_span = Span::new(5, 95);
     let result_span = Span::new(92, 93);
 
-    // Build: (if (eq-i64 n 0) 0 (countdown$Int (sub-i64 n 1)))
+    // Build: (if (eq-i64 n 0) 0 (countdown (sub-i64 n 1)))
     let cond = Expr::Apply {
         callee: Box::new(Expr::Var {
             name: Symbol::from("eq-i64"),
@@ -325,7 +327,7 @@ fn test_mono_defn_self_recursive_tco() {
     };
 
     // The recursive call: callee is "countdown" (original name),
-    // but it's resolved to countdown$Int via SigDispatch.
+    // but its SigDispatch resolves to the concrete executable identity.
     let recurse = Expr::Apply {
         callee: Box::new(Expr::Var {
             name: Symbol::from("countdown"),
@@ -352,7 +354,7 @@ fn test_mono_defn_self_recursive_tco() {
     };
 
     let countdown_defn = Defn {
-        name: Symbol::from("countdown$Int"),
+        name: Symbol::from(concrete_key),
         docstring: None,
         variants: vec![DefnVariant {
             params: vec![(Symbol::from("n"), None)],
@@ -366,7 +368,7 @@ fn test_mono_defn_self_recursive_tco() {
     // Set up method resolutions:
     // - eq_span: BuiltinFn("eq-i64") for the equality check
     // - sub_span: BuiltinFn("sub-i64") for the subtraction
-    // - recurse_span: SigDispatch("countdown$Int") for the self-recursive call
+    // - recurse_span: SigDispatch(concrete_key) for the self-recursive call
     let mut check = empty_check();
     check.method_resolutions.insert(
         eq_span,
@@ -380,10 +382,9 @@ fn test_mono_defn_self_recursive_tco() {
             name: Symbol::from("sub-i64"),
         },
     );
-    check.method_resolutions.insert(
-        recurse_span,
-        sig_binding("test", "countdown$Int"),
-    );
+    check
+        .method_resolutions
+        .insert(recurse_span, sig_binding("test", concrete_key));
 
     // Enrich the defn from CheckResult side maps (test bridge).
     let mut enriched_defn = countdown_defn.clone();
@@ -408,7 +409,7 @@ fn test_mono_defn_self_recursive_tco() {
         jit.jit_module(),
     );
     let countdown_ptr = jit
-        .finalize_and_get_ptr(&Symbol::from("countdown$Int"), 1)
+        .finalize_and_get_ptr(&Symbol::from(concrete_key), 1)
         .unwrap();
 
     // Call with 1_000_000 — without TCO this would stack overflow.
@@ -987,6 +988,85 @@ fn sprint56_compile_to_module_direct_call_writes_got_and_artifacts() {
         }
         other => panic!("expected Def with ast + got_slot, got {other:?}"),
     }
+}
+
+fn compile_synthetic_result(result_ty: cranelisp_types::ConcreteType) -> CompilationArtifacts {
+    use cranelisp_types::{CallableOrigin, MonoDefnVariant, MonoExpr, Realization, Scheme};
+
+    let module = ModuleFullPath::from("user");
+    let name = Symbol::from("result-root-probe");
+    let span = Span::new(0, 1);
+    let ast = DefnVariant {
+        params: vec![],
+        body: Expr::IntLit {
+            value: 0,
+            span,
+            inferred_type: Some(Box::new(result_ty.to_type())),
+        },
+        span,
+    };
+    let view = MonoDefnVariant {
+        name: name.clone(),
+        params: vec![],
+        body: MonoExpr::IntLit {
+            value: 0,
+            span,
+            ty: result_ty.clone(),
+        },
+        span,
+        mode_summary: None,
+    };
+    let tables = empty_tables();
+    let mut table = SymbolTable::new(module.clone());
+    table
+        .install_concrete(
+            name.clone(),
+            Scheme {
+                type_vars: vec![],
+                constraints: HashMap::new(),
+                ty: Type::Fn(vec![], Box::new(result_ty.to_type())),
+            },
+            vec![],
+            None,
+            0,
+            CallableOrigin::Plain,
+            Realization::Body { view, code: None },
+            Some(ast),
+            vec![],
+            Visibility::Public,
+        )
+        .expect("install result-root probe");
+    tables.insert(module.clone(), table);
+
+    let mut jit = Jit::new_with_symbols(&[]).unwrap();
+    compile_names_to_module(module, &[name], &tables, jit.jit_module(), false)
+        .expect("result-root probe compiles")
+}
+
+// spec: design/backend/s122-closure.md §2 — compile_to_module asks the
+// canonical ConcreteType projection for proactive result glue. A body returning
+// IO String requests String glue even though no ordinary body release seam does;
+// the non-IO String control remains its own root.
+#[test]
+fn compile_to_module_requests_glue_for_the_canonical_result_root() {
+    let string = cranelisp_types::ConcreteType::String;
+    let io_string = cranelisp_types::ConcreteType::ADT(
+        cranelisp_types::FQTypeName::new(
+            ModuleFullPath::from("primitives"),
+            cranelisp_types::TypeName::from("IO"),
+        ),
+        vec![string.clone()],
+    );
+
+    let io_artifacts = compile_synthetic_result(io_string.clone());
+    assert!(io_artifacts.drop_glues.contains_key(&string));
+    assert!(
+        !io_artifacts.drop_glues.contains_key(&io_string),
+        "the backend must use the canonical one-hop result root, not IO's outer node"
+    );
+
+    let plain_artifacts = compile_synthetic_result(string.clone());
+    assert!(plain_artifacts.drop_glues.contains_key(&string));
 }
 
 // spec: design/backend/compile-to-module.md §4 — ast: None returns error
@@ -1737,10 +1817,11 @@ fn s117_assert_attributed_body_failure(
         [table.got.load_slot(0), table.got.load_slot(1)]
     };
     let mut jit = Jit::new_with_symbols(&[]).expect("JIT");
-    let error = match compile_names_to_module(module.clone(), names, &tables, jit.jit_module(), true) {
-        Ok(_) => panic!("missing local in a body must fail codegen"),
-        Err(error) => error,
-    };
+    let error =
+        match compile_names_to_module(module.clone(), names, &tables, jit.jit_module(), true) {
+            Ok(_) => panic!("missing local in a body must fail codegen"),
+            Err(error) => error,
+        };
 
     match error {
         crate::CompilationError::CodegenFailed {

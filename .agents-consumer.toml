@@ -1,0 +1,7 @@
+schema = 1
+
+[roles]
+dispatched = ["arch", "audit", "design", "dev", "docs", "ops", "qa", "review", "spec", "test", "training"]
+
+[adapters]
+posture = "checked-in"

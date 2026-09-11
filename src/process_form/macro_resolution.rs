@@ -142,8 +142,7 @@ impl MacroResolver for SymbolTableMacroResolver<'_> {
         // Step 2: Ensure the clause code is in memory (on-demand compile). The
         // executor (`JitMacroExpander::invoke`) reads clause code ptrs from the
         // GOT, so they must be compiled before the walk executes the macro.
-        let all_compiled =
-            (0..clauses).all(|idx| has_code_ptr(self.symbol_tables, &fq, idx));
+        let all_compiled = (0..clauses).all(|idx| has_code_ptr(self.symbol_tables, &fq, idx));
 
         if !all_compiled {
             // Step 2a (S77 W-MacroTrait, FIXME 0299): cache-restore parity.
@@ -350,23 +349,27 @@ fn qualify_scoped(
             //    free reference") excludes it: qualifying `'(name)` to `'(dm/name)`
             //    would change a runtime VALUE. Structurally identical to
             //    `expand_scoped`'s Rule Q / Rule QQ and recognized by the SAME
-            //    shared classifier (`expander::quote_head`) — never a private copy
+            //    shared `cranelisp_types::quote_head` classifier — never a private copy
             //    (Principle 7). Placed FIRST, as in the expander.
-            match crate::expander::quote_head(&children) {
+            match cranelisp_types::quote_head(&children) {
                 // Rule Q — held fully verbatim, no descent.
-                Some(crate::expander::QuoteHead::Quote) => {
+                Some(cranelisp_types::QuoteHead::Quote) => {
                     return Sexp::List(children, span);
                 }
                 // Rule QQ — the body is walked verbatim at qq_depth 0; only the
                 // body of a LIVE unquote/unquote-splicing is re-entered.
-                Some(crate::expander::QuoteHead::Quasiquote) => {
+                Some(cranelisp_types::QuoteHead::Quasiquote) => {
                     let mut children = children;
                     let body = children.pop().expect("len == 2: quasiquote body");
                     let head_sym = children.pop().expect("len == 2: quasiquote head");
                     let inner = qualify_shield_qq(ctx, body, shadows, 0);
                     return Sexp::List(vec![head_sym, inner], span);
                 }
-                Some(crate::expander::QuoteHead::Unquote) | None => {}
+                Some(
+                    cranelisp_types::QuoteHead::Unquote
+                    | cranelisp_types::QuoteHead::UnquoteSplicing,
+                )
+                | None => {}
             }
             // 1. `defmacro`/`defmacro-` (§2.6): a macro-emitted macro definition
             //    carries the SAME binder slots as `defn` — head, name, optional
@@ -432,8 +435,11 @@ fn qualify_shield_qq(
 ) -> Sexp {
     match node {
         Sexp::List(children, span) if !children.is_empty() => {
-            match crate::expander::quote_head(&children) {
-                Some(crate::expander::QuoteHead::Unquote) => {
+            match cranelisp_types::quote_head(&children) {
+                Some(
+                    cranelisp_types::QuoteHead::Unquote
+                    | cranelisp_types::QuoteHead::UnquoteSplicing,
+                ) => {
                     let mut children = children;
                     let body = children.pop().expect("len == 2: unquote body");
                     let head_sym = children.pop().expect("len == 2: unquote head");
@@ -445,14 +451,14 @@ fn qualify_shield_qq(
                     };
                     return Sexp::List(vec![head_sym, inner], span);
                 }
-                Some(crate::expander::QuoteHead::Quasiquote) => {
+                Some(cranelisp_types::QuoteHead::Quasiquote) => {
                     let mut children = children;
                     let body = children.pop().expect("len == 2: quasiquote body");
                     let head_sym = children.pop().expect("len == 2: quasiquote head");
                     let inner = qualify_shield_qq(ctx, body, shadows, qq_depth + 1);
                     return Sexp::List(vec![head_sym, inner], span);
                 }
-                Some(crate::expander::QuoteHead::Quote) | None => {}
+                Some(cranelisp_types::QuoteHead::Quote) | None => {}
             }
             let mapped: Vec<Sexp> = children
                 .into_iter()

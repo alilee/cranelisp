@@ -26,7 +26,7 @@ fn vec_strings_from_owned_constructs_empty_vec() {
         assert!(read_data_ptr(vec as *const u8).is_null());
     }
 
-    crate::drop::consume_vec_of_string(vec);
+    crate::drop::consume_vec_of_string(crate::handle::test_owned(vec));
 }
 
 #[test]
@@ -51,7 +51,7 @@ fn vec_strings_from_owned_publishes_exact_layout_and_content() {
     assert_eq!(heap_rc(one), 1);
     assert_eq!(heap_rc(two), 1);
 
-    crate::drop::consume_vec_of_string(vec);
+    crate::drop::consume_vec_of_string(crate::handle::test_owned(vec));
 }
 
 #[test]
@@ -100,7 +100,7 @@ fn with_vec_strings_scopes_a_non_owning_read() {
     assert_eq!(heap_rc(one), 1);
     assert_eq!(heap_rc(two), 1);
 
-    crate::drop::consume_vec_of_string(vec);
+    crate::drop::consume_vec_of_string(crate::handle::test_owned(vec));
 }
 
 #[test]
@@ -113,7 +113,7 @@ fn with_vec_strings_reads_empty_vec_through_zero_length_sentinel() {
     let observed_len = unsafe { with_vec_strings(vec, |elements| elements.len()) };
     assert_eq!(observed_len, 0);
 
-    crate::drop::consume_vec_of_string(vec);
+    crate::drop::consume_vec_of_string(crate::handle::test_owned(vec));
 }
 
 #[test]
@@ -130,7 +130,7 @@ fn with_vec_strings_does_not_consume_on_callback_unwind() {
     assert!(panic.is_err());
     assert_eq!(heap_rc(string), 1);
 
-    crate::drop::consume_vec_of_string(vec);
+    crate::drop::consume_vec_of_string(crate::handle::test_owned(vec));
 }
 
 #[test]

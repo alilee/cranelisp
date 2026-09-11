@@ -12,9 +12,8 @@ lookup with the prelude fallback intrinsic, and ONE §8.6.4 definition seam
 that every definition form routes through. Consumers: `/dev` narrow
 (cranelisp-typecheck + the approved `cranelisp-types` change-set), then
 `/dev` narrow (src/int); `/review` for the structural grep; `/qa`'s
-acceptance matrix is `tests/plan/PLAN.md` §"Prelude ≡ explicit import —
-resolution-site × polarity matrix" (8 committed failing-not-ignored REDs,
-R1–R8; GREEN pins G1–G8 guard behaviour preservation).
+current evidence navigation is [prelude and explicit-import parity](../../tests/plan/PLAN.md#prelude-and-explicit-import-parity).
+The S108 R1–R8/G1–G8 matrix remains [dated evidence in Git](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md).
 
 Companion class ruling: `resolve-home-enumeration.md` (the display/
 enumeration side of the same family; reframed onto this model). FIXME 0564

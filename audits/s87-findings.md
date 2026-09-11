@@ -414,7 +414,7 @@ which is a failing-test-record, no FIXME). Three cross-crate items need a durabl
 | intrinsics | `intrinsics-2026-06-14.md` | **Strongly positive** — HIGH-1/HIGH-3/MED-1(bulk)/LOW-1/LOW-2 resolved; unsafe exemplary (1 missing SAFETY comment); the vec_set_copy seed (→B2) |
 | primitives | `primitives-2026-06-14.md` | **Strongly positive** — HIGH-1/MED-1 resolved well (guard tests + const asserts); residue is the registration seam guard (MED-1) + doc currency |
 | platform | `platform-2026-06-14.md` | **Strongly positive** — 6 of 7 resolved; unsafe exemplary; the headline is consumer-side host-callback divergence (→B3), not a platform-crate defect |
-| types | `facades/types-audit-s69.md` | **Positive** — mechanical/relocation findings resolved; FQTypeName held; 2 open: FQ-rendering proliferation (→B4) + SymbolTable concurrency limbo (→B8) |
+| types | S69 audit, retained in Git at [types-audit-s69.md](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/arch/facades/types-audit-s69.md) | **Positive** — mechanical/relocation findings resolved; FQTypeName held; 2 open: FQ-rendering proliferation (→B4) + SymbolTable concurrency limbo (→B8) |
 
 **Net:** the recurring misses are the duplication families (T1/T6 — recurrence-escalated)
 and one interim-arch limbo (T8-types). No crate carries a Blocker; no crate's residue

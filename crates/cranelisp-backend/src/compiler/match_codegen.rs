@@ -88,6 +88,7 @@ where
 
     pub(crate) fn compile_match(
         &mut self,
+        node_id: usize,
         scrutinee: &MonoExpr,
         arms: &[MonoMatchArm],
         span: Span,
@@ -148,6 +149,7 @@ where
         }
 
         // Compile each arm as a test-and-branch chain.
+        let mut every_normal_arm_independent = !arms.is_empty();
         for (i, arm) in arms.iter().enumerate() {
             let next_block = if i + 1 < arms.len() {
                 arm_blocks[i + 1]
@@ -177,11 +179,12 @@ where
                     self.in_tail_position = saved_tail;
                     let body_val = self.compile_expr(&arm.body)?;
                     let body_val = self.maybe_protect_tail_arg_alias(&arm.body, body_val);
+                    every_normal_arm_independent &= self.body_has_independent_result(&arm.body);
                     self.emit_arm_scrutinee_release(owes_release)?;
                     self.builder.ins().jump(merge_block, &[body_val]);
                 }
                 Pattern::Var { name, .. } => {
-                    self.compile_var_pattern_arm(
+                    every_normal_arm_independent &= self.compile_var_pattern_arm(
                         name,
                         scrut_val,
                         scrutinee,
@@ -208,7 +211,7 @@ where
                     // now rides the keyed carrier `arm.resolved_ctor`, not a
                     // string parsed by the S110-W3-deleted `lookup_constructor`.
                     let ctor_name = Symbol::from(name.to_string());
-                    self.compile_constructor_pattern(
+                    every_normal_arm_independent &= self.compile_constructor_pattern(
                         &ctor_name,
                         bindings,
                         arm.resolved_ctor.as_ref(),
@@ -236,6 +239,9 @@ where
         // releases the wrapper once, at its own lifetime end.
         self.builder.switch_to_block(merge_block);
         self.builder.seal_block(merge_block);
+
+        self.independent_match_results
+            .insert(node_id, every_normal_arm_independent);
 
         Ok(self.builder.block_params(merge_block)[0])
     }
@@ -272,7 +278,7 @@ where
         merge_block: Block,
         owes_release: bool,
         scrut_root: Option<crate::compiler::fn_compiler::BorrowRoot>,
-    ) -> Result<(), CranelispError> {
+    ) -> Result<bool, CranelispError> {
         // Bind scrutinee to variable, always matches.
         self.push_scope();
         self.bind_local(name, scrut_val, Some(scrutinee.ty().to_type()));
@@ -294,7 +300,7 @@ where
         // the PATTERN KIND, which is the per-spelling rule §5 exists to
         // eliminate.
         self.mark_borrowed(name);
-        if let Some(root) = scrut_root {
+        if let Some(root) = scrut_root.clone() {
             self.record_borrow_root(name, root);
         }
 
@@ -306,16 +312,29 @@ where
         // is the balancing dec, not a caller, so an unconditional protect inc on
         // a fresh arm value would leak. `maybe_protect_tail_arg_alias` incs only a
         // direct scope-binding-`Var` arm the flush will dec (F1 UAF cure).
-        if self.tail_arg_protect {
+        let returned_borrowed = skip_var
+            .and_then(|slot| self.scope.slot(slot))
+            .is_some_and(|slot| slot.is_borrowed());
+        let independent = if self.tail_arg_protect {
             self.maybe_protect_tail_arg_alias(body, body_val);
+            self.body_has_independent_result(body)
         } else {
-            self.protect_return_value(&skip_var, body_val, body);
-        }
+            let protected = self.protect_return_value(&skip_var, body_val, body);
+            if returned_borrowed {
+                !owes_release
+                    && matches!(
+                        scrut_root,
+                        Some(crate::compiler::fn_compiler::BorrowRoot::OwnedTemporary)
+                    )
+            } else {
+                protected
+            }
+        };
         self.pop_scope_with_cleanup(skip_var)?;
         self.emit_arm_scrutinee_release(owes_release)?;
         self.builder.ins().jump(merge_block, &[body_val]);
 
-        Ok(())
+        Ok(independent)
     }
 
     /// Compile a constructor pattern arm.
@@ -330,7 +349,7 @@ where
         match_ctx: &MatchContext,
         body: &MonoExpr,
         span: Span,
-    ) -> Result<(), CranelispError> {
+    ) -> Result<bool, CranelispError> {
         // **Pattern position gets exactly ONE resolver (S109 W1.2, §10.3).** The
         // arm's `resolved_ctor` is typecheck's STORAGE identity for this pattern
         // ctor (canonical `Type.Ctor` for a sum ctor; the type-name key for a
@@ -417,7 +436,7 @@ where
         is_mixed: bool,
         match_ctx: &MatchContext,
         body: &MonoExpr,
-    ) -> Result<(), CranelispError> {
+    ) -> Result<bool, CranelispError> {
         let body_block = self.builder.create_block();
 
         if is_mixed {
@@ -465,10 +484,11 @@ where
         self.builder.seal_block(body_block);
         self.in_tail_position = match_ctx.saved_tail;
         let body_val = self.compile_expr(body)?;
+        let independent = self.body_has_independent_result(body);
         self.emit_arm_scrutinee_release(match_ctx.owes_release)?;
         self.builder.ins().jump(match_ctx.merge_block, &[body_val]);
 
-        Ok(())
+        Ok(independent)
     }
 
     /// Compile a data constructor pattern (heap-allocated, with field bindings).
@@ -482,7 +502,7 @@ where
         bindings: &[Symbol],
         match_ctx: &MatchContext,
         body: &MonoExpr,
-    ) -> Result<(), CranelispError> {
+    ) -> Result<bool, CranelispError> {
         let body_block = if is_value {
             // R5 (§7.1): the scrutinee IS the flattened value word — there is no
             // heap tag to load (a `heap_load` on the bare word would dereference
@@ -522,7 +542,7 @@ where
         // create an owning reference. Borrowed vars share the scrutinee's
         // reference, but the return value must survive the scrutinee's
         // eventual dec. This is the sketch's "auto-upgrade borrowed on return".
-        if let Some(sv) = skip_var
+        let independent = if let Some(sv) = skip_var
             && self.scope.slot(sv).is_some_and(|slot| slot.is_borrowed())
         {
             if let Some(ty) = self.scope.slot(sv).and_then(|slot| slot.ty()).cloned() {
@@ -554,15 +574,17 @@ where
                     HeapCategory::NeverHeap | HeapCategory::Value => {}
                 }
             }
+            true
         } else if self.tail_arg_protect {
             // Tail-call-arg context: the tail-jump flush is the balancing dec
             // (not a caller), so protect only a direct scope-binding-`Var` arm
             // the flush will dec — never an unconditional inc on a fresh value,
             // which would leak here (F1 UAF cure).
             self.maybe_protect_tail_arg_alias(body, body_val);
+            self.body_has_independent_result(body)
         } else {
-            self.protect_return_value(&skip_var, body_val, body);
-        }
+            self.protect_return_value(&skip_var, body_val, body)
+        };
 
         self.pop_scope_with_cleanup(skip_var)?;
         // §2 — protect, THEN tear down. Every protective inc on an extracted
@@ -573,7 +595,7 @@ where
         self.emit_arm_scrutinee_release(match_ctx.owes_release)?;
         self.builder.ins().jump(match_ctx.merge_block, &[body_val]);
 
-        Ok(())
+        Ok(independent)
     }
 
     /// Emit the heap-pointer guard (for mixed ADTs) and tag comparison

@@ -429,7 +429,10 @@ pub mod serialize;
 /// not cover it — an uncommitted landing build stamps the pre-fix sha, the
 /// identical hole recorded for the S103 15 → 16 bump. The bump refuses every
 /// schema-27 sidecar and paired object wholesale; no translation path.
-pub const CACHE_SCHEMA_VERSION: u32 = 28;
+/// S122 changes persisted generic-instance keys from substitution suffixes to
+/// their canonical full concrete signatures. Schema-28 sidecars and paired
+/// objects therefore cannot be mixed with the current symbol-table identity.
+pub const CACHE_SCHEMA_VERSION: u32 = 29;
 
 /// Compile-time build identifier (Sprint 60 Workstream C).
 ///

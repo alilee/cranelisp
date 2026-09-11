@@ -4286,7 +4286,8 @@ fn set_doc_non_function_target_e2e_refused_not_recorded_neg() {
 
 // ===========================================================================
 // Sprint 109 — Observability (§17.20.3a field→metric acceptance) + §17.2.1
-// probe channel. Plan: tests/plan/PLAN.md §S109 §F. Agent-feature build only
+// probe channel. The [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md)
+// records S109 F. Agent-feature build only
 // (feature-off there is no agent and no log). Stub-driven, zero network; the
 // activity log (`CRANELISP_AGENT_LOG`) is read back and asserted on raw JSONL
 // text (the greppable-keys contract, §17.20.3). The six §17.20.3a fields

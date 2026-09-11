@@ -170,10 +170,10 @@ A.4-revised done-bar (cure-the-risk, not just gate it):
   (the `CompileArtifacts` rustdoc cites `facades/backend.md` §"jit shape DTOs",
   retired S75) — it goes with the struct.
 - **Public API**: all `pub(crate)` — `public-api.txt` unchanged.
-- **Doc consequence**: `implementation-slice-s66.md` row 1(d) ("`Jit::compile_defn`
-  deletion observed in source") finally becomes TRUE — that one-shot is now cleanly
-  archived at `design/backend/archive/implementation-slice-s66.md` (FIXME 0635 I4,
-  S113; `archive/README.md` carries its row).
+- **Doc consequence**: the S66 row 1(d) ("`Jit::compile_defn` deletion observed
+  in source") is now true. S122 document maintenance deleted that duplicate
+  one-shot plan; Git retains its history. This section and the current
+  `backend.md`/`compile-to-module.md` contracts carry the result.
 
 ### 1.4 Drop `module_aliases` off `CompileContext`
 

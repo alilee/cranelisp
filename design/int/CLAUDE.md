@@ -61,6 +61,19 @@ refusal, and reads the optional `/strand` dev sink. It never reaches into reacto
 
 ## Document index (durable vs historical) — the triage of record
 
+This memory establishes three Binary/int-owned collections:
+
+| Collection | Purpose |
+|---|---|
+| `int-current-designs` | Current Binary/int master, subsystem and active feature designs for pipeline orchestration, compiler-internal scheduling, REPL/session, persistence, macro execution, host integration and observability. |
+| `int-reference-lineage` | Load-bearing concurrency and race-analysis records retained as precedent for current Binary/int design. |
+| `int-historical-records` | Superseded Binary/int working, migration and slice records retained solely for the audit trail described by the S110 triage. |
+
+All three are established collections. References remain live in the current
+declaration. The historical collection is the bounded candidate if the user
+later approves historical-record reference policy; this memory grants no such
+waiver.
+
 Maintained by `/design` (int); triaged S110, FIXME 0607 (the S109 typecheck 0578 template).
 An agent designing against this surface reads the **durable** docs; the **historical** docs
 are retained for the audit trail only and each carries a top-of-file `HISTORICAL` banner — do
@@ -82,7 +95,13 @@ doc is subordinate.
 `terminal-styling.md` (the `styled::render` role-span seam).
 
 **Active subordinate feature docs** (scoped, live):
-`s121-c6-visit.md` (S121 — **the current entry point for this surface**: the one
+`s122-closure.md` (S122 — **the current entry point for the selected Binary/int
+closure**: source-reconciled reload-demand recovery including linked
+concrete-in-place overload realizations, macro/quote ownership, canonical
+result-root + `/mem`, failed-codegen evidence choice, eval-production stop, and
+the continuous Phase-5 source reservation),
+`s121-c6-visit.md` (S121 — the preceding complete-surface visit whose selected
+remaining obligations are narrowed by `s122-closure.md`: the one
 C6 binary/exe-bundle visit. Ordered bundles N1–N6, per-FIXME dispositions for
 the 21 allocated records plus the C6 half of 0553, the exact `src/` reservations,
 public-API/schema/ABI effects (two individually approved and baseline-confirmed
@@ -100,8 +119,8 @@ macro expansion; the int leg of the quasiquote-legal-everywhere wave),
 synthetic-span diagnostics over macro-expansion output relocate to the origin form;
 paired with `design/frontend/binder-head-reject.md`; §2.1 S114 extends the same
 transform to the def/const finalize/typecheck-error path),
-`macro-turn-ownership.md` (S119, FIXME 0889 — **the** macro-turn ownership
-protocol, ruled pre-implementation: single-owner marshalling, transfer-by-ABI-
+`macro-turn-ownership.md` (S119/S122, FIXME 0889 — **the** delivered macro-turn ownership
+protocol: single-owner marshalling, transfer-by-ABI-
 crossing, exactly-once result discharge through `consume_sexp`, the
 `MacroClauseAbi` ownership declaration [Rule 0], the arena/epoch rejection, and
 the §9 S121 macro-checkpoint interaction surface; §8 is the `/dev` gate set,
@@ -119,9 +138,9 @@ the foreground public-write chokepoint contract; companion to
 `index-worker-isolation.md`'s background half; S115 corrected the predicate to
 declared-export closure and routed `commit_staging_to_live`; **S121 closed the
 census** with the three session-init rows, the scope-boundary statement, the two
-factual corrections 0740 carried, and one recorded residual — the gate runs
-*after* `commit_slotted_def`, so "nothing committed" on rejection is true of the
-table and not of the slot),
+factual corrections 0740 carried, and candidate-batch validation before table
+or GOT publication; the retired 0604/0740/0793/0818 group now has its closure
+and historical attribution limits in `design/arch/bounded-contexts.md` §6),
 `impl-redefinition-hot-reload.md` (S115, FIXME 0714 / spec §5.4.5 — a same-type
 re-impl hot-reloads via the existing `commit_staging_to_live`→`commit_slotted_def`
 GOT-patch path; the silent-ignore locus is the `derive_codegen_batch` TraitImpl
@@ -153,7 +172,7 @@ audit trail only): `step4-macro-blocking.md`, `step5-lazy-discovery.md`, `step7-
 `s77-int-restructure.md`, `s78-implementation.md`, `s78-entry-module.md` (its §2
 prelude-fallback mechanism is now canonical in `design/arch/prelude-import-convergence.md` +
 `src/CLAUDE.md`), `s87-decomposition.md`, `s102-defect-wave.md`, `wave-3a-process-form.md`,
-`implementation-slice-s66.md`, `phase2-codegen-convergence.md`, `pipeline-convergence.md`,
+`phase2-codegen-convergence.md`, `pipeline-convergence.md`,
 `dual-path-persistence-collapse.md`, `cache-prelude-restoration-repro.md`,
 `platform-registry-removal.md`.
 

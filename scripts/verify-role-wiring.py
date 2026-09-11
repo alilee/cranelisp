@@ -1,67 +1,42 @@
 #!/usr/bin/env python3
-"""verify-role-wiring.py — the declared role set, its adapters, and its wiring agree.
+"""Verify the shared consumer contract, then Cranelisp's local role wiring.
 
-Root `CLAUDE.md` §Roles declares twelve dispatched roles. Each one has to reach a
-dispatch through four independent copies of the same fact: a contract in the
-pinned `.agents` package, a Claude host adapter, a Copilot host adapter, and a
-composition entry. Per-host adapter copies are the shape that has already
-drifted twice (S65, S76), leaving Principles on disk invisible to the roles
-applying them for whole sprints; the package converges every increment and can
-rename or drop a role at any time.
+The pinned package's offline ``check_consumer.py`` is the first structural gate.
+It owns declaration validation, Claude adapter identity and allocation parity,
+package contracts and composition, link topology, manifests, and submodule
+wiring. A failure stops this script before any local prerequisite can mask it.
 
-Nothing about that agreement is structural — every copy is a separate file that
-can be edited alone — so it is measured. This docstring is the single carrier of
-the condition list; `tests/role_wiring.rs` proves each one detects, and cites
-here rather than restating.
+The remaining conditions belong to this repository:
 
-  W1  the declared role set equals the Claude adapter set equals the Copilot
-      adapter set, and every declared role has a contract and a composition entry
-  W2  each adapter names its own role, carries a model and effort allocation, and
-      points at its role's contract
-  W3  every skill named in the composition has a contract on disk
-  W4  the subagent telemetry hooks, the dispatch transport, and the skills
-      symlink are present
-  W5  the Principle files on disk and the Principle index cite each other exactly,
-      and each file's frontmatter number matches its filename
-  W6  every role `sprints/METHOD.md` §1.1 obliges to read `design/arch/principles.md`
-      first has that instruction in both of its host adapters
-  W7  each Claude adapter's `model:` and `effort:` equal the definitive shared
-      allocation in `.agents/agents/<role>.md` (Copilot adapters carry none)
+  W1  root ``CLAUDE.md`` declares the same subordinate roles as
+      ``.agents-consumer.toml``, and Copilot exposes exactly that set
+  W2  each Copilot adapter names its role and shared contract
+  W3  lifecycle telemetry, provider-routing guard, and dispatch transports are
+      wired; the PreToolUse guard is unfiltered
+  W4  Principle files and their canonical index cite each other exactly, and
+      each file's frontmatter number matches its filename
+  W5  every role ``sprints/METHOD.md`` obliges to read the Principle index first
+      carries that instruction in both host adapters
 
-W2 checks that an allocation is present; W7 checks that it is the one the package
-allocated. Neither states a role-to-tier mapping. `.agents/CLAUDE.md` §Execution
-tiers makes the frontmatter of `.agents/agents/<role>.md` the definitive
-executable allocation and forbids a consumer remapping it, so reading that
-carrier at check time single-sources the fact from its determinant rather than
-copying a declaration. Until S120 this docstring asserted the opposite — that any
-tier check here would copy the declaration under test. That held while the
-allocation's only carriers were prose; it does not survive a determinant on disk,
-and the transport prefers the consumer adapter, so an unobserved local remap
-would execute. What W7 does not reach is the *executed* model and effort, which
-are the dispatch row's.
-
-W6 and W7 both read their subject out of the determinant rather than listing it
-here: a second copy of the obliged set, or of the allocation, would drift from
-its source exactly as an adapter can.
+The subjects for W1 and W5 are read from their determinants rather than copied
+here. ``tests/role_wiring.rs`` proves the shared integration and every local
+condition detect planted faults.
 
 Usage:
     scripts/verify-role-wiring.py [ROOT]
-
-ROOT defaults to the repository this script lives in. It is a parameter so the
-detection proof (`tests/role_wiring.rs`) can run the identical command against a
-scratch copy carrying a planted fault.
 """
 
 from __future__ import annotations
 
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
 try:
     import tomllib
-except ModuleNotFoundError:  # pragma: no cover - reported as a loud failure below
+except ModuleNotFoundError:  # pragma: no cover - shared checker reports this first
     tomllib = None
 
 ROLES_TABLE_ROW = re.compile(r"^\|\s*`(?P<role>[a-z][a-z0-9-]*)`\s*\|")
@@ -71,15 +46,11 @@ PRINCIPLE_CITATION = re.compile(r"principles/(?P<file>\d{2}-[a-z0-9-]+\.md)")
 NUMBER_FIELD = re.compile(r"^number:\s*(?P<num>\d{1,3})\s*$", re.MULTILINE)
 
 PRINCIPLES_INDEX = "design/arch/principles.md"
-# The clause in `sprints/METHOD.md` §1.1 that states the first-read obligation.
-# Matching on the phrase rather than on a role list keeps METHOD the determinant.
 FIRST_READ_CLAUSE = "read it first"
 BACKTICKED = re.compile(r"`([a-z][a-z0-9-]*)`")
 
 
 class Report:
-    """Findings keyed by condition, plus the counters that prove work was done."""
-
     def __init__(self) -> None:
         self.findings: list[tuple[str, str]] = []
         self.counts: dict[str, int] = {}
@@ -96,7 +67,6 @@ def read_text(path: Path) -> str:
 
 
 def frontmatter(path: Path) -> dict[str, str]:
-    """The leading `---` fenced block as key/value pairs. Empty when absent."""
     lines = read_text(path).splitlines()
     if not lines or lines[0].strip() != "---":
         return {}
@@ -104,22 +74,44 @@ def frontmatter(path: Path) -> dict[str, str]:
     for line in lines[1:]:
         if line.strip() == "---":
             break
-        m = FRONTMATTER_ENTRY.match(line)
-        if m:
-            fields[m.group("key")] = m.group("value")
+        match = FRONTMATTER_ENTRY.match(line)
+        if match:
+            fields[match.group("key")] = match.group("value")
     return fields
 
 
+def run_consumer_check(root: Path) -> int:
+    """Run the package-owned gate first and forward its concise report."""
+    checker = root / ".agents/tools/check_consumer.py"
+    if not checker.is_file():
+        print(f"consumer-check-missing {checker}: the pinned checker cannot run")
+        return 1
+    try:
+        run = subprocess.run(
+            [sys.executable, str(checker), "--root", str(root)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as error:
+        print(f"consumer-check-unrunnable {checker}: {error}")
+        return 1
+    if run.stdout.strip():
+        print(run.stdout.rstrip())
+    if run.stderr.strip():
+        print(run.stderr.rstrip(), file=sys.stderr)
+    return run.returncode
+
+
 def declared_roles(root: Path, report: Report) -> list[str]:
-    """Role names from the first table under root `CLAUDE.md` §Roles."""
-    claude_md = root / "CLAUDE.md"
-    if not claude_md.is_file():
-        report.fail("W1", f"no root instruction file at {claude_md.name}")
+    path = root / "CLAUDE.md"
+    if not path.is_file():
+        report.fail("W1", "no root instruction file at CLAUDE.md")
         return []
     roles: list[str] = []
     in_section = False
     in_table = False
-    for line in read_text(claude_md).splitlines():
+    for line in read_text(path).splitlines():
         if line.startswith("## "):
             if in_table:
                 break
@@ -127,10 +119,10 @@ def declared_roles(root: Path, report: Report) -> list[str]:
             continue
         if not in_section:
             continue
-        m = ROLES_TABLE_ROW.match(line)
-        if m:
+        match = ROLES_TABLE_ROW.match(line)
+        if match:
             in_table = True
-            roles.append(m.group("role"))
+            roles.append(match.group("role"))
         elif in_table and not line.startswith("|"):
             break
     if not roles:
@@ -138,293 +130,205 @@ def declared_roles(root: Path, report: Report) -> list[str]:
     return roles
 
 
-def check_inventory(root: Path, roles: list[str], report: Report) -> None:
-    """W1 — one role set, four carriers."""
-    declared = set(roles)
-
-    claude_dir = root / ".claude/agents"
-    copilot_dir = root / ".github/agents"
-    claude = {p.stem for p in claude_dir.glob("*.md")}
-    copilot = {p.name[: -len(".agent.md")] for p in copilot_dir.glob("*.agent.md")}
-    report.counts["claude adapters"] = len(claude)
-    report.counts["copilot adapters"] = len(copilot)
-
-    for role in sorted(declared - claude):
-        report.fail("W1", f"role `{role}` is declared but has no Claude adapter at "
-                          f".claude/agents/{role}.md")
-    for name in sorted(claude - declared):
-        report.fail("W1", f".claude/agents/{name}.md is an adapter for `{name}`, which "
-                          f"root CLAUDE.md §Roles does not declare")
-    for role in sorted(declared - copilot):
-        report.fail("W1", f"role `{role}` is declared but has no Copilot adapter at "
-                          f".github/agents/{role}.agent.md")
-    for name in sorted(copilot - declared):
-        report.fail("W1", f".github/agents/{name}.agent.md is an adapter for `{name}`, "
-                          f"which root CLAUDE.md §Roles does not declare")
-
-    composition = read_text(root / ".agents/skill-composition.toml")
-    for role in roles:
-        contract = root / f".agents/skills/{role}/SKILL.md"
-        if not contract.is_file():
-            report.fail("W1", f"role `{role}` has no contract at "
-                              f".agents/skills/{role}/SKILL.md")
-        if f"[roles.{role}]" not in composition:
-            report.fail("W1", f"role `{role}` has no [roles.{role}] entry in "
-                              f".agents/skill-composition.toml")
-
-
-def check_adapters(root: Path, roles: list[str], report: Report) -> None:
-    """W2 — each adapter names its own role, its allocation, and its contract."""
-    for role in roles:
-        contract = f".agents/skills/{role}/SKILL.md"
-
-        claude = root / f".claude/agents/{role}.md"
-        if claude.is_file():
-            fields = frontmatter(claude)
-            name = fields.get("name")
-            if name != role:
-                report.fail("W2", f".claude/agents/{role}.md declares `name: "
-                                  f"{name or '<absent>'}`, not `{role}` — a dispatch of "
-                                  f"`{role}` would select the wrong contract")
-            for key in ("model", "effort"):
-                if not fields.get(key):
-                    report.fail("W2", f".claude/agents/{role}.md carries no `{key}:` "
-                                      f"allocation; the transport refuses at dispatch "
-                                      f"time, which is late")
-            if contract not in read_text(claude):
-                report.fail("W2", f".claude/agents/{role}.md does not name its contract "
-                                  f"{contract}")
-
-        copilot = root / f".github/agents/{role}.agent.md"
-        if copilot.is_file():
-            name = frontmatter(copilot).get("name")
-            if name != role:
-                report.fail("W2", f".github/agents/{role}.agent.md declares `name: "
-                                  f"{name or '<absent>'}`, not `{role}`")
-            if contract not in read_text(copilot):
-                report.fail("W2", f".github/agents/{role}.agent.md does not name its "
-                                  f"contract {contract}")
-
-
-def check_allocation_parity(root: Path, roles: list[str], report: Report) -> None:
-    """W7 — each Claude adapter's allocation equals the shared package's.
-
-    The shared carrier is read here rather than mirrored, so this compares two
-    copies of one fact instead of asserting a tier table of its own.
-    """
-    pairs = 0
-    for role in roles:
-        consumer = root / f".claude/agents/{role}.md"
-        if not consumer.is_file():
-            continue  # W1 owns an absent adapter; W7 would only repeat it
-        shared = root / f".agents/agents/{role}.md"
-        if not shared.is_file():
-            report.fail("W7", f"role `{role}` has no shared allocation carrier at "
-                              f".agents/agents/{role}.md, so .claude/agents/{role}.md's "
-                              f"allocation has nothing definitive to agree with")
-            continue
-
-        allocated = frontmatter(shared)
-        local = frontmatter(consumer)
-        absent = [key for key in ("model", "effort") if not allocated.get(key)]
-        if absent:
-            report.fail("W7", f".agents/agents/{role}.md carries no "
-                              f"{' or '.join(f'`{k}:`' for k in absent)} field; the "
-                              f"definitive allocation for `{role}` is unreadable, and an "
-                              f"unreadable determinant makes this comparison vacuous")
-            continue
-
-        for key in ("model", "effort"):
-            if local.get(key) != allocated[key]:
-                report.fail("W7", f".claude/agents/{role}.md allocates `{key}: "
-                                  f"{local.get(key) or '<absent>'}` for `{role}`, but the "
-                                  f"definitive shared allocation at .agents/agents/"
-                                  f"{role}.md is `{key}: {allocated[key]}`. The transport "
-                                  f"prefers the consumer adapter, so `{role}` would "
-                                  f"execute remapped")
-        pairs += 1
-    report.counts["allocation pairs"] = pairs
-
-
-def check_composed_skills(root: Path, report: Report) -> None:
-    """W3 — every skill the composition names has a contract on disk."""
-    path = root / ".agents/skill-composition.toml"
-    if not path.is_file():
-        report.fail("W3", "no .agents/skill-composition.toml")
-        return
+def consumer_roles(root: Path) -> list[str]:
+    """The package checker has already validated this declaration."""
     if tomllib is None:
-        report.fail("W3", "this interpreter has no `tomllib`; the composition cannot be "
-                          "read. Python 3.11 or newer is required")
-        return
-    try:
-        data = tomllib.loads(read_text(path))
-    except tomllib.TOMLDecodeError as exc:
-        report.fail("W3", f".agents/skill-composition.toml does not parse: {exc}")
-        return
+        return []
+    data = tomllib.loads(read_text(root / ".agents-consumer.toml"))
+    return data["roles"]["dispatched"]
 
-    named: set[str] = set(data.get("support", {}).get("skills", []))
-    for entry in data.get("roles", {}).values():
-        for key in ("always", "standing_documents"):
-            named.update(entry.get(key, []))
-    report.counts["composed skills"] = len(named)
 
-    for skill in sorted(named):
-        if not (root / f".agents/skills/{skill}/SKILL.md").is_file():
-            report.fail("W3", f"the composition names skill `{skill}`, which has no "
-                              f"contract at .agents/skills/{skill}/SKILL.md")
+def check_inventory(root: Path, prose_roles: list[str], report: Report) -> None:
+    """W1 — local prose, machine declaration, and Copilot inventory agree."""
+    prose = set(prose_roles)
+    machine = set(consumer_roles(root))
+    copilot_dir = root / ".github/agents"
+    copilot = {p.name[: -len(".agent.md")] for p in copilot_dir.glob("*.agent.md")}
+    report.counts["subordinate roles"] = len(machine)
+    report.counts["Copilot adapters"] = len(copilot)
+
+    for role in sorted(machine - prose):
+        report.fail("W1", f".agents-consumer.toml dispatches `{role}`, but root "
+                    "CLAUDE.md §Roles has no row for it")
+    for role in sorted(prose - machine):
+        report.fail("W1", f"root CLAUDE.md §Roles declares `{role}`, but "
+                    ".agents-consumer.toml does not dispatch it")
+    for role in sorted(machine - copilot):
+        report.fail("W1", f"role `{role}` is dispatched but has no Copilot adapter at "
+                    f".github/agents/{role}.agent.md")
+    for role in sorted(copilot - machine):
+        report.fail("W1", f".github/agents/{role}.agent.md exposes `{role}`, which "
+                    ".agents-consumer.toml does not dispatch")
+
+
+def check_copilot_adapters(root: Path, roles: list[str], report: Report) -> None:
+    """W2 — Copilot adapter identity and contract references."""
+    for role in roles:
+        relative = f".github/agents/{role}.agent.md"
+        path = root / relative
+        if not path.is_file():
+            continue  # W1 owns absence
+        name = frontmatter(path).get("name")
+        if name != role:
+            report.fail("W2", f"{relative} declares `name: {name or '<absent>'}`, not "
+                        f"`{role}`")
+        contract = f".agents/skills/{role}/SKILL.md"
+        if contract not in read_text(path):
+            report.fail("W2", f"{relative} does not name its contract {contract}")
+
+
+def command_hooks(hooks: dict, event: str) -> list[tuple[dict, str]]:
+    entries = hooks.get(event, [])
+    if not isinstance(entries, list):
+        return []
+    return [
+        (matcher, hook.get("command", ""))
+        for matcher in entries
+        if isinstance(matcher, dict)
+        for hook in matcher.get("hooks", [])
+        if isinstance(hook, dict) and hook.get("type") == "command"
+    ]
 
 
 def check_dispatch_wiring(root: Path, report: Report) -> None:
-    """W4 — telemetry hooks, transport, and the skills symlink."""
+    """W3 — repository hook policy, transports, and skills exposure."""
     settings = root / ".claude/settings.json"
-    telemetry = ".agents/tools/subagent_telemetry.py"
+    hooks: dict = {}
     if not settings.is_file():
-        report.fail("W4", ".claude/settings.json is absent, so no subagent lifecycle "
-                          "hook is wired in this checkout")
+        report.fail("W3", ".claude/settings.json is absent, so dispatch hooks are unwired")
     else:
         try:
-            hooks = json.loads(read_text(settings)).get("hooks", {})
-        except json.JSONDecodeError as exc:
-            hooks = {}
-            report.fail("W4", f".claude/settings.json does not parse: {exc}")
-        for event in ("SubagentStart", "SubagentStop"):
-            commands = [
-                hook.get("command", "")
-                for matcher in hooks.get(event, [])
-                for hook in matcher.get("hooks", [])
-                if hook.get("type") == "command"
-            ]
-            if not any(telemetry in c for c in commands):
-                report.fail("W4", f".claude/settings.json declares no `{event}` command "
-                                  f"hook running {telemetry}; dispatch rows for that "
-                                  f"event are never written")
+            parsed = json.loads(read_text(settings))
+        except json.JSONDecodeError as error:
+            report.fail("W3", f".claude/settings.json does not parse: {error}")
+        else:
+            candidate = parsed.get("hooks") if isinstance(parsed, dict) else None
+            if isinstance(candidate, dict):
+                hooks = candidate
+            else:
+                report.fail("W3", ".claude/settings.json carries no `hooks` object")
 
-    for tool in (telemetry, ".agents/tools/claude_role.py"):
+    telemetry = ".agents/tools/subagent_telemetry.py"
+    for event in ("SubagentStart", "SubagentStop"):
+        commands = command_hooks(hooks, event)
+        if not any(telemetry in command for _, command in commands):
+            report.fail("W3", f".claude/settings.json declares no `{event}` command "
+                        f"hook running {telemetry}")
+
+    guard = ".agents/tools/guard_dispatch.py"
+    guard_hooks = [
+        matcher for matcher, command in command_hooks(hooks, "PreToolUse")
+        if guard in command
+    ]
+    if not guard_hooks:
+        report.fail("W3", ".claude/settings.json declares no `PreToolUse` command hook "
+                    f"running {guard}")
+    elif not any("matcher" not in entry for entry in guard_hooks):
+        report.fail("W3", f"the `PreToolUse` hook running {guard} is filtered by a "
+                    "tool-name matcher and cannot guard every native dispatch")
+
+    tools = (
+        telemetry,
+        guard,
+        ".agents/tools/codex_role.py",
+        ".agents/tools/claude_role.py",
+    )
+    for tool in tools:
         if not (root / tool).is_file():
-            report.fail("W4", f"{tool} is absent from the pinned package")
-
-    skills = root / ".claude/skills"
-    target = root / ".agents/skills"
-    if not skills.is_symlink():
-        report.fail("W4", ".claude/skills is not a symlink; role contracts do not "
-                          "resolve for the Claude host")
-    elif skills.resolve() != target.resolve():
-        report.fail("W4", f".claude/skills resolves to {skills.resolve()}, not "
-                          f"{target}")
-
+            report.fail("W3", f"{tool} is absent from the pinned package")
 
 def check_principles(root: Path, report: Report) -> None:
-    """W5 — the Principle set on disk and the index that puts it in force agree."""
-    index = root / "design/arch/principles.md"
+    """W4 — the Principle set and its canonical index agree."""
+    index = root / PRINCIPLES_INDEX
     directory = root / "design/arch/principles"
     if not index.is_file():
-        report.fail("W5", "no principle index at design/arch/principles.md")
+        report.fail("W4", f"no principle index at {PRINCIPLES_INDEX}")
         return
 
     on_disk = {p.name for p in directory.glob("*.md") if PRINCIPLE_FILE.match(p.name)}
     cited = set(PRINCIPLE_CITATION.findall(read_text(index)))
     report.counts["principles"] = len(on_disk)
-
     for name in sorted(on_disk - cited):
-        report.fail("W5", f"design/arch/principles/{name} exists but the index does not "
-                          f"cite it — the index is the single carrier of the set, so "
-                          f"this Principle is not in force")
+        report.fail("W4", f"design/arch/principles/{name} exists but the index does not "
+                    "cite it")
     for name in sorted(cited - on_disk):
-        report.fail("W5", f"design/arch/principles.md cites {name}, which is not on disk")
-
+        report.fail("W4", f"{PRINCIPLES_INDEX} cites {name}, which is not on disk")
     for name in sorted(on_disk):
         expected = PRINCIPLE_FILE.match(name).group("num")
-        m = NUMBER_FIELD.search(read_text(directory / name))
-        if not m:
-            report.fail("W5", f"design/arch/principles/{name} has no `number:` field")
-        elif m.group("num").zfill(2) != expected:
-            report.fail("W5", f"design/arch/principles/{name} declares `number: "
-                              f"{m.group('num')}`, which is not {expected}")
+        match = NUMBER_FIELD.search(read_text(directory / name))
+        if not match:
+            report.fail("W4", f"design/arch/principles/{name} has no `number:` field")
+        elif match.group("num").zfill(2) != expected:
+            report.fail("W4", f"design/arch/principles/{name} declares `number: "
+                        f"{match.group('num')}`, not {expected}")
 
 
 def first_read_roles(root: Path, roles: list[str], report: Report) -> list[str]:
-    """The roles `sprints/METHOD.md` §1.1 obliges to read the principle index first.
-
-    Read from METHOD rather than listed here: the obligation lives in that
-    sentence, and a copy of the set in this script would drift from it exactly
-    as an adapter can. An empty result is itself a finding — a check whose
-    subject set is empty passes vacuously.
-    """
+    """Read METHOD §1.1's first-read subject set without copying it."""
     method = root / "sprints/METHOD.md"
     if not method.is_file():
-        report.fail("W6", "no sprints/METHOD.md, so the first-read obligation has no "
-                          "determinant to check the adapters against")
+        report.fail("W5", "no sprints/METHOD.md, so the first-read determinant is absent")
         return []
-
     declared = set(roles)
     named: list[str] = []
     for line in read_text(method).splitlines():
         if PRINCIPLES_INDEX not in line or FIRST_READ_CLAUSE not in line:
             continue
         for sentence in line.split(". "):
-            if FIRST_READ_CLAUSE not in sentence:
-                continue
-            for role in BACKTICKED.findall(sentence):
-                if role in declared and role not in named:
-                    named.append(role)
-            break
+            if FIRST_READ_CLAUSE in sentence:
+                for role in BACKTICKED.findall(sentence):
+                    if role in declared and role not in named:
+                        named.append(role)
+                break
         break
-
     if not named:
-        report.fail("W6", f"sprints/METHOD.md names no declared role as reading "
-                          f"{PRINCIPLES_INDEX} first (looked for a sentence carrying both "
-                          f"that path and \"{FIRST_READ_CLAUSE}\"). Either the obligation "
-                          f"was dropped, or it was reworded and this check now has an "
-                          f"empty subject set, which passes vacuously")
+        report.fail("W5", f"sprints/METHOD.md names no dispatched role as reading "
+                    f"{PRINCIPLES_INDEX} first")
     return named
 
 
 def check_first_read(root: Path, obliged: list[str], report: Report) -> None:
-    """W6 — both host adapters of an obliged role carry the first-read instruction."""
+    """W5 — both host adapters carry every applicable first-read instruction."""
     for role in obliged:
-        for rel in (f".claude/agents/{role}.md", f".github/agents/{role}.agent.md"):
-            adapter = root / rel
-            if not adapter.is_file():
-                continue  # W1 owns an absent adapter; W6 would only repeat it
-            if PRINCIPLES_INDEX not in read_text(adapter):
-                report.fail("W6", f"{rel} does not name {PRINCIPLES_INDEX}; "
-                                  f"sprints/METHOD.md §1.1 obliges `{role}` to read the "
-                                  f"principle index first, and this adapter drops the "
-                                  f"instruction")
+        for relative in (f".claude/agents/{role}.md", f".github/agents/{role}.agent.md"):
+            path = root / relative
+            if path.is_file() and PRINCIPLES_INDEX not in read_text(path):
+                report.fail("W5", f"{relative} does not name {PRINCIPLES_INDEX}; "
+                            f"sprints/METHOD.md §1.1 obliges `{role}` to read it first")
 
 
 def main() -> int:
-    root = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 \
-        else Path(__file__).resolve().parent.parent
+    root = (Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).parent.parent).resolve()
     if not root.is_dir():
         print(f"ROLE WIRING: {root} is not a directory.")
         return 2
 
+    consumer_status = run_consumer_check(root)
+    if consumer_status != 0:
+        return consumer_status
+
     report = Report()
-    roles = declared_roles(root, report)
-    report.counts["roles"] = len(roles)
-    obliged = first_read_roles(root, roles, report)
-    report.counts["first-read roles"] = len(obliged)
-    check_inventory(root, roles, report)
-    check_adapters(root, roles, report)
-    check_allocation_parity(root, roles, report)
-    check_composed_skills(root, report)
+    prose_roles = declared_roles(root, report)
+    machine_roles = consumer_roles(root)
+    check_inventory(root, prose_roles, report)
+    check_copilot_adapters(root, machine_roles, report)
     check_dispatch_wiring(root, report)
     check_principles(root, report)
+    obliged = first_read_roles(root, machine_roles, report)
+    report.counts["first-read roles"] = len(obliged)
     check_first_read(root, obliged, report)
 
-    for condition in ("W1", "W2", "W3", "W4", "W5", "W6", "W7"):
-        group = [d for c, d in report.findings if c == condition]
+    for condition in ("W1", "W2", "W3", "W4", "W5"):
+        group = [detail for found, detail in report.findings if found == condition]
         if group:
             print(f"\n=== {condition} ({len(group)}) ===")
             for detail in group:
                 print(f"  {detail}")
 
-    summary = ", ".join(f"{n} {label}" for label, n in report.counts.items())
-    print(f"\n{root}: {summary}.")
-    print(f"{len(report.findings)} finding(s).")
+    summary = ", ".join(f"{count} {label}" for label, count in report.counts.items())
+    print(f"\n{root}: {summary}; {len(report.findings)} local finding(s).")
     return 1 if report.findings else 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

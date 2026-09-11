@@ -60,8 +60,8 @@ fn a1_rc_inc_ok_on_live_pointer() {
     let base = alloc::alloc_with_rc(16) as i64; // live, rc=1
     rc_inc(base); // rc → 2, live — no panic
     // SAFETY: two refs (rc=2); consume twice to balance and free.
-    consume_shallow(base);
-    consume_shallow(base);
+    consume_shallow(crate::handle::test_owned(base));
+    consume_shallow(crate::handle::test_owned(base));
 }
 
 // spec: design/arch/CLAUDE.md Decision 24 — consume_shallow skips bare nullary tags
@@ -74,10 +74,12 @@ fn decision24_consume_shallow_skips_nullary_tags() {
     let allocs_before = alloc::alloc_count();
     let deallocs_before = alloc::dealloc_count();
     // 0 = None (nullary tag); passing to consume_shallow must be a no-op.
-    consume_shallow(0);
-    consume_shallow(1);
-    consume_shallow(100);
-    consume_shallow(cranelisp_types::NULLARY_TAG_THRESHOLD as i64 - 1);
+    consume_shallow(crate::handle::test_owned(0));
+    consume_shallow(crate::handle::test_owned(1));
+    consume_shallow(crate::handle::test_owned(100));
+    consume_shallow(crate::handle::test_owned(
+        cranelisp_types::NULLARY_TAG_THRESHOLD as i64 - 1,
+    ));
     assert_eq!(alloc::alloc_count() - allocs_before, 0);
     assert_eq!(alloc::dealloc_count() - deallocs_before, 0);
 }
@@ -89,7 +91,7 @@ fn decision24_consume_shallow_frees_last_reference() {
     let deallocs_before = alloc::dealloc_count();
     // Allocate a heap value with rc=1; consume_shallow should free it.
     let base = alloc::alloc_with_rc(16) as i64;
-    consume_shallow(base);
+    consume_shallow(crate::handle::test_owned(base));
     assert_eq!(alloc::alloc_count() - allocs_before, 1);
     assert_eq!(alloc::dealloc_count() - deallocs_before, 1);
 }
@@ -106,7 +108,7 @@ fn decision24_consume_shallow_preserves_shared_reference() {
             &*((base as *const u8).add(HeapHeader::RC_OFFSET as usize) as *const AtomicI64);
         rc_ptr.fetch_add(1, Ordering::Release);
     }
-    consume_shallow(base); // rc: 2 -> 1, no free
+    consume_shallow(crate::handle::test_owned(base)); // rc: 2 -> 1, no free
     assert_eq!(alloc::alloc_count() - allocs_before, 1);
     assert_eq!(
         alloc::dealloc_count() - deallocs_before,
@@ -127,7 +129,7 @@ fn rc_inc_increments_canonical_rc_field() {
     // rc_inc: 1 -> 2 (lands on the canonical RC field, observed by the dec).
     rc_inc(base);
     // First dec: 2 -> 1, must NOT free.
-    consume_shallow(base);
+    consume_shallow(crate::handle::test_owned(base));
     assert_eq!(alloc::alloc_count() - allocs_before, 1);
     assert_eq!(
         alloc::dealloc_count() - deallocs_before,
@@ -135,7 +137,7 @@ fn rc_inc_increments_canonical_rc_field() {
         "must not free after rc_inc raised the count"
     );
     // Second dec: 1 -> 0, frees.
-    consume_shallow(base);
+    consume_shallow(crate::handle::test_owned(base));
     assert_eq!(alloc::dealloc_count() - deallocs_before, 1);
 }
 
@@ -161,8 +163,8 @@ fn rc_inc_traces_without_panic() {
     let base = alloc::alloc_with_rc(16) as i64;
     rc_inc(base); // rc: 1 -> 2, traces "inc"
     // Clean up both references.
-    consume_shallow(base);
-    consume_shallow(base);
+    consume_shallow(crate::handle::test_owned(base));
+    consume_shallow(crate::handle::test_owned(base));
 }
 
 // ---------------------------------------------------------------------------

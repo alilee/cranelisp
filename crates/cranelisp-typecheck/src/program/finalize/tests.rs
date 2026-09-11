@@ -900,26 +900,22 @@ fn concrete_instance_of_generic_def_is_slotted() {
         "the generic `id` template must stay slot-less Polymorphic",
     );
 
-    // The mono instance `id$Int` is Concrete, slotted, and concrete-typed
-    // (home-qualified `test/id$Int`, FIXME 0519).
-    match tc
-        .symbol_table()
-        .get("test/id$Int")
-        .and_then(Binding::callable)
-    {
+    // The full-signature `id` mono instance is Concrete, slotted, and typed.
+    let id_int = "(test/id [primitives/Int] primitives/Int)";
+    match tc.symbol_table().get(id_int).and_then(Binding::callable) {
         Some(callable) => {
             let slot = tc
                 .symbol_table()
-                .get("test/id$Int")
+                .get(id_int)
                 .and_then(Binding::callable_got_slot);
-            assert!(slot.is_some(), "id$Int must carry a GOT slot");
+            assert!(slot.is_some(), "{id_int} must carry a GOT slot");
             assert!(
                 callable.arm.scheme.ty.is_concrete(),
                 "id$Int's stored type must be fully concrete, got {:?}",
                 callable.arm.scheme.ty,
             );
         }
-        other => panic!("id$Int mono instance not registered: {other:?}"),
+        other => panic!("{id_int} mono instance not registered: {other:?}"),
     }
 }
 
@@ -958,12 +954,13 @@ fn codegen_view_populated_for_concrete_and_mono_none_for_template() {
         "concrete defn body root must be a ConcreteType (Int)"
     );
 
-    // 2. The minted mono instance `id$Int` carries a view whose body root is
+    // 2. The minted full-signature `id` instance carries a view whose body root is
     //    `Int` (the identity body `x` at `Int`).
+    let id_int = "(test/id [primitives/Int] primitives/Int)";
     let id_int_view = table
-        .get("test/id$Int")
+        .get(id_int)
         .and_then(|e| e.codegen_view().cloned())
-        .expect("mono instance `test/id$Int` must carry Some(codegen_view)");
+        .unwrap_or_else(|| panic!("mono instance `{id_int}` must carry Some(codegen_view)"));
     assert_eq!(
         id_int_view.body.ty(),
         &ConcreteType::Int,

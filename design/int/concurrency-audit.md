@@ -1254,7 +1254,7 @@ invariant that the two are synchronously co-mutated).
 
 ### §9.2 Decision 30 — mutual-import deadlock
 
-`design/arch/CLAUDE.md` Decision 30 records that the v4 scheduler
+[mutual-import decision](../arch/decisions/0030-form-by-form-scheduler-mutual-imports.md) records that the v4 scheduler
 can deadlock on form-by-form mutual imports: module A imports B, B
 imports A, both are pushed to `typecheck_first`, both block on each
 other's `register_dep`. This is an **architectural constraint, not a

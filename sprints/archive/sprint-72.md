@@ -186,7 +186,7 @@ Single coordinated fold:
 - **5a** — `/dev typecheck` authors `crates/cranelisp-typecheck/src/lib.rs` `//!` preamble + per-item `///` on ~41 public items (folds facade contract + per-item invariants).
 - **5b** — `/design typecheck` migrates cross-surface narrative + invariants 1–10 + module-locality rationale to `bounded-contexts.md §2`.
 - **5c** — `/dev typecheck` runs `cargo public-api -p cranelisp-typecheck` → regenerates `crates/cranelisp-typecheck/public-api.txt` baseline. Verifies every baseline line is named in lib.rs `//!` or per-item `///`.
-- **5d** — Cross-reference sweep across ~12 files cited by `/design` (interfaces.md, arch/CLAUDE.md, cranelisp-types-settled-verdict-s70.md, design/frontend/wave-3a-build-form.md, design/platform/implementation-slice-s66.md, design/int/int.md, design/int/implementation-slice-s66.md, tests/facade_compliance.rs cite-only). `design/typecheck/typecheck.md` NOT touched.
+- **5d** — Cross-reference sweep across ~12 files cited by `/design` (interfaces.md, arch/CLAUDE.md, cranelisp-types-settled-verdict-s70.md, design/frontend/wave-3a-build-form.md, design/platform/implementation-slice-s66.md, design/int/int.md, [Binary/int S66 implementation plan (Git history)](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/int/implementation-slice-s66.md), tests/facade_compliance.rs cite-only). `design/typecheck/typecheck.md` NOT touched.
 - **5e** — `design/arch/CLAUDE.md` exception list extended (4th retired facade).
 - **5f** — `facades/typecheck.md` git-rm.
 

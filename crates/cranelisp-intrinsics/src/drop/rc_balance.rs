@@ -38,7 +38,7 @@ fn write_field(base: i64, offset: isize, value: i64) {
 /// `elem_dec_fn` to exactly this ABI. `rc::consume_shallow` is a Rust-ABI
 /// `fn(i64)` and cannot be passed directly — this is the ABI-correct shim.
 extern "C" fn consume_string_elem(ptr: i64) -> i64 {
-    rc::consume_shallow(ptr);
+    rc::consume_shallow(crate::handle::test_owned(ptr));
     0
 }
 
@@ -70,7 +70,7 @@ fn make_sexp_annotated(stype: i64, sform: i64) -> i64 {
 #[test]
 fn rc_balance_adt_sum_with_string_field() {
     assert_balanced(
-        || make_sexp_str(alloc_string(b"hello") as i64),
+        || crate::handle::test_owned(make_sexp_str(alloc_string(b"hello") as i64)),
         consume_sexp,
     );
 }
@@ -89,7 +89,7 @@ fn rc_balance_adt_product_two_string_fields() {
             let base = alloc_with_rc(16) as i64; // SexpList: tag + items
             write_field(base, TAG_OFF, TAG_SEXP_LIST);
             write_field(base, F0_OFF, list);
-            base
+            crate::handle::test_owned(base)
         },
         consume_sexp,
     );
@@ -105,7 +105,7 @@ fn rc_balance_nested_sexp_annotated_tree() {
             let sform = make_sexp_str(alloc_string(b"value") as i64);
             let inner = make_sexp_annotated(stype, sform);
             let outer_form = make_sexp_str(alloc_string(b"body") as i64);
-            make_sexp_annotated(inner, outer_form)
+            crate::handle::test_owned(make_sexp_annotated(inner, outer_form))
         },
         consume_sexp,
     );
@@ -121,7 +121,7 @@ fn rc_balance_nested_recursive() {
             let a = make_sexp_str(alloc_string(b"a") as i64);
             let b = make_sexp_str(alloc_string(b"b") as i64);
             let c = make_sexp_str(alloc_string(b"c") as i64);
-            make_scons(a, make_scons(b, make_scons(c, 0)))
+            crate::handle::test_owned(make_scons(a, make_scons(b, make_scons(c, 0))))
         },
         consume_slist,
     );
@@ -137,7 +137,7 @@ fn rc_balance_closure_env() {
             let c = alloc_with_rc(16) as i64; // code_ptr + drop_glue_ptr
             write_field(c, 16, 0); // code_ptr
             write_field(c, 24, 0); // drop_glue_ptr = 0 (no captures)
-            c
+            crate::handle::test_owned(c)
         },
         consume_closure,
     );
@@ -153,7 +153,7 @@ fn rc_balance_closure_captures_string() {
     extern "C" fn drop_glue_one_string_capture(closure_ptr: i64) {
         // SAFETY: closure_ptr is the live env; the capture i64 lives at +32.
         let capture = unsafe { crate::heap_access::read_i64(closure_ptr, 32) };
-        rc::consume_shallow(capture);
+        rc::consume_shallow(crate::handle::test_owned(capture));
     }
     assert_balanced(
         || {
@@ -162,7 +162,7 @@ fn rc_balance_closure_captures_string() {
             write_field(c, 16, 0); // code_ptr
             write_field(c, 24, drop_glue_one_string_capture as *const () as i64);
             write_field(c, 32, s); // capture slot 0
-            c
+            crate::handle::test_owned(c)
         },
         consume_closure,
     );
@@ -177,8 +177,8 @@ fn rc_balance_closure_multiple_captures() {
         // SAFETY: two captures at +32 and +40.
         let c0 = unsafe { crate::heap_access::read_i64(closure_ptr, 32) };
         let c1 = unsafe { crate::heap_access::read_i64(closure_ptr, 40) };
-        rc::consume_shallow(c0);
-        rc::consume_shallow(c1);
+        rc::consume_shallow(crate::handle::test_owned(c0));
+        rc::consume_shallow(crate::handle::test_owned(c1));
     }
     assert_balanced(
         || {
@@ -189,7 +189,7 @@ fn rc_balance_closure_multiple_captures() {
             write_field(c, 24, drop_glue_two_string_captures as *const () as i64);
             write_field(c, 32, a);
             write_field(c, 40, b);
-            c
+            crate::handle::test_owned(c)
         },
         consume_closure,
     );
@@ -284,7 +284,10 @@ fn rc_balance_vec_of_strings() {
 // `rc_defn_unused_string_param_freed`.
 #[test]
 fn rc_balance_consume_unused_string_param() {
-    assert_balanced(|| alloc_string(b"hello") as i64, rc::consume_shallow);
+    assert_balanced(
+        || crate::handle::test_owned(alloc_string(b"hello") as i64),
+        rc::consume_shallow,
+    );
 }
 
 // spec: spec/12-runtime.md §12.3 — multiple unused heap params each freed.
@@ -295,8 +298,8 @@ fn rc_balance_consume_multiple_unused_params() {
     let deallocs_before = dealloc_count();
     let a = alloc_string(b"x") as i64;
     let b = alloc_string(b"y") as i64;
-    rc::consume_shallow(a);
-    rc::consume_shallow(b);
+    rc::consume_shallow(crate::handle::test_owned(a));
+    rc::consume_shallow(crate::handle::test_owned(b));
     assert_eq!(alloc_count() - allocs_before, 2);
     assert_eq!(dealloc_count() - deallocs_before, 2);
 }

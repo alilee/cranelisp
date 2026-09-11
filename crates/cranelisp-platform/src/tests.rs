@@ -296,8 +296,8 @@ fn decision24_capture_effect_pattern_balanced() {
 }
 
 // ---------------------------------------------------------------------
-// Sprint 71 Wave 2 — pinned-surface tests per
-// `tests/plan/sprint71-platform.md`.
+// Platform pinned-surface tests per
+// `tests/plan/PLAN.md` §Platform structural and crossing evidence.
 // ---------------------------------------------------------------------
 
 // ABI_VERSION is 10 because the DLL-constructed Pure node appends the payload

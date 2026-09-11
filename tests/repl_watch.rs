@@ -31,7 +31,7 @@
 #[path = "helpers/e2e.rs"]
 mod e2e;
 
-use e2e::Cranelisp;
+use e2e::{CrOutput, Cranelisp};
 
 /// Conventional prelude pulling primitives and defining the Num trait
 /// for Int. Shared across watch tests that use operators (`+`).
@@ -223,7 +223,8 @@ fn watch_emits_per_module_notifications_without_truncation() {
     );
 }
 
-// spec: repl/spec.md §14.3 — notification deferred during input.
+// spec: repl/spec.md §14.2 + §14.3 — a detected reload completes before the
+// next evaluation, and its notification is deferred during input.
 //   The notification line must NOT interleave with an expression
 //   result line (e.g. `:Int 42`). REGRESSION-GUARD: the watcher
 //   architecture only polls between prompts; this test guards that
@@ -233,7 +234,7 @@ fn watch_emits_per_module_notifications_without_truncation() {
 // (carry: legacy/sprint23.rs::watch_notification_deferred_during_input)
 #[test]
 fn watch_notification_appears_at_prompt_boundary_not_mid_result() {
-    let prelude = "(import [mymod [val]])\n";
+    let prelude = "(export [mymod [val]])\n";
     let stdin = "\
 (val)
 /sh sleep 0.3
@@ -248,10 +249,29 @@ fn watch_notification_appears_at_prompt_boundary_not_mid_result() {
         .file("mymod.cl", "(defn val [] 42)")
         .stdin(stdin)
         .output();
+    let details = format!(
+        "status={:?}\nstdout:\n{}\nstderr:\n{}",
+        out.status, out.stdout, out.stderr
+    );
     assert!(
-        out.stdout.contains("[updated: mymod.cl]"),
-        "notification should appear: stdout={}",
-        out.stdout
+        out.status.success(),
+        "watch reload and following evaluation must complete successfully; {details}"
+    );
+    let initial = out
+        .stdout
+        .find(":primitives/Int 42")
+        .unwrap_or_else(|| panic!("initial value must be observed before reload; {details}"));
+    let notification = out
+        .stdout
+        .find("[updated: mymod.cl]")
+        .unwrap_or_else(|| panic!("successful reload notification must appear; {details}"));
+    let updated = out
+        .stdout
+        .find(":primitives/Int 99")
+        .unwrap_or_else(|| panic!("the first evaluation after reload must observe 99; {details}"));
+    assert!(
+        initial < notification && notification < updated,
+        "initial value, completed reload, and updated evaluation must appear in order; {details}"
     );
     for line in out.stdout.lines() {
         let has_result = line.contains(":Int ");
@@ -261,6 +281,151 @@ fn watch_notification_appears_at_prompt_boundary_not_mid_result() {
             "notification must not appear on the same line as a result: line={line:?}"
         );
     }
+}
+
+// Shared Q7 watcher setup. The two named callers force distinct Int and String
+// realizations; the sentinel exposes any replay of an unrelated prompt
+// expression.
+fn generic_demand_reload_session(import_directly: bool) -> CrOutput {
+    let prelude = if import_directly {
+        WATCH_PRELUDE_PRIMS.to_string()
+    } else {
+        format!("{WATCH_PRELUDE_PRIMS}(export [generic_value [value-for]])\n")
+    };
+    let direct_import = if import_directly {
+        "(import [generic_value [value-for]])\n"
+    } else {
+        ""
+    };
+    let stdin = format!(
+        "{direct_import}\
+(defn call-int [] (value-for 0))
+(defn call-string [] (value-for \"text\"))
+(call-int)
+(call-string)
+31337
+/sh sleep 0.3
+/sh echo '(defn value-for [_] 42)' > generic_value.cl
+/sh sleep 0.5
+(call-int)
+(call-string)
+/quit
+"
+    );
+    Cranelisp::new()
+        .repl()
+        .file("prelude.cl", &prelude)
+        .file("generic_value.cl", "(defn value-for [_] 7)")
+        .stdin(&stdin)
+        .output()
+}
+
+// spec: repl/spec.md §14.2 and design/int/s122-closure.md §2 — watcher reload
+// recovers every prior concrete demand for a replaced generic dependency
+// without replaying stale prompt expressions. The transitive prelude-export
+// edge is the public subject; the direct-import sibling below is its control.
+#[test]
+fn watch_reload_recovers_two_generic_demands_without_replaying_stale_expression() {
+    let out = generic_demand_reload_session(false);
+    let details = format!(
+        "status={:?}\nstdout:\n{}\nstderr:\n{}",
+        out.status, out.stdout, out.stderr
+    );
+    assert!(
+        out.status.success(),
+        "generic dependency reload and both following calls must succeed; {details}"
+    );
+    assert_eq!(
+        out.stdout.matches(":primitives/Int 31337").count(),
+        1,
+        "the unrelated prior prompt expression must not replay during reload; {details}"
+    );
+    let sentinel = out
+        .stdout
+        .find(":primitives/Int 31337")
+        .expect("sentinel count established above");
+    let notification = out
+        .stdout
+        .find("[updated: generic_value.cl]")
+        .unwrap_or_else(|| panic!("successful dependency reload must be reported; {details}"));
+    let (before_reload, after_reload) = out.stdout.split_at(notification);
+    assert_eq!(
+        before_reload.matches(":primitives/Int 7").count(),
+        2,
+        "both concrete callers must observe the initial generic body before reload; {details}"
+    );
+    assert_eq!(
+        after_reload.matches(":primitives/Int 42").count(),
+        2,
+        "both recovered concrete callers must observe the replacement body after reload; {details}"
+    );
+    assert!(
+        !after_reload.contains(":primitives/Int 7"),
+        "no recovered caller may retain the prior generic body after reload; {details}"
+    );
+    let replacement = after_reload
+        .find(":primitives/Int 42")
+        .map(|offset| notification + offset)
+        .expect("replacement result count established above");
+    assert!(
+        sentinel < notification && notification < replacement,
+        "the stale expression, completed reload, and replacement calls must occur in order; {details}"
+    );
+}
+
+// spec: repl/spec.md §14.2 and design/int/s122-closure.md §2 — direct-import
+// control for the same two demands and stale-expression oracle. This keeps the
+// reload subject identical while making the changed dependency an explicit
+// edge of the user module rather than a transitive prelude export.
+#[test]
+fn watch_reload_direct_import_recovers_two_generic_demands_control() {
+    let out = generic_demand_reload_session(true);
+    let details = format!(
+        "status={:?}\nstdout:\n{}\nstderr:\n{}",
+        out.status, out.stdout, out.stderr
+    );
+    assert!(
+        out.status.success(),
+        "direct-import generic dependency reload and following calls must succeed; {details}"
+    );
+    assert_eq!(
+        out.stdout.matches(":primitives/Int 31337").count(),
+        1,
+        "the unrelated prior prompt expression must not replay during direct reload; {details}"
+    );
+    let notification = out
+        .stdout
+        .find("[updated: generic_value.cl]")
+        .unwrap_or_else(|| {
+            panic!("successful direct dependency reload must be reported; {details}")
+        });
+    let (before_reload, after_reload) = out.stdout.split_at(notification);
+    assert_eq!(
+        before_reload.matches(":primitives/Int 7").count(),
+        2,
+        "both direct-import callers must observe the initial body before reload; {details}"
+    );
+    assert_eq!(
+        after_reload.matches(":primitives/Int 42").count(),
+        2,
+        "both direct-import callers must observe the replacement after reload; {details}"
+    );
+    assert!(
+        !after_reload.contains(":primitives/Int 7"),
+        "no direct-import caller may retain the prior body after reload; {details}"
+    );
+    let sentinel = out
+        .stdout
+        .find(":primitives/Int 31337")
+        .unwrap_or_else(|| panic!("sentinel must be present exactly once; {details}"));
+    let replacement = after_reload
+        .find(":primitives/Int 42")
+        .map(|offset| notification + offset)
+        .expect("replacement result count established above");
+    assert!(
+        sentinel < notification && notification < replacement,
+        "sentinel, completed direct reload, and replacement calls must occur in order; {details}"
+    );
 }
 
 // =============================================================================

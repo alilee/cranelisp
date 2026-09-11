@@ -3,7 +3,7 @@
 // Covers `spec/07-traits.md`. Carries forward language-behaviour assertions
 // from legacy integration-tier `tests/ring2.rs`, `tests/sketch_port.rs`,
 // `tests/e2e.rs`. REPL canonical per
-// `tests/plan/PLAN.md §"Mode canonicalisation"`.
+// [current mode-canonicalisation guidance](plan/PLAN.md#mode-canonicalisation--repl-is-the-canonical-surface-for-language-conformance).
 //
 // What this file covers:
 //   - Trait declaration (§7.1)
@@ -762,7 +762,9 @@ fn hkt_functor_impl_on_option_dispatches_via_match() {
 }
 
 // ===========================================================================
-// R1 — HKT-arity gate parity: prelude-provided impl target (PLAN.md §II R1)
+// R1 — HKT-arity gate parity: prelude-provided impl target
+// ([current parity guidance](plan/PLAN.md#prelude-and-explicit-import-parity);
+// [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md), R1)
 //
 // The invariant (spec/08-modules.md §8.8.1): a prelude-provided name is in a
 // module's scope on EXACTLY the same terms as an explicit `import`. The kind-
@@ -2389,7 +2391,7 @@ fn deftype_deftrait_reference_qualified_and_bare_equiv() {
 // The S109-revert class was a gate that
 // drifted back to surface-type concreteness (`!is_concrete()`) and false-flagged
 // exactly this cell; RD-3 pins that it stays computable and unflagged.
-// Plan: tests/plan/PLAN.md §S110 D / RD-3.
+// [Historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md), S110 D / RD-3.
 //
 // FIXTURE REPAIR (S115 W5a — FIXMEs 0785 + 0770). The trait was written
 // `(add2 [:a x :a y] :a)`: a `:`-prefixed RETURN position (parameter-annotation
@@ -2444,7 +2446,8 @@ fn arg_directed_dispatch_result_in_value_position_not_flagged() {
 //     (TX-5), while an impl-signature type position errors (TX-6).
 // FV-13/FV-14 (TX-8/TX-9) pin what must NOT broaden. Design:
 // design/typecheck/type-expr-resolver-convergence.md §1. Spec: spec/07-traits.md
-// + spec/08-modules.md §8.5 (bare ≡ qualified-in-scope). Plan: PLAN.md §S110 C.
+// + spec/08-modules.md §8.5 (bare ≡ qualified-in-scope). See the
+// [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md), S110 C.
 // =============================================================================
 
 // spec: spec/08-modules.md §8.5 + spec/07-traits.md §7.1 — a BARE in-scope user
@@ -2520,7 +2523,7 @@ fn hkt_unresolved_tail_classifies_as_forbidden_default_body_neg() {
 //   (iii) the error names the unknown type.
 // Resolver-level HKT-declaration rejection has a direct unit representative;
 // TX-5's e2e now pins the distinct §7.1 tail-classification boundary. Plan:
-// PLAN.md §S110 C TX-5/TX-6.
+// [Historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md), S110 C TX-5/TX-6.
 
 // spec: spec/03-types.md §3.11 — FV-13 over-broadening fence (TX-8): the
 // convergence's mint capability (a bare LOWERCASE name mints a fresh type var)

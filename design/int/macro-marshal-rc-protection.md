@@ -8,12 +8,13 @@
 >
 > **Status: LANDED (S114); §2's MECHANISM SUPERSEDED (S119) — history retained.**
 >
-> As landed, the deep-protection mechanism is in source —
-> `src/marshal.rs::protect_marshalled_cell` (`:204`) applied per marshalled cell
-> (`:220`/`:234`/`:251`/`:264`; module rustdoc `:7`), curing the interior-alias
-> double-free at the marshal boundary. §4's discriminating step was run before
-> landing. Five pins in `tests/macro_expansion_interior_alias_double_free.rs` are
-> the trigger + regression record. (Banner refreshed S115, FIXME 0699 item 4.)
+> As landed in S114, the deep-protection mechanism used the former private
+> `protect_marshalled_cell` helper in `src/marshal.rs`, applied per marshalled
+> cell to cure the interior-alias double-free at the marshal boundary. Section
+> 4's discriminating step was run before landing. Five pins in
+> `tests/macro_expansion_interior_alias_double_free.rs` are the trigger and
+> regression record. S119 subsequently removed that helper as described below.
+> (Banner refreshed S115, FIXME 0699 item 4.)
 >
 > **S119 supersession (`design/int/macro-turn-ownership.md`, FIXME 0889).** The +1
 > per cell accounts a retention the marshaller does not actually hold: after

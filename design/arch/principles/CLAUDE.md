@@ -2,6 +2,14 @@
 
 Architectural Principles register. One file per Principle: `NN-{slug}.md` with frontmatter `number: NN, title: ...`. The index `design/arch/principles.md` is the **single carrier of the principle set**: a Principle is in force when it is indexed there, and nothing else enumerates the set.
 
+| Collection | Purpose | Boundary |
+|---|---|---|
+| `architectural-principle-bodies` | Architectural rules and their falsifiers. | `NN-{slug}.md`; owned by `/arch`, with live-reference checks. |
+
+ This collection declaration
+supplies document ownership and establishment only; it does not replace the
+index's authority over which principles are in force.
+
 ## How a Principle reaches a role
 
 `arch`, `design`, `dev` and `review` read `design/arch/principles.md` as a first-read of every dispatch. `sprints/METHOD.md` §1.1 states the obligation; the consumer adapter of each of these roles at `.claude/agents/<role>.md` names the index in its entry text. The index carries one line per Principle, so a role that has read it can tell which body file governs the choice in front of it and cite by name.

@@ -374,6 +374,14 @@ where
     /// Absent key = the producer never ran in THIS compiler frame.
     pub(crate) cow_retain_decisions: HashMap<Span, Option<bool>>,
 
+    /// Whether each compiled match merge receives an independently owned
+    /// result on every normal arm, keyed by the stable address of the `MonoExpr`
+    /// node during this compilation. Written by match lowering from the same
+    /// arm-local protection decisions that emit RC operations; panic edges do
+    /// not enter the merge. The enclosing ownership classifier reads this
+    /// instead of re-deriving protection from arm syntax.
+    pub(crate) independent_match_results: HashMap<usize, bool>,
+
     /// FIXME 0720 (S115 W3 change-set 2) — the `Borrowed` heap params this frame
     /// has PROMOTED to frame-owned for the duration of a TCO loop, because a tail
     /// self-call SUPERSEDES their slot with a value the caller does not own.
@@ -476,6 +484,7 @@ where
             return_cow_source: None,
             pending_cow_escapes: None,
             cow_retain_decisions: HashMap::new(),
+            independent_match_results: HashMap::new(),
             tco_owned_params: std::collections::HashSet::new(),
             pending_scrutinee_releases: Vec::new(),
         }
@@ -553,6 +562,7 @@ where
         defn: &Defn,
         body: &MonoExpr,
         mode_summary: Option<cranelisp_types::ModeSummary>,
+        param_types: &[Option<Type>],
         func: &mut cranelift::codegen::ir::Function,
         func_ctx: &mut FunctionBuilderContext,
         module: &'a mut M,
@@ -578,7 +588,8 @@ where
         // entry block (the caller's incoming value, executed exactly once — NOT
         // per iteration, which the loop header would give). See the
         // `tco_owned_params` field rustdoc for the invariant this establishes.
-        let promoted = tco_promoted_borrowed_params(defn, body, mode_summary.as_ref(), &ctx);
+        let promoted =
+            tco_promoted_borrowed_params(defn, body, mode_summary.as_ref(), param_types, &ctx);
         let entry_params: Vec<Value> = builder.block_params(entry_block).to_vec();
         for (i, _, category) in &promoted {
             match category {
@@ -638,12 +649,13 @@ where
             return_cow_source: None,
             pending_cow_escapes: None,
             cow_retain_decisions: HashMap::new(),
+            independent_match_results: HashMap::new(),
             tco_owned_params: std::collections::HashSet::new(),
             pending_scrutinee_releases: Vec::new(),
         };
 
         // Seed the function's parameters into the chain's parameter frame.
-        compiler.bind_defn_params(defn, body, loop_header);
+        compiler.bind_defn_params(defn, body, param_types, loop_header);
         compiler.tco_owned_params = promoted.into_iter().map(|(_, name, _)| name).collect();
 
         // Compile the function body with scope cleanup for parameters.
@@ -715,16 +727,13 @@ where
     /// `Variable`, records the binding in the current scope frame, and records
     /// the parameter's authoritative type so scope cleanup can emit `rc_dec`
     /// for heap-typed parameters at function exit.
-    fn bind_defn_params(&mut self, defn: &Defn, body: &MonoExpr, loop_header: Block) {
-        // Look up the defn's inferred type to get authoritative parameter types.
-        // This is essential for unused parameters: derive_param_type scans
-        // use sites, so unused params (e.g., `_s` in `(defn f [:String _s] 42)`)
-        // would have no type recorded and scope cleanup would skip their RC dec.
-        //
-        // Read from the symbol table's Scheme.ty (authoritative source) rather
-        // than from expr_types side map (Step 1c: AST-sourced codegen).
-        let defn_param_types: Vec<Option<Type>> = defn_param_types(&self.ctx, defn);
-
+    fn bind_defn_params(
+        &mut self,
+        defn: &Defn,
+        body: &MonoExpr,
+        param_types: &[Option<Type>],
+        loop_header: Block,
+    ) {
         // Bind function parameters from loop header block params (not entry block).
         // Each parameter's type is published with it so scope cleanup can emit
         // rc_dec for heap-typed parameters at function exit.
@@ -733,7 +742,7 @@ where
             // Use the defn's inferred param type (from symbol table) first.
             // Fall back to derive_param_type_from_body (use-site inference) if the
             // defn type isn't available.
-            let ty = match defn_param_types.get(i) {
+            let ty = match param_types.get(i) {
                 Some(Some(ty)) => Some(ty.clone()),
                 _ => Self::derive_param_type_from_body(body, param_name),
             };
@@ -886,7 +895,7 @@ where
                 arms,
                 span,
                 ..
-            } => self.compile_match(scrutinee, arms, *span),
+            } => self.compile_match(expr as *const MonoExpr as usize, scrutinee, arms, *span),
             MonoExpr::VecLit { elements, span, .. } => self.compile_vec_lit(elements, *span),
             MonoExpr::Trace {
                 modules,
@@ -1874,9 +1883,20 @@ where
 
     /// Whether the yielded reference survives scope cleanup without another retain.
     pub(crate) fn body_has_independent_result(&self, body: &MonoExpr) -> bool {
-        value_provenance_with_calls(body, &|fq| self.ctx.ctor_value_shape_at(fq), &|call| {
-            self.call_returns_owned_reference(call)
-        }) <= ValueProvenance::TransferredCall
+        value_provenance_with_calls(
+            body,
+            &|fq| self.ctx.ctor_value_shape_at(fq),
+            &|call| self.call_returns_owned_reference(call),
+            &|node| match node {
+                MonoExpr::Match { .. } => self
+                    .independent_match_results
+                    .get(&(node as *const MonoExpr as usize))
+                    .copied()
+                    .filter(|owned| *owned)
+                    .map(|_| ValueProvenance::TransferredCall),
+                _ => None,
+            },
+        ) <= ValueProvenance::TransferredCall
     }
 
     fn call_returns_owned_reference(&self, expr: &MonoExpr) -> bool {
@@ -2536,15 +2556,19 @@ pub(crate) fn value_provenance(
     expr: &MonoExpr,
     ctor_shape: &impl Fn(&cranelisp_types::FQSymbol) -> Option<CtorValueShape>,
 ) -> ValueProvenance {
-    value_provenance_with_calls(expr, ctor_shape, &|_| false)
+    value_provenance_with_calls(expr, ctor_shape, &|_| false, &|_| None)
 }
 
 fn value_provenance_with_calls(
     expr: &MonoExpr,
     ctor_shape: &impl Fn(&cranelisp_types::FQSymbol) -> Option<CtorValueShape>,
     owned_call: &impl Fn(&MonoExpr) -> bool,
+    compiled_result: &impl Fn(&MonoExpr) -> Option<ValueProvenance>,
 ) -> ValueProvenance {
     use ValueProvenance::{Fresh, NoReference, NotOwnedHere, OwnedTemporary};
+    if let Some(provenance) = compiled_result(expr) {
+        return provenance;
+    }
     match expr {
         // A constructor `Def`'s synthesised body. With fields it mints the box
         // it returns; with none its whole value is the bare tag, so there is no
@@ -2596,14 +2620,18 @@ fn value_provenance_with_calls(
         // both thresholds are SCALE-INVARIANT in `let` depth and correct on
         // mixed arms (a join is its weakest arm — one borrowing arm makes the
         // whole join borrowing, which is what cures 0781).
-        MonoExpr::Let { body, .. } => value_provenance_with_calls(body, ctor_shape, owned_call),
+        MonoExpr::Let { body, .. } => {
+            value_provenance_with_calls(body, ctor_shape, owned_call, compiled_result)
+        }
         MonoExpr::If {
             then_branch,
             else_branch,
             ..
-        } => value_provenance_with_calls(then_branch, ctor_shape, owned_call).join(
-            value_provenance_with_calls(else_branch, ctor_shape, owned_call),
-        ),
+        } => {
+            value_provenance_with_calls(then_branch, ctor_shape, owned_call, compiled_result).join(
+                value_provenance_with_calls(else_branch, ctor_shape, owned_call, compiled_result),
+            )
+        }
         // An arm-less `Match` yields no value on ANY path — a different fact
         // from "every path yields something carrying no reference", which is
         // what the fold's `NoReference` identity now means. ⊤ is the only safe
@@ -2611,7 +2639,9 @@ fn value_provenance_with_calls(
         MonoExpr::Match { arms, .. } if arms.is_empty() => NotOwnedHere,
         MonoExpr::Match { arms, .. } => arms
             .iter()
-            .map(|arm| value_provenance_with_calls(&arm.body, ctor_shape, owned_call))
+            .map(|arm| {
+                value_provenance_with_calls(&arm.body, ctor_shape, owned_call, compiled_result)
+            })
             .fold(NoReference, ValueProvenance::join),
         // `Trace` forwards its inner value; `ParBind`/`LaunchContinue` yield a
         // joined/continued value. All three FORWARD the borrowing direction
@@ -2621,13 +2651,16 @@ fn value_provenance_with_calls(
         // `is_fresh_construction` byte-identical to its pre-0781 answers on
         // these kinds.
         MonoExpr::Trace { body, .. } => {
-            value_provenance_with_calls(body, ctor_shape, owned_call).join(OwnedTemporary)
+            value_provenance_with_calls(body, ctor_shape, owned_call, compiled_result)
+                .join(OwnedTemporary)
         }
         MonoExpr::ParBind { body, .. } => {
-            value_provenance_with_calls(body, ctor_shape, owned_call).join(OwnedTemporary)
+            value_provenance_with_calls(body, ctor_shape, owned_call, compiled_result)
+                .join(OwnedTemporary)
         }
         MonoExpr::LaunchContinue { continuation, .. } => {
-            value_provenance_with_calls(continuation, ctor_shape, owned_call).join(OwnedTemporary)
+            value_provenance_with_calls(continuation, ctor_shape, owned_call, compiled_result)
+                .join(OwnedTemporary)
         }
         // A `Var` naming a zero-field constructor is a bare tag, not a binding:
         // `emit_adt_construct(tag, &[])` folds it to an `iconst`, so nothing
@@ -2664,32 +2697,6 @@ pub(crate) fn yields_owned_temporary(expr: &MonoExpr) -> bool {
     )
 }
 
-/// The authoritative per-position parameter types of `defn`, read from the
-/// symbol table's `Scheme.ty` (Principle 7 — the ONE lookup shared by
-/// [`FnCompiler::bind_defn_params`] and the FIXME-0720 promotion set, which must
-/// classify heap-ness against exactly the types the binder records). `None` at a
-/// position ⇒ no authoritative type (the binder falls back to use-site inference;
-/// the promotion declines).
-fn defn_param_types<C, L>(ctx: &CompileContext<'_, C, L>, defn: &Defn) -> Vec<Option<Type>>
-where
-    C: cranelisp_types::CodeStore,
-    L: cranelisp_types::LinkerStore,
-{
-    ctx.symbol_tables
-        .get(&ctx.current_module)
-        .and_then(|table| {
-            if let Some(callable) = table
-                .get(defn.name.as_ref())
-                .and_then(cranelisp_types::Binding::callable)
-                && let Type::Fn(ref param_types, _) = callable.arm.scheme.ty
-            {
-                return Some(param_types.iter().map(|t| Some(t.clone())).collect());
-            }
-            None
-        })
-        .unwrap_or_else(|| vec![None; defn.params().len()])
-}
-
 /// Is the tail self-call argument at position `i` a value that SUPERSEDES the
 /// param slot — i.e. NOT a bare `Var` naming the param itself? (FIXME 0720.)
 ///
@@ -2721,6 +2728,7 @@ fn tco_promoted_borrowed_params<C, L>(
     defn: &Defn,
     body: &MonoExpr,
     mode_summary: Option<&cranelisp_types::ModeSummary>,
+    param_types: &[Option<Type>],
     ctx: &CompileContext<'_, C, L>,
 ) -> Vec<(usize, Symbol, HeapCategory)>
 where
@@ -2732,7 +2740,6 @@ where
         // promote (the conservative all-`Owned` lowering already flushes).
         return Vec::new();
     };
-    let param_types = defn_param_types(ctx, defn);
     defn.params()
         .iter()
         .enumerate()
@@ -4679,18 +4686,18 @@ mod rc_release_sweep_tests {
             match_of(var("c"), vec![call.clone(), ctor_adt(), nullary_ctor_var()]),
         ] {
             assert_eq!(
-                super::value_provenance_with_calls(&body, &ctor_shape, &probe),
+                super::value_provenance_with_calls(&body, &ctor_shape, &probe, &|_| None),
                 ValueProvenance::TransferredCall
             );
             assert!(!is_fresh_construction(&body, &ctor_shape));
         }
         let mixed = match_of(var("c"), vec![call.clone(), var("x")]);
         assert_eq!(
-            super::value_provenance_with_calls(&mixed, &ctor_shape, &probe),
+            super::value_provenance_with_calls(&mixed, &ctor_shape, &probe, &|_| None),
             ValueProvenance::NotOwnedHere
         );
         assert_eq!(
-            super::value_provenance_with_calls(&trace_of(call), &ctor_shape, &probe),
+            super::value_provenance_with_calls(&trace_of(call), &ctor_shape, &probe, &|_| None),
             ValueProvenance::OwnedTemporary
         );
     }
@@ -5168,3 +5175,5 @@ mod tco_shadowing_borrow_tests;
 /// 0903 — see this module's rustdoc.
 #[cfg(test)]
 mod ctor_template_admission_tests;
+#[cfg(test)]
+pub(crate) use ctor_template_admission_tests::assert_threshold_guarded_adds;

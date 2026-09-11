@@ -900,7 +900,7 @@ fn section_entry_claimed_or_excluded(name: &str, entry: &Binding<crate::code::Co
     // variants, `__expr` / `__macro_*` wrappers) are never persisted as their
     // own row — they ride their owner's form (§8's `is_internal_listing_name`
     // skip). A legal exclusion regardless of kind.
-    if crate::worker::is_internal_listing_name(name) {
+    if crate::worker::is_internal_listing_entry(name, entry) {
         return true;
     }
     match &entry.declaration {
@@ -952,19 +952,16 @@ fn generate_fns_and_macros(
         // transient session output, NOT module content, and MUST NOT be
         // persisted to the backing source file (repl/spec.md §15.7). Only its
         // SOURCE emission is suppressed — the live in-session `__expr` entry is
-        // left untouched. The reload/T1 cure re-reads the definitions-only file
-        // and re-injects the `__expr` instantiation driver EXPLICITLY (via
-        // `redefine::capture_instantiation_drivers` + `reload_module`'s
-        // `extra_forms`), so same-module polymorphic mono variants re-mint
-        // without the driver form entering the persisted `.cl`
-        // (`design/int/session-transaction.md` §10 CS-1; Q1 precedes Q2).
+        // left untouched. A reload re-reads the definitions-only file; its
+        // ordinary prepared replacement captures and rematerializes historical
+        // concrete demands, so no synthetic expression is replayed or persisted.
         //
         // The wrapper name is EXACTLY `"__expr"` (never suffixed), so match it
         // exactly via `worker::is_internal_listing_name` — a user symbol like
         // `__expr-helper` is a legitimate definition and MUST be preserved
         // (Principle 7: one predicate encapsulates the `$`-contains + `__expr`
         // pair, not an over-broad `starts_with`).
-        if crate::worker::is_internal_listing_name(name.as_ref()) {
+        if crate::worker::is_internal_listing_entry(name.as_ref(), entry) {
             continue;
         }
         // Predicate: include both UserFn and Macro Def entries for
@@ -1117,7 +1114,7 @@ pub(crate) fn rehydrate_userfn_introspection_from_source(
     // regenerated as fn/macro source.)
     let mut missing: Vec<cranelisp_types::Symbol> = Vec::new();
     for (name, entry) in st.all_symbols() {
-        if name.contains('$') {
+        if crate::worker::is_internal_listing_entry(name.as_ref(), entry) {
             continue;
         }
         let is_userfn = entry

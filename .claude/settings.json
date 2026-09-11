@@ -19,6 +19,16 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $CLAUDE_PROJECT_DIR/.agents/tools/guard_dispatch.py"
+          }
+        ]
+      }
     ]
   }
 }

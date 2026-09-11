@@ -15,7 +15,7 @@ use cranelisp_types::{
     ConcreteType, CranelispError, ErrorLocation, HeapHeader, MonoExpr, Span, Symbol, Type,
 };
 
-use crate::heap::{self, HeapCategory, HeapVec, NULLARY_THRESHOLD_I64, RcAtomicity};
+use crate::heap::{self, HeapCategory, HeapVec, RcAtomicity};
 
 use super::control_flow::emit_extern_call_in_wrapper;
 use super::{FnCompiler, signature_heap_category};
@@ -380,7 +380,7 @@ where
                     heap::emit_rc_inc(&mut self.builder, self.module, val);
                 }
                 Some(HeapCategory::Mixed) => {
-                    emit_guarded_rc_inc(&mut self.builder, self.module, val);
+                    heap::emit_rc_inc_guarded(&mut self.builder, self.module, val);
                 }
                 Some(HeapCategory::NeverHeap | HeapCategory::Value) | None => {}
             }
@@ -541,7 +541,7 @@ where
                     heap::emit_rc_inc(&mut self.builder, self.module, new_val);
                 }
                 Some(HeapCategory::Mixed) => {
-                    emit_guarded_rc_inc(&mut self.builder, self.module, new_val);
+                    heap::emit_rc_inc_guarded(&mut self.builder, self.module, new_val);
                 }
                 Some(HeapCategory::NeverHeap | HeapCategory::Value) | None => {}
             }
@@ -626,7 +626,7 @@ where
                     heap::emit_rc_inc(&mut self.builder, self.module, new_val);
                 }
                 Some(HeapCategory::Mixed) => {
-                    emit_guarded_rc_inc(&mut self.builder, self.module, new_val);
+                    heap::emit_rc_inc_guarded(&mut self.builder, self.module, new_val);
                 }
                 Some(HeapCategory::NeverHeap | HeapCategory::Value) | None => {}
             }
@@ -986,27 +986,7 @@ where
 
         let val = builder.block_params(entry)[0];
 
-        if guarded {
-            // Guard: skip inc if val < NULLARY_TAG_THRESHOLD.
-            let threshold = builder.ins().iconst(types::I64, NULLARY_THRESHOLD_I64);
-            let is_tag = builder.ins().icmp(IntCC::UnsignedLessThan, val, threshold);
-            let inc_block = builder.create_block();
-            let ret_block = builder.create_block();
-
-            builder.ins().brif(is_tag, ret_block, &[], inc_block, &[]);
-
-            builder.switch_to_block(inc_block);
-            builder.seal_block(inc_block);
-            heap::emit_rc_inc(&mut builder, self.module, val);
-            builder.ins().jump(ret_block, &[]);
-
-            builder.switch_to_block(ret_block);
-            builder.seal_block(ret_block);
-        } else {
-            heap::emit_rc_inc(&mut builder, self.module, val);
-        }
-
-        builder.ins().return_(&[val]);
+        emit_elem_inc_body(&mut builder, self.module, val, guarded);
         builder.finalize();
 
         self.module
@@ -1311,7 +1291,7 @@ pub(crate) fn emit_vec_get_core<M: Module>(
                 heap::emit_rc_inc(builder, module, elem);
             }
             Some(HeapCategory::Mixed) => {
-                emit_guarded_rc_inc(builder, module, elem);
+                heap::emit_rc_inc_guarded(builder, module, elem);
             }
             Some(HeapCategory::NeverHeap | HeapCategory::Value) | None => {}
         }
@@ -1642,28 +1622,6 @@ pub(crate) fn emit_vec_rc_dec_with_drop_atomicity<M: Module>(
     builder.seal_block(cont_block);
 }
 
-/// Emit guarded RC inc: skip if value is a bare nullary tag.
-///
-/// `module` is threaded for the S99 RC-op instrumentation gate (see
-/// `heap::emit_rc_inc`); inert with the gate off.
-fn emit_guarded_rc_inc<M: Module>(builder: &mut FunctionBuilder, module: &mut M, val: Value) {
-    let threshold = builder.ins().iconst(types::I64, NULLARY_THRESHOLD_I64);
-    let is_tag = builder.ins().icmp(IntCC::UnsignedLessThan, val, threshold);
-
-    let inc_block = builder.create_block();
-    let cont_block = builder.create_block();
-
-    builder.ins().brif(is_tag, cont_block, &[], inc_block, &[]);
-
-    builder.switch_to_block(inc_block);
-    builder.seal_block(inc_block);
-    heap::emit_rc_inc(builder, module, val);
-    builder.ins().jump(cont_block, &[]);
-
-    builder.switch_to_block(cont_block);
-    builder.seal_block(cont_block);
-}
-
 /// Emit a bounds-check panic for vec-get.
 fn emit_vec_bounds_panic<M: Module>(
     builder: &mut FunctionBuilder,
@@ -1750,6 +1708,23 @@ fn element_consuming_inc(elem_arg: &MonoExpr, elem_category: HeapCategory) -> Op
     }
 }
 
+/// Emit the complete `(val: i64) -> i64` Vec element-retain adapter body.
+/// `build_elem_inc_fn` owns declaration and definition; this body shares the
+/// canonical guarded increment with ordinary inline Vec sites.
+fn emit_elem_inc_body<M: Module>(
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    val: Value,
+    guarded: bool,
+) {
+    if guarded {
+        heap::emit_rc_inc_guarded(builder, module, val);
+    } else {
+        heap::emit_rc_inc(builder, module, val);
+    }
+    builder.ins().return_(&[val]);
+}
+
 #[cfg(test)]
 mod vec_push_rc_tests;
 
@@ -1776,3 +1751,6 @@ mod tests;
 
 #[cfg(test)]
 mod element_release_tests;
+
+#[cfg(test)]
+mod guard_convergence_tests;

@@ -853,7 +853,7 @@ fn select_nested_par_holds_root_after_winner_until_entered_worker_exits() {
             returned.store(true, std::sync::atomic::Ordering::Release);
             set_bridge_gate_observer(None);
             let root = root.load(std::sync::atomic::Ordering::Acquire);
-            crate::drop::consume_io_tree(root);
+            crate::drop::consume_io_tree(crate::handle::test_owned(root));
             outcome
         })
     };

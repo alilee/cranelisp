@@ -26,7 +26,7 @@ The sprint **does not** pre-commit to a fixed task list from §15. It picks up t
 - **M9a** — strip duplicated boilerplate (release gate, git discipline, testing ownership, design-doc obligation pattern) from every legacy skill def into METHOD or a shared skill-def appendix. Natural pair with M1: running M9a first clarifies what content remains in each legacy def for M9b/M9c to extract.
 - **M9b** — extract per-skill *decisions / direction* content from legacy dev skill defs (e.g. `/backend` Sketch Consultation, `/int` slash-command list + Pass-1/Pass-2 model) into draft `design/{crate}/{crate}.md` overviews. Feeds M2 (per-crate design doc authoring).
 - **M9c** — extract per-skill *conventions / API gotchas* (Cranelift v0.125 notes, parser gotchas like `-3` integer parsing) into per-crate `CLAUDE.md`. Feeds M8 (CLAUDE.md rework).
-- **M11** — archive `sprints/reimplementation.md` (content is historical now). Cheap; can land any time.
+- **M11** — archive [reimplementation (Git history)](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/sprints/reimplementation.md) (content is historical now). Cheap; can land any time.
 - **M13** — confirm `cranelisp-runtime` ownership reassignment to `/dev` backend mode (paired with `cranelisp-backend`, not owned by `/platform`). Update any `CLAUDE.md` / design / sprint doc that says otherwise. Cheap; can land any time.
 
 ### Deferred to S64+ (sized too large for one sprint each, or dependency-blocked)
@@ -91,7 +91,7 @@ Performed reflexively during M0 W2 — `/arch` was invoked under its own newly-r
 
 - **`/arch`** — draft shared narrow-deployment template + the three new skill defs (M1); identify boilerplate-strip targets (M9a); confirm runtime ownership (M13).
 - **Each retiring legacy skill** (`/frontend`, `/typecheck`, `/backend`, `/int`, `/platform`) — extract own *decisions / direction* content for M9b and *conventions / API gotchas* content for M9c, before the legacy skill def is eventually deleted in a later sprint.
-- **`/sprint`** — archive `sprints/reimplementation.md` (M11); update `METHOD.md` cross-references as the new skill defs land.
+- **`/sprint`** — archive [reimplementation (Git history)](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/sprints/reimplementation.md) (M11); update `METHOD.md` cross-references as the new skill defs land.
 - **`/qa`** — no in-sprint code-test work; but `/qa` reads the new `/dev`, `/design`, `/review` skill defs once drafted and confirms they preserve the testing-ownership boundary (`METHOD_PROPOSED §8.1`: unit tests by implementing skill, integration tests by `/qa`).
 - **User-proxy skills** — no Phase 6b new demo (showcase waived); confirm at close that prior demos still replay green.
 
@@ -138,7 +138,7 @@ User approves each skill def at its respective gate before the next is authored.
 
 | Skill | Crate | Task | Status |
 |---|---|---|---|
-| /sprint | — | Archive `sprints/reimplementation.md` (M11) | pending |
+| /sprint | — | Archive [reimplementation (Git history)](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/sprints/reimplementation.md) (M11) | pending |
 | /sprint | — | Sweep stale references to `/platform`-owned runtime in `CLAUDE.md` / sprint docs (M13 proper) | pending |
 | /sprint | — | Update `sprints/METHOD_PROPOSED.md` Phase 7 to mention principle-review touchpoint (per arch.md §Sprint participation) | pending |
 | /arch | — | Phase 7 principles review per `arch.md` §Sprint participation | pending |
@@ -191,7 +191,7 @@ The sprint opened the methodology migration arc (M0 as planned) and then **subst
 
 **/qa test plan refresh (committed `32291fc`)**
 - Two-tier strategy pinned (e2e against exe + per-crate unit; no middle session-construction tier)
-- New `tests/plan/PLAN.md` (spec→tests bridge), `tests/plan/helpers.md` (Cranelisp builder API design), `tests/plan/ledger.md` (renamed from baseline.md)
+- New [historical QA plan](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md) (spec→tests bridge), `tests/plan/helpers.md` (Cranelisp builder API design), `tests/plan/ledger.md` (renamed from baseline.md)
 - 8 superseded plan docs archived to `tests/plan/legacy/`
 - Ring axis retired from /qa-owned annotation convention (Sprint 63 user decision: all ring-envisaged functionality delivered; project in maintenance/extension mode)
 
@@ -216,7 +216,7 @@ The sprint opened the methodology migration arc (M0 as planned) and then **subst
 | M5/M6 — `pub(crate)` downgrade + facade module pattern | Not actioned | Defer to S64+; M3 (FIXME 0100) lands first |
 | M7 — inline FIXME → file migration | Partial standup happened (`design/arch/fixmes/` directory live; ~16 file FIXMEs created) | Full sweep of inline FIXMEs to S64+ |
 | M8/M10 — CLAUDE.md rework + memory retirement | Not actioned | Defer to S64+; chases M9c |
-| M11 — archive `sprints/reimplementation.md` | Not actioned | FIXME 0114 covers similar concern (ring-axis retirement implies reimplementation.md is historical) |
+| M11 — archive [reimplementation (Git history)](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/sprints/reimplementation.md) | Not actioned | FIXME 0114 covers similar concern (ring-axis retirement implies reimplementation.md is historical) |
 | M12 — METHOD_PROPOSED → METHOD rename | Not actioned | Last task in arc; defer until M-sequence formally closes (informal close with this sprint outcome may be sufficient) |
 | M13 — runtime ownership confirm | Confirmed in `arch.md` during M0 W2; sweep of stale references deferred to S64+ | Cheap; opportunistic |
 | Concurrency work (S62 carries) | Untouched — preserved in `design/int/concurrency/` per S62 close | Defer to post-test-port sprint per FIXME 0115 |

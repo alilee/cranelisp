@@ -132,7 +132,7 @@ stays tuple-shaped (`Code::Jit(Arc<Jit>)` /
 difference vs. the previous amendment is purely *where* the call
 address lives: GOT slot, not sibling field.
 
-See `design/arch/sprint-66-types-authoring-plan.md` §1.7-revised for
+See the S66 types authoring plan (Git history) §1.7-revised for
 the complete authoring brief; `facades/types.md` §"Symbol table — the
 single store" and Decision 41's "S66 amendment + rollback" for the
 canonical post-rollback statement.

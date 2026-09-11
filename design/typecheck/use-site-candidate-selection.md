@@ -8,7 +8,7 @@ Owner: `/design` narrow-deployed to `cranelisp-typecheck`. Audience: the user
 reviewing the interior choice, then `/dev` and `/review` on this crate.
 
 This document designs how typecheck consumes the already-approved
-`ResolutionScope::resolve_candidates` result. It holds the Packet-B public API,
+`ResolutionScope::resolve_candidates` result. It holds the approved candidate public API,
 crate graph, cache schema, platform ABI, language semantics, and the
 product-only accessor rule fixed. It is subordinate to `typecheck.md` and
 elaborates `inference.md`, `traits.md`, and `adt.md` only for candidate
@@ -17,8 +17,9 @@ selection.
 Governing requirements are `spec/03-types.md` §3.5.3, §3.9.3 and §3.10;
 `spec/08-modules.md` §8.6.4–§8.6.5; the pattern specialization in
 `spec/06-pattern-matching.md` §6.2.1; and trait dispatch in
-`spec/07-traits.md` §7.4.1. The types-owned representation and exact approved
-facade are recorded in `sprints/s121-public-api-review.md` Packet B.
+`spec/07-traits.md` §7.4.1. The types-owned representation and approved facade
+are canonical in `design/arch/symbol-table-lifecycle.md` §§3 and 4.4; approval
+provenance is retained in `sprints/archive/sprint-121.md` §Phase approvals.
 
 ## 1. Outcome and boundary
 

@@ -8,7 +8,7 @@
 **Author.** /design (typecheck), 2026-05-12.
 **Scope.** This document refines the master design `design/typecheck/typecheck.md` §§2, 5, 6 (drift register; pipeline structure; mutation discipline) to lock down the **as-designed** shape `/dev` will implement for the Wave 3a-β shape pivot — the two-pass per-form typecheck surface that the orchestrator drives across a cluster.
 
-**Reads.** `design/typecheck/typecheck.md`; `design/typecheck/implementation-slice-s66.md` §1.B + §1.C; `design/arch/facades/typecheck.md` §"Public surface" + §"Bounded-context invariants"; `design/arch/facades/int.md` §"`process_cluster` — the cluster-atomic orchestration loop"; `design/arch/facades/types.md` §"`ParsedEntry`" + §"`View`"; `design/arch/decisions/0044-cluster-atomic-typecheck-orchestrator-staging.md` (amended FIXME 0167); `design/arch/decisions/0045-traitimpl-storage-in-trait-defining-module.md`; `design/arch/principles/17-module-locality-in-typecheck.md`; `tests/process_form_dispatch.rs` (Wave 3a-β gate); `tests/stdlib_trait_impls.rs::stdlib_*` (P17 short-name follow-up).
+**Reads.** `design/typecheck/typecheck.md`; `design/arch/facades/typecheck.md` §"Public surface" + §"Bounded-context invariants"; `design/arch/facades/int.md` §"`process_cluster` — the cluster-atomic orchestration loop"; `design/arch/facades/types.md` §"`ParsedEntry`" + §"`View`"; `design/arch/decisions/0044-cluster-atomic-typecheck-orchestrator-staging.md` (amended FIXME 0167); `design/arch/decisions/0045-traitimpl-storage-in-trait-defining-module.md`; `design/arch/principles/17-module-locality-in-typecheck.md`; `tests/process_form_dispatch.rs` (Wave 3a-β gate); `tests/stdlib_trait_impls.rs::stdlib_*` (P17 short-name follow-up).
 
 **Supersedes.** `design/typecheck/check-form-api.md` (single-call shape; `&mut SymbolTable`; pre-Decision-44 framing) for the post-Wave-3a-β shape. `check-form-api.md`'s algorithmic content (Pass-1/Pass-2 dispatch matrix, accumulator pattern, mutual-recursion invariant) survives and is reproduced where it remains correct under the cluster-atomic frame; what does not survive is the single-call entry shape, the `&mut SymbolTable` parameter, and `FormCheckResult` as a per-call return value.
 
@@ -449,8 +449,7 @@ This wave touches concurrency-safety (cluster atomicity) and simplicity (duplica
 
 ## 13. Cross-references
 
-- `design/typecheck/typecheck.md` §§2, 5, 6 — master design; this doc refines §6 (mutation discipline) for Wave 3a-β.
-- `design/typecheck/implementation-slice-s66.md` §1.B + §1.C — wave delta tables for α and β; this doc is the β design.
+- `design/typecheck/typecheck.md` §§2, 3.3, 5–7 — current surface, module-locality, pipeline, mutation and concurrency design; this doc is the historical β elaboration.
 - `design/arch/facades/typecheck.md` §"Public surface" + §"Bounded-context invariants" — the as-designed surface this doc binds.
 - `design/arch/facades/int.md` §"`process_cluster`" — orchestrator-side contract.
 - `design/arch/facades/types.md` §"`ParsedEntry`" + §"`View`" — boundary types consumed.

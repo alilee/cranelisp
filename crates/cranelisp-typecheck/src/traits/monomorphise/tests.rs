@@ -1,8 +1,8 @@
 //! Monomorphisation signature reconstruction, instance publication and annotation guards.
 
 use cranelisp_types::{
-    Binding, Defn, DefnVariant, Expr, Life, ModuleFullPath, Span, Symbol, TemplateKind,
-    TopLevel, Type, TypeName, Visibility,
+    Binding, Defn, DefnVariant, Expr, Life, ModuleFullPath, Span, Symbol, TemplateKind, TopLevel,
+    Type, TypeName, Visibility,
 };
 
 use super::*;
@@ -106,14 +106,13 @@ fn wave0_mono_entry_registered_with_distinct_got_slot() {
     // Mono entry: kind UserFn(Concrete), ast: Some(..), has a GOT slot distinct from template.
     let mono_got_slot = {
         let st = tc.symbol_table();
-        // FIXME 0519: mono names are home-qualified `{home}/{bare}$sig`; the
-        // fixture's current module is `test`.
-        match st.get("test/add$Int") {
+        let add_int = "(test/add [primitives/Int primitives/Int] primitives/Int)";
+        match st.get(add_int) {
             Some(entry) => {
                 let callable = entry.callable().expect("mono callable");
                 assert!(
                     matches!(callable.arm.life, Life::Concrete { .. }),
-                    "mono 'test/add$Int' should be concrete"
+                    "mono '{add_int}' should be concrete"
                 );
                 let Life::Concrete {
                     ast: Some(defn), ..
@@ -142,7 +141,7 @@ fn wave0_mono_entry_registered_with_distinct_got_slot() {
                     .callable_got_slot()
                     .expect("mono must have a GOT slot assigned")
             }
-            other => panic!("'test/add$Int' mono should be Def entry, got {:?}", other),
+            other => panic!("'{add_int}' mono should be Def entry, got {:?}", other),
         }
     };
 
@@ -341,8 +340,14 @@ fn two_instantiations_mint_two_distinct_concrete_mono_entries() {
     tc.check_repl_input_self(&use_float).unwrap();
 
     // BOTH mono instances must be minted, each Concrete, under its own key.
-    let int_slot = assert_concrete_mono_slot(&tc, "test/add$Int");
-    let float_slot = assert_concrete_mono_slot(&tc, "test/add$Float");
+    let int_slot = assert_concrete_mono_slot(
+        &tc,
+        "(test/add [primitives/Int primitives/Int] primitives/Int)",
+    );
+    let float_slot = assert_concrete_mono_slot(
+        &tc,
+        "(test/add [primitives/Float primitives/Float] primitives/Float)",
+    );
 
     // Distinct instantiations get distinct GOT slots.
     assert_ne!(
@@ -455,10 +460,8 @@ fn rechecked_bare_constructor_value_mints_and_carries_its_concrete_instance() {
 // minting while the concrete value carrier names the distinct caller module.
 #[test]
 fn rechecked_imported_constructor_value_mints_and_carries_in_the_caller_module() {
-    let control = fixture_for_rechecked_imported_constructor_value(
-        "timeout-lambda",
-        "(fn [x] (Some x))",
-    );
+    let control =
+        fixture_for_rechecked_imported_constructor_value("timeout-lambda", "(fn [x] (Some x))");
     assert_lambda_constructor_control(&control, "caller");
 
     let subject = fixture_for_rechecked_imported_constructor_value("timeout", "Some");
@@ -502,7 +505,7 @@ fn fixture_for_rechecked_imported_constructor_value(
 }
 
 fn concrete_some_instance(tc: &crate::checker::TestFixture) -> String {
-    symbol_names_containing(tc, "Some$Int")
+    symbol_names_containing(tc, "Some [primitives/Int]")
         .into_iter()
         .next()
         .expect("the concrete constructor instance must be registered")
@@ -510,7 +513,7 @@ fn concrete_some_instance(tc: &crate::checker::TestFixture) -> String {
 
 fn assert_lambda_constructor_control(tc: &crate::checker::TestFixture, caller_module: &str) {
     let some_instance = concrete_some_instance(tc);
-    let caller_instance = symbol_names_containing(tc, "timeout-lambda$Int")
+    let caller_instance = symbol_names_containing(tc, "/timeout-lambda [primitives/Int]")
         .into_iter()
         .next()
         .expect("the concrete lambda caller instance must be registered");
@@ -541,7 +544,7 @@ fn assert_bare_constructor_instance_and_carrier(
     caller: &str,
 ) {
     let some_instance = concrete_some_instance(tc);
-    let caller_instance = symbol_names_containing(tc, &format!("{caller}$Int"))
+    let caller_instance = symbol_names_containing(tc, &format!("/{caller} [primitives/Int]"))
         .into_iter()
         .next()
         .expect("the concrete caller instance must be registered");

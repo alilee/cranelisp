@@ -667,9 +667,7 @@ fn tail_transfer_releases_the_displaced_same_name_binder_run_and_link() {
         )
         .measure();
 
-        if measured.control().exit_code() != Some(8)
-            || measured.subject().exit_code() != Some(8)
-        {
+        if measured.control().exit_code() != Some(8) || measured.subject().exit_code() != Some(8) {
             failures.push_str(&format!(
                 "\n=== {mode}: terminating-value witness ===\n{}\n\
                  control stdout:\n{}\ncontrol stderr:\n{}\n\

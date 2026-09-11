@@ -3,7 +3,7 @@ macro_rules! primitive_declarations {
         $(
             user_extern {
                 name: $ename:literal,
-                shim: $shim:ident($($arg:ident : $argty:ty),*) => $implementation:path, call: ($($callarg:ident),*),
+                shim: $shim:ident($($arg:ident : $argty:ty),*) -> $retty:ty => $implementation:path, call: ($($callarg:ident),*),
                 metadata: $metadata:expr,
                 type_vars: $type_vars:expr,
                 ownership: $ownership:expr
@@ -20,20 +20,24 @@ macro_rules! primitive_declarations {
         $(
             harvest_only {
                 name: $hname:literal,
-                shim: $hshim:ident($($harg:ident : $hargty:ty),*) => $himplementation:path, call: ($($hcallarg:ident),*)
+                shim: $hshim:ident($($harg:ident : $hargty:ty),*) -> $hretty:ty => $himplementation:path, call: ($($hcallarg:ident),*)
             }
         )*
     ) => {
         $(
             #[unsafe(export_name = $ename)]
-            pub(crate) extern "C" fn $shim($($arg: $argty),*) -> i64 {
-                $implementation($($callarg),*)
+            pub(crate) extern "C" fn $shim($($arg: i64),*) -> i64 {
+                crate::abi_facts::AbiHandle::into_abi($implementation($(unsafe {
+                    <$argty as crate::abi_facts::AbiHandle>::from_abi($callarg)
+                }),*))
             }
         )*
         $(
             #[unsafe(export_name = $hname)]
-            pub(crate) extern "C" fn $hshim($($harg: $hargty),*) -> i64 {
-                $himplementation($($hcallarg),*)
+            pub(crate) extern "C" fn $hshim($($harg: i64),*) -> i64 {
+                crate::abi_facts::AbiHandle::into_abi($himplementation($(unsafe {
+                    <$hargty as crate::abi_facts::AbiHandle>::from_abi($hcallarg)
+                }),*))
             }
         )*
 
@@ -54,6 +58,8 @@ macro_rules! primitive_declarations {
                     ownership: $ownership,
                     shim_name: stringify!($shim),
                     shim: $shim as *const u8,
+                    abi_param_kinds: vec![$(<$argty as crate::abi_facts::AbiHandle>::KIND),*],
+                    abi_result_kind: <$retty as crate::abi_facts::AbiHandle>::KIND,
                 });
             )*
             $(
@@ -76,6 +82,8 @@ macro_rules! primitive_declarations {
                     name: $hname,
                     shim_name: stringify!($hshim),
                     shim: $hshim as *const u8,
+                    abi_param_kinds: vec![$(<$hargty as crate::abi_facts::AbiHandle>::KIND),*],
+                    abi_result_kind: <$hretty as crate::abi_facts::AbiHandle>::KIND,
                 });
             )*
             declarations

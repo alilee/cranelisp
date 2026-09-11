@@ -5,15 +5,16 @@
 > `FQSymbol`/`FQTypeName`, error types, `SymbolTable`/`GotTable`/`View` facade).
 > Run by `/review` per `sprints/SPRINT.md §"Stage B"` (Wave 1b, the 7-lens pass).
 > READ-ONLY on code; findings route to `/arch` (the crate owner) via the Stage-B
-> backlog / FIXME store. This is a **delta + currency check** on the deep baseline
-> `design/arch/facades/types-audit-s69.md`, NOT a from-zero look.
+> backlog / FIXME store. This is a **delta + currency check** on the deep S69
+> audit baseline identified below, NOT a from-zero look.
 
 **Audit surface**: `crates/cranelisp-types/src/*.rs` — corrected **3,035** non-test
 LOC (`audits/loc-s87.md`); `module.rs` (685 corrected) is the one concentration;
 otherwise broadly distributed, consistent with a DTO/interface crate.
 
-**Baseline**: `design/arch/facades/types-audit-s69.md` (59 findings; the S69 facade
-audit, the deepest prior look at this crate).
+**Baseline**: the S69 facade audit (59 findings, the deepest prior look at this
+crate), now retained in Git at
+[types-audit-s69.md](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/arch/facades/types-audit-s69.md).
 
 **Date**: 2026-06-20 · **Auditor**: /review (cranelisp-types narrow deployment)
 

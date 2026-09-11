@@ -9,6 +9,15 @@ POSITION-COMPLETE and built on the shared `Type::is_representation_undetermined(
 predicate** (belt-and-braces ruling 2026-06-16; resolves FIXME 0380, closes the 0379
 positional hole).
 
+**Executable-identity alignment (S122).** The canonical identity of a concrete
+callable is its authored owner plus full concrete function signature, derived by
+the context-bearing `InstanceLink::instance_key(&template_scheme)` contract in
+[the approved architecture packet](../arch/s122-overload-reorder-publication.md).
+This supersedes this document's older executable-key examples based on appended
+type arguments. `$Var` and trait-method spellings below remain valid where they
+name private template or declaration selectors; old expanded spellings retained
+inside defect observations describe the evidence produced by the earlier pipeline.
+
 Contract this designs against:
 
 - `design/arch/principles/20-model-invariants-by-representation.md` — **the spine.**
@@ -237,11 +246,14 @@ separate at each site.
 > `TemplateKind` instead of collapsing it, and it is retained for that argument. **No
 > `UserFnState::Polymorphic` variant is authored** — it was a strict waypoint of the
 > unified machine, and landing it first would churn the same sites twice
-> (`symbol-table-lifecycle.md` §9). Read `Polymorphic` below as
+> ([S121 lifecycle design at checkpoint
+> `dc78ddbe`](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/arch/symbol-table-lifecycle.md)
+> §9). Read `Polymorphic` below as
 > `Life::Template { kind: Parametric }`, `Constrained` as
 > `Life::Template { kind: Constrained(..) }`, and `NotDetermined` as `Life::Declared`.
 > §6's `arch` FIXME and its cache-bump consequence are likewise subsumed: the one
-> S121 window is `CACHE_SCHEMA_VERSION` 24→25, in the C1 change-set.
+> S121 window under that dated §9 plan is `CACHE_SCHEMA_VERSION` 24→25, in the
+> C1 change-set.
 
 **Decision: a NEW `UserFnState` variant, working name `Polymorphic`** — slot-less,
 sibling to `Constrained`. Rationale (reuse rejected):
@@ -486,17 +498,18 @@ monomorphisation reload seed — `instantiate_demands`"). Where this section and
 contract disagree, the contract wins. Resolves the typecheck half
 of FIXME **0553**, included in S121 by user decision 2026-09-01 because its natural
 types / typecheck / backend / `src` seams all open in this sprint. The carrier is
-C1's (`design/arch/symbol-table-lifecycle.md` §9 names `MonoDemand` as the carrier
+C1's (`design/arch/symbol-table-lifecycle.md` §5.2 names `MonoDemand` as the carrier
 this entry point demands instances through).
 
 ### 3.8.1 The capability, and the two limitations it dissolves
 
 After a from-source module reload, orphaned same-module polymorphic mono variants
-must be re-minted. Today `src/redefine.rs::capture_instantiation_drivers` (`:1264`,
-called `:1324`) captures the **single last `__expr` driver expression** and
-`reload_module`'s `extra_forms` (`src/session_v4/lifecycle.rs:1330,:1392`) replays
-it. That is correct for the reachable case and at parity with prior robustness, and
-it carries two structural limitations:
+must be re-minted. Before S122, the former `capture_instantiation_drivers`
+helper in `src/redefine.rs` captured the **single last `__expr` driver
+expression**, and the then-current `extra_forms` parameter of `reload_module`
+in `src/session_v4/lifecycle.rs` replayed it. That was correct for the reachable
+case and at parity with prior robustness, but carried two structural
+limitations:
 
 1. **Multiple past instantiations are not covered.** Each REPL turn overwrites the
    single `__expr` introspection record, so a session that minted `g$Int` then
@@ -508,8 +521,11 @@ it carries two structural limitations:
    re-inject a now-ill-typed `__expr` and degrade a clean cure to the error-blocked
    floor. **Replaying a form re-runs whatever ill-typedness the form has acquired.**
 
-Both dissolve if the reload requests instantiation of a named symbol **at a recorded
-set of concrete type-argument tuples** — data, not a form.
+Both dissolve when reload requests instantiation of a named symbol **at a
+recorded set of concrete type-argument tuples** — data, not a form. Current
+Binary/int implements that carrier through
+`src/worker.rs::capture_reload_instantiation_demands`; its transaction and
+generation-remap details are authoritative in `design/int/s122-closure.md` §2.
 
 ### 3.8.2 Replay the complete substitution demand
 
@@ -590,6 +606,67 @@ backend facade effect.
   crate's caller census for the mint core is unchanged — and its body builds demands and
   enters the existing pass-4 drive path rather than duplicating §3.3. A
   keyed-read-else-replay hybrid is a reject.
+
+### 3.8.6 Demand completion includes ordinary ownership inference (S122 Q1)
+
+`instantiate_demands` completes the accepted instances before returning them to
+Binary/int. Current `crates/cranelisp-typecheck/src/form.rs` returns immediately
+after `instantiate_demand_roots`, while
+`crates/cranelisp-typecheck/src/traits/monomorphise.rs` registers each completed
+concrete AST and `MonoExpr` codegen view with `mode_summary: None`. The consumer
+cannot distinguish that omitted producer step from a conservative ownership
+refusal and must not repair it by copying the prior instance summary.
+
+After the complete demand set drains successfully, the entry point runs the
+existing private ownership pass once over the same `TypeCheckEnv` and
+`CheckState`, then returns the existing `CheckResult`: retain the result of
+`instantiate_demand_roots`, call `crate::ownership::run_pass5(&env, &state)`,
+and return that result. This placement has four constraints:
+
+1. Run after all accepted roots have registered their concrete bodies and views,
+   not once per root. Interdependent remints therefore enter one fixpoint.
+2. Retain the ownership pass's strict-concrete universe predicate. A demand does
+   not become eligible merely because it came through this entry point.
+3. Retain the analysis-off and non-convergence refusal shapes. Either may leave
+   `mode_summary` absent; completion promises that the ordinary producer ran,
+   not that every accepted body has a summary.
+4. Publish only through the existing staging-aware ownership funnel. In cluster
+   mode the read world is staging-first over live, while the write guard can
+   update only entries owned by staging. A live-only same-module entry may inform
+   the fixpoint but cannot be changed by the candidate. Live-mode callers retain
+   their existing live destination; no direct write route is added.
+
+The stored per-entry `callees` vector is not a prerequisite for this completion.
+The ownership pass derives its dependency facts from the registered `MonoExpr`
+body and resolves through the same symbol-table view. A hard demand error returns
+before ownership inference; ordinary stale-root warnings still drain alongside
+valid roots, and inference then covers the accepted set. The private pass returns
+no new result or error, so this correction changes no public signature, warning or
+error vocabulary, schema, API baseline, cache identity or backend contract.
+
+Two producer units in `crates/cranelisp-typecheck/src/form/tests.rs` are
+proportionate:
+
+- Extend `instantiate_demands_mints_and_deduplicates_existing_instance` so the
+  first successful mint requires a freshly produced `ModeSummary` on both the
+  callable entry and its codegen view, and requires those two carriers to be
+  equal. The existing repeated-demand slot assertion remains the idempotence
+  control. The pre-correction `None` carrier makes this unit red.
+- Add the cluster-mode twin using the existing `SymbolTableAccess::cluster`
+  fixture shape. Keep the template in live, mint its demanded instance into a
+  freestanding staging table, and assert that staging alone contains the instance
+  and its equal entry/view summaries while live keeps its pre-call keys and
+  payloads. This catches a direct-live ownership publication bypass as well as a
+  missing ownership pass.
+
+The retained typecheck visit also supplies the already allocated FIXME 0779
+private auto-curry polarity unit exactly as `auto-curry.md` §3.2 specifies; it is
+independent of demand completion. In the same source visit, correct the two stale
+`new_with_staging` comments in `crates/cranelisp-typecheck/src/checker.rs` that say
+the returned environment is not `Sync`: the type explicitly retains `Send + Sync`
+through its existing unsafe implementation, with single-cluster non-sharing as
+the safety precondition. This is documentation repair only; do not change marker
+traits, constructor visibility or concurrency behavior.
 
 ---
 
@@ -815,13 +892,12 @@ Two properties together preserve it:
    around the inner recursion keeps a mono recheck's substitution from leaking into
    the parent's preserved scheme.
 
-**Distinct-instance discipline.** The cluster-level `done` set (§3.5) keyed on the
-mangled `name$T1+T2` creates each *distinct* concrete instance exactly once and reuses
-the slot of an identical prior instance (`register_mono_entry`'s preserve-on-collision).
-Distinct instantiations of the fold helper (`reduce$Int+Vec` vs `reduce$Bool+Vec`) are
-distinct mangled keys → distinct slotted instances, never collapsed; an identical
-re-reach is deduped, not re-minted. The discipline is "distinct concrete type-args ⇒
-distinct instance; identical ⇒ reuse" — and the residual-`Var` defer ensures a
+**Distinct-instance discipline.** The cluster-level `done` set (§3.5) is keyed on
+the canonical authored-owner/full-concrete-signature identity. It creates each
+distinct concrete callable exactly once and reuses the slot of an identical prior
+instance (`register_mono_entry`'s preserve-on-collision). Distinct full signatures
+of the fold helper remain distinct slotted instances; an identical owner/signature
+re-reach is deduped, not re-minted. The residual-`Var` defer ensures a
 *still-polymorphic* shape is never forced into a premature concrete instance.
 
 **The canary guards** (must stay green through the Tier-2 widening — name them in the
@@ -1470,10 +1546,11 @@ the specified verdict, and no /spec framing is owed: M1 is closed.
 
 ### 11.3.4 As-built — the I1 fix: a mono-recheck monomorphic-recursion context (review SOUND) + the R1 boundary
 
-Caveat (b) of §11.3.1 (the mono-recheck blind spot) is the I1 defect: a genuinely-poly
+Caveat (b) of §11.3.1 (the mono-recheck blind spot) was the I1 defect: a genuinely-poly
 recursive clause — e.g. the 1-arg clause of `(defn g ([x] (if true x (g x))) ([a b]
 a))`, whose standalone twin `(defn g1 [x] (if true x (g1 x)))` accepts and runs — was
-wrong-rejected, with the internal `user/g$Var$Int` mangle leaking into the diagnostic.
+wrong-rejected, with the old internal `user/g$Var$Int` spelling leaking into the
+recorded diagnostic.
 Root cause: during the mono recheck of the `$Var` template clause instantiated at
 `Int`, the inner self-call `(g x)` classifies as *external* under the textual
 `current_defn` tag (which is the template mangle `g$Var`, not `g`/`g__vN`), so it
@@ -1594,8 +1671,9 @@ constrained is impossible). Steps:
    *external* call whose selected clause is a `$Var` TEMPLATE entry — kept slot-less
    by the §11.4 bifurcation in `resolve_variant_types` (`register.rs`, the
    `is_template` re-key branch) — routes through `monomorphise_call` at the call's
-   concrete args, producing/reusing concrete instances (`g$Var$Int`, …) via the
-   established constrained-fn machinery, no backend special-case (§3.7 of the
+   concrete args, producing/reusing concrete instances under the canonical authored
+   owner/full-concrete-signature key via the established constrained-fn machinery,
+   with no backend special-case (§3.7 of the
    typecheck CLAUDE.md). This is the design — a drain-driven cell that rides the
    existing overload-resolution path — **not** a deviation from intent; only the
    *mechanism* (route via the drain, keep the filter) differs from the Phase-3
@@ -1657,17 +1735,14 @@ requires the finalised clause param types feeding `mangle_sig` to be `TyConApp`-
 spellings, it MUST be a canonical left-to-right renumbering (`a,b,c…`), never raw
 ids; the constant `"Var"` is sufficient and deterministic today.
 
-**Known grammar wart — template mono instances DOUBLE-mangle (review M3).** When an
-external call monomorphises a `$Var` template clause (§11.3.1 pass 2 / §11.4 step 3),
-`monomorphise_call` builds the instance name over the *already-mangled* template name,
-so a 1-arg poly clause `g$Var` instantiated at `Int` mints `g$Var$Int` (two `$`
-segments), not `g$Int`. This is **deterministic** — a pure function of (template name,
-concrete args) — so the fresh-build byte-identity obligation (§11.5, /qa gate) holds;
-it is not a soundness or collision hazard. But `$Var$Int` **leaks into diagnostics and
-persisted `.meta.json` names**, where it reads oddly. Recorded as a known mangled-name-
-grammar wart under the FIXME-0519 one-canonical-mangler context (§3.5); **no redesign
-this sprint** — a grammar that collapses the template segment for an instance would be
-a §3.5-wide change, out of leg-(a) scope.
+**Template labels are not executable identity.** A normalized `$Var` spelling remains
+the private selector for a polymorphic overload clause. Once a concrete call selects
+that template, `monomorphise_call` derives the realization key from the authored
+family and complete settled function signature through the shared context-bearing
+key API. It must not append concrete arguments to the `$Var` selector or persist that
+composite as a second executable identity. The existing fresh-build byte-identity
+obligation (§11.5, /qa gate) therefore applies to both the private template selector
+and the separately derived canonical realization key.
 
 ### 11.6 Leg (c) framing only — return-type-dispatch codegen (repro-gated)
 
@@ -2176,7 +2251,7 @@ that wrapper's monomorphisation into a separately-monomorphised poly consumer
 multi-sig `peers` is GREEN (window 3 already covers the top-level SingleSig
 consumer of a multi-sig return, §11.8.10 window-3 row). The failing shape is
 exactly the exemplar's `peers`/`eliminate-from-peers` axis: `peers` consumed
-inside a wrapper, never at a concrete site. Today the wrapper case leaks
+inside a wrapper, never at a concrete site. The recorded pre-correction RED leaked
 `ambiguous type … monomorphised in \`user/peers$Var$Int\`` — the element `Var`
 reaches codegen. The two-function twin
 (`(defn peers [idx] (peers-helper idx []))`) compiles and returns 3, so by the
@@ -2196,8 +2271,9 @@ instance of `peers` minted from within `run-elim`'s harvested body derives its
 type args from the call site's fresh instantiation of `peers`' scheme; if
 `run-elim`'s body harvest does not re-run `resolve_expr_types` at the SETTLED
 window (so the fresh element var re-unifies against `peers`' back-flow-pinned
-concrete return), the instance mints as `peers$Var$Int` — the element `Var`
-un-settled, reaching codegen.
+concrete return), the old pipeline minted `peers$Var$Int` — evidence that the element
+`Var` was unsettled and reached codegen. This spelling is retained here as an
+observed diagnostic, not as the current executable-key contract.
 
 **The fix — derive the wrapper-indirected instance from SETTLED state (P26).**
 The consumer-harvest keying for the wrapper case must re-derive the inner

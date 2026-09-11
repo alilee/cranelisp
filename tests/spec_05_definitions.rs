@@ -3,7 +3,7 @@
 // Covers `spec/05-definitions.md`. Carries forward language-behaviour
 // assertions from legacy integration-tier `tests/ring0.rs`, `tests/ring1.rs`,
 // `tests/ring2.rs`, `tests/sketch_port.rs`, and `tests/e2e.rs`. REPL canonical
-// per `tests/plan/PLAN.md §"Mode canonicalisation"`.
+// per the [current mode-canonicalisation guidance](plan/PLAN.md#mode-canonicalisation--repl-is-the-canonical-surface-for-language-conformance).
 //
 // What this file covers:
 //   - defn (single-signature) — body, params (§5.1.1)
@@ -1514,7 +1514,7 @@ fn impl_method_colliding_with_field_accessor_rejected_neg() {
 
 // =============================================================================
 // Sprint 109 — SS-3/SS-4: §5.1.2 multi-arity each-variant-independent checking.
-// Plan: tests/plan/PLAN.md §S109 §I.
+// [Historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md), S109 I.
 // =============================================================================
 
 // spec: spec/05-definitions.md §5.1.2 — UW-8 RETARGET (plan §2): the OLD SS-3
@@ -1575,7 +1575,8 @@ fn defn_multi_arity_annotated_clauses_compile() {
 
 // =============================================================================
 // §5.1.2 × §3.3 [S109 W6.3] — Written free vars in multi-arity clauses.
-// Plan: tests/plan/PLAN.md §L.1 (C-4, FV-12).
+// [Historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md),
+// S109 L.1 (C-4, FV-12).
 //
 // §3.3.1 MUST (a) crossed with §5.1.2 "each variant type-checked independently":
 // each clause is a DISJOINT lexical scope, so its bare `:a` pins independently by

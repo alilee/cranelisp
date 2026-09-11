@@ -3,9 +3,10 @@
 **Status:** WORKING DESIGN (`/arch`, S119, 2026-07-28) — the design commission for
 the user-directed concreteness programme, following `total-concreteness.md`
 (which this document amends in one clause: I-ABI → I-EMIT, §1 below).
-**Cross-check instrument:** `sprints/concreteness-requirements.md` (40 rows;
-the per-row disposition table is §6 — the register is `/sprint`'s; corrections
-to it are returned in §7, not edited in place).
+**Cross-check provenance:** the Sprint 119 forty-row requirements register
+(Git history). Its complete per-row dispositions remain in §6 and its
+source-backed corrections in §7. These dated dispositions do not certify
+completion of the later programme.
 **Governs:** the invariant clauses (I-EMIT §1, the R-24 resolution §2), the
 register cross-check (§6/§7) and the wash-size evidence (§4).
 **§3's pinned per-kind types change-set is SUPERSEDED as a migration step
@@ -16,7 +17,7 @@ waypoint of that design and are not run first (two exhaustive sweeps over
 the same ~200 sites for one destination). What §3 landed ahead of the flip —
 `CallableSlot` + `mint_callable_slot`/`rebind`, `ctor_field_types_at`, the
 `CacheStale` load re-check discipline — survives inside the unified machine
-(`symbol-table-lifecycle.md` §4.3/§9); the dormant `CtorState` deletes
+(`symbol-table-lifecycle.md` §4.3; S121 migration history in Git); the dormant `CtorState` deletes
 unwired. FIXMEs 0931–0935 re-point to `symbol-table-lifecycle.md`
 §5.2/§5.5/§5.6 via their owning streams.
 **Archive trigger:** the S121 unified wash lands; the surviving invariant
@@ -508,11 +509,11 @@ type; the view carries no slot.
 > ENTRIES, under which the null-ambiguity ground dissolves — the surviving
 > residual is published-but-unclaimed slots (concrete→template flips,
 > AbiChanging freezes), answered by a table-side tombstone record
-> (`symbol-table-lifecycle.md` §1.1/§4.3). (2) ruling 3's entry-split decline
+> (`symbol-table-lifecycle.md` §4.3). (2) ruling 3's entry-split decline
 > leaned in part on churn, which the user has discounted for the primary data
 > structure; re-weighed on the resolution-vocabulary leg alone, the coherent
 > shape is a SMALLER three-arm outer layer with facets nested below
-> (`symbol-table-lifecycle.md` §1.2/§3). Rulings 1, 2, and 4 stand in
+> (`symbol-table-lifecycle.md` §3). Rulings 1, 2, and 4 stand in
 > substance (the register rejection's determinant argument, D11, one index
 > space) and are re-derived rather than cited in the clean-sheet document.
 > The user ADOPTED that document's §9 on 2026-09-01: the per-kind flip does

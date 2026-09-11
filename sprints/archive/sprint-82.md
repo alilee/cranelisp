@@ -161,12 +161,12 @@ authored). **S82 requires no `cranelisp-types` change.**
 
 ## Skill plans (Phase 3)
 
-> Phase-3 design fan-out complete (6 agents: /qa + /design×5 crates). **Three findings reshape scope — see "Phase-3 escalations" in Notes.** Plans condensed below; full agent designs in their crate `design/{crate}/` docs + `tests/plan/sprint82-test-plan.md`.
+> Phase-3 design fan-out complete (6 agents: /qa + /design×5 crates). **Three findings reshape scope — see "Phase-3 escalations" in Notes.** Plans condensed below; full agent designs in their crate `design/{crate}/` docs + [S82 sprint82-test-plan record](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/sprint82-test-plan.md).
 
 ### /qa — test plan + harvest measurement gate
 
 - **Workstream D:** all 14 e2e guards + 2 unit repros already exist (S81). /qa's D work: the **repro-before-handoff probes** (`0342` introspection probe → already run, result = int ordering; `0340` split into timing+capture repros) and confirming each guard flips. **New Stage-1 authored failing-first:** `0340` timing guard (`(trace small)` <5s ceiling → backend); `0337` `tests/examples.rs` directory-entry coverage. **`0340` capture repro must be RE-SHAPED** (see escalation 3) — current repro traces `add-i64` (an invisible inline primitive), so empty trace is *correct*; re-point to a GOT-slotted callee.
-- **Workstream H — harvest measurement gate (the confidence-to-delete centerpiece):** extends the existing S64 `wave-5.5/5.6` dedupe audits. Per file: every assertion → COVERED (name active test) | GAP (harvest as unit/e2e) | OBSOLETE (drop, written reason). Artifact `tests/plan/s82-harvest-{file}.md` with summary `N: C/G/O`. **A file is DONE only when deleted + FIXME closed.** Read-only audit fans out parallel; harvest edits serialize. `0134` partition confirmed; co-owner relabel `0130`→intrinsics / `0135`→primitives; `0136` sketch_port is /qa-internal (preserve 11 known-fail lineage as failing guards).
+- **Workstream H — harvest measurement gate (the confidence-to-delete centerpiece):** extends the existing S64 `wave-5.5/5.6` dedupe audits. Per file: every assertion → COVERED (name active test) | GAP (harvest as unit/e2e) | OBSOLETE (drop, written reason). Artifact [dated harvest records](https://github.com/alilee/cranelisp/tree/dc78ddbee3107043925505531798667dc61f7a03/tests/plan) with summary `N: C/G/O`. **A file is DONE only when deleted + FIXME closed.** Read-only audit fans out parallel; harvest edits serialize. `0134` partition confirmed; co-owner relabel `0130`→intrinsics / `0135`→primitives; `0136` sketch_port is /qa-internal (preserve 11 known-fail lineage as failing guards).
 - **Acceptance:** 7 guards green; every legacy assertion dispositioned in writing; all 20 files deleted + 12 harvest FIXMEs closed.
 
 ### /design+/dev cranelisp-frontend — 0341
@@ -211,7 +211,7 @@ authored). **S82 requires no `cranelisp-types` change.**
 |---|---|---|---|
 | /arch | cranelisp-types | Add `TypeExpr::Bounds(Vec<TraitRef>)` (param tuple unchanged); regen `public-api.txt`; interfaces.md narrative (FIXME 0346) | serial (source) |
 | /spec | spec/ | Fix §8.2.6 worked example to nested layout (FIXME 0345); confirm §8.2.5 normative | serial (doc) |
-| /qa | tests/ | **Harvest measurement-gate audit** — per-file dedup map for all 20 legacy files (`tests/plan/s82-harvest-*.md`) | **parallel (read-only fan-out)** |
+| /qa | tests/ | **Harvest measurement-gate audit** — per-file dedup map for all 20 legacy files ([dated harvest records](https://github.com/alilee/cranelisp/tree/dc78ddbee3107043925505531798667dc61f7a03/tests/plan)) | **parallel (read-only fan-out)** |
 | /qa | tests/ | Stage-1 failing-first: `0340` timing guard (<5s); `0337` multi-file-dir CI coverage; **re-shape `0340` capture repro** to a GOT-slotted callee | serial (source) |
 
 ### Wave 1 — int decomposition (0109 Wave D) — land EARLY
@@ -271,7 +271,7 @@ Scan `design/arch/fixmes/` for `target: /skill-in-wave` + `status: open`. Curren
 
 ### Wave 0 — DONE (foundations + measurement gate)
 - **/arch — `TypeExpr::Bounds(Vec<TraitRef>)` landed** in `cranelisp-types` (`ast.rs`); baseline regenerated (`+pub …TypeExpr::Bounds…`); `interfaces.md` updated; `cargo check -p cranelisp-types` green. **Param tuple unchanged** (zero churn). FIXME 0346 updated (types-half done; frontend+typecheck cascade pending W2). **Build now RED** — typecheck has 5 exhaustive `match` sites needing a `Bounds` arm: `form.rs:404` (no-op), `resolve.rs:34` (the try-type-then-trait + `Scheme.constraints` accumulation = 0341 tc-half), `traits.rs:1744/1796/1861`. frontend = emission only (no match breaks); backend + src/ clean (catchall).
-- **/qa — harvest measurement gate COMPLETE** (read-only; 9 disposition docs + `tests/plan/s82-harvest-rollup.md`). **1,323 tests → 356 GAP (57 reg-guards) / 960 COVERED / 7 OBSOLETE.** Harvest is ~73% audit-and-delete, 27% real porting. `0134` partition confirmed; `0130`→intrinsics / `0135`→primitives co-owners; `0136` 11-failure lineage preserved as failing-not-ignored GAP.
+- **/qa — harvest measurement gate COMPLETE** (read-only; 9 disposition docs + [S82 s82-harvest-rollup record](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/s82-harvest-rollup.md)). **1,323 tests → 356 GAP (57 reg-guards) / 960 COVERED / 7 OBSOLETE.** Harvest is ~73% audit-and-delete, 27% real porting. `0134` partition confirmed; `0130`→intrinsics / `0135`→primitives co-owners; `0136` 11-failure lineage preserved as failing-not-ignored GAP.
 - **Remaining W0:** /spec §8.2.6 nested-example fix (doc); /qa Stage-1 failing-first tests (0340 timing, 0337 CI dir-coverage, re-shape 0340 capture repro) — deferred until build green.
 
 ### Wave 2 (started early — restore green) — IN PROGRESS

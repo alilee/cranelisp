@@ -631,6 +631,7 @@ fn mk_mod_test_ctx<'a>(
         platform_dirs: &[],
         project_root: Path::new("/"),
         shared_state: None,
+        reload_demands: std::sync::Arc::from([]),
         eval_driven: false,
     }
 }

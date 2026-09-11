@@ -294,7 +294,6 @@ fn encode_puzzle_form(puzzle: &str) -> String {
 // round-trip (concurrent launched handlers, borrowed-Var grid mutation, DLL
 // marshaling) now serves correctly with no heap corruption.
 fn assert_web_routes(port: u16) {
-
     // --- GET / -> the puzzle-entry form page ---
     let form_resp = http_request(port, "GET", "/", None);
     assert!(
@@ -364,7 +363,6 @@ fn assert_web_routes(port: u16) {
         "GET on an unknown path must serve the Not Found page; got:\n{}",
         truncate(&nf_resp, 600)
     );
-
 }
 
 // spec: design/arch/platform-interface.md §3a — the established Model-A

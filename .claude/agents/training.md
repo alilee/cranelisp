@@ -1,6 +1,7 @@
 ---
 name: training
 description: Own examples/ as an ordered learning sequence
+provider: claude
 model: opus
 effort: high
 ---

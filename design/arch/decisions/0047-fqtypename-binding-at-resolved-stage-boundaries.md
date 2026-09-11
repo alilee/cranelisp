@@ -3,7 +3,7 @@ number: 0047
 title: FQTypeName is binding as the cross-crate boundary type for resolved-stage type identifiers
 status: pre-implementation
 filed: sprint 67 (Phase 3 Wave 0 — second user-challenge scope amendment)
-canonical_location: design/arch/facades/types.md §"Resolved type system" + §"FQTypeName migration plan (Sprint 67)"
+canonical_location: design/arch/interfaces.md §"Type System" (binding rule + exceptions); crates/cranelisp-types/src/newtype.rs (`FQTypeName`, `FQTraitName`); the retired `facades/types.md` migration plan is Git history
 amends: []
 amended_by: []
 retracts: []
@@ -15,7 +15,7 @@ filed_by_fixme: 0151
 
 Every API past frontend's resolution stage that names a type uses `FQTypeName`; bare `TypeName` is reserved for syntactic-stage uses inside the frontend (parser output, AST surface, `TypeExpr` shape).
 
-This Decision formalises the binding commitment lifted from aspirational to binding in Sprint 65 W2 (per `sprint-65-reshape-phase-2-review.md` §4.1 — the grep-and-classify pass that produced the lift). The `facades/types.md` text states the commitment; this Decision is the operative register entry that names the close-out + the two narrow exceptions.
+This Decision formalises the binding commitment lifted from aspirational to binding in Sprint 65 W2 (per the S65 reshape review (Git history) §4.1 — the grep-and-classify pass that produced the lift). The `facades/types.md` text states the commitment; this Decision is the operative register entry that names the close-out + the two narrow exceptions.
 
 ## Exceptions
 
@@ -49,12 +49,12 @@ FIXME 0151 closes alongside Wave 5 acceptance.
 
 ## Cross-references
 
-- `facades/types.md` §"Resolved type system" — the canonical statement of binding
-- `facades/types.md` §"FQTypeName migration plan (Sprint 67)" — per-API enumeration + per-crate disposition
-- `design/arch/fixmes/0151-types-fqtypename-implementation.md` — the open implementation tracker (closed by S67 W5)
+- `design/arch/interfaces.md` §"Type System" — the current statement of binding and its two exceptions
+- `facades/types.md` §"FQTypeName migration plan (Sprint 67)" — per-API enumeration + per-crate disposition (facade retired; Git history)
+- FIXME 0151 — the implementation tracker, closed at S67 W5 (Git history)
 - `design/arch/principles.md` Principle 2 (narrow interfaces — fully-qualified identity at every boundary past the lift site)
 - `design/arch/principles.md` Principle 17 (module locality — type names without module context are syntactic-stage only)
-- `sprint-65-reshape-phase-2-review.md` §4.1 — the binding lift's rationale
+- the S65 reshape review (Git history) §4.1 — the binding lift's rationale
 
 ## Rationale
 
@@ -64,4 +64,4 @@ FIXME 0151 closes alongside Wave 5 acceptance.
 
 ## Canonical location
 
-`crates/cranelisp-types/src/newtype.rs` (`FQTypeName` definition); `facades/types.md` §"Resolved type system" (binding commitment + exception list); `facades/types.md` §"FQTypeName migration plan (Sprint 67)" (per-API close-out enumeration). Owner: `/arch` files Decision + facade text; `/dev` (per crate) executes per-API conversions in S67 Wave 3.
+`crates/cranelisp-types/src/newtype.rs` (`FQTypeName` definition); `design/arch/interfaces.md` §"Type System" (binding commitment + exception list); the S67 per-API close-out enumeration lived in the since-retired `facades/types.md` (Git history). Owner: `/arch` files Decision + facade text; `/dev` (per crate) executes per-API conversions in S67 Wave 3.

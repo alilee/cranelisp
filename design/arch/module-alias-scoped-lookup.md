@@ -142,7 +142,7 @@ segments (Principle 24 corollary — the resolution product travels; Principle 7
 The C1↔C6 interim (scoped lookup landed, submodule writers not yet flipped)
 lies entirely inside the S121 C1-led wash, whose landing model is already
 "compilation and the tests stream enumerate the downstream wash"
-(`symbol-table-lifecycle.md` §9); no transitional bare-key fallback arm is
+(the S121 lifecycle migration, retained in Git history); no transitional bare-key fallback arm is
 built (Principle 8).
 
 ## 5. Allocation and order (H2 discharged)

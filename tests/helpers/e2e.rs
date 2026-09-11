@@ -1003,7 +1003,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
 // Mode-equivalence helper — run one program through all six permutations
 // =============================================================================
 //
-// Per `tests/plan/PLAN.md §"Mode canonicalisation"` and
+// Per the [current mode-canonicalisation guidance](../plan/PLAN.md#mode-canonicalisation--repl-is-the-canonical-surface-for-language-conformance) and
 // `tests/plan/helpers-api.md §"Mode-equivalence helper"`. Use ONLY for the
 // curated mode-equivalence subset in `tests/build_confidence.rs`. Bulk
 // language-conformance tests use REPL canonical directly via the `Cranelisp`

@@ -86,6 +86,20 @@ RED until B0-be lands the capture; the full-corpus diff runs via
 
 ## Re-baselines (scoped, attributed — MANIFEST §"Extension ≠ re-baseline")
 
+- **All 14 entries** — re-captured S122 after the approved concrete-signature
+  identity migration (generated API baseline confirmed 2026-09-10) and repair
+  of the capture parser to retain canonical executable names containing spaces.
+  Frame counts are unchanged. The exact delta renames
+  `user::primitives/IO.Pure$Int` in every entry to its full-signature identity;
+  entry 02 similarly renames `user::user/call1$Int`, entry 10 renames
+  `user::primitives/Option.Some$user/Box`, and `f4_sudoku` renames seven generic
+  constructor/accessor/function instances. Every renamed frame body is
+  byte-identical apart from its function declaration label, and every
+  same-named frame is byte-identical. Thus the shared Vec guard convergence and
+  Q4 macro alias correction produce no instruction or control-flow delta in
+  this retained corpus. Full double-capture determinism passes 14/14 before
+  replacement; the complete-frame `clif_golden.sh diff` passes afterward.
+
 - **11 of 13 entries (01, 02, 03, 04, 05, 07, 08, f1, f2, f3, f4)** —
   re-captured S118 (FIXME 0908) for the **W3 consumer migration onto canonical
   drop glue**, change-set `2df95c41..966d298e` (emitting seam: `c6234398` S1,

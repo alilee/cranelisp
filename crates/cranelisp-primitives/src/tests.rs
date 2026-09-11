@@ -163,7 +163,12 @@ fn assert_content_row(name: &str, expected_ty: &cranelisp_types::Type, expected_
         "scheme.ty mismatch for {name}"
     );
     // param_names match the spec contract.
-    let actual: Vec<&str> = callable.arm.param_names.iter().map(|p| p.as_ref()).collect();
+    let actual: Vec<&str> = callable
+        .arm
+        .param_names
+        .iter()
+        .map(|p| p.as_ref())
+        .collect();
     assert_eq!(
         actual.as_slice(),
         expected_params,

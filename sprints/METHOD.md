@@ -17,7 +17,7 @@ Root `CLAUDE.md` §Roles is the declaration — which of the package's twelve ro
 - `cranelisp-frontend`
 - `cranelisp-typecheck`
 - `cranelisp-backend`
-- `cranelisp-primitives` + `cranelisp-intrinsics` — the **backend-emitted runtime library** (S73 Decision-43 split of the former `cranelisp-runtime`). **Paired with backend, not with the binary**: `cranelisp-backend` depends on these crates and emits calls into them. The binary is only a *host-client* of the runtime (constructs `HostCtx`, drives `block_on_reactor`); the IO-runtime internals (reactor, `consume_io_tree`, RC) are not its concern.
+- `cranelisp-primitives` + `cranelisp-intrinsics` — the **backend-emitted runtime library** (Decision-43 split of the former `cranelisp-runtime`). **Paired with backend, not with the binary**: `cranelisp-backend` depends on these crates and emits calls into them. The binary is only a *host-client* of the runtime (constructs `HostCtx`, drives `block_on_reactor`); the IO-runtime internals (reactor, `consume_io_tree`, RC) are not its concern.
 - `cranelisp-platform` — consumer of the runtime, not its owner
 - `src/` — binary crate (pipeline, REPL, CLI, session), plus `crates/cranelisp-exe-bundle/`
 
@@ -29,23 +29,16 @@ Cross-surface work is sequential invocations coordinated by `sprint`. Any interf
 
 ### 1.2 Where content lives
 
-Three kinds of content, three homes. This is the rule that lets a generic narrow-deployed role carry per-crate weight.
+The [information map](#31-where-things-live) identifies canonical homes. Shared
+role contracts own procedure; technical documents own system contracts and
+mechanisms; local memories supply entry guidance and navigation.
 
-| Content kind | Lives in | Example |
-|---|---|---|
-| **How to work** — process, role procedure | `.agents/skills/{role}/SKILL.md` — the shared package, changed only through its contribution cadence | "Confirm the surface in scope, read its design, then proceed." |
-| **What to decide** — direction, codified design decisions | `design/{crate}/{crate}.md` | "RC discipline: borrowed-vs-consumed-vs-unique tracking." |
-| **How the code is** — data structures, invariants, conventions | `CLAUDE.md` per directory | "Cranelift v0.125: `jump`/`brif` take `IntoIterator<Item = &'a BlockArg>`." |
-
-In doubt: process → the package contract; decision or target shape → design doc; mechanical, API-surface or convention → `CLAUDE.md`.
-
-**What a localized `CLAUDE.md` holds.** Written local memory is what keeps a narrow-deployed `dev` from re-deriving invariants out of source, so every workhorse-deployed surface earns one.
-
-- **In**: API gotchas; data-structure invariants with their provenance; the submodule seam map and where each `#[cfg(test)]` module lives (this is what makes the per-submodule scenario accounting in §2.2 auditable); build and debug hooks; known asymmetries a reader would otherwise misread as bugs.
-- **Out**: direction and target shape (→ `design/{crate}/`), boundary narrative (→ `design/arch/`), public surface (→ crate-root rustdoc), process (→ the role contract).
-- **Budget**: about 150 lines. Past that it is accreting design content, and `review` flags it.
-- **Owner**: `dev` narrow per crate, except `crates/cranelisp-types/` → `arch`, which owns that crate's source and so owns the voice of its code.
-- **Current-state, not changelog**: at most one "current state" section, consolidated at close. Stacked sprint-stamped sections are the named decay smell.
+A local `CLAUDE.md` carries only guidance needed to work in that directory:
+non-obvious tooling constraints, build/debug entry points and links to its
+contracts and tests. Link to canonical invariants and API guarantees rather
+than maintaining a second account. Do not repeat parent guidance, sprint
+history or a complete source inventory. Source memories belong to `dev`, except
+the types crate's memory belongs to `arch`.
 
 ### 1.3 Where cranelisp overrides the package
 
@@ -135,6 +128,18 @@ cd <own scratch dir> && CRANELISP_LIB=<repo>/stdlib <repo>/target/debug/cranelis
 
 For the binary surface the package is `cranelisp`; verify `cranelisp-exe-bundle` too when the change touched it. The completion report states before/after warning counts and confirms each gate. This is `dev`'s own responsibility — `review` checks against design intent, not build cleanliness — and handing off with a broken build, a failing test, or new warnings is not a handoff.
 
+**Approved cross-crate migrations.** The user-established callee-first rule
+(recorded in FIXME 0940) permits a planned producer-to-consumer continuation
+with temporary compile failures inside an approved migration. Sprint retains
+the affected source reservations and records the remaining consumers; a caller
+that still uses the retired interface is migration work, not grounds to restore
+it. This continuation is not a completed delivery handoff. The cascade closes
+only after its consumers build and the allocated behavioral evidence plus the
+full `cargo nextest run --no-fail-fast` establish the accepted outcome; compile
+success alone does not prove the migrated behavior (FIXME 0941). Required API
+approvals and serial source editing still apply.
+
+
 **`review` runs in a fresh named subagent.** Fresh context and non-authorship
 supply the required independence. Run the shared model and effort allocation
 in the primary harness when it is available there, and use the configured
@@ -204,28 +209,65 @@ Assessments are point-in-time records: appended to with acceptance and decline o
 
 ### 3.1 Where things live
 
-| Artifact | Path | Owner |
+| Information | Canonical home | Owner |
 |---|---|---|
-| Language spec | `spec/` | `spec` |
-| REPL experience spec | `repl/spec.md` | `spec` |
-| Architecture rules, principles, decisions | `design/arch/` | `arch` |
-| Cross-crate types and traits | `crates/cranelisp-types/` | `arch` |
-| Per-crate design | `design/{crate}/{crate}.md` and subordinates | `design` |
-| Code conventions per directory | `CLAUDE.md` per directory | directory-owning role |
-| Evidence plan and coverage process | `tests/plan/` (`PLAN.md` normative) | `qa` |
-| E2e tests, fixtures, helpers | `tests/` | `test` |
-| Repository reference and wiring verifiers | `scripts/verify-*.py` | `test` |
-| Citation-drift ratchet | `scripts/citation-drift-baseline.txt` | `qa` |
-| Host role adapters and dispatch wiring | `.claude/agents/`, `.github/agents/`, `.claude/settings.json` | `sprint` |
-| Unit tests | `crates/{crate}/src/**` under `#[cfg(test)]` | `dev` |
-| Whole-context audit assessments | `audits/{context}-sNNN.md` | `audit` |
-| Delivery method | `sprints/METHOD.md` (this) | `sprint` |
-| Roadmap | `sprints/ROADMAP.md` | `sprint` |
-| Current sprint plan | `sprints/SPRINT.md` | `sprint` |
-| Sprint archive | `sprints/archive/sprint-{id}.md` | `sprint` |
-| Actions | `sprints/actions/ACT-NNNN-name.md` | filing role until resolved |
-| FIXMEs (rundown only) | `design/arch/fixmes/NNNN-name.md` | filing role until resolved |
-| Role contracts | `.agents/skills/{role}/SKILL.md` | the shared package |
+| Entry guidance and navigation | Root and nearest `CLAUDE.md`; public introduction in `README.md` | Directory owner; root `sprint` |
+| Required language / REPL behavior | `spec/index.md` and `repl/spec.md`, leading to their sections | `spec` |
+| Using / learning the system | `user/` / `examples/`; callable reference in library docstrings | `docs` / `training`; library `dev` |
+| System boundaries and shared guarantees | `design/arch/overview.md`, `design/arch/bounded-contexts.md` and focused shared contracts | `arch` |
+| Context mechanisms and invariants | Context master under `design/`, with independently maintained subordinate subjects | `design`; types `arch` |
+| Exact Rust API obligations and guarantees | Rustdoc beside public items; `public-api.txt` is surface evidence | `arch` owns public contracts |
+| Current assurance and evidence navigation | `tests/plan/PLAN.md`; bounded active evidence plans under `tests/plan/` | `qa` |
+| Executable evidence | Solution tests in `tests/`; module tests beside source | `test` / source owner |
+| Audit assessments | `audits/`; unresolved obligations use the action/filing homes below | `audit` |
+| Current increment / future direction | `sprints/SPRINT.md` / `sprints/ROADMAP.md` | `sprint` |
+| Unresolved obligations | `sprints/actions/`; existing `design/arch/fixmes/` drained in place | Target role resolves |
+| Closed delivery outcomes | Compact `sprints/archive/` records; ordinary working history in Git | `sprint` |
+| Role procedure / local delivery additions | Shared `.agents/skills/` / this method | Shared package / `sprint` |
+| Host-entry guidance and adapters | `AGENTS.md`, `.codex/`, `.claude/`, `.github/` entry and role wiring | `sprint` |
+| Repository verifier implementations / project document declaration | `scripts/` / `standing-documents.toml`; checker implementation in shared package | `test` / `sprint`; shared package |
+
+The primitives/intrinsics shared contracts under `design/runtime/` retain one
+nominated design owner; their location is not an instruction to change crate
+boundaries. Exact context entry points are linked by the governing design
+memories. Substantial technical proposals live with their technical owner and
+are linked from the sprint, not copied into a second specification.
+
+Host-entry guidance directs each coding-agent host to the canonical repository
+and shared-package authorities. Sprint maintains those entry points and their
+consistency with the role adapters; ownership of referenced architecture,
+evidence policy and shared role contracts stays with their respective owners.
+Copilot retains eleven checked-in role adapters, maintained directly and
+verified against the shared package by the existing wiring check. There is no
+adapter generator.
+
+Place Claude handoff inventories and scratch reports in ignored `.local/` so
+its normal file tools can access them within the repository scope.
+
+#### Retention and maintenance
+
+- Retain a document for a named reader, current purpose, owner and canonical
+  content. A link or past approval does not by itself justify retention.
+- Maintain each claim authoritatively once. Audience-specific explanations
+  link to that authority; indexes and memories remain thin navigation.
+- Distinguish current contracts, proposals and historical evidence. Root
+  establishment proves discoverability, not approval or currentness.
+- Compare a candidate with its canonical destination. Delete redundant or
+  obsolete originals when Git suffices; first extract any useful missing
+  rules, rationale or evidence in the destination's form. Preserve unresolved
+  obligations independently; deleting a record does not resolve its findings.
+- Retire working plans after incorporating their useful results. Keep closed
+  records only for an explicit evidence or rationale need beyond Git. Preserve
+  irreplaceable raw evidence in an established location with its purpose.
+- Keep PLAN focused on current assurance and SPRINT on current coordination.
+  Completed matrices and transcripts do not accumulate there or move into a
+  replacement archive dump. Split only independently maintained subjects.
+- Establish every retained document through its governing memory or a coherent
+  collection to root `CLAUDE.md`. The project declaration implements discovery,
+  not another explanatory map; new exceptions need explicit disposition.
+- Judge reduction by active prose, duplicate authorities, and how many places
+  a reader or ordinary change must visit. File/finding counts are diagnostic,
+  not quotas or proof that retained content is worth keeping.
 
 ### 3.2 Reading order
 

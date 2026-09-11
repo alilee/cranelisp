@@ -26,12 +26,15 @@
 
 use cranelisp_intrinsics::alloc::alloc_with_rc;
 use cranelisp_intrinsics::drop::{consume_sexp, consume_slist};
+use cranelisp_intrinsics::handle::{Borrowed, Owned};
 use cranelisp_intrinsics::heap_string::alloc_string;
 use cranelisp_types::HeapHeader;
 use cranelisp_types::{
     TAG_SCONS, TAG_SEXP_BOOL, TAG_SEXP_BRACKET, TAG_SEXP_FLOAT, TAG_SEXP_INT, TAG_SEXP_LIST,
     TAG_SEXP_STR, TAG_SEXP_SYM, TAG_SNIL,
 };
+
+use crate::abi_facts::adopt_produced_value;
 
 // Heap-layout offsets (base-pointer convention, Decision 10), single-sourced
 // from `cranelisp_types::HeapHeader` (Principle 7). The payload (first ADT
@@ -59,33 +62,44 @@ const NULLARY_THRESHOLD: i64 = cranelisp_types::NULLARY_TAG_THRESHOLD as i64;
 // ---------------------------------------------------------------------------
 
 /// Allocate a 2-slot ADT cell: [tag, field].
-fn alloc_adt_2(tag: i64, field: i64) -> i64 {
+enum StoredField {
+    Scalar(i64),
+    Owned(Owned),
+}
+
+fn alloc_adt_2(tag: i64, field: StoredField) -> Owned {
     let payload_size = 16; // tag(8) + field(8)
     let base = alloc_with_rc(payload_size) as i64;
     unsafe {
         write_i64(base, PAYLOAD_OFFSET, tag);
-        write_i64(base, FIELD0_OFFSET, field);
+        match field {
+            StoredField::Scalar(value) => write_i64(base, FIELD0_OFFSET, value),
+            StoredField::Owned(owner) => write_i64(base, FIELD0_OFFSET, owner.into_raw()),
+        }
     }
-    base
+    // SAFETY: both slots are initialized and `base` is a fresh RC=1 ADT.
+    unsafe { adopt_produced_value(base) }
 }
 
 /// Allocate a 3-slot ADT cell: [tag, field0, field1].
-fn alloc_adt_3(tag: i64, field0: i64, field1: i64) -> i64 {
+fn alloc_adt_3(tag: i64, field0: Owned, field1: Owned) -> Owned {
     let payload_size = 24; // tag(8) + field0(8) + field1(8)
     let base = alloc_with_rc(payload_size) as i64;
     unsafe {
         write_i64(base, PAYLOAD_OFFSET, tag);
-        write_i64(base, FIELD0_OFFSET, field0);
-        write_i64(base, FIELD1_OFFSET, field1);
+        write_i64(base, FIELD0_OFFSET, field0.into_raw());
+        write_i64(base, FIELD1_OFFSET, field1.into_raw());
     }
-    base
+    // SAFETY: all three slots are initialized and `base` is a fresh RC=1 ADT.
+    unsafe { adopt_produced_value(base) }
 }
 
-/// Build a runtime SList from a slice of i64 values.
+/// Build a runtime SList from a fixed array of owned values.
 /// Right-folds into SCons chain: SCons(items[0], SCons(items[1], ... SNil)).
-fn build_runtime_list(items: &[i64]) -> i64 {
-    let mut list = TAG_SNIL;
-    for &item in items.iter().rev() {
+fn build_runtime_list<const N: usize>(items: [Owned; N]) -> Owned {
+    // SAFETY: `TAG_SNIL` is the canonical produced nullary list value.
+    let mut list = unsafe { adopt_produced_value(TAG_SNIL) };
+    for item in items.into_iter().rev() {
         list = alloc_adt_3(TAG_SCONS, item, list);
     }
     list
@@ -95,31 +109,33 @@ fn build_runtime_list(items: &[i64]) -> i64 {
 ///
 /// # Safety
 /// `ptr` must be a valid SList value (SNil tag or heap pointer to SCons).
-unsafe fn read_slist(mut ptr: i64) -> Vec<i64> {
+unsafe fn read_slist<'a>(mut list: Borrowed<'a>) -> Vec<Borrowed<'a>> {
     let mut result = Vec::new();
-    unsafe {
-        loop {
-            if ptr < NULLARY_THRESHOLD {
-                break;
-            }
-            let head = read_i64(ptr, FIELD0_OFFSET);
-            let tail = read_i64(ptr, FIELD1_OFFSET);
-            result.push(head);
-            ptr = tail;
+    loop {
+        if list.raw_for_read() < NULLARY_THRESHOLD {
+            break;
         }
+        // SAFETY: the loop guard establishes the current node is an SCons;
+        // its closed layout carries reference-bearing head and tail fields.
+        let head = unsafe { borrowed_field(list, FIELD0_OFFSET) };
+        // SAFETY: same live SCons parent and closed layout as the head.
+        let tail = unsafe { borrowed_field(list, FIELD1_OFFSET) };
+        result.push(head);
+        list = tail;
     }
     result
 }
 
 /// Allocate a runtime string from bytes. Returns the base pointer as i64.
-fn alloc_runtime_string(name: &str) -> i64 {
-    alloc_string(name.as_bytes()) as i64
+fn alloc_runtime_string(name: &str) -> Owned {
+    // SAFETY: `alloc_string` returned a fully initialized fresh RC=1 String.
+    unsafe { adopt_produced_value(alloc_string(name.as_bytes()) as i64) }
 }
 
 /// Build a runtime SexpSym with the given name.
-fn make_sexp_sym(name: &str) -> i64 {
+fn make_sexp_sym(name: &str) -> Owned {
     let s = alloc_runtime_string(name);
-    alloc_adt_2(TAG_SEXP_SYM, s)
+    alloc_adt_2(TAG_SEXP_SYM, StoredField::Owned(s))
 }
 
 // ---------------------------------------------------------------------------
@@ -132,6 +148,19 @@ unsafe fn read_i64(base: i64, offset: usize) -> i64 {
 
 unsafe fn write_i64(base: i64, offset: usize, value: i64) {
     unsafe { *((base as *mut u8).add(offset) as *mut i64) = value }
+}
+
+/// Project a reference-bearing child through its live parent borrow.
+///
+/// # Safety
+///
+/// `offset` must identify a live reference-bearing field in the parent's
+/// established ADT layout.
+unsafe fn borrowed_field<'a>(parent: Borrowed<'a>, offset: usize) -> Borrowed<'a> {
+    let raw = unsafe { read_i64(parent.raw_for_read(), offset) };
+    // SAFETY: the caller established the field's retained-reference contract;
+    // the return type narrows the raw assertion to the parent lifetime.
+    unsafe { Borrowed::from_abi(raw) }
 }
 
 // ---------------------------------------------------------------------------
@@ -155,8 +184,8 @@ unsafe fn write_i64(base: i64, offset: usize, value: i64) {
 /// call on a `ys` that is `SNil`. This replaces the former *non-atomic*
 /// `*rc_ptr += 1` (audit MED-1), which became a genuine data race once the S85
 /// auto-IO wiring let a spark fork a callee sharing a value inc'd here.
-fn shallow_rc_inc(val: i64) {
-    cranelisp_intrinsics::rc::rc_inc(val);
+fn shallow_rc_inc(val: Borrowed<'_>) -> Owned {
+    val.to_owned()
 }
 
 /// Concatenate two runtime SList values (xs ++ ys).
@@ -192,22 +221,21 @@ fn shallow_rc_inc(val: i64) {
 ///
 /// Registered in the JIT as "sconcat" and in the `macros` module typechecker
 /// so that `macros/sconcat` resolves correctly.
-pub(crate) fn sconcat(xs: i64, ys: i64) -> i64 {
-    let items = unsafe { read_slist(xs) };
+pub(crate) fn sconcat(xs: Owned, ys: Owned) -> Owned {
+    let items = unsafe { read_slist(xs.as_borrowed()) };
+    let ys_borrowed = ys.as_borrowed();
     let result = if items.is_empty() {
         // No items from xs: the result IS ys. One inc on the node returned —
         // nullary-safe, so an SNil `ys` is skipped inside `rc_inc`.
-        shallow_rc_inc(ys);
-        ys
+        shallow_rc_inc(ys_borrowed)
     } else {
         // RE-1: one inc on the node embedded as the tail. Not a walk — the
         // interior nodes and elements already have owners, unchanged by the
         // embed.
-        shallow_rc_inc(ys);
-        let mut acc = ys;
-        for &item in items.iter().rev() {
+        let mut acc = shallow_rc_inc(ys_borrowed);
+        for item in items.into_iter().rev() {
             // Inc each item so it survives when the original xs chain is freed.
-            shallow_rc_inc(item);
+            let item = shallow_rc_inc(item);
             acc = alloc_adt_3(TAG_SCONS, item, acc);
         }
         acc
@@ -239,8 +267,8 @@ pub(crate) fn sconcat(xs: i64, ys: i64) -> i64 {
 /// incs) and then releases the input via `consume_sexp` (runtime-side
 /// recursive drop glue). Callers compile args through
 /// `compile_consuming_arg_list`.
-pub(crate) fn quote_sexp(val: i64) -> i64 {
-    let result = quote_sexp_build(val);
+pub(crate) fn quote_sexp(val: Owned) -> Owned {
+    let result = quote_sexp_build(val.as_borrowed());
     // Decision 24: consume the heap argument we did not return.
     consume_sexp(val);
     result
@@ -249,65 +277,75 @@ pub(crate) fn quote_sexp(val: i64) -> i64 {
 /// Build the quoted-form Sexp without consuming `val`. Shared between the
 /// extern entry and `quote_slist` (which feeds items that are still owned
 /// by the parent SList).
-fn quote_sexp_build(val: i64) -> i64 {
+fn quote_sexp_build(val: Borrowed<'_>) -> Owned {
     // SAFETY: val is a valid heap pointer to a Sexp ADT cell.
-    let tag = unsafe { read_i64(val, PAYLOAD_OFFSET) };
-    let field0 = unsafe { read_i64(val, FIELD0_OFFSET) };
+    let tag = unsafe { read_i64(val.raw_for_read(), PAYLOAD_OFFSET) };
 
     match tag {
         TAG_SEXP_INT => {
+            let field0 = unsafe { read_i64(val.raw_for_read(), FIELD0_OFFSET) };
             let ctor = make_sexp_sym("macros/SexpInt");
-            let original = alloc_adt_2(TAG_SEXP_INT, field0);
-            let items = build_runtime_list(&[ctor, original]);
-            alloc_adt_2(TAG_SEXP_LIST, items)
+            let original = alloc_adt_2(TAG_SEXP_INT, StoredField::Scalar(field0));
+            let items = build_runtime_list([ctor, original]);
+            alloc_adt_2(TAG_SEXP_LIST, StoredField::Owned(items))
         }
         TAG_SEXP_FLOAT => {
+            let field0 = unsafe { read_i64(val.raw_for_read(), FIELD0_OFFSET) };
             let ctor = make_sexp_sym("macros/SexpFloat");
-            let original = alloc_adt_2(TAG_SEXP_FLOAT, field0);
-            let items = build_runtime_list(&[ctor, original]);
-            alloc_adt_2(TAG_SEXP_LIST, items)
+            let original = alloc_adt_2(TAG_SEXP_FLOAT, StoredField::Scalar(field0));
+            let items = build_runtime_list([ctor, original]);
+            alloc_adt_2(TAG_SEXP_LIST, StoredField::Owned(items))
         }
         TAG_SEXP_BOOL => {
+            let field0 = unsafe { read_i64(val.raw_for_read(), FIELD0_OFFSET) };
             let ctor = make_sexp_sym("macros/SexpBool");
-            let original = alloc_adt_2(TAG_SEXP_BOOL, field0);
-            let items = build_runtime_list(&[ctor, original]);
-            alloc_adt_2(TAG_SEXP_LIST, items)
+            let original = alloc_adt_2(TAG_SEXP_BOOL, StoredField::Scalar(field0));
+            let items = build_runtime_list([ctor, original]);
+            alloc_adt_2(TAG_SEXP_LIST, StoredField::Owned(items))
         }
         TAG_SEXP_STR => {
             // The cloned ADT reuses field0 (a String pointer) — inc it so
             // both the input and the new wrapper own a reference.
-            shallow_rc_inc(field0);
+            // SAFETY: this tag's field 0 is a retained String reference.
+            let field0 = unsafe { borrowed_field(val, FIELD0_OFFSET) };
             let ctor = make_sexp_sym("macros/SexpStr");
-            let original = alloc_adt_2(TAG_SEXP_STR, field0);
-            let items = build_runtime_list(&[ctor, original]);
-            alloc_adt_2(TAG_SEXP_LIST, items)
+            let original = alloc_adt_2(TAG_SEXP_STR, StoredField::Owned(field0.to_owned()));
+            let items = build_runtime_list([ctor, original]);
+            alloc_adt_2(TAG_SEXP_LIST, StoredField::Owned(items))
         }
         TAG_SEXP_SYM => {
             // Symbol name (string ptr) -> wrap as SexpStr for the argument.
             // Inc so the new SexpStr owns an independent reference.
-            shallow_rc_inc(field0);
+            // SAFETY: this tag's field 0 is a retained String reference.
+            let field0 = unsafe { borrowed_field(val, FIELD0_OFFSET) };
             let ctor = make_sexp_sym("macros/SexpSym");
-            let str_val = alloc_adt_2(TAG_SEXP_STR, field0);
-            let items = build_runtime_list(&[ctor, str_val]);
-            alloc_adt_2(TAG_SEXP_LIST, items)
+            let str_val = alloc_adt_2(TAG_SEXP_STR, StoredField::Owned(field0.to_owned()));
+            let items = build_runtime_list([ctor, str_val]);
+            alloc_adt_2(TAG_SEXP_LIST, StoredField::Owned(items))
         }
         TAG_SEXP_LIST => {
+            // SAFETY: this tag's field 0 is a retained SList reference.
+            let field0 = unsafe { borrowed_field(val, FIELD0_OFFSET) };
             let ctor = make_sexp_sym("macros/SexpList");
             let quoted_list = quote_slist(field0);
-            let items = build_runtime_list(&[ctor, quoted_list]);
-            alloc_adt_2(TAG_SEXP_LIST, items)
+            let items = build_runtime_list([ctor, quoted_list]);
+            alloc_adt_2(TAG_SEXP_LIST, StoredField::Owned(items))
         }
         TAG_SEXP_BRACKET => {
+            // SAFETY: this tag's field 0 is a retained SList reference.
+            let field0 = unsafe { borrowed_field(val, FIELD0_OFFSET) };
             let ctor = make_sexp_sym("macros/SexpBracket");
             let quoted_list = quote_slist(field0);
-            let items = build_runtime_list(&[ctor, quoted_list]);
-            alloc_adt_2(TAG_SEXP_LIST, items)
+            let items = build_runtime_list([ctor, quoted_list]);
+            alloc_adt_2(TAG_SEXP_LIST, StoredField::Owned(items))
         }
         _ => {
             // Unknown tag — panic at runtime.
             let msg = "unknown Sexp tag in quote-sexp";
             cranelisp_intrinsics::panic::runtime_panic(msg.as_ptr(), msg.len());
-            0
+            // SAFETY: this is the existing no-reference error sentinel after
+            // `runtime_panic` has recorded the unknown-tag failure.
+            unsafe { adopt_produced_value(0) }
         }
     }
 }
@@ -316,18 +354,18 @@ fn quote_sexp_build(val: i64) -> i64 {
 ///
 /// SNil -> SexpSym("macros/SNil")
 /// SCons(head, tail) -> SexpList([SexpSym("macros/SCons"), quote_sexp(head), quote_slist(tail)])
-fn quote_slist(slist: i64) -> i64 {
+fn quote_slist(slist: Borrowed<'_>) -> Owned {
     let items = unsafe { read_slist(slist) };
     // Use the non-consuming builder for sub-items: ownership of each item
     // stays with the parent SList, which the caller will eventually
     // release via `consume_sexp` at the top-level quote_sexp.
-    let quoted: Vec<i64> = items.iter().map(|&item| quote_sexp_build(item)).collect();
+    let quoted: Vec<Owned> = items.into_iter().map(quote_sexp_build).collect();
 
     let nil = make_sexp_sym("macros/SNil");
-    quoted.iter().rev().fold(nil, |acc, &item| {
+    quoted.into_iter().rev().fold(nil, |acc, item| {
         let scons_sym = make_sexp_sym("macros/SCons");
-        let list_items = build_runtime_list(&[scons_sym, item, acc]);
-        alloc_adt_2(TAG_SEXP_LIST, list_items)
+        let list_items = build_runtime_list([scons_sym, item, acc]);
+        alloc_adt_2(TAG_SEXP_LIST, StoredField::Owned(list_items))
     })
 }
 

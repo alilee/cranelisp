@@ -1282,7 +1282,7 @@ fn register_test_infrastructure(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cranelisp_types::{CallableOrigin, Life};
+    use cranelisp_types::{CallableOrigin, Life, TemplateBody};
 
     /// Test helper: resolve a constructor by its BARE name to the terminal `Def`,
     /// following the S109 same-module bare→canonical `Import` alias one hop (a sum
@@ -1317,7 +1317,7 @@ mod tests {
         (tables, AtomicU32::new(0))
     }
 
-    // spec: design/arch/s121-lifecycle-public-api-review.md §13 — session
+    // spec: design/int/int.md "S121 correction" — session
     // bootstrap is a typed error boundary. A lifecycle refusal while installing
     // a synthetic seed must return a located compiler error, never unwind.
     #[test]
@@ -1802,6 +1802,52 @@ mod tests {
             }
             other => panic!("catch-runtime-error should be a PrimitiveExtern Def, got {other:?}"),
         }
+    }
+
+    // spec: design/arch/concreteness-types-first.md §1.3 — enumerate the
+    // production bootstrap's complete generic uniform-body roster through the
+    // lifecycle carriers that actually mount it.
+    #[test]
+    fn bootstrap_generic_uniform_body_roster_is_closed() {
+        let (tables, next_id) = fresh_tables();
+        mount_synthetic_modules(&tables, &next_id).expect("bootstrap mount");
+        let mut roster = std::collections::BTreeSet::new();
+        for module in tables.iter() {
+            for (name, binding) in module.value().all_symbols() {
+                let Some(callable) = binding.callable() else {
+                    continue;
+                };
+                if callable.arm.scheme.type_vars.is_empty() {
+                    continue;
+                }
+                let body = match &callable.arm.life {
+                    Life::HostPromised => Some("HostPromised".to_string()),
+                    Life::Template {
+                        body: TemplateBody::UniformRust { abi_name },
+                        ..
+                    } => Some(format!("UniformRust({abi_name})")),
+                    _ => None,
+                };
+                if let Some(body) = body {
+                    assert!(
+                        binding.callable_got_slot().is_none(),
+                        "generic uniform body {}/{name} must remain slot-less",
+                        module.key()
+                    );
+                    roster.insert(format!("{}/{name}: {body}", module.key()));
+                }
+            }
+        }
+        let expected = std::collections::BTreeSet::from([
+            "primitives/bind: HostPromised".to_string(),
+            "primitives/catch-runtime-error: HostPromised".to_string(),
+            "primitives/race: HostPromised".to_string(),
+            "primitives/select: HostPromised".to_string(),
+        ]);
+        assert_eq!(
+            roster, expected,
+            "an added or reclassified generic uniform body introduces a new backend representation dependency"
+        );
     }
 
     #[test]

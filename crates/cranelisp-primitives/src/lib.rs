@@ -112,6 +112,8 @@ use std::sync::{Arc, LazyLock};
 
 use cranelisp_types::{GOT_TABLE_SIZE, GotTable, ModuleFullPath, SymbolTable};
 
+pub(crate) mod abi_facts;
+
 /// The writable static slab backing the synthetic `primitives` module's GOT,
 /// exported under the canonical link-time symbol `__cranelisp_got_primitives`.
 ///

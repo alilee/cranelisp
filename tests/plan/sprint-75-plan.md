@@ -188,7 +188,7 @@ semantics):
 | `tests/spec_10_io.rs` | `Pure`/`bind!`/IO path — `mode_equiv_io_pure_primitive`'s spec-section home; part of the 0122 cluster shape. |
 
 These rows already exist in `PLAN.md` and are already `[Tested ...]` from
-prior sprints; **no new rows are added by S75** (per §1, no new behaviour).
+prior sprints; **no new rows are added by S75** (per this plan's [risk assessment](#1-risk-assessment-is-any-new-language-visible-behaviour-introduced), no new behaviour).
 They are named here so the S77 int-conform sprint knows exactly which guards
 must replay green when the binary builds workspace-wide.
 

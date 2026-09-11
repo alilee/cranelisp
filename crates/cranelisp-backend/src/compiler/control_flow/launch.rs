@@ -436,7 +436,10 @@ mod tests {
         // consume_closure path) — it dec's the captured `h`. The discriminating
         // assertion: WITH the consuming-call inc `h` survives this drop; pre-fix the
         // double-dec frees it (the corruption that wrecked the launched serve loop).
-        cranelisp_intrinsics::drop::consume_closure(cont_ptr);
+        // SAFETY: the fixture transferred the continuation owner out of the
+        // deliberately unconsumed Bind node and consumes it exactly once here.
+        let cont = unsafe { cranelisp_intrinsics::handle::Owned::from_abi(cont_ptr) };
+        cranelisp_intrinsics::drop::consume_closure(cont);
 
         #[cfg(debug_assertions)]
         assert!(

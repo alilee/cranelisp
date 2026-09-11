@@ -610,7 +610,7 @@ window).
 
 ### /qa — sprint-wide failing-test plan (2026-07-15, COMPLETE; Phase-3 exit gate MET)
 
-**Plan location**: `tests/plan/PLAN.md` §"Sprint 110" (the drafting spec
+**Plan location**: [historical QA plan](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md) §"Sprint 110" (the drafting spec
 `/testing` authors to in Phase 5). Risk register: `tests/plan/risks.md`
 §"S110 risk read" (10 entries, S110-1…S110-10). Vocabulary add:
 `class=shared-state-write-race` (tests/CLAUDE.md, per 0604 §Acceptance 4).

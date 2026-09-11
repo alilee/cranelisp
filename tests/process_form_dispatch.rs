@@ -8,8 +8,9 @@
 // other two cannot validate end-to-end.
 //
 // What this file covers (post Decision 44 + /spec FIXME 0165 resolution +
-// /arch FIXME 0166 resolution; per `tests/plan/implementation-slice-s66.md
-// §5.1` revised):
+// /arch FIXME 0166 resolution; per
+// the [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md),
+// FIXME 0098 — process_form gap-orchestration):
 //
 //   - REPL `(import [m])` immediately followed by `(macro-from-m ...)` —
 //     the typed `ExpansionError::Gap(ResolutionGap::MacroInMem(fq))` retry
@@ -188,7 +189,8 @@ fn process_form_dispatch_bare_forward_ref_errors_clearly() {
 
 // spec: design/backend/backend.md §"FIXME 0099 — GotObserver implementation (was: GOT-slot population log gap)"
 // (`CRANELISP_GOT_TRACE` reservation) + orchestration invariant per
-// `tests/plan/implementation-slice-s66.md §5.1`.
+// the [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md),
+// FIXME 0098 — process_form gap-orchestration.
 // FIXME(/dev int Phase 4 of FIXME 0098 + /dev backend Phase 1 of FIXME 0099,
 //       Decision 44) — fails until backend's `register_got_observer` exists
 //       AND int's `process_cluster` dispatches macro vs. fn after the

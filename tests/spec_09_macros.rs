@@ -4,7 +4,7 @@
 // from legacy integration-tier `tests/macros.rs`, `tests/ring1.rs`,
 // `tests/ring3_repl.rs` (already absorbed into repl_*.rs in Wave 3),
 // `tests/sketch_port.rs`, and `tests/e2e.rs`. REPL canonical per
-// `tests/plan/PLAN.md §"Mode canonicalisation"`.
+// [current mode-canonicalisation guidance](plan/PLAN.md#mode-canonicalisation--repl-is-the-canonical-surface-for-language-conformance).
 //
 // What this file covers:
 //   - Sexp data model (§9.1) — observable through working macros
@@ -689,7 +689,7 @@ fn runtime_error_during_expansion_clean_report() {
 // (carry-forward: legacy/v4_pipeline.rs §D — Wave 6 batch 6)
 //
 // These tests use `--run` mode (mode-specific exception per
-// `tests/plan/PLAN.md §"Mode canonicalisation"`) — the canonical
+// [current mode-canonicalisation guidance](plan/PLAN.md#mode-canonicalisation--repl-is-the-canonical-surface-for-language-conformance)) — the canonical
 // observation for §9.2.5 capabilities (macro body calls helper, calls
 // another macro, transitive call graph) is the exit-code witness from
 // the batch driver. The REPL form is awkward for single-file

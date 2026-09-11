@@ -2,7 +2,7 @@
 //
 // Carries forward the slash-command + introspection assertions from the
 // integration-tier `repl_experience.rs`, `repl_negative.rs`, `ring3_repl.rs`,
-// `v4_repl_eval.rs`. Per `tests/plan/PLAN.md §"Mode canonicalisation"`,
+// `v4_repl_eval.rs`. Per the [current mode-canonicalisation guidance](plan/PLAN.md#mode-canonicalisation--repl-is-the-canonical-surface-for-language-conformance),
 // canonical mode is REPL (this file IS the REPL surface — slash commands).
 //
 // What this file covers (per `repl/spec.md §3` introspection + §4 universal
@@ -2505,14 +2505,17 @@ fn mem_snapshot_emits_live_and_allocs_neg_no_delta() {
     );
 }
 
-// spec: repl/spec.md §3.7 — `/mem <expr>` evaluates the expression, prints
-// the formatted result, then emits one `; delta:` line carrying signed
-// `bytes` and `live` deltas plus `allocs` / `deallocs` fields.
+// spec: repl/spec.md §3.7 — `/mem <expr>` evaluates and formats the expression,
+// releases its returned owner, then samples the delta. A warmed scalar control
+// and heap-valued subject must both report `live +0`; the heap result is checked
+// separately so an early release cannot satisfy the balance oracle.
 // (carry: legacy/e2e.rs::mem_command_delta_runs_expr_and_shows_signed_deltas)
 #[test]
 fn mem_with_expr_emits_signed_delta_line() {
     let out = repl(
         "(import [primitives [str-concat]])
+(str-concat \"warm\" \"up\")
+/mem 0
 /mem (str-concat \"hi \" \"world\")
 ",
     );
@@ -2526,16 +2529,19 @@ fn mem_with_expr_emits_signed_delta_line() {
         "/mem <expr> MUST evaluate the expression; got:\n{}",
         out.stdout
     );
-    let delta_line = out
+    let delta_lines = out
         .stdout
         .lines()
-        .find(|l| l.contains("; delta:"))
-        .unwrap_or_else(|| {
-            panic!(
-                "/mem <expr> MUST emit a '; delta:' line per §3.7; got:\n{}",
-                out.stdout
-            )
-        });
+        .filter(|line| line.contains("; delta:"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        delta_lines.len(),
+        2,
+        "the scalar control and heap subject must each emit one delta line; got:\n{}",
+        out.stdout
+    );
+    let control_line = delta_lines[0];
+    let delta_line = delta_lines[1];
     for needle in &["allocs +", "deallocs +", "bytes ", "live "] {
         assert!(
             delta_line.contains(needle),
@@ -2548,10 +2554,14 @@ fn mem_with_expr_emits_signed_delta_line() {
         "'bytes' delta MUST carry a signed prefix per §3.7; got:\n{delta_line}"
     );
     assert!(
-        delta_line.contains("live +")
-            || delta_line.contains("live -")
-            || delta_line.contains("live 0"),
-        "'live' delta MUST be signed per §3.7; got:\n{delta_line}"
+        control_line.contains("live +0"),
+        "the warmed scalar control must retain no result owner; got:\n{control_line}\nfull stdout:\n{}",
+        out.stdout
+    );
+    assert!(
+        delta_line.contains("live +0"),
+        "the rendered heap result must be released before /mem closes its delta window; got:\n{delta_line}\nfull stdout:\n{}",
+        out.stdout
     );
 }
 
@@ -3324,7 +3334,8 @@ fn display_defn_with_docstring_uses_dash_separator() {
 // `cargo public-api` baseline) that backend's public surface no longer
 // exposes `display::*` symbols.
 //
-// Per `tests/plan/implementation-slice-s66.md §5.7`.
+// Per the [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md),
+// FIXME 0108 — display.rs backend → int.
 
 // spec: repl/spec.md §1.1 — universal output format `:Type value` is
 // spec-pinned; relocation MUST NOT shift output bytes.
@@ -4459,7 +4470,8 @@ fn list_layout_l3_neg_boundary_no_straddle() {
 // =============================================================================
 // Sprint 109 — EV-1 (named fn value shows FQ name, not <closure>, 0572), FQ-D2
 // (bare FQ display parity with imported introspection), DC-10 (constructor
-// listed once — /list + /exports twins). Plan: tests/plan/PLAN.md §S109 §G/§B/§D.
+// listed once — /list + /exports twins). See the [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md),
+// S109 G/B/D.
 // =============================================================================
 
 // spec: repl/spec.md §1.5 — a named function value carries its FULLY-QUALIFIED
@@ -4565,7 +4577,7 @@ fn exports_show_ctor_once_canonical() {
 // VALUE renders WITH its fields (`(Lst.Cons 5 Lst.Nil)`-form), never as a bare
 // ctor name with fields DROPPED. GREEN today; invariance pin (guards the
 // canonical-aware `display.rs::ctor_field_types` probe through the W1 flip).
-// Plan: tests/plan/PLAN.md §S109 §D.1 AN-3.
+// [Historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md), S109 D.1 AN-3.
 #[test]
 fn data_ctor_value_displays_with_fields_not_bare_name_neg() {
     let out = repl(
@@ -4592,7 +4604,8 @@ fn data_ctor_value_displays_with_fields_not_bare_name_neg() {
 // =============================================================================
 // Sprint 109 — 0571.2 B1: a private FQ member MUST error (§8.7.3), NOT display an
 // introspection envelope; mode-uniform. `/review` proved this in the landed 0571
-// change-set (35153cf8). Plan: tests/plan/PLAN.md §S109 (0571.2 negatives).
+// change-set (35153cf8). See the [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md),
+// S109 0571.2 negatives.
 // =============================================================================
 
 // spec: spec/08-modules.md §8.7.3 — accessing a private member via a qualified

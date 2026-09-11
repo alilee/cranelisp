@@ -318,11 +318,10 @@ impl std::fmt::Debug for OwnedProgramResult {
 /// It comes, in order of authority:
 ///
 /// 1. from the result-producing entry's own `codegen_view` body type — the
-///    SAME `ConcreteType` backend computed its result roots from
-///    (`compile_to_module`'s `result_roots`, which strips the `IO` head of an
-///    `IO a` body exactly as this does). Taking the key from the same read
-///    that produced the code pointer is the §4.3 rule, and it makes int's
-///    classification agree with backend's `request_if_owning` **by
+///    SAME `ConcreteType` backend computed its result roots from, projected
+///    through the shared `ConcreteType::result_root()` rule. Taking the key
+///    from the same read that produced the code pointer is the §4.3 rule, and
+///    it makes int's classification agree with backend's `request_if_owning` **by
 ///    construction** instead of by a second derivation (§4.1 — never re-derive
 ///    backend's type encoding);
 /// 2. failing that, by narrowing the observed static `Type`. A narrowing
@@ -335,15 +334,15 @@ impl std::fmt::Debug for OwnedProgramResult {
 /// polymorphic nullary constructor (`None` ⇒ `(Option t2)`) are spec-required
 /// REPL displays whose observed `Type` carries a residual var. Backend already
 /// resolves those through `MonoExpr::lenient_from_expr`, and int must reach the
-/// same verdict backend reached, not a second one. FIXME 0892 carries this
-/// back to `/design`.
+/// same verdict backend reached, not a second one. FIXME 0896 is ratified in
+/// `design/int/result-owner.md` §1.1.1.
 fn release_key(
     codegen_result_ty: Option<ConcreteType>,
     ty: &Type,
     module: &ModuleFullPath,
 ) -> Result<ConcreteType, CranelispError> {
     if let Some(codegen_ty) = codegen_result_ty {
-        return Ok(strip_io_head(codegen_ty));
+        return Ok(codegen_ty.result_root().clone());
     }
     ConcreteType::from_type(ty).map_err(|why| {
         OwnedProgramResult::invariant(format!(
@@ -412,23 +411,6 @@ where
         result_is_exit_code: result_is_exit_code(inner_ty),
         release_symbol,
     })
-}
-
-/// `IO a` ⇒ `a`; anything else unchanged. The single int-side statement of the
-/// result-root rule backend applies at `compile_to_module` when it pre-requests
-/// glue for every concrete owning result root "including the inner `a` of
-/// `IO a`" (§3.1). Run, REPL and the linked stub all key through here.
-fn strip_io_head(ty: ConcreteType) -> ConcreteType {
-    match ty {
-        ConcreteType::ADT(ref name, ref args)
-            if name.module.as_ref() == "primitives"
-                && name.name.as_ref() == "IO"
-                && !args.is_empty() =>
-        {
-            args[0].clone()
-        }
-        other => other,
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1081,9 +1063,9 @@ mod tests {
         assert!(take_events().is_empty());
     }
 
-    // spec: design/int/result-owner.md §3.1 — the release key strips the `IO`
-    // head exactly as backend's `result_roots` pre-pass does, so `IO String`
-    // selects `String` glue and never `IO String` glue.
+    // spec: design/int/result-owner.md §1.1.1 — the shared
+    // `ConcreteType::result_root()` projection makes both int and backend select
+    // `String` glue for `IO String`, never `IO String` glue.
     #[test]
     fn codegen_view_io_head_is_stripped_to_the_inner_type() {
         let _ = take_events();

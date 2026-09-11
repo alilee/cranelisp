@@ -6,10 +6,9 @@
 > ruling, binding) and FIXME 0889's own precondition — *the ownership protocol is
 > ruled before any `/dev` dispatch*.
 >
-> **Status: RULED, pre-implementation.** §3 is normative. §8 is the ordered
-> `/dev` obligation set, and **§8 D0 is a hard gate: the protocol does not bind
-> until D0's measurement is on the record** (the sprint's measure-before-binding
-> discipline; the S118 §4.1 falsification is the precedent).
+> **Status: RULED and delivered in Binary/int.** §3 is normative. Section 8
+> retains the ordered evidence obligations that established the implementation;
+> current delivery and residual status lives in `s122-closure.md` §3.
 >
 > **S121:** both open dependencies returned settled — §12 records the answers,
 > §3 Rule 0 absorbs the `/arch` enforcement ruling (FIXME 0927), and §8 D2's
@@ -28,6 +27,18 @@
 > Supersedes `design/int/macro-marshal-rc-protection.md` §2 (the deep
 > `protect_marshalled_cell` +1). That doc's diagnosis stands and its history is
 > load-bearing; its *mechanism* is retired by §3 Rule 2 here.
+>
+> **S122 delivery reconciliation (2026-09-10).** Binary/int now uses the typed
+> handle and consuming APIs, clears the synthesized clause's inferred ownership
+> summary, and follows the single-owner transfer and result-discharge protocol.
+> The executable clause's `Code` owner leases
+> the entry pointer through marshal, protected invoke, result copy and result
+> consume. On the trap path Rule 3 forfeits the transferred argument tree and
+> forbids host cleanup after the non-local exit; no all-path zero-residue claim
+> is made. `design/int/s122-closure.md` §3 fixes the current source reservation
+> and current evidence boundary. Backend's selected-arm parameter carriage and
+> compilation-local match-owner result close Q4's returned-alias residual; the
+> public alias/nullary pair passes 2/2 and scoped review found no material issue.
 
 ---
 
@@ -193,14 +204,10 @@ statement is `design/arch/bounded-contexts.md` §6. Absorbed here:
    makes the convention uniform, D0 confirms what that uniform convention
    actually emits.
 
-**As built (verified S121):** not implemented. The only non-test `mode_summary`
-mention in `src/process_form/macro_clause.rs` is the `set_callable_slot`
-destructure at `:455`, which explicitly *preserves* the summary while
-overwriting the slot. Under the S121 C1 lifecycle wash the same act becomes a
-field clear at the settlement funnel (`Life::Concrete`'s `mode_summary`); the
-seam does not move, only the spelling.
-
-`/dev` obligations D0 and D4 below discharge this rule.
+**As delivered in S122:** int clears the synthesized clause's inferred
+`mode_summary` at clause preparation, before codegen sees it. The focused fence
+observes that structural pin; D0 retains the emitted all-Owned convention as a
+separate observation.
 
 ### Rule 1 — the marshaller produces owned trees and retains nothing
 
@@ -429,10 +436,10 @@ answers trades a bounded compile-time leak for an unbounded memory-safety class.
 
 ---
 
-## 8. Implementation obligations for `/dev`(int), in order
+## 8. Delivery obligations and evidence record
 
-Each step is a gate; a step that does not produce its stated evidence stops the
-wave rather than proceeding on assumption.
+These gates established the delivered Binary/int mechanism. Current evidence
+status and Q4's backend residual are recorded in `s122-closure.md` §3.
 
 - **D0 — pin the clause-side convention (Rule 0; the binding gate).** Determine
   whether a compiled macro clause consumes its `(SList Sexp)` parameter. Read it
@@ -452,15 +459,12 @@ wave rather than proceeding on assumption.
   ⇒ §2's argument is confirmed. Any red ⇒ §7.
 - **D2 — confirm `consume_sexp` covers `TAG_SEXP_ANNOTATED`.** Rule 4 discharges
   the result through intrinsics' tag dispatch; the two-field annotated cell
-  (`alloc_sexp_pair`) must have both fields discharged. **Confirmed absent, and
-  now scheduled (S121):** `crates/cranelisp-intrinsics/src/drop.rs:242-255` has
-  two arms plus a scalar catch-all, and `TAG_SEXP_ANNOTATED` is not imported
-  (`drop.rs:45`), so an annotated cell today deallocs its parent and leaks both
-  halves. The arm is C5 bundle I1
-  (`design/intrinsics/s121-c5-intrinsics-visit.md` §5). D2 becomes a
-  **precondition check**, not a discovery: it must be landed before Rules 3/4
-  bind, because Rule 4 makes the gap definitely reachable. The fix stays in
-  `drop.rs`; a compensating walk in `src/marshal.rs` is a `/review` reject.
+  (`alloc_sexp_pair`) must have both fields discharged. **Delivered and
+  observed:** intrinsics owns the tag-dispatch arm, while Binary/int's recursive
+  single-owner completeness cell visits the annotated root, both child cells
+  and both child strings. That cell is included in the reviewed S122 affected
+  13/13 set. The fix stays in `drop.rs`; a compensating release walk in
+  `src/marshal.rs` remains a `/review` reject.
 - **D3 — the drop-bomb detection proof (gate G4's per-tranche obligation).**
   Plant a deliberate leaked-on-the-floor `Owned` at this seam and prove the debug
   bomb catches it, at the frame. Per the 0768 rule an instrument is unverified

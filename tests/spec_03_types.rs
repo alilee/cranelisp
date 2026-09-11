@@ -3,7 +3,7 @@
 // Covers `spec/03-types.md`. Carries forward language-behaviour assertions
 // from the legacy integration-tier `tests/ring0.rs`, `tests/ring1.rs`,
 // `tests/ring2.rs`, `tests/sketch_port.rs`, and `tests/e2e.rs`. Per
-// `tests/plan/PLAN.md §"Mode canonicalisation"`, the canonical mode is
+// the [current mode-canonicalisation guidance](plan/PLAN.md#mode-canonicalisation--repl-is-the-canonical-surface-for-language-conformance), the canonical mode is
 // REPL — type assertions are visible in the `:primitives/Type value`
 // display per `repl/spec.md §1.2`.
 //
@@ -20,7 +20,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{run_through_all_modes, Cranelisp, PreludeVariant};
+use helpers::e2e::{Cranelisp, PreludeVariant, run_through_all_modes};
 
 // =============================================================================
 // Helpers
@@ -531,7 +531,8 @@ fn defn_call_with_too_many_args_arity_mismatch_neg() {
 
 // =============================================================================
 // §3.3.1 [S109 W6.3] — Written free-type-variable annotation resolution.
-// Plan: tests/plan/PLAN.md §L.1 (retained guards + R1/R3/R9(i) PINs).
+// [Historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md),
+// S109 L.1 (retained guards + R1/R3/R9(i) pins).
 //
 // §3.3.1 MUSTs cited by the rows below (the retired W6.2 MUST-1..MUST-4/SCOPE-5
 // band is superseded):
@@ -925,7 +926,8 @@ fn free_var_annotation_codegen_reaching_is_ambiguity_not_unknown_type_neg() {
 
 // =============================================================================
 // §3.3.1–3.3.5 [S109 W6.3] — SETTLED written-type-var semantics (user ruling
-// 2026-07-14; spec §3.3.1–3.3.5 rows 1–17). Plan: tests/plan/PLAN.md §L.1.
+// 2026-07-14; spec §3.3.1–3.3.5 rows 1–17). See the
+// [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md), S109 L.1.
 // This SUPERSEDES the W6.2 rigid-everywhere model shipped at `b2bfb760`: bare
 // written vars are NOT rigid — rigidity lives on the CONSTRAINT path only.
 //
@@ -1206,7 +1208,8 @@ fn qualified_lowercase_annotation_unknown_type_not_minted_neg() {
 
 // =============================================================================
 // §3.3.2–3.3.5 [S109 W6.3] — constraint path + value-position rows (R5–R17).
-// Free-standing trait fixtures (no stdlib). Plan: tests/plan/PLAN.md §L.1.
+// Free-standing trait fixtures (no stdlib). See the [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md),
+// S109 L.1.
 // =============================================================================
 
 // `nadd : (Fn [a a] a)` — a `Num`-style trait; bare params default to `self`
@@ -1379,7 +1382,8 @@ fn returned_rank1_polymorphic_fn_accepted() {
 
 // --- B-1 (RED, pos) — an annotated lambda APPLIED IN PLACE at a GENERIC arg ----
 //
-// Plan: tests/plan/PLAN.md §L Table 2b, row B-1 (FIXME 0596). The poly-as-value
+// [Historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md),
+// S109 L Table 2b, row B-1 (FIXME 0596). The poly-as-value
 // discriminator that landed at `c3008d1f` (R10) over-fires: it flags ANY written
 // lambda param var that is still `Type::Var` after body inference, conflating
 // (a) free-because-held-as-a-value (row 10, correctly rejected) with

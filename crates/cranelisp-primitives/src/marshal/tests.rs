@@ -1,5 +1,65 @@
 use super::*;
 
+fn consume_slist(raw: i64) {
+    cranelisp_intrinsics::drop::consume_slist(crate::abi_facts::test_owned(raw));
+}
+
+fn consume_sexp(raw: i64) {
+    cranelisp_intrinsics::drop::consume_sexp(crate::abi_facts::test_owned(raw));
+}
+
+fn alloc_adt_2(tag: i64, field: i64) -> i64 {
+    let field = if matches!(tag, TAG_SEXP_INT | TAG_SEXP_FLOAT | TAG_SEXP_BOOL) {
+        StoredField::Scalar(field)
+    } else {
+        StoredField::Owned(crate::abi_facts::test_owned(field))
+    };
+    super::alloc_adt_2(tag, field).into_raw()
+}
+
+fn alloc_adt_3(tag: i64, field0: i64, field1: i64) -> i64 {
+    super::alloc_adt_3(
+        tag,
+        crate::abi_facts::test_owned(field0),
+        crate::abi_facts::test_owned(field1),
+    )
+    .into_raw()
+}
+
+fn build_runtime_list(items: &[i64]) -> i64 {
+    items
+        .iter()
+        .rev()
+        .fold(TAG_SNIL, |tail, &item| alloc_adt_3(TAG_SCONS, item, tail))
+}
+
+unsafe fn read_slist(raw: i64) -> Vec<i64> {
+    unsafe { super::read_slist(crate::abi_facts::test_borrowed(raw)) }
+        .into_iter()
+        .map(|item| item.raw_for_read())
+        .collect()
+}
+
+fn make_sexp_sym(name: &str) -> i64 {
+    super::make_sexp_sym(name).into_raw()
+}
+
+fn shallow_rc_inc(raw: i64) {
+    let _ = super::shallow_rc_inc(crate::abi_facts::test_borrowed(raw)).into_raw();
+}
+
+fn sconcat(xs: i64, ys: i64) -> i64 {
+    super::sconcat(
+        crate::abi_facts::test_owned(xs),
+        crate::abi_facts::test_owned(ys),
+    )
+    .into_raw()
+}
+
+fn quote_sexp(raw: i64) -> i64 {
+    super::quote_sexp(crate::abi_facts::test_owned(raw)).into_raw()
+}
+
 use cranelisp_intrinsics::alloc::{alloc_count, dealloc_count};
 
 // spec: bounded-contexts.md §4a — heap-layout offsets single-sourced from
@@ -42,14 +102,14 @@ fn shallow_rc_inc_targets_canonical_rc_field() {
     // Inc via the marshal helper (rc 1 -> 2).
     shallow_rc_inc(base);
     // First consume: rc 2 -> 1, NOT freed (the inc landed at the RC field).
-    cranelisp_intrinsics::drop::consume_sexp(base);
+    consume_sexp(base);
     assert_eq!(
         cranelisp_intrinsics::alloc::dealloc_count() - deallocs_before,
         0,
         "inc must land on the RC field so the first dec does not free"
     );
     // Second consume: rc 1 -> 0, freed.
-    cranelisp_intrinsics::drop::consume_sexp(base);
+    consume_sexp(base);
     assert_eq!(
         cranelisp_intrinsics::alloc::alloc_count() - allocs_before,
         1

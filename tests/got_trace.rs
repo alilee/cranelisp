@@ -6,7 +6,8 @@
 // point (backend Phase 1) + int-side ring buffer + flush guard (Phase 2)
 // produce stderr trace events when `CRANELISP_GOT_TRACE=1`.
 //
-// What this file covers (per `tests/plan/implementation-slice-s66.md §5.2`):
+// What this file covers (per the [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md),
+// FIXME 0099 — GotObserver):
 //   - JitWrite events fire when symbols are JIT'd.
 //   - LinkerWrite events fire when cached objects are loaded.
 //   - Redefinition events fire when a REPL redefines a name.

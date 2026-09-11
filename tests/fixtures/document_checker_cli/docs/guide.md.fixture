@@ -1,0 +1,6 @@
+# Guide
+
+The [root memory](../CLAUDE.md#root-memory) defines the fixture. The same
+contract is identified by `CLAUDE.md` §Root memory.
+
+The retained [historical record](../archive/old.md) remains a valid live target.

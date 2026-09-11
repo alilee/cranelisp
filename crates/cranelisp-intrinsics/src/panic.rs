@@ -291,7 +291,9 @@ pub extern "C" fn cranelisp_run_program(
         // reactor through one entry — no second forcing site (0419-aligned).
         let inner = crate::io::drive_io(main_result);
         // Decision 24: release the caller's tree (non-consuming driver).
-        crate::drop::consume_io_tree(main_result);
+        // SAFETY: an IO-valued main result transfers its tree owner to the
+        // unified program driver.
+        crate::drop::consume_io_tree(unsafe { crate::handle::Owned::from_abi(main_result) });
         inner
     } else {
         main_result
@@ -440,7 +442,8 @@ pub extern "C" fn catch_runtime_error(thunk_closure: i64) -> i64 {
     //     from leaking exactly one closure cell per call. `consume_closure` runs
     //     the embedded drop glue on last ref (dec'ing any heap captures) before
     //     deallocating; a zero-capture thunk is a bare dealloc.
-    crate::drop::consume_closure(thunk_closure);
+    // SAFETY: the protected-call ABI transfers this one-shot thunk owner.
+    crate::drop::consume_closure(unsafe { crate::handle::Owned::from_abi(thunk_closure) });
 
     // 3. Read-and-clear the slot (covers both this thread's panic and any
     //    worker error ferried into it by the join paths).

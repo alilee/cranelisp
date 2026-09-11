@@ -72,6 +72,193 @@ fn cache_result_only_returned_closure_specializations_agree_uncached_cold_and_wa
     );
 }
 
+// spec: spec/12-runtime.md §12.5 + design/backend/module-caching.md §4 — a
+// generic self-call with a nested function parameter agrees across cold JIT,
+// a real warm object-cache load, and linking from that cached project state.
+#[test]
+fn cache_generic_self_call_agrees_cold_warm_and_linked() {
+    let files = [
+        (
+            "util.cl",
+            "(import [primitives [Int add-i64 eq-i64 sub-i64]])\n\
+             (defn repeat-fn [f :Int n x]\n\
+               (if (eq-i64 n 0) x (repeat-fn f (sub-i64 n 1) (f x))))\n\
+             (defn repeat-five [] (repeat-fn (fn [x] (add-i64 x 1)) 5 0))\n",
+        ),
+        (
+            "main.cl",
+            "(import [primitives [Pure]])\n\
+             (import [util [repeat-five]])\n\
+             (defn main [] (Pure (repeat-five)))\n",
+        ),
+    ];
+    let cold = project(&files)
+        .run("main.cl")
+        .env("CRANELISP_MODULE_TRACE", "1")
+        .output()
+        .assert_exit(5);
+    assert!(!cold.stderr.contains("cache hit"), "{}", cold.stderr);
+    assert!(
+        cold.tmp_exists(".cranelisp-cache/util.o"),
+        "the concrete util wrapper must emit the generic self-call specialization into util.o"
+    );
+    let util_object = cold.tmpdir.join(".cranelisp-cache/util.o");
+    let cold_object = fs::read(&util_object).expect("read cold util.o");
+    let cold_object_mtime = mtime(&cold, ".cranelisp-cache/util.o");
+
+    let warm = cold
+        .run_again()
+        .run("main.cl")
+        .env("CRANELISP_MODULE_TRACE", "1")
+        .output()
+        .assert_exit(5);
+    assert!(
+        warm.stderr.contains("cache hit (.meta valid) for util"),
+        "warm JIT execution must load the generic self-call's object from cache:\n{}",
+        warm.stderr
+    );
+    assert_eq!(
+        fs::read(&util_object).expect("read warm util.o"),
+        cold_object,
+        "warm JIT execution must reuse the exact util.o bytes"
+    );
+    assert_eq!(
+        mtime(&warm, ".cranelisp-cache/util.o"),
+        cold_object_mtime,
+        "warm JIT execution must not rewrite util.o"
+    );
+
+    let linked = warm
+        .run_again()
+        .link_then_run("main.cl")
+        .env("CRANELISP_MODULE_TRACE", "1")
+        .output()
+        .assert_exit(5);
+    assert!(
+        linked.stderr.contains("cache hit (.meta valid) for util"),
+        "linking from the warm project must reuse the generic self-call's cached object:\n{}",
+        linked.stderr
+    );
+    assert_eq!(
+        fs::read(&util_object).expect("read util.o after linking"),
+        cold_object,
+        "linking from the warm project must reuse the exact util.o bytes"
+    );
+    assert_eq!(
+        mtime(&linked, ".cranelisp-cache/util.o"),
+        cold_object_mtime,
+        "linking from the warm project must not rewrite util.o"
+    );
+}
+
+const PRE_SIGNATURE_IDENTITY_SCHEMA: u32 = 28;
+
+// spec: design/arch/s122-overload-reorder-publication.md §"Verification
+// boundary" — schema-28 sidecar/object pairs use the retired executable-key
+// identity. Version 29 must reject them with the current compiler fingerprint,
+// rebuild the pair, and then serve the rebuilt current pair on a warm run.
+#[test]
+fn schema28_identity_cache_refused_rebuilt_and_reused_warm() {
+    let cold = project(&[("main.cl", SCHEMA_MAIN), ("util.cl", SCHEMA_UTIL)])
+        .run("main.cl")
+        .env("CRANELISP_MODULE_TRACE", "1")
+        .output()
+        .assert_exit(42);
+    let cache_dir = cold.tmpdir.join(".cranelisp-cache");
+    let manifest_path = cache_dir.join("manifest.json");
+    let meta_path = cache_dir.join("util.meta.json");
+    let object_path = cache_dir.join("util.o");
+    let manifest = fs::read_to_string(&manifest_path).expect("read manifest.json");
+    let meta = fs::read_to_string(&meta_path).expect("read util.meta.json");
+    let current_schema = PRE_SIGNATURE_IDENTITY_SCHEMA + 1;
+    assert_eq!(
+        extract_manifest_format_version(&manifest),
+        Some(current_schema),
+        "the identity migration must stamp cache format 29"
+    );
+    assert_eq!(
+        extract_schema_version(&meta),
+        Some(current_schema),
+        "the identity migration must stamp sidecar schema 29"
+    );
+    let compiler_fingerprint = extract_json_string_field(&manifest, "compiler_mtime")
+        .expect("manifest must carry the current compiler fingerprint")
+        .to_string();
+    let build_id =
+        extract_build_id(&meta).expect("sidecar must carry the current compiler build identifier");
+    assert!(
+        object_path.is_file(),
+        "util.o must exist beside its sidecar"
+    );
+    let old_object_mtime = mtime(&cold, ".cranelisp-cache/util.o");
+
+    let stale_manifest = set_json_u32(
+        &manifest,
+        "\"cache_format_version\":",
+        PRE_SIGNATURE_IDENTITY_SCHEMA,
+    );
+    let stale_meta = set_json_u32(&meta, "\"schema_version\":", PRE_SIGNATURE_IDENTITY_SCHEMA);
+    assert_eq!(
+        extract_json_string_field(&stale_manifest, "compiler_mtime"),
+        Some(compiler_fingerprint.as_str()),
+        "the stale-version fixture must retain the current compiler fingerprint"
+    );
+    assert_eq!(
+        extract_build_id(&stale_meta).as_deref(),
+        Some(build_id.as_str()),
+        "the stale-version fixture must retain the current compiler build identifier"
+    );
+    fs::write(&manifest_path, stale_manifest).expect("write schema-28 manifest");
+    fs::write(&meta_path, stale_meta).expect("write schema-28 util sidecar");
+    nap_for_mtime();
+
+    let rebuilt = cold
+        .run_again()
+        .run("main.cl")
+        .env("CRANELISP_MODULE_TRACE", "1")
+        .output()
+        .assert_exit(42);
+    assert!(
+        !rebuilt.stderr.contains("cache hit") && !rebuilt.stderr.contains("metadata preloaded"),
+        "schema 28 must be refused before its table/object can be installed:\n{}",
+        rebuilt.stderr
+    );
+    let rebuilt_manifest = fs::read_to_string(&manifest_path).expect("read rebuilt manifest.json");
+    let rebuilt_meta = fs::read_to_string(&meta_path).expect("read rebuilt util.meta.json");
+    assert_eq!(
+        extract_manifest_format_version(&rebuilt_manifest),
+        Some(current_schema)
+    );
+    assert_eq!(extract_schema_version(&rebuilt_meta), Some(current_schema));
+    assert_eq!(
+        extract_json_string_field(&rebuilt_manifest, "compiler_mtime"),
+        Some(compiler_fingerprint.as_str())
+    );
+    assert_eq!(extract_build_id(&rebuilt_meta), Some(build_id));
+    let rebuilt_object_mtime = mtime(&rebuilt, ".cranelisp-cache/util.o");
+    assert_ne!(
+        rebuilt_object_mtime, old_object_mtime,
+        "schema-28 refusal must rebuild util.o instead of installing the paired object"
+    );
+
+    let warm = rebuilt
+        .run_again()
+        .run("main.cl")
+        .env("CRANELISP_MODULE_TRACE", "1")
+        .output()
+        .assert_exit(42);
+    assert!(
+        warm.stderr.contains("cache hit (.meta valid) for util"),
+        "the rebuilt schema-29 pair must be reusable on the next warm run:\n{}",
+        warm.stderr
+    );
+    assert_eq!(
+        mtime(&warm, ".cranelisp-cache/util.o"),
+        rebuilt_object_mtime,
+        "a current warm hit must retain the rebuilt object"
+    );
+}
+
 // spec: repl/spec/18-redefinition.md §18.1.2 — restart reconstruction is not
 // constrained by the live-slot ownership-ABI gate; cold and warm must agree.
 // defect: class=wrong-reject locus=src/session_v4.rs found=S121 owner=/dev
@@ -1490,6 +1677,13 @@ fn extract_manifest_format_version(manifest_text: &str) -> Option<u32> {
     after[..end].parse().ok()
 }
 
+fn extract_json_string_field<'a>(text: &'a str, field: &str) -> Option<&'a str> {
+    let needle = format!("\"{field}\":");
+    let after = text.get(text.find(&needle)? + needle.len()..)?.trim_start();
+    let value = after.strip_prefix('"')?;
+    Some(&value[..value.find('"')?])
+}
+
 // spec: design/backend/module-caching.md §4 — the schema version R5's
 // representation change stamps MUST advance past the pre-R5 value (14→15), so
 // no pre-R5 `.o` is schema-compatible. RED at draft (still 14); flips when R5
@@ -1569,7 +1763,7 @@ fn cache_pre_r5_schema_object_invalidated_wholesale() {
 
 // =============================================================================
 // Sprint 109 — DC-9 (dotted-ctor warm-cache round-trip) + AL-8 warm-cache leg
-// (FQ auto-load from cache). Plan: tests/plan/PLAN.md §S109 §A/§D.
+// (FQ auto-load from cache). See the [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md), S109 A/D.
 // =============================================================================
 
 // spec: design/arch/dotted-ctor-canonical-keys.md §2 — a
@@ -1632,7 +1826,8 @@ fn fq_ref_resolves_from_warm_cache() {
 // meta lacks it (serde default `None`) and would hard-error at the backend, so a
 // pre-18 `.meta.json` MUST be rejected wholesale (recompiled), never silently
 // read; a warm schema-18 rerun of the DC-12 differing-layout twin stays green.
-// Plan: tests/plan/PLAN.md §S109 §D.3 DC-14. RED today — this rides the §10
+// [Historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md),
+// S109 D.3 DC-14. RED today — this rides the §10
 // sidecar-transport change-set (the DC-12 twin itself is the Blocker), and the
 // 17→18 bump lands with it; the pre-18-specific reject fully materialises once
 // /dev bumps the binary to schema 18.

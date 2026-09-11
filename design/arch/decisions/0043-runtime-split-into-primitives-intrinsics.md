@@ -1,9 +1,9 @@
 ---
 number: 0043
 title: Runtime splits into `cranelisp-primitives` + `cranelisp-intrinsics`; backend has no trait knowledge
-status: pre-implementation
+status: operative (implemented; closed S67 — see the status pointer below)
 filed: sprint 65 (Phase 2 legacy triage)
-canonical_location: design/arch/legacy/substance-scoping.md §1.7 (substantive resolution); to be implemented across `crates/cranelisp-primitives/` (new), `crates/cranelisp-intrinsics/` (new), `crates/cranelisp-runtime/` (retires), `crates/cranelisp-backend/src/operators.rs` (renames to `primitives_inline.rs`; trait-knowledge maps deleted), stdlib trait impls
+canonical_location: design/arch/bounded-contexts.md §4a (primitives) + §4b (intrinsics); crates/cranelisp-primitives/, crates/cranelisp-intrinsics/, crates/cranelisp-backend/src/primitives_inline.rs (name-keyed substitution table)
 amends: []
 amended_by: []
 retracts: [0014]
@@ -89,11 +89,11 @@ Rejected alternatives:
 
 ## Cross-references
 
-- `design/arch/legacy/substance-scoping.md` §1.7 — full substantive resolution + symptom + tension analysis (this Decision distils §1.7 into a Decision register entry; §1.7 is preserved as the historical analysis)
+- Sprint 63 substance-scoping pass §1.7 (Git history; the legacy record was retired S122) — the symptom and tension analysis this Decision distils
 - `design/arch/decisions/0040-runtime-trace-io-trace-relocate-to-int.md` — IoObserver callback contract; the registration API now resides in `cranelisp-intrinsics` post-split
 - `design/arch/decisions/0041-compile-to-module-per-symbol-jit-direct-writes.md` — backend's substitution-table responsibility becomes explicit at the per-symbol JIT site
 - `design/arch/principles.md` — Principle 1 (decoupling), Principle 7 (no duplicate addressable forms) cited as rationale
-- `design/arch/fixmes/0150-runtime-split-primitives-intrinsics.md` — implementation tracker; coordinates with FIXME 0103 (trace/io_trace relocation)
+- FIXME 0150 — the implementation tracker, closed with this Decision at S67 (Git history); it coordinated with FIXME 0103 (trace/io_trace relocation)
 - `design/arch/legacy/decisions/` — Decisions 0014, 0015 NOT present (deleted in commit `754d525` per "rely on git for history"); historical bodies recoverable via `git show 754d525^:design/arch/decisions/0014-*.md` and similarly for 0015. This Decision is the formal replacement direction.
 
 ## Sequencing

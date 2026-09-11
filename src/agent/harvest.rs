@@ -228,7 +228,7 @@ impl CompilerSession {
                 table
                     .all_symbols()
                     .filter(|(sym, entry)| {
-                        !crate::worker::is_internal_listing_name(sym.as_ref())
+                        !crate::worker::is_internal_listing_entry(sym.as_ref(), entry)
                             && !matches!(entry.declaration, cranelisp_types::Decl::SpecialForm(_))
                     })
                     .map(|(sym, entry)| (sym.as_ref().to_string(), entry.clone()))
@@ -355,7 +355,7 @@ impl CompilerSession {
                 })
                 // Exclude internal compiler artifacts ($-mangled names + the
                 // synthetic `__expr` wrapper) from the harvested module source.
-                .filter(|(s, _)| !crate::worker::is_internal_listing_name(s.as_ref()))
+                .filter(|(s, entry)| !crate::worker::is_internal_listing_entry(s.as_ref(), entry))
                 .map(|(s, _)| s.as_ref().to_string())
                 .collect();
             for name in names {

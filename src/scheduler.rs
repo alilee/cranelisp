@@ -8,7 +8,9 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Condvar, Mutex, MutexGuard};
 
-use cranelisp_types::{CranelispError, ErrorLocation, ModuleFullPath, Sexp, Span, Symbol};
+use cranelisp_types::{
+    CranelispError, ErrorLocation, ModuleFullPath, MonoDemand, Sexp, Span, Symbol,
+};
 
 use crate::observability::{self, SchedulerTraceTag};
 
@@ -137,6 +139,11 @@ pub struct ModuleState {
     /// (registered at `TypecheckDone`, never typechecked from source).
     pub sexps: Option<std::sync::Arc<[Sexp]>>,
 
+    /// Historical concrete instantiations that a persisted-source reload must
+    /// recreate in this generation. Stored beside `sexps` so dependency
+    /// retries carry the same immutable request packet.
+    pub instantiation_demands: std::sync::Arc<[MonoDemand]>,
+
     /// True after this generation's structural/prologue work has completed.
     /// A dependency retry then consumes only `sexps`, which is the remaining
     /// source continuation, without repeating generation setup.
@@ -176,6 +183,7 @@ impl ModuleState {
             error: None,
             static_closure_memo: None,
             sexps,
+            instantiation_demands: std::sync::Arc::from([]),
             generation_started: false,
             blocked_on: None,
         }
@@ -199,6 +207,7 @@ impl ModuleState {
             error: None,
             static_closure_memo: None,
             sexps: None,
+            instantiation_demands: std::sync::Arc::from([]),
             generation_started: false,
             blocked_on: None,
         }
@@ -225,6 +234,7 @@ impl ModuleState {
             error: None,
             static_closure_memo: None,
             sexps: None,
+            instantiation_demands: std::sync::Arc::from([]),
             generation_started: false,
             blocked_on: None,
         }
@@ -268,6 +278,7 @@ pub enum PriorityWork {
     Typecheck {
         module: ModuleFullPath,
         sexps: std::sync::Arc<[Sexp]>,
+        instantiation_demands: std::sync::Arc<[MonoDemand]>,
         generation_started: bool,
     },
     /// JIT-compile a symbol from a TypecheckDone module.
@@ -584,6 +595,17 @@ impl CompileScheduler {
         module: &ModuleFullPath,
         sexps: std::sync::Arc<[Sexp]>,
     ) -> bool {
+        self.re_register_module_with_demands(module, sexps, std::sync::Arc::from([]))
+    }
+
+    /// Re-register changed persisted source together with the historical
+    /// concrete instantiations that must join the same unpublished candidate.
+    pub(crate) fn re_register_module_with_demands(
+        &self,
+        module: &ModuleFullPath,
+        sexps: std::sync::Arc<[Sexp]>,
+        instantiation_demands: std::sync::Arc<[MonoDemand]>,
+    ) -> bool {
         observability::record_module_event(SchedulerTraceTag::ReRegisterModule, module.as_ref());
         let mut state = self.lock();
         let ms = match state.modules.get(module) {
@@ -643,6 +665,7 @@ impl CompileScheduler {
                 // Source changed — the static closure must be re-walked.
                 static_closure_memo: None,
                 sexps: Some(sexps),
+                instantiation_demands,
                 generation_started: false,
                 blocked_on: None,
             };
@@ -740,15 +763,22 @@ impl CompileScheduler {
             .modules
             .get(&module)
             .is_some_and(|ms| ms.generation_started);
+        let instantiation_demands = state
+            .modules
+            .get(&module)
+            .map(|ms| std::sync::Arc::clone(&ms.instantiation_demands))
+            .unwrap_or_else(|| std::sync::Arc::from([]));
         PriorityWork::Typecheck {
             module,
             sexps,
+            instantiation_demands,
             generation_started,
         }
     }
 
-    /// Replace a blocked module's retry packet with its source-only
-    /// continuation. Compilation candidates never enter scheduler state.
+    /// Replace a blocked module's source continuation. Reload demands remain
+    /// on the same immutable packet across the retry; compilation candidates
+    /// never enter scheduler state.
     pub fn set_source_continuation(
         &self,
         module: &ModuleFullPath,
@@ -1001,6 +1031,9 @@ impl CompileScheduler {
             return;
         }
         Self::set_pool_locked(&mut state, module, ModulePool::TypecheckDone);
+        if let Some(ms) = state.modules.get_mut(module) {
+            ms.instantiation_demands = std::sync::Arc::from([]);
+        }
         // Phase-A barrier (S93): the terminal pool transition IS the signature
         // publication edge. `notify_typecheck_done` runs post-`finalize_cluster`
         // (the cluster's Defs are already installed in `symbol_tables[module]`),
@@ -2301,6 +2334,7 @@ impl CompileScheduler {
         Self::set_pool_locked(state, module, ModulePool::Failed);
         if let Some(ms) = state.modules.get_mut(module) {
             ms.error = Some(error);
+            ms.instantiation_demands = std::sync::Arc::from([]);
         }
         Self::cascade_failure_locked(state, module);
     }

@@ -1,6 +1,7 @@
 ---
 name: ops
 description: Provenance, artifacts, environments and release; currently unused here
+provider: claude
 model: opus
 effort: high
 ---

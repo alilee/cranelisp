@@ -1,6 +1,6 @@
 # W0.b lenient-class golden-CLIF corpus — MANIFEST
 
-**Gate:** KC-W0-2 (`tests/plan/PLAN.md §S110`) — the CLIF byte-identity
+**Gate:** KC-W0-2 ([historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md), S110) — the CLIF byte-identity
 shippability gate for the W0.b totalization flip
 (`design/arch/backend-keyed-consumer.md` §4 W0.b + §5).
 **Owner:** `/testing` (corpus + goldens + this manifest + the harness

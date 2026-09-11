@@ -1,8 +1,51 @@
 # The typed consume funnel (option 1, tranche A)
 
+> ## S122 source reconciliation (2026-09-09, `/design` intrinsics)
+>
+> **The intrinsics producer and same-crate callers are delivered from compiler
+> checkpoint `dc78ddbe`; cross-crate completion remains pending.**
+> `crates/cranelisp-intrinsics/src/handle.rs` now defines the approved closed
+> vocabulary, and all nine public consume functions plus their named intrinsics
+> callers use it in source. The committed intrinsics baseline still records raw
+> `i64` parameters and awaits generation/confirmation. The S121 IO/Sexp prerequisites are delivered:
+> annotated-Sexp disposal, the ABI-10 `Pure` ownership witness and
+> `free_io_node` are current source and are not recreated by this tranche.
+>
+> The exact public target in §8 is unchanged, including `fn(Owned)` on
+> `consume_vec_with`; the user approved it on 2026-09-05 and no additional
+> public, emitted-ABI, schema or consumer-edge delta was found. The current
+> intrinsics interior, owner-seam allow-list, dependency order and ACT-0956
+> evidence are in
+> [`design/intrinsics/s122-typed-consume-closure.md`](../intrinsics/s122-typed-consume-closure.md).
+> On 2026-09-10 the user also approved the bounded D8 private amendment in
+> `sprints/s122-primitives-allocation-proposal.md`: 19 primitives functions / 20
+> produced-value adoption sites, six parent-lifetime child-borrow projections,
+> and four owner-to-raw storage exits. It adds no handle operation or public
+> delta. The primitives and backend consumers are delivered. The exact primitives interior and guard names
+> are in `design/primitives/s122-typed-consume-consumers.md` §3/§6.
+>
+> Two old measurements below are historical inputs rather than the S122
+> before-state: the syntactic declaration census is now **150**, not 136, after
+> delivered S121 runtime work; the non-test intrinsics `extern "C" fn` census
+> remains **81**. The primitive `consume_` token census remains 27/8/1 in
+> `string.rs`/`marshal.rs`/`int.rs`. Phase-5 implementation re-derives exact
+> post-change counts from the current source; it does not force the live tree
+> back to the S119/S121 arithmetic.
+>
+> Q3's shared-`Bind` transition and Q11's ready-loser lifecycle test are delivered
+> at their intrinsics module seams. The focused eight-row run is green, and the
+> three sandbox socket timeouts pass under the authorized environment. This does
+> not establish the pending public `sequence-io`, macro-transfer or Binary/int
+> consumer acceptance. The recursive lexical trusted-base guard now checks exact
+> function/site maps: a same-count move to an unauthorized helper was RED in run
+> `f328523a-868d-463d-a0ab-732cee761c7d`, and restored source passed 1/1 in
+> `e0a1f21b`. It makes the adoption sites enumerable and covers nested source
+> modules, but does not prove raw-word provenance or semantics inside an allowed
+> function.
+
 > ## S121 reconciliation (2026-09-01, `/design`(intrinsics), C5)
 >
-> **This document is still live and still pre-implementation.** Verified at HEAD
+> **At that checkpoint this document was live and pre-implementation.** Verified at HEAD
 > `18bca20d`: `crates/cranelisp-intrinsics/src/handle.rs` does not exist, no
 > `Owned`/`Borrowed` type exists in either crate, and no `from_abi` call site
 > exists anywhere. Nothing in tranche A has landed. The design below is adopted
@@ -32,10 +75,13 @@
 > ordering against the IO slice and the `Sexp` walk, its reservations and its
 > test rows — is `design/intrinsics/s121-c5-intrinsics-visit.md` §6.
 
-**Status:** DESIGN — pre-implementation, at S121 as at S119. Originally the
-Phase-3 deliverable for Spine 2, tranche A. Binding on the `/dev`(runtime pair)
-wave; the `public-api.txt` delta in §8 went to `/arch` at the S119 Phase-3 exit
-gate and returned settled (FIXME 0928).
+**Status:** PARTIALLY DELIVERED — intrinsics producer/internal callers, Q3/Q11
+module evidence, primitives/backend consumers and the exact-site guard are
+delivered; Binary/int, integrated evidence and the generated intrinsics baseline
+remain open. Originally
+the Phase-3 deliverable for Spine 2, tranche A. The `public-api.txt` delta in
+§8 returned settled through the S121 IO-teardown packet; its generated
+before/after baseline still requires post-build user confirmation.
 **Scope:** the runtime pair — `cranelisp-intrinsics` (the discharge funnel and
 the new handle vocabulary) + `cranelisp-primitives` (the extern shim generator
 and the implementation bodies it reaches).
@@ -107,8 +153,8 @@ list is an `/arch`-visible change to the trusted base, not a convenience edit.
 
 | Operation | Signature | Role |
 |---|---|---|
-| `from_abi` | `unsafe fn from_abi(raw: i64) -> Owned` | **The one raw entry.** The shim's assertion that the ABI transferred a reference. Nullary-tag-safe (the guard stays inside the consume fns, unchanged). |
-| `into_raw` | `#[must_use] fn into_raw(self) -> i64` | **The one raw exit**, with **two** uses: returning across the ABI shim, and the typed→raw destructure every `consume_*` performs before handing the raw to `atomic_dec_rc` (§3, `[S121]`). Disarms the bomb; it is the only handle-related `mem::forget` in the crate (`reactor.rs`'s waker carries a pre-existing, unrelated one — §3's enumerated allow-list). |
+| `from_abi` | `unsafe fn from_abi(raw: i64) -> Owned` | **The one raw-owner adoption operation.** The declaration shim asserts an ABI transfer; the approved D8 primitives adapter asserts one completed produced value or its named nullary/error sentinel. It remains nullary-tag-safe. The exact sites are guarded in §3. |
+| `into_raw` | `#[must_use] fn into_raw(self) -> i64` | **The one raw exit**, with **three** use classes: ABI return, typed consume destructure before raw RC mechanics, and the approved D8 transfer of a typed child into an initialized ADT/Vec receiver. Disarms the bomb; it is the only handle-related `mem::forget` in the crate (`reactor.rs`'s waker carries a pre-existing, unrelated one — §3's enumerated allow-list). |
 | `as_borrowed` | `fn as_borrowed(&self) -> Borrowed<'_>` | Read access without discharging. The brand ties the borrow to this frame's `Owned`. |
 | `raw_for_read` | `fn raw_for_read(&self) -> i64` | Feed the raw layout accessors (`heap_access::read_i64`, `HeapString` reads). Takes `&self`, so it cannot discharge. |
 | `is_nullary_tag` | `fn is_nullary_tag(&self) -> bool` | The `< NULLARY_TAG_THRESHOLD` predicate, single-sourced. |
@@ -142,7 +188,7 @@ pub struct Borrowed<'a>(i64, PhantomData<&'a ()>);
 
 | Operation | Signature | Role |
 |---|---|---|
-| `from_abi` | `unsafe fn from_abi(raw: i64) -> Borrowed<'static>` | Shim entry for a **retained** (non-consumed) ABI parameter. Exactly one row uses it today (§4.3). |
+| `from_abi` | `unsafe fn from_abi(raw: i64) -> Borrowed<'static>` | Raw retained-reference assertion. The declaration shim uses it for the one retained ABI row (§4.3); approved D8 permits one private marshal field projector that narrows the result to its live parent's lifetime (§3). |
 | `to_owned` | `fn to_owned(self) -> Owned` | **The single home of `rc_inc`.** Every new reference in the pair's Rust bodies is minted here. |
 | `raw_for_read` | `fn raw_for_read(self) -> i64` | Feed the layout accessors. |
 
@@ -180,25 +226,29 @@ that set countable, and countable means checkable:
 
 | Trusted item | Where | Count |
 |---|---|---|
-| `Owned::from_abi` — asserts an incoming ABI value is a transferred reference | `handle.rs` | 1 definition |
+| `Owned::from_abi` — adopts a raw transferred or produced owner under the guarded assertions below | `handle.rs` | 1 definition |
 | `Owned::into_raw` — the only `mem::forget` in the pair's non-test code | `handle.rs` | 1 definition |
-| `Borrowed::from_abi` — asserts an incoming ABI value is retained by the caller | `handle.rs` | 1 definition |
+| `Borrowed::from_abi` — asserts a raw retained reference under the guarded ABI/child-projection rules below | `handle.rs` | 1 definition |
 | `impl Drop for Owned` | `handle.rs` | 1 definition |
 | Shim wrapping (derived, §4) | `declaration_macro.rs` | 1 generator |
-| Hand-written intrinsics extern shims that wrap (§10.3) | `trace.rs`, `io.rs` | 6 call sites |
+| D8 produced-value adoption | Delivered `crates/cranelisp-primitives/src/abi_facts.rs::adopt_produced_value` | 1 private adapter; 19 functions / 20 guarded callers |
+| D8 parent-lifetime child projection | Delivered `crates/cranelisp-primitives/src/marshal.rs::borrowed_field` | 1 private adapter; 2 functions / 6 guarded callers |
+| D8 owner transfer into raw storage | `marshal::{alloc_adt_2, alloc_adt_3}`; `string::vec_strings_from_owned_handles` | 3 private receivers / 4 guarded `into_raw` sites |
+| Hand-written intrinsics raw-owner adaptations (§10.3) | `drop.rs`, `io.rs`, `panic.rs`, `reactor.rs`, `trace.rs`, `vec_runtime.rs`; exact function allow-list in the S122 intrinsics delta | enumerated by current owner seams |
 | **`[S121]`** Field-mint sites on the teardown path (below) | `drop.rs` | 2 call sites |
 
 **`[S121]` The two field-mint sites, and why the original count missed them.**
 The discharge walk reads `i64` field words off a node whose last reference it is
 discharging, and must hand them to a `consume_*` that now takes `Owned`. That is
 a genuine transfer — the node is being destroyed, so its fields' references
-transfer to this frame — but it is neither an ABI entry nor one of the six
-enumerated shims, and §4's derivation does not reach it. Left unnamed, it would
+transfer to this frame — but it is neither an ABI entry nor a declaration-macro
+shim, and §4's derivation does not reach it. Left unnamed, it would
 have arrived as ~15 scattered `from_abi` calls and quietly emptied the third
 grep row below of meaning. It is confined to **two** sites, both in `drop.rs`:
-the per-tag field dispatcher (`design/intrinsics/s121-c5-intrinsics-visit.md`
-§3), and `consume_vec_with`'s element loop, which mints one `Owned` per element
-for its `fn(Owned)` callback. A third is a `/review` reject.
+one private `owned_field` operation shared by the current Sexp and IO
+dispatchers (`design/intrinsics/s122-typed-consume-closure.md` §2), and
+`consume_vec_with`'s element loop, which mints one `Owned` per element for its
+`fn(Owned)` callback. A third `drop.rs` mint is a `/review` reject.
 
 **Structural guard (a `/review` reject criterion, and a unit row).** The
 crate's established grep-gate pattern applies:
@@ -215,19 +265,30 @@ crate's established grep-gate pattern applies:
   the implementer to relax it, which is precisely how a structural guard becomes
   decoration; the allow-list form is the §4.4 pattern and keeps the guard honest.
 - `Owned::from_abi` / `Borrowed::from_abi` call sites outside `handle.rs`,
-  `declaration_macro.rs`, the six enumerated intrinsics shims **and the two
-  enumerated field-mint sites** must be zero in non-test code.
+  `declaration_macro.rs`, the current intrinsics owner-seam allow-list, the two
+  enumerated `drop.rs` field-mint sites, D8's single
+  `abi_facts::adopt_produced_value`, and D8's single
+  `marshal::borrowed_field` must be zero in non-test code. The two D8 helpers
+  have their own exact caller guards; neither permits a whole-file or
+  whole-primitives exemption.
+- Primitives `adopt_produced_value` callers must be exactly the approved 19
+  functions / 20 sites; `borrowed_field` callers exactly six sites in
+  `read_slist` and `quote_sexp_build`; storage `into_raw` exactly four sites in
+  `alloc_adt_2`, `alloc_adt_3`, and `vec_strings_from_owned_handles`. The full
+  names and branch meanings are in the S122 primitives design §6.
 
 The last row is the one that keeps the base from silently widening: without
 it, "just wrap it here too" is a one-line edit that re-opens the class. This is
 the same shape as the S110 `resolve_driven` grep gate — the count *is* the
 contract (Principle 13, interfaces are auditable).
 
-**`[S121]` `into_raw` has two uses, and the table above names one.** It is the
-ABI return path *and* the typed→raw destructure every `consume_*` performs
-before handing the raw to `atomic_dec_rc` (which stays raw — §6.3). Both are the
-same operation, the end of the handle's obligation, but the second is by far the
-more common and a reader of the one-line description will not expect it.
+**`[S121 + D8]` `into_raw` has three use classes.** It is the ABI return path,
+the typed→raw destructure every `consume_*` performs before handing the raw to
+`atomic_dec_rc` (which stays raw — §6.3), and the bounded D8 storage transfer
+after an ADT/Vec receiver is ready to assume the child. All are the same
+operation—the end of this frame's handle obligation—but the storage class is
+limited to the four sites above. Disarm-and-re-adopt round trips remain a
+review rejection.
 
 ---
 
@@ -695,44 +756,52 @@ authorized.
 
 ---
 
-## 9. Implementation order for `/dev`
+## 9. Delivery order and current tail for `/dev`
+
+CS-1 through CS-4 are delivered across intrinsics and primitives together with
+the internal caller migration and Q3/Q11 module corrections. CS-5's exact-site
+guard is delivered; post-change counts and generated public baselines remain
+open. The sequence below is retained because it still governs that artifact
+tail.
 
 Five change-sets, each independently `cargo check`-clean. The ordering is chosen
 so the compiler enumerates the next step's worklist — the option paper's own
 "signatures flip, `cargo check` enumerates every affected call site" discipline.
 
-**CS-1 — the vocabulary, dormant.** `handle.rs` + `handle/tests.rs` (the §5
-triplet) + the §3 structural grep gate. Nothing consumes the types yet; the
-crate compiles unchanged. The triplet is RED-observed against a broken bomb
-here, before any consumer exists, so the instrument is proven before it is
-relied on. *This is the change-set that answers "landed with zero consumers is
-not landed" — it does not land alone; CS-2 is in the same wave.*
+**CS-1 — vocabulary delivered with CS-2.** `handle.rs` + `handle/tests.rs` carry
+the §5 triplet and landed in the same source wave as the consuming funnel. The
+bomb and unwind plants arm the instrument. The recursive exact function/site
+guard is separately armed by the same-count unauthorized-helper RED and restored
+GREEN recorded above; its guarantee remains lexical.
 
-**CS-2 — A1, the intrinsics discharge funnel.** The nine public signatures and
-one private dispatcher signature. `cargo check`
-then enumerates every in-crate caller (io.rs 9, trace.rs 12, panic.rs 2,
-reactor.rs 2, vec_runtime.rs 1, drop.rs 20 internal, plus ~110 test sites) and
-the 6 hand-written extern shims that must wrap. Class-2/Class-3 rules from §7
-govern the test edits. `free_io_branches` takes `Borrowed<'_>` — the first
-non-shim `Borrowed` consumer.
+**CS-2 — A1 intrinsics discharge funnel delivered.** The nine public signatures,
+typed Vec callback and private dispatcher are migrated together with the named
+same-crate callers. The S119 counts (`io.rs` 9,
+`trace.rs` 12, `panic.rs` 2, `reactor.rs` 2, `vec_runtime.rs` 1, `drop.rs` 20
+internal, plus the test tier) are discovery history; the exact S122 production
+owner-seam allow-list is in the current intrinsics delta. Class-2/Class-3 rules
+from §7 govern the test edits.
 
-**CS-3 — A3 then A2, primitives.** A3 first (`marshal.rs`'s interior: this is
+**CS-3 — A3 then A2, primitives, delivered.** A3 first (`marshal.rs`'s interior: this is
 where the 0835 contract becomes a signature — `read_slist` returns
-`Vec<Borrowed<'_>>`, `alloc_adt_3` takes `Owned` fields, and RE-1's "one inc on
-the node stored" is spelled as a single `to_owned()`), then A2's 23
-implementation fns. The 29 production consume sites flip here.
+`Vec<Borrowed<'_>>`, `StoredField` keeps scalar and owned two-slot payloads
+distinct, `alloc_adt_3` takes `Owned` fields, and RE-1's "one inc on the node
+stored" is spelled as a single `to_owned()`), then the current 22 A2
+implementation functions. The 29 production consume sites flip here. D8's
+approved produced-value, child-borrow and storage seams apply exactly as §3
+enumerates.
 
-**CS-4 — the derivation.** `abi_facts.rs`, the `AbiHandle` trait, the
+**CS-4 — the derivation, delivered.** `abi_facts.rs`, the `AbiHandle` trait, the
 `declaration_macro.rs` shim generator, the two `PrimitiveDecl::UserExtern`
 fields, `ownership_facts.rs` hoisted onto `is_heap_carried`, and the
 `shim_abi_kinds_match_declared_facts` row with its one-name allow-list.
 `string-identity` flips to `Borrowed` here and its arithmetic must be shown
 unchanged.
 
-**CS-5 — the counts and the gate.** Re-run the §6.1 command; record the
-before/after pair and the N_heap enumeration in the change-set; run the §7
-Class-1 zero-diff check and the §7 Class-2 screen; regenerate both crates'
-`public-api.txt` (intrinsics changes, primitives must not).
+**CS-5 — the counts and the gate.** The exact-site lexical gate is delivered and
+armed as recorded above. Record the post-change count and N_heap enumeration;
+run the §7 Class-1 zero-diff check and the §7 Class-2 screen; regenerate both
+crates' `public-api.txt` (intrinsics changes, primitives must not).
 
 **Wave constraint (from `/arch`, restated because it binds `/dev`):** the
 Spine-1 backend implementation and this signature churn **never share a wave**.
@@ -754,22 +823,28 @@ attributable.
 
 ## 10. Honest limits
 
-**10.1 Exactly-once is not enforced.** `mem::forget` exists; a shim can lie.
-What tranche A delivers is the §3 narrowing — a trusted base of 4 definitions +
-1 generator + 6 hand-written sites, guarded by a grep gate that makes its
-growth visible. It is a large reduction from "every call site in two crates",
-not an elimination, and this document does not claim otherwise anywhere.
+**10.1 Exactly-once is not enforced.** `mem::forget` exists; a shim or raw
+provenance assertion can lie. What tranche A plus D8 deliver is the §3
+narrowing: four handle definitions, one primitives generator, two `drop.rs`
+field-mint sites, one produced-value adapter with 20 guarded sites, one
+parent-lifetime field projector with six guarded sites, four guarded storage
+exits, and the exact intrinsics owner allow-list. The guards make growth
+visible; they do not prove the permitted raw words' provenance.
 
 **10.2 "Cannot be stored" is partly aspirational.** §2.2. The enforceable
 properties are: `Borrowed` has no discharge operation, and a `Borrowed` derived
 via `as_borrowed` cannot outlive its `Owned`. A `Borrowed` obtained from
-`from_abi` is `'static`-branded and can be stored. Tranche D may revisit if a
-real storing hazard appears.
+`from_abi` is `'static`-branded and can be stored. D8's `borrowed_field`
+immediately narrows that raw conversion to the live parent's lifetime; it does
+not add a generally available child-borrow operation. Tranche D may revisit if
+a real storing hazard appears.
 
-**10.3 The 81 intrinsics extern shims are not derived.** They are hand-written
-and carry no declaration table, so their ownership facts are asserted at the
-`from_abi` call and backed only by rustdoc. Six of them wrap after CS-2. The
-natural second derivation home is `intrinsics_table()`
+**10.3 The 81 intrinsics extern functions are not declaration-derived.** They
+are hand-written and carry no declaration table, so the consuming subset's
+ownership facts are asserted at the named `from_abi` owner seams and backed by
+their source contracts. The S122 allow-list supersedes the old six-site count,
+which predated delivered IO/panic/trace callers. The natural second derivation
+home is `intrinsics_table()`
 (`design/intrinsics/intrinsics-table.md`) — a tranche-C/D candidate, not
 authorized here, and **not** claimed under G4, whose text scopes the derivation
 to the declaration table.
@@ -794,13 +869,13 @@ into `--release` under the differential lane). Recording the trigger in
 in either crate, and the conditional detector-oracle protocol
 (`design/intrinsics/diagnostic-modes.md` §9a) is retired unexecuted.
 
-**10.5 A parameter's *storage* obligation is still prose.** The type says
-consumed-or-borrowed. It does not say "this handle is stored into a structure
-whose drop glue will later discharge it" versus "this handle is discharged
-here". `alloc_adt_3(tag, field0: Owned, field1: Owned) -> Owned` expresses the
-transfer, which is the load-bearing half, but the *identity* of the eventual
-discharger is not in the type. That is drop-glue identity — Spine 1's territory,
-not this tranche's.
+**10.5 D8 types storage transfer; eventual disposer identity remains prose.**
+`StoredField::Owned`, `alloc_adt_3`'s owned fields, and
+`vec_strings_from_owned_handles` express the transfer and use `into_raw` only
+after the receiver is ready. The parent/container then owns the existing
+reference obligation. The type still does not identify which later drop glue
+will discharge that field. That is drop-glue identity—Spine 1's territory—not
+this tranche's.
 
 ---
 
@@ -852,11 +927,10 @@ not this tranche's.
 settled** (FIXME 0928 items 1–3, absorbed in place at §8 and §7). Current
 routing:
 
-- `/design`(primitives) — the next C5 invocation. **Consume this document; do
-  not edit it.** Its half is §4's derivation (`abi_facts`, the `AbiHandle`
-  trait, the `declaration_macro.rs` generator, the
-  `shim_abi_kinds_match_declared_facts` row with its one-name `sconcat`
-  allow-list) plus the A2/A3 body flips of §6.3.
+- `/design`(primitives) — propagate the approved D8 status into its completed
+  S122 consumer design, then `/dev` implements §4's derivation and A2/A3 body
+  flips with §3's exact adoption, projection and storage guards. This shared
+  file remains owned by the intrinsics invocation.
 - `/dev` (runtime pair) — CS-1…CS-5 per §9, as bundle **I2** of the C5 order,
   after the IO and `Sexp` bundles and in a wave with neither C4's bundles nor
   the Spine-1 backend work.

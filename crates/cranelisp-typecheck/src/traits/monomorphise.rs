@@ -5,7 +5,7 @@ use cranelisp_types::{
     ErrorLocation, Expr, FQSymbol, InstanceLink, JitSymbol, Life, MethodResolutions,
     ModuleFullPath, MonoDefn, MonoDefnVariant, MonoDemand, MonoExpr, NotConcrete, Realization,
     ResolvedCall, Scheme, Span, Symbol, TemplateBody, Type, TypeName, VarRef, ViewBuildError,
-    Visibility, apply, free_vars,
+    Visibility, apply, concrete_callable_key, free_vars,
 };
 
 use crate::checker::{CheckState, TypeCheckEnv};
@@ -31,6 +31,21 @@ pub(crate) struct TemplateFn {
 // ---------------------------------------------------------------------------
 
 impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
+    pub(crate) fn demand_instance_key(
+        demand: &MonoDemand,
+        scheme: &Scheme,
+    ) -> Result<Symbol, CranelispError> {
+        demand
+            .instance_key(scheme)
+            .map_err(|error| CranelispError::TypeError {
+                message: format!(
+                    "could not derive the concrete instance key for {:?}: {error}",
+                    demand.template
+                ),
+                location: ErrorLocation::from_span(demand.site),
+            })
+    }
+
     pub(crate) fn derive_mono_demand(
         &self,
         state: &CheckState,
@@ -188,7 +203,17 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         // Preserve the demand's identity through naming and publication.
         let link = demand.instance_link();
-        let instance_key = link.instance_key();
+        let instance_key = Self::demand_instance_key(demand, &scheme)?;
+        let resolved_key = Self::realized_instance_key(&link, &resolved, call_span)?;
+        if instance_key != resolved_key {
+            return Err(CranelispError::CodegenError {
+                message: format!(
+                    "demand key `{instance_key}` does not match realized signature key \
+                     `{resolved_key}` for `{fn_name}`"
+                ),
+                location: ErrorLocation::from_span(call_span),
+            });
+        }
         let mangled_name = String::from(instance_key.as_ref());
 
         // === P2 — verify constraints (module-switched) ===
@@ -210,6 +235,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 fn_name,
                 synth,
                 link,
+                &instance_key,
                 origin,
                 &mangled_name,
                 &concrete_param_types,
@@ -288,6 +314,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             state,
             mono_defn_ast,
             link,
+            &instance_key,
             origin,
             &mangled_name,
             &concrete_param_types,
@@ -307,6 +334,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         fn_name: &Symbol,
         synth: cranelisp_types::SynthSpec,
         link: InstanceLink,
+        instance_key: &Symbol,
         origin: CallableOrigin,
         mangled_name: &str,
         concrete_param_types: &[Type],
@@ -409,6 +437,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             state,
             &mono,
             link,
+            instance_key,
             origin,
             concrete_param_types,
             concrete_ret_ty,
@@ -687,6 +716,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         state: &mut CheckState,
         mono_defn_ast: Defn,
         link: InstanceLink,
+        instance_key: &Symbol,
         origin: CallableOrigin,
         mangled_name: &str,
         concrete_param_types: &[Type],
@@ -788,6 +818,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             state,
             &mono_defn,
             link,
+            instance_key,
             origin,
             concrete_param_types,
             concrete_ret_ty,
@@ -804,6 +835,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         state: &mut CheckState,
         mono: &MonoDefn,
         link: InstanceLink,
+        expected_instance_key: &Symbol,
         origin: CallableOrigin,
         concrete_param_types: &[Type],
         concrete_ret_ty: &Type,
@@ -813,9 +845,18 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             concrete_param_types.to_vec(),
             Box::new(concrete_ret_ty.clone()),
         );
+        let instance_key = Self::realized_instance_key(&link, &fn_ty, mono.defn.span)?;
+        if &instance_key != expected_instance_key {
+            return Err(CranelispError::CodegenError {
+                message: format!(
+                    "prepared instance key `{expected_instance_key}` does not match realized \
+                     signature key `{instance_key}`"
+                ),
+                location: ErrorLocation::from_span(mono.defn.span),
+            });
+        }
         let scheme = crate::scheme::mono(fn_ty);
 
-        let instance_key = link.instance_key();
         let already_installed = {
             let table = self.current_symbol_table(state);
             let view = table.view();
@@ -856,6 +897,38 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             )
             .map_err(crate::result::lifecycle_error)?;
         Ok(())
+    }
+
+    fn realized_instance_key(
+        link: &InstanceLink,
+        signature: &Type,
+        span: Span,
+    ) -> Result<Symbol, CranelispError> {
+        let owner = match &link.template {
+            CallableTarget::Binding(owner) | CallableTarget::OverloadArm { owner, .. } => owner,
+            CallableTarget::MacroClause { .. } => {
+                return Err(CranelispError::CodegenError {
+                    message: "macro clauses do not have language-callable instance keys"
+                        .to_string(),
+                    location: ErrorLocation::from_span(span),
+                });
+            }
+            _ => {
+                return Err(CranelispError::CodegenError {
+                    message: "unsupported callable target for a concrete instance".to_string(),
+                    location: ErrorLocation::from_span(span),
+                });
+            }
+        };
+        let concrete =
+            ConcreteType::from_type(signature).map_err(|error| CranelispError::TypeError {
+                message: format!("instance signature is not concrete: {error:?}"),
+                location: ErrorLocation::from_span(span),
+            })?;
+        concrete_callable_key(owner, &concrete).map_err(|error| CranelispError::CodegenError {
+            message: format!("could not derive the realized instance key: {error}"),
+            location: ErrorLocation::from_span(span),
+        })
     }
 
     /// Instantiate a scheme with fresh type variables, unify with the given
@@ -1193,6 +1266,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             ) else {
                 continue;
             };
+            let instance_key = Self::demand_instance_key(&demand, &template.core.scheme)?;
 
             let saved_subst = state.subst.clone();
             let mono = self.monomorphise_call(
@@ -1209,7 +1283,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     span,
                     VarRef::Global(FQSymbol {
                         module: state.current_module.clone(),
-                        symbol: Symbol::from(demand.instance_key().as_ref()),
+                        symbol: instance_key,
                     }),
                 );
             }
@@ -1218,7 +1292,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     }
 
     /// Look up a constrained function by name.
-    fn get_constrained_fn(
+    pub(crate) fn get_constrained_fn(
         &self,
         state: &CheckState,
         name: &Symbol,
@@ -1259,9 +1333,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Build a mangled name from a function name and its concrete parameter types.
-///
-/// Format: `name$Type1+Type2`
 /// Collect every `Apply`-of-bare-`Var` call site in an expression tree, except
 /// calls a fn makes to ITSELF (generic self-recursion is not a concrete mono
 /// site — its arg types are the defn's own generic vars). Records

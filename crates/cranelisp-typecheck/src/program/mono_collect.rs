@@ -628,15 +628,25 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             let call_span = demand.site;
             let home_module = &owner.module;
 
-            // Deduplicate: same defining home + fn + arg types = same
-            // specialization. Route the dedup key through the ONE canonical
-            // mangler so the dedup grain == the minted-name grain (FIXME 0519):
-            // a home-blind key collapsed two same-named imported generics at the
-            // dedup step (the 0508 collapse point) even after the name grew a
-            // home. `arg_types` are the concrete param types (gated concrete
-            // above), so this key string is byte-identical to the `mono.defn.name`
-            // that `monomorphise_call` mints below.
-            let instance_key = demand.instance_key();
+            let selected_template = match &demand.template {
+                CallableTarget::OverloadArm { .. } => {
+                    self.owned_overload_template(&demand.template)
+                }
+                _ => (home_module == &state.current_module)
+                    .then(|| self.checked_body_template(state, bodies, fn_name))
+                    .flatten()
+                    .or_else(|| self.get_constrained_fn(state, fn_name, Some(home_module))),
+            };
+            let Some(selected_template) = selected_template else {
+                continue;
+            };
+
+            // Deduplicate by the selected template's complete concrete function
+            // signature. Route the key through the canonical identity helper so
+            // the dedup grain equals the minted-name grain (FIXME 0519): a
+            // home-blind key collapsed same-named imported generics, while an
+            // argument-only key collapses result-context and legal arity choices.
+            let instance_key = Self::demand_instance_key(demand, &selected_template.core.scheme)?;
             let key = instance_key.clone();
 
             // The finalize pipeline has three intentional pass-4 windows. An
@@ -662,21 +672,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 continue;
             }
 
-            let local_template = match &demand.template {
-                CallableTarget::OverloadArm { .. } => {
-                    self.owned_overload_template(&demand.template)
-                }
-                _ => (home_module == &state.current_module)
-                    .then(|| self.checked_body_template(state, bodies, fn_name))
-                    .flatten(),
-            };
             if let Some(mono) = self.monomorphise_call(
                 state,
                 fn_name,
                 demand,
                 Some(home_module),
                 None,
-                local_template,
+                Some(selected_template),
             )? {
                 let mangled = JitSymbol::from(mono.defn.name.as_ref());
                 // Record dispatch for this call site
@@ -718,9 +720,23 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 continue;
             };
             let arg_name = &owner.symbol;
-            // Home-qualified dedup key == the minted name (FIXME 0519): `home`
-            // for an IMPORTED generic fn-value (FIXME 0488 sig b), else current.
-            let instance_key = site.demand.instance_key();
+            let selected_template = match &site.demand.template {
+                CallableTarget::OverloadArm { .. } => {
+                    self.owned_overload_template(&site.demand.template)
+                }
+                _ => (owner.module == state.current_module)
+                    .then(|| self.checked_body_template(state, bodies, arg_name))
+                    .flatten()
+                    .or_else(|| self.get_constrained_fn(state, arg_name, Some(&owner.module))),
+            };
+            let Some(selected_template) = selected_template else {
+                continue;
+            };
+            // The selected template's complete concrete signature supplies the
+            // dedup key and minted name (FIXME 0519), including the imported
+            // home for an imported generic fn-value (FIXME 0488 sig b).
+            let instance_key =
+                Self::demand_instance_key(&site.demand, &selected_template.core.scheme)?;
             let key = instance_key.clone();
             let mangled_sym = if self
                 .current_symbol_table(state)
@@ -740,9 +756,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 &site.demand,
                 Some(&owner.module),
                 None,
-                (owner.module == state.current_module)
-                    .then(|| self.checked_body_template(state, bodies, arg_name))
-                    .flatten(),
+                Some(selected_template),
             )? {
                 let mangled = JitSymbol::from(mono.defn.name.as_ref());
                 seen.insert(key, mangled.clone());
@@ -799,8 +813,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             && resolved.canonical.module != state.current_module
             && Self::entry_is_monomorphisable_polymorphic(&resolved.entry)
         {
-            // FIXME 0488 sig a (cross-module FQ): record the BARE terminal symbol
-            // (`resolved.fq.symbol`), not the raw reference `name` — a qualified
+            // FIXME 0488 sig a (cross-module FQ): record the canonical terminal
+            // (`resolved.canonical`), not the raw reference `name` — a qualified
             // callee (`gen/iden2`) would otherwise reach `get_constrained_fn`'s
             // home-probe as a `/`-bearing key in the home module → no mint. The
             // resolver already split `mod/sym` and resolved the module alias.
@@ -1165,9 +1179,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// `ViaCallee` fallback, diagnosed one crate away as the backend's located
     /// producer contradiction.
     ///
-    /// The seam census (the mapping this parameter forces each caller to
-    /// answer, and which `mono_collect::tests::auto_curry_drain_*` pins
-    /// behaviourally):
+    /// The seam census is the mapping this parameter forces each caller to
+    /// answer. `mono_collect::tests::auto_curry_drain_*` pins the two polarity
+    /// behaviours directly; the per-seam reasons remain design-recorded:
     ///
     /// | Seam | Discipline | Why |
     /// |---|---|---|

@@ -50,6 +50,7 @@ use cranelisp_types::{
 };
 
 use crate::alloc;
+use crate::handle::Owned;
 use crate::heap_access;
 use crate::rc;
 // Vec layout authority — the blessed, `const _: () = assert!(…)`-locked offsets
@@ -261,6 +262,17 @@ const SELECT_FIELDS: &[IoField] = &[IoField {
 // Vec layout (`vec_runtime`) nor the consuming dec sequences (per-module by
 // design) — only the accessor.
 
+/// Transfer one owned field from a parent whose last-reference decrement and
+/// Acquire fence have completed.
+fn owned_field(base: i64, offset: isize) -> Owned {
+    // SAFETY: callers use the closed field tables only after becoming the sole
+    // owner of `base`; destroying that parent transfers this field reference.
+    let raw = unsafe { heap_access::read_i64(base, offset) };
+    // SAFETY: the parent transfer above supplies exactly the owned reference
+    // adopted here. Bare nullary fields are valid owners with no allocation.
+    unsafe { Owned::from_abi(raw) }
+}
+
 /// Atomically decrement the RC at `ptr` with Release ordering.
 /// Returns the OLD RC value.
 ///
@@ -338,26 +350,12 @@ unsafe fn atomic_dec_rc(ptr: i64) -> i64 {
 ///
 /// # Safety
 /// `ptr` must be a valid SList pointer (SCons with rc > 0) or a bare SNil tag.
-pub fn consume_slist(mut ptr: i64) {
+pub fn consume_slist(handle: Owned) {
+    let mut ptr = handle.into_raw();
     loop {
         if ptr < NULLARY_THRESHOLD {
             return; // SNil or bare tag
         }
-        // Read fields BEFORE dec so we can recurse on the last-ref path.
-        // SAFETY: `ptr` cleared the nullary-tag guard immediately above, so per
-        // this fn's `# Safety` contract it is a live SCons base — and the dec
-        // below has not run yet, so the reference that brought us here still
-        // holds the allocation. An SCons node is `[header | tag@16 | head@24 |
-        // tail@32]`, so `FIELD0_OFFSET` (24) is an 8-aligned cell inside it.
-        let head = unsafe { heap_access::read_i64(ptr, FIELD0_OFFSET) };
-        // SAFETY: same still-owned, pre-dec SCons base as the read above (no
-        // mutation between them), and `FIELD1_OFFSET` (32) is that node's tail
-        // cell — the last field of the two-field SCons allocation, so also in
-        // bounds and 8-aligned. Reading both fields before the dec is what makes
-        // the last-ref path sound: the values are in registers by the time the
-        // node is freed below.
-        let tail = unsafe { heap_access::read_i64(ptr, FIELD1_OFFSET) };
-
         // SAFETY: `atomic_dec_rc` requires a valid heap base with `rc > 0`.
         // `ptr` passed the nullary-tag guard and, per this fn's `# Safety`
         // contract, names a live SCons node; this call releases exactly the one
@@ -370,6 +368,8 @@ pub fn consume_slist(mut ptr: i64) {
 
         // Last ref: recursively release head (Sexp), then dealloc this node,
         // then iterate to tail to avoid unbounded recursion on long chains.
+        let head = owned_field(ptr, FIELD0_OFFSET);
+        let tail = owned_field(ptr, FIELD1_OFFSET);
         consume_sexp(head);
         // SAFETY: `old_rc == 1` means this thread just dropped the final
         // reference, so no other holder can observe the node; the Acquire fence
@@ -378,7 +378,7 @@ pub fn consume_slist(mut ptr: i64) {
         // frame owns — exactly `dealloc`'s contract — and `head`/`tail` were
         // copied out before the free.
         unsafe { alloc::dealloc(ptr as *mut u8) };
-        ptr = tail;
+        ptr = tail.into_raw();
     }
 }
 
@@ -397,7 +397,8 @@ pub fn consume_slist(mut ptr: i64) {
 ///
 /// # Safety
 /// `ptr` must be a valid Sexp heap pointer (rc > 0) or a bare nullary tag.
-pub fn consume_sexp(ptr: i64) {
+pub fn consume_sexp(handle: Owned) {
+    let ptr = handle.into_raw();
     if ptr < NULLARY_THRESHOLD {
         return;
     }
@@ -443,9 +444,7 @@ fn sexp_fields(tag: SexpTag) -> &'static [SexpField] {
 }
 
 fn discharge_sexp_field(ptr: i64, field: SexpField) {
-    // SAFETY: the closed tag-to-field table names an in-bounds word for the
-    // decoded node shape; the last-reference fence has completed.
-    let value = unsafe { heap_access::read_i64(ptr, field.offset) };
+    let value = owned_field(ptr, field.offset);
     match field.kind {
         SexpFieldKind::Shallow => rc::consume_shallow(value),
         SexpFieldKind::SList => consume_slist(value),
@@ -457,9 +456,6 @@ fn discharge_sexp_field(ptr: i64, field: SexpField) {
 // Vec consumption
 // ---------------------------------------------------------------------------
 
-/// Per-element consume callback pointer.
-type ElemConsumeFn = fn(i64);
-
 /// Consume a Vec whose elements are released via `elem_consume`.
 ///
 /// On last ref: walk `len` live elements, call `elem_consume` on each;
@@ -469,7 +465,8 @@ type ElemConsumeFn = fn(i64);
 /// `ptr` must be a valid Vec struct base pointer (rc > 0) or bare nullary
 /// tag. The element consume function must be safe to call on the in-Vec
 /// i64 values.
-pub fn consume_vec_with(ptr: i64, elem_consume: ElemConsumeFn) {
+pub fn consume_vec_with(handle: Owned, elem_consume: fn(Owned)) {
+    let ptr = handle.into_raw();
     if ptr < NULLARY_THRESHOLD {
         return;
     }
@@ -505,7 +502,9 @@ pub fn consume_vec_with(ptr: i64, elem_consume: ElemConsumeFn) {
         crate::vec_runtime::debug_assert_live_buffer(data as *const i64, cap, "consume_vec_with");
 
         for i in 0..len as usize {
-            let elem = *data.add(i);
+            // SAFETY: on this last-reference path the Vec transfers its live
+            // element reference to the callback before freeing the buffer.
+            let elem = Owned::from_abi(*data.add(i));
             elem_consume(elem);
         }
 
@@ -519,8 +518,8 @@ pub fn consume_vec_with(ptr: i64, elem_consume: ElemConsumeFn) {
 }
 
 /// Consume a Vec of heap Strings (elements are consumed via `rc::consume_shallow`).
-pub fn consume_vec_of_string(ptr: i64) {
-    consume_vec_with(ptr, rc::consume_shallow);
+pub fn consume_vec_of_string(handle: Owned) {
+    consume_vec_with(handle, rc::consume_shallow);
 }
 
 // ---------------------------------------------------------------------------
@@ -543,7 +542,8 @@ pub fn consume_vec_of_string(ptr: i64) {
 ///
 /// # Safety
 /// `ptr` must be a valid IO tree root pointer (rc > 0) or bare nullary tag.
-pub fn consume_io_tree(ptr: i64) {
+pub fn consume_io_tree(handle: Owned) {
+    let ptr = handle.into_raw();
     if ptr < NULLARY_THRESHOLD {
         return;
     }
@@ -575,19 +575,16 @@ fn discharge_io_field(ptr: i64, field: IoField) {
         IoFieldKind::IoTree => {
             // SAFETY: the closed tag-to-field table names an in-bounds word for
             // the decoded node shape; the last-reference fence has completed.
-            let value = unsafe { heap_access::read_i64(ptr, field.offset) };
+            let value = owned_field(ptr, field.offset);
             consume_io_tree(value);
         }
         IoFieldKind::NonZeroIoTree => {
             // SAFETY: same table-owned shape guarantee as the `IoTree` arm.
-            let value = unsafe { heap_access::read_i64(ptr, field.offset) };
-            if value != 0 {
-                consume_io_tree(value);
-            }
+            consume_io_tree(owned_field(ptr, field.offset));
         }
         IoFieldKind::Closure => {
             // SAFETY: same table-owned shape guarantee as the `IoTree` arm.
-            let value = unsafe { heap_access::read_i64(ptr, field.offset) };
+            let value = owned_field(ptr, field.offset);
             consume_closure(value);
         }
         IoFieldKind::InlineIoBranches => {
@@ -597,15 +594,14 @@ fn discharge_io_field(ptr: i64, field: IoField) {
             let count = unsafe { heap_access::read_i64(ptr, field.offset) } as usize;
             for index in 0..count {
                 // SAFETY: `index < count`; see the Par layout guarantee above.
-                let branch =
-                    unsafe { heap_access::read_i64(ptr, FIELD1_OFFSET + (index as isize) * 16) };
+                let branch = owned_field(ptr, FIELD1_OFFSET + (index as isize) * 16);
                 consume_io_tree(branch);
             }
         }
         IoFieldKind::IoBranchVec => {
             // SAFETY: this kind is declared only for Select, whose field 0 is
             // the branch-carrier `Vec (IO a)`.
-            let value = unsafe { heap_access::read_i64(ptr, field.offset) };
+            let value = owned_field(ptr, field.offset);
             consume_vec_with(value, consume_io_tree);
         }
     }
@@ -726,7 +722,8 @@ pub(crate) extern "C" fn free_io_node(ptr: i64) {
 /// bare nullary tag. Fields at offsets 24/32/… must NOT still be owned
 /// solely through this pointer — the caller is asserting that every
 /// heap-typed field has already been re-owned elsewhere.
-pub fn dec_shallow_io(ptr: i64) {
+pub fn dec_shallow_io(handle: Owned) {
+    let ptr = handle.into_raw();
     if ptr < NULLARY_THRESHOLD {
         return;
     }
@@ -760,7 +757,8 @@ pub(crate) const CLOSURE_DROP_GLUE_OFFSET: isize = HeapHeader::SIZE as isize + 8
 ///
 /// # Safety
 /// `ptr` must be a valid closure heap pointer (rc > 0) or bare nullary tag.
-pub fn consume_closure(ptr: i64) {
+pub fn consume_closure(handle: Owned) {
+    let ptr = handle.into_raw();
     if ptr < NULLARY_THRESHOLD {
         return;
     }

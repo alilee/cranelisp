@@ -343,7 +343,7 @@ design-only track.
   set and unit matrices; establish non-instrumented production witnesses for
   R-2/0859; audit 0804 honestly.
 - **Plan**: `tests/plan/s117-test-plan.md`, with durable rows in
-  `tests/plan/PLAN.md` and `tests/plan/risks.md`.
+  [historical QA plan](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md) and `tests/plan/risks.md`.
 - **Status: CONDITIONAL PASS (2026-07-24).**
 
 Findings:

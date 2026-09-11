@@ -332,7 +332,7 @@ closed failing-first.
 
 | S87 | Finding | S109 status |
 |---|---|---|
-| F-A | codegen batch ignores prelude fallback (DEF-1 seat) | **Resolved at a different seam** — the DEF-1 repro is GREEN-pinned (`tests/plan/PLAN.md:1797`, S108 prelude≡import convergence); `derive_codegen_batch` (`worker.rs:874`) still enumerates only the module's own table, which is now correct by design |
+| F-A | codegen batch ignores prelude fallback (DEF-1 seat) | **Resolved at a different seam** — the DEF-1 repro is GREEN-pinned ([historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md), S108 prelude≡import convergence); `derive_codegen_batch` (`worker.rs:874`) still enumerates only the module's own table, which is now correct by design |
 | F-B | JIT vs `--link` host-extern dual wiring | **Open, unchanged** (`worker.rs:1421` dlsym path vs JIT fallback) — remains 0407-family backlog; no parity guard yet |
 | F-C | `try_cache_hit_load` god fn | **Resolved** — 43 lines + 6 helpers (`cache_restore.rs:41-469`) |
 | F-D | 3 over-budget session_v4 fns | **Resolved** — 83/53/42 lines after extraction |

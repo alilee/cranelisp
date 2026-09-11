@@ -791,20 +791,15 @@ fn declare_intrinsics_generic_covers_the_catalog() {
     assert!(ids.vec_drop.is_some(), "runtime/vec_drop accessor");
 }
 
-// ── Decision 31 reclaim reg-guards (S82 harvest of legacy
-//    tests/legacy/v4_jit_reclaim.rs, FIXME 0133) ─────────────────────────
+// ── Decision 31 reclaim regression guards ──────────────────────────────
 //
-// The 6 legacy tests asserted Decision-31 reclaim invariants through the
-// full `ReplSession` eval pipeline (`bytes_current()` deltas, session-held
-// `Arc<Jit>` clone counts, `Code` enum shapes on `ModuleEntry::Def`). Per
-// tests/CLAUDE.md §"Two tiers" + the s82-harvest disposition, the
-// byte-counter / session-coupled assertions cannot be expressed at the
-// unit tier; what IS the durable, crate-internal kernel of each reg-guard
-// is the `Arc<Jit>` reclaim discipline that `Jit::drop` materialises. These
-// units pin that kernel directly on `Arc<Jit>` — the same retention root
-// the session layers `Code::Jit` over. All are REGRESSION-GUARDs (6 in the
-// legacy file): a regression in `Jit::drop` / the reclaim counter surfaces
-// here before it surfaces as a session-level leak or a dangling GOT slot.
+// Public session-level byte deltas and `Code` shapes belong to the binary
+// tier (`tests/CLAUDE.md` §Two tiers, no middle). These units pin the durable
+// crate-internal kernel directly: the `Arc<Jit>` reclaim discipline that
+// `Jit::drop` materialises, over the same retention root that the session
+// layers `Code::Jit` over. A regression in `Jit::drop` or the reclaim counter
+// therefore surfaces here before it becomes a session leak or dangling GOT
+// slot. See `tests/plan/PLAN.md` §Coverage preservation and evidence navigation.
 #[allow(clippy::arc_with_non_send_sync)]
 fn arc_jit() -> std::sync::Arc<Jit> {
     // `Arc<Jit>` is intentionally not Send+Sync (Jit is not Sync); the

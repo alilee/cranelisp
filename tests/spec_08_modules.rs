@@ -5,7 +5,7 @@
 // `tests/ring2.rs`, `tests/sprint59_neg.rs`, and `tests/e2e.rs`.
 // Module tests use on-disk fixtures via the `Cranelisp::file()` builder
 // and `--run` mode (mode-specific exception per
-// `tests/plan/PLAN.md §"Mode canonicalisation"` — module discovery is
+// the [current mode-canonicalisation guidance](plan/PLAN.md#mode-canonicalisation--repl-is-the-canonical-surface-for-language-conformance) — module discovery is
 // most cleanly tested through the batch-driver's project-root resolution).
 //
 // What this file covers:
@@ -584,7 +584,7 @@ fn regen_annotation_spacing_no_space_after_colon() {
 //
 // Wave 5.6 carry-forwards from legacy/modules.rs. All 13 use the
 // tempdir-fixture + --run pattern (mode-specific exception per
-// PLAN.md §"Mode canonicalisation" — module discovery is most cleanly
+// the [current mode-canonicalisation guidance](plan/PLAN.md#mode-canonicalisation--repl-is-the-canonical-surface-for-language-conformance) — module discovery is most cleanly
 // tested through the batch-driver's project-root resolution).
 // =============================================================================
 
@@ -2341,7 +2341,7 @@ fn dotted_constructor_in_value_position_resolves() {
 // =============================================================================
 // Sprint 109 — §8.5.4 Auto-loading (AL rows) + 0571 FQ defect class (FQ rows) +
 // dotted-`Type.Ctor` capability (DC rows) + 0570 `mod-` search twin (MV rows).
-// Plan: tests/plan/PLAN.md §"Sprint 109 — sprint-wide failing-test plan".
+// [Historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md), Sprint 109.
 // Fixtures are stdlib-free: own modules composed into the tmpdir via `.file()`,
 // PreludeVariant::None (default) unless a row needs primitives named in-file.
 // =============================================================================
@@ -3232,7 +3232,8 @@ fn mod_dash_child_file_pattern_loads() {
 
 // =============================================================================
 // Sprint 109 W1-prep — §D.1 acceptance negatives (the 73-regression classes as
-// permanent guards). Plan: tests/plan/PLAN.md §S109 §D.1. AN-1/AN-4 are
+// permanent guards). The [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md)
+// records S109 D.1. AN-1/AN-4 are
 // behaviour-invariance pins (GREEN today, must stay green through commit-1/2);
 // AN-2/AN-5 are pre-existing-defect repros owed ahead of the wave.
 // =============================================================================
@@ -3374,7 +3375,8 @@ fn bare_field_accessor_same_cluster_run_mode() {
 
 // =============================================================================
 // Sprint 109 — 0571.2 negatives (I1 + I2). `/review` proved these in the landed
-// 0571 change-set (35153cf8). Plan: tests/plan/PLAN.md §S109 (0571.2 negatives).
+// 0571 change-set (35153cf8). See the [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md),
+// S109 0571.2 negatives.
 // =============================================================================
 
 // spec: spec/08-modules.md §8.5.4 edge 4/5 — a retry after a FAILED auto-load

@@ -124,7 +124,7 @@ impl CompilerSession {
             // `$`-mangled names and the synthetic `__expr` top-level-expression
             // wrapper are excluded (shared predicate so the filter cannot drift
             // from the synthesis site).
-            if crate::worker::is_internal_listing_name(name.as_ref()) {
+            if crate::worker::is_internal_listing_entry(name.as_ref(), entry) {
                 continue;
             }
             // §3.3: names only, no `: type` suffix — the layout block is shared
@@ -306,7 +306,8 @@ impl CompilerSession {
                 // merges both legs into one entry per logical caller. Unlike
                 // `stale_callers`, `/refs` wants ALL referers (compiled or not), so
                 // the `code: Some` compiled-filter is intentionally NOT applied here.
-                let base = crate::redefine::base_fq(&caller);
+                let base =
+                    crate::redefine::base_fq_from_tables(&self.shared.symbol_tables, &caller);
                 referers.push(format!("{}/{}", base.module.as_ref(), base.symbol.as_ref()));
             }
         }
@@ -703,14 +704,13 @@ impl CompilerSession {
             // Public symbols only — both prelude's own defs and its re-export
             // `(export …)` Import edges (e.g. `add-i64`) are user-visible.
             let name = sym.to_string();
-            // Skip mangled multi-sig / overload variants and special forms
-            // (special forms are surfaced from root in their own category).
-            if name.contains('$') {
+            // Generated instances remain internal even though their canonical
+            // storage keys no longer use the legacy `$` spelling.
+            let Some(entry) = self.resolve_to_definition(&candidate.source) else {
                 continue;
-            }
-            if self
-                .resolve_to_definition(&candidate.source)
-                .is_some_and(|entry| matches!(entry.declaration, Decl::SpecialForm(_)))
+            };
+            if crate::worker::is_internal_listing_entry(candidate.source.symbol.as_ref(), &entry)
+                || matches!(entry.declaration, Decl::SpecialForm(_))
             {
                 continue;
             }
@@ -752,7 +752,16 @@ impl CompilerSession {
 
             for (sym, candidate) in table.all_name_candidates() {
                 let name = sym.to_string();
-                if candidate.source.module == current || name.contains('$') {
+                if candidate.source.module == current {
+                    continue;
+                }
+                let Some(entry) = self.resolve_to_definition(&candidate.source) else {
+                    continue;
+                };
+                if crate::worker::is_internal_listing_entry(
+                    candidate.source.symbol.as_ref(),
+                    &entry,
+                ) {
                     continue;
                 }
                 let classification = self.classify_import(&candidate.source);
@@ -810,7 +819,10 @@ impl CompilerSession {
                     continue;
                 }
                 let name = sym.to_string();
-                if name.contains('$') {
+                let Some(entry) = self.resolve_to_definition(source) else {
+                    continue;
+                };
+                if crate::worker::is_internal_listing_entry(source.symbol.as_ref(), &entry) {
                     continue;
                 }
                 if *source.module == *filter {
@@ -886,9 +898,6 @@ impl CompilerSession {
             // `__expr` top-level-expression wrapper (the wrapper is
             // `Visibility::Public`, so the `is_public()` gate above does not
             // catch it) — shared predicate, single source with the synthesis.
-            if crate::worker::is_internal_listing_name(&name) {
-                continue;
-            }
             if !prefix_filter.is_empty()
                 && !name
                     .to_lowercase()
@@ -903,6 +912,9 @@ impl CompilerSession {
             let Some(entry) = self.resolve_to_definition(&candidate.source) else {
                 continue;
             };
+            if crate::worker::is_internal_listing_entry(&name, &entry) {
+                continue;
+            }
             // A local sum constructor is exposed twice for lookup: under its
             // canonical `Type.Ctor` binding and under the convenient bare
             // spelling. `/exports` describes declarations, not every lookup
@@ -1026,8 +1038,20 @@ impl CompilerSession {
         let deallocs_before = cranelisp_intrinsics::dealloc_count();
         let bytes_before = cranelisp_intrinsics::bytes_current();
 
-        let eval_outcome = self.eval(expr_src);
+        let mut eval_outcome = self.eval(expr_src);
 
+        let header = match &mut eval_outcome {
+            Ok(Some(result)) => {
+                let rendered = self.format_eval_result(result);
+                result.release_program_result();
+                rendered
+            }
+            Ok(None) => "(no result)".to_string(),
+            Err(e) => crate::style::error_line(&e.to_string()),
+        };
+
+        // Close the measurement only after the result has been observed and
+        // released, so the delta describes the completed turn.
         let allocs_after = cranelisp_intrinsics::alloc_count();
         let deallocs_after = cranelisp_intrinsics::dealloc_count();
         let bytes_after = cranelisp_intrinsics::bytes_current();
@@ -1036,12 +1060,6 @@ impl CompilerSession {
         let d_deallocs = deallocs_after.saturating_sub(deallocs_before);
         let d_bytes = (bytes_after as i64) - (bytes_before as i64);
         let live_delta = (d_allocs as i64) - (d_deallocs as i64);
-
-        let header = match eval_outcome {
-            Ok(Some(result)) => self.format_eval_result(&result),
-            Ok(None) => "(no result)".to_string(),
-            Err(e) => crate::style::error_line(&e.to_string()),
-        };
 
         let delta_line = format!(
             "; delta: allocs +{d_allocs}  deallocs +{d_deallocs}  bytes {d_bytes:+}  live {live_delta:+}"

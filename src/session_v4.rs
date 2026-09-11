@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::{Arc, Mutex};
 
-use cranelisp_types::{CranelispError, FQSymbol, ModuleFullPath, Sexp, Warning};
+use cranelisp_types::{FQSymbol, ModuleFullPath, Warning};
 // Re-exported for the `#[cfg(test)] mod *_tests` siblings that reach it via
 // `use super::*` (they construct `SessionSettings`). The parent itself no
 // longer names it directly (the `SessionSettings` field moved to `types.rs`).
@@ -510,50 +510,6 @@ pub struct CompilerSession {
     /// field, lazily wired — not a parallel state machine (int.md §4).
     #[cfg(feature = "agent")]
     pub(crate) agent: Option<crate::agent::types::AgentState>,
-}
-
-impl CompilerSession {
-    /// Re-register a module for typechecking (file-watcher path).
-    ///
-    /// Sprint 67 Wave 3 (FIXME 0176 closure scope) — facade-prescribed
-    /// `CompilerSession` thin forward to `CompileScheduler::re_register_module`
-    /// per `design/arch/facades/int.md` §"CompilerSession". Returns
-    /// `Ok(true)` if the module was re-registered, `Ok(false)` if the
-    /// scheduler skipped it (unknown module, mid-typecheck, or its backing
-    /// source could not be read).
-    ///
-    /// S78: re-register now requires the module's cluster sexps (they ride the
-    /// work packet). This forward sources them from the module's backing file
-    /// (the file-watcher's `reload_module` is the primary path and already
-    /// carries the on-disk source; this thin forward reads + parses the file
-    /// recorded on the typecheck product). If no backing file or the source
-    /// cannot be read/parsed, the re-register is skipped (`Ok(false)`).
-    ///
-    /// S87 §2: kept on the parent (the struct's home) as the facade thin-forward
-    /// — the bulk of the lifecycle impl moved to `lifecycle.rs`, but this one
-    /// stays here so the `session_v4.rs` facade surface (and the row-45 guard)
-    /// is preserved.
-    pub fn re_register_module(&mut self, module: &ModuleFullPath) -> Result<bool, CranelispError> {
-        let Some(file_path) = self
-            .shared
-            .typecheck_products
-            .get(module)
-            .and_then(|tp| tp.file_path.clone())
-        else {
-            return Ok(false);
-        };
-        let Ok(source) = std::fs::read_to_string(&file_path) else {
-            return Ok(false);
-        };
-        let sexps: std::sync::Arc<[Sexp]> =
-            std::sync::Arc::from(cranelisp_frontend::parse(&source)?);
-        // Module-preamble wiring (§8.16.5; design/frontend/module-preamble.md §5):
-        // a watcher-triggered re-register re-reads fresh source from disk, so the
-        // preamble is re-captured (the on-disk file is the source of truth here,
-        // not a cache).
-        crate::save::apply_module_preamble(&self.shared.symbol_tables, module, &source);
-        Ok(self.shared.scheduler.re_register_module(module, sexps))
-    }
 }
 
 #[cfg(test)]

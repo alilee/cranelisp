@@ -5,7 +5,8 @@
 // `num.bits` and other deep submodules are unreachable from the 13 top-level
 // `.cl` files, so a top-level-only probe would miss them).
 //
-// Design (design/int/index-worker-isolation.md context + PLAN.md §S110 E,
+// Design (design/int/index-worker-isolation.md context +
+// [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md), S110 E,
 // /qa-confirmed with two refinements):
 //   1. Enumeration is RECURSIVE — every `stdlib/**/*.cl`, skipping `prelude.cl`
 //      and every subtree declared private by its parent (`(mod- name)`, which
@@ -22,7 +23,8 @@
 //
 // Behind the ONE sanctioned `use_workspace_stdlib_for_stdlib_conformance_only()`
 // gate (root CLAUDE.md §"Design Principles" — Stdlib separation; tests/CLAUDE.md
-// §"Test isolation"). Plan: tests/plan/PLAN.md §S110 E / SG-1.
+// §"Test isolation"). The [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md)
+// records S110 E / SG-1.
 
 #[path = "helpers/mod.rs"]
 mod helpers;
@@ -226,6 +228,62 @@ fn stdlib_repl(stdin: &str) -> helpers::e2e::CrOutput {
         .output()
 }
 
+/// Exercise a public core.io program through the three user-visible modes.
+fn core_io_mode_failures(label: &str, source: &str) -> Vec<String> {
+    let repl = stdlib_repl(&format!("{source}(main)\n"));
+    let run = Cranelisp::new()
+        .use_workspace_stdlib_for_stdlib_conformance_only()
+        .run("user.cl")
+        .user(source)
+        .timeout(Duration::from_secs(90))
+        .output();
+    let link = Cranelisp::new()
+        .use_workspace_stdlib_for_stdlib_conformance_only()
+        .link_then_run("user.cl")
+        .user(source)
+        .timeout(Duration::from_secs(90))
+        .output();
+
+    let mut failures = Vec::new();
+    for (mode, expected_repl_value, out) in [
+        ("REPL", true, repl),
+        ("--run", false, run),
+        ("--link", false, link),
+    ] {
+        let succeeds = if expected_repl_value {
+            out.status.success() && out.stdout.contains(":primitives/Int 0")
+        } else {
+            out.status.code() == Some(0)
+        };
+        if !succeeds {
+            failures.push(format!(
+                "{label} {mode}: expected REPL Int 0 or batch exit 0; status={:?}\n\
+                 stdout:\n{}\nstderr:\n{}",
+                out.status.code(),
+                out.stdout,
+                out.stderr
+            ));
+        }
+    }
+    failures
+}
+
+fn assert_stdlib_repl_result(label: &str, source: &str, expected: &str) {
+    let out = stdlib_repl(source);
+    let details = format!(
+        "status={:?}\nstdout:\n{}\nstderr:\n{}",
+        out.status, out.stdout, out.stderr
+    );
+    assert!(
+        out.status.success(),
+        "{label} must complete without abort or timeout; {details}"
+    );
+    assert!(
+        out.stdout.contains(expected),
+        "{label} must produce {expected:?}; {details}"
+    );
+}
+
 const TIMEOUT_CODEGEN_BACKSTOP: &str =
     "generic value reference 'Some' reached codegen without a mono instance";
 const TIMEOUT_LOSER_MARKER: &str = "S121_TIMEOUT_CANCELLED_LOSER_SHOULD_NOT_PRINT";
@@ -265,7 +323,9 @@ fn timeout_mode_failures(label: &str, source: &str) -> Vec<String> {
             failures.push(format!(
                 "{label} {mode}: expected the timer/None outcome (REPL Int 0 or batch exit 0) \\
                  without `{TIMEOUT_CODEGEN_BACKSTOP}`; status={:?}\nstdout:\n{}\nstderr:\n{}",
-                out.status.code(), out.stdout, out.stderr
+                out.status.code(),
+                out.stdout,
+                out.stderr
             ));
         }
     }
@@ -454,6 +514,125 @@ fn stdlib_timeout_public_concrete_call_and_lambda_control_across_modes() {
 // One public executable check for the six `core.io` families that cannot enter
 // the in-language discovery runner: its zero exit requires every scalar or
 // structural observation below to agree.
+
+// This is the smallest ordered `sequence-io` composition that retains the
+// public List result and distinguishes both element order and list termination.
+// spec: spec/10-io.md §10.3 + §10.12.8 — public sequence IO returns its values
+// in action order; spec/11-stdlib.md §11 — public core.io helpers are usable.
+#[test]
+fn stdlib_core_io_ordered_two_action_sequence_reduction_across_modes() {
+    const SOURCE: &str = r#"
+(import [core.io [sequence-io]])
+(import [collections.list [List Nil Cons]])
+(import [primitives [IO Pure bind eq-i64]])
+
+(defn nested-action [x] (bind (Pure x) (fn [v] (Pure v))))
+
+(defn main []
+  (bind (sequence-io (Cons (nested-action 1) (Cons (nested-action 2) Nil)))
+        (fn [xs]
+          (match xs [(Cons a rest-a)
+                       (match rest-a [(Cons b rest-b)
+                                      (match rest-b [Nil (Pure (if (eq-i64 a 1) (if (eq-i64 b 2) 0 1) 1))
+                                                     _ (Pure 1)])
+                                      _ (Pure 1)])
+                     _ (Pure 1)]))))
+"#;
+    let failures = core_io_mode_failures("ordered two-action sequence reduction", SOURCE);
+    assert!(
+        failures.is_empty(),
+        "ordered two-action sequence reduction failures:\n{}",
+        failures.join("\n\n")
+    );
+}
+
+// Control for the reduction above: the two actions are explicitly bound and
+// their results are assembled into the same List shape before the same order
+// and termination observation.
+// spec: spec/10-io.md §10.3 + §10.12.8 — explicit bind preserves public IO
+// action order; spec/11-stdlib.md §11 — public core.io imports remain usable.
+#[test]
+fn stdlib_core_io_ordered_two_action_explicit_bind_control_across_modes() {
+    const SOURCE: &str = r#"
+(import [core.io [sequence-io]])
+(import [collections.list [List Nil Cons]])
+(import [primitives [IO Pure bind eq-i64]])
+
+(defn nested-action [x] (bind (Pure x) (fn [v] (Pure v))))
+
+(defn main []
+  (bind (nested-action 1)
+        (fn [a]
+          (bind (nested-action 2)
+                (fn [b]
+                  (let [xs (Cons a (Cons b Nil))]
+                    (match xs [(Cons x rest-x)
+                                 (match rest-x [(Cons y rest-y)
+                                                (match rest-y [Nil (Pure (if (eq-i64 x 1) (if (eq-i64 y 2) 0 1) 1))
+                                                               _ (Pure 1)])
+                                                _ (Pure 1)])
+                               _ (Pure 1)])))))))
+"#;
+    let failures = core_io_mode_failures("ordered two-action explicit-bind control", SOURCE);
+    assert!(
+        failures.is_empty(),
+        "ordered two-action explicit-bind control failures:\n{}",
+        failures.join("\n\n")
+    );
+}
+
+// Multiplicity control for the reduced subject: `sequence-io` still receives a
+// nested Bind action and returns a List, but it sequences only one action.
+// spec: spec/10-io.md §10.3 + §10.12.8 — public sequence IO returns its values
+// in action order; spec/11-stdlib.md §11 — public core.io helpers are usable.
+#[test]
+fn stdlib_core_io_one_nested_action_sequence_control_across_modes() {
+    const SOURCE: &str = r#"
+(import [core.io [sequence-io]])
+(import [collections.list [List Nil Cons]])
+(import [primitives [IO Pure bind eq-i64]])
+
+(defn nested-action [x] (bind (Pure x) (fn [v] (Pure v))))
+
+(defn main []
+  (bind (sequence-io (Cons (nested-action 1) Nil))
+        (fn [xs]
+          (match xs [(Cons x rest)
+                       (match rest [Nil (Pure (if (eq-i64 x 1) 0 1))
+                                    _ (Pure 1)])
+                     _ (Pure 1)]))))
+"#;
+    let failures = core_io_mode_failures("one nested-action sequence control", SOURCE);
+    assert!(
+        failures.is_empty(),
+        "one nested-action sequence control failures:\n{}",
+        failures.join("\n\n")
+    );
+}
+
+// Empty input has no actions and must return the empty List rather than a
+// synthesized element, hang, or process failure.
+// spec: spec/10-io.md §10.3 + §10.12.8 — empty public sequence IO returns an
+// empty result; spec/11-stdlib.md §11 — public core.io helpers are usable.
+#[test]
+fn stdlib_core_io_empty_sequence_returns_empty_across_modes() {
+    const SOURCE: &str = r#"
+(import [core.io [sequence-io]])
+(import [collections.list [List Nil]])
+(import [primitives [IO Pure bind]])
+
+(defn main []
+  (bind (sequence-io :(List (IO Int)) Nil)
+        (fn [xs] (match xs [Nil (Pure 0) _ (Pure 1)]))))
+"#;
+    let failures = core_io_mode_failures("empty sequence result", SOURCE);
+    assert!(
+        failures.is_empty(),
+        "empty sequence result failures:\n{}",
+        failures.join("\n\n")
+    );
+}
+
 // spec: spec/10-io.md §10.3 + §10.12.8 — `>>`/mapping/conditional/sequence IO composition and both derived-timeout outcomes execute through a public `core.io` import; spec/11-stdlib.md §11 — public stdlib imports remain usable.
 // defect: class=rc-miscount locus=public `core.io` composition boundary (internal source/locus unassigned) — the valid all-family program aborts with `STALE RC DEC` before its required zero result in REPL, `--run`, and `--link`.
 #[test]
@@ -543,7 +722,9 @@ fn stdlib_core_io_public_scalar_driver_across_modes() {
             failures.push(format!(
                 "public core.io scalar driver {mode}: expected REPL Int 0 or batch exit 0; \\
                  status={:?}\nstdout:\n{}\nstderr:\n{}",
-                out.status.code(), out.stdout, out.stderr
+                out.status.code(),
+                out.stdout,
+                out.stderr
             ));
         }
     }
@@ -665,7 +846,9 @@ fn stdlib_core_io_nested_bind_outer_aggregation_control_across_modes() {
             failures.push(format!(
                 "public core.io nested-bind control {mode}: expected REPL Int 0 or batch exit 0; \\
                  status={:?}\nstdout:\n{}\nstderr:\n{}",
-                out.status.code(), out.stdout, out.stderr
+                out.status.code(),
+                out.stdout,
+                out.stderr
             ));
         }
     }
@@ -714,7 +897,9 @@ fn stdlib_core_syntax_annotated_helpers_macro_client_across_modes() {
             failures.push(format!(
                 "annotated-Sexp macro client {mode}: expected REPL Int 19 or batch exit 19; \\
                  status={:?}\nstdout:\n{}\nstderr:\n{}",
-                out.status.code(), out.stdout, out.stderr
+                out.status.code(),
+                out.stdout,
+                out.stderr
             ));
         }
     }
@@ -722,6 +907,107 @@ fn stdlib_core_syntax_annotated_helpers_macro_client_across_modes() {
         failures.is_empty(),
         "explicit core.syntax annotated-Sexp helper client failures:\n{}",
         failures.join("\n\n")
+    );
+}
+
+// Q10 — derive macros on the omitted public shapes. Each subject runs in its
+// own child so an abort or timeout is reported by the Rust harness.
+
+// spec: spec/09-macros.md §9.3 + spec/05-definitions.md §5.2 +
+// spec/07-traits.md §7.1 — derive-Eq compares every field of a two-field
+// product.
+#[test]
+fn stdlib_derive_eq_two_field_product() {
+    assert_stdlib_repl_result(
+        "derive-Eq two-field product",
+        "(import [derive [derive-Eq]])\n\
+         (import [compare.eq [Eq = !=]])\n\
+         (import [primitives [Int]])\n\
+         (deftype Point [:Int x :Int y])\n\
+         (derive-Eq (deftype Point [:Int x :Int y]))\n\
+         (if (= (Point 1 2) (Point 1 2)) (!= (Point 1 2) (Point 1 3)) false)\n",
+        ":primitives/Bool true",
+    );
+}
+
+// spec: spec/09-macros.md §9.3 + spec/05-definitions.md §5.2 +
+// spec/07-traits.md §7.1 — derive-Ord compares later fields when the preceding
+// field is equal.
+#[test]
+fn stdlib_derive_ord_two_field_product() {
+    assert_stdlib_repl_result(
+        "derive-Ord two-field product",
+        "(import [derive [derive-Ord]])\n\
+         (import [compare.ord [Ord <]])\n\
+         (import [primitives [Int]])\n\
+         (deftype Point [:Int x :Int y])\n\
+         (derive-Ord (deftype Point [:Int x :Int y]))\n\
+         (< (Point 1 2) (Point 1 3))\n",
+        ":primitives/Bool true",
+    );
+}
+
+// spec: spec/09-macros.md §9.3 + spec/05-definitions.md §5.2 +
+// spec/07-traits.md §7.1 — derive-Display renders both fields of a two-field
+// product in declaration order.
+#[test]
+fn stdlib_derive_display_two_field_product() {
+    assert_stdlib_repl_result(
+        "derive-Display two-field product",
+        "(import [derive [derive-Display]])\n\
+         (import [text.display [Display show]])\n\
+         (import [primitives [Int]])\n\
+         (deftype Point [:Int x :Int y])\n\
+         (derive-Display (deftype Point [:Int x :Int y]))\n\
+         (show (Point 1 2))\n",
+        ":primitives/String \"Point(1 2)\"",
+    );
+}
+
+// spec: spec/09-macros.md §9.3 + spec/05-definitions.md §5.2 +
+// spec/07-traits.md §7.1 — constructor declaration order determines Ord for a
+// three-constructor nullary enum.
+#[test]
+fn stdlib_derive_ord_three_constructor_enum() {
+    assert_stdlib_repl_result(
+        "derive-Ord three-constructor enum",
+        "(import [derive [derive-Ord]])\n\
+         (import [compare.ord [Ord <]])\n\
+         (deftype Rank Low Middle High)\n\
+         (derive-Ord (deftype Rank Low Middle High))\n\
+         (if (< Low Middle) (< Middle High) false)\n",
+        ":primitives/Bool true",
+    );
+}
+
+// spec: spec/09-macros.md §9.3 + spec/05-definitions.md §5.2 +
+// spec/07-traits.md §7.1 — adjacent controls: every derive macro accepts one
+// data field, while Eq and Display accept the same three-constructor enum shape
+// used by the Ord subject.
+#[test]
+fn stdlib_derive_adjacent_arity_controls() {
+    assert_stdlib_repl_result(
+        "derive adjacent arity controls",
+        "(import [derive [derive-Eq derive-Ord derive-Display]])\n\
+         (import [compare.eq [Eq =]])\n\
+         (import [compare.ord [Ord <]])\n\
+         (import [text.display [Display show]])\n\
+         (import [primitives [Int String str-eq]])\n\
+         (deftype Level (Lvl [:Int n]))\n\
+         (derive-Eq (deftype Level (Lvl [:Int n])))\n\
+         (derive-Ord (deftype Level (Lvl [:Int n])))\n\
+         (derive-Display (deftype Level (Lvl [:Int n])))\n\
+         (deftype Colour Red Green Blue)\n\
+         (derive-Eq (deftype Colour Red Green Blue))\n\
+         (derive-Display (deftype Colour Red Green Blue))\n\
+         (if (= (Lvl 1) (Lvl 1))\n\
+             (if (< (Lvl 1) (Lvl 2))\n\
+                 (if (str-eq (show (Lvl 1)) \"Lvl(1)\")\n\
+                     (if (= Red Red) (str-eq (show Blue) \"Blue\") false)\n\
+                     false)\n\
+                 false)\n\
+             false)\n",
+        ":primitives/Bool true",
     );
 }
 

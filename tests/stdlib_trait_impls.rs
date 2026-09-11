@@ -14,7 +14,8 @@
 // via the operator-as-value path `(let [f +] (f a b))`. If either path
 // regresses during the Phase-4 stdlib-impl audit, a test fires.
 //
-// Per `tests/plan/implementation-slice-s66.md §5.8`.
+// Per the [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md),
+// FIXME 0150 — D43 runtime split (highest-risk reshape).
 //
 // Negative path coverage: post-FIXME-0150 Phase 5, the `cranelisp-runtime`
 // crate must no longer be a workspace member.

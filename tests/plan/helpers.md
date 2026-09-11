@@ -22,8 +22,7 @@ implementation codes against. This document is the design intent;
 
    **Canonical mode for language-conformance bulk = REPL.** Per the
    Sprint 64 Wave 2.5 architecture decision recorded in
-   `tests/plan/PLAN.md §"Mode canonicalisation — REPL is the canonical
-   surface for language conformance"`: language-conformance tests run
+   [mode selection](PLAN.md#mode-canonicalisation--repl-is-the-canonical-surface-for-language-conformance): language-conformance tests run
    through REPL, not `--run`. The mode-equivalence subset
    (`build_confidence.rs`) additionally exercises a curated handful
    through all six mode×cache permutations, asserting equivalent

@@ -1,0 +1,12 @@
+# Root memory
+
+- `docs/CLAUDE.md` — Governs the fixture's maintained documentation.
+- `dated-records` — Retains bounded historical records for provenance.
+- `reasoned-notes` — Retains explicitly exempt operational notes.
+- `vendor/package` — Declares the optional shared-package boundary.
+
+**Operational contract.** Maintained documents stay connected to this root.
+
+| Section | Purpose |
+|---|---|
+| Release gate | Validate the complete declared corpus. |

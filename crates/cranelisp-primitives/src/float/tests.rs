@@ -1,5 +1,4 @@
 use super::*;
-use cranelisp_intrinsics::alloc;
 
 fn float_bits(f: f64) -> i64 {
     f.to_bits() as i64
@@ -10,9 +9,12 @@ fn float_bits(f: f64) -> i64 {
 fn test_float_to_string_integer() {
     let result = float_to_string(float_bits(3.0));
     unsafe {
-        assert_eq!(heap_string::read_string_as_str(result), "3.0");
-        alloc::dealloc(result as *mut u8);
+        assert_eq!(
+            heap_string::read_string_as_str(result.raw_for_read()),
+            "3.0"
+        );
     }
+    cranelisp_intrinsics::rc::consume_shallow(result);
 }
 
 // spec: appendix-a-builtins §A.3 — float-to-string converts fractional float
@@ -20,9 +22,12 @@ fn test_float_to_string_integer() {
 fn test_float_to_string_fractional() {
     let result = float_to_string(float_bits(3.25));
     unsafe {
-        assert_eq!(heap_string::read_string_as_str(result), "3.25");
-        alloc::dealloc(result as *mut u8);
+        assert_eq!(
+            heap_string::read_string_as_str(result.raw_for_read()),
+            "3.25"
+        );
     }
+    cranelisp_intrinsics::rc::consume_shallow(result);
 }
 
 // spec: appendix-a-builtins §A.3 — float-to-string converts negative float
@@ -30,9 +35,12 @@ fn test_float_to_string_fractional() {
 fn test_float_to_string_negative() {
     let result = float_to_string(float_bits(-2.5));
     unsafe {
-        assert_eq!(heap_string::read_string_as_str(result), "-2.5");
-        alloc::dealloc(result as *mut u8);
+        assert_eq!(
+            heap_string::read_string_as_str(result.raw_for_read()),
+            "-2.5"
+        );
     }
+    cranelisp_intrinsics::rc::consume_shallow(result);
 }
 
 // spec: appendix-a-builtins §A.3 — float-to-string converts zero
@@ -40,7 +48,10 @@ fn test_float_to_string_negative() {
 fn test_float_to_string_zero() {
     let result = float_to_string(float_bits(0.0));
     unsafe {
-        assert_eq!(heap_string::read_string_as_str(result), "0.0");
-        alloc::dealloc(result as *mut u8);
+        assert_eq!(
+            heap_string::read_string_as_str(result.raw_for_read()),
+            "0.0"
+        );
     }
+    cranelisp_intrinsics::rc::consume_shallow(result);
 }

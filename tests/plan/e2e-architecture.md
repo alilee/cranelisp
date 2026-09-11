@@ -223,8 +223,7 @@ The setup script in §2 already makes the slow class *correct* regardless
 of grouping. Grouping is then an optimisation + a concurrency-control
 lever, not a correctness requirement. Design:
 
-1. **Keep the spec-section-anchored file layout** (`PLAN.md §"Sprint 64
-   reorganisation strategy"`). Do NOT re-shard tests into a separate
+1. **Keep the spec-section-anchored file layout** ([current coverage navigation](PLAN.md#current-coverage-navigation)). Do NOT re-shard tests into a separate
    `tests/e2e_link/` tree — that would fragment the spec-coverage read the
    project deliberately chose. The slow `--link` tests live in the same
    spec-section files as their fast siblings (`spec_10_io.rs` has both

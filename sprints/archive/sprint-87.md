@@ -39,7 +39,7 @@ Fresh-view audit of the **physical workspace crates** for **simplicity, maintain
 | `cranelisp-intrinsics` (7.1k — would have been skipped under the old list; the `vec_set_copy` RC-asymmetry seed already implies it is in scope) | `audits/intrinsics-2026-06-14.md` (no diagram) |
 | `cranelisp-primitives` | `audits/primitives-2026-06-14.md` (no diagram) |
 | `cranelisp-platform` | `audits/platform-2026-06-14.md` (no diagram) |
-| `cranelisp-types` | `design/arch/facades/types-audit-s69.md` |
+| `cranelisp-types` | [types audit s69 (Git history)](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/arch/facades/types-audit-s69.md) |
 
 "No prior baseline" ≠ skip — it means a from-zero pass, flagged as such.
 

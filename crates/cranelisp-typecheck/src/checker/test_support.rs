@@ -770,22 +770,22 @@ impl TestFixture {
     /// `CheckResult.mono_defns` (but only the names — mono entries now carry
     /// their annotated AST on `ModuleEntry::Def.ast`).
     ///
-    /// Mono entries are registered as `DefKind::UserFn { constrained_fn: None }`
-    /// with mangled names containing a `$` separator (e.g. `add$Int+Int`).
-    /// Trait-impl methods also use `$` mangling (e.g. `Num.+$Int`), but those
-    /// carry a `.` prefix — excluded here by requiring the name NOT contain a
-    /// `.` before the `$`.
+    /// Mono entries are concrete callables whose lifecycle backlink names the
+    /// template that produced them. Ordinary concrete definitions and trait
+    /// implementations have no such backlink.
     pub fn mono_defn_names(&self) -> Vec<Symbol> {
         self.symbol_table()
             .all_symbols()
             .filter_map(|(name, entry)| {
                 let callable = entry.callable()?;
-                if !matches!(callable.arm.life, cranelisp_types::Life::Concrete { .. }) {
-                    return None;
-                }
-                let s = name.as_ref();
-                let dollar = s.find('$')?;
-                (!s[..dollar].contains('.')).then(|| name.clone())
+                matches!(
+                    callable.arm.life,
+                    cranelisp_types::Life::Concrete {
+                        minted_from: Some(_),
+                        ..
+                    }
+                )
+                .then(|| name.clone())
             })
             .collect()
     }

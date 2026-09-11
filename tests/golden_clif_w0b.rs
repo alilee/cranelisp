@@ -57,7 +57,7 @@
 // list — a THIRD consumer of this extraction is the bar to unify the three).
 //
 // spec: design/arch/backend-keyed-consumer.md §4 W0.b — CLIF byte-identity gate
-// plan: tests/plan/PLAN.md §S110 KC-W0-2
+// [Historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md), S110 KC-W0-2.
 
 #[path = "helpers/mod.rs"]
 mod helpers;

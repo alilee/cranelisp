@@ -14,6 +14,17 @@ it commits to. They are distinct from:
   traps, layout invariants, the submodule seam map;
 - `spec/10-io.md`, `spec/12-runtime.md` — what runtime behaviour is correct.
 
+## Document collections
+
+| Collection | Purpose | Boundary |
+|---|---|---|
+| `platform-current-designs` | Current platform interior designs and retained live design evidence for the host/DLL ABI, authoring and loading, poll leaves and ADT marker binding. | The five named live Markdown products directly under `design/platform/`. |
+| `platform-historical-records` | Superseded platform host-wiring, registry-removal and poll-support records whose distinct rationale is not duplicated by current documents. | Markdown products under `design/platform/archive/`. |
+
+Both are established collections and retain live reference checking. The
+archive index remains the authority for each historical record's retention;
+collection membership does not make it current design.
+
 ## Live documents
 
 | File | Carries |
@@ -40,8 +51,10 @@ it commits to. They are distinct from:
 - **Record rejected alternatives briefly** — considered X, chose Y because Z —
   and record deferred extensions with the **trigger** that would require them. A
   deferral without a trigger is a decision nobody can revisit.
-- **Superseded records move to `archive/`** with an index row saying what
-  superseded them. Deleting loses provenance; leaving them beside current design
-  makes a reader guess which is live.
+- **Retain one canonical home.** A superseded record stays in `archive/` only when
+  it remains the canonical home for distinct rationale. If current documents or git
+  already carry its useful content, delete the duplicate. If useful detail is missing,
+  first fold that detail into the current owning document in its current form, then
+  delete the old record. The archive index explains every retained exception.
 - **Cite, do not restate.** When a fact belongs to `arch`, `spec` or a
   neighbouring crate, cite it in that owner's language.

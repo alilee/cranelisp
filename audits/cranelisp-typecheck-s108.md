@@ -180,7 +180,7 @@ visible place: `deftype` (program.rs:911), `deftrait` name + each method name
 (program.rs:932–937, placed at the arm so plain AND HKT registration branches
 share one call site), `defn`/`defn-` (program.rs:954); `defmacro` reaches the
 identical types-owned seam from int (form_dispatch.rs:244). The variant ×
-polarity matrix (`tests/plan/PLAN.md:1753–1859`) is the standing lever that
+polarity matrix ([historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md)) is the standing lever that
 keeps it one codepath.
 
 **Is the class TRULY closed on the check path?** **Yes, structurally** — a
@@ -246,7 +246,7 @@ Top technical risks derived from invariants + defect history, each verdicted:
 - **Risk: a resolution/definition site silently lacking prelude parity** (the
   E3/E8/0558/E9/S8/S14–S16 class — this context's dominant historical defect
   class). **Pinned, production-path.** The S1–S21 site enumeration + R1–R8
-  RED-to-GREEN matrix (`tests/plan/PLAN.md:1753–1859`) runs e2e through the
+  RED-to-GREEN matrix ([historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md)) runs e2e through the
   real binary (`spec_08_name_shadowing.rs`, `spec_07_traits.rs`,
   `spec_08_prelude_outer_scope.rs`), twin-fixture shape, both polarities,
   mode parity pinned (R3). All R-rows verified GREEN post-landing and stand

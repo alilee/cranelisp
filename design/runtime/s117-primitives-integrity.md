@@ -3,8 +3,10 @@
 **Status:** Phase 3 design of record
 **Scope:** Runtime surface (`cranelisp-primitives` with its
 `cranelisp-intrinsics` Rust-path dependency)
-**Authority:** elaborates `design/runtime/runtime.md`; public-surface changes
-remain subject to `/arch`
+**Authority:** `design/arch/bounded-contexts.md` §4a (primitives) and §4b
+(the intrinsics representation and lifetime mechanics this design reaches
+through the Rust path); elaborates `design/primitives/primitives.md`.
+Public-surface changes remain subject to `arch`.
 
 ## 1. Actors and functions
 

@@ -1,44 +1,24 @@
-//! S111 §G.1 / IR-1 — FIXME 0604 foreground concurrent-compile write race.
+//! S122 closure rider — FIXME 0604 public-write isolation regression sweep.
 //!
-//! ## What this is
+//! The current structural contract routes every public cross-module name
+//! candidate through `check_exposed_candidate_closure` before table or GOT
+//! mutation. Private and intra-module candidates take their explicit arms; the
+//! three session-initialization seams have separate dispositions. The route
+//! census and contract live in `design/int/prelude-table-write-isolation.md`
+//! §§2.1, 2.4 and 4.
 //!
-//! The `--run` path builds `num.bits` + the prelude + ~13 re-exported domain
-//! modules CONCURRENTLY (eval thread + priority/nice workers). Under an
-//! unlucky interleaving a phantom `bit-and → primitives/bit-and` entry is
-//! written into the live `prelude` table, spuriously firing the (spec-correct)
-//! §8.6.5 super-import poison and making `num.bits` unimportable — so the
-//! `(defn use-it [:Int x] :Int (bit-and x 7))` below fails with a spurious
-//! `ambiguous`/unresolved `bit-and`. S110 `/dev` PROVED the *index feed* inert
-//! under this recipe (`--run` never arms the index; instrumented 0×), so the
-//! writer is on the FOREGROUND concurrent-compile path
-//! (`src/process_form/`, `src/imports.rs`, `src/worker.rs`) — re-attributed
-//! FOREGROUND for S111. Attribution record:
-//! `tests/plan/s109-attribution-index-feed-race.md`.
+//! This retained recipe exercises the historical `num.bits` + prelude fan-out
+//! and refuses the old phantom-write signatures. It is a no-regression sweep,
+//! not proof that the historical race fired in this environment or that its
+//! exact writer was established. The old firing record (16/16 in one
+//! environment and quiet runs elsewhere) remains provenance in
+//! `tests/plan/s109-attribution-index-feed-race.md`. FIXME 0818's contaminated
+//! probe is an unconfirmed explanatory lead, not attribution of those runs.
 //!
-//! defect: class=shared-state-write-race locus=src/worker.rs (foreground concurrent-compile phantom prelude write — exact seam UNLOCATED) found=S109 owner=/dev
-//!
-//! ## Environment sensitivity (READ BEFORE TRIAGING A GREEN)
-//!
-//! The race is scheduling-dependent: it fired 16/16 in the `/sprint` firing
-//! environment and 0/140 in earlier `/testing` runs. At S111 Phase-5 authoring
-//! it did NOT fire in this environment (0/45 across the verbatim recipe + a
-//! main-wrapped variant, `CRANELISP_MODULE_TRACE=1`). Per `tests/CLAUDE.md`
-//! §"Isolating Cross-Crate Failures" this lands as an ENVIRONMENT-DRIVEN e2e
-//! (binary invocation with `CRANELISP_LIB` → workspace stdlib) rather than an
-//! in-process free-standing test, because the recipe INHERENTLY imports the
-//! real stdlib module graph (`num.bits` + its re-export fan-out) — that graph
-//! is the race substrate and cannot be reduced away without dissolving the
-//! race.
-//!
-//! FIXME(/testing): the exact foreground write seam is UNLOCATED and the race
-//! does not fire deterministically here. The deliverable per the /sprint
-//! dispatch is this committed repro + the attribution record; `/sprint` runs
-//! this lane in the firing environment (16/16). A GREEN here is NOT proof the
-//! race is fixed — it is the environment not firing (the S98 false-green /
-//! forbidden-"flaky" class: the race is a real bug, named and pinned, not
-//! flake). The fail-on-revert guard rides the CS-6 fix; do not weaken the
-//! spec-correct §8.6.5 poison consumer (the `super_import_wrapper_*` twins in
-//! `tests/spec_08_prelude_outer_scope.rs` pin its two correct poles).
+//! Historical defect provenance: class=shared-state-write-race, observed as a
+//! public `bit-and → primitives/bit-and` entry outside prelude's declared export
+//! closure, found=S109, owner=/dev. The structural gate closes that invalid
+//! publication class without claiming a recovered per-interleaving writer.
 
 #[path = "helpers/mod.rs"]
 mod helpers;
@@ -46,19 +26,18 @@ mod helpers;
 use helpers::e2e::Cranelisp;
 
 /// The verbatim FIXME 0604 recipe. No `main` — the "entry module has no 'main'
-/// function" error is the EXPECTED clean outcome; the race is in the
-/// import-triggered concurrent compile, which runs regardless.
+/// function" error is the expected clean outcome after import-triggered
+/// compilation completes.
 const RECIPE: &str = "(import [num.bits [bit-and]])\n\
     (import [primitives [Int]])\n\
     (defn use-it [:Int x] :Int (bit-and x 7))\n";
 
-/// The workspace `stdlib/` directory — the real `num.bits` fan-out is the race
-/// substrate. read-only on project_root.
+/// The workspace `stdlib/` directory supplies the real `num.bits` fan-out.
+/// Read-only on project_root.
 const WORKSPACE_STDLIB: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/stdlib");
 
-/// Signatures of the phantom-write firing (the spurious §8.6.5 poison / a
-/// `bit-and` mis-resolution making `num.bits` unimportable). None of these may
-/// appear — the only expected error is the benign "no 'main' function".
+/// Historical phantom-publication signatures. None may appear; the only
+/// expected error is the benign "no 'main' function".
 const RACE_SIGNATURES: &[&str] = &[
     "ambiguous",
     "has no member 'bit-and'",
@@ -67,11 +46,11 @@ const RACE_SIGNATURES: &[&str] = &[
     "unimportable",
 ];
 
-// spec: spec/08-modules.md §8.6.5 — a concurrent phantom write into the live
-// `prelude` table MUST NOT spuriously fire the super-import poison; `num.bits`
-// stays importable. Environment-bound (0/45 here; fires 16/16 in the /sprint
-// firing environment). Each iteration is a FRESH tempdir (cold cache) so the
-// concurrent compile actually runs — the race surface.
+// spec: spec/08-modules.md §8.6.5 — an invalid public candidate must not enter
+// the live `prelude` table and spuriously poison the valid `num.bits` import.
+// Each iteration uses a fresh tempdir and cold cache so compilation traverses
+// the guarded publication routes. This sweep is supplemental to the structural
+// route/gate evidence; a quiet run does not reconstruct the historical race.
 #[test]
 fn num_bits_import_not_poisoned_by_foreground_concurrent_compile_race() {
     for i in 0..8 {
@@ -85,9 +64,10 @@ fn num_bits_import_not_poisoned_by_foreground_concurrent_compile_race() {
         for sig in RACE_SIGNATURES {
             assert!(
                 !hay.contains(sig),
-                "iteration {i}: the foreground concurrent-compile write race \
-                 fired — `num.bits`/`bit-and` mis-resolved (signature {sig:?}). \
-                 This is FIXME 0604 (shared-state-write-race, /dev src/int). \
+                "iteration {i}: `num.bits`/`bit-and` exposed a prohibited \
+                 historical phantom-publication signature {sig:?}. \
+                 This is the FIXME 0604 no-regression sweep; the observed \
+                 signature alone does not identify its writer. \
                  stdout:\n{}\nstderr:\n{}",
                 out.stdout,
                 out.stderr

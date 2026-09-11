@@ -5,6 +5,48 @@ use std::path::Path;
 use cranelisp_types::{CallableOrigin, Life, ModuleFullPath, Realization, SymbolTable};
 
 use super::{PrimitiveDecl, build_table, declarations, harvest_shims};
+use crate::abi_facts::{AbiKind, abi_kinds_for, result_kind_for};
+
+// spec: design/runtime/s119-typed-consume-funnel.md §4.3 — the private Rust
+// shim types and the declaration's language type/ParamFlow project the same
+// ABI ownership facts while the exported wrapper stays raw i64.
+#[test]
+fn shim_abi_kinds_match_declared_facts() {
+    for row in declarations() {
+        match row {
+            PrimitiveDecl::UserExtern {
+                scheme,
+                ownership,
+                abi_param_kinds,
+                abi_result_kind,
+                ..
+            } => {
+                assert_eq!(abi_param_kinds, abi_kinds_for(&scheme.ty, &ownership));
+                assert_eq!(abi_result_kind, result_kind_for(&scheme.ty));
+            }
+            PrimitiveDecl::HarvestExtern {
+                name,
+                abi_param_kinds,
+                abi_result_kind,
+                ..
+            } => match name {
+                "neq-i64" | "neq-f64" | "neq-bool" => {
+                    assert_eq!(abi_param_kinds, [AbiKind::Scalar, AbiKind::Scalar]);
+                    assert_eq!(abi_result_kind, AbiKind::Scalar);
+                }
+                "sconcat" => {
+                    assert_eq!(
+                        abi_param_kinds,
+                        [AbiKind::OwnedHandle, AbiKind::OwnedHandle]
+                    );
+                    assert_eq!(abi_result_kind, AbiKind::OwnedHandle);
+                }
+                other => panic!("unexpected harvest-only ABI exemption {other}"),
+            },
+            PrimitiveDecl::UserInline { .. } => {}
+        }
+    }
+}
 
 #[test]
 fn production_inventory_projects_both_ways() {
@@ -214,6 +256,10 @@ fn malformed_declaration_rows_do_not_compile() {
         ("extern_without_shim.rs", "no rules expected `metadata`"),
         ("harvest_only_inline.rs", "no rules expected `metadata`"),
         ("callable_without_ownership.rs", "no rules expected `}`"),
+        (
+            "typed_shim_body_mismatch.rs",
+            "expected `Owned`, found `i64`",
+        ),
     ] {
         let source = manifest.join("src/declarations/ui").join(case);
         let output = Command::new("rustc")

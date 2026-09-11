@@ -470,9 +470,9 @@ where
     pub(crate) cell: &'a RefCell<&'b mut SymbolTable<C, L>>,
 }
 
-// SAFETY: `TypeCheckStaging` carries a `&RefCell<&mut SymbolTable>` which
-// `RefCell` makes `!Sync` and the inner `&mut` makes `!Send` for the
-// reborrow. The staging variant is constructed only by `check_forms` on the
+// SAFETY: `TypeCheckStaging`'s fields do not automatically implement the
+// required `Send + Sync` pair because it carries a `&RefCell<&mut SymbolTable>`.
+// The staging variant is constructed only by `check_forms` on the
 // orchestrator's single thread (the entire `check_forms` call frame is a
 // per-cluster, single-threaded ownership of staging). Concurrent workers
 // in other parts of the codebase construct their own `TypeCheckEnv`
@@ -629,10 +629,10 @@ where
     /// through to live unchanged — `symbol_table_mut_in` is unaffected by
     /// staging.
     ///
-    /// The returned env is **not `Sync`** — it carries a `RefCell` reference.
-    /// Cluster mode is single-threaded by construction (the orchestrator's
-    /// `check_forms` call frame); concurrent workers use `new` without
-    /// staging instead.
+    /// The unsafe implementation above preserves `TypeCheckEnv`'s `Send + Sync`
+    /// bounds despite the `RefCell` reference. Cluster mode remains
+    /// single-threaded by construction: sharing this staging env would violate
+    /// the safety precondition. Concurrent workers use `new` without staging.
     pub(crate) fn new_with_staging(
         modules: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>,
         next_id: &'a AtomicU32,

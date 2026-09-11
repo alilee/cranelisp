@@ -1,3 +1,291 @@
+; === CLIF user::(primitives/IO.Pure [primitives/Int] (primitives/IO primitives/Int)) ===
+function %(primitives/IO.Pure [primitives/Int] (primitives/IO primitives/Int))(i64) -> i64 system_v {
+    sig0 = (i64) -> i64 system_v
+    fn0 = u0:0 sig0
+
+block0(v0: i64):
+    jump block1(v0)
+
+block1(v1: i64):
+    v2 = iconst.i64 0
+    v3 = iconst.i64 24
+    v4 = call fn0(v3)  ; v3 = 24
+    v5 = iconst.i64 0
+    store notrap aligned v5, v4+16  ; v5 = 0
+    store notrap aligned v1, v4+24
+    store notrap aligned v2, v4+32  ; v2 = 0
+    return v4
+}
+; === end CLIF user::(primitives/IO.Pure [primitives/Int] (primitives/IO primitives/Int)) ===
+; === CLIF user::(primitives/Option.Some [(user/Grid (primitives/Vec user/Cell))] (primitives/Option (user/Grid (primitives/Vec user/Cell)))) ===
+function %(primitives/Option.Some [(user/Grid (primitives/Vec user/Cell))] (primitives/Option (user/Grid (primitives/Vec user/Cell))))(i64) -> i64 system_v {
+    sig0 = (i64) -> i64 system_v
+    sig1 = (i64) system_v
+    fn0 = u0:0 sig0
+    fn1 = colocated u0:84 sig1
+
+block0(v0: i64):
+    jump block1(v0)
+
+block1(v1: i64):
+    v2 = iadd_imm v1, 8
+    v3 = iconst.i64 1
+    v4 = atomic_rmw.i64 add v2, v3  ; v3 = 1
+    v5 = iconst.i64 16
+    v6 = call fn0(v5)  ; v5 = 16
+    v7 = iconst.i64 1
+    store notrap aligned v7, v6+16  ; v7 = 1
+    store notrap aligned v1, v6+24
+    call fn1(v1)
+    return v6
+}
+; === end CLIF user::(primitives/Option.Some [(user/Grid (primitives/Vec user/Cell))] (primitives/Option (user/Grid (primitives/Vec user/Cell)))) ===
+; === CLIF user::(primitives/Option.Some [primitives/Int] (primitives/Option primitives/Int)) ===
+function %(primitives/Option.Some [primitives/Int] (primitives/Option primitives/Int))(i64) -> i64 system_v {
+    sig0 = (i64) -> i64 system_v
+    fn0 = u0:0 sig0
+
+block0(v0: i64):
+    jump block1(v0)
+
+block1(v1: i64):
+    v2 = iconst.i64 16
+    v3 = call fn0(v2)  ; v2 = 16
+    v4 = iconst.i64 1
+    store notrap aligned v4, v3+16  ; v4 = 1
+    store notrap aligned v1, v3+24
+    return v3
+}
+; === end CLIF user::(primitives/Option.Some [primitives/Int] (primitives/Option primitives/Int)) ===
+; === CLIF user::(user/Grid [(primitives/Vec user/Cell)] (user/Grid (primitives/Vec user/Cell))) ===
+function %(user/Grid [(primitives/Vec user/Cell)] (user/Grid (primitives/Vec user/Cell)))(i64) -> i64 system_v {
+    sig0 = (i64) -> i64 system_v
+    sig1 = (i64) system_v
+    fn0 = u0:0 sig0
+    fn1 = colocated u0:85 sig1
+
+block0(v0: i64):
+    jump block1(v0)
+
+block1(v1: i64):
+    v2 = iadd_imm v1, 8
+    v3 = iconst.i64 1
+    v4 = atomic_rmw.i64 add v2, v3  ; v3 = 1
+    v5 = iconst.i64 16
+    v6 = call fn0(v5)  ; v5 = 16
+    v7 = iconst.i64 0
+    store notrap aligned v7, v6+16  ; v7 = 0
+    store notrap aligned v1, v6+24
+    call fn1(v1)
+    return v6
+}
+; === end CLIF user::(user/Grid [(primitives/Vec user/Cell)] (user/Grid (primitives/Vec user/Cell))) ===
+; === CLIF user::(user/SolveResult.Success [(user/Grid (primitives/Vec user/Cell))] (user/SolveResult (user/Grid (primitives/Vec user/Cell)))) ===
+function %(user/SolveResult.Success [(user/Grid (primitives/Vec user/Cell))] (user/SolveResult (user/Grid (primitives/Vec user/Cell))))(i64) -> i64 system_v {
+    sig0 = (i64) -> i64 system_v
+    sig1 = (i64) system_v
+    fn0 = u0:0 sig0
+    fn1 = colocated u0:84 sig1
+
+block0(v0: i64):
+    jump block1(v0)
+
+block1(v1: i64):
+    v2 = iadd_imm v1, 8
+    v3 = iconst.i64 1
+    v4 = atomic_rmw.i64 add v2, v3  ; v3 = 1
+    v5 = iconst.i64 16
+    v6 = call fn0(v5)  ; v5 = 16
+    v7 = iconst.i64 0
+    store notrap aligned v7, v6+16  ; v7 = 0
+    store notrap aligned v1, v6+24
+    call fn1(v1)
+    return v6
+}
+; === end CLIF user::(user/SolveResult.Success [(user/Grid (primitives/Vec user/Cell))] (user/SolveResult (user/Grid (primitives/Vec user/Cell)))) ===
+; === CLIF user::(user/cell-at [(user/Grid (primitives/Vec user/Cell)) primitives/Int] user/Cell) ===
+function %(user/cell-at [(user/Grid (primitives/Vec user/Cell)) primitives/Int] user/Cell)(i64, i64) -> i64 system_v {
+    gv0 = symbol colocated userextname0
+    gv1 = symbol colocated userextname2
+    sig0 = (i64, i64) -> i64 system_v
+    sig1 = (i64, i64) -> i64 system_v
+    fn0 = u0:2 sig0
+    fn1 = u0:2 sig1
+
+block0(v0: i64, v1: i64):
+    jump block1(v0, v1)
+
+block1(v2: i64, v3: i64):
+    jump block4
+
+block4:
+    jump block5
+
+block5:
+    v5 = load.i64 notrap aligned v2+16
+    v6 = iconst.i64 0
+    v7 = icmp eq v5, v6  ; v6 = 0
+    brif v7, block6, block3
+
+block6:
+    v8 = load.i64 notrap aligned v2+24
+    v9 = load.i64 notrap aligned v8+16
+    v10 = iconst.i64 0
+    v11 = icmp.i64 slt v3, v10  ; v10 = 0
+    v12 = icmp.i64 sge v3, v9
+    v13 = bor v11, v12
+    brif v13, block8, block7
+
+block8:
+    v14 = global_value.i64 gv0
+    v15 = iconst.i64 28
+    v16 = call fn0(v14, v15)  ; v15 = 28
+    v17 = iconst.i64 0
+    return v17  ; v17 = 0
+
+block7:
+    v18 = load.i64 notrap aligned v8+32
+    v19 = iconst.i64 8
+    v20 = imul.i64 v3, v19  ; v19 = 8
+    v21 = iadd v18, v20
+    v22 = load.i64 notrap aligned v21
+    v23 = iadd_imm v22, 8
+    v24 = iconst.i64 1
+    v25 = atomic_rmw.i64 add v23, v24  ; v24 = 1
+    jump block2(v22)
+
+block3:
+    v26 = global_value.i64 gv1
+    v27 = iconst.i64 12
+    v28 = call fn1(v26, v27)  ; v27 = 12
+    v29 = iconst.i64 0
+    return v29  ; v29 = 0
+
+block2(v4: i64):
+    return v4
+}
+; === end CLIF user::(user/cell-at [(user/Grid (primitives/Vec user/Cell)) primitives/Int] user/Cell) ===
+; === CLIF user::(user/first-success [(user/SolveResult (user/Grid (primitives/Vec user/Cell))) (user/SolveResult (user/Grid (primitives/Vec user/Cell)))] (user/SolveResult (user/Grid (primitives/Vec user/Cell)))) ===
+function %(user/first-success [(user/SolveResult (user/Grid (primitives/Vec user/Cell))) (user/SolveResult (user/Grid (primitives/Vec user/Cell)))] (user/SolveResult (user/Grid (primitives/Vec user/Cell))))(i64, i64) -> i64 system_v {
+    gv0 = symbol userextname0
+    gv1 = symbol colocated userextname1
+    sig0 = (i64) -> i64 system_v
+    sig1 = (i64, i64) -> i64 system_v
+    sig2 = (i64) system_v
+    fn0 = u0:2 sig1
+    fn1 = colocated u0:89 sig2
+
+block0(v0: i64, v1: i64):
+    jump block1(v0, v1)
+
+block1(v2: i64, v3: i64):
+    v18 -> v3
+    v28 -> v3
+    v29 -> v3
+    jump block4
+
+block4:
+    v5 = iconst.i64 1024
+    v6 = icmp.i64 uge v2, v5  ; v5 = 1024
+    brif v6, block6, block5
+
+block6:
+    v7 = load.i64 notrap aligned v2+16
+    v8 = iconst.i64 0
+    v9 = icmp eq v7, v8  ; v8 = 0
+    brif v9, block7, block5
+
+block7:
+    v10 = load.i64 notrap aligned v2+24
+    v11 = iadd_imm v10, 8
+    v12 = iconst.i64 1
+    v13 = atomic_rmw.i64 add v11, v12  ; v12 = 1
+    v14 = global_value.i64 gv0
+    v15 = iadd_imm v14, 72
+    v16 = load.i64 notrap aligned v15
+    v17 = call_indirect sig0, v16(v10)
+    jump block2(v17)
+
+block5:
+    jump block2(v3)
+
+block3:
+    v19 = global_value.i64 gv1
+    v20 = iconst.i64 12
+    v21 = call fn0(v19, v20)  ; v20 = 12
+    v22 = iconst.i64 0
+    return v22  ; v22 = 0
+
+block2(v4: i64):
+    v23 = iconst.i64 1024
+    v24 = icmp ult v4, v23  ; v23 = 1024
+    brif v24, block8, block9
+
+block9:
+    v25 = iadd_imm.i64 v4, 8
+    v26 = iconst.i64 1
+    v27 = atomic_rmw.i64 add v25, v26  ; v26 = 1
+    jump block8
+
+block8:
+    call fn1(v3)
+    return v4
+}
+; === end CLIF user::(user/first-success [(user/SolveResult (user/Grid (primitives/Vec user/Cell))) (user/SolveResult (user/Grid (primitives/Vec user/Cell)))] (user/SolveResult (user/Grid (primitives/Vec user/Cell)))) ===
+; === CLIF user::(user/set-cell [(user/Grid (primitives/Vec user/Cell)) primitives/Int user/Cell] (user/Grid (primitives/Vec user/Cell))) ===
+function %(user/set-cell [(user/Grid (primitives/Vec user/Cell)) primitives/Int user/Cell] (user/Grid (primitives/Vec user/Cell)))(i64, i64, i64) -> i64 system_v {
+    gv0 = symbol userextname2
+    gv1 = symbol colocated userextname3
+    sig0 = (i64) -> i64 system_v
+    sig1 = (i64, i64, i64, i64) -> i64 system_v
+    sig2 = (i64) -> i64 system_v
+    sig3 = (i64, i64) -> i64 system_v
+    sig4 = (i64) system_v
+    fn0 = colocated u0:90 sig0
+    fn1 = u0:23 sig1
+    fn2 = u0:2 sig3
+    fn3 = colocated u0:86 sig4
+
+block0(v0: i64, v1: i64, v2: i64):
+    jump block1(v0, v1, v2)
+
+block1(v3: i64, v4: i64, v5: i64):
+    jump block4
+
+block4:
+    jump block5
+
+block5:
+    v7 = load.i64 notrap aligned v3+16
+    v8 = iconst.i64 0
+    v9 = icmp eq v7, v8  ; v8 = 0
+    brif v9, block6, block3
+
+block6:
+    v10 = load.i64 notrap aligned v3+24
+    v11 = func_addr.i64 fn0
+    v12 = iadd_imm.i64 v5, 8
+    v13 = iconst.i64 1
+    v14 = atomic_rmw.i64 add v12, v13  ; v13 = 1
+    v15 = call fn1(v10, v4, v5, v11)
+    v16 = global_value.i64 gv0
+    v17 = iadd_imm v16, 48
+    v18 = load.i64 notrap aligned v17
+    v19 = call_indirect sig2, v18(v15)
+    jump block2(v19)
+
+block3:
+    v20 = global_value.i64 gv1
+    v21 = iconst.i64 12
+    v22 = call fn2(v20, v21)  ; v21 = 12
+    v23 = iconst.i64 0
+    return v23  ; v23 = 0
+
+block2(v6: i64):
+    call fn3(v5)
+    return v6
+}
+; === end CLIF user::(user/set-cell [(user/Grid (primitives/Vec user/Cell)) primitives/Int user/Cell] (user/Grid (primitives/Vec user/Cell))) ===
 ; === CLIF user::Cell.Candidates ===
 function %Cell.Candidates(i64) -> i64 system_v {
     sig0 = (i64) -> i64 system_v
@@ -2610,65 +2898,6 @@ block4(v9: i64, v68: i64):
     return v9
 }
 ; === end CLIF user::peers-helper ===
-; === CLIF user::primitives/IO.Pure$Int ===
-function %primitives/IO.Pure$Int(i64) -> i64 system_v {
-    sig0 = (i64) -> i64 system_v
-    fn0 = u0:0 sig0
-
-block0(v0: i64):
-    jump block1(v0)
-
-block1(v1: i64):
-    v2 = iconst.i64 0
-    v3 = iconst.i64 24
-    v4 = call fn0(v3)  ; v3 = 24
-    v5 = iconst.i64 0
-    store notrap aligned v5, v4+16  ; v5 = 0
-    store notrap aligned v1, v4+24
-    store notrap aligned v2, v4+32  ; v2 = 0
-    return v4
-}
-; === end CLIF user::primitives/IO.Pure$Int ===
-; === CLIF user::primitives/Option.Some$Int ===
-function %primitives/Option.Some$Int(i64) -> i64 system_v {
-    sig0 = (i64) -> i64 system_v
-    fn0 = u0:0 sig0
-
-block0(v0: i64):
-    jump block1(v0)
-
-block1(v1: i64):
-    v2 = iconst.i64 16
-    v3 = call fn0(v2)  ; v2 = 16
-    v4 = iconst.i64 1
-    store notrap aligned v4, v3+16  ; v4 = 1
-    store notrap aligned v1, v3+24
-    return v3
-}
-; === end CLIF user::primitives/Option.Some$Int ===
-; === CLIF user::primitives/Option.Some$user/Grid$primitives/Vec$user/Cell ===
-function %primitives/Option.Some$user/Grid$primitives/Vec$user/Cell(i64) -> i64 system_v {
-    sig0 = (i64) -> i64 system_v
-    sig1 = (i64) system_v
-    fn0 = u0:0 sig0
-    fn1 = colocated u0:84 sig1
-
-block0(v0: i64):
-    jump block1(v0)
-
-block1(v1: i64):
-    v2 = iadd_imm v1, 8
-    v3 = iconst.i64 1
-    v4 = atomic_rmw.i64 add v2, v3  ; v3 = 1
-    v5 = iconst.i64 16
-    v6 = call fn0(v5)  ; v5 = 16
-    v7 = iconst.i64 1
-    store notrap aligned v7, v6+16  ; v7 = 1
-    store notrap aligned v1, v6+24
-    call fn1(v1)
-    return v6
-}
-; === end CLIF user::primitives/Option.Some$user/Grid$primitives/Vec$user/Cell ===
 ; === CLIF user::propagate ===
 function %propagate(i64) -> i64 system_v {
     gv0 = symbol userextname0
@@ -3589,232 +3818,3 @@ block4(v14: i64):
     return v14
 }
 ; === end CLIF user::solve-range ===
-; === CLIF user::user/Grid$primitives/Vec$user/Cell ===
-function %user/Grid$primitives/Vec$user/Cell(i64) -> i64 system_v {
-    sig0 = (i64) -> i64 system_v
-    sig1 = (i64) system_v
-    fn0 = u0:0 sig0
-    fn1 = colocated u0:85 sig1
-
-block0(v0: i64):
-    jump block1(v0)
-
-block1(v1: i64):
-    v2 = iadd_imm v1, 8
-    v3 = iconst.i64 1
-    v4 = atomic_rmw.i64 add v2, v3  ; v3 = 1
-    v5 = iconst.i64 16
-    v6 = call fn0(v5)  ; v5 = 16
-    v7 = iconst.i64 0
-    store notrap aligned v7, v6+16  ; v7 = 0
-    store notrap aligned v1, v6+24
-    call fn1(v1)
-    return v6
-}
-; === end CLIF user::user/Grid$primitives/Vec$user/Cell ===
-; === CLIF user::user/SolveResult.Success$user/Grid$primitives/Vec$user/Cell ===
-function %user/SolveResult.Success$user/Grid$primitives/Vec$user/Cell(i64) -> i64 system_v {
-    sig0 = (i64) -> i64 system_v
-    sig1 = (i64) system_v
-    fn0 = u0:0 sig0
-    fn1 = colocated u0:84 sig1
-
-block0(v0: i64):
-    jump block1(v0)
-
-block1(v1: i64):
-    v2 = iadd_imm v1, 8
-    v3 = iconst.i64 1
-    v4 = atomic_rmw.i64 add v2, v3  ; v3 = 1
-    v5 = iconst.i64 16
-    v6 = call fn0(v5)  ; v5 = 16
-    v7 = iconst.i64 0
-    store notrap aligned v7, v6+16  ; v7 = 0
-    store notrap aligned v1, v6+24
-    call fn1(v1)
-    return v6
-}
-; === end CLIF user::user/SolveResult.Success$user/Grid$primitives/Vec$user/Cell ===
-; === CLIF user::user/cell-at$user/Cell ===
-function %user/cell-at$user/Cell(i64, i64) -> i64 system_v {
-    gv0 = symbol colocated userextname0
-    gv1 = symbol colocated userextname2
-    sig0 = (i64, i64) -> i64 system_v
-    sig1 = (i64, i64) -> i64 system_v
-    fn0 = u0:2 sig0
-    fn1 = u0:2 sig1
-
-block0(v0: i64, v1: i64):
-    jump block1(v0, v1)
-
-block1(v2: i64, v3: i64):
-    jump block4
-
-block4:
-    jump block5
-
-block5:
-    v5 = load.i64 notrap aligned v2+16
-    v6 = iconst.i64 0
-    v7 = icmp eq v5, v6  ; v6 = 0
-    brif v7, block6, block3
-
-block6:
-    v8 = load.i64 notrap aligned v2+24
-    v9 = load.i64 notrap aligned v8+16
-    v10 = iconst.i64 0
-    v11 = icmp.i64 slt v3, v10  ; v10 = 0
-    v12 = icmp.i64 sge v3, v9
-    v13 = bor v11, v12
-    brif v13, block8, block7
-
-block8:
-    v14 = global_value.i64 gv0
-    v15 = iconst.i64 28
-    v16 = call fn0(v14, v15)  ; v15 = 28
-    v17 = iconst.i64 0
-    return v17  ; v17 = 0
-
-block7:
-    v18 = load.i64 notrap aligned v8+32
-    v19 = iconst.i64 8
-    v20 = imul.i64 v3, v19  ; v19 = 8
-    v21 = iadd v18, v20
-    v22 = load.i64 notrap aligned v21
-    v23 = iadd_imm v22, 8
-    v24 = iconst.i64 1
-    v25 = atomic_rmw.i64 add v23, v24  ; v24 = 1
-    jump block2(v22)
-
-block3:
-    v26 = global_value.i64 gv1
-    v27 = iconst.i64 12
-    v28 = call fn1(v26, v27)  ; v27 = 12
-    v29 = iconst.i64 0
-    return v29  ; v29 = 0
-
-block2(v4: i64):
-    return v4
-}
-; === end CLIF user::user/cell-at$user/Cell ===
-; === CLIF user::user/first-success$user/Grid$primitives/Vec$user/Cell ===
-function %user/first-success$user/Grid$primitives/Vec$user/Cell(i64, i64) -> i64 system_v {
-    gv0 = symbol userextname0
-    gv1 = symbol colocated userextname1
-    sig0 = (i64) -> i64 system_v
-    sig1 = (i64, i64) -> i64 system_v
-    sig2 = (i64) system_v
-    fn0 = u0:2 sig1
-    fn1 = colocated u0:89 sig2
-
-block0(v0: i64, v1: i64):
-    jump block1(v0, v1)
-
-block1(v2: i64, v3: i64):
-    v18 -> v3
-    v28 -> v3
-    v29 -> v3
-    jump block4
-
-block4:
-    v5 = iconst.i64 1024
-    v6 = icmp.i64 uge v2, v5  ; v5 = 1024
-    brif v6, block6, block5
-
-block6:
-    v7 = load.i64 notrap aligned v2+16
-    v8 = iconst.i64 0
-    v9 = icmp eq v7, v8  ; v8 = 0
-    brif v9, block7, block5
-
-block7:
-    v10 = load.i64 notrap aligned v2+24
-    v11 = iadd_imm v10, 8
-    v12 = iconst.i64 1
-    v13 = atomic_rmw.i64 add v11, v12  ; v12 = 1
-    v14 = global_value.i64 gv0
-    v15 = iadd_imm v14, 72
-    v16 = load.i64 notrap aligned v15
-    v17 = call_indirect sig0, v16(v10)
-    jump block2(v17)
-
-block5:
-    jump block2(v3)
-
-block3:
-    v19 = global_value.i64 gv1
-    v20 = iconst.i64 12
-    v21 = call fn0(v19, v20)  ; v20 = 12
-    v22 = iconst.i64 0
-    return v22  ; v22 = 0
-
-block2(v4: i64):
-    v23 = iconst.i64 1024
-    v24 = icmp ult v4, v23  ; v23 = 1024
-    brif v24, block8, block9
-
-block9:
-    v25 = iadd_imm.i64 v4, 8
-    v26 = iconst.i64 1
-    v27 = atomic_rmw.i64 add v25, v26  ; v26 = 1
-    jump block8
-
-block8:
-    call fn1(v3)
-    return v4
-}
-; === end CLIF user::user/first-success$user/Grid$primitives/Vec$user/Cell ===
-; === CLIF user::user/set-cell$user/Cell ===
-function %user/set-cell$user/Cell(i64, i64, i64) -> i64 system_v {
-    gv0 = symbol userextname2
-    gv1 = symbol colocated userextname3
-    sig0 = (i64) -> i64 system_v
-    sig1 = (i64, i64, i64, i64) -> i64 system_v
-    sig2 = (i64) -> i64 system_v
-    sig3 = (i64, i64) -> i64 system_v
-    sig4 = (i64) system_v
-    fn0 = colocated u0:90 sig0
-    fn1 = u0:23 sig1
-    fn2 = u0:2 sig3
-    fn3 = colocated u0:86 sig4
-
-block0(v0: i64, v1: i64, v2: i64):
-    jump block1(v0, v1, v2)
-
-block1(v3: i64, v4: i64, v5: i64):
-    jump block4
-
-block4:
-    jump block5
-
-block5:
-    v7 = load.i64 notrap aligned v3+16
-    v8 = iconst.i64 0
-    v9 = icmp eq v7, v8  ; v8 = 0
-    brif v9, block6, block3
-
-block6:
-    v10 = load.i64 notrap aligned v3+24
-    v11 = func_addr.i64 fn0
-    v12 = iadd_imm.i64 v5, 8
-    v13 = iconst.i64 1
-    v14 = atomic_rmw.i64 add v12, v13  ; v13 = 1
-    v15 = call fn1(v10, v4, v5, v11)
-    v16 = global_value.i64 gv0
-    v17 = iadd_imm v16, 48
-    v18 = load.i64 notrap aligned v17
-    v19 = call_indirect sig2, v18(v15)
-    jump block2(v19)
-
-block3:
-    v20 = global_value.i64 gv1
-    v21 = iconst.i64 12
-    v22 = call fn2(v20, v21)  ; v21 = 12
-    v23 = iconst.i64 0
-    return v23  ; v23 = 0
-
-block2(v6: i64):
-    call fn3(v5)
-    return v6
-}
-; === end CLIF user::user/set-cell$user/Cell ===

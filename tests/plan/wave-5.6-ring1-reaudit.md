@@ -1679,5 +1679,5 @@ this re-audit.
    spec sections 03 §3.8 (×7), 04 §4.4 + §4.6.3 (×4), 05 §5.2.7 (×3),
    06 §6.2.1 + §6.3.3 + §6.5.1 + §6.5.2 + §6.6.1 (×11), 12 §12.3.3
    (×3), repl §1.5 + §1.2 (×3), appendix-a §A.3 (×8). Spec annotation
-   updates per `tests/plan/PLAN.md §"Requirements/Test Traceability"`
+   updates per [current root traceability](../../CLAUDE.md#requirementstest-traceability)
    should follow the authoring dispatch.

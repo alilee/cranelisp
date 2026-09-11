@@ -477,7 +477,7 @@ Everything else is sequencing discipline over work already owed.
 - `design/arch/fixmes/0641-…md` — the gated instance-fix (§1.5).
 - `design/arch/fixmes/0637-…md`, `0638-…md` — open instances of the §4
   profile at non-ownership seams.
-- `tests/plan/PLAN.md` §"Sprint 111 … I. In-sprint additions" — the
+- [S111 safety-matrix allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md) — the
   committed S111 safety matrices this strategy generalizes.
 - `tests/plan/risks.md` — standing risk entry pointing here.
 - `tests/CLAUDE.md` §"Diagnostic env vars", §"Defect-repro notation" — the

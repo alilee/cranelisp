@@ -246,6 +246,33 @@ fn make_identity_pure_closure() -> i64 {
     base as i64
 }
 
+/// Allocate a continuation that returns `node`. When `counted` is true, the
+/// return path creates a second counted reference before handing the node to
+/// the trampoline; the test retains the allocation's original reference.
+fn make_return_node_closure(node: i64, counted: bool) -> i64 {
+    extern "C" fn return_unique(env_ptr: i64, _val: i64) -> i64 {
+        unsafe { *((env_ptr as isize + 32) as *const i64) }
+    }
+
+    extern "C" fn return_counted(env_ptr: i64, _val: i64) -> i64 {
+        let node = unsafe { *((env_ptr as isize + 32) as *const i64) };
+        crate::rc::rc_inc(node);
+        node
+    }
+
+    let base = alloc_with_rc(24);
+    unsafe {
+        *((base as isize + 16) as *mut i64) = if counted {
+            return_counted as *const () as i64
+        } else {
+            return_unique as *const () as i64
+        };
+        *((base as isize + 24) as *mut i64) = 0;
+        *((base as isize + 32) as *mut i64) = node;
+    }
+    base as i64
+}
+
 /// Allocate a Pure node — callable from any context including extern "C".
 fn make_pure_node_inline(value: i64) -> i64 {
     let base = alloc_with_rc(24);
@@ -563,6 +590,72 @@ fn run_io_trampoline_rc_balanced() {
     );
 }
 
+// spec: spec/12-runtime.md §12.3.1 — a continuation-produced Bind with one
+// owner remains reachable through the trampoline walk and tears down exactly
+// once. This is the RC1 control for the shared-parent witness below.
+#[test]
+fn continuation_returned_unique_bind_transfers_and_balances() {
+    let allocs_before = crate::alloc::alloc_count();
+    let deallocs_before = crate::alloc::dealloc_count();
+
+    let returned_inner = make_pure_node(73);
+    let returned_cont = make_identity_pure_closure();
+    let returned_bind = make_bind_node(returned_inner, returned_cont);
+    let root = make_bind_node(
+        make_pure_node(0),
+        make_return_node_closure(returned_bind, false),
+    );
+
+    assert_eq!(cranelisp_run_io(root), 73);
+    assert!(!crate::alloc::is_live(returned_bind as usize));
+    assert!(!crate::alloc::is_live(returned_inner as usize));
+    assert!(!crate::alloc::is_live(returned_cont as usize));
+    assert_eq!(
+        crate::alloc::alloc_count() - allocs_before,
+        crate::alloc::dealloc_count() - deallocs_before,
+        "the unique returned Bind and caller tree must tear down exactly once"
+    );
+}
+
+// spec: spec/12-runtime.md §12.3.1 — consuming the trampoline's counted
+// reference to a continuation-produced Bind must preserve the fields still
+// reachable through another live reference to that Bind.
+// defect: class=rc-miscount locus=crates/cranelisp-intrinsics/src/io.rs::run_io_trampoline_inner_async found=S122 owner=/dev
+#[test]
+fn continuation_returned_shared_bind_preserves_retained_parent_fields() {
+    let allocs_before = crate::alloc::alloc_count();
+    let deallocs_before = crate::alloc::dealloc_count();
+
+    let returned_inner = make_pure_node(73);
+    let returned_cont = make_identity_pure_closure();
+    let returned_bind = make_bind_node(returned_inner, returned_cont);
+    let root = make_bind_node(
+        make_pure_node(0),
+        make_return_node_closure(returned_bind, true),
+    );
+
+    assert_eq!(cranelisp_run_io(root), 73);
+    let parent_live = crate::alloc::is_live(returned_bind as usize);
+    let inner_live = crate::alloc::is_live(returned_inner as usize);
+    let cont_live = crate::alloc::is_live(returned_cont as usize);
+    assert!(
+        parent_live,
+        "the test retains the Bind's original reference"
+    );
+    assert!(
+        inner_live && cont_live,
+        "a retained Bind must retain its child references; parent_live={parent_live}, \
+         inner_live={inner_live}, cont_live={cont_live}"
+    );
+
+    crate::drop::consume_io_tree(crate::handle::test_owned(returned_bind));
+    assert_eq!(
+        crate::alloc::alloc_count() - allocs_before,
+        crate::alloc::dealloc_count() - deallocs_before,
+        "releasing the retained parent after the walk must balance the fixture"
+    );
+}
+
 // spec: design/arch/CLAUDE.md Decision 29 — deep bind chain is RC-balanced
 // (was the O(N) leak reason before Wave 3).
 #[test]
@@ -623,7 +716,7 @@ fn call_continuation_dec_closure() {
     );
 
     // Clean up the returned Pure.
-    crate::drop::consume_io_tree(result_io);
+    crate::drop::consume_io_tree(crate::handle::test_owned(result_io));
     assert_eq!(crate::alloc::dealloc_count() - deallocs_before, 2);
 
     // Case B: cont_is_fresh=false — closure stays live.
@@ -644,8 +737,8 @@ fn call_continuation_dec_closure() {
     );
 
     // Clean up manually.
-    crate::drop::consume_closure(cont_b);
-    crate::drop::consume_io_tree(result_b);
+    crate::drop::consume_closure(crate::handle::test_owned(cont_b));
+    crate::drop::consume_io_tree(crate::handle::test_owned(result_b));
     assert_eq!(crate::alloc::dealloc_count() - deallocs_b_before, 2);
 }
 
@@ -706,7 +799,7 @@ fn trampoline_runtime_panic_in_continuation_stops_and_leaves_slot_set() {
             .is_some_and(|m| m.contains("division by zero")),
         "the surfaced message must carry the panic cause (got {drained:?})"
     );
-    crate::drop::consume_io_tree(io);
+    crate::drop::consume_io_tree(crate::handle::test_owned(io));
 }
 
 // spec: 10-io §10.12 — read_resource_token returns 0 for non-Effect nodes
@@ -965,8 +1058,8 @@ fn blocking_par_sync_dispatcher_runs_without_semaphore_neg() {
     assert_eq!(r0, 10, "blocking branch 0 result via the sync dispatcher");
     assert_eq!(r1, 20, "blocking branch 1 result via the sync dispatcher");
 
-    crate::rc::consume_shallow(results_buf);
-    crate::drop::consume_io_tree(par);
+    crate::rc::consume_shallow(crate::handle::test_owned(results_buf));
+    crate::drop::consume_io_tree(crate::handle::test_owned(par));
 }
 
 // spec: spec/12-runtime.md §12.4.3 + spec/10-io.md §10.12.4 — capacity-1
@@ -1004,7 +1097,7 @@ fn serial_group_first_fault_prevents_later_owning_effect() {
         "the first error must abort before the later same-token effect starts"
     );
 
-    crate::drop::consume_io_tree(par);
+    crate::drop::consume_io_tree(crate::handle::test_owned(par));
 }
 
 // spec: spec/12-runtime.md §12.4.3
@@ -1042,7 +1135,7 @@ fn async_capacity_one_first_fault_prevents_parked_owning_effect() {
         "an effect that never starts produces no owning result"
     );
 
-    crate::drop::consume_io_tree(par);
+    crate::drop::consume_io_tree(crate::handle::test_owned(par));
 }
 
 // ===========================================================================
@@ -1147,7 +1240,7 @@ mod poll_arm {
             }),
             "poll node must resume: {events:?}"
         );
-        crate::drop::consume_io_tree(node); // tag-4 consume path frees node + closure
+        crate::drop::consume_io_tree(crate::handle::test_owned(node)); // tag-4 consume path frees node + closure
     }
 
     /// Build an `IO_TAG_EFFECT_POLL` node carrying a LIVE `(token, capacity)` at
@@ -1208,8 +1301,8 @@ mod poll_arm {
             "sentinel poll node capacity reads 1"
         );
 
-        crate::drop::consume_io_tree(live);
-        crate::drop::consume_io_tree(sentinel);
+        crate::drop::consume_io_tree(crate::handle::test_owned(live));
+        crate::drop::consume_io_tree(crate::handle::test_owned(sentinel));
     }
 
     // spec: design/arch/effect-concurrency.md §"The ratified backend↔intrinsics poll-shape Effect-node seam (S94, R1 — the /dev contract)" (b)
@@ -1223,7 +1316,7 @@ mod poll_arm {
             result, 42,
             "drive_io routes a poll node through the reactor"
         );
-        crate::drop::consume_io_tree(node);
+        crate::drop::consume_io_tree(crate::handle::test_owned(node));
     }
 
     // spec: design/intrinsics/reactor.md §2.9 §1A — the LIVE poll-carrier acquire wiring:
@@ -1248,7 +1341,7 @@ mod poll_arm {
             TrampolineOutcome::Completed(63),
             "live-capacity poll node completes (acquire→own→release) via the generic env slot"
         );
-        crate::drop::consume_io_tree(node);
+        crate::drop::consume_io_tree(crate::handle::test_owned(node));
     }
 
     /// A poll fixture with a CALLER-CHOSEN timer delay (vs `test_timer_poll`'s
@@ -1328,6 +1421,128 @@ mod poll_arm {
         base
     }
 
+    /// Build a blocking leaf whose worker cannot publish until the test has
+    /// observed the branch future suspended on its receiver.
+    fn build_gated_blocking_effect(start: std::sync::Arc<std::sync::Barrier>, value: i64) -> i64 {
+        let thunk: Box<Box<dyn FnOnce() -> cranelisp_platform::EffectOutcome>> =
+            Box::new(Box::new(move || {
+                start.wait();
+                cranelisp_platform::EffectOutcome {
+                    value,
+                    fault_cause: std::ptr::null(),
+                    fault_len: 0,
+                }
+            }));
+        let thunk_ptr = Box::into_raw(thunk) as i64;
+        let base = alloc_with_rc(40) as i64;
+        unsafe {
+            crate::heap_access::write_i64(base, TAG_OFFSET, IO_TAG_EFFECT);
+            crate::heap_access::write_i64(base, FIELD_0_OFFSET, thunk_ptr);
+            crate::heap_access::write_i64(base, FIELD_1_OFFSET, 0);
+            crate::heap_access::write_i64(base, FIELD_2_OFFSET, 0);
+            crate::heap_access::write_i64(base, FIELD_2_OFFSET + 8, 1);
+        }
+        base
+    }
+
+    // spec: spec/10-io.md §10.12.9 — a blocking Select loser whose owning
+    // result was successfully published into the bridge is disposed exactly
+    // once when cancellation drops the ready receiver before its next poll.
+    #[test]
+    fn ready_blocking_loser_disposes_successfully_published_result_once() {
+        const VALUE: i64 = 83;
+        RESULT_DISPOSALS.store(0, std::sync::atomic::Ordering::SeqCst);
+        FIRST_DISPOSED_VALUE.store(0, std::sync::atomic::Ordering::SeqCst);
+        let start = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let node = build_gated_blocking_effect(start.clone(), VALUE);
+        let handoff = install_ready_handoff_test_barrier(node);
+
+        crate::reactor::block_on_reactor(async |env| {
+            let branch = ParBranch {
+                io: node,
+                disposer: ResultDisposer::from_fn(record_first_disposal),
+            };
+            let mut running = Box::pin(run_blocking_branch(0, branch, env));
+            let waker = futures::task::noop_waker();
+            let mut context = std::task::Context::from_waker(&waker);
+            assert!(matches!(
+                std::future::Future::poll(running.as_mut(), &mut context),
+                std::task::Poll::Pending
+            ));
+            start.wait();
+            handoff.wait_until_published();
+
+            drop(running);
+            assert_eq!(
+                RESULT_DISPOSALS.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "dropping the ready receiver must dispose its queued owner once"
+            );
+            assert_eq!(
+                FIRST_DISPOSED_VALUE.load(std::sync::atomic::Ordering::SeqCst),
+                VALUE,
+                "the queued payload's exact value reaches its disposer"
+            );
+            handoff.release_and_wait_until_finished();
+            0
+        })
+        .expect("reactor");
+        crate::drop::consume_io_tree(crate::handle::test_owned(node));
+    }
+
+    // spec: spec/10-io.md §10.12.9 — polling the same ready handoff transfers
+    // its result outward; only the receiving caller performs the one disposal.
+    #[test]
+    fn ready_blocking_winner_transfers_result_to_caller() {
+        const VALUE: i64 = 89;
+        RESULT_DISPOSALS.store(0, std::sync::atomic::Ordering::SeqCst);
+        FIRST_DISPOSED_VALUE.store(0, std::sync::atomic::Ordering::SeqCst);
+        let start = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let node = build_gated_blocking_effect(start.clone(), VALUE);
+        let handoff = install_ready_handoff_test_barrier(node);
+
+        crate::reactor::block_on_reactor(async |env| {
+            let disposer = ResultDisposer::from_fn(record_first_disposal);
+            let branch = ParBranch { io: node, disposer };
+            let mut running = Box::pin(run_blocking_branch(0, branch, env));
+            let waker = futures::task::noop_waker();
+            let mut context = std::task::Context::from_waker(&waker);
+            assert!(matches!(
+                std::future::Future::poll(running.as_mut(), &mut context),
+                std::task::Poll::Pending
+            ));
+            start.wait();
+            handoff.wait_until_published();
+
+            let (_, produced) = match std::future::Future::poll(running.as_mut(), &mut context) {
+                std::task::Poll::Ready(output) => output,
+                std::task::Poll::Pending => panic!("published receiver must now be ready"),
+            };
+            let produced = produced.expect("the ready branch publishes its owning value");
+            assert_eq!(
+                RESULT_DISPOSALS.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "receiving the ready value must transfer rather than dispose it"
+            );
+            let value = produced.transfer();
+            assert_eq!(value, VALUE);
+            disposer.dispose(value);
+            assert_eq!(
+                RESULT_DISPOSALS.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "the receiving caller releases the transferred value exactly once"
+            );
+            assert_eq!(
+                FIRST_DISPOSED_VALUE.load(std::sync::atomic::Ordering::SeqCst),
+                VALUE
+            );
+            handoff.release_and_wait_until_finished();
+            0
+        })
+        .expect("reactor");
+        crate::drop::consume_io_tree(crate::handle::test_owned(node));
+    }
+
     // spec: spec/10-io.md §10.12.9 item 4 — cancelling an admitted blocking
     // branch does not interrupt the foreign call; when it returns later, the
     // worker disposes the result instead of suppressing an owned value.
@@ -1376,7 +1591,7 @@ mod poll_arm {
             1,
             "the cancelled worker's late result is disposed exactly once"
         );
-        crate::drop::consume_io_tree(node);
+        crate::drop::consume_io_tree(crate::handle::test_owned(node));
     }
 
     // spec: design/intrinsics/reactor.md §2.6 (two-pool join) — a mixed `Par` of one
@@ -1422,8 +1637,8 @@ mod poll_arm {
         );
 
         // Cleanup: free the merged results buffer + the Par tree.
-        crate::rc::consume_shallow(results_buf);
-        crate::drop::consume_io_tree(par);
+        crate::rc::consume_shallow(crate::handle::test_owned(results_buf));
+        crate::drop::consume_io_tree(crate::handle::test_owned(par));
     }
 
     /// A continuation closure `(fn [_] <captured-node>)` — ignores its argument
@@ -1587,7 +1802,7 @@ mod poll_arm {
         // The caller's tree (Bind + Pure + cont closure) is non-fresh — the guard
         // leaves it to its owner; release it so the test is leak-clean. (The fresh
         // poll node was already consumed by the guard, so it is NOT in this walk.)
-        crate::drop::consume_io_tree(bind);
+        crate::drop::consume_io_tree(crate::handle::test_owned(bind));
     }
 }
 
@@ -1920,5 +2135,5 @@ fn empty_select_raises_runtime_error_and_does_not_feed_continuation() {
          unsound null at a heap-typed `a`); the trampoline must abort first"
     );
 
-    crate::drop::consume_io_tree(bind);
+    crate::drop::consume_io_tree(crate::handle::test_owned(bind));
 }

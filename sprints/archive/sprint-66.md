@@ -11,14 +11,14 @@
 Execute the 9 implementation slices authored in S65 W4a, against the now-stable final-state facades:
 
 - `design/frontend/implementation-slice-s66.md`
-- `design/typecheck/implementation-slice-s66.md`
+- [implementation slice s66 (Git history)](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/typecheck/implementation-slice-s66.md)
 - `design/backend/implementation-slice-s66.md`
-- `design/primitives/implementation-slice-s66.md`
-- `design/intrinsics/implementation-slice-s66.md`
+- [implementation slice s66 (Git history)](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/primitives/implementation-slice-s66.md)
+- [implementation slice s66 (Git history)](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/intrinsics/implementation-slice-s66.md)
 - `design/platform/implementation-slice-s66.md`
-- `design/runtime/implementation-slice-s66.md`
-- `design/int/implementation-slice-s66.md`
-- `tests/plan/implementation-slice-s66.md` (QA test plan)
+- [Runtime S66 implementation plan (Git history)](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/runtime/implementation-slice-s66.md)
+- [implementation slice s66 (Git history)](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/int/implementation-slice-s66.md)
+- [implementation slice s66 (Git history)](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/implementation-slice-s66.md) (QA test plan)
 
 Substantive FIXMEs to close in this sprint:
 
@@ -182,7 +182,7 @@ Before Phase 3 can begin, the following must land in SPRINT.md:
 2. **The Wave 3 "parallel observer/error adoption" framing under-states int's load.** The int slice authors estimate ~10–13 working days = ~2.5–3 S66 waves. Wave 3 cannot complete in one wave-equivalent for int alone; parallelisability across other crates does not reduce the int total. Either accept a 2-wave int allocation, or split int's migration across S66 + S67 with explicit /arch FIXMEs documenting same-sprint deferral rationale.
 3. **The 16 open questions surfaced across slices (1 frontend + 4 typecheck + 5 backend + 5 int + 5 runtime + 5 primitives + 3 platform + 1 intrinsics) should be triaged at Phase 3 open.** Most are editorial; a few are substantive (typecheck Q2 — check_form post-Gap state contract; int Q2 — SharedState vs decomposition sequencing). /arch dispatches narrow resolutions before Phase 4 wave plan locks.
 4. **The /qa slice's pre-classified reshape table (§2.3) is the right shape but underweights FIXME 0150 Phase 4** (stdlib trait-impl audit). This is the highest-risk reshape per the slice author's own assessment ("up to ~10–15 conformance tests"). Recommend /sprint dedicate observability bandwidth (CRANELISP_RC_TRACE, CRANELISP_CODEGEN_TRACE) to catch circular-impl regressions early.
-5. **`design/qa/implementation-slice-s66.md` does not exist; the QA slice lives at `tests/plan/implementation-slice-s66.md`.** SPRINT.md line 21 cites the wrong path. Editorial — fix in same revision.
+5. **`design/qa/implementation-slice-s66.md` does not exist; the QA slice lives at [implementation slice s66 (Git history)](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/implementation-slice-s66.md).** SPRINT.md line 21 cites the wrong path. Editorial — fix in same revision.
 
 ## Skill plans (Phase 3)
 
@@ -316,7 +316,7 @@ Outcome authoring, ROADMAP update, archive on user approval.
 
 **Wave 3a status: redo queued.** Architectural inputs are locked in (commits `ab1686c..f7f4287`). Wave 3a re-executes against the corrected inputs:
 
-1. **`/design (typecheck)` first** — refine `design/typecheck/implementation-slice-s66.md` against Pattern B + chain-follow + current-module-only short-name lookup + FQ-at-registration + synthetic-modules-empty. The slice has uncommitted Pattern-A-era content that needs Pattern-B reconciliation before `/dev` fires.
+1. **`/design (typecheck)` first** — refine [implementation slice s66 (Git history)](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/typecheck/implementation-slice-s66.md) against Pattern B + chain-follow + current-module-only short-name lookup + FQ-at-registration + synthetic-modules-empty. The slice has uncommitted Pattern-A-era content that needs Pattern-B reconciliation before `/dev` fires.
 2. **`/dev (typecheck)` second** — implement the locality refactor with the corrected design as guidance. The 40+ direct `self.modules.X` access sites still need refactoring to current-module-rooted accessors; impl writes target the trait's defining module (chain-follow to find it from the writer's view); impl reads use chain-follow from the trait member; no `transitive_import_closure` function; no defensive synthetic glob.
 3. **`/review (typecheck)` third** — change-set review against the corrected design intent.
 4. **Wave 3a-β** (cluster-atomic triad per Decision 44) — downstream of α redo.

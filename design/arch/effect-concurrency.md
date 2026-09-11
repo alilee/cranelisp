@@ -472,7 +472,8 @@ and the allocator is at 0.1% of syscall time. Phase-H mechanisms (thread-local R
 Perceus reuse) leave F4 **identical**; **Phase-H does NOT restore the F4 utilization floor.** The
 utilization thesis and the memory-model spine (`ownership-inference.md`) are genuinely orthogonal tracks.
 This is a **roadmap course-correction** for `/sprint` to record in `sprints/ROADMAP.md`: the earlier
-reading (this §3.1 pre-S103, and the §7 "F4-at-north-star = III-G2" staging in `ownership-inference.md`)
+reading (the pre-S103 [floor scope](#31-floor-scope--contention-is-the-boundary-not-compute-s94-port-finding),
+and the "F4-at-north-star = III-G2" [two-increment staging](ownership-inference.md#7-two-increment-staging-principle-8))
 that Phase-H is the structural cure for the parallel floor is corrected — Phase-H cures the (b) alloc/RC
 contention term it measured, but the F4 scheduler-churn floor is a *separate* axis cured by the utilization
 gate, available now and independent of the memory model. No `design/arch/` roadmap doc carries the stale

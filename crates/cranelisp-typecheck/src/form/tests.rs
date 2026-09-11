@@ -663,12 +663,12 @@ fn check_forms_cross_call_constrained_poly_mono_terminates() {
     )
     .expect("call 2: monomorphise (id 7) — must not overflow");
 
-    // Assert: `id$Int` mono entry is registered in live (home-qualified
-    // `test_form_mod/id$Int`, FIXME 0519).
+    // Assert: the full-signature `id` mono entry is registered in live.
+    let id_int = "(test_form_mod/id [primitives/Int] primitives/Int)";
     let guard = modules.get(&module_path()).expect("module exists");
     assert!(
-        guard.get("test_form_mod/id$Int").is_some(),
-        "test_form_mod/id$Int should be registered after call 2 mono"
+        guard.get(id_int).is_some(),
+        "{id_int} should be registered after call 2 mono"
     );
 }
 
@@ -961,11 +961,21 @@ fn check_forms_cross_call_multi_sig_dispatch_resolves_to_variant() {
                 },
                 arm: CallableArmId::from_ordinal(0).expect("arm 0 is representable"),
             };
-            let expected = cranelisp_types::InstanceLink::from_type_args(
-                arm_target.clone(),
-                vec![cranelisp_types::ConcreteType::Int],
+            let expected = cranelisp_types::concrete_callable_key(
+                &FQSymbol {
+                    module: module_path(),
+                    symbol: Symbol::from("f"),
+                },
+                &cranelisp_types::ConcreteType::Fn(
+                    vec![cranelisp_types::ConcreteType::Int],
+                    Box::new(cranelisp_types::ConcreteType::Int),
+                ),
             )
-            .instance_key();
+            .unwrap();
+            assert_eq!(
+                expected.as_ref(),
+                "(test_form_mod/f [primitives/Int] primitives/Int)"
+            );
             assert_eq!(owner.module, module_path());
             assert_eq!(owner.symbol, expected);
             let instance = guard
@@ -1419,7 +1429,7 @@ fn lift_error_does_not_mask_codegen_error_as_gap_when_a_gap_is_pending() {
     );
 }
 
-// design/typecheck/monomorphisation.md §3.8 M-1/M-2 — reload demands seed
+// spec: design/typecheck/monomorphisation.md §3.8 M-1/M-2 — reload demands seed
 // the existing mono engine, mint the ordinary concrete instance, and dedup a
 // repeated seed without moving its slot.
 #[test]
@@ -1445,6 +1455,20 @@ fn instantiate_demands_mints_and_deduplicates_existing_instance() {
         vec![cranelisp_types::ConcreteType::Int],
         Span::new(800, 810),
     );
+    let template_scheme = modules
+        .get(&module_path())
+        .and_then(|table| {
+            table
+                .get("reload-id")
+                .and_then(Binding::callable)
+                .map(|callable| callable.arm.scheme.clone())
+        })
+        .unwrap();
+    let instance_key = demand.instance_key(&template_scheme).unwrap();
+    assert_eq!(
+        instance_key.as_ref(),
+        "(test_form_mod/reload-id [primitives/Int] primitives/Int)"
+    );
     let result = instantiate_demands(
         vec![demand.clone()],
         &mut ctx,
@@ -1459,10 +1483,24 @@ fn instantiate_demands_mints_and_deduplicates_existing_instance() {
         .get(&module_path())
         .and_then(|table| {
             table
-                .get(&demand.instance_key())
+                .get(instance_key.as_ref())
                 .and_then(Binding::callable_got_slot)
         })
         .expect("the ordinary mono engine installs a concrete instance");
+    {
+        let table = modules.get(&module_path()).expect("module exists");
+        let instance = table
+            .get(instance_key.as_ref())
+            .expect("the concrete instance remains installed");
+        let entry_summary = instance
+            .mode_summary()
+            .expect("a freshly demanded instance receives an ownership summary");
+        let view_summary = instance
+            .codegen_view()
+            .and_then(|view| view.mode_summary.as_ref())
+            .expect("the codegen view receives the same ownership summary");
+        assert_eq!(entry_summary, view_summary);
+    }
     let again = instantiate_demands(
         vec![demand.clone()],
         &mut ctx,
@@ -1476,11 +1514,100 @@ fn instantiate_demands_mints_and_deduplicates_existing_instance() {
         .get(&module_path())
         .and_then(|table| {
             table
-                .get(&demand.instance_key())
+                .get(instance_key.as_ref())
                 .and_then(Binding::callable_got_slot)
         })
         .expect("the deduplicated instance remains installed");
     assert_eq!(first_slot, second_slot);
+}
+
+// spec: design/typecheck/monomorphisation.md §3.8.6 — demand-triggered ownership
+// publication obeys the same cluster staging boundary as the minted instance.
+#[test]
+fn instantiate_demands_infers_ownership_in_cluster_staging_only() {
+    let modules = modules();
+    let aliases = no_aliases();
+    let fallback = no_fallback();
+    let mut live_ctx: SymbolTableAccess<'_, (), ()> =
+        SymbolTableAccess::live(&modules, module_path());
+    check_forms::<(), ()>(
+        vec![polymorphic_identity("reload-id")],
+        &mut live_ctx,
+        &modules,
+        &aliases,
+        &fallback,
+    )
+    .expect("template registration succeeds");
+
+    let demand = MonoDemand::from_type_args(
+        cranelisp_types::CallableTarget::Binding(cranelisp_types::FQSymbol {
+            module: module_path(),
+            symbol: Symbol::from("reload-id"),
+        }),
+        vec![cranelisp_types::ConcreteType::Int],
+        Span::new(820, 830),
+    );
+    let template_scheme = modules
+        .get(&module_path())
+        .and_then(|table| {
+            table
+                .get("reload-id")
+                .and_then(Binding::callable)
+                .map(|callable| callable.arm.scheme.clone())
+        })
+        .unwrap();
+    let instance_key = demand.instance_key(&template_scheme).unwrap();
+    let (live_keys_before, live_template_before) = {
+        let table = modules.get(&module_path()).expect("live module exists");
+        (
+            table
+                .all_symbols()
+                .map(|(name, _)| name.clone())
+                .collect::<std::collections::HashSet<_>>(),
+            format!("{:?}", table.get("reload-id")),
+        )
+    };
+
+    let mut staging = SymbolTable::<(), ()>::new_with_params(module_path());
+    {
+        let mut ctx = SymbolTableAccess::cluster(&modules, &mut staging, module_path());
+        instantiate_demands(
+            vec![demand.clone()],
+            &mut ctx,
+            &modules,
+            &aliases,
+            &fallback,
+        )
+        .expect("cluster demand succeeds");
+    }
+
+    let table = modules.get(&module_path()).expect("live module exists");
+    let live_keys_after = table
+        .all_symbols()
+        .map(|(name, _)| name.clone())
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(live_keys_before, live_keys_after);
+    assert_eq!(
+        live_template_before,
+        format!("{:?}", table.get("reload-id"))
+    );
+    assert!(
+        table.get(instance_key.as_ref()).is_none(),
+        "the demanded instance must not leak into live"
+    );
+    drop(table);
+
+    let instance = staging
+        .get(instance_key.as_ref())
+        .expect("the demanded instance is published to staging");
+    let entry_summary = instance
+        .mode_summary()
+        .expect("the staged instance receives an ownership summary");
+    let view_summary = instance
+        .codegen_view()
+        .and_then(|view| view.mode_summary.as_ref())
+        .expect("the staged codegen view receives the same ownership summary");
+    assert_eq!(entry_summary, view_summary);
 }
 
 // spec: 03-types §3.6.3 — a map-free demand reconstructs result-only substitutions.
@@ -1502,6 +1629,15 @@ fn instantiate_demands_result_context_and_malformed_length() {
         };
     }
     check_forms(vec![definition], &mut ctx, &modules, &aliases, &fallback).unwrap();
+    let template_scheme = modules
+        .get(&module_path())
+        .and_then(|table| {
+            table
+                .get("g")
+                .and_then(Binding::callable)
+                .map(|callable| callable.arm.scheme.clone())
+        })
+        .unwrap();
     let target = cranelisp_types::CallableTarget::Binding(cranelisp_types::FQSymbol {
         module: module_path(),
         symbol: Symbol::from("g"),
@@ -1516,12 +1652,17 @@ fn instantiate_demands_result_context_and_malformed_length() {
     )
     .unwrap();
     assert_eq!(result.warnings.len(), 1);
+    assert!(malformed.instance_key(&template_scheme).is_err());
     assert!(
-        modules
+        !modules
             .get(&module_path())
             .unwrap()
-            .get(&malformed.instance_key())
-            .is_none()
+            .all_symbols()
+            .any(|(_, binding)| matches!(
+                binding.callable().map(|callable| &callable.arm.life),
+                Some(Life::Concrete { minted_from: Some(link), .. })
+                    if link == &malformed.instance_link()
+            ))
     );
     let mut slots = Vec::new();
     for ty in [ConcreteType::Int, ConcreteType::String] {
@@ -1538,7 +1679,8 @@ fn instantiate_demands_result_context_and_malformed_length() {
             .unwrap();
             assert!(result.warnings.is_empty(), "{:?}", result.warnings);
             let table = modules.get(&module_path()).unwrap();
-            let binding = table.get(&demand.instance_key()).unwrap();
+            let instance_key = demand.instance_key(&template_scheme).unwrap();
+            let binding = table.get(instance_key.as_ref()).unwrap();
             assert_eq!(
                 binding.callable().unwrap().arm.scheme.ty,
                 Type::Fn(
@@ -1598,10 +1740,20 @@ fn instantiate_demands_declines_stale_root_and_drains_remaining_roots() {
     assert_eq!(result.warnings.len(), 1);
     assert_eq!(result.warnings[0].span, Span::SYNTHETIC);
     assert!(result.warnings[0].message.contains("removed"));
+    let template_scheme = modules
+        .get(&module_path())
+        .and_then(|table| {
+            table
+                .get("reload-id")
+                .and_then(Binding::callable)
+                .map(|callable| callable.arm.scheme.clone())
+        })
+        .unwrap();
+    let valid_key = valid.instance_key(&template_scheme).unwrap();
     assert!(
         modules
             .get(&module_path())
-            .is_some_and(|table| table.get(&valid.instance_key()).is_some()),
+            .is_some_and(|table| table.get(valid_key.as_ref()).is_some()),
         "the valid root after a decline must still be realized"
     );
 }

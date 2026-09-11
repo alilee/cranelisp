@@ -477,72 +477,71 @@ fn predecessors<'a>(
 /// 0905). Inverting the dec-side comparison to `uge` releases bare nullary tags
 /// and skips real pointers — breaking I-CT in exactly the polarity-gap
 /// direction — while leaving the constant count at exactly `fields * 2`.
-fn assert_threshold_guarded_rmws(clif: &str, per_op: usize, what: &str) {
+fn assert_threshold_guarded_op(clif: &str, op: &str, expected: usize, what: &str) -> Vec<String> {
     let rmws = collect_guarded_rmws(clif);
     let threshold = i64::try_from(NULLARY_TAG_THRESHOLD).expect("threshold fits i64");
-    let mut subjects_by_op: HashMap<&str, Vec<String>> = HashMap::new();
-
-    for op in ["add", "sub"] {
-        let of_op: Vec<&GuardedRmw> = rmws.iter().filter(|r| r.op == op).collect();
-        assert_eq!(
-            of_op.len(),
-            per_op,
-            "{what}: expected {per_op} `atomic_rmw {op}` op(s), found {}\n{clif}",
-            of_op.len()
-        );
-        for r in of_op {
-            let subject = r.subject.as_deref().unwrap_or_else(|| {
-                panic!(
-                    "{what}: the `{op}` RMW's address is not `iadd_imm ptr, RC_OFFSET`, so no \
-                     pointer can be matched against its guard\n{clif}"
-                )
-            });
-            let guard = r.guard.as_ref().unwrap_or_else(|| {
-                panic!(
-                    "{what}: the `{op}` RMW on {subject} is not admitted by a single two-way \
-                     branch — an unguarded RC op dereferences a bare nullary tag\n{clif}"
-                )
-            });
-            assert_eq!(
-                guard.cc, "ult",
-                "{what}: the `{op}` guard compares with `{}`, not `ult`; the two halves must \
-                 share ONE comparison, and `uge` inverts which words are treated as \
-                 pointers\n{clif}",
-                guard.cc
-            );
-            assert_eq!(
-                guard.lhs, subject,
-                "{what}: the `{op}` guard tests {} but the RMW targets {subject}'s RC header — \
-                 the threshold constant guards an unrelated value\n{clif}",
-                guard.lhs
-            );
-            assert_eq!(
-                guard.rhs_const,
-                Some(threshold),
-                "{what}: the `{op}` guard's threshold operand is not \
-                 NULLARY_TAG_THRESHOLD ({threshold})\n{clif}"
-            );
-            assert_eq!(
-                guard.arm,
-                BrifArm::NotTaken,
-                "{what}: the `{op}` RMW sits on the condition-TRUE arm of `{} < {threshold}`, so \
-                 it executes on bare nullary tags and is SKIPPED for real pointers — the \
-                 polarity is inverted\n{clif}",
-                guard.lhs
-            );
-            subjects_by_op
-                .entry(op)
-                .or_default()
-                .push(subject.to_string());
-        }
-    }
-
-    for subjects in subjects_by_op.values_mut() {
-        subjects.sort();
-    }
+    let of_op: Vec<&GuardedRmw> = rmws.iter().filter(|r| r.op == op).collect();
     assert_eq!(
-        subjects_by_op.get("add"),
-        subjects_by_op.get("sub"),
+        of_op.len(),
+        expected,
+        "{what}: expected {expected} `atomic_rmw {op}` op(s), found {}\n{clif}",
+        of_op.len()
+    );
+    let mut subjects = Vec::with_capacity(of_op.len());
+    for r in of_op {
+        let subject = r.subject.as_deref().unwrap_or_else(|| {
+            panic!(
+                "{what}: the `{op}` RMW's address is not `iadd_imm ptr, RC_OFFSET`, so no \
+                 pointer can be matched against its guard\n{clif}"
+            )
+        });
+        let guard = r.guard.as_ref().unwrap_or_else(|| {
+            panic!(
+                "{what}: the `{op}` RMW on {subject} is not admitted by a single two-way \
+                 branch — an unguarded RC op dereferences a bare nullary tag\n{clif}"
+            )
+        });
+        assert_eq!(
+            guard.cc, "ult",
+            "{what}: the `{op}` guard compares with `{}`, not `ult`; the guard must admit \
+             only heap pointers\n{clif}",
+            guard.cc
+        );
+        assert_eq!(
+            guard.lhs, subject,
+            "{what}: the `{op}` guard tests {} but the RMW targets {subject}'s RC header — \
+             the threshold constant guards an unrelated value\n{clif}",
+            guard.lhs
+        );
+        assert_eq!(
+            guard.rhs_const,
+            Some(threshold),
+            "{what}: the `{op}` guard's threshold operand is not \
+             NULLARY_TAG_THRESHOLD ({threshold})\n{clif}"
+        );
+        assert_eq!(
+            guard.arm,
+            BrifArm::NotTaken,
+            "{what}: the `{op}` RMW sits on the condition-TRUE arm of `{} < {threshold}`, so \
+             it executes on bare nullary tags and is SKIPPED for real pointers — the \
+             polarity is inverted\n{clif}",
+            guard.lhs
+        );
+        subjects.push(subject.to_owned());
+    }
+    subjects.sort();
+    subjects
+}
+
+pub(crate) fn assert_threshold_guarded_adds(clif: &str, expected: usize, what: &str) {
+    let _ = assert_threshold_guarded_op(clif, "add", expected, what);
+}
+
+fn assert_threshold_guarded_rmws(clif: &str, per_op: usize, what: &str) {
+    let add_subjects = assert_threshold_guarded_op(clif, "add", per_op, what);
+    let sub_subjects = assert_threshold_guarded_op(clif, "sub", per_op, what);
+    assert_eq!(
+        add_subjects, sub_subjects,
         "{what}: the inc and the dec must fire on the SAME words; they name different \
          pointers\n{clif}"
     );

@@ -461,8 +461,11 @@ where
     }
 
     let mut state = CheckState::new(current_module);
-    env.instantiate_demand_roots(&mut state, demands)
-        .map_err(|error| lift_error(error, &state))
+    let result = env
+        .instantiate_demand_roots(&mut state, demands)
+        .map_err(|error| lift_error(error, &state))?;
+    crate::ownership::run_pass5(&env, &state);
+    Ok(result)
 }
 
 fn callable_target_owner(target: &cranelisp_types::CallableTarget) -> Option<&FQSymbol> {

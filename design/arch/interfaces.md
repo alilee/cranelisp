@@ -193,7 +193,7 @@ diverge, a quoted subtree is double-desugared or mis-qualified
 structural close. **No parser redesign**: the reader still lowers `'x`/`` `x ``
 /`~x`/`~@x` to the list forms; this predicate only classifies them.
 `public-api.txt` delta: `cranelisp-types` +2 items, riding the one S121
-C1 regeneration (`symbol-table-lifecycle.md` §9); no frontend baseline delta
+C1 regeneration (the S121 lifecycle migration, retained in Git history); no frontend baseline delta
 (the predicates were never frontend surface).
 
 ---
@@ -662,12 +662,14 @@ pub enum Type {
     String,
     Float,
     Fn(Vec<Type>, Box<Type>),
-    ADT(TypeName, Vec<Type>),
+    ADT(FQTypeName, Vec<Type>),   // module-qualified at construction (Decision 47)
     Var(TypeId),
     TyConApp(TypeId, Vec<Type>),
 }
 
 impl Type {
+    pub fn adt(module: ModuleFullPath, name: TypeName, args: Vec<Type>) -> Type { ... }
+    pub fn is_io(&self) -> bool { ... }   // `ADT(primitives/IO, _)` only; a user `IO` type never matches
     pub fn from_name(name: &str) -> Option<Type> { ... }
     pub fn type_name(&self) -> Option<&'static str> { ... }
     pub fn is_heap(&self) -> bool { ... }
@@ -677,7 +679,7 @@ impl Type {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Scheme {
     pub vars: Vec<TypeId>,
-    pub constraints: HashMap<TypeId, Vec<TraitName>>,
+    pub constraints: HashMap<TypeId, Vec<FQTraitName>>,
     pub ty: Type,
 }
 
@@ -699,6 +701,26 @@ The `Type`-representation core is unchanged from v1; S87 added the single
 `render_type` walk + `PrimitiveNaming`/`VarNaming` config and **removed** the
 dead `format_type_display` / `format_type_with_vars` free fns (their lettered
 capability preserved as `VarNaming::Lettered`).
+
+**Resolved-stage type identity is module-qualified (Decision 47).** Every API
+past the frontend's resolution stage names a type or trait as `FQTypeName` /
+`FQTraitName` (`crates/cranelisp-types/src/newtype.rs`); bare `TypeName` /
+`TraitName` are syntactic-stage values (parser output, `TypeExpr`, the
+pre-resolution `ImplSexp.target`). The lift happens once, in
+`cranelisp_typecheck::resolve`, and unification compares the whole
+`FQTypeName`, so a `Point` defined in two modules yields two distinct types. There are
+exactly two exceptions, neither extendable without `arch` review: (1) the
+reverse-lookup helpers `Type::from_name` / `Type::type_name`, which operate
+only on the built-in non-ADT variants; (2) receiver-pinned lookups such as
+`SymbolTable::get_type(&TypeName)`, where `&self` already supplies the module.
+Two consequences are load-bearing: the primitive types keep dedicated `Type`
+variants (`Int`, `Bool`, `String`, `Float`) rather than becoming
+`ADT(primitives/Int)` — they need no tag, constructor or heap layout, and
+`primitives/Int` is a rendering convention (`PrimitiveNaming::Qualified`), not
+a type-system fact; and no derived name→module map exists anywhere — a
+`Type::ADT` carries its module, so display and codegen never reverse-look it
+up. Constructor names stay `Symbol` because the symbol table that holds them is
+already module-pinned.
 
 ---
 
@@ -1556,8 +1578,8 @@ cluster commit still has exactly one matching record and shell per key.
 ### Instance identity funnel
 
 `InstanceLink` and `MonoDemand` carry `template: CallableTarget` and
-`type_args: Vec<ConcreteType>`. The target identifies the selected binding,
-overload arm or macro clause. The vector records one concrete substitution per
+`type_args: Vec<ConcreteType>`. The target identifies the selected template binding or overload arm;
+macro-clause demands are rejected. The vector records one concrete substitution per
 generalized variable, including result-only variables, in first structural
 occurrence order in the template scheme (parameters before result, repeated
 variables once, higher-kinded heads before their arguments). This is neither
@@ -1567,9 +1589,14 @@ scheme while a cluster is unpublished.
 
 The public constructors are `InstanceLink::from_type_args(template, type_args)`
 and `MonoDemand::from_type_args(template, type_args, site)`. `site` is diagnostic;
-`MonoDemand::instance_link()` projects it away. `InstanceLink::instance_key()`
-is the sole key encoder, and collection, deduplication, minting and installation
-preserve that same link. Typecheck derives it only after the full use type
+`MonoDemand::instance_link()` projects it away. The approved S122
+`instance_key(&Scheme) -> Result<Symbol, InstanceKeyError>` methods apply these
+substitutions to the selected template scheme and delegate to the types-owned
+`concrete_callable_key(&FQSymbol, &ConcreteType)` encoder. This encodes the
+authored owner and complete concrete function signature, including result, with
+no arm ordinal. Collection, deduplication, minting and installation preserve
+that same link. The exact approved contract and source migration are in
+[s122-overload-reorder-publication.md](s122-overload-reorder-publication.md). Typecheck derives it only after the full use type
 settles, reconstructs the concrete signature from it and checks constraints.
 Replay requires no expression map and checks vector length against the selected
 scheme's generalized variables. The producer and replay contract lives in
@@ -1595,17 +1622,19 @@ pub fn install_instance(
 ) -> Result<(Symbol, CallableSlot), LifecycleError>
 ```
 
-The table derives the storage key once from `link.instance_key()`, stores
+The table derives the storage key from the actual settled instance scheme and
+the authored owner in the link through `concrete_callable_key`, stores
 `minted_from: Some(link)`, and returns the derived key and slot. A single
-private validator compares every concrete binding's actual key with its
-`InstanceLink::instance_key()`; it runs before install mutation and from
+private validator compares every concrete binding's actual key with the
+same settled-signature derivation; it runs before install mutation and from
 `validate_lifecycle()` after clone/deserialisation. A mismatch is
 `LifecycleError::InstanceKeyMismatch { symbol, expected }`, and cache load
 maps it to cache-stale. Required evidence is: a positive instance-funnel pin;
 an install-time mismatch plant proving no mutation; a tampered restored-key
 plant; and an external-consumer compile-pass using `install_instance`.
-The substitution-based carrier and key semantics use cache schema 26. Schema-25
-cache pairs are stale and rebuilt; there is no argument-only compatibility
+S122 changes key meaning without changing carrier fields and requires the
+coordinated backend semantic cache-version bump before integrated completion.
+There is no ordinal/substitution-key compatibility
 constructor or serde alias. Platform ABI and calling conventions are unchanged.
 
 ### Slot and cache authority
@@ -1746,8 +1775,8 @@ no cache-schema effect.
 > has no `facades/{crate}.md`). The S81 free-fn `resolve_with_fallback` shape
 > that previously occupied this section (landed FIXME 0316c) is superseded:
 > per-call opt-in fallback (`fallback_on: bool` threaded at every site) proved
-> forgettable — the S108 matrix (`tests/plan/PLAN.md` §"Prelude ≡ explicit
-> import") found six `_or_prelude` variants and four RED silent-accept/skip
+> forgettable — the [S108 matrix in Git](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md)
+> found six `_or_prelude` variants and four RED silent-accept/skip
 > sites, each a per-site re-decision of the fallback question. Git history
 > preserves the S81 section text. **LANDED S108 Inc3** (baseline
 > regenerated; `/review` structural grep CLEAR).
@@ -2098,41 +2127,32 @@ impl HeapHeader {
 }
 ```
 
-**R5 value-representation flattening — the single-sourced Copy/value-layout predicate (S103 Wave 1; `design/arch/ownership-inference.md` §6.3, `design/backend/ownership-codegen.md` §7.1).** Increment II's one genuinely-new cross-crate edge, landing beside `HeapHeader` in `crates/cranelisp-types/src/heap.rs` with a `CACHE_SCHEMA_VERSION` bump 14 → 15 (representation change; wholesale-invalidates every pre-R5 `.o` via the manifest `cache_format_version` global key).
+### R5 value-representation flattening
 
-```rust
-pub const VALUE_LAYOUT_MAX_WORDS: usize = 1;      // one word (8 bytes), first landing (§7.2)
+The types-owned layout predicate is shared by typecheck's Copy/uniqueness
+classification and backend's value lowering. A disagreement could bit-copy a
+heap pointer without retaining it, so neither consumer derives eligibility
+independently. Exact signatures and lookup obligations live in
+[`heap.rs` rustdoc](../../crates/cranelisp-types/src/heap.rs).
 
-#[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ValueLayout { pub words: usize }        // the classification result (a HeapCategory analogue — recomputed, not persisted)
+- `Some(ValueLayout)` identifies a scalar or a single-constructor ADT with
+  exactly one transitively value-eligible field, within `VALUE_LAYOUT_MAX_WORDS`.
+  Multiple constructors, heap collections and fields whose stored types are
+  not concrete are ineligible. This walk performs no generic substitution;
+  `ctor_field_types_at` is the distinct substituting projection.
+- `value_layout` adapts published tables to `value_layout_with_lookup`. The
+  latter accepts exact keyed owned-binding lookup; the caller supplies a coherent
+  declaration view and releases guards before returning each binding. The walk
+  releases metadata before recursion and retains no callback or binding.
+- Typecheck supplies its staging-first lookup to both classifiers. A present
+  staged binding wins even when ineligible; only an absent key falls through.
+  Backend uses the same algorithm with its codegen tables.
+- The shared constructor projection preserves canonical member-key preference
+  and the product-type facet. Cycles return no value layout.
 
-pub fn value_layout<C, L>(
-    ty: &ConcreteType,
-    type_defs: Option<&SymbolTables<C, L>>,          // the same view HeapCategory::classify takes
-) -> Option<ValueLayout>
-where C: CodeStore, L: LinkerStore;
-
-pub fn value_layout_with_lookup<C, F>(
-    ty: &ConcreteType,
-    lookup: &F,
-) -> Option<ValueLayout>
-where
-    C: CodeStore,
-    F: Fn(&ModuleFullPath, &Symbol) -> Option<Binding<C>>;
-```
-
-The table entry point delegates to the lookup entry point. A lookup returns an
-owned binding at the exact module/storage key and releases its guard before
-returning; it supplies a coherent declaration view without name resolution or
-publication. The layout walk and `type_ctor_names` share one private constructor
-projection, preserving canonical-key preference and the product facet. The S121
-implemented typecheck consumer supplies staging-first lookup to both Copy
-and uniqueness eligibility through its shared private adapter. This
-additive API changes no eligibility rule, persisted field meaning or platform
-ABI. See [the exact review packet](s121-staged-value-layout-api.md).
-
-`Some(ValueLayout { words })` ⟺ **Copy-eligible** (a scalar, or a single-constructor ADT with exactly one field that is transitively value-eligible) **∧** the fully-flattened representation is `≤ VALUE_LAYOUT_MAX_WORDS` words; `None` ⟺ today's heap/scalar representation verbatim. **Soundness-coupled single-sourcing (Principle 7, resolving FIXME 0468):** typecheck's `Copy` mode classifier and the backend's `HeapCategory::Value` arm are two consumers that MUST agree — a param moded `Copy` whose representation the backend did *not* flatten is a pointer bit-copied with no `rc_inc` (a missing-inc UAF) — so ONE predicate lives here and both delegate; neither derives its own. **Monotone-sound conservatism** (first landing): `None` is always sound (keeps today's lowering), so multi-constructor ADTs, `Vec`/heap collections, and generic ctor fields whose stored scheme type is not already concrete (no per-instantiation substitution) all return `None`. The `HeapCategory::Value` consuming arm + the F2v single-ctor witness are the Wave-3 backend work; the carrier lands with the mechanism, never ahead (Principle 8) — Wave 1 is carrier + tests only.
+The staging-aware input changed declaration access, not layout rules, calling
+conventions or persisted field meanings. Approval and measured delivery history
+remain in the closed S121 record and Git.
 
 ### Resource scheduling — the `ctx` vtable handle model (ABI v9, S97, supersedes FIXME 0482)
 

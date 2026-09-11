@@ -246,6 +246,7 @@ pub enum ClusterOutcome {
 pub fn process_cluster(
     shared: &crate::session_v4::SharedState,
     forms: std::sync::Arc<[cranelisp_types::Sexp]>,
+    reload_demands: std::sync::Arc<[cranelisp_types::MonoDemand]>,
     scope: &ModuleFullPath,
     generation_started: bool,
 ) -> Result<ClusterOutcome, CranelispError> {
@@ -285,6 +286,7 @@ pub fn process_cluster(
         platform_dirs: &platform_dirs,
         project_root: &shared.project_root,
         shared_state: Some(shared),
+        reload_demands,
         // Pool-orchestrated (worker): a dependency gap moves the module to
         // TypecheckBlocked and the scheduler requeues it — NOT eval-driven.
         eval_driven: false,

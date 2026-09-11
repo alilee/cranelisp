@@ -270,11 +270,19 @@ fn external_consumer_can_author_lifecycle_records_and_instance_funnel() {
         }),
         vec![ConcreteType::Int],
     );
-    let expected = link.instance_key();
+    let instance_scheme = scheme(Type::Fn(vec![Type::Int], Box::new(Type::Int)));
+    let expected = cranelisp_types::concrete_callable_key(
+        &FQSymbol {
+            module: "producer".into(),
+            symbol: "generic".into(),
+        },
+        &ConcreteType::from_type(&instance_scheme.ty).unwrap(),
+    )
+    .unwrap();
     let (key, slot) = table
         .install_instance(
             link.clone(),
-            concrete,
+            instance_scheme,
             Vec::new(),
             None,
             5,

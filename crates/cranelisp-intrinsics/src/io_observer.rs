@@ -32,7 +32,7 @@ use std::time::Instant;
 // ---------------------------------------------------------------------------
 
 /// IO trampoline event tag — the variants reflect the trampoline's state
-/// machine transitions (per `design/backend/io-trampoline-trace.md §3`).
+/// machine transitions.
 ///
 /// `#[non_exhaustive]` per facade — adding a new tag is a minor revision
 /// (consumers must not match-exhaustively on this enum without a default

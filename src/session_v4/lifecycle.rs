@@ -864,7 +864,7 @@ impl CompilerSession {
                 // names and the synthetic `__expr` top-level-expression wrapper
                 // are not user definitions (repl/spec.md §3.3; shared predicate
                 // with `handle_list` / `/exports` / the harvest).
-                if crate::worker::is_internal_listing_name(name.as_ref()) {
+                if crate::worker::is_internal_listing_entry(name.as_ref(), entry) {
                     continue;
                 }
                 // Bucketing is the shared `classify_listing_entry` classifier
@@ -1007,14 +1007,16 @@ impl CompilerSession {
         }
     }
 
-    /// The dependent modules (+ backing file paths) that import ANY module in
-    /// `changed`, excluding the changed modules themselves. **Single-sourced**
+    /// The transitive dependent modules (+ backing file paths) that import or
+    /// re-export ANY module in `changed`, excluding the changed modules
+    /// themselves. A module whose implicit prelude fallback is enabled depends
+    /// on `prelude`. **Single-sourced**
     /// for both the watcher cascade (`poll_and_reload`) and the T1 full-cure
     /// cascade (`redefine::reload_t1_dependents`) so the two never reload
     /// different sets (Principle 7 — no drift; the P7 hazard `/review` flagged).
     /// Path resolution is the `file_to_module` reverse map; a dependent absent
-    /// from it is skipped in BOTH callers identically. `ImportSpec.module_path`
-    /// is a `ModuleFullPath`, so the import match is a direct `==`.
+    /// from it is skipped in BOTH callers identically. Results are layered in
+    /// dependency order, so a re-exporting module precedes its consumers.
     pub(crate) fn dependent_modules(
         &self,
         changed: &HashSet<ModuleFullPath>,
@@ -1024,30 +1026,245 @@ impl CompilerSession {
             .file_to_module
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        let prelude = ModuleFullPath::from("prelude");
+        let mut reached = changed.clone();
         let mut out: Vec<(ModuleFullPath, PathBuf)> = Vec::new();
-        for entry in self.shared.symbol_tables.iter() {
-            let dependent = entry.key().clone();
-            if changed.contains(&dependent) {
-                continue; // A changed module is reloaded directly, not as a dependent.
-            }
-            let depends_on_changed = entry
-                .value()
-                .imports
+        loop {
+            let mut layer = self
+                .shared
+                .symbol_tables
                 .iter()
-                .any(|spec| changed.contains(&spec.module_path));
-            if !depends_on_changed {
-                continue;
+                .filter_map(|entry| {
+                    let dependent = entry.key().clone();
+                    if reached.contains(&dependent) {
+                        return None;
+                    }
+                    let table = entry.value();
+                    let explicit = table
+                        .imports
+                        .iter()
+                        .any(|spec| reached.contains(&spec.module_path))
+                        || table
+                            .exports
+                            .iter()
+                            .any(|spec| reached.contains(&spec.module_path));
+                    let through_prelude = reached.contains(&prelude)
+                        && self
+                            .shared
+                            .prelude_fallback
+                            .get(&dependent)
+                            .is_some_and(|enabled| *enabled);
+                    (explicit || through_prelude).then_some(dependent)
+                })
+                .collect::<Vec<_>>();
+            layer.sort_by(|left, right| left.as_ref().cmp(right.as_ref()));
+            layer.dedup();
+
+            let mut admitted = Vec::new();
+            for dependent in layer {
+                if let Some(path) = file_to_mod
+                    .iter()
+                    .find(|(_, module)| **module == dependent)
+                    .map(|(path, _)| path.clone())
+                {
+                    admitted.push((dependent, path));
+                }
             }
-            if let Some(path) = file_to_mod
-                .iter()
-                .find(|(_, mp)| **mp == dependent)
-                .map(|(p, _)| p.clone())
-                && !out.iter().any(|(mp, _)| mp == &dependent)
-            {
+            if admitted.is_empty() {
+                break;
+            }
+            for (dependent, path) in admitted {
+                reached.insert(dependent.clone());
                 out.push((dependent, path));
             }
         }
-        out
+
+        self.order_reload_modules(out)
+    }
+
+    /// Topologically order a complete admitted reload set after condensing its
+    /// strongly connected components. Edges point from dependency to consumer;
+    /// members of one SCC use lexical order only inside that indivisible unit.
+    fn order_reload_modules(
+        &self,
+        modules: Vec<(ModuleFullPath, PathBuf)>,
+    ) -> Vec<(ModuleFullPath, PathBuf)> {
+        fn finish_order(
+            node: usize,
+            edges: &[Vec<usize>],
+            seen: &mut [bool],
+            finished: &mut Vec<usize>,
+        ) {
+            if std::mem::replace(&mut seen[node], true) {
+                return;
+            }
+            for &next in &edges[node] {
+                finish_order(next, edges, seen, finished);
+            }
+            finished.push(node);
+        }
+
+        fn collect_component(
+            node: usize,
+            reverse: &[Vec<usize>],
+            component: usize,
+            assigned: &mut [Option<usize>],
+            members: &mut Vec<usize>,
+        ) {
+            if assigned[node].is_some() {
+                return;
+            }
+            assigned[node] = Some(component);
+            members.push(node);
+            for &next in &reverse[node] {
+                collect_component(next, reverse, component, assigned, members);
+            }
+        }
+
+        if modules.len() < 2 {
+            return modules;
+        }
+        let index = modules
+            .iter()
+            .enumerate()
+            .map(|(index, (module, _))| (module.clone(), index))
+            .collect::<HashMap<_, _>>();
+        let mut edges = vec![Vec::new(); modules.len()];
+        let mut reverse = vec![Vec::new(); modules.len()];
+        let prelude = ModuleFullPath::from("prelude");
+        for (consumer_index, (consumer, _)) in modules.iter().enumerate() {
+            let Some(table) = self.shared.symbol_tables.get(consumer) else {
+                continue;
+            };
+            let mut dependencies = table
+                .imports
+                .iter()
+                .map(|spec| &spec.module_path)
+                .chain(table.exports.iter().map(|spec| &spec.module_path))
+                .filter_map(|dependency| index.get(dependency).copied())
+                .collect::<Vec<_>>();
+            if self
+                .shared
+                .prelude_fallback
+                .get(consumer)
+                .is_some_and(|enabled| *enabled)
+                && let Some(prelude_index) = index.get(&prelude)
+            {
+                dependencies.push(*prelude_index);
+            }
+            dependencies.sort_unstable();
+            dependencies.dedup();
+            for dependency_index in dependencies {
+                edges[dependency_index].push(consumer_index);
+                reverse[consumer_index].push(dependency_index);
+            }
+        }
+
+        let mut seen = vec![false; modules.len()];
+        let mut finished = Vec::with_capacity(modules.len());
+        for node in 0..modules.len() {
+            finish_order(node, &edges, &mut seen, &mut finished);
+        }
+        let mut assigned = vec![None; modules.len()];
+        let mut components = Vec::<Vec<usize>>::new();
+        while let Some(node) = finished.pop() {
+            if assigned[node].is_some() {
+                continue;
+            }
+            let component = components.len();
+            let mut members = Vec::new();
+            collect_component(node, &reverse, component, &mut assigned, &mut members);
+            components.push(members);
+        }
+
+        let mut component_edges = vec![HashSet::new(); components.len()];
+        let mut indegree = vec![0usize; components.len()];
+        for (dependency, consumers) in edges.iter().enumerate() {
+            let dependency_component = assigned[dependency].expect("every node assigned");
+            for &consumer in consumers {
+                let consumer_component = assigned[consumer].expect("every node assigned");
+                if dependency_component != consumer_component
+                    && component_edges[dependency_component].insert(consumer_component)
+                {
+                    indegree[consumer_component] += 1;
+                }
+            }
+        }
+
+        let component_key = |component: usize| {
+            components[component]
+                .iter()
+                .map(|&member| modules[member].0.as_ref())
+                .min()
+                .unwrap_or("")
+        };
+        let mut ready = indegree
+            .iter()
+            .enumerate()
+            .filter_map(|(component, degree)| (*degree == 0).then_some(component))
+            .collect::<Vec<_>>();
+        let mut component_order = Vec::with_capacity(components.len());
+        while !ready.is_empty() {
+            ready.sort_by(|left, right| component_key(*left).cmp(component_key(*right)));
+            let component = ready.remove(0);
+            component_order.push(component);
+            for &consumer in &component_edges[component] {
+                indegree[consumer] -= 1;
+                if indegree[consumer] == 0 {
+                    ready.push(consumer);
+                }
+            }
+        }
+
+        let mut modules = modules.into_iter().map(Some).collect::<Vec<_>>();
+        let mut ordered = Vec::with_capacity(modules.len());
+        for component in component_order {
+            let mut members = components[component].clone();
+            members.sort_by(|left, right| {
+                modules[*left]
+                    .as_ref()
+                    .unwrap()
+                    .0
+                    .as_ref()
+                    .cmp(modules[*right].as_ref().unwrap().0.as_ref())
+            });
+            ordered.extend(members.into_iter().map(|member| {
+                modules[member]
+                    .take()
+                    .expect("each reload module emitted once")
+            }));
+        }
+        ordered
+    }
+
+    /// Assemble the exact root-plus-dependent sequence consumed by the watcher
+    /// reload loop. Keeping root mapping and cascade selection together makes
+    /// their shared ordering observable at the execution boundary.
+    fn watcher_reload_plan(&self, changed_paths: &[PathBuf]) -> Vec<(ModuleFullPath, PathBuf)> {
+        let file_to_mod = self
+            .shared
+            .file_to_module
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut plan = Vec::new();
+        for path in changed_paths {
+            if let Some(module) = file_to_mod.get(path)
+                && !plan.iter().any(|(existing, _)| existing == module)
+            {
+                plan.push((module.clone(), path.clone()));
+            }
+        }
+        let changed = plan
+            .iter()
+            .map(|(module, _)| module.clone())
+            .collect::<HashSet<_>>();
+        drop(file_to_mod);
+        for dependent in self.dependent_modules(&changed) {
+            if !plan.iter().any(|(existing, _)| existing == &dependent.0) {
+                plan.push(dependent);
+            }
+        }
+        self.order_reload_modules(plan)
     }
 
     /// Poll the file watcher for changed source files and reload them.
@@ -1072,32 +1289,9 @@ impl CompilerSession {
             None => return Vec::new(),
         };
 
-        // Map file paths → module paths via SharedState.file_to_module.
-        let file_to_mod = self
-            .shared
-            .file_to_module
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let mut modules_to_reload: Vec<(ModuleFullPath, PathBuf)> = Vec::new();
-        for path in &changed_paths {
-            if let Some(module_path) = file_to_mod.get(path)
-                && !modules_to_reload.iter().any(|(mp, _)| mp == module_path)
-            {
-                modules_to_reload.push((module_path.clone(), path.clone()));
-            }
-        }
-        let changed_modules: HashSet<ModuleFullPath> =
-            modules_to_reload.iter().map(|(mp, _)| mp.clone()).collect();
-        drop(file_to_mod);
-        // Cascade invalidation: find modules that import any changed module
-        // and add them to the reload list — via the SHARED dependent-scan
-        // helper the T1 full-cure cascade also uses (Principle 7: one
-        // dependent set + path resolution, no drift).
-        for (dep_module, dep_path) in self.dependent_modules(&changed_modules) {
-            if !modules_to_reload.iter().any(|(mp, _)| mp == &dep_module) {
-                modules_to_reload.push((dep_module, dep_path));
-            }
-        }
+        // The production plan maps roots, closes over dependents, and orders
+        // the complete selected graph before this loop consumes it.
+        let modules_to_reload = self.watcher_reload_plan(&changed_paths);
 
         let mut messages = Vec::new();
         for (module_path, file_path) in modules_to_reload {
@@ -1106,7 +1300,7 @@ impl CompilerSession {
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or_else(|| module_path.as_ref());
-            match self.reload_module(&module_path, &file_path, &[]) {
+            match self.reload_module(&module_path, &file_path) {
                 Ok(()) => {
                     // `reload_module` itself clears `error_modules` +
                     // `failed_forms` on success (S102 W5R B-1).
@@ -1305,26 +1499,14 @@ impl CompilerSession {
     /// re-typecheck + re-codegen. Sprint 57 Wave 4 G11 per
     /// `persistent-workers.md` §4.6 — reload via scheduler falls out of
     /// persistent workers (same path as `register_module_with_source`).
-    /// Reload a module from its backing `.cl`, plus a set of in-memory
-    /// **instantiation-driver** forms appended to the parsed source before
-    /// re-registration (`extra_forms` empty ⇒ a plain from-source reload).
-    ///
-    /// The from-source reload re-typechecks + re-codegens a module from its
-    /// backing `.cl`, which is **definitions-only** (FIXME 0549 / §8 pin (v) —
-    /// the synthetic `__expr` eval wrapper is no longer persisted). A same-module
-    /// polymorphic mono variant (`g$Int`) originally minted by a REPL top-level
-    /// expression therefore has no minter on a from-source reload. The T1 CS-1
-    /// full-cure driver (`redefine.rs::drive_t1_full_cure`) captures those driver
-    /// expressions from the live table BEFORE regen and passes them here so the
-    /// workers re-mint exactly those mono variants against the reloaded
-    /// definitions — the mono-instantiation obligation travelling the explicit
-    /// in-memory channel, never the persisted `.cl` source channel
-    /// (`design/int/session-transaction.md` §10 CS-1; Q1 strictly precedes Q2).
+    /// Reload a module from its definitions-only backing `.cl`. The ordinary
+    /// prepared replacement captures and rematerializes historical concrete
+    /// demands in the same unpublished candidate, so no synthetic expression
+    /// replay is appended to persisted source.
     pub(crate) fn reload_module(
         &mut self,
         module_path: &ModuleFullPath,
         file_path: &Path,
-        extra_forms: &[Sexp],
     ) -> Result<(), CranelispError> {
         crate::observability::record_module_event(
             crate::observability::SchedulerTraceTag::RecompileModule,
@@ -1364,13 +1546,14 @@ impl CompilerSession {
         // Parse the new source; the sexps ride the re-register work packet
         // (S78 — no shared `module_sexps` map). Persistent workers parked on
         // the priority-work condvar wake and process it (G11 per §4.6).
-        // Q1 (FIXME 0549): the captured instantiation-driver forms are appended
-        // in-memory so the reload re-mints the same-module mono variants they
-        // instantiate — without those transient expressions entering the
-        // definitions-only backing file.
-        let mut parsed = cranelisp_frontend::parse(&source)?;
-        parsed.extend_from_slice(extra_forms);
+        let parsed = cranelisp_frontend::parse(&source)?;
         let sexps: std::sync::Arc<[Sexp]> = std::sync::Arc::from(parsed);
+        let instantiation_demands = self
+            .shared
+            .symbol_tables
+            .get(module_path)
+            .map(|table| crate::worker::capture_reload_instantiation_demands(&table))
+            .unwrap_or_else(|| std::sync::Arc::from([]));
 
         // Module-preamble wiring (§8.16.5; design/frontend/module-preamble.md §5):
         // a reload re-reads fresh source, so re-capture the leading `;;` block
@@ -1395,10 +1578,11 @@ impl CompilerSession {
         // `re_register_module` clears `inmem_done` and re-queues the module
         // for typecheck with the fresh sexps. `register_module` would be a
         // no-op because the module is already in `scheduler.modules`.
-        let re_registered = self
-            .shared
-            .scheduler
-            .re_register_module(module_path, sexps.clone());
+        let re_registered = self.shared.scheduler.re_register_module_with_demands(
+            module_path,
+            sexps.clone(),
+            instantiation_demands,
+        );
         if !re_registered {
             // Module isn't known to the scheduler yet (first-time seed from
             // file watcher) — fall back to register_module.
@@ -1444,11 +1628,6 @@ impl CompilerSession {
         self.register_entry_module(module_name)?;
         Ok(())
     }
-
-    // `re_register_module` deliberately stays on the PARENT `session_v4.rs`
-    // (S87 §2 — facade thin-forward kept at the struct's home; also satisfies
-    // the `facade_pif_rows` row-45 source-text guard that greps
-    // `src/session_v4.rs` for the method). See the parent file.
 
     /// Register a module with explicit source (internal + test helpers).
     ///
@@ -2969,5 +3148,151 @@ mod restore_notice_tests {
             restored_definition_count("(import [primitives [Int]])\n", &[]),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod watcher_reload_plan_tests {
+    use super::*;
+    use cranelisp_types::{CodegenBehaviour, ImportNames, ImportSpec};
+
+    fn plan_session() -> (CompilerSession, tempfile::TempDir) {
+        let root = tempfile::tempdir().expect("create watcher-plan project root");
+        let mut session = CompilerSession::new(
+            SessionSettings {
+                no_color: true,
+                no_cache: true,
+                codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
+                priority_workers: 1,
+                nice_workers: 0,
+                run_mode: crate::session_v4::RunMode::Repl,
+            },
+            root.path().to_path_buf(),
+            "user",
+        )
+        .expect("create watcher-plan session");
+        session.set_lib_dirs(Vec::new());
+        (session, root)
+    }
+
+    fn install_plan_module(
+        session: &CompilerSession,
+        root: &Path,
+        module: &str,
+        dependencies: &[&str],
+    ) -> PathBuf {
+        let module_path = ModuleFullPath::from(module);
+        let path = root.join(format!("{module}.cl"));
+        let mut table = SessionSymbolTable::new_with_params(module_path.clone());
+        table
+            .imports
+            .extend(dependencies.iter().map(|dependency| ImportSpec {
+                module_path: ModuleFullPath::from(*dependency),
+                alias: None,
+                names: ImportNames::Glob,
+                span: Span::SYNTHETIC,
+            }));
+        session
+            .shared
+            .symbol_tables
+            .insert(module_path.clone(), table);
+        session
+            .shared
+            .file_to_module
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(path.clone(), module_path);
+        path
+    }
+
+    fn plan_names(plan: &[(ModuleFullPath, PathBuf)]) -> Vec<&str> {
+        plan.iter().map(|(module, _)| module.as_ref()).collect()
+    }
+
+    // spec: repl/spec.md §14.2 — an admitted dependency SCC is one ordering
+    // component. Every member precedes a downstream consumer even when that
+    // consumer's name sorts first.
+    #[test]
+    fn watcher_plan_orders_dependency_scc_before_lexical_downstream() {
+        let (mut session, root) = plan_session();
+        let changed = install_plan_module(&session, root.path(), "zz_root", &[]);
+        install_plan_module(
+            &session,
+            root.path(),
+            "middle_cycle_a",
+            &["zz_root", "middle_cycle_b"],
+        );
+        install_plan_module(&session, root.path(), "middle_cycle_b", &["middle_cycle_a"]);
+        install_plan_module(&session, root.path(), "aaa_downstream", &["middle_cycle_a"]);
+        install_plan_module(&session, root.path(), "unrelated", &[]);
+
+        let plan = session.watcher_reload_plan(&[changed]);
+        let names = plan_names(&plan);
+        let downstream = names
+            .iter()
+            .position(|name| *name == "aaa_downstream")
+            .expect("downstream consumer selected");
+        for dependency in ["middle_cycle_a", "middle_cycle_b"] {
+            assert!(
+                names.iter().position(|name| *name == dependency).unwrap() < downstream,
+                "dependency component must precede downstream consumer: {names:?}"
+            );
+        }
+        for selected in [
+            "zz_root",
+            "middle_cycle_a",
+            "middle_cycle_b",
+            "aaa_downstream",
+        ] {
+            assert_eq!(
+                names.iter().filter(|name| **name == selected).count(),
+                1,
+                "each selected module occurs once: {names:?}"
+            );
+        }
+        assert!(!names.contains(&"unrelated"));
+        session.shutdown();
+    }
+
+    // spec: repl/spec.md §14.2 — simultaneously changed roots participate in
+    // the same complete ordering plan; incoming HashSet order cannot put a
+    // changed consumer ahead of its changed dependency.
+    #[test]
+    fn watcher_plan_orders_related_changed_roots_in_both_input_orders() {
+        let (mut session, root) = plan_session();
+        let dependency = install_plan_module(&session, root.path(), "changed_dependency", &[]);
+        let consumer = install_plan_module(
+            &session,
+            root.path(),
+            "changed_consumer",
+            &["changed_dependency"],
+        );
+        install_plan_module(&session, root.path(), "unrelated", &[]);
+
+        for changed in [
+            vec![consumer.clone(), dependency.clone()],
+            vec![dependency.clone(), consumer.clone()],
+        ] {
+            let plan = session.watcher_reload_plan(&changed);
+            let names = plan_names(&plan);
+            let dependency_index = names
+                .iter()
+                .position(|name| *name == "changed_dependency")
+                .unwrap();
+            let consumer_index = names
+                .iter()
+                .position(|name| *name == "changed_consumer")
+                .unwrap();
+            assert!(
+                dependency_index < consumer_index,
+                "changed dependency must precede changed consumer for either input order: {names:?}"
+            );
+            assert_eq!(
+                names.len(),
+                2,
+                "unrelated module stays outside plan: {names:?}"
+            );
+        }
+        session.shutdown();
     }
 }

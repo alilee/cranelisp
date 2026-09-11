@@ -30,8 +30,8 @@
 
 use cranelisp_types::{
     CranelispError, Decl, ErrorLocation, FQSymbol, Life, MacroExpander, MacroInvokeError,
-    MacroParam, ModuleAliases, ModuleFullPath, NULLARY_TAG_THRESHOLD, Realization,
-    ResolutionScope, Sexp, Span, Symbol, View,
+    MacroParam, ModuleAliases, ModuleFullPath, QuoteHead, Realization, ResolutionScope, Sexp, Span,
+    Symbol, View, quote_head,
 };
 
 use std::collections::HashSet;
@@ -497,26 +497,21 @@ pub(crate) fn find_matching_clause<'a>(
 // Clause invocation
 // ---------------------------------------------------------------------------
 
-/// Marshal arguments, invoke a clause's function pointer, and unmarshal the result.
+/// Marshal arguments, transfer them to a clause, and copy and release its result.
+///
+/// The argument owner crosses the ABI before the protected call. A hardware
+/// trap forfeits that one tree in the abandoned JIT frame; the host must not
+/// attempt cleanup after the non-local exit. A successful result is observed
+/// through a borrow and consumed exactly once while the clause's `Code` lease
+/// remains live.
 pub(crate) fn invoke_clause(
     clause: &ExecutableMacroClause,
     args: &[Sexp],
     span: Span,
 ) -> Result<Sexp, CranelispError> {
     let _code_lease = &clause.owner;
-    // Marshal each argument to a runtime Sexp ADT value. Deep protection is now
-    // applied at every allocation site inside the marshaller (`protect_marshalled_cell`,
-    // FIXME 0638): every marshalled cell — top-level, interior, SList spine, and
-    // HeapString — is born at RC ≥ 2, accounting the reference the marshaller
-    // retains. The former bespoke top-level-only protect loop here is REMOVED (it
-    // covered only the top of each arg, leaving interiors at RC = 1 → the
-    // interior-alias double-free); the marshaller now owns the protection,
-    // co-located with the allocation whose retention it accounts for.
-    let marshalled: Vec<i64> = args.iter().map(marshal::sexp_to_runtime).collect();
-
-    // Package all args as an (SList Sexp). The spine SCons cells are protected on
-    // build too (`alloc_scons`), so the whole args tree is uniformly RC ≥ 2.
-    let args_slist = marshal::build_runtime_slist(&marshalled);
+    let marshalled = args.iter().map(marshal::sexp_to_runtime).collect();
+    let args_slist = marshal::build_runtime_slist(marshalled);
 
     // Invoke the compiled function with signal protection.
     // JIT code may trigger hardware traps (e.g., division by zero -> SIGFPE,
@@ -524,17 +519,22 @@ pub(crate) fn invoke_clause(
     // that convert these signals to Rust panics, then use catch_unwind
     // to turn them into clean CranelispError results.
     let result_i64 = invoke_jit_protected(clause.entry, clause.abi, args_slist, span)?;
+    // SAFETY: the macro-clause ABI transfers one owned Sexp result word to the
+    // host. Bare nullary tags are valid `Owned` values and consume as a no-op.
+    let result = unsafe { cranelisp_intrinsics::handle::Owned::from_abi(result_i64) };
 
     // Validate the result is a heap pointer (all Sexp constructors are data).
-    if result_i64 < NULLARY_TAG_THRESHOLD as i64 {
+    if result.is_nullary_tag() {
+        cranelisp_intrinsics::drop::consume_sexp(result);
         return Err(CranelispError::MacroError {
             message: format!("macro returned invalid value {result_i64} (expected heap pointer)"),
             location: ErrorLocation::from_span(span),
         });
     }
 
-    // Unmarshal the result back to a compiler Sexp.
-    Ok(marshal::runtime_to_sexp(result_i64))
+    let copied = marshal::runtime_to_sexp(result.as_borrowed());
+    cranelisp_intrinsics::drop::consume_sexp(result);
+    Ok(copied)
 }
 
 /// Invoke a JIT function pointer with crash protection.
@@ -550,7 +550,7 @@ pub(crate) fn invoke_clause(
 fn invoke_jit_protected(
     entry: std::ptr::NonNull<u8>,
     abi: MacroClauseAbi,
-    args_slist: i64,
+    args_slist: cranelisp_intrinsics::handle::Owned,
     span: Span,
 ) -> Result<i64, CranelispError> {
     use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -584,7 +584,10 @@ fn invoke_jit_protected(
             };
             // Clear any stale error before the JIT call.
             let _ = cranelisp_intrinsics::panic::take_runtime_error();
-            let result_i64 = func(args_slist);
+            // `into_raw` is the ownership transfer. On a signal recovery the
+            // JIT frame and that transferred tree are forfeited; the host has
+            // no remaining handle it could incorrectly release.
+            let result_i64 = func(args_slist.into_raw());
 
             // Restore original signal handlers.
             restore_signal_handlers(old_handlers);
@@ -785,42 +788,6 @@ pub(crate) fn expand_sexp_recursive(
     expand_scoped(sexp, resolver, depth, origin_span, &HashSet::new())
 }
 
-/// The reader-quote head the [`expand_scoped`] shield recognizes at the top of a
-/// non-empty list arm (`design/int/quote-shield.md` §3).
-pub(crate) enum QuoteHead {
-    /// `(quote X)` — fully verbatim, no descent (Rule Q).
-    Quote,
-    /// `(quasiquote T)` — descend only into live unquotes, tracking depth (Rule QQ).
-    Quasiquote,
-    /// `(unquote X)` / `(unquote-splicing X)` — an escape back to expression
-    /// position; live or nested according to the walker's `qq_depth`.
-    Unquote,
-}
-
-/// Structural recognition of the reader-quote family — bare-symbol head +
-/// `len() == 2`, consulting neither `shadows` nor any resolver (the SAME test
-/// the frontend fold applies in `quasiquote.rs::is_quote`/`is_quasiquote`).
-///
-/// **Single source for BOTH int-side scope-aware walks** (Principle 7): the
-/// expander shield here (`expand_scoped` / [`shield_qq`]) and the qualify shield
-/// in `process_form::macro_resolution::qualify_scoped` (S115, FIXME 0718 /
-/// `expansion-qualification-scope.md` §2.4). If the two tests ever diverge a
-/// subtree gets double-desugared or mis-qualified — so neither walk may keep a
-/// private copy. (The frontend fold's own predicates are crate-private in
-/// `cranelisp-frontend`; collapsing all three onto one exported predicate is
-/// FIXME 0789, `target: /arch`.)
-pub(crate) fn quote_head(children: &[Sexp]) -> Option<QuoteHead> {
-    if children.len() != 2 {
-        return None;
-    }
-    match &children[0] {
-        Sexp::Symbol(h, _) if h == "quote" => Some(QuoteHead::Quote),
-        Sexp::Symbol(h, _) if h == "quasiquote" => Some(QuoteHead::Quasiquote),
-        Sexp::Symbol(h, _) if h == "unquote" || h == "unquote-splicing" => Some(QuoteHead::Unquote),
-        _ => None,
-    }
-}
-
 /// Is `head` a `defmacro`/`defmacro-` head? The CS-D1 shield's structural test,
 /// shared with the qualify walk's §2.6 shield (FIXME 0718) so the two stay in
 /// lockstep. Deliberately NOT folded into [`is_binding_form`]: that predicate
@@ -865,7 +832,7 @@ fn shield_qq(
                 // Recognition via the shared `quote_head` classifier (P7).
                 match quote_head(&children) {
                     // unquote / unquote-splicing.
-                    Some(QuoteHead::Unquote) => {
+                    Some(QuoteHead::Unquote | QuoteHead::UnquoteSplicing) => {
                         let mut children = children;
                         let body = children.pop().expect("len == 2: unquote body");
                         let head_sym = children.pop().expect("len == 2: unquote head");
@@ -966,7 +933,7 @@ fn expand_scoped(
                     }
                     // A bare `(unquote X)` outside any quasiquote is not shielded
                     // here — it stays an ordinary list (the fold diagnoses it).
-                    Some(QuoteHead::Unquote) | None => {}
+                    Some(QuoteHead::Unquote | QuoteHead::UnquoteSplicing) | None => {}
                 }
             }
             // 1. Binding special forms establish a lexical scope (§8.6.3). Handle
@@ -2153,7 +2120,8 @@ mod tests {
 
         for case in &cases {
             let rt = marshal::sexp_to_runtime(case);
-            let back = marshal::runtime_to_sexp(rt);
+            let back = marshal::runtime_to_sexp(rt.as_borrowed());
+            cranelisp_intrinsics::drop::consume_sexp(rt);
             match (case, &back) {
                 (Sexp::Int(a, _), Sexp::Int(b, _)) => assert_eq!(a, b),
                 (Sexp::Float(a, _), Sexp::Float(b, _)) => {
@@ -2181,7 +2149,8 @@ mod tests {
             marshal::sexp_to_runtime(&Sexp::Symbol("x".to_string(), Span::SYNTHETIC)),
             marshal::sexp_to_runtime(&Sexp::Str("hello".to_string(), Span::SYNTHETIC)),
         ];
-        let _slist = marshal::build_runtime_slist(&items);
+        let slist = marshal::build_runtime_slist(items);
+        cranelisp_intrinsics::drop::consume_slist(slist);
 
         // Read back by wrapping in a SexpList and reading.
         let wrapped = Sexp::List(
@@ -2193,7 +2162,8 @@ mod tests {
             Span::SYNTHETIC,
         );
         let rt = marshal::sexp_to_runtime(&wrapped);
-        let back = marshal::runtime_to_sexp(rt);
+        let back = marshal::runtime_to_sexp(rt.as_borrowed());
+        cranelisp_intrinsics::drop::consume_sexp(rt);
         if let Sexp::List(children, _) = back {
             assert_eq!(children.len(), 3);
             assert!(matches!(&children[0], Sexp::Int(1, _)));

@@ -3,7 +3,7 @@
 **Owner**: `/design` (cranelisp-platform narrow deployment).
 **Date**: 2026-06-03.
 **Status**: PHASE 3 DESIGN.
-**Scope**: The platform crate's own part of the S76 host-wiring set (FIXMEs 0229–0235), the cross-crate seam map, and the round-trip completion plan. Companion to `design/platform/sprint71-redesign.md` (which built the boundary this sprint wires) and `design/platform/platform.md` (master).
+**Scope**: The platform crate's own part of the S76 host-wiring set (FIXMEs 0229–0235), the cross-crate seam map, and the round-trip completion plan. Its S71 predecessor is recoverable from git; the current boundary is `design/platform/platform.md` and `design/platform/adt-marker-binding.md`.
 
 **Inputs grounding this doc**: `sprints/SPRINT.md` §W-Integrate + Phase-2 Architecture review §Q3; `design/arch/bounded-contexts.md` §5 (esp. §"Future host-wiring story" + invariants 1/4/5); FIXMEs `0229`–`0235`; `crates/cranelisp-platform/src/{lib,adt,schema}.rs` (the landed S71 boundary); `src/platform.rs` (`load_platform_dll`, `register_platform_in_tc`, `parse_platform_type_sig`); `crates/cranelisp-exe-bundle/src/lib.rs:97-106` (the `--link` HostCallbacks init); `crates/cranelisp-intrinsics/src/alloc.rs` (the allocator the wired `alloc_with_tag` builds on).
 
@@ -11,7 +11,7 @@
 
 ## 1. Executive summary — what S71 left, what S76 wires
 
-The S71 redesign (`sprint71-redesign.md`) built the **entire platform-side boundary** and it is **landed and green**:
+The S71 redesign built the **entire platform-side boundary** and landed green. Its duplicate design record was deleted during S122 document maintenance after the durable result moved to the current platform documents:
 
 - `crates/cranelisp-platform/src/schema.rs` (956 LOC) — the S-expr schema parser, `Schema`/`TypeShape`/`Variant`/`Field`/`FieldType`/`SchemaParseError`, `lookup_field_offset` + `lookup_variant_field_offset`.
 - `crates/cranelisp-platform/src/adt.rs` (626 LOC) — `CLAdt<T>`, `CLAdtType`, `AnyAdt`, `GetSchema`, `read_tag`/`read_field`/`own_field`/`construct`/`into_typed`, the type-witness check, dot-qualified sum lookup.
@@ -105,7 +105,7 @@ The host-wiring set spans six crates + qa. Platform owns none of the bodies belo
 | **0231** | `/typecheck` | `pub fn check_type_expr(expr, ctx, symbol_tables) -> Result<Type, CheckError>` — typecheck a standalone type-expr against a symbol-table. | `TypeExpr` + `CheckContext` + `SymbolTables` in → resolved `Type` out; resolves schema-declared ADT names. | Indirect — enables sig types to reference schema ADTs (`(Fn [Rectangle] Int)`); also the path 0229-step-2's validator uses. |
 | **0232** | `/backend` | `.meta.json` gains `schema_literal: String` (optional, `""` for schema-less DLLs). | JSON string field; round-trips the raw schema text for cache-restore re-parse + re-validate. | Consumes the schema literal (per S-PLAT-1 resolution — whichever channel /arch picks supplies it). |
 | **0233** | `/int` | Remove `parse_platform_type_sig`; route sigs through 0230+0231; register platforms as **normal modules** with their own `SymbolTable` + `GotTable` (BC §5 invariant 1 target: synthetic `platform.<name>` module, DLL retained on `SymbolTable.dll`). | `ModuleEntry::Def` per fn (`kind: DefKind::PlatformEffect { scheduling_class }`, `got_slot`, `scheme`); DLL handle on the platform module's `SymbolTable.dll: Option<D>`. | Consumes `manifest_to_descriptors` output; retires int's call to it as a *bespoke* path in favour of the module-loader path. Platform's `OwnedPlatformFnDescriptor` surface unchanged. |
-| **0234** | `/repl` | `/abi <TypeName>` emitter — cranelisp `deftype` → schema-DSL text per `sprint71-redesign.md §1` BNF + §1.3 poly naming. | Reads symbol-table; emits `(TypeName ((CLInt x) ...))`. Reserves CL-wrapper names (`Int`→`CLInt`). | Pure consumer of the schema-DSL grammar platform settled (§1 of sprint71-redesign). No platform-crate change; the grammar is the contract. |
+| **0234** | `/repl` | `/abi <TypeName>` emitter — cranelisp `deftype` → the then-current schema-declaration text. | Reads symbol-table; emits `(TypeName ((CLInt x) ...))`. Reserves CL-wrapper names (`Int`→`CLInt`). | Historical consumer of the S71 schema-declaration dialect, which was later retired when platforms stopped declaring ADTs. No current platform contract is inferred from this row. |
 | **0235** | `/qa` | Round-trip e2e: `platforms/test-adt/` DLL + `tests/spec_platforms_adt.rs` (construct/read/list-sum), cache-restore round-trip, schema-typo mismatch rejection. | Exercises the whole §2 round-trip end-to-end. | The **acceptance criterion** for the platform e2e gate. Platform supplies the DLL-author surface (`declare_platform!` schema arm + `CLAdt`); qa builds the fixture DLL against it. |
 
 ### Seam ownership summary (which FIXME → which crate)
@@ -189,7 +189,7 @@ One seam needs an /arch ruling; one confirmation request.
 
 ## Cross-references
 
-- `design/platform/sprint71-redesign.md` — the boundary this sprint wires (§1 schema BNF, §3 marker-type, §4 CLAdt API, §5 HostCallbacks growth, §9 R1 gate)
+- S71 platform redesign record — deleted as duplicate in S122; recoverable from git. Its durable successor is `design/platform/platform.md` plus `design/platform/adt-marker-binding.md`.
 - `design/platform/platform.md` — master crate design (§7 manifest/DLL discovery, §9 forward-commitment)
 - `design/arch/bounded-contexts.md` §5 — Platform BC (§"Future host-wiring story", invariants 1/4/5)
 - `design/arch/fixmes/0229`–`0235` — the host-wiring set

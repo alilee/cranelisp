@@ -1,16 +1,13 @@
-// ===== FIXME 0135 harvest (backend IO-scheduling slice): the Par-node
-// CLIF-emission kernel of the quarantined `tests/legacy/lenient.rs`
-// `test_io_schedule_*` GAP tests. Those 5 legacy tests assert RUNTIME
-// scheduling behaviour (commutative pair → concurrent dispatch; Sequential
-// → ordered; data-dependent → no Par; ResourceSerial same/diff token) which
-// is **not e2e-witnessable without the test-capture commutative /
-// ResourceSerial DLL fixture** — that runtime-dispatch slice is the
-// `cranelisp-platform` co-owner's (per `s82-harvest-trace_lenient_jit.md`).
-// The BACKEND-portable kernel is the **Par-node CLIF emission**: when an
+// ===== Backend Par-node CLIF-emission coverage. Runtime scheduling behaviour
+// (commutative pair → concurrent dispatch; Sequential → ordered;
+// data-dependent → no Par; ResourceSerial same/different token) belongs to
+// public evidence with the test-capture commutative/ResourceSerial DLL fixture.
+// The backend-portable kernel is **Par-node CLIF emission**: when an
 // `Expr::ParBind` reaches codegen, `compile_par_bind` must emit the
 // documented IO-tree structure (a `IO_TAG_PAR=3` node holding N branch
 // pointers, wrapped by a `IO_TAG_BIND=2` node). This guard pins that
-// structure at the CLIF layer — independent of the trampoline / DLL.
+// structure at the CLIF layer, independent of the trampoline/DLL. See
+// `tests/plan/PLAN.md` §Coverage preservation and evidence navigation.
 //
 // The complementary decision pass — whether a `bind!` chain BECOMES a
 // `ParBind` (scheduling-class + data-independence analysis) — runs upstream

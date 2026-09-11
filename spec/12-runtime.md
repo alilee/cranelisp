@@ -118,6 +118,12 @@ A conforming implementation MUST satisfy the following:
 2. Freed memory MUST NOT be accessed after deallocation. [Tested tests/spec_12_runtime::string_literal_alloc_drop_balanced, tests/shadowed_param_reach_stale_rc_dec::shadowed_param_binder_safety_matrix_run_and_link_agree, tests/shadowed_param_reach_stale_rc_dec::shadowed_fresh_rhs_binder_rc_balance_matches_ownership_off, tests/shadowed_param_reach_stale_rc_dec::renamed_fresh_rhs_binder_control_safety_matrix_green]
 3. The user MUST NOT need to manage memory manually — allocation and deallocation are entirely the implementation's responsibility. [Tested tests/spec_12_runtime::string_literal_alloc_drop_balanced]
 
+The exact-balance escape, superseded-value and transitive-capture evidence is
+mapped in [PLAN.md, S122 W3c reconciliation](../tests/plan/PLAN.md#s122--w3c-traceability-reconciliation-0766--0771).
+[Tested tests/rc_escape_release_0763::curried_local_closure_escaping_its_frame_balances,
+tests/adt_wrapped_supersede_leak_0720::adt_wrapped_supersede_residue_does_not_scale_with_n,
+tests/capture_drop_glue_strands_nested_heap_0760::nested_adt_chain_past_glue_depth_limit_does_not_leak]
+
 ### 12.3.2 Implementation Freedom [Tested crates/cranelisp-intrinsics/src/alloc.rs::test_live_allocs_tracking]
 
 The implementation MAY use any memory management strategy:

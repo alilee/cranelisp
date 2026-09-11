@@ -4,9 +4,10 @@
 (S119); producer + restore halves LANDED S121 (`/arch`, 2026-09-01 — §9);
 fresh-registration transaction facade AMENDED by the executing C3 falsifier
 (S121, 2026-09-01 — §§3–4).**
-This is the binding cross-crate contract for FIXME 0869
-(`design/arch/fixmes/0869-cache-restoration-loses-sibling-written-trait-impls.md`),
-authored per the S118 Phase-2 ruling 1. The types carrier
+This is the durable cross-crate contract for the resolved sibling written-trait-impl
+cache-restoration defect (former FIXME 0869), authored per the S118 Phase-2
+ruling 1. The satisfied filing is retired; the landed carrier, producer and
+restore obligations remain here and in the owning source contracts. The types carrier
 (`WrittenTraitImpl`, `SymbolTable.written_trait_impls`,
 `enrol_written_trait_impl`, `trait_impl_key`) landed S119 with unit coverage;
 At the S121 opening it had **zero producers and zero readers** — the exact
@@ -211,7 +212,7 @@ pre-carrier sidecar would silently reproduce the defect this carrier cures).
 
 **S121:** the producer and restore halves take **no schema increment** — the
 field is already serde-mandatory at 24, and the S121 24→25 window belongs to
-C1's lifecycle wash (`symbol-table-lifecycle.md` §9), which this contract
+C1's lifecycle wash (the S121 lifecycle migration, retained in Git history), which this contract
 reads and never bumps.
 
 **Named residual (S121, honest grade: asserted-with-a-falsifier).** Inside the

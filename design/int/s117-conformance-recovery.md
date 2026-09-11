@@ -25,6 +25,20 @@ changes no generated Rust surface line; int adds no further public delta.
 > cells, and cross-module rollback are deleted rather than adapted. The current
 > design is stated in the amended sections below.
 
+> **S122 failed-codegen evidence amendment.** The four historical
+> `vec-flatten` witnesses no longer produce a backend codegen failure and two
+> can pass without observing recovery. Source inspection found no legitimate,
+> stable public-language replacement. The production transaction and exact
+> `CallableTarget` diagnostic identity remain unchanged. The reviewable choice
+> is either a private `src/worker.rs` compile-operation parameter used by a
+> deterministic unit that performs real compilation for a real prepared target,
+> proves its GOT cell changed while the local JIT owner remains live, then
+> returns an error before publication, with production still passing the
+> existing backend operation; or retaining TX-1..TX-4 open
+> until a public trigger exists. No public flag, API, faulty language program,
+> or production fault branch is authorized. The concrete seam, assertions,
+> risk, and limit are in `design/int/s122-closure.md` §5.
+
 ## 0. Phase-5 refinement against the W1 guards
 
 The W1 results narrow W3:

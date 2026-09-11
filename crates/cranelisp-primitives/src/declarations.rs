@@ -1,9 +1,11 @@
 //! Single declaration inventory for the primitive table and linker harvest.
 
+use cranelisp_intrinsics::handle::{Borrowed, Owned};
 use cranelisp_types::{
     Mode, ModeSummary, ModuleFullPath, Scheme, Symbol, SymbolTable, Type, TypeName, Visibility,
 };
 
+use crate::abi_facts::AbiKind;
 use crate::ownership_facts;
 
 #[derive(Debug, Clone)]
@@ -24,6 +26,10 @@ pub(crate) enum PrimitiveDecl {
         ownership: ModeSummary,
         shim_name: &'static str,
         shim: *const u8,
+        #[allow(dead_code)]
+        abi_param_kinds: Vec<AbiKind>,
+        #[allow(dead_code)]
+        abi_result_kind: AbiKind,
     },
     UserInline {
         name: &'static str,
@@ -36,6 +42,10 @@ pub(crate) enum PrimitiveDecl {
         name: &'static str,
         shim_name: &'static str,
         shim: *const u8,
+        #[allow(dead_code)]
+        abi_param_kinds: Vec<AbiKind>,
+        #[allow(dead_code)]
+        abi_result_kind: AbiKind,
     },
 }
 
@@ -62,7 +72,7 @@ include!("declaration_macro.rs");
 primitive_declarations! {
         user_extern {
             name: "add-i64",
-            shim: shim_add_i64(a: i64, b: i64) => crate::ring0::add_i64, call: (a, b),
+            shim: shim_add_i64(a: i64, b: i64) -> i64 => crate::ring0::add_i64, call: (a, b),
             metadata: PrimitiveDef {
             name: Symbol::from("add-i64"),
             ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
@@ -74,7 +84,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "sub-i64",
-            shim: shim_sub_i64(a: i64, b: i64) => crate::ring0::sub_i64, call: (a, b),
+            shim: shim_sub_i64(a: i64, b: i64) -> i64 => crate::ring0::sub_i64, call: (a, b),
             metadata: PrimitiveDef {
             name: Symbol::from("sub-i64"),
             ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
@@ -86,7 +96,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "mul-i64",
-            shim: shim_mul_i64(a: i64, b: i64) => crate::ring0::mul_i64, call: (a, b),
+            shim: shim_mul_i64(a: i64, b: i64) -> i64 => crate::ring0::mul_i64, call: (a, b),
             metadata: PrimitiveDef {
             name: Symbol::from("mul-i64"),
             ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
@@ -98,7 +108,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "div-i64",
-            shim: shim_div_i64(a: i64, b: i64) => crate::ring0::div_i64, call: (a, b),
+            shim: shim_div_i64(a: i64, b: i64) -> i64 => crate::ring0::div_i64, call: (a, b),
             metadata: PrimitiveDef {
             name: Symbol::from("div-i64"),
             ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
@@ -110,7 +120,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "add-f64",
-            shim: shim_add_f64(a: i64, b: i64) => crate::ring0::add_f64, call: (a, b),
+            shim: shim_add_f64(a: i64, b: i64) -> i64 => crate::ring0::add_f64, call: (a, b),
             metadata: PrimitiveDef {
             name: Symbol::from("add-f64"),
             ty: Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Float)),
@@ -122,7 +132,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "sub-f64",
-            shim: shim_sub_f64(a: i64, b: i64) => crate::ring0::sub_f64, call: (a, b),
+            shim: shim_sub_f64(a: i64, b: i64) -> i64 => crate::ring0::sub_f64, call: (a, b),
             metadata: PrimitiveDef {
             name: Symbol::from("sub-f64"),
             ty: Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Float)),
@@ -134,7 +144,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "mul-f64",
-            shim: shim_mul_f64(a: i64, b: i64) => crate::ring0::mul_f64, call: (a, b),
+            shim: shim_mul_f64(a: i64, b: i64) -> i64 => crate::ring0::mul_f64, call: (a, b),
             metadata: PrimitiveDef {
             name: Symbol::from("mul-f64"),
             ty: Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Float)),
@@ -146,7 +156,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "div-f64",
-            shim: shim_div_f64(a: i64, b: i64) => crate::ring0::div_f64, call: (a, b),
+            shim: shim_div_f64(a: i64, b: i64) -> i64 => crate::ring0::div_f64, call: (a, b),
             metadata: PrimitiveDef {
             name: Symbol::from("div-f64"),
             ty: Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Float)),
@@ -158,7 +168,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "eq-i64",
-            shim: shim_eq_i64(a: i64, b: i64) => crate::ring0::eq_i64, call: (a, b),
+            shim: shim_eq_i64(a: i64, b: i64) -> i64 => crate::ring0::eq_i64, call: (a, b),
             metadata: PrimitiveDef {
             name: Symbol::from("eq-i64"),
             ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Bool)),
@@ -170,7 +180,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "lt-i64",
-            shim: shim_lt_i64(a: i64, b: i64) => crate::ring0::lt_i64, call: (a, b),
+            shim: shim_lt_i64(a: i64, b: i64) -> i64 => crate::ring0::lt_i64, call: (a, b),
             metadata: PrimitiveDef {
             name: Symbol::from("lt-i64"),
             ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Bool)),
@@ -182,7 +192,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "gt-i64",
-            shim: shim_gt_i64(a: i64, b: i64) => crate::ring0::gt_i64, call: (a, b),
+            shim: shim_gt_i64(a: i64, b: i64) -> i64 => crate::ring0::gt_i64, call: (a, b),
             metadata: PrimitiveDef {
             name: Symbol::from("gt-i64"),
             ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Bool)),
@@ -194,7 +204,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "le-i64",
-            shim: shim_le_i64(a: i64, b: i64) => crate::ring0::le_i64, call: (a, b),
+            shim: shim_le_i64(a: i64, b: i64) -> i64 => crate::ring0::le_i64, call: (a, b),
             metadata: PrimitiveDef {
             name: Symbol::from("le-i64"),
             ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Bool)),
@@ -206,7 +216,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "ge-i64",
-            shim: shim_ge_i64(a: i64, b: i64) => crate::ring0::ge_i64, call: (a, b),
+            shim: shim_ge_i64(a: i64, b: i64) -> i64 => crate::ring0::ge_i64, call: (a, b),
             metadata: PrimitiveDef {
             name: Symbol::from("ge-i64"),
             ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Bool)),
@@ -218,7 +228,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "eq-f64",
-            shim: shim_eq_f64(a: i64, b: i64) => crate::ring0::eq_f64, call: (a, b),
+            shim: shim_eq_f64(a: i64, b: i64) -> i64 => crate::ring0::eq_f64, call: (a, b),
             metadata: PrimitiveDef {
             name: Symbol::from("eq-f64"),
             ty: Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Bool)),
@@ -230,7 +240,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "lt-f64",
-            shim: shim_lt_f64(a: i64, b: i64) => crate::ring0::lt_f64, call: (a, b),
+            shim: shim_lt_f64(a: i64, b: i64) -> i64 => crate::ring0::lt_f64, call: (a, b),
             metadata: PrimitiveDef {
             name: Symbol::from("lt-f64"),
             ty: Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Bool)),
@@ -242,7 +252,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "gt-f64",
-            shim: shim_gt_f64(a: i64, b: i64) => crate::ring0::gt_f64, call: (a, b),
+            shim: shim_gt_f64(a: i64, b: i64) -> i64 => crate::ring0::gt_f64, call: (a, b),
             metadata: PrimitiveDef {
             name: Symbol::from("gt-f64"),
             ty: Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Bool)),
@@ -254,7 +264,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "le-f64",
-            shim: shim_le_f64(a: i64, b: i64) => crate::ring0::le_f64, call: (a, b),
+            shim: shim_le_f64(a: i64, b: i64) -> i64 => crate::ring0::le_f64, call: (a, b),
             metadata: PrimitiveDef {
             name: Symbol::from("le-f64"),
             ty: Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Bool)),
@@ -266,7 +276,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "ge-f64",
-            shim: shim_ge_f64(a: i64, b: i64) => crate::ring0::ge_f64, call: (a, b),
+            shim: shim_ge_f64(a: i64, b: i64) -> i64 => crate::ring0::ge_f64, call: (a, b),
             metadata: PrimitiveDef {
             name: Symbol::from("ge-f64"),
             ty: Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Bool)),
@@ -278,7 +288,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "not",
-            shim: shim_not(b: i64) => crate::ring0::not, call: (b),
+            shim: shim_not(b: i64) -> i64 => crate::ring0::not, call: (b),
             metadata: PrimitiveDef {
             name: Symbol::from("not"),
             ty: Type::Fn(vec![Type::Bool], Box::new(Type::Bool)),
@@ -290,7 +300,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "eq-bool",
-            shim: shim_eq_bool(a: i64, b: i64) => crate::ring0::eq_bool, call: (a, b),
+            shim: shim_eq_bool(a: i64, b: i64) -> i64 => crate::ring0::eq_bool, call: (a, b),
             metadata: PrimitiveDef {
             name: Symbol::from("eq-bool"),
             ty: Type::Fn(vec![Type::Bool, Type::Bool], Box::new(Type::Bool)),
@@ -302,7 +312,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "bit-and",
-            shim: shim_bit_and(a: i64, b: i64) => crate::ring0::bit_and, call: (a, b),
+            shim: shim_bit_and(a: i64, b: i64) -> i64 => crate::ring0::bit_and, call: (a, b),
             metadata: PrimitiveDef {
             name: Symbol::from("bit-and"),
             ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
@@ -314,7 +324,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "bit-or",
-            shim: shim_bit_or(a: i64, b: i64) => crate::ring0::bit_or, call: (a, b),
+            shim: shim_bit_or(a: i64, b: i64) -> i64 => crate::ring0::bit_or, call: (a, b),
             metadata: PrimitiveDef {
             name: Symbol::from("bit-or"),
             ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
@@ -326,7 +336,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "bit-xor",
-            shim: shim_bit_xor(a: i64, b: i64) => crate::ring0::bit_xor, call: (a, b),
+            shim: shim_bit_xor(a: i64, b: i64) -> i64 => crate::ring0::bit_xor, call: (a, b),
             metadata: PrimitiveDef {
             name: Symbol::from("bit-xor"),
             ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
@@ -338,7 +348,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "bit-not",
-            shim: shim_bit_not(x: i64) => crate::ring0::bit_not, call: (x),
+            shim: shim_bit_not(x: i64) -> i64 => crate::ring0::bit_not, call: (x),
             metadata: PrimitiveDef {
             name: Symbol::from("bit-not"),
             ty: Type::Fn(vec![Type::Int], Box::new(Type::Int)),
@@ -350,7 +360,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "shl",
-            shim: shim_shl(v: i64, amt: i64) => crate::ring0::shl, call: (v, amt),
+            shim: shim_shl(v: i64, amt: i64) -> i64 => crate::ring0::shl, call: (v, amt),
             metadata: PrimitiveDef {
             name: Symbol::from("shl"),
             ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
@@ -362,7 +372,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "shr",
-            shim: shim_shr(v: i64, amt: i64) => crate::ring0::shr, call: (v, amt),
+            shim: shim_shr(v: i64, amt: i64) -> i64 => crate::ring0::shr, call: (v, amt),
             metadata: PrimitiveDef {
             name: Symbol::from("shr"),
             ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
@@ -374,7 +384,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "popcount",
-            shim: shim_popcount(x: i64) => crate::ring0::popcount, call: (x),
+            shim: shim_popcount(x: i64) -> i64 => crate::ring0::popcount, call: (x),
             metadata: PrimitiveDef {
             name: Symbol::from("popcount"),
             ty: Type::Fn(vec![Type::Int], Box::new(Type::Int)),
@@ -386,7 +396,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "str-concat",
-            shim: shim_str_concat(a: i64, b: i64) => crate::string::str_concat, call: (a, b),
+            shim: shim_str_concat(a: Owned, b: Owned) -> Owned => crate::string::str_concat, call: (a, b),
             metadata: PrimitiveDef {
             name: Symbol::from("str-concat"),
             ty: Type::Fn(vec![Type::String, Type::String], Box::new(Type::String)),
@@ -398,7 +408,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "str-eq",
-            shim: shim_str_eq(a: i64, b: i64) => crate::string::str_eq, call: (a, b),
+            shim: shim_str_eq(a: Owned, b: Owned) -> i64 => crate::string::str_eq, call: (a, b),
             metadata: PrimitiveDef {
             name: Symbol::from("str-eq"),
             ty: Type::Fn(vec![Type::String, Type::String], Box::new(Type::Bool)),
@@ -410,7 +420,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "neq-string",
-            shim: shim_neq_string(a: i64, b: i64) => crate::string::neq_string, call: (a, b),
+            shim: shim_neq_string(a: Owned, b: Owned) -> i64 => crate::string::neq_string, call: (a, b),
             metadata: PrimitiveDef {
             name: Symbol::from("neq-string"),
             ty: Type::Fn(vec![Type::String, Type::String], Box::new(Type::Bool)),
@@ -422,7 +432,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "str-len",
-            shim: shim_str_len(s: i64) => crate::string::str_len, call: (s),
+            shim: shim_str_len(s: Owned) -> i64 => crate::string::str_len, call: (s),
             metadata: PrimitiveDef {
             name: Symbol::from("str-len"),
             ty: Type::Fn(vec![Type::String], Box::new(Type::Int)),
@@ -434,7 +444,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "string-identity",
-            shim: shim_string_identity(s: i64) => crate::string::string_identity, call: (s),
+            shim: shim_string_identity(s: Borrowed<'static>) -> Owned => crate::string::string_identity, call: (s),
             metadata: PrimitiveDef {
             name: Symbol::from("string-identity"),
             ty: Type::Fn(vec![Type::String], Box::new(Type::String)),
@@ -446,7 +456,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "int-to-string",
-            shim: shim_int_to_string(n: i64) => crate::int::int_to_string, call: (n),
+            shim: shim_int_to_string(n: i64) -> Owned => crate::int::int_to_string, call: (n),
             metadata: PrimitiveDef {
             name: Symbol::from("int-to-string"),
             ty: Type::Fn(vec![Type::Int], Box::new(Type::String)),
@@ -458,7 +468,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "float-to-string",
-            shim: shim_float_to_string(f_bits: i64) => crate::float::float_to_string, call: (f_bits),
+            shim: shim_float_to_string(f_bits: i64) -> Owned => crate::float::float_to_string, call: (f_bits),
             metadata: PrimitiveDef {
             name: Symbol::from("float-to-string"),
             ty: Type::Fn(vec![Type::Float], Box::new(Type::String)),
@@ -470,7 +480,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "bool-to-string",
-            shim: shim_bool_to_string(b: i64) => crate::bool::bool_to_string, call: (b),
+            shim: shim_bool_to_string(b: i64) -> Owned => crate::bool::bool_to_string, call: (b),
             metadata: PrimitiveDef {
             name: Symbol::from("bool-to-string"),
             ty: Type::Fn(vec![Type::Bool], Box::new(Type::String)),
@@ -482,7 +492,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "parse-int",
-            shim: shim_parse_int(s: i64) => crate::int::parse_int, call: (s),
+            shim: shim_parse_int(s: Owned) -> Owned => crate::int::parse_int, call: (s),
             metadata: PrimitiveDef {
             name: Symbol::from("parse-int"),
             ty: Type::Fn(
@@ -500,7 +510,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "substring",
-            shim: shim_str_substring(s: i64, start: i64, end: i64) => crate::string::str_substring, call: (s, start, end),
+            shim: shim_str_substring(s: Owned, start: i64, end: i64) -> Owned => crate::string::str_substring, call: (s, start, end),
             metadata: PrimitiveDef {
             name: Symbol::from("substring"),
             ty: Type::Fn(vec![Type::String, Type::Int, Type::Int], Box::new(Type::String)),
@@ -513,7 +523,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "char-at",
-            shim: shim_str_char_at(s: i64, idx: i64) => crate::string::str_char_at, call: (s, idx),
+            shim: shim_str_char_at(s: Owned, idx: i64) -> Owned => crate::string::str_char_at, call: (s, idx),
             metadata: PrimitiveDef {
             name: Symbol::from("char-at"),
             ty: Type::Fn(vec![Type::String, Type::Int], Box::new(Type::String)),
@@ -526,7 +536,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "split",
-            shim: shim_str_split(s: i64, sep: i64) => crate::string::str_split, call: (s, sep),
+            shim: shim_str_split(s: Owned, sep: Owned) -> Owned => crate::string::str_split, call: (s, sep),
             metadata: PrimitiveDef {
             name: Symbol::from("split"),
             ty: Type::Fn(
@@ -544,7 +554,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "join",
-            shim: shim_str_join(sep: i64, vec: i64) => crate::string::str_join, call: (sep, vec),
+            shim: shim_str_join(sep: Owned, vec: Owned) -> Owned => crate::string::str_join, call: (sep, vec),
             metadata: PrimitiveDef {
             name: Symbol::from("join"),
             ty: Type::Fn(
@@ -562,7 +572,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "replace",
-            shim: shim_str_replace(s: i64, from: i64, to: i64) => crate::string::str_replace, call: (s, from, to),
+            shim: shim_str_replace(s: Owned, from: Owned, to: Owned) -> Owned => crate::string::str_replace, call: (s, from, to),
             metadata: PrimitiveDef {
             name: Symbol::from("replace"),
             ty: Type::Fn(vec![Type::String, Type::String, Type::String], Box::new(Type::String)),
@@ -574,7 +584,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "trim",
-            shim: shim_str_trim(s: i64) => crate::string::str_trim, call: (s),
+            shim: shim_str_trim(s: Owned) -> Owned => crate::string::str_trim, call: (s),
             metadata: PrimitiveDef {
             name: Symbol::from("trim"),
             ty: Type::Fn(vec![Type::String], Box::new(Type::String)),
@@ -586,7 +596,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "starts-with?",
-            shim: shim_str_starts_with(s: i64, prefix: i64) => crate::string::str_starts_with, call: (s, prefix),
+            shim: shim_str_starts_with(s: Owned, prefix: Owned) -> i64 => crate::string::str_starts_with, call: (s, prefix),
             metadata: PrimitiveDef {
             name: Symbol::from("starts-with?"),
             ty: Type::Fn(vec![Type::String, Type::String], Box::new(Type::Bool)),
@@ -598,7 +608,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "ends-with?",
-            shim: shim_str_ends_with(s: i64, suffix: i64) => crate::string::str_ends_with, call: (s, suffix),
+            shim: shim_str_ends_with(s: Owned, suffix: Owned) -> i64 => crate::string::str_ends_with, call: (s, suffix),
             metadata: PrimitiveDef {
             name: Symbol::from("ends-with?"),
             ty: Type::Fn(vec![Type::String, Type::String], Box::new(Type::Bool)),
@@ -610,7 +620,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "contains?",
-            shim: shim_str_contains(s: i64, needle: i64) => crate::string::str_contains, call: (s, needle),
+            shim: shim_str_contains(s: Owned, needle: Owned) -> i64 => crate::string::str_contains, call: (s, needle),
             metadata: PrimitiveDef {
             name: Symbol::from("contains?"),
             ty: Type::Fn(vec![Type::String, Type::String], Box::new(Type::Bool)),
@@ -622,7 +632,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "to-upper",
-            shim: shim_str_to_upper(s: i64) => crate::string::str_to_upper, call: (s),
+            shim: shim_str_to_upper(s: Owned) -> Owned => crate::string::str_to_upper, call: (s),
             metadata: PrimitiveDef {
             name: Symbol::from("to-upper"),
             ty: Type::Fn(vec![Type::String], Box::new(Type::String)),
@@ -634,7 +644,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "to-lower",
-            shim: shim_str_to_lower(s: i64) => crate::string::str_to_lower, call: (s),
+            shim: shim_str_to_lower(s: Owned) -> Owned => crate::string::str_to_lower, call: (s),
             metadata: PrimitiveDef {
             name: Symbol::from("to-lower"),
             ty: Type::Fn(vec![Type::String], Box::new(Type::String)),
@@ -646,7 +656,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "quote-sexp",
-            shim: shim_quote_sexp(val: i64) => crate::marshal::quote_sexp, call: (val),
+            shim: shim_quote_sexp(val: Owned) -> Owned => crate::marshal::quote_sexp, call: (val),
             metadata: PrimitiveDef {
             name: Symbol::from("quote-sexp"),
             ty: Type::Fn(vec![sexp_type()], Box::new(sexp_type())),
@@ -702,19 +712,19 @@ primitive_declarations! {
         }
         harvest_only {
             name: "neq-i64",
-            shim: shim_neq_i64(a: i64, b: i64) => crate::ring0::neq_i64, call: (a, b)
+            shim: shim_neq_i64(a: i64, b: i64) -> i64 => crate::ring0::neq_i64, call: (a, b)
         }
         harvest_only {
             name: "neq-f64",
-            shim: shim_neq_f64(a: i64, b: i64) => crate::ring0::neq_f64, call: (a, b)
+            shim: shim_neq_f64(a: i64, b: i64) -> i64 => crate::ring0::neq_f64, call: (a, b)
         }
         harvest_only {
             name: "neq-bool",
-            shim: shim_neq_bool(a: i64, b: i64) => crate::ring0::neq_bool, call: (a, b)
+            shim: shim_neq_bool(a: i64, b: i64) -> i64 => crate::ring0::neq_bool, call: (a, b)
         }
         harvest_only {
             name: "sconcat",
-            shim: shim_sconcat(xs: i64, ys: i64) => crate::marshal::sconcat, call: (xs, ys)
+            shim: shim_sconcat(xs: Owned, ys: Owned) -> Owned => crate::marshal::sconcat, call: (xs, ys)
         }
 }
 
@@ -808,6 +818,7 @@ pub(crate) fn harvest_shims(
                 name,
                 shim,
                 shim_name,
+                ..
             } => {
                 assert!(
                     shim_name.starts_with("shim_"),

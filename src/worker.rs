@@ -14,8 +14,9 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use cranelisp_types::Defn;
 use cranelisp_types::{
-    Binding, CallableOrigin, CallableTarget, CranelispError, Decl, ErrorLocation, Life,
-    ModuleFullPath, Realization, Sexp, Span, StagedPublicationDecision, Symbol, TopLevel,
+    Binding, CallableOrigin, CallableTarget, CranelispError, Decl, ErrorLocation, InstanceLink,
+    Life, ModuleFullPath, MonoDemand, Realization, Sexp, Span, StagedPublicationDecision, Symbol,
+    TopLevel,
 };
 
 use cranelisp_typecheck::CheckState;
@@ -402,6 +403,7 @@ fn check_cluster_to_staging(
 }
 
 #[allow(clippy::type_complexity)]
+#[cfg(test)]
 pub(crate) fn prepare_cluster_commit(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module_aliases: &cranelisp_types::ModuleAliases,
@@ -416,26 +418,120 @@ pub(crate) fn prepare_cluster_commit(
     >,
     CranelispError,
 > {
-    let Some(checked) = check_cluster_to_staging(
+    prepare_cluster_commit_with_demands(
         symbol_tables,
         module_aliases,
         prelude_fallback,
         module,
         working_program,
-    )?
-    else {
-        return Ok(None);
+        codegen_program,
+        &[],
+        shared,
+    )
+}
+
+#[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_cluster_commit_with_demands(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    module_aliases: &cranelisp_types::ModuleAliases,
+    prelude_fallback: &cranelisp_typecheck::PreludeFallback,
+    module: &ModuleFullPath,
+    working_program: &[TopLevel],
+    codegen_program: &[TopLevel],
+    reload_demands: &[MonoDemand],
+    shared: &crate::session_v4::SharedState,
+) -> Result<
+    Option<
+        Result<(PreparedCommit, cranelisp_typecheck::CheckResult), cranelisp_types::ResolutionGap>,
+    >,
+    CranelispError,
+> {
+    let checked = check_cluster_to_staging(
+        symbol_tables,
+        module_aliases,
+        prelude_fallback,
+        module,
+        working_program,
+    )?;
+    let checked = match checked {
+        Some(checked) => checked,
+        None if reload_demands.is_empty() => return Ok(None),
+        None => Ok(PreparedCheck {
+            staging: cranelisp_types::SymbolTable::<crate::code::Code, ()>::new_with_params(
+                module.clone(),
+            ),
+            result: cranelisp_typecheck::CheckResult {
+                warnings: Vec::new(),
+                display: None,
+                unresolved_dispatch: Vec::new(),
+            },
+        }),
     };
     let checked = match checked {
         Ok(checked) => checked,
         Err(gap) => return Ok(Some(Err(gap))),
     };
+    validate_guarded_staging(symbol_tables, module, &checked.staging)?;
+    let mut demands = capture_affected_mono_demands(symbol_tables, module, &checked.staging)?;
+    extend_reload_demands(
+        symbol_tables,
+        module,
+        &checked.staging,
+        reload_demands,
+        &mut demands,
+    )?;
+    finish_prepared_commit(
+        symbol_tables,
+        module_aliases,
+        prelude_fallback,
+        module,
+        codegen_program,
+        checked,
+        &demands,
+        shared,
+    )
+}
+
+#[allow(clippy::type_complexity)]
+fn finish_prepared_commit(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    module_aliases: &cranelisp_types::ModuleAliases,
+    prelude_fallback: &cranelisp_typecheck::PreludeFallback,
+    module: &ModuleFullPath,
+    codegen_program: &[TopLevel],
+    mut checked: PreparedCheck,
+    demands: &[CapturedMonoDemand],
+    shared: &crate::session_v4::SharedState,
+) -> Result<
+    Option<
+        Result<(PreparedCommit, cranelisp_typecheck::CheckResult), cranelisp_types::ResolutionGap>,
+    >,
+    CranelispError,
+> {
+    if let Err(gap) = instantiate_captured_demands(
+        symbol_tables,
+        module_aliases,
+        prelude_fallback,
+        module,
+        &mut checked,
+        demands,
+    )? {
+        return Ok(Some(Err(gap)));
+    }
+    let DemandPublicationPlan {
+        targets,
+        decisions,
+        guard_exempt_symbols,
+        authored_bases,
+    } = plan_demand_publication(symbol_tables, module, &checked.staging, demands)?;
     // A top-level expression whose return-directed dispatch is still
     // unresolved deliberately survives typecheck so the REPL/executable entry
     // boundary can report the language-level ambiguity. It has no concrete
     // `__expr` body to compile, however. Keep every successfully checked
     // definition in this cluster eligible for codegen and omit only the
-    // affected expression wrapper from the forced-enrollment input.
+    // affected expression wrapper from the forced-enrollment input. Exact
+    // demand targets are added to that complete batch below.
     let codegen_program: Vec<TopLevel> = codegen_program
         .iter()
         .filter(|top| match top {
@@ -447,15 +543,726 @@ pub(crate) fn prepare_cluster_commit(
         })
         .cloned()
         .collect();
-    let prepared = plan_staging_commit(
+    let mut prepared = plan_staging_commit_inner(
         symbol_tables,
         module,
         checked.staging,
         &codegen_program,
         shared,
-        &[],
+        &decisions,
+        &guard_exempt_symbols,
     )?;
+    prepared
+        .outcomes
+        .retain(|outcome| !authored_bases.contains(&outcome.fq.symbol));
+    for target in targets {
+        if !prepared.targets.contains(&target) {
+            prepared.targets.push(target);
+        }
+    }
     Ok(Some(Ok((prepared, checked.result))))
+}
+
+fn instantiate_captured_demands(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    module_aliases: &cranelisp_types::ModuleAliases,
+    prelude_fallback: &cranelisp_typecheck::PreludeFallback,
+    module: &ModuleFullPath,
+    checked: &mut PreparedCheck,
+    demands: &[CapturedMonoDemand],
+) -> Result<Result<(), cranelisp_types::ResolutionGap>, CranelispError> {
+    let already_materialized = materialize_settled_overload_demands(&mut checked.staging, demands)?;
+    let target_clean_tables = dashmap::DashMap::new();
+    for row in symbol_tables.iter() {
+        if row.key() == module {
+            let mut target = row.value().clone();
+            for demand in demands {
+                target
+                    .retire_abi_changing(&demand.prior_key)
+                    .map_err(|error| CranelispError::ModuleError {
+                        message: error.to_string(),
+                        location: ErrorLocation::from_span(Span::SYNTHETIC),
+                    })?;
+            }
+            target_clean_tables.insert(module.clone(), target);
+        } else {
+            target_clean_tables.insert(row.key().clone(), row.value().clone());
+        }
+    }
+    let demand_result = {
+        let mut access = cranelisp_typecheck::SymbolTableAccess::cluster(
+            &target_clean_tables,
+            &mut checked.staging,
+            module.clone(),
+        );
+        cranelisp_typecheck::instantiate_demands(
+            demands
+                .iter()
+                .filter(|captured| {
+                    captured
+                        .staged_key
+                        .as_ref()
+                        .is_none_or(|key| !already_materialized.contains(key))
+                })
+                .filter_map(|captured| captured.demand.clone())
+                .collect(),
+            &mut access,
+            &target_clean_tables,
+            module_aliases,
+            prelude_fallback,
+        )
+    };
+    let demand_result = match demand_result {
+        Ok(result) => result,
+        Err(cranelisp_typecheck::CheckError::Gap(gap)) => return Ok(Err(gap)),
+        Err(error) => return Err(check_error_to_cranelisp_error(error)),
+    };
+    checked.result.warnings.extend(demand_result.warnings);
+    checked
+        .result
+        .warnings
+        .extend(demands.iter().filter(|captured| captured.demand.is_none()).map(
+            |captured| cranelisp_types::Warning {
+                kind: cranelisp_types::WarningKind::Other,
+                message: format!(
+                    "declined stale monomorphisation demand for {:?} at ({}): replacement has no corresponding callable template",
+                    captured.old_link.template,
+                    captured
+                        .old_link
+                        .type_args
+                        .iter()
+                        .map(|arg| arg.to_type().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                span: Span::SYNTHETIC,
+            },
+        ));
+    Ok(Ok(()))
+}
+
+/// Materialize an exact demand directly from a replacement overload arm that
+/// typecheck has already settled concrete in-place. This is the back-flow case:
+/// there is no template left for `instantiate_demands` to replay, but the
+/// checked arm carries the scheme, body and metadata needed for the generated
+/// instance entry. Ordinary demand processing completes ownership before
+/// publication planning.
+fn materialize_settled_overload_demands(
+    staging: &mut crate::code::SessionSymbolTable,
+    demands: &[CapturedMonoDemand],
+) -> Result<std::collections::HashSet<Symbol>, CranelispError> {
+    let mut materialized = std::collections::HashSet::new();
+    for captured in demands {
+        let (Some(demand), Some(staged_key)) = (&captured.demand, &captured.staged_key) else {
+            continue;
+        };
+        let expected_link = demand.instance_link();
+        if staging.get(staged_key.as_ref()).is_some_and(|binding| {
+            matches!(
+                binding.callable().map(|callable| &callable.arm.life),
+                Some(Life::Concrete {
+                    minted_from: Some(link),
+                    ..
+                }) if link == &expected_link
+            )
+        }) {
+            materialized.insert(staged_key.clone());
+            continue;
+        }
+        let CallableTarget::OverloadArm { owner, arm } = &demand.template else {
+            continue;
+        };
+        let Some(family) = staging.get(owner.symbol.as_ref()).cloned() else {
+            continue;
+        };
+        let Decl::Overloaded(declaration) = &family.declaration else {
+            continue;
+        };
+        let Some(selected) = declaration
+            .arms
+            .iter()
+            .find(|candidate| candidate.id == *arm)
+        else {
+            continue;
+        };
+        let Life::Concrete {
+            realization: Realization::Body { view, code: None },
+            minted_from: None,
+            ast,
+            callees,
+            value_use,
+            mode_summary,
+            ..
+        } = &selected.callable.life
+        else {
+            continue;
+        };
+        if demand.instance_key(&selected.callable.scheme).ok().as_ref() != Some(staged_key) {
+            continue;
+        }
+
+        let mut instance_view = view.clone();
+        instance_view.name = staged_key.clone();
+        instance_view.mode_summary = mode_summary.clone();
+        let (installed_key, _) = staging
+            .install_instance(
+                expected_link,
+                selected.callable.scheme.clone(),
+                selected.callable.param_names.clone(),
+                declaration.docstring.clone(),
+                declaration.seq,
+                CallableOrigin::Plain,
+                Realization::Body {
+                    view: instance_view.clone(),
+                    code: None,
+                },
+                ast.clone(),
+                callees.clone(),
+                family.visibility,
+            )
+            .map_err(|error| CranelispError::ModuleError {
+                message: format!(
+                    "cannot stage settled overload realization '{staged_key}': {error}"
+                ),
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
+            })?;
+        if &installed_key != staged_key {
+            return Err(CranelispError::ModuleError {
+                message: format!(
+                    "settled overload realization key mismatch: expected '{staged_key}', installed '{installed_key}'"
+                ),
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
+            });
+        }
+        let target = CallableTarget::Binding(cranelisp_types::FQSymbol {
+            module: staging.path.clone(),
+            symbol: installed_key.clone(),
+        });
+        if let Some(summary) = mode_summary.clone() {
+            staging
+                .publish_body_ownership(&target, summary, instance_view)
+                .map_err(|error| CranelispError::ModuleError {
+                    message: format!(
+                        "cannot publish ownership for settled overload realization '{staged_key}': {error}"
+                    ),
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
+                })?;
+        }
+        if *value_use {
+            staging
+                .set_value_use(&installed_key, true)
+                .map_err(|error| CranelispError::ModuleError {
+                    message: format!(
+                        "cannot preserve value use for settled overload realization '{staged_key}': {error}"
+                    ),
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
+                })?;
+        }
+        materialized.insert(installed_key);
+    }
+    Ok(materialized)
+}
+
+struct CapturedMonoDemand {
+    prior_key: Symbol,
+    old_link: InstanceLink,
+    demand: Option<cranelisp_types::MonoDemand>,
+    staged_key: Option<Symbol>,
+    policy: crate::redefine::InstanceRematerializationPolicy,
+}
+
+struct DemandPublicationPlan {
+    targets: Vec<CallableTarget>,
+    decisions: Vec<StagedPublicationDecision>,
+    guard_exempt_symbols: Vec<Symbol>,
+    authored_bases: Vec<Symbol>,
+}
+
+fn plan_demand_publication(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    module: &ModuleFullPath,
+    staging: &crate::code::SessionSymbolTable,
+    demands: &[CapturedMonoDemand],
+) -> Result<DemandPublicationPlan, CranelispError> {
+    use crate::redefine::InstanceRematerializationPolicy::{
+        CallerFreeLanguageTypeChange, SameLanguageType,
+    };
+
+    let mut targets = Vec::new();
+    let mut decisions = Vec::new();
+    let mut guard_exempt_symbols = Vec::new();
+    let mut authored_bases = Vec::new();
+    let live = symbol_tables.get(module);
+    for captured in demands {
+        if let Some(owner) = callable_target_owner(&captured.old_link.template)
+            && &owner.module == module
+            && !authored_bases.contains(&owner.symbol)
+        {
+            authored_bases.push(owner.symbol.clone());
+        }
+        let realized = captured.demand.as_ref().and_then(|demand| {
+            let expected_link = demand.instance_link();
+            staging.codegen_targets().find_map(|(target, arm)| {
+                let owner = callable_target_owner(&target)?;
+                (Some(&owner.symbol) == captured.staged_key.as_ref()
+                    && matches!(
+                        &arm.life,
+                        Life::Concrete {
+                            minted_from: Some(link),
+                            ..
+                        } if link == &expected_link
+                    ))
+                .then_some(target)
+            })
+        });
+        if let Some(target) = realized {
+            let symbol = callable_target_owner(&target)
+                .map(|owner| owner.symbol.clone())
+                .ok_or_else(|| CranelispError::ModuleError {
+                    message: format!("rematerialized target '{target:?}' has no callable owner"),
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
+                })?;
+            let prior = live
+                .as_ref()
+                .and_then(|table| table.get(captured.prior_key.as_ref()))
+                .ok_or_else(|| rematerialization_error(captured, "prior instance disappeared"))?;
+            let staged = staging
+                .get(
+                    captured
+                        .staged_key
+                        .as_ref()
+                        .expect("realized demand has a staged key")
+                        .as_ref(),
+                )
+                .ok_or_else(|| rematerialization_error(captured, "new instance disappeared"))?;
+            let (kind, _) =
+                crate::redefine::classify_redefinition(symbol.as_ref(), Some(prior), staged);
+            let abi_compatible = kind != crate::redefine::RedefKind::AbiChanging
+                && cranelisp_types::ModeSummary::abi_eq_opt(
+                    prior.mode_summary(),
+                    staged.mode_summary(),
+                );
+            let decision = match captured.policy {
+                SameLanguageType
+                    if captured.staged_key.as_ref() == Some(&captured.prior_key)
+                        && abi_compatible =>
+                {
+                    StagedPublicationDecision::PreserveAbi {
+                        symbol: symbol.clone(),
+                    }
+                }
+                SameLanguageType => {
+                    return Err(rematerialization_error(
+                        captured,
+                        "same-language-type replacement changed the realization key or ABI",
+                    ));
+                }
+                CallerFreeLanguageTypeChange
+                    if captured.staged_key.as_ref() == Some(&captured.prior_key)
+                        && abi_compatible =>
+                {
+                    StagedPublicationDecision::PreserveAbi {
+                        symbol: symbol.clone(),
+                    }
+                }
+                CallerFreeLanguageTypeChange => StagedPublicationDecision::ChangeAbi {
+                    symbol: symbol.clone(),
+                },
+            };
+            if captured.staged_key.as_ref() == Some(&captured.prior_key) {
+                decisions.push(decision);
+            }
+            if captured.staged_key.as_ref() != Some(&captured.prior_key)
+                && !decisions.iter().any(|decision| {
+                    matches!(
+                        decision,
+                        StagedPublicationDecision::ChangeAbi { symbol }
+                            if symbol == &captured.prior_key
+                    )
+                })
+            {
+                decisions.push(StagedPublicationDecision::ChangeAbi {
+                    symbol: captured.prior_key.clone(),
+                });
+            }
+            if !targets.contains(&target) {
+                targets.push(target);
+            }
+            if !guard_exempt_symbols.contains(&symbol) {
+                guard_exempt_symbols.push(symbol);
+            }
+        } else {
+            match captured.policy {
+                SameLanguageType => {
+                    return Err(rematerialization_error(
+                        captured,
+                        "same-language-type replacement declined the prior realization",
+                    ));
+                }
+                CallerFreeLanguageTypeChange => {
+                    if !decisions.iter().any(|decision| {
+                        matches!(
+                            decision,
+                            StagedPublicationDecision::ChangeAbi { symbol: prior }
+                                if prior == &captured.prior_key
+                        )
+                    }) {
+                        decisions.push(StagedPublicationDecision::ChangeAbi {
+                            symbol: captured.prior_key.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    Ok(DemandPublicationPlan {
+        targets,
+        decisions,
+        guard_exempt_symbols,
+        authored_bases,
+    })
+}
+
+fn rematerialization_error(captured: &CapturedMonoDemand, reason: &str) -> CranelispError {
+    CranelispError::TypeError {
+        message: format!(
+            "cannot rematerialize prior instance '{}' ({:?}) for replacement: {reason}",
+            captured.prior_key, captured.old_link
+        ),
+        location: ErrorLocation::from_span(Span::SYNTHETIC),
+    }
+}
+
+struct HistoricalMonoInstance {
+    prior_key: Symbol,
+    link: InstanceLink,
+}
+
+/// Capture the typed identity of every concrete instance owned by one live
+/// module generation.
+fn capture_mono_demands(table: &crate::code::SessionSymbolTable) -> Vec<HistoricalMonoInstance> {
+    fn capture_life(
+        prior_key: &Symbol,
+        life: &Life<crate::code::Code>,
+        instances: &mut Vec<HistoricalMonoInstance>,
+    ) {
+        if let Life::Concrete {
+            minted_from: Some(link),
+            ..
+        } = life
+            && !instances
+                .iter()
+                .any(|instance| instance.prior_key == *prior_key)
+        {
+            instances.push(HistoricalMonoInstance {
+                prior_key: prior_key.clone(),
+                link: link.clone(),
+            });
+        }
+    }
+
+    let mut instances = Vec::new();
+    for (name, binding) in table.all_symbols() {
+        match &binding.declaration {
+            Decl::Callable(callable) => capture_life(name, &callable.arm.life, &mut instances),
+            Decl::Overloaded(declaration) => {
+                for arm in &declaration.arms {
+                    capture_life(name, &arm.callable.life, &mut instances);
+                }
+            }
+            Decl::Macro(declaration) => {
+                for clause in &declaration.clauses {
+                    capture_life(name, &clause.callable.life, &mut instances);
+                }
+            }
+            _ => {}
+        }
+    }
+    instances
+}
+
+/// Project the concrete instantiations owned by one module table into the
+/// immutable request packet carried by a persisted-source reload.
+pub(crate) fn capture_reload_instantiation_demands(
+    table: &crate::code::SessionSymbolTable,
+) -> std::sync::Arc<[MonoDemand]> {
+    capture_mono_demands(table)
+        .into_iter()
+        .map(|historical| {
+            MonoDemand::from_type_args(
+                historical.link.template,
+                historical.link.type_args,
+                Span::SYNTHETIC,
+            )
+        })
+        .collect::<Vec<_>>()
+        .into()
+}
+
+/// Add reload-carried historical instances that are not already covered by
+/// an authored replacement in this cluster. A missing replacement template is
+/// an explicit decline; its prior key retires only if the whole candidate
+/// later publishes successfully.
+fn extend_reload_demands(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    module: &ModuleFullPath,
+    staging: &crate::code::SessionSymbolTable,
+    reload_demands: &[MonoDemand],
+    captured: &mut Vec<CapturedMonoDemand>,
+) -> Result<(), CranelispError> {
+    let Some(live) = symbol_tables.get(module).map(|table| table.clone()) else {
+        return Ok(());
+    };
+    let historical = capture_mono_demands(&live);
+    for demand in reload_demands {
+        let old_link = demand.instance_link();
+        let Some(prior) = historical.iter().find(|prior| prior.link == old_link) else {
+            continue;
+        };
+        if captured
+            .iter()
+            .any(|existing| existing.prior_key == prior.prior_key)
+        {
+            continue;
+        }
+        let Some(owner) = callable_target_owner(&demand.template) else {
+            continue;
+        };
+        let remapped = if &owner.module == module {
+            staging.callable_target(&demand.template).map(|arm| {
+                demand
+                    .instance_key(&arm.scheme)
+                    .map(|key| (demand.clone(), key))
+                    .map_err(|error| CranelispError::TypeError {
+                        message: format!(
+                            "cannot rematerialize persisted instance '{}': replacement key derivation failed: {error}",
+                            prior.prior_key
+                        ),
+                        location: ErrorLocation::from_span(Span::SYNTHETIC),
+                    })
+            }).transpose()?
+        } else {
+            symbol_tables
+                .get(&owner.module)
+                .map(|table| remap_foreign_reload_demand(&table, demand, &prior.prior_key))
+                .transpose()?
+                .flatten()
+        };
+        let Some((staged_demand, staged_key)) = remapped else {
+            captured.push(CapturedMonoDemand {
+                prior_key: prior.prior_key.clone(),
+                old_link,
+                demand: None,
+                staged_key: None,
+                policy:
+                    crate::redefine::InstanceRematerializationPolicy::CallerFreeLanguageTypeChange,
+            });
+            continue;
+        };
+        captured.push(CapturedMonoDemand {
+            prior_key: prior.prior_key.clone(),
+            old_link,
+            demand: Some(staged_demand),
+            staged_key: Some(staged_key),
+            policy: crate::redefine::InstanceRematerializationPolicy::CallerFreeLanguageTypeChange,
+        });
+    }
+    Ok(())
+}
+
+/// Resolve a reload-carried demand against the dependency generation visible
+/// now. Overload arm ordinals are generation-local, so foreign replay matches
+/// by the canonical concrete-signature key that the historical caller owns.
+fn remap_foreign_reload_demand(
+    table: &crate::code::SessionSymbolTable,
+    demand: &MonoDemand,
+    prior_key: &Symbol,
+) -> Result<Option<(MonoDemand, Symbol)>, CranelispError> {
+    let CallableTarget::OverloadArm { owner, .. } = &demand.template else {
+        let Some(arm) = table.callable_target(&demand.template) else {
+            return Ok(None);
+        };
+        let key = demand.instance_key(&arm.scheme).map_err(|error| {
+            CranelispError::TypeError {
+                message: format!(
+                    "cannot rematerialize persisted instance '{prior_key}': replacement key derivation failed: {error}"
+                ),
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
+            }
+        })?;
+        return Ok(Some((demand.clone(), key)));
+    };
+
+    let Some(binding) = table.get(owner.symbol.as_ref()) else {
+        return Ok(None);
+    };
+    let Decl::Overloaded(declaration) = &binding.declaration else {
+        return Ok(None);
+    };
+    let mut matches = Vec::new();
+    for (ordinal, replacement) in declaration.arms.iter().enumerate() {
+        let Ok(arm) = cranelisp_types::CallableArmId::from_ordinal(ordinal) else {
+            continue;
+        };
+        let remapped = MonoDemand::from_type_args(
+            CallableTarget::OverloadArm {
+                owner: owner.clone(),
+                arm,
+            },
+            demand.type_args.clone(),
+            Span::SYNTHETIC,
+        );
+        if remapped
+            .instance_key(&replacement.callable.scheme)
+            .is_ok_and(|key| key == *prior_key)
+        {
+            matches.push(remapped);
+        }
+    }
+    match matches.len() {
+        0 => Ok(None),
+        1 => Ok(matches.pop().map(|remapped| (remapped, prior_key.clone()))),
+        count => Err(CranelispError::TypeError {
+            message: format!(
+                "cannot rematerialize persisted instance '{prior_key}': replacement overload has {count} matching arms"
+            ),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        }),
+    }
+}
+
+fn capture_affected_mono_demands(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    module: &ModuleFullPath,
+    staging: &crate::code::SessionSymbolTable,
+) -> Result<Vec<CapturedMonoDemand>, CranelispError> {
+    let Some(live) = symbol_tables.get(module).map(|table| table.clone()) else {
+        return Ok(Vec::new());
+    };
+    let mut captured = Vec::new();
+    let mut staged_keys = std::collections::HashMap::<Symbol, Symbol>::new();
+    for historical in capture_mono_demands(&live) {
+        let Some(owner) = callable_target_owner(&historical.link.template) else {
+            continue;
+        };
+        if &owner.module != module {
+            continue;
+        }
+        let Some(prior) = live.get(owner.symbol.as_ref()) else {
+            continue;
+        };
+        let Some(replacement) = staging.get(owner.symbol.as_ref()) else {
+            continue;
+        };
+        let Some(policy) = crate::redefine::instance_rematerialization_policy(
+            symbol_tables,
+            module,
+            &owner.symbol,
+            prior,
+            replacement,
+        ) else {
+            continue;
+        };
+        let staged_template = match &historical.link.template {
+            CallableTarget::Binding(owner) => Some(CallableTarget::Binding(owner.clone())),
+            CallableTarget::OverloadArm { owner, arm } => {
+                match crate::redefine::match_replacement_overload_arm(
+                    owner,
+                    prior,
+                    replacement,
+                    *arm,
+                ) {
+                    Ok(matched) => Some(CallableTarget::OverloadArm {
+                        owner: owner.clone(),
+                        arm: matched,
+                    }),
+                    Err(_)
+                        if policy
+                            == crate::redefine::InstanceRematerializationPolicy::CallerFreeLanguageTypeChange =>
+                    {
+                        None
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            CallableTarget::MacroClause { .. } => continue,
+            _ => continue,
+        };
+        let (demand, staged_key) = if let Some(staged_template) = staged_template {
+            let Some(staged_scheme) = staging
+                .callable_target(&staged_template)
+                .map(|arm| &arm.scheme)
+            else {
+                if policy
+                    == crate::redefine::InstanceRematerializationPolicy::CallerFreeLanguageTypeChange
+                {
+                    captured.push(CapturedMonoDemand {
+                        prior_key: historical.prior_key,
+                        old_link: historical.link,
+                        demand: None,
+                        staged_key: None,
+                        policy,
+                    });
+                    continue;
+                }
+                return Err(CranelispError::TypeError {
+                    message: format!(
+                        "cannot rematerialize prior instance '{}': matched staged template is absent",
+                        historical.prior_key
+                    ),
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
+                });
+            };
+            let demand = cranelisp_types::MonoDemand::from_type_args(
+                staged_template,
+                historical.link.type_args.clone(),
+                Span::SYNTHETIC,
+            );
+            let staged_key = match demand.instance_key(staged_scheme) {
+                Ok(key) => Some(key),
+                Err(_)
+                    if policy
+                        == crate::redefine::InstanceRematerializationPolicy::CallerFreeLanguageTypeChange =>
+                {
+                    None
+                }
+                Err(error) => {
+                    return Err(CranelispError::TypeError {
+                        message: format!(
+                            "cannot rematerialize prior instance '{}': replacement key derivation failed: {error}",
+                            historical.prior_key
+                        ),
+                        location: ErrorLocation::from_span(Span::SYNTHETIC),
+                    });
+                }
+            };
+            (Some(demand), staged_key)
+        } else {
+            (None, None)
+        };
+        if let Some(staged_key) = &staged_key {
+            if let Some(other_prior) =
+                staged_keys.insert(staged_key.clone(), historical.prior_key.clone())
+                && other_prior != historical.prior_key
+            {
+                return Err(CranelispError::TypeError {
+                    message: format!(
+                        "cannot rematerialize prior instances '{}' and '{}': both map to staged key '{}'",
+                        other_prior, historical.prior_key, staged_key
+                    ),
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
+                });
+            }
+        }
+        captured.push(CapturedMonoDemand {
+            prior_key: historical.prior_key,
+            old_link: historical.link,
+            demand,
+            staged_key,
+            policy,
+        });
+    }
+    Ok(captured)
 }
 
 pub(crate) fn plan_staging_commit(
@@ -466,10 +1273,30 @@ pub(crate) fn plan_staging_commit(
     shared: &crate::session_v4::SharedState,
     additional_decisions: &[StagedPublicationDecision],
 ) -> Result<PreparedCommit, CranelispError> {
+    plan_staging_commit_inner(
+        symbol_tables,
+        module,
+        staging,
+        codegen_program,
+        shared,
+        additional_decisions,
+        &[],
+    )
+}
+
+fn plan_staging_commit_inner(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    module: &ModuleFullPath,
+    staging: crate::code::SessionSymbolTable,
+    codegen_program: &[TopLevel],
+    shared: &crate::session_v4::SharedState,
+    additional_decisions: &[StagedPublicationDecision],
+    rematerialized_instances: &[Symbol],
+) -> Result<PreparedCommit, CranelispError> {
     use crate::redefine::{RedefKind, RedefinitionOutcome, classify_redefinition};
     use cranelisp_types::FQSymbol;
 
-    validate_guarded_staging(symbol_tables, module, &staging)?;
+    validate_guarded_staging_except(symbol_tables, module, &staging, rematerialized_instances)?;
 
     let tables = dashmap::DashMap::new();
     for row in symbol_tables.iter() {
@@ -501,7 +1328,13 @@ pub(crate) fn plan_staging_commit(
         let prior_slot = prior.and_then(binding_first_slot);
         let staged_slot = binding_first_slot(binding);
         let (kind, per_symbol) = classify_redefinition(name.as_ref(), prior, binding);
-        if prior_slot.is_some() && staged_slot.is_some() {
+        if prior_slot.is_some()
+            && staged_slot.is_some()
+            && !additional_decisions.iter().any(|decision| match decision {
+                StagedPublicationDecision::PreserveAbi { symbol }
+                | StagedPublicationDecision::ChangeAbi { symbol } => symbol == name,
+            })
+        {
             decisions.push(match kind {
                 RedefKind::AbiChanging => StagedPublicationDecision::ChangeAbi {
                     symbol: name.clone(),
@@ -548,9 +1381,9 @@ pub(crate) fn plan_staging_commit(
     let targets = derive_codegen_batch(module, codegen_program, &tables);
     for target in &targets {
         let valid = tables.get(module).is_some_and(|table| {
-            table.callable_target(target).is_some_and(|arm| {
-                matches!(arm.life, Life::Concrete { .. })
-            })
+            table
+                .callable_target(target)
+                .is_some_and(|arm| matches!(arm.life, Life::Concrete { .. }))
         });
         if !valid {
             return Err(CranelispError::ModuleError {
@@ -708,12 +1541,18 @@ fn commit_staging_to_live(
                 .retained_code
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            for body in record.bodies.iter().filter(|body| body.displaced_owner.is_some()) {
+            for body in record
+                .bodies
+                .iter()
+                .filter(|body| body.displaced_owner.is_some())
+            {
                 retained.push(crate::redefine::RetainedCode::frozen(
                     module,
                     &record.symbol,
                     body.prior_slot.map(|slot| slot.index()),
-                    body.displaced_owner.clone().expect("owner presence was filtered"),
+                    body.displaced_owner
+                        .clone()
+                        .expect("owner presence was filtered"),
                 ));
             }
         }
@@ -735,10 +1574,22 @@ fn validate_guarded_staging(
     module: &ModuleFullPath,
     staging: &crate::code::SessionSymbolTable,
 ) -> Result<(), CranelispError> {
+    validate_guarded_staging_except(symbol_tables, module, staging, &[])
+}
+
+fn validate_guarded_staging_except(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    module: &ModuleFullPath,
+    staging: &crate::code::SessionSymbolTable,
+    rematerialized_instances: &[Symbol],
+) -> Result<(), CranelispError> {
     let Some(live) = symbol_tables.get(module).map(|table| table.clone()) else {
         return Ok(());
     };
     for (name, staged) in staging.all_symbols() {
+        if rematerialized_instances.contains(name) {
+            continue;
+        }
         crate::redefine::validate_guarded_redefinition(
             symbol_tables,
             module,
@@ -873,6 +1724,9 @@ pub struct ModuleCompiler<'a> {
     /// codegen input stashing for nice workers.
     /// None for REPL contexts where caching is not used.
     pub shared_state: Option<&'a crate::session_v4::SharedState>,
+    /// Historical concrete instantiations captured atomically with a
+    /// persisted-source re-registration. Empty for ordinary compilation.
+    pub reload_demands: std::sync::Arc<[MonoDemand]>,
     /// **Eval-thread orchestration mode (S93, Invariant SW).** `true` ONLY on
     /// the REPL eval thread driving its own entry module (the Additive path in
     /// `eval.rs`). When set, a dependency gap records a *cycle-check* edge via
@@ -1071,15 +1925,13 @@ pub fn derive_codegen_batch(
         match top {
             TopLevel::Defn(defn) => {
                 push_matching(&|target| {
-                    callable_target_owner(target)
-                        .is_some_and(|owner| owner.symbol == defn.name)
+                    callable_target_owner(target).is_some_and(|owner| owner.symbol == defn.name)
                 });
             }
             TopLevel::Expr(_) => {
                 push_matching(&|target| {
-                    callable_target_owner(target).is_some_and(|owner| {
-                        owner.symbol.as_ref() == SYNTHETIC_EXPR_WRAPPER
-                    })
+                    callable_target_owner(target)
+                        .is_some_and(|owner| owner.symbol.as_ref() == SYNTHETIC_EXPR_WRAPPER)
                 });
             }
             TopLevel::TraitImpl(impl_) => {
@@ -1277,6 +2129,36 @@ fn compile_and_publish_prepared(
     shared: &crate::session_v4::SharedState,
     capture_clif: bool,
 ) -> Result<(), CranelispError> {
+    compile_and_publish_prepared_with(
+        processed,
+        shared,
+        capture_clif,
+        |prepared, jit, capture_clif| {
+            cranelisp_backend::compile_to_module(
+                prepared.module.clone(),
+                &prepared.targets,
+                &prepared.tables,
+                jit.jit_module(),
+                capture_clif,
+            )
+            .map_err(Into::into)
+        },
+    )
+}
+
+fn compile_and_publish_prepared_with<Compile>(
+    processed: &mut crate::cluster::ProcessedCluster,
+    shared: &crate::session_v4::SharedState,
+    capture_clif: bool,
+    compile: Compile,
+) -> Result<(), CranelispError>
+where
+    Compile: FnOnce(
+        &PreparedCommit,
+        &mut cranelisp_backend::jit::Jit,
+        bool,
+    ) -> Result<cranelisp_backend::CompilationArtifacts, CranelispError>,
+{
     let Some(prepared) = processed.prepared.take() else {
         return Ok(());
     };
@@ -1319,9 +2201,7 @@ fn compile_and_publish_prepared(
         for target in &prepared.targets {
             let Some(arm) = table.callable_target(target) else {
                 return Err(CranelispError::ModuleError {
-                    message: format!(
-                        "prepared target '{target:?}' is missing or not executable"
-                    ),
+                    message: format!("prepared target '{target:?}' is missing or not executable"),
                     location: ErrorLocation::from_span(Span::SYNTHETIC),
                 });
             };
@@ -1333,10 +2213,8 @@ fn compile_and_publish_prepared(
                 } => slot.index(),
                 _ => {
                     return Err(CranelispError::ModuleError {
-                    message: format!(
-                            "prepared target '{target:?}' has no concrete body slot"
-                    ),
-                    location: ErrorLocation::from_span(Span::SYNTHETIC),
+                        message: format!("prepared target '{target:?}' has no concrete body slot"),
+                        location: ErrorLocation::from_span(Span::SYNTHETIC),
                     });
                 }
             };
@@ -1379,13 +2257,7 @@ fn compile_and_publish_prepared(
     }
 
     let compiled = if let Some(mut jit) = jit.take() {
-        let result = cranelisp_backend::compile_to_module(
-            prepared.module.clone(),
-            &prepared.targets,
-            &prepared.tables,
-            jit.jit_module(),
-            capture_clif,
-        );
+        let result = compile(&prepared, &mut jit, capture_clif);
         let artifacts = match result {
             Ok(artifacts) => artifacts,
             Err(error) => {
@@ -1395,7 +2267,7 @@ fn compile_and_publish_prepared(
                     &mut live,
                     &got_snapshots,
                 )?;
-                return Err(error.into());
+                return Err(error);
             }
         };
         #[allow(clippy::arc_with_non_send_sync)]
@@ -1610,7 +2482,9 @@ fn retain_and_restore_rejected_compilation(
         let name = callable_target_owner(&target)
             .map(|owner| owner.symbol.clone())
             .unwrap_or_else(|| Symbol::from("<unknown-callable-target>"));
-        retained.push(crate::redefine::RetainedCode::frozen(module, &name, slot, owner));
+        retained.push(crate::redefine::RetainedCode::frozen(
+            module, &name, slot, owner,
+        ));
     }
 }
 
@@ -1705,6 +2579,26 @@ pub(crate) const SYNTHETIC_EXPR_WRAPPER: &str = "__expr";
 /// copies).
 pub(crate) fn is_internal_listing_name(name: &str) -> bool {
     name.contains('$') || name == SYNTHETIC_EXPR_WRAPPER
+}
+
+/// Classify generated callable rows using lifecycle provenance as well as the
+/// legacy private spelling. Canonical instance keys no longer contain `$`, but
+/// a concrete `minted_from` backlink still distinguishes them from authored
+/// declarations without parsing their readable key.
+pub(crate) fn is_internal_listing_entry<C: cranelisp_types::CodeStore>(
+    name: &str,
+    entry: &Binding<C>,
+) -> bool {
+    is_internal_listing_name(name)
+        || entry.callable().is_some_and(|callable| {
+            matches!(
+                callable.arm.life,
+                Life::Concrete {
+                    minted_from: Some(_),
+                    ..
+                }
+            )
+        })
 }
 
 /// The single user-facing category of a symbol-table entry — the ONE
@@ -2184,6 +3078,7 @@ pub fn priority_worker_loop_shared(shared: &crate::session_v4::SharedState) {
             Some(PriorityWork::Typecheck {
                 module,
                 sexps,
+                instantiation_demands,
                 generation_started,
             }) => {
                 // FIXME 0285 defect 2 — worker-panic→park robustness. A panic
@@ -2195,7 +3090,13 @@ pub fn priority_worker_loop_shared(shared: &crate::session_v4::SharedState) {
                 // Catch the unwind, convert it to a module failure, and notify
                 // so `wait_inmem_complete_blocking` returns `ModuleFailed`.
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                    handle_typecheck_work_shared(shared, &module, &sexps, generation_started)
+                    handle_typecheck_work_shared(
+                        shared,
+                        &module,
+                        &sexps,
+                        instantiation_demands,
+                        generation_started,
+                    )
                 }));
                 match result {
                     Ok(Ok(())) => {}
@@ -2432,11 +3333,13 @@ fn handle_typecheck_work_shared(
     shared: &crate::session_v4::SharedState,
     module: &ModuleFullPath,
     sexps: &std::sync::Arc<[Sexp]>,
+    instantiation_demands: std::sync::Arc<[MonoDemand]>,
     generation_started: bool,
 ) -> Result<(), CranelispError> {
     match crate::cluster::process_cluster(
         shared,
         std::sync::Arc::clone(sexps),
+        instantiation_demands,
         module,
         generation_started,
     )? {

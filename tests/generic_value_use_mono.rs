@@ -373,7 +373,7 @@ fn prelude_provided_polymorphic_fn_monomorphises_twin() {
 // collect; these rows pin the CLASS at each of the three positions so a 4th
 // cannot silently leak. All fixtures primitives-only, stdlib-free; the generic
 // value is `gcount : (Fn [(Vec a)] Int)` (element-polymorphic vec-len wrapper),
-// mirroring the FQ-D1 fixture. Plan: tests/plan/PLAN.md §S110 B.
+// mirroring the FQ-D1 fixture. See the [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md), S110 B.
 // =============================================================================
 
 // A local generic fn (element-polymorphic) + a same-type sibling, used as the

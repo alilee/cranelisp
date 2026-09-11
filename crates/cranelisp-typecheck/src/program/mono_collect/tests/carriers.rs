@@ -610,13 +610,14 @@ fn resolved_target_fn_value_mono_rewrite_carries_mangled_carrier() {
     let view = main_codegen_view_of(&tc, "use1");
     let mut targets = Vec::new();
     collect_resolved_targets(&view.body, &mut targets);
+    let iden_int = "(test/iden [primitives/Int] primitives/Int)";
     let want = FQSymbol {
         module: ModuleFullPath::from("test"),
-        symbol: Symbol::from("test/iden$Int"),
+        symbol: Symbol::from(iden_int),
     };
     let got = targets
         .iter()
-        .find(|(label, _)| label == "test/iden$Int")
+        .find(|(label, _)| label == iden_int)
         .and_then(|(_, fq)| fq.clone());
     assert_eq!(
         got,
@@ -929,7 +930,7 @@ fn mono_ctor_pattern_view_same_run_carries_resolved_ctor() {
          (defn get [b] (match b [(Box v) v]))\n\
          (defn use-box [] :primitives/Int (get (Box 5)))",
     );
-    let arm_ctor = mono_match_arm_ctor(&tc, "test", "get$")
+    let arm_ctor = mono_match_arm_ctor(&tc, "test", "(test/get [")
         .expect("get$Int mono instance with a ctor-pattern view must exist");
     assert_eq!(
         arm_ctor,
@@ -957,7 +958,7 @@ fn mono_ctor_pattern_view_cross_run_same_module_carries_resolved_ctor() {
     // has NO `Box` pattern span (run 1's was swept), so the pre-fix
     // view-build read `None`; the per-instance recheck re-records it.
     check_src(&mut tc, "(defn use-box [] :primitives/Int (get (Box 5)))");
-    let arm_ctor = mono_match_arm_ctor(&tc, "test", "get$")
+    let arm_ctor = mono_match_arm_ctor(&tc, "test", "(test/get [")
         .expect("get$Int mono instance with a ctor-pattern view must exist");
     assert_eq!(
         arm_ctor,
@@ -988,7 +989,7 @@ fn mono_ctor_pattern_view_cross_module_carries_resolved_ctor() {
     tc.set_current_module(ModuleFullPath::from("test"));
     seed_specific_import(&mut tc, &ModuleFullPath::from("lib"), &["Box", "get"]);
     check_src(&mut tc, "(defn use-box [] :primitives/Int (get (Box 5)))");
-    let arm_ctor = mono_match_arm_ctor(&tc, "test", "get$")
+    let arm_ctor = mono_match_arm_ctor(&tc, "test", "(lib/get [")
         .expect("cross-module get$Int mono with a ctor-pattern view must exist");
     assert_eq!(
         arm_ctor,
@@ -1052,32 +1053,29 @@ fn u_a1_same_module_fq_call_mints_bare_and_dispatches() {
          (defn caller [] (test/iden 5))",
     );
 
-    // `test/iden$Int` minted (home-qualified, FIXME 0519), concrete + slotted.
-    match tc
-        .symbol_table()
-        .get("test/iden$Int")
-        .and_then(Binding::callable)
-    {
+    let iden_int = "(test/iden [primitives/Int] primitives/Int)";
+    // The full-signature `iden` instance is concrete and slotted.
+    match tc.symbol_table().get(iden_int).and_then(Binding::callable) {
         Some(callable) => {
             assert!(
                 matches!(callable.arm.life, Life::Concrete { .. }),
-                "test/iden$Int must be a Concrete (slotted) mono instance, got {:?}",
+                "{iden_int} must be a Concrete (slotted) mono instance, got {:?}",
                 callable.arm.life,
             );
             assert!(
                 callable.arm.scheme.ty.is_concrete(),
-                "test/iden$Int type must be concrete"
+                "{iden_int} type must be concrete"
             );
         }
-        other => panic!(
-            "same-module FQ call must mint `test/iden$Int` (FIXME 0488 sig a); got {other:?}"
-        ),
+        other => {
+            panic!("same-module FQ call must mint `{iden_int}` (FIXME 0488 sig a); got {other:?}")
+        }
     }
     // The caller's Apply node carries SigDispatch{test/iden$Int}.
     assert_eq!(
         first_sig_dispatch(&stored_body(&tc, "caller")).as_deref(),
-        Some("test/iden$Int"),
-        "the same-module FQ call node must carry SigDispatch{{test/iden$Int}}",
+        Some(iden_int),
+        "the same-module FQ call node must carry SigDispatch{{{iden_int}}}",
     );
 }
 
@@ -1092,7 +1090,9 @@ fn u_a1_neg_same_module_fq_concrete_call_mints_nothing() {
          (defn caller [] (test/incr 5))",
     );
     assert!(
-        tc.symbol_table().get("incr$Int").is_none(),
+        tc.symbol_table()
+            .get("(test/incr [primitives/Int] primitives/Int)")
+            .is_none(),
         "a concrete FQ callee must NOT mint a mono instance",
     );
 }
@@ -1115,20 +1115,23 @@ fn u_a2_cross_module_fq_call_mints_home_qualified_name() {
     seed_specific_import(&mut tc, &ModuleFullPath::from("gen"), &["iden2"]);
     check_src(&mut tc, "(defn caller [] (gen/iden2 5))");
 
+    let iden2_int = "(gen/iden2 [primitives/Int] primitives/Int)";
     assert!(
-        tc.symbol_table().get("gen/iden2$Int").is_some(),
-        "cross-module FQ call must mint the HOME-qualified `gen/iden2$Int` in \
+        tc.symbol_table().get(iden2_int).is_some(),
+        "cross-module FQ call must mint the HOME-qualified `{iden2_int}` in \
          the caller module (FIXME 0488 sig a + 0519 home-qualification)",
     );
     assert!(
-        tc.symbol_table().get("iden2$Int").is_none(),
-        "the mono must NOT be minted under the home-blind bare `iden2$Int` \
+        tc.symbol_table()
+            .get("(test/iden2 [primitives/Int] primitives/Int)")
+            .is_none(),
+        "the mono must NOT be minted under a caller-home `test/iden2` identity \
          name (the 0508 collision axis)",
     );
     assert_eq!(
         first_sig_dispatch(&stored_body(&tc, "caller")).as_deref(),
-        Some("gen/iden2$Int"),
-        "the cross-module FQ call node must carry SigDispatch{{gen/iden2$Int}}",
+        Some(iden2_int),
+        "the cross-module FQ call node must carry SigDispatch{{{iden2_int}}}",
     );
 }
 
@@ -1152,16 +1155,16 @@ fn u_b_imported_fn_value_use_mints_and_rewrites() {
          (defn use1 [] (call1 iden2 5))",
     );
 
+    let iden2_int = "(gen/iden2 [primitives/Int] primitives/Int)";
     assert!(
-        // FIXME 0519: home-qualified by the DEFINING module `gen`.
-        tc.symbol_table().get("gen/iden2$Int").is_some(),
-        "imported fn-value use must mint `gen/iden2$Int` (FIXME 0488 sig b)",
+        tc.symbol_table().get(iden2_int).is_some(),
+        "imported fn-value use must mint `{iden2_int}` (FIXME 0488 sig b)",
     );
     // The fn-value `Var` in use1's body is rewritten to the mangled name.
     let body = stored_body(&tc, "use1");
     assert!(
-        body_has_var_named(&body, "gen/iden2$Int"),
-        "the imported fn-value `Var` must be rewritten to `gen/iden2$Int` in the \
+        body_has_var_named(&body, iden2_int),
+        "the imported fn-value `Var` must be rewritten to `{iden2_int}` in the \
          caller AST; body = {body:?}",
     );
     assert!(
@@ -1182,13 +1185,14 @@ fn u_b_neg_same_module_fn_value_use_unchanged() {
          (defn call1 [f x] (f x))\n\
          (defn use1 [] (call1 iden 5))",
     );
+    let iden_int = "(test/iden [primitives/Int] primitives/Int)";
     assert!(
-        tc.symbol_table().get("test/iden$Int").is_some(),
-        "same-module fn-value use must still mint `test/iden$Int` (0374 regression fence)",
+        tc.symbol_table().get(iden_int).is_some(),
+        "same-module fn-value use must still mint `{iden_int}` (0374 regression fence)",
     );
     assert!(
-        body_has_var_named(&stored_body(&tc, "use1"), "test/iden$Int"),
-        "same-module fn-value `Var` must still be rewritten to `test/iden$Int`",
+        body_has_var_named(&stored_body(&tc, "use1"), iden_int),
+        "same-module fn-value `Var` must still be rewritten to `{iden_int}`",
     );
 }
 
@@ -1210,15 +1214,16 @@ fn u_b_if_branch_fn_value_position_mints_and_rewrites() {
         "(defn iden [x] x)\n\
          (defn use1 [] ((if true iden iden) 5))",
     );
+    let iden_int = "(test/iden [primitives/Int] primitives/Int)";
     assert!(
-        tc.symbol_table().get("test/iden$Int").is_some(),
+        tc.symbol_table().get(iden_int).is_some(),
         "a generic fn-value in an `if`-branch value position must be \
          monomorphised (I2/0585 position-completeness — the whitelist skipped \
          if/match/vector)",
     );
     let body = stored_body(&tc, "use1");
     assert!(
-        body_has_var_named(&body, "test/iden$Int"),
+        body_has_var_named(&body, iden_int),
         "the if-branch fn-value `Var` must be rewritten to the mangled name; \
          body = {body:?}",
     );

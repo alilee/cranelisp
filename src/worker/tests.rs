@@ -160,6 +160,19 @@ fn binding_target(module: &ModuleFullPath, name: impl Into<Symbol>) -> CallableT
     })
 }
 
+fn demand_instance_key(
+    table: &crate::code::SessionSymbolTable,
+    demand: &cranelisp_types::MonoDemand,
+) -> Symbol {
+    let scheme = &table
+        .callable_target(&demand.template)
+        .expect("demand template exists")
+        .scheme;
+    demand
+        .instance_key(scheme)
+        .expect("fixture demand has a concrete callable identity")
+}
+
 fn concrete_body_draft(name: &str) -> CallableArmDraft {
     let variant = trivial_variant();
     let view = cranelisp_types::MonoDefnVariant {
@@ -277,6 +290,13 @@ fn has_compiled_owner(binding: &Binding<crate::code::Code>) -> bool {
     )
 }
 
+fn concrete_callees(binding: &Binding<crate::code::Code>) -> Vec<FQSymbol> {
+    match binding.callable().map(|callable| &callable.arm.life) {
+        Some(Life::Concrete { callees, .. }) => callees.clone(),
+        other => panic!("expected concrete caller, got {other:?}"),
+    }
+}
+
 fn install_plain_template_fixture(
     table: &mut crate::code::SessionSymbolTable,
     name: impl Into<Symbol>,
@@ -299,6 +319,1228 @@ fn install_plain_template_fixture(
             Visibility::Public,
         )
         .expect("plain template fixture must install");
+}
+
+// spec: design/int/s122-closure.md §2 — ordinary replacement preparation
+// rematerializes a prior generic instance even with no named caller.
+#[test]
+fn ordinary_replacement_preparation_rematerializes_prior_instance() {
+    use crate::session_v4::{CompilerSession, RunMode, SessionSettings};
+    use cranelisp_types::{CodegenBehaviour, ConcreteType, MonoDemand, RetireReason};
+
+    let root = tempfile::tempdir().unwrap();
+    let mut session = CompilerSession::new(
+        SessionSettings {
+            no_color: true,
+            no_cache: true,
+            codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
+            priority_workers: 1,
+            nice_workers: 0,
+            run_mode: RunMode::Repl,
+        },
+        root.path().to_path_buf(),
+        "user",
+    )
+    .unwrap();
+    session.set_lib_dirs(Vec::new());
+    session
+        .eval("(defn same-module-helper [] 42)")
+        .expect("same-module helper definition succeeds");
+    session
+        .eval("(defn reload-id [x] x)")
+        .expect("generic template definition succeeds");
+    let mut realized = session
+        .eval("(reload-id 7)")
+        .expect("initial concrete realization succeeds")
+        .expect("the call produces a result");
+    assert_eq!(realized.value(), 7);
+    realized.release_program_result();
+
+    let module = ModuleFullPath::from("user");
+    let demand = MonoDemand::from_type_args(
+        binding_target(&module, "reload-id"),
+        vec![ConcreteType::Int],
+        Span::SYNTHETIC,
+    );
+    let instance_key = {
+        let table = session.shared.symbol_tables.get(&module).unwrap();
+        demand_instance_key(&table, &demand)
+    };
+    let prior_slot = session
+        .shared
+        .symbol_tables
+        .get(&module)
+        .and_then(|table| {
+            table
+                .get(instance_key.as_ref())
+                .and_then(Binding::callable_got_slot)
+        })
+        .expect("the prior concrete instance has a live slot");
+    let replacement = build_program_compat(
+        &cranelisp_frontend::parse("(defn reload-id [_] (same-module-helper))").unwrap(),
+    )
+    .unwrap();
+    let (prepared, check) = prepare_cluster_commit(
+        &session.shared.symbol_tables,
+        &session.shared.module_aliases,
+        &session.shared.prelude_fallback,
+        &module,
+        &replacement,
+        &replacement,
+        &session.shared,
+    )
+    .unwrap()
+    .unwrap()
+    .unwrap();
+    assert!(check.warnings.is_empty());
+
+    let instance_target = binding_target(&module, instance_key.clone());
+    let table = prepared.tables.get(&module).unwrap();
+    let arm = table
+        .callable_target(&instance_target)
+        .expect("the same typed instance key is present in the prepared world");
+    let new_slot = match &arm.life {
+        Life::Concrete {
+            slot,
+            ast:
+                Some(DefnVariant {
+                    body: Expr::Apply { .. },
+                    ..
+                }),
+            minted_from: Some(actual),
+            ..
+        } => {
+            assert_eq!(actual, &demand.instance_link());
+            slot.index()
+        }
+        other => panic!("expected replacement-materialized Int body, got {other:?}"),
+    };
+    assert_ne!(
+        new_slot, prior_slot,
+        "changed ownership ABI needs a fresh slot"
+    );
+    assert!(table.retired_slots().iter().any(|retired| {
+        retired.slot.index() == prior_slot
+            && matches!(
+                &retired.reason,
+                RetireReason::AbiChanging { symbol } if symbol == &instance_key
+            )
+    }));
+    assert!(
+        prepared.targets.contains(&instance_target),
+        "the successful demand target must join the ordinary compile batch"
+    );
+
+    session.shutdown();
+}
+
+// spec: design/int/s122-closure.md §2 — an admitted same-language-type
+// generic edit rematerializes every prior instance in the original candidate,
+// preserving an ABI-compatible instance's exact slot.
+// defect: class=stale-realization locus=src/worker.rs::capture_affected_mono_demands found=S122 owner=/dev
+#[test]
+fn ordinary_same_type_replacement_preparation_rematerializes_prior_instance() {
+    use crate::session_v4::{CompilerSession, RunMode, SessionSettings};
+    use cranelisp_types::{CodegenBehaviour, ConcreteType, MonoDemand};
+
+    let root = tempfile::tempdir().unwrap();
+    let mut session = CompilerSession::new(
+        SessionSettings {
+            no_color: true,
+            no_cache: true,
+            codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
+            priority_workers: 1,
+            nice_workers: 0,
+            run_mode: RunMode::Repl,
+        },
+        root.path().to_path_buf(),
+        "user",
+    )
+    .unwrap();
+    session.set_lib_dirs(Vec::new());
+    session.eval("(defn same-type-id [_] 7)").unwrap();
+    let mut realized = session.eval("(same-type-id 0)").unwrap().unwrap();
+    assert_eq!(realized.value(), 7);
+    realized.release_program_result();
+
+    let module = ModuleFullPath::from("user");
+    let demand = MonoDemand::from_type_args(
+        binding_target(&module, "same-type-id"),
+        vec![ConcreteType::Int],
+        Span::SYNTHETIC,
+    );
+    let instance_key = {
+        let table = session.shared.symbol_tables.get(&module).unwrap();
+        demand_instance_key(&table, &demand)
+    };
+    let prior_slot = session
+        .shared
+        .symbol_tables
+        .get(&module)
+        .and_then(|table| {
+            table
+                .get(instance_key.as_ref())
+                .and_then(Binding::callable_got_slot)
+        })
+        .unwrap();
+    let replacement =
+        build_program_compat(&cranelisp_frontend::parse("(defn same-type-id [_] 42)").unwrap())
+            .unwrap();
+    let (prepared, check) = prepare_cluster_commit(
+        &session.shared.symbol_tables,
+        &session.shared.module_aliases,
+        &session.shared.prelude_fallback,
+        &module,
+        &replacement,
+        &replacement,
+        &session.shared,
+    )
+    .unwrap()
+    .unwrap()
+    .unwrap();
+    assert!(check.warnings.is_empty());
+
+    let instance_target = binding_target(&module, instance_key.clone());
+    let table = prepared.tables.get(&module).unwrap();
+    let arm = table.callable_target(&instance_target).unwrap();
+    match &arm.life {
+        Life::Concrete {
+            slot,
+            ast:
+                Some(DefnVariant {
+                    body: Expr::IntLit { value: 42, .. },
+                    ..
+                }),
+            minted_from: Some(actual),
+            ..
+        } => {
+            assert_eq!(actual, &demand.instance_link());
+            assert_eq!(slot.index(), prior_slot);
+        }
+        other => panic!("expected same-type replacement body at prior key, got {other:?}"),
+    }
+    assert!(
+        prepared
+            .decisions
+            .contains(&StagedPublicationDecision::PreserveAbi {
+                symbol: instance_key,
+            })
+    );
+    assert!(prepared.targets.contains(&instance_target));
+    session.shutdown();
+}
+
+// spec: spec/05-definitions.md §5.1.2; design/int/s122-closure.md §2 — an
+// overload arm made concrete in-place by sibling-call back-flow is already the
+// replacement candidate's realization. Same-type replacement preparation must
+// use that checked arm to rematerialize the exact historical instance rather
+// than decline its demand.
+#[test]
+fn same_type_backflow_concrete_arm_replacement_uses_staged_arm() {
+    use crate::session_v4::{CompilerSession, RunMode, SessionSettings};
+    use cranelisp_types::CodegenBehaviour;
+
+    let root = tempfile::tempdir().unwrap();
+    let mut session = CompilerSession::new(
+        SessionSettings {
+            no_color: true,
+            no_cache: true,
+            codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
+            priority_workers: 1,
+            nice_workers: 0,
+            run_mode: RunMode::Repl,
+        },
+        root.path().to_path_buf(),
+        "user",
+    )
+    .unwrap();
+    session.set_lib_dirs(Vec::new());
+    let original = "(defn rp4 \
+        ([p rot] (let [q (rp4 p rot 0)] p)) \
+        ([p rot idx] (primitives/add-i64 p (primitives/add-i64 rot idx))))";
+    session
+        .eval(&format!("{original}\n(defn call-rp4 [] (rp4 3 4))"))
+        .unwrap();
+    let mut prior_result = session.eval("(call-rp4)").unwrap().unwrap();
+    assert_eq!(prior_result.value(), 3);
+    prior_result.release_program_result();
+
+    let module = ModuleFullPath::from("user");
+    let family = FQSymbol {
+        module: module.clone(),
+        symbol: Symbol::from("rp4"),
+    };
+    let prior_key = Symbol::from("(user/rp4 [primitives/Int primitives/Int] primitives/Int)");
+    let (prior_scheme, prior_link) = {
+        let mut live = session.shared.symbol_tables.get_mut(&module).unwrap();
+        let family_binding = live.get("rp4").unwrap().clone();
+        let Decl::Overloaded(declaration) = &family_binding.declaration else {
+            panic!("rp4 must be an overload family");
+        };
+        let arm = &declaration.arms[0];
+        let Life::Concrete {
+            realization: Realization::Body { view, .. },
+            minted_from: None,
+            ast,
+            callees,
+            mode_summary: None,
+            ..
+        } = &arm.callable.life
+        else {
+            panic!(
+                "fresh back-flow-pinned arm must be concrete and unlinked, got {:?}",
+                arm.callable.life
+            );
+        };
+        let link = cranelisp_types::InstanceLink::from_type_args(
+            CallableTarget::OverloadArm {
+                owner: family.clone(),
+                arm: arm.id,
+            },
+            Vec::new(),
+        );
+        let prior_summary = cranelisp_types::ModeSummary {
+            param_modes: vec![cranelisp_types::Mode::Copy; 2],
+            result: cranelisp_types::ResultMode::AliasOf(0),
+            param_flow: vec![cranelisp_types::ParamFlow::Consumed; 2],
+            spark_ops: vec![false; 2],
+            result_unique: false,
+        };
+        let mut prior_view = view.clone();
+        prior_view.mode_summary = Some(prior_summary.clone());
+        let (installed, _) = live
+            .install_instance(
+                link.clone(),
+                arm.callable.scheme.clone(),
+                arm.callable.param_names.clone(),
+                declaration.docstring.clone(),
+                declaration.seq,
+                CallableOrigin::Plain,
+                Realization::Body {
+                    view: prior_view.clone(),
+                    code: None,
+                },
+                ast.clone(),
+                callees.clone(),
+                family_binding.visibility,
+            )
+            .unwrap();
+        assert_eq!(installed, prior_key);
+        live.publish_body_ownership(
+            &binding_target(&module, prior_key.clone()),
+            prior_summary,
+            prior_view,
+        )
+        .unwrap();
+        let generated = live.get(prior_key.as_ref()).unwrap();
+        let generated = generated.callable().unwrap();
+        let Life::Concrete {
+            minted_from: Some(link),
+            ..
+        } = &generated.arm.life
+        else {
+            panic!(
+                "generated rp4 instance must retain its backlink, got {:?}",
+                generated.arm.life
+            );
+        };
+        assert_eq!(link.instance_key(&arm.callable.scheme).unwrap(), prior_key);
+        (generated.arm.scheme.clone(), link.clone())
+    };
+
+    let replacement = build_program_compat(&cranelisp_frontend::parse(original).unwrap()).unwrap();
+    let checked = check_cluster_to_staging(
+        &session.shared.symbol_tables,
+        &session.shared.module_aliases,
+        &session.shared.prelude_fallback,
+        &module,
+        &replacement,
+    )
+    .unwrap()
+    .unwrap()
+    .unwrap();
+    let Decl::Overloaded(staged_declaration) = &checked.staging.get("rp4").unwrap().declaration
+    else {
+        panic!("replacement rp4 must remain an overload family");
+    };
+    let staged_arm = &staged_declaration.arms[0].callable;
+    assert!(matches!(
+        staged_arm.life,
+        Life::Concrete {
+            minted_from: None,
+            ..
+        }
+    ));
+    assert_eq!(staged_arm.scheme.ty, prior_scheme.ty);
+    assert_eq!(staged_arm.scheme.type_vars, prior_scheme.type_vars);
+    assert_eq!(
+        prior_link.instance_key(&staged_arm.scheme).unwrap(),
+        prior_key
+    );
+    assert!(checked.staging.get(prior_key.as_ref()).is_none());
+    let staged_target = CallableTarget::OverloadArm {
+        owner: family,
+        arm: staged_declaration.arms[0].id,
+    };
+    drop(checked);
+
+    let (prepared, check) = prepare_cluster_commit(
+        &session.shared.symbol_tables,
+        &session.shared.module_aliases,
+        &session.shared.prelude_fallback,
+        &module,
+        &replacement,
+        &replacement,
+        &session.shared,
+    )
+    .unwrap()
+    .unwrap()
+    .unwrap();
+    assert!(check.warnings.is_empty());
+    assert!(prepared.targets.contains(&staged_target));
+
+    let mut processed =
+        crate::cluster::ProcessedCluster::from_parts(check.warnings, Vec::new(), Vec::new());
+    processed.set_prepared(prepared);
+    compile_and_publish_prepared(&mut processed, &session.shared, true).unwrap();
+    let mut replaced_result = session.eval("(call-rp4)").unwrap().unwrap();
+    assert_eq!(replaced_result.value(), 3);
+    replaced_result.release_program_result();
+    session.shutdown();
+}
+
+// spec: design/int/s122-closure.md §2 — overload arm ids are generation-local.
+// Original replacement preparation matches historical instances by canonical
+// language type, then preserves their full-signature keys, slots and callers.
+#[test]
+fn ordinary_overload_reorder_remaps_instances_before_atomic_publication() {
+    use crate::session_v4::{CompilerSession, RunMode, SessionSettings};
+    use cranelisp_types::CodegenBehaviour;
+
+    struct PriorInstance {
+        key: Symbol,
+        old_arm: CallableArmId,
+        slot: usize,
+        pointer: usize,
+        caller: &'static str,
+        caller_callees: Vec<FQSymbol>,
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let mut session = CompilerSession::new(
+        SessionSettings {
+            no_color: true,
+            no_cache: true,
+            codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
+            priority_workers: 1,
+            nice_workers: 0,
+            run_mode: RunMode::Repl,
+        },
+        root.path().to_path_buf(),
+        "user",
+    )
+    .unwrap();
+    session.set_lib_dirs(Vec::new());
+    session
+        .eval("(defn f ([:a x] 7) ([:a x :b y] 42))")
+        .unwrap();
+    session.eval("(defn call-one [] (f 0))").unwrap();
+    session.eval("(defn call-two [] (f 0 0))").unwrap();
+    let mut one = session.eval("(call-one)").unwrap().unwrap();
+    assert_eq!(one.value(), 7);
+    one.release_program_result();
+    let mut two = session.eval("(call-two)").unwrap().unwrap();
+    assert_eq!(two.value(), 42);
+    two.release_program_result();
+
+    let module = ModuleFullPath::from("user");
+    let family = FQSymbol {
+        module: module.clone(),
+        symbol: Symbol::from("f"),
+    };
+    let (prior_family, prior_instances) = {
+        let live = session.shared.symbol_tables.get(&module).unwrap();
+        let prior_family = live.get("f").unwrap().clone();
+        let mut instances = live
+            .all_symbols()
+            .filter_map(|(key, binding)| {
+                let callable = binding.callable()?;
+                let Life::Concrete {
+                    slot,
+                    minted_from:
+                        Some(cranelisp_types::InstanceLink {
+                            template: CallableTarget::OverloadArm { owner, arm },
+                            ..
+                        }),
+                    ..
+                } = &callable.arm.life
+                else {
+                    return None;
+                };
+                (owner == &family).then(|| PriorInstance {
+                    key: key.clone(),
+                    old_arm: *arm,
+                    slot: slot.index(),
+                    pointer: live.got.load_slot(slot.index()) as usize,
+                    caller: if arm.ordinal() == 0 {
+                        "call-one"
+                    } else {
+                        "call-two"
+                    },
+                    caller_callees: Vec::new(),
+                })
+            })
+            .collect::<Vec<_>>();
+        instances.sort_by_key(|instance| instance.old_arm.ordinal());
+        assert_eq!(instances.len(), 2);
+        for instance in &mut instances {
+            instance.caller_callees = concrete_callees(live.get(instance.caller).unwrap());
+            assert!(instance.caller_callees.contains(&FQSymbol {
+                module: module.clone(),
+                symbol: instance.key.clone(),
+            }));
+            assert!(has_compiled_owner(live.get(instance.key.as_ref()).unwrap()));
+        }
+        (prior_family, instances)
+    };
+    assert_eq!(
+        prior_instances[0].key.as_ref(),
+        "(user/f [primitives/Int] primitives/Int)"
+    );
+    assert_eq!(
+        prior_instances[1].key.as_ref(),
+        "(user/f [primitives/Int primitives/Int] primitives/Int)"
+    );
+    let listed = session.list_user_definitions();
+    for instance in &prior_instances {
+        assert!(!is_internal_listing_name(instance.key.as_ref()));
+        assert!(
+            !listed.iter().any(|entry| entry.name == instance.key),
+            "a generated concrete instance must not become a user declaration"
+        );
+    }
+
+    let replacement = build_program_compat(
+        &cranelisp_frontend::parse("(defn f ([:q x :r y] 142) ([:z x] 107))").unwrap(),
+    )
+    .unwrap();
+    let (prepared, check) = prepare_cluster_commit(
+        &session.shared.symbol_tables,
+        &session.shared.module_aliases,
+        &session.shared.prelude_fallback,
+        &module,
+        &replacement,
+        &replacement,
+        &session.shared,
+    )
+    .unwrap()
+    .unwrap()
+    .unwrap();
+    assert!(check.warnings.is_empty());
+
+    let staged_family = prepared.staging.get("f").unwrap();
+    let table = prepared.tables.get(&module).unwrap();
+    for instance in &prior_instances {
+        let matched = crate::redefine::match_replacement_overload_arm(
+            &family,
+            &prior_family,
+            staged_family,
+            instance.old_arm,
+        )
+        .unwrap();
+        assert_eq!(matched.ordinal(), 1 - instance.old_arm.ordinal());
+        let target = binding_target(&module, instance.key.clone());
+        let arm = table
+            .callable_target(&target)
+            .expect("remapped instance is present under its prior full-signature key");
+        let Life::Concrete {
+            slot,
+            minted_from: Some(link),
+            ast: Some(ast),
+            ..
+        } = &arm.life
+        else {
+            panic!(
+                "expected prepared rematerialized instance, got {:?}",
+                arm.life
+            );
+        };
+        assert_eq!(slot.index(), instance.slot);
+        assert_eq!(
+            link.template,
+            CallableTarget::OverloadArm {
+                owner: family.clone(),
+                arm: matched,
+            }
+        );
+        let Decl::Overloaded(staged_declaration) = &staged_family.declaration else {
+            panic!("staged f remains overloaded");
+        };
+        let staged_scheme = &staged_declaration.arms[matched.ordinal()].callable.scheme;
+        assert_eq!(
+            link.instance_key(staged_scheme).unwrap(),
+            instance.key,
+            "the remapped staged selector retains canonical executable identity"
+        );
+        let expected_body = if instance.old_arm.ordinal() == 0 {
+            107
+        } else {
+            142
+        };
+        assert!(matches!(ast.body, Expr::IntLit { value, .. } if value == expected_body));
+        assert!(
+            prepared
+                .decisions
+                .contains(&StagedPublicationDecision::PreserveAbi {
+                    symbol: instance.key.clone(),
+                })
+        );
+        assert!(prepared.targets.contains(&target));
+        assert_eq!(
+            concrete_callees(table.get(instance.caller).unwrap()),
+            instance.caller_callees
+        );
+    }
+    drop(table);
+
+    let retained_before = session.shared.retained_code.lock().unwrap().len();
+    let mut processed =
+        crate::cluster::ProcessedCluster::from_parts(check.warnings, Vec::new(), Vec::new());
+    processed.set_prepared(prepared);
+    compile_and_publish_prepared(&mut processed, &session.shared, true).unwrap();
+
+    {
+        let live = session.shared.symbol_tables.get(&module).unwrap();
+        for instance in &prior_instances {
+            let binding = live.get(instance.key.as_ref()).unwrap();
+            let callable = binding.callable().unwrap();
+            let Life::Concrete {
+                slot,
+                minted_from: Some(link),
+                ..
+            } = &callable.arm.life
+            else {
+                panic!("published instance is not concrete");
+            };
+            assert_eq!(slot.index(), instance.slot);
+            assert_eq!(
+                link.template,
+                CallableTarget::OverloadArm {
+                    owner: family.clone(),
+                    arm: CallableArmId::from_ordinal(1 - instance.old_arm.ordinal()).unwrap(),
+                }
+            );
+            assert_ne!(live.got.load_slot(instance.slot) as usize, instance.pointer);
+            assert!(has_compiled_owner(binding));
+            assert_eq!(
+                concrete_callees(live.get(instance.caller).unwrap()),
+                instance.caller_callees
+            );
+        }
+    }
+    let retained = session.shared.retained_code.lock().unwrap();
+    for instance in &prior_instances {
+        assert!(
+            retained[retained_before..].iter().any(|owner| {
+                owner.fq.symbol == instance.key && owner.slot == Some(instance.slot)
+            })
+        );
+    }
+    drop(retained);
+
+    let mut one = session.eval("(call-one)").unwrap().unwrap();
+    assert_eq!(one.value(), 107);
+    one.release_program_result();
+    let mut two = session.eval("(call-two)").unwrap().unwrap();
+    assert_eq!(two.value(), 142);
+    two.release_program_result();
+    session.shutdown();
+}
+
+// spec: design/int/s122-closure.md §2 — caller-free language-type-changing
+// replacement may remove every prior arm language type. Historical arm
+// instances then decline and their exact keys retire with the successful
+// original candidate.
+#[test]
+fn caller_free_changed_overload_declines_removed_arm_instances() {
+    use crate::session_v4::{CompilerSession, RunMode, SessionSettings};
+    use cranelisp_types::CodegenBehaviour;
+
+    let root = tempfile::tempdir().unwrap();
+    let mut session = CompilerSession::new(
+        SessionSettings {
+            no_color: true,
+            no_cache: true,
+            codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
+            priority_workers: 1,
+            nice_workers: 0,
+            run_mode: RunMode::Repl,
+        },
+        root.path().to_path_buf(),
+        "user",
+    )
+    .unwrap();
+    session.set_lib_dirs(Vec::new());
+    session.eval("(defn f ([:a x] x) ([:a x :b y] y))").unwrap();
+    let mut one = session.eval("(f 1)").unwrap().unwrap();
+    one.release_program_result();
+    let mut two = session.eval("(f 1 2)").unwrap().unwrap();
+    two.release_program_result();
+
+    let module = ModuleFullPath::from("user");
+    let family = FQSymbol {
+        module: module.clone(),
+        symbol: Symbol::from("f"),
+    };
+    let prior_keys = {
+        let live = session.shared.symbol_tables.get(&module).unwrap();
+        let mut keys = live
+            .all_symbols()
+            .filter_map(|(key, binding)| {
+                let Life::Concrete {
+                    minted_from:
+                        Some(cranelisp_types::InstanceLink {
+                            template: CallableTarget::OverloadArm { owner, .. },
+                            ..
+                        }),
+                    ..
+                } = &binding.callable()?.arm.life
+                else {
+                    return None;
+                };
+                (owner == &family).then(|| key.clone())
+            })
+            .collect::<Vec<_>>();
+        keys.sort();
+        keys
+    };
+    assert_eq!(prior_keys.len(), 2);
+
+    let replacement = build_program_compat(
+        &cranelisp_frontend::parse(
+            "(defn f \
+                ([:primitives/Bool x] x) \
+                ([:primitives/Bool x :primitives/Bool y] y))",
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let (prepared, check) = prepare_cluster_commit(
+        &session.shared.symbol_tables,
+        &session.shared.module_aliases,
+        &session.shared.prelude_fallback,
+        &module,
+        &replacement,
+        &replacement,
+        &session.shared,
+    )
+    .unwrap()
+    .unwrap()
+    .unwrap();
+    assert_eq!(check.warnings.len(), prior_keys.len());
+    for key in &prior_keys {
+        assert!(
+            prepared
+                .decisions
+                .contains(&StagedPublicationDecision::ChangeAbi {
+                    symbol: key.clone(),
+                }),
+            "declined historical instance `{key}` must retire atomically"
+        );
+    }
+
+    let mut processed =
+        crate::cluster::ProcessedCluster::from_parts(check.warnings, Vec::new(), Vec::new());
+    processed.set_prepared(prepared);
+    compile_and_publish_prepared(&mut processed, &session.shared, true).unwrap();
+    let live = session.shared.symbol_tables.get(&module).unwrap();
+    assert!(matches!(
+        live.get("f").map(|binding| &binding.declaration),
+        Some(Decl::Overloaded(_))
+    ));
+    for key in &prior_keys {
+        assert!(live.get(key.as_ref()).is_none());
+    }
+    drop(live);
+    session.shutdown();
+}
+
+// spec: design/int/s122-closure.md §2 — a caller-free language-type-changing
+// replacement may change an overload family into one ordinary callable. Its
+// historical arm instances decline and retire with that original candidate.
+#[test]
+fn caller_free_overload_to_plain_retires_prior_arm_instances() {
+    use crate::session_v4::{CompilerSession, RunMode, SessionSettings};
+    use cranelisp_types::CodegenBehaviour;
+
+    let root = tempfile::tempdir().unwrap();
+    let mut session = CompilerSession::new(
+        SessionSettings {
+            no_color: true,
+            no_cache: true,
+            codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
+            priority_workers: 1,
+            nice_workers: 0,
+            run_mode: RunMode::Repl,
+        },
+        root.path().to_path_buf(),
+        "user",
+    )
+    .unwrap();
+    session.set_lib_dirs(Vec::new());
+    session.eval("(defn f ([:a x] x) ([:a x :b y] y))").unwrap();
+    let mut one = session.eval("(f 1)").unwrap().unwrap();
+    one.release_program_result();
+    let mut two = session.eval("(f 1 2)").unwrap().unwrap();
+    two.release_program_result();
+
+    let module = ModuleFullPath::from("user");
+    let family = FQSymbol {
+        module: module.clone(),
+        symbol: Symbol::from("f"),
+    };
+    let prior_keys = {
+        let live = session.shared.symbol_tables.get(&module).unwrap();
+        let mut keys = live
+            .all_symbols()
+            .filter_map(|(key, binding)| {
+                let Life::Concrete {
+                    minted_from:
+                        Some(cranelisp_types::InstanceLink {
+                            template: CallableTarget::OverloadArm { owner, .. },
+                            ..
+                        }),
+                    ..
+                } = &binding.callable()?.arm.life
+                else {
+                    return None;
+                };
+                (owner == &family).then(|| key.clone())
+            })
+            .collect::<Vec<_>>();
+        keys.sort();
+        keys
+    };
+    assert_eq!(prior_keys.len(), 2);
+
+    let replacement = build_program_compat(
+        &cranelisp_frontend::parse("(defn f [:primitives/Bool x] x)").unwrap(),
+    )
+    .unwrap();
+    let (prepared, check) = prepare_cluster_commit(
+        &session.shared.symbol_tables,
+        &session.shared.module_aliases,
+        &session.shared.prelude_fallback,
+        &module,
+        &replacement,
+        &replacement,
+        &session.shared,
+    )
+    .unwrap()
+    .unwrap()
+    .unwrap();
+    assert_eq!(check.warnings.len(), prior_keys.len());
+    for key in &prior_keys {
+        assert!(
+            prepared
+                .decisions
+                .contains(&StagedPublicationDecision::ChangeAbi {
+                    symbol: key.clone(),
+                }),
+            "declined historical instance `{key}` must retire atomically"
+        );
+    }
+
+    let mut processed =
+        crate::cluster::ProcessedCluster::from_parts(check.warnings, Vec::new(), Vec::new());
+    processed.set_prepared(prepared);
+    compile_and_publish_prepared(&mut processed, &session.shared, true).unwrap();
+    let live = session.shared.symbol_tables.get(&module).unwrap();
+    assert!(matches!(
+        live.get("f").map(|binding| &binding.declaration),
+        Some(Decl::Callable(_))
+    ));
+    for key in &prior_keys {
+        assert!(live.get(key.as_ref()).is_none());
+    }
+    drop(live);
+    session.shutdown();
+}
+
+// spec: design/int/s122-closure.md §2 — a declined historical demand is
+// retired only by successful publication of the complete replacement batch.
+#[test]
+fn declined_prior_demand_retirement_is_unpublished_until_commit() {
+    use crate::session_v4::{CompilerSession, RunMode, SessionSettings};
+    use cranelisp_types::{CodegenBehaviour, ConcreteType, MonoDemand};
+
+    let root = tempfile::tempdir().unwrap();
+    let mut session = CompilerSession::new(
+        SessionSettings {
+            no_color: true,
+            no_cache: true,
+            codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
+            priority_workers: 1,
+            nice_workers: 0,
+            run_mode: RunMode::Repl,
+        },
+        root.path().to_path_buf(),
+        "user",
+    )
+    .unwrap();
+    session.set_lib_dirs(Vec::new());
+    session.eval("(defn retired-id [x] x)").unwrap();
+    let mut realized = session.eval("(retired-id 7)").unwrap().unwrap();
+    realized.release_program_result();
+
+    let module = ModuleFullPath::from("user");
+    let demand = MonoDemand::from_type_args(
+        binding_target(&module, "retired-id"),
+        vec![ConcreteType::Int],
+        Span::SYNTHETIC,
+    );
+    let instance_key = {
+        let table = session.shared.symbol_tables.get(&module).unwrap();
+        demand_instance_key(&table, &demand)
+    };
+    let (prior_slot, prior_ptr, prior_owner) = {
+        let live = session.shared.symbol_tables.get(&module).unwrap();
+        let binding = live.get(instance_key.as_ref()).unwrap();
+        let slot = binding.callable_got_slot().unwrap();
+        (slot, live.got.load_slot(slot), has_compiled_owner(binding))
+    };
+    let replacement = build_program_compat(
+        &cranelisp_frontend::parse("(defn retired-id [:primitives/Int _] true)").unwrap(),
+    )
+    .unwrap();
+    let (prepared, check) = prepare_cluster_commit(
+        &session.shared.symbol_tables,
+        &session.shared.module_aliases,
+        &session.shared.prelude_fallback,
+        &module,
+        &replacement,
+        &replacement,
+        &session.shared,
+    )
+    .unwrap()
+    .unwrap()
+    .unwrap();
+    assert_eq!(check.warnings.len(), 1);
+    assert!(
+        prepared
+            .decisions
+            .contains(&StagedPublicationDecision::ChangeAbi {
+                symbol: instance_key.clone(),
+            })
+    );
+    drop(prepared);
+
+    let live = session.shared.symbol_tables.get(&module).unwrap();
+    let binding = live
+        .get(instance_key.as_ref())
+        .expect("discarded preparation must preserve the live instance");
+    assert_eq!(binding.callable_got_slot(), Some(prior_slot));
+    assert_eq!(live.got.load_slot(prior_slot), prior_ptr);
+    assert_eq!(has_compiled_owner(binding), prior_owner);
+    drop(live);
+    session.shutdown();
+}
+
+struct Q1FailureSnapshot {
+    base: String,
+    instance: String,
+    slot: usize,
+    pointer: *const u8,
+    owner: bool,
+    retained: usize,
+    glues: usize,
+    introspection: Option<String>,
+    backing_path: std::path::PathBuf,
+    backing_source: String,
+}
+
+impl Q1FailureSnapshot {
+    fn capture(
+        session: &crate::session_v4::CompilerSession,
+        module: &ModuleFullPath,
+        instance_key: &Symbol,
+        backing_path: std::path::PathBuf,
+        backing_source: &str,
+    ) -> Self {
+        std::fs::write(&backing_path, backing_source).unwrap();
+        ensure_typecheck_product(&session.shared.typecheck_products, module);
+        let mut product = session.shared.typecheck_products.get_mut(module).unwrap();
+        product.file_path = Some(backing_path.clone());
+        product.source_text = Some(backing_source.to_string());
+        drop(product);
+        let live = session.shared.symbol_tables.get(module).unwrap();
+        let base = live.get("rollback-id").unwrap();
+        let instance = live.get(instance_key.as_ref()).unwrap();
+        let slot = instance.callable_got_slot().unwrap();
+        Self {
+            base: format!("{base:?}"),
+            instance: format!("{instance:?}"),
+            slot,
+            pointer: live.got.load_slot(slot),
+            owner: has_compiled_owner(instance),
+            retained: session.shared.retained_code.lock().unwrap().len(),
+            glues: session.shared.fresh_jit_drop_glues.len(),
+            introspection: rollback_introspection(session, module),
+            backing_path,
+            backing_source: backing_source.to_string(),
+        }
+    }
+
+    fn assert_unchanged(
+        &self,
+        session: &crate::session_v4::CompilerSession,
+        module: &ModuleFullPath,
+        instance_key: &Symbol,
+        processed: &crate::cluster::ProcessedCluster,
+    ) {
+        let live = session.shared.symbol_tables.get(module).unwrap();
+        let base = live.get("rollback-id").unwrap();
+        let instance = live.get(instance_key.as_ref()).unwrap();
+        assert_eq!(format!("{base:?}"), self.base);
+        assert_eq!(format!("{instance:?}"), self.instance);
+        assert_eq!(instance.callable_got_slot(), Some(self.slot));
+        assert_eq!(live.got.load_slot(self.slot), self.pointer);
+        assert_eq!(has_compiled_owner(instance), self.owner);
+        drop(live);
+        assert_eq!(
+            session.shared.retained_code.lock().unwrap().len(),
+            self.retained
+        );
+        assert_eq!(session.shared.fresh_jit_drop_glues.len(), self.glues);
+        assert_eq!(rollback_introspection(session, module), self.introspection);
+        let product = session.shared.typecheck_products.get(module).unwrap();
+        assert_eq!(
+            product.file_path.as_deref(),
+            Some(self.backing_path.as_path())
+        );
+        assert_eq!(
+            product.source_text.as_deref(),
+            Some(self.backing_source.as_str())
+        );
+        drop(product);
+        assert_eq!(
+            std::fs::read_to_string(&self.backing_path).unwrap(),
+            self.backing_source
+        );
+        assert!(processed.warnings().is_empty());
+        assert!(processed.redefinitions().is_empty());
+        assert!(processed.pending_codegen_notification.is_none());
+    }
+}
+
+fn rollback_introspection(
+    session: &crate::session_v4::CompilerSession,
+    module: &ModuleFullPath,
+) -> Option<String> {
+    session.shared.introspection.as_ref().and_then(|records| {
+        records
+            .get(&FQSymbol {
+                module: module.clone(),
+                symbol: Symbol::from("rollback-id"),
+            })
+            .map(|record| format!("{:?}", record.value()))
+    })
+}
+
+fn production_diagnostic_for_exact_target(prepared: &PreparedCommit) -> CranelispError {
+    assert_eq!(
+        prepared.targets.len(),
+        1,
+        "this diagnostic control deliberately identifies one exact batch member"
+    );
+    let target = prepared.targets[0].clone();
+    let owner = callable_target_owner(&target).unwrap();
+    let tables = dashmap::DashMap::new();
+    for row in prepared.tables.iter() {
+        tables.insert(row.key().clone(), row.value().clone());
+    }
+    let mut invalid = crate::code::SessionSymbolTable::new_with_params(prepared.module.clone());
+    install_transaction_entry(&mut invalid, owner.symbol.as_ref(), Type::Int, false);
+    tables.insert(prepared.module.clone(), invalid);
+    let mut jit = build_session_jit(&tables).unwrap();
+    let error = match cranelisp_backend::compile_to_module(
+        prepared.module.clone(),
+        std::slice::from_ref(&target),
+        &tables,
+        jit.jit_module(),
+        true,
+    ) {
+        Ok(_) => panic!("the private invalid body must reach production error attribution"),
+        Err(error) => error,
+    };
+    match &error {
+        cranelisp_backend::CompilationError::CodegenFailed {
+            module,
+            symbol,
+            cause,
+            ..
+        } => {
+            assert_eq!(module, &owner.module);
+            assert_eq!(symbol, &owner.symbol);
+            assert_ne!(symbol.as_ref(), "missing-local");
+            assert!(cause.contains("missing-local"), "actual cause was {cause}");
+        }
+        other => panic!("expected attributed CodegenFailed, got {other:?}"),
+    }
+    error.into()
+}
+
+// spec: design/int/s122-closure.md §2/§5 — an ordinary replacement that
+// rematerializes a prior generic instance remains wholly unpublished when a
+// real compile mutates the candidate GOT and then fails before publication.
+// defect: class=partial-commit locus=src/worker.rs::compile_and_publish_prepared found=S122 owner=/dev
+// fault-injection: the private compile operation arms only after the real
+// backend returns; `observed_mutations` proves that path ran. A second private
+// invalid body under the exact prepared target exercises production error
+// attribution. Deleting GOT compensation makes the prior pointer/state
+// assertions fail before the old-definition call can pass.
+#[test]
+fn ordinary_replacement_compile_failure_restores_prior_instance_and_session_state() {
+    use crate::session_v4::{CompilerSession, RunMode, SessionSettings};
+    use cranelisp_types::{CodegenBehaviour, ConcreteType, MonoDemand};
+    use std::cell::RefCell;
+
+    let root = tempfile::tempdir().unwrap();
+    let mut session = CompilerSession::new(
+        SessionSettings {
+            no_color: true,
+            no_cache: true,
+            codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
+            priority_workers: 1,
+            nice_workers: 0,
+            run_mode: RunMode::Repl,
+        },
+        root.path().to_path_buf(),
+        "user",
+    )
+    .unwrap();
+    session.set_lib_dirs(Vec::new());
+    session.eval("(defn rollback-helper [] 42)").unwrap();
+    session.eval("(defn rollback-id [x] x)").unwrap();
+    let mut realized = session.eval("(rollback-id 7)").unwrap().unwrap();
+    assert_eq!(realized.value(), 7);
+    realized.release_program_result();
+
+    let module = ModuleFullPath::from("user");
+    let demand = MonoDemand::from_type_args(
+        binding_target(&module, "rollback-id"),
+        vec![ConcreteType::Int],
+        Span::SYNTHETIC,
+    );
+    let instance_key = {
+        let table = session.shared.symbol_tables.get(&module).unwrap();
+        demand_instance_key(&table, &demand)
+    };
+    let snapshot = Q1FailureSnapshot::capture(
+        &session,
+        &module,
+        &instance_key,
+        root.path().join("user.cl"),
+        "(defn rollback-id [x] x)\n",
+    );
+
+    let replacement = build_program_compat(
+        &cranelisp_frontend::parse("(defn rollback-id [_] (rollback-helper))").unwrap(),
+    )
+    .unwrap();
+    let (prepared, check) = prepare_cluster_commit(
+        &session.shared.symbol_tables,
+        &session.shared.module_aliases,
+        &session.shared.prelude_fallback,
+        &module,
+        &replacement,
+        &replacement,
+        &session.shared,
+    )
+    .unwrap()
+    .unwrap()
+    .unwrap();
+    let expected_targets = prepared.targets.clone();
+    let observed_mutations = RefCell::new(Vec::new());
+    let observed_targets = RefCell::new(Vec::new());
+    let mut processed =
+        crate::cluster::ProcessedCluster::from_parts(check.warnings, Vec::new(), Vec::new());
+    processed.set_prepared(prepared);
+
+    let error = compile_and_publish_prepared_with(
+        &mut processed,
+        &session.shared,
+        true,
+        |prepared, jit, capture_clif| {
+            let table = prepared.tables.get(&prepared.module).unwrap();
+            let before_cells = prepared
+                .targets
+                .iter()
+                .filter_map(|target| {
+                    let arm = table.callable_target(target)?;
+                    let Life::Concrete { slot, .. } = &arm.life else {
+                        return None;
+                    };
+                    Some((slot.index(), table.got.load_slot(slot.index()) as usize))
+                })
+                .collect::<Vec<_>>();
+            drop(table);
+            let _artifacts = cranelisp_backend::compile_to_module(
+                prepared.module.clone(),
+                &prepared.targets,
+                &prepared.tables,
+                jit.jit_module(),
+                capture_clif,
+            )
+            .map_err(CranelispError::from)?;
+            observed_targets.replace(prepared.targets.clone());
+            let table = prepared.tables.get(&prepared.module).unwrap();
+            observed_mutations.replace(
+                before_cells
+                    .into_iter()
+                    .filter_map(|(slot, before)| {
+                        let after = table.got.load_slot(slot) as usize;
+                        (after != before).then_some((slot, before, after))
+                    })
+                    .collect(),
+            );
+            Err(production_diagnostic_for_exact_target(prepared))
+        },
+    )
+    .expect_err("the private compile operation fails before publication");
+    assert!(
+        !observed_mutations.borrow().is_empty(),
+        "real backend compilation must mutate a prepared GOT cell while its JIT is live"
+    );
+    assert_eq!(*observed_targets.borrow(), expected_targets);
+    let message = error.to_string();
+    let target_symbol = callable_target_owner(&expected_targets[0]).unwrap();
+    assert!(message.contains(target_symbol.module.as_ref()));
+    assert!(message.contains(target_symbol.symbol.as_ref()));
+    assert!(message.contains("missing-local"));
+    let live = session.shared.symbol_tables.get(&module).unwrap();
+    for (slot, before, after) in observed_mutations.borrow().iter().copied() {
+        assert_ne!(
+            after, before,
+            "the recorded candidate cell must have changed"
+        );
+        assert_eq!(
+            live.got.load_slot(slot) as usize,
+            before,
+            "the compile-error compensation must restore every mutated candidate cell"
+        );
+    }
+    drop(live);
+
+    snapshot.assert_unchanged(&session, &module, &instance_key, &processed);
+
+    let mut old_call = session
+        .eval("(rollback-id 9)")
+        .expect("the next ordinary turn succeeds")
+        .expect("the old definition still returns a value");
+    assert_eq!(old_call.value(), 9);
+    old_call.release_program_result();
+    session.shutdown();
 }
 
 // spec: design/arch/macro-availability-model.md §0 (FIXME 0299) — the
@@ -1071,6 +2313,7 @@ fn mk_writer_test_ctx<'a>(
         platform_dirs: &[],
         project_root: Path::new("/"),
         shared_state: None,
+        reload_demands: std::sync::Arc::from([]),
         eval_driven: false,
     }
 }

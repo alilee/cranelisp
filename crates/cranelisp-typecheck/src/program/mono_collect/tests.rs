@@ -27,26 +27,42 @@ fn result_context_nullary_instances_have_distinct_schemes_links_and_slots() {
     let mut slots = Vec::new();
     let mut keys = Vec::new();
     for ty in [Type::Int, Type::String] {
+        let owner = FQSymbol {
+            module: tc.state.current_module.clone(),
+            symbol: Symbol::from("g"),
+        };
         let link = cranelisp_types::InstanceLink::from_type_args(
-            CallableTarget::Binding(FQSymbol {
-                module: tc.state.current_module.clone(),
-                symbol: Symbol::from("g"),
-            }),
+            CallableTarget::Binding(owner.clone()),
             vec![ConcreteType::from_type(&ty).unwrap()],
         );
+        let signature = Type::Fn(
+            vec![],
+            Box::new(Type::Fn(vec![ty.clone()], Box::new(Type::Int))),
+        );
+        let key = cranelisp_types::concrete_callable_key(
+            &owner,
+            &ConcreteType::from_type(&signature).unwrap(),
+        )
+        .unwrap();
+        let arg = if ty == Type::Int {
+            "primitives/Int"
+        } else {
+            "primitives/String"
+        };
+        assert_eq!(
+            key.as_ref(),
+            format!("(test/g [] (Fn [{arg}] primitives/Int))")
+        );
         let binding = table
-            .get(&link.instance_key())
+            .get(key.as_ref())
             .expect("result-specific instance exists");
         let callable = binding.callable().unwrap();
-        assert_eq!(
-            callable.arm.scheme.ty,
-            Type::Fn(vec![], Box::new(Type::Fn(vec![ty], Box::new(Type::Int))))
-        );
+        assert_eq!(callable.arm.scheme.ty, signature);
         assert!(
             matches!(&callable.arm.life, Life::Concrete { minted_from: Some(actual), .. } if actual == &link)
         );
         slots.push(binding.callable_got_slot().unwrap());
-        keys.push(link.instance_key());
+        keys.push(key);
     }
     assert_ne!(slots[0], slots[1]);
     drop(table);
@@ -271,12 +287,13 @@ fn mono_instance_carries_concrete_boundary_monoexpr_body() {
     // is itself the validation payoff; assert the variant is observable and
     // its body's root type is a `ConcreteType`.
     let variants = tc.mono_variants();
+    let add_int = "(test/add [primitives/Int primitives/Int] primitives/Int)";
     let v = variants
         .iter()
-        .find(|v| v.name.as_ref() == "test/add$Int")
+        .find(|v| v.name.as_ref() == add_int)
         .unwrap_or_else(|| {
             panic!(
-                "expected a MonoDefnVariant for test/add$Int, got {:?}",
+                "expected a MonoDefnVariant for {add_int}, got {:?}",
                 variants.iter().map(|v| v.name.as_ref()).collect::<Vec<_>>()
             )
         });
@@ -348,11 +365,12 @@ fn caller_codegen_view_carries_post_mono_sigdispatch() {
 
     tc.check_program_self(&[id_defn, main_defn]).unwrap();
 
-    // The mono instance `id$Int` is minted (home-qualified, FIXME 0519).
+    // The full-signature Int instance is minted.
+    let id_int = "(test/id [primitives/Int] primitives/Int)";
     let mono_names = tc.mono_defn_names();
     assert!(
-        mono_names.iter().any(|n| n.as_ref() == "test/id$Int"),
-        "expected test/id$Int mono instance, got {mono_names:?}"
+        mono_names.iter().any(|n| n.as_ref() == id_int),
+        "expected {id_int} mono instance, got {mono_names:?}"
     );
 
     // `main` is a Concrete{slot} codegen target carrying a POST-mono
@@ -415,9 +433,8 @@ fn caller_codegen_view_carries_post_mono_sigdispatch() {
     let mut dispatches = Vec::new();
     collect_sig_dispatch(&main_view.body, &mut dispatches);
     assert!(
-        // FIXME 0519: SigDispatch names the home-qualified mono `test/id$Int`.
-        dispatches.iter().any(|d| d == "test/id$Int"),
-        "main's codegen_view must carry the post-mono SigDispatch{{test/id$Int}} \
+        dispatches.iter().any(|d| d == id_int),
+        "main's codegen_view must carry the post-mono SigDispatch{{{id_int}}} \
          for the (id 7) call; found dispatches: {dispatches:?}"
     );
 }
@@ -470,24 +487,21 @@ fn box_field_through_hof_monomorphises_concrete() {
         "the generic `mk` template must be slot-less Polymorphic",
     );
 
-    // The fn-value-argument worklist minted `mk$Int` (mangled by `mk`'s
-    // own concrete param type `Int`) — a concrete, slotted mono instance
+    // The fn-value-argument worklist minted the full-signature `mk` instance —
+    // a concrete, slotted mono instance
     // with a fully-concrete `(Fn [Int] (Box Int))` stored type (no residual
     // `Type::Var` ADT field).
-    match tc
-        .symbol_table()
-        .get("test/mk$Int")
-        .and_then(Binding::callable)
-    {
+    let mk_int = "(test/mk [primitives/Int] (test/Box primitives/Int))";
+    match tc.symbol_table().get(mk_int).and_then(Binding::callable) {
         Some(callable) => {
             assert!(
                 matches!(callable.arm.life, Life::Concrete { .. }),
-                "mk$Int must be a Concrete (slotted) mono instance",
+                "{mk_int} must be a Concrete (slotted) mono instance",
             );
             let scheme = &callable.arm.scheme;
             assert!(
                 scheme.ty.is_concrete(),
-                "mk$Int's stored type must be fully concrete (no Type::Var \
+                "{mk_int}'s stored type must be fully concrete (no Type::Var \
                  ADT field), got {:?}",
                 scheme.ty,
             );
@@ -501,11 +515,11 @@ fn box_field_through_hof_monomorphises_concrete() {
                                 && args.len() == 1
                                 && args[0] == Type::Int
                     ),
-                    "mk$Int's result must be (Box Int), got {ret:?}",
+                    "{mk_int}'s result must be (Box Int), got {ret:?}",
                 );
             }
         }
-        other => panic!("mk$Int mono instance not registered: {other:?}"),
+        other => panic!("{mk_int} mono instance not registered: {other:?}"),
     }
 }
 
@@ -552,7 +566,7 @@ fn fn_value_in_concrete_multi_sig_clause_minted_and_carried_sugg7() {
     // 1. The poly fn-value `mk` was monomorphised to `mk$Int` from the
     //    multi-sig clause body (the D3 clause-body scan reached it).
     assert!(
-        !symbol_names_containing(&tc, "mk$Int").is_empty(),
+        !symbol_names_containing(&tc, "/mk [primitives/Int]").is_empty(),
         "the poly fn-value `mk` in `ms`'s concrete clause body MUST be \
          monomorphised to `mk$Int`; symbols: {:?}",
         symbol_names_containing(&tc, "mk"),
@@ -563,7 +577,9 @@ fn fn_value_in_concrete_multi_sig_clause_minted_and_carried_sugg7() {
     let mut targets = Vec::new();
     collect_resolved_targets(&view.body, &mut targets);
     let mk_carrier = targets.iter().any(|(l, fq)| {
-        l == "mk" && matches!(fq, Some(fq) if fq.symbol.as_ref().contains("mk$Int"))
+        l == "mk"
+            && matches!(fq, Some(fq) if fq.symbol.as_ref()
+                == "(test/mk [primitives/Int] primitives/Int)")
     });
     assert!(
         mk_carrier,
@@ -682,8 +698,7 @@ fn cross_module_imported_constrained_fn_monomorphises_in_defining_scope() {
         .get(&caller)
         .unwrap()
         .all_symbols()
-        // FIXME 0519: mono name is home-qualified by cmp's DEFINING module.
-        .filter(|(name, _)| name.as_ref().contains("cmp$"))
+        .filter(|(name, _)| name.as_ref().starts_with("(helper/cmp ["))
         .map(|(name, entry)| {
             let concrete = matches!(
                 entry.callable().map(|c| &c.arm.life),
@@ -693,7 +708,9 @@ fn cross_module_imported_constrained_fn_monomorphises_in_defining_scope() {
         })
         .collect();
     assert!(
-        monos.iter().any(|(n, _)| n == "helper/cmp$Int"),
+        monos
+            .iter()
+            .any(|(n, _)| n == "(helper/cmp [primitives/Int] primitives/Int)"),
         "a `helper/cmp$Int` mono variant must be created in the CALLER module \
          for the imported constrained call (FIXME 0355; home-qualified by cmp's \
          defining module `helper`, FIXME 0519); found: {monos:?}",
@@ -701,7 +718,7 @@ fn cross_module_imported_constrained_fn_monomorphises_in_defining_scope() {
     assert!(
         monos
             .iter()
-            .find(|(n, _)| n == "helper/cmp$Int")
+            .find(|(n, _)| n == "(helper/cmp [primitives/Int] primitives/Int)")
             .map(|(_, c)| *c)
             .unwrap_or(false),
         "the `cmp$Int` mono entry must be a concrete UserFn owning its own \
@@ -811,8 +828,7 @@ fn def1_bare_prelude_fallback_polymorphic_call_mints_mono_in_consumer() {
         .get(&consumer)
         .unwrap()
         .all_symbols()
-        // FIXME 0519: mono name is home-qualified by count's DEFINING module.
-        .filter(|(name, _)| name.as_ref().contains("count$"))
+        .filter(|(name, _)| name.as_ref().starts_with("(prelude/count ["))
         .map(|(name, entry)| {
             let concrete = matches!(
                 entry.callable().map(|c| &c.arm.life),
@@ -873,11 +889,11 @@ fn polymorphic_result_hops_monomorphise_with_concrete_result_type() {
     let mono = tc.mono_defn_names();
     let mono_strs: Vec<String> = mono.iter().map(|s| s.as_ref().to_string()).collect();
     assert!(
-        mono_strs.iter().any(|n| n.contains("h1$")),
+        mono_strs.iter().any(|n| n.starts_with("(test/h1 [")),
         "h1 must be monomorphised (FIXME 0373 Tier 1); mono entries: {mono_strs:?}",
     );
     assert!(
-        mono_strs.iter().any(|n| n.contains("h2$")),
+        mono_strs.iter().any(|n| n.starts_with("(test/h2 [")),
         "h2 must ALSO be monomorphised — the concrete instantiation must \
          propagate through the hop chain (FIXME 0373 Tier 1, multi-hop); \
          mono entries: {mono_strs:?}",
@@ -908,8 +924,8 @@ fn polymorphic_result_hops_monomorphise_with_concrete_result_type() {
             other => panic!("{name} mono entry not a Def: {other:?}"),
         }
     };
-    assert_concrete_int_result(&tc, "h1$");
-    assert_concrete_int_result(&tc, "h2$");
+    assert_concrete_int_result(&tc, "(test/h1 [");
+    assert_concrete_int_result(&tc, "(test/h2 [");
 }
 
 // spec: spec/07-traits.md §7.8 — CROSS-MODULE polymorphic-result hop mono
@@ -1001,8 +1017,8 @@ fn cross_module_polymorphic_result_hops_monomorphise_with_concrete_result_type()
             other => panic!("{name} mono entry not a Def: {other:?}"),
         }
     };
-    assert_concrete_int_result(&tc, "h1$");
-    assert_concrete_int_result(&tc, "h2$");
+    assert_concrete_int_result(&tc, "(hop/h1 [");
+    assert_concrete_int_result(&tc, "(hop/h2 [");
 }
 
 // =====================================================================
@@ -1087,8 +1103,7 @@ fn u_c2_minted_mono_scheme_return_is_concrete() {
     let st = tc.symbol_table();
     let (mono_name, scheme) = st
         .all_symbols()
-        // FIXME 0519: mono name is home-qualified with a lossless sig.
-        .find(|(n, _)| n.as_ref().contains("vconcat$"))
+        .find(|(n, _)| n.as_ref().starts_with("(test/vconcat ["))
         .and_then(|(n, e)| {
             e.callable()
                 .map(|c| (n.as_ref().to_string(), c.arm.scheme.clone()))
@@ -1257,6 +1272,82 @@ fn fq_is_trait_method_decl_discriminates_decl_from_callable() {
     );
 }
 
+// spec: design/typecheck/auto-curry.md §3.2; FIXME 0779 — exercise both required
+// drain disciplines directly over the same unresolved trait-declaration
+// carrier. This pins the function-level polarity independently of which
+// production settlement seam selects it.
+#[test]
+fn auto_curry_drain_polarities_handle_unresolved_trait_decl_carrier() {
+    for drain in [AutoCurryDrain::Deferrable, AutoCurryDrain::Final] {
+        let mut tc = tc_with_prims();
+        register_num_trait_inline(&mut tc);
+        let call_span = span(1_300, 1_310);
+        let callee_span = span(1_301, 1_302);
+        let decl_fq = FQSymbol {
+            module: tc.state.current_module.clone(),
+            symbol: Symbol::from("+"),
+        };
+        tc.state.method_resolutions.var_refs.insert(
+            callee_span,
+            cranelisp_types::VarRef::Global(decl_fq.clone()),
+        );
+        tc.state.pending_auto_curry.push((
+            call_span,
+            Symbol::from("+"),
+            1,
+            2,
+            Type::Fn(
+                vec![Type::Var(9_901), Type::Var(9_901)],
+                Box::new(Type::Var(9_901)),
+            ),
+            None,
+            Some(callee_span),
+        ));
+
+        let env = TypeCheckEnv::new(
+            &tc.modules,
+            &tc.next_id,
+            &tc.module_aliases,
+            &tc.prelude_fallback,
+        );
+        env.resolve_auto_curry(&mut tc.state, drain);
+
+        assert!(tc.state.pending_auto_curry.is_empty());
+        assert!(
+            !matches!(
+                tc.state.method_resolutions.apply_refs.get(&call_span),
+                Some(cranelisp_types::ApplyRef::Dispatch(actual)) if actual == &decl_fq
+            ),
+            "neither polarity may publish the unslotted trait declaration as a dispatch carrier"
+        );
+        match drain {
+            AutoCurryDrain::Deferrable => {
+                assert_eq!(tc.state.deferred_auto_curry.len(), 1);
+                assert!(
+                    tc.state
+                        .method_resolutions
+                        .resolved_calls
+                        .get(&call_span)
+                        .is_none(),
+                    "the pre-settlement polarity retains the whole item for the final drain"
+                );
+            }
+            AutoCurryDrain::Final => {
+                assert!(tc.state.deferred_auto_curry.is_empty());
+                assert!(matches!(
+                    tc.state.method_resolutions.resolved_calls.get(&call_span),
+                    Some(ResolvedCall::AutoCurry {
+                        applied_count: 1,
+                        total_count: 2,
+                        trait_resolution: None,
+                        ..
+                    })
+                ));
+            }
+        }
+    }
+}
+
 // spec: design/backend/s115-carrier-and-rc-sweep.md §1.3 — the MULTI-SIG
 // per-variant TWIN of `autocurry_over_trait_operator_never_carries_the_decl_fq`
 // (FIXME 0775; the standing "coverage by definition variants" lens — one
@@ -1284,7 +1375,7 @@ fn autocurry_in_a_multi_sig_clause_never_carries_the_decl_fq() {
          (defn h [] ((g 3) 4))",
     );
     // The 1-arity clause is owned arm 0; `(g 3)` mints its typed instance.
-    let view = mono_instance_view_containing(&tc, "g__arm0$");
+    let view = mono_instance_view_containing(&tc, "(test/g [");
     match autocurry_dispatch_in(&view) {
         cranelisp_types::ApplyRef::Dispatch(fq) => {
             assert!(

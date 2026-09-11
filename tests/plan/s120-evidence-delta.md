@@ -322,7 +322,7 @@ are the repository maintenance checks only, re-executed by `qa` on 2026-08-31:
   landed and measured 2026-08-31 (§2 D-2): the wiring gate reports
   `12 allocation pairs` and its plant fires.
 
-Classification unchanged (`tests/plan/PLAN.md` §"Repository gates"): both
+Classification unchanged ([repository evidence classification](PLAN.md#repository-gates--maintenance-checks-never-compiler-authority)): both
 gates are **maintenance checks** — they protect record currency and wiring
 declarations, and are never compiler acceptance evidence.
 
@@ -397,7 +397,7 @@ for this increment. Phase advancement and close operations remain the user's.
 
 | To | What |
 |---|---|
-| `sprint` | R1 in the §4.4 order; the user decisions named in the Wave 6 report (publication now or carry locally; owners for `.claude/`, `.github/`, `AGENTS.md`, `.codex/`; the `xhigh` effort override in root `CLAUDE.md` §Models; the Copilot inventory); moving `sprints/reimplementation.md` to `sprints/archive/` or accepting its 5 enrolled entries; ROADMAP line 3 (cites `tests/plan/strategy.md`, which does not exist) and line 522 |
+| `sprint` | R1 in the §4.4 order; the user decisions named in the Wave 6 report (publication now or carry locally; owners for `.claude/`, `.github/`, `AGENTS.md`, `.codex/`; the `xhigh` effort override in root `CLAUDE.md` §Models; the Copilot inventory); the dated S120 proposal to archive the obsolete prototype strategy or accept its 5 enrolled entries (superseded by S122 deletion after canonical-content comparison; historical source is verified at [Git blob dc78ddbe](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/sprints/reimplementation.md), not a current archive instruction); ROADMAP line 3 (cites `tests/plan/strategy.md`, which does not exist) and line 522 |
 | `test` | **Nothing open.** W7 — the allocation-equality condition, its plant, and the docstring repair in `scripts/verify-role-wiring.py` — was delivered at Phase 6b (§2 D-2, verified 2026-08-31), as were the earlier Wave 6 items: W6, the C8 leg, the `tests/citation_drift.rs` header contradiction and its stale ACT-0946 path, the §7 C-ii dedupe (§4.5) |
 | `review` | State which undated `design/review/` files besides `CLAUDE.md` are standing, so `qa` can admit them to the live corpus per file (C8 residual). The content repair of `design/review/CLAUDE.md` itself was delivered at Phase 6b |
 | `arch` | package-side at contribution time: the three unexercised refusal branches in §2 "Not allocated here" (missing-contract, adapter-name-mismatch, missing-`model`). The rest of that list — the summary's dropped `transcript_unavailable` rows, the unreachable adapter fallback, the `close_row` classification order and the stale writer docstring (§7 A, B; audit F-7) — was delivered in the integrated `.agents` delta, verified against source 2026-08-31. Still open: `design/CLAUDE.md`'s dead `sprints/METHOD.md` §1.4 anchor; `design/arch/legacy/` retired-mechanism lines at archive triage |

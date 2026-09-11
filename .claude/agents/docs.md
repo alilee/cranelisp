@@ -1,6 +1,7 @@
 ---
 name: docs
 description: Own user/ so a reader can understand the language from prose
+provider: claude
 model: opus
 effort: high
 ---

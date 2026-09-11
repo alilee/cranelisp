@@ -96,9 +96,40 @@ dump() {
   python3 - "$d/err.txt" "$out" <<'PY'
 import re, sys
 raw = open(sys.argv[1]).read()
+frame_re = re.compile(
+    r'; === CLIF ([^\r\n]+?) ===\r?\n(.*?); === end CLIF \1 ===\r?\n',
+    re.S,
+)
+start_re = re.compile(r'^; === CLIF ([^\r\n]+?) ===\r?$', re.M)
+end_re = re.compile(r'^; === end CLIF ([^\r\n]+?) ===\r?$', re.M)
+def matched_frames(text):
+    matches = list(frame_re.finditer(text))
+    starts = list(start_re.finditer(text))
+    ends = list(end_re.finditer(text))
+    if len(matches) != len(starts) or len(matches) != len(ends):
+        raise ValueError(
+            f'MALFORMED FRAME SET: starts={len(starts)} ends={len(ends)} '
+            f'matched={len(matches)} — a header is mismatched or truncated'
+        )
+    return matches
+# Keep the executable-name grammar honest: canonical names may contain spaces,
+# and an end header for a different name must never complete the frame.
+probe_name = 'user::(primitives/IO.Pure [primitives/Int] (primitives/IO primitives/Int))'
+probe_body = f'; === CLIF {probe_name} ===\nfunction %probe() {{\n}}\n'
+if len(matched_frames(probe_body + f'; === end CLIF {probe_name} ===\n')) != 1:
+    sys.exit('INTERNAL EXTRACTOR ERROR: whitespace-bearing CLIF name was dropped')
+try:
+    matched_frames(probe_body + '; === end CLIF user::different ===\n')
+except ValueError:
+    pass
+else:
+    sys.exit('INTERNAL EXTRACTOR ERROR: mismatched CLIF end header was accepted')
 frames = {}
-for m in re.finditer(r'; === CLIF (\S+) ===\n(.*?); === end CLIF \1 ===\n',
-                     raw, re.S):
+try:
+    matches = matched_frames(raw)
+except ValueError as error:
+    sys.exit(str(error))
+for m in matches:
     name = m.group(1)
     if name in frames:
         sys.exit(f"DUPLICATE FRAME: {name} — under --no-cache each symbol "

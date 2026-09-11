@@ -244,8 +244,10 @@ pub(crate) fn install_exports(
 // | bootstrap.rs::mount_synthetic_modules    | yes     | LEGAL-SKIP, ASSERTED   |
 // |   (session-init synthetic seeds; S115    |         | (see note below)       |
 // |    W6, FIXME 0740 disposition)           |         |                        |
-// | platform.rs::register_platform_in_tc     | yes     | ROUTE through gate     |
-// |   (DLL-load orchestration)               |         | (own-def arm, D=None)  |
+// | lifecycle.rs PRIMITIVES_TABLE whole-table| yes     | named legal-skip: own  |
+// |   session-init mount                     |         | definitions before pool|
+// | platform.rs::register_platform_in_tc     | yes     | named legal-skip:      |
+// |   (DLL-load orchestration)               |         | canonical own-def only |
 //
 // **bootstrap legal-skip, with a detection proof (not an argument).**
 // `mount_synthetic_modules` runs ONCE at session init, single-threaded, BEFORE

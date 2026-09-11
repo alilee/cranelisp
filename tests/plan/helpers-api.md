@@ -282,7 +282,7 @@ forces a deliberate decision and is greppable.
 
 ## Mode-equivalence helper — `run_through_all_modes`
 
-Per `tests/plan/PLAN.md §"Mode canonicalisation"` and
+Per [mode selection](PLAN.md#mode-canonicalisation--repl-is-the-canonical-surface-for-language-conformance) and
 `helpers.md §"Mode-equivalence"`, a curated subset of tests runs one
 program through all six mode×cache permutations and asserts equivalent
 observable behaviour. The helper lives in `tests/helpers/e2e.rs`
@@ -343,7 +343,7 @@ impl AllModesResult {
 /// cached), and returns observations.
 ///
 /// Use only for the mode-equivalence subset (per
-/// `tests/plan/PLAN.md §"Mode canonicalisation"`). Bulk language
+/// [mode selection](PLAN.md#mode-canonicalisation--repl-is-the-canonical-surface-for-language-conformance)). Bulk language
 /// conformance MUST NOT use this helper — use REPL canonical directly.
 ///
 /// `prelude` selects the prelude variant (typically `TestStandard`

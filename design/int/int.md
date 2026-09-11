@@ -2,9 +2,12 @@
 
 Owner: `/design`. Single source of design intent for the integration layer (`src/` + `crates/cranelisp-exe-bundle/`). Authored Sprint 63; refreshed Sprint 64 against the pinned Decision 40 / 41 / 42 + Principle 14 / 15 configuration.
 
-**Sprint 121 — the C6 binary / exe-bundle visit.** `s121-c6-visit.md` is the
-active subordinate design for the whole Binary/int surface this sprint, and it
-is the entry point: it states the ordered bundles, the per-FIXME dispositions,
+**Sprint 122 — selected Binary/int closure.** `s122-closure.md` is the current
+entry point for the approved reload/session, macro/quote, result-root, `/mem`,
+diagnostic-recovery and eval-client review. It records the source-reconciled
+mechanics, one continuous Phase-5 reservation and the explicit stop on an
+ungrounded public codegen-failure trigger. `s121-c6-visit.md` remains the
+preceding complete-surface record: it states the ordered bundles, the per-FIXME dispositions,
 and the exact source and module-test reservations. Its thesis in one line: int
 stops carrying private copies of facts its neighbours now own — the symbol
 lifecycle, the result-root rule, the RC primitive, the instantiation trigger —
@@ -74,7 +77,11 @@ heap-type predicate. `result-owner.md` §8 is the serial implementation order;
 §9 the four-cell flip set plus QA's armed-detector acceptance leg; §11 the
 ordering constraint against FIXME 0863 (arch ruling 11: 0745 first).
 
-This document elaborates *within* the bounded context fixed by `design/arch/bounded-contexts.md` §6 and the public surface fixed by `design/arch/facades/int.md`. Where this document and either of those drift, the bounded-context statement and facade win — file FIXME `target: /arch` or update this doc accordingly.
+This document elaborates *within* the bounded context fixed by
+`design/arch/bounded-contexts.md` §6. The current public crate source and its
+generated API checks are the concrete facade evidence. Where this document
+drifts from the bounded-context statement or an approved public contract, route
+the boundary conflict to `/arch` and update this doc accordingly.
 
 > **S76 implementation plan — see `design/int/s76-implementation-plan.md`.** This master is S64-era and substantially stale w.r.t. the as-built (`cluster.rs`, `cache.rs`, `got_trace.rs`, `trace.rs`, `io_trace.rs`, `display.rs` have since landed in `src/`; many §14/§16 FIXMEs are resolved). The S76 plan is the authoritative sequencing for the facade-arc wash-through (W-Absorb), the parallel-JIT-pipeline collapse (W-Collapse), the LOCKED three-pass macro orchestration (W-Macro), W-Enablement, and host-wiring. Two master claims are **superseded by the S76 LOCKED W-Macro decision** (`macro-availability-model.md` §0): (1) §2 note 4 / §6.3's "macro-vs-fn discrimination is orchestrator-owned via a `MacroInMem` gap peek" — recognition is now a `cranelisp_types::resolve_macro_head` query in int's Pass-1 `process_cluster` expand loop over the committed view, and the `block_for_macro_codegen` path is DELETED not wired (no same-module non-macro clause-callee case exists under the lock); (2) §3/§6's "macro expansion is frontend's job / `int::process_form` is the gap-orchestrator not the expander" — int now OWNS macro execution via `cranelisp_types::MacroExpander` over `src/expander.rs`'s invocation core + `src/marshal.rs`, and the free-standing `expand_sexp_recursive` walk / `SymbolTableMacroResolver` DELETE (BC §6 int bullet).
 
@@ -116,7 +123,8 @@ Per `design/arch/bounded-contexts.md` §6 — `int` is the *integration layer* s
 - Boundary types (`cranelisp-types`, owned by `/arch`)
 
 **Crosses the boundary**:
-- **Inward**: the public surfaces of all five other crates (per `facades/int.md` §Consumed surface).
+- **Inward**: the approved public surfaces of the compiler and runtime crates,
+  as consumed by the current Binary/int source and checked APIs.
 - **Outward**: nothing for other workspace crates — `int` is the application root. Exe-bundle exposes a startup stub used only by the system linker.
 - **Window types**: cadence-scoped; not exposed to other crates.
 
@@ -130,12 +138,18 @@ Per `design/arch/bounded-contexts.md` §6 — `int` is the *integration layer* s
 
 ## 2. Public surface
 
-`design/arch/facades/int.md` is the authoritative public-API contract (810 lines). This document does not restate the surface; it elaborates the rationale and the internal architecture that backs it.
+The current root-library source and generated public-API checks are the concrete
+public-surface evidence. `design/arch/bounded-contexts.md` §6 owns the boundary;
+this document elaborates its internal architecture.
 
 Three structural notes about the surface worth naming:
 
 1. **`CompilerSession` is the high-level facade.** A single object that `::main` constructs and drives. Construction is fallible and returns `Result<CompilerSession, CranelispError>` because bootstrap uses the same fallible lifecycle machine as every other birth route. It wraps an `Arc<SharedState>` (the worker-shareable subset) plus initiator-thread-only state (watcher channel, REPL eval cursor, worker pool handles, accumulated warnings). Every CLI mode (`--run`, `--link`, REPL) constructs the same `CompilerSession`; the only difference is which methods are invoked after `register_module`. Per Principle 11 (single pipeline; mode parameters) — there is exactly one `process_form`, parameterised by mode (and the mode discriminator IS `shared.introspection.is_some()`, not a separate flag).
-2. **No re-exports of `cranelisp-types` items in int's public surface beyond what facades elsewhere already publish.** Per Principle 15 (facade types live with their behavior) — int IMPORTS from each implementation crate directly; the int facade re-exports `cranelisp-types` symbols that are part of int's documented API surface (per `facades/int.md` §"Re-exports from cranelisp-types") only as a convenience to consumers of the binary, which is itself a small audience (no out-of-tree dependents on the `cranelisp` binary crate as a library). The Principle-15 external-audience exception applies to platform alone.
+2. **No re-exports of `cranelisp-types` items beyond the checked Binary/int
+   public surface.** Per Principle 15 (facade types live with their behavior),
+   int imports from each implementation crate directly. Any convenience
+   re-export is retained only when it remains present in the current checked
+   public surface; the root library has a small consumer audience.
 3. **`Code` re-export per Decision 41.** `Code` lives in `cranelisp-backend/src/code.rs` (moved per Decision 41 from the previous `src/code.rs` location). int re-exports `pub use cranelisp_backend::Code;` for session-boundary `SymbolTable<Code, ()>` instantiation. Backend constructs `Code::Jit` directly inside `compile_to_module` and writes via `SymbolTable::write_code(&self, sym, code)`; int no longer wraps a backend return tuple. Principle 3 protection (no `cranelisp-types → cranelisp-backend` dep) survives intact.
 
 ---
@@ -317,12 +331,12 @@ for sym in defined_symbols(&shared.symbol_tables[scope]) {
 ### 4.3 Introspection placement (Decision 38, mode-conditional)
 
 `shared.introspection: Option<DashMap<FQSymbol, Introspection>>`. The outer `Option`:
-- `Some(map)` iff REPL mode OR `CRANELISP_CODEGEN_TRACE` is set (or REPL trace mode).
-- `None` in production batch (`--run` non-trace, `--link`).
+- `Some(map)` iff `RunMode::Repl`.
+- `None` in production batch (`--run`, `--link`).
 
-The presence of the map IS the mode discriminator; there is no separate `is_repl: bool` flag. Production batch pays zero per-symbol metadata cost.
+**The mode discriminator is the explicit `RunMode` carrier on `SharedState`, not the store's presence.** `RunMode::populates_introspection()` decides the `Option` once at session construction and gates every population site; `CRANELISP_CODEGEN_TRACE` does not enable the store. The earlier `introspection.is_some()` proxy was retired by `design/arch/d1-introspection-repl-only.md` §4 — a store's presence is not a readable statement of session intent, and two facts keyed on one field drift. Production batch pays zero per-symbol metadata cost.
 
-**`Introspection` shape** (per `facades/int.md` §"Introspection"):
+**`Introspection` shape** (`src/session_v4/types.rs`):
 - `source: Option<String>` — per-defn source snippet (Decision 39); replaces module-global source store.
 - `sexp: Option<Sexp>` — post-expansion s-expression.
 - `clif_ir: Option<String>` — CLIF IR text (when trace mode); **eagerly captured** post-codegen.
@@ -856,22 +870,25 @@ The audit's F4 (worker orchestration split across files) collapses under the tar
 
 ## 11. Observability — three ring buffers + introspection
 
-Post-S64 the observability surface has four sinks, all int-owned:
+The observability surface has four sinks, all int-owned. `observability.md` is
+the canonical carrier for activator semantics, placement constraints and dump
+mechanics; this table is the one-glance map, and `src/sched_dump.rs`'s SIGUSR1
+live-state snapshot (a fifth instrument, not a sink) is in its §8.
 
 | Sink | Activator | What it observes | Implementation |
 |---|---|---|---|
-| Scheduler trace | `CRANELISP_SCHEDULER_TRACE=1` (or REPL trace mode) | Worker lifecycle, scheduler dispatch, notify_*, wait_for_* | `src/observability.rs` (+ `observability/tests.rs`) — the stable home; the S81-era "renamed `src/scheduler_trace/`" plan never happened and is retired |
-| IO trace | `CRANELISP_IO_TRACE=1` (or REPL trace mode) | IO trampoline transitions, Par fork-join, IVar spark/force | `src/io_trace/` (post-FIXME 0103; relocated from `cranelisp-runtime/src/io_trace.rs`) |
-| GOT trace | `CRANELISP_GOT_TRACE=1` (or REPL trace mode) | GOT-slot population events: JitWrite, LinkerWrite, Redefinition | `src/got_trace/` (post-FIXME 0099; new) |
-| Introspection store | REPL mode OR `CRANELISP_CODEGEN_TRACE` | Per-symbol metadata: source, sexp, clif_ir, disasm, code_size, compile_duration | `SharedState.introspection` |
+| Scheduler trace | `CRANELISP_SCHEDULER_TRACE=1\|*\|<module-list>` | Worker lifecycle, scheduler dispatch, pool transitions, `is_typechecked` hit/miss | `src/observability.rs` (+ `observability/tests.rs`) — the stable home; the S81-era "renamed `src/scheduler_trace/`" plan never happened and is retired |
+| IO trace | `CRANELISP_IO_TRACE=1\|*` | IO trampoline transitions, platform effects, Par fork-join | `src/io_trace.rs` |
+| GOT trace | `CRANELISP_GOT_TRACE=1\|*` | GOT-slot writes: JitWrite, LinkerWrite, Redefinition, SlotFreeze, TrapPatch | `src/got_trace.rs` |
+| Introspection store | `RunMode::Repl` only (D1 §4) | Per-symbol metadata: source, sexp, clif_ir, code_size, compile_duration | `SharedState.introspection` |
 
-The first three are per-thread `VecDeque<Event>` ring buffers with FIFO overflow; activated by env-var; flushed to stderr at session end (with merge-sort across threads via shared `TRACE_ANCHOR` `Instant`). Sinks 2 + 3 are reached via observer-callback contracts owned by their originating crates: `cranelisp_intrinsics::register_io_observer(...)` (Decision 40 — the registration host moved to intrinsics with the D43 split of the former `cranelisp-runtime`) and `cranelisp_backend::register_got_observer(...)` (FIXME 0099). int's session startup registers the observers when the activator is on, no-ops otherwise; the relaxed-load null check costs one branch per call site in the unregistered case.
+The first three are per-thread `VecDeque<Event>` ring buffers with FIFO overflow; activated by env-var; flushed to stderr at session end (with merge-sort across threads via shared `TRACE_ANCHOR` `Instant`; the IO sink's cross-thread half is currently unreachable — `observability.md` §10). Sinks 2 + 3 are reached via observer-callback contracts owned by their originating crates: `cranelisp_intrinsics::register_io_observer(...)` (Decision 40 — the registration host moved to intrinsics with the D43 split of the former `cranelisp-runtime`) and `cranelisp_backend::register_got_observer(...)` (FIXME 0099). `main` registers the observers when the activator is on, no-ops otherwise; the relaxed-load null check costs one branch per call site in the unregistered case.
 
 **The pattern is uniform across the three ring buffers**: each crate that originates events defines the taxonomy (`IoEventTag` / `GotEventTag` / scheduler events), exposes a registration function, and emits through the registered observer. int implements the ring-buffer state, formatter, and dump.
 
 The fourth sink (introspection) is a per-key store, not a ring; it serves slash commands and the rich error formatter. It overwrites on REPL redefinition (per the Decision 31 carry-forward invariant — same key, fresh data).
 
-**Production-batch cost** (`--link` and non-trace `--run`): zero — `shared.introspection == None` means no populate paths run; no observers are registered, so the ring-buffer call sites no-op after the relaxed load + null check.
+**Production-batch cost** (`--link` and `--run`): zero — `shared.introspection == None` means no populate paths run; no observers are registered, so the ring-buffer call sites no-op after the relaxed load + null check.
 
 ---
 
@@ -1035,7 +1052,7 @@ The 32 docs in `design/int/` plus the `concurrency/` subdirectory were authored 
 | `cranelisp-toml.md` | 412 | **keep** | TOML settings format; load-bearing reference. |
 | `repl-lifecycle.md` | 506 | **refresh** | REPL flow steps; some pre-38. Shorter refresh than `concurrency-architecture.md`; high reader-utility. |
 | `session-persistence.md` | 469 | **refresh** | `module_sources` references; supersede with Decision 39. The `regenerate_backing_file` shape moved per §8.3 of this master. |
-| `observability.md` | 376 | **refresh** | Pre-S64. Refresh to describe the four-sink shape (§11 of this master) — scheduler trace + IO trace + GOT trace + introspection. Single-source the env-var activator table. |
+| `observability.md` | 344 | **keep** | Refreshed S122 against source: four sinks + the SIGUSR1 snapshot, the int-owned activator table, the placement constraints and the dump mechanics. Canonical for activator semantics; §11 here is the one-glance map. |
 | `terminal-styling.md` | 511 | **keep** | Style spec; load-bearing reference. |
 | `private-submodule-import.md` | 304 | **keep** | Edge-case behaviour spec; preserves audit-trail value. |
 | `bare-primitive-value-path.md` | 219 | **keep** | Edge-case behaviour spec. |

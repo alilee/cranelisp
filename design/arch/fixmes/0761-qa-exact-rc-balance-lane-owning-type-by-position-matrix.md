@@ -113,3 +113,26 @@ cross-crate (it lives in `tests/`, `/qa`'s and `/testing`'s territory), so it is
 named and routed rather than landed with the fix. The in-crate half DID land:
 `typed_release_kind` is now the ONE type-directed release classification with an
 exhaustive dispatch, and `is_fresh_construction` is exhaustive over `MonoExpr`.
+
+## S122 QA current-source disposition (2026-09-10)
+
+The differential-only defect claim is superseded by the delivered exact lane:
+`tests/gen_ownership_flows.rs` has five owning types × twelve positions × two
+toggles × two iteration counts, no balance exclusions, and exact/value/
+differential/scaling/missing-measurement checks. All five lane and five
+capability/clean tests PASS in the existing `dc78ddbe` stocktake; no rerun was
+performed here. PLAN now distinguishes its historical five-by-nine account
+from current source. Focused 0763/0760 tests cover closure-owning shapes beyond
+the generator's type list.
+
+One bounded obligation remains: the generator is run-only; 0763 A/B/C/C2
+already cover link, but nested-data capture and closure-capturing-closure are
+run-only in the inspected dedicated corpus. The retained runtime/test visit
+reuses one existing nested-data capture program and the existing F
+closure-capturing-closure program through `link_then_run`, with exact balance
+and expected values in both toggles, alongside the existing linked clean
+control. This replaces a redundant full link Cartesian expansion with the two
+distinct release-path observations still lacking that mode. See
+`tests/plan/s122-evidence-delta.md` for the current allocation. Keep this filing
+open until those observations settle; do not add a new generator or retire the
+separate differential face.

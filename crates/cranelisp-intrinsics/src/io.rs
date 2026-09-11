@@ -13,6 +13,8 @@ use cranelisp_platform::{
 };
 use cranelisp_types::HeapHeader;
 
+use crate::handle::{Borrowed, Owned};
+
 use crate::alloc::alloc_with_rc;
 use crate::io_observer::{self, IoEvent, IoEventTag};
 
@@ -145,7 +147,8 @@ impl Drop for ProducedValue {
                     };
                     disposer.dispose(value);
                 }
-                crate::rc::consume_shallow(self.value);
+                // SAFETY: the armed Par buffer is owned by this guard.
+                crate::rc::consume_shallow(unsafe { Owned::from_abi(self.value) });
             }
             None => {}
         }
@@ -204,7 +207,8 @@ pub extern "C" fn cranelisp_run_io(io_ptr: i64) -> i64 {
     // Intermediate nodes produced by the trampoline have already been
     // released by `run_io_trampoline` itself — `io_ptr` is untouched by
     // the trampoline, so this dec is not a double-free.
-    crate::drop::consume_io_tree(io_ptr);
+    // SAFETY: the consuming trampoline entry received this tree by transfer.
+    crate::drop::consume_io_tree(unsafe { Owned::from_abi(io_ptr) });
     result
 }
 
@@ -263,10 +267,10 @@ pub(crate) fn drive_io(io_ptr: i64) -> i64 {
 /// `Option`-take / "consumed exactly once" discipline §2.9 uses for the permit
 /// (Principle 20).
 ///
-/// **Scope (C2 foundations).** The guard frees only the **fresh** (continuation-
-/// produced) in-flight pointers — nodes/closures the trampoline produced and that
-/// have **no other owner**, so freeing them on cancel is a pure leak-fix with no
-/// double-free risk. The **non-fresh** root of a moved-out branch sub-tree (the
+/// **Scope (C2 foundations).** The guard frees only the frame's references to
+/// **fresh** (continuation-produced) in-flight pointers. Other structural owners
+/// may retain their own references. The **non-fresh** root of a moved-out branch
+/// sub-tree (the
 /// race/select loser's own tree, transferred by the C3 move-out) is freed by its
 /// owner, NOT here — that per-branch root ownership + the `consume_io_tree` balance
 /// of a partially-stepped non-fresh tree is the **/design-backend-coordinated seam
@@ -290,17 +294,19 @@ impl Drop for TrampolineFrame {
         if !self.armed {
             return; // walk completed / aborted normally — already balanced.
         }
-        // Free the FRESH in-flight node (continuation-produced, no other owner).
+        // Release the frame's reference to the FRESH in-flight node.
         if self.current_is_fresh && self.current != 0 {
-            crate::drop::consume_io_tree(self.current);
+            // SAFETY: `current_is_fresh` marks the frame-owned reference.
+            crate::drop::consume_io_tree(unsafe { Owned::from_abi(self.current) });
         }
-        // Free each un-popped FRESH continuation closure (a fresh Bind's cont,
-        // already dec_shallow_io'd at push, so this is its sole remaining owner). A
-        // non-fresh cont belongs to the caller's/owner's tree — left for its
-        // consume_io_tree.
+        // Release the frame's reference to each un-popped FRESH continuation.
+        // That reference was acquired before the fresh Bind parent was consumed;
+        // another retained parent may still own a separate reference. A non-fresh
+        // cont belongs to the caller's/owner's tree — left for its consume_io_tree.
         for cont in self.cont_stack.drain(..) {
             if cont.is_fresh {
-                crate::drop::consume_closure(cont.ptr);
+                // SAFETY: `is_fresh` marks the frame-owned continuation.
+                crate::drop::consume_closure(unsafe { Owned::from_abi(cont.ptr) });
             }
         }
     }
@@ -383,10 +389,8 @@ pub(crate) fn run_io_trampoline_inner_async<'a, 'h: 'a>(
                     edge_disposer,
                 ),
                 t if t == IO_TAG_BIND => {
-                    let inner = unsafe { read_node_field(current, FIELD_0_OFFSET) };
-                    let cont = unsafe { read_node_field(current, FIELD_1_OFFSET) };
-                    let input_disposer =
-                        ResultDisposer(unsafe { read_node_field(current, FIELD_2_OFFSET) });
+                    let (inner, cont, input_disposer) =
+                        read_bind_transition(current, current_is_fresh);
                     io_observer::emit(
                         IoEventTag::BindEnter,
                         &IoEvent::BindEnter {
@@ -408,9 +412,6 @@ pub(crate) fn run_io_trampoline_inner_async<'a, 'h: 'a>(
                             new_depth: frame.cont_stack.len() as u32,
                         },
                     );
-                    if current_is_fresh {
-                        crate::drop::dec_shallow_io(current);
-                    }
                     frame.current = inner;
                     // freshness unchanged: descending the inner of a (non-)fresh Bind.
                     continue;
@@ -882,7 +883,13 @@ async fn run_blocking_branch(
         // ferried back — the fork-join error-slot ferry (test-discovery.md §6).
         let err = crate::panic::take_runtime_error();
         if !lease.is_cancelled() {
-            let _ = tx.send((produced, err));
+            let published = tx.send((produced, err)).is_ok();
+            #[cfg(test)]
+            if published {
+                ready_handoff_test_barrier(branch.io);
+            }
+            #[cfg(not(test))]
+            let _ = published;
         }
     });
 
@@ -906,6 +913,121 @@ async fn run_blocking_branch(
     // 5. The guard released the permit after disarming cancellation — this
     //    increments the pool and wakes the front parked waiter.
     (idx, result)
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct ReadyHandoffBarrierState {
+    published: bool,
+    release: bool,
+    finished: bool,
+}
+
+#[cfg(test)]
+struct ReadyHandoffBarrier {
+    state: std::sync::Mutex<ReadyHandoffBarrierState>,
+    changed: std::sync::Condvar,
+}
+
+#[cfg(test)]
+impl ReadyHandoffBarrier {
+    fn new() -> Self {
+        Self {
+            state: std::sync::Mutex::new(ReadyHandoffBarrierState::default()),
+            changed: std::sync::Condvar::new(),
+        }
+    }
+
+    fn wait_until_published(&self) {
+        let mut state = self.state.lock().unwrap();
+        while !state.published {
+            state = self.changed.wait(state).unwrap();
+        }
+    }
+
+    fn release_and_wait_until_finished(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.release = true;
+        self.changed.notify_all();
+        while !state.finished {
+            state = self.changed.wait(state).unwrap();
+        }
+    }
+
+    fn release(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.release = true;
+        self.changed.notify_all();
+    }
+}
+
+#[cfg(test)]
+struct ReadyHandoffBarrierGuard {
+    branch: i64,
+    barrier: std::sync::Arc<ReadyHandoffBarrier>,
+}
+
+#[cfg(test)]
+impl ReadyHandoffBarrierGuard {
+    fn wait_until_published(&self) {
+        self.barrier.wait_until_published();
+    }
+
+    fn release_and_wait_until_finished(&self) {
+        self.barrier.release_and_wait_until_finished();
+    }
+}
+
+#[cfg(test)]
+impl Drop for ReadyHandoffBarrierGuard {
+    fn drop(&mut self) {
+        self.barrier.release();
+        let mut hook = READY_HANDOFF_TEST_HOOK.lock().unwrap();
+        if hook
+            .as_ref()
+            .is_some_and(|(branch, _)| *branch == self.branch)
+        {
+            hook.take();
+        }
+    }
+}
+
+#[cfg(test)]
+static READY_HANDOFF_TEST_HOOK: std::sync::LazyLock<
+    std::sync::Mutex<Option<(i64, std::sync::Arc<ReadyHandoffBarrier>)>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+
+#[cfg(test)]
+fn install_ready_handoff_test_barrier(branch: i64) -> ReadyHandoffBarrierGuard {
+    let barrier = std::sync::Arc::new(ReadyHandoffBarrier::new());
+    let mut hook = READY_HANDOFF_TEST_HOOK.lock().unwrap();
+    assert!(
+        hook.is_none(),
+        "only one ready-handoff barrier may be armed"
+    );
+    *hook = Some((branch, barrier.clone()));
+    ReadyHandoffBarrierGuard { branch, barrier }
+}
+
+#[cfg(test)]
+fn ready_handoff_test_barrier(branch: i64) {
+    let barrier = READY_HANDOFF_TEST_HOOK
+        .lock()
+        .unwrap()
+        .as_ref()
+        .filter(|(armed_branch, _)| *armed_branch == branch)
+        .map(|(_, barrier)| barrier.clone());
+    let Some(barrier) = barrier else {
+        return;
+    };
+    let mut state = barrier.state.lock().unwrap();
+    state.published = true;
+    barrier.changed.notify_all();
+    while !state.release {
+        state = barrier.changed.wait(state).unwrap();
+    }
+    state.finished = true;
+    barrier.changed.notify_all();
 }
 
 /// The poll-shape partition of the two-pool join: each poll leaf is awaited on
@@ -959,9 +1081,10 @@ async fn run_poll_partition(
 /// during the walk — specifically, nodes allocated by a continuation's
 /// body. A continuation `(fn [x] (pure (+ x 1)))` allocates a fresh Pure
 /// when invoked. That Pure becomes the new `current` and, as the
-/// trampoline steps further, is replaced — at which point it is
-/// shallow-dec'd. Without this inline dec the continuation-produced nodes
-/// would leak (O(N) for N Bind steps).
+/// trampoline steps further, is replaced — at which point the frame releases
+/// its reference. Fresh Bind nodes are structurally consumed after the frame
+/// acquires its own references to the inner node and continuation. Without these
+/// releases the continuation-produced nodes would leak (O(N) for N Bind steps).
 ///
 /// A `current_is_fresh` flag tracks whether the current node belongs to
 /// the caller's tree (initially) or to a continuation-produced subtree
@@ -1062,6 +1185,38 @@ unsafe fn read_node_field(node: i64, field_offset: isize) -> i64 {
     unsafe { crate::heap_access::read_i64(node, field_offset) }
 }
 
+/// Project a child borrow through the lifetime of its live IO parent.
+fn borrowed_io_field<'a>(parent: Borrowed<'a>, field_offset: isize) -> Borrowed<'a> {
+    // SAFETY: `parent` brands the live node for this call. The caller selects a
+    // field present in that node's closed IO layout, and the returned borrow is
+    // narrowed to the parent's lifetime by this function's signature.
+    unsafe { Borrowed::from_abi(read_node_field(parent.raw_for_read(), field_offset)) }
+}
+
+/// Read one Bind transition. A fresh parent is a frame-owned counted
+/// reference, so acquire independent child references before structurally
+/// releasing it. Caller-tree parents remain borrowed and untouched.
+fn read_bind_transition(current: i64, current_is_fresh: bool) -> (i64, i64, ResultDisposer) {
+    if !current_is_fresh {
+        return (
+            unsafe { read_node_field(current, FIELD_0_OFFSET) },
+            unsafe { read_node_field(current, FIELD_1_OFFSET) },
+            ResultDisposer(unsafe { read_node_field(current, FIELD_2_OFFSET) }),
+        );
+    }
+
+    // SAFETY: `current_is_fresh` means the trampoline frame owns exactly the
+    // continuation-produced reference represented by `current`.
+    let parent = unsafe { Owned::from_abi(current) };
+    let borrowed = parent.as_borrowed();
+    let inner = borrowed_io_field(borrowed, FIELD_0_OFFSET).to_owned();
+    let cont = borrowed_io_field(borrowed, FIELD_1_OFFSET).to_owned();
+    let input_disposer =
+        ResultDisposer(unsafe { read_node_field(parent.raw_for_read(), FIELD_2_OFFSET) });
+    crate::drop::consume_io_tree(parent);
+    (inner.into_raw(), cont.into_raw(), input_disposer)
+}
+
 /// Feed `value` (the result a `Pure`/`Effect`/`Par` arm just produced) to the
 /// next continuation, or finish the walk.
 ///
@@ -1094,7 +1249,8 @@ fn feed_continuation(
             // it ourselves (fresh subtree). A caller-tree node is left for the
             // caller's post-return `consume_io_tree`.
             if current_is_fresh {
-                crate::drop::dec_shallow_io(current);
+                // SAFETY: a fresh completed current is owned by this frame.
+                crate::drop::dec_shallow_io(unsafe { Owned::from_abi(current) });
             }
             // Same rule for the closure we're about to invoke: consume it only
             // if it was part of a fresh Bind.
@@ -1110,7 +1266,8 @@ fn feed_continuation(
         None => {
             // Final node; shallow-dec only if fresh.
             if current_is_fresh {
-                crate::drop::dec_shallow_io(current);
+                // SAFETY: a fresh final current is owned by this frame.
+                crate::drop::dec_shallow_io(unsafe { Owned::from_abi(current) });
             }
             Step::Finish(value.transfer())
         }
@@ -1168,16 +1325,14 @@ fn force_effect_node(node: i64) -> EffectStep {
     // thunk/token fields are within its payload.
     let thunk_ptr = unsafe { read_node_field(node, FIELD_0_OFFSET) };
     let resource_token = unsafe { read_node_field(node, FIELD_1_OFFSET) };
-    // Scheduling class is not currently stored on Effect nodes at runtime — the
-    // class attaches to platform symbols at registration time (see
-    // `cranelisp-platform::SchedulingClass` and `PlatformFn.scheduling_class`).
-    // At the trampoline site we do not have a back-reference to the symbol. Emit
-    // 0 as a placeholder; Slice 4 can either plumb the class through Effect
-    // construction or consume it via /int's scheduler trace.
-    //
-    // FIXME(/backend): consider threading SchedulingClass into the Effect node
-    // payload (extra field) so trampoline events carry the real class without
-    // needing a cross-trace correlation. Deferred pending Slice 4 evidence.
+    // `scheduling_class: 0` is deliberate, not a placeholder. The class attaches
+    // to platform symbols at registration time — `cranelisp_platform::SchedulingClass`,
+    // derived onto `OwnedPlatformFnDescriptor.scheduling_class` from
+    // `PlatformFn.concurrency` — and the trampoline has no back-reference to the
+    // symbol. Extending the Effect node payload to carry it was considered and
+    // rejected: `design/backend/io-scheduling.md` §"Scheduling class in trampoline
+    // trace events" (resolution (b)). Consumers recover the class by correlating
+    // this event with the originating `ParBind` classification trace.
     io_observer::emit(
         IoEventTag::PlatformEffect,
         &IoEvent::PlatformEffect {
@@ -1314,10 +1469,7 @@ fn run_io_trampoline_inner(
                 }
             },
             t if t == IO_TAG_BIND => {
-                let inner = unsafe { read_node_field(current, FIELD_0_OFFSET) };
-                let cont = unsafe { read_node_field(current, FIELD_1_OFFSET) };
-                let input_disposer =
-                    ResultDisposer(unsafe { read_node_field(current, FIELD_2_OFFSET) });
+                let (inner, cont, input_disposer) = read_bind_transition(current, current_is_fresh);
                 io_observer::emit(
                     IoEventTag::BindEnter,
                     &IoEvent::BindEnter {
@@ -1342,11 +1494,6 @@ fn run_io_trampoline_inner(
                         new_depth: frame.cont_stack.len() as u32,
                     },
                 );
-                if current_is_fresh {
-                    // Fresh Bind: shallow-dec the outer Bind alloc; inner
-                    // ownership transfers to `current` and remains fresh.
-                    crate::drop::dec_shallow_io(current);
-                }
                 // current_is_fresh stays as-is: if we were fresh, the inner
                 // (allocated by the same continuation) is also fresh; if we
                 // were not, we're still descending the caller's tree.
@@ -1415,7 +1562,8 @@ fn call_continuation(cont_ptr: i64, val: i64, cont_is_fresh: bool) -> i64 {
     if cont_is_fresh {
         // Continuation-owned closure: release it now. `consume_closure`
         // invokes the embedded drop glue on last-ref and deallocs.
-        crate::drop::consume_closure(cont_ptr);
+        // SAFETY: a fresh continuation transfers its closure owner here.
+        crate::drop::consume_closure(unsafe { Owned::from_abi(cont_ptr) });
     }
     new_io
 }

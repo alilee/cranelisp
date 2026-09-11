@@ -17,6 +17,15 @@ The REPL *experience* (the `/ask` UX, the agent-output frame, the `--agent` row,
 `/refs`/`/tests-for` UX, the U6 first-use disclosure wording) is `/repl`-owned in
 `repl/spec.md`; this doc designs the int *mechanism* that backs it.
 
+**S122 eval-client decision.** The selected eval harness is a test-owned client
+of the real agent-enabled process over ordinary REPL stdin. Current provider
+configuration, bounded loop, stub, and best-effort event files expose the
+needed surface, so no Binary/int production change is selected. Missing or
+unparseable logs invalidate only log-derived metrics. An approved live budget
+that cannot admit the current 65,536-token maximum output request is the exact
+trigger for a small configuration follow-up; no cap, logger, provider, or fault
+mode is designed speculatively. See `design/int/s122-closure.md` §6.
+
 ---
 
 ## 0. Scope summary — MVP-core vs R5-release-valve

@@ -16,8 +16,19 @@ Sprint 116 architecture ruling 9, and S118 arch rulings 10 (the Principle-8
 bridge closes this sprint) and 11 (0863 serializes AFTER this work).
 **Backend counterpart:** `design/backend/transitive-drop-glue.md` (§3.3 the
 artifact contract, §3.4 D1/D6 the as-built reshape, §7 the slice order).
-This resolves the design obligation in FIXME 0745; the FIXME remains open
-until implementation and verification.
+This resolves the design obligation in FIXME 0745; its implementation and
+verification are complete and the filing is closed.
+
+**S122 delivered amendment.** `src/result_owner.rs::release_key` consumes the
+producer's concrete codegen type through `ConcreteType::result_root()`; the
+private `strip_io_head` copy is gone. `/mem` observes the result, explicitly
+calls the existing `EvalResult::release_program_result()` chokepoint, and only
+then closes the counter window. QA's allocated heap/scalar process witness
+records the rendered value and post-release snapshot. It remains Q6-specific
+and distinct from the completed Q4 balance pair and Q5 matched comparison; it
+does not establish integrated runtime acceptance.
+Current evidence and reservations are pinned in `design/int/s122-closure.md`
+§4.
 
 ---
 
@@ -162,13 +173,13 @@ follows it; it does not fork it.
 §1.1 step 1 and §5's "missing/non-concrete type at typed exit" row required int
 to narrow the **observed** static `Type` with `ConcreteType::from_type` and to
 treat a narrowing failure as a hard invariant error. W4 implemented that
-literally, and it was **falsified in implementation**. `/design` has verified
-the as-built shape (`src/result_owner.rs::release_key` + `strip_io_head`) and
-**ratifies it**; the rule below is the design of record.
+literally, and it was **falsified in implementation**. `/design` ratifies the
+producer-key shape implemented by `src/result_owner.rs::release_key`; the rule
+below is the design of record.
 
 > **The rule.** The release key is the **result-producing entry's `codegen_view`
-> body `ConcreteType`** — the same value backend computed its `result_roots`
-> from — with the `IO` head stripped by the same rule backend applies. Narrowing
+> body `ConcreteType`** — the same value backend uses for its result root —
+> projected through `ConcreteType::result_root()`. Narrowing
 > the observed `Type` with `ConcreteType::from_type` is the **fallback**, used
 > only when the entry published no codegen view; a narrowing failure *there*
 > keeps §5's hard located/invariant error, and its diagnostic names both the
@@ -220,16 +231,10 @@ not take this path: they remain subject to ordinary evaluation and the
 return-directed ambiguity gate. This preserves both total slot⇔concrete and the
 REPL §1.5.1 introspection disposition.
 
-**Cross-reference — the strip rule's home is an open `/arch` question.** The
-`IO a ⇒ a` strip this rule applies (`strip_io_head`) currently has **two literal
-encodings**: int's and backend's inline map in `compile_to_module`. They agree
-by text, not by shared derivation. **FIXME 0898 (`target: /arch`)** owns where
-the single statement lives — the candidate home is `cranelisp-types` beside
-`drop_glue_symbol_name`, which is a cross-crate/public-surface question this
-design does not settle and must not pre-empt. Until 0898 rules, int's
-`strip_io_head` is the int-side statement of a rule whose authority is
-backend's; if 0898 lands a shared helper, int **calls** it and deletes its copy
-— it does not keep a fork.
+**Cross-reference — the strip rule has one home.** FIXME 0898 placed the one-hop
+`IO a ⇒ a` projection in `cranelisp-types` beside `drop_glue_symbol_name` as
+`ConcreteType::result_root()`. Binary/int and backend consume that helper; no
+private inline copy remains.
 
 ---
 
@@ -598,15 +603,13 @@ by this ruling. If `/repl` ever wants `/time` to mean "time for the whole turn",
 that is a `repl/spec.md` question and the same seam serves it — do not change
 one instrument's window to match the other's on grounds of symmetry alone.
 
-**Implementation obligation (`/dev`(int)).** Restructure `handle_mem` so the
-`Ok(Some(result))` arm renders, then calls `release_program_result()`, before the
-closing `alloc_count`/`dealloc_count`/`bytes_current` reads; leave the `Ok(None)`
-and `Err` arms alone (neither carries an owning result — §5). The e2e acceptance
-is the FIXME's own evidence run: `/mem (Box "boxed")` repeated on a
-`(deftype Box [:String contents])` must report `deallocs +2 live +0`, matching
-the bracketing snapshots that already show `live` flat. Unit tier: the exactly-once
-guard already has rows at `src/session_v4/types.rs:280-346` (including the
-double-`release_program_result` cell at `:301-302`) — extend, do not duplicate.
+**Delivered S122 shape.** `handle_mem` renders an `Ok(Some(result))`, calls
+`release_program_result()`, and then reads the closing allocation counters;
+`Ok(None)` and `Err` carry no owning result. QA's allocated `str-concat`
+heap/scalar process witness records the rendered value and post-release
+snapshot in `/tmp/s122-int-q6-mem-result-dc78ddbe.log`. That observation is
+specific to Q6 ordering; Q5's paired session after-state and integrated runtime
+acceptance remain separate.
 
 ### 4.3 Run lifetime
 
@@ -655,22 +658,14 @@ drift this rule exists to prevent.
 The `IO a ⇒ a` strip applied to that key is the same rule backend applies to its
 result roots.
 
-> **RULED and part-landed; three encodings at HEAD, not two (S121, FIXME 0898).**
+> **RULED and delivered (S122, FIXME 0898).**
 > `/arch` ruled the single statement's home: `ConcreteType::result_root()`,
 > `crates/cranelisp-types/src/concrete.rs:131`, one hop on the `primitives/IO`
 > non-empty-args head, with the `drop_glue_symbol_name` cross-reference. It
-> **landed**, and **neither consumer migrated** — so the rule now has three
-> literal encodings, not the two the filing was raised against: the types
-> method (zero production call sites at HEAD), backend's inline `result_roots`
-> map (`crates/cranelisp-backend/src/lib.rs:672-684`, removed by C4 bundle B6),
-> and int's `strip_io_head` (`src/result_owner.rs:421`, sole caller
-> `release_key` at `:346`).
->
-> **Int's obligation** is bundle N6b of `design/int/s121-c6-visit.md` §9.2:
-> re-express `release_key` over `result_root()` and delete `strip_io_head`.
-> Semantics are byte-identical; any semantic change is out of scope. The filing
-> deletes when *both* consumers are collapsed — neither stream discharges it
-> alone.
+> now supplies both backend and Binary/int directly; the two private inline
+> encodings are gone. Binary/int obtains the release key from the existing
+> concrete codegen view and applies the shared one-hop projection without a
+> second heap predicate or semantic change.
 >
 > Worth carrying past this instance: a shared helper published without migrating
 > its consumers **increases** the duplication it was meant to remove. The
@@ -922,17 +917,13 @@ invocation and does not create another drop-glue registry writer.
 ## Next skills
 
 **Implementation is complete** (§8's I0–I5 landed `fc3375f9..16a26408`; the four
-§9.1 cells flipped; W4 gate PASS; FIXME 0745 CLOSED). What remains:
+§9.1 cells flipped; W4 gate PASS; FIXME 0745 CLOSED). S122 also delivered the
+0898 int consumer and 0914 `/mem` ordering. What remains:
 
-- `/dev` (int) — **FIXME 0898's int half**: `result_root()` exists and int still
-  forks it. Re-express `release_key` over the shared method and delete
-  `strip_io_head` (§4.3's blockquote; bundle N6b of
-  `design/int/s121-c6-visit.md` §9.2). `/arch`'s ruling is settled — this is no
-  longer an open question, it is an unlanded consumer migration.
-- `/dev` (int) — **FIXME 0914**: `/mem`'s delta window closes before the
-  release, so every heap-valued expression reports a phantom leak. §4.2.1 rules
-  the seam (shape (a): render, release, *then* close the window, through the
-  same chokepoint); the same bundle carries it.
+- `/qa` — preserve Q6's allocated rendered-value/post-release observation and
+  Q5's completed matched reduction from residual 1143 to 46 under its exact
+  recorded workload and configuration. The 46 remains unclassified; neither
+  observation substitutes for integrated runtime evidence.
 - `/dev` (int/exe-bundle) — stale-citation sweep: `src/result_owner.rs`'s
   `release_key` rustdoc and `src/CLAUDE.md` §"Program-result ownership" both
   cite the retired number **0892**; the ruling is **0896** and now lives in

@@ -166,7 +166,7 @@ left dangling.
 (last touched 2026-07-03, but only sectionally):
 - Cites `design/arch/facades/backend.md` as "authoritative" at lines 3, 5, 7,
   38, 322, 418, 444 — that facade was **retired S75 W5b** (→ BC §3 + source
-  rustdoc, per `design/arch/CLAUDE.md` §facades). A reader following the doc's
+  rustdoc, per [recorded architecture guidance](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/arch/CLAUDE.md)). A reader following the doc's
   own authority pointer finds nothing (`design/arch/facades/` now contains only
   s69/s70 audit files).
 - §Module inventory (line 97 region) describes a tree three reorganizations old:

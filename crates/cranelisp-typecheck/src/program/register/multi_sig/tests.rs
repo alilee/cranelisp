@@ -627,15 +627,16 @@ fn wrapper_indirected_multi_sig_return_monomorphises_from_settled_state() {
     // The template clause's instance exists and carries a concrete-boundary view
     // — a view cannot be built while any node retains a residual `Var`, so its
     // presence IS the settled-state evidence.
-    let minted = symbol_names_containing(&tc, "peers__arm0$");
+    let peers_instance = "(test/peers [primitives/Int] (primitives/Vec primitives/Int))";
+    let minted = symbol_names_containing(&tc, "(test/peers [");
     assert!(
-        minted == ["test/peers__arm0$"],
+        minted == [peers_instance],
         "the wrapper-indirected multi-sig call MUST mint a concrete instance; \
          got {minted:?}"
     );
-    let _view = mono_instance_view_containing(&tc, "peers__arm0$");
+    let _view = mono_instance_view_containing(&tc, peers_instance);
     let table = tc.symbol_table();
-    let arm = table.get("test/peers__arm0$").unwrap().callable().unwrap();
+    let arm = table.get(peers_instance).unwrap().callable().unwrap();
     assert!(arm.arm.scheme.ty.is_concrete());
     assert!(
         matches!(&arm.arm.life, Life::Concrete { minted_from: Some(link), .. } if link.type_args.is_empty())

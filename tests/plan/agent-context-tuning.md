@@ -1,118 +1,49 @@
-# Agent Context Tuning — eval-scenario process & metrics
+# REPL-agent evaluation policy
 
-Owner: `/qa`. Companion to FIXME `design/arch/fixmes/0577` (the log-schema
-enrichment + primer coverage, owned by `/repl`/`/dev`). This doc defines the
-**measurement process** that turns the enriched §27 activity log into a signal for
-tuning the agent's context (primer + harvest) across assistance scenarios. It does
-NOT specify the log schema (that is 0577 → repl/spec.md §17.20) or the primer
-content (0577 thread C).
+Owner: QA. Purpose: measure whether the delivered REPL agent completes real compiler-use tasks and identify useful context improvements. Agent conformance remains governed by the REPL specification and its deterministic tests; model-quality results are diagnostic observations, not language acceptance gates.
 
-Related prior art: `agent-testing-strategy.md` (S88/S89 — agent conformance
-testing). This doc is distinct: not "does the agent behave correctly" but "does
-the *context* let the agent succeed efficiently, and where are its gaps."
+## Corpus
 
-## 1. Why this exists
+- Use fixed, replayable tasks from actual assistance sessions or observed compiler-use problems. Record provenance and distinguish verbatim replay from a newly written adaptation.
+- Fix the starting project/session, prompt sequence and independently checkable outcome. Preserve exact source files and hashes, including the grader. Do not grade the agent's claim of completion as task completion.
+- Include only tasks whose required observable is established. A task summary without input data or expected behavior is a candidate, not a runnable eval.
+- Keep the suite small and name its coverage limits. The recorded `safe-dial` session describes Position/Rotation ADTs, multi-arity rotate-position and fold-rotations, but its exact prompt/data/expected results have not been recovered; it is not currently replayable.
+- The current selected corpus and executable harness allocation live in [the S122 evidence delta](s122-evidence-delta.md#runnable-eval-corpus-and-policy). Automatic tuning and a broad provider comparison are not part of that slice.
 
-The agent's context is two artifacts with different lifetimes:
+## Evidence and interpretation
 
-- **Primer** (`src/agent/primer.txt` + the `syntax` cheatsheet) — STATIC,
-  spec-dependent syntax/semantics. Should cover ~99% of syntax needs (0577 C).
-- **Harvest** (`src/agent/harvest.rs`) — SESSION-dependent, what's in scope
-  (prelude status, stdlib symbols, existing-defn style).
+- Observe actual definitions and program results through the ordinary REPL or compiled artifact. Keep deterministic harness/stub evidence separate from live-model outcomes.
+- Record task result independently from attribution. Wrong output, refusal, compiler defect, provider failure and missing evidence are different observations. Attribute a compiler failure only when a current compiler-only reproduction supports it.
+- Retain incomplete and failed attempts. Report denominators and known compiler-blocked cases explicitly; never retry until success and report only the last run.
+- A missing activity log invalidates metrics derived from it, not a separately observed program result. Production log sinks are best-effort; the runner checks the files it relies on.
+- Fixes to compiler or agent behavior use their ordinary spec-traced evidence. An aggregate eval score cannot select a language semantic change or require the compiler to satisfy an invalid task.
 
-Tuning either requires a feedback signal: **per scenario, which context gaps
-caused inefficiency or failure.** The full trace (`agent_trace.txt`) has the raw
-material but is unmineable at scale (16k lines/session). The enriched §27 JSONL
-index (0577 thread A) is the substrate; this process reads it.
+## Existing observations
 
-## 2. The tuning loop
+The activity-log contract is [REPL agent observability](../../repl/spec/17b-agent-observability.md); the source carrier is `src/agent/log.rs`. Extract only fields actually present:
 
-```
-1. Define / extend the scenario suite (§3), each with a scenario tag.
-2. Run each scenario with logging on:
-     CRANELISP_AGENT_LOG=<path>  CRANELISP_AGENT_SCENARIO=<tag>
-   The log records the current context-version stamp (primer_hash + harvest_len).
-3. Mine the log per scenario (§4 metrics).
-4. Attribute each gap:
-     static syntax/semantics  -> primer   (0577 C)
-     session/in-scope facts   -> harvest  (agent-prelude-awareness-via-harvest lesson)
-5. Edit primer/harvest; re-run the SAME scenarios; diff the metrics.
-   The context-version stamp makes step 5 a controlled before/after, not eyeballing.
-```
+| Observation | Source / interpretation |
+|---|---|
+| Completion | Independent post-turn program-result grader |
+| Submitted definitions and repairs | submit/repair events by symbol and turn; a first-submit rate requires identifiable association |
+| Tool use | pull events grouped by tool; zero is valid only when the required log exists |
+| Stop reason | give_up cause and error_class; missing definition alone does not establish model refusal |
+| Steps | steps_at_submit and steps_at_give_up; retain turn correlation with the full trace |
+| Context | primer_hash and harvest_len, plus fixture/configuration hashes |
+| Questions | Recorded pull question text, when present; useful input to primer/harvest investigation |
+| Duration | Harness wall-clock observation |
+| Tokens/cost | Actual provider telemetry when supplied; otherwise unknown, never inferred from text length |
 
-The loop is `/repl`-driven for the primer edits (0577 D — recurring questions are
-uncovered primer rows); `/qa` owns the suite, the metrics, and the
-comparable-runs discipline.
+Raw counts and per-run observations precede derived rates. No metric is evidence that the primer covers a numerical percentage of the language.
 
-## 3. Scenario suite
+## Comparable runs
 
-The suite is **seeded from real cases, grown as they arise** — NOT invented
-(tests derive from real behaviour, not speculation). Each scenario is a fixed
-user-prompt sequence run against a fixed starting session, tagged for slicing.
+- Record the actual executable path/hash, source revision and dirty diff, features/configuration, fixture/prompt/probe/grader hashes, provider/model/endpoint, request settings, consent/autonomy, run limits and repeat number. Never retain credential values in reports.
+- Start each repeat in a fresh isolated process/project/cache. Keep the agent-feature build in its separate target directory, following `tests/scripts/run-agent-lane.sh`.
+- Compare only matching task and execution strata, or explicitly identify the changed compiler/context/model dimension. Identical hashes do not eliminate model nondeterminism.
+- Choose live-provider disclosure, model and budget before execution. One run is a smoke observation; a small repeated baseline is descriptive, not evidence of statistical significance.
+- A proposed primer/harvest change follows observed failure analysis. Re-run the same fixed tasks after the change; retain regressions as well as improvements. Do not turn the measurement loop into automatic production prompt editing.
 
-| tag | prompt shape | what it exercises | seeded from |
-|---|---|---|---|
-| `safe-dial` | AoC-style: model a dial as `Position` (1-D coord) + `Rotation` (L/R sum type), build multi-sig `rotate-position` (2-arg natural + 3-arg indexed) and `fold-rotations` over a Vec | ADT `deftype` (sum + product), multi-arity `defn`, `match`, accessor use, tail recursion | S108 live session (this batch) |
-| _(open)_ | _add real scenarios here as they are exercised_ | | |
+## Handoff
 
-Discipline: **do not pad the suite with synthetic scenarios** to look thorough.
-A small suite of real assistance sessions, each replayable, beats a large
-invented one. Log what the suite does NOT yet cover (no silent caps).
-
-## 4. Metrics (jq over the enriched §27 JSONL)
-
-All derive from harness-visible events (0577 A). Per scenario tag:
-
-- **First-submit-typecheck rate** — of `submit` events, the fraction with no
-  preceding `repair` for the same `symbol`. North-star: the primer/harvest should
-  make the agent's first submit compile.
-- **Probes-per-submit** — count of `pull` events (probe tools: `type`, `syntax`,
-  `info`, `sig`, `source`) per `submit`. Efficiency signal; a context edit that
-  works drives this down. **Step facet (F6, §17.20.3a):** `steps_at_submit` is
-  reported alongside the pull count — steps-to-submit catches churn that isn't
-  pull-shaped, so a context edit that cuts probes but adds other looping is
-  still visible.
-- **Error-class histogram** — `error_class` frequency across `repair` AND `pull`
-  results (0577 A.2). Recurring classes = highest-value tuning targets.
-- **Give-up rate + cause histogram** — `give_up` events per scenario, bucketed by
-  `cause` (`step_budget` / `model_declined`) and dominant `error_class` (0577 A.3).
-  **Step facet (F6):** `steps_at_give_up` (total steps burned before the stop)
-  sharpens the analysis — a `step_budget` give-up at 8 steps and one at 40 are
-  different tuning problems.
-- **Unresolved-question list** — the `question` field (0577 A.1) on every `pull`,
-  deduped and ranked by frequency. This is the direct primer-gap worklist handed
-  to `/repl` each sprint.
-
-**F6 disposition (S109, /qa — resolving the `/repl` flag).** There is
-deliberately **no standalone step-accounting metric**: F6
-(`step`/`steps_at_submit`/`steps_at_give_up`) folds into Probes-per-submit and
-the Give-up histogram as the named step facets above. This closes the two-sided
-field→metric audit exactly as the `repl/spec.md §17.20.3a` mapping table
-records (F6 → Probes-per-submit + the give-up step facet); every §17.20.3a
-field now feeds at least one named metric here, and no metric lacks a feeding
-field.
-
-Example (once 0577 lands): the S108 `safe-dial` session would show a `give_up`
-with `cause:step_budget` + `error_class:AmbiguousType`, probes-per-submit high,
-and unresolved-questions including "does `fn` support multi-arity" and "do
-multi-arity `defn` clauses share inference" — both static-primer gaps (0575/0576).
-
-## 5. Comparable-runs discipline
-
-- Every mined run is tagged with its **context-version stamp** (0577 A.4). A
-  metric delta is only valid between runs whose stamps differ ONLY in the edited
-  artifact.
-- Re-run the **same** scenario prompts verbatim; a changed prompt invalidates the
-  comparison.
-- Record each tuning iteration: scenario tag, before/after context version,
-  metric deltas, and the primer/harvest edit made. This is the audit trail that
-  the ~99% primer target (0577 C) is actually being approached, not asserted.
-
-## 6. Handoffs
-
-- `/repl` — the unresolved-question list (§4) is its per-sprint primer-gap
-  worklist (0577 D); the eval loop (§2) is how it validates a primer edit helped.
-- `/dev` — implements the log fields (0577 A) that these metrics read; the metrics
-  here are the acceptance signal that the fields carry usable information.
-- `/sprint` — the suite (§3) and metric deltas feed scope: a scenario class with a
-  high give-up rate is a candidate increment.
+QA owns task conditions, classifications and adequacy. Test owns runner, fixtures, graders and report generation. Binary/int design/dev owns any demonstrated production agent seam gap or selected primer/harvest correction. Sprint coordinates live-run decisions and uses the reported limitations to choose later work.

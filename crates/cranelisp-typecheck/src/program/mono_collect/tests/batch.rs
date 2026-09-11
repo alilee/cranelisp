@@ -205,9 +205,10 @@ fn test_repl_expr_monomorphise() {
         "REPL expr should generate mono_defns for constrained fn calls"
     );
     assert!(
-        // FIXME 0519: mono names are home-qualified `{home}/{bare}$sig`.
-        mono_names.iter().any(|n| n.as_ref() == "test/add$Int"),
-        "expected test/add$Int in mono entries, got {mono_names:?}"
+        mono_names
+            .iter()
+            .any(|n| { n.as_ref() == "(test/add [primitives/Int primitives/Int] primitives/Int)" }),
+        "expected the full-signature Int `add` instance, got {mono_names:?}"
     );
 }
 
@@ -278,9 +279,10 @@ fn test_repl_defn_body_monomorphise() {
         "REPL defn should generate mono_defns for constrained fn calls in body"
     );
     assert!(
-        // FIXME 0519: mono names are home-qualified `{home}/{bare}$sig`.
-        mono_names.iter().any(|n| n.as_ref() == "test/add$Int"),
-        "expected test/add$Int in mono entries, got {mono_names:?}"
+        mono_names
+            .iter()
+            .any(|n| { n.as_ref() == "(test/add [primitives/Int primitives/Int] primitives/Int)" }),
+        "expected the full-signature Int `add` instance, got {mono_names:?}"
     );
 }
 
@@ -567,7 +569,7 @@ fn forward_reference_polymorphic_call_creates_mono_variant() {
     let mono_count = tc
         .symbol_table()
         .all_symbols()
-        .filter(|(name, _)| name.as_ref().contains("reduce$"))
+        .filter(|(name, _)| name.as_ref().starts_with("(test/reduce ["))
         .count();
     assert!(
         mono_count >= 1,
@@ -576,7 +578,7 @@ fn forward_reference_polymorphic_call_creates_mono_variant() {
          found mono variants: {:?}",
         tc.symbol_table()
             .all_symbols()
-            .filter(|(n, _)| n.as_ref().starts_with("reduce$"))
+            .filter(|(n, _)| n.as_ref().starts_with("(test/reduce ["))
             .map(|(n, _)| n.as_ref().to_string())
             .collect::<Vec<_>>(),
     );
@@ -655,14 +657,12 @@ fn fold_helper_mints_only_concrete_instance_no_partial() {
         .iter()
         .map(|v| v.name.as_ref().to_string())
         .collect();
-    // FIXME 0519: the mono name is home-qualified with a lossless recursive
-    // sig (`f`'s `Fn` type recursed, the `(Vec Int)` arg recursed FQ), so the
-    // exact string is `test/reduce-loop$Fn(...)+Int+.../Vec$Int+Int+Int`. The
-    // test's invariant is unchanged: exactly ONE genuine concrete instance,
-    // and NO spurious partial (a residual `Var` token in the sig).
+    // The full signature recursively includes `f`'s `Fn` type and the
+    // `(Vec Int)` argument. The invariant is exactly one genuine concrete
+    // instance and no residual `Var` in its signature.
     let reduce_loop_monos: Vec<&String> = mono_names
         .iter()
-        .filter(|n| n.contains("reduce-loop$"))
+        .filter(|n| n.starts_with("(test/reduce-loop ["))
         .collect();
     assert!(
         !reduce_loop_monos.is_empty(),

@@ -3,7 +3,7 @@
 // Carries forward the session-mechanism assertions from the integration-tier
 // `repl_experience.rs` (lifecycle slice), `ring3_repl.rs` (macro persistence),
 // `v4_repl_eval.rs` (eval-cycle persistence + error recovery). Per
-// `tests/plan/PLAN.md §"Mode canonicalisation"`, canonical mode is REPL.
+// the [current mode-canonicalisation guidance](plan/PLAN.md#mode-canonicalisation--repl-is-the-canonical-surface-for-language-conformance), canonical mode is REPL.
 //
 // Coverage (per `repl/spec.md §0.1, §1.2, §1.3, §2.3, §3.1, §5.2, §6.2, §11.4, §15.2,
 // §15.6` and `spec/05-definitions.md §5.1, §5.2`, `spec/09-macros.md §9.2, §9.13`):
@@ -854,7 +854,7 @@ fn non_tty_repl_output_byte_identical_line_editor_off() {
 
 // =============================================================================
 // Sprint 109 — 0573: deftype-shape × persistence matrix ("coverage by
-// definition variants" made flesh). Plan: tests/plan/PLAN.md §S109 §E.
+// definition variants" made flesh). See the [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md), S109 E.
 // A SUM deftype persists to the backing `user.cl`; a PRODUCT deftype does NOT
 // (silent data loss — the 0573 defect). Both are pinned here + a no-double-emit
 // negative for the post-fix `type_def_info()`-keyed change.

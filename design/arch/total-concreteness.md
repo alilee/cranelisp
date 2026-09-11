@@ -22,7 +22,7 @@ file moves to `design/arch/archive/`.
 > target (`symbol-table-lifecycle.md`, disposition 2026-09-01), so the
 > "S120 tranche" staging in §5.2 is superseded as a schedule: the per-kind
 > `CtorState` flip does not land first — the ctor template-slot retirement
-> (§3.1, FIXME 0931), the `vec-len` de-slot (§3.2, 0932), and the platform
+> ([constructor retirement](total-concreteness.md#31-constructors-rows-12-monomorphise-per-instantiation-the-template-slot-retires), FIXME 0931), the `vec-len` de-slot (§3.2, 0932), and the platform
 > `Type::Var` refusal (§3.5, 0933) all land as arms of the ONE S121 C1-led
 > lifecycle wash (`Life::Template`/`Concrete`, the §5.5/§5.6 population
 > installs, the manifest-order mint). §5.3's Bind payload-glue tranche
@@ -38,8 +38,8 @@ file moves to `design/arch/archive/`.
 > safety-register row R20.
 
 > **AMENDED 2026-07-28 (`/arch`, the design commission): I-ABI is re-ruled.**
-> The user's follow-on direction (R-25/R-27 of
-> `sprints/concreteness-requirements.md` — "typecheck must emit fully
+> The user's follow-on direction (R-25/R-27, preserved in
+> `design/arch/concreteness-types-first.md` §6 — "typecheck must emit fully
 > concrete-typed syntax tree including calls to primitives … I don't think we
 > should tolerate any slotted-and-polymorphic") overrides §2's I-ABI clause:
 > the four-member roster does NOT survive as a typecheck-boundary licence.
@@ -326,7 +326,7 @@ is therefore already discharged except for one entry.
 > reject 9 tightens to "any backend edit"), the same source area is visited
 > once, and no dispensation or C4 re-open is needed.
 >
-> **Ordering (matches the §9 stream order of `symbol-table-lifecycle.md`):**
+> **Historical S121 ordering (the original lifecycle stream plan is in Git):**
 > C4's wave lands the dormant arm → C5's wave flips the declaration
 > (`user_extern` → `user_inline`, P0) which makes the arm live → C5's P1
 > typed-funnel slice then excludes `vec_len` (already removed). The flip is a
@@ -596,7 +596,7 @@ intermediate type at each call site. So:
 > test-fixture rebuilds — no new versioning mechanism is invented. Stale
 > cached objects constructing one-field `Pure` nodes are excluded by the one
 > S121 `CACHE_SCHEMA_VERSION` 24→25 window's wholesale invalidation
-> (`symbol-table-lifecycle.md` §9): no acceptance cache baseline is captured
+> (the S121 lifecycle migration, retained in Git history): no acceptance cache baseline is captured
 > between the C1 bump and the C4 layout flip.
 > R1 changes the field's state predicate inside that same v10 window; it adds no
 > field, tag, public constant, glue identity, cache datum, or second ABI bump.

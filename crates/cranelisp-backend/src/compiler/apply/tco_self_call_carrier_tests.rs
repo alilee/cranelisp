@@ -218,29 +218,23 @@ fn genuine_self_call_still_tco_loops_via_carrier() {
     );
 }
 
-// spec: spec/05-monomorphisation.md §5.1.2 — fast-path 2 (SigDispatch mangled-
-// name) regression pin. A mono self-recursive variant `countdown$Int` whose body
-// `(countdown x)` resolves to `SigDispatch { mangled_name: "countdown$Int" }`.
-// Fast-path 2's string compare `current_fn_name == mangled_name` is a MODULE-
-// identity compare by construction of the 0519 `{home}/`-embedding mangle
-// (`backend.md` §2.7.1 fast-path-2 VERDICT — unchanged by this change-set); it
-// must still TCO-loop. NOTE: the mangle carries no `{home}/` prefix here because
-// the probe registers the variant under the bare `countdown$Int` name; the test
-// pins that the SigDispatch path itself still self-jumps.
+// spec: spec/05-monomorphisation.md §5.1.2 — fast-path 2 (SigDispatch concrete-
+// identity) regression pin. A mono self-recursive variant carries the canonical
+// full-signature key in both its definition and resolved SigDispatch target.
+// Their equality must still select the TCO loop.
 #[test]
 fn mono_sigdispatch_self_call_still_tco_loops() {
-    // (defn countdown$Int [x] (countdown x))  with the recursive Apply carrying
-    // SigDispatch { mangled_name: "countdown$Int" }.
+    let concrete_key = "(user/countdown [primitives/Int] primitives/Int)";
     let body = tail_call(
         "countdown",
         Span::new(200, 210),
         Span::new(201, 209),
         "x",
-        Some(crate::test_support::sig_binding("user", "countdown$Int")),
+        Some(crate::test_support::sig_binding("user", concrete_key)),
     );
     // The callee name is "countdown" (not a carrier) — fast-path 2 keys on the
-    // SigDispatch mangled name, not the callee carrier.
-    let clif = clif_of(&defn("countdown$Int", body), &[]);
+    // SigDispatch concrete key, not the callee carrier.
+    let clif = clif_of(&defn(concrete_key, body), &[]);
     assert!(
         !clif.contains("call"),
         "a mono SigDispatch self-call must TCO-loop (jump to loop header), \

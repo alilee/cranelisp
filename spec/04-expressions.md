@@ -341,7 +341,7 @@ When the callee is an arbitrary expression (variable, lambda, function applicati
 (apply-fn inc 5)                ; f is a closure; indirect call
 ```
 
-### 4.6.3 Auto-Currying [Tested+Neg tests/spec_04_expressions::auto_curry_two_param_partial_apply, auto_curry_three_param_partial_apply, auto_curry_higher_order_usage, auto_curry_repl, auto_curry_too_many_args_error, auto_curry_wrong_type_error, tests/spec_04_expressions::auto_curry_passed_to_higher_order_fn, constrained_auto_curry_plus_apply, constrained_auto_curry_minus_int, constrained_auto_curry_make_adder_int, constrained_auto_curry_make_adder_float, auto_curry_lambda_partial_apply]
+### 4.6.3 Auto-Currying [Tested+Neg tests/spec_04_expressions::auto_curry_two_param_partial_apply, auto_curry_three_param_partial_apply, auto_curry_higher_order_usage, auto_curry_repl, auto_curry_too_many_args_error, auto_curry_wrong_type_error, tests/spec_04_expressions::auto_curry_passed_to_higher_order_fn, constrained_auto_curry_plus_apply, constrained_auto_curry_minus_int, constrained_auto_curry_make_adder_int, constrained_auto_curry_make_adder_float, auto_curry_lambda_partial_apply, tests/shadowing_scope_lookup::local_closure_auto_curry_non_trait_control_resolves_to_local]
 
 When a function is called with fewer arguments than it declares parameters, the result is a **closure** capturing the applied arguments. This applies to named function references and variables bound to closures — the callee MUST be a variable reference. Anonymous lambda expressions (e.g., `((fn [a b] ...) 1)`) MUST be bound to a variable first.
 

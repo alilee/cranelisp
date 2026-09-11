@@ -27,13 +27,42 @@ impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_intrinsics::catalog::
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_intrinsics::catalog::IntrinsicEntry
 pub fn cranelisp_intrinsics::catalog::intrinsics_table() -> &'static [cranelisp_intrinsics::catalog::IntrinsicEntry]
 pub mod cranelisp_intrinsics::drop
-pub fn cranelisp_intrinsics::drop::consume_closure(i64)
-pub fn cranelisp_intrinsics::drop::consume_io_tree(i64)
-pub fn cranelisp_intrinsics::drop::consume_sexp(i64)
-pub fn cranelisp_intrinsics::drop::consume_slist(i64)
-pub fn cranelisp_intrinsics::drop::consume_vec_of_string(i64)
-pub fn cranelisp_intrinsics::drop::consume_vec_with(i64, fn(i64))
-pub fn cranelisp_intrinsics::drop::dec_shallow_io(i64)
+pub fn cranelisp_intrinsics::drop::consume_closure(cranelisp_intrinsics::handle::Owned)
+pub fn cranelisp_intrinsics::drop::consume_io_tree(cranelisp_intrinsics::handle::Owned)
+pub fn cranelisp_intrinsics::drop::consume_sexp(cranelisp_intrinsics::handle::Owned)
+pub fn cranelisp_intrinsics::drop::consume_slist(cranelisp_intrinsics::handle::Owned)
+pub fn cranelisp_intrinsics::drop::consume_vec_of_string(cranelisp_intrinsics::handle::Owned)
+pub fn cranelisp_intrinsics::drop::consume_vec_with(cranelisp_intrinsics::handle::Owned, fn(cranelisp_intrinsics::handle::Owned))
+pub fn cranelisp_intrinsics::drop::dec_shallow_io(cranelisp_intrinsics::handle::Owned)
+pub mod cranelisp_intrinsics::handle
+#[repr(transparent)] pub struct cranelisp_intrinsics::handle::Borrowed<'a>(_, _)
+impl<'a> cranelisp_intrinsics::handle::Borrowed<'a>
+pub unsafe fn cranelisp_intrinsics::handle::Borrowed<'a>::from_abi(i64) -> cranelisp_intrinsics::handle::Borrowed<'static>
+pub fn cranelisp_intrinsics::handle::Borrowed<'a>::raw_for_read(self) -> i64
+pub fn cranelisp_intrinsics::handle::Borrowed<'a>::to_owned(self) -> cranelisp_intrinsics::handle::Owned
+impl<'a> core::marker::Freeze for cranelisp_intrinsics::handle::Borrowed<'a>
+impl<'a> core::marker::Send for cranelisp_intrinsics::handle::Borrowed<'a>
+impl<'a> core::marker::Sync for cranelisp_intrinsics::handle::Borrowed<'a>
+impl<'a> core::marker::Unpin for cranelisp_intrinsics::handle::Borrowed<'a>
+impl<'a> core::marker::UnsafeUnpin for cranelisp_intrinsics::handle::Borrowed<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for cranelisp_intrinsics::handle::Borrowed<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for cranelisp_intrinsics::handle::Borrowed<'a>
+#[repr(transparent)] pub struct cranelisp_intrinsics::handle::Owned(_)
+impl cranelisp_intrinsics::handle::Owned
+pub fn cranelisp_intrinsics::handle::Owned::as_borrowed(&self) -> cranelisp_intrinsics::handle::Borrowed<'_>
+pub unsafe fn cranelisp_intrinsics::handle::Owned::from_abi(i64) -> Self
+pub fn cranelisp_intrinsics::handle::Owned::into_raw(self) -> i64
+pub fn cranelisp_intrinsics::handle::Owned::is_nullary_tag(&self) -> bool
+pub fn cranelisp_intrinsics::handle::Owned::raw_for_read(&self) -> i64
+impl core::ops::drop::Drop for cranelisp_intrinsics::handle::Owned
+pub fn cranelisp_intrinsics::handle::Owned::drop(&mut self)
+impl core::marker::Freeze for cranelisp_intrinsics::handle::Owned
+impl core::marker::Send for cranelisp_intrinsics::handle::Owned
+impl core::marker::Sync for cranelisp_intrinsics::handle::Owned
+impl core::marker::Unpin for cranelisp_intrinsics::handle::Owned
+impl core::marker::UnsafeUnpin for cranelisp_intrinsics::handle::Owned
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_intrinsics::handle::Owned
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_intrinsics::handle::Owned
 pub mod cranelisp_intrinsics::heap_string
 #[repr(C)] pub struct cranelisp_intrinsics::heap_string::HeapString
 pub cranelisp_intrinsics::heap_string::HeapString::header: cranelisp_types::heap::HeapHeader
@@ -160,7 +189,7 @@ pub fn cranelisp_intrinsics::panic::set_runtime_error(alloc::string::String)
 pub fn cranelisp_intrinsics::panic::take_dispatch_fault() -> core::option::Option<cranelisp_intrinsics::panic::DispatchFault>
 pub fn cranelisp_intrinsics::panic::take_runtime_error() -> core::option::Option<alloc::string::String>
 pub mod cranelisp_intrinsics::rc
-pub fn cranelisp_intrinsics::rc::consume_shallow(i64)
+pub fn cranelisp_intrinsics::rc::consume_shallow(cranelisp_intrinsics::handle::Owned)
 pub fn cranelisp_intrinsics::rc::is_rc_trace_enabled() -> bool
 pub fn cranelisp_intrinsics::rc::rc_emit_counts() -> (u64, u64)
 pub fn cranelisp_intrinsics::rc::rc_inc(i64)
@@ -200,7 +229,7 @@ impl core::marker::Unpin for cranelisp_intrinsics::trace_format::DisplayDescript
 impl core::marker::UnsafeUnpin for cranelisp_intrinsics::trace_format::DisplayDescriptor
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_intrinsics::trace_format::DisplayDescriptor
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_intrinsics::trace_format::DisplayDescriptor
-pub fn cranelisp_intrinsics::trace::consume_trace_call(i64)
+pub fn cranelisp_intrinsics::trace::consume_trace_call(cranelisp_intrinsics::handle::Owned)
 #[no_mangle] pub c fn cranelisp_intrinsics::trace::cranelisp_collect_trace() -> i64
 #[no_mangle] pub c fn cranelisp_intrinsics::trace::cranelisp_trace_children(i64) -> i64
 #[no_mangle] pub c fn cranelisp_intrinsics::trace::cranelisp_trace_enter(i64, i64, i64, i64)

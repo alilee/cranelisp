@@ -715,8 +715,8 @@ every seam it serves.
 Arch ruling 1(d) orders 0835 first; ruling 1(a) requires "controlled reduction
 and permanent repro for the corruption face" *before* migration. **Neither
 exists at HEAD**: there is no `tests/*0835*` file, no `// defect:` cell, no
-`PLAN.md` row, and 0835 is absent from QA's 28-name baseline (plan §2.1) and
-from the §4 Track-B matrix. FIXME 0765 ("no fix without a repro precondition")
+`PLAN.md` row, and 0835 is absent from QA's [S118 baseline enumeration](../../tests/plan/s118-test-plan.md#21-enumeration-from-live-sources-2026-07-25) and
+[S118 consumer-migration matrix](../../tests/plan/s118-test-plan.md#4-track-b--consumer-migration-acceptance-the-red-clearance-payload). FIXME 0765 ("no fix without a repro precondition")
 therefore blocks this slice as written.
 
 Worse for the ordering: **the leading mechanism candidate is not in this

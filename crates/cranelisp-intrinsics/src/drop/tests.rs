@@ -100,7 +100,7 @@ fn decision24_consume_slist_frees_chain() {
 
     let list = make_scons(int0, make_scons(int1, 0));
 
-    consume_slist(list);
+    consume_slist(crate::handle::test_owned(list));
 
     assert_eq!(alloc_count() - allocs, 4); // 2 SCons + 2 SexpInt
     assert_eq!(dealloc_count() - deallocs, 4);
@@ -114,7 +114,7 @@ fn decision24_consume_sexp_sym_frees_string() {
 
     let name = alloc_string(b"hello") as i64;
     let sym = make_sexp_sym(name);
-    consume_sexp(sym);
+    consume_sexp(crate::handle::test_owned(sym));
 
     assert_eq!(alloc_count() - allocs, 2); // string + sym
     assert_eq!(dealloc_count() - deallocs, 2);
@@ -133,7 +133,7 @@ fn decision24_consume_sexp_list_recurses() {
     let list = make_scons(sym1, make_scons(sym2, 0));
     let sexp_list = make_sexp_list(list);
 
-    consume_sexp(sexp_list);
+    consume_sexp(crate::handle::test_owned(sexp_list));
     // 2 strings + 2 Sexp wrappers + 2 SCons + 1 SexpList = 7
     assert_eq!(alloc_count() - allocs, 7);
     assert_eq!(dealloc_count() - deallocs, 7);
@@ -154,7 +154,7 @@ fn decision24_consume_sexp_preserves_shared_ref() {
         rc_ptr.fetch_add(1, Ordering::Release);
     }
 
-    consume_sexp(sym); // dec rc to 1 — must NOT free
+    consume_sexp(crate::handle::test_owned(sym)); // dec rc to 1 — must NOT free
 
     assert_eq!(alloc_count() - allocs, 2);
     assert_eq!(
@@ -164,7 +164,7 @@ fn decision24_consume_sexp_preserves_shared_ref() {
     );
 
     // Clean up manually.
-    consume_sexp(sym);
+    consume_sexp(crate::handle::test_owned(sym));
     assert_eq!(dealloc_count() - deallocs, 2);
 }
 
@@ -193,7 +193,7 @@ fn consume_sexp_unary_heap_tags_discharge_their_declared_field() {
         let node = alloc_slot(16);
         write_field(node, TAG_OFFSET, tag);
         write_field(node, FIELD0_OFFSET, alloc_string(b"field") as i64);
-        consume_sexp(node);
+        consume_sexp(crate::handle::test_owned(node));
         assert_eq!(alloc_count() - allocs, 2);
         assert_eq!(dealloc_count() - deallocs, 2, "shallow tag {tag}");
     }
@@ -207,7 +207,7 @@ fn consume_sexp_unary_heap_tags_discharge_their_declared_field() {
         let node = alloc_slot(16);
         write_field(node, TAG_OFFSET, tag);
         write_field(node, FIELD0_OFFSET, make_scons(int, 0));
-        consume_sexp(node);
+        consume_sexp(crate::handle::test_owned(node));
         assert_eq!(alloc_count() - allocs, 3);
         assert_eq!(dealloc_count() - deallocs, 3, "SList tag {tag}");
     }
@@ -222,7 +222,7 @@ fn consume_sexp_annotated_discharges_both_sexp_fields() {
 
     let stype = make_sexp_sym(alloc_string(b"Int") as i64);
     let sform = make_sexp_str(alloc_string(b"value") as i64);
-    consume_sexp(make_sexp_annotated(stype, sform));
+    consume_sexp(crate::handle::test_owned(make_sexp_annotated(stype, sform)));
 
     assert_eq!(alloc_count() - allocs, 5);
     assert_eq!(
@@ -239,7 +239,10 @@ fn consume_sexp_annotated_accepts_nullary_halves() {
     let allocs = alloc_count();
     let deallocs = dealloc_count();
 
-    consume_sexp(make_sexp_annotated(TAG_SEXP_INT, TAG_SEXP_BOOL));
+    consume_sexp(crate::handle::test_owned(make_sexp_annotated(
+        TAG_SEXP_INT,
+        TAG_SEXP_BOOL,
+    )));
 
     assert_eq!(alloc_count() - allocs, 1);
     assert_eq!(dealloc_count() - deallocs, 1);
@@ -256,14 +259,14 @@ fn consume_sexp_scalar_tags_discharge_no_fields() {
         write_field(node, TAG_OFFSET, tag);
         write_field(node, FIELD0_OFFSET, scalar_bits);
 
-        consume_sexp(node);
+        consume_sexp(crate::handle::test_owned(node));
 
         assert_eq!(
             dealloc_count() - deallocs,
             1,
             "tag {tag} must release only its outer node"
         );
-        rc::consume_shallow(scalar_bits);
+        rc::consume_shallow(crate::handle::test_owned(scalar_bits));
     }
 }
 
@@ -275,10 +278,10 @@ fn unknown_io_and_sexp_tags_release_only_the_outer_node_ordinarily() {
     let deallocs = dealloc_count();
     let sexp = alloc_slot(8);
     write_field(sexp, TAG_OFFSET, 998);
-    consume_sexp(sexp);
+    consume_sexp(crate::handle::test_owned(sexp));
     let io = alloc_slot(8);
     write_field(io, TAG_OFFSET, 999);
-    consume_io_tree(io);
+    consume_io_tree(crate::handle::test_owned(io));
     assert_eq!(dealloc_count() - deallocs, 2);
 }
 
@@ -296,8 +299,8 @@ fn unknown_sexp_tag_gate_child() {
         _ => return,
     };
     match tag_family.as_deref() {
-        Some("sexp") => consume_sexp(node),
-        Some("io") => consume_io_tree(node),
+        Some("sexp") => consume_sexp(crate::handle::test_owned(node)),
+        Some("io") => consume_io_tree(crate::handle::test_owned(node)),
         _ => unreachable!(),
     }
 }
@@ -354,7 +357,7 @@ fn decision24_consume_vec_of_string_frees_elements() {
     }
     write_field(vec, crate::vec_runtime::LEN_OFFSET as isize, 3);
 
-    consume_vec_of_string(vec);
+    consume_vec_of_string(crate::handle::test_owned(vec));
     assert_eq!(alloc_count() - allocs, 4); // vec struct + 3 strings
     assert_eq!(dealloc_count() - deallocs, 4);
 }
@@ -373,7 +376,7 @@ fn decision24_consume_vec_of_string_frees_elements() {
 fn databuf_guard_still_trips_on_stale_fixture_buffer_after_consume() {
     let (vec, data) = make_vec_struct(2);
     // len stays 0 — no elements to walk; consume frees the data buffer + struct.
-    consume_vec_of_string(vec);
+    consume_vec_of_string(crate::handle::test_owned(vec));
     // The buffer is now deregistered (FREED). A stale touch must trip the guard.
     crate::vec_runtime::debug_assert_live_buffer(data, 2, "test(stale-fixture)");
 }
@@ -384,7 +387,7 @@ fn decision24_consume_io_pure_frees_node() {
     let allocs = alloc_count();
     let deallocs = dealloc_count();
     let base = make_io_pure(42);
-    consume_io_tree(base);
+    consume_io_tree(crate::handle::test_owned(base));
     assert_eq!(alloc_count() - allocs, 1);
     assert_eq!(dealloc_count() - deallocs, 1);
 }
@@ -418,7 +421,7 @@ fn consume_io_select_frees_branch_vec_and_all_branches() {
     write_field(node, FIELD0_OFFSET, vec);
     write_field(node, FIELD1_OFFSET, NON_OWNING_DISPOSER_SENTINEL);
 
-    consume_io_tree(node);
+    consume_io_tree(crate::handle::test_owned(node));
 
     // alloc_with_rc-tracked allocations: node + vec struct + b0 + b1 = 4. (The Vec
     // data buffer is a plain allocation, freed by consume_vec_with but not counted.)
@@ -459,7 +462,7 @@ fn dec_shallow_io_select_deep_frees_branch_vec_and_all_branches() {
     write_field(node, FIELD0_OFFSET, vec);
     write_field(node, FIELD1_OFFSET, NON_OWNING_DISPOSER_SENTINEL);
 
-    dec_shallow_io(node);
+    dec_shallow_io(crate::handle::test_owned(node));
 
     // node + vec struct + b0 + b1 = 4 alloc_with_rc-tracked allocations, all freed.
     assert_eq!(alloc_count() - allocs, 4);
@@ -491,7 +494,7 @@ fn dec_shallow_io_par_deep_frees_branches() {
     write_field(par, FIELD1_OFFSET + 16, b1);
     write_field(par, FIELD1_OFFSET + 24, NON_OWNING_DISPOSER_SENTINEL);
 
-    dec_shallow_io(par);
+    dec_shallow_io(crate::handle::test_owned(par));
 
     assert_eq!(alloc_count() - allocs, 3);
     assert_eq!(
@@ -522,7 +525,7 @@ fn decision24_consume_io_bind_recurses_into_inner() {
     write_field(bind, FIELD1_OFFSET, cont);
     write_field(bind, FIELD1_OFFSET + 8, NON_OWNING_DISPOSER_SENTINEL);
 
-    consume_io_tree(bind);
+    consume_io_tree(crate::handle::test_owned(bind));
     assert_eq!(alloc_count() - allocs, 3);
     assert_eq!(dealloc_count() - deallocs, 3);
 }
@@ -546,7 +549,7 @@ fn decision24_consume_io_par_walks_branches() {
     write_field(par, FIELD1_OFFSET + 16, b1);
     write_field(par, FIELD1_OFFSET + 24, NON_OWNING_DISPOSER_SENTINEL);
 
-    consume_io_tree(par);
+    consume_io_tree(crate::handle::test_owned(par));
     assert_eq!(alloc_count() - allocs, 3);
     assert_eq!(dealloc_count() - deallocs, 3);
 }
@@ -560,7 +563,7 @@ fn decision24_consume_closure_bare() {
     let c = alloc_slot(16); // code_ptr + drop_glue_ptr
     write_field(c, 16, 0);
     write_field(c, 24, 0);
-    consume_closure(c);
+    consume_closure(crate::handle::test_owned(c));
     assert_eq!(alloc_count() - allocs, 1);
     assert_eq!(dealloc_count() - deallocs, 1);
 }
@@ -587,7 +590,7 @@ fn dec_shallow_io_frees_outer_only() {
     write_field(bind, FIELD1_OFFSET, cont);
     write_field(bind, FIELD1_OFFSET + 8, NON_OWNING_DISPOSER_SENTINEL);
 
-    dec_shallow_io(bind);
+    dec_shallow_io(crate::handle::test_owned(bind));
 
     // Exactly one alloc was deallocated (the Bind node); inner + cont are
     // still live and owned by the test.
@@ -611,9 +614,9 @@ fn dec_shallow_io_frees_outer_only() {
 fn dec_shallow_io_skips_nullary() {
     let allocs = alloc_count();
     let deallocs = dealloc_count();
-    dec_shallow_io(0);
-    dec_shallow_io(1);
-    dec_shallow_io(NULLARY_THRESHOLD - 1);
+    dec_shallow_io(crate::handle::test_owned(0));
+    dec_shallow_io(crate::handle::test_owned(1));
+    dec_shallow_io(crate::handle::test_owned(NULLARY_THRESHOLD - 1));
     assert_eq!(alloc_count() - allocs, 0);
     assert_eq!(dealloc_count() - deallocs, 0);
 }
@@ -633,7 +636,7 @@ fn dec_shallow_io_preserves_shared_reference() {
         rc_ptr.fetch_add(1, Ordering::Release);
     }
 
-    dec_shallow_io(node); // rc: 2 -> 1, no free
+    dec_shallow_io(crate::handle::test_owned(node)); // rc: 2 -> 1, no free
     assert_eq!(alloc_count() - allocs, 1);
     assert_eq!(
         dealloc_count() - deallocs,
@@ -647,7 +650,7 @@ fn dec_shallow_io_preserves_shared_reference() {
         PurePayloadState::Scalar
     );
     // Clean up the remaining reference.
-    dec_shallow_io(node);
+    dec_shallow_io(crate::handle::test_owned(node));
     assert_eq!(dealloc_count() - deallocs, 1);
 }
 
@@ -675,7 +678,7 @@ fn re2_consume_slist_stops_at_a_live_interior_reference() {
     crate::rc::rc_inc(a);
     let b = make_scons(z, a);
 
-    consume_slist(b);
+    consume_slist(crate::handle::test_owned(b));
 
     // `a` is still on a live reference and must be intact.
     // SAFETY: `a` is still owned by this frame — `consume_slist(b)` released
@@ -699,7 +702,7 @@ fn re2_consume_slist_stops_at_a_live_interior_reference() {
         "RE-2: the walk stops at the first node not on its last reference"
     );
 
-    consume_slist(a);
+    consume_slist(crate::handle::test_owned(a));
     assert_eq!(
         alloc_count() - allocs,
         dealloc_count() - deallocs,
@@ -712,11 +715,11 @@ fn re2_consume_slist_stops_at_a_live_interior_reference() {
 fn decision24_consume_slist_skips_nullary() {
     let allocs = alloc_count();
     let deallocs = dealloc_count();
-    consume_slist(0); // SNil
-    consume_sexp(0);
-    consume_vec_of_string(0);
-    consume_io_tree(0);
-    consume_closure(0);
+    consume_slist(crate::handle::test_owned(0)); // SNil
+    consume_sexp(crate::handle::test_owned(0));
+    consume_vec_of_string(crate::handle::test_owned(0));
+    consume_io_tree(crate::handle::test_owned(0));
+    consume_closure(crate::handle::test_owned(0));
     assert_eq!(alloc_count() - allocs, 0);
     assert_eq!(dealloc_count() - deallocs, 0);
 }
@@ -741,7 +744,7 @@ fn consume_launch_node_frees_live_subtree() {
     write_field(launch, FIELD0_OFFSET, sub);
     write_field(launch, FIELD1_OFFSET, NON_OWNING_DISPOSER_SENTINEL);
 
-    consume_io_tree(launch);
+    consume_io_tree(crate::handle::test_owned(launch));
     // Null-guard sees a non-zero field-0 → recurse: BOTH the Launch node and the
     // live sub-tree are freed (no leak).
     assert_eq!(alloc_count() - allocs, 2);
@@ -761,7 +764,7 @@ fn consume_launch_node_detached_field0_sentinel_is_noop() {
     write_field(launch, FIELD0_OFFSET, 0);
     write_field(launch, FIELD1_OFFSET, NON_OWNING_DISPOSER_SENTINEL);
 
-    consume_io_tree(launch);
+    consume_io_tree(crate::handle::test_owned(launch));
     assert_eq!(alloc_count() - allocs, 1);
     assert_eq!(dealloc_count() - deallocs, 1);
 }
@@ -849,6 +852,6 @@ fn vec_fields_round_trip_through_the_shared_accessor() {
             0x1234
         );
     }
-    crate::rc::consume_shallow(v);
-    crate::rc::consume_shallow(par);
+    crate::rc::consume_shallow(crate::handle::test_owned(v));
+    crate::rc::consume_shallow(crate::handle::test_owned(par));
 }

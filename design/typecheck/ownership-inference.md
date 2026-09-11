@@ -532,20 +532,22 @@ emitted site fact in increment I maps it to `Crossing` (atomic). Reasoning:
 
 ## §6. Generic-instantiation summary dedup at mint sites (spine §10 item 4, §4.2)
 
-- **The key is the existing one.** A mono instance's identity is its mangled name
-  (`build_mangled_name`, `monomorphise.rs:1033` — `name$Type1+Type2`), and mint-site dedup
+- **The key is the existing canonical realization key.** A mono instance's identity
+  is its authored owner plus full concrete function signature, projected by the
+  context-bearing `InstanceLink::instance_key(&template_scheme)` contract in the
+  [S122 identity packet](../arch/s122-overload-reorder-publication.md). Mint-site dedup
   already exists (`register_mono_entry` preserves an existing entry + its slot; the `seen`
   gates in `pass4_monomorphise`/`monomorphise_inner_parametric_hops`). The summary is
   **per-instance state on the instance's entry** and inherits this dedup: computed once per
   registered instance per cluster (§3.1), persisted with the entry.
 - **Cross-module duplicate instances are benign.** Instances register in the **caller's**
-  module (`crates/cranelisp-typecheck/CLAUDE.md` §cross-module-mono), so `cmp$Int+Int` can
-  exist in two importing modules. Re-inference is deterministic over the same inputs (same
+  module (`crates/cranelisp-typecheck/CLAUDE.md` §cross-module-mono), so the same canonical
+  realization can exist in two importing modules. Re-inference is deterministic over the same inputs (same
   template `ast`, same callee summaries — spine §4.2 pins this), so duplicates carry equal
   summaries; no cross-module instance store is added (Principle 7 is satisfied by determinism,
   not by a registry).
 - **The session memo.** To make repeated mints and the R3 incremental path cheap, the checker
-  env carries a memo `DashMap<(FQSymbol template-home, JitSymbol mangled), OwnershipSummary>`
+  env carries a memo keyed by template home and canonical realization key
   (the same concurrency shape as the env's other caches). Hits skip the transfer walk
   entirely. **Invalidation is subsumption, not machinery:** the memo is keyed within a session
   and entries for a template are dropped when the template's module recompiles — which the
@@ -628,9 +630,10 @@ The data that would fund it: per-instance counters (a `CRANELISP_RC_STATS` exten
 check-branch cost on the F-series fixtures after (a)+(b) land. Mode-in-key pays only if a hot
 instance shows a high-volume, high-hit-rate check that a duplicated unique-entry body would
 remove — and §7.2's chaining already removes the *provable* population, so the expectation
-recorded here is that the key extension does **not** clear the bar. If it does, the key is
-mono-internal (`build_mangled_name` gains a mode component for the duplicated instances only)
-— invisible on the boundary, no contract migration (spine §4.3 kept-open-by-design).
+recorded here is that the key extension does **not** clear the bar. If it does, any
+specialization mechanism must remain separate from canonical executable identity;
+ownership mode is not part of the authored-owner/full-signature key. Such a mechanism
+requires its own design rather than widening the identity key.
 
 ---
 
@@ -1867,7 +1870,8 @@ including both precedence directions, missing-key fallback and a nested type
 in another module. The declaration-access correction changes neither layout
 rules nor the live ownership-ABI refusal or cache schema; the exact boundary
 and composed evidence are governed by
-[the approved API packet](../arch/s121-staged-value-layout-api.md).
+[the R5 value-representation contract](../arch/interfaces.md#r5-value-representation-flattening)
+and the `crates/cranelisp-types/src/heap.rs::value_layout_with_lookup` rustdoc.
 
 ### 14.6 CS staging + acceptance seams (Phase-5 handoff)
 

@@ -2421,8 +2421,9 @@ per-visit phrasing:
 
 **Scope (arch-narrowed W5, `safety-invariants.md` §6 W5-status).** The ownership-INDEPENDENT
 backend half of the 0641 family — the two residuals (B-2, I-2) whose wrong-VALUE face the
-typecheck provenance axis (§3a/§3c monotone walk) CANNOT flip alone (`tests/plan/PLAN.md`
-§I.4; `s113-risk-assessment.md` §3a). The elision + R4-mint censuses (`safety-invariants.md`
+typecheck provenance axis (§3a/§3c monotone walk) CANNOT flip alone (the S113 Phase-5-close
+attribution addendum in `tests/plan/PLAN.md`, Git history at commit `3297adf8`, 2026-07-20;
+`s113-risk-assessment.md` §3a). The elision + R4-mint censuses (`safety-invariants.md`
 §6 tasks 2/3) are explicitly NOT in W5's ruled depth — S114+ cascade.
 
 **The repros (committed failing-not-ignored, `tests/false_fresh_provenance_residual.rs`):**
@@ -2434,7 +2435,8 @@ typecheck provenance axis (§3a/§3c monotone walk) CANNOT flip alone (`tests/pl
 Both fail with `CRANELISP_NO_OWNERSHIP=1` (the all-Owned conservative lowering) — so the
 fault is in the conservative lowering itself, not an elision. That toggle-off probe is
 exactly what splits the family: B-1/I-1 (inference-half — `/dev` typecheck under the §3
-frame) recover toggle-off; B-2/I-2 do not (`/qa` PLAN §I.4 owner split).
+frame) recover toggle-off; B-2/I-2 do not (the `/qa` owner split in that S113 attribution
+addendum).
 
 **Call-chain evidence — the mutate/grow branch under `Borrowed` returns a borrow
 masquerading as owned.** A COW op has three runtime branches (`vec_codegen.rs`

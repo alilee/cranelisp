@@ -379,6 +379,11 @@ no "asserted" grade survives without a matching triplet. Grades land in
 
 ### 3.5 0859 ProjectionOf witness — CONDITIONAL cell (ruling 2)
 
+> Retired unexecuted under the 2026-09-01 user disposition (gate 3 below,
+> disposition 2). The gates that follow are the dated S118 record, not a live
+> conditional cell; the exact revival trigger is the
+> [accepted future-triggered action row](s121-test-plan.md#510-accepted-future-triggered-actions).
+
 **Not a suite cell yet.** The instrument is the **existing** env-gated
 detector surface (M1/M2/M3 + RC/parity counters) used as an oracle over
 isolated-declaration-mutation experiments (`ownership_facts.rs`:
@@ -821,8 +826,7 @@ in 0907.
 
 The censused families (synthetic accessors of generic/undeclared-field
 products; generic trait-method instances — both shallow-release and leak
-today, pre-existing) get **PLAN rows now** (landed, `PLAN.md` §S118 track
-rows) and **failing-not-ignored marginal-balance guards authored by
+today, pre-existing) get **PLAN rows now** (landed, [historical S118 track rows](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md)) and **failing-not-ignored marginal-balance guards authored by
 `/testing` at S119 W1**, QA-first, BEFORE the 0903 ruling's implementing
 wave. Not now, because: (1) the W8 gate's name-for-name accounting is
 already fixed — injecting new intended REDs mid-gate churns the exact
@@ -1035,7 +1039,7 @@ consistent signatures.
 
 **0909 resolved at this gate**: MANIFEST §Re-baselines S118 entry landed
 (with the `Grid.cells` defect-sighting record — the blessed golden is a leak
-record, not certification); PLAN.md §S116-A warm-control row added
+record, not certification); [S116 warm-control row](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md) added
 (`exemplar_ownership_residue_s116::warm_cache_hit_control_carries_no_ambient_residual`,
 GREEN in both runs); 0903 gained the acceptance addendum naming the
 `f4_sudoku::user::Grid.cells` re-baseline as the S119 fix's own witness.

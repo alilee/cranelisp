@@ -345,6 +345,7 @@ impl CompilerSession {
                     platform_dirs: &platform_dirs_snap,
                     project_root: &self.shared.project_root,
                     shared_state: Some(&self.shared),
+                    reload_demands: std::sync::Arc::from([]),
                     // S93 Invariant SW: the REPL eval thread is the sole
                     // orchestrator of its entry module — a dependency gap must
                     // NOT move the entry to TypecheckBlocked (the eval thread

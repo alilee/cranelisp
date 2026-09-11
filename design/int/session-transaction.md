@@ -28,6 +28,26 @@
 > latent type-changing-redefinition hole that exists today — spine §5.2) with named seams
 > (§2.4, §3.5) where increment I's mode vectors slot in without restructuring.
 
+> **S122 selected-closure amendment (approved 2026-09-09).** Section 10's
+> source-form driver replay is superseded by `design/int/s122-closure.md` §2.
+> Capture a deduplicated set from every target-module
+> `InstanceLink { template, type_args }` before replacement and carry that set
+> into the module's ordinary prepared transaction. Reload preparation continues
+> with an empty unpublished staging table when saved demands exist but source
+> checking produces no authored row. A demand owned by another module remaps an
+> overload selector to the unique current arm that derives the historical
+> concrete-signature key; the old ordinal is never treated as identity. The
+> existing `instantiate_demands` completes the resulting source-or-demand
+> staging before one compile and publish. The private planner accepts the exact
+> successful demand targets because demand-only staging has no source AST. The
+> same change deletes `capture_instantiation_drivers`, `extra_forms`, and
+> synthetic `__expr` replay. The approved ACT-0954 change also deletes the
+> public session `re_register_module` wrapper while retaining the private
+> scheduler operation and synchronous lifecycle reload. S122's scoped reviews
+> closed empty-staging replay, foreign-arm remap, watcher provenance and
+> complete-plan ordering; final integrated evidence remains as recorded in
+> `s122-closure.md` §7.
+
 ---
 
 ## §1. Actors and functions first (Principle 21)
@@ -845,8 +865,8 @@ downgraded (below) and T3 is unimplemented-because-unreachable. The triggers, ex
      symbol-table entry. So decoupling means moving the mint trigger to an **explicit in-memory
      channel**, not relying on the reload reading a live entry.
 
-     *The as-built mechanism (driver-replay), tests green:*
-     - `redefine.rs::capture_instantiation_drivers(module)` reads the module's live `__expr`
+     *Historical S106 mechanism (driver replay, removed by S122; tests were green):*
+     - The former driver-capture helper in `redefine.rs` reads the module's live `__expr`
        `Introspection.sexp` (the single last top-level REPL expression) from the
        **compiled/in-memory** channel — not the `.cl`.
      - `lifecycle.rs::reload_module` gained an `extra_forms: &[Sexp]` parameter that
@@ -882,7 +902,7 @@ downgraded (below) and T3 is unimplemented-because-unreachable. The triggers, ex
 
      The capture is a **projection of the target module's own table**, not session bookkeeping:
      after the S121 lifecycle wash every instance is an entry born
-     `Life::Concrete { minted_from: Some(InstanceLink { template, args }), .. }`, so the driver
+     `Life::Concrete { minted_from: Some(InstanceLink { template, type_args }), .. }`, so the driver
      emits one `MonoDemand` per such entry. That covers **every** historical instantiation rather
      than the last one, and it removes the stale-form hazard by construction — a demand names a
      template and concrete arguments, so there is no expression that could have acquired

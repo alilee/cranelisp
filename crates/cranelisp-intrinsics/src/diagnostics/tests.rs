@@ -154,7 +154,7 @@ fn precheck_accepts_a_well_formed_live_production_base() {
     assert_eq!(size, 40, "header alloc_size = HeapHeader::SIZE + payload");
     assert_eq!(rc, 1, "alloc_with_rc initialises rc to 1");
     assert_eq!(seam_precheck_verdict(size, rc), None);
-    crate::rc::consume_shallow(base);
+    crate::rc::consume_shallow(crate::handle::test_owned(base));
 }
 
 // Edge: the smallest legal allocation is exactly `HeapHeader::SIZE` (a
@@ -190,7 +190,7 @@ fn precheck_accepts_a_ragged_heap_string_size() {
         header_size_plausible(size),
         "a ragged HeapString size MUST NOT be rejected"
     );
-    crate::rc::consume_shallow(base);
+    crate::rc::consume_shallow(crate::handle::test_owned(base));
 }
 
 // Negative: an interior/non-base address's word@0 is a tag / length / field
@@ -262,7 +262,7 @@ fn precheck_verdict_does_not_mutate_the_header() {
     assert_eq!(rc_after, 0, "the rejected call left the rc word untouched");
     // Restore the rc so the block frees cleanly (keeps the process balanced).
     unsafe { crate::heap_access::write_i64(base, 8, 1) };
-    crate::rc::consume_shallow(base);
+    crate::rc::consume_shallow(crate::handle::test_owned(base));
 }
 
 // Byte-identical-off: with no env set every gate reads its off value, so no
@@ -760,15 +760,15 @@ fn clean_heap_workload_balances_at_every_seam() {
     // A marker-size block, shared then released twice.
     let block = crate::alloc::alloc_with_rc(PLANT_MARKER_PAYLOAD) as i64;
     crate::rc::rc_inc(block);
-    crate::rc::consume_shallow(block);
-    crate::rc::consume_shallow(block);
+    crate::rc::consume_shallow(crate::handle::test_owned(block));
+    crate::rc::consume_shallow(crate::handle::test_owned(block));
 
     // A ragged-size HeapString (total 27 — NOT 8-aligned; the armed
     // header-plausibility precheck MUST accept it).
     let s = crate::heap_string::alloc_string(b"abc") as i64;
     crate::rc::rc_inc(s);
-    crate::rc::consume_shallow(s);
-    crate::rc::consume_shallow(s);
+    crate::rc::consume_shallow(crate::handle::test_owned(s));
+    crate::rc::consume_shallow(crate::handle::test_owned(s));
 
     // A scalar Sexp through the drop-glue funnel (`atomic_dec_rc`).
     let sexp = crate::alloc::alloc_with_rc(24) as i64;
@@ -777,7 +777,7 @@ fn clean_heap_workload_balances_at_every_seam() {
         crate::heap_access::write_i64(sexp, 16, 0); // SexpInt
         crate::heap_access::write_i64(sexp, 24, 7);
     }
-    crate::drop::consume_sexp(sexp);
+    crate::drop::consume_sexp(crate::handle::test_owned(sexp));
 
     let after = (crate::alloc::alloc_count(), crate::alloc::dealloc_count());
     assert_eq!(
@@ -805,7 +805,7 @@ fn plant_child_m1_stale_reuse() {
     assert_plant_captured(base);
 
     // Free through the production funnel (rc 1 → 0 → `dealloc`).
-    crate::rc::consume_shallow(base);
+    crate::rc::consume_shallow(crate::handle::test_owned(base));
     let retained = fault_observation().quarantine_retained_bytes;
     eprintln!("M1-RETAINED bytes={retained}");
 
@@ -833,7 +833,7 @@ fn plant_child_m1_stale_reuse() {
     crate::rc::rc_inc(base);
     eprintln!("M1-NO-REJECTION");
     for p in again {
-        crate::rc::consume_shallow(p);
+        crate::rc::consume_shallow(crate::handle::test_owned(p));
     }
 }
 
@@ -853,7 +853,7 @@ fn plant_child_m2_stale_read() {
 
     // Free through the production funnel. Both legs arm M1, so the block stays
     // MAPPED and the read below is never a read of unmapped memory.
-    crate::rc::consume_shallow(base);
+    crate::rc::consume_shallow(crate::handle::test_owned(base));
     // SAFETY: the block is withheld by M1 (quarantined, still mapped).
     let word = unsafe { crate::heap_access::read_i64(base, 16) };
     eprintln!("M2-READBACK word={word:#x}");
@@ -884,7 +884,7 @@ fn plant_child_m3_leak() {
     let base = crate::alloc::alloc_with_rc(PLANT_MARKER_PAYLOAD) as i64;
     // The production discharge is SUPPRESSED at `PreFree`: the block is
     // genuinely leaked, so the ledger stays truthful.
-    crate::rc::consume_shallow(base);
+    crate::rc::consume_shallow(crate::handle::test_owned(base));
     let (allocs, deallocs) = (crate::alloc::alloc_count(), crate::alloc::dealloc_count());
     eprintln!("M3-LEDGER allocs={allocs} deallocs={deallocs}");
     assert!(
@@ -903,7 +903,7 @@ fn plant_child_m3_over_free() {
     }
     let base = crate::alloc::alloc_with_rc(PLANT_MARKER_PAYLOAD) as i64;
     // One EXTRA ledger discharge at `PostFree` — no memory is freed twice.
-    crate::rc::consume_shallow(base);
+    crate::rc::consume_shallow(crate::handle::test_owned(base));
     let (allocs, deallocs) = (crate::alloc::alloc_count(), crate::alloc::dealloc_count());
     eprintln!("M3-LEDGER allocs={allocs} deallocs={deallocs}");
     assert!(
@@ -935,7 +935,7 @@ fn plant_child_a1_zero_rc() {
     // SAFETY: same live allocation.
     let rc = unsafe { crate::heap_access::read_i64(base, 8) };
     eprintln!("A1-NO-REJECTION rc={rc}");
-    crate::rc::consume_shallow(base);
+    crate::rc::consume_shallow(crate::handle::test_owned(base));
 }
 
 // spec: 12-runtime §12.3 — R8 (diagnostic-modes §7.3 row A2InteriorPointer)
@@ -956,14 +956,14 @@ fn plant_child_a2_interior_pointer() {
     let interior = base + HeapHeader::SIZE as i64;
     eprintln!("PLANT-APPLIED a2 interior={interior:#x}");
 
-    crate::rc::consume_shallow(interior);
+    crate::rc::consume_shallow(crate::handle::test_owned(interior));
 
     // Unreached in BOTH legs in the debug profile: the positive aborts at the
     // seam precheck; the negative control aborts at the `is_live` debug twin
     // (its recorded, contained failure mode — no `fetch_sub` is executed
     // either way, so no control obtains its polarity through UB).
     eprintln!("A2-NO-REJECTION");
-    crate::rc::consume_shallow(base);
+    crate::rc::consume_shallow(crate::handle::test_owned(base));
 }
 
 // spec: 12-runtime §12.3 — R8 (diagnostic-modes §7.3 row A3FreedPointer)
@@ -976,7 +976,7 @@ fn plant_child_a3_freed_pointer() {
     assert_plant_captured(base);
     // Free through the production funnel; both legs arm M1+M2 so the base stays
     // MAPPED (containment) and poisoned.
-    crate::rc::consume_shallow(base);
+    crate::rc::consume_shallow(crate::handle::test_owned(base));
     eprintln!(
         "PLANT-APPLIED a3 freed base={base:#x} retained={}",
         fault_observation().quarantine_retained_bytes
@@ -985,7 +985,7 @@ fn plant_child_a3_freed_pointer() {
     // Route the stale dec through the drop-glue funnel (`atomic_dec_rc`) — the
     // ordinary entry point every recursive drop-glue leaf uses. No test calls
     // the seam directly.
-    crate::drop::consume_closure(base);
+    crate::drop::consume_closure(crate::handle::test_owned(base));
 
     // Unreached in BOTH legs: positive aborts at the seam precheck; the
     // negative control aborts at the `is_live` twin before the `fetch_sub`.

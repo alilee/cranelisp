@@ -1159,21 +1159,17 @@ fn test_compile_vec_set_on_temp() {
     assert_eq!(result.unwrap(), 3);
 }
 
-// ===== FIXME 0134 harvest (backend slice): Vec-COW value-correctness +
-// RC-balance kernels of the quarantined `tests/legacy/{ring1,ring2,e2e}.rs`
-// GAPs. The existing `test_compile_vec_set_{copy_path,on_temp}` tests prove
-// vec-set COMPILES and RUNS but assert only the result LENGTH (=3). The
-// disposition (`s82-harvest-conformance_bulk.md` flag 1: backend =
-// `assert_rc_balanced` + Vec-COW edge cases) names the uncovered angles:
+// ===== Vec-COW value-correctness and RC-balance kernels. The existing
+// `test_compile_vec_set_{copy_path,on_temp}` tests prove vec-set COMPILES and
+// RUNS but assert only the result LENGTH (=3). These guards add the material
+// value and lifecycle angles:
 // (a) the COPY path leaves the ORIGINAL vec untouched
-//     (legacy `vec_set_cow_preserves_original`);
 // (b) a set preserves OTHER positions' values
-//     (legacy `vec_set_preserves_other_elements`);
 // (c) RC balance — a vec lifecycle returns live bytes to baseline
-//     (legacy `assert_rc_balanced`).
 // These run at the backend unit layer via `test_compile_and_run` (full
 // codegen + JIT execute), reading element VALUES via vec-get — the durable
-// value-level guards the length-only tests lack. =====
+// value-level guards the length-only tests lack. Coverage retention follows
+// `tests/plan/PLAN.md` §Coverage preservation and evidence navigation. =====
 
 /// Build `(vec-get <vec_expr> idx)` against a fresh span. Helper for the
 /// COW value-correctness guards below.

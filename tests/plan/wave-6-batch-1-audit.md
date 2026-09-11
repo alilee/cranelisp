@@ -322,7 +322,7 @@ codegen regression test" should find it in a regression-cohort file,
 not under `exemplar.rs`.
 
 Recommendation: carry to a new `tests/regression.rs` (the file named
-in PLAN.md §"Reorganisation strategy" — the defect-repro cohort
+in [S64 reorganisation plan](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md) — the defect-repro cohort
 holding `sprint59_defects456_repro.rs`/`wave6_demo_repros.rs`/etc.
 remnants). T-S2-1 (the Layer-1 contract) is more arguably exemplar-y
 because it asserts a *contract on `solver.cl::eliminate`*, but if

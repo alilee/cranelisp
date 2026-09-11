@@ -1,14 +1,13 @@
 # The non-concrete producer obligations — typecheck's half of the release contract
 
-**Status:** RULING — authored S119 Phase 3 round 2, **re-grounded S121 Phase 3 on the
-adopted unified lifecycle** (`design/arch/symbol-table-lifecycle.md`, user disposition
-2026-09-01). The S119 rulings survive in substance; their *spelling* moves from the
-per-kind `UserFnState` vocabulary onto the one `Life` machine, and P-1's enforcement
-moves from a typecheck-local helper into C1's settlement funnel.
+**Status:** CURRENT — authored S119 Phase 3 round 2, re-grounded S121 Phase 3 on the
+adopted unified lifecycle, and verified as built in S122 on 2026-09-10. Sections 1–7
+retain the implementation rationale; §8 records the current source-backed disposition.
 **Subordinate to:** `typecheck.md` §9.3 / §9.4 / §9.8. Extends `monomorphisation.md`
 §1–§3 and `adt.md` §"Product Type Handling".
-**Governed by:** `design/arch/symbol-table-lifecycle.md` §§3–5 and §9 (the representation
-and the C1→C3 handoff), and `design/backend/non-concrete-release-contract.md` R-2, R-3,
+**Governed by:** `design/arch/symbol-table-lifecycle.md` §§3–7 (the current
+representation, enforcement and residual limits), and
+`design/backend/non-concrete-release-contract.md` R-2, R-3,
 §5.2, §5.4 (the release contract). Where this doc and either ruling disagree, the
 ruling wins.
 **Resolves (typecheck side):** FIXMEs **0924**, **0913**, **0935**. The former
@@ -182,10 +181,11 @@ Both are `/dev`(typecheck) hygiene inside this visit's reservation (§7).
 
 ### 2.1 P-1, restated where it now lives
 
-> **P-1 (the gate is universal, and it is structural).** `Life::Concrete { slot, … }` is
+> **P-1 (the gate is universal and table-enforced).** `Life::Concrete { slot, … }` is
 > constructed **only** by C1's `settle_concrete`, which checks `Type::is_concrete()`,
 > accepts the realization, and mints-or-rebinds the slot in one act
-> (`symbol-table-lifecycle.md` §4.4 invariant 2). A non-concrete callable is
+> (`symbol-table-lifecycle.md` §§4.2 and 4.4; exact accepted states are in the
+> `crates/cranelisp-types/src/module.rs::settle_concrete` rustdoc). A non-concrete callable is
 > `Life::Template` — slot-less, view-less, **with no field for either capability** — and
 > is a monomorphisation source, never a codegen target.
 >
@@ -193,14 +193,19 @@ Both are `/dev`(typecheck) hygiene inside this visit's reservation (§7).
 > funnel, and the four literal mints (F0–F3) are deleted rather than gated.
 
 This is not new policy. It is `monomorphisation.md` §1 — *a def has a slot ⟺ its type is
-`is_concrete()`* — made unconstructable instead of asserted. Row 1 and row 2 of the C1
-impossibility table (`symbol-table-lifecycle.md` §6) are exactly this obligation's
-end state.
+`is_concrete()`* — enforced at the table boundary instead of left as a caller
+convention. [Lifecycle enforcement](../arch/symbol-table-lifecycle.md#6-enforcement)
+prevents ordinary consumers from bypassing settlement and slot construction;
+[Residual responsibilities](../arch/symbol-table-lifecycle.md#7-residual-responsibilities)
+retain the clone/serde and copied-claim limits and their load/publication
+validation. That qualified boundary is this obligation's end state.
 
 > **P-2 (no second identity home).** A monomorphised accessor or trait-method instance is
-> named by the ONE canonical `traits::monomorphise::build_mangled_name(home, bare_name,
-> param_types)` (`monomorphisation.md` §3.5), and under C1 that name is **derived once**
-> at instance registration from the `InstanceLink`, never re-composed at a probe site
+> named by the ONE canonical context-bearing
+> `InstanceLink::instance_key(&template_scheme)` contract
+> ([S122 identity packet](../arch/s122-overload-reorder-publication.md)), and under C1
+> that name is **derived once** at instance registration from the authored owner and
+> complete concrete function signature, never re-composed at a probe site
 > (`symbol-table-lifecycle.md` §5.2). No new grammar, no widened second mangle.
 
 ### 2.2 Why P-2 still rejects 0924's own suggested spelling
@@ -214,9 +219,9 @@ order of weight:
    and `b` comes from the *function argument's* return type, not the receiver. Widening
    by the receiver's arguments yields one name for `(fmap show (Some 1))` and
    `(fmap inc (Some 1))` — the 0483/0508/0519 collision class re-minted at a new site.
-2. **`build_mangled_name` already carries the whole signature**, recursing every concrete
-   parameter type through `program::mangle_type` (ADT args recursed, `Fn` params recursed
-   rather than dropped), with the `is_concrete()` tripwire at `monomorphise.rs:1295-1300`.
+2. **The shared key derivation carries the whole signature**, including ordered
+   parameters and result, with recursive concrete types. Residual types fail key
+   derivation instead of producing a partial spelling.
 3. **Principle 7.** Two grammars for "a concrete instance of a generic body" is the second
    identity home the release contract's reject criterion 5 forbids in the backend and that
    S110's alias-class close removed from the resolution channel.
@@ -227,7 +232,7 @@ dispatch key. Restated on the C1 machine:
 | Role | Symbol | `Life` |
 |---|---|---|
 | Impl-method template (as today, now slot-less) | `Functor.fmap$primitives/Option` | `Template { body: Ast(variant), kind: Parametric }` |
-| Concrete instance (minted on demand) | `{impl_module}/Functor.fmap$primitives/Option$Fn(Int;primitives/String)+primitives/Option$Int` | `Concrete { slot, realization: Body { view }, minted_from: Some(link) }` |
+| Concrete instance (minted on demand) | authored owner + full concrete function signature, in the canonical readable syntax | `Concrete { slot, realization: Body { view }, minted_from: Some(link) }` |
 
 The template's key is untouched, so trait *discovery* (`impl$…$…`, `dispatch.rs:143`,
 `impl_check.rs:421`, the §7.3.5 conformance seams) is untouched. Only the *call* is
@@ -255,7 +260,8 @@ synthesiser does not have:
 > **A-MINT.** A monomorphised field accessor is produced by **re-running the synthesiser
 > at concrete type arguments** — the same `synthesise_one_accessor` computation with
 > `adt_type` and `field.ty` substituted through the instantiation — keyed by
-> `build_mangled_name`. It never re-checks a body and never consults a span-keyed sidecar.
+> the canonical authored-owner/full-concrete-signature identity. It never re-checks a
+> body and never consults a span-keyed sidecar.
 
 **What C1 adds, and it is the part S119 could not state.** Under the old shape the
 polymorphic accessor template still had to *carry* something — a slot and a view it had no
@@ -311,8 +317,8 @@ design intent is:
 > **same** worklist and the **same** core. It is a successor-discovery widening, not a
 > second entry point (`arch`'s standing Principle-7 ruling, `monomorphisation.md` §3.1).
 
-Whether `drive_call_site_monomorphisation` already reaches some of these sites once the
-entry becomes `Template` is **MEASURE-1** (§8).
+The landed collector reaches these template sites through the ordinary typed-demand
+worklist; §8 records the current source-backed disposition.
 
 ### 2.5 FIXME 0935 — absorbed by the demand carrier, not patched at the spelling
 
@@ -348,7 +354,9 @@ bare-alias `Import` yielded `None` → `Ok(None)` → a silent skip. Given a sto
 demand the probe hits the terminal entry by construction. Its `Ok(None)` early return
 **remains** the "not a mono target" signal — and under C1 a demand that finds no instance
 is a loud missing-slot failure downstream, because the template has no slot for the call
-to fall through (`symbol-table-lifecycle.md` §6 rows 3 and 5).
+to fall through (`symbol-table-lifecycle.md` §§4.2 and 6); §7 retains the
+load/publication rechecks rather than claiming every bad restored value is
+structurally impossible.
 
 **0935's second finding is binding and is honoured:** the dotted spelling's minted
 instance was itself unsound, because the generic mono path's recheck over the
@@ -356,11 +364,9 @@ instance was itself unsound, because the generic mono path's recheck over the
 change and A-MINT **land together for the F1 family**; for ordinary generic fns behind
 renamed imports the demand-carrier change alone is complete.
 
-**The mechanism half is re-measured, not inherited.** 0935's differential proof
-(`CRANELISP_CODEGEN_DUMP='*'`: bare `(v (Bx 5))` mints no instance, dotted
-`(Bx.v (Bx 5))` mints `user/Bx.v$user/Bx$Int`) was run at an S119 HEAD. It is
-**MEASURE-4** (§8): re-run before CS-2 is written, so the acceptance is against an
-observation of this tree rather than a record of another.
+The S119 differential motivated the carrier change. Current acceptance is the canonical
+bare-accessor and renamed-import carrier evidence recorded in §8; the historical dump is
+not a continuing measurement gate.
 
 ### 2.6 The cost, against the measured census
 
@@ -386,9 +392,8 @@ concrete instantiation*. Three grounds for a multiplier near 1, and one honest u
   A-MINT emits no more per instance than the template emits today.
 - The language already pays this multiplier for every ordinary generic `defn`; the census's
   own frame list carries `ct/ap$Fn(Int;ct/Bx$Int)+Int` beside `Bx.v`.
-- **MEASURE-2**: the distinct-instantiation count per F0/F1/F2 frame across the corpus is
-  in neither census. If some frame instantiates at many types, the growth shows in object
-  size and compile time, not in correctness.
+- The distinct-instantiation multiplier remains a performance characteristic, not a
+  correctness or filing-retirement gate.
 
 **Precision gain, recorded because it is not free value.** Every F1/F2 call becomes a
 statically-resolved call to a concrete instance — the exact precondition
@@ -550,9 +555,11 @@ because `lenient_from_expr` returns a total `MonoExpr` and widening it to a `Res
 living in**, and the disposition changes accordingly:
 
 `Realization::Body` carries its `view: MonoDefnVariant` **non-optionally**, and
-`Life::Concrete` is constructed only with a realization
-(`symbol-table-lifecycle.md` §4.6, §6 row 8). So "a concrete entry whose view was built over
-a placeholder" is no longer representable. A frame whose body still has a residual **root**
+the supported authoring path constructs `Life::Concrete` only with a
+realization (`symbol-table-lifecycle.md` §§4.2, 4.4 and 4.6; exact states are in
+the `crates/cranelisp-types/src/module.rs::settle_concrete` rustdoc). So that path cannot
+produce "a concrete entry whose view was built over a placeholder"; lifecycle
+§7 still records the clone/serde validation limit. A frame whose body still has a residual **root**
 after defaulting therefore has exactly two admissible dispositions, and no third:
 
 1. **It is not a codegen target** — it stays `Life::Template`, and any reachable use is a
@@ -748,7 +755,9 @@ needs is either C1-published or `pub(crate)`.
 **The schema question S119 left open for `arch` is answered and this section supersedes
 it.** S119 §5 offered three options because SPRINT.md then authorised exactly one 23→24
 window owned by 0869. The S121 contract settles it: **`CACHE_SCHEMA_VERSION` 24→25, exactly
-once, in the C1 change-set** (`symbol-table-lifecycle.md` §9). Both halves of this
+once, in the C1 change-set** ([S121 lifecycle design at checkpoint
+`dc78ddbe`](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/arch/symbol-table-lifecycle.md)
+§9). Both halves of this
 obligation are cache-visible *meaning* changes and both are covered by that window's
 wholesale pre-25 invalidation:
 
@@ -766,7 +775,9 @@ Two consequences C3 must not get wrong:
    `crates/cranelisp-backend/src/cache/mod.rs:391` (value 24 at HEAD), so the bump is a
    *backend* edit that C1 coordinates. A second bump inside C3 is a plan violation to report.
 2. **No cache baseline may be captured for acceptance between the C1 bump and the C4
-   IO-layout flip** (`symbol-table-lifecycle.md` §9), so C3's warm-cache evidence is taken
+   IO-layout flip** ([S121 lifecycle design at checkpoint
+   `dc78ddbe`](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/arch/symbol-table-lifecycle.md)
+   §9), so C3's warm-cache evidence is taken
    after C4, not during this visit.
 
 ---
@@ -800,7 +811,8 @@ paths in `typecheck.md` §9.8.
 - **The demand carrier (0935).** Converge `mono_collect.rs:480-485`, `:592` and `:687` on one
   `MonoDemand` constructor whose `template` is the carrier-read storage FQ. No spelling
   swap (§2.7 item 6).
-- **A-MINT** (§2.3): an accessor-instance minter keyed by `build_mangled_name`, fed from the
+- **A-MINT** (§2.3): an accessor-instance minter keyed by the context-bearing canonical
+  instance key, fed from the
   mono worklist, substituting through the instantiation and re-running the synthesiser's
   derivation over the template's `SynthSpec`.
 - **Product boundary** (§4): retain the `is_product`/lone-constructor source for
@@ -809,7 +821,8 @@ paths in `typecheck.md` §9.8.
 - **F2 trigger** (§2.4): extend `collect_mono_call_sites` with the
   `ApplyRef::Dispatch → Template` case, reusing `local_parametric_call_triggers` verbatim;
   rewrite the site's `ApplyRef::Dispatch` to the instance's `FQSymbol`.
-- **Cluster-level dedup** on the mangled key, unchanged (`monomorphisation.md` §3.5).
+- **Cluster-level dedup** on the canonical realization key, unchanged
+  (`monomorphisation.md` §3.5).
 - **Cross-cluster / REPL:** an accessor is minted at `deftype` time in a *prior* cluster; the
   demanding call site is in a later one. That is the `collect_imported_constrained_calls`
   cross-module shape, and `monomorphisation.md` §3.7's three scoping facts apply verbatim to
@@ -847,39 +860,43 @@ Rows placed beside their production owner per the crate `CLAUDE.md` sibling conv
 |---|---|---|---|
 | `adt` ctor + accessor mint | a concrete product's ctor and accessor are `Life::Concrete` with a slot and a `Realization::Body` view, byte-identical to today | a polymorphic product's ctor and accessor are `Life::Template`, **no slot allocated**, no view built | the bare-alias `Import`, the `Ambiguous` poison and the cross-cluster `committed_accessor_kind` classification are unchanged for **both** arms — a lifecycle change must not perturb the §8.6.5 contest |
 | `adt` product/sum boundary (0867 retirement) | concrete and polymorphic products mint their canonical `Type.field` and bare candidate | differently named one-arm and multi-arm sums extract payloads by positional `match` | no sum payload label mints a dotted or bare accessor; no partial accessor or runtime variant check exists |
-| accessor A-MINT | one instance per distinct `(fqtn, field, concrete args)`; scheme `is_concrete()`; view built by `synthetic_local_from_expr` | two distinct instantiations mint two distinct mangled keys; an identical re-reach dedups to one | the minter never consults a span-keyed sidecar; a non-concrete instantiation is **not** minted (deferred per `monomorphisation.md` §3.3) |
+| accessor A-MINT | one instance per distinct authored accessor/full concrete signature; scheme `is_concrete()`; view built by `synthetic_local_from_expr` | two distinct concrete signatures mint two distinct canonical keys; an identical re-reach dedups to one | the minter never consults a span-keyed sidecar; a non-concrete instantiation is **not** minted (deferred per `monomorphisation.md` §3.3) |
 | `traits::impl_check` scheme | a **concrete** impl method (`Show.show$primitives/Int`) is `Life::Concrete`, identical to today | a residual impl method quantifies its free vars and is `Life::Template` | `scheme::mono` is not called on a non-concrete `fn_type` at this site; `mangle_trait_method`'s output is **unchanged** for every input |
 | `mono_collect` demand carrier | a bare-alias accessor call and its dotted spelling produce the **same** `MonoDemand` and dedup to ONE instance | a renamed-import generic call mints | no `MonoDemand` is constructible from a written spelling; all three collector sites take the same constructor |
-| F2 collection | a dispatched call at concrete arg types mints one instance under `build_mangled_name` and rewrites `ApplyRef::Dispatch` | the `b`-from-argument case: `(fmap show …)` and `(fmap inc …)` over the same receiver mint **distinct** names (§2.2) | no second mangle grammar appears; no `$Type$Arg` key is minted anywhere |
+| F2 collection | a dispatched call at a full concrete signature mints one instance under the canonical key and rewrites `ApplyRef::Dispatch` | the `b`-from-argument case: `(fmap show …)` and `(fmap inc …)` over the same receiver mint **distinct** names (§2.2) | no second key grammar appears; no `$Type$Arg` key is minted anywhere |
 | `support::default_residual_parameters` | `(Result a String)` ⇒ `(Result Int String)`; `(Result String a)` ⇒ `(Result String Int)`; `(Vec a)` ⇒ `(Vec Int)`; concrete arguments preserved at every depth | nested: `(Result (Vec a) String)` defaults only the inner position; a fully-concrete body is a no-op and the strict walk was already taken | **the type is never replaced** — no input yields a bare `Int` from a constructor-rooted type; a bare `Type::Var` root is **not** defaulted (L-2); a variable in `scheme.constraints` is a **located error** (L-3); a residual occurring in a declared parameter type is **not** defaulted (L-1) |
 | §5.2.4 explicit generic product | `(deftype (B a) [:a v])` registers a template constructor and product accessor | each accessor instance mints at a concrete use | typecheck does not invent or accept missing field types; the frontend boundary makes that state unrepresentable |
 
 ---
 
-## 8. What this ruling does not settle (measurement-gated)
+## 8. S122 as-built disposition
 
-Stated rather than guessed, per the sprint's measure-before-binding discipline. Each needs a
-build/test slot `sprint` sequences.
+The former measurement gates are no longer implementation choices:
 
-- **MEASURE-1 — F2 collection reach.** Once an impl-method entry is `Template`, how much of
-  the F2 call population does the *existing* `drive_call_site_monomorphisation` already
-  reach, and how much needs the §2.4 trigger? The answer sizes CS-2. Reading
-  `mono_collect.rs` says the trait dispatch shape is not currently collected (the callee is
-  not a bare `Var` in `constrained_fn_names`), but `fq_is_trait_method_decl`'s existing
-  callers may already cover part of it.
-- **MEASURE-1b — F1 collection reach.** `entry_is_monomorphisable_polymorphic` already
-  answers **true** for a polymorphic accessor, so `collect_local_parametric_calls` ought to
-  reach `(v b)` — yet the census shows `Bx.v` compiled with residual types. FIXME 0935
-  pre-empts part of the answer (the collector records the written spelling, so the *bare*
-  call declines at the probe), which means the discriminating A/B is now: pin `get`'s
-  parameter (`(defn get [b :(Bx Int)] (v b))`) **and** use the dotted spelling, and see
-  which of the two conditions each recovers.
-- **MEASURE-2 — instantiation multiplier.** Distinct instantiations per F0/F1/F2 frame across
-  the corpus. Neither census carries it, and it is the only real cost axis (§2.6).
-- **MEASURE-3 — the corpus gate.** Zero new refusals across the 16 programs named in FIXME
-  0903, per-program table recorded. The release contract was falsified twice by exactly this
-  measurement; the producer half is not exempt.
-- **MEASURE-4 — 0935's differential, re-run at this tree.** §2.5.
+- **0924 is satisfied.** `adt.rs` settles residual constructors and product accessors as
+  slotless `Life::Template { body: TemplateBody::Synth(..) }` entries. The concrete-use
+  path in `traits/monomorphise.rs::monomorphise_synth` derives the instance from that
+  recipe. `adt::tests::polymorphic_constructors_are_slotless_templates` pins the template
+  boundary, while the mono-collector and synth-view units pin canonical concrete demand
+  and view production. Trait-method templates use the same lifecycle and ordinary
+  instance path; no second mangle grammar was added.
+- **0935 is satisfied.** `program/mono_collect.rs::mono_demand_from_spans` receives
+  `resolved.canonical` at the imported, local and dispatch collectors and constructs the
+  typed `MonoDemand`. The bare-accessor and renamed-import carrier units in
+  `program/mono_collect/tests/carriers.rs` assert the canonical storage identity. The
+  nearby source comment now describes the live `resolved.canonical` input.
+- **0913 is satisfied.** `program/support.rs::build_concrete_codegen_view` invokes
+  `default_residual_parameters`, then retries the strict concrete view. The solution-level
+  `tests/residual_type_param_result_leak_0913.rs::unannotated_result_turn_releases_like_its_annotated_twin`
+  supplies the exact marginal-balance evidence recorded by the S122 inventory.
+- **The typecheck arm of 0929 is satisfied.** `ownership/fixpoint.rs` records residual
+  parameter frames, excludes them from the walkable ownership universe and publishes no
+  summary for them. `ownership::fixpoint::tests::a_residual_parameter_frame_publishes_nothing_and_stays_in_the_keyed_set`
+  pins both the refusal and the keyed observation. Other 0929 census arms remain with
+  their owning contexts.
+
+The historical corpus and multiplier measurements explain the original change, but they
+are not continuing typecheck mechanisms or open filing gates.
 
 ---
 
@@ -905,8 +922,8 @@ build/test slot `sprint` sequences.
 - **Testability (Principle 5).** The gate cell (§4.3 item 2) is a pure unit assertion on an
   entry's `Life` — no program run, no allocator counters, no 1024 boundary. It is the
   cheapest possible guard for the most expensive possible defect.
-- **Performance.** One body per instantiation instead of one per declaration; the multiplier
-  is MEASURE-2 and is expected near 1 for accessors. Offset: 2,216+ fewer compiled template
+- **Performance.** One body per instantiation instead of one per declaration; the historical
+  multiplier estimate was near 1 for accessors. Offset: 2,216+ fewer compiled template
   bodies once the release contract's faces 1–3 are complete, and the §2.6 precision gain.
 - **Concurrency-safety.** Untouched. No new shared state; A-MINT is a pure function of its
   inputs; the defaulting operates on a clone. The funnel's writes go through the same
@@ -918,8 +935,11 @@ build/test slot `sprint` sequences.
 
 - `design/arch/symbol-table-lifecycle.md` — §3 (outer layer), §4 (the `Life` machine, the
   funnels, `Realization`), §5.2 (`InstanceLink`/`MonoDemand`), §5.7 (trait impls), §5.8
-  (synthesised ctors and accessors), §6 (impossibility table), §9 (the C1→C3 handoff, the
-  one schema window)
+  (synthesised ctors and accessors), §6 (current enforcement) and §7 (residual
+  limits). The C1→C3 handoff and one schema window are S121 provenance in
+  [the lifecycle design at checkpoint
+  `dc78ddbe`](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/arch/symbol-table-lifecycle.md)
+  §9
 - `design/backend/non-concrete-release-contract.md` — R-2, R-3, §4 faces 2/3/5, §4.3 (the
   impossibility proof), §5.1 (the instrument), §5.2, §5.4, §7 (staging), §8 (reject criteria)
 - `monomorphisation.md` §1 (slot ⟺ concrete), §2 (the gate), §3.1/§3.3/§3.5/§3.7 (the spine
@@ -936,24 +956,8 @@ build/test slot `sprint` sequences.
 - `design/arch/principles/{06,07,18,20,24,25,26}` — Principle 25 is the spine of §3.2's
   fence and §3.3's self-check
 
-## Next roles
+## Current handoff
 
-- **`arch`** — nothing outstanding. The one item was FIXME 0553's public entry point on
-  `cranelisp-typecheck` (`monomorphisation.md` §3.8), approved 2026-09-01; it was never
-  this obligation's. The schema question S119 raised is answered by the S121 contract and
-  needs nothing further (§6).
-- **`qa`** — the §4 product/sum boundary cells; the §5.1 backend criterion;
-  the NC-R relabel derivation in §5.4; the §7.5 negative column. Section 5.2
-  allocates no counter evidence.
-- **`test`** — the §2.4-of-the-release-contract four-line accessor repro (`1023` GREEN /
-  `1024` SIGSEGV) is still the cheapest memory-safety cell in the class and is the
-  *precondition* for CS-1's acceptance, not a follow-on.
-- **`dev`(typecheck)** — CS-1 → CS-2 → CS-3 (+ CS-4 anywhere), after C1 lands. The
-  visit's remaining change-sets are not this obligation's: CS-5 is 0553's and CS-6 is the
-  FIXME-0869 written-trait-impl producer (`traits.md` §3.0.1). CS-6 follows CS-1 because
-  it shares `impl_check.rs`'s retain-prior arms with the funnel conversion.
-- **`sprint`** — three findings: 0867's widening is retired by the product-only
-  ruling (§4); MEASURE-1b's discriminating control has changed shape (§8); and the
-  0553 entry point moves typecheck's `public-api.txt` — approved 2026-09-01, so the
-  regenerated baseline rides its own change-set (`typecheck.md` §9.8.2 CS-5) and blocks
-  nothing here.
+The 0924, 0913 and 0935 typecheck work is complete and their filings are retired. The
+canonical-demand source comment is corrected. The separate 0779 polarity unit is complete
+and recorded in `auto-curry.md` §3.

@@ -1,0 +1,69 @@
+[inventory]
+version = 1
+root_memory = "CLAUDE.md"
+owners = ["docs", "test"]
+
+[[document]]
+path = "CLAUDE.md"
+kind = "root-memory"
+owner = "docs"
+purpose = "Governs the complete fixture document inventory."
+
+[[document]]
+path = "docs/CLAUDE.md"
+kind = "memory"
+owner = "docs"
+purpose = "Governs the fixture's maintained documentation."
+established_by = "CLAUDE.md"
+
+[[document]]
+path = "docs/guide.md"
+kind = "standing"
+owner = "docs"
+purpose = "Explains the fixture's supported workflow."
+established_by = "docs/CLAUDE.md"
+
+[[document]]
+path = "docs/one/topic.md"
+kind = "standing"
+owner = "docs"
+purpose = "Supplies one shorthand candidate."
+established_by = "docs/CLAUDE.md"
+
+[[document]]
+path = "docs/two/topic.md"
+kind = "standing"
+owner = "docs"
+purpose = "Supplies a second shorthand candidate."
+established_by = "docs/CLAUDE.md"
+
+[[document_class]]
+name = "dated-records"
+patterns = ["archive/*.md"]
+owner = "docs"
+purpose = "Retains bounded historical records for provenance."
+established_by = "CLAUDE.md"
+disposition = "exempt"
+reason = "Dated records preserve the state and citations of their original delivery."
+reference_policy = "historical-record"
+
+[[document_class]]
+name = "reasoned-notes"
+patterns = ["notes/*.md"]
+owner = "docs"
+purpose = "Retains explicitly exempt operational notes."
+established_by = "CLAUDE.md"
+disposition = "exempt"
+reason = "Operational notes are intentionally retained without individual product entries."
+
+[[submodule]]
+path = "vendor/package"
+owner = "test"
+purpose = "Declares the optional shared-package boundary."
+established_by = "CLAUDE.md"
+optional_absent = true
+
+[references]
+source_roots = ["src", "docs", "archive", "notes"]
+symbol_roots = ["src"]
+comment_input_patterns = ["src/**/*.rs", "src/**/*.py"]

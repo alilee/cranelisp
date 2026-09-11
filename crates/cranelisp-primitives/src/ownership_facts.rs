@@ -5,6 +5,8 @@
 
 use cranelisp_types::{Mode, ModeSummary, ParamFlow, ResultMode, Type};
 
+use crate::abi_facts::is_heap_carried;
+
 fn summary(param_modes: Vec<Mode>, param_flow: Vec<ParamFlow>, result: ResultMode) -> ModeSummary {
     ModeSummary {
         param_modes,
@@ -38,10 +40,10 @@ pub(crate) fn uniform_for_type(ty: &Type, heap_mode: Mode) -> ModeSummary {
     let param_modes = params
         .iter()
         .map(|ty| {
-            if matches!(ty, Type::Int | Type::Bool | Type::Float) {
-                Mode::Copy
-            } else {
+            if is_heap_carried(ty) {
                 heap_mode
+            } else {
+                Mode::Copy
             }
         })
         .collect();

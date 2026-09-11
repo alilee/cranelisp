@@ -148,10 +148,10 @@ Only `/qa` invoked in Phase 3. No `/spec` (no language semantics change), no `/a
 - **Task**: Author the Phase 3 design package. Three artefacts:
   1. **Trim `tests/plan/helpers.md`** per the Phase 0 collapse list (Phase 1 §1 of scope). The trimmed `helpers.md` is the spec the Phase 1 implementation codes against.
   2. **Concrete API signatures** for `tests/helpers/e2e.rs` (`Cranelisp`, `CrInvocation`, `CrOutput`, `PreludeVariant`) and `tests/helpers/regex.rs` (the named regex library). Either inline in the trimmed `helpers.md` or in a new sibling file.
-  3. **Per-test row plan in `tests/plan/PLAN.md`** for Phase 2 — list every test file in scope (~56 files), classify each (clean port / port-with-defect-likely / holdout-risk), and propose batches. Output drives Phase 4 (Wave organisation).
+  3. **Per-test row plan in [historical QA plan](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md)** for Phase 2 — list every test file in scope (~56 files), classify each (clean port / port-with-defect-likely / holdout-risk), and propose batches. Output drives Phase 4 (Wave organisation).
 - **Design refs to read first**:
   - `tests/plan/helpers.md` (current — drafting both the trim list AND the concrete API)
-  - `tests/plan/PLAN.md` (current — the per-test row work extends this)
+  - [historical QA plan](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md) (current — the per-test row work extends this)
   - `design/backend/module-caching.md` §"Cache directory layout" (Phase 1 §2 cites this)
   - `design/int/repl-lifecycle.md` §"Project root resolution" (the harness orchestration foundation)
   - `tests/CLAUDE.md` §"Fresh Temp Directory per Test" (the fresh-tmpdir discipline)
@@ -159,7 +159,7 @@ Only `/qa` invoked in Phase 3. No `/spec` (no language semantics change), no `/a
 - **Acceptance criteria** (`/sprint` checks before advancing to Phase 4):
   - `tests/plan/helpers.md` is consistent end-to-end (no remaining references to `TomlVariant`, FIXME 0110/0111/0112, `assert_stderr_traces_only`, ready-sentinel, or "blanket determinism mode" framing).
   - Concrete signatures cover every Phase 1 §3 deliverable (builder methods, assertion methods, regex helpers, gating mechanism for `use_workspace_stdlib`).
-  - `tests/plan/PLAN.md` has rows for every test file in scope with a port classification.
+  - [historical QA plan](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md) has rows for every test file in scope with a port classification.
   - Phase 2 batches are proposed with rationale (file size, dependency clusters, defect-risk concentration).
   - Ledger lockstep mechanism is specified (how does each Phase 2 PR demonstrate `tests/plan/ledger.md` was updated?).
 
@@ -213,7 +213,7 @@ User confirms continuation, redirects ordering, or requests scope adjustment. `/
 - 2026-05-03: `/qa` Phase 3 artefacts delivered:
   - `tests/plan/helpers.md` trimmed (595→385 lines) — `TomlVariant`, `assert_stderr_traces_only`, `stderr_traces`, `TraceKind`, `rc_balanced_for_string_concat` example, `--deterministic` framing, FIXME 0110/0111/0112 references all removed. One remaining mention in §"What the harness does NOT provide" intentionally documents rejection.
   - `tests/plan/helpers-api.md` created (347 lines) — concrete signatures for `Cranelisp`, `CrInvocation`, `CrOutput`, `CrError`, `PreludeVariant`, `tests/helpers/regex.rs`. `use_workspace_stdlib_for_stdlib_conformance_only()` rename chosen for gating. Cache-hit pattern: `CrOutput::run_again() -> Cranelisp` (consumes output, transfers TempDir into new builder).
-  - `tests/plan/PLAN.md` extended (+201 lines) — §"Sprint 64 port plan" with classification taxonomy + per-file table covering 42 files / ~36k LOC + 8 batches by topic affinity + 3-pronged ledger lockstep mechanism.
+  - [historical QA plan](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md) extended (+201 lines) — §"Sprint 64 port plan" with classification taxonomy + per-file table covering 42 files / ~36k LOC + 8 batches by topic affinity + 3-pronged ledger lockstep mechanism.
   - **Two structural findings flagged for user decision**: (a) 8 holdout-risk files (`scheduler.rs`, `wave2/3/4_g{6,8,9}.rs`, `v4_jit_reclaim.rs`, `sprint61_observability_*.rs`) reach into `cranelisp::scheduler`, `cranelisp::observability`, runtime counters — belong as `#[cfg(test)]` unit tests in owning crates, not e2e; (b) `cache.rs` (2073 LOC, 55 tests) directly constructs `SymbolTable`/`CacheManifest` — mostly unit-tier in the wrong location, needs FIXME(/backend) to relocate. 4 open questions surfaced for Phase 4.
 - 2026-05-03: User resolved Q1-Q4 with scope expansion:
   - Q1: `tests/legacy/` (Cargo doesn't auto-discover nested dirs) confirmed.
@@ -222,7 +222,7 @@ User confirms continuation, redirects ordering, or requests scope adjustment. `/
   - Q4: every file gets the audit-and-extract filter, not just the awkward ones. End state: high-quality manageable test set assessable against the spec.
   - Sprint scope expanded: Phase 2 is now four-step (audit / port / reorganise / quarantine) per file. `/qa` re-dispatched to update Phase 3 artefacts (PLAN.md classification framework, reorganisation strategy, batch re-shape, audit-workflow specification, `tests/legacy/` mechanism).
 - 2026-05-03: `/qa` revised Phase 3 artefacts delivered:
-  - `tests/plan/PLAN.md` extended (518 → 924 lines). New §"Sprint 64 port plan" rewritten with: per-file disposition framework (Carry-forward% / Quarantine% / Delete% / target file / FIXME target / defect risk), reorganisation strategy + file tree, per-file disposition table (42 rows), audit workflow specification, FIXME template for harvest commitments, per-file commit discipline, 10 Phase 2 batches, sprint sizing assessment, ledger lockstep mechanism, 6 Phase-4 open questions.
+  - [historical QA plan](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md) extended (518 → 924 lines). New §"Sprint 64 port plan" rewritten with: per-file disposition framework (Carry-forward% / Quarantine% / Delete% / target file / FIXME target / defect risk), reorganisation strategy + file tree, per-file disposition table (42 rows), audit workflow specification, FIXME template for harvest commitments, per-file commit discipline, 10 Phase 2 batches, sprint sizing assessment, ledger lockstep mechanism, 6 Phase-4 open questions.
   - **Reorganisation strategy chosen**: spec-section-anchored. 16 top-level e2e files (`spec_03_types.rs` … `spec_appendix_a_builtins.rs` + `repl_*` + `cache.rs` + `examples.rs` + `exemplar.rs` + `regression.rs` + `build_confidence.rs`) plus ~10 `tests/legacy/` archive files. Down from 42 source files. Reviewer answers "which spec section?" from filename.
   - **Sprint sizing recommendation**: two-sprint split. S64 = Phase 1 + Batches 1/5/7/9/10 (cache seed + stdlib + REPL + pure-quarantine + build_confidence). S65 = Batches 2/3/4/6/8 + Phase 3 legacy-helper deletion. Rationale: ~36k LOC + ~1500 carry-forward assertions + ~10 harvest FIXMEs + ~80–110 ledger entries does not fit single-sprint cadence cleanly. Single-sprint compression left as user/`/sprint` decision at Phase 4 wave gate. FIXME 0115 lock-in (test-port precedes crate-refactor) preserved either way.
   - 6 open questions for Phase 4 wave organisation; sprint sizing is the load-bearing one.
@@ -241,7 +241,7 @@ User confirms continuation, redirects ordering, or requests scope adjustment. `/
 - 2026-05-03: User review of Wave 2 raised mode-canonicalisation question (REPL/`--run`/`--link` boundary). Decisions: adopt; canonical = REPL; re-port `spec_11_stdlib.rs` for pristine state; PLAN.md update only (no `/arch` consult); fix before Wave 3. Mode-equivalence helper extended to 6 permutations: `repl-fresh / repl-cached / run-fresh / run-cached / link-fresh / link-cached`.
 - 2026-05-03: Wave 2.5 dispatched — methodology-correction wave between Wave 2 and Wave 3. Combined design + helper + re-port + reshape work.
 - 2026-05-03: Wave 2.5 complete (uncommitted). Outcomes:
-  - `tests/plan/PLAN.md` extended with §"Mode canonicalisation — REPL is the canonical surface for language conformance" + audit-workflow rule update.
+  - [historical QA plan](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md) extended with §"Mode canonicalisation — REPL is the canonical surface for language conformance" + audit-workflow rule update.
   - `tests/plan/helpers.md` and `tests/plan/helpers-api.md` extended with mode-equivalence helper section.
   - `tests/helpers/e2e.rs` extended with `run_through_all_modes(program, prelude) -> AllModesResult` + `assert_all_equivalent()` + `assert_all_equal(N)`. Canonical observation: `(defn main [] expr-returning-Int)`; cross-mode equivalence is "all 6 paths produce the same Int". `Cranelisp::with_prelude_no_overwrite()` added for cached-permutation flow.
   - `tests/spec_11_stdlib.rs` re-ported to REPL canonical: 54/54 pass. Net stronger assertion shape (`:Type value` substring asserts both type and value in one call). 3 ADT-typed tests needed minor reshaping for top-level type-variable disambiguation; no spec-coverage drop.

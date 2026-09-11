@@ -229,7 +229,7 @@ fn enter_sets_body_running_collect_clears() {
         !TRACE_BODY_RUNNING.with(Cell::get),
         "collect must clear the flag"
     );
-    consume_trace_call(t);
+    consume_trace_call(crate::handle::test_owned(t));
 
     TRACE_THREAD_ID.store(0, Ordering::SeqCst);
 }
@@ -338,7 +338,7 @@ fn capture_fidelity_got_slotted_callee_names_call_and_carries_operands() {
     );
 
     // Release ownership (consume the marshalled tree).
-    consume_trace_call(root);
+    consume_trace_call(crate::handle::test_owned(root));
     TRACE_THREAD_ID.store(0, Ordering::SeqCst);
     TRACE_BODY_RUNNING.with(|f| f.set(false));
 }
@@ -382,7 +382,7 @@ fn empty_trace_yields_faithful_placeholder_not_a_defect() {
         "empty-trace children are faithfully SNil"
     );
 
-    consume_trace_call(root);
+    consume_trace_call(crate::handle::test_owned(root));
 }
 
 // spec: spec/04-expressions.md §4.12.5 — panic-unwind trace-guard cleanup
@@ -542,7 +542,7 @@ fn accessor_params_reads_offset_and_rc_incs_field() {
 
     // Balance: consume the inc'd SList ref (the TraceCall consumed the
     // original). The SList holds two String heads.
-    consume_slist_of_string(got);
+    consume_slist_of_string(crate::handle::test_owned(got));
     let _ = (name, result, children);
 }
 
@@ -590,7 +590,7 @@ fn accessor_children_reads_offset_and_rc_incs_field() {
     );
     assert_eq!(unsafe { read_i64(got, PAYLOAD_OFFSET) }, TAG_SCONS);
 
-    consume_slist_of_trace(got); // balance the inc'd ref
+    consume_slist_of_trace(crate::handle::test_owned(got)); // balance the inc'd ref
     let _ = (name, params, result);
 }
 

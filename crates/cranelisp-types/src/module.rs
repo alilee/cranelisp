@@ -2748,7 +2748,7 @@ impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
         callees: Vec<FQSymbol>,
         visibility: Visibility,
     ) -> Result<(Symbol, CallableSlot), LifecycleError> {
-        let name = link.instance_key();
+        let name = settled_instance_key(&link, &scheme)?;
         let slot = self.mint_callable_slot(&scheme)?;
         self.install_settled_callable(
             name.clone(),
@@ -3952,6 +3952,16 @@ fn publication_arm_pairs<C: CodeStore>(
             pairs.extend(new.into_iter().skip(common).map(|arm| (None, Some(arm))));
             Ok(pairs)
         }
+        // A roster/single-body transition changes the callable's language type.
+        // Preserve must not fall through to the retire-and-mint pairing below.
+        (Decl::Callable(_), Decl::Overloaded(_)) | (Decl::Overloaded(_), Decl::Callable(_))
+            if matches!(decision, Some(PlannedAbiDecision::Preserve)) =>
+        {
+            Err(LifecycleError::WrongState {
+                symbol: name.clone(),
+                expected: "ChangeAbi for an ordinary/overloaded callable transition",
+            })
+        }
         _ => Ok(old
             .into_iter()
             .map(|arm| (Some(arm), None))
@@ -4434,6 +4444,15 @@ fn validate_publication_collision<C: CodeStore, L: LinkerStore>(
                 })
             }
         }
+        // Adding/removing signatures may change a plain defn's representation.
+        // Semantic admission belongs to integration; slot and owner moves remain
+        // in the ordinary publication transaction. Other origins cannot cross.
+        (Decl::Overloaded(_), Decl::Callable(callable))
+        | (Decl::Callable(callable), Decl::Overloaded(_))
+            if matches!(callable.origin, CallableOrigin::Plain) =>
+        {
+            Ok(())
+        }
         (Decl::Overloaded(_), Decl::Overloaded(_)) | (Decl::Macro(_), Decl::Macro(_)) => Ok(()),
         (Decl::TraitMethod(existing), Decl::TraitMethod(replacement))
             if prior.visibility == staged.visibility
@@ -4708,6 +4727,27 @@ fn binding_matches_written_trait_impl<C: CodeStore>(
     )
 }
 
+// The instance scheme is authoritative here: its template may live in another
+// table. Installation and restored-state validation share this exact projection.
+fn settled_instance_key(link: &InstanceLink, scheme: &Scheme) -> Result<Symbol, LifecycleError> {
+    let owner = crate::lifecycle::instance_owner(&link.template).map_err(|_| {
+        LifecycleError::WrongState {
+            symbol: match &link.template {
+                CallableTarget::Binding(owner)
+                | CallableTarget::OverloadArm { owner, .. }
+                | CallableTarget::MacroClause { owner, .. } => owner.symbol.clone(),
+            },
+            expected: "an instance template target that is not a macro clause",
+        }
+    })?;
+    let concrete = ConcreteType::from_type(&scheme.ty)
+        .map_err(|error| LifecycleError::SlotMint(SlotMintError::NotConcrete(error)))?;
+    crate::concrete_callable_key(owner, &concrete).map_err(|_| LifecycleError::WrongState {
+        symbol: owner.symbol.clone(),
+        expected: "a concrete function instance scheme",
+    })
+}
+
 fn validate_instance_key<C: CodeStore>(
     symbol: &Symbol,
     callable: &Callable<C>,
@@ -4719,13 +4759,7 @@ fn validate_instance_key<C: CodeStore>(
     else {
         return Ok(());
     };
-    if matches!(link.template, CallableTarget::MacroClause { .. }) {
-        return Err(LifecycleError::WrongState {
-            symbol: symbol.clone(),
-            expected: "an instance template target that is not a macro clause",
-        });
-    }
-    let expected = link.instance_key();
+    let expected = settled_instance_key(link, &callable.arm.scheme)?;
     if *symbol != expected {
         return Err(LifecycleError::InstanceKeyMismatch {
             symbol: symbol.clone(),

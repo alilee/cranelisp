@@ -1150,4 +1150,4 @@ The fix is S101 scope item 1; when it lands, in order:
 - Supersedes nothing; peer of `tests/plan/s99-measurement.md` (whose baselines it
   consumes). `tests/plan/PLAN.md` remains the spec→tests bridge; rows for the new
   tests join it as they are authored (the S100 triage tests trace to
-  `spec/04-expressions.md §4.6.2`).
+  the [indirect-call specification](../../spec/04-expressions.md)).

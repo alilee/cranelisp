@@ -397,7 +397,9 @@ impl Drop for UnpublishedVecStrings {
         }
 
         for &element in &self.elements {
-            crate::rc::consume_shallow(element);
+            // SAFETY: an unpublished Vec owns each initialized element until
+            // publication or this unwind cleanup.
+            crate::rc::consume_shallow(unsafe { crate::handle::Owned::from_abi(element) });
         }
 
         if !self.base.is_null() {

@@ -1070,7 +1070,7 @@ the new step 7 riding the C5 IO slice.
   cross-crate surface.
 - `/qa` — 0857's citation repair in `tests/plan/s115-instrumentation-matrix.md`
   (the dead `ms_p6_mode_self_tests` line citations; the live replacement is the
-  committed M3 e2e cell), and the `tests/plan/PLAN.md` rows that still mark the
+  committed M3 e2e cell), and the [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md) rows that then marked the
   two M3 e2e cells as baseline REDs. **0859's oracle is retired unexecuted
   (§9a)** — do not schedule it; record its revival trigger instead, and retire
   the sibling conditional at `tests/plan/s118-test-plan.md` §3.5.

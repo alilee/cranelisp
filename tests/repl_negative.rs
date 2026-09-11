@@ -3,7 +3,7 @@
 // Carries forward the negative-coverage assertions from the integration-tier
 // `repl_negative.rs` (~31 tests), `repl_experience.rs` (error subset),
 // and `ring3_repl.rs` (defmacro negative paths). Per
-// `tests/plan/PLAN.md §"Mode canonicalisation"` REPL is canonical.
+// the [current mode-canonicalisation guidance](plan/PLAN.md#mode-canonicalisation--repl-is-the-canonical-surface-for-language-conformance), REPL is canonical.
 //
 // What this file covers (per `repl/spec.md §5` error model):
 //   - Type errors at the REPL produce clear messages mentioning expected/actual
@@ -869,17 +869,10 @@ fn parse_error_unclosed_paren_neg() {
     );
 }
 
-// =============================================================================
-// Harvested from tests/legacy/repl_negative_old.rs (FIXME 0124) — S82 Wave 2.
-//
-// The classification helpers + display-format assertions in the legacy file
-// inspected Rust-internal state (`format_result`, `session.shared.symbol_tables`).
-// The genuinely-uncovered NEGATIVE assertions are re-expressed here as e2e
-// REPL captures against the live binary's `/list` + definition-display surface.
-// Items already covered in the active suite (defn-display normalization,
-// module-scoping refusal, enum-constructor classification) are NOT re-ported —
-// see tests/plan/s82-harvest-repl_negative_old.md for the per-test disposition.
-// =============================================================================
+// Coverage preserved from `tests/legacy/repl_negative_old.rs` is expressed here
+// through public REPL observations. Current evidence navigation follows
+// the [current coverage-preservation guidance](plan/PLAN.md#coverage-preservation-and-evidence-navigation); each
+// retained witness carries its own spec trace and legacy `carry:` annotation.
 
 // spec: repl/spec.md §3.3 (neg) — no symbol appears in two /list categories.
 // A defn classifies under Fns ONLY; a deftype name under Types ONLY. The two

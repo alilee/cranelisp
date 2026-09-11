@@ -1111,31 +1111,30 @@ impl InstanceLink {
         }
     }
 
-    /// Derive the one canonical instance storage key from typed identity.
-    pub fn instance_key(&self) -> Symbol {
-        let sig = self
-            .type_args
-            .iter()
-            .map(mangle_concrete_type)
-            .collect::<Vec<_>>()
-            .join("+");
-        let stem = match &self.template {
-            CallableTarget::Binding(template) => {
-                format!("{}/{}", template.module, template.symbol)
-            }
-            CallableTarget::OverloadArm { owner, arm } => {
-                format!("{}/{}__arm{}", owner.module, owner.symbol, arm.ordinal())
-            }
-            CallableTarget::MacroClause { owner, clause } => {
-                format!(
-                    "{}/{}__macro_clause{}",
-                    owner.module,
-                    owner.symbol,
-                    clause.ordinal()
-                )
-            }
-        };
-        Symbol::from(format!("{stem}${sig}"))
+    /// Derive identity using the authoritative selected template's scheme.
+    ///
+    /// The caller must supply the scheme from the intended template generation.
+    /// Substitutions follow first structural occurrence among quantified variables;
+    /// unused quantifiers take no argument. This projects a signature only: it does
+    /// not check constraints or certify that the scheme belongs to the target.
+    pub fn instance_key(&self, template_scheme: &Scheme) -> Result<Symbol, InstanceKeyError> {
+        let owner = instance_owner(&self.template)?;
+        let mut variables = Vec::new();
+        crate::collect_var_ids_ordered(&template_scheme.ty, &mut variables);
+        variables.retain(|id| template_scheme.type_vars.contains(id));
+        if variables.len() != self.type_args.len() {
+            return Err(InstanceKeyError::ArgumentCount {
+                expected: variables.len(),
+                actual: self.type_args.len(),
+            });
+        }
+        let subst = variables
+            .into_iter()
+            .zip(self.type_args.iter().map(ConcreteType::to_type))
+            .collect();
+        let ty = crate::apply(&subst, &template_scheme.ty);
+        let concrete = ConcreteType::from_type(&ty).map_err(InstanceKeyError::NotConcrete)?;
+        concrete_callable_key(owner, &concrete)
     }
 }
 
@@ -1173,33 +1172,78 @@ impl MonoDemand {
     }
 
     /// Derive the canonical storage key shared with [`InstanceLink`].
-    pub fn instance_key(&self) -> Symbol {
-        self.instance_link().instance_key()
+    pub fn instance_key(&self, template_scheme: &Scheme) -> Result<Symbol, InstanceKeyError> {
+        self.instance_link().instance_key(template_scheme)
     }
 }
 
-fn mangle_concrete_type(ty: &ConcreteType) -> String {
-    match ty {
-        ConcreteType::Int => "Int".to_string(),
-        ConcreteType::Bool => "Bool".to_string(),
-        ConcreteType::String => "String".to_string(),
-        ConcreteType::Float => "Float".to_string(),
-        ConcreteType::Fn(params, ret) => {
-            let params = params
-                .iter()
-                .map(mangle_concrete_type)
-                .collect::<Vec<_>>()
-                .join(",");
-            format!("Fn({params};{})", mangle_concrete_type(ret))
+/// A refusal to derive a concrete callable's canonical identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum InstanceKeyError {
+    /// The substitutions do not match the occurring quantified variables.
+    ArgumentCount { expected: usize, actual: usize },
+    /// The supplied signature is not a function.
+    NotFunction,
+    /// A variable or higher-kinded head remains unresolved.
+    NotConcrete(crate::NotConcrete),
+    /// Macro clauses do not use language-callable instance identity.
+    UnsupportedTemplate,
+}
+
+impl std::fmt::Display for InstanceKeyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ArgumentCount { expected, actual } => write!(
+                f,
+                "expected {expected} instance substitutions, got {actual}"
+            ),
+            Self::NotFunction => f.write_str("instance signature is not a function"),
+            Self::NotConcrete(error) => write!(f, "instance signature is not concrete: {error:?}"),
+            Self::UnsupportedTemplate => f.write_str("unsupported instance template target"),
         }
-        ConcreteType::ADT(name, args) if args.is_empty() => name.to_string(),
-        ConcreteType::ADT(name, args) => format!(
-            "{}${}",
-            name,
-            args.iter()
-                .map(mangle_concrete_type)
-                .collect::<Vec<_>>()
-                .join("+")
-        ),
     }
+}
+
+impl std::error::Error for InstanceKeyError {}
+
+pub(crate) fn instance_owner(target: &CallableTarget) -> Result<&FQSymbol, InstanceKeyError> {
+    match target {
+        CallableTarget::Binding(owner) | CallableTarget::OverloadArm { owner, .. } => Ok(owner),
+        CallableTarget::MacroClause { .. } => Err(InstanceKeyError::UnsupportedTemplate),
+    }
+}
+
+/// Render semantic executable identity from a canonical authored owner and full
+/// concrete function signature. This neither changes authored declaration names
+/// nor chooses native object labels. Results participate in identity, including
+/// result-only generic specializations. Non-function signatures are refused.
+pub fn concrete_callable_key(
+    owner: &FQSymbol,
+    signature: &ConcreteType,
+) -> Result<Symbol, InstanceKeyError> {
+    let ConcreteType::Fn(params, result) = signature else {
+        return Err(InstanceKeyError::NotFunction);
+    };
+    Ok(Symbol::from(format!(
+        "({owner} [{}] {})",
+        render_key_params(params),
+        render_key_type(result)
+    )))
+}
+
+fn render_key_params(params: &[ConcreteType]) -> String {
+    params
+        .iter()
+        .map(render_key_type)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn render_key_type(ty: &ConcreteType) -> String {
+    crate::render_type(
+        &ty.to_type(),
+        crate::PrimitiveNaming::Qualified,
+        crate::VarNaming::Numbered,
+    )
 }

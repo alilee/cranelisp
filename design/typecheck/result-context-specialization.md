@@ -2,11 +2,13 @@
 
 Owner: `design`, narrow-deployed to `cranelisp-typecheck`. Reader: the crate's
 implementer and independent reviewer. Status: implementation design under the
-user-approved [architecture and exact API packet](../arch/s121-result-context-specialization.md)
-(2026-09-07), implemented in the typecheck crate. Whole-wave acceptance remains
-subject to the sprint's independent and cross-crate evidence gates.
+user-approved [instance identity funnel](../arch/interfaces.md#instance-identity-funnel)
+(result-context approval 2026-09-07), implemented in the typecheck crate. The
+current scheme-bearing key contract is the
+[full-signature identity design](../arch/s122-overload-reorder-publication.md).
+Whole-wave acceptance remains subject to the sprint's independent and cross-crate evidence gates.
 Approval and wave readiness are recorded in the [sprint ledger](../../sprints/SPRINT.md);
-the architecture packet's review-era status header is not the current gate state.
+the archived approval record is not the current gate state.
 
 This elaborates [monomorphisation.md](monomorphisation.md) under
 [spec §3.3.4 and §3.6.3–§3.6.4](../../spec/03-types.md). The subsystem document records complete substitution identity and map-free replay. No additional

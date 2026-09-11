@@ -1,6 +1,7 @@
 ---
 name: test
 description: Author e2e evidence to qa's plan; reduce and commit reproductions
+provider: claude
 model: opus
 effort: high
 ---

@@ -14,16 +14,16 @@ Before doing work in any directory, read all `CLAUDE.md` files in that directory
 
 | Directory | Purpose |
 |---|---|
-| `spec/` | Language specification — owned by `spec` (scribe; the user arbitrates semantics) |
-| `design/` | Architecture and per-crate implementation design — `design/arch/` owned by `arch`, `design/{crate}/` by `design` |
-| `src/` | Compiler binary crate — pipeline, REPL, CLI, session |
-| `crates/` | Bounded-context library crates (types, frontend, typecheck, backend, primitives, intrinsics, platform, exe-bundle) |
-| `user/` | User-facing documentation — owned by `docs` |
-| `stdlib/` | Standard library in Cranelisp — a `dev` surface |
-| `examples/` | Learning sequence — owned by `training` |
-| `exemplar/` | Showcase project (Sudoku Solver) — a `dev` surface |
-| `repl/` | REPL experience spec (`spec`), demos and harness (`test`) |
-| `tests/` | E2e suite — plan owned by `qa`, test sources by `test` |
+| [spec/](spec/CLAUDE.md) | Language specification — owned by `spec` (scribe; the user arbitrates semantics) |
+| [design/](design/CLAUDE.md) | Architecture and per-crate implementation design — `design/arch/` owned by `arch`, `design/{crate}/` by `design` |
+| [src/](src/CLAUDE.md) | Compiler binary crate — pipeline, REPL, CLI, session |
+| `crates/` | Bounded-context library guidance: [types](crates/cranelisp-types/CLAUDE.md), [frontend](crates/cranelisp-frontend/CLAUDE.md), [typecheck](crates/cranelisp-typecheck/CLAUDE.md), [backend](crates/cranelisp-backend/CLAUDE.md), [primitives](crates/cranelisp-primitives/CLAUDE.md), [intrinsics](crates/cranelisp-intrinsics/CLAUDE.md), [platform](crates/cranelisp-platform/CLAUDE.md), [exe-bundle](crates/cranelisp-exe-bundle/CLAUDE.md) |
+| [user/](user/CLAUDE.md) | User-facing documentation — owned by `docs` |
+| [stdlib/](stdlib/CLAUDE.md) | Standard library in Cranelisp — a `dev` surface |
+| [examples/](examples/CLAUDE.md) | Learning sequence — owned by `training` |
+| [exemplar/](exemplar/CLAUDE.md) | Showcase project (Sudoku Solver) — a `dev` surface |
+| [repl/](repl/CLAUDE.md) | REPL experience spec (`spec`), demos and harness (`test`) |
+| [tests/](tests/CLAUDE.md) | E2e suite — plan owned by `qa`, test sources by `test` |
 | `audits/` | Whole-context audit assessments — owned by `audit` |
 | `sprints/` | Delivery coordination — method, roadmap, current sprint, actions, archive — owned by `sprint` |
 | `.agents/` | The shared role package, pinned as a submodule (`.agents/CONSUMING.md`) |
@@ -37,6 +37,11 @@ The prototype compiler that lived in `sketch/` was **deleted at the close of Spr
 ## Pipeline
 
 The v4 scheduler-driven pipeline is the only pipeline. `CompilerSession` in `src/session_v4.rs` is the unified session type. `main.rs` uses one code path for Run/Link/REPL — REPL/`--run`/`--link` divergence is always a defect. See `design/arch/overview.md` and `design/int/CLAUDE.md` for the binary/integration layer.
+
+[README.md](README.md) introduces the compiler and its user documentation.
+[AGENTS.md](AGENTS.md) and
+[Copilot instructions](.github/copilot-instructions.md) direct coding hosts to
+this canonical guidance.
 
 ## Active Skill Indicator
 
@@ -53,7 +58,7 @@ rm .claude-role               # clear it
 
 Cranelisp dispatches the shared role package pinned as a submodule at `.agents`. The package defines each role's authority, boundaries and handoffs; `.agents/CONSUMING.md` states the wiring and the convergence cadence. This section is cranelisp's declaration of how it uses them.
 
-**Dispatched — all twelve.**
+**Dispatched — eleven subordinate roles.**
 
 | Role | Owns here | Notes |
 |---|---|---|
@@ -65,10 +70,13 @@ Cranelisp dispatches the shared role package pinned as a submodule at `.agents`.
 | `qa` | `tests/plan/` | Risk, evidence allocation, defect intake and attribution, the traceability band |
 | `test` | test sources, fixtures and helpers under `tests/` | |
 | `audit` | `audits/` | One bounded context per sprint, in rotation |
-| `sprint` | `sprints/` | Coordination; owns no technical content |
 | `docs` | `user/` | |
 | `training` | `examples/` | The learning sequence |
 | `ops` | — | Declared and currently unused: cranelisp ships one CLI executable. Phase H release provenance is its first work |
+
+The primary coordinator loads `sprint` and owns `sprints/`; it is not a
+dispatched subagent and owns no technical content. The machine declaration is
+`.agents-consumer.toml`.
 
 **Where the retired skills went.** `/stdlib` and `/port` are `dev` narrow-deployed to `stdlib/` and `exemplar/` — those modules take the full role set like any other surface, so an exemplar is architected, designed, built and evidenced rather than written. `/examples` became `training`; `/docs` became `docs`; `/testing` became `test`. `/repl` split: `repl/spec.md` is a surface specification owned by `spec` with `design` for its interior, and the demos and harness are `test` artifacts. The earlier `/frontend`, `/typecheck`, `/backend`, `/int` and `/platform` collapsed into `dev` narrow-deployment at the 2026-07-11 artefact restructure; see git history.
 
@@ -85,36 +93,36 @@ baseline diff returns to the user for confirmation before the wave passes. A
 phase, wave or general architecture approval does not satisfy either gate; an
 unapproved or mismatching delta stops the wave and returns to the user.
 
-**Models.** The shared package owns the role-to-tier relationship and `high`
-effort default. The primary harness supplies the `sprint` coordinator and its
-model. For Claude subagents, `arch`, `audit`, `qa` and `review` use `fable`; the
-other dispatched roles use `opus`. Cranelisp's local adapters add repository
-entry context and match that shared allocation. Allocation changes are made in
-the shared package; Cranelisp does not remap it locally.
+**Models.** The pinned shared package owns each subordinate role's provider,
+model and effort; see `.agents/CONSUMING.md` §Role allocation and dispatch.
+The primary harness supplies the `sprint` coordinator and its model. Local
+adapters match the shared allocation and add repository entry context only.
 
 **Dispatch.** Use a fresh named subagent in the primary harness when it offers
-the exact shared model and effort; fresh context supplies review independence.
-Otherwise invoke the shared cross-harness transport directly with
-`python3 .agents/tools/claude_role.py <role> <brief-file>`. Never use that
-transport for `sprint`. Both paths implement the definitive shared allocation
-and require no further delegation approval. If the required role agent,
-transport, provider access, authentication or permissions are unavailable,
-stop and escalate the tooling gap to the user rather than substituting another
-model, effort or harness.
+the exact shared provider, model and effort; fresh context supplies review
+independence. The package currently allocates subordinate roles to Claude;
+Codex dispatches them through the shared Claude transport.
+For a role hosted by another provider, use the corresponding shared transport
+from the repository root: `python3 .agents/tools/codex_role.py <role> <brief-file>`
+or `python3 .agents/tools/claude_role.py <role> <brief-file>`, as selected by the
+shared allocation. Never dispatch `sprint`. Both paths are normal role execution
+within the approved phase. If the exact route or required access is unavailable,
+escalate the tooling gap instead of substituting a model, effort or harness.
 
-When Codex is the coordinator, run the shared wrapper with repository-scoped
-unsandboxed/network-escalated command execution. The default Codex command
-sandbox can start `claude` but leave its provider request to time out with zero
-input and output tokens. After a direct `claude -p` smoke test succeeds, that
-zero-token timeout is a sandbox denial: retry the same wrapper through the
-approved `python3 .agents/tools/claude_role.py` escalation, never by changing
-the allocated role, model or effort.
+Cross-harness commands require their provider's network authority. In Codex,
+request repository-scoped escalation for the Claude transport when needed;
+keep that authority scoped to the wrapper. Shared transports retain their
+permission and sandbox defaults unless the user explicitly authorizes a change.
 
 **Host adapters.** `.claude/skills` resolves the shared contracts directly.
-The twelve checked-in `.claude/agents/` adapters carry Cranelisp's model,
-effort and repository-entry context; `.github/agents/` exposes the same role
-inventory to Copilot. Adapters carry no role authority independent of
-`.agents/skills/`.
+The eleven checked-in `.claude/agents/` adapters carry the shared provider,
+model and effort plus repository-entry context; `.github/agents/` exposes the
+same subordinate inventory to Copilot. Adapters carry no independent role
+authority. Claude dispatch hooks enforce provider routing and record lifecycle.
+The repository wiring verifier composes the pinned package's consumer check.
+
+The optional Rust context standard introduced in the S122 package update is
+not adopted. Existing crate and design conventions continue to apply.
 
 ## Delivery
 
@@ -142,7 +150,16 @@ Current state and trajectory:
 - `sprints/METHOD.md` — what cranelisp adds to the role package: the crate-shaped surfaces, the seven phases, escalation, the audit rotation, filing formats
 - `sprints/ROADMAP.md` — sprint-by-sprint progress
 - `sprints/SPRINT.md` — the active sprint plan (absent between sprints; archived to `sprints/archive/`)
-- `sprints/reimplementation.md` — the original strategy (historical reference)
+- [Sprint template](sprints/SPRINT_TEMPLATE.md) — canonical starting structure for a new sprint plan
+
+The following collections are established here for document discovery:
+
+| Collection | Scope and purpose |
+|---|---|
+| `sprint-delivery-documents` | Current sprint coordination, delivery method and roadmap documents under `sprints/`. |
+| `delivery-actions` | Open cross-sprint work and defect intake records under `sprints/actions/`. |
+| `closed-sprint-records` | Closed sprint records under `sprints/archive/` preserve the decisions and evidence of their delivery date. Their outgoing historical references do not track the current tree. |
+| `host-role-adapters` | Checked-in role entry guidance under `.claude/agents/` and `.github/agents/` connects each host to the shared role contracts. |
 
 `arch` is the final arbiter of design decisions that cross crate boundaries.
 `sprint` orchestrates within the approved phase; the user approves every phase
@@ -166,7 +183,14 @@ A role MUST NOT silently edit an artifact owned by another. It files, and the ow
 
 **An action is for deliberate cross-sprint work, an accepted residual, or defect intake routed to `qa` — never for a question available now.** A dependency inside the increment is resolved synchronously through `sprint` in the same wave.
 
-**In transition, two surfaces.** New filings are actions at `sprints/actions/ACT-NNNN-short-name.md`. The open FIXMEs at `design/arch/fixmes/` are **run down in place** over the next several sprints rather than converted in bulk; their format and lifecycle stay as `sprints/METHOD.md` §3.3 records them until the directory empties. Inline `FIXME(/skill)` comments are a third and older protocol, superseded at Sprint 63 — do not author new ones.
+**In transition, two surfaces.** New filings are actions under `sprints/actions/`.
+Their filename pattern is:
+
+```text
+sprints/actions/ACT-NNNN-short-name.md
+```
+
+The open FIXMEs at `design/arch/fixmes/` are **run down in place** over the next several sprints rather than converted in bulk; their format and lifecycle stay as `sprints/METHOD.md` §3.3 records them until the directory empties. Inline `FIXME(/skill)` comments are a third and older protocol, superseded at Sprint 63 — do not author new ones.
 
 **Verify against source first.** Any disposition of a filing — resolve, defer, re-target, or a scheduling decision built on it — verifies its central claim against its `refers_to` source as the first act, and the note records what was opened.
 
@@ -214,10 +238,22 @@ A document, FIXME, plan row, or comment that asserts something about source is a
 Verifying a claim against its `refers_to` source is the binding first act of any FIXME disposition (`sprints/METHOD.md` §3.3) — but a discipline that depends on remembering is not a mechanism. The mechanism is:
 
 ```
-scripts/verify-citations.py --corpus live --baseline scripts/citation-drift-baseline.txt
+python3 .agents/tools/check_documents.py --root . --config standing-documents.toml
 ```
 
-It checks what can be checked without judgement: cited paths resolve, cited line numbers are in range, and `file::symbol` citations name an identifier that actually occurs in that file. It does **not** check that the cited line still *means* what the document claims — that stays human. The baseline is a **ratchet**: it records the known-stale backlog so the check can gate a repo that already has one. Entries may be deleted when a citation is repaired; **entries are never added by hand**, because a new finding is a new stale record and stopping those is the point.
+The shared checker discovers documents independently, checks their establishment
+chain to this root, and validates local references, source line bounds and
+symbol text presence. [standing-documents.toml](standing-documents.toml) owns
+project declarations; the [shared contract](.agents/CONSUMING.md#shared-document-checking)
+owns checker behavior. Whether a citation supports a document's substantive
+claim remains an owner judgment.
+
+Exit 1 reports unresolved findings; exit 2 reports inability to inspect or an
+invalid invocation/configuration. The project invocation applies no baseline.
+Outstanding findings require repair or explicit disposition; installing the
+checker does not accept them as debt. The retired checker's baseline and exact
+migration mapping are retained as [reconciliation evidence](tests/plan/s122-document-checker-reconciliation/README.md),
+not suppression input.
 
 ## Testing
 
@@ -275,6 +311,16 @@ When `test` writes a test, it adds the test-side `// spec:` comment. When covera
 
 **`[Done]` is retired.** It provided no traceability and was applied prematurely. All `[Done]` tags should be replaced with either `[Tested tests/file::test_name]` (if covered) or `[S{M}]` (if not).
 
+## Document maintenance
+
+The [information map and retention policy](sprints/METHOD.md#31-where-things-live)
+define canonical content homes. Keep current authority separate from proposals
+and history, extract useful missing content before retiring superseded records,
+and establish retained documents through this root. Measure reading and update
+burden as well as checker findings.
+
 ## Known Issues
 
-See `sprints/reimplementation.md` §"Risk Analysis" for known-issues disposition. (The former prototype's `sketch/KNOWN_ISSUES.md` and `sketch/audits/` were removed with the sketch at Sprint 87 close; recover from git history if needed.)
+Current issue dispositions live in the [active sprint](sprints/SPRINT.md),
+[open actions](sprints/actions/) and [remaining legacy filings](design/arch/fixmes/).
+The retired prototype strategy and issue records are recoverable from Git history.

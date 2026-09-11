@@ -842,7 +842,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             ) else {
                 return Ok(());
             };
-            let expected_instance = demand.instance_key();
+            let expected_instance = Self::demand_instance_key(&demand, &template.core.scheme)?;
             // The module-wide drain may already have minted this exact template
             // instance before a later isolated mono-body recheck reaches the
             // same call.  Consume that keyed lifecycle fact instead of trying

@@ -3,7 +3,7 @@
 // Covers `spec/10-io.md`. Carries forward language-behaviour assertions
 // from the legacy integration-tier `tests/io.rs`, `tests/io_minimal.rs`,
 // `tests/sprint61_io_closure_regression.rs`. Per
-// `tests/plan/PLAN.md §"Mode canonicalisation"`, default canonical mode is
+// the [current mode-canonicalisation guidance](plan/PLAN.md#mode-canonicalisation--repl-is-the-canonical-surface-for-language-conformance), default canonical mode is
 // REPL — Pure / bind / IO trampoline observable behaviour is asserted via
 // stdout substring against the REPL.
 //
@@ -325,7 +325,7 @@ fn repl_bind_pure_lambda_no_double_free() {
 // --run mode: IO sequencing (mode-specific exception)
 // =============================================================================
 //
-// Per `tests/plan/PLAN.md §"Mode canonicalisation"`, --run mode is the
+// Per the [current mode-canonicalisation guidance](plan/PLAN.md#mode-canonicalisation--repl-is-the-canonical-surface-for-language-conformance), --run mode is the
 // canonical home for "main returns Pure(N), exit code = N" semantics. The
 // REPL form would observe Int N as well, but the spec says batch mode
 // returns IO via the trampoline before exiting. These tests exercise that
@@ -860,7 +860,8 @@ fn run_mode_deep_bind_chain_named_continuation() {
 //   - trace.rs + io_trace.rs ring-buffer + flush guard move from runtime
 //     into `src/io_trace/`.
 //
-// Per `tests/plan/implementation-slice-s66.md §5.4`. The snapshot fixture
+// Per the [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md),
+// FIXME 0103 — IoObserver in intrinsics; trace.rs/io_trace.rs in int. The snapshot fixture
 // `tests/fixtures/io_trace_snapshot.txt` pins event presence (not line
 // ordering — line ordering may shift slightly across the relocation). The
 // second test verifies the public-API home of `register_io_observer` is
@@ -1692,7 +1693,8 @@ fn auto_io_par_branch_panic_no_slot_pollution_neg() {
 // `internal` flag must chain-follow the bare alias to the terminal ctor `Def`,
 // keeping `Bind` internal. It is GREEN today (the exclusion holds) and FAILS if
 // the registration change regresses the exclusion.
-// Plan: tests/plan/PLAN.md §S109 §D BR-2. The e2e idiom IS expressible
+// The [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md)
+// records S109 D / BR-2. The e2e idiom IS expressible
 // (verified this pass); the enumerated /dev unit fallback (assert `internal ==
 // true` for Bind/Pure/Effect AFTER the bare key becomes an alias) is the
 // deterministic complement in cranelisp-typecheck.

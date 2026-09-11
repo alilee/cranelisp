@@ -370,7 +370,9 @@ fn repl_macro_uses_earlier_macro_works() {
 }
 
 // =============================================================================
-// G5 — prelude ≡ explicit import: a PRELUDE-DEFINED macro (PLAN.md §III G5)
+// G5 — prelude ≡ explicit import: a PRELUDE-DEFINED macro
+// ([current parity guidance](plan/PLAN.md#prelude-and-explicit-import-parity);
+// [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md), G5)
 //
 // Verified against the coverage above (2026-07-12): this file pins macros
 // defined in a DEPENDENCY module (`mac`) reached via import / FQ ref, but NOT a

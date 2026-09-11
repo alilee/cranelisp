@@ -482,7 +482,9 @@ fn bare_primitive_and_prelude_defn_coexist() {
 }
 
 // =============================================================================
-// 5. PARITY PINS — prelude ≡ explicit import (PLAN.md §III G1–G4)
+// 5. PARITY PINS — prelude ≡ explicit import
+// ([current parity guidance](plan/PLAN.md#prelude-and-explicit-import-parity);
+// [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md), G1–G4)
 //
 // Twin fixtures: one program, two provenances for the contested name (explicit
 // import vs implicit prelude), asserting the SAME outcome. These are GREEN

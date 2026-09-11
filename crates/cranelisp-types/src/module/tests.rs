@@ -3323,11 +3323,18 @@ fn install_instance_derives_key_preserves_backlink_and_mints_slot() {
         }),
         vec![ConcreteType::Int],
     );
-    let expected_key = link.instance_key();
+    let expected_key = crate::concrete_callable_key(
+        &FQSymbol {
+            module: "producer".into(),
+            symbol: "generic".into(),
+        },
+        &ConcreteType::Fn(vec![ConcreteType::Int], Box::new(ConcreteType::Int)),
+    )
+    .unwrap();
     let (key, slot) = table
         .install_instance(
             link.clone(),
-            concrete_scheme(),
+            scheme(Type::Fn(vec![Type::Int], Box::new(Type::Int))),
             Vec::new(),
             None,
             1,
@@ -3364,15 +3371,24 @@ fn mismatched_instance_candidate_is_rejected_before_mutation() {
         }),
         vec![ConcreteType::Int],
     );
-    let expected = link.instance_key();
+    let expected = crate::concrete_callable_key(
+        &FQSymbol {
+            module: "producer".into(),
+            symbol: "generic".into(),
+        },
+        &ConcreteType::Fn(vec![ConcreteType::Int], Box::new(ConcreteType::Int)),
+    )
+    .unwrap();
     let actual = Symbol::from("wrong-key");
-    let slot = table.mint_callable_slot(&concrete_scheme()).unwrap();
+    let slot = table
+        .mint_callable_slot(&scheme(Type::Fn(vec![Type::Int], Box::new(Type::Int))))
+        .unwrap();
     let candidate = Callable {
         docstring: None,
         seq: 0,
         origin: CallableOrigin::Plain,
         arm: CallableArm::new(
-            concrete_scheme(),
+            scheme(Type::Fn(vec![Type::Int], Box::new(Type::Int))),
             Vec::new(),
             Life::Concrete {
                 slot,
@@ -3407,11 +3423,18 @@ fn restored_instance_with_tampered_storage_key_is_rejected_exactly() {
         }),
         vec![ConcreteType::Int],
     );
-    let expected = link.instance_key();
+    let expected = crate::concrete_callable_key(
+        &FQSymbol {
+            module: "producer".into(),
+            symbol: "generic".into(),
+        },
+        &ConcreteType::Fn(vec![ConcreteType::Int], Box::new(ConcreteType::Int)),
+    )
+    .unwrap();
     table
         .install_instance(
             link,
-            concrete_scheme(),
+            scheme(Type::Fn(vec![Type::Int], Box::new(Type::Int))),
             Vec::new(),
             None,
             0,
@@ -3446,6 +3469,7 @@ fn restored_instance_with_tampered_storage_key_is_rejected_exactly() {
 
 #[test]
 fn typed_demand_and_link_share_one_lossless_instance_key() {
+    let selected_scheme = key_template(vec![Type::Var(0), Type::Var(1)], Type::Int, vec![0, 1]);
     let template = FQSymbol {
         module: ModuleFullPath::from("producer"),
         symbol: Symbol::from("apply"),
@@ -3460,7 +3484,10 @@ fn typed_demand_and_link_share_one_lossless_instance_key() {
     let link = demand.instance_link();
     assert_eq!(link.template, target);
     assert_eq!(link.type_args, args);
-    assert_eq!(demand.instance_key(), link.instance_key());
+    assert_eq!(
+        demand.instance_key(&selected_scheme).unwrap(),
+        link.instance_key(&selected_scheme).unwrap()
+    );
 
     let other_home = InstanceLink::from_type_args(
         CallableTarget::Binding(FQSymbol {
@@ -3469,7 +3496,10 @@ fn typed_demand_and_link_share_one_lossless_instance_key() {
         }),
         link.type_args.clone(),
     );
-    assert_ne!(link.instance_key(), other_home.instance_key());
+    assert_ne!(
+        link.instance_key(&selected_scheme).unwrap(),
+        other_home.instance_key(&selected_scheme).unwrap()
+    );
     let other_adt_arg = InstanceLink::from_type_args(
         link.template.clone(),
         vec![
@@ -3477,7 +3507,10 @@ fn typed_demand_and_link_share_one_lossless_instance_key() {
             ConcreteType::Fn(vec![ConcreteType::String], Box::new(ConcreteType::Bool)),
         ],
     );
-    assert_ne!(link.instance_key(), other_adt_arg.instance_key());
+    assert_ne!(
+        link.instance_key(&selected_scheme).unwrap(),
+        other_adt_arg.instance_key(&selected_scheme).unwrap()
+    );
 }
 
 fn trait_name() -> FQTraitName {
@@ -4140,7 +4173,7 @@ fn checked_body_rejects_synth_uniform_instance_and_foreign_realizations() {
     let (instance, _) = table
         .install_instance(
             link,
-            concrete_scheme(),
+            scheme(Type::Fn(vec![Type::Int], Box::new(Type::Int))),
             Vec::new(),
             None,
             1,
@@ -4758,6 +4791,11 @@ fn written_impl_upsert_is_one_per_key_and_writer_checked() {
 // spec: spec/03-types.md §3.6.3 — complete substitutions identify concrete instances
 #[test]
 fn result_only_substitutions_distinguish_instances_and_reuse_equal_vectors() {
+    let selected_scheme = key_template(
+        vec![],
+        Type::Fn(vec![Type::Var(0)], Box::new(Type::Var(0))),
+        vec![0],
+    );
     let target = CallableTarget::Binding(FQSymbol {
         module: ModuleFullPath::from("producer"),
         symbol: Symbol::from("returned_closure"),
@@ -4772,8 +4810,14 @@ fn result_only_substitutions_distinguish_instances_and_reuse_equal_vectors() {
 
     assert_eq!(int.instance_link().type_args, vec![ConcreteType::Int]);
     assert_eq!(string.instance_link().type_args, vec![ConcreteType::String]);
-    assert_ne!(int.instance_key(), string.instance_key());
-    assert_eq!(int.instance_key(), int_again.instance_key());
+    assert_ne!(
+        int.instance_key(&selected_scheme).unwrap(),
+        string.instance_key(&selected_scheme).unwrap()
+    );
+    assert_eq!(
+        int.instance_key(&selected_scheme).unwrap(),
+        int_again.instance_key(&selected_scheme).unwrap()
+    );
     let mut instances = std::collections::HashSet::new();
     assert!(instances.insert(int.instance_link()));
     assert!(instances.insert(string.instance_link()));
@@ -4783,6 +4827,7 @@ fn result_only_substitutions_distinguish_instances_and_reuse_equal_vectors() {
 
 #[test]
 fn demand_key_uses_storage_symbol_but_excludes_diagnostic_site() {
+    let selected_scheme = key_template(vec![Type::Var(0)], Type::Var(0), vec![0]);
     let template = FQSymbol {
         module: ModuleFullPath::from("producer"),
         symbol: Symbol::from("written-alias"),
@@ -4792,8 +4837,17 @@ fn demand_key_uses_storage_symbol_but_excludes_diagnostic_site() {
     let first = MonoDemand::from_type_args(target.clone(), args.clone(), Span::new(1, 4));
     let later_site = MonoDemand::from_type_args(target.clone(), args.clone(), Span::new(40, 80));
     assert_eq!(first.instance_link().template, target);
-    assert_eq!(first.instance_key(), later_site.instance_key());
-    assert_eq!(first.instance_key(), first.instance_link().instance_key());
+    assert_eq!(
+        first.instance_key(&selected_scheme).unwrap(),
+        later_site.instance_key(&selected_scheme).unwrap()
+    );
+    assert_eq!(
+        first.instance_key(&selected_scheme).unwrap(),
+        first
+            .instance_link()
+            .instance_key(&selected_scheme)
+            .unwrap()
+    );
 
     let other_storage_symbol = MonoDemand::from_type_args(
         CallableTarget::Binding(FQSymbol {
@@ -4803,7 +4857,10 @@ fn demand_key_uses_storage_symbol_but_excludes_diagnostic_site() {
         args,
         first.site,
     );
-    assert_ne!(first.instance_key(), other_storage_symbol.instance_key());
+    assert_ne!(
+        first.instance_key(&selected_scheme).unwrap(),
+        other_storage_symbol.instance_key(&selected_scheme).unwrap()
+    );
 }
 
 fn packet_a_accessor_origin(field: &str) -> CallableOrigin {
@@ -5145,4 +5202,312 @@ fn unpublished_synthesized_replacement_refuses_non_null_got_without_mutation() {
         Some(slot.index())
     );
     assert!(table.retired_slots().is_empty());
+}
+
+fn key_template(params: Vec<Type>, result: Type, variables: Vec<u32>) -> Scheme {
+    Scheme {
+        type_vars: variables,
+        constraints: HashMap::new(),
+        ty: Type::Fn(params, Box::new(result)),
+    }
+}
+
+// spec: spec/03-types.md §3.6.3 — complete callable types distinguish realizations
+#[test]
+fn executable_keys_share_rendering_without_ordinals_or_substitution_collisions() {
+    use crate::concrete_callable_key;
+    let owner = FQSymbol {
+        module: "user".into(),
+        symbol: "f".into(),
+    };
+    let single = key_template(vec![Type::Var(8)], Type::Int, vec![99, 8]);
+    let repeated = key_template(vec![Type::Var(2), Type::Var(2)], Type::Int, vec![2]);
+    let target = CallableTarget::Binding(owner.clone());
+    let demand = MonoDemand::from_type_args(target, vec![ConcreteType::Int], Span::SYNTHETIC);
+    let single_key = demand.instance_key(&single).unwrap();
+    assert_eq!(
+        single_key.as_ref(),
+        "(user/f [primitives/Int] primitives/Int)"
+    );
+    assert_eq!(
+        demand.instance_key(&repeated).unwrap().as_ref(),
+        "(user/f [primitives/Int primitives/Int] primitives/Int)"
+    );
+    assert_ne!(single_key, demand.instance_key(&repeated).unwrap());
+    for ordinal in [0, 7] {
+        let link = InstanceLink::from_type_args(
+            CallableTarget::OverloadArm {
+                owner: owner.clone(),
+                arm: CallableArmId::from_ordinal(ordinal).unwrap(),
+            },
+            vec![ConcreteType::Int],
+        );
+        assert_eq!(link.instance_key(&single).unwrap(), single_key);
+    }
+    let concrete = ConcreteType::Fn(vec![ConcreteType::Int], Box::new(ConcreteType::Int));
+    assert_eq!(
+        concrete_callable_key(&owner, &concrete).unwrap(),
+        single_key
+    );
+    let renamed = key_template(vec![Type::Var(51)], Type::Int, vec![51]);
+    assert_eq!(demand.instance_key(&renamed).unwrap(), single_key);
+    let params = vec![ConcreteType::Int, ConcreteType::String];
+    assert_ne!(
+        concrete_callable_key(
+            &owner,
+            &ConcreteType::Fn(params.clone(), Box::new(ConcreteType::Bool))
+        )
+        .unwrap(),
+        concrete_callable_key(
+            &owner,
+            &ConcreteType::Fn(
+                params.into_iter().rev().collect(),
+                Box::new(ConcreteType::Bool)
+            )
+        )
+        .unwrap()
+    );
+}
+
+// spec: spec/03-types.md §3.6.3 — result context participates recursively in identity
+#[test]
+fn executable_key_result_context_and_nominal_structure_are_lossless() {
+    use crate::concrete_callable_key;
+    let owner = FQSymbol {
+        module: "user".into(),
+        symbol: "maker".into(),
+    };
+    let signature = |ty| {
+        ConcreteType::Fn(
+            vec![],
+            Box::new(ConcreteType::Fn(vec![ty], Box::new(ConcreteType::Bool))),
+        )
+    };
+    let int = concrete_callable_key(&owner, &signature(ConcreteType::Int)).unwrap();
+    let string = concrete_callable_key(&owner, &signature(ConcreteType::String)).unwrap();
+    assert_ne!(int, string);
+    assert_eq!(
+        int.as_ref(),
+        "(user/maker [] (Fn [primitives/Int] primitives/Bool))"
+    );
+    let vec_name = FQTypeName::new("collections".into(), "Vec".into());
+    let nominal = ConcreteType::ADT(vec_name.clone(), vec![ConcreteType::Float]);
+    let key = concrete_callable_key(&owner, &signature(nominal)).unwrap();
+    assert_eq!(
+        key.as_ref(),
+        "(user/maker [] (Fn [(collections/Vec primitives/Float)] primitives/Bool))"
+    );
+    let other = ConcreteType::ADT(
+        FQTypeName::new("other".into(), "Vec".into()),
+        vec![ConcreteType::Float],
+    );
+    assert_ne!(
+        key,
+        concrete_callable_key(&owner, &signature(other)).unwrap()
+    );
+    let higher = key_template(
+        vec![Type::TyConApp(9, vec![Type::Var(3)])],
+        Type::Bool,
+        vec![3, 9],
+    );
+    let link = InstanceLink::from_type_args(
+        CallableTarget::Binding(owner),
+        vec![ConcreteType::ADT(vec_name, vec![]), ConcreteType::Float],
+    );
+    assert_eq!(
+        link.instance_key(&higher).unwrap().as_ref(),
+        "(user/maker [(collections/Vec primitives/Float)] primitives/Bool)"
+    );
+}
+
+#[test]
+fn executable_key_errors_refuse_incomplete_or_unsupported_inputs() {
+    use crate::{InstanceKeyError as E, NotConcrete, concrete_callable_key};
+    let owner = FQSymbol {
+        module: "user".into(),
+        symbol: "f".into(),
+    };
+    let link = InstanceLink::from_type_args(CallableTarget::Binding(owner.clone()), vec![]);
+    assert_eq!(
+        link.instance_key(&key_template(vec![Type::Var(0)], Type::Int, vec![0])),
+        Err(E::ArgumentCount {
+            expected: 1,
+            actual: 0
+        })
+    );
+    assert_eq!(
+        link.instance_key(&key_template(vec![Type::Var(0)], Type::Int, vec![])),
+        Err(E::NotConcrete(NotConcrete::Var(0)))
+    );
+    assert_eq!(
+        link.instance_key(&key_template(
+            vec![Type::TyConApp(0, vec![])],
+            Type::Int,
+            vec![]
+        )),
+        Err(E::NotConcrete(NotConcrete::HktHead(0)))
+    );
+    assert_eq!(link.instance_key(&scheme(Type::Int)), Err(E::NotFunction));
+    assert_eq!(
+        concrete_callable_key(&owner, &ConcreteType::Int),
+        Err(E::NotFunction)
+    );
+    let macro_link = InstanceLink::from_type_args(
+        CallableTarget::MacroClause {
+            owner,
+            clause: CallableArmId::from_ordinal(0).unwrap(),
+        },
+        vec![],
+    );
+    assert_eq!(
+        macro_link.instance_key(&scheme(Type::Int)),
+        Err(E::UnsupportedTemplate)
+    );
+}
+
+// spec: repl/spec/18-redefinition.md §18.3 — signature removal/addition replaces the whole family
+#[test]
+fn cross_class_plain_overload_publication_conserves_slots_and_owners() {
+    let overloaded = || {
+        let mut table = SymbolTable::<String, ()>::new_with_params("m".into());
+        table
+            .install_overloaded(
+                "f".into(),
+                None,
+                0,
+                vec![
+                    concrete_arm_draft(Type::Int, "int-arm"),
+                    concrete_arm_draft(Type::Bool, "bool-arm"),
+                ],
+                Visibility::Public,
+            )
+            .unwrap();
+        table
+    };
+    for overload_to_plain in [true, false] {
+        let (mut live, staging, old_targets) = if overload_to_plain {
+            (
+                overloaded(),
+                owner_table("m", None),
+                vec![overload_target("m", "f", 0), overload_target("m", "f", 1)],
+            )
+        } else {
+            (
+                owner_table("m", None),
+                overloaded(),
+                vec![binding_target("m", "f")],
+            )
+        };
+        let old_slots: Vec<_> = old_targets
+            .iter()
+            .enumerate()
+            .map(|(i, target)| {
+                publish_string_owner(&mut live, target, &format!("old-{i}"));
+                live.callable_target(target)
+                    .unwrap()
+                    .life
+                    .claimed_slot()
+                    .unwrap()
+            })
+            .collect();
+        let before = serde_json::to_value(&live).unwrap();
+        let preservation = live.publish_staged(
+            staging.clone(),
+            &[StagedPublicationDecision::PreserveAbi { symbol: "f".into() }],
+        );
+        assert!(preservation.is_err());
+        assert_eq!(serde_json::to_value(&live).unwrap(), before);
+        let records = live
+            .publish_staged(
+                staging,
+                &[StagedPublicationDecision::ChangeAbi { symbol: "f".into() }],
+            )
+            .unwrap();
+        assert!(matches!(
+            preservation,
+            Err(LifecycleError::WrongState { .. })
+        ));
+        let bodies = &records[0].bodies;
+        assert_eq!(
+            bodies
+                .iter()
+                .filter_map(|body| body.displaced_owner.clone())
+                .collect::<Vec<_>>(),
+            (0..old_targets.len())
+                .map(|i| format!("old-{i}"))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            bodies
+                .iter()
+                .filter_map(|body| body.prior_target.clone())
+                .collect::<Vec<_>>(),
+            old_targets
+        );
+        let new_slots: Vec<_> = bodies
+            .iter()
+            .filter_map(|body| body.published_slot)
+            .collect();
+        assert_eq!(new_slots.len(), if overload_to_plain { 1 } else { 2 });
+        assert!(new_slots.iter().all(|slot| !old_slots.contains(slot)));
+        assert_eq!(live.retired_slots().len(), old_slots.len());
+        for old_slot in old_slots {
+            assert!(
+                live.retired_slots()
+                    .iter()
+                    .any(|retired| retired.slot == old_slot
+                        && matches!(retired.reason, RetireReason::AbiChanging { .. }))
+            );
+        }
+        assert!(
+            matches!(live.get("f").unwrap().declaration, Decl::Callable(_)) == overload_to_plain
+        );
+        live.validate_lifecycle().unwrap();
+    }
+}
+
+#[test]
+fn cross_class_publication_does_not_admit_non_plain_origins() {
+    for overload_to_primitive in [true, false] {
+        let mut overloaded = SymbolTable::<String, ()>::new_with_params("m".into());
+        overloaded
+            .install_overloaded(
+                "f".into(),
+                None,
+                0,
+                vec![
+                    concrete_arm_draft(Type::Int, "int-arm"),
+                    concrete_arm_draft(Type::Bool, "bool-arm"),
+                ],
+                Visibility::Public,
+            )
+            .unwrap();
+        let mut primitive = owner_table("m", None);
+        primitive
+            .symbols
+            .get_mut(&Symbol::from("f"))
+            .unwrap()
+            .binding
+            .as_mut()
+            .unwrap()
+            .callable_mut()
+            .unwrap()
+            .origin = CallableOrigin::RustPrimitive;
+        let (live, staging) = if overload_to_primitive {
+            (overloaded, primitive)
+        } else {
+            (primitive, overloaded)
+        };
+        let before = serde_json::to_value(&live).unwrap();
+        assert!(matches!(
+            validate_publication_collision(
+                &live,
+                &Symbol::from("f"),
+                live.get("f"),
+                staging.get("f").unwrap()
+            ),
+            Err(LifecycleError::NotCallable { .. })
+        ));
+        assert_eq!(serde_json::to_value(&live).unwrap(), before);
+    }
 }

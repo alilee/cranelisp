@@ -158,16 +158,16 @@ where
         skip_var: &Option<crate::compiler::scope_chain::SlotRef>,
         body_val: Value,
         body: &MonoExpr,
-    ) {
+    ) -> bool {
         if skip_var.is_some() {
-            return; // The skip_var mechanism already protects the return value.
+            return true; // The skip_var mechanism transfers the binding's owner.
         }
         // A callable can return an independently owned reference that aliases a
         // parameter. Cleanup consumes the parameter's owner, not that returned
         // reference; retaining it again would strand it after the caller's dec.
         // Inline COW/projection results keep their existing protection rules.
         if self.body_has_independent_result(body) {
-            return;
+            return true;
         }
         // Only protect if the current scope has heap-typed bindings that
         // scope cleanup will dec. Borrowed vars are skipped by
@@ -179,7 +179,7 @@ where
                 !slot.is_borrowed() && slot.ty().is_some_and(|ty| self.is_heap_type(ty))
             });
         if !has_cleanup_targets {
-            return;
+            return false;
         }
         let category = HeapCategory::classify(body.ty(), Some(self.ctx.symbol_tables));
         // B3.3 (§5.1): the materialization inc on the returned cell goes
@@ -191,6 +191,7 @@ where
         match category {
             HeapCategory::AlwaysHeap => {
                 heap::emit_rc_inc_atomicity(&mut self.builder, self.module, body_val, atomicity);
+                true
             }
             HeapCategory::Mixed => {
                 heap::emit_rc_inc_guarded_atomicity(
@@ -199,8 +200,9 @@ where
                     body_val,
                     atomicity,
                 );
+                true
             }
-            HeapCategory::NeverHeap | HeapCategory::Value => {}
+            HeapCategory::NeverHeap | HeapCategory::Value => true,
         }
     }
 

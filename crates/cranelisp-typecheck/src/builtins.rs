@@ -2766,9 +2766,9 @@ mod tests {
     // -----------------------------------------------------------------------
     //
     // These tests guard the locality-correctness invariants established by
-    // Wave 3a-α (Decision 45 + Decision 46 + Principle 17). See
-    // `design/typecheck/implementation-slice-s66.md §5` for the test surface
-    // plan.
+    // Wave 3a-α (Decision 45 + Decision 46 + Principle 17). The current
+    // contracts are `design/typecheck/typecheck.md §3.3` and
+    // `design/typecheck/traits.md §1.3`.
 
     // spec: arch Principle 17 + slice §1.A α13 — synthetic modules have empty
     // imports/exports by invariant. Negative invariant guards against any
@@ -2885,7 +2885,7 @@ mod tests {
                 !body.contains(forbidden.as_str()),
                 "`{forbidden}` MUST NOT appear in crates/cranelisp-typecheck/src/{name} \
                  — retired by Decision 45 Pattern B; chain-follow is THE navigation primitive \
-                 (Principle 17). See design/typecheck/implementation-slice-s66.md §1.A α14."
+                 (Principle 17). See design/typecheck/typecheck.md §3.3."
             );
         }
     }

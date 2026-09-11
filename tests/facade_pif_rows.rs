@@ -503,32 +503,6 @@ fn walk_rust_files(root: &std::path::Path) -> Vec<PathBuf> {
 }
 
 // =============================================================================
-// Row 45 — re_register_module forward on CompilerSession (trivial PIF)
-// =============================================================================
-
-// spec: design/int/int.md §8.4 — CompilerSession::re_register_module
-// FIXME(/dev int Wave 3 row 45): add the thin forward; CompileScheduler keeps
-// its method, CompilerSession exposes a one-line passthrough.
-#[test]
-fn row_45_re_register_module_callable_on_compiler_session() {
-    // The int crate is a binary, no pub-api baseline. Indirect signal:
-    // grep the src/ tree for an `impl CompilerSession` block that defines
-    // `pub fn re_register_module`. Pre-S67 the method only lives on
-    // CompileScheduler at scheduler.rs:412.
-    let src = workspace_root().join("src/session_v4.rs");
-    let text =
-        std::fs::read_to_string(&src).unwrap_or_else(|e| panic!("read {}: {e}", src.display()));
-    // Heuristic: a `pub fn re_register_module(` inside session_v4.rs is a
-    // CompilerSession method (the file defines the impl block).
-    let on_session = text.contains("pub fn re_register_module(");
-    assert!(
-        on_session,
-        "Row 45 close: `CompilerSession::re_register_module` not present in \
-         src/session_v4.rs. Facade prescribes a thin forward; /dev (int) Wave 3."
-    );
-}
-
-// =============================================================================
 // FQTypeName binding (Decision 47, types.md §232) — second user-challenge amend
 // =============================================================================
 

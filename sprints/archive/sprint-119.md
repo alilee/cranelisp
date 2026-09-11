@@ -925,7 +925,7 @@ Verified against `git log 5520186d..c3000277` (21 commits), not against §Scope.
   adopted (`c7156cb7`); the clean-sheet symbol-table lifecycle design with both corrections
   conceded (`c3000277`). New arch corpus: `design/arch/total-concreteness.md` (416 lines),
   `design/arch/concreteness-types-first.md` (886), `design/arch/symbol-table-lifecycle.md` (719).
-- **The 40-row concreteness requirements register** (`sprints/concreteness-requirements.md`,
+- **The 40-row concreteness requirements register** ([concreteness requirements (Git history)](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/sprints/concreteness-requirements.md),
   `f0adbf24` / `c2783975` / `b725c41d`) — the cross-check instrument for the revised design,
   owned by `/sprint` as a programme artefact spanning S119–S121+. It has already earned its
   keep: it caught R-24 and forced R-3/R-23 corrections, and it flags the I-ABI four-callable
@@ -1059,7 +1059,7 @@ assessment to calibrate. The check is owed at S120 close.
 ### Carries into S120 Phase 1 — the binding list
 
 1. **The total-concreteness programme is LIVE, not shelved.** The 40-row register
-   (`sprints/concreteness-requirements.md`) plus `design/arch/total-concreteness.md`,
+   ([concreteness requirements (Git history)](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/sprints/concreteness-requirements.md)) plus `design/arch/total-concreteness.md`,
    `concreteness-types-first.md` and `symbol-table-lifecycle.md` are **ratified and
    unimplemented**. The register's own status line scopes it S119–S121+. Open threads it names:
    I-ABI needs re-ruling on the R-25/R-27 basis (the four-callable polymorphic roster does not

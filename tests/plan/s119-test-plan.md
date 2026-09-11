@@ -83,7 +83,7 @@ evidence). A RED that flips during a byte-identical-by-design wave
 | **G2 — mechanism count stays one** | (a) `drop_glue_legacy_emitter_fence` stays GREEN through every wave; (b) the new **emission-licence census cell** (§3.6): admission-variant set, `Rejected` call-site count, and `protect_return_value` call-site count pinned to the ruling's numbers — a new licence arm cannot land without touching the census in the same change-set; (c) `/review` reject criterion (arch ruling) | §3.6 |
 | **G3 — raw-handle representability** | (a) before/after counts recorded in the tranche-A change-set: `consume_*` raw-`i64` signatures 36→0; non-extern `i64`-heap-handle declarations 136 → 136 − (exact tranche-A slice, enumerated); (b) structural census cell: zero `consume_*` fn taking raw `i64` (§4.2); (c) 83 extern shims byte-identical: `public-api.txt` diff (extern lines unchanged) + `facade_compliance` + `public_api_relocations` GREEN | §4.2 |
 | **G4 — prose-contract elimination** | (a) shim-fact single-sourcing **unit row**: every shim's `Owned`/`Borrowed` signature derived from (and conflict-checked against) the declaration table — one derivation (§4.3); (b) per-tranche **drop-bomb detection proof**: positive plant (undischarged `Owned` → debug bomb fires, located) + clean control + recorded fail-on-revert (0768 rule) — one triplet per tranche (A, B-int) (§4.3) | §4.3 |
-| **G5 — instrument truthfulness** | (a) unit-tier marginal helper + its own detection proof (§5.2); (b) the lens rule normative in §5.1 (and folded to `PLAN.md` at Phase 6/7); (c) 0890 re-derivation record §5.3–§5.4: warmed-pair harness mode + its capability cells + cell #21 threshold retirement post-0917; (d) the option-2 measurement recorded with its method (§7) | §5, §7 |
+| **G5 — instrument truthfulness** | (a) unit-tier marginal helper + its own detection proof (§5.2); (b) the lens rule normative in §5.1 (and folded to `PLAN.md` at Phase 6/7); (c) 0890 re-derivation in this plan's [threshold retirement](#53-threshold-cell-retirement-the-census-and-the-worked-instance) and [cold/warm axis](#6-fixme-0890--the-coldwarm-cache-axis-record--s119-residue): warmed-pair harness mode + its capability cells + cell #21 threshold retirement post-0917; (d) the option-2 measurement recorded with its method (§7) | §5, §7 |
 | **G6 — 0889** | the **0889 exact-value pins** (`macro_turn_marshal_leak_0889.rs`): re-derived to **zero** in tranche B-int's implementing change-set — or, if B-int is cut, an explicit recorded carry with the pins standing at their documented values (they are GREEN either way; the branch is recorded, never silent) | §4.4 |
 
 Cross-cutting acceptance for both spines: **the S118 instrument set re-runs
@@ -328,6 +328,12 @@ ungraded). All routed into NC-2 family B + FIXME 0929's extension.
   over slotted entries' schemes and cannot see the backend's
   declaration-materialised `CtorMeta` channel — that is NC-5's job; the two
   are a pair, not alternatives.
+> S122 current disposition: the following NC-R description is historical. Its
+> I-ABI label and four-member roster are superseded by the retained backend
+> uniform-realization contract. The current production evidence task and actual
+> lifecycle distinction are in [S122 QA](s122-evidence-delta.md#09320936-current-realization-roster-evidence-handoff).
+> Synthetic UniformRust fixtures do not establish the production roster.
+
 - **NC-R — the I-ABI roster pin** (NC-1's partner cell; unit row,
   `/dev`(src) beside `src/bootstrap.rs`, stage-1, GREEN at author time).
   The slot-less polymorphic by-name callable roster is a **closed set**
@@ -512,7 +518,7 @@ normative form:
   one ambient-zero control (a trivial program through the same fixture,
   asserting absolute 0). Remaining `balance_exclusion` entries each carry an
   open-defect citation or are removed.
-- 0761 is then actioned: the lane row folds into `PLAN.md` (§S119) and the
+- 0761 is then actioned: the lane row folds into [historical S119 QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md) and the
   FIXME deletes when the lane lands. Disposition appended to the FIXME this
   phase.
 - 0779's decided candidate (1) — the `resolve_auto_curry` seam-polarity unit
@@ -809,7 +815,7 @@ Phase-3 exit gate.
 7. Durable fold-back: §5.1's normative form and the R8 lane row land in
    `PLAN.md`; 0761 deleted with the lane; the annotation band updated for
    newly covered spec rows.
-8. **Negative-coverage accounting (the S119 user finding):** the §3.7 set
+8. **Negative-coverage accounting (the S119 user finding):** the [negative set in this plan](#37-the-r11r17r18-negative-set-user-finding-phase-5-amendment)
    reconciled name-for-name — NC-1 group 1 + the 0926 gate cell GREEN with
    P-1's change-set named; **NC-1 groups 2–3 are pre-declared S120
    carries**, attributed at authoring time (group 2 → FIXME 0931, group 3

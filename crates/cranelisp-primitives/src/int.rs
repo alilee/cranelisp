@@ -14,14 +14,18 @@
 //! its D43 split produced `cranelisp-primitives` + `cranelisp-intrinsics`.)
 
 use cranelisp_intrinsics::alloc;
+use cranelisp_intrinsics::handle::Owned;
 use cranelisp_intrinsics::heap_string;
 use cranelisp_intrinsics::rc;
 
+use crate::abi_facts::adopt_produced_value;
+
 /// Convert an integer to its decimal string representation.
 /// Returns a new HeapString (rc=1).
-pub(crate) fn int_to_string(n: i64) -> i64 {
+pub(crate) fn int_to_string(n: i64) -> Owned {
     let s = n.to_string();
-    heap_string::alloc_string(s.as_bytes()) as i64
+    // SAFETY: `alloc_string` returned a fully initialized fresh RC=1 String.
+    unsafe { adopt_produced_value(heap_string::alloc_string(s.as_bytes()) as i64) }
 }
 
 /// Parse an integer from a string. Returns an Option Int as a heap ADT.
@@ -35,9 +39,9 @@ pub(crate) fn int_to_string(n: i64) -> i64 {
 /// Parse an integer from a string. Returns an Option Int as a heap ADT.
 ///
 /// Decision 24 (Sprint 56 Step 2c): consuming convention — dec the heap arg.
-pub(crate) fn parse_int(s: i64) -> i64 {
+pub(crate) fn parse_int(s: Owned) -> Owned {
     // SAFETY: s is a valid HeapString base pointer.
-    let str_val = unsafe { heap_string::read_string_as_str(s) };
+    let str_val = unsafe { heap_string::read_string_as_str(s.raw_for_read()) };
 
     let result = match str_val.trim().parse::<i64>() {
         Ok(n) => {
@@ -50,11 +54,13 @@ pub(crate) fn parse_int(s: i64) -> i64 {
                 // value at HeapHeader::SIZE + 8 (offset 24)
                 *(base.add(cranelisp_types::HeapHeader::SIZE + 8) as *mut i64) = n;
             }
-            base as i64
+            // SAFETY: `base` is now a fully initialized fresh RC=1 Some node.
+            unsafe { adopt_produced_value(base as i64) }
         }
         Err(_) => {
             // None: bare tag 0
-            0
+            // SAFETY: zero is the canonical produced `None` nullary tag.
+            unsafe { adopt_produced_value(0) }
         }
     };
     // Consume the input string reference (Decision 24).

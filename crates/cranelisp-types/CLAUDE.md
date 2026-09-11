@@ -70,9 +70,10 @@ re-pattern the lifecycle set:
   claims after construction, clone, or deserialization.
 - **Instance identity is authored once.** Ordinary `settle_concrete` and
   `install_concrete` do not accept `minted_from`. `install_instance(link, …)`
-  derives the storage key from `link.instance_key()`, stores the back-link,
+  derives the storage key from the actual settled function scheme plus the
+  authored owner in the link via `concrete_callable_key`, stores the back-link,
   and returns `(key, slot)`. The common private validator rejects
-  `key != link.instance_key()` before install mutation and from
+  a key inconsistent with that settled-signature derivation before install mutation and from
   `validate_lifecycle` after clone/deserialization as
   `LifecycleError::InstanceKeyMismatch`; a restored mismatch is cache-stale.
 - **Public non-exhaustive lifecycle records need explicit authoring paths.**

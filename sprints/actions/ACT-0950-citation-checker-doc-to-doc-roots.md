@@ -45,7 +45,23 @@ and repair-before-widen may be the better disposition for some owners.
 
 Returns to the next product sprint's scope gate; not for S120.
 
-## Completion evidence
+## S122 approved disposition
+
+On 2026-09-10 the user approved the shared document-mechanism pilot in
+`sprints/SPRINT.md`, superseding the narrow root-expansion request and its
+completion checklist below. The existing checker source was reopened: its
+fixed target roots still omit design/spec/audits/user. The pilot addresses that
+gap through a shared reference resolver plus independently discovered document
+establishment to root `CLAUDE.md`, rather than a standalone root-list patch.
+The original measurement below remains historical evidence only.
+
+Sprint coordinates the shared design, QA evidence, test-owned checker adoption
+and document-owner repairs. Candidate validation in Magic is read-only; Magic
+cutover and upstream publication remain subsequent operations. Existing debt
+must be mapped or repaired explicitly, with any proposed residual exceptions
+returned to the user. No automatic baseline migration is approved.
+
+## Original completion evidence (superseded by S122 disposition)
 
 - A ruling on which of the four roots join, and on repair-versus-enrol per
   citing-document owner, with the measured count at ruling time.

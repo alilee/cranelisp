@@ -23,7 +23,7 @@ It encompasses the entire user experience from invoking the repl as well as its 
 | `spec/index.md` | Normative front matter, design principle, and section map |
 | `spec/*.md` | Normative REPL experience specification, split by numbered section |
 | `showcase` | Top-level showcase script — builds binary, plays demos |
-| `demos/` | `.demo` scripts, demo player (`demo-player.py`), and `CLAUDE.md` |
+| `demos/` | `.demo` scripts, demo player (`demo-player.py`), and [local ownership and guidance](demos/CLAUDE.md) |
 
 ## Conventions
 

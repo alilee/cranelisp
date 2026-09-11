@@ -1,6 +1,7 @@
 ---
 name: audit
 description: Read-only whole-context assessment of one bounded context, in rotation
+provider: claude
 model: fable
 effort: high
 ---

@@ -1,7 +1,7 @@
 // sprint71_platform_baseline.rs — Sprint 71 Wave 1 (Phase 5 Stage 1).
 //
-// T23 of `tests/plan/sprint71-platform.md` — the lone workspace-integration
-// test /qa authors this sprint. Verifies that the Sprint 71 `cranelisp-
+// T23 in `tests/plan/PLAN.md#platform-structural-and-crossing-evidence` — the
+// lone workspace-integration test /qa authors this sprint. Verifies that the Sprint 71 `cranelisp-
 // platform` surface bump is visible in BOTH the source const and the
 // committed `cargo-public-api` baseline; the two-update discipline per
 // `design/arch/CLAUDE.md` §"Baseline-diff discipline (Sprint 67 close)"
@@ -24,8 +24,9 @@
 // it e2e-or-unit; this is one of the explicitly-justified workspace-
 // integration exceptions for facade/baseline discipline alongside
 // `facade_compliance.rs`, `facade_pif_rows.rs`, `public_api_relocations.rs`,
-// and `s68_primitives_uniform.rs`). Per `tests/plan/sprint71-platform.md`
-// §4, this is the ONLY workspace-integration test /qa authors this
+// and `s68_primitives_uniform.rs`). Per
+// `tests/plan/PLAN.md#platform-structural-and-crossing-evidence`, this is the
+// ONLY workspace-integration test /qa authors this
 // sprint; the rest of the new ADT-traversal surface is tested by /dev
 // platform's unit + crate-integration tests inside the crate.
 
@@ -55,7 +56,7 @@ fn read_source(rel: &str) -> String {
 // `design/arch/CLAUDE.md` §"Baseline-diff discipline (Sprint 67 close)" —
 // the two-update rule this test enforces.
 //
-// T23 per tests/plan/sprint71-platform.md row T23.
+// T23 per `tests/plan/PLAN.md#platform-structural-and-crossing-evidence`.
 #[test]
 fn sprint71_abi_version_baseline_co_regen() {
     // (1) Source-side: ABI_VERSION must read `= 10;` after the Sprint 121

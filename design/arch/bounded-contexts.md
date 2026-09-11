@@ -97,7 +97,7 @@ The four free-function form-by-form boundary — `parse`, `extract_module_declar
 
 **Cluster-atomic entry surface.** The approved typecheck entry surface is the cluster entry — **one** free function per cluster, `check_forms(parsed: Vec<ParsedEntry>, ctx: &mut SymbolTableAccess, symbol_tables: &SymbolTables, module_aliases: &ModuleAliases, prelude_fallback: &PreludeFallback) -> Result<CheckResult, CheckError>` (the `PreludeFallback` parameter and the `CheckResult` return joined the surface at S108 Wave G and S110 respectively; `public-api.txt` is the as-built authority) — plus the narrower standalone type-expression validator `check_type_expr(expr: &TypeExpr, ctx: &mut SymbolTableAccess, symbol_tables: &SymbolTables, module_aliases: &ModuleAliases, prelude_fallback: &PreludeFallback, current_module: &ModuleFullPath, span: Span) -> Result<Type, CheckError>` (S76 seam-1; FIXME 0246, FIXME 0231) and the approved monomorphisation reload seed `instantiate_demands` (S121 Packet C below). `check_type_expr` resolves a single `TypeExpr` against the supplied view — no body inference, no cluster atomicity, just leaf-name resolution through the same §7 resolution primitive `check_forms` uses (so schema-declared ADT names referenced in a platform sig resolve identically; int's platform loader uses it to typecheck `PlatformFn.type_sig`, pairing with frontend's `parse_type_expr`). It is **additive and view-respecting**, blessed here: it introduces no new boundary type (`TypeExpr`, `Type`, `CheckError`, `SymbolTableAccess`, `SymbolTables`, `ModuleAliases` all already cross the typecheck boundary) and is consistent with the bounded context (type resolution against a view is in-scope). The per-item contract lands in the lib.rs `///` rustdoc when `/dev` authors it; the baseline-diff two-update discipline is satisfied because the surface is named here. The cluster-atomic entry `check_forms` is, per Decision 44 (amended FIXME 0167 for Approach B + `SymbolTableAccess`; 2026-05-13 third amendment collapsing the prior two-pass facade split into a single function; 2026-09-03 macro-checkpoint amendment). A **cluster** is the unit of non-macro HM typecheck atomicity: one non-macro form (a non-`begin` REPL input), the non-macro contents of `(begin form₁ … formN)` (an explicit REPL cluster), or a file's fully expanded non-structural, non-macro forms (batch). Source-ordered `defmacro` checkpoints publish separately and do not split the forward-reference scope among those non-macro forms. The internal two-pass discipline (Pass 1 register signatures into staging, then Pass 2 check bodies against the unioned staging+live view — spec §5.13.1, supporting forward references / mutual recursion) is preserved as an implementation-phase ordering **inside** `check_forms`; it does not cross the boundary. There is no public pass discriminator and no public accumulator type — Pass-1-to-Pass-2 working state (`defn_type_vars`, default-method-defn deferrals, generalisation inputs) lives inside the one stack frame and is dropped when the call returns, closing the state-threading hole by construction (no working state crosses the facade because there is only one call). See the `check_forms` per-item `///` rustdoc in `crates/cranelisp-typecheck/src/lib.rs` (post-S72 W5 canonical; `facades/typecheck.md` retired) for the per-item contract and Decision 44 for the rationale + rejected alternatives.
 
-**Monomorphisation reload seed `instantiate_demands` (S121 Packet C; FIXME 0553).** This implements the approved "instantiate this symbol at these types" capability designed at `design/typecheck/monomorphisation.md` §3.8. The source and `public-api.txt` carry the signature below; API approvals are recorded in [SPRINT.md](../../sprints/SPRINT.md). It has the `check_forms` context with demands in place of forms:
+**Monomorphisation reload seed `instantiate_demands` (S121 Packet C; FIXME 0553).** This implements the approved "instantiate this symbol at these types" capability designed at `design/typecheck/monomorphisation.md` §3.8. The source and `public-api.txt` carry the signature below. The user approved this exact signature and root re-export on 2026-09-02 ([S121 approvals](../../sprints/archive/sprint-121.md), Packet C); the approved consumer is the Binary/int reload driver. S122 realizes that existing handoff without another interface approval unless its contract changes. It has the `check_forms` context with demands in place of forms:
 
 ```rust
 pub fn instantiate_demands<C, L>(
@@ -113,10 +113,34 @@ where
 ```
 
 Placement: beside `check_forms` in `form.rs`, re-exported by the crate root.
-The intended production consumer is the Binary/int reload driver; this entry
-point currently has no production caller. It seeds the existing collector and
-minter engine and returns the same transient `CheckResult`; it adds no second
-pipeline, publication mechanism or Cargo edge.
+The production consumer is the Binary/int reload driver. **Implementation
+pending (S122):** the entry point exists, but the driver still replays source
+forms. The driver captures complete `InstanceLink` identities before module
+replacement, projects them through `MonoDemand::from_type_args` with synthetic
+sites, waits for reload to settle, then consumes the returned `CheckResult`
+through normal codegen and staged publication before dependent reload proceeds.
+This seeds the existing collector and minter engine; it adds no second pipeline,
+publication mechanism, Cargo edge, schema change or generated-baseline delta.
+Source-form replay retires with the consumer. The interior handoff belongs to
+[session-transaction.md](../int/session-transaction.md) §10.
+
+**Demand completion (S122 Q1 producer correction).** The existing approved
+entry point completes ordinary ownership inference after its successful demand
+worklist drain, before Binary/int classifies realization ABI or compiles the
+candidate. Reuse the typecheck-private ownership pass over settled bodies and
+its staging-aware publication; do not expose a second public pass or have int
+infer/copy summaries. The existing inference universe, analysis-off toggle and
+refusal behavior still apply: completion does not promise a summary for every
+body. Unknown or incompatible ABI remains subject to the ordinary publication
+guard. This corrects the omitted producer completion inside the existing
+`instantiate_demands` contract, with no signature, return/error vocabulary,
+schema, dependency or generated-baseline change. **Implemented in the S122
+working tree (2026-09-10):** `form.rs::instantiate_demands` invokes the existing
+private pass only after the successful full drain, then returns its unchanged
+result. Supplied producer evidence demonstrates the missing-summary failure
+before the correction and fresh entry/view summary plus staging-isolation
+controls afterward; independent typecheck review remains pending. The
+consumer's old-summary reuse is not a substitute.
 
 - **Identity and settlement.** `MonoDemand { template: CallableTarget, type_args: Vec<ConcreteType>, site: Span }` carries the selected callable and its complete generic substitutions. The canonical vector contract is [interfaces.md](interfaces.md) §Instance identity funnel. Typecheck reconciles the selected scheme with the full settled use type: ordinary calls supply parameters and result, function values supply their whole function type, and auto-curry combines supplied parameters with the residual closure's parameters and result. A function-valued return alone does not indicate auto-curry. Unsettled sites in generic definitions wait for concrete recheck; unresolved runtime uses retain the existing ambiguity error.
 - **Minting and reuse.** Derivation and replay use the same authoritative template scheme, including the checked-body scheme before publication. The minter reconstructs the complete signature, verifies constraints and rechecks the body in its defining scope; nested rechecks use their own captured maps. It preserves the demand's `InstanceLink` through naming, deduplication and installation in the demanding module (Principle 17). Identical `(template, type_args)` reuse the existing instance and GOT slot, including recursive uses; distinct result-only choices produce distinct instances.
@@ -363,8 +387,8 @@ it.
 **In-scope.**
 - Heap memory model (allocation, layout — base-pointer convention per Decision 11)
 - Reference counting primitives
-- Drop glue helpers (consume_shallow, consume_io_tree, dec_shallow_io, and — approved S119 Phase-3 gate — **`free_io_node`**: the tail half of `consume_io_tree` split at the dec (tag-walk + branch release + dealloc; NO dec, NO fence; precondition: caller has dec'd to zero and fenced). One new `pub fn` + one new `#[export_name]` extern; backend's `drop<IO T>` glue is a fixed per-`T`-identical body (nullary guard + dec-to-zero + Acquire fence + call) that hands the node to it — the runtime-directed teardown disposition for IO's existential `Bind`, per `design/backend/non-concrete-release-contract.md` §4.4/§5.3 as re-shaped by the S121 0934/R1 ruling. `Pure` field 1 is the single three-state atomic ownership witness (`0 = Scalar`, `1 = Claimed`, otherwise `Owned(glue)`). The run lane claims before reading/transferring field 0; `free_io_node` claims at teardown and calls only an observed `Owned(glue)`. A duplicate force observes `Claimed` and takes the standard runtime-error path without reading the payload. No tag state or side-table owner is added (`design/arch/total-concreteness.md` §3.4), and no tag test or `drop<T>` call remains in the generated glue body itself. `free_io_node` stays raw `i64` permanently — it is *beneath* the typed-handle abstraction (its precondition is a count already at zero; an `Owned` models a live counted reference), classified with `atomic_dec_rc` in the tranche-A residue.)
-- **The typed handle vocabulary** (approved S119 Phase-3 gate): `pub mod handle` — `Owned` (`#[repr(transparent)]`, `#[must_use]`, no `Copy`/`Clone`, debug-profile drop bomb) and `Borrowed<'a>` (`Copy`, lifetime-branded, no discharge operation), eight operations, closed set. The pair's public discharge discipline: `consume_*`/`dec_shallow_io` take `Owned`; `Borrowed::to_owned()` is the single typed home of `rc_inc`. Adding an operation to the set is an `/arch`-visible trusted-base change. Canonical design: `design/runtime/s119-typed-consume-funnel.md` (§3 counts the trusted base; §8 is the approved `public-api.txt` delta). Consumed by the pair, backend's one test-site wrap, and (tranche B-int) `src/marshal.rs` + `src/expander.rs::invoke_clause`.
+- Drop glue helpers (consume_shallow, consume_io_tree, dec_shallow_io, and — approved S119 Phase-3 gate — **`free_io_node`**: the tail half of `consume_io_tree` split at the dec (tag-walk + branch release + dealloc; NO dec, NO fence; precondition: caller has dec'd to zero and fenced). The emitted `runtime/free_io_node` target is a `pub(crate) extern "C" fn` with an export name, not a public Rust function (S121 IO teardown packet); backend's `drop<IO T>` glue is a fixed per-`T`-identical body (nullary guard + dec-to-zero + Acquire fence + call) that hands the node to it — the runtime-directed teardown disposition for IO's existential `Bind`, per `design/backend/non-concrete-release-contract.md` §4.4/§5.3 as re-shaped by the S121 0934/R1 ruling. `Pure` field 1 is the single three-state atomic ownership witness (`0 = Scalar`, `1 = Claimed`, otherwise `Owned(glue)`). The run lane claims before reading/transferring field 0; `free_io_node` claims at teardown and calls only an observed `Owned(glue)`. A duplicate force observes `Claimed` and takes the standard runtime-error path without reading the payload. No tag state or side-table owner is added (`design/arch/total-concreteness.md` §3.4), and no tag test or `drop<T>` call remains in the generated glue body itself. `free_io_node` stays raw `i64` permanently — it is *beneath* the typed-handle abstraction (its precondition is a count already at zero; an `Owned` models a live counted reference), classified with `atomic_dec_rc` in the tranche-A residue.)
+- **Typed counted-reference transfer.** Intrinsics owns the closed `Owned`/`Borrowed` vocabulary and the nine Rust discharge operations below. Primitives owns its raw-ABI shim adaptation; Binary/int owns macro argument transfer and returned-Sexp copying/release. Backend-emitted and platform entry signatures remain raw ABI words. The internal design and trusted-base census live in [s119-typed-consume-funnel.md](../runtime/s119-typed-consume-funnel.md); the cross-context contract is stated below.
 - String and vector runtime
 - IO trampoline
 - Fork-join evaluation cells (IVar)
@@ -374,6 +398,105 @@ it.
 - **The fork-join error-slot ferry** on both fork-join join paths (IVar lenient-let spark/join + Par branch dispatch) + a new internal `set_runtime_error` companion — the mechanism that makes the combinator sound under live lenient/Par evaluation (invariant 13).
 - IO observer registration API (per Decision 40 — the registration site lives here; observer state lives in int)
 - **The `(trace ...)` execution-trace runtime** (S76 user ruling — D40's trace-relocation-to-int retracted): the 12 `cranelisp_trace_*` bodies (`enter`/`exit`/`swap_got`/`restore_got`/`collect_trace`/`first_child_nanos`/`name`/`params`/`result`/`children`/`nanos`/`format`), the `TRACE_STACK` call-frame stack, `TRACE_THREAD_ID` role-CAS, the `consume_trace_call` drop helper, the descriptor-driven pure value-formatter, and the same-thread nested-trace runtime guard. Published through `intrinsics_table()` like every other intrinsic. (Backend emits the externs as `Linkage::Import` + bakes the display descriptors + discovers the traced set in codegen; stdlib `core.trace` adds display helpers; int does NOT host trace runtime code. See invariant 12 + `design/arch/tracing.md`.)
+
+**Counted-reference Rust contract.**
+
+**Approved and implemented (S122); allocated runtime evidence complete,
+generated baseline USER-CONFIRMED (2026-09-11).** The user approved the nine-funnel
+`Owned`/`Borrowed` API in the 2026-09-05 IO teardown packet
+([S121 approvals](../../sprints/archive/sprint-121.md)). Current source contains
+`handle.rs` and all nine typed consuming signatures, including the Vec callback.
+Primitives, backend and Binary/int consumers are delivered. Allocated public
+watcher/macro/IO/memory evidence, complete CLIF checks and scoped reviews are
+complete; QA judges this generated checkpoint adequate for presentation. The independent
+ABI-10 IO disposal implementation remains distinct from this Rust contract.
+
+`pub mod handle` exposes `Owned`, a transparent private-field `i64` wrapper
+with no `Copy` or `Clone`, and `Borrowed<'a>`, a private-field lifetime-branded
+`Copy + Clone` view. `Owned` is `#[must_use]`; its leak-detecting `Drop` exists
+only in debug builds and does not panic during an existing unwind. The closed
+public methods are:
+
+- `Owned::from_abi(raw: i64) -> Owned` (`unsafe`), `into_raw(self) -> i64`
+  (`#[must_use]`), `as_borrowed(&self) -> Borrowed<'_>`,
+  `raw_for_read(&self) -> i64`, and `is_nullary_tag(&self) -> bool`.
+- `Borrowed::from_abi(raw: i64) -> Borrowed<'static>` (`unsafe`),
+  `to_owned(self) -> Owned`, and `raw_for_read(self) -> i64`.
+
+`from_abi` asserts an actual transferred or borrowed reference; the nullary
+case remains legal. `into_raw` transfers the obligation rather than releasing
+it. `to_owned` atomically acquires a counted reference. A borrow derived from
+`Owned` cannot outlive it; the unsafe ABI borrow is caller-asserted and carries
+no structural lifetime guarantee beyond that assertion.
+
+| Public Rust function | Approved parameter types |
+|---|---|
+| `rc::consume_shallow` | `Owned` |
+| `drop::consume_slist`, `drop::consume_sexp` | `Owned` |
+| `drop::consume_vec_with` | `Owned, fn(Owned)` |
+| `drop::consume_vec_of_string`, `drop::consume_io_tree` | `Owned` |
+| `drop::consume_closure`, `drop::dec_shallow_io` | `Owned` |
+| `trace::consume_trace_call` | `Owned` |
+
+All nine return `()`. The Vec callback is part of the existing approval; its
+private alias does not become a new public name. Its current callback producers
+are intrinsics' shallow-String and IO-tree disposers. The zero-count teardown
+`free_io_node(i64)` remains beneath this live-reference contract.
+
+Primitives is a required consumer: `int`, `string` and `marshal` call these
+funnels. Their bodies and generated shims remain `pub(crate)`, so the approved
+migration changes no primitives Rust baseline or exported raw-ABI signature.
+Binary/int's macro marshal/invoke consumer is also approved; its executable
+code lease remains separate from counted heap references. A backend closure
+fixture directly calls `consume_closure` through the delivered typed
+adaptation; this does not change the backend's emitted ABI.
+
+**Primitives construction, traversal and storage (D8).** The user approved
+this limited private-boundary amendment on 2026-09-10; **source implementation
+and its allocated integrated/public evidence are delivered**. The exact function/site set and evidence obligations are in the
+[approved D8 packet](../../sprints/s122-primitives-allocation-proposal.md).
+
+- The private `abi_facts::adopt_produced_value(i64) -> Owned` uses
+  existing `Owned::from_abi` at 20 adoption sites across 19 functions. Inputs
+  are fully initialized fresh owners, canonical produced `None`/`SNil`, or
+  the existing `quote_sexp_build` zero error sentinel after `runtime_panic`.
+  That sentinel remains an error-lane word, not a valid initialized Sexp.
+- The private `marshal::borrowed_field` projects a child through
+  existing `Borrowed::from_abi`, preserving the parent borrow lifetime. Its
+  six projections cover SCons head/tail and classified Sexp String/SList
+  fields; scalar payloads remain scalar reads. Reused children acquire an
+  owned reference through `Borrowed::to_owned` before storage.
+- Four storage `into_raw` sites, in the two ADT constructors and the
+  String-Vec receiving helper, transfer child obligations to their receiver.
+  Private `StoredField` distinguishes scalar and owned fields. Prepare the
+  destination before disarming children; complete stores and receiver handoff
+  without an intervening fallible gap. The existing Vec constructor owns its
+  elements from call entry, including unwind cleanup; `Owned` itself supplies
+  no automatic release.
+
+The named mint, borrow and storage sets extend the trusted-base guard together;
+no directory-wide exemption or arbitrary raw round trip is allowed. This
+amendment adds no public handle operation, allocator API, generated-baseline
+row, emitted ABI, heap-layout or schema change. A full public allocation API
+redesign remains separate future work. Approval of this D8 boundary does not
+approve other unresolved design packets or advance the sprint phase.
+
+The intrinsics baseline gains the handle surface and replaces the nine
+signatures, including `fn(Owned)`. Default-debug generation records the
+conditional `Drop`. The generated intrinsics-only **+38/−9** diff matches the
+approved packet; the other six guarded crate outputs are identical. **The user
+explicitly confirmed this actual runtime diff on 2026-09-11**, separately from
+the earlier identity baseline confirmation. ACT0955 contraction remains
+separate and unimplemented; overall Phase 5 remains pending.
+The [QA evidence record](../../tests/plan/s122-evidence-delta.md) retains the Q5
+unclassified residual and evidence limits; [the sprint](../../sprints/SPRINT.md)
+owns remaining streams and overall Phase 5 status. This checkpoint does not
+claim their closure.
+Unchanged approved signatures need no renewed approval. New operations,
+visibility changes or consumers beyond this contract return as exact deltas.
+Do not credit a dormant handle foundation as macro leak recovery: its selected
+production consumers and their executing ownership evidence belong to the same
+completed implementation stream.
 
 **Out of scope.**
 - Code generation (backend)
@@ -598,7 +721,7 @@ These hold across sprints — the contract `cranelisp-platform` makes with the r
 
 4. **Marshaling tags shared with intrinsics.** The `CLType` impls use the same `i64` layout the intrinsics helpers expect. `CLString.0` is an alloc-base pointer to an intrinsics-allocated `HeapString` (Decision 0012 — string layout owned by `cranelisp-intrinsics`; Decision 0043 — intrinsics is the post-runtime-split host); `CLOwned<CLString>` participates in RC via `HostCallbacks.alloc` and the intrinsics-side dec path. There is one `i64` representation per CLType, agreed between platform and intrinsics via this crate's documented layout.
 
-5. **`HostContext` initialised once per session.** `int` constructs `HostCallbacks` (with fn pointers into `cranelisp_intrinsics`) at `CompilerSession::new` and calls `HostContext::init` exactly once. Subsequent platform fn calls see the same callbacks for the session's lifetime. `HostContext` is `Send + Sync` by auto-derivation (`AtomicPtr<HostCallbacks>` is `Send + Sync`); `HostCallbacks` auto-projects `!Send + !Sync` (extern "C" fn pointers + raw allocations); `OwnedPlatformFnDescriptor` auto-projects `!Send + !Sync` (raw `ptr: *const u8`); `PlatformFn` carries explicit `unsafe impl Send + Sync` because the IO trampoline reads descriptors from multiple threads when dispatching Effect nodes (safety justified by BC §5 invariant 6 — no DLL unloading mid-session).
+5. **`HostContext` initialised once per session.** `int` constructs `HostCallbacks` (with fn pointers into `cranelisp_intrinsics`) at `CompilerSession::new` and calls `HostContext::init` exactly once. Subsequent platform fn calls see the same callbacks for the session's lifetime. `HostContext` is `Send + Sync` by auto-derivation (`AtomicPtr<HostCallbacks>` is `Send + Sync`); `HostCallbacks` auto-projects `Send + Sync` (its fields are extern "C" function pointers; pointers passed as callback arguments are not stored fields); `OwnedPlatformFnDescriptor` auto-projects `!Send + !Sync` (raw `ptr: *const u8`); `PlatformFn` carries explicit `unsafe impl Send + Sync` because the IO trampoline reads descriptors from multiple threads when dispatching Effect nodes (safety justified by BC §5 invariant 6 — no DLL unloading mid-session).
 
 6. **No DLL unloading mid-session.** Once a platform DLL is loaded via `load_manifest`, it stays loaded until session shutdown. This is what makes the per-symbol GOT-slot pointer valid for the session — DLL pages are not unmapped while symbols reference them. The crate's bounded leaks (`declare_platform!` per-fn allocations; the `EffectOutcome.fault_cause` panic-message bytes, invariant 9) are bounded by this invariant.
 
@@ -617,6 +740,20 @@ These hold across sprints — the contract `cranelisp-platform` makes with the r
 ---
 
 ## 6. Binary / int — `src/` + `crates/cranelisp-exe-bundle/`
+
+**Public candidate isolation — S122 closure of 0604/0740/0793/0818.** The
+current route census, three session-init dispositions and publication-before-
+mutation contract live in [prelude-table-write-isolation.md](../int/prelude-table-write-isolation.md)
+§§2.1, 2.4 and 4. QA's existing no-flip retirement ruling and the delivered
+census discharge the structural obligation. The retained
+[foreground regression sweep](../../tests/index_race_foreground_0604.rs) now
+states that scope and its evidence limit. The historical contaminated-probe
+signature in 0818 is an **unconfirmed explanatory lead**: neither the original
+firing environments' directory state nor a recovered writer was established.
+Quiet sweeps do not prove historical absence, and structural closure does not
+attribute the old firings to contamination. This limitation survives filing
+retirement; no experiment to reconstruct unavailable attribution is owed.
+
 
 **Bounded context.** The integration layer wires the other surfaces into a deployable artefact and into a working REPL. It hosts three internal cadences with distinct execution shapes — compilation, REPL, watcher — coordinates the typed handoffs between them, owns all development tooling (slash commands, observability ring buffers, introspection), and is the only crate that knows the concrete carrier of compiled code. The two crate paths (`src/` and `cranelisp-exe-bundle`) are one surface for triad purposes: a change touching both is one design/development/review cycle.
 
@@ -651,6 +788,21 @@ Handoffs are how cadences communicate. The pattern matters; the int facade pins 
 - **Watcher → REPL → compilation**: file-change events do not flow directly into compilation. They are polled by the REPL at prompt boundaries (avoiding mid-input interleave) and become re-register requests.
 
 The runtime cadence (inside running programs) produces no handoffs to other cadences.
+
+**Session re-registration surface (ACT-0954).** The user approved removal of
+`cranelisp::session_v4::CompilerSession::re_register_module(&mut self,
+module: &ModuleFullPath) -> Result<bool, CranelispError>` at the S122 Phase-3
+checkpoint, 2026-09-09 ([approval](../../sprints/SPRINT.md)). The wrapper has no
+production caller and exposes background publication without a completion
+contract. Remove it; retain the internal scheduler re-registration operation
+and the synchronous watcher reload path. Do not introduce a publication clock
+or replacement public async protocol to preserve the unused wrapper.
+
+**Implementation pending:** `src/lib.rs` publicly exports `session_v4`, and the
+wrapper remains in source. Its removal is a breaking root-library API change
+with no effect on the seven tracked library baselines. The source-text facade
+presence assertion and the interior API documentation retire with it. The
+synchronous reload → subsequent-eval behavior remains the observable contract.
 
 ### 6.3 Within-cadence access
 
@@ -749,7 +901,14 @@ The int-internal structural-target guard that introspected `SharedState` (`share
 
 ## 7. Cross-crate types — `crates/cranelisp-types/`
 
-**Concrete instance identity.** Types owns `MonoDemand`, `InstanceLink` and the
+**Concrete executable identity — implemented; API and generated baseline user-confirmed 2026-09-10.**
+The exact [S122 signature-key contract](s122-overload-reorder-publication.md)
+uses canonical authored owner plus full concrete function signature, including
+result. Types owns the key and its slot relationship; backend only adapts actual
+old-key dependencies, with no wholesale native-label rename. Authored bindings
+and generation-local roster selectors remain distinct from executable identity.
+
+Types owns `MonoDemand`, `InstanceLink` and the
 sole instance-key encoder. Their `CallableTarget` plus complete `type_args`
 contract, constructors and cache compatibility are recorded in
 [interfaces.md](interfaces.md) §Instance identity funnel. Typecheck derives and
@@ -888,7 +1047,14 @@ The S82 stopgap enforced this at the *read seam* — a `got_slot: Option<usize>`
 
 **S119 types-first slice — LANDED (`/arch`, the `concreteness-types-first.md` §3 vocabulary, ahead of the kind-field flip).** The witness half of I-CONC is now code: `CallableSlot` (opaque; private field; `#[serde(transparent)]`) is obtainable only from the ONE fallible `SymbolTable::mint_callable_slot(scheme)` (checks `is_concrete()` + allocates in one act), from the re-checking `CallableSlot::rebind` (the Decision-31 REPL slot carry-forward), or from deserialization — which is why the cache trust boundary gains the restored-slot re-check (`CacheStale::NonConcreteSlot`, the backend-wash arm). The kind-field retypes (`UserFnState::Concrete`, `PrimitiveBody::Extern`, `PlatformEffect`, and `DefKind::Constructor` → the landed-dormant `CtorState { Template, Concrete }` sum) were the pinned per-kind wash flip (FIXME 0931) — **superseded 2026-09-01 by the adopted unified lifecycle machine (the S121 paragraph below): the same sites re-arm once onto `Life<C>`, the dormant `CtorState` deletes unwired, and the transitional `allocate_got_slot` retires into the settlement funnel** rather than merely demoting. Landed alongside, same change-set: the instantiation-substituting `heap::ctor_field_types_at` (concrete-or-refuse, beside the preserved `value_layout` model site — R-6/R-16), `ConcreteType::result_root()` (the ONE IO-head-strip rule, FIXME 0898), the **injective** `got_data_symbol_name` escape (FIXME 0748 — `a.b`/`a_b` can no longer share a GOT slab symbol; alphanumeric paths stay fixed points for the `__cranelisp_got_primitives` link-time ABI literal), the 0869 writer-side trait-impl cache carrier (`SymbolTable.written_trait_impls: Vec<WrittenTraitImpl>` with NO serde default + `enrol_written_trait_impl` + the hoisted `trait_impl_key` mint), and the FIXME-0918 dead-surface deletions (`ImplSexp`, `CompileResult`, `CallEdge`/`CallInfo`/`CallGraph`, `StructuralDeclEntry`/`append_structural_decl` — the pub structural Vec fields ARE the append contract). ONE `CACHE_SCHEMA_VERSION` window (23→24) covers all of it; in-sprint downstream waves ride that bump.
 
-**S121 — the unified symbol-lifecycle architecture, Packet B candidate facade and Packet A1 publication facade are approved (user decisions 2026-09-02).** The approved core is the `Binding -> Decl -> Callable -> Life` separation with declaration facets nested below, one `Callable` lifecycle machine, one symbol map whose private per-spelling `SymbolEntry` owns an optional canonical `Binding` and terminal `NameCandidate` references, private lifecycle/slot mutation through types-owned transitions, and module-atomic staged-to-live publication. A parallel trait-method map and `BindingBody::{Alias, Ambiguous}` are explicitly rejected. Packet B approves the exact candidate, simplified binding and resolution facade recorded in `design/arch/s121-lifecycle-public-api-review.md`; its same-day approved realization correction adds the read-only all-candidate projection and preserves declared primitive ownership in extern/inline birth funnels, including `Life::Inline { mode_summary }`. Packet A1 adds the exact `publish_staged`, `publish_compiled_owner`, `publish_compiled_staged` and owner-conserving `mark_broken` boundary with its reviewed carriers. Its later approved semantic amendment gives existing `ChangeAbi { symbol }` two explicit retirement outcomes: a staged slotted replacement receives a fresh slot, while a key wholly absent from staging removes the live binding with no replacement; omission alone never deletes. The latter returns the displaced owner and prior slot through the existing `PublicationRecord`, leaves the GOT pointer frozen and tombstones the slot as ABI-changing. It is a behavior extension with no item, signature, re-export, generated-baseline or schema change. Origin/realization payloads, `MonoDemand`/`InstanceLink`, overload mechanism, and the remaining lifecycle-authoring surface retain their individual public-API/spec gates. Implementing the approved serialized representation uses the one `CACHE_SCHEMA_VERSION` 24→25 wholesale invalidation. No crate may create a second lifecycle or name-candidate representation.
+**Symbol lifecycle and publication.** Types owns the private per-spelling
+candidate/binding store, lifecycle transitions, slot claims and atomic module
+publication. Integration supplies semantic ABI decisions and retains displaced
+compiled owners; typecheck authors unpublished state. The current shared
+contract is [symbol-table lifecycle](symbol-table-lifecycle.md), especially §4.4
+for publication and §5 for declaration families and instances. Exact Rust
+contracts live beside the types items; generated baselines and approval history
+are evidence, not a parallel facade definition.
 
 **Concurrency "facade target" — RETRACTED (S119, FIXME 0919; no third state).** The long-stale target narrative on `SymbolTable`'s allocator fields (DashMap-inner atomics — `next_seq: AtomicU64` / `next_got_slot: AtomicUsize`, the S-DRIFT-19/20/21 cascade) is formally retracted: plain fields mutated under `&mut SymbolTable` ARE the end-state, because every per-module write is already serialized by the DashMap shard guard the orchestrator holds — the atomic conversion buys nothing the access pattern needs, and the GOT (the one genuinely concurrent surface) is already atomic per-slot. There was never a `SymbolTable.dll` field or `D: DllStore` generic (platform DLL handles are retained int-side in `SharedState.kept_dlls`); the phantom narratives are corrected at source.
 
@@ -910,8 +1076,9 @@ projection. Staging policy belongs to typecheck's existing lookup, while types
 owns eligibility and releases metadata before recursive lookups. Typecheck
 routes both Copy and uniqueness eligibility through its shared private adapter
 over that view. Backend retains its table API. No schema,
-platform ABI or live-redefinition rule changes. Exact contract and approval:
-[staged value-layout packet](s121-staged-value-layout-api.md).
+platform ABI or live-redefinition rule changes. Current contract:
+[R5 value layout](interfaces.md#r5-value-representation-flattening) and
+[types lookup rustdoc](../../crates/cranelisp-types/src/heap.rs).
 
 **`Def` entry construction — the builder (Tier 1, production).** `ModuleEntry::Def` carries ~11 fields, six of which are construction-time defaults at every static-table / mount call site (`callees`, `value_use`, `trait_origin`, `seq`, `ast`, `code`). Enum variants cannot use `..Default::default()`, so hand-rolled `ModuleEntry::Def { … }` struct literals spell out all 11 fields even where only three matter. `ModuleEntry::def(scheme, kind) -> DefBuilder<C>` is the single production constructor for `Def` entries: chainable setters for the construction-time concerns (`visibility` — defaulting to `Public`, `docstring`, `param_names`, `trait_origin`, `seq`, `ast`, `codegen_view`), terminated by `.build()` (or the `From<DefBuilder<C>>` conversion). There is **no `got_slot` setter** — the slot rides the callable `DefKind` variants (S83), so a slot-carrying caller passes it inside the kind it builds with (an earlier revision of this paragraph listed `got_slot` among the builder setters; that was drift against source, corrected S119/FIXME 0919). `callees` and `code` are deliberately *not* settable — they are runtime-state fields written downstream (callees by typecheck's `finalize_check_result`, code by backend after `compile_to_module`); the builder is construction-time-only, keeping the runtime-state single-source-of-truth invariants intact (Principle 7). The builder is the multi-consumer Tier-1 piece shared by `cranelisp-primitives` static-table assembly, `int`'s synthetic-module mount (FIXME 0242), and the Tier-2 test helpers. It realizes the `declare_def` helper deferred by FIXME 0241; the broader `declare_adt` / `declare_special_form` / `declare_trait` vocabulary remains deferred (minimum mechanism — only the `Def` constructor has two real production consumers today).
 

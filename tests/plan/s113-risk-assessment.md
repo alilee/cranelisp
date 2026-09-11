@@ -19,8 +19,7 @@ unmanaged* risk — a family the suite can see and a wave will fix is lower
 risk than a family with fewer known defects that nothing can detect.
 
 No test run was performed for this assessment (Phase-3 constraint); all
-suite-state citations are to committed records (`PLAN.md` §S111 I.1–I.5,
-§S112; `sprints/archive/sprint-112.md` §Outcome; `memory-safety-coverage.md`
+suite-state citations are to committed records ([historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md), S111 rows I.1–I.5 and S112; `sprints/archive/sprint-112.md` §Outcome; `memory-safety-coverage.md`
 §5).
 
 ## §1. The ranking
@@ -129,7 +128,7 @@ ghost has cost ~320 diagnostic runs).
   recommendation instantiates (§1 gate design, §2 generator, §5 exposure).
 - `design/arch/safety-invariants.md` — §2 ladder, §4 register (R1–R13), §6
   cascade; Principle 25.
-- `tests/plan/PLAN.md` §S111 I.1–I.5 — the committed defect/attribution
+- [S111 committed attribution rows](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md) — the committed defect/attribution
   records cited per row.
 - `tests/plan/s113-test-plan.md` — the sprint plan consuming this verdict.
 - `tests/plan/risks.md` §"S113 risk read" — the compact register form.

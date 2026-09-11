@@ -148,7 +148,7 @@ Remaining open FIXMEs (49 total) are carried without sprint action unless a trac
 
 ### `/qa` — COMPLETE (2026-07-25)
 
-Plan of record: `tests/plan/s118-test-plan.md`; durable rows in `tests/plan/PLAN.md` §S118 and `tests/plan/risks.md` (10-row S118 read + two permanent register lenses).
+Plan of record: `tests/plan/s118-test-plan.md`; durable rows in [historical QA plan](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md) §S118 and `tests/plan/risks.md` (10-row S118 read + two permanent register lenses).
 
 - **Certification split structural**: detector arming is child-env only; W1 adds a static grep gate against suite-scope arming; exactly one schema window (23→24, 0869-only) — any other schema delta is a close blocker.
 - **28-name baseline enumerated from live sources** with per-cell flip attribution. Two low-confidence cells flagged for W1 reconciliation from the captured baseline log (the `conj` armed-parity leg; whether the M3 clean control is 0848-only or 0745-coupled); family arithmetic reconciles at 28 either way.

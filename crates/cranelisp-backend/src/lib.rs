@@ -677,9 +677,10 @@ where
     let intrinsic_ids = declare_intrinsics_generic(module)?;
 
     // Step 1 (§3.1): look up each named entry, retrieve its `MonoExpr` body +
-    // ownership summary. The three lockstep vectors + the hard `codegen_view`-
+    // ownership summary and selected-arm parameter types. The four lockstep
+    // vectors + the hard `codegen_view`-
     // None producer-gap error live in `collect_compile_targets`.
-    let (defns, bodies, summaries) =
+    let (defns, bodies, summaries, param_types) =
         collect_compile_targets::<C, L>(&module_path, targets, symbol_tables)?;
 
     // v9 ctx-vtable (`io-trampoline.md §17.3`): the S96 `inject_poll_leading_pair`
@@ -706,16 +707,7 @@ where
     // mutually-recursive type graphs close through already-declared FuncIds.
     let result_roots: Vec<ConcreteType> = bodies
         .iter()
-        .map(|body| match body.ty() {
-            ConcreteType::ADT(name, args)
-                if name.module.as_ref() == "primitives"
-                    && name.name.as_ref() == "IO"
-                    && !args.is_empty() =>
-            {
-                args[0].clone()
-            }
-            ty => ty.clone(),
-        })
+        .map(|body| body.ty().result_root().clone())
         .collect();
     let mut glue_registry = drop_glue::DropGlueRegistry::new(
         module_path.clone(),
@@ -755,6 +747,7 @@ where
         &defns,
         &bodies,
         &summaries,
+        &param_types,
         &func_ids,
         &func_arities,
         &intrinsic_ids,
@@ -822,11 +815,11 @@ fn project_drop_glues<M: CodeFinalizer>(
 }
 
 /// Step 1 (S111 R5 §3.1): look up each named entry, reconstruct its single-variant
-/// `Defn`, and read its `MonoExpr` body + ownership summary from the
-/// typecheck-populated `codegen_view`. Returns the three lockstep vectors. Owns
+/// `Defn`, and read its `MonoExpr` body + ownership summary and parameter types
+/// from the selected arm. Returns the four lockstep vectors. Owns
 /// the symbol-table lookup loop AND the hard `codegen_view: None` producer-gap
 /// error (§5 W0.b — no silent lenient rebuild). Pure extraction — byte-identical.
-// The return is the three lockstep vectors the design (§3.1) specifies verbatim;
+// The return is the four lockstep vectors the design (§3.1/§7) specifies;
 // a named struct would be over-engineering for a single internal Step-1 helper.
 #[allow(clippy::type_complexity)]
 fn collect_compile_targets<C, L>(
@@ -838,6 +831,7 @@ fn collect_compile_targets<C, L>(
         Vec<Defn>,
         Vec<cranelisp_types::MonoExpr>,
         Vec<Option<cranelisp_types::ModeSummary>>,
+        Vec<Vec<Option<cranelisp_types::Type>>>,
     ),
     CranelispError,
 >
@@ -864,6 +858,8 @@ where
     // lockstep with `bodies`.
     let mut summaries: Vec<Option<cranelisp_types::ModeSummary>> =
         Vec::with_capacity(targets.len());
+    let mut param_types: Vec<Vec<Option<cranelisp_types::Type>>> =
+        Vec::with_capacity(targets.len());
     {
         let table = symbol_tables
             .get(module_path)
@@ -887,15 +883,16 @@ where
                     location: ErrorLocation::from_span(Span::SYNTHETIC),
                 });
             }
-            let entry = table
-                .get(owner.symbol.as_ref())
-                .ok_or_else(|| CranelispError::CodegenError {
-                    message: format!(
-                        "compile_to_module: owner '{}' not found in module '{module_path}'",
-                        owner.symbol
-                    ),
-                    location: ErrorLocation::from_span(Span::SYNTHETIC),
-                })?;
+            let entry =
+                table
+                    .get(owner.symbol.as_ref())
+                    .ok_or_else(|| CranelispError::CodegenError {
+                        message: format!(
+                            "compile_to_module: owner '{}' not found in module '{module_path}'",
+                            owner.symbol
+                        ),
+                        location: ErrorLocation::from_span(Span::SYNTHETIC),
+                    })?;
             let Some(arm) = table.callable_target(target) else {
                 return Err(CranelispError::CodegenError {
                     message: format!(
@@ -930,12 +927,11 @@ where
             // sources for that metadata post-narrowing). The `Defn` supplies the
             // signature (params / name / span) for declaration + binding; the
             // body walk uses the `MonoExpr` below.
-            let label = callable_target_label(target).ok_or_else(|| {
-                CranelispError::CodegenError {
+            let label =
+                callable_target_label(target).ok_or_else(|| CranelispError::CodegenError {
                     message: format!("compile_to_module: unsupported target '{target:?}'"),
                     location: ErrorLocation::from_span(Span::SYNTHETIC),
-                }
-            })?;
+                })?;
             let defn = Defn {
                 name: Symbol::from(label.as_ref()),
                 docstring: match &entry.declaration {
@@ -947,6 +943,13 @@ where
                 variants: vec![variant.clone()],
                 visibility: entry.visibility,
                 span: variant.span,
+            };
+            // The selected arm owns the scheme. Generated overload/macro
+            // labels are executable names and are not table bindings, so a
+            // later lookup by `defn.name` cannot recover these types.
+            let selected_param_types = match &arm.scheme.ty {
+                cranelisp_types::Type::Fn(params, _) => params.iter().cloned().map(Some).collect(),
+                _ => vec![None; defn.params().len()],
             };
 
             // The backend codegen walk is over `MonoExpr` (concrete-boundary-type.md
@@ -999,9 +1002,10 @@ where
             defns.push(defn);
             bodies.push(body);
             summaries.push(mode_summary);
+            param_types.push(selected_param_types);
         }
     }
-    Ok((defns, bodies, summaries))
+    Ok((defns, bodies, summaries, param_types))
 }
 
 /// Step 2 (S111 R5 §3.1): declare every module function with its bare
@@ -1050,6 +1054,7 @@ fn compile_module_bodies<M, C, L>(
     defns: &[Defn],
     bodies: &[cranelisp_types::MonoExpr],
     summaries: &[Option<cranelisp_types::ModeSummary>],
+    param_types: &[Vec<Option<cranelisp_types::Type>>],
     func_ids: &HashMap<Symbol, FuncId>,
     func_arities: &HashMap<Symbol, usize>,
     intrinsic_ids: &crate::jit::IntrinsicFuncIds,
@@ -1078,7 +1083,12 @@ where
     // many times.
     let clif_dump_filter: Option<String> = std::env::var("CRANELISP_CODEGEN_DUMP").ok();
 
-    for ((defn, body), mode_summary) in defns.iter().zip(bodies.iter()).zip(summaries.iter()) {
+    for (index, ((defn, body), mode_summary)) in defns
+        .iter()
+        .zip(bodies.iter())
+        .zip(summaries.iter())
+        .enumerate()
+    {
         let compile_ctx = CompileContext {
             func_ids,
             func_arities,
@@ -1113,6 +1123,7 @@ where
             defn,
             body,
             mode_summary.clone(),
+            &param_types[index],
             module,
             &mut func_ctx,
             func_ids,
@@ -1192,10 +1203,7 @@ where
         })?;
     let mut slot_funcs: Vec<(usize, FuncId)> = Vec::with_capacity(defns.len());
     for (target, defn) in targets.iter().zip(defns) {
-        let Some(slot) = table
-            .callable_target(target)
-            .and_then(callable_arm_slot)
-        else {
+        let Some(slot) = table.callable_target(target).and_then(callable_arm_slot) else {
             continue; // Non-Def / slot-less Def (primitive-shaped, etc.)
         };
         let Some(&func_id) = func_ids.get(&defn.name) else {
@@ -1263,11 +1271,9 @@ fn write_finalized_got_slots<M, C, L>(
         };
 
         // Resolve the entry's GOT slot and write the finalised ptr.
-        let slot_opt = symbol_tables.get(module_path).and_then(|table| {
-            table
-                .callable_target(target)
-                .and_then(callable_arm_slot)
-        });
+        let slot_opt = symbol_tables
+            .get(module_path)
+            .and_then(|table| table.callable_target(target).and_then(callable_arm_slot));
         if let Some(slot) = slot_opt {
             if let Some(table) = symbol_tables.get(module_path) {
                 table.got.store_slot(slot, ptr);
@@ -1737,6 +1743,7 @@ fn compile_defn_in_module<M, C, L>(
     defn: &Defn,
     body: &cranelisp_types::MonoExpr,
     mode_summary: Option<cranelisp_types::ModeSummary>,
+    param_types: &[Option<cranelisp_types::Type>],
     module: &mut M,
     func_ctx: &mut FunctionBuilderContext,
     func_ids: &HashMap<Symbol, FuncId>,
@@ -1771,6 +1778,7 @@ where
         defn,
         body,
         mode_summary,
+        param_types,
         &mut func,
         func_ctx,
         module,
@@ -1869,6 +1877,9 @@ pub(crate) mod test_support;
 // Relocated crate-root module-assembly + GOT-emission tests (FIXME 0495 step 1).
 #[cfg(test)]
 mod module_assembly_tests;
+
+#[cfg(test)]
+mod macro_clause_ownership_tests;
 
 // GOT slab-stability invariant tests, rehomed from the deleted `got.rs` shim
 // (S111 R4 §1.2).

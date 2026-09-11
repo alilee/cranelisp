@@ -481,7 +481,8 @@ fn s68_primitives_entries_carry_code_none_kind_primitive() {
 // tests confused a constructor argument for a free-standing bare-`TypeName`
 // violation. `src/` is a binary, not a library: it publishes no `public-api.txt`
 // surface against which the boundary rule can be enforced. The corresponding
-// PLAN.md rows (12–14) move to "removed — non-applicable target" disposition.
+// The [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md)
+// records rows 12–14 as "removed — non-applicable target".
 // =============================================================================
 
 // spec: design/arch/decisions/0047-fqtypename-binding-at-resolved-stage-boundaries.md

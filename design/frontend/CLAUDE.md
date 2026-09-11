@@ -10,6 +10,16 @@ This is distinct from:
 - `design/arch/interfaces.md` — the *boundary contract* (what goes in and out)
 - `spec/` — the *language definition* (what behaviour is correct)
 
+## Document collection
+
+| Collection | Purpose | Boundary |
+|---|---|---|
+| `frontend-designs` | Frontend interior designs and retained live design evidence for reading, syntactic validation, AST construction, module syntax and quasiquote desugaring. | The named Markdown products directly under `design/frontend/`, excluding this memory. |
+
+This is an established collection with live reference checking. The staleness
+register in `frontend.md` §9 governs documents with partially superseded content;
+each retains a stated live purpose. No remaining product is historical-only.
+
 ## What to Document
 
 The frontend is **purely syntactic** post-S76 W-Macro: text → `Sexp` → AST. It

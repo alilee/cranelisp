@@ -470,13 +470,14 @@ fn finalize_cluster(
     let mut prepared = None;
     let (maybe_gap, cluster_warnings, unresolved_dispatch, redefinitions) =
         if let Some(shared) = ctx.shared_state {
-            match crate::worker::prepare_cluster_commit(
+            match crate::worker::prepare_cluster_commit_with_demands(
                 ctx.symbol_tables,
                 ctx.module_aliases,
                 ctx.prelude_fallback,
                 module,
                 &final_working,
                 expanded_program,
+                &ctx.reload_demands,
                 shared,
             ) {
                 Ok(None) => (None, Vec::new(), Vec::new(), Vec::new()),

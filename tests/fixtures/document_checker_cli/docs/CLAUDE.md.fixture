@@ -1,0 +1,5 @@
+# Documentation memory
+
+- `docs/guide.md` — Explains the fixture's supported workflow.
+- `docs/one/topic.md` — Supplies one shorthand candidate.
+- `docs/two/topic.md` — Supplies a second shorthand candidate.

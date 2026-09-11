@@ -1,6 +1,7 @@
 ---
 name: spec
 description: Scribe the language specification; the user arbitrates every normative question
+provider: claude
 model: opus
 effort: high
 ---

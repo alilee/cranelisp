@@ -12,6 +12,10 @@ status: open
 
 # Design-doc structure convention: solution first, change history last
 
+## S122 verified disposition (2026-09-10)
+
+Verified design/CLAUDE.md and METHOD, then the adopted maintain-documents skill. Shared guidance already requires governing outcome first, current intent, explanatory structure proportionate to the reader, and history outside active guidance. Those general claims are satisfied. The exact eight-part project design-document ordering below is not present; it must not be silently treated as adopted or discarded. Remaining owner: arch with design/sprint, to reconcile that retained user preference into one project-level design convention (including which sections are applicable), without duplicating shared writing procedure. No mandatory new template is enacted here.
+
 ## Issue
 
 There is no recorded convention for how a `design/` document is *shaped*. METHOD §1.4

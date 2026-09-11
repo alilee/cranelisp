@@ -13,6 +13,37 @@ status: open
 
 # Register row candidate: an operation run at N non-equivalent seams needs an enumerated seam taxonomy, not a per-seam judgement call
 
+
+## S122 verified grade disposition (2026-09-10)
+
+Verified the original `monomorphisation.md` §11.8.10 and
+`program/mono_collect.rs` targets against current source, the root assurance
+standard and `auto-curry.md` §§1.2/3. The historical dangerous-default claim is
+superseded: `AutoCurryDrain` is a required argument to `resolve_auto_curry`.
+Under the existing grades, omission of that argument is **Structural**; choosing
+the correct variant at every production seam is a different property.
+
+The delivered function-polarity unit exercises `Deferrable` and `Final` on the
+same unresolved trait carrier. Its deliberately planted function fault failed
+and its restored control passed (the exact test and evidence are retained in
+`design/typecheck/auto-curry.md` §3.2). That function behavior is **Measured**.
+The one plant does not establish six independent caller-seam proofs. The
+seam-to-polarity mapping and three-window taxonomy remain
+**Asserted-with-a-named-falsifier**: a current invocation omitted from the
+owning tables, or a call's variant inconsistent with its documented settlement
+state, refutes the claim; review compares the current invocation census and
+settlement context against those tables. This is the existing grade vocabulary,
+not a new control category or a mandate for six new tests.
+
+**Exact remaining decision:** the proposed universal rule below would make an
+explicit seam taxonomy and architectural approval for growth mandatory beyond
+these existing per-pass rules. That generalization has not been adopted merely
+by completing the polarity unit. Arch owns its disposition at Phase 7: accept
+an exact justified general rule through the ordinary principle process, or
+explicitly decline it in favor of the existing local rules and assurance
+standard. Keep this proposal open for that decision; no source defect or new
+architectural policy is inferred by this factual reconciliation.
+
 ## Severity
 
 **Important** (register-row candidate; no in-wave blocking effect).

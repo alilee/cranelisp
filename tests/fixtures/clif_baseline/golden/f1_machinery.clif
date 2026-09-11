@@ -1,3 +1,22 @@
+; === CLIF user::(primitives/IO.Pure [primitives/Int] (primitives/IO primitives/Int)) ===
+function %(primitives/IO.Pure [primitives/Int] (primitives/IO primitives/Int))(i64) -> i64 system_v {
+    sig0 = (i64) -> i64 system_v
+    fn0 = u0:0 sig0
+
+block0(v0: i64):
+    jump block1(v0)
+
+block1(v1: i64):
+    v2 = iconst.i64 0
+    v3 = iconst.i64 24
+    v4 = call fn0(v3)  ; v3 = 24
+    v5 = iconst.i64 0
+    store notrap aligned v5, v4+16  ; v5 = 0
+    store notrap aligned v1, v4+24
+    store notrap aligned v2, v4+32  ; v2 = 0
+    return v4
+}
+; === end CLIF user::(primitives/IO.Pure [primitives/Int] (primitives/IO primitives/Int)) ===
 ; === CLIF user::Cell.Given ===
 function %Cell.Given(i64) -> i64 system_v {
     sig0 = (i64) -> i64 system_v
@@ -329,25 +348,6 @@ block4:
     return v22
 }
 ; === end CLIF user::mid-of ===
-; === CLIF user::primitives/IO.Pure$Int ===
-function %primitives/IO.Pure$Int(i64) -> i64 system_v {
-    sig0 = (i64) -> i64 system_v
-    fn0 = u0:0 sig0
-
-block0(v0: i64):
-    jump block1(v0)
-
-block1(v1: i64):
-    v2 = iconst.i64 0
-    v3 = iconst.i64 24
-    v4 = call fn0(v3)  ; v3 = 24
-    v5 = iconst.i64 0
-    store notrap aligned v5, v4+16  ; v5 = 0
-    store notrap aligned v1, v4+24
-    store notrap aligned v2, v4+32  ; v2 = 0
-    return v4
-}
-; === end CLIF user::primitives/IO.Pure$Int ===
 ; === CLIF user::read-work ===
 function %read-work(i64, i64, i64, i64) -> i64 system_v {
     gv0 = symbol colocated userextname0

@@ -3,14 +3,20 @@
 **Status.** ACTIVE — the maintained interior of the primitives surface. The
 canonical cross-surface contract is `design/arch/bounded-contexts.md` §4a; the
 as-designed Rust surface is the crate-root and per-item rustdoc plus
-`crates/cranelisp-primitives/public-api.txt`. The completed S66 migration plan
-remains historical in `design/primitives/implementation-slice-s66.md`.
+`crates/cranelisp-primitives/public-api.txt`. Git retains the completed S66
+migration history; this document states the resulting maintained design.
 
-**Sprint 121's design delta is `design/primitives/s121-c5-primitives-visit.md`**
-— the `vec-len` de-slot, the typed consume funnel's primitives half, and the
-per-filing dispositions. Where this master states a target that has not yet
-landed, it names the bundle that lands it; a clause asserting landed state it
-does not have is a defect in this document.
+**Sprint 122's current typed-consumer delta is
+`design/primitives/s122-typed-consume-consumers.md`.** It distinguishes the raw
+ABI wrapper from the typed private body boundary, records the delivered declaration
+and body adaptation, and records the exact private trusted-base amendment
+approved on 2026-09-10 and now implemented. Sprint 121's retained design
+record is
+`design/primitives/s121-c5-primitives-visit.md`; its `vec-len` de-slot is now in
+source, while its typed-consume portion is superseded by the delivered S122
+primitives carrier. Generated baseline confirmation and integrated host/backend/
+macro evidence remain outside that module delivery. A clause asserting landed
+state it does not have is a defect in this document.
 
 Sprint 117's option analysis and evidence live in
 `design/runtime/s117-primitives-integrity.md`. This master records the settled
@@ -425,7 +431,6 @@ read costs and clones no element.
 - `design/primitives/s121-c5-primitives-visit.md` (the Sprint 121 design delta)
 - `design/arch/symbol-table-lifecycle.md` §4.2/§4.6/§5.5 (the callable
   lifecycle this crate's rows are born settled into)
-- `design/primitives/implementation-slice-s66.md` (historical)
 
 ## 10. Next roles
 

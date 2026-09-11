@@ -3,15 +3,17 @@
 Test infrastructure for the Cranelisp reimplementation.
 
 **Ownership.** `tests/plan/` is owned by `/qa` (strategy, risk, coverage
-process, attribution; `plan/PLAN.md` is the normative spec → tests bridge).
+process and attribution; its [current assurance plan](plan/PLAN.md) supplies
+evidence policy, navigation and active allocation without replacing the specs).
 Everything else here — `tests/*.rs`, `tests/helpers/`, `tests/fixtures/`,
 `tests/scripts/`, `// defect:` notation upkeep, and this file — is owned by
-`/testing`. Per-crate `#[cfg(test)]` unit tests are `/dev`'s and live in
+`/test`. Per-crate `#[cfg(test)]` unit tests are `/dev`'s and live in
 `crates/{crate}/src/`, not here.
 
 ## Two tiers, no middle
 
-Cranelisp tests fall into exactly two tiers:
+Cranelisp tests follow the [current QA tier strategy](plan/PLAN.md#strategy--two-tiers-no-middle)
+and fall into exactly two tiers:
 
 1. **e2e tests** — `tests/*.rs`. Run the `cranelisp` binary directly: REPL
    via stdin, `--run file.cl`, or `--link` then run the produced executable.
@@ -40,7 +42,7 @@ preserves it for provenance only.
 
 | File | Purpose |
 |---|---|
-| `PLAN.md` | Normative spec → tests bridge; every e2e test traces to a row. |
+| `PLAN.md` | Current assurance policy, evidence navigation and active allocation. Fine-grained traceability remains in specs and test sources. |
 | `ledger.md` | RETIRED S108 (tombstone only). Triage = the inline defect-comment/FIXME convention; analysis = `// defect:` notation (see §"Defect-repro notation"). History in git. |
 | `risks.md` | Qualitative risk register. |
 | `coverage-gaps.md` | Per-crate coverage analysis. |
@@ -216,7 +218,8 @@ from accidental use.
 - **E2E tests invoke the binary only.** No Rust-API calls, no internal state
   inspection; the `Cranelisp` builder is the only sanctioned harness.
 - **No test is silently dropped.** Every test traces to a spec section via
-  `// spec:` and to a `plan/PLAN.md` row.
+  `// spec:`; the [current coverage navigation](plan/PLAN.md#current-coverage-navigation)
+  identifies the owning evidence family without duplicating every test name.
 - **Negative tests verify absence, not just presence** (see below).
 
 ## Negative test convention
@@ -249,9 +252,8 @@ must behave UNIFORMLY across a variant family, the rolling audit question is:
 - does the matrix **pressure ONE codepath**, or has each variant grown its own
   resolver/registrar/formatter? A per-variant fix that leaves the siblings
   untested is the smell; the worked exemplar is the prelude ≡ explicit-import
-  convergence (`plan/PLAN.md` §"Prelude ≡ explicit import"), where a
-  variant×polarity matrix forced 12 divergent resolver variants onto ONE
-  codepath.
+  convergence described by the [current parity guidance](plan/PLAN.md#prelude-and-explicit-import-parity),
+  where equivalent-provenance twins guard the shared resolution contract.
 
 Variant families to sweep (rolling; extend as the language grows):
 
@@ -347,7 +349,7 @@ Every `#[test]` carries a `// spec:` comment naming the section it validates:
 // spec: repl/spec.md §1.2 — Int display format
 ```
 
-`/testing` adds the test-side `// spec:`; `/qa` audits the two-sided match and
+`/test` adds the test-side `// spec:`; `/qa` audits the two-sided match and
 adds the spec-side `[Tested …]` annotation. Two structural verifiers live in
 `plan/` (owned by `/qa`; run them before landing annotation changes):
 
@@ -459,7 +461,7 @@ evidenced classes):
 
 - ONLY defect-repro tests carry `// defect:`. Ordinary spec-coverage tests do
   not — the signal is defect density, and tagging everything erases it.
-- The notation is applied by `/testing` at repro time (and retro-tagged
+- The notation is applied by `/test` at repro time (and retro-tagged
   opportunistically); the vocabulary is `/qa`'s.
 - A repro's comment states its defect in the PAST tense once fixed. A GREEN
   repro carrying present-tense "DEFECT (open)" framing lets a future
@@ -593,7 +595,9 @@ CRANELISP_RC_TRACE=1 cargo nextest run --test spec_12_runtime         # with a t
    `PrimitivesOnly` or `TestStandard` when operators/ADTs are needed.
 4. **Name after the behaviour** validated.
 5. **Run through all modes** if it asserts language semantics.
-6. **Add `// spec:`** on every `#[test]` and a `plan/PLAN.md` row.
+6. **Add `// spec:`** on every `#[test]`; ask `/qa` to update active allocation
+   or [current coverage navigation](plan/PLAN.md#current-coverage-navigation)
+   when the new evidence is not already discoverable there.
 
 ## Unit-test-per-fix discipline
 
@@ -621,6 +625,6 @@ invariant. Two operational rules:
   revert of its fix. A bare "unit-pinned" with no enumeration is a hole —
   `/dev` pins the happy path and the negatives fall through.
 
-Provenance: S108 Increment 2 (user finding, `sprints/SPRINT.md` §Findings);
-the enumerated-deferral pattern in `plan/PLAN.md` §"Sprint 108 Increment 2"
-is the worked example.
+Provenance: S108 Increment 2 (user finding in the [closed sprint record](../sprints/archive/sprint-108.md#findings));
+the [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md)
+retains the worked enumerated-deferral pattern for that increment.

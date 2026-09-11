@@ -1,6 +1,7 @@
 ---
 name: qa
 description: Risk, evidence allocation, defect intake and attribution, the traceability band
+provider: claude
 model: fable
 effort: high
 ---

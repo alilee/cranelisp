@@ -3,7 +3,7 @@
 **Status**: CLOSED — 2026-09-09, with explicitly accepted residuals.
 The Phase-5 green checkpoint is historical, not the final whole-suite result.
 The accepted outcome and evidence are in
-[the close record](../s121-acceptance-and-close.md).
+[the closure outcome](#outcome-phase-7).
 
 **Goal**: Restore a clean, attributable release baseline and drain the legacy
 filing backlog by verifying every live FIXME and action against current source
@@ -31,10 +31,10 @@ out-of-rotation assessment; confirmed at Phase 4 per `sprints/METHOD.md` §2.7.
 | Checked-body ledger and private-state cleanup | Private body-occurrence ledger plus the five-item cleanup basket in `design/typecheck/checked-body-publication.md` §11; no public API, schema, ABI or language change | 2026-09-03, “approved” | approved; realizing inside the retained typecheck stream |
 | Packet C public API | Exact additive `instantiate_demands` signature and crate-root re-export proposed in `design/arch/bounded-contexts.md` §2; no dependency, schema or platform-ABI change; forecast one typecheck baseline line | 2026-09-02, “approved” | implementation authorized; generated baseline confirmation remains pending |
 | Packet-A accessor API derivation | Architecture may derive the exact types-owned atomic same-type accessor replacement/candidate-reconciliation proposal | 2026-09-02, “approved” | complete; exact two-method proposal returned |
-| Packet-A accessor public API | Exact `replace_unpublished_synthesized_template` and `replace_unpublished_synthesized_concrete` methods recorded in `design/arch/symbol-table-lifecycle.md` | 2026-09-02, “approved” | implementation authorized; generated two-line types baseline confirmation remains pending |
+| Packet-A accessor public API | Exact `replace_unpublished_synthesized_template` and `replace_unpublished_synthesized_concrete` methods recorded in [S121 lifecycle record](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/arch/symbol-table-lifecycle.md) | 2026-09-02, “approved” | implementation authorized; generated two-line types baseline confirmation remains pending |
 | Packet-A accessor generated baseline | Exact incremental two-line `cranelisp-types/public-api.txt` result after implementation | 2026-09-03, “yes” | confirmed; Packet-A public gate complete |
-| Root set-doc metadata API | Exact additive `SymbolTable::set_plain_callable_docstring` proposal in `design/arch/s121-lifecycle-public-api-review.md`; implementation and generated baseline are separate gates | implementation approved 2026-09-03, “yes”; generated line confirmed 2026-09-03, “approved” | public API gate complete; types 255/255, review clean and QA-released to root consumer |
-| Root compiled-publication API | Exact additive `CompiledPublicationRejection` and `SymbolTable::publish_compiled_staged` transaction in `design/arch/s121-lifecycle-public-api-review.md` §11; existing owner-free `publish_staged` remains unchanged | design approved 2026-09-03, “ok”; exact generated twelve-line baseline confirmed 2026-09-03, “yes” | public API gate complete; types 262/262, independent review clean and QA-released to root publication consumer |
+| Root set-doc metadata API | Exact additive `SymbolTable::set_plain_callable_docstring` proposal in [S121 lifecycle-public-api-review record](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/arch/s121-lifecycle-public-api-review.md); implementation and generated baseline are separate gates | implementation approved 2026-09-03, “yes”; generated line confirmed 2026-09-03, “approved” | public API gate complete; types 255/255, review clean and QA-released to root consumer |
+| Root compiled-publication API | Exact additive `CompiledPublicationRejection` and `SymbolTable::publish_compiled_staged` transaction in [S121 lifecycle-public-api-review record](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/arch/s121-lifecycle-public-api-review.md) §11; existing owner-free `publish_staged` remains unchanged | design approved 2026-09-03, “ok”; exact generated twelve-line baseline confirmed 2026-09-03, “yes” | public API gate complete; types 262/262, independent review clean and QA-released to root publication consumer |
 | Macro compilation checkpoint | A `defmacro` commits its complete expansion-time closure after that macro typechecks and codegens; a later form failure does not roll it back; nonmacro definitions retain one all-or-nothing HM cluster. Delete the unpublished candidate-world mechanism and resume after dependency gaps from source position, never compiled candidate state. | 2026-09-03, “ok” | normative, architecture and int-design carriers **converged** (verified 2026-09-03 at handover); source held for QA readiness |
 | Explicit callable retirement semantics | `StagedPublicationDecision::ChangeAbi` may explicitly retire a live slotted callable with no staged replacement; omission alone never removes a binding. The old slot is tombstoned and frozen, its owner is displaced, and mixed replacements/removals validate before mutation. Macro shrink selects only exact private `MacroClause` rows belonging to its staged parent. | 2026-09-03, “yes” | public semantic contract approved; no Rust signature, generated-baseline, schema, backend, platform or ABI delta expected |
 | Macro dependency publication clarification | Correct §9.12.1 so dependency modules publish independently before the defining module's atomic parent/active-clause/generated-realization checkpoint and survive parent failure | 2026-09-03, “yes” | specification corrected; QA's sole readiness HOLD closed |
@@ -64,10 +64,10 @@ out-of-rotation assessment; confirmed at Phase 4 per `sprints/METHOD.md` §2.7.
 | Result-handoff disposal carrier | Put disposal authority on the private edge that receives a produced result: Bind carries `drop<a>` for its inner value; Par carries one disposer per branch; Select carries one common disposer; Launch carries the detached result disposer. Runtime-produced values remain armed until explicit continuation/buffer/supervisor/top-level transfer and dispose on cancellation or fault. | 2026-09-05, “approved” | complete; independent review PASS; no platform-authored node, public Rust API, language specification, `ABI_VERSION = 10`, or `cranelisp_run_io(i64) -> i64` change; [ACT-0956](../actions/ACT-0956-blocking-select-ready-loser-disposal-evidence.md) retains the one advisory extra-evidence case |
 | Capacity-1 first-error behaviour | A same-token serial group stops at its first runtime error; it does not start later parked effects. Already-started concurrent work still follows structured cancellation and disposal. | 2026-09-05, “I agree with your recommendation” | implementation and backend design align to `spec/12-runtime.md` §12.4.3 and `spec/10-io.md` §10.12.4; no normative specification or public API change |
 | Phase 5 → Phase 6a | Accepted green delivery; assess docs, examples, stdlib, exemplar and REPL, plus the scheduled read-only `src/` audit; return a grouped action plan | 2026-09-08, “approved” | approved |
-| Phase 6a → Phase 6b | Five user-facing streams in `s121-phase6b-proposal.md`; retain current `def` application behavior and defer 0800 face 3; exact spec edits remain separately reviewed | 2026-09-09, “yes” | approved |
+| Phase 6a → Phase 6b | Five user-facing streams recorded below; retain current `def` application behavior and defer 0800 face 3; exact spec edits remain separately reviewed | 2026-09-09, “yes” | approved |
 | Phase 6b → Phase 7 | Delivered artifacts and exact close operations | — | pending |
 
-## Active checkpoint — Phase-6b completion
+## Phase-6b completion record
 
 User approved the five-stream package and explicit 0800 face-3 deferral on
 2026-09-09. Current `def` behavior and diagnostics remain unchanged; the
@@ -76,8 +76,11 @@ not authorized. The user approved the exact three specification-record
 corrections on 2026-09-09; spec applied only those hunks, verified against
 pre-edit snapshots in `/tmp/cranelisp-s121-phase6b-spec-before-YcI1mK/`.
 Evidence/reports: `/tmp/cranelisp-s121-phase6b-M0qqm2/`.
-The exact spec approval packet is retained durably in
-[s121-spec-record-review.md](../s121-spec-record-review.md). The Phase-6a temporary
+The approved record-only edits corrected the delivered `/search` status and
+exact-in-scope inventory row, and removed the disproven FIXME-0832 failure
+paragraph. The canonical text is in `repl/spec/17a-agent-language-awareness.md`,
+`repl/spec/03-slash-commands.md` and `repl/spec/18-redefinition.md`; the original
+before/after packet is recoverable from Git history. The Phase-6a temporary
 reports are unavailable after the session boundary; approved scope and role
 outcomes remain in this record and the completion package. Prior test results
 are accepted historical evidence, not executions repeated in this phase.
@@ -120,8 +123,10 @@ User approved fixing the reproduced `core.io/timeout` wrong rejection on
 2026-09-09 (“ok let's fix the defect”); this does not approve the separate
 spec-record edits. The private typecheck mono-recheck correction now passes
 the permanent public regression through REPL, run and link without changing
-the real stdlib, specification, public API or ABI. Attribution and pre-fix
-evidence are retained in [s121-timeout-intake.md](../s121-timeout-intake.md).
+the real stdlib, specification, public API or ABI. Attribution and pre-fix evidence are recorded below with the public
+regression, counterfactual and final-source results. The lambda counterfactual
+distinguishes a constructor used as a value; the timeout observation does not
+independently prove loser cancellation.
 
 Docs updated eight `user/` files. Fresh existing-binary observations cover
 feature-off agent flags, `/syntax`, same-type redefinition (2→11), blocked
@@ -187,7 +192,7 @@ associated but distinct failed-turn coverage repair. Investigation is stopped;
 these are accepted residuals, not fixes. QA judges the complete original run,
 targeted isolation and corrected citation check sufficient to present
 close, without another whole-suite run. The user subsequently approved Phase 7,
-commit and push under [s121-acceptance-and-close.md](../s121-acceptance-and-close.md).
+commit and push under [the recorded close approval](#outcome-phase-7).
 Original acceptance raw log:
 `/tmp/cranelisp-s121-phase6b-acceptance-iFoDVf/nextest.log`. The historical
 all-green Phase-5 result is not reused as the current suite result.
@@ -744,7 +749,7 @@ Opus high session `98a3f103-7cc8-443c-9f49-afa840584585`); report present and
 reservation released. QA (`qa-post-review-adequacy.md`, authorized Opus high
 session `1bb7abef-2c53-4bf4-b5d1-e7448d4db0cd`) reached the provider session limit
 before producing its verdict. Its partial owned edits are preserved: the stale
-provenance claim in `tests/plan/PLAN.md`, the allocated refusal wording in the
+provenance claim in [historical QA plan](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md), the allocated refusal wording in the
 S121 test plan, and the ratified `enumeration-miss` vocabulary extension in
 `tests/CLAUDE.md`. That interrupted attempt produced no final QA report.
 
@@ -1387,7 +1392,7 @@ test-to-spec citations passed 93/93. No compiler or public API changed with
 that specification edit.
 
 On “ok keep moving”, `/root/arch_result_context` prepared the standalone
-[result-context architecture/API proposal](../../design/arch/s121-result-context-specialization.md).
+[result-context architecture/API proposal](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/arch/s121-result-context-specialization.md).
 It proposes substitution-based `type_args`, explicit `from_type_args`
 constructors on the two existing carriers, and cache schema 25→26, with no
 platform ABI or new consumer edge. Generic-variable positions follow structural
@@ -1469,7 +1474,7 @@ module and cache repros plus existing live-refusal/slot controls. The approved
 realization and current reservation are recorded below.
 User approved preparing the exact API proposal (“yes”);
 `/root/arch_staged_layout_api` completed the docs-only
-[exact API packet](../../design/arch/s121-staged-value-layout-api.md): one additive
+[exact API packet](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/arch/s121-staged-value-layout-api.md): one additive
 `value_layout_with_lookup` function and a new typecheck consumer edge, with
 existing table APIs retained. Two documents / 43 citations and whitespace pass;
 no source, baseline, schema or ABI edits. **User approved the exact additive
@@ -1697,7 +1702,7 @@ creates one language binding and will not prescribe internal clause storage.
    `retire_abi_changing` would create a dangling candidate plus an invalid
    staging tombstone. Architecture therefore proposes two types-owned atomic
    transitions—template and concrete—whose exact signatures are recorded in
-   `design/arch/symbol-table-lifecycle.md`. They preserve the candidate vector,
+   [S121 lifecycle record](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/arch/symbol-table-lifecycle.md). They preserve the candidate vector,
    refuse non-unpublished owners without mutation and leave published-retirement
    policy to A1. The exact methods were user-approved 2026-09-02; their
    generated two-line types baseline remains a separate confirmation gate.
@@ -1776,7 +1781,7 @@ work, return the exact §18 semantic delta to the user. Specification must settl
 the caller boundary and affected declaration classes, and architecture must
 settle any hidden ownership-mode ABI effect without making a same-language-type
 replacement unpredictably illegal. The unapproved FIFO/nested-recheck text in
-`design/arch/s121-lifecycle-public-api-review.md` is not authoritative and must
+[S121 lifecycle-public-api-review record](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/arch/s121-lifecycle-public-api-review.md) is not authoritative and must
 be reconciled by `arch`. In the same structural wave, QA must teach its link and
 coverage checkers to resolve `repl/spec/` and preserve old `repl/spec.md §N`
 citations through the compatibility entry point; this avoids a 2,285-occurrence
@@ -2099,7 +2104,7 @@ complete and no architecture or scope decision remains implicit.
 
 | Decision | Architecture evidence and consequence | Decision state and disposition |
 |---|---|---|
-| C1 lifecycle target | `design/arch/symbol-table-lifecycle.md` §9 finds that the dormant `CallableSlot`/`CtorState` flip is a strict waypoint to a unified lifecycle machine. Landing both means two exhaustive washes over roughly 200 sites; the unified target is estimated at 1.5–2× one scoped wash but visits the sites once. | **Partially approved, clarified 2026-09-02** — the `Binding -> Decl -> Callable -> Life` representation and table-owned transition enforcement are accepted. The exact mutation facade and every public API line remain held for review. |
+| C1 lifecycle target | [S121 lifecycle record](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/arch/symbol-table-lifecycle.md) §9 finds that the dormant `CallableSlot`/`CtorState` flip is a strict waypoint to a unified lifecycle machine. Landing both means two exhaustive washes over roughly 200 sites; the unified target is estimated at 1.5–2× one scoped wash but visits the sites once. | **Partially approved, clarified 2026-09-02** — the `Binding -> Decl -> Callable -> Life` representation and table-owned transition enforcement are accepted. The exact mutation facade and every public API line remain held for review. |
 | 0912 undeclared `deftype` fields | The earlier inferred-parameter proposal was rejected on user review. Implicit field typing leaves declaration intent under-specified and creates downstream free-variable states. | **Superseded by user 2026-09-02** — a bare head is monomorphic, a parenthesized head states the complete parameter list, and every field has a written type. Missing types and undeclared variables are located frontend errors. |
 | 0052 `/learn` | Its scheduling trigger is met, but the live repository has no complete feature contract. The retired Sprint-0 plan is provenance, not authority; implementation would have to invent routing, triggers, state and persistence. | **Phase-2 inclusion superseded by user 2026-09-01** — defer the feature, remove the provisional spec, and require ACT-0951's complete user-ruled specification before a future implementation sprint. |
 | 0050 display protocol | The trigger remains unmet: no display protocol or type-directed pretty-printer exists. Pulling it in would create a new architecture feature solely to unblock its prose. | **Approved 2026-09-01** — defer with the verified trigger and do not couple it to 0800/0863. |
@@ -2298,11 +2303,11 @@ No existing worktree delta is grandfathered. The already-generated
 held for user review; neither wave can pass under the former arch-only rule.
 W3 is the first prospective application: its organization is approved, but its
 API is not, and no W3 product-source work begins until the exact proposal is
-presented and approved. `s121-public-api-review.md` is the gate record: Packet A
+presented and approved. [s121 public api review (Git history)](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/sprints/s121-public-api-review.md) is the gate record: Packet A
 separates W1's lifecycle boundary from the W3 candidate projection and W4
 typecheck entry point currently mixed into the generated worktree baselines.
 The user approved the staged/live publication architecture in
-`design/arch/s121-lifecycle-public-api-review.md` on 2026-09-02. Its exact
+[S121 lifecycle-public-api-review record](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/arch/s121-lifecycle-public-api-review.md) on 2026-09-02. Its exact
 method, carrier and baseline review remains held while `arch` re-derives Packet
 A from the approved capability families and production-consumer census.
 
@@ -2503,7 +2508,7 @@ publication operations remain independently reviewable because they consume a
 complete `SymbolTable` and do not expose the candidate representation.
 
 **PACKET B READY — 2026-09-02.** The exact W3 proposal is now recorded in
-`s121-public-api-review.md`. It keeps `SymbolEntry` private, generalizes the
+[s121 public api review (Git history)](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/sprints/s121-public-api-review.md). It keeps `SymbolEntry` private, generalizes the
 read-only projection to `NameCandidate`, removes `BindingBody::{Alias,
 Ambiguous}` and the parallel trait-method facade, and reduces `Resolved` to
 one canonical terminal identity. It also removes the old
@@ -2638,7 +2643,7 @@ session identifiers are unrecoverable at handover and are not invented here.
 The user approved closure, commit and push on 2026-09-09. All five Phase-6b
 streams are delivered; final acceptance retains the enabled sequence-IO and
 generic-redefinition REDs and the failed-turn coverage repair. This is not an
-all-green release. See [the close record](../s121-acceptance-and-close.md) for
+all-green release. See [the closure outcome](#outcome-phase-7) for
 exact full-suite and subsequent targeted results, and `sprints/ROADMAP.md`
 for the top next-sprint handoff.
 
@@ -2647,3 +2652,17 @@ the revision exercised by this sprint. Contribution is reconciled with remote
 main in an isolated checkout; upstream changes are not adopted by Cranelisp
 until the next sprint's opening. The user explicitly confirmed this separation.
 No further compiler, specification or public-API changes belong to closure.
+
+The approved close operations were to record the accepted residuals, update the
+roadmap, archive the live plan, check affected references, and commit/push the
+delivered compiler and reviewed five-file shared-package contribution. No
+baseline regeneration, compiler repair or consumer adoption of upstream changes
+was included. The user separately approved the existing `debug = 1` development
+setting; metadata validation passed with no fresh-clone claim.
+
+The shared contribution was published at `98436c9`, a fast-forward retaining
+`1172631` as an ancestor; remote readback matched. Dispatcher checks passed
+33/33 (Claude), 66/66 (Codex), and statistics checks 10/10. Cranelisp retained
+its tested `1172631` gitlink through closure. The post-archive citation check
+reported 486 documents, 8,458 citations and zero findings. No permanent RED
+was disabled; these are closure observations, not a new whole-suite result.

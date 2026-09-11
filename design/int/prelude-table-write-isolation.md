@@ -3,17 +3,17 @@
 > Subordinate topic doc, cited from `design/int/int.md`. Owned by `/design`(int).
 > Authored S114 Phase 3 to satisfy the FIXME 0604 routing ("/design(int) records
 > the isolation contract") and `/qa`'s S114 plan of record
-> (`design/arch/fixmes/0604-*.md` §"/qa S114 Phase-3 plan of record" +
-> `tests/plan/s114-test-plan.md` §4.2). SPRINT.md §Scope-C — **SHIPS this sprint**
+> (`tests/plan/s114-test-plan.md` §4.2). SPRINT.md §Scope-C — **SHIPS this sprint**
 > (user approved Phase 1). Companion to `index-worker-isolation.md` (the
 > *background* index-feed half, S110); this doc is the *foreground*
-> concurrent-compile half the 0604 re-scope (FIXME §S110) moved attribution to.
+> concurrent-compile half established by the S110 re-scope.
 >
-> **Status: S121 correction APPROVED; implementation and QA pending.** The
-> lifecycle migration invalidated the landed binding-shaped proof. FIXME
-> retirement is therefore conditional again on the candidate routes and §4
-> evidence; the historical S114/S115 census below is provenance, not current
-> closure evidence.
+> **Status: delivered and closed.**
+> The current candidate contract, complete route census, three session-init
+> dispositions and corrected bootstrap facts are recorded in §§2.1–2.4. The
+> retired 0604/0740/0793/0818 group now has its current closure and historical
+> attribution limits in `design/arch/bounded-contexts.md` §6. This topic doc
+> remains the detailed Binary/int mechanism carrier.
 >
 > **S121 correction — current design.** The lifecycle migration separates a
 > terminal binding from its local name candidates. The binding-shaped
@@ -47,10 +47,9 @@
 > /arch Phase-2 §4). S115 corrects the predicate to **declared-export closure**,
 > dispositions the **one missed census row** (`commit_staging_to_live`), and
 > lands the /qa synthesized-trigger unit test. The ship gate stays STRUCTURAL,
-> not a stable-RED flip (the sanctioned no-stable-RED exception stands — 0604
-> §"Why a FIXME despite the no-FIXME rule"); writer identification is
-> DESIRED-not-required for 0604 to retire (the re-based plan, 0604 §"/qa S114
-> Phase-6b re-base").
+> not a stable-RED flip (the historical no-stable-RED exception stands);
+> writer identification was desired rather than required for structural
+> closure.
 
 ## 0. The defect, in one line
 
@@ -130,14 +129,14 @@ explicitly so a future reader does not have to re-derive it:
 |---|---|---|---|
 | `bootstrap.rs::mount_synthetic_modules` (`src/bootstrap.rs:240`) | `root`, `primitives`, `macros`, `Option`, `IO`, `Trace` | **yes** — own definitions, plus ONE intra-module public `Import` | **named legal-skip, ASSERTED**. Own-def and intra-module-self-alias arms only; the skip carries a detection proof (below) |
 | `session_v4/lifecycle.rs` `PRIMITIVES_TABLE` mount (`:268-274`) | `primitives` | **yes** — a whole-table clone of `cranelisp_primitives::PRIMITIVES_TABLE` | **named legal-skip**. A whole-**table** mount, not an entry insert; every entry is `primitives`' own definition (own-def arm), installed at init before `mount_synthetic_modules` (`:286`) and before any worker spawns |
-| `platform.rs::register_platform_in_tc` (`src/platform.rs:316`) | `platform.<name>` | **yes** — own-def `PlatformEffect` | **ROUTED**. `check_terminal_closure` at `:427-433` immediately precedes `table.insert` at `:434`; `declared_exports = None` because a synthetic platform module records no `(export …)` surface. Guard-safe by construction: the own-def arm does no map read |
+| `platform.rs::register_platform_in_tc` | `platform.<name>` | **yes** — own-def `PlatformEffect` | **named legal-skip**. `SymbolTable::install_platform` installs the declaration in its canonical module; it creates no public cross-module exposure for the candidate gate to adjudicate |
 
 **Two factual corrections, recorded so they stop propagating.** FIXME 0740
 characterised `bootstrap.rs`'s four `Int/Bool/Float/String → primitives/<name>`
 edges into the live `macros` table as cross-module PUBLIC re-exports — "the exact
 phantom shape". **That is false.** Those edges carry `Visibility::Private`
-(`src/bootstrap.rs:480`), so `check_terminal_closure`'s `!entry.is_public()`
-clause returns `Ok` before any arm is consulted: they are not public writes at
+(`src/bootstrap.rs`), so `check_exposed_candidate_closure`'s private-candidate
+clause returns `Ok` before any other arm is consulted: they are not public writes at
 all. Bootstrap's one genuinely public `Import` is `Bind → primitives/IO.Bind`
 (`src/bootstrap.rs:849-858`), whose source module is `primitives` — the
 destination — so it takes the **intra-module self-alias** arm with no `D` read.
@@ -156,8 +155,8 @@ seam can insert a public table entry. The S114 census **missed
 the commit gate) is a Wave-3a-β scaffold whose per-entry loop is normally empty —
 the live commit path is `worker::process_cluster_once` → `commit_staging_to_live`
 (`worker.rs:307`), which drains staging under a `get_mut` guard and never routed
-through the gate. That is the seam the phantom evidence names (0604 refers_to;
-0698 finding 2). §2.4 dispositions it. The prime suspects §3 tell the census where
+through the gate. That is the seam the historical phantom evidence named.
+Section 2.4 dispositions it. The prime suspects §3 tell the census where
 to look hardest.
 
 ### 2.2 The ONE chokepoint — candidate export-closure gate
@@ -185,7 +184,7 @@ prelude-only sibling `prelude_write_is_closure_valid` (`imports.rs:245`) are
 **source** module provides the name (`src.get(source.symbol).is_some()`). Their
 rationale comments assert *"`bit-and` is homed in num.bits, **absent from
 primitives**"* — this clause is **FALSE**. `bit-and` **IS a bundled public
-primitive** (`crates/cranelisp-primitives/src/lib.rs:412`; homed in `num.bits`
+primitive** (`crates/cranelisp-primitives/src/declarations.rs:314`; homed in `num.bits`
 only as a wrapper `(defn bit-and … (primitives/bit-and …))`,
 `stdlib/num/bits.cl:58`). Consequently the phantom
 `bit-and → primitives/bit-and` names a **genuine provider** — provider-existence
@@ -203,7 +202,7 @@ them. The correct question is not *"does the source provide the name?"* but
 *"does the **destination** module `M` **declare** this public name in its own
 export surface?"*
 
-> **`check_terminal_closure(M, local, source, visibility, D(M))`** — a name
+> **`check_exposed_candidate_closure(M, local, source, visibility, D(M))`** — a name
 > candidate is closure-valid iff it is private, its canonical source is in
 > `M`, its public local name belongs to `D(M)`, or `D(M)` is not yet known.
 > Otherwise the public cross-module exposure is rejected and diagnosed.
@@ -260,7 +259,7 @@ phantom write is *rejected at the seam*, so no phantom can ever reach a live tab
   reports ambiguity only when more than one viable candidate remains; do not
   restore the former import-time poison to pre-empt that decision.
 - The `concurrency_capacity` threshold defect stays a **SEPARATE** defect
-  (effect-concurrency track) — not folded here (0604 §Guard/verify notes).
+  (effect-concurrency track) — not folded into this candidate-isolation design.
 
 ### 2.4 Publication routes candidates, not bindings (S121 correction)
 
@@ -278,7 +277,7 @@ validating any candidate rejects the candidate batch before table or GOT
 publication.
 
 **Greppable structural guard (Principle 18):** a public cross-module
-name-candidate exposure that bypasses `check_terminal_closure`, or any restored
+name-candidate exposure that bypasses `check_exposed_candidate_closure`, or any restored
 binding-shaped closure predicate, is a `/review` finding.
 
 ## 3. Prime suspects (where the census looks first)
@@ -296,8 +295,8 @@ binding-shaped closure predicate, is a `/review` finding.
 
 ## 4. Acceptance (the ship gate — no flip, structural)
 
-Per `/qa` (`tests/plan/s115-test-plan.md` §3.1 + 0604 §"/qa S114 Phase-6b
-re-base"):
+The delivered structural evidence retained by
+`design/arch/bounded-contexts.md` §6 and `tests/plan/s115-test-plan.md` §3.1 is:
 
 1. **One candidate-shaped gate:** a public external candidate outside `D(M)`
    rejects; inside `D(M)` admits; private, same-module/self-alias, and
@@ -320,8 +319,8 @@ re-base"):
    deterministic; and the `_collides_…_neg` poison twin — the poison stays
    spec-correct).
 7. **This doc records the current contract:** §2.2 defines the sole predicate
-   and §2.4 owns the candidate routes. FIXMEs 0604, 0740 and 0793 retire only
-   with this evidence.
+   and §2.4 owns the candidate routes. The retired group retains the historical
+   attribution limits stated in `design/arch/bounded-contexts.md` §6.
 
 ## 5. Principles cited
 
@@ -340,23 +339,24 @@ re-base"):
 
 ## 6. Cross-references
 
-- `design/arch/fixmes/0604-*.md` — the defect, the re-scope to foreground, and
-  `/qa`'s plan of record.
-- `src/imports.rs` — the sole candidate-shaped `check_terminal_closure` and the
+- `design/arch/bounded-contexts.md` §6 — current closure carrier for the retired
+  0604/0740/0793/0818 group and its historical attribution limits.
+- `src/imports.rs` — the sole candidate-shaped
+  `check_exposed_candidate_closure` and the
   `install_exports` / `install_imports` routes; `insert_detecting_ambiguity`
   remains the §8.6.5 poison consumer.
 - `src/worker.rs` — prepared and retained staging publication enumerate the
   complete candidate batch before mutation.
-- `src/bootstrap.rs::mount_synthetic_modules` — fallible candidate exposure and
-  the non-vacuous `all_name_candidates` proof.
-- `src/session_v4/lifecycle.rs:268-274` — the `PRIMITIVES_TABLE` whole-table
+- `src/bootstrap.rs::mount_synthetic_modules` — candidate seeding and the
+  non-vacuous `all_name_candidates` proof for its named legal skip.
+- `src/session_v4/lifecycle.rs::seed_session_symbol_tables` — the `PRIMITIVES_TABLE` whole-table
   mount, the third session-init census row.
-- `src/platform.rs::register_platform_in_tc` (`:316`; gate `:427-433`, insert
-  `:434`) — the routed DLL-load seam.
+- `src/platform.rs::register_platform_in_tc` — the canonical own-definition
+  DLL-load seam and its named legal skip.
 - `design/int/s121-c6-visit.md` §10 — the C6 visit that closes this census.
 - `src/cluster.rs` (`insert_cluster`:337) — the Wave-3a-β scaffold gate call
   (normally-empty entries loop).
-- `crates/cranelisp-primitives/src/lib.rs:412` — `bit-and` IS a bundled
+- `crates/cranelisp-primitives/src/declarations.rs:314` — `bit-and` IS a bundled
   primitive (the falsified-premise evidence).
 - `tests/plan/s115-test-plan.md` §3.1 — the synthesized-trigger binding finding.
 - `design/int/index-worker-isolation.md` — the *background* index-feed isolation

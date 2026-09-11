@@ -344,7 +344,10 @@ fn callees_records_late_fn_value_mono_instance() {
     );
     let edges = callees_of(&tc, "test", "use1");
     assert!(
-        edges.contains(&fq_sym("test", "test/iden$Int")),
+        edges.contains(&fq_sym(
+            "test",
+            "(test/iden [primitives/Int] primitives/Int)",
+        )),
         "the final callee set must include the fn-value's minted instance; got {edges:?}",
     );
 }

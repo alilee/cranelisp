@@ -12,6 +12,10 @@ status: open
 
 # Principle 11 amendment: the acid test is early-branch duplication, not divergence in meaning
 
+## S122 verified disposition (2026-09-10)
+
+Verified Principle 11 itself: it still states one pipeline and parameterized genuine differences, but does not contain the proposed early-branch/shared-work audit test. Remaining owner: arch at Phase 7 principle review, using the existing user ruling; no mid-sprint principle amendment or new policy is enacted. Current principles/CLAUDE.md requires body plus index when the statement changes, not the obsolete four import blocks mentioned below.
+
 ## Issue
 
 Principle 11 states the rule ("one compilation pipeline… the difference is a parameter

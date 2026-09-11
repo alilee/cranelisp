@@ -11,6 +11,10 @@ status: open
 
 # Principle-authoring convention: the wording states INTENT, never verified against the implementation
 
+## S122 verified disposition (2026-09-10)
+
+Verified the original principles/CLAUDE.md target and the adopted maintain-documents skill. The skill now requires current intent and separates ordinary history, but neither carrier states this filing's specific intent-before-implementation principle-derivation rule or strengthening question. Remaining owner: arch at Phase 7 principle/guidance review; decide and propagate the existing user-ruling wording in one appropriate carrier. No principle or shared-package change is enacted by this disposition. The retired four-import-block mechanics in the original filing are superseded by the current single index.
+
 ## Issue
 
 `design/arch/principles/CLAUDE.md` is complete on the *mechanics* of a Principle —

@@ -1,6 +1,6 @@
 ---
 number: 0929
-target: /design
+target: /design (backend)
 filed_by: /qa
 filed_at: 2026-07-27
 sprint_filed: 119
@@ -16,6 +16,14 @@ status: open
 ---
 
 # R18's instance census is incomplete: two fabrication arms live outside both design censuses, and one carries an unproven soundness claim in its rustdoc
+
+> **S122 typecheck reconciliation (2026-09-10).** The typecheck ownership arm is
+> satisfied: `ownership/fixpoint.rs` records residual parameter frames, excludes them
+> from the walkable ownership universe and publishes no summary for them;
+> `ownership::fixpoint::tests::a_residual_parameter_frame_publishes_nothing_and_stays_in_the_keyed_set`
+> pins the refusal and keyed observation. The filing remains open only for its non-typecheck
+> census residue under the backend target established by the ruling below. This update does
+> not infer a disposition for backend, types or int sites.
 
 > **`/arch` disposition (2026-07-27, S119 step-back ruling) — asks 1–3
 > DISCHARGED; ask 4 RULED; residue re-targeted to `/design`(backend).**

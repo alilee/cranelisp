@@ -12,6 +12,10 @@ status: open
 
 # Proposal discipline: data ownership, derive-before-add, minimum mechanism
 
+## S122 verified disposition (2026-09-10)
+
+Verified Principle 21 and adopted arch/quality-standards skills. Actors/functions-first remains in Principle 21; current arch guidance covers callers, single data ownership, narrow consumer facades, and simpler existing boundaries before new mechanisms. These satisfy the general boundary/minimum-mechanism claims. The specific receiver-level derive-before-add/accessor checklist below is not fully recorded. Remaining owner: arch, to reconcile the retained user examples into an appropriate procedural carrier; a principle amendment, if selected, belongs at Phase 7. The examples do not authorize a new blanket prohibition on methods accepting other data. No source sweep, new API rule or shared-package amendment is enacted here.
+
 ## Issue
 
 Principle 21 requires an actor/function model before a mechanism is synthesised. It says

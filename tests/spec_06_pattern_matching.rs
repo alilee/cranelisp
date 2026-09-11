@@ -3,7 +3,7 @@
 // Covers `spec/06-pattern-matching.md`. Carries forward language-behaviour
 // assertions from legacy integration-tier `tests/ring0.rs`, `tests/ring1.rs`,
 // `tests/ring2.rs`, `tests/sketch_port.rs`, and `tests/e2e.rs`. REPL canonical
-// per `tests/plan/PLAN.md §"Mode canonicalisation"`.
+// per the [current mode-canonicalisation guidance](plan/PLAN.md#mode-canonicalisation--repl-is-the-canonical-surface-for-language-conformance).
 //
 // What this file covers:
 //   - Match expression syntax (§6.1)
@@ -550,7 +550,8 @@ fn match_qualified_constructor_pattern_resolves() {
 // =============================================================================
 // Sprint 109 — dotted-`Type.Ctor` pattern position (DC-4/DC-5) + the
 // exhaustiveness `.`-strip blast-radius guard (BR-1, arch-pre-flagged) +
-// qualified-ctor pattern auto-load (M2-P). Plan: tests/plan/PLAN.md §S109 §D/§H.
+// qualified-ctor pattern auto-load (M2-P). See the [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md),
+// S109 D/H.
 // Fixtures are stdlib-free (own modules; --run mode for module resolution).
 // =============================================================================
 
@@ -728,7 +729,7 @@ fn fq_ctor_pattern_position_autoloads() {
 // the scrutinee-directed resolution in `pattern_ctors`, but the backend
 // re-resolves the bare name context-free via a DashMap in arbitrary order → wrong
 // module's same-named ctor, wrong tag/arity, runtime `match failed`, run-to-run
-// nondeterminism). Plan: tests/plan/PLAN.md §S109 §D.3.
+// nondeterminism). See the [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md), S109 D.3.
 // =============================================================================
 
 // spec: spec/06-pattern-matching.md §6.2.1 scrutinee-directed + arch §10.9 —

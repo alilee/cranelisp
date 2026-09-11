@@ -2,9 +2,18 @@
 
 Scoped subordinate design doc (S111, FIXME 0613; `/arch` Phase-2 §3 correction).
 Master: `int.md`. Code home: `src/expander.rs` (`expand_scoped`). Owner surface:
-int (`/dev` implements in Phase 5). This doc is the design intent for the int leg
+int (shared-classifier migration delivered in S122). This doc is the design
+intent for the int leg
 of the quasiquote-legal-everywhere wave; the frontend leg (folding
 `expand_quasiquotes` into `build_forms`) is `design/frontend/`.
+
+**S122 current amendment.** `cranelisp_types::{quote_head, QuoteHead}` is now
+the canonical classifier. Both the `expand_scoped` shield and
+`src/process_form/macro_resolution.rs` consume it unchanged;
+`src/expander.rs` has no private classifier. The rules below do not change.
+Existing alias guards must cover both consumers, but no additional semantic
+quote matrix is required solely for the ownership move. See
+`design/int/s122-closure.md` §3.
 
 ## 1. Why the shield exists — the hazard the fold unmasks
 
@@ -12,13 +21,12 @@ Sprint 111 rules 0613 **(A) legal everywhere**: quote/quasiquote desugar whereve
 an expression is legal. The delivery folds `expand_quasiquotes` into frontend
 `build_forms`, so every form is desugared before `build_form` dispatch.
 
-int's Pass-1 macro expander runs **before** `build_forms` — i.e. before the fold's
-desugar point. `expand_scoped` (`src/expander.rs:735`) recurses into **all**
-sub-lists of a form, recognising and dispatching macro-call-shaped heads, with the
-only verbatim shields today being the binding forms (`let`/`fn`/`lambda`/`defn`/
-`defn-`/`match`, §8.6.3) and the `defmacro` name position (S102 CS-D1). There is
-**zero quote/quasiquote handling** (verified: no `quote` reference anywhere in the
-file).
+Int's Pass-1 macro expander runs **before** `build_forms` — i.e. before the fold's
+desugar point. Before the shield landed, `expand_scoped` recursed into **all**
+sub-lists of a form, recognising and dispatching macro-call-shaped heads, with
+only the binding forms (`let`/`fn`/`lambda`/`defn`/`defn-`/`match`, §8.6.3) and
+the `defmacro` name position (S102 CS-D1) held verbatim. It had no
+quote/quasiquote handling.
 
 Once quote is legal everywhere, that gap becomes a live corruption surface. A
 macro-call-shaped list living inside quoted **data** would be macro-expanded before

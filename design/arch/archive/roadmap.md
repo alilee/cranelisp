@@ -2,7 +2,7 @@
 
 Ring-by-ring plan for the Cranelisp reimplementation. Each ring establishes a stable foundation before the next begins. Within each ring, compiler skills work in parallel against interface stubs.
 
-For the full reimplementation strategy, skill definitions, and risk analysis, see `sprints/reimplementation.md`. For boundary types, see `design/arch/interfaces.md`. For crate structure and architectural decisions, see `design/arch/architecture.md`.
+The original reimplementation strategy, skill definitions, and risk analysis are available in Git history. For boundary types, see `design/arch/interfaces.md`. For crate structure and architectural decisions, see `design/arch/architecture.md`.
 
 ## Ring 0: Core
 

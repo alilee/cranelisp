@@ -33,7 +33,7 @@ status: operative
 
 The pre-amendment `compile_to_module` signature carried `introspection: Option<&DashMap<FQSymbol, Introspection>>` as a parameter so backend could direct-write the per-symbol introspection record. That third direct-write is **retracted**.
 
-**Why retract.** `Introspection` is an integration-layer (`int`) type — defined in `src/session_v4.rs` and target-stated by `facades/int.md` §"Introspection". For backend to accept `Option<&DashMap<FQSymbol, Introspection>>` at its public boundary, `Introspection` would have to live where `cranelisp-backend` can reach it. It does not — and putting it there inverts the DAG (Principle 3: `cranelisp-backend` does not depend on the `int` binary crate). This DAG inversion was surfaced by the Sprint 70 Phase B configuration → source completeness sweep, 5th audit lens (memo at `design/arch/cranelisp-types-settled-verdict-s70.md`). FIXME 0221 captured the question; this amendment resolves it.
+**Why retract.** `Introspection` is an integration-layer (`int`) type — defined in `src/session_v4.rs` and target-stated by `facades/int.md` §"Introspection". For backend to accept `Option<&DashMap<FQSymbol, Introspection>>` at its public boundary, `Introspection` would have to live where `cranelisp-backend` can reach it. It does not — and putting it there inverts the DAG (Principle 3: `cranelisp-backend` does not depend on the `int` binary crate). This DAG inversion was surfaced by the Sprint 70 Phase B configuration → source completeness sweep, 5th audit lens (memo at the S70 settled-types verdict (Git history)). FIXME 0221 captured the question; this amendment resolves it.
 
 **New shape — categorize by always-created vs on-demand.** The user-arbitrated direction: "for those things that are always created, no harm in passing those back to the caller and having the caller discard them if not required. for those created as needed, could there be a separate call?" Applied to backend's per-symbol introspection contributions:
 
@@ -194,7 +194,7 @@ Decision 41's substance is unchanged: per-symbol JIT cardinality, `Code` lives i
 3. Backend calls `SymbolTable::write_code(&self, sym, Code::Jit(Arc<Jit>))` to install the lifecycle owner (Decision 38's interior-mutable signature).
 4. The entry's `got_slot: Some(slot)` was already allocated at registration; no field-level ptr write occurs.
 
-Decision 31 Scenario 2 reclaim semantics are preserved (lifecycle ownership stays inside `Code::Jit(Arc<Jit>)`; `Drop` chain unchanged; the GOT slot's stored ptr becomes invalid the instant `JITModule::free_memory()` runs). See `design/arch/sprint-66-types-authoring-plan.md` §1.7-revised + §1.8 and `design/arch/facades/{types,backend,primitives,platform}.md` for the as-designed shape.
+Decision 31 Scenario 2 reclaim semantics are preserved (lifecycle ownership stays inside `Code::Jit(Arc<Jit>)`; `Drop` chain unchanged; the GOT slot's stored ptr becomes invalid the instant `JITModule::free_memory()` runs). See the S66 types authoring plan (Git history) §1.7-revised + §1.8 and `design/arch/facades/{types,backend,primitives,platform}.md` for the as-designed shape.
 
 ## Cranelift evidence (why custom `Drop` is required)
 
@@ -269,7 +269,7 @@ The exact host-callback names and signatures are out of scope for this forward c
 
 **Decision 32 unchanged.** The empty-marker `CodeStore` trait still serves: `()` for non-codegen crates, `Code` for backend + int. The `Clone` super-bound stays — `Code` derives `Clone` (Arc clones are cheap).
 
-Sprint 63 substance-scoping resolution §1.2.
+Sprint 63 substance-scoping resolution §1.2 (Git history; the legacy record was retired S122).
 
 ## Rationale
 

@@ -6,7 +6,8 @@
 wave, and the design shapes for the four backend-owned S115 scope inputs: the ONE
 RC-release sweep (§2), the 0705 consumer-totality arm (§3), the R4 mangle-family
 injectivity census (§4), and the R6 persisted-index validation seam (§5). §6
-confirms the W-B5 patch-collapse; §7 dispositions FIXMEs 0696/0697.
+records the former W-B5 patch-collapse; its S122 supersession is now the current
+0747 disposition. §7 dispositions FIXMEs 0696/0697.
 
 **Governing authority:** `design/arch/safety-invariants.md` §4 register rows R4
 (keyed-identity injectivity) + R6 (persisted-index trust boundary) — re-audited
@@ -395,6 +396,13 @@ load defensively (cheap, uniform with the loop); it does not build the consumer.
 ---
 
 ## 6. W-B5 patch-collapse — RULED S121 (FIXME 0747)
+
+> **S122 supersession.** The one-finder/reach-class ruling below is retired by
+> `design/backend/s122-closure.md` §5.1. Current source requires an exact
+> `SlotRef` for same-frame cleanup, a carrier-keyed current-frame COW source,
+> and a wider name-valued provenance traversal. These are three different
+> questions, not thresholds on one answer. Their existing separation is the
+> current design; W-B5 has no source change or golden re-baseline.
 
 > **RULING (`/design`(backend), S121 Phase 3).** FIXME 0747 is right that the
 > mechanism and the acceptance below cannot both hold **as the collapse was

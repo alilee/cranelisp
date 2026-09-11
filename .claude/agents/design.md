@@ -1,6 +1,7 @@
 ---
 name: design
 description: Design one crate-shaped surface's interior; does not edit code
+provider: claude
 model: opus
 effort: high
 ---

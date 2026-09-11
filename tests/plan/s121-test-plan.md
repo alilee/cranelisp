@@ -1219,7 +1219,9 @@ substituted for these edge-specific ownership assertions.
 ## 12. Result-context specialization
 
 QA allocation for implementers and independent review. Authority is the approved
-[architecture/API packet](../../design/arch/s121-result-context-specialization.md)
+[current identity contract](../../design/arch/interfaces.md#instance-identity-funnel)
+(the [S121 approved packet](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/arch/s121-result-context-specialization.md)
+retains dated approval provenance)
 and [typecheck design](../../design/typecheck/result-context-specialization.md),
 under `spec/03-types.md` §§3.3.4, 3.6.3–3.6.4 and 3.11.3. Scheduling, executed
 evidence and current gate status belong to the sprint ledger.
@@ -1265,7 +1267,7 @@ census and remaining closure streams.
 
 ## 13. Staging-aware value layout
 
-QA allocation for the approved [exact API packet](../../design/arch/s121-staged-value-layout-api.md).
+Historical S121 QA allocation for the [approved exact API packet](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/arch/s121-staged-value-layout-api.md).
 The user approval recorded in the sprint ledger releases serial types then
 typecheck implementation. This delta changes declaration access, not layout
 eligibility or the live-redefinition ownership-ABI rule (§10 GR-1/GR-4).
@@ -1580,8 +1582,7 @@ does not report it, so a census reporting it again is a REGRESSION, not a known
 open defect. `spec_10_io::resource_serial_diff_token_parallelizes` is likewise
 GREEN there, confirming the load-sensitivity reading above. The one non-golden RED
 in that census is the newly authored `shadowed_param_reach_stale_rc_dec::binder_rename_must_not_change_rc_counters`
-(backend-attributed; rows in `tests/plan/PLAN.md` §"Sprint-121 shadowed-parameter
-reach rows"). The seven CLIF-golden REDs are the same seven cells and the
+(backend-attributed; rows in [S121 shadowed-parameter evidence](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md)). The seven CLIF-golden REDs are the same seven cells and the
 recapture hold stands.
 
 **Timing instrument, not a product RED.** `spec_10_io::resource_serial_diff_token_parallelizes`

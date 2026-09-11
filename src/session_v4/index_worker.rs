@@ -1263,7 +1263,7 @@ fn public_entries_with_entry(
     let mut out = Vec::new();
     for (sym, entry) in table.public_symbols() {
         let name = sym.as_ref();
-        if name.contains('$') || name.starts_with("__") {
+        if crate::worker::is_internal_listing_entry(name, entry) || name.starts_with("__") {
             continue;
         }
         match &entry.declaration {
@@ -1294,7 +1294,7 @@ fn public_entries_from_table(
     let mut out = Vec::new();
     for (sym, entry) in table.public_symbols() {
         let name = sym.as_ref();
-        if name.contains('$') || name.starts_with("__") {
+        if crate::worker::is_internal_listing_entry(name, entry) || name.starts_with("__") {
             continue;
         }
         // Macros are deliberately absent from all Sprint-121 search feeds. An

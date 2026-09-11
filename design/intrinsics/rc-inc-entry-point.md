@@ -92,7 +92,7 @@ pub fn rc_inc(ptr: i64) {
 
 ### 2.1 Derivation notes (load-bearing, must match the dec mirror)
 
-- **Nullary-tag skip.** `ptr < cranelisp_types::NULLARY_TAG_THRESHOLD as i64` — the *same* threshold `consume_shallow` uses (`rc.rs:79`), the single discriminator for "is this i64 a heap pointer?" (`design/runtime/runtime.md` §"Nullary tags"; Principle 7). Bare tags are not heap pointers; inc on one would corrupt a tag value.
+- **Nullary-tag skip.** `ptr < cranelisp_types::NULLARY_TAG_THRESHOLD as i64` — the *same* threshold `rc::consume_shallow` uses, the single discriminator for "is this i64 a heap pointer?" (the obligation that every RC entry point guards on it is `crates/cranelisp-intrinsics/CLAUDE.md` §"RC discipline", under `design/arch/bounded-contexts.md` §4b invariant 3; Principle 7). Bare tags are not heap pointers; inc on one would corrupt a tag value.
 - **RC field offset.** Derived from `HeapHeader::RC_OFFSET` (`= 8`), never a magic `.add(8)` — single-sourced from `cranelisp-types` exactly as `consume_shallow` (`rc.rs:84`) and `string_identity` (`string.rs:122`) already do.
 - **`&AtomicI64` view.** Cast the RC field to `&AtomicI64` and call `fetch_add` — identical mechanism to `consume_shallow`'s `fetch_sub` view (`rc.rs:83-86`). The atomic view is required for the data-race-free guarantee under sparks (NFR C.4.1).
 - **`rc_trace("inc", ptr, new_rc)`.** Pass the *post*-inc value (`old_rc + 1`) so the trace line reads the resulting count — consistent with `consume_shallow`'s `rc_trace("dec", ptr, old_rc - 1)` (`rc.rs:91`) and with the existing `string_identity`'s `rc_trace("inc", s, new_rc)` (`string.rs:125`). The `"inc"` op string already exists in the trace vocabulary (the module `//!` and `string_identity` both use it).

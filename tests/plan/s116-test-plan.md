@@ -97,7 +97,7 @@ M3 requires both intrinsics unit proof and one e2e counter→atexit→abort cell
 | Constructor arms | All 15 cells named by 0847 remain represented: bare/documented nullary, content-free paren, fielded, enum, product and zero-field product, positive and negative. Duplicate constructor and duplicate field errors locate the second occurrence. Pattern/value/definition mirrors agree. |
 | Annotation fold | top-level, paren application, macro argument, nested expression, and qualified type; malformed/dangling annotation negatives; `Sexp::Annotated` round-trip and schema 22→23 stale-cache rejection; no macro-specific pairing path. |
 
-The 15 constructor rows belong in `PLAN.md` and the §5.2 annotation band upgrades only after implementation and traceability audit. FIXME 0847 remains open until that durable update; Phase 3 records the required rows here so `/testing` is unblocked.
+The 15 constructor rows belong in `PLAN.md` and the [type-definition specification](../../spec/05-definitions.md) annotation band upgrades only after implementation and traceability audit. FIXME 0847 remains open until that durable update; Phase 3 records the required rows here so `/testing` is unblocked.
 
 ## 6. Narrow owner acceptance criteria
 

@@ -226,13 +226,7 @@ mod tests {
 
         let mut jit = Jit::new_with_symbols(&extras).expect("jit init");
         let target = crate::test_support::binding_target(&user_module, &name);
-        let result = compile_to_module(
-            user_module,
-            &[target],
-            &tables,
-            jit.jit_module(),
-            true,
-        );
+        let result = compile_to_module(user_module, &[target], &tables, jit.jit_module(), true);
         assert!(
             result.is_ok(),
             "extern primitive sconcat should compile via GOT-indirect when resolved_call is BuiltinFn: {}",

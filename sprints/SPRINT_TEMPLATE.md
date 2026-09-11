@@ -4,7 +4,7 @@
 
 **Goal**: {one-sentence sprint goal}
 
-**Audit**: {bounded context — filled at Phase 4 from the rotation, METHOD §2.7; dispatched read-only in the Phase 6/7 window → `audits/{context}-s{ID}.md`; disposed next sprint Phase 1}
+**Audit**: {bounded context selected at Phase 4 from the rotation in METHOD §2.7; dispatched read-only in Phase 6a; disposition at the next sprint opening}
 
 ## Phase approvals
 
@@ -56,7 +56,7 @@ maintenance checks are reported but do not become product acceptance gates.}
 ### `role-name`
 
 - **Task**: {what this role does in this sprint}
-- **Crate** (if narrow-deployed): {cranelisp-frontend | cranelisp-typecheck | cranelisp-backend | cranelisp-primitives+intrinsics | cranelisp-platform | src/}
+- **Crate** (if narrow-deployed): {cranelisp-frontend | cranelisp-typecheck | cranelisp-backend | cranelisp-primitives | cranelisp-intrinsics | cranelisp-platform | src/}
 - **Design refs**: {spec sections, design docs, FIXMEs to read}
 - **Acceptance**: {how to verify the task is done}
 

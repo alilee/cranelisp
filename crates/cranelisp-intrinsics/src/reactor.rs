@@ -828,7 +828,9 @@ impl StateClosure {
             self.0 = 0;
             // `consume_closure` atomically dec's the closure RC and, on last ref,
             // invokes the embedded drop glue (dec'ing the baked args) + deallocs.
-            crate::drop::consume_closure(clo);
+            // SAFETY: `StateClosure` holds this keep-alive owner until resolve
+            // or cancellation consumes it.
+            crate::drop::consume_closure(unsafe { crate::handle::Owned::from_abi(clo) });
         }
     }
 }
@@ -1629,7 +1631,8 @@ async fn supervised(
     }
 
     // The strand owns its detached sub-tree (§2.11) — free it exactly once.
-    crate::drop::consume_io_tree(sub_tree);
+    // SAFETY: the supervised strand owns its detached subtree.
+    crate::drop::consume_io_tree(unsafe { crate::handle::Owned::from_abi(sub_tree) });
     // `global_permit` drops HERE (scope end) → frees a global-budget slot →
     // FIFO-wakes a parked launch (§2.13). Explicit to document the release point.
     drop(global_permit);

@@ -5,7 +5,7 @@
 // assertions from legacy integration-tier `tests/ring0.rs`, `tests/ring1.rs`,
 // `tests/sketch_port.rs`, and `tests/e2e.rs`. REPL canonical with
 // PrimitivesOnly prelude per
-// `tests/plan/PLAN.md §"Mode canonicalisation"`.
+// [current mode-canonicalisation guidance](plan/PLAN.md#mode-canonicalisation--repl-is-the-canonical-surface-for-language-conformance).
 //
 // What this file covers:
 //   - §A.1 primitive types — covered surface in spec_03_types.rs

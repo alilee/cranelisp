@@ -184,6 +184,7 @@ pub mod catalog;
 /// no public surface, no ABI/catalog delta (`design/intrinsics/diagnostic-modes.md`).
 pub(crate) mod diagnostics;
 pub mod drop;
+pub mod handle;
 /// Single-source heap-cell `i64` read/write accessors over a base+offset (MED-1,
 /// FIXME 0370). `pub(crate)` — an internal layout-access helper, not a public
 /// surface item.

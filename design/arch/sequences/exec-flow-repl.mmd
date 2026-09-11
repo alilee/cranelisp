@@ -1,180 +1,70 @@
 sequenceDiagram
-    title Execution flow — REPL cadence (precise Rust facade signatures)
+    title Execution flow — synchronous REPL and watcher handoff
 
-    participant Initiator as ::main (cli REPL entrypoint)
-    participant User as User (terminal)
-    participant Watcher as Watcher<br/>::watch (OS callback thread + channel)
-    participant Sess as Session<br/>::session_v4::CompilerSession
+    participant Main as main.rs REPL orchestration
+    participant Input as ReplInput
+    participant Sess as CompilerSession
+    participant Watcher as FileWatcher
 
-    Note over Initiator, Sess: † marks proposed/target API not yet in current code.<br/>Receiver (&self / &mut self) is implicit in the lifeline.<br/>Compilation internals (Sched, Cache, Backend, etc.) delegated to exec-flow-compilation —<br/>this diagram shows REPL orchestration around register_module + wait_for_inmem_codegen + eval + trampoline.<br/>Display formatting (format_eval_result, pretty_print, write_prompt, print_banner) is a method group on Sess —<br/>not a separate facade.
+    Note over Main, Watcher: Scope: REPL startup, completed input turns, watcher handoff and shutdown.<br/>Session-call receivers are implicit. signatures are from current source.<br/>Compilation and runtime interiors are owned by their contexts. this diagram adds no facade.<br/>Source: main.rs run_repl/repl_prologue/repl_read_eval_loop and session_v4/lifecycle.rs.
 
-    rect rgb(245, 230, 255)
-        Note over Initiator, Sess: STARTUP — parse cli args, construct session, register entry module (no wait), init watcher, print banner<br/>(entry module in-mem catches up at the first iteration's wait_for_inmem_codegen.<br/>Other transitively imported modules — including any prelude — are pulled in via the import branch of exec-flow-compilation.<br/>The REPL never references the prelude directly.)
-
-        Initiator ->> Initiator: ::main::parse_args() -> Result<(Action, ProjectTarget, SessionSettings), CliError>
-        Note over Initiator: per repl/spec.md §0 — Action ∈ { Repl, Run, Link, Version, Help }.<br/>This diagram covers Action::Repl. For Run / Link see exec-flow-run, exec-flow-link.<br/>ProjectTarget { project_root: PathBuf, entry_module: ModuleFullPath } resolved per repl/spec.md §0.5.
-
-        Initiator ->> Sess: CompilerSession::new(settings: SessionSettings, project_root: PathBuf) -> CompilerSession
-        Note over Sess: spawns priority + nice worker pools — opens cache directory — initialises empty SymbolTables.<br/>Watcher channel opened separately by init_watcher (after register_module, so the entry module's path is known)
-        Sess -->> Initiator: CompilerSession
-
-        Initiator ->> Sess: CompilerSession::register_module(entry_module: &ModuleFullPath) -> Result<(), CranelispError>
-        Note over Sess: registers the entry module under target.entry_module (defaults to "user" if no positional arg).<br/>See exec-flow-compilation. Fire-and-forget, returns immediately. Compilation begins in background.
-        Sess -->> Initiator: Ok(())
-
-        Initiator ->> Sess: CompilerSession::init_watcher() -> Result<(), CranelispError>
-        Note over Sess: opens the OS file watcher on project_root, wires channel to the background watcher event processor (created suspended)
-        Sess -->> Initiator: Ok(())
-
-        Note over Initiator: REPL session state — current_repl_module: ModuleFullPath = target.entry_module<br/>(this is THE module that defns and imports append to. Changeable via /mod. Defaults to entry module.<br/>"user" is just the default name when no positional arg is given — it is not architecturally special.)
-
-        Initiator ->> Sess: CompilerSession::print_banner(stdout: &mut impl Write)
-        Initiator ->> Sess: CompilerSession::write_prompt(stdout: &mut impl Write, compile_ms: u64, eval_ms: u64)
+    Main ->> Sess: CompilerSession::new(settings: SessionSettings, project_root: PathBuf, entry_module_name: &str) -> Result<CompilerSession, CranelispError>
+    Note over Main, Sess: A construction error exits through the ordinary error path.<br/>The remaining flow assumes a constructed session.
+    Main ->> Sess: register_module(module_name: &str) -> Result<(), CranelispError>
+    alt initial registration succeeds
+        Main ->> Sess: wait_inmem_complete() -> Result<(), SchedulerError>
     end
+    opt registration or startup wait fails
+        Main ->> Sess: recover_startup_failure(module_name: &str) -> Option<String>
+        Note over Sess: Preserve successful forms and report failed forms. the repair REPL remains available.
+    end
+    Main ->> Sess: mark_entry_eval_owned()
+    Main ->> Sess: init_watcher()
+    Note over Main, Sess: Prologue also arms the importable index, configures the optional agent,<br/>and prints startup feedback and the banner.
+    Note over Watcher: OS callbacks capture file-change events into a channel.<br/>They do not reload modules or publish compiler state.
 
-    rect rgb(220, 235, 255)
-        Note over Initiator, User: LOOP ITERATION — per-input cycle<br/>(repeats until /quit or EOF)
+    loop until EOF or CommandResult::Quit
+        Main ->> Sess: prompt_string(compile_ms: u64, eval_ms: u64) -> String
+        Note over Main, Input: An incomplete source form uses continuation_prompt_string instead.<br/>Slash commands occupy one line. Search completion notices occur before the prompt.
+        Main ->> Input: read_line(prompt: &str, stdout: &mut impl Write) -> ReadOutcome
+        Note over Input, Watcher: TTY editing and piped input share ReplInput.<br/>While reading or accumulating a form, watcher events remain queued.<br/>There is no background watcher processor or input-active publication switch.
+        Input -->> Main: ReadOutcome::Line(String) or ReadOutcome::Eof
+        Note over Main: EOF exits the loop. Incomplete forms return to the continuation read.<br/>The following branches receive one complete input.
 
-        loop until /quit or EOF
-            Note over Initiator, Sess: STEP 1 — resume watcher processing<br/>(events flow during the prompt-wait window)
-
-            Initiator ->> Sess: CompilerSession::set_repl_input_active(active: bool) †
-            Note over Sess: active=true — Sess background processor pulls events from the watcher channel and invokes re_register_module per event
-
-            Note over Initiator, User: STEP 2 — print prompt and block on user input<br/>(while LineEditor is blocked, watcher events may arrive and be processed concurrently)
-
-            create participant LineEditor as Line editor<br/>::repl::line_editor (rustyline-backed)
-            Initiator ->> LineEditor: ::repl::line_editor::read_line(prompt: &str, continuation_state: &mut ContinuationState) -> Result<InputState, ReplError> †
-            LineEditor ->> User: display prompt (per repl/spec.md §2.1)
-
-            opt one or more file changes arrive during the prompt-wait
-                loop each event (concurrent with LineEditor blocking)
-                    Watcher -->> Sess: notify::Event { kind: Modify, paths: [m.cl] } (channel send from OS callback thread)
-                    Note over Sess: background watcher processor pulls the event and invokes re_register_module —<br/>typecheck + JIT proceed without blocking the LineEditor read
-                    Sess ->> Sess: CompileScheduler::re_register_module(module: &ModuleFullPath) -> bool
-                    Note over Sess: see exec-flow-compilation watcher branch
-                end
-            end
-
-            User ->> LineEditor: keystrokes + Enter
-            opt parens unbalanced AND input does not start with "/" (slash commands are single-line per main.rs)
-                LineEditor -->> Initiator: InputState::NeedContinuation(partial: String)
-                Initiator ->> Sess: CompilerSession::parens_balanced(input: &str) -> bool
-                Sess -->> Initiator: false
-                loop until balanced
-                    Initiator ->> Sess: CompilerSession::write_continuation_prompt(stdout, compile_ms, eval_ms)
-                    Initiator ->> LineEditor: ::repl::line_editor::read_line(continuation_prompt, &mut state) †
-                    LineEditor ->> User: display continuation prompt (per repl/spec.md §2.2)
-                    User ->> LineEditor: keystrokes + Enter
-                end
-            end
-            LineEditor -->> Initiator: InputState::Complete(source: String)
-
-            Note over Initiator, Sess: STEP 3 — suspend watcher processing<br/>(events arriving from now on accumulate in the channel until next iteration's STEP 1)
-
-            Initiator ->> Sess: CompilerSession::set_repl_input_active(false) †
-            Note over Sess: active=false — Sess background processor stops pulling events —<br/>any in-flight re_register_module calls complete normally
-
-            Note over Initiator, Sess: STEP 4 — catch up in-mem codegen<br/>(blocks until entry module initial load + all watcher-triggered reloads from STEP 2 are in-mem.<br/>This makes /list, /info, eval all see consistent module state.)
-
-            Initiator ->> Sess: CompilerSession::wait_for_inmem_codegen() -> Result<(), CranelispError> †
-            Sess -->> Initiator: Ok(())
-
-            Note over Initiator, Sess: STEP 5 — dispatch input via process_commands
-
-            Initiator ->> Sess: CompilerSession::process_commands(input: &str, stdout: &mut impl Write) -> CommandResult
-            Note over Sess: process_commands handles slash commands directly (writing some output to stdout for streaming commands) —<br/>routes /quit to CommandResult::Quit, blank/comment to CommandResult::Nothing,<br/>/list /info /sig /exports etc. to CommandResult::Final(text) via introspection accessors,<br/>Cranelisp source to CommandResult::Compile(src) for the caller to feed into eval.
-            Sess -->> Initiator: CommandResult { Nothing | Quit | Final(text: String) | Compile(src: String) }
-
-            alt CommandResult::Nothing
-                Note over Initiator: no display, no eval — proceed to STEP 7
-            else CommandResult::Quit
-                Note over Initiator: break out of loop — see SHUTDOWN below
-            else CommandResult::Final(text)
-                Initiator ->> Sess: CompilerSession::pretty_print(form: &str, stdout: &mut impl Write)
-                Note over Sess: writes the slash-command's output to stdout
-            else CommandResult::Compile(src)
-                Initiator ->> Sess: CompilerSession::eval(src: &str) -> Result<Option<EvalResult>, CranelispError>
-
-                Note over Sess: eval uses the same source-order orchestrator as batch (Decision 44 plus the 2026-09-03 macro-checkpoint amendment). A non-begin input supplies one REPL cluster, while begin supplies its inner form sequence.<br/>Pass 1 expands only committed macros. Each direct or expansion-produced defmacro closes typecheck and codegen over its parent, clauses, and full expansion-time dependency/generated-realization closure, then publishes the parent, clauses, and current-module realization rows as one checkpoint before later forms continue. Dependency modules publish independently. A successful checkpoint survives later failure including the section 18 dependent cure, while a failed checkpoint exposes none of the new macro. There is no unpublished-candidate invocation or temporary GOT stack.<br/>The fully expanded non-macro forms then enter one check_forms call (its internal signature/body passes) and one non-macro cluster publication. Thus non-macro forward-reference scope spans defmacro positions even though those macros checkpoint independently.<br/>For the trailing expression, eval skips the non-macro definition commit and hands the typed AST to a fresh per-eval JITModule.
-
-                opt one or more source forms — direct/generated defmacros checkpoint in source order, remaining definitions form the non-macro HM cluster
-                    Sess ->> Sess: CompilerSession::process_cluster(forms: Vec[Sexp], scope: &current_repl_module) -> Result<ProcessedCluster, CranelispError> †
-                    Note over Sess: shared entry point — invokes the same source-order expand/checkpoint then single non-macro check_forms sequence shown in exec-flow-compilation. ResolutionGap loads foreign dependencies. Each dependency publishes independently and the current attempt retries from source. At this return, successful macro checkpoints are already live. ProcessedCluster carries only the still-unpublished non-macro transaction.
-                    Sess -->> Sess: ProcessedCluster { drained staging entries, resolved import bindings, populated introspection } †
-
-                    Sess ->> Sess: CompilerSession::insert_cluster(processed: ProcessedCluster, target: &current_repl_module) †
-                    Note over Sess: non-macro cluster-atomic commit.<br/>Earlier successful macro checkpoints are outside this rollback domain. Triggers pending typecheck waiters and codegen work for the non-macro entries.
-                    create participant ST_current as ST[current_repl_module]<br/>cranelisp_types::module::SymbolTable<Code, ()>
-                    Sess ->> ST_current: SymbolTable::insert_or_update(sym: Symbol, entry: ModuleEntry<Code>)
-
-                    opt needs_codegen
-                        Sess ->> Sess: CompileScheduler::wait_for_inmem(fq: &FQSymbol) †
-                        Note over Sess: per-symbol wait — block only on the new symbol's jit, not on every pending in-mem item (global wait already happened at STEP 4)
+        alt optional agent route selected
+            Main ->> Sess: agent_turn(text: &str, stdout: &mut impl Write, consent: &mut dyn ConsentReader)
+            Note over Main, Sess: Agent consent uses the same input reader.<br/>Tool evaluation uses the ordinary session compiler. no second pipeline.
+        else ordinary source or command
+            Main ->> Sess: process_commands(src: &str, stdout: &mut impl Write) -> CommandResult
+            Sess -->> Main: Nothing, Quit, Final(String), or Compile(String)
+            Note over Main: Quit exits before watcher polling. Nothing requires no output.<br/>Final text is rendered through pretty_print.
+            opt CommandResult::Compile
+                Main ->> Sess: eval(source: &str) -> Result<Option<EvalResult>, CranelispError>
+                Note over Sess: Source-ordered macro checkpoints publish independently.<br/>Non-macro forms share their HM cluster and ordinary staged publication.<br/>Successful earlier macro checkpoints survive a later failure.<br/>Executable retention and result disposal follow the existing result-owner contract.
+                alt displayable result
+                    Main ->> Sess: format_eval_result(result: &EvalResult) -> String
+                    Note over Main: Append any cascade report, release the owned program result,<br/>then render the captured text. Record the same feedback for the optional agent.
+                    Main ->> Sess: pretty_print(form: &str, stdout: &mut impl Write)
+                    opt result is defining
+                        Main ->> Sess: regenerate_backing_file()
                     end
-
-                    Sess ->> ST_current: SymbolTable::get(name: &Symbol) -> Option<&ModuleEntry<Code>>
-                    ST_current -->> Sess: Some(&ModuleEntry { kind, scheme, .. })
-                    Note over Sess: for defn redefinition — per-symbol reclaim of old Arc<Jit> when previous ModuleEntry's Code is dropped (Decision 41 reclaim semantics — D31 retired — substance amended into D41 at S64 + relocated at S69 Phase 3)
-                end
-
-                opt trailing expression form (e.g. "(+ 1 2)" or "factorial 10")
-                    Sess ->> Sess: CompilerSession::process_form(wrapped_expr: Sexp, scope: &current_repl_module) -> Result<ProcessedForm, CranelispError> †
-                    Note over Sess: same shared entry point and same gap-orchestration retry loop — FQ refs in the expression are resolved by process_form before it returns.<br/>scope = current_repl_module for visibility, no commit target.<br/>The wrapped expression is "(defn __expr [] expr)" but __expr is NOT committed anywhere — no insert_symbol call follows.<br/>The temp closure exists only as a typed AST + per-eval JIT until the trampoline returns and the JIT drops.
-                    Sess -->> Sess: ProcessedForm { typed_ast, scheme: Some(_), defined_symbol: Some(__expr), callees, needs_codegen: true } †
-
-                    loop each un-codegenned dependency dep: FQSymbol in callees
-                        Sess ->> Sess: CompileScheduler::block_for_macro_codegen(fq: &FQSymbol) -> Result<(), SchedulerError>
-                        Note over Sess: enqueues BlockingJitCodegen for dep (priority-boosted) and waits — see exec-flow-compilation.<br/>S76 W-Macro DECISION LOCKED — the macro-clause use of block_for_macro_codegen is DELETED (no same-module non-macro clause callee under the lock — macro-availability-model.md section 0.7). This eval-time value-expression dependency-codegen wait is an int-interior scheduler concern, re-synced when /dev lands the three-pass implementation.
-                    end
-
-                    create participant EvalJit as Eval JIT<br/>::session_v4::CompilerSession::eval_jit (fresh JITModule per eval, wrapped in Arc<Jit>)
-                    Sess ->> EvalJit: cranelisp_backend::compile_to_module<M: Module>(scope: &current_repl_module, names: &[__expr], symbol_tables: &SymbolTables[Code, ()], module_aliases: &ModuleAliases, module: jit.jit_module(), capture_clif: bool) -> Result<CompilationArtifacts, CompilationError>
-                    Note over EvalJit: per pipeline-v4 §6.2 — fresh JITModule per eval call.<br/>Wrapped in Jit newtype whose Drop calls unsafe JITModule::free_memory() (per Decision 41 §"Cranelift evidence" — D31 retired — substance amended into D41 at S64 + relocated at S69 Phase 3).<br/>Temp closure has NO entry in ST_current and NO GOT slot — it is one-shot.<br/>Per Decision 41 (+ S75 W2 Finding-A) backend writes ONLY the GOT slot via got().store_slot(slot, ptr) for entried symbols — the CALLER composes Code::Jit(Arc[Jit]) after the call (int wraps Arc::new(jit) — backend only borrows &mut M, never owns the Arc[Jit]). For the temp-closure case there is no entry / no GOT slot — int reads code_ptr from the populated Jit handle directly, and no Code is composed.
-                    EvalJit -->> Sess: Ok(()) — temp closure code_ptr available via the eval's Jit handle
-
-                    create participant Trampoline as IO Trampoline<br/>::session_v4::CompilerSession::trampoline
-                    Sess ->> Trampoline: CompilerSession::trampoline(code_ptr: *const u8, expected_type: &Type) -> Result<EvalValue, RuntimeError>
-                    Note over Trampoline: runtime cadence active inside the call —<br/>atomic RC inc/dec, fork-join cells (lenient eval / par bind!),<br/>IO trampoline if expected_type wraps IO _ (see exec-flow-runtime)
-                    Trampoline -->> Sess: Ok(EvalValue { repr: i64, ty: Type, heap_root: Option<Arc<HeapRetention>> }) †
-                    Note over EvalJit: drop(Jit) — custom Drop calls unsafe JITModule::free_memory() —<br/>__expr's executable memory is reclaimed before the next iteration<br/>(safety holds because the value is fully consumed, GOT was never updated, and fn values are heap closures that go through GOTs not raw ptrs)
-                end
-
-                Sess -->> Initiator: Ok(Some(EvalResult { Def { symbol, ty, .. } | Value { repr, ty, .. } }))
-
-                Initiator ->> Sess: CompilerSession::format_eval_result(result: &EvalResult) -> String
-                Note over Sess: formats per repl/spec.md §1 — ":Type value — classification — docstring" for definitions, bare ":Type value" for expressions, etc.
-                Sess -->> Initiator: formatted text
-
-                Initiator ->> Sess: CompilerSession::pretty_print(text: &str, stdout: &mut impl Write)
-
-                opt result is a definition or structural change
-                    Initiator ->> Sess: CompilerSession::regenerate_backing_file() -> Result<(), CranelispError>
-                    Note over Sess: per repl/spec.md §15 — persists current_repl_module's accumulated forms to {project_root}/{current_repl_module}.cl
+                else structural change without displayable result
+                    Main ->> Sess: regenerate_backing_file()
+                else evaluation error
+                    Note over Main: Render the diagnostic. keep the session available for the next turn.
                 end
             end
-
-            Note over Initiator, Sess: STEP 6 — sync watcher set with newly-loaded modules<br/>(imports during eval may have registered new modules — the watcher should now watch their files too)
-
-            Initiator ->> Sess: CompilerSession::sync_watcher() -> Result<(), CranelispError>
-
-            Note over Initiator, Sess: STEP 7 — print next prompt with timing info from the just-completed iteration
-
-            Initiator ->> Sess: CompilerSession::write_prompt(stdout, compile_ms, eval_ms)
         end
+
+        Main ->> Sess: sync_watcher()
+        Main ->> Sess: poll_and_reload() -> Vec<String>
+        Note over Sess, Watcher: The REPL thread drains captured events at this completed-turn boundary.<br/>Each reload queues internal scheduler work and waits for compilation to finish.<br/>The next prompt follows reload completion. no public asynchronous re-registration wrapper is needed.<br/>The same poll sequence follows an agent turn.
+        Sess -->> Main: reload notifications
+        Note over Main: Render notifications, then begin the next prompt.
     end
 
-    rect rgb(255, 245, 220)
-        Note over Initiator, Sess: SHUTDOWN — on /quit or EOF
-
-        Initiator ->> Sess: CompilerSession::wait_for_object_codegen() -> Result<(), CranelispError> †
-        Note over Sess: ensures cache .o + sidecars are written for all touched modules — next REPL session can cache-hit
-        Sess -->> Initiator: Ok(()) — all object work drained
-
-        Initiator ->> Sess: CompilerSession::shutdown()
-        Note over Sess: signals worker pools to drain + terminate —<br/>closes watcher channel — closes cache directory.
-
-        Note over Initiator: drop(Sess) — per-symbol reclaim chain fires (Decision 41) —<br/>each ModuleEntry::Code drops, Arc<Jit> refcount hits 0,<br/>custom Drop calls unsafe JITModule::free_memory() per symbol (one JITModule per defn under D41 cardinality).
-
-        Initiator ->> User: exit (status 0)
-    end
+    Note over Main: Save input history and handle any incomplete EOF form through the ordinary eval path.
+    Main ->> Sess: flush_final_persist()
+    Main ->> Sess: wait_object_complete() -> Result<(), SchedulerError>
+    Main ->> Sess: shutdown()
+    Note over Main, Sess: Drain worker activity before session teardown.<br/>Executable and value owners retain their existing lifetime obligations.

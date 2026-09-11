@@ -408,7 +408,8 @@ pub(crate) extern "C" fn extern_adapt_str_len_stat() -> i64 {
 /// `ptr` must be either a valid heap base pointer whose RC is > 0, or a
 /// bare nullary tag (< NULLARY_TAG_THRESHOLD).
 #[inline]
-pub fn consume_shallow(ptr: i64) {
+pub fn consume_shallow(handle: crate::handle::Owned) {
+    let ptr = handle.into_raw();
     if ptr < cranelisp_types::NULLARY_TAG_THRESHOLD as i64 {
         return; // bare tag — no heap alloc to dec
     }

@@ -4,7 +4,7 @@
 // assertions from the legacy integration-tier `tests/ring0.rs`,
 // `tests/ring1.rs`, `tests/ring2.rs`, `tests/lenient.rs`,
 // `tests/sketch_port.rs`, and `tests/e2e.rs`. Per
-// `tests/plan/PLAN.md §"Mode canonicalisation"`, REPL is canonical.
+// the [current mode-canonicalisation guidance](plan/PLAN.md#mode-canonicalisation--repl-is-the-canonical-surface-for-language-conformance), REPL is canonical.
 //
 // What this file covers:
 //   - Literals: Int, Float, Bool, String (§4.1)
@@ -22,7 +22,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, PreludeVariant, run_through_all_modes};
+use helpers::e2e::{run_through_all_modes, Cranelisp, PreludeVariant};
 
 fn repl_prims(lines: &str) -> helpers::e2e::CrOutput {
     Cranelisp::new()
@@ -327,6 +327,45 @@ fn auto_curry_three_param_partial_apply() {
          (let [f (add3 10 20)] (f 30))\n",
     )
     .assert_stdout_contains(":primitives/Int 60");
+}
+
+// spec: spec/04-expressions.md §4.6.3 — a free type variable in an already
+// supplied parameter remains in the same inference context; applying the
+// fully concrete residual closure determines and returns its Int result.
+#[test]
+fn auto_curry_supplied_free_variable_then_apply() {
+    let out = repl_prims(
+        "(defn supplied-free [x :Int y] (add-i64 y 0))\n\
+         ((supplied-free 5) 3)\n",
+    );
+    let details = format!(
+        "status={:?}\nstdout:\n{}\nstderr:\n{}",
+        out.status, out.stdout, out.stderr
+    );
+    assert!(
+        out.status.success(),
+        "supplied-free-variable curry must leave the child successful; {details}"
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 3"),
+        "applying the residual closure must return 3; {details}"
+    );
+}
+
+// spec: spec/04-expressions.md §4.6.3 — control: the same partial application
+// forms an `(Fn [Int] Int)` residual before an incompatible scalar use rejects
+// that function value.
+#[test]
+fn auto_curry_supplied_free_variable_forms_residual_control() {
+    let out = repl_prims(
+        "(defn supplied-free [x :Int y] (add-i64 y 0))\n\
+         (add-i64 (supplied-free 5) 1)\n",
+    );
+    let details = format!("stdout:\n{}\nstderr:\n{}", out.stdout, out.stderr);
+    assert!(
+        details.contains("Fn [") && details.contains("primitives/Int") && details.contains("got"),
+        "the diagnostic must expose the residual function value; {details}"
+    );
 }
 
 // spec: spec/04-expressions.md §4.6 — supplying MORE args than a fn's arity is
@@ -870,7 +909,7 @@ fn type_annotation_qualified_and_bare_resolve_identically() {
 
 // =============================================================================
 // Sprint 109 — SS-1: §4.5 `fn` is single-arity; the parenthesised multi-arity
-// clause form is a compile-time (parse) error. Plan: tests/plan/PLAN.md §S109 §I.
+// clause form is a compile-time (parse) error. See the [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md), S109 I.
 // =============================================================================
 
 // spec: spec/04-expressions.md §4.5 — `(fn ([x] x) ([x y] x))` (the parenthesised
@@ -908,7 +947,8 @@ fn fn_multi_arity_clause_form_parse_error_neg() {
 
 // =============================================================================
 // §4.5 [S109 W6.3] — Written free-type-variable annotation in `fn` param position.
-// Plan: tests/plan/PLAN.md §L.1 (R9(i)).
+// [Historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md),
+// S109 L.1 (R9(i)).
 //
 // §3.3.1 MUST (a): a bare lowercase identifier in an annotation is an inference
 // variable with a name. Here in `fn` (lambda) param position (§4.5) — the same
@@ -994,7 +1034,8 @@ fn lambda_owned_var_instantiated_in_place() {
 
 // =============================================================================
 // §3.3.1 [S109 W6.3] — Nested `fn` written vars CO-REFER (do NOT shadow).
-// Plan: tests/plan/PLAN.md §L.1 (R8). GREEN PIN — the co-reference half landed
+// [Historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md),
+// S109 L.1 (R8). GREEN PIN — the co-reference half landed
 // at `b2bfb760` and survives W6.3 unchanged (only bare-var rigidity is reversed).
 //
 // §3.3.1 MUST (g) (lexical co-reference): a written var is introduced at the

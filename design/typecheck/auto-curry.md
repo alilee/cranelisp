@@ -1,7 +1,7 @@
 # Auto-currying — detection, settlement, and the drain seams
 
 Owner: `design`(typecheck). Subordinate to `typecheck.md` §9.6.
-Normative source: `spec/04-expressions.md` §4.6.3 and **§4.6.3.1** (S121);
+Normative source: `spec/04-expressions.md` §4.6.3;
 `spec/03-types.md` §3.11.1/§3.11.4 for the ambiguity interaction.
 
 Auto-currying is the language feature where calling a function with fewer arguments than it
@@ -25,7 +25,8 @@ trigger because it means "these types do not match as a direct call" without a s
 branch on the normal path. `try_auto_curry` is defined at `infer.rs:1106` and called from
 `infer.rs:983`.
 
-Four exits, and the difference between them is the subject of §2:
+Five outcomes define the detection boundary. Section 2 records the current
+free-variable behavior without changing that boundary:
 
 | Exit | Site | Behaviour |
 |---|---|---|
@@ -76,101 +77,29 @@ for seam 3.
 
 ---
 
-## 2. FIXME 0799 — the free-type-variable acceptance path
+## 2. Free variables remain in the ordinary inference context
 
-### 2.1 The rule, which the spec now settles
+`spec/04-expressions.md` §4.6.3 now carries the complete rule. Forming a residual
+closure does not generalize unresolved monotype variables. They remain in the same
+inference context and a later use may constrain them; any variable still unresolved
+after inference is handled by the ordinary §3.11 ambiguity rule.
 
-`spec/04-expressions.md` §4.6.3.1 (S121) is decisive and needs no further arbitration:
+The S122 Q10 discriminator confirms that this is the current implementation behavior,
+without a production change:
 
-> A curried closure is an ordinary value, and the ambiguity rule of §3.11 governs it on the
-> ordinary terms. **Neither the supplied nor the residual parameter positions need be
-> concrete for the curry to form.** … A written parameter annotation is identical to an
-> inference-generated variable. Whether a parameter carries a written annotation therefore
-> MUST NOT decide whether a curry forms … Rejecting a partial application because a
-> parameter was left unannotated is a defect, not an application of this rule.
-
-Three dispositions, all inherited rather than invented:
-
-| Shape | Disposition |
+| Public shape | Current evidence |
 |---|---|
-| a reachable use pins the residual variable — `((f 5) 3)`, `(let [h (f 5)] (h 3))` | **accepted**, and monomorphised at that use, producing the same result as the full application `(f 5 3)` |
-| unpinned in a codegen-reaching value position | the §3.11.1 ambiguity error, disposition 2 of §3.11.4 |
-| bare at the REPL | type display, disposition 3 of §3.11.4 |
+| `(defn supplied-free [x :Int y] (add-i64 y 0))` followed by `((supplied-free 5) 3)` | succeeds and returns `3` |
+| pass `(supplied-free 5)` to a scalar consumer | rejects and exposes the residual function type |
 
-**The ambiguity semantics are not changed by this work.** Cell (e) of the filing's matrix —
-a curry whose *residual* carries a free variable that nothing pins — stays rejected by the
-§3.11 gate, and that rejection is principled. What is a defect is the rejection of cells
-(a), (f), (h) and (m), where a reachable use *does* pin the variable.
-
-### 2.2 The measured axis, and the discriminating control
-
-From the filing (HEAD `9088c82e`, `--run`, `PrimitivesOnly`), reduced to the pair that
-matters:
-
-| # | Program (`x` unannotated ⇒ free type var) | Result |
-|---|---|---|
-| a | `(defn g [x y] (add-i64 y 0))` → `((g 5) 3)` | **rejected**: `expected (Fn [Int] Int), got Int` |
-| c | `(defn g [:Int x :Int y] …)` → `((g 5) 3)` — annotated twin | exit 3 ✓ |
-| **j** | same `g` as (a), non-callee use `(add-i64 (g 5) 1)` | rejected with `got (Fn [Int] Int)` — **the curry DID form** |
-| m | same `g`, let-bound then applied | rejected, same message as (a) |
-
-**(j) beside (a) is the discriminating control**: same function, same free parameter, and
-the only variable is whether the curried result is applied. The curry demonstrably forms
-when the result flows to a non-application use, so the boundary is not deliberate — which
-is what makes this a `wrong-reject` rather than a spec fork, and why §4.6.3.1 could be
-written without a new user ruling.
-
-### 2.3 The seam is a hypothesis — observe before designing the cure
-
-METHOD §2.2 and the filing both say the same thing, and this design honours it rather than
-pre-empting it: **the first act is to observe which arm `try_auto_curry` takes for cell (a),
-not to fix from the table.**
-
-The available hypothesis is that the callee type at `infer.rs:1121` is not yet resolved to
-`Type::Fn` — because `g`'s scheme instantiates to a type whose shape is still a variable at
-that point — so the guard falls through the silent `_ => Ok(None)` at `:1123`. After that an
-ordinary apply-unification against a bare type variable cannot enforce arity, the inner node
-types as `Int` (a *full* application of a 2-parameter function to 1 argument), and the error
-surfaces at the *outer* node with exactly the observed message. It fits every observation,
-including the message's location. It is still a hypothesis.
-
-**The design rule, which holds whichever arm is taken:**
-
-> **AC-1. The curry decision is a function of the callee's settled arity, and the callee's
-> arity is on its carrier, not on the substituted type at the moment of the guard.**
-> `infer_var` already resolves every `Var` once and records a typed verdict
-> (`VarRef::Global(FQSymbol)` / `VarRef::Local { binder, .. }`,
-> `design/arch/typed-resolution-carrier.md`). A global callee's declared parameter count is
-> on its entry's scheme; a local binder's is on the binder. Reading arity from the carrier
-> rather than from `apply_subst`'s current answer is Principle 24 at this seam — the type is
-> a trigger, the carrier is the identity — and it is what makes the decision independent of
-> how much of the callee's type inference has settled by the time the guard runs.
-
-Two consequences follow, and both are stated as obligations rather than as a diff, because
-the observation decides which of them is load-bearing:
-
-1. **The silent fallthrough at `infer.rs:1123` stops being silent.** Whatever the arm's
-   correct behaviour, an unobservable `Ok(None)` on a callee whose arity is knowable is the
-   mechanism that made this invisible. Either it curries (arity known from the carrier), or
-   it declines *for a stated reason* that the enclosing error can cite.
-2. **Diagnostic quality is part of acceptance, not a nicety.** The present message describes
-   the failure of the *application* (`expected (Fn [Int] Int), got Int`) rather than the
-   reason the curry did not form, so it sends a reader to the wrong line. Whatever lands
-   must say something a user can act on, and the text is pinned by a cell.
-
-**AC-2. What must not change.** The four other exits of §1.1 keep their behaviour exactly:
-`args.is_empty()` is not a curry; a constructor callee is an arity error, not a curry; a
-non-`Var` callee is an error; and a curry whose residual variable nothing pins still reaches
-the §3.11 gate. A fix that makes cell (a) pass by *also* accepting cell (e) has widened the
-ambiguity rule and is a `review` reject.
-
-### 2.4 Falsifiers
-
-- **The minimal pair is (a) RED beside (j) GREEN** — one function, two uses. That pair is
-  worth more than (a) alone: it pins that the curry *can* form, so a "fix" that simply
-  rejects both cannot pass. Cell (c) is the born-green annotated twin control.
-- A fix that changes any golden for an already-green `auto_curry_*` cell is a finding.
-- A fix that makes cell (e) compile is a reject (AC-2).
+The exact cells are
+`tests/spec_04_expressions.rs::auto_curry_supplied_free_variable_then_apply` and
+`auto_curry_supplied_free_variable_forms_residual_control`; both pass in
+`/tmp/s122-q10-current-shapes-dc78ddbe.log`. The historical 0799 wrong-reject no
+longer reproduces, so its observation-first repair, alternate diagnostic, carrier-arity
+mechanism and semantic-fork prose are retired. This pair does not establish that every
+historical matrix cell ran, and it does not widen the ambiguity rule. FIXME 0779's drain
+polarity evidence was completed separately in §3.
 
 ---
 
@@ -199,7 +128,7 @@ discipline mapping is checkable rather than folklore.
 The structural half — a **required** `AutoCurryDrain` parameter, so a new seam cannot
 inherit `Final` silently — landed S115 W4b and is verified live (`mono_collect.rs:815`).
 
-### 3.2 The detection gap, and the honest boundary
+### 3.2 The detection evidence, and the honest boundary
 
 FIXME 0779 measured the mapping's detection by flipping each seam to the opposite discipline
 and running the full typecheck unit tier: **one of six** reddens (`body.rs`'s single-sig
@@ -207,7 +136,7 @@ post-pass, via
 `mono_collect::tests::autocurry_over_trait_operator_never_carries_the_decl_fq`). The other
 five leave the tier green.
 
-`qa` decided the shape at S118 Phase 3 and this design consumes that decision:
+`qa` decided the shape at S118 Phase 3 and the S122 evidence implements that decision:
 
 > **Candidate (1) adopted** — a **seam-level polarity cell** driving `resolve_auto_curry`
 > directly over a seeded `pending_auto_curry`, testing both disciplines exhaustively at the
@@ -221,27 +150,23 @@ five leave the tier green.
 > disposition is recorded rather than left as a silent gap: **seams 4, 5 and 6 are `Final`
 > by construction, not by test.**
 
+`program::mono_collect::tests::auto_curry_drain_polarities_handle_unresolved_trait_decl_carrier`
+now drives both disciplines over the same seeded unresolved trait-declaration carrier.
+The single-polarity plant fails at deferred count 0 versus 1; the restored implementation
+passes 1/1. Evidence is recorded in
+`/tmp/s122-0779-polarity-plant-red-dc78ddbe.log` and
+`/tmp/s122-0779-polarity-restored-green-dc78ddbe.log`.
+
 That boundary is only honest if the *reason* per seam is written down, which is what §1.2's
 table supplies: a recheck derives from state settled before it begins, so there is nothing
-for a `Deferrable` polarity to hold back. The seam-level cell tests that the function's two
-polarities are both correct; the table is the argument that each seam passes the right one.
-Neither substitutes for the other, and neither is claimed to.
+for a `Deferrable` polarity to hold back. The unit asserts the function's two polarities;
+the table is the construction argument that each seam passes the right one. This is not a
+claim of six independent caller-seam behavioral proofs. FIXME 0779 is closed.
 
-**Owner:** the cell is `dev`(typecheck)'s and lands in this visit (§4). It is the S119-owed
-residual 0779 records; there was no typecheck wave in S118.
+### 3.3 The source census points here
 
-### 3.3 A stale record inside the instrument
-
-`mono_collect.rs:810-814`'s rustdoc carries the seam census as a table of file:line pairs —
-`body.rs:88`, `body.rs:441`, `impl_check.rs:762`/`:1024`, `monomorphise.rs:856`,
-`finalize.rs:607` — and **every one has drifted** from the live call sites in §1.2, by
-between 4 and 190 lines. The crate `CLAUDE.md` already warns "do not read the census table
-as an instrument"; a census whose citations do not resolve is worse than that, it is a
-record that will misroute the next reader. The correction is reserved to this visit (§4).
-
-The durable fix is not a better line number. It is that the *set* is enumerated in this
-design with its per-seam reason, and the rustdoc cites the design rather than re-listing
-sites it cannot keep current.
+`mono_collect.rs` now cites this design instead of maintaining drifting file-and-line
+copies. Section 1.2 remains the durable seam census and construction rationale.
 
 ---
 
@@ -249,23 +174,15 @@ sites it cannot keep current.
 
 | Item | Class | Where |
 |---|---|---|
-| The 0799 acceptance path | **live implementation**, observation-first | `infer.rs::try_auto_curry` + whatever the observation names; §2.3 |
-| The 0779 seam-level polarity cell | **live evidence** | `program/mono_collect/tests/` per the crate `CLAUDE.md` test-home table |
+| The 0799 acceptance path | **current behavior; filing retired** | §2's Q10 public pair; no production change |
+| The 0779 seam-level polarity cell | **evidence complete; filing retired** | `program::mono_collect::tests::auto_curry_drain_polarities_handle_unresolved_trait_decl_carrier`; §3.2 |
 | The seam → discipline table with per-seam reasons | **current-state wash** | §1.2 of this doc (done) |
-| `mono_collect.rs:810-814`'s drifted census citations | **live source hygiene**, reserved | §3.3 |
-| The §4.6.3 traceability band, including the free-type-variable column | **evidence**, `qa`-owned | `spec/04-expressions.md` §4.6.3/§4.6.3.1 |
+| The source census comment | **corrected** | points to §1.2 rather than duplicating line citations |
+| The §4.6.3 supplied-free-variable pair | **evidence complete** | `tests/spec_04_expressions.rs`; §2 |
 | 0776's register row | **not C3's** | `arch` |
 
-The free-type-variable column of the §4.6.3 matrix — all twelve existing `auto_curry_*`
-tests curry over a *determined* type, a coverage-by-definition-variants hole — is `qa`'s to
-allocate and `test`'s to author. Rows owed, each with its annotated twin: free var in the
-supplied position; free var in the residual position (expect the §3.11 gate); free var in
-both; ≥3 arity with the free var in a middle position; and the curried result used as a
-value (the (j) shape) vs applied (the (a) shape) vs let-bound-then-applied (the (m) shape).
-
-**Adjacency worth checking in one breath:** if the §2.3 observation lands in the drain
-machinery rather than in the guard, then 0799 and 0779 are one finding — 0779's detection
-gap is why 0799 was invisible — and the polarity cell should be authored to redden on it.
+No historical matrix is resurrected from 0799. The 0779 unit and comment repair are
+complete, without claiming six caller-seam behavioral proofs.
 
 ---
 
@@ -289,7 +206,8 @@ environment pointer plus the new arguments.
 resolution is `(Fn [Int Int] Int)`, unification against `(Fn [Int] ?ret)` fails, and the
 fallback yields `(Fn [Int] Int)`. Constrained polymorphic operators inherit the constraint
 and are monomorphised at the call site where concrete types become known (§4.6.3's
-`make-adder` example), which is the same accept path §2.1 states for the unconstrained case.
+`make-adder` example), which is the same inference-context behavior §2 records for the
+unconstrained case.
 
 **Product constructors do not auto-curry.** §1.1's constructor guard; see
 `adt.md` §"Product Type Handling".
@@ -298,7 +216,7 @@ and are monomorphised at the call site where concrete types become known (§4.6.
 
 ## 6. Cross-references
 
-- `spec/04-expressions.md` §4.6.3, §4.6.3.1 (S121), §4.7; `spec/03-types.md` §3.11.1,
+- `spec/04-expressions.md` §4.6.3, §4.7; `spec/03-types.md` §3.11.1,
   §3.11.4
 - `monomorphisation.md` §11.8.10 — the sibling multi-seam operation and its standing
   fourth-window rule
@@ -308,4 +226,3 @@ and are monomorphised at the call site where concrete types become known (§4.6.
 - `crates/cranelisp-typecheck/CLAUDE.md` §"The two order/settlement seams" — the as-built
   memory for both cures
 - `design/arch/backend-keyed-consumer.md` §1.1.1 — the AutoCurry callee-span transport
-- `design/arch/typed-resolution-carrier.md` — the `VarRef`/`ApplyRef` carrier AC-1 reads

@@ -1115,8 +1115,8 @@ fn search_unloaded_module_still_indexes_alongside_loaded_feed_neg() {
 // Sprint 109/Sprint 121 — MV-1/MV-3 (0570 `mod-` search-exclude twin), EV-3
 // (macro declarations excluded from search; ACT-0952 retains future full
 // semantic indexing), EV-4 (search-row ≡ bare-lookup envelope), DC-10
-// (constructor listed once, canonical form). Plan: tests/plan/PLAN.md §S109
-// §J/§G/§D. Stdlib-free; PrimitivesOnly; reachable modules built inline.
+// (constructor listed once, canonical form). The [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md)
+// records S109 J/G/D. Stdlib-free; PrimitivesOnly; reachable modules built inline.
 // ===========================================================================
 
 /// A REPL session with a parent module declaring a PRIVATE `(mod- priv)` and a

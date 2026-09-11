@@ -2,12 +2,9 @@
 //! Decision 40 §"Int hosting — the trace bodies and observer state" (Path B1).
 //!
 //! This file absorbs the io_trace ring-buffer machinery that previously lived
-//! in `crates/cranelisp-intrinsics/src/io_trace.rs`. The intrinsics-side
-//! definition remains (orphaned, awaiting FIXME 0198 deletion) but is no
-//! longer the live consumer for int sessions — int's session startup
-//! registers `record` (below) with `cranelisp_intrinsics::register_io_observer`
-//! and the IO trampoline emits events through that registration via
-//! `io_observer::emit`.
+//! in `cranelisp-intrinsics`. Int's session startup registers `record` (below)
+//! with `cranelisp_intrinsics::register_io_observer`, and the IO trampoline
+//! emits events through that registration via `io_observer::emit`.
 //!
 //! ## Activation
 //!
@@ -228,9 +225,10 @@ pub fn record_event(tag: IoTraceTag, payload: IoTracePayload) {
 /// bench (FIXME 0021, `/qa`) links `src/lib.rs` and calls this in a tight loop
 /// with `CRANELISP_IO_TRACE` unset to measure the per-call early-return cost
 /// against a no-op baseline at nanosecond resolution — establishing the `<1%`
-/// off-path bound (`design/backend/io-trampoline-trace.md` §9 AC 2). A
-/// subprocess-driven measurement cannot reach that resolution (process-spawn +
-/// I/O jitter swamps the signal), so the measurement must be in-process.
+/// off-path bound (archived `design/backend/archive/io-trampoline-trace.md`
+/// §9 AC 2). A subprocess-driven measurement cannot reach that resolution
+/// (process-spawn + I/O jitter swamps the signal), so the measurement must be
+/// in-process.
 ///
 /// This is a thin pass-through to `record_event` — it adds NO measurement
 /// logic of its own (the bench owns timing); it exists solely to give the

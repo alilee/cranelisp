@@ -303,10 +303,10 @@ pub use scheduling::SchedulingClass;
 pub use lifecycle::{
     Binding, BrokenProvenance, Callable, CallableArm, CallableArmDraft, CallableArmId,
     CallableArmSettlement, CallableOrigin, CallableTarget, ConstrainedMeta, Decl, ImplShell,
-    InstanceLink, Life, LifecycleError, MacroClause, MacroClauseDraft, MacroDeclaration,
-    MonoDemand, NameCandidate, OverloadArm, OverloadedCallable, Realization, RetireReason,
-    RetiredSlot, SpecialFormRecord, SynthSpec, TemplateBody, TemplateKind, TraitMethodRecord,
-    TraitRecord, TypeRecord,
+    InstanceKeyError, InstanceLink, Life, LifecycleError, MacroClause, MacroClauseDraft,
+    MacroDeclaration, MonoDemand, NameCandidate, OverloadArm, OverloadedCallable, Realization,
+    RetireReason, RetiredSlot, SpecialFormRecord, SynthSpec, TemplateBody, TemplateKind,
+    TraitMethodRecord, TraitRecord, TypeRecord, concrete_callable_key,
 };
 pub use module::{
     BrokenTransition, CHAIN_FOLLOW_DEPTH_LIMIT, CallablePublicationRecord, CallableSlot, CodeStore,

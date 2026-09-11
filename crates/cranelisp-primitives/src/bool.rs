@@ -5,28 +5,34 @@
 //! `primitives` module's symbol table. Wave 3b-2d.2b lifted the body from
 //! the pre-D43 runtime crate (`primitives/bool.rs`).
 
+use cranelisp_intrinsics::handle::Owned;
 use cranelisp_intrinsics::heap_string;
+
+use crate::abi_facts::adopt_produced_value;
 
 /// Convert a Bool (0 or 1) to "true" or "false".
 /// Returns a new HeapString (rc=1).
-pub(crate) fn bool_to_string(b: i64) -> i64 {
+pub(crate) fn bool_to_string(b: i64) -> Owned {
     let s = if b != 0 { "true" } else { "false" };
-    heap_string::alloc_string(s.as_bytes()) as i64
+    // SAFETY: `alloc_string` returned a fully initialized fresh RC=1 String.
+    unsafe { adopt_produced_value(heap_string::alloc_string(s.as_bytes()) as i64) }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cranelisp_intrinsics::alloc;
 
     // spec: appendix-a-builtins §A.3 — bool-to-string converts true
     #[test]
     fn test_bool_to_string_true() {
         let result = bool_to_string(1);
         unsafe {
-            assert_eq!(heap_string::read_string_as_str(result), "true");
-            alloc::dealloc(result as *mut u8);
+            assert_eq!(
+                heap_string::read_string_as_str(result.raw_for_read()),
+                "true"
+            );
         }
+        cranelisp_intrinsics::rc::consume_shallow(result);
     }
 
     // spec: appendix-a-builtins §A.3 — bool-to-string converts false
@@ -34,9 +40,12 @@ mod tests {
     fn test_bool_to_string_false() {
         let result = bool_to_string(0);
         unsafe {
-            assert_eq!(heap_string::read_string_as_str(result), "false");
-            alloc::dealloc(result as *mut u8);
+            assert_eq!(
+                heap_string::read_string_as_str(result.raw_for_read()),
+                "false"
+            );
         }
+        cranelisp_intrinsics::rc::consume_shallow(result);
     }
 
     // spec: 12-runtime §12.1.1 — nonzero i64 value is truthy (Bool representation)
@@ -44,8 +53,11 @@ mod tests {
     fn test_bool_to_string_nonzero_is_true() {
         let result = bool_to_string(42);
         unsafe {
-            assert_eq!(heap_string::read_string_as_str(result), "true");
-            alloc::dealloc(result as *mut u8);
+            assert_eq!(
+                heap_string::read_string_as_str(result.raw_for_read()),
+                "true"
+            );
         }
+        cranelisp_intrinsics::rc::consume_shallow(result);
     }
 }

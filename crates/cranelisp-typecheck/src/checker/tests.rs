@@ -878,7 +878,8 @@ fn ensure_module_exists_concurrent_same_path_emits_exactly_one_created() {
 //
 // These tests guard Decision 45 (Pattern B) and Principle 17 (per-symbol
 // chain-follow as THE navigation primitive) for `TraitImpl` writes and
-// lookups. See `design/typecheck/implementation-slice-s66.md §5`.
+// lookups. See `design/typecheck/traits.md §1.3` and
+// `design/typecheck/typecheck.md §3.3`.
 
 use cranelisp_types::{
     Defn, Expr, FQSymbol, FQTypeName, TraitDecl, TraitImpl, TraitName, TypeName,

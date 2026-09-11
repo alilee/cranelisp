@@ -32,9 +32,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Mutex;
 
 use cranelisp_types::{
-    Binding, BrokenProvenance, CallableOrigin, CallableTarget, CranelispError, Decl, ErrorLocation,
-    FQSymbol, Life, ModuleFullPath, ModuleStrategy, Realization, Scheme, Sexp, Span, Symbol, Type,
-    TypeId,
+    Binding, BrokenProvenance, CallableArmId, CallableOrigin, CallableTarget, CranelispError, Decl,
+    ErrorLocation, FQSymbol, Life, ModuleFullPath, ModuleStrategy, Realization, Scheme, Sexp, Span,
+    Symbol, Type, TypeId,
 };
 
 use crate::code::{Code, SessionSymbolTable};
@@ -416,6 +416,103 @@ pub(crate) fn validate_guarded_redefinition(
     ))
 }
 
+/// Publication policy for historical instances of an admitted authored
+/// callable replacement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InstanceRematerializationPolicy {
+    SameLanguageType,
+    CallerFreeLanguageTypeChange,
+}
+
+/// Classify an authored replacement whose historical concrete instances must
+/// be rematerialized in the same prepared turn. The ordinary guard runs first;
+/// this projection preserves its same-type and caller-free type-change cases.
+pub(crate) fn instance_rematerialization_policy(
+    symbol_tables: &SymbolTables,
+    module: &ModuleFullPath,
+    name: &Symbol,
+    prior: &Binding<Code>,
+    staged: &Binding<Code>,
+) -> Option<InstanceRematerializationPolicy> {
+    if declaration_class(prior) != Some(DeclarationClass::Callable)
+        || declaration_class(staged) != Some(DeclarationClass::Callable)
+    {
+        return None;
+    }
+    let Some(prior_type) = callable_language_type(prior) else {
+        return None;
+    };
+    let Some(staged_type) = callable_language_type(staged) else {
+        return None;
+    };
+    if prior_type == staged_type {
+        return Some(InstanceRematerializationPolicy::SameLanguageType);
+    }
+    let target = FQSymbol {
+        module: module.clone(),
+        symbol: name.clone(),
+    };
+    blocking_dependents(symbol_tables, &target)
+        .is_empty()
+        .then_some(InstanceRematerializationPolicy::CallerFreeLanguageTypeChange)
+}
+
+/// Match one historical overload arm to the unique staged arm with the same
+/// canonical authored language type. Arm ids are generation-local roster
+/// positions and therefore cannot be carried across a replacement.
+pub(crate) fn match_replacement_overload_arm(
+    owner: &FQSymbol,
+    prior: &Binding<Code>,
+    staged: &Binding<Code>,
+    prior_arm: CallableArmId,
+) -> Result<CallableArmId, CranelispError> {
+    let (Decl::Overloaded(prior), Decl::Overloaded(staged)) =
+        (&prior.declaration, &staged.declaration)
+    else {
+        return Err(CranelispError::TypeError {
+            message: format!(
+                "cannot rematerialize prior overload instance for {owner}: replacement is not the same callable family class"
+            ),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        });
+    };
+    let old = prior
+        .arms
+        .get(prior_arm.ordinal())
+        .filter(|arm| arm.id == prior_arm)
+        .ok_or_else(|| CranelispError::TypeError {
+            message: format!(
+                "cannot rematerialize prior overload instance for {owner}: historical arm {} is absent",
+                prior_arm.ordinal()
+            ),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        })?;
+    let old_type = LanguageType::of_scheme(&old.callable.scheme);
+    let matches = staged
+        .arms
+        .iter()
+        .filter(|arm| LanguageType::of_scheme(&arm.callable.scheme) == old_type)
+        .map(|arm| arm.id)
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [matched] => Ok(*matched),
+        [] => Err(CranelispError::TypeError {
+            message: format!(
+                "cannot rematerialize prior overload instance for {owner}: historical arm {} has no matching staged language type",
+                prior_arm.ordinal()
+            ),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        }),
+        _ => Err(CranelispError::TypeError {
+            message: format!(
+                "cannot rematerialize prior overload instance for {owner}: historical arm {} matches more than one staged language type",
+                prior_arm.ordinal()
+            ),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        }),
+    }
+}
+
 fn type_change_rejection(
     target: &FQSymbol,
     old_type: String,
@@ -785,6 +882,24 @@ pub(crate) fn mark_broken(
 // Reverse dependency index (design §3.3)
 // ---------------------------------------------------------------------------
 
+fn instance_template_owner(binding: &Binding<Code>) -> Option<FQSymbol> {
+    let callable = binding.callable()?;
+    let Life::Concrete {
+        minted_from: Some(link),
+        ..
+    } = &callable.arm.life
+    else {
+        return None;
+    };
+    match &link.template {
+        CallableTarget::Binding(owner) | CallableTarget::OverloadArm { owner, .. } => {
+            Some(owner.clone())
+        }
+        CallableTarget::MacroClause { .. } => None,
+        _ => None,
+    }
+}
+
 /// Callee → callers, derived on demand from `Def.callees` across the live
 /// tables at the moment an `AbiChanging` classification fires. Never a
 /// second authored store (Principle 7): a scan is correct by construction
@@ -792,11 +907,27 @@ pub(crate) fn mark_broken(
 /// fast path (L-D1 — no incremental maintenance tax on registrations).
 pub(crate) struct ReverseIndex {
     map: HashMap<FQSymbol, Vec<FQSymbol>>,
+    instance_owners: HashMap<FQSymbol, FQSymbol>,
 }
 
 impl ReverseIndex {
     pub(crate) fn build(tables: &SymbolTables) -> Self {
         let mut map: HashMap<FQSymbol, Vec<FQSymbol>> = HashMap::new();
+        let mut instance_owners = HashMap::new();
+        for shard in tables.iter() {
+            let module = shard.key().clone();
+            for (name, entry) in shard.value().all_symbols() {
+                if let Some(owner) = instance_template_owner(entry) {
+                    instance_owners.insert(
+                        FQSymbol {
+                            module: module.clone(),
+                            symbol: name.clone(),
+                        },
+                        owner,
+                    );
+                }
+            }
+        }
         for shard in tables.iter() {
             let module = shard.key().clone();
             for (name, entry) in shard.value().all_symbols() {
@@ -845,7 +976,10 @@ impl ReverseIndex {
             });
             callers.dedup();
         }
-        ReverseIndex { map }
+        ReverseIndex {
+            map,
+            instance_owners,
+        }
     }
 
     pub(crate) fn callers_of(&self, fq: &FQSymbol) -> &[FQSymbol] {
@@ -860,7 +994,7 @@ impl ReverseIndex {
     pub(crate) fn callers_of_with_variants(&self, target: &FQSymbol) -> Vec<FQSymbol> {
         let mut out: Vec<FQSymbol> = Vec::new();
         for (callee, callers) in &self.map {
-            if callee == target || base_fq(callee) == *target {
+            if callee == target || self.base_fq(callee) == *target {
                 out.extend(callers.iter().cloned());
             }
         }
@@ -869,6 +1003,13 @@ impl ReverseIndex {
         });
         out.dedup();
         out
+    }
+
+    fn base_fq(&self, fq: &FQSymbol) -> FQSymbol {
+        self.instance_owners
+            .get(fq)
+            .cloned()
+            .unwrap_or_else(|| base_fq(fq))
     }
 }
 
@@ -916,7 +1057,7 @@ pub(crate) fn stale_callers(tables: &SymbolTables, target: &FQSymbol) -> Vec<FQS
         // a `__macro_*` clause names its owning user macro (§18.1.1). The
         // target itself (e.g. a recursive self-edge through an old mint) is not
         // a member of its own set.
-        let base = render_caller_base(&caller);
+        let base = render_caller_base(&reverse.base_fq(&caller));
         if base == *target {
             continue;
         }
@@ -1311,7 +1452,7 @@ fn process_scc(
     // defns (a `$`-mangled variant re-mints through its base form).
     let mut units: Vec<FQSymbol> = Vec::new();
     for &i in scc {
-        let base = base_fq(&members[i].fq);
+        let base = base_fq_from_tables(&session.shared.symbol_tables, &members[i].fq);
         if !units.contains(&base) {
             units.push(base);
         }
@@ -1326,7 +1467,10 @@ fn process_scc(
                         let m = &members[i];
                         let own = by_fq
                             .get(&m.fq)
-                            .or_else(|| by_fq.get(&base_fq(&m.fq)))
+                            .or_else(|| {
+                                by_fq
+                                    .get(&base_fq_from_tables(&session.shared.symbol_tables, &m.fq))
+                            })
                             .copied();
                         let green_changing = own.map(|k| k == RedefKind::AbiChanging);
                         propagates.insert(
@@ -1353,7 +1497,8 @@ fn process_scc(
                         // site; `base`/`units` stay RAW for the sexp lookup
                         // and the broken-registry key. Dedup on the folded
                         // name so two clauses of one macro collapse.
-                        let display = render_caller_base(base);
+                        let display =
+                            render_caller_base_from_tables(&session.shared.symbol_tables, base);
                         if reported.insert(display.clone()) {
                             report.recompiled.push(display);
                         }
@@ -1370,7 +1515,8 @@ fn process_scc(
                             target,
                             &err,
                         );
-                        let display = render_caller_base(base);
+                        let display =
+                            render_caller_base_from_tables(&session.shared.symbol_tables, base);
                         if reported.insert(display.clone()) {
                             report.broken.push((display, err.clone()));
                         }
@@ -1398,7 +1544,7 @@ fn process_scc(
                 // case — a cross-module macro clause with no standalone
                 // sexp routes here via T2); the broken-registry key stays
                 // RAW (`base_fq`).
-                let display = render_caller_base(&m.fq);
+                let display = render_caller_base_from_tables(&session.shared.symbol_tables, &m.fq);
                 if reloaded {
                     propagates.insert(m.fq.clone(), true);
                     if reported.insert(display.clone()) {
@@ -1407,7 +1553,7 @@ fn process_scc(
                 } else {
                     // No backing file to reload from: trap rather than
                     // leave a stale caller silently unsound.
-                    let base = base_fq(&m.fq);
+                    let base = base_fq_from_tables(&session.shared.symbol_tables, &m.fq);
                     let err = "definition source unavailable for dependent \
                                recompilation"
                         .to_string();
@@ -1440,6 +1586,20 @@ pub(crate) fn base_fq(fq: &FQSymbol) -> FQSymbol {
     }
 }
 
+/// Resolve a concrete instance row to its authored template owner using the
+/// stored backlink. Legacy `$`-generated rows retain the spelling fallback for
+/// the non-instance implementation and macro artifacts that still use it.
+pub(crate) fn base_fq_from_tables(tables: &SymbolTables, fq: &FQSymbol) -> FQSymbol {
+    tables
+        .get(&fq.module)
+        .and_then(|table| {
+            table
+                .get(fq.symbol.as_ref())
+                .and_then(instance_template_owner)
+        })
+        .unwrap_or_else(|| base_fq(fq))
+}
+
 /// Fold a synthetic `__macro_{name}_clause_{idx}` clause symbol to its owning
 /// user macro base name `{name}` (S103, FIXME 0507 Issue 2 / F3 — §18.1.1
 /// "no internal artifacts"). Returns `None` for a non-clause symbol.
@@ -1460,6 +1620,16 @@ pub(crate) fn render_caller_base(fq: &FQSymbol) -> FQSymbol {
         };
     }
     base_fq(fq)
+}
+
+fn render_caller_base_from_tables(tables: &SymbolTables, fq: &FQSymbol) -> FQSymbol {
+    if let Some(base) = macro_clause_base_name(fq.symbol.as_ref()) {
+        return FQSymbol {
+            module: fq.module.clone(),
+            symbol: Symbol::from(base),
+        };
+    }
+    base_fq_from_tables(tables, fq)
 }
 
 enum RecheckInputs {
@@ -1554,7 +1724,7 @@ fn module_grain_reload(session: &mut CompilerSession, module: &ModuleFullPath) -
     else {
         return false;
     };
-    session.reload_module(module, &path, &[]).is_ok()
+    session.reload_module(module, &path).is_ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -1592,29 +1762,6 @@ impl CompilerSession {
         for target in t1_targets {
             self.drive_t1_full_cure(&target);
         }
-    }
-
-    /// Q1 (FIXME 0549 / `design/int/session-transaction.md` §10 CS-1): capture
-    /// `module`'s live **instantiation-driver** forms — the source expression of
-    /// the synthetic `__expr` eval wrapper (a same-module REPL top-level
-    /// expression is the minter of same-module polymorphic mono variants like
-    /// `g$Int`). Read from the live REPL `Introspection` record, so the mono
-    /// re-instantiation obligation travels the compiled/in-memory channel rather
-    /// than the persisted `.cl` (which §8 pin (v) makes definitions-only). Empty
-    /// when the module has no live `__expr` (no same-module expression drove a
-    /// mint this session) — then the reload behaves as a plain from-source reload.
-    fn capture_instantiation_drivers(&self, module: &ModuleFullPath) -> Vec<Sexp> {
-        let fq = FQSymbol {
-            module: module.clone(),
-            symbol: Symbol::from(crate::worker::SYNTHETIC_EXPR_WRAPPER),
-        };
-        self.shared
-            .introspection
-            .as_ref()
-            .and_then(|m| m.get(&fq))
-            .and_then(|i| i.sexp.clone())
-            .into_iter()
-            .collect()
     }
 
     /// The §10 T1 full cure (S103, FIXME 0507, change-sets CS-1/2/3): a
@@ -1655,22 +1802,13 @@ impl CompilerSession {
             self.push_stale_report(target, stale);
             return;
         }
-        // Q1 (FIXME 0549 / §10 CS-1 explicit-capture): capture the target
-        // module's live instantiation-driver forms (the synthetic `__expr` eval
-        // wrapper's source expression) BEFORE regen makes the backing file
-        // definitions-only. The from-source reload re-mints the same-module mono
-        // variants they instantiate through this explicit in-memory channel —
-        // never the persisted `.cl`. Q1 strictly precedes Q2 (the writer filter);
-        // without it, dropping `__expr` from the file would leave a stale mono
-        // caller uncured (the reverted Wave-4 regression).
-        let drivers = self.capture_instantiation_drivers(&target.module);
         // CS-1: persist the just-committed redefinition, then reload.
         self.regenerate_backing_file();
         let Some(path) = self.module_backing_path(&target.module) else {
             self.push_stale_report(target, stale);
             return;
         };
-        match self.reload_module(&target.module, &path, &drivers) {
+        match self.reload_module(&target.module, &path) {
             Ok(()) => {
                 self.reload_t1_dependents(&target.module);
                 // CS-2: the reload recompiled exactly the stale callers — the
@@ -1782,7 +1920,7 @@ impl CompilerSession {
         let mut changed_set: HashSet<ModuleFullPath> = HashSet::new();
         changed_set.insert(changed.clone());
         for (dep, path) in self.dependent_modules(&changed_set) {
-            let _ = self.reload_module(&dep, &path, &[]);
+            let _ = self.reload_module(&dep, &path);
         }
     }
 
@@ -1834,6 +1972,7 @@ impl CompilerSession {
                 platform_dirs: &platform_dirs_snap,
                 project_root: &self.shared.project_root,
                 shared_state: Some(&self.shared),
+                reload_demands: std::sync::Arc::from([]),
                 // Eval-thread-synchronous: a dependency gap must never move
                 // the module to TypecheckBlocked (Invariant SW) — the
                 // transaction waits on the dep itself and retries from the top.
@@ -2007,11 +2146,7 @@ mod tests {
         table
             .install_template(
                 Symbol::from(name),
-                Scheme {
-                    type_vars: vec![0],
-                    constraints: StdHashMap::new(),
-                    ty: fn_ty(Vec::new(), fn_ty(vec![Type::Var(0)], Type::Int)),
-                },
+                template_fixture_scheme(),
                 Vec::new(),
                 None,
                 0,
@@ -2024,15 +2159,31 @@ mod tests {
             .expect("template fixture installs through lifecycle funnel");
     }
 
+    fn template_fixture_scheme() -> Scheme {
+        Scheme {
+            type_vars: vec![0],
+            constraints: StdHashMap::new(),
+            ty: fn_ty(Vec::new(), fn_ty(vec![Type::Var(0)], Type::Int)),
+        }
+    }
+
+    fn instance_fixture_link(template: FQSymbol, arg: ConcreteType) -> InstanceLink {
+        InstanceLink::from_type_args(CallableTarget::Binding(template), vec![arg])
+    }
+
+    fn instance_fixture_key(link: &InstanceLink) -> Symbol {
+        link.instance_key(&template_fixture_scheme())
+            .expect("fixture template and substitution form a callable key")
+    }
+
     fn install_instance_fixture(
         table: &mut SessionSymbolTable,
         template: FQSymbol,
         arg: ConcreteType,
         callees: Vec<FQSymbol>,
     ) {
-        let link =
-            InstanceLink::from_type_args(CallableTarget::Binding(template), vec![arg.clone()]);
-        let name = link.instance_key();
+        let link = instance_fixture_link(template, arg.clone());
+        let name = instance_fixture_key(&link);
         let result_ty = fn_ty(vec![arg.to_type()], Type::Int);
         let ast = DefnVariant {
             params: Vec::new(),
@@ -2883,8 +3034,8 @@ mod tests {
     }
 
     // spec: design/int/s102-defect-wave.md §1 — variant-awareness + base
-    // grain: a caller compiled against a `$`-mangled mint of the target is
-    // stale (its callee's base is the target) and reports at base-defn grain;
+    // grain: a caller compiled against a concrete mint of the target is stale
+    // (its stored InstanceLink names the target) and reports at base-defn grain;
     // an old mint of the TARGET itself is not a member of its own set; a
     // target with no callers yields the empty set (section omitted).
     #[test]
@@ -2892,31 +3043,30 @@ mod tests {
         let tables: SymbolTables = dashmap::DashMap::new();
         let user = ModuleFullPath::from("user");
         let mut ut = SessionSymbolTable::new_with_params(user.clone());
-        install_concrete_fixture(
+        install_template_fixture(&mut ut, "id", Vec::new());
+        install_template_fixture(&mut ut, "h", Vec::new());
+        let id_link = instance_fixture_link(fq("user", "id"), ConcreteType::Int);
+        let id_key = instance_fixture_key(&id_link);
+        install_instance_fixture(
             &mut ut,
-            "id",
-            fn_ty(vec![Type::Int], Type::Int),
-            Vec::new(),
-            0,
-        );
-        // Compiled mono caller recorded against the MANGLED mint: IN, as `h`.
-        install_concrete_fixture(
-            &mut ut,
-            "h$primitives/Int",
-            Type::Int,
-            vec![fq("user", "id$primitives/Int")],
-            1,
-        );
-        publish_fixture_owner(&mut ut, "h$primitives/Int");
-        // The target's own old mint (recursive self-edge shape): excluded.
-        install_concrete_fixture(
-            &mut ut,
-            "id$primitives/Int",
-            Type::Int,
+            fq("user", "id"),
+            ConcreteType::Int,
             vec![fq("user", "id")],
-            2,
         );
-        publish_fixture_owner(&mut ut, "id$primitives/Int");
+        publish_fixture_owner(&mut ut, id_key.as_ref());
+        let h_link = instance_fixture_link(fq("user", "h"), ConcreteType::Int);
+        let h_key = instance_fixture_key(&h_link);
+        // Compiled mono caller recorded against the concrete id mint: IN, as h.
+        install_instance_fixture(
+            &mut ut,
+            fq("user", "h"),
+            ConcreteType::Int,
+            vec![FQSymbol {
+                module: user.clone(),
+                symbol: id_key.clone(),
+            }],
+        );
+        publish_fixture_owner(&mut ut, h_key.as_ref());
         tables.insert(user.clone(), ut);
 
         let stale = stale_callers(&tables, &fq("user", "id"));

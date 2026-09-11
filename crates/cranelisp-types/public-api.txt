@@ -308,6 +308,23 @@ impl core::marker::Unpin for cranelisp_types::ImportNames
 impl core::marker::UnsafeUnpin for cranelisp_types::ImportNames
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::ImportNames
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::ImportNames
+#[non_exhaustive] pub enum cranelisp_types::InstanceKeyError
+pub cranelisp_types::InstanceKeyError::ArgumentCount
+pub cranelisp_types::InstanceKeyError::ArgumentCount::actual: usize
+pub cranelisp_types::InstanceKeyError::ArgumentCount::expected: usize
+pub cranelisp_types::InstanceKeyError::NotConcrete(cranelisp_types::NotConcrete)
+pub cranelisp_types::InstanceKeyError::NotFunction
+pub cranelisp_types::InstanceKeyError::UnsupportedTemplate
+impl core::error::Error for cranelisp_types::InstanceKeyError
+impl core::fmt::Display for cranelisp_types::InstanceKeyError
+pub fn cranelisp_types::InstanceKeyError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for cranelisp_types::InstanceKeyError
+impl core::marker::Send for cranelisp_types::InstanceKeyError
+impl core::marker::Sync for cranelisp_types::InstanceKeyError
+impl core::marker::Unpin for cranelisp_types::InstanceKeyError
+impl core::marker::UnsafeUnpin for cranelisp_types::InstanceKeyError
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::InstanceKeyError
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::InstanceKeyError
 pub enum cranelisp_types::Life<C: cranelisp_types::CodeStore>
 pub cranelisp_types::Life::Broken
 pub cranelisp_types::Life::Broken::error: cranelisp_types::BrokenProvenance
@@ -1472,7 +1489,7 @@ pub cranelisp_types::InstanceLink::template: cranelisp_types::CallableTarget
 pub cranelisp_types::InstanceLink::type_args: alloc::vec::Vec<cranelisp_types::ConcreteType>
 impl cranelisp_types::InstanceLink
 pub fn cranelisp_types::InstanceLink::from_type_args(cranelisp_types::CallableTarget, alloc::vec::Vec<cranelisp_types::ConcreteType>) -> Self
-pub fn cranelisp_types::InstanceLink::instance_key(&self) -> cranelisp_types::Symbol
+pub fn cranelisp_types::InstanceLink::instance_key(&self, &cranelisp_types::Scheme) -> core::result::Result<cranelisp_types::Symbol, cranelisp_types::InstanceKeyError>
 impl core::marker::Freeze for cranelisp_types::InstanceLink
 impl core::marker::Send for cranelisp_types::InstanceLink
 impl core::marker::Sync for cranelisp_types::InstanceLink
@@ -1743,7 +1760,7 @@ pub cranelisp_types::MonoDemand::template: cranelisp_types::CallableTarget
 pub cranelisp_types::MonoDemand::type_args: alloc::vec::Vec<cranelisp_types::ConcreteType>
 impl cranelisp_types::MonoDemand
 pub fn cranelisp_types::MonoDemand::from_type_args(cranelisp_types::CallableTarget, alloc::vec::Vec<cranelisp_types::ConcreteType>, cranelisp_types::Span) -> Self
-pub fn cranelisp_types::MonoDemand::instance_key(&self) -> cranelisp_types::Symbol
+pub fn cranelisp_types::MonoDemand::instance_key(&self, &cranelisp_types::Scheme) -> core::result::Result<cranelisp_types::Symbol, cranelisp_types::InstanceKeyError>
 pub fn cranelisp_types::MonoDemand::instance_link(&self) -> cranelisp_types::InstanceLink
 impl core::marker::Freeze for cranelisp_types::MonoDemand
 impl core::marker::Send for cranelisp_types::MonoDemand
@@ -2305,6 +2322,7 @@ pub fn cranelisp_types::apply(&cranelisp_types::Subst, &cranelisp_types::Type) -
 pub fn cranelisp_types::bare_member_name(&str) -> &str
 pub fn cranelisp_types::build_adt_entries<C: cranelisp_types::CodeStore>(&cranelisp_types::FQTypeName, &[cranelisp_types::Symbol], &[cranelisp_types::TypeId], core::option::Option<&str>, &[cranelisp_types::AdtCtorSpec], cranelisp_types::Visibility) -> alloc::vec::Vec<(cranelisp_types::Symbol, cranelisp_types::AdtEntrySpec<C>)>
 pub fn cranelisp_types::collect_var_ids_ordered(&cranelisp_types::Type, &mut alloc::vec::Vec<cranelisp_types::TypeId>)
+pub fn cranelisp_types::concrete_callable_key(&cranelisp_types::FQSymbol, &cranelisp_types::ConcreteType) -> core::result::Result<cranelisp_types::Symbol, cranelisp_types::InstanceKeyError>
 pub fn cranelisp_types::ctor_field_types_at<C, L>(&cranelisp_types::SymbolTable<C, L>, &cranelisp_types::Symbol, &[cranelisp_types::ConcreteType]) -> core::result::Result<alloc::vec::Vec<cranelisp_types::ConcreteType>, cranelisp_types::CtorFieldsAtError> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
 pub fn cranelisp_types::drop_glue_symbol_name(&cranelisp_types::ModuleFullPath, &cranelisp_types::ConcreteType) -> cranelisp_types::LinkerSymbol
 pub fn cranelisp_types::enrol_written_trait_impl<C, L>(&mut cranelisp_types::SymbolTable<C, L>, &cranelisp_types::WrittenTraitImpl) -> core::result::Result<cranelisp_types::EnrolOutcome, cranelisp_types::CranelispError> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore

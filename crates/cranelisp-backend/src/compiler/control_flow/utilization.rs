@@ -151,13 +151,24 @@ pub(crate) fn mstatic_admits(callee_in_recursive_scc: bool, in_tail_position: bo
     callee_in_recursive_scc && !in_tail_position
 }
 
-// ── Bare-name normalisation (mono/sig-suffix + module-prefix stripping) ──────
+// ── Bare-name normalisation (executable identity + legacy suffix stripping) ─
 
-/// The source-level bare symbol of a possibly-qualified, possibly-mono-mangled
-/// name: strip a leading `module/` qualifier and a trailing `$…` monomorphisation
-/// / sig-dispatch suffix (`fib$Int` → `fib`, `mod/reduce-tree$Int` → `reduce-tree`).
+/// Recover the authored owner spelling from a canonical executable key. Other
+/// names pass through unchanged, including the legacy `$` spelling handled by
+/// [`bare_name`].
+fn authored_owner(name: &str) -> &str {
+    name.strip_prefix('(')
+        .and_then(|body| body.split_once(" ["))
+        .map_or(name, |(owner, _)| owner)
+}
+
+/// The source-level bare symbol of a possibly-qualified executable identity:
+/// project a canonical `(module/name [..] result)` key to its owner, then strip
+/// the module qualifier. Legacy `$…` monomorphisation/sig-dispatch suffixes are
+/// retained here only for older internal labels.
 fn bare_name(s: &str) -> &str {
-    let after_module = s.rsplit('/').next().unwrap_or(s);
+    let owner = authored_owner(s);
+    let after_module = owner.rsplit('/').next().unwrap_or(owner);
     after_module.split('$').next().unwrap_or(after_module)
 }
 
@@ -166,15 +177,16 @@ fn bare_name(s: &str) -> &str {
 /// current module; the symbol is normalised to its source bare name so it matches
 /// the `callees`-derived graph keys.
 fn callee_fqsymbol(current: &ModuleFullPath, name: &str) -> FQSymbol {
-    if let Some(pos) = name.find('/') {
+    let owner = authored_owner(name);
+    if let Some(pos) = owner.find('/') {
         FQSymbol {
-            module: ModuleFullPath::from(&name[..pos]),
-            symbol: Symbol::from(bare_name(&name[pos + 1..])),
+            module: ModuleFullPath::from(&owner[..pos]),
+            symbol: Symbol::from(bare_name(&owner[pos + 1..])),
         }
     } else {
         FQSymbol {
             module: current.clone(),
-            symbol: Symbol::from(bare_name(name)),
+            symbol: Symbol::from(bare_name(owner)),
         }
     }
 }
@@ -515,6 +527,10 @@ mod tests {
         assert_eq!(bare_name("fib$Int"), "fib");
         assert_eq!(bare_name("mod/reduce-tree"), "reduce-tree");
         assert_eq!(bare_name("mod/reduce-tree$Int"), "reduce-tree");
+        assert_eq!(
+            bare_name("(mod/reduce-tree [primitives/Int] primitives/Int)"),
+            "reduce-tree"
+        );
     }
 
     #[test]
@@ -522,6 +538,10 @@ mod tests {
         let cur = ModuleFullPath::from("user");
         assert_eq!(callee_fqsymbol(&cur, "fib$Int"), fq("user", "fib"));
         assert_eq!(callee_fqsymbol(&cur, "other/g$Int"), fq("other", "g"));
+        assert_eq!(
+            callee_fqsymbol(&cur, "(other/g [primitives/Int] primitives/Int)"),
+            fq("other", "g")
+        );
     }
 
     // --- M-static admission through the real classifier (Wave 1) ---

@@ -24,15 +24,36 @@ The former `/frontend`, `/typecheck`, `/backend`, `/platform` skills were retire
 | `platform/` | `/design` (platform) | DLL loading, IO trampoline, scheduling-class registry design |
 | `int/` | `/design` (int) | Binary/integration layer — pipeline orchestration, REPL session, CLI, `--link` |
 | `review/` | `/review` | Review checklists, ring-completion reports, code-quality standards |
-| `runtime/` | `/design` (runtime-pair contract; one nominated crate pass owns each edit) | Shared `cranelisp-primitives` ↔ `cranelisp-intrinsics` ownership/ABI contracts plus retained pre-D43 history. File status, not the directory name, distinguishes live records from historical ones; a sprint reserves each shared file to one crate pass so both sides do not rewrite it. |
-| `stdlib/` | `/stdlib` | Stdlib design records (e.g. examples `--run` path remediation) |
+| `runtime/` | `/design` (runtime-pair contract; one nominated crate pass owns each edit) | Shared `cranelisp-primitives` ↔ `cranelisp-intrinsics` ownership/ABI contracts. A sprint reserves each shared file to one crate pass so both sides do not rewrite it. |
+| `stdlib/` | `/design` (stdlib) | Stdlib interior design records; `/dev` (stdlib) owns source under repository `stdlib/` |
+
+## Governing memories and document collections
+
+The existing context memories are [arch](arch/CLAUDE.md),
+[frontend](frontend/CLAUDE.md), [typecheck](typecheck/CLAUDE.md),
+[backend](backend/CLAUDE.md), [intrinsics](intrinsics/CLAUDE.md),
+[platform](platform/CLAUDE.md), [int](int/CLAUDE.md), and
+[review](review/CLAUDE.md). They establish their local products and collections.
+This memory directly governs the primitives, runtime and stdlib design
+collections below, which have no separate local memory.
+
+| Collection | Purpose | Boundary |
+|---|---|---|
+| `primitives-designs` | Primitives interior designs and implementation dispositions. | `primitives/*.md`; owned by `/design` (primitives). |
+| `runtime-pair-designs` | Shared primitives/intrinsics ownership and ABI contracts with their retained design evidence. | `runtime/*.md`; one nominated `/design` writer per file. |
+| `stdlib-designs` | Standard-library interior design records. | `stdlib/*.md`; owned by `/design` (stdlib). |
+
+These are maintained design collections, not historical-reference exemptions.
+Individual status continues to distinguish adopted contracts, proposals and
+retained evidence; collection membership does not approve a proposal or excuse
+a stale live reference.
 
 ## Design-doc expectations
 
 Per-crate design docs describe *how* a surface solves problems — algorithms, data structures, internal architecture, trade-offs. They are distinct from `design/arch/interfaces.md` (cross-crate boundary contracts) and `spec/` (correct behaviour). A design doc is created or updated as part of the design phase for each surface; see each subdirectory's `CLAUDE.md`.
 
-The content split (skill definition vs design doc vs `CLAUDE.md`) is normative in `sprints/METHOD.md` §1.4.
+The content split (skill definition vs design doc vs `CLAUDE.md`) is normative in `sprints/METHOD.md` §1.2.
 
-## Historical reference
+## Architecture and delivery
 
-`sprints/reimplementation.md` records the original reimplementation strategy (historical). Delivery progress is tracked in `sprints/ROADMAP.md`, owned by `/sprint`.
+`design/arch/overview.md` introduces the current architecture; `design/arch/bounded-contexts.md` defines context ownership and boundaries. `sprints/METHOD.md` governs delivery, and `sprints/ROADMAP.md` tracks progress under `/sprint` ownership.

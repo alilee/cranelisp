@@ -1025,8 +1025,7 @@ qualified reference whose MODULE half is dotted — was unfenced in both tiers.
 
 `/testing` landed all four proposed cells at W7. **Disposition, all four items:**
 
-1. **The matrix records them** — PLAN rows in `PLAN.md` §"Sprint 115" (§10.6
-   below), five cells: `--run` and REPL faces of the dotted-module-half
+1. **The matrix records them** — [historical Sprint 115 PLAN rows](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md) ([W7 cells in this plan](#106-plan-rows-for-the-w7-cells)), five cells: `--run` and REPL faces of the dotted-module-half
    reference, the `export` twin, the alias form, and the degenerate case.
 2. **The unit tier is NOT the agreed home for the degenerate case.** `/testing`
    pinned `a.` / `.b` / bare `.` e2e as located reader errors, and that is the
@@ -1207,7 +1206,7 @@ conclusion resting on a false premise reads as verified.**
 
 ### 10.6 PLAN rows for the W7 cells
 
-Landed in `tests/plan/PLAN.md` §"Sprint 115 — W7 cells". Three groups: the 10
+Landed in [S115 W7 allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md). Three groups: the 10
 `gen_ownership_flows` fns + the product statement; the 3 new + 1 sharpened
 `impl_redefinition_dispatch` cells; the 5 dotted reference-column controls.
 

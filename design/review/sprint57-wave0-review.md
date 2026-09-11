@@ -66,8 +66,8 @@ Answers to the five Important-level questions:
 
 **S-3. Cross-reference to Decision 30 inside the integration test comment.**
 - **Location**: `tests/modules.rs:430-433`
-- **Issue**: The positive integration test comment explains the no-mutual-import constraint but does not cite `design/arch/CLAUDE.md` Decision 30 or `concurrent-pipeline.md §7.1 item 1`. A future developer reading this test might restructure parent→child imports and hit the deadlock without understanding the shape of the constraint.
-- **Proposed fix**: Append `" — see design/arch/CLAUDE.md Decision 30 for the underlying scheduler constraint."` to the existing block comment.
+- **Issue**: The positive integration test comment explains the no-mutual-import constraint but does not cite [recorded architecture guidance](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/arch/CLAUDE.md) Decision 30 or `concurrent-pipeline.md §7.1 item 1`. A future developer reading this test might restructure parent→child imports and hit the deadlock without understanding the shape of the constraint.
+- **Proposed fix**: Append `" — see the recorded architecture guidance, Decision 30 for the underlying scheduler constraint."` to the existing block comment.
 - **Owner**: `/qa`.
 - **Severity**: Low. The comment already explains *what*; the cross-ref explains *why at the architectural level*.
 
@@ -107,7 +107,7 @@ Verifying against `design/review/checklist.md`:
 ## Design doc assessment
 
 - **`design/arch/super-import-arbitration.md`**: Comprehensive. Rationale, sketch comparison (the sketch's placement is explicitly compared and the divergence justified), error contract, consequences, ownership. Sketch comparison is substantive — not a "sketch does similar" gloss. **PASS** with S-5/S-6 noted above.
-- **`design/arch/CLAUDE.md` Decision 30**: Thorough articulation of the mutual-import deadlock constraint, safe/unsafe patterns enumerated, workaround documented (`discover-tests` + `run-test`), future-work pointer. Decision 30 does the heavy lifting of preventing future re-discovery of the pass-order issue. PASS.
+- **[recorded architecture guidance](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/arch/CLAUDE.md) Decision 30**: Thorough articulation of the mutual-import deadlock constraint, safe/unsafe patterns enumerated, workaround documented (`discover-tests` + `run-test`), future-work pointer. Decision 30 does the heavy lifting of preventing future re-discovery of the pass-order issue. PASS.
 - **`spec/08-modules.md §8.3.7`**: Normative requirement plus non-normative "Known limitation" paragraph. The paragraph is well-written: crisp about the deadlock shape, prescribes implementation freedom ("MAY reject... MUST NOT silently produce a non-terminating compilation"), cross-refs Decision 30 and the test-scaffolding workaround. PASS.
 - **`/int`, `/frontend`, `/qa` did not author standalone design docs** — not needed for a two-site code change covered by the arbitration doc. Correct judgement.
 

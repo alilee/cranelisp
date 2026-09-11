@@ -30,14 +30,22 @@ this crate's `intrinsics_table()` catalog is not.
 
 ## Documents here
 
+This memory establishes one intrinsics-owned collection:
+
+| Collection | Purpose | Boundary |
+|---|---|---|
+| `intrinsics-current-designs` | Current intrinsics interior designs and retained live design evidence for runtime heap ownership, typed disposal, diagnostics, intrinsic registration and IO execution. | The six named current Markdown products directly under `design/intrinsics/`. |
+
+`intrinsics-current-designs` is established and retains live reference checking.
+
 | File | Purpose |
 |---|---|
-| `s121-c5-intrinsics-visit.md` | **The current visit.** Sprint 121's single design delta for this crate (stream C5): `free_io_node`; R1's three-state atomic `Pure` claim/discharge, error ferry and evidence; R2's cancelled-blocking-loser join preservation; the **one structural discharge mechanism** applied to both the `IO` and `Sexp` node families — which is where `consume_sexp`'s missing `SexpAnnotated` (tag 7) arm lands — the typed consume funnel's intrinsics half, the `vec-len` de-slot's intrinsics arm and roster handoff, and the source-backed disposition of FIXMEs 0835/0848/0859/0928/0932/0934. Carries the retained-reservation W3 braid without a second visit. |
+| `s122-typed-consume-closure.md` | **The current S122 intrinsics delta.** Reconciles the approved nine typed consume signatures and closed handle vocabulary against the delivered Sexp/ABI-10 disposal interior, same-crate owner seams, all direct consumers, ACT-0956's deterministic module evidence, and Q3's continuation-produced shared-`Bind` normal-completion correction. The generated runtime baseline is confirmed; integrated Phase-5 acceptance remains open. |
+| `s121-c5-intrinsics-visit.md` | Retained Sprint 121 visit record. Its `free_io_node`, three-state `Pure` ownership, cancellation join, exhaustive IO/Sexp disposal and `SexpAnnotated` work are delivered. Its typed-funnel plan is superseded by the S122 record; all consumer migrations and the generated baseline are delivered, while integrated Phase-5 acceptance remains open. |
 | `reactor.md` | The slice-2 effect reactor + async-trampoline interior — reactor loop, `HostCtx`/waker C-ABI, `EffectPoll`, the two-pool `Par` join, the token-capacity permit pool, launch/supervisor/admission, the combinator runtime + cancellation drop-paths. **§0 demarcates the thin `/int` host-client seam**; everything else is runtime-library interior. Relocated from `design/int/` at S97 (FIXME 0486). |
 | `intrinsics-table.md` | The published `intrinsics_table()` Import-catalog design (BC §4b invariant 11). **Landed**; its as-built correction is at the head (the catalog shipped as a `pub fn`, not the `pub static` the body target-states, per the S76 seam-3 `!Sync` ruling — read every `INTRINSICS_TABLE` as `intrinsics_table()`). §6a is this crate's half of the backend import roster and why `vec-len` joins neither half. |
 | `rc-inc-entry-point.md` | The `rc_inc` blessed inc entry point (BC §4b invariant 3, the atomic-RC discipline). |
 | `diagnostic-modes.md` | Implemented M1/M2/M3 and RC/alloc seam diagnostics; the closed test-only fault-plant protocol (§7, **landed S118 W2a** — all eight detection triplets, the e2e M3 cell, and the fail-on-revert records; FIXME 0848 has no source work left, and §9a's 0859 detector-as-oracle protocol is **retired unexecuted** by the 2026-09-01 user disposition) including the lane-scoped arming invariant and the precheck-ordering prerequisite; the 0850 + ruling-7 convergence batch (§9); the 0859 oracle cross-reference (§9a). Carries the two S118 W2b design rulings: §7.5's `header_size_plausible` predicate (FIXME 0879 — the alignment clause is retracted; it false-positived on ragged `HeapString` sizes) and §7.1's plant config-error timing (FIXME 0881 — the contract is state-and-action precedence, not wall-order). |
-| `implementation-slice-s66.md` | Historical implementation-slice notes. |
 
 ## Cross-references
 
@@ -45,10 +53,10 @@ this crate's `intrinsics_table()` catalog is not.
 - `design/runtime/s119-typed-consume-funnel.md` — the **cross-pair** typed
   handle contract (`Owned`/`Borrowed`, the derived shim fact, the counted
   trusted base). Homed in `design/runtime/` for the same reason its S117/S118
-  siblings are: it spans the pair. **While Sprint 121's C5 stream runs, the
-  intrinsics invocation holds it** so the two crate passes cannot both rewrite
-  one contract; the primitives invocation consumes it without editing. Its
-  intrinsics-half implementation design is `s121-c5-intrinsics-visit.md` §6.
+  siblings are: it spans the pair. The current intrinsics delivery and remaining
+  cross-pair tails are reconciled at its head; crate-specific consumer visits
+  consume that contract without redefining it. Its retained implementation
+  sequence is `s121-c5-intrinsics-visit.md` §6.
 - `design/runtime/s118-structural-embedding-ownership.md` — the **runtime-pair**
   consume-owner contract (FIXME 0835). It is homed in `design/runtime/` (the
   `s117-primitives-integrity.md` precedent) because it spans the pair: the

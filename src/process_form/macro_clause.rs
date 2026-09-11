@@ -252,6 +252,7 @@ fn checked_clause_drafts(
                 "clause is not an uncompiled concrete body",
             ));
         };
+        let view = pin_macro_clause_ownership(view.clone());
         drafts.push(MacroClauseDraft::new(
             parsed.fixed_params.clone(),
             parsed.rest_param.clone(),
@@ -259,12 +260,23 @@ fn checked_clause_drafts(
                 callable.arm.scheme.clone(),
                 callable.arm.param_names.clone(),
                 ast.clone(),
-                view.clone(),
+                view,
                 callees.clone(),
             ),
         ));
     }
     Ok(drafts)
+}
+
+/// Pin a synthesized macro clause to its declared consuming ABI.
+fn pin_macro_clause_ownership(
+    mut view: cranelisp_types::MonoDefnVariant,
+) -> cranelisp_types::MonoDefnVariant {
+    // Macro clauses cross the fixed consuming `SexpListToSexpI64V1`
+    // boundary. Clearing the generated body's inferred summary pins the
+    // backend to its all-Owned convention for every clause shape.
+    view.mode_summary = None;
+    view
 }
 
 pub(super) fn same_macro_abi(actual: &Scheme, expected: &Scheme) -> bool {
@@ -298,8 +310,37 @@ fn invalid_clause(name: &Symbol, span: Span, reason: &str) -> CranelispError {
 mod tests {
     use super::*;
     use cranelisp_types::{
-        CallableTarget, ConcreteType, FQSymbol, InstanceLink, MonoDefnVariant, MonoExpr,
+        CallableTarget, ConcreteType, FQSymbol, InstanceLink, Mode, ModeSummary, MonoDefnVariant,
+        MonoExpr, ParamFlow, ResultMode,
     };
+
+    // spec: design/int/macro-turn-ownership.md Rule 0 / D4 — every synthesized
+    // clause is compiled under the all-Owned fallback, independent of the
+    // ownership result inferred for its body.
+    #[test]
+    fn macro_clause_preparation_clears_inferred_ownership_summary() {
+        let mut view = MonoDefnVariant {
+            name: Symbol::from("__macro_m_clause_0"),
+            params: vec![Symbol::from("__args__")],
+            body: MonoExpr::IntLit {
+                value: 1,
+                span: Span::SYNTHETIC,
+                ty: ConcreteType::Int,
+            },
+            span: Span::SYNTHETIC,
+            mode_summary: None,
+        };
+        view.mode_summary = Some(ModeSummary {
+            param_modes: vec![Mode::Borrowed],
+            result: ResultMode::Fresh,
+            param_flow: vec![ParamFlow::Consumed],
+            spark_ops: vec![false],
+            result_unique: false,
+        });
+
+        let pinned = pin_macro_clause_ownership(view);
+        assert!(pinned.mode_summary.is_none());
+    }
 
     // spec: spec/03-types.md §3.3.4 — complete substitutions distinguish
     // independent result-context specializations across publication.
@@ -312,12 +353,20 @@ mod tests {
             module,
             symbol: Symbol::from("g"),
         });
+        let template_scheme = Scheme {
+            type_vars: vec![0],
+            constraints: Default::default(),
+            ty: Type::Fn(
+                Vec::new(),
+                Box::new(Type::Fn(vec![Type::Var(0)], Box::new(Type::Int))),
+            ),
+        };
         let links = [ConcreteType::Int, ConcreteType::String]
             .map(|arg| InstanceLink::from_type_args(template.clone(), vec![arg]));
         for link in &links {
             let result = ConcreteType::Fn(link.type_args.clone(), Box::new(ConcreteType::Int));
             let view = MonoDefnVariant {
-                name: link.instance_key(),
+                name: link.instance_key(&template_scheme).unwrap(),
                 params: Vec::new(),
                 body: MonoExpr::Lambda {
                     params: vec![Symbol::from("y")],
@@ -356,9 +405,12 @@ mod tests {
         }
 
         retain_checked_instances(&checked, &mut target, Span::SYNTHETIC).unwrap();
-        assert_ne!(links[0].instance_key(), links[1].instance_key());
+        assert_ne!(
+            links[0].instance_key(&template_scheme).unwrap(),
+            links[1].instance_key(&template_scheme).unwrap()
+        );
         let slots = links.map(|link| {
-            let key = link.instance_key();
+            let key = link.instance_key(&template_scheme).unwrap();
             let original = checked.get(key.as_ref()).unwrap().callable().unwrap();
             let retained = target.get(key.as_ref()).unwrap().callable().unwrap();
             assert_eq!(retained.arm.scheme.ty, original.arm.scheme.ty);

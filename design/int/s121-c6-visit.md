@@ -29,16 +29,20 @@ int. Cross-module and whole-source macro atomicity are not requirements.
 
 **Consumes, does not decide:**
 
-- `design/arch/symbol-table-lifecycle.md` §§4–5, §9 — the one `Life`/
-  `Realization` machine, `retired_slots`, `MonoDemand`/`InstanceLink`, the
-  single `CACHE_SCHEMA_VERSION` 24→25 window and load-boundary revalidation.
-  C6 is stream 5 of §9's handoff table.
+- `design/arch/symbol-table-lifecycle.md` §§4.1–4.4, 5.2 and 6 — the current
+  one `Life`/`Realization` machine, `retired_slots`, `MonoDemand`/
+  `InstanceLink` and load-boundary revalidation. The single
+  `CACHE_SCHEMA_VERSION` 24→25 window and C6 stream allocation are S121
+  migration provenance in [the lifecycle design at checkpoint
+  `dc78ddbe`](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/arch/symbol-table-lifecycle.md)
+  §9, not current scheduling instructions.
 - `design/arch/bounded-contexts.md` §2 — the approved `instantiate_demands`
   facade and its C3→C6 handoff clause.
 - `design/arch/bounded-contexts.md` §6 — the macro-clause ABI ownership ruling
   (absorbed here at §7.1) and the `Introspection` narrowing.
-- `design/arch/s121-lifecycle-public-api-review.md` §11 — the approved
-  `publish_compiled_staged` transaction, owner-conserving refusal and GOT
+- `design/arch/symbol-table-lifecycle.md` §4.4 and the
+  `crates/cranelisp-types/src/module.rs::publish_compiled_staged` rustdoc — the
+  current compiled-publication transaction, owner-conserving refusal and GOT
   rollback order used by N1.
 - `design/arch/trait-impl-cache-carrier.md` — the `WrittenTraitImpl` carrier,
   its enrolment primitive, and §9's allocation of the producer to C3 and the
@@ -100,8 +104,10 @@ split up front is what keeps the visit one visit:
 
 ## 3. Bundle N1 — consume the lifecycle
 
-`symbol-table-lifecycle.md` §9 row 5 states C6's obligation in four clauses.
-Each is a relocation of authority *out* of int, not a new int mechanism.
+[The S121 lifecycle design at checkpoint
+`dc78ddbe`](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/arch/symbol-table-lifecycle.md)
+§9 row 5 allocated C6's obligation in four clauses. Each was a relocation of
+authority *out* of int, not a new int mechanism.
 
 ### 3.1 The commit gate keeps its policy, loses its bookkeeping
 
@@ -178,12 +184,11 @@ any of its clauses. A private int-side check of a lifecycle invariant is a
 
 ### 4.1 What is being replaced
 
-`redefine.rs::capture_instantiation_drivers` (`src/redefine.rs:1264`) reads the
-module's live `__expr` `Introspection.sexp` and hands it to
-`lifecycle.rs::reload_module`'s `extra_forms` parameter
-(`src/session_v4/lifecycle.rs:1330`), which appends it to the re-parsed program
-(`:1392`). `drive_t1_full_cure` sequences the three
-(`src/redefine.rs:1324`, `:1330`).
+At the S121 measurement point, the former `capture_instantiation_drivers`
+helper in `src/redefine.rs` read the module's live `__expr`
+`Introspection.sexp` and handed it to the then-current `extra_forms` parameter
+of `reload_module` in `src/session_v4/lifecycle.rs`, which appended it to the
+re-parsed program. `drive_t1_full_cure` sequenced the three operations.
 
 The mechanism is correct for the reachable case and was accepted as such
 (`session-transaction.md` §10 CS-1). It carries two structural limits the
@@ -195,13 +200,13 @@ error-blocked floor. Both are properties of replaying a *form*.
 ### 4.2 The replacement — a demand-set projection
 
 After the C1 wash, every monomorphic instance is an entry born
-`Life::Concrete { minted_from: Some(InstanceLink { template, args }), .. }`.
+`Life::Concrete { minted_from: Some(InstanceLink { template, type_args }), .. }`.
 The capture is therefore a **projection of the reloading module's own table**,
 not session bookkeeping:
 
 > For each entry in the target module whose `life` is `Concrete` with
 > `minted_from = Some(link)`, emit
-> `MonoDemand { template: link.template, args: link.args.clone(), site: Span::SYNTHETIC }`.
+> `MonoDemand::from_type_args(link.template, link.type_args.clone(), Span::SYNTHETIC)`.
 
 Three properties follow directly and are the reason this is the general cure:
 
@@ -390,9 +395,11 @@ their restore legs.
 Two properties C6 must preserve as it lands them. **No transitional bare-key
 fallback arm** — the interim between C1's walk and C6's writer flips lies
 inside the wash, whose landing model is compilation-plus-tests enumeration
-(`symbol-table-lifecycle.md` §9), and a fallback leg would preserve both
-wrong-accepts indefinitely (Principle 8; §16 reject 13). **An undeclared alias
-stays a located "module not found"** — the substitution that accepts any head
+([S121 lifecycle design at checkpoint
+`dc78ddbe`](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/arch/symbol-table-lifecycle.md)
+§9), and a fallback leg would preserve both wrong-accepts indefinitely
+(Principle 8; §16 reject 13). **An undeclared alias stays a located "module not
+found"** — the substitution that accepts any head
 is the pre-existing §16 reject 5.
 
 ### 5.4 Monomorphic instances
@@ -881,22 +888,25 @@ unchanged. Unit tier extends the exactly-once rows at
 `src/session_v4/types.rs:275`, `:298`, `:311`, `:339` rather than duplicating
 them.
 
-### 9.2 The strip rule — three encodings, not two
+### 9.2 The strip rule — S121 measured three encodings, not two
+
+This is the pre-migration S121 measurement. Both consumers now call the shared
+helper; `result-owner.md` §4.3 and `s122-closure.md` §4 carry the current state.
 
 0898 was filed against two literal encodings of the `IO a ⇒ a` result-root
-rule. The types half then landed without either consumer migrating, so at HEAD
-there are **three**:
+rule. At the S121 measurement point, the types half had landed without either
+consumer migrating, so there were **three**:
 
 | Encoding | Site | Disposition |
 |---|---|---|
-| `ConcreteType::result_root()` | `crates/cranelisp-types/src/concrete.rs:131` | the ONE rule; **zero production call sites at HEAD** |
+| `ConcreteType::result_root()` | `crates/cranelisp-types/src/concrete.rs:131` | the ONE rule; **zero production call sites at the S121 measurement point** |
 | backend's inline `result_roots` map | `crates/cranelisp-backend/src/lib.rs:672-684` | C4 bundle B6 deletes it |
-| `src/result_owner.rs:421::strip_io_head` | sole caller `release_key`, `:346` | **C6 deletes it**, re-expressing over `result_root()` |
+| former private `strip_io_head` in `src/result_owner.rs` | sole caller was `release_key` | **C6 deletes it**, re-expressing over `result_root()` |
 
 Semantics are byte-identical — exactly one hop on the `primitives/IO`
 non-empty-args head. Any semantic change is out of scope. The filing deletes
-when both consumers are collapsed, which is a two-stream act: C4's twin and
-C6's twin must both go, and neither alone discharges it.
+when both consumers are collapsed, which was a two-stream act: C4's twin and
+C6's twin both had to go, and neither alone discharged it.
 
 This is worth naming as a pattern, not just a row: a shared helper published
 without migrating its consumers **increases** the duplication it was meant to
@@ -1080,7 +1090,7 @@ workspace all-targets fixture gate.
 
 | Surface | Effect |
 |---|---|
-| `cranelisp-types` `public-api.txt` | **Two individually approved and baseline-confirmed C6 additions.** (1) `set_plain_callable_docstring(&mut self, &Symbol, String) -> Result<(), LifecycleError>` is implemented and its generated baseline line was user-confirmed on 2026-09-03. It is the sole agent `set-doc` mutation and retains the exact behavior in `design/arch/s121-lifecycle-public-api-review.md` §10. (2) `publish_compiled_staged(&mut self, SymbolTable<C, ()>, &[StagedPublicationDecision], HashMap<Symbol, C>) -> Result<Vec<PublicationRecord<C>>, CompiledPublicationRejection<C>>` and the opaque `CompiledPublicationRejection<C>` with `reason` / owner-returning `into_parts` were user-approved, implemented, independently reviewed and generated-baseline-confirmed on 2026-09-03. The full types suite is green at 262/262; QA's staging-tombstone and `Life::Declared` refusal controls prove owner return plus zero live mutation. The operation atomically binds the exact keyed owner set while publishing the staged cluster; `publish_staged` remains owner-free. No raw map access, callable reconstruction, sequential live owner attachment or owner-bearing staging is permitted. |
+| `cranelisp-types` `public-api.txt` | **Two individually approved and baseline-confirmed C6 additions.** (1) `set_plain_callable_docstring(&mut self, &Symbol, String) -> Result<(), LifecycleError>` is implemented and its generated baseline line was user-confirmed on 2026-09-03. It is the sole agent `set-doc` mutation; its current behavior is specified by `crates/cranelisp-types/src/module.rs::set_plain_callable_docstring` and `design/arch/symbol-table-lifecycle.md` §4.4. (2) The S121-approved signature was `publish_compiled_staged(&mut self, SymbolTable<C, ()>, &[StagedPublicationDecision], HashMap<Symbol, C>) -> Result<Vec<PublicationRecord<C>>, CompiledPublicationRejection<C>>`; that operation and the opaque `CompiledPublicationRejection<C>` with `reason` / owner-returning `into_parts` were implemented, independently reviewed and generated-baseline-confirmed on 2026-09-03. S122 subsequently changed only the owner-map key in this displayed signature to `CallableTarget`; the current transaction and overload-family contracts are `design/arch/symbol-table-lifecycle.md` §§4.4 and 5.3 plus the method's source rustdoc. The dated S121 approval record remains available at Git checkpoint `dc78ddbee3107043925505531798667dc61f7a03`. The full types suite was green at 262/262; QA's staging-tombstone and `Life::Declared` refusal controls proved owner return plus zero live mutation. The operation atomically binds the exact keyed owner set while publishing the staged cluster; `publish_staged` remains owner-free. No raw map access, callable reconstruction, sequential live owner attachment or owner-bearing staging is permitted. |
 | `cranelisp-typecheck` `public-api.txt` | **none from C6.** `instantiate_demands`' one line is C3's |
 | `cranelisp-backend`, `cranelisp-intrinsics`, `cranelisp-primitives`, `cranelisp-platform` baselines | **none from C6** |
 | `CACHE_SCHEMA_VERSION` | **read-only.** 24→25 is C1's, once |
@@ -1306,8 +1316,11 @@ Each of the visit's load-bearing claims, and what would refute it:
 
 ## Cross-references
 
-- `design/arch/symbol-table-lifecycle.md` §§4–5, §9 — the machine and the
-  handoff table.
+- `design/arch/symbol-table-lifecycle.md` §§4–6 — the current machine,
+  publication funnels, declaration populations and enforcement. The S121
+  handoff table is migration provenance in [the lifecycle design at checkpoint
+  `dc78ddbe`](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/design/arch/symbol-table-lifecycle.md)
+  §9.
 - `design/arch/bounded-contexts.md` §2 (the `instantiate_demands` contract),
   §6 (the macro-clause ABI ruling, the `Introspection` narrowing).
 - `design/arch/trait-impl-cache-carrier.md` — the 0869 contract, §6's residual

@@ -2,7 +2,7 @@
 // (Sprint 64 Wave 2 Batch 10 + Wave 2.5 reshape)
 //
 // Per `qa.md §"Working build requirement"` and
-// `tests/plan/PLAN.md §"Mode canonicalisation"`. This file carries TWO roles:
+// the [current mode-canonicalisation guidance](plan/PLAN.md#mode-canonicalisation--repl-is-the-canonical-surface-for-language-conformance). This file carries TWO roles:
 //
 // 1. Smoke set — a handful of tests verifying each user-visible CLI surface
 //    actually boots: REPL banner, `--run` exit, `--link` produces an
@@ -107,8 +107,8 @@ fn smoke_run_warms_project_root_cache() {
 //
 // Each test below feeds ONE program through `run_through_all_modes()` and
 // asserts all 6 permutations agree. The subset covers one representative
-// per language-feature class (per `tests/plan/PLAN.md §"Mode-equivalence
-// subset"`). When a permutation diverges, that's a parity defect — the
+// per language-feature class (per the [current mode-canonicalisation guidance](plan/PLAN.md#mode-canonicalisation--repl-is-the-canonical-surface-for-language-conformance)).
+// When a permutation diverges, that's a parity defect — the
 // failing test is the durable record (parity rule); a FIXME against the
 // owning skill is filed; the fix is out-of-sprint.
 

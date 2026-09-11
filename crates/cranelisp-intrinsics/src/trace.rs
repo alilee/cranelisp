@@ -81,6 +81,7 @@ use std::time::Instant;
 use cranelisp_types::HeapHeader;
 
 use crate::alloc::alloc_with_rc;
+use crate::handle::Owned;
 use crate::heap_string::alloc_string;
 use crate::{alloc as intrinsics_alloc, rc as intrinsics_rc};
 
@@ -628,7 +629,8 @@ pub extern "C" fn cranelisp_trace_first_child_nanos(trace_adt: i64) -> i64 {
     };
     // Decision 24 (Sprint 56 Step 2c): consuming convention — release the
     // Trace ADT (walks sub-refs if this was the last reference).
-    consume_trace_call(trace_adt);
+    // SAFETY: this consuming extern received one transferred Trace owner.
+    consume_trace_call(unsafe { Owned::from_abi(trace_adt) });
     result
 }
 
@@ -736,7 +738,8 @@ pub extern "C" fn cranelisp_trace_name(trace_ptr: i64) -> i64 {
     // SAFETY: trace_ptr is a valid TraceCall heap pointer.
     let val = unsafe { read_i64(trace_ptr, TRACE_TNAME_OFFSET) };
     rc_inc_if_heap(val);
-    consume_trace_call(trace_ptr);
+    // SAFETY: this consuming extern received one transferred Trace owner.
+    consume_trace_call(unsafe { Owned::from_abi(trace_ptr) });
     val
 }
 
@@ -748,7 +751,8 @@ pub extern "C" fn cranelisp_trace_name(trace_ptr: i64) -> i64 {
 pub extern "C" fn cranelisp_trace_params(trace_ptr: i64) -> i64 {
     let val = unsafe { read_i64(trace_ptr, TRACE_TPARAMS_OFFSET) };
     rc_inc_if_heap(val);
-    consume_trace_call(trace_ptr);
+    // SAFETY: this consuming extern received one transferred Trace owner.
+    consume_trace_call(unsafe { Owned::from_abi(trace_ptr) });
     val
 }
 
@@ -760,7 +764,8 @@ pub extern "C" fn cranelisp_trace_params(trace_ptr: i64) -> i64 {
 pub extern "C" fn cranelisp_trace_result(trace_ptr: i64) -> i64 {
     let val = unsafe { read_i64(trace_ptr, TRACE_TRESULT_OFFSET) };
     rc_inc_if_heap(val);
-    consume_trace_call(trace_ptr);
+    // SAFETY: this consuming extern received one transferred Trace owner.
+    consume_trace_call(unsafe { Owned::from_abi(trace_ptr) });
     val
 }
 
@@ -773,7 +778,8 @@ pub extern "C" fn cranelisp_trace_result(trace_ptr: i64) -> i64 {
 pub extern "C" fn cranelisp_trace_children(trace_ptr: i64) -> i64 {
     let val = unsafe { read_i64(trace_ptr, TRACE_TCHILDREN_OFFSET) };
     rc_inc_if_heap(val);
-    consume_trace_call(trace_ptr);
+    // SAFETY: this consuming extern received one transferred Trace owner.
+    consume_trace_call(unsafe { Owned::from_abi(trace_ptr) });
     val
 }
 
@@ -786,7 +792,8 @@ pub extern "C" fn cranelisp_trace_nanos(trace_ptr: i64) -> i64 {
     // SAFETY: same as cranelisp_trace_name — offset 56 is within payload
     // bounds.
     let val = unsafe { read_i64(trace_ptr, TRACE_TNANOS_OFFSET) };
-    consume_trace_call(trace_ptr);
+    // SAFETY: this consuming extern received one transferred Trace owner.
+    consume_trace_call(unsafe { Owned::from_abi(trace_ptr) });
     val
 }
 
@@ -828,42 +835,44 @@ unsafe fn trace_atomic_dec_rc(ptr: i64) -> i64 {
 /// Consume an SList whose elements are heap Strings (TraceCall's `tparams`
 /// field). On last ref: walks the SCons chain, calling
 /// `intrinsics_rc::consume_shallow` on each head, and frees each SCons node.
-fn consume_slist_of_string(mut ptr: i64) {
+fn consume_slist_of_string(handle: Owned) {
+    let mut ptr = handle.into_raw();
     loop {
         if ptr < NULLARY_THRESHOLD {
             return;
         }
-        let head = unsafe { read_i64(ptr, FIELD0_OFFSET) };
-        let tail = unsafe { read_i64(ptr, FIELD1_OFFSET) };
         let old_rc = unsafe { trace_atomic_dec_rc(ptr) };
         if old_rc != 1 {
             return;
         }
         std::sync::atomic::fence(Ordering::Acquire);
+        let head = unsafe { Owned::from_abi(read_i64(ptr, FIELD0_OFFSET)) };
+        let tail = unsafe { Owned::from_abi(read_i64(ptr, FIELD1_OFFSET)) };
         intrinsics_rc::consume_shallow(head);
         unsafe { intrinsics_alloc::dealloc(ptr as *mut u8) };
-        ptr = tail;
+        ptr = tail.into_raw();
     }
 }
 
 /// Consume an SList whose elements are TraceCall ADTs (TraceCall's
 /// `tchildren` field). On last ref: walks the SCons chain, recursively
 /// consuming each head TraceCall, and frees each SCons node.
-fn consume_slist_of_trace(mut ptr: i64) {
+fn consume_slist_of_trace(handle: Owned) {
+    let mut ptr = handle.into_raw();
     loop {
         if ptr < NULLARY_THRESHOLD {
             return;
         }
-        let head = unsafe { read_i64(ptr, FIELD0_OFFSET) };
-        let tail = unsafe { read_i64(ptr, FIELD1_OFFSET) };
         let old_rc = unsafe { trace_atomic_dec_rc(ptr) };
         if old_rc != 1 {
             return;
         }
         std::sync::atomic::fence(Ordering::Acquire);
+        let head = unsafe { Owned::from_abi(read_i64(ptr, FIELD0_OFFSET)) };
+        let tail = unsafe { Owned::from_abi(read_i64(ptr, FIELD1_OFFSET)) };
         consume_trace_call(head);
         unsafe { intrinsics_alloc::dealloc(ptr as *mut u8) };
-        ptr = tail;
+        ptr = tail.into_raw();
     }
 }
 
@@ -877,21 +886,21 @@ fn consume_slist_of_trace(mut ptr: i64) {
 ///
 /// Leaf consumer of `crate::rc::consume_shallow` + `crate::alloc::dealloc`;
 /// intrinsics' `drop` module does NOT reference this fn (`tracing.md` §4.1).
-pub fn consume_trace_call(ptr: i64) {
+pub fn consume_trace_call(handle: Owned) {
+    let ptr = handle.into_raw();
     if ptr < NULLARY_THRESHOLD {
         return;
     }
-    let tname = unsafe { read_i64(ptr, TRACE_TNAME_OFFSET) };
-    let tparams = unsafe { read_i64(ptr, TRACE_TPARAMS_OFFSET) };
-    let tresult = unsafe { read_i64(ptr, TRACE_TRESULT_OFFSET) };
-    let tchildren = unsafe { read_i64(ptr, TRACE_TCHILDREN_OFFSET) };
-
     let old_rc = unsafe { trace_atomic_dec_rc(ptr) };
     if old_rc != 1 {
         return;
     }
     std::sync::atomic::fence(Ordering::Acquire);
 
+    let tname = unsafe { Owned::from_abi(read_i64(ptr, TRACE_TNAME_OFFSET)) };
+    let tparams = unsafe { Owned::from_abi(read_i64(ptr, TRACE_TPARAMS_OFFSET)) };
+    let tresult = unsafe { Owned::from_abi(read_i64(ptr, TRACE_TRESULT_OFFSET)) };
+    let tchildren = unsafe { Owned::from_abi(read_i64(ptr, TRACE_TCHILDREN_OFFSET)) };
     intrinsics_rc::consume_shallow(tname);
     consume_slist_of_string(tparams);
     intrinsics_rc::consume_shallow(tresult);

@@ -28,6 +28,18 @@ This is distinct from:
 
 ## Document index (durable vs historical) — the triage of record
 
+This memory establishes two typecheck-owned collections:
+
+| Collection | Purpose |
+|---|---|
+| `typecheck-current-designs` | Current typecheck master, subsystem and active feature designs for inference, constraints, traits, ADTs, monomorphisation, ownership and typed publication. |
+| `typecheck-historical-records` | Superseded typecheck working, migration and slice records retained solely for the audit trail described by the S109 triage. |
+
+Both are established collections. References remain live in the current
+declaration. The historical collection is the bounded candidate if the user
+later approves historical-record reference policy; this memory grants no such
+waiver.
+
 Maintained by `/design` (triaged S109, FIXME 0578). An agent designing against
 this crate reads the **durable** docs; the **historical** docs are retained for
 the audit trail only and each carries a top-of-file `HISTORICAL` banner — do not
@@ -82,8 +94,9 @@ and the separate keyed ownership-seed observation → subordinate to
 `design/arch/symbol-table-lifecycle.md` and
 `design/backend/non-concrete-release-contract.md`),
 `result-context-specialization.md` (S121 — complete concrete substitutions as the
-specialization identity, under the user-approved
-`design/arch/s121-result-context-specialization.md` → subordinate to
+specialization identity, governed by the
+[instance identity funnel](../arch/interfaces.md#instance-identity-funnel) and
+`design/arch/s122-overload-reorder-publication.md` → subordinate to
 `monomorphisation.md`),
 `s116-method-signature-resolution.md` (S116 — one `method_sig` tail; DESIGN,
 implementation pending → subordinate to `traits.md`),
@@ -108,8 +121,8 @@ subordinate to `monomorphisation.md`, governed by
 `design/arch/typed-resolution-carrier.md`).
 
 **Historical working docs** (`HISTORICAL`-bannered; completed/superseded, audit
-trail only): `sprint50-fixes.md`, `phase-b-plan.md`, `implementation-slice-s66.md`,
-`wave-3a-check-form.md`, `s76-resolution-and-enablement.md`, `step4-macro-deps.md`,
+trail only): `sprint50-fixes.md`, `phase-b-plan.md`, `wave-3a-check-form.md`,
+`s76-resolution-and-enablement.md`, `step4-macro-deps.md`,
 `s87-fq-walk-consolidation.md`, `dashmap-migration.md`, `stateless-tc-impl.md`.
 (The last two describe now-as-built structure under the retired `TypeChecker`
 name — the as-built types are `TypeCheckEnv` + `CheckState`, `traits.md §1.1`.)

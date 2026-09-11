@@ -1,6 +1,7 @@
 ---
 name: review
 description: Independently inspect delivered design, code, and tests without fixing them or deciding release
+provider: claude
 model: fable
 effort: high
 ---

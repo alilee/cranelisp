@@ -1,7 +1,7 @@
 // spec_12_runtime.rs — Runtime model surface (Sprint 64 Wave 4 Batch 6).
 //
 // Covers spec/12-runtime.md observable runtime properties via REPL canonical
-// (per `tests/plan/PLAN.md §"Mode canonicalisation"`). Carries forward the
+// (per the [current mode-canonicalisation guidance](plan/PLAN.md#mode-canonicalisation--repl-is-the-canonical-surface-for-language-conformance)). Carries forward the
 // language-behaviour subset of the integration-tier `tests/rc.rs`,
 // `tests/ring4_trace.rs`. Rust-internal observations (CRANELISP_RC_TRACE
 // stderr alloc/free counter parsing; trace event taxonomy via
@@ -1410,7 +1410,7 @@ fn tco_self_recursion_with_fn_typed_parameter() {
 //
 // These tests are the FIRST coverage of spec/12-runtime.md §12.6 (R4 S10
 // pre-batch). They use `--run` mode (mode-specific exception per
-// `tests/plan/PLAN.md §"Mode canonicalisation"`) — the canonical
+// [current mode-canonicalisation guidance](plan/PLAN.md#mode-canonicalisation--repl-is-the-canonical-surface-for-language-conformance)) — the canonical
 // observation for §12.6 is the process exit code from
 // `(defn main [] expr-returning-Int)`. The REPL form does not invoke
 // `main`; only the `--run` driver does.
@@ -1493,7 +1493,8 @@ fn main_invokes_recursive_user_defn_for_exit_code() {
 // §12.7.4.2 Batch Mode Error Behaviour
 // (carry-forward: legacy/v4_pipeline.rs — Wave 6 batch 6)
 //
-// Per `tests/plan/PLAN.md`, §12.7.4.2 was `[R4 S18]` UNTESTED. The
+// Per the [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md),
+// §12.7.4.2 was `[R4 S18]` UNTESTED. The
 // batch-mode error rendering surface is most cleanly observed via
 // `--run` mode + stderr capture + non-zero exit-code witness.
 // =============================================================================
@@ -2508,7 +2509,11 @@ fn apply_arg_single_expensive_preserves_result_parity() {
         on, off,
         "single-expensive apply-arg ON vs OFF differ ({on:?} vs {off:?})"
     );
-    assert_eq!(on, Some(40), "expected the single work result 40; got {on:?}");
+    assert_eq!(
+        on,
+        Some(40),
+        "expected the single work result 40; got {on:?}"
+    );
 }
 
 // spec: spec/12-runtime.md §12.4.3 — NEGATIVE gating: an apply whose arguments

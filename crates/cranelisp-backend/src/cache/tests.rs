@@ -97,6 +97,32 @@ fn test_try_load_cached_module_with_object() {
     assert!(cached.has_object);
 }
 
+// spec: design/arch/s122-overload-reorder-publication.md — schema-28 caches
+// carry the retired substitution-suffix executable identity. Refuse their
+// sidecar before admitting the paired object; a current sidecar admits the same
+// non-empty object as a warm cache pair.
+#[test]
+fn identity_schema_v28_pair_is_rejected_before_current_pair_loads() {
+    let dir = tempfile::tempdir().unwrap();
+    let mp = ModuleFullPath::from("user");
+    let (meta_path, object_path) = module_cache_path(dir.path(), &mp);
+    let table = SymbolTable::new(mp.clone());
+
+    serialize::write_meta(&meta_path, &table, 28).unwrap();
+    atomic_write(&object_path, b"current-object-placeholder").unwrap();
+    assert!(
+        try_load_cached_module(dir.path(), &mp).unwrap().is_none(),
+        "schema-28 metadata must reject the cache pair before its object is admitted"
+    );
+
+    serialize::write_meta(&meta_path, &table, CACHE_SCHEMA_VERSION).unwrap();
+    let current = try_load_cached_module(dir.path(), &mp)
+        .unwrap()
+        .expect("current metadata should admit the warm cache pair");
+    assert!(current.has_object);
+    assert_eq!(current.object_path, object_path);
+}
+
 // spec: design/backend/module-caching.md §8 — empty .o file treated as no object
 #[test]
 fn test_try_load_cached_module_empty_object() {
