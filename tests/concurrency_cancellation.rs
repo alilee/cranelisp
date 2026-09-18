@@ -2,7 +2,8 @@
 //! (`race` / `select` / `timeout` + structured cancellation) — the QA-first
 //! (Phase-5 Chunk-C Stage-1, Wave-C1) **synthetic** e2e acceptance rows.
 //!
-//! Plan: `tests/plan/sprint-96.md` (CHUNK C) §C1 / §C2 / §C3 / §C4 / §C5a.
+//! Plan: retired S96 QA plan, Chunk C §C1 / §C2 / §C3 / §C4 / §C5a
+//! (`git show 7e56a81c:tests/plan/sprint-96.md`).
 //! Contract of record: `design/arch/effect-concurrency.md` §9 (the control half —
 //! the combinators are ordinary typed functions constructing trampoline-interpreted
 //! IO-ADT nodes; `cancel` is the *consequence* of losing a race = drop the future)
@@ -54,7 +55,7 @@
 //!
 //! Chunk A BUILT the future-drop RAII permit-release path (the intrinsics-unit
 //! predecessor `dropping_inflight_poll_releases_permit_next_waiter_proceeds`,
-//! `tests/plan/sprint-96.md` §2B); Chunk C EXERCISES it at the source level here:
+//! retired S96 QA plan §2B); Chunk C EXERCISES it at the source level here:
 //! §C1c (`race_loser_releases_resource_permit`) and §C4a
 //! (`cancelled_inflight_poll_releases_permit_next_waiter_proceeds_e2e`) are its
 //! named e2e exercises. Co-review with the Chunk-A drop-release machinery.

@@ -569,9 +569,8 @@ built with `LLVM_PROFILE_FILE` set. `coverage/` is gitignored.
 ## Build & run
 
 Always use `cargo nextest run --no-fail-fast` (never `cargo test`; alias
-`cargo nt`). Full suite ~60s post-build; anything past ~3 minutes including
-build is wrong — kill and investigate. Never run tests in the background; only
-one agent runs tests at a time.
+`cargo nt`). Root `CLAUDE.md` §Testing owns the suite's time budget and the
+background/one-agent run rules.
 
 ```bash
 cargo nextest run --no-fail-fast                       # full suite

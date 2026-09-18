@@ -6,7 +6,8 @@
 //! empty select raises at effect-run time, outside the `catch-runtime-error`
 //! construction bracket (appendix-a §A.3), so it is uncatchable.
 //!
-//! Plan: `tests/plan/sprint-97.md` §"Item 4" (0475) + §"Item 5" row 5.2 (0479).
+//! Plan: retired S97 QA plan §"Item 4" (0475) + §"Item 5" row 5.2 (0479)
+//! (`git show 7e56a81c:tests/plan/sprint-97.md`).
 //! Contracts of record: `design/int/reactor.md §9` (0475 — count-zero guard in
 //! `run_select_node`, `io.rs:496-500`) + `§8` (0479 — armed-ness deadlock detector
 //! + `drive_mode` knob). Spec of record: `spec/10-io.md §10.12.8` ("Empty

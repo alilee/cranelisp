@@ -1222,13 +1222,13 @@ fn resource_serial_diff_token_parallelizes() {
 // =============================================================================
 // Sprint 84 Cluster B — AUTOMATIC IO PARALLELISATION (PO-0367 checklist).
 //
-// Plan: tests/plan/sprint84-test-plan.md §B (FIXMEs 0367 / 0353). The
-// independence-analysis pass that inserts `Par` nodes from `bind` chains is
-// dead code today (`apply_bind_chain_analysis`, zero live callers), so NO `Par`
-// node is emitted and every chain runs sequentially. These e2e proxies are the
+// Plan: retired S84 QA plan §B (`git show 7e56a81c:tests/plan/sprint84-test-plan.md`;
+// FIXMEs 0367 / 0353). At S84 authoring the independence-analysis pass that
+// inserts `Par` nodes from `bind` chains (`apply_bind_chain_analysis`) had no
+// live caller; S85 wired it at the mode-uniform `finalize_cluster` seam
+// (`sprints/archive/sprint-85.md` §Outcome). These e2e proxies were the
 // Wave-0 failing-first guards /qa owns for PO-0367.1 / .2 (the deterministic
-// AST-property contract is pinned by /dev unit tests in the wiring change-set;
-// these e2e proxies CAN be RED at Wave-0 and ARE the failing-first signal).
+// AST-property contract is pinned by /dev unit tests in the wiring change-set).
 //
 // TIMING DISCIPLINE: identical to the §10.12.4 ResourceSerial pair above —
 // D = 200 ms per call, structural inequality at the 1.5*D = 300 ms midpoint
@@ -1538,7 +1538,8 @@ fn auto_io_par_grouping_uniform_across_modes() {
 // =============================================================================
 // Sprint 85 Item 4 — 0398 Par-boundary FORK-JOIN ERROR FERRY (NEW e2e guards).
 //
-// Plan: tests/plan/sprint85-test-plan.md §Item 4 (FIXME 0398). The Par/IO
+// Plan: retired S85 QA plan §Item 4 (`git show 7e56a81c:tests/plan/sprint85-test-plan.md`;
+// FIXME 0398). The Par/IO
 // analogue of `tests/spec_12_runtime.rs::lenient_binding_panic_not_swallowed_neg`
 // (the IVar/lenient boundary), extending the witness to the Par boundary that
 // 0367's wiring newly activates on user effects.
@@ -1560,15 +1561,12 @@ fn auto_io_par_grouping_uniform_across_modes() {
 // 0367 wires Par emission. (Were the panic ever swallowed across the Par fork,
 // these flip RED — exactly the 0398 defect signal.)
 //
-// LINK-MODE NOTE: a div-by-zero panic in a `--link` produced binary currently
-// terminates by SIGSEGV (exit 139), not a clean "division by zero" message —
-// a PRE-EXISTING `--link` panic-surfacing gap independent of Par and of 0367
-// (reproduces with a plain non-bind div-by-zero `--run`/`--link` program). To
-// avoid entangling 0398's ferry guard with that separate gap, the `--link` leg
-// asserts only the spec-load-bearing property — the panic is NOT silently
-// swallowed (exit non-zero, never a clean exit 0) — while the `--run` leg
-// asserts the full "division by zero" surfacing. The message-in-`--link` gap is
-// a separate concern, not this guard's subject.
+// LINK-MODE NOTE: the `--link` leg asserts only the spec-load-bearing property —
+// the panic is NOT silently swallowed (exit non-zero, never a clean exit 0) —
+// while the `--run` leg asserts the full "division by zero" surfacing. When this
+// guard was authored, a `--link` div-by-zero terminated by SIGSEGV (exit 139);
+// S85 fixed that (FIXMEs 0399/0401), and `--link` message surfacing is guarded
+// by `tests/spec_12_runtime.rs::runtime_panic_in_io_continuation_surfaces_link`.
 
 /// A two-binding Commutative `bind` chain where the FIRST branch's argument
 /// raises a div-by-zero runtime panic: `(commutative-sleep-ms (div-i64 200 0))`.
@@ -1627,9 +1625,8 @@ fn auto_io_par_branch_panic_surfaces_on_join_neg() {
     );
 
     // --link: the produced binary MUST also not silently swallow the panic
-    // (exit non-zero). The full message-surfacing in --link is gated on a
-    // separate pre-existing --link panic gap (see the LINK-MODE NOTE above), so
-    // this leg asserts only the spec-load-bearing non-swallow property.
+    // (exit non-zero). Message surfacing in --link has its own guard (see the
+    // LINK-MODE NOTE above), so this leg asserts only the non-swallow property.
     let link_out = Cranelisp::new()
         .use_workspace_platforms()
         .file("main.cl", &src)

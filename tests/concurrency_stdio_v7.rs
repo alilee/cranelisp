@@ -1,8 +1,9 @@
 //! Sprint 96 — effect-concurrency Chunk A: stdio v7 adoption — the QA-first
 //! (Phase-5 Wave-A1) e2e rows.
 //!
-//! Plan: `tests/plan/sprint-96.md` §3B / §3C (stdio half). Scope source:
-//! `sprints/SPRINT.md` S96 item 1 ("`print` stays blocking; `read_line` the poll
+//! Plan: retired S96 QA plan §3B / §3C, stdio half
+//! (`git show 7e56a81c:tests/plan/sprint-96.md`). Scope source: S96 item 1
+//! (`sprints/archive/sprint-96.md`) ("`print` stays blocking; `read_line` the poll
 //! candidate — the 'simple platform ports cleanly' ergonomics check").
 //!
 //! ## The unit-vs-e2e / RED honesty note (Wave A1 finding)
@@ -19,15 +20,14 @@
 //! genuine RED-first acceptance for the poll carrier lives in
 //! `concurrency_poll_capacity.rs` (the §1 capacity rows, which require the
 //! acquire-around-poll machinery and are RED against the absent `poll-pool`
-//! leaf). See the Wave-A1 ledger note in `tests/plan/sprint-96.md`.
+//! leaf).
 //!
-//! ## Lanes
+//! ## Lane
 //!
-//! - §3B / §3B-neg are gated `#[cfg(feature = "concurrency-runtime")]` — they
-//!   exercise the stdio leaves with the reactor ON (`nt-reactor-e2e`), the lane
-//!   where the poll candidate matters.
-//! - §3C-stdio is UNGATED — the byte-identical-off floor runs in the default
-//!   `nt` lane (the production default, `concurrency-runtime` OFF).
+//! Un-gated; every row runs in the default lane. The S96 single-ABI cutover
+//! retired the `concurrency` / `concurrency-runtime` features and the
+//! `nt-reactor-e2e` lane (`Cargo.toml` §6.8.0a note); the host reactor is
+//! unconditional (lazy-init).
 
 #[path = "helpers/mod.rs"]
 mod helpers;
@@ -47,8 +47,7 @@ fn read_echo_prog() -> &'static str {
 // §3B — stdio `read_line` poll candidate round-trips (reactor ON).
 // =============================================================================
 
-// spec: spec/10-io.md §10.12.4.1 — a `--run` program built `concurrency-runtime`
-// ON that `read_line`s from piped stdin (the poll candidate — suspends on stdin
+// spec: spec/10-io.md §10.12.4.1 — a `--run` program that `read_line`s from piped stdin (the poll candidate — suspends on stdin
 // readiness, resumes) and echoes via `print` (which stays blocking): the line
 // round-trips correctly. The "simple platform ports cleanly" ergonomics check.
 // Posture: verify / stays-green (see the module RED-honesty note) — flips to a

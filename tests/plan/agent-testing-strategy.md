@@ -22,8 +22,8 @@ covers all of them; the S88 Lane-A/B tests themselves are written in Wave 3 by
   testability notes, §12 S89 seams).
 - `design/arch/repl-embedded-agent.md` §6 (primer + validator), §7 (architecture /
   safety — feature gating, the "no private tools" principle), §9 (phasing).
-- The S88 `/qa` failing-test plan (`tests/plan/s88-test-plan.md` §"Stage B/C") — the
-  agent-feature lane outline this doc generalises into a track-wide strategy.
+- The S88 `/qa` failing-test plan's agent-feature lane outline, which this doc
+  generalises into a track-wide strategy (retired; `git show 7e56a81c:tests/plan/`).
 
 **Authority order.** This is a `/qa` test-strategy doc. Where it drifts from the
 ratified `repl-embedded-agent.md`, the `/arch` Phase-2 verdict, or `design/int/agent.md`,
@@ -49,8 +49,7 @@ directly. So a test constructs an `AgentState` whose `model` is a deterministic 
 `AgentModel`, and the entire agent *logic* — classifier → request assembly → harvest →
 pull → render → feed-back → validator-repair — runs with **zero network, zero API key,
 zero non-determinism.** The rig wire-path BELOW the membrane (`provider.rs`/`request.rs`)
-is covered separately by a rig-trait-level mock (the 0429 step-1 deliverable, `s89-test-plan.md
-§Cluster-B`).
+is covered separately by a rig-trait-level mock (the 0429 step-1 deliverable).
 
 This single seam is what makes the agent's *plumbing* a CI lane (Lane A) and confines
 its *model quality* to a separate, non-blocking eval lane (Lane C). The split is the
@@ -132,8 +131,7 @@ preferred Wave-3 deliverable; it makes the bulk of Lane A genuine e2e.
 
 The default `cargo nextest run` (~9s, `tests/CLAUDE.md`) **stays agent-free**: only Lane B
 runs there. Lanes A and D run in a separate `--features agent` nextest invocation (a CI
-lane / `--features agent` profile, `s88-test-plan.md §"Lane mechanics"`). Lane C is never
-in any automated suite.
+lane / `--features agent` profile). Lane C is never in any automated suite.
 
 ---
 
@@ -141,7 +139,7 @@ in any automated suite.
 
 The CI lane that proves the agent's *logic*. All tests `#[cfg(feature="agent")]`, in a
 dedicated file (`tests/agent.rs`, gated `#![cfg(feature = "agent")]` at the top so the
-whole file compiles out by default — `s88-test-plan.md §"Lane mechanics"`). E2e where the
+whole file compiles out by default). E2e where the
 behaviour surfaces through the binary's I/O (preferred); the residual request-content
 assertions are `/dev`-owned unit tests in `src/agent/` (§1.1).
 
@@ -248,12 +246,12 @@ regen pretty-printer path — `agent.md §5.2`, `spec/08-modules.md §8.16.5`):
 | preamble read | `/doc <module>` | prints the module's preamble text | `spec/08-modules.md §8.16.4`, `repl/spec.md §17.5.1` |
 | **+neg: absent preamble** | `/doc <module>` on a module with no preamble | clean "no preamble" message, NOT an error/empty crash | `repl/spec.md §17.5.1` |
 | unchanged preamble byte-stable | regen a module whose preamble is unchanged | leading comment block byte-identical before/after (no reflow/re-wrap/re-mark) | `spec/08-modules.md §8.16.5` |
-| 0423 lib-dir-relative write (rung-0 cousin) | `(mod test)` extraction | backing file at lib-dir-relative path; **+neg** no stray CWD-root file | `spec/08-modules.md §8.2.2` (the existing 0423 RED guard, `s88-test-plan.md` Stage A) |
+| 0423 lib-dir-relative write (rung-0 cousin) | `(mod test)` extraction | backing file at lib-dir-relative path; **+neg** no stray CWD-root file | `spec/08-modules.md §8.2.2` (`spec_08_modules.rs::inline_mod_test_extraction_writes_lib_dir_relative_not_cwd`) |
 
 **Rung 6 (S89) — Document mode:** the agent writes a module preamble; it round-trips; the
 next session's harvester reads it back. Ties to `spec/08-modules.md §8.16` (the preamble
 edit path) and the byte-stable round-trip (`§8.16.5`). The preamble write must also be
-lib-dir-relative (the same 0423 fix surface — `s88-test-plan.md §"Module-preamble"`):
+lib-dir-relative (the same 0423 fix surface):
 
 | Test (behaviour) | Asserts |
 |---|---|
@@ -265,8 +263,8 @@ lib-dir-relative (the same 0423 fix surface — `s88-test-plan.md §"Module-prea
 `/refs` / `/tests-for` are **NOT gated** — LLM-free, default build (`agent.md §9`,
 `repl/spec.md §17.6`). They grow the REPL for everyone, so they ALSO get **default-lane
 (agent-free)** coverage (Lane B territory) — they are plain introspection commands. The
-agent reaches for them as pull-tools, but they stand alone. (Detailed rows in
-`s88-test-plan.md §"Reverse-query commands"`.) `/qa` may author these as soon as the
+agent reaches for them as pull-tools, but they stand alone. (The landed cells are the
+`refs_*` and `tests_for_*` tests in `tests/agent.rs`.) `/qa` may author these as soon as the
 commands land — they are the one Stage-B sub-deliverable testable ahead of the rest of the
 agent lane.
 
@@ -315,7 +313,7 @@ lane that is **never in the default suite and never CI-blocking**.
 - **Gating:** behind `--features agent` AND a runtime presence check — the test is
   `#[ignore = "needs CRANELISP_AGENT_KEY (or local Ollama)"]` when no provider is reachable
   (the **one legitimate ignore** in the whole strategy — a backend-credential gate, not a
-  spec gap — `s88-test-plan.md §"Dormant-without-key discipline"`). Run via
+  spec gap). Run via
   `-- --ignored` on the eval-lane invocation.
 - **Scored grounding assertions (not exact-match):**
   - the answer **cites the real symbol** harvested for the turn (e.g. `/ask "what does foo
@@ -403,7 +401,7 @@ not tied to one rung.
   gate (`#[ignore = "needs CRANELISP_AGENT_KEY (or local Ollama)"]`, §5) — a credential
   gate, not a spec gap.
 - **Future-sprint rungs are PLAN rows, not written tests.** Rungs 5–6 (S89) and rung 7
-  (S90) get rows in this strategy + `s88-test-plan.md`/`PLAN.md` with `[S89]`/`[S90]`; the
+  (S90) get rows in this strategy with `[S89]`/`[S90]`; the
   tests themselves are authored in the sprint that builds them (per the
   `qa.md §"Failing-not-ignored"` table — "scheduled but not yet active → plan row, do not
   write the test yet").
@@ -435,7 +433,6 @@ not tied to one rung.
   helper (`tests/CLAUDE.md §"Two tiers, no middle"`). The residual request-content unit
   tests are `/dev`-owned in `src/agent/`.
 - **`tests/agent.rs` + `tests/fixtures/agent/`** are new test artefacts; the
-  `--features agent` nextest lane + its `.runs/` gitignore entry are Wave-3 setup
-  (`s88-test-plan.md §"Lane mechanics"`).
+  `--features agent` nextest lane + its `.runs/` gitignore entry are Wave-3 setup.
 - **rig trait shape** (the stub's `impl rig::completion::CompletionModel`) is a Phase-5
   lookup against the pinned `rig-core` version (`agent.md §6.4`) — not pinned in this doc.

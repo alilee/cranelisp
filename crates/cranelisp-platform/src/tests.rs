@@ -512,8 +512,7 @@ fn effect_node_is_40_bytes_with_null_fn_name_and_capacity_1() {
 
 // =====================================================================
 // Slice-3 capacity carrier (S95) — the additive `(token, capacity)`
-// node carrier. `effect-concurrency.md` §8.1 / `io-trampoline.md` §13.2 /
-// `tests/plan/sprint-95.md` §1A rows 145 + 146.
+// node carrier. `effect-concurrency.md` §8.1 / `io-trampoline.md` §13.2.
 // =====================================================================
 
 // spec: crates/cranelisp-platform/public-api.txt + io-trampoline.md §13.9 —

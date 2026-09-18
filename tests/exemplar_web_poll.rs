@@ -1,8 +1,9 @@
 //! Sprint 96 — effect-concurrency Chunk B (Wave B4): the §3A web single-serial-
 //! roundtrip e2e against the v8 POLL-shape web platform (FIXME 0465 / Gap G4).
 //!
-//! Plan: `tests/plan/sprint-96.md` §3A (`web_poll_accept_read_serves_one_roundtrip_serial`,
-//! DEFERRED → A4 co-landing). Contract of record:
+//! Plan: retired S96 QA plan §3A (`git show 7e56a81c:tests/plan/sprint-96.md`;
+//! `web_poll_accept_read_serves_one_roundtrip_serial`, deferred to the A4
+//! co-landing). Contract of record:
 //! `design/platform/poll-support.md §3.5` (the web connection-handle interface —
 //! bind-listener blocking + accept-conn/read-conn/send-conn poll leaves over
 //! per-connection tokens) / §3.5.5 (the SERIAL serve loop, the Chunk-A baseline).

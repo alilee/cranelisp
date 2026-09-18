@@ -4,7 +4,8 @@
 //! signature change (item 1) and the v9 layout / representation guards (item 2 —
 //! *adjusted* to the ctx-vtable reality, S97 Wave-1 layout rework).
 //!
-//! Plan: `tests/plan/sprint-97.md` §"Item 1" + §"Item 2". Contracts of record:
+//! Plan: retired S97 QA plan §"Item 1" + §"Item 2"
+//! (`git show 7e56a81c:tests/plan/sprint-97.md`). Contracts of record:
 //!   - `design/platform/poll-support.md §3.5` — **opaque `Connection` with a GENUINE
 //!     `fd` field** (`(deftype Connection [:primitives/Int fd])`; `r == fd`, the
 //!     platform reads it back, user code threads but cannot destructure it open) +
@@ -307,8 +308,8 @@ fn connection_display_shows_no_descriptor_neg() {
 //
 // The DEEPER, CLIF-internal absence — no header slot @ +24, no poll-node `role` @
 // +32, no `desc_out` @ +40, no `inject_poll_leading_pair` positional bake — is NOT
-// e2e-observable; it is a `/dev`-owed backend codegen unit (`io-trampoline.md §17`,
-// recorded in `tests/plan/sprint-97.md` §"Item 2" mirror). This e2e covers only the
+// e2e-observable; it is a `/dev`-owed backend codegen unit (`io-trampoline.md §17`).
+// This e2e covers only the
 // value-/type-level "no scheduling state" face.
 #[test]
 fn connection_carries_no_scheduling_state_normal_adt_neg() {
@@ -345,18 +346,13 @@ fn connection_carries_no_scheduling_state_normal_adt_neg() {
 // →retire cycle, `[RC] alloc` MUST equal `[RC] free`: the handle RC-balances like any
 // 1-field ADT (the `fd` Int is a scalar — no RC, no drop glue), and scheduling lives
 // in the trampoline `ctx`, not on the value, so there is no value-carried region to
-// leak. RED on HEAD; GREEN when the bounded fixture (G-C) lands. (Re-expressed from the
-// dead "16-byte descriptor region @ +24" model — there is no such region under v9.)
+// leak. (Re-expressed from the dead "16-byte descriptor region @ +24" model — there
+// is no such region under v9.)
 //
-// FIXME(/sprint S97 W3) — gap G-C: an RC-balance assertion over a REAL network server
-// is non-deterministic (the server runs indefinitely; trace volume is unbounded). A
-// clean no-leak witness needs a BOUNDED poll fixture that produces then consumes a
-// handful of resource handles and EXITS — the co-landing `/platform` + `/dev`
-// `poll-produce` / `poll-consume` leaves (the S96 Gap-G1 poll-pool analogue). /dev
-// (Wave 3) must ADD them to `platforms/poll-pool/` + `tests/scripts/
-// build-link-prereqs.sh`. If that fixture does not land, 2.4 REDUCES to the `/dev`
-// intrinsics RC-balance UNIT (plan §"Item 2" mirror, /dev-owed). On HEAD the leaves are
-// absent ⇒ RED (the run errors; no balanced trace).
+// Gap G-C: an RC-balance assertion over a REAL network server is non-deterministic
+// (the server runs indefinitely; trace volume is unbounded), so the witness uses the
+// BOUNDED `poll-produce` / `poll-consume` leaves in `platforms/poll-pool/` (closed
+// FIXME 0490), which produce then consume a handful of handles and EXIT.
 #[test]
 fn produce_consume_descriptor_no_rc_leak() {
     // A bounded produce→consume loop over N opaque handles, then exit. `poll-produce`

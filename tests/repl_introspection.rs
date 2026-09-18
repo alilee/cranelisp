@@ -3840,11 +3840,8 @@ fn display_float_nan_value() {
 }
 
 // =============================================================================
-// Pillar 1 — the `/syntax` cheat-sheet command (S90, tests/plan/s90-test-plan.md
-// §P1). RED-FIRST: `/syntax` is unimplemented on HEAD (the REPL replies
-// "unknown command '/syntax'"), so every row below fails until /dev 1d wires the
-// `ReplCommand::Syntax` variant + dispatch + the `src/syntax/cheatsheet.txt`
-// asset parser. `/syntax` is NOT feature-gated — it is a deterministic
+// Pillar 1 — the `/syntax` cheat-sheet command (S90; retired QA plan §P1:
+// `git show 7e56a81c:tests/plan/s90-test-plan.md`). `/syntax` is NOT feature-gated — it is a deterministic
 // static-asset command usable on the DEFAULT (non-`agent`) build (§17.17.3), so
 // these default-build rows live here (the deterministic-command home), NOT in
 // the `--features agent` lane. The agent-pull row (P1.6) lives in `tests/agent.rs`.

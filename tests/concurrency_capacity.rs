@@ -1,7 +1,8 @@
 //! Sprint 95 — effect-concurrency Slice 3 (token-capacity `Semaphore` pool) +
 //! Slice 6 (two-pool routing): the QA-first (Phase-5 Wave-1) e2e acceptance rows.
 //!
-//! Plan: `tests/plan/sprint-95.md` §1B / §1C / §1D / §1F / §2B. Contract of
+//! Plan: retired S95 QA plan §1B / §1C / §1D / §1F / §2B
+//! (`git show 7e56a81c:tests/plan/sprint-95.md`). Contract of
 //! record: `design/arch/effect-concurrency.md` §8.1 (the `(token, capacity)`
 //! dynamic-on-the-node carrier) / §8.2 (within-token source ordering) / §7
 //! (two-pool model). Spec of record: `spec/10-io.md` §10.12.4.1 (Resource
@@ -9,12 +10,9 @@
 //!
 //! ## Lane
 //!
-//! The whole file is gated `#![cfg(feature = "concurrency-runtime")]` — it runs
-//! ONLY in the `nt-reactor-e2e` lane (`cargo nextest run -p cranelisp --features
-//! concurrency-runtime`), where the reactor runtime + the host-owned
-//! `HashMap<token, Semaphore(capacity)>` pool + the two-pool router are compiled
-//! in. In the default `nt` lane the file compiles to nothing (no collateral RED,
-//! no warnings).
+//! Un-gated; runs in the default lane. The S96 single-ABI cutover retired the
+//! `concurrency` / `concurrency-runtime` features and the `nt-reactor-e2e` lane
+//! (`Cargo.toml` §6.8.0a note); the host reactor is unconditional (lazy-init).
 //!
 //! ## Posture (Phase-5 Wave-1 = RED-first)
 //!
@@ -35,7 +33,7 @@
 //!
 //! ## The intended `pool-demo` blocking capacity leaf (Wave-2 deliverable, Gap G1)
 //!
-//! `tests/plan/sprint-95.md` §5 G1: the blocking capacity test-leaf is a
+//! Retired S95 QA plan §5 G1: the blocking capacity test-leaf is a
 //! `/platform` + `/dev` Wave-2 deliverable. It does NOT exist yet, so this file
 //! references the INTENDED surface via the consts below; reconcile the leaf
 //! name(s) + the per-row token/capacity knob when the fixture lands (mirrors the

@@ -2,8 +2,8 @@
 //!
 //! A standalone **blocking** (v6) cdylib that demonstrates the
 //! effect-concurrency token-capacity pool on the BLOCKING carrier
-//! (`effect-concurrency.md` §8.1 / `io-trampoline.md` §13.2 / `tests/plan/sprint-95.md`
-//! §1C/§1D/§1F). Each effect declares its `(token, capacity)` pair dynamically at
+//! (`effect-concurrency.md` §8.1 / `io-trampoline.md` §13.2).
+//! Each effect declares its `(token, capacity)` pair dynamically at
 //! the effect site via the additive
 //! [`CLIO::effect_on_resource_with_capacity`](cranelisp_platform::CLIO::effect_on_resource_with_capacity)
 //! constructor (slice-3 capacity carrier, S95), then performs a blocking sleep so

@@ -2,7 +2,8 @@
 //! backpressure (the fan-out / control-flow chunk) — the QA-first (Phase-5
 //! Chunk-B Stage-1, Wave-B1) e2e acceptance rows.
 //!
-//! Plan: `tests/plan/sprint-96.md` (CHUNK B) §B1 / §B2-syn / §B3-syn / §B4.
+//! Plan: retired S96 QA plan, Chunk B §B1 / §B2-syn / §B3-syn / §B4
+//! (`git show 7e56a81c:tests/plan/sprint-96.md`).
 //! Contract of record: `design/arch/effect-concurrency.md` §4 (launch-and-
 //! continue is *inferable* — a result-discarded, token-disjoint effect may be
 //! launched and not joined; the accept loop fans out automatically, TCO'd) / §5
@@ -33,7 +34,7 @@
 //! composition, the no-ferry semantics) + the web rows (the FIXME-0465 connection-
 //! handle interface + the Gap-G4 port-parametrized fixture) **co-land** with their
 //! /dev crate waves — writing them now would reference types/programs absent on
-//! HEAD and break the workspace build (`tests/plan/sprint-96.md` §B9).
+//! HEAD and break the workspace build (retired S96 QA plan §B9).
 //!
 //! ## The extended `poll-pool` fixture (Gap G6 — Chunk-B /dev deliverable)
 //!

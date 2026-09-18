@@ -2594,8 +2594,8 @@ fn agent_document_yes_auto_accepts_preamble_edit() {
 }
 
 // ===========================================================================
-// Pillar 1 (S90) — `/syntax` as an AGENT PULL-TOOL (tests/plan/s90-test-plan.md
-// §P1 row P1.6). The default-build `/syntax` command rows (P1.1–P1.5, P1.7,
+// Pillar 1 (S90) — `/syntax` as an AGENT PULL-TOOL (retired S90 QA plan row
+// P1.6: `git show 7e56a81c:tests/plan/s90-test-plan.md`). The default-build `/syntax` command rows (P1.1–P1.5, P1.7,
 // P1.8) live in `tests/repl_introspection.rs` (the deterministic-command home,
 // not feature-gated). This row is the Lane-A agent-pull face: the agent
 // synthesizes `/syntax <topic>` via the stub `tool: syntax <topic>` line, the
@@ -3052,8 +3052,8 @@ fn harvest_references_actual_sig_no_relist_needed() {
 }
 
 // ===========================================================================
-// Pillar 4 (S90) — silent greppable agent log (tests/plan/s90-test-plan.md §P4
-// rows P4.1–P4.5; repl/spec.md §17.20; design/int/agent.md §27).
+// Pillar 4 (S90) — silent greppable agent log (repl/spec.md §17.20;
+// design/int/agent.md §27; retired S90 QA plan rows P4.1–P4.5).
 //
 // With `CRANELISP_AGENT_LOG=<path>` set, an `--features agent` session appends
 // one structured JSONL record per agent event to that file — SILENTLY (nothing
@@ -3426,7 +3426,7 @@ fn agent_log_feature_off_byte_identical_reverify() {
 // ===========================================================================
 // S90 ADDENDUM (step 5q) — persistent full-content TRACE sink + log↔trace `turn`
 // correlation (repl/spec.md §17.20 reframed + §17.21 NEW; design/int/agent.md
-// §28; tests/plan/s90-test-plan.md §"S90 addendum — persistent trace + turn").
+// §28).
 //
 // The §17.20 LOG is the compact greppable INDEX (metadata-only, gains a `turn`
 // field). Its companion §17.21 TRACE is the persistent FULL-CONTENT sink:

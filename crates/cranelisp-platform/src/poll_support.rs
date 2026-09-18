@@ -266,7 +266,7 @@ mod tests {
     // design: design/platform/poll-leaf-authoring.md §2 — the R1 env-layout
     // convention (result @ +0, leaf arg i @ +8+8i) lives in ONE place; a
     // write-then-read round-trip pins the offsets so the poll leaves are
-    // offset-safe. (tests/plan/sprint-96.md §4A)
+    // offset-safe.
     // -----------------------------------------------------------------------
     #[test]
     fn poll_state_env_accessor_arg_scratch_set_result_round_trip() {
@@ -337,7 +337,7 @@ mod tests {
     // §4B — fd-readiness / timer poll scaffold over the host/waker vtable.
     // design: design/platform/poll-leaf-authoring.md §2 — the Reactor wrapper hides
     // the (*host).register_*(host, …, waker) vtable indirection behind one named
-    // verb per readiness kind. (tests/plan/sprint-96.md §4B)
+    // verb per readiness kind.
     // -----------------------------------------------------------------------
     #[test]
     fn poll_support_fd_readiness_timer_scaffold_over_waker_vtable() {
@@ -385,7 +385,7 @@ mod tests {
     // design: design/platform/poll-leaf-authoring.md §2 — PollState distinguishes the
     // establish step (first poll: arm/register, stash a non-zero marker) from the
     // resume step (re-poll: read-result), over the env result slot reused as the
-    // 0-initialised phase sentinel. (tests/plan/sprint-96.md §4B)
+    // 0-initialised phase sentinel.
     // -----------------------------------------------------------------------
     #[test]
     fn poll_state_phase_first_poll_then_re_poll() {

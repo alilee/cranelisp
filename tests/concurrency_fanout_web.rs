@@ -3,7 +3,8 @@
 //! + the now-un-deferred cancel-on-disconnect / graceful-shutdown web rows, PLUS
 //! the launch-eligibility negative matrix (E1/E2/E3) observable face.
 //!
-//! Plan: `tests/plan/sprint-96.md` (CHUNK C) §C5b/§C5c + the C-fanout rows from
+//! Plan: retired S96 QA plan, Chunk C §C5b/§C5c
+//! (`git show 7e56a81c:tests/plan/sprint-96.md`) + the C-fanout rows from
 //! `design/arch/fixmes/0470-design-user-fn-launch-eligibility-server-fanout.md`
 //! (/arch lighter-path ruling: option-2 inline-handler + local discarded-disjoint
 //! sub-tree launch; eligibility predicate E1/E2/E3 at `effect-concurrency.md`

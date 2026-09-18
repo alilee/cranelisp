@@ -57,6 +57,15 @@ separates delivered wiring from unresolved document conformance.
   [safety-register](../../design/arch/safety-invariants.md) row touched in
   scope carries its own cited detection proof under that register's
   requirement; this plan does not duplicate it.
+- A wall-clock witness asserts a structural inequality between regimes that
+  are wide apart (overlapped, waved, serial), never a tuned threshold. Repeat
+  only the leg that machine contention can falsify: contention slows a run and
+  never speeds it, so an upper bound takes the minimum of several attempts
+  while a lower bound stays single-shot. A CPU-bound speedup witness needs a
+  qualifying attempt among several, and its no-speedup control a majority.
+  Widen the separation between regimes before loosening a margin; assert
+  value equality on every attempt. [Failing-test discipline](../CLAUDE.md#failing-test-discipline-migrated-from-the-retired-ledger)
+  bans the "timing-sensitive" disposition these rules exist to avoid.
 - In-scope failures remain visible. Unknown attribution stays provisional;
   neither an old issue label nor a terminal error identifies the corrective
   owner. Use the [test-side notation and harness rules](../CLAUDE.md).
@@ -115,6 +124,15 @@ tier strategy above, the per-test temporary-directory rule in
 harness enforcement in [helpers design constraints](helpers.md#design-constraints),
 and the S61 negative-coverage promotions in the specification annotations
 themselves.
+
+The eleven Sprint-84 to Sprint-97 working plans (monomorphisation and
+auto-IO, the agent rungs, `/search`, the race gate and the effect-concurrency
+slices) were deleted in S122 (`git show 7e56a81c:tests/plan/`). Their closed
+[sprint records](../../sprints/archive/) hold each increment's disposition and
+the tests they named are in the suite; a plan row is not evidence that its test
+landed, so rows that never did are carried below as unclassified leads. The
+lane, feature-gate and descriptor models those plans describe were retired by
+the S96 single-lane cutover and the S97 handle model.
 
 ### Mode canonicalisation — REPL is the canonical surface for language conformance
 
@@ -211,7 +229,27 @@ active allocation cites them; they are not fresh source censuses.
     Vec and a no-raw-pointer / no-forced-tail negative for List; the bare-`[]`
     case is now evidenced by [introspection](../repl_introspection.rs)
     (`display_empty_vec_value`), and the exact-line display cells partially
-    subsume both by whole-line equality.
+    subsume both by whole-line equality;
+  - the S85 REPL-entered auto-IO parallelisation witness. The S85 plan row
+    `auto_io_repl_eval_path_parallelizes` was never authored; the
+    [S85 record](../../sprints/archive/sprint-85.md) left it on a doubt that
+    REPL output gives a reliable wall-clock window and proposed a
+    `Par`-emission introspection witness instead. Today
+    `auto_io_par_grouping_uniform_across_modes` in [IO behavior](../spec_10_io.rs)
+    observes run and linked execution only, and
+    [bind-chain analysis](../../design/int/bind-chain-analysis.md) §5.1 rests
+    the REPL case on all modes sharing one `process_cluster_once` seam;
+  - the S87 wall-clock witness sweep. S87 allocated a QA pass over every timing
+    assertion whose contention-falsifiable leg is single-shot; its findings
+    file holds no result (`git show 66a4d41e:audits/s87-findings.md`). Later
+    witnesses follow the timing rule in §Traceability; earlier ones were not
+    re-inspected against it;
+  - the S88 module-preamble read. The `/doc <module>` read and its no-preamble
+    refusal are rows of the [agent testing strategy](agent-testing-strategy.md#35-preamble-edit--round-trip-rungs-0-and-6);
+    the command is implemented in the REPL command handler, the requirement
+    headings in [modules](../../spec/08-modules.md) §8.16.4 and the
+    [embedded agent experience](../../repl/spec/17-embedded-agent.md) §17.5.1
+    still carry `[S88]`, and no solution test traces to either section.
 
   They are not newly allocated defects. Before relying on any, compare current
   specification and evidence; no new test, API or optimization is authorized

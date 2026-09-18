@@ -3560,7 +3560,8 @@ fn fixme_0373_residual_polymorphic_result_cross_module_hops_no_crash() {
 // =============================================================================
 // Sprint 84 Cluster A — FULL MONOMORPHISATION (Tier-2 instance-shape gap).
 //
-// Plan: tests/plan/sprint84-test-plan.md §A.1 (FIXME 0374). Tier-1/1.5 (landed
+// Plan: retired S84 QA plan §A.1 (`git show 7e56a81c:tests/plan/sprint84-test-plan.md`;
+// FIXME 0374). Tier-1/1.5 (landed
 // S83 — the two GREEN guards above) covers exactly the *polymorphic-result-hop*
 // set, enumerated BACKWARD from result-var detection. The Tier-2 remainder is
 // everything reachable FORWARD from the roots that the backward result-var gate
@@ -3862,7 +3863,7 @@ fn mono_tier2_fold_accumulator_not_over_monomorphised() {
 // Sprint 84 Cluster A — §A.2: 0373(ii) AMBIGUOUS-TYPE rule, RESHAPED to the
 // ruled §3.11 DISPOSITION TRIPLE (user ruling 2026-06-16; FIXME 0378).
 //
-// Plan: tests/plan/sprint84-test-plan.md §A.2 (FIXME 0373/0378). §3.11 was
+// Plan: retired S84 QA plan §A.2 (FIXME 0373/0378). §3.11 was
 // refined into three exhaustive dispositions for a form whose finalised type
 // retains a free type variable:
 //   • §3.11.1 — a use in a CODEGEN-REACHING value position with the var
@@ -4002,7 +4003,7 @@ fn mono_ambiguous_neg_does_not_reach_codegen() {
 // Sprint 84 Cluster A — §A.3.a: 0375 KEPT-path guard (Mixed-ADT nullary-tag
 // discrimination still correct after the guard is scoped down).
 //
-// Plan: tests/plan/sprint84-test-plan.md §A.3 (FIXME 0375). 0375 makes
+// Plan: retired S84 QA plan §A.3 (FIXME 0375). 0375 makes
 // `classify(Type::Var)` an assert and retires `emit_rc_inc_guarded` from the
 // `Type::Var` path, but KEEPS the guard for nullary-tag discrimination within a
 // known `Mixed` ADT (a nullary tag `< 1024` vs a heap pointer). This guards the

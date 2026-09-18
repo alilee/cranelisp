@@ -369,6 +369,12 @@ permutation:
 | `--link` fresh | link, then run produced binary; produced exit code | produced exit code → `N` |
 | `--link` cached | re-spawn link in same TempDir; produced exit | produced exit code → `N` |
 
+The reduction is exact only for results in `0..=255`. A process exit carries
+the low eight bits of `main`'s Int while the REPL prints the whole value, so a
+negative or larger result (`-5` prints as `-5` and exits `251`) reports a false
+divergence. Keep the fixture's result in range, or drive the modes explicitly
+and compare each observation in its own encoding.
+
 For REPL paths, the harness pipes (in order):
 
 ```

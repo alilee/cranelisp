@@ -1,7 +1,8 @@
 //! Sprint 96 — effect-concurrency Chunk A: poll-shape live capacity — the
 //! QA-first (Phase-5 Wave-A1) e2e acceptance rows.
 //!
-//! Plan: `tests/plan/sprint-96.md` §1B / §1C / §1D. Contract of record:
+//! Plan: retired S96 QA plan §1B / §1C / §1D
+//! (`git show 7e56a81c:tests/plan/sprint-96.md`). Contract of record:
 //! `design/arch/effect-concurrency.md` §8.1 (the `(token, capacity)`
 //! dynamic-on-the-node carrier — now lit up on the POLL carrier) / §8.2
 //! (within-token source ordering) / §7 (two-pool model). `design/int/reactor.md`
@@ -14,13 +15,9 @@
 //!
 //! ## Lane
 //!
-//! The whole file is gated `#![cfg(feature = "concurrency-runtime")]` — it runs
-//! ONLY in the `nt-reactor-e2e` lane (`cargo nextest run -p cranelisp --features
-//! concurrency-runtime`), where the reactor runtime + the host-owned
-//! `HashMap<token, Semaphore(capacity)>` pool + the live poll-node `(token,
-//! capacity)` read + the acquire-around-poll lifecycle are compiled in. In the
-//! default `nt` lane the file compiles to nothing (no collateral RED, no
-//! warnings).
+//! Un-gated; runs in the default lane. The S96 single-ABI cutover retired the
+//! `concurrency` / `concurrency-runtime` features and the `nt-reactor-e2e` lane
+//! (`Cargo.toml` §6.8.0a note); the host reactor is unconditional (lazy-init).
 //!
 //! ## Posture (Phase-5 Wave-A1 = RED-first)
 //!
@@ -46,7 +43,7 @@
 //!
 //! ## The intended `poll-pool` poll-shape capacity leaf (Wave-A4 deliverable, Gap G1)
 //!
-//! `tests/plan/sprint-96.md` §7 G1: the S95 capacity leaf (`pool-demo`) was
+//! Retired S96 QA plan §7 G1: the S95 capacity leaf (`pool-demo`) was
 //! BLOCKING; Chunk A needs the **poll-shape analogue** — a `poll-pool` platform
 //! whose effects declare `(token, capacity)` at the effect site and route to the
 //! **reactor** (not rayon), suspending/resuming on an armed timer. It does NOT
@@ -66,8 +63,7 @@
 //!
 //! NOTE — do NOT add a `platforms/poll-pool` crate here: an absent platform is a
 //! clean runtime-RED; a non-compiling fixture crate would break the workspace
-//! build. The fixture lands in Wave A4 (per `tests/plan/sprint-96.md` §7 G1 and
-//! the SPRINT.md A4 wave).
+//! build. The fixture lands in Wave A4 (retired S96 QA plan §7 G1).
 
 #[path = "helpers/mod.rs"]
 mod helpers;
@@ -213,9 +209,11 @@ fn same_token_capacity_n_poll_admits_n_concurrent_nplus1_parks() {
 // the effects share the SAME EXPLICIT HANDLE (a shared free var). This test threads
 // the token as a literal arg (`9`) across three DATA-INDEPENDENT `log` calls, so
 // post-cutover the inference may parallelise them (exclusion via the permit, but NOT
-// order) and the a<b<c assertion could break. Phase-5/dev-OWED reshape: thread the
-// same explicit handle so E2 serialises them (or split exclusion vs order). Recorded
-// in `tests/plan/sprint-97.md` §"§8.2 same-handle ordering watch-item".
+// order) and the a<b<c assertion could break. Proposed reshape: thread the same
+// explicit handle so E2 serialises them (or split exclusion vs order). The S97
+// closed record reports §8.2 ordering green after the cutover
+// (`sprints/archive/sprint-97.md` §Outcome); what carries the order for literal
+// tokens is not recorded, so this watch stays open.
 #[test]
 fn same_token_capacity_1_poll_serial_and_source_ordered() {
     // token 9, capacity 1, tags a/b/c in source order, each suspending D ms.

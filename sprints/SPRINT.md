@@ -1,6 +1,6 @@
 # Sprint 122: Known-issue closure and REPL-agent evaluation
 
-**Status:** PHASE 5 — Shared document-checker source parity and all 605 legacy mappings are complete. The final checker corrections pass 14/14 units and 21/21 CLI cases; all nine affected establishment observations are resolved; project integration is implemented. Wiring controls pass. The first canonicalization batch removes 37 redundant originals; the latest unsuppressed check reports 5,329 findings across 769 documents. The approved-map representative pass removes 14 more completed documents; cross-owner references and integrated verification are complete, with no new finding identities. Runtime implementation, evidence, reviews and generated API confirmation are complete (2026-09-11: intrinsics +38/−9, other six unchanged). ACT-0957 is closed; 27 of the original 88 filing rows now link closure evidence. Overall sprint acceptance remains pending. Implementation authorized 2026-09-10.
+**Status:** PHASE 5 — Runtime implementation, evidence, reviews and generated API confirmation are complete. Shared document-checker adoption is implemented; the latest completed consolidation check reports 2,522 existing findings across 722 documents, with no new finding identities. The eleven S84–S97 QA plans are retired after source-backed retention assessment and reference integration. The local REPL-agent eval runner/corpus and final integrated acceptance remain pending. No phase transition or publication is authorized.
 
 **Goal:** Resolve the known compiler and language defects, make the remaining
 issue records truthful, and deliver a repeatable REPL-agent evaluation baseline.
@@ -1266,3 +1266,77 @@ checks pass. No compiler builds or runtime suites were run for this batch.
 NOTES remains unchanged and ignored. The seventeen retirements remove about
 97,000 net Markdown words across the changed surface. Changes after checkpoint
 `b602708e` remain uncommitted; no push or phase transition occurred.
+
+### Early QA-plan consolidation
+
+The user authorized checkpoint and continuation; commit `7e56a81c` saves the
+completed harvest cohort. QA now reserves the eleven S84–S97 plan candidates
+and their minimum QA-owned integration. Test independently inspects incoming
+reference contexts and waits for QA's disposition before editing its own
+surface. Root integrates other mechanical references and verifies the result.
+No compiler behavior, new control, publication or phase change is in scope.
+
+| Owner | Provider/model | Effort | Session | State |
+|---|---|---|---|---|
+| qa — early plans | Claude/Fable | high | `0c9e3812-3f30-4412-b872-dde600d65283` | interrupted: provider limit |
+| test — incoming references | Claude/Opus | high | `a38201b4-738f-4cc4-81a5-01d5bd7fa778` | interrupted: provider limit |
+
+Both dispatches stopped with Claude API 429, terminal reason `api_error`,
+before any candidate, source or test edits. The provider reports the session
+limit resets at 20:10 Australia/Melbourne on 2026-09-11 (10:10 UTC). QA reported
+Claude Fable 5.1; test reported Claude Opus 5. All eleven candidates are
+byte-identical to checkpoint `7e56a81c`. No retention decision or partial
+inspection is accepted as completed evidence. The last full checker result
+remains 2,625 findings across 733 documents.
+
+Resume this same reserved cohort through the required Claude allocation once
+capacity returns. Briefs, candidate list, cross-reference inventory and provider
+results are retained as `.local/s122-early-plans-*`; they are working inputs,
+not new standing records. No model substitution, publication or phase
+transition occurred. Only this coordination entry changed after the checkpoint;
+NOTES remains unchanged and ignored.
+
+
+On 2026-09-18 the user authorized resumption: finish this cohort with QA first,
+then one settled test-reference handoff, verify and checkpoint, and reassess
+current standing-document reconciliation and the outstanding local eval
+deliverable. Fresh QA dispatch uses Claude Fable/high, session
+`621de07c-1394-416a-850f-8b66648d18c0`; complete, reported Claude Fable 5.1.
+QA retired all eleven plans, extracted existing timing-witness practice and the
+mode-helper range limit, and retained three unclassified evidence leads in
+PLAN. All QA reservations are released. Test integration uses Claude Opus/high,
+session `6bcc2c1f-69ca-4309-b281-4dd2b2f9c83c`; complete, reported Claude Opus 5. Root removed the five
+obsolete plan citations from platform comments, retaining their design references. The preceding provider-limit entries remain historical. Live eval
+configuration and budget remain separately gated.
+
+
+Both owners released their reservations. Reports are
+`.local/s122-early-plans-qa-result.md` and
+`.local/s122-early-plans-test-result.md`. QA retained three unclassified leads:
+REPL auto-IO parallelisation evidence, the unfinished timing-witness sweep,
+and module-preamble read/refusal coverage. Their current observations and
+provenance are in PLAN; retirement does not close them or allocate new tests.
+Test repaired 13 source files and replaced duplicated test-run timing guidance
+with a reference to root authority. Root integrated three platform-source files.
+
+The final stable-tree checker observes 722 documents, 2,522 findings at 3,091
+locations: 103 identities removed, none added. It still exits 1 for existing
+debt; no baseline or exception was added, and historical exclusions remain 182.
+Report: `.local/s122-early-plans-final.json`, SHA-256
+`ae69f10b1077863bc4fa6d65879c6baa111b9b522446a5efdc1cb291a0156e41`.
+This observation precedes the ledger-only completion update. All 16 changed
+Rust files preserve non-comment content; test counts, ignore status and spec
+anchors are unchanged. Consumer/wiring and diff checks pass. No runtime suite
+was run for comment/document edits. The batch removes about 64,000 net Markdown
+words. NOTES is unchanged and ignored; the published package Gitlink is retained.
+
+Reassessment: finish the local REPL-agent eval runner/corpus/grader already
+allocated in the wave plan and QA delta before selecting another broad
+historical cleanup cohort. No runner or task-fixture implementation was found
+in the current test/script surfaces. Its two-task local stub validation can
+proceed within Phase 5; live execution still requires D6. Reconcile current
+integration-design publication/lifetime claims in an owned pass before relying
+on them for acceptance. Test's report retains concurrency-comment debt, the
+literal-token ordering question and the bare-alias list-coverage lead; none is
+silently converted into a compiler defect or a new test obligation here.
+The next checkpoint saves this completed cohort; no push or phase advance.
