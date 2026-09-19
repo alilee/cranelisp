@@ -47,6 +47,13 @@ The approved limited private allocation ownership change proceeds within S122.
 is a future scoping item; it does not block the limited change. Other unresolved
 obligations remain in the current sprint and action/filing registers.
 
+### Future agent configuration and eval comparisons
+
+[ACT-0960](actions/ACT-0960-agent-configuration-and-model-comparison.md) carries
+project-TOML agent configuration, GPT/OpenAI integration and combined multi-model
+eval reports. These are deferred to future sprints; S122 proceeds with the
+existing runner and a Haiku baseline.
+
 ## Delivery history and retained direction
 
 ### Pre-Phase-H consolidation arc — COMPLETE (S86 + S87) — Phase H scope decided

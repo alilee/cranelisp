@@ -177,9 +177,12 @@ Worked callsites: `tests/ms_p8_conj_leak.rs`,
 Tests MUST NOT depend on `stdlib/` (root `CLAUDE.md` §"Design Principles" —
 Stdlib separation). The suite uses its own QA-owned fixtures under
 `tests/fixtures/` to validate language features independently of stdlib
-evolution. The single named exception is stdlib conformance, gated behind the
-verbosely-named `.use_workspace_stdlib_for_stdlib_conformance_only()` so misuse
-is visible in review and `git grep`.
+evolution. The single named exception among suite tests is stdlib
+conformance, gated behind the verbosely-named
+`.use_workspace_stdlib_for_stdlib_conformance_only()` so misuse is visible in
+review and `git grep`. Outside the suite, the REPL-agent eval runner copies
+`stdlib/` into each run under QA's
+[eval policy](plan/s122-evidence-delta.md#runnable-eval-corpus-and-policy).
 
 ## Fresh temp directory per test
 
@@ -311,6 +314,31 @@ resolves the binary root from `CARGO_TARGET_DIR`, so each lane execs its own
 binary — isolation by construction. This closes FIXME 0615's binary-provenance
 race (a differently-featured build swapping the binary a feature-OFF guard then
 spawns); the race is deterministic in provenance, never a flake.
+
+### REPL-agent evals
+
+`scripts/run-agent-evals.py` runs the task corpus in `fixtures/agent-evals/`
+against the isolated binary. QA's [eval policy](plan/s122-evidence-delta.md#runnable-eval-corpus-and-policy)
+defines the tasks, graders, result classes and report contents.
+
+- Build the binary with `cargo build --features agent --target-dir target/agent`.
+- Run `run-agent-evals.py self-check --out <new-dir>` to check the harness. It
+  uses the stub provider, makes no network calls and exits 1 on any case
+  mismatch. Stub results are harness evidence, not a model baseline.
+- Run `run-agent-evals.py run --out <new-dir> --autonomy yes --provider stub
+  --stub-script <file> [--task <id>] [--repeats N] [--timeout S]` to run the
+  corpus. A live provider (`anthropic`, `ollama`) also needs `--allow-live`
+  and a separately approved model, disclosure and budget. The runner refuses
+  a live launch without `CRANELISP_AGENT_MODEL`, or for `anthropic` without a
+  credential. Reports record only whether credentials are present, never their
+  values.
+- Each invocation needs a new or empty `--out` directory, so earlier attempts
+  are never overwritten. `report.json` holds the provenance and per-run
+  results; `runs/<run-id>/` retains that run's inputs, outputs, logs and
+  project.
+- `tasks/<id>.json` holds one versioned task. Change its `version` whenever you
+  change the task. `self-check/cases.json` lists the parser and process cases
+  and the report fields each case must produce.
 
 ## Diagnostic env vars & assertions
 

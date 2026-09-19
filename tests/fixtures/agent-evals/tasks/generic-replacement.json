@@ -1,0 +1,20 @@
+{
+  "id": "generic-replacement",
+  "version": 1,
+  "provenance": "Fixed adaptation (not a verbatim conversation) of tests/spec_11_stdlib.rs::same_session_generic_redefinition_without_vec_import; requirement repl/spec/18-redefinition.md §18.1.",
+  "target_symbol": "redefinition-no-import",
+  "setup": [
+    {"input": "(defn redefinition-no-import [v] v)", "expect": ":(Fn [a] a) user/redefinition-no-import ; defn"},
+    {"input": "(redefinition-no-import 7)", "expect": ":primitives/Int 7"}
+  ],
+  "prompt": "Replace redefinition-no-import in this session with a generic one-argument function that ignores its argument and always returns 42. Keep that exact name. Apply the definition.",
+  "probes": [
+    {"id": "call-0", "input": "(redefinition-no-import 0)", "expect": ":primitives/Int 42"},
+    {"id": "call-9", "input": "(redefinition-no-import 9)", "expect": ":primitives/Int 42"},
+    {"id": "info", "input": "/info redefinition-no-import", "expect": ":(Fn [a] primitives/Int) user/redefinition-no-import ; defn"}
+  ],
+  "not_completed_when": [
+    {"probe": "info", "equals": ":(Fn [a] a) user/redefinition-no-import ; defn"}
+  ],
+  "api_review": null
+}

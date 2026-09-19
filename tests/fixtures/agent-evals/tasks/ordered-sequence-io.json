@@ -1,0 +1,20 @@
+{
+  "id": "ordered-sequence-io",
+  "version": 2,
+  "provenance": "Fixed adaptation (not a verbatim conversation) of tests/stdlib_conformance.rs::stdlib_core_io_ordered_two_action_sequence_reduction_across_modes (imports copied); requirement spec/10-io.md §10.3 + §10.12.8.",
+  "target_symbol": "collect-three",
+  "setup": [
+    {"input": "(import [core.io [sequence-io]])", "expect": null},
+    {"input": "(import [collections.list [List Nil Cons]])", "expect": null},
+    {"input": "(import [primitives [IO Pure bind eq-i64]])", "expect": null}
+  ],
+  "prompt": "Define collect-three with no arguments. Use sequence-io to collect (Pure 1), (Pure 2), and (Pure 3) into a List in that order. Apply the definition so I can call it.",
+  "probes": [
+    {"id": "info", "input": "/info collect-three", "expect": null},
+    {"id": "shape", "input": "(bind (collect-three) (fn [xs] (match xs [(Cons a r1) (match r1 [(Cons b r2) (match r2 [(Cons c r3) (match r3 [Nil (Pure (if (eq-i64 a 1) (if (eq-i64 b 2) (if (eq-i64 c 3) 123 -5) -5) -5)) _ (Pure -1)]) _ (Pure -2)]) _ (Pure -3)]) _ (Pure -4)])))", "expect": ":primitives/Int 123"}
+  ],
+  "not_completed_when": [
+    {"probe": "info", "equals": null}
+  ],
+  "api_review": "A person confirms that the retained collect-three source (the info probe output and project/user.cl) actually calls sequence-io; a string occurrence alone is insufficient."
+}

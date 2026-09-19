@@ -1,6 +1,6 @@
 # Sprint 122: Known-issue closure and REPL-agent evaluation
 
-**Status:** PHASE 5 — Runtime implementation, evidence, reviews and generated API confirmation are complete. Shared document-checker adoption is implemented; the latest completed consolidation check reports 2,522 existing findings across 722 documents, with no new finding identities. The eleven S84–S97 QA plans are retired after source-backed retention assessment and reference integration. The local REPL-agent eval runner/corpus and final integrated acceptance remain pending. No phase transition or publication is authorized.
+**Status:** PHASE 5 — Runtime implementation, evidence, reviews and generated API confirmation are complete. Shared document-checker adoption is implemented; the latest completed consolidation check reports 2,522 existing findings across 722 documents, with no new finding identities. The eleven S84–S97 QA plans are retired after source-backed retention assessment and reference integration. The local REPL-agent eval runner/corpus is delivered with 18/18 self-check outcomes; live evaluation and final integrated acceptance remain pending. No phase transition or publication is authorized.
 
 **Goal:** Resolve the known compiler and language defects, make the remaining
 issue records truthful, and deliver a repeatable REPL-agent evaluation baseline.
@@ -67,11 +67,32 @@ available. Any extra instrumentation must have an identified information need;
 no general observability platform or automatic tuning system is implied.
 
 A baseline may run while known compiler failures remain explicitly classified.
-Model, endpoint, external data disclosure and run budget are decisions before
-live execution, not guessed defaults. The user-authorized Codex delivery-role
-allocation does not add an OpenAI provider to the embedded REPL agent. Prefer
-an already-supported provider for the initial runnable slice. No new provider
-adapter is included by inference.
+The user selected the latest Claude Haiku as the eval quality benchmark on
+2026-09-19. Resolve the latest Haiku release when preparing a baseline and record
+the exact model ID for comparisons. On that date, Anthropic's
+[model reference](https://platform.claude.com/docs/en/models/haiku-4-5/overview)
+identifies Haiku 4.5, `claude-haiku-4-5-20251001`. This selects the embedded
+agent's reference benchmark; delivery-role allocation stays unchanged. No
+numerical quality threshold is inferred from the model choice.
+
+The user deferred project-TOML agent configuration, GPT/OpenAI integration and
+combined multi-model comparison reports to future sprints on 2026-09-19.
+[ACT-0960](actions/ACT-0960-agent-configuration-and-model-comparison.md) owns that
+follow-on. The immediate outcome is a Haiku run using the existing harness.
+
+The requested first live slice is the two existing tasks, one attempt each,
+using Anthropic Haiku 4.5 (`claude-haiku-4-5-20251001`), fresh disposable
+projects and `--yes`, with a 120-second process timeout per task and no retries.
+Disclosed material is the fixed eval prompts, generated project source and
+harvested repository stdlib context. The existing compiler caps agent turns and
+repair iterations; the timeout is not a hard monetary cap. Preserve all attempt
+artifacts and record actual available metrics. The user's direction to get to
+the Haiku run authorizes this bounded task execution, not a wider campaign.
+
+Credential preflight found neither `ANTHROPIC_API_KEY` nor `CRANELISP_AGENT_KEY`
+in this session. Sprint requested the existing credential-loading location
+without requesting a secret in chat. No live request has been sent; the
+credential is the current execution dependency.
 
 ### Explicit exclusions and proposed carries
 
@@ -87,7 +108,8 @@ that has become false.
 | Natural List/Seq display — 0050 | Optional UX addition proposed outside core scope. Its design already exists; “no design” is not a valid carry reason | user scope selection, then design(src); include now only if selected before binary reservation closure |
 | Network teaching example — 0463 | Optional teaching capability outside core scope; verify prerequisites and retain one explicit owner instead of treating it as a compiler defect | training with platform/test; return when the network lesson and its assets are selected |
 | Ownership-ABI-independent live replacement — ACT-0953 | Stronger contract excluded; fix current-contract violations without silently removing the interim restriction | spec/user then arch; return on approval of the stronger promise |
-| Automatic primer tuning, broad model comparison or new REPL-agent provider | Not needed for a first working eval baseline | user-selected follow-on informed by baseline results |
+| Project-TOML agent configuration, GPT support, multi-model comparison reports | Deferred by the user to future sprints so the Haiku baseline can run now | ACT-0960; future sprint scope |
+| Automatic primer tuning or an unbounded live comparison campaign | Outside this bounded Haiku run | Separate future scope and spend decision |
 
 Repeated-deferral history is reviewed per filing before a final disposition.
 The longest-standing optional items above require explicit scope approval;
@@ -1340,3 +1362,74 @@ on them for acceptance. Test's report retains concurrency-comment debt, the
 literal-token ordering question and the bare-alias list-coverage lead; none is
 silently converted into a compiler defect or a new test obligation here.
 The next checkpoint saves this completed cohort; no push or phase advance.
+
+
+### Local REPL-agent eval implementation
+
+After checkpoint `660f0920`, the user directed continuation of the already
+approved local runner, two-task corpus and stub validation. Test owns the
+combined implementation and serial build/test reservation, using the existing
+QA readiness and evidence allocation. Claude Opus/high session
+`414eaaf4-eb09-4330-95fa-584b6fc37b7c` completed (Claude Opus 5). Working brief and results are
+`.local/s122-local-evals-test-*`. Independent review and QA adequacy follow the
+working deliverable. Live calls remain gated by D6; no new production seam,
+commit, publication or phase advance is included in this dispatch.
+
+
+Test delivered the process runner, two task manifests, stub/parser self-checks
+and usage guidance. The report at `.local/s122-local-evals-test-result.md`
+records a fresh isolated agent build, 17/17 expected self-check outcomes,
+2/2 generic normal-run outcomes and three effective grader-fault detections.
+All source/build reservations are released. These observations validate the
+local harness only; requested-API compliance remains a separate source review,
+and no model-quality baseline is claimed. Independent review completed on
+Claude Fable/high, session `c06c8d87-e6f0-4adb-a6e8-85a22f8b5fd5`.
+
+
+QA sessions `2954b139-b344-4ad3-8286-dafd60c69ee9` and
+`3257b79c-ec13-4b42-a31f-0b5f374ea874` (Claude Fable/high) settled the review
+findings and the coordinator's list-encoding counterexample. Both completed
+and released the evidence delta. Their reports are
+`.local/s122-local-evals-qa-result.md` and
+`.local/s122-local-evals-qa-probe-result.md`. The corrected allocation narrows
+automatic attribution to supported observations and requires exact per-element
+list comparison. Test now owns one L+D correction batch, including the
+counterexample's executing before/after evidence and offline live-readiness
+repairs: Claude Opus/high session `3123b785-4182-4528-919e-65e1b0faa308`.
+QA accepts local E1 completion on the prescribed green evidence without another
+review cycle. Live E2 evidence and user D6 configuration remain outstanding.
+
+
+The L+D correction completed on Claude Opus 5, with the intended four RED
+mismatches followed by 18/18 GREEN outcomes. Report:
+`.local/s122-local-evals-test-correction-result.md`. The real counterexample
+List 1,1,13 passed the old encoding and fails the exact-value probe; 1,2,3
+remains green. Offline configuration refusals and report survival after a later
+attempt failure also pass. No compiler source changed.
+
+A source-backed endpoint follow-up resolved the reported registry-access gap:
+this build uses Rig 0.39.0's Ollama `Client::new`, not its environment-reading
+constructor. Test corrected the report to name the actual localhost endpoint
+and label the override as ignored. Session
+`e446ebe2-537a-4ecb-9ca7-8d7dd4ad1b8c` (Claude Opus/high) completed; report:
+`.local/s122-local-evals-endpoint-result.md`. The final runner self-check is
+18/18, exit 0; report `.local/s122-agent-evals/endpoint-green-self-check/report.json`,
+SHA-256 `16a5b05956937bcfa61b486aea7a8de768cc1f5e5b3e04bfddfd90e88374a4a3`.
+All source/build reservations are released. QA's stated local E1 completion
+condition is met. Usage lives in test guidance; E2 remains unobserved.
+
+The stable-tree document check before the final endpoint-only source repair
+observed 722 documents and 2,519 findings at 3,088 locations: three identities
+removed, none added, no suppression; historical exclusions remain 182. Report:
+`.local/s122-local-evals-final.json`, SHA-256
+`3876e5ba6923565bbf911f0cba75d212f5d7bb4d2c0a996c73029d623f061dde`.
+The endpoint repair changed no Markdown; subsequent ledger edits receive scoped
+reference/diff checks. Wiring checks pass; NOTES remains unchanged and ignored.
+Changes are uncommitted; no live calls, push or phase advance occurred.
+
+Remaining product observations for QA intake before any affected live use:
+the provider guide claims an Ollama endpoint override the current constructor
+ignores, and repair-provider errors can be logged as model decline. The local
+runner reports these paths conservatively; it neither fixes nor attributes a
+compiler defect from them. Live readiness still requires D6 and the committed
+runner/fixtures specified by QA. These observations do not reopen local E1.

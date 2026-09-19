@@ -1,0 +1,153 @@
+{
+  "parser_cases": [
+    {
+      "name": "control-pass",
+      "task": "generic-replacement",
+      "transcript": "generic-replacement-pass.txt",
+      "sentinels": [700000000001, 700000000002, 700000000003, 700000000004, 700000000005, 700000000006],
+      "log": [
+        "{\"event\":\"exchange\",\"turn\":1,\"primer_hash\":\"d73ab194948eda7b\",\"harvest_len\":471,\"scenario\":\"parser-case\",\"ts\":1}",
+        "{\"event\":\"submit\",\"symbol\":\"redefinition-no-import\",\"module\":\"user\",\"turn\":1,\"steps_at_submit\":1,\"scenario\":\"parser-case\",\"ts\":1}"
+      ],
+      "expect": {"task_result": "pass", "attribution": null, "log.status": "ok", "log.metrics.submits": 1}
+    },
+    {
+      "name": "missing-sentinel",
+      "task": "generic-replacement",
+      "transcript": "generic-replacement-pass.txt",
+      "sentinels": [700000000001, 700000000002, 700000000003, 700000000004, 700000000005, 700000000006],
+      "edits": [["11+0ms; user> :primitives/Int 700000000005\n", ""]],
+      "log": [],
+      "expect": {"task_result": "ungradable", "attribution": "harness", "log.status": "no_exchange", "log.metrics": "unavailable"}
+    },
+    {
+      "name": "duplicate-sentinel-in-agent-region",
+      "task": "generic-replacement",
+      "transcript": "generic-replacement-pass.txt",
+      "sentinels": [700000000001, 700000000002, 700000000003, 700000000004, 700000000005, 700000000006],
+      "edits": [["▌ Replaced it.\n", "▌ Replaced it.\n:primitives/Int 700000000004\n"]],
+      "log": [],
+      "expect": {"task_result": "ungradable", "attribution": "harness"}
+    },
+    {
+      "name": "ambiguous-probe-slot",
+      "task": "generic-replacement",
+      "transcript": "generic-replacement-pass.txt",
+      "sentinels": [700000000001, 700000000002, 700000000003, 700000000004, 700000000005, 700000000006],
+      "edits": [[":primitives/Int 700000000004\n", ":primitives/Int 700000000004\n:primitives/Int 42\n"]],
+      "log": [],
+      "expect": {"task_result": "ungradable", "attribution": "harness"}
+    },
+    {
+      "name": "setup-precondition-failed",
+      "task": "generic-replacement",
+      "transcript": "generic-replacement-pass.txt",
+      "sentinels": [700000000001, 700000000002, 700000000003, 700000000004, 700000000005, 700000000006],
+      "edits": [[":primitives/Int 7\n", ":primitives/Int 8\n"]],
+      "log": [],
+      "expect": {"task_result": "ungradable", "attribution": "unknown"}
+    },
+    {
+      "name": "nonzero-exit-with-passing-transcript",
+      "task": "generic-replacement",
+      "transcript": "generic-replacement-pass.txt",
+      "sentinels": [700000000001, 700000000002, 700000000003, 700000000004, 700000000005, 700000000006],
+      "exit_code": 134,
+      "log": [],
+      "expect": {"task_result": "ungradable", "attribution": "unknown"}
+    },
+    {
+      "name": "malformed-log-keeps-language-result",
+      "task": "generic-replacement",
+      "transcript": "generic-replacement-pass.txt",
+      "sentinels": [700000000001, 700000000002, 700000000003, 700000000004, 700000000005, 700000000006],
+      "log": ["{\"event\":\"exchange\",\"turn\":1,\"scenario\":\"parser-case\",\"ts\":1}", "{\"event\":\"submit\",\"sym"],
+      "expect": {"task_result": "pass", "log.status": "malformed", "log.metrics": "unavailable"}
+    },
+    {
+      "name": "foreign-scenario-log",
+      "task": "generic-replacement",
+      "transcript": "generic-replacement-pass.txt",
+      "sentinels": [700000000001, 700000000002, 700000000003, 700000000004, 700000000005, 700000000006],
+      "log": ["{\"event\":\"exchange\",\"turn\":1,\"scenario\":\"another-run\",\"ts\":1}"],
+      "expect": {"task_result": "pass", "log.status": "scenario_mismatch", "log.metrics": "unavailable"}
+    },
+    {
+      "name": "unchanged-with-give-up-log",
+      "task": "generic-replacement",
+      "transcript": "generic-replacement-pass.txt",
+      "sentinels": [700000000001, 700000000002, 700000000003, 700000000004, 700000000005, 700000000006],
+      "edits": [[":(Fn [a] primitives/Int) user/redefinition-no-import ; defn", ":(Fn [a] a) user/redefinition-no-import ; defn"], [":primitives/Int 42\n", ":primitives/Int 0\n"]],
+      "log": [
+        "{\"event\":\"exchange\",\"turn\":1,\"scenario\":\"parser-case\",\"ts\":1}",
+        "{\"event\":\"give_up\",\"cause\":\"step_budget\",\"error_class\":\"TypeError\",\"steps_at_give_up\":3,\"scenario\":\"parser-case\",\"ts\":1}"
+      ],
+      "expect": {
+        "task_result": "not_completed",
+        "attribution": "unknown",
+        "evidence": ["probe info shows the pre-turn state", "give_up recorded: cause=step_budget error_class=TypeError steps_at_give_up=3"]
+      }
+    },
+    {
+      "name": "unchanged-with-missing-log",
+      "task": "generic-replacement",
+      "transcript": "generic-replacement-pass.txt",
+      "sentinels": [700000000001, 700000000002, 700000000003, 700000000004, 700000000005, 700000000006],
+      "edits": [[":(Fn [a] primitives/Int) user/redefinition-no-import ; defn", ":(Fn [a] a) user/redefinition-no-import ; defn"], [":primitives/Int 42\n", ":primitives/Int 0\n"]],
+      "log": null,
+      "expect": {"task_result": "not_completed", "attribution": "unknown", "log.status": "missing"}
+    }
+  ],
+  "process_cases": [
+    {
+      "name": "generic-replacement-correct",
+      "task": "generic-replacement",
+      "stub": ["tool: submit (defn redefinition-no-import [_] 42)", "done: Replaced it."],
+      "expect": {"task_result": "pass", "attribution": null, "complete_success": true, "log.status": "ok", "log.metrics.submits": 1}
+    },
+    {
+      "name": "generic-replacement-wrong-value",
+      "task": "generic-replacement",
+      "stub": ["tool: submit (defn redefinition-no-import [_] 41)", "done: Replaced it."],
+      "expect": {"task_result": "wrong_result", "attribution": "unknown", "complete_success": false}
+    },
+    {
+      "name": "generic-replacement-explicit-give-up",
+      "task": "generic-replacement",
+      "stub": ["tool: submit (defn redefinition-no-import [_] 42", "done: I cannot produce a definition that compiles."],
+      "expect": {"task_result": "not_completed", "attribution": "unknown", "log.status": "ok"}
+    },
+    {
+      "name": "ordered-sequence-io-correct",
+      "task": "ordered-sequence-io",
+      "stub": ["tool: submit (defn collect-three [] (sequence-io (Cons (Pure 1) (Cons (Pure 2) (Cons (Pure 3) Nil)))))", "done: Defined collect-three."],
+      "expect": {"task_result": "pass", "attribution": null, "api_compliance": "unreviewed", "complete_success": false}
+    },
+    {
+      "name": "ordered-sequence-io-wrong-order",
+      "task": "ordered-sequence-io",
+      "stub": ["tool: submit (defn collect-three [] (sequence-io (Cons (Pure 3) (Cons (Pure 2) (Cons (Pure 1) Nil)))))", "done: Defined collect-three; calling it gives :primitives/Int 123."],
+      "expect": {"task_result": "wrong_result", "attribution": "unknown"}
+    },
+    {
+      "name": "ordered-sequence-io-positional-encoding-collision",
+      "task": "ordered-sequence-io",
+      "stub": ["tool: submit (defn collect-three [] (sequence-io (Cons (Pure 1) (Cons (Pure 1) (Cons (Pure 13) Nil)))))", "done: Defined collect-three."],
+      "expect": {"task_result": "wrong_result", "attribution": "unknown"}
+    },
+    {
+      "name": "ordered-sequence-io-success-claim-without-definition",
+      "task": "ordered-sequence-io",
+      "stub": ["done: I defined collect-three; calling it gives :primitives/Int 123.", "prose: (defn collect-three [] (sequence-io (Cons (Pure 1) (Cons (Pure 2) (Cons (Pure 3) Nil)))))"],
+      "expect": {"task_result": "not_completed", "attribution": "unknown", "log.metrics.submits": 0}
+    },
+    {
+      "name": "ordered-sequence-io-child-killed-at-timeout",
+      "task": "ordered-sequence-io",
+      "stub": ["tool: submit (defn collect-three [] (sequence-io (Cons (Pure 1) (Cons (Pure 2) (Cons (Pure 3) Nil)))))", "done: Defined collect-three."],
+      "inject": ["(defn spin [n] (if (eq-i64 n -1) 0 (spin n)))", "(spin 0)"],
+      "timeout_s": 20,
+      "expect": {"task_result": "ungradable", "attribution": "unknown", "process.timed_out": true}
+    }
+  ]
+}

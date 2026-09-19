@@ -1,0 +1,19 @@
+cranelisp REPL — type /help for help
+0+0ms; user> :(Fn [a] a) user/redefinition-no-import ; defn
+9+0ms; user> :primitives/Int 700000000001
+8+0ms; user> :primitives/Int 7
+9+0ms; user> :primitives/Int 700000000002
+8+0ms; user> agent> (defn redefinition-no-import [_] 42)
+▌ --yes is on: the agent will now submit definitions WITHOUT asking for per-action confirmation. The pre-flight validator still gates correctness — only code that compiles cleanly is ever submitted.
+:(Fn [a] primitives/Int) user/redefinition-no-import ; defn
+▌ Replaced it.
+8+0ms; user> :primitives/Int 700000000003
+7+0ms; user> :primitives/Int 42
+11+0ms; user> :primitives/Int 700000000004
+7+0ms; user> :primitives/Int 42
+11+0ms; user> :primitives/Int 700000000005
+12+0ms; user> :(Fn [a] primitives/Int) user/redefinition-no-import ; defn
+  (defn redefinition-no-import [_] 42)
+  ? bytes
+12+0ms; user> :primitives/Int 700000000006
+7+0ms; user>
